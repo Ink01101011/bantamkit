@@ -121,7 +121,7 @@ class OpenAICompatible:
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     json=payload,
                 )
-                if r.status_code >= 500:
+                if r.status_code == 429 or r.status_code >= 500:
                     raise TransportError(f"server error {r.status_code}: {r.text[:200]}")
                 r.raise_for_status()
                 return self._parse(r.json())
@@ -132,15 +132,29 @@ class OpenAICompatible:
 
     @staticmethod
     def _parse(data: dict) -> Response:
-        choice = data["choices"][0]["message"]
-        tool_calls = [
-            ToolCall(
-                id=tc["id"],
-                name=tc["function"]["name"],
-                arguments=json.loads(tc["function"]["arguments"]),
-            )
-            for tc in (choice.get("tool_calls") or [])
-        ]
+        try:
+            choice = data["choices"][0]["message"]
+        except (KeyError, IndexError) as e:
+            raise BantamError(f"malformed chat response: {data!r:.200}") from e
+
+        tool_calls = []
+        for tc in choice.get("tool_calls") or []:
+            try:
+                name = tc["function"]["name"]
+                raw_args = tc["function"]["arguments"]
+                # Support dict-form arguments (already a dict) or JSON string
+                if isinstance(raw_args, dict):
+                    arguments = raw_args
+                else:
+                    arguments = json.loads(raw_args)
+                tool_calls.append(ToolCall(id=tc["id"], name=name, arguments=arguments))
+            except (json.JSONDecodeError, ValueError) as e:
+                raw = tc["function"]["arguments"]
+                name = tc["function"]["name"]
+                raise BantamError(
+                    f"tool call '{name}' has malformed JSON arguments: {raw!r:.200}"
+                ) from e
+
         usage = data.get("usage") or {}
         return Response(
             message=Message(role="assistant", content=choice.get("content"), tool_calls=tool_calls),
