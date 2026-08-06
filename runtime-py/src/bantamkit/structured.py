@@ -14,14 +14,21 @@ class StructuredOutputError(BantamError):
     """No schema-valid output within the retry budget."""
 
 
-def extract_json(text: str):
+def extract_json(text: str) -> dict | list:
     text = text.strip()
     fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     if fence:
         text = fence.group(1).strip()
-    start = text.find("{")
-    if start == -1:
+    start_brace = text.find("{")
+    start_bracket = text.find("[")
+    if start_brace == -1 and start_bracket == -1:
         raise ValueError("no JSON object found in output")
+    elif start_brace == -1:
+        start = start_bracket
+    elif start_bracket == -1:
+        start = start_brace
+    else:
+        start = min(start_brace, start_bracket)
     obj, _ = json.JSONDecoder().raw_decode(text[start:])
     return obj
 

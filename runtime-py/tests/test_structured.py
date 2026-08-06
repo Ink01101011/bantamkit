@@ -27,6 +27,14 @@ def test_extract_json_no_object_raises():
         extract_json("no json here")
 
 
+def test_extract_json_top_level_array():
+    assert extract_json("[1, 2]") == [1, 2]
+
+
+def test_extract_json_array_with_prose():
+    assert extract_json('here: [{"a": 1}] done') == [{"a": 1}]
+
+
 def test_structured_valid_first_try():
     client = FakeClient([assistant(content='{"name": "Ann", "email": "a@x.com"}')])
     data = structured(client, "extract", SCHEMA)
