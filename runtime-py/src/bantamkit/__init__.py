@@ -10,5 +10,6 @@ from bantamkit.client import (
     TransportError,
     Usage,
 )
+from bantamkit.critique import CritiqueExhausted, CritiqueGate, Rubric, load_rubric
 from bantamkit.memory import Memory, MemoryStore
 from bantamkit.structured import StructuredOutputError, extract_json, structured

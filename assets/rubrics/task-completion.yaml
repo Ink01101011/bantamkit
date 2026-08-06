@@ -1,0 +1,19 @@
+name: task-completion
+threshold: 7
+schema:
+  type: object
+  required: [score, feedback]
+  properties:
+    score: {type: integer, minimum: 0, maximum: 10}
+    feedback: {type: string}
+prompt: |
+  You are a strict reviewer. Judge whether the answer completes the task.
+
+  Task:
+  {task}
+
+  Answer:
+  {output}
+
+  Score 0-10, where 10 = fully correct, complete, and directly usable.
+  Return ONLY JSON: {{"score": <int>, "feedback": "<what is wrong or missing>"}}
