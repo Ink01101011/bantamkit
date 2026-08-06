@@ -1,0 +1,13 @@
+name: recall-owner
+family: memory-recall
+prompt: |
+  Which team owns the payments API? If you have a memory tool, check memory
+  first. Answer with the team name.
+memory_setup:
+  - type: project
+    name: payments-api-owner
+    description: which team owns the payments api
+    body: The payments API is owned by team Atlas.
+scoring:
+  kind: contains
+  expected: ["atlas"]

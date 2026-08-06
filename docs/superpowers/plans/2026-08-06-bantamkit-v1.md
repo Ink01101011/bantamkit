@@ -2170,6 +2170,32 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ---
 
+### Task 10: Runbook documentation (user-requested addition)
+
+**Files:**
+- Create: `README.md` (repo root), `docs/install.md`, `docs/usage.md`, `docs/memory.md`, `docs/eval.md`
+
+**Interfaces:**
+- Consumes: the final public API as implemented in Tasks 1–9 (read the actual code in `runtime-py/src/bantamkit/` — do not invent APIs).
+- Produces: linked runbook docs. No code changes.
+
+Requirements (content is written from the implemented API at execution time, so no verbatim text here — this task runs LAST):
+
+- **`README.md`** — short entry point only: what bantamkit is (2-3 sentences from the spec's tagline), a minimal composition example copied from working code, and a link list to the four docs files. Hard cap ~60 lines; anything longer moves into a linked file.
+- **`docs/install.md`** — install via pip (editable install from clone for now), Python >=3.11 requirement, how to point at an OpenAI-compatible endpoint (Ollama example with base_url/model), `BANTAMKIT_ASSETS` env var override.
+- **`docs/usage.md`** — the runbook: construct `OpenAICompatible` + `Agent`, register a tool (`ToolDef`), `agent.use(...)` composition with `Memory` and `CritiqueGate`, `structured()` standalone use, error types users must handle (`MaxTurnsExceeded`, `StructuredOutputError`, `CritiqueExhausted`, `TransportError`) and what each means. Every code block must be copy-paste runnable.
+- **`docs/memory.md`** — store layout on disk, the four ops and when each runs, budget/dedupe behavior (what "duplicate" replies mean), lifecycle (compact/archive).
+- **`docs/eval.md`** — how to run the eval CLI, what the config matrix means, how to read the report (score/1k tok column), how to add a task YAML (fields + scoring kinds).
+- Each docs file links back to README and to its sibling files where relevant. Keep each file focused and short; split rather than grow.
+- Verification: every Python snippet in the docs is import-checked (`python -c` the imports at minimum); the eval CLI line matches `python -m bantamkit.evalrun --help` output.
+
+- [ ] **Step 1: Read the implemented API surface** (`runtime-py/src/bantamkit/__init__.py` and the modules it exports)
+- [ ] **Step 2: Write the five files per the requirements above**
+- [ ] **Step 3: Verify snippets** (imports run; CLI flags match `--help`)
+- [ ] **Step 4: Commit** — `docs: add runbook (install/usage/memory/eval) linked from README`
+
+---
+
 ## Out of Scope (mirrors spec §8)
 
-TS runtime, MCP server exposure, CodeAct/sandboxed execution, vector embeddings/FTS5, automatic memory compression, multi-agent orchestration (structured-handoff note in spec), ReAct fallback tool-calling, README/PyPI publishing polish.
+TS runtime, MCP server exposure, CodeAct/sandboxed execution, vector embeddings/FTS5, automatic memory compression, multi-agent orchestration (structured-handoff note in spec), ReAct fallback tool-calling, PyPI publishing polish.

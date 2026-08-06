@@ -1,0 +1,13 @@
+name: recall-deploy
+family: memory-recall
+prompt: |
+  How do we deploy this project to production? If you have a memory tool,
+  check memory first. Answer with the exact command.
+memory_setup:
+  - type: project
+    name: deploy-command
+    description: how we deploy this project to production
+    body: Deploy with `make ship-prod` from the repo root.
+scoring:
+  kind: contains
+  expected: ["ship-prod"]

@@ -1,0 +1,14 @@
+name: extract-contact
+family: structured-extraction
+prompt: |
+  Extract the contact as JSON with keys "name" and "email".
+  Text: "Reach out to Ann Chen, she is at ann.chen@example.com, usually after 2pm."
+schema:
+  type: object
+  required: [name, email]
+  properties:
+    name: {type: string}
+    email: {type: string}
+scoring:
+  kind: json_equal
+  expected: {name: "Ann Chen", email: "ann.chen@example.com"}

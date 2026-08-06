@@ -1,0 +1,20 @@
+name: code-quality
+threshold: 7
+schema:
+  type: object
+  required: [score, feedback]
+  properties:
+    score: {type: integer, minimum: 0, maximum: 10}
+    feedback: {type: string}
+prompt: |
+  You are a strict code reviewer. Judge the code below.
+
+  Task:
+  {task}
+
+  Code:
+  {output}
+
+  Score 0-10 on: correctness for the task, handling of error cases, and
+  absence of dead or needless code. 10 = ship as-is.
+  Return ONLY JSON: {{"score": <int>, "feedback": "<specific defects to fix>"}}

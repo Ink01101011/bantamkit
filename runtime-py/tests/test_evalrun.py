@@ -1,0 +1,208 @@
+from conftest import FakeClient, assistant, call
+
+from bantamkit.client import Message, ToolCall
+from bantamkit.evalrun import (
+    CONFIGS,
+    TrackingClient,
+    format_report,
+    load_tasks,
+    run_task,
+    score_output,
+)
+
+
+def get_task(name):
+    return next(t for t in load_tasks() if t["name"] == name)
+
+
+def test_load_tasks_reads_asset_suite():
+    names = {t["name"] for t in load_tasks()}
+    assert {"extract-contact", "shop-total", "recall-deploy"} <= names
+
+
+def test_score_json_equal():
+    task = get_task("extract-contact")
+    good = '{"name": "Ann Chen", "email": "ann.chen@example.com"}'
+    assert score_output(task, good, []) is True
+    assert score_output(task, '{"name": "Ann Chen"}', []) is False
+    assert score_output(task, "not json", []) is False
+
+
+def test_score_contains_case_insensitive():
+    task = get_task("recall-owner")
+    assert score_output(task, "It is owned by Team ATLAS.", []) is True
+    assert score_output(task, "no idea", []) is False
+
+
+def test_score_contains_matches_on_word_boundaries_not_substrings():
+    """`100` inside `1000` is a wrong answer, not a pass (shop-total's expected value)."""
+    task = get_task("shop-total")
+    assert score_output(task, "The total stock value is 100.", []) is True
+    assert score_output(task, "The total stock value is 1000", []) is False
+    assert score_output(task, "It is 4100 in total", []) is False
+    assert score_output(task, "100.50 dollars", []) is True  # `.` is not a word character
+
+
+def test_score_contains_allows_punctuation_and_hyphens_around_the_term():
+    task = get_task("recall-deploy")
+    assert score_output(task, "Run `make ship-prod` from the root.", []) is True
+    assert score_output(task, "Run make ship-production.", []) is False
+
+
+def test_score_tool_trace_subsequence():
+    task = get_task("shop-compare")
+    trace = [
+        Message(
+            role="assistant",
+            tool_calls=[ToolCall(id="1", name="price_lookup", arguments={"item": "widget"})],
+        ),
+        Message(
+            role="assistant",
+            tool_calls=[ToolCall(id="2", name="price_lookup", arguments={"item": "gadget"})],
+        ),
+    ]
+    assert score_output(task, "gadget", trace) is True
+    assert score_output(task, "gadget", trace[:1]) is False
+
+
+def test_tracking_client_accumulates_usage():
+    inner = FakeClient([assistant(content="a"), assistant(content="b")])
+    tracking = TrackingClient(inner)
+    tracking.chat([Message(role="user", content="x")])
+    tracking.chat([Message(role="user", content="y")])
+    assert tracking.usage.prompt_tokens == 20 and tracking.usage.completion_tokens == 10
+
+
+def test_run_task_bare_passes_and_counts_tokens(tmp_path):
+    content = '{"name": "Ann Chen", "email": "ann.chen@example.com"}'
+    client = FakeClient([assistant(content=content)])
+    result = run_task(client, get_task("extract-contact"), "bare", tmp_path)
+    assert result.passed is True and result.tokens == 15 and result.error is None
+
+
+def test_run_task_memory_config_seeds_store(tmp_path):
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("memory_recall", {"query": "deploy production"})]),
+            assistant(content="Run make ship-prod."),
+        ]
+    )
+    result = run_task(client, get_task("recall-deploy"), "memory", tmp_path)
+    assert result.passed is True
+    # The scripted answer passes regardless, so assert the seeded fact actually came back:
+    # an unseeded store answers "no memories matched" and this fails.
+    recall_obs = client.calls[1]["messages"][-1].content
+    assert "[deploy-command]" in recall_obs
+    assert "make ship-prod" in recall_obs
+
+
+def test_run_task_explicit_failure_recorded_not_raised(tmp_path):
+    client = FakeClient([assistant(content="not json")] * 3)
+    result = run_task(client, get_task("extract-contact"), "structured", tmp_path)
+    assert result.passed is False
+    assert "StructuredOutputError" in result.error
+
+
+CONTACT = '{"name": "Ann Chen", "email": "ann.chen@example.com"}'
+GOOD_VERDICT = '{"score": 9, "feedback": "looks good"}'
+
+
+def test_structured_config_schema_task_bypasses_agent(tmp_path):
+    """`structured` is unchanged: one direct structured() call, no agent, no critique."""
+    client = FakeClient([assistant(content=CONTACT)])
+    result = run_task(client, get_task("extract-contact"), "structured", tmp_path)
+    assert result.passed is True and result.error is None
+    assert len(client.calls) == 1
+    system = client.calls[0]["messages"][0]
+    assert system.role == "system" and "JSON Schema" in system.content
+
+
+def test_structured_config_schema_with_tool_trace_scoring_is_explicit_failure(tmp_path):
+    """The structured path has no transcript, so tool_trace scoring must fail loudly."""
+    task = {
+        "name": "synthetic-schema-trace",
+        "prompt": "do the thing",
+        "schema": {"type": "object"},
+        "scoring": {"kind": "tool_trace", "expected": ["price_lookup"]},
+    }
+    client = FakeClient([])
+    result = run_task(client, task, "structured", tmp_path)
+    assert result.passed is False
+    assert "tool_trace" in result.error and "EvalConfigError" in result.error
+    assert client.calls == []
+
+
+def test_full_config_schema_task_runs_agent_and_critique(tmp_path):
+    """`full` must exercise the agent so CritiqueGate actually participates."""
+    client = FakeClient([assistant(content=CONTACT), assistant(content=GOOD_VERDICT)])
+    result = run_task(client, get_task("extract-contact"), "full", tmp_path)
+    assert result.passed is True and result.error is None
+    assert len(client.calls) == 2  # agent turn + critique turn
+    prompts = [m.content or "" for c in client.calls for m in c["messages"]]
+    assert any("strict reviewer" in p for p in prompts)
+
+
+def test_full_config_schema_task_retries_on_low_critique_score(tmp_path):
+    client = FakeClient(
+        [
+            assistant(content='{"name": "Ann", "email": "wrong@example.com"}'),
+            assistant(content='{"score": 2, "feedback": "wrong email"}'),
+            assistant(content=CONTACT),
+            assistant(content=GOOD_VERDICT),
+        ]
+    )
+    result = run_task(client, get_task("extract-contact"), "full", tmp_path)
+    assert result.passed is True and result.error is None
+    revision_prompt = client.calls[2]["messages"][-1].content
+    assert "wrong email" in revision_prompt
+
+
+def test_full_config_schema_violation_triggers_revision_round(tmp_path):
+    """Schema parity with structured(): a violation is fed back, not scored as a loss."""
+    client = FakeClient(
+        [
+            assistant(content='{"name": "Ann Chen"}'),  # missing email
+            assistant(content=CONTACT),
+            assistant(content=GOOD_VERDICT),
+        ]
+    )
+    result = run_task(client, get_task("extract-contact"), "full", tmp_path)
+    assert result.passed is True and result.error is None
+    revision = client.calls[1]["messages"][-1].content
+    assert "email" in revision and "ONLY a JSON object" in revision
+
+
+def test_full_config_schema_violation_recorded_not_raised(tmp_path):
+    """Same total attempt budget as structured() (3), then an explicit recorded failure."""
+    client = FakeClient([assistant(content='{"name": "Ann Chen"}')] * 3)
+    result = run_task(client, get_task("extract-contact"), "full", tmp_path)
+    assert result.passed is False
+    assert "StructuredOutputError" in result.error
+    assert "3 attempts" in result.error and "email" in result.error
+    assert len(client.calls) == 3  # no critique call: the schema gate runs first
+
+
+def test_full_config_non_json_output_recorded_not_raised(tmp_path):
+    client = FakeClient([assistant(content="sorry, no idea")] * 3)
+    result = run_task(client, get_task("extract-contact"), "full", tmp_path)
+    assert result.passed is False
+    assert "StructuredOutputError" in result.error and "not parseable JSON" in result.error
+
+
+def test_format_report_has_score_per_1k():
+    from bantamkit.evalrun import TaskResult
+
+    results = [
+        TaskResult(task="t1", config="bare", passed=True, tokens=500, error=None),
+        TaskResult(task="t2", config="bare", passed=False, tokens=500, error=None),
+        TaskResult(task="t1", config="full", passed=True, tokens=250, error=None),
+        TaskResult(task="t2", config="full", passed=True, tokens=250, error=None),
+    ]
+    report = format_report(results)
+    assert "score/1k tok" in report
+    assert "| bare" in report and "| full" in report
+    assert "1/2" in report and "2/2" in report
+
+
+def test_configs_matrix():
+    assert CONFIGS == ["bare", "structured", "critique", "memory", "full"]
