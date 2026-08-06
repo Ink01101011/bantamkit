@@ -247,7 +247,14 @@ The proof point of the whole project.
 - Vector embeddings / semantic retrieval (grep-first; SQLite FTS5 is the
   next step if memory grows past hundreds of entries — backlog).
 - Automatic memory compression (manual `compact()` command only).
-- Multi-agent decomposition / orchestration.
+- Multi-agent decomposition / orchestration. Design note for when it lands:
+  handoffs are **structured, not compressed** — a subagent starts with fresh
+  context, receives a task-brief template (asset) with only the required
+  slots filled, and returns a schema-enforced result (via 4.3). The
+  orchestrator never sees the subagent's transcript, only the result. No
+  runtime LLM prompt-compression: it spends tokens to save tokens, is
+  non-deterministic (breaks eval comparability), and small models drop
+  essentials when summarizing.
 - Fallback tool-calling for models without native tool support
   (ReAct-style text protocol — backlog).
 
