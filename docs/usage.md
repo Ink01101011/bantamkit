@@ -8,9 +8,10 @@ once you have an endpoint from [Install](install.md).
 ## 1. Client
 
 `OpenAICompatible` is the only adapter. It retries 429/5xx/network errors with
-exponential backoff and raises `TransportError` when the budget runs out. A 4xx
-response is not retried — it raises `APIError` immediately, carrying
-`.status_code` and a `.body` snippet. No `httpx` exception ever reaches you.
+exponential backoff and raises `TransportError` when the budget runs out. Any
+other non-2xx status is not retried — it raises `APIError` immediately, carrying
+`.status_code` and a `.body` snippet. Redirects are not followed, so 1xx/3xx
+land there too.
 
 ```python
 from bantamkit import Message, OpenAICompatible
@@ -152,8 +153,10 @@ custom = CritiqueGate(
 )
 ```
 
-A rubric prompt **must** contain both `{task}` and `{output}` placeholders;
-otherwise `BantamError` is raised at construction time.
+A rubric prompt **must** contain both `{task}` and `{output}` placeholders.
+Building a bare `Rubric` does not check this — validation runs when the gate is
+constructed (`CritiqueGate(...)`) or when `load_rubric(...)` reads one from the
+asset pack, and raises `BantamError`.
 
 ## 5. `structured()` standalone
 
@@ -190,11 +193,12 @@ All of them subclass `BantamError`, so `except BantamError` is a valid backstop.
 | Error | Raised when | Usual fix |
 |---|---|---|
 | `TransportError` | HTTP call still failing after `max_retries` (429, 5xx, connection/timeout) | Endpoint down or overloaded — check it is serving, raise `timeout`/`max_retries` |
-| `APIError` | The endpoint returned a 4xx. Not retried — replaying a malformed or unauthorized request cannot help | Read `e.status_code` and `e.body`: 401/403 means a bad `api_key`, 404 a wrong `base_url` or unknown `model`, 400 an unsupported request (e.g. a server that rejects `tools`) |
+| `APIError` | The endpoint returned a non-2xx that is not worth retrying (any 4xx, and 1xx/3xx since redirects are not followed) | Read `e.status_code` and `e.body`: 401/403 means a bad `api_key`, 404 a wrong `base_url` or unknown `model`, 400 an unsupported request (e.g. a server that rejects `tools`), 3xx a `base_url` that redirects (use the final URL) |
 | `MaxTurnsExceeded` | The loop hit `max_turns` without producing a final answer | Model is looping on tools or the critique gate keeps rejecting — raise `max_turns`, simplify the task, or lower the rubric threshold |
 | `StructuredOutputError` | No schema-valid JSON within `max_retries` | Schema too complex for the model — flatten it, shorten the prompt, or raise `max_retries` |
 | `CritiqueExhausted` | Output stayed below the rubric threshold for `max_rounds` critiques | The model cannot reach the bar — the message carries the last feedback; log it, lower the threshold, or escalate to a larger model |
-| `BantamError` (direct) | Malformed provider response, malformed tool-call JSON arguments, invalid rubric, `AssetNotFound` | Usually a misconfigured endpoint or asset pack |
+| `AssetNotFound` | A skill, rubric or tool asset is missing — `bantamkit.assets`, its own `BantamError` subclass | Wrong or incomplete `BANTAMKIT_ASSETS` override; see [Install](install.md) |
+| `BantamError` (direct) | Malformed provider response, malformed tool-call JSON arguments, a rubric prompt missing `{task}`/`{output}` | Usually a misconfigured endpoint or a hand-written rubric |
 
 ```python
 from bantamkit import (
@@ -232,7 +236,12 @@ Two things worth knowing:
 
 - `CritiqueExhausted` and `StructuredOutputError` can surface from `agent.run()`
   too, because the critique gate scores via `structured()`.
-- bantamkit never lets an `httpx` exception escape. Catching `BantamError` is
-  enough; you do not need to import or handle `httpx` errors yourself.
+- `BantamError` covers **network and HTTP-status failures** — connection and
+  timeout errors (`httpx.TransportError` subclasses) become `TransportError`, and
+  every non-2xx status becomes `TransportError` or `APIError`. It is not a
+  universal catch-all: a malformed `base_url` (`httpx.InvalidURL`), a redirect
+  loop (`httpx.TooManyRedirects`), or a 200 response whose body is not JSON will
+  still surface as the underlying exception. Add a bare `except Exception` at
+  your top level if the process must not die.
 
 Next: [Memory](memory.md) · [Eval](eval.md).

@@ -58,7 +58,8 @@ The payments API is owned by team Atlas.
 
 The store index holds one line per fact, `- [[name]] (type) — description`. It
 is the thing the budget is measured against, and is rebuilt after every save and
-compact. Writes go through a temp file and an atomic rename.
+compact. Fact files are written through a temp file and an atomic rename; the
+index is rewritten in place, and is always derivable from the fact files.
 
 ## The four ops
 

@@ -66,14 +66,27 @@ when you read the numbers:
 - **`structured`** hands the task to `structured()`, which runs its own
   validate-and-retry loop. That loop has no agent transcript, so tools and
   memory are not available to those tasks — it isolates the structured-output
-  primitive. A task combining `schema` with `tool_trace` scoring is
-  unscoreable here and is reported as an explicit failure rather than silently
-  scored zero.
-- **`full`** keeps the agent in charge. The schema instruction is appended to
-  the system prompt, the agent runs its normal loop with memory and the critique
-  gate active, and the final answer is validated against the schema afterwards.
-  A final answer that misses the schema raises a `BantamError` and shows up
-  under explicit failures.
+  primitive. A task combining `schema` with `tool_trace` scoring is unscoreable
+  here and raises `EvalConfigError`, reported as an explicit failure rather than
+  silently scored zero.
+- **`full`** keeps the agent in charge. The schema instruction is appended to the
+  system prompt and a `SchemaGate` post-hook is registered, so the agent runs its
+  normal loop with memory and the critique gate active. When the final answer
+  violates the schema the gate does **not** score it as a loss — it feeds back a
+  pointed validation error (`JSON does not match schema at '<path>': ...`) and
+  the agent gets a revision round, exactly as `structured()` does.
+
+Two details make that comparison fair rather than flattering:
+
+- **Budget parity.** `SchemaGate` allows 3 attempts — deliberately the same
+  budget `structured()` gets. Neither config gets more shots at schema
+  compliance than the other, so the difference between them measures the
+  components, not the retry allowance. Exhausting the budget raises
+  `StructuredOutputError`, which lands under explicit failures rather than
+  crashing the sweep.
+- **Gate ordering.** `SchemaGate` is registered *ahead* of `CritiqueGate`, so
+  malformed output is repaired before a critique call is spent on it. Reviewing
+  the quality of unparseable JSON would burn tokens to reach the same verdict.
 
 So `full` is the headline number: it is the only config where all three
 primitives are stacked on the same run, which is also what you would ship.
@@ -102,6 +115,12 @@ Explicit failures:
   extra correctness is worth the spend.
 - **Explicit failures** lists only tasks that raised a `BantamError`. A task that
   simply produced a wrong answer counts against `score` without appearing here.
+  The three you are most likely to see: `StructuredOutputError` (schema retry
+  budget exhausted, in `structured` or `full`), `CritiqueExhausted` (stayed below
+  the rubric threshold), and `EvalConfigError` (`bantamkit.evalrun`) — the task
+  and the config cannot be scored together, currently only `schema` +
+  `tool_trace` under `structured`. `EvalConfigError` means fix the task file,
+  not the model.
 
 Tokens are read from the endpoint's `usage` field. Servers that omit it report
 `0`, which makes `score/1k tok` read `0.00` — check the column is non-zero
