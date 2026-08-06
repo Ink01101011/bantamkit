@@ -93,3 +93,17 @@ def test_compact_archives_least_recently_recalled(tmp_path):
     assert (store.root / "archive" / "old-fact.md").exists()
     assert not (store.root / "facts" / "old-fact.md").exists()
     store.lint()
+
+
+def test_lint_catches_drifted_frontmatter(tmp_path):
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-06")
+    # Write a drifted fact file with invalid frontmatter (empty, so yaml.safe_load returns None)
+    (store.root / "facts" / "drifted.md").write_text("---\n---\n\nbody\n")
+    with pytest.raises(MemoryValidationError, match="frontmatter is not a mapping"):
+        store.lint()
+
+
+def test_recall_ignores_type_token(store):
+    store.save("user", "vi-config", "text editor configuration", "vim config file")
+    # Query for "user" should not match because type is not scored, only name+description
+    assert store.recall("user") == []

@@ -115,11 +115,11 @@ class MemoryStore:
         return SaveResult(status="saved", name=name)
 
     def recall(self, query: str, k: int | None = None) -> list[Fact]:
-        k = k or self.k
+        k = k if k is not None else self.k
         q = _tokens(query)
         scored = []
         for fact in self._facts():
-            score = len(q & _tokens(f"{fact.name} {fact.description} {fact.type}"))
+            score = len(q & _tokens(f"{fact.name} {fact.description}"))
             if score > 0:
                 scored.append((score, fact))
         scored.sort(key=lambda pair: (-pair[0], pair[1].name))
@@ -166,6 +166,10 @@ class MemoryStore:
             try:
                 _, front, body = text.split("---\n", 2)
                 meta = yaml.safe_load(front)
+                if not isinstance(meta, dict):
+                    raise MemoryValidationError(
+                        f"malformed fact file {path.name}: frontmatter is not a mapping"
+                    )
                 facts.append(
                     Fact(
                         name=meta["name"],
