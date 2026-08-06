@@ -42,6 +42,9 @@ class Agent:
     observation_budget: int = 4096
     _post_hooks: list[Callable[[str, str], str | None]] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        self.tools = list(self.tools or [])
+
     def use(self, *components) -> Agent:
         for component in components:
             component.setup(self)

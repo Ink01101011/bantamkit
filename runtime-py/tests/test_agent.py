@@ -111,3 +111,9 @@ def test_truncate_helper():
     assert truncate("short", 100) == "short"
     out = truncate("a" * 150, 100)
     assert out.endswith("[truncated 50 bytes]")
+
+
+def test_agent_tools_none_normalized():
+    client = FakeClient([assistant(content="ok")])
+    result = Agent(client=client, tools=None).run("t")
+    assert result.output == "ok"
