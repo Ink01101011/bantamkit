@@ -83,6 +83,76 @@ def test_run_task_explicit_failure_recorded_not_raised(tmp_path):
     assert "StructuredOutputError" in result.error
 
 
+CONTACT = '{"name": "Ann Chen", "email": "ann.chen@example.com"}'
+GOOD_VERDICT = '{"score": 9, "feedback": "looks good"}'
+
+
+def test_structured_config_schema_task_bypasses_agent(tmp_path):
+    """`structured` is unchanged: one direct structured() call, no agent, no critique."""
+    client = FakeClient([assistant(content=CONTACT)])
+    result = run_task(client, get_task("extract-contact"), "structured", tmp_path)
+    assert result.passed is True and result.error is None
+    assert len(client.calls) == 1
+    system = client.calls[0]["messages"][0]
+    assert system.role == "system" and "JSON Schema" in system.content
+
+
+def test_structured_config_schema_with_tool_trace_scoring_is_explicit_failure(tmp_path):
+    """The structured path has no transcript, so tool_trace scoring must fail loudly."""
+    task = {
+        "name": "synthetic-schema-trace",
+        "prompt": "do the thing",
+        "schema": {"type": "object"},
+        "scoring": {"kind": "tool_trace", "expected": ["price_lookup"]},
+    }
+    client = FakeClient([])
+    result = run_task(client, task, "structured", tmp_path)
+    assert result.passed is False
+    assert "tool_trace" in result.error and "BantamError" in result.error
+    assert client.calls == []
+
+
+def test_full_config_schema_task_runs_agent_and_critique(tmp_path):
+    """`full` must exercise the agent so CritiqueGate actually participates."""
+    client = FakeClient([assistant(content=CONTACT), assistant(content=GOOD_VERDICT)])
+    result = run_task(client, get_task("extract-contact"), "full", tmp_path)
+    assert result.passed is True and result.error is None
+    assert len(client.calls) == 2  # agent turn + critique turn
+    prompts = [m.content or "" for c in client.calls for m in c["messages"]]
+    assert any("strict reviewer" in p for p in prompts)
+
+
+def test_full_config_schema_task_retries_on_low_critique_score(tmp_path):
+    client = FakeClient(
+        [
+            assistant(content='{"name": "Ann", "email": "wrong@example.com"}'),
+            assistant(content='{"score": 2, "feedback": "wrong email"}'),
+            assistant(content=CONTACT),
+            assistant(content=GOOD_VERDICT),
+        ]
+    )
+    result = run_task(client, get_task("extract-contact"), "full", tmp_path)
+    assert result.passed is True and result.error is None
+    revision_prompt = client.calls[2]["messages"][-1].content
+    assert "wrong email" in revision_prompt
+
+
+def test_full_config_schema_violation_recorded_not_raised(tmp_path):
+    client = FakeClient(
+        [assistant(content='{"name": "Ann Chen"}'), assistant(content=GOOD_VERDICT)]
+    )
+    result = run_task(client, get_task("extract-contact"), "full", tmp_path)
+    assert result.passed is False
+    assert "BantamError" in result.error and "email" in result.error
+
+
+def test_full_config_non_json_output_recorded_not_raised(tmp_path):
+    client = FakeClient([assistant(content="sorry, no idea"), assistant(content=GOOD_VERDICT)])
+    result = run_task(client, get_task("extract-contact"), "full", tmp_path)
+    assert result.passed is False
+    assert "BantamError" in result.error and "JSON" in result.error
+
+
 def test_format_report_has_score_per_1k():
     from bantamkit.evalrun import TaskResult
 

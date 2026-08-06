@@ -9,6 +9,8 @@ from typing import Protocol
 
 import httpx
 
+BODY_SNIPPET = 200
+
 
 class BantamError(Exception):
     """Base for all bantamkit errors."""
@@ -16,6 +18,15 @@ class BantamError(Exception):
 
 class TransportError(BantamError):
     """HTTP-level failure after bounded retries."""
+
+
+class APIError(BantamError):
+    """Non-retryable error response (4xx) from the model endpoint."""
+
+    def __init__(self, status_code: int, body: str):
+        self.status_code = status_code
+        self.body = body[:BODY_SNIPPET]
+        super().__init__(f"API error {status_code}: {self.body!r}")
 
 
 @dataclass
@@ -122,8 +133,10 @@ class OpenAICompatible:
                     json=payload,
                 )
                 if r.status_code == 429 or r.status_code >= 500:
-                    raise TransportError(f"server error {r.status_code}: {r.text[:200]}")
-                r.raise_for_status()
+                    raise TransportError(f"server error {r.status_code}: {r.text[:BODY_SNIPPET]}")
+                if r.status_code >= 400:
+                    # Non-retryable: surface status + body instead of a raw httpx error.
+                    raise APIError(r.status_code, r.text)
                 return self._parse(r.json())
             except (httpx.TransportError, TransportError) as e:
                 last_err = e

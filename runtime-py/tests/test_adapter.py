@@ -3,7 +3,14 @@ import json
 import httpx
 import pytest
 
-from bantamkit.client import BantamError, Message, OpenAICompatible, Tool, TransportError
+from bantamkit.client import (
+    APIError,
+    BantamError,
+    Message,
+    OpenAICompatible,
+    Tool,
+    TransportError,
+)
 
 
 def make_client(handler, max_retries=3):
@@ -92,9 +99,23 @@ def test_4xx_fails_immediately_without_retry(monkeypatch):
         calls["n"] += 1
         return httpx.Response(401, text="bad key")
 
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(APIError) as excinfo:
         make_client(handler).chat([Message(role="user", content="hi")])
     assert calls["n"] == 1
+    err = excinfo.value
+    assert isinstance(err, BantamError)
+    assert err.status_code == 401
+    assert "bad key" in err.body
+    assert "401" in str(err) and "bad key" in str(err)
+
+
+def test_api_error_body_snippet_is_bounded():
+    def handler(request):
+        return httpx.Response(400, text="x" * 5000)
+
+    with pytest.raises(APIError) as excinfo:
+        make_client(handler).chat([Message(role="user", content="hi")])
+    assert 0 < len(excinfo.value.body) <= 200
 
 
 def test_raises_bantam_error_on_empty_choices():

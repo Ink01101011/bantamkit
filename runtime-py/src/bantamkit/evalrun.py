@@ -8,6 +8,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+import jsonschema
 import yaml
 
 from bantamkit.agent import Agent, ToolDef
@@ -113,6 +114,23 @@ def score_output(task: dict, output: str, messages: list[Message]) -> bool:
     raise ValueError(f"unknown scoring kind '{kind}'")
 
 
+SCHEMA_INSTRUCTION = "Return ONLY a JSON object matching this JSON Schema. No prose.\n"
+
+
+def enforce_schema(output: str, schema: dict) -> str:
+    """Validate an agent's final answer against a task schema; raise BantamError if it misses."""
+    try:
+        data = extract_json(output)
+    except ValueError as e:
+        raise BantamError(f"final output was not parseable JSON: {e}") from e
+    try:
+        jsonschema.validate(data, schema)
+    except jsonschema.ValidationError as e:
+        where = "/".join(str(p) for p in e.absolute_path) or "root"
+        raise BantamError(f"final output does not match schema at '{where}': {e.message}") from e
+    return json.dumps(data)
+
+
 def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> TaskResult:
     tracking = TrackingClient(client)
     tools = [BUILTIN_TOOLS[name] for name in task.get("tools", [])]
@@ -126,14 +144,25 @@ def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> Tas
         agent.use(Memory(store=store_dir))
     if config in ("critique", "full"):
         agent.use(CritiqueGate("task-completion", client=tracking))
+    if config == "full" and "schema" in task:
+        # The agent owns the loop here, so it needs the same instruction structured() gives.
+        agent.add_system(SCHEMA_INSTRUCTION + json.dumps(task["schema"]))
 
     try:
-        if config in ("structured", "full") and "schema" in task:
+        if config == "structured" and "schema" in task:
+            # structured() drives its own loop, so no agent transcript exists to score against.
+            if task["scoring"]["kind"] == "tool_trace":
+                raise BantamError(
+                    f"task '{task['name']}' uses schema + tool_trace scoring, which the "
+                    "structured config cannot score: it has no agent transcript"
+                )
             data = structured(tracking, task["prompt"], task["schema"])
             output, messages = json.dumps(data), []
         else:
             result = agent.run(task["prompt"])
             output, messages = result.output, result.messages
+            if config == "full" and "schema" in task:
+                output = enforce_schema(output, task["schema"])
         passed = score_output(task, output, messages)
         error = None
     except BantamError as e:
