@@ -78,10 +78,14 @@ when you read the numbers:
 
 Two details make that comparison fair rather than flattering:
 
-- **Budget parity.** `SchemaGate` allows 3 attempts — deliberately the same
-  budget `structured()` gets. Neither config gets more shots at schema
-  compliance than the other, so the difference between them measures the
-  components, not the retry allowance. Exhausting the budget raises
+- **Comparable budgets.** `SchemaGate` allows 3 attempts, matching
+  `structured()`'s `max_retries=3`, so neither config is handed an obviously
+  larger retry allowance. The counting is not identical, though:
+  `structured()` gets 3 attempts *in total*, while `SchemaGate` counts 3
+  *consecutive* violations and resets its counter on any schema-valid answer
+  (`evalrun.py`). Since a critique revision round can follow a valid answer,
+  `full` can spend more schema retries across a whole task than `structured`
+  can. Read the comparison as close, not exact. Exhausting the budget raises
   `StructuredOutputError`, which lands under explicit failures rather than
   crashing the sweep.
 - **Gate ordering.** `SchemaGate` is registered *ahead* of `CritiqueGate`, so
@@ -95,6 +99,9 @@ Memory stores are seeded fresh per task per config in a temp directory, so runs
 do not contaminate each other.
 
 ## Reading the report
+
+A report looks like this (numbers illustrative; for measured ones see
+[Current results](#current-results)):
 
 ```
 | config | score | tokens | score/1k tok |
@@ -128,6 +135,43 @@ before drawing conclusions.
 
 Scores move between runs unless the endpoint is deterministic (temperature 0,
 fixed seed). Compare configs within one sweep, not across sweeps.
+
+## Current results
+
+One smoke sweep, `qwen2.5:7b-instruct` served by Ollama, all five configs over
+the 6-task suite:
+
+| config | score | score/1k tok |
+|---|---|---|
+| bare | 3/6 | 1.22 |
+| structured | 3/6 | 1.62 |
+| critique | 3/6 | 0.32 |
+| memory | 5/6 | 1.36 |
+| full | 5/6 | 0.33 |
+
+What the numbers say, without spin:
+
+- **Memory carries the uplift, and pays for its context.** It is the only
+  config that beats `bare` on *both* columns — +2 passes *and* a better
+  score/1k (1.36 vs 1.22). That is the shape spec §2.4 asks for.
+- **Structured buys efficiency, not correctness.** Same 3/6 as `bare` at the
+  best score/1k in the sweep (1.62): fewer tokens for the same passes.
+- **Critique is token-negative on this model.** Same 3/6 as `bare` for roughly
+  5× the tokens (score/1k 1.22 → 0.32), with `CritiqueExhausted` among the
+  explicit failures — a 7B model repeatedly fails to satisfy its own rubric,
+  and every extra round costs a scoring call plus a revision.
+- **`full`'s uplift is expensive.** 5/6 matches `memory`, but at ~4× worse
+  score/1k than `bare` (0.33 vs 1.22); the critique gate's cost rides along.
+  So spec §7's token-efficiency criterion — "the full-toolkit config's
+  score-per-1k-tokens is at least on par with bare" — is **not met** by this
+  run as written.
+- **That criterion is strictly untested, though.** Spec §7 names `qwen3:4b` as
+  its reference model, and this sweep is a different, larger one. These
+  numbers say where the token cost sits on a 7B; they do not settle the spec.
+
+Caveats: a single sweep against a non-deterministic endpoint. Run-to-run
+variance is roughly ±1 task per config, which on a 6-task suite is a wide band
+— do not read a 1-task difference between configs as a result.
 
 ## Add a task
 
@@ -169,8 +213,10 @@ Scoring kinds:
 - **`json_equal`** — `expected` is a mapping. The output is parsed with
   `extract_json` and must compare exactly equal. Unparseable output fails.
 - **`contains`** — `expected` is a non-empty list of strings; every one must
-  appear in the output, case-insensitively. Use this when only a fact matters,
-  not the phrasing.
+  appear in the output, case-insensitively and on a word boundary (no word
+  character on either side of the match). So `100` does not match inside
+  `1000`, and `atlas` does not match inside `atlassian`. Use this when only a
+  fact matters, not the phrasing.
 - **`tool_trace`** — `expected` is a non-empty list of tool names that must
   appear as an **ordered subsequence** of the actual tool calls. Extra calls in
   between are allowed; wrong order is not. This scores the transcript, so do

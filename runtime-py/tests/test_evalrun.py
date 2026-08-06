@@ -34,6 +34,21 @@ def test_score_contains_case_insensitive():
     assert score_output(task, "no idea", []) is False
 
 
+def test_score_contains_matches_on_word_boundaries_not_substrings():
+    """`100` inside `1000` is a wrong answer, not a pass (shop-total's expected value)."""
+    task = get_task("shop-total")
+    assert score_output(task, "The total stock value is 100.", []) is True
+    assert score_output(task, "The total stock value is 1000", []) is False
+    assert score_output(task, "It is 4100 in total", []) is False
+    assert score_output(task, "100.50 dollars", []) is True  # `.` is not a word character
+
+
+def test_score_contains_allows_punctuation_and_hyphens_around_the_term():
+    task = get_task("recall-deploy")
+    assert score_output(task, "Run `make ship-prod` from the root.", []) is True
+    assert score_output(task, "Run make ship-production.", []) is False
+
+
 def test_score_tool_trace_subsequence():
     task = get_task("shop-compare")
     trace = [
@@ -74,6 +89,11 @@ def test_run_task_memory_config_seeds_store(tmp_path):
     )
     result = run_task(client, get_task("recall-deploy"), "memory", tmp_path)
     assert result.passed is True
+    # The scripted answer passes regardless, so assert the seeded fact actually came back:
+    # an unseeded store answers "no memories matched" and this fails.
+    recall_obs = client.calls[1]["messages"][-1].content
+    assert "[deploy-command]" in recall_obs
+    assert "make ship-prod" in recall_obs
 
 
 def test_run_task_explicit_failure_recorded_not_raised(tmp_path):

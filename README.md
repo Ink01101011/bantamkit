@@ -45,6 +45,10 @@ print(result.output, result.usage.total)
 - [Memory](docs/memory.md) — on-disk layout, the four ops, dedupe and budget, compact/archive
 - [Eval](docs/eval.md) — running the suite, the config matrix, reading the report, adding tasks
 
+Latest measured numbers (one sweep, `qwen2.5:7b-instruct`) are in
+[Eval → Current results](docs/eval.md#current-results): memory lifts 3/6 → 5/6
+*and* improves score/1k, while the critique gate costs more tokens than it earns.
+
 ## Repo layout
 
 | Path | What |

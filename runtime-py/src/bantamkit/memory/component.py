@@ -6,7 +6,7 @@ from pathlib import Path
 
 from bantamkit.agent import Agent, ToolDef
 from bantamkit.assets import load_skill, load_tool
-from bantamkit.memory.store import MemoryStore, MemoryValidationError
+from bantamkit.memory.store import MemoryBudgetExceeded, MemoryStore, MemoryValidationError
 
 
 class Memory:
@@ -25,6 +25,12 @@ class Memory:
             result = self.store.save(type, name, description, body, tuple(links or ()))
         except MemoryValidationError as e:
             return f"error: {e}"
+        except MemoryBudgetExceeded as e:
+            # Not an argument problem: retrying the same call cannot fit the index.
+            return (
+                f"error: {e}. Nothing was saved and retrying will not help — "
+                f"compact or archive existing memories first, then save again."
+            )
         if result.status == "duplicate":
             return (
                 f"similar memory '{result.similar}' already exists — save under that SAME "

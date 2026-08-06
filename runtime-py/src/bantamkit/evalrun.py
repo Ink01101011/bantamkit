@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -97,6 +98,17 @@ def load_tasks() -> list[dict]:
     return [yaml.safe_load(f.read_text()) for f in files]
 
 
+def contains_term(output: str, term: str) -> bool:
+    """Case-insensitive match on word boundaries.
+
+    A plain substring test scores wrong answers as passes: `100` is inside `1000`, `atlas`
+    is inside `atlassian`. The guards are "no word character either side" rather than `\\b`,
+    so terms that start or end with punctuation still anchor the way you would expect.
+    """
+    pattern = rf"(?<!\w){re.escape(term)}(?!\w)"
+    return re.search(pattern, output, re.IGNORECASE) is not None
+
+
 def score_output(task: dict, output: str, messages: list[Message]) -> bool:
     kind = task["scoring"]["kind"]
     expected = task["scoring"]["expected"]
@@ -106,7 +118,7 @@ def score_output(task: dict, output: str, messages: list[Message]) -> bool:
         except ValueError:
             return False
     if kind == "contains":
-        return all(str(s).lower() in output.lower() for s in expected)
+        return all(contains_term(output, str(s)) for s in expected)
     if kind == "tool_trace":
         trace = [tc.name for m in messages for tc in m.tool_calls]
         it = iter(trace)

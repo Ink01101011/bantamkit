@@ -120,6 +120,16 @@ class OpenAICompatible:
         self.max_retries = max_retries
         self._http = httpx.Client(timeout=timeout, transport=transport)
 
+    def close(self) -> None:
+        """Release the underlying HTTP connection pool. Idempotent."""
+        self._http.close()
+
+    def __enter__(self) -> OpenAICompatible:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
     def chat(self, messages: list[Message], tools: list[Tool] | None = None) -> Response:
         payload: dict = {"model": self.model, "messages": [m.to_wire() for m in messages]}
         if tools:
@@ -141,7 +151,9 @@ class OpenAICompatible:
                 return self._parse(r.json())
             except (httpx.TransportError, TransportError) as e:
                 last_err = e
-                time.sleep(0.5 * (2**attempt))
+                if attempt < self.max_retries - 1:
+                    # No backoff after the final attempt — nothing follows it but the raise.
+                    time.sleep(0.5 * (2**attempt))
         raise TransportError(f"chat failed after {self.max_retries} attempts: {last_err}")
 
     @staticmethod

@@ -83,6 +83,40 @@ def test_validation_error_becomes_actionable_observation(tmp_path):
     assert obs.startswith("error:") and "bogus" in obs and "memory_save failed" not in obs
 
 
+def test_budget_exceeded_becomes_an_accurate_observation(tmp_path):
+    """A budget overflow is not an argument error — the loop's generic retry advice misleads."""
+    # Unit test: the component handles the budget error itself
+    memory = Memory(store=tmp_path / "mem", index_budget=10)
+    result = memory._save(type="project", name="deploy-command", description="d", body="b")
+    assert result.startswith("error:")
+    assert "budget" in result and "compact" in result
+    assert "fix the arguments" not in result
+
+    # Integration test: the observation reaches the model unchanged by Agent._dispatch
+    client = FakeClient(
+        [
+            assistant(
+                tool_calls=[
+                    call(
+                        "memory_save",
+                        {
+                            "type": "project",
+                            "name": "deploy-command",
+                            "description": "d",
+                            "body": "b",
+                        },
+                    )
+                ]
+            ),
+            assistant(content="ok"),
+        ]
+    )
+    Agent(client=client).use(memory).run("t")
+    obs = client.calls[1]["messages"][-1].content
+    assert "budget" in obs and "compact" in obs
+    assert "memory_save failed" not in obs and "fix the arguments" not in obs
+
+
 def test_duplicate_reply_guides_update(tmp_path):
     memory = Memory(store=tmp_path / "mem")
     memory.store.save("project", "deploy-command", "how we deploy to prod", "x")

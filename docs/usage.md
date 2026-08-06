@@ -23,6 +23,21 @@ print(response.message.content)
 print(response.usage.prompt_tokens, response.usage.completion_tokens, response.usage.total)
 ```
 
+The client owns an `httpx` connection pool. Call `close()` when you are done
+with it, or use it as a context manager — short-lived scripts and tests leak
+sockets otherwise:
+
+```python
+url, model = "http://localhost:11434/v1", "qwen2.5:7b-instruct"
+
+with OpenAICompatible(base_url=url, model=model) as client:
+    print(client.chat([Message(role="user", content="Say hi.")]).message.content)
+# the pool is closed here, including if the block raised
+```
+
+`close()` is idempotent, so an extra call in a `finally` is harmless. A closed
+client cannot be reused — build a new one.
+
 Anything with a `chat(messages, tools=None) -> Response` method satisfies the
 `ModelClient` protocol, so you can wrap or fake the client in tests.
 
@@ -240,8 +255,9 @@ Two things worth knowing:
   timeout errors (`httpx.TransportError` subclasses) become `TransportError`, and
   every non-2xx status becomes `TransportError` or `APIError`. It is not a
   universal catch-all: a malformed `base_url` (`httpx.InvalidURL`), a redirect
-  loop (`httpx.TooManyRedirects`), or a 200 response whose body is not JSON will
-  still surface as the underlying exception. Add a bare `except Exception` at
+  loop (`httpx.TooManyRedirects`), a 200 response whose body is not JSON, or a
+  call on a client you already `close()`d (`RuntimeError`) will still surface as
+  the underlying exception. Add a bare `except Exception` at
   your top level if the process must not die.
 
 Next: [Memory](memory.md) · [Eval](eval.md).
