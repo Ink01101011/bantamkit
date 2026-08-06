@@ -59,6 +59,12 @@ def test_save_and_recall_through_agent_loop(tmp_path):
 
 
 def test_validation_error_becomes_actionable_observation(tmp_path):
+    # Unit test: component handles validation error directly
+    memory = Memory(store=tmp_path / "mem")
+    result = memory._save(type="bogus", name="x", description="d", body="b")
+    assert result.startswith("error:") and "bogus" in result
+
+    # Integration test: loop-level error handling is not used
     client = FakeClient(
         [
             assistant(
@@ -74,7 +80,7 @@ def test_validation_error_becomes_actionable_observation(tmp_path):
     )
     Agent(client=client).use(Memory(store=tmp_path / "mem")).run("t")
     obs = client.calls[1]["messages"][-1].content
-    assert obs.startswith("error:") and "bogus" in obs
+    assert obs.startswith("error:") and "bogus" in obs and "memory_save failed" not in obs
 
 
 def test_duplicate_reply_guides_update(tmp_path):
