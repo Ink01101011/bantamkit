@@ -1,0 +1,14 @@
+name: extract-order
+family: structured-extraction
+prompt: |
+  Extract the order as JSON with keys "item" (lowercase) and "quantity" (integer).
+  Text: "Customer wants three Widgets shipped by Friday."
+schema:
+  type: object
+  required: [item, quantity]
+  properties:
+    item: {type: string}
+    quantity: {type: integer}
+scoring:
+  kind: json_equal
+  expected: {item: "widget", quantity: 3}

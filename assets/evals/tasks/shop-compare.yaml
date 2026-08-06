@@ -1,0 +1,9 @@
+name: shop-compare
+family: tool-use
+prompt: |
+  Use the tools to check the unit prices of "widget" and "gadget",
+  and answer with the name of the more expensive item.
+tools: [price_lookup]
+scoring:
+  kind: tool_trace
+  expected: [price_lookup, price_lookup]
