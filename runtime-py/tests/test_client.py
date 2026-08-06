@@ -6,13 +6,19 @@ def test_user_message_wire_format():
 
 
 def test_assistant_tool_call_wire_format():
-    msg = Message(role="assistant", content=None,
-                  tool_calls=[ToolCall(id="c1", name="lookup", arguments={"item": "widget"})])
+    msg = Message(
+        role="assistant",
+        content=None,
+        tool_calls=[ToolCall(id="c1", name="lookup", arguments={"item": "widget"})],
+    )
     wire = msg.to_wire()
-    assert wire["tool_calls"] == [{
-        "id": "c1", "type": "function",
-        "function": {"name": "lookup", "arguments": '{"item": "widget"}'},
-    }]
+    assert wire["tool_calls"] == [
+        {
+            "id": "c1",
+            "type": "function",
+            "function": {"name": "lookup", "arguments": '{"item": "widget"}'},
+        }
+    ]
 
 
 def test_tool_result_wire_format():
@@ -22,8 +28,10 @@ def test_tool_result_wire_format():
 
 def test_tool_wire_format():
     tool = Tool(name="lookup", description="d", parameters={"type": "object"})
-    assert tool.to_wire() == {"type": "function", "function": {
-        "name": "lookup", "description": "d", "parameters": {"type": "object"}}}
+    assert tool.to_wire() == {
+        "type": "function",
+        "function": {"name": "lookup", "description": "d", "parameters": {"type": "object"}},
+    }
 
 
 def test_usage_addition():

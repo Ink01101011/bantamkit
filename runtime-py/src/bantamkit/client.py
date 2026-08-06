@@ -1,4 +1,5 @@
 """Core types + ModelClient protocol + OpenAI-compatible adapter."""
+
 from __future__ import annotations
 
 import json
@@ -32,8 +33,11 @@ class Message:
         wire: dict = {"role": self.role, "content": self.content}
         if self.tool_calls:
             wire["tool_calls"] = [
-                {"id": tc.id, "type": "function",
-                 "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)}}
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)},
+                }
                 for tc in self.tool_calls
             ]
         if self.tool_call_id is not None:
@@ -48,8 +52,14 @@ class Tool:
     parameters: dict  # JSON Schema
 
     def to_wire(self) -> dict:
-        return {"type": "function", "function": {
-            "name": self.name, "description": self.description, "parameters": self.parameters}}
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
 
 
 @dataclass
@@ -57,9 +67,11 @@ class Usage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
 
-    def __add__(self, other: "Usage") -> "Usage":
-        return Usage(self.prompt_tokens + other.prompt_tokens,
-                     self.completion_tokens + other.completion_tokens)
+    def __add__(self, other: Usage) -> Usage:
+        return Usage(
+            self.prompt_tokens + other.prompt_tokens,
+            self.completion_tokens + other.completion_tokens,
+        )
 
     @property
     def total(self) -> int:

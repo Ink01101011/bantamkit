@@ -10,7 +10,7 @@ requires-python = ">=3.11"
 dependencies = ["httpx>=0.27", "jsonschema>=4.21", "pyyaml>=6.0"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "ruff>=0.4"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/bantamkit"]
@@ -20,3 +20,13 @@ packages = ["src/bantamkit"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/bantamkit/__init__.py" = ["F401"]  # package re-exports
