@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from typing import Protocol
+
+import httpx
 
 
 class BantamError(Exception):
@@ -86,3 +89,60 @@ class Response:
 
 class ModelClient(Protocol):
     def chat(self, messages: list[Message], tools: list[Tool] | None = None) -> Response: ...
+
+
+class OpenAICompatible:
+    """One adapter covers Ollama / vLLM / LM Studio / llama.cpp server / OpenRouter."""
+
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        api_key: str = "none",
+        timeout: float = 60.0,
+        max_retries: int = 3,
+        transport: httpx.BaseTransport | None = None,
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.api_key = api_key
+        self.max_retries = max_retries
+        self._http = httpx.Client(timeout=timeout, transport=transport)
+
+    def chat(self, messages: list[Message], tools: list[Tool] | None = None) -> Response:
+        payload: dict = {"model": self.model, "messages": [m.to_wire() for m in messages]}
+        if tools:
+            payload["tools"] = [t.to_wire() for t in tools]
+        last_err: Exception | None = None
+        for attempt in range(self.max_retries):
+            try:
+                r = self._http.post(
+                    f"{self.base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json=payload,
+                )
+                if r.status_code >= 500:
+                    raise TransportError(f"server error {r.status_code}: {r.text[:200]}")
+                r.raise_for_status()
+                return self._parse(r.json())
+            except (httpx.TransportError, TransportError) as e:
+                last_err = e
+                time.sleep(0.5 * (2**attempt))
+        raise TransportError(f"chat failed after {self.max_retries} attempts: {last_err}")
+
+    @staticmethod
+    def _parse(data: dict) -> Response:
+        choice = data["choices"][0]["message"]
+        tool_calls = [
+            ToolCall(
+                id=tc["id"],
+                name=tc["function"]["name"],
+                arguments=json.loads(tc["function"]["arguments"]),
+            )
+            for tc in (choice.get("tool_calls") or [])
+        ]
+        usage = data.get("usage") or {}
+        return Response(
+            message=Message(role="assistant", content=choice.get("content"), tool_calls=tool_calls),
+            usage=Usage(usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)),
+        )
