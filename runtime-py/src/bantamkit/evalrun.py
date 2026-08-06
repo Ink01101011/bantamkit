@@ -16,7 +16,7 @@ from bantamkit.assets import assets_root
 from bantamkit.client import BantamError, Message, ModelClient, OpenAICompatible, Tool, Usage
 from bantamkit.critique import CritiqueGate
 from bantamkit.memory import Memory, MemoryStore
-from bantamkit.structured import extract_json, structured
+from bantamkit.structured import StructuredOutputError, extract_json, structured
 
 CONFIGS = ["bare", "structured", "critique", "memory", "full"]
 
@@ -117,18 +117,52 @@ def score_output(task: dict, output: str, messages: list[Message]) -> bool:
 SCHEMA_INSTRUCTION = "Return ONLY a JSON object matching this JSON Schema. No prose.\n"
 
 
-def enforce_schema(output: str, schema: dict) -> str:
-    """Validate an agent's final answer against a task schema; raise BantamError if it misses."""
+class EvalConfigError(BantamError):
+    """A task and a config combine into something the harness cannot score."""
+
+
+def schema_error(output: str, schema: dict) -> str | None:
+    """Return a pointed validation error for `output`, or None if it satisfies `schema`."""
     try:
         data = extract_json(output)
     except ValueError as e:
-        raise BantamError(f"final output was not parseable JSON: {e}") from e
+        return f"output was not parseable JSON: {e}"
     try:
         jsonschema.validate(data, schema)
     except jsonschema.ValidationError as e:
         where = "/".join(str(p) for p in e.absolute_path) or "root"
-        raise BantamError(f"final output does not match schema at '{where}': {e.message}") from e
-    return json.dumps(data)
+        return f"JSON does not match schema at '{where}': {e.message}"
+    return None
+
+
+class SchemaGate:
+    """Enforce a task schema on the agent's final answer, on structured()'s retry budget.
+
+    Mirrors structured(): a violation is fed back as a pointed revision message rather than
+    scored as a loss, so `full` and `structured` get the same number of shots at schema
+    compliance and the config comparison measures the components, not the retry budget.
+    """
+
+    def __init__(self, schema: dict, max_attempts: int = 3):
+        self.schema = schema
+        self.max_attempts = max_attempts
+        self._attempts = 0
+
+    def setup(self, agent: Agent) -> None:
+        agent.add_post_hook(self)
+
+    def __call__(self, task: str, output: str) -> str | None:
+        error = schema_error(output, self.schema)
+        if error is None:
+            self._attempts = 0
+            return None
+        self._attempts += 1
+        if self._attempts >= self.max_attempts:
+            self._attempts = 0
+            raise StructuredOutputError(
+                f"no valid output after {self.max_attempts} attempts; last error: {error}"
+            )
+        return f"{error}\nReturn ONLY a JSON object matching the schema."
 
 
 def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> TaskResult:
@@ -142,17 +176,20 @@ def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> Tas
         for fact in task["memory_setup"]:
             seed.save(fact["type"], fact["name"], fact["description"], fact["body"])
         agent.use(Memory(store=store_dir))
-    if config in ("critique", "full"):
-        agent.use(CritiqueGate("task-completion", client=tracking))
     if config == "full" and "schema" in task:
         # The agent owns the loop here, so it needs the same instruction structured() gives.
+        # Gate registered before the critique gate: a malformed answer is fixed for free
+        # rather than spending a critique call on it.
         agent.add_system(SCHEMA_INSTRUCTION + json.dumps(task["schema"]))
+        agent.use(SchemaGate(task["schema"]))
+    if config in ("critique", "full"):
+        agent.use(CritiqueGate("task-completion", client=tracking))
 
     try:
         if config == "structured" and "schema" in task:
             # structured() drives its own loop, so no agent transcript exists to score against.
             if task["scoring"]["kind"] == "tool_trace":
-                raise BantamError(
+                raise EvalConfigError(
                     f"task '{task['name']}' uses schema + tool_trace scoring, which the "
                     "structured config cannot score: it has no agent transcript"
                 )
@@ -161,8 +198,6 @@ def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> Tas
         else:
             result = agent.run(task["prompt"])
             output, messages = result.output, result.messages
-            if config == "full" and "schema" in task:
-                output = enforce_schema(output, task["schema"])
         passed = score_output(task, output, messages)
         error = None
     except BantamError as e:

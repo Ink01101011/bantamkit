@@ -108,7 +108,7 @@ def test_structured_config_schema_with_tool_trace_scoring_is_explicit_failure(tm
     client = FakeClient([])
     result = run_task(client, task, "structured", tmp_path)
     assert result.passed is False
-    assert "tool_trace" in result.error and "BantamError" in result.error
+    assert "tool_trace" in result.error and "EvalConfigError" in result.error
     assert client.calls == []
 
 
@@ -137,20 +137,36 @@ def test_full_config_schema_task_retries_on_low_critique_score(tmp_path):
     assert "wrong email" in revision_prompt
 
 
-def test_full_config_schema_violation_recorded_not_raised(tmp_path):
+def test_full_config_schema_violation_triggers_revision_round(tmp_path):
+    """Schema parity with structured(): a violation is fed back, not scored as a loss."""
     client = FakeClient(
-        [assistant(content='{"name": "Ann Chen"}'), assistant(content=GOOD_VERDICT)]
+        [
+            assistant(content='{"name": "Ann Chen"}'),  # missing email
+            assistant(content=CONTACT),
+            assistant(content=GOOD_VERDICT),
+        ]
     )
     result = run_task(client, get_task("extract-contact"), "full", tmp_path)
+    assert result.passed is True and result.error is None
+    revision = client.calls[1]["messages"][-1].content
+    assert "email" in revision and "ONLY a JSON object" in revision
+
+
+def test_full_config_schema_violation_recorded_not_raised(tmp_path):
+    """Same total attempt budget as structured() (3), then an explicit recorded failure."""
+    client = FakeClient([assistant(content='{"name": "Ann Chen"}')] * 3)
+    result = run_task(client, get_task("extract-contact"), "full", tmp_path)
     assert result.passed is False
-    assert "BantamError" in result.error and "email" in result.error
+    assert "StructuredOutputError" in result.error
+    assert "3 attempts" in result.error and "email" in result.error
+    assert len(client.calls) == 3  # no critique call: the schema gate runs first
 
 
 def test_full_config_non_json_output_recorded_not_raised(tmp_path):
-    client = FakeClient([assistant(content="sorry, no idea"), assistant(content=GOOD_VERDICT)])
+    client = FakeClient([assistant(content="sorry, no idea")] * 3)
     result = run_task(client, get_task("extract-contact"), "full", tmp_path)
     assert result.passed is False
-    assert "BantamError" in result.error and "JSON" in result.error
+    assert "StructuredOutputError" in result.error and "not parseable JSON" in result.error
 
 
 def test_format_report_has_score_per_1k():

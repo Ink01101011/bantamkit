@@ -109,6 +109,31 @@ def test_4xx_fails_immediately_without_retry(monkeypatch):
     assert "401" in str(err) and "bad key" in str(err)
 
 
+def test_redirect_becomes_api_error_without_retry(monkeypatch):
+    """3xx must not fall through to JSON parsing: the client does not follow redirects."""
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(302, headers={"location": "http://elsewhere/v1"}, text="moved")
+
+    with pytest.raises(APIError) as excinfo:
+        make_client(handler).chat([Message(role="user", content="hi")])
+    assert calls["n"] == 1
+    assert excinfo.value.status_code == 302
+    assert "moved" in excinfo.value.body
+
+
+def test_informational_status_becomes_api_error():
+    def handler(request):
+        return httpx.Response(101, text="switching protocols")
+
+    with pytest.raises(APIError) as excinfo:
+        make_client(handler).chat([Message(role="user", content="hi")])
+    assert excinfo.value.status_code == 101
+
+
 def test_api_error_body_snippet_is_bounded():
     def handler(request):
         return httpx.Response(400, text="x" * 5000)
