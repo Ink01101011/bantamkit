@@ -24,6 +24,13 @@ small-model agent performance, plus an eval harness that quantifies it:
 compose, in the spirit of smolagents/pydantic-ai — but focused specifically
 on primitives that lift small models.
 
+The primitives are model-agnostic and scale up: on a small model they turn
+"can't do the task" into "can", on a larger model they cut wasted tokens
+(fewer malformed-output retries, no full-store memory loads, failures caught
+by the critique gate instead of a re-prompt) and sharpen answers by keeping
+context lean. Small models are the *proof point* because the uplift is
+easiest to measure there — not the only beneficiary.
+
 ## 2. Core Design Principles
 
 ### 2.1 Skill = judgment layer, runtime = correctness layer
@@ -68,6 +75,23 @@ covers nearly every runtime users will bring. Custom adapters are ~20 lines.
 class ModelClient(Protocol):
     def chat(self, messages: list[Message], tools: list[Tool] | None = None) -> Response: ...
 ```
+
+### 2.4 Token economy is a first-class constraint
+
+Every token of context has three costs: VRAM/latency on local serving,
+credits on hosted serving, and — worst for small models — degraded attention.
+A primitive that lifts scores by inflating context is not an uplift; it is a
+trade the user never agreed to. Therefore:
+
+- **Every primitive must pay for its context.** Mechanisms already in this
+  design exist for this reason: the byte-budgeted memory index (never load
+  the store), top-k=3 recall, skills kept to a page, bounded retries.
+- **Bounded observations:** tool output entering the loop is truncated to a
+  size budget with an explicit `[truncated N bytes]` marker, so one verbose
+  tool call cannot flood the window.
+- **Measured, not assumed:** the eval harness records token usage per run
+  and reports it next to scores (see 4.6). A config that scores higher by
+  spending disproportionately more tokens is flagged, not celebrated.
 
 ## 3. Architecture
 
@@ -118,6 +142,8 @@ result = agent.run("...")
   observation → repeat. Max-turns budget; exceeding it is an explicit failure.
 - Tool errors are returned into the loop as actionable messages so the model
   can self-correct (this is where small models shine: iterate-with-feedback).
+- Observations are size-bounded per 2.4: tool output over the budget is
+  truncated with an explicit marker before entering the message history.
 
 ### 4.3 Structured output enforcement
 
@@ -177,6 +203,10 @@ The proof point of the whole project.
 - Scoring: deterministic checks where possible (exact/schema match, tool-call
   trace assertions); LLM-judge only where unavoidable, using a pinned judge
   model — never the model under test.
+- Token accounting: every run records prompt + completion tokens (from the
+  API usage field). The report shows, per model × config: score, total
+  tokens, and **score-per-1k-tokens** — so an uplift that comes from context
+  bloat is visible immediately.
 - Output: a comparison table per model × config, reproducible from one command.
 
 ## 5. Error Handling
@@ -200,6 +230,9 @@ The proof point of the whole project.
 - A ~4B model (e.g. `qwen3:4b` on Ollama) with the full toolkit scores
   measurably higher than bare on the eval suite.
 - Stretch: full-toolkit 4B is competitive with a bare model one size class up.
+- Token efficiency: the full-toolkit config's score-per-1k-tokens is at
+  least on par with bare — the uplift must come from the harness, not from
+  spending more context.
 - The toolkit is installable and usable in a third-party project via
   `pip install` + an OpenAI-compatible base URL, with no bantamkit-specific
   server or platform.
