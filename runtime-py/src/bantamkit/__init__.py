@@ -10,3 +10,4 @@ from bantamkit.client import (
     TransportError,
     Usage,
 )
+from bantamkit.structured import StructuredOutputError, extract_json, structured
