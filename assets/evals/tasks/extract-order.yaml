@@ -1,7 +1,8 @@
 name: extract-order
 family: structured-extraction
 prompt: |
-  Extract the order as JSON with keys "item" (lowercase) and "quantity" (integer).
+  Extract the order as JSON with keys "item" (singular, lowercase) and
+  "quantity" (integer).
   Text: "Customer wants three Widgets shipped by Friday."
 schema:
   type: object

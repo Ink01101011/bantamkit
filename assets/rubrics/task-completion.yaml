@@ -12,6 +12,10 @@ prompt: |
   Do NOT deduct points for formatting, phrasing, extra surrounding text,
   hedging, or verbosity. If the required facts are present and right, the
   answer completes the task.
+  An answer that refuses or declines to provide what the task asks for is
+  missing the required content — score it 0-4, even when the refusal is
+  polite or explains itself. Hedging around a real answer is fine; hedging
+  instead of an answer is not.
 
   Task:
   {task}
