@@ -249,8 +249,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--config", action="append", choices=CONFIGS, help="repeatable; default: all configs"
     )
+    parser.add_argument(
+        "--timeout", type=float, default=60.0, help="per-request timeout in seconds (default 60)"
+    )
     args = parser.parse_args(argv)
-    client = OpenAICompatible(base_url=args.base_url, model=args.model)
+    client = OpenAICompatible(base_url=args.base_url, model=args.model, timeout=args.timeout)
     print(format_report(run_suite(client, configs=args.config)))
 
 

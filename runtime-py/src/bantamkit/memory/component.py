@@ -6,12 +6,44 @@ from pathlib import Path
 
 from bantamkit.agent import Agent, ToolDef
 from bantamkit.assets import load_skill, load_tool
-from bantamkit.memory.store import MemoryBudgetExceeded, MemoryStore, MemoryValidationError
+from bantamkit.client import BantamError
+from bantamkit.memory.layers import discover_project_store, load_grants
+from bantamkit.memory.store import (
+    Fact,
+    MemoryBudgetExceeded,
+    MemoryStore,
+    MemoryValidationError,
+)
+
+
+def _layer_label(root: Path) -> str:
+    if root.parent.name == ".bantamkit":
+        return root.parent.parent.name
+    return root.name
 
 
 class Memory:
     def __init__(self, store: str | Path, k: int = 3, index_budget: int = 4096):
         self.store = MemoryStore(store, index_budget=index_budget, k=k)
+        self.k = k
+        self._layers: list[tuple[str, MemoryStore, bool]] = [("project", self.store, True)]
+        self._show_layers = False
+
+    @classmethod
+    def layered(
+        cls, start: str | Path | None = None, k: int = 3, index_budget: int = 4096
+    ) -> Memory:
+        """Project store (discovered) + configured read-only grants + profile store."""
+        project_root = discover_project_store(start)
+        mem = cls(project_root, k=k, index_budget=index_budget)
+        mem._show_layers = True
+        for grant in load_grants(project_root):
+            mem._layers.append(
+                (f"extra:{_layer_label(grant)}", MemoryStore(grant, k=k, create=False), False)
+            )
+        profile = Path.home() / ".bantamkit" / "memory"
+        mem._layers.append(("profile", MemoryStore(profile, k=k, create=False), False))
+        return mem
 
     def setup(self, agent: Agent) -> None:
         agent.register_tool(ToolDef(tool=load_tool("memory_save"), handler=self._save))
@@ -39,7 +71,27 @@ class Memory:
         return f"saved '{result.name}'"
 
     def _recall(self, query: str, k: int | None = None) -> str:
-        facts = self.store.recall(query, k)
-        if not facts:
+        budget = k if k is not None else self.k
+        picked: list[tuple[str, Fact]] = []
+        seen: set[str] = set()
+        for label, store, writable in self._layers:
+            if len(picked) >= budget:
+                break  # budget spent: later (read-only) layers are never even read
+            try:
+                facts = store.recall(query, budget, stamp=writable)
+            except (BantamError, OSError, UnicodeDecodeError):
+                if writable:
+                    raise  # the project layer failing is a real error, as in v1
+                continue  # a corrupt grant/profile layer must not take down recall
+            for fact in facts:
+                if fact.name in seen or len(picked) >= budget:
+                    continue
+                seen.add(fact.name)
+                picked.append((label, fact))
+        if not picked:
             return "no memories matched. Try different words, or proceed without."
-        return "\n\n".join(f"[{f.name}] ({f.type}) {f.description}\n{f.body}" for f in facts)
+        return "\n\n".join(self._format(label, fact) for label, fact in picked)
+
+    def _format(self, label: str, fact: Fact) -> str:
+        tag = f"[{label}] " if self._show_layers else ""
+        return f"{tag}[{fact.name}] ({fact.type}) {fact.description}\n{fact.body}"

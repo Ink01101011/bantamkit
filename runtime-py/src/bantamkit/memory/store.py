@@ -59,11 +59,16 @@ class MemoryStore:
         index_budget: int = 4096,
         k: int = 3,
         today: Callable[[], str] | None = None,
+        create: bool = True,
     ):
         self.root = Path(root)
         self.index_budget = index_budget
         self.k = k
         self._today = today or (lambda: date.today().isoformat())
+        if create:
+            self._ensure_dirs()
+
+    def _ensure_dirs(self) -> None:
         (self.root / "facts").mkdir(parents=True, exist_ok=True)
         (self.root / "archive").mkdir(parents=True, exist_ok=True)
 
@@ -72,6 +77,7 @@ class MemoryStore:
     def save(
         self, type: str, name: str, description: str, body: str, links: tuple[str, ...] = ()
     ) -> SaveResult:
+        self._ensure_dirs()
         if type not in VALID_TYPES:
             raise MemoryValidationError(
                 f"invalid type '{type}'; must be one of {sorted(VALID_TYPES)}"
@@ -114,7 +120,7 @@ class MemoryStore:
         self._rebuild_index()
         return SaveResult(status="saved", name=name)
 
-    def recall(self, query: str, k: int | None = None) -> list[Fact]:
+    def recall(self, query: str, k: int | None = None, stamp: bool = True) -> list[Fact]:
         k = k if k is not None else self.k
         q = _tokens(query)
         scored = []
@@ -124,9 +130,10 @@ class MemoryStore:
                 scored.append((score, fact))
         scored.sort(key=lambda pair: (-pair[0], pair[1].name))
         hits = [fact for _, fact in scored[:k]]
-        for fact in hits:
-            fact.last_recalled = self._today()
-            self._write_fact(fact)
+        if stamp:
+            for fact in hits:
+                fact.last_recalled = self._today()
+                self._write_fact(fact)
         return hits
 
     def lint(self) -> None:

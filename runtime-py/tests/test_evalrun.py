@@ -1,5 +1,6 @@
 from conftest import FakeClient, assistant, call
 
+from bantamkit import evalrun
 from bantamkit.client import Message, ToolCall
 from bantamkit.evalrun import (
     CONFIGS,
@@ -206,3 +207,41 @@ def test_format_report_has_score_per_1k():
 
 def test_configs_matrix():
     assert CONFIGS == ["bare", "structured", "critique", "memory", "full"]
+
+
+def test_cli_timeout_flag_reaches_client(monkeypatch):
+    """Custom timeout flag is passed to OpenAICompatible constructor."""
+    captured = {}
+
+    class FakeAdapter:
+        def __init__(self, base_url, model, timeout):
+            captured["base_url"] = base_url
+            captured["model"] = model
+            captured["timeout"] = timeout
+
+    monkeypatch.setattr(evalrun, "OpenAICompatible", FakeAdapter)
+    monkeypatch.setattr(evalrun, "run_suite", lambda client, configs=None: [])
+    monkeypatch.setattr(evalrun, "format_report", lambda results: "")
+    evalrun.main(["--base-url", "http://x", "--model", "m", "--timeout", "120.5"])
+    assert captured["base_url"] == "http://x"
+    assert captured["model"] == "m"
+    assert captured["timeout"] == 120.5
+
+
+def test_cli_timeout_flag_default_value(monkeypatch):
+    """Timeout defaults to 60.0 when not specified."""
+    captured = {}
+
+    class FakeAdapter:
+        def __init__(self, base_url, model, timeout):
+            captured["base_url"] = base_url
+            captured["model"] = model
+            captured["timeout"] = timeout
+
+    monkeypatch.setattr(evalrun, "OpenAICompatible", FakeAdapter)
+    monkeypatch.setattr(evalrun, "run_suite", lambda client, configs=None: [])
+    monkeypatch.setattr(evalrun, "format_report", lambda results: "")
+    evalrun.main(["--base-url", "http://x", "--model", "m"])
+    assert captured["base_url"] == "http://x"
+    assert captured["model"] == "m"
+    assert captured["timeout"] == 60.0

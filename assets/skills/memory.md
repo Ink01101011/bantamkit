@@ -27,3 +27,9 @@ Ask: "what words will future-me search with?" Put related memory names in links.
 
 If memory_save answers that a similar memory exists, either update it by
 saving under that SAME name, or skip — never rename to force a second copy.
+
+## Layers
+
+Recall lines may start with `[project]`, `[extra:<name>]`, or `[profile]` —
+where the fact came from. Prefer `[project]` when they conflict; saves always
+go to the project store.
