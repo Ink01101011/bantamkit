@@ -321,4 +321,4 @@ def test_all_memory_setups_seed_without_jaccard_collisions(tmp_path):
                 f"task '{task['name']}': fact '{fact['name']}' collides with "
                 f"'{result.similar}' — make descriptions more distinct"
             )
-    assert seeded >= 6  # memory-recall family carries seeded facts; 0 means the guard went blind
+    assert seeded >= 6  # exactly 6 facts today (5 recall tasks); adjust when retiring

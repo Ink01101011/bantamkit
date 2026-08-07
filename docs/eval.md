@@ -94,8 +94,9 @@ Two details make that comparison fair rather than flattering:
   malformed output is repaired before a critique call is spent on it. Reviewing
   the quality of unparseable JSON would burn tokens to reach the same verdict.
 
-So `full` is the headline number: it is the only config where all three
-primitives are stacked on the same run, which is also what you would ship.
+So `full` stacks all three primitives on one run — see
+[Current results](#current-results) for whether that stack earns its bill
+(on the current suite, `lean` does the same work for a third fewer tokens).
 
 `lean` exists to answer one question: how much of `full`'s token bill is the
 critique gate? `lean` runs the same agent loop with memory and `SchemaGate`
@@ -194,7 +195,7 @@ Against spec §7, without spin:
   banks zero passes, while `lean` spends 6464 tokens injecting the store index
   and wins all five. On the 10 tasks both configs pass, the efficiency gap
   nearly closes (`bare` 3.62, `lean` 3.29) — and that residual 9% is the
-  schema instruction, not memory: `memory` matches `bare` at 3.62 exactly.
+  schema instruction, not memory: `memory` matches `bare` at 3.62 to two decimals.
   A config that skips work it would fail will always look efficient.
 - **`full − lean` — critique's marginal cost and uplift: +4850 tokens (+51%)
   for +0 passes.** Same 15/15, score/1k falls 1.58 → 1.05. On this model and
@@ -296,8 +297,8 @@ Fields:
 | `scoring.kind` | yes | `json_equal`, `contains`, or `tool_trace` |
 | `scoring.expected` | yes | Shape depends on `kind`, below |
 | `tools` | no | Names from the builtin fixtures: `price_lookup`, `stock_lookup` |
-| `schema` | no | Valid JSON Schema; engages `structured`/`full` |
-| `memory_setup` | no | List of facts (`type`, `name`, `description`, `body`) seeded before the run; engages `memory`/`full` |
+| `schema` | no | Valid JSON Schema; engages `structured`/`lean`/`full` |
+| `memory_setup` | no | List of facts (`type`, `name`, `description`, `body`) seeded before the run; engages `memory`/`lean`/`full` |
 
 Scoring kinds:
 
@@ -319,7 +320,7 @@ each with `price` and `stock`), so tool-use tasks stay deterministic on the
 harness side.
 
 `runtime-py/tests/test_conformance.py` enforces the contract above and requires
-at least 6 tasks with all three families present, at least 2 each. Run it after
+at least 15 tasks with all three families present, at least 2 each. Run it after
 adding a task:
 
 ```bash
