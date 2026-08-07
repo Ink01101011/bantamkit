@@ -117,8 +117,9 @@ def contains_term(output: str, term: str) -> bool:
     A plain substring test scores wrong answers as passes: `100` is inside `1000`, `atlas`
     is inside `atlassian`. The guards are "no word character either side" rather than `\\b`,
     so terms that start or end with punctuation still anchor the way you would expect.
+    Digit-comma adjacency is also blocked, so `200` does not match inside `1,200`.
     """
-    pattern = rf"(?<!\w){re.escape(term)}(?!\w)"
+    pattern = rf"(?<!\d,)(?<!\w){re.escape(term)}(?!\w)(?!,\d)"
     return re.search(pattern, output, re.IGNORECASE) is not None
 
 
@@ -289,6 +290,7 @@ def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> Tas
         tokens=tracking.usage.total,
         outcome=classify_outcome(task, passed, output, caught),
         model_calls=tracking.calls,
+        # messages stays [] when agent.run raises, so tool_calls reads 0 on gate-exhausted runs.
         tool_calls=sum(len(m.tool_calls) for m in messages),
         schema_retries=schema_retries,
         critique_rounds=critique_gate.rounds_used if critique_gate else 0,

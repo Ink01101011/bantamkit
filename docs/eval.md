@@ -338,6 +338,12 @@ primitive, so they were not promoted. Only the four memory-recall candidates
 cleared the bar, which is why the hardened suite is 9 recall tasks and still
 5 + 5 elsewhere.
 
+This misses the cycle's own promotion goal of new discriminating tasks in at
+least two families — the calibration data is the evidence for why no other
+family could clear the bar on this model: extraction saturates bare, and
+tool-arithmetic failures have no rescuer while the critic cannot see tool
+results.
+
 ### Prior baselines
 
 Not comparable to the sweep above, and kept only for the before/after.
@@ -463,8 +469,9 @@ Scoring kinds:
 - **`contains`** — `expected` is a non-empty list of strings; every one must
   appear in the output, case-insensitively and on a word boundary (no word
   character on either side of the match). So `100` does not match inside
-  `1000`, and `atlas` does not match inside `atlassian`. Use this when only a
-  fact matters, not the phrasing.
+  `1000`, and `atlas` does not match inside `atlassian`. Comma-grouped digits
+  do not match either, so `200` does not match inside `1,200`. Use this when
+  only a fact matters, not the phrasing.
 - **`tool_trace`** — `expected` is a non-empty list of tool names that must
   appear as an **ordered subsequence** of the actual tool calls. Extra calls in
   between are allowed; wrong order is not. This scores the transcript, so do

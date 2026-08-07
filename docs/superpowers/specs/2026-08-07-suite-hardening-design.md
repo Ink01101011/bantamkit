@@ -1,7 +1,7 @@
 # Suite Hardening Design
 
 **Date:** 2026-08-07
-**Status:** Draft — awaiting user review
+**Status:** Executed — shipped on feat/suite-hardening; §5 criterion 1 unmet as written (see docs/eval.md "How the suite was hardened")
 **Depends on:** eval-quality cycle (PR #3, `633c287`)
 
 ## 1. Problem

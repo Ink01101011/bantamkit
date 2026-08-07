@@ -781,3 +781,38 @@ def test_format_report_all_pass_still_prints_zero_headline():
     ]
     report = format_report(results)
     assert "Discriminating tasks: 0/1" in report
+
+
+def test_classify_outcome_returns_only_documented_outcomes(tmp_path):
+    from bantamkit.critique import CritiqueExhausted
+    from bantamkit.evalrun import OUTCOMES, EvalConfigError, classify_outcome
+    from bantamkit.structured import StructuredOutputError
+
+    task_json = {"scoring": {"kind": "json_equal", "expected": {}}}
+    task_txt = {"scoring": {"kind": "contains", "expected": ["x"]}}
+    cases = [
+        classify_outcome(task_txt, True, "x", None),
+        classify_outcome(task_txt, False, "nope", None),
+        classify_outcome(task_json, False, "not json", None),
+        classify_outcome(task_json, False, None, StructuredOutputError("s")),
+        classify_outcome(task_json, False, None, CritiqueExhausted("c")),
+        classify_outcome(task_json, False, None, EvalConfigError("e")),
+        classify_outcome(task_json, False, None, BantamError("t")),
+    ]
+    assert cases == [
+        "pass",
+        "wrong-answer",
+        "malformed-output",
+        "schema-exhausted",
+        "critique-exhausted",
+        "config-error",
+        "transport-error",
+    ]
+    assert set(cases) <= set(OUTCOMES)
+
+
+def test_score_contains_rejects_comma_grouped_superstrings():
+    task = get_task("recall-org-quota")  # expected ["200"]
+    assert score_output(task, "The quota is 200 requests per minute.", []) is True
+    assert score_output(task, "It handles 1,200 requests per minute.", []) is False
+    assert score_output(task, "About 200, give or take.", []) is True
