@@ -167,8 +167,8 @@ from bantamkit import Agent, Memory
 agent = Agent(client=client).use(Memory.layered())   # client as above
 ```
 
-`Memory.layered(start=None, k=3, index_budget=4096)` is a classmethod; `k` and
-`index_budget` mean exactly what they do on `Memory(...)`.
+`Memory.layered(start=None, k=3, index_budget=4096)` is a classmethod; `k`
+bounds the merged result and `index_budget` governs the project store.
 
 | Layer | Where | Written? |
 |---|---|---|

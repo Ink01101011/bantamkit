@@ -30,8 +30,6 @@ saving under that SAME name, or skip — never rename to force a second copy.
 
 ## Layers
 
-Recall results may be prefixed with their origin: `[project]` (this folder's
-store), `[extra:<name>]` (a read-only store this project was explicitly
-granted), or `[profile]` (your user-wide store). When facts conflict, prefer
-`[project]` — it is the closest to the work. Saves always go to the project
-store; the other layers are read-only.
+Recall lines may start with `[project]`, `[extra:<name>]`, or `[profile]` —
+where the fact came from. Prefer `[project]` when they conflict; saves always
+go to the project store.
