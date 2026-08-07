@@ -711,3 +711,73 @@ def test_format_report_rescue_matrix_shows_repeat_fractions():
 def test_format_report_no_matrix_for_single_config():
     report = format_report([make_result(passed=False, outcome="wrong-answer")])
     assert "Discriminating" not in report
+
+
+def test_format_report_section_order():
+    results = [
+        make_result(task="e1", config="bare", passed=True),
+        make_result(
+            task="m1",
+            config="bare",
+            family="memory-recall",
+            passed=False,
+            outcome="wrong-answer",
+        ),
+        make_result(task="e1", config="full", passed=True),
+        make_result(
+            task="m1",
+            config="full",
+            family="memory-recall",
+            passed=False,
+            outcome="critique-exhausted",
+            error="CritiqueExhausted: below threshold",
+        ),
+    ]
+    report = format_report(results)
+    markers = [
+        "| config | score | tokens | score/1k tok |",
+        "Per family (score · tokens):",
+        "Failure outcomes:",
+        "Discriminating tasks:",
+        "Explicit failures:",
+    ]
+    positions = [report.index(m) for m in markers]
+    assert positions == sorted(positions)
+
+
+def test_format_report_config_rows_follow_configs_order():
+    results = [
+        make_result(task="t1", config="critique", passed=True),
+        make_result(task="t1", config="structured", passed=True),
+    ]
+    report = format_report(results)
+    assert report.index("| structured |") < report.index("| critique |")
+
+
+def test_format_report_family_cells_align_with_columns():
+    results = [
+        make_result(task="e1", config="bare", passed=True, tokens=100),
+        make_result(
+            task="m1",
+            config="bare",
+            family="memory-recall",
+            passed=False,
+            outcome="wrong-answer",
+            tokens=50,
+        ),
+        make_result(task="e1", config="full", passed=True, tokens=200),
+        make_result(task="m1", config="full", family="memory-recall", passed=True, tokens=300),
+    ]
+    report = format_report(results)
+    assert "| config | memory-recall | structured-extraction |" in report
+    assert "| bare | 0/1 · 50 tok | 1/1 · 100 tok |" in report
+    assert "| full | 1/1 · 300 tok | 1/1 · 200 tok |" in report
+
+
+def test_format_report_all_pass_still_prints_zero_headline():
+    results = [
+        make_result(task="e1", config="bare", passed=True),
+        make_result(task="e1", config="full", passed=True),
+    ]
+    report = format_report(results)
+    assert "Discriminating tasks: 0/1" in report

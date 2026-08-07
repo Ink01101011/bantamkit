@@ -120,8 +120,25 @@ A report looks like this (numbers illustrative; for measured ones see
 | bare | 3/6 | 4821 | 0.62 |
 | full | 5/6 | 9137 | 0.55 |
 
+Per family (score · tokens):
+| config | memory-recall | structured-extraction | tool-use |
+|---|---|---|---|
+| bare | 1/2 · 721 tok | 1/2 · 1200 tok | 1/2 · 2900 tok |
+| full | 2/2 · 2500 tok | 2/2 · 2015 tok | 1/2 · 4622 tok |
+
+Failure outcomes:
+- bare: malformed-output ×1, wrong-answer ×2
+- full: critique-exhausted ×1
+
+Discriminating tasks: 2/6
+| task | bare | full |
+|---|---|---|
+| extract-order | 0/1 | 1/1 |
+| shop-total | 0/1 | 0/1 |
+| recall-deploy | 0/1 | 1/1 |
+
 Explicit failures:
-- full/extract-order: StructuredOutputError: no valid output after 3 attempts; last error: ...
+- full/shop-total: CritiqueExhausted: below threshold 7 after 3 rounds; last feedback: ...
 ```
 
 - **score** — tasks passed / tasks run for that config.

@@ -383,7 +383,7 @@ def _rescue_matrix(results: list[TaskResult], configs: list[str]) -> list[str]:
         if any(p < n for p, n in per_config.values()):
             grid[name] = per_config
     if not grid:
-        return []
+        return ["", f"Discriminating tasks: 0/{len(task_names)}"]
     discriminating = sum(
         1
         for per_config in grid.values()
