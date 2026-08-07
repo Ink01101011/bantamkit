@@ -75,9 +75,10 @@ def test_load_grants_dangling_path_raises(tmp_path):
 
 
 def test_discover_with_start_as_store_directory(tmp_path):
-    store = _mkstore(tmp_path / "companyA")
+    _mkstore(tmp_path)
+    own_store = _mkstore(tmp_path / "companyA")
     result = discover_project_store(tmp_path / "companyA")
-    assert result == store
+    assert result == own_store
 
 
 def test_discover_skips_file_named_store(tmp_path):
@@ -99,7 +100,6 @@ def test_discover_symlinked_start_resolves(tmp_path):
 
     result = discover_project_store(link / "src")
     assert result == real_proj
-    assert result == real_proj.resolve()
 
 
 def test_load_grants_config_as_directory_raises(tmp_path):
@@ -113,3 +113,32 @@ def test_load_grants_no_extra_stores_key_is_empty(tmp_path):
     store = _mkstore(tmp_path / "companyA")
     (store.parent / "config.yaml").write_text("some_other_key: value\n")
     assert load_grants(store) == []
+
+
+def test_discover_miss_path_under_resolved_ancestor(tmp_path):
+    real_proj = tmp_path / "companyA"
+    real_proj.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real_proj)
+
+    result = discover_project_store(link / "fresh_sub")
+    expected = real_proj.resolve() / "fresh_sub" / ".bantamkit" / "memory"
+    assert result == expected
+    assert not result.exists()
+
+
+def test_load_grants_symlinked_store_reads_adjacent_config(tmp_path):
+    real_store = _mkstore(tmp_path / "realstore")
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    symlink_store = proj / ".bantamkit" / "memory"
+    symlink_store.parent.mkdir(parents=True)
+    symlink_store.symlink_to(real_store)
+
+    other_store = _mkstore(tmp_path / "other")
+    (proj / ".bantamkit" / "config.yaml").write_text(
+        "extra_stores:\n  - ../../other/.bantamkit/memory\n"
+    )
+
+    result = load_grants(symlink_store)
+    assert result == [other_store.resolve()]

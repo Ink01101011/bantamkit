@@ -17,13 +17,15 @@ def discover_project_store(start: str | Path | None = None) -> Path:
 
     Returns the nearest existing store dir; if none exists anywhere up the
     tree, designates `start/.bantamkit/memory` without creating anything.
-    Returned paths are fully resolved.
+    Ancestor path is fully resolved; the returned store path is not resolved
+    further — a symlinked store keeps its config beside the symlink. Callers
+    needing store identity comparison must resolve() at the comparison site.
     """
     base = (Path(start) if start is not None else Path.cwd()).resolve()
     for d in (base, *base.parents):
         candidate = d / PROJECT_STORE
         if candidate.is_dir():
-            return candidate.resolve()
+            return candidate
     return base / PROJECT_STORE
 
 
@@ -34,7 +36,7 @@ def load_grants(project_store: str | Path) -> list[Path]:
     not a mapping, non-list/non-str `extra_stores`, or a listed path that is not
     an existing directory — raises MemoryValidationError: a grant you wrote that
     is wrong is a mistake to surface at construction, not silently drop.
-    Returned paths are fully resolved.
+    Returned grant paths are fully resolved.
     """
     config_path = Path(project_store).parent / CONFIG_NAME
     if not config_path.exists():
