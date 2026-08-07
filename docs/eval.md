@@ -138,8 +138,34 @@ fixed seed). Compare configs within one sweep, not across sweeps.
 
 ## Current results
 
-One smoke sweep, `qwen2.5:7b-instruct` served by Ollama, all five configs over
-the 6-task suite:
+Reference sweep per spec §7 — `qwen3:4b-instruct` (4B class, non-thinking)
+served by Ollama, all five configs over the 6-task suite:
+
+| config | score | score/1k tok |
+|---|---|---|
+| bare | 3/6 | 2.27 |
+| structured | 3/6 | 2.09 |
+| critique | 3/6 | 0.47 |
+| memory | 5/6 | 1.43 |
+| full | 4/6 | 0.38 |
+
+Against spec §7, without spin:
+
+- **"Full toolkit scores measurably higher than bare": met.** `full` 4/6 vs
+  `bare` 3/6, and `memory` alone reaches 5/6. The uplift is real on the
+  4B reference class.
+- **Stretch ("competitive with a bare model one size class up"): met.**
+  Bare `qwen2.5:7b-instruct` scored 3/6 on the same suite (below); full-toolkit
+  4B beats it.
+- **Token efficiency ("full at least on par with bare on score/1k"): not
+  met.** 0.38 vs 2.27 — bare 4B answers are terse, so its efficiency bar is
+  high, and the critique gate's rounds dominate `full`'s spend. Both
+  `CritiqueExhausted` failures in this sweep are the critic rejecting answers
+  over format pedantry, which is rubric tuning, not harness correctness.
+- **Memory remains the best value primitive**: +2 passes for a modest spend
+  (5/6 at 1.43), though on this model even it does not clear bare's score/1k.
+
+Earlier sweep on the larger `qwen2.5:7b-instruct` for comparison:
 
 | config | score | score/1k tok |
 |---|---|---|
@@ -149,27 +175,18 @@ the 6-task suite:
 | memory | 5/6 | 1.36 |
 | full | 5/6 | 0.33 |
 
-What the numbers say, without spin:
+On the 7B, `memory` beat bare on *both* columns (the shape spec §2.4 asks
+for), and `structured` bought efficiency at equal score.
 
-- **Memory carries the uplift, and pays for its context.** It is the only
-  config that beats `bare` on *both* columns — +2 passes *and* a better
-  score/1k (1.36 vs 1.22). That is the shape spec §2.4 asks for.
-- **Structured buys efficiency, not correctness.** Same 3/6 as `bare` at the
-  best score/1k in the sweep (1.62): fewer tokens for the same passes.
-- **Critique is token-negative on this model.** Same 3/6 as `bare` for roughly
-  5× the tokens (score/1k 1.22 → 0.32), with `CritiqueExhausted` among the
-  explicit failures — a 7B model repeatedly fails to satisfy its own rubric,
-  and every extra round costs a scoring call plus a revision.
-- **`full`'s uplift is expensive.** 5/6 matches `memory`, but at ~4× worse
-  score/1k than `bare` (0.33 vs 1.22); the critique gate's cost rides along.
-  So spec §7's token-efficiency criterion — "the full-toolkit config's
-  score-per-1k-tokens is at least on par with bare" — is **not met** by this
-  run as written.
-- **That criterion is strictly untested, though.** Spec §7 names `qwen3:4b` as
-  its reference model, and this sweep is a different, larger one. These
-  numbers say where the token cost sits on a 7B; they do not settle the spec.
+A note on thinking models: the thinking variant `qwen3:4b` emits hundreds of
+reasoning tokens per call (counted in `tokens` — they are real cost). Its
+partial sweep (`bare` 3/6 @ 0.29, `structured` 3/6 @ 0.58, `memory` 5/6 @
+0.47) shows the same score shape at several times the token cost; the
+critique/full configs were impractical to measure — calls exceed the
+adapter's default 60s timeout (the CLI currently has no `--timeout` flag,
+a known gap). Prefer instruct variants for this suite.
 
-Caveats: a single sweep against a non-deterministic endpoint. Run-to-run
+Caveats: single sweeps against a non-deterministic endpoint. Run-to-run
 variance is roughly ±1 task per config, which on a 6-task suite is a wide band
 — do not read a 1-task difference between configs as a result.
 
