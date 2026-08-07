@@ -107,3 +107,28 @@ def test_recall_ignores_type_token(store):
     store.save("user", "vi-config", "text editor configuration", "vim config file")
     # Query for "user" should not match because type is not scored, only name+description
     assert store.recall("user") == []
+
+
+def test_create_false_touches_nothing_and_recall_is_empty(tmp_path):
+    root = tmp_path / "absent"
+    store = MemoryStore(root, create=False)
+    assert not root.exists()
+    assert store.recall("anything") == []
+    assert not root.exists()  # recall on a missing store creates nothing either
+
+
+def test_save_creates_dirs_lazily_for_create_false_store(tmp_path):
+    root = tmp_path / "lazy"
+    store = MemoryStore(root, create=False)
+    store.save("project", "deploy-cmd", "how to deploy", "make ship")
+    assert (root / "facts" / "deploy-cmd.md").exists()
+    assert (root / "archive").is_dir()
+
+
+def test_recall_stamp_false_leaves_files_unchanged(tmp_path):
+    store = MemoryStore(tmp_path / "m", today=lambda: "2026-08-07")
+    store.save("project", "deploy-cmd", "how to deploy", "make ship")
+    before = (tmp_path / "m" / "facts" / "deploy-cmd.md").read_text()
+    hits = store.recall("deploy", stamp=False)
+    assert [f.name for f in hits] == ["deploy-cmd"]
+    assert (tmp_path / "m" / "facts" / "deploy-cmd.md").read_text() == before
