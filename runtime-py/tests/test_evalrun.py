@@ -636,3 +636,78 @@ def test_cli_repeats_zero_rejected(monkeypatch):
     monkeypatch.setattr(evalrun, "format_report", lambda results: "")
     with pytest.raises(SystemExit):
         evalrun.main(["--base-url", "http://x", "--model", "m", "--repeats", "0"])
+
+
+def test_format_report_family_table():
+    results = [
+        make_result(task="e1", config="bare", passed=True, tokens=100),
+        make_result(
+            task="m1",
+            config="bare",
+            family="memory-recall",
+            passed=False,
+            outcome="wrong-answer",
+            tokens=50,
+        ),
+        make_result(task="e1", config="full", passed=True, tokens=200),
+        make_result(task="m1", config="full", family="memory-recall", passed=True, tokens=300),
+    ]
+    report = format_report(results)
+    assert "Per family (score · tokens):" in report
+    assert "memory-recall" in report and "structured-extraction" in report
+    assert "0/1 · 50 tok" in report
+    assert "1/1 · 300 tok" in report
+
+
+def test_format_report_family_table_omitted_for_single_family():
+    report = format_report([make_result()])
+    assert "Per family" not in report
+
+
+def test_format_report_outcome_histogram():
+    results = [
+        make_result(task="a", passed=False, outcome="wrong-answer"),
+        make_result(task="b", passed=False, outcome="wrong-answer"),
+        make_result(task="c", passed=False, outcome="malformed-output"),
+        make_result(task="d", passed=True),
+    ]
+    report = format_report(results)
+    assert "Failure outcomes:" in report
+    assert "- bare: malformed-output ×1, wrong-answer ×2" in report
+
+
+def test_format_report_rescue_matrix_counts_discriminating():
+    results = [
+        # e1: passes everywhere -> excluded from the matrix entirely
+        make_result(task="e1", config="bare", passed=True),
+        make_result(task="e1", config="full", passed=True),
+        # m1: bare fails, full passes -> discriminating
+        make_result(task="m1", config="bare", passed=False, outcome="wrong-answer"),
+        make_result(task="m1", config="full", passed=True),
+        # m2: fails everywhere -> shown in the matrix but NOT discriminating
+        make_result(task="m2", config="bare", passed=False, outcome="wrong-answer"),
+        make_result(task="m2", config="full", passed=False, outcome="wrong-answer"),
+    ]
+    report = format_report(results)
+    assert "Discriminating tasks: 1/3" in report
+    matrix = report.split("Discriminating tasks:")[1]
+    assert "| m1 | 0/1 | 1/1 |" in matrix
+    assert "| m2 | 0/1 | 0/1 |" in matrix
+    assert "| e1 |" not in matrix
+
+
+def test_format_report_rescue_matrix_shows_repeat_fractions():
+    results = (
+        [make_result(task="m1", config="bare", passed=False, outcome="wrong-answer")] * 2
+        + [make_result(task="m1", config="bare", passed=True)]
+        + [make_result(task="m1", config="full", passed=True)] * 3
+    )
+    report = format_report(results)
+    assert "| m1 | 1/3 | 3/3 |" in report
+    # 1/3 < 3/3 but bare did pass once: not fully-failed, so not "discriminating"
+    assert "Discriminating tasks: 0/1" in report
+
+
+def test_format_report_no_matrix_for_single_config():
+    report = format_report([make_result(passed=False, outcome="wrong-answer")])
+    assert "Discriminating" not in report

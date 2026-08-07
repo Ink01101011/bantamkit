@@ -140,6 +140,23 @@ Explicit failures:
   `tool_trace` under `structured`. `EvalConfigError` means fix the task file,
   not the model.
 
+Three further sections appear when the results give them something to say:
+
+- **Per family** — score and tokens per (config, family). This is where
+  saturation shows: a family scoring identically under every config is not
+  measuring the primitives.
+- **Failure outcomes** — non-pass runs classified: `wrong-answer` (content
+  wrong), `malformed-output` (a `json_equal` task whose output was not
+  parseable JSON), `schema-exhausted` / `critique-exhausted` (a gate spent its
+  budget), `config-error`, `transport-error`. Content-wrong and format-broken
+  have opposite remedies, so they are never lumped together.
+- **Discriminating tasks** — a pass-fraction grid over tasks that at least one
+  run failed. A task counts as *discriminating* when at least one config passed
+  all its runs and at least one passed none: those are the tasks that separate
+  configs, and the `N/total` headline is the suite-quality number. Per-run gate
+  counters (`schema_retries`, `critique_rounds` in the `--json` output) tell
+  you whether a gate actually fired on a task or just billed tokens.
+
 Tokens are read from the endpoint's `usage` field. Servers that omit it report
 `0`, which makes `score/1k tok` read `0.00` — check the column is non-zero
 before drawing conclusions.

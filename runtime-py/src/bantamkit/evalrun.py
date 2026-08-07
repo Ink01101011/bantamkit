@@ -6,6 +6,7 @@ import argparse
 import json
 import re
 import tempfile
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -318,19 +319,87 @@ def run_suite(
     return results
 
 
+def _score_cell(rows: list[TaskResult]) -> str:
+    return f"{sum(r.passed for r in rows)}/{len(rows)}"
+
+
 def format_report(results: list[TaskResult]) -> str:
+    configs = [c for c in CONFIGS if any(r.config == c for r in results)]
     lines = ["| config | score | tokens | score/1k tok |", "|---|---|---|---|"]
-    for config in [c for c in CONFIGS if any(r.config == c for r in results)]:
+    for config in configs:
         rows = [r for r in results if r.config == config]
         passed, tokens = sum(r.passed for r in rows), sum(r.tokens for r in rows)
         per_1k = passed / (tokens / 1000) if tokens else 0.0
-        lines.append(f"| {config} | {passed}/{len(rows)} | {tokens} | {per_1k:.2f} |")
-    failures = [r for r in results if r.error]
-    if failures:
-        lines.append("")
-        lines.append("Explicit failures:")
-        lines.extend(f"- {r.config}/{r.task}: {r.error}" for r in failures)
+        lines.append(f"| {config} | {_score_cell(rows)} | {tokens} | {per_1k:.2f} |")
+
+    families = sorted({r.family for r in results})
+    if len(families) > 1:
+        lines += [
+            "",
+            "Per family (score · tokens):",
+            "| config | " + " | ".join(families) + " |",
+            "|---" * (len(families) + 1) + "|",
+        ]
+        for config in configs:
+            cells = []
+            for family in families:
+                rows = [r for r in results if r.config == config and r.family == family]
+                cells.append(f"{_score_cell(rows)} · {sum(r.tokens for r in rows)} tok")
+            lines.append(f"| {config} | " + " | ".join(cells) + " |")
+
+    failed = [r for r in results if not r.passed]
+    if failed:
+        lines += ["", "Failure outcomes:"]
+        for config in configs:
+            counts = Counter(r.outcome for r in failed if r.config == config)
+            if counts:
+                summary = ", ".join(f"{o} ×{n}" for o, n in sorted(counts.items()))
+                lines.append(f"- {config}: {summary}")
+
+    if len(configs) > 1:
+        lines += _rescue_matrix(results, configs)
+
+    errors = [r for r in results if r.error]
+    if errors:
+        lines += ["", "Explicit failures:"]
+        lines.extend(f"- {r.config}/{r.task}: {r.error}" for r in errors)
     return "\n".join(lines)
+
+
+def _rescue_matrix(results: list[TaskResult], configs: list[str]) -> list[str]:
+    """Pass-fraction grid over tasks some run failed.
+
+    "Discriminating" = fully passed under at least one config AND fully failed
+    under at least one — the tasks that actually separate configs. The count is
+    the suite-quality headline the hardening cycle exists to move.
+    """
+    task_names = list(dict.fromkeys(r.task for r in results))
+    grid: dict[str, dict[str, tuple[int, int]]] = {}
+    for name in task_names:
+        per_config = {}
+        for config in configs:
+            rows = [r for r in results if r.task == name and r.config == config]
+            per_config[config] = (sum(r.passed for r in rows), len(rows))
+        if any(p < n for p, n in per_config.values()):
+            grid[name] = per_config
+    if not grid:
+        return []
+    discriminating = sum(
+        1
+        for per_config in grid.values()
+        if any(n > 0 and p == n for p, n in per_config.values())
+        and any(n > 0 and p == 0 for p, n in per_config.values())
+    )
+    lines = [
+        "",
+        f"Discriminating tasks: {discriminating}/{len(task_names)}",
+        "| task | " + " | ".join(configs) + " |",
+        "|---" * (len(configs) + 1) + "|",
+    ]
+    for name, per_config in grid.items():
+        cells = [f"{p}/{n}" for p, n in (per_config[c] for c in configs)]
+        lines.append(f"| {name} | " + " | ".join(cells) + " |")
+    return lines
 
 
 def main(argv: list[str] | None = None) -> None:
