@@ -100,7 +100,7 @@ Two details make that comparison fair rather than flattering:
 
 So `full` stacks all three primitives on one run — see
 [Current results](#current-results) for whether that stack earns its bill
-(on the current suite, `lean` does the same work for a third fewer tokens).
+(on the current suite, `lean` does the same work for 29% fewer tokens).
 
 `lean` exists to answer one question: how much of `full`'s token bill is the
 critique gate? `lean` runs the same agent loop with memory and `SchemaGate`
@@ -183,9 +183,165 @@ fixed seed). Compare configs within one sweep, not across sweeps.
 
 ## Current results
 
-Reference sweep per spec §7 — `qwen3:4b-instruct` (4B class, non-thinking)
-served by Ollama, all six configs over the 15-task suite (5 tasks each of
-structured-extraction, tool-use, memory-recall):
+Reference sweep on the hardened suite — `qwen3:4b-instruct` (4B class,
+non-thinking) served by Ollama, all six configs over the 19-task suite at
+`--repeats 3`: 6 × 19 × 3 = 342 runs. The suite is 5 structured-extraction,
+5 tool-use and 9 memory-recall tasks. Every per-run row, including the
+`schema_retries` and `critique_rounds` counters the analysis below leans on,
+is in `docs/eval-data/2026-08-07-reference-sweep.jsonl`; the calibration
+sweeps that selected the new tasks sit beside it in the same directory.
+
+| config | score | tokens | score/1k tok |
+|---|---|---|---|
+| bare | 30/57 | 12325 | 2.43 |
+| structured | 30/57 | 13396 | 2.24 |
+| critique | 30/57 | 65906 | 0.46 |
+| memory | 57/57 | 43917 | 1.30 |
+| lean | 57/57 | 44716 | 1.27 |
+| full | 57/57 | 63085 | 0.90 |
+
+Per family (score · tokens):
+
+| config | memory-recall | structured-extraction | tool-use |
+|---|---|---|---|
+| bare | 0/27 · 4030 tok | 15/15 · 1059 tok | 15/15 · 7236 tok |
+| structured | 0/27 · 4331 tok | 15/15 · 1840 tok | 15/15 · 7225 tok |
+| critique | 0/27 · 47640 tok | 15/15 · 6135 tok | 15/15 · 12131 tok |
+| memory | 27/27 · 35576 tok | 15/15 · 1053 tok | 15/15 · 7288 tok |
+| lean | 27/27 · 35635 tok | 15/15 · 1835 tok | 15/15 · 7246 tok |
+| full | 27/27 · 44162 tok | 15/15 · 6846 tok | 15/15 · 12077 tok |
+
+```
+Failure outcomes:
+- bare: wrong-answer ×27
+- structured: wrong-answer ×27
+- critique: critique-exhausted ×11, wrong-answer ×16
+```
+
+Discriminating tasks: 9/19
+
+| task | bare | structured | critique | memory | lean | full |
+|---|---|---|---|---|---|---|
+| recall-audit-retention | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-cache-ttl | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-db-port | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-deploy | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-env-endpoint | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-oncall-rotation | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-oncall | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-org-quota | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-owner | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+
+```
+Explicit failures:
+- critique/recall-cache-ttl: CritiqueExhausted: below threshold 7 after 3
+  rounds; last feedback: The task asks for the cache TTL in seconds, but the
+  answer states it cannot retrieve the value and provides "0" as a response.
+  The required content is absent and incorrect because the cache TTL is not
+  actually known or accessible, and providing a value of 0 without
+  justification or correct information violates the requirement to give the
+  correct number of seconds.
+- critique/recall-cache-ttl: CritiqueExhausted: below threshold 7 after 3
+  rounds; last feedback: The task requires the actual current cache TTL in
+  seconds, but the answer does not provide this number. Instead, it explains
+  the inability to retrieve it, which means the required factual content is
+  absent.
+  (9 more `critique-exhausted` entries of the same shape — see the JSONL)
+```
+
+The per-run gate counters are this sweep's headline, because they say what the
+token columns alone cannot — whether a gate did work or only billed for it:
+
+- **No schema gate in the sweep ever fired.** `schema_retries == 0` in all 342
+  runs: the model did not violate a schema once, not inside `structured()` and
+  not through `SchemaGate` under `lean`/`full`. The schema machinery repaired
+  nothing. That makes `structured`'s extra cost over `bare` on extraction
+  (1840 vs 1059 tokens for the same 15/15) *measured pure instruction tax* —
+  the price of carrying the schema in the prompt, with no repair loop behind it.
+- **The critic inside `full` never objected.** `critique_rounds == 0` in all 57
+  `full` runs. `full − lean` is +18369 tokens (+41%) for +0 passes, and the
+  counters show the whole delta is scoring-call overhead: not one revision
+  round was bought with it.
+- **Only the standalone `critique` config fired at all:** 27 critique rounds
+  across 15 runs, every one on a memory-recall task, where that config has no
+  store to answer from. Eleven of those runs ended `critique-exhausted` — the
+  critic *correctly* refusing a fabricated or absent answer, as the feedback
+  above shows — while the other 16 memory failures were wrong answers the
+  critic scored as good enough.
+- **Zero repeat variance.** Every one of the 114 (task, config) cells came out
+  0/3 or 3/3: 87 at 3/3, 27 at 0/3, none split. At 3 repeats there is no noise
+  band in this sweep for a difference to hide in.
+- **Nine of 19 tasks discriminate, and all nine are memory-recall** — the five
+  original recall tasks plus the four multi-hop/distractor tasks promoted this
+  cycle. Extraction and tool-use are saturated: identical under every config.
+
+Against spec §7, without spin:
+
+- **"Full toolkit scores measurably higher than bare": met.** `full`, `lean`
+  and `memory` all score 57/57 vs `bare` 30/57. But read the family table
+  before celebrating: all 27 gained runs are memory-recall, and `memory` alone
+  reaches 57/57 for fewer tokens than either `lean` or `full`. On this suite
+  the uplift *is* the memory primitive; nothing else moves a task.
+- **Does `lean` beat `bare` on score? Yes — 57/57 vs 30/57, +27 runs.**
+- **Is `lean`'s score/1k near `bare`'s? No — 1.27 vs 2.43, about 52% of it.**
+  The §7 "on par" bar is not met, and the gap is the same cheap-failure
+  artifact as before: `bare` disposes of 27 recall runs for 4030 tokens total
+  and banks zero passes, while `lean` spends 35635 tokens injecting the store
+  index and wins all 27. On the 30 runs both configs pass, the gap nearly
+  closes — `bare` 3.62 (30 passes / 8295 tok), `lean` 3.30 (30 / 9081),
+  `memory` 3.60 (30 / 8341). The residual `bare` → `lean` gap is the schema
+  instruction, and the counter data now shows that instruction repaired
+  nothing. A config that skips work it would fail will always look efficient.
+- **`full − lean` — critique's marginal cost and uplift: +18369 tokens (+41%)
+  for +0 passes**, with `critique_rounds == 0` proving the critic never fired.
+  Score/1k falls 1.27 → 0.90. `lean` is what you would ship; `full` is worth
+  its bill only if your tasks have failure modes this suite does not contain.
+- **Can structured output or critique be made to pay on this model? Measured,
+  and the answer is no.** That was this cycle's goal, and the hardened suite
+  answers it negatively with evidence rather than by omission. Extraction
+  saturates at `bare` — the model simply does not emit malformed JSON here, so
+  there is no repair for a schema gate to perform. The tool-use failures that
+  *would* need a critic are unrescuable by the critic we have: the model does
+  its lookups correctly and then botches the arithmetic or comparison, and
+  `CritiqueGate` has no tool access, so it cannot check a tool-derived number
+  and accepts the wrong one every time. The primitive this data motivates is
+  **grounded critique** — a critic with access to the tool results and the
+  transcript, able to recompute a claim instead of judging its prose.
+- **Stretch ("competitive with a bare model one size class up"): still not
+  re-measured.** The 7B comparison below is on the retired 6-task suite and is
+  not comparable to these numbers.
+
+### How the suite was hardened
+
+The four promoted recall tasks came out of a calibration pass, not authoring
+taste. Twelve candidate tasks were written to deliberately target the
+structured and critique weaknesses above — 4 hard-extraction, 4 tool-use, 4
+memory-recall — and each was run at 3 repeats across 5 configs
+(`docs/eval-data/2026-08-07-calibration.jsonl`, 180 runs). The promotion bar
+was: `bare` scores ≤1/3 **and** some config scores ≥2/3, i.e. the task must be
+hard for the control and rescuable by a primitive.
+
+All four hard-extraction candidates and two of the four tool-use candidates
+saturated — 3/3 under every config, including `bare` — so they measure nothing
+and were dropped. The remaining two tool-use candidates (multi-item basket
+arithmetic, largest-shortfall comparison) failed 0/3 under *every* config, and
+stayed 0/3 after a tuning pass
+(`docs/eval-data/2026-08-07-calibration-tuned-rerun.jsonl`, 30 runs). Live
+probes showed why: the model performs the tool lookups correctly and then gets
+the arithmetic or the comparison wrong, and the critic signs off on the wrong
+number — zero `critique-exhausted` outcomes on those runs, because
+`CritiqueGate` cannot see tool ground truth. Unrescuable by any current
+primitive, so they were not promoted. Only the four memory-recall candidates
+cleared the bar, which is why the hardened suite is 9 recall tasks and still
+5 + 5 elsewhere.
+
+### Prior baselines
+
+Not comparable to the sweep above, and kept only for the before/after.
+
+Pre-hardening 15-task sweep — the same model and the same six configs on the
+**15-task suite at a single repeat**, before the four recall tasks were
+promoted:
 
 | config | score | tokens | score/1k tok |
 |---|---|---|---|
@@ -196,20 +352,6 @@ structured-extraction, tool-use, memory-recall):
 | lean | 15/15 | 9500 | 1.58 |
 | full | 15/15 | 14350 | 1.05 |
 
-```
-Explicit failures:
-- critique/recall-cache-ttl: CritiqueExhausted: below threshold 7 after 3 rounds;
-  last feedback: The answer provides a number (0) but it is not valid or accurate
-  as a cache TTL in real-world systems. ...
-```
-
-The other 14 failures are plain wrong answers, not raised errors: `bare`,
-`structured` and `critique` have no memory store, so all five memory-recall
-tasks are unanswerable under them.
-
-The score column is entirely decided by the memory-recall family. Broken out
-by family, every config passes 10/10 on extraction and tool-use:
-
 | config | extraction | tool-use | memory-recall |
 |---|---|---|---|
 | bare | 5/5 · 351 tok | 5/5 · 2415 tok | 0/5 · 702 tok |
@@ -219,42 +361,8 @@ by family, every config passes 10/10 on extraction and tool-use:
 | lean | 5/5 · 615 tok | 5/5 · 2421 tok | 5/5 · 6464 tok |
 | full | 5/5 · 2272 tok | 5/5 · 4042 tok | 5/5 · 8036 tok |
 
-Against spec §7, without spin:
-
-- **"Full toolkit scores measurably higher than bare": met.** `full` 15/15 vs
-  `bare` 10/15. But read the family table before celebrating: all five gained
-  tasks are memory-recall, and `memory` alone gets the same 15/15 for 36% fewer
-  tokens. On this suite the uplift *is* the memory primitive; nothing else
-  moves a task.
-- **Does `lean` beat `bare` on score? Yes — 15/15 vs 10/15, +5 tasks.**
-- **Is `lean`'s score/1k near `bare`'s? No — 1.58 vs 2.88, about 55% of it.**
-  The §7 "on par" bar is not met, but the gap is an artifact of how cheaply
-  `bare` fails: it disposes of the five recall tasks for 702 tokens total and
-  banks zero passes, while `lean` spends 6464 tokens injecting the store index
-  and wins all five. On the 10 tasks both configs pass, the efficiency gap
-  nearly closes (`bare` 3.62, `lean` 3.29) — and that residual 9% is the
-  schema instruction, not memory: `memory` matches `bare` at 3.62 to two decimals.
-  A config that skips work it would fail will always look efficient.
-- **`full − lean` — critique's marginal cost and uplift: +4850 tokens (+51%)
-  for +0 passes.** Same 15/15, score/1k falls 1.58 → 1.05. On this model and
-  suite the critique gate buys nothing it can be measured buying, so `lean` is
-  what you would ship; `full` is worth its bill only if your tasks have failure
-  modes this suite does not contain.
-- **Did the retuned rubric stop `critique` being net-negative? On score, yes.**
-  In the pre-cycle baseline below, adding the critic *destroyed* a pass —
-  `full` 4/6 sat under `memory` 5/6, and its `CritiqueExhausted` failures were
-  the critic rejecting correct answers over formatting. Now `full` 15/15
-  matches `memory` and `lean`, and the single `CritiqueExhausted` left is the
-  critic correctly refusing a fabricated answer (the `critique` config has no
-  memory, so the model invented a TTL of `0`). The rubric now fails content,
-  not format. On efficiency it is still net-negative: 0.62 standalone, and
-  −34% score/1k when stacked into `full`.
-- **Stretch ("competitive with a bare model one size class up"): not
-  re-measured.** The 7B comparison below is on the retired 6-task suite and is
-  not comparable to these numbers.
-
 Pre-cycle baseline — the same model on the **old 6-task suite with the old
-rubric**, kept for the before/after:
+rubric**:
 
 | config | score | score/1k tok |
 |---|---|---|
@@ -264,14 +372,18 @@ rubric**, kept for the before/after:
 | memory | 5/6 | 1.43 |
 | full | 4/6 | 0.38 |
 
-Do not read the two tables as a controlled comparison. Three things changed
+Do not read those two tables as a controlled comparison. Three things changed
 between them: the suite grew 6 → 15 tasks with a different family balance, the
 `task-completion` rubric was retuned to judge content rather than format, and
 `lean` did not exist. The `critique` and `full` rows in particular are **not**
 apples-to-apples — their improvement is partly a better critic and partly an
 easier-to-satisfy scoring path. The `bare` row is the honest anchor: it moved
 3/6 → 10/15 (50% → 67%) purely because the expanded suite added families this
-model handles well.
+model handles well. The retuned rubric is also what turned `critique` from
+score-negative into score-neutral: in the 6-task baseline adding the critic
+*destroyed* a pass (`full` 4/6 under `memory` 5/6, rejecting correct answers
+over formatting), whereas in the sweep above every `CritiqueExhausted` is the
+critic refusing an answer that really was absent or fabricated.
 
 Earlier sweep on the larger `qwen2.5:7b-instruct`, also on the old 6-task
 suite, for comparison:
@@ -296,12 +408,14 @@ critique/full configs were impractical to measure — calls exceed the
 adapter's default 60s timeout. Use `--timeout` to increase the limit for
 slow models. Prefer instruct variants for this suite.
 
-Caveats: single sweeps against a non-deterministic endpoint. Run-to-run
-variance is roughly ±1 task per config, which on the 15-task suite is about
-±7% — narrower than the retired 6-task suite's ±17%, but still wide enough
-that a 1-task difference between configs is noise. The differences load-bearing
-above are 5 tasks (memory families) and 0 tasks (`full − lean`), both well
-clear of that band; the token columns are not subject to it in the same way.
+Caveats: the reference sweep runs 3 repeats per (config, task), and observed
+variance within it was zero — all 114 cells came out 0/3 or 3/3, none split.
+That is a much stronger footing than the single-repeat baselines above, whose
+±1-task run-to-run wobble made a 1-task difference between configs noise. It
+is still a non-deterministic endpoint, though: zero observed variance at 3
+repeats is not a guarantee of determinism, and nothing here is reproducible
+run-for-run on another day or another server. Compare configs within one
+sweep, not across sweeps.
 
 ## Add a task
 
@@ -353,9 +467,9 @@ Scoring kinds:
   **not** combine it with a `schema`: the `structured` config has no transcript
   to score and reports such a task as an explicit failure.
 
-The builtin tools read `assets/evals/fixtures/catalog.json` (`widget`, `gadget`, `doohickey`, `sprocket`,
-each with `price` and `stock`), so tool-use tasks stay deterministic on the
-harness side.
+The builtin tools read `assets/evals/fixtures/catalog.json` (`widget`,
+`gadget`, `doohickey`, `sprocket`, each with `price` and `stock`), so tool-use
+tasks stay deterministic on the harness side.
 
 `runtime-py/tests/test_conformance.py` enforces the contract above and requires
 at least 19 tasks with all three families present, at least 2 each. Run it after
