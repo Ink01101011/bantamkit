@@ -251,3 +251,95 @@ def test_v1_single_store_output_has_no_layer_prefixes(tmp_path):
     out = mem._recall("deploy")
     assert "[deploy]" in out
     assert "[project]" not in out
+
+
+def test_layered_budget_allows_later_layers_to_contribute_on_overlap(tmp_path, fake_home):
+    """Regression test for budget parameter (not remaining): layers fetch full budget,
+    deduplication handles overlaps, allowing later layers to fill gaps."""
+    project = tmp_path / "companyA"
+    project.mkdir()
+    store = project / ".bantamkit" / "memory"
+    _seed(store, "alpha", "x", description="alpha fact description context")
+    _seed(store, "beta", "x", description="beta fact specific info here")
+    profile_store = fake_home / ".bantamkit" / "memory"
+    _seed(
+        profile_store,
+        "alpha",
+        "y",
+        description="alpha fact entry from profile differs",
+    )
+    _seed(profile_store, "gamma", "y", description="gamma fact only in profile")
+    _seed(profile_store, "delta", "y", description="delta fact another profile entry")
+
+    out = Memory.layered(start=project, k=4)._recall("fact")
+    # Should return 4 facts: alpha (project), beta (project), gamma (profile), delta (profile)
+    # Project layer returns alpha+beta (2 facts matching "fact")
+    # Profile layer returns alpha (skip, seen), gamma, delta (2 new facts)
+    # Total: 4 facts within budget
+    assert out.count("\n\n") == 3  # 4 facts separated by 3 newline pairs
+    assert "[project] [alpha]" in out
+    assert "[project] [beta]" in out
+    assert "[profile] [gamma]" in out
+    assert "[profile] [delta]" in out
+
+
+def test_corrupt_project_layer_raises_on_recall(tmp_path, fake_home):
+    """Corrupt project layer (malformed facts) raises MemoryValidationError on recall."""
+    project = tmp_path / "companyA"
+    project.mkdir()
+    project_store = project / ".bantamkit" / "memory"
+    (project_store / "facts").mkdir(parents=True)
+    # Write a corrupted fact file with no frontmatter
+    (project_store / "facts" / "broken.md").write_text("no frontmatter here at all")
+
+    with pytest.raises(MemoryValidationError):
+        Memory.layered(start=project)._recall("test")
+
+
+def test_v1_corrupt_layer_raises_on_recall(tmp_path):
+    """Corrupt layer in v1 mode also raises MemoryValidationError on recall."""
+    store_path = tmp_path / "m"
+    (store_path / "facts").mkdir(parents=True)
+    (store_path / "facts" / "broken.md").write_text("no frontmatter here at all")
+
+    mem = Memory(store=store_path)
+    with pytest.raises(MemoryValidationError):
+        mem._recall("test")
+
+
+def test_layered_short_circuits_and_does_not_query_profile_when_budget_filled(
+    tmp_path, fake_home, monkeypatch
+):
+    """Profile store recall should not be called when k budget is filled by project layer."""
+    project = tmp_path / "companyA"
+    project.mkdir()
+    store = project / ".bantamkit" / "memory"
+    descriptions = [
+        "fact: deploy to main branch",
+        "fact: stage in test environment",
+        "fact: rollback strategy procedure",
+        "fact: monitoring after release",
+    ]
+    for i in range(4):
+        _seed(store, f"proj-{i}", "x", description=descriptions[i])
+
+    profile_store = fake_home / ".bantamkit" / "memory"
+    _seed(profile_store, "prof", "y", description="fact from profile")
+
+    mem = Memory.layered(start=project, k=4)
+    # Spy on profile store recall by tracking calls
+    profile_layer_store = mem._layers[-1][1]  # Get the profile store
+    original_recall = profile_layer_store.recall
+    recall_called = []
+
+    def spy_recall(*args, **kwargs):
+        recall_called.append((args, kwargs))
+        return original_recall(*args, **kwargs)
+
+    profile_layer_store.recall = spy_recall
+
+    out = mem._recall("fact")
+    # Should get 4 project facts, filling budget
+    assert out.count("[project] [") == 4
+    # Profile recall should NOT have been called (budget exhausted before reaching it)
+    assert not recall_called, "Profile store recall should not be called when k budget is filled"

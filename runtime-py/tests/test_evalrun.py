@@ -214,13 +214,17 @@ def test_cli_timeout_flag_reaches_client(monkeypatch):
     captured = {}
 
     class FakeAdapter:
-        def __init__(self, base_url, model, timeout=60.0):
+        def __init__(self, base_url, model, timeout):
+            captured["base_url"] = base_url
+            captured["model"] = model
             captured["timeout"] = timeout
 
     monkeypatch.setattr(evalrun, "OpenAICompatible", FakeAdapter)
     monkeypatch.setattr(evalrun, "run_suite", lambda client, configs=None: [])
     monkeypatch.setattr(evalrun, "format_report", lambda results: "")
     evalrun.main(["--base-url", "http://x", "--model", "m", "--timeout", "120.5"])
+    assert captured["base_url"] == "http://x"
+    assert captured["model"] == "m"
     assert captured["timeout"] == 120.5
 
 
@@ -229,11 +233,15 @@ def test_cli_timeout_flag_default_value(monkeypatch):
     captured = {}
 
     class FakeAdapter:
-        def __init__(self, base_url, model, timeout=60.0):
+        def __init__(self, base_url, model, timeout):
+            captured["base_url"] = base_url
+            captured["model"] = model
             captured["timeout"] = timeout
 
     monkeypatch.setattr(evalrun, "OpenAICompatible", FakeAdapter)
     monkeypatch.setattr(evalrun, "run_suite", lambda client, configs=None: [])
     monkeypatch.setattr(evalrun, "format_report", lambda results: "")
     evalrun.main(["--base-url", "http://x", "--model", "m"])
+    assert captured["base_url"] == "http://x"
+    assert captured["model"] == "m"
     assert captured["timeout"] == 60.0

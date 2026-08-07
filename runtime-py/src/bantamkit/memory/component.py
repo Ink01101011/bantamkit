@@ -77,9 +77,8 @@ class Memory:
         for label, store, writable in self._layers:
             if len(picked) >= budget:
                 break  # budget spent: later (read-only) layers are never even read
-            remaining = budget - len(picked)
             try:
-                facts = store.recall(query, remaining, stamp=writable)
+                facts = store.recall(query, budget, stamp=writable)
             except BantamError:
                 if writable:
                     raise  # the project layer failing is a real error, as in v1

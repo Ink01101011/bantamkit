@@ -140,5 +140,5 @@ def test_load_grants_symlinked_store_reads_adjacent_config(tmp_path):
         "extra_stores:\n  - ../../other/.bantamkit/memory\n"
     )
 
-    result = load_grants(symlink_store)
+    result = load_grants(discover_project_store(proj))
     assert result == [other_store.resolve()]
