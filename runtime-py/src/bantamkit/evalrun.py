@@ -6,7 +6,9 @@ import argparse
 import json
 import re
 import tempfile
-from dataclasses import dataclass
+from collections import Counter
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import jsonschema
@@ -15,7 +17,7 @@ import yaml
 from bantamkit.agent import Agent, ToolDef
 from bantamkit.assets import assets_root
 from bantamkit.client import BantamError, Message, ModelClient, OpenAICompatible, Tool, Usage
-from bantamkit.critique import CritiqueGate
+from bantamkit.critique import CritiqueExhausted, CritiqueGate
 from bantamkit.memory import Memory, MemoryStore
 from bantamkit.structured import StructuredOutputError, extract_json, structured
 
@@ -75,26 +77,37 @@ BUILTIN_TOOLS = {
 class TaskResult:
     task: str
     config: str
+    family: str
     passed: bool
     tokens: int
+    outcome: str
+    model_calls: int
+    tool_calls: int
+    schema_retries: int
+    critique_rounds: int
     error: str | None
 
 
 class TrackingClient:
-    """Wraps any ModelClient and accumulates token usage across all calls."""
+    """Wraps any ModelClient and accumulates token usage and call count across all calls."""
 
     def __init__(self, inner: ModelClient):
         self.inner = inner
         self.usage = Usage()
+        self.calls = 0
 
     def chat(self, messages, tools=None):
         resp = self.inner.chat(messages, tools)
         self.usage = self.usage + resp.usage
+        self.calls += 1
         return resp
 
 
-def load_tasks() -> list[dict]:
-    files = sorted((assets_root() / "evals" / "tasks").glob("*.yaml"))
+def load_tasks(tasks_dir: Path | None = None) -> list[dict]:
+    tasks_dir = tasks_dir or assets_root() / "evals" / "tasks"
+    files = sorted(Path(tasks_dir).glob("*.yaml"))
+    if not files:
+        raise EvalConfigError(f"no task files found in {tasks_dir}")
     return [yaml.safe_load(f.read_text()) for f in files]
 
 
@@ -104,8 +117,9 @@ def contains_term(output: str, term: str) -> bool:
     A plain substring test scores wrong answers as passes: `100` is inside `1000`, `atlas`
     is inside `atlassian`. The guards are "no word character either side" rather than `\\b`,
     so terms that start or end with punctuation still anchor the way you would expect.
+    Digit-comma adjacency is also blocked, so `200` does not match inside `1,200`.
     """
-    pattern = rf"(?<!\w){re.escape(term)}(?!\w)"
+    pattern = rf"(?<!\d,)(?<!\w){re.escape(term)}(?!\w)(?!,\d)"
     return re.search(pattern, output, re.IGNORECASE) is not None
 
 
@@ -158,9 +172,11 @@ class SchemaGate:
     def __init__(self, schema: dict, max_attempts: int = 3):
         self.schema = schema
         self.max_attempts = max_attempts
+        self.retries_used = 0
         self._attempts = 0
 
     def setup(self, agent: Agent) -> None:
+        self.retries_used = 0
         agent.add_post_hook(self)
 
     def __call__(self, task: str, output: str) -> str | None:
@@ -174,7 +190,45 @@ class SchemaGate:
             raise StructuredOutputError(
                 f"no valid output after {self.max_attempts} attempts; last error: {error}"
             )
+        self.retries_used += 1
         return f"{error}\nReturn ONLY a JSON object matching the schema."
+
+
+OUTCOMES = [
+    "pass",
+    "wrong-answer",
+    "malformed-output",
+    "schema-exhausted",
+    "critique-exhausted",
+    "config-error",
+    "transport-error",
+]
+
+
+def classify_outcome(
+    task: dict, passed: bool, output: str | None, error: BantamError | None
+) -> str:
+    """One deterministic failure class per run (suite-hardening spec §3.2).
+
+    Splits "failed" into content-wrong vs format-broken vs gate-gave-up vs
+    infrastructure — each has a different remedy.
+    """
+    if passed:
+        return "pass"
+    if isinstance(error, EvalConfigError):
+        return "config-error"
+    if isinstance(error, StructuredOutputError):
+        return "schema-exhausted"
+    if isinstance(error, CritiqueExhausted):
+        return "critique-exhausted"
+    if error is not None:
+        return "transport-error"
+    if task["scoring"]["kind"] == "json_equal":
+        try:
+            extract_json(output or "")
+        except ValueError:
+            return "malformed-output"
+    return "wrong-answer"
 
 
 def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> TaskResult:
@@ -182,6 +236,8 @@ def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> Tas
     tools = [BUILTIN_TOOLS[name] for name in task.get("tools", [])]
     agent = Agent(client=tracking, tools=tools)
 
+    schema_gate: SchemaGate | None = None
+    critique_gate: CritiqueGate | None = None
     if config in ("memory", "lean", "full") and task.get("memory_setup"):
         store_dir = workdir / f"{task['name']}-{config}-mem"
         seed = MemoryStore(store_dir)
@@ -193,11 +249,18 @@ def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> Tas
         # Gate registered before the critique gate: a malformed answer is fixed for free
         # rather than spending a critique call on it.
         agent.add_system(SCHEMA_INSTRUCTION + json.dumps(task["schema"]))
-        agent.use(SchemaGate(task["schema"]))
+        schema_gate = SchemaGate(task["schema"])
+        agent.use(schema_gate)
     if config in ("critique", "full"):
-        agent.use(CritiqueGate("task-completion", client=tracking))
+        critique_gate = CritiqueGate("task-completion", client=tracking)
+        agent.use(critique_gate)
 
+    output: str | None = None
+    messages: list[Message] = []
+    caught: BantamError | None = None
     try:
+        if "family" not in task:
+            raise EvalConfigError(f"task '{task['name']}' is missing required key 'family'")
         if config == "structured" and "schema" in task:
             # structured() drives its own loop, so no agent transcript exists to score against.
             if task["scoring"]["kind"] == "tool_trace":
@@ -206,40 +269,139 @@ def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> Tas
                     "structured config cannot score: it has no agent transcript"
                 )
             data = structured(tracking, task["prompt"], task["schema"])
-            output, messages = json.dumps(data), []
+            output = json.dumps(data)
         else:
             result = agent.run(task["prompt"])
             output, messages = result.output, result.messages
         passed = score_output(task, output, messages)
-        error = None
     except BantamError as e:
-        passed, error = False, f"{type(e).__name__}: {e}"
+        passed, caught = False, e
+
+    if config == "structured" and "schema" in task:
+        # No gate object on this path; structured() makes exactly one call per attempt.
+        schema_retries = max(0, tracking.calls - 1)
+    else:
+        schema_retries = schema_gate.retries_used if schema_gate else 0
     return TaskResult(
-        task=task["name"], config=config, passed=passed, tokens=tracking.usage.total, error=error
+        task=task["name"],
+        config=config,
+        family=task.get("family", "unknown"),
+        passed=passed,
+        tokens=tracking.usage.total,
+        outcome=classify_outcome(task, passed, output, caught),
+        model_calls=tracking.calls,
+        # messages stays [] when agent.run raises, so tool_calls reads 0 on gate-exhausted runs.
+        tool_calls=sum(len(m.tool_calls) for m in messages),
+        schema_retries=schema_retries,
+        critique_rounds=critique_gate.rounds_used if critique_gate else 0,
+        error=f"{type(caught).__name__}: {caught}" if caught else None,
     )
 
 
 def run_suite(
-    client: ModelClient, configs: list[str] | None = None, workdir: Path | None = None
+    client: ModelClient,
+    configs: list[str] | None = None,
+    workdir: Path | None = None,
+    tasks_dir: Path | None = None,
+    repeats: int = 1,
+    on_result: Callable[[TaskResult], None] | None = None,
 ) -> list[TaskResult]:
     configs = configs or CONFIGS
     workdir = workdir or Path(tempfile.mkdtemp(prefix="bantamkit-eval-"))
-    return [run_task(client, task, config, workdir) for config in configs for task in load_tasks()]
+    tasks = load_tasks(tasks_dir)
+    results: list[TaskResult] = []
+    for config in configs:
+        for task in tasks:
+            for i in range(repeats):
+                # Fresh subdir per repeat: memory stores must not leak between repeats.
+                result = run_task(client, task, config, workdir / f"repeat-{i}")
+                results.append(result)
+                if on_result is not None:
+                    on_result(result)
+    return results
+
+
+def _score_cell(rows: list[TaskResult]) -> str:
+    return f"{sum(r.passed for r in rows)}/{len(rows)}"
 
 
 def format_report(results: list[TaskResult]) -> str:
+    configs = [c for c in CONFIGS if any(r.config == c for r in results)]
     lines = ["| config | score | tokens | score/1k tok |", "|---|---|---|---|"]
-    for config in [c for c in CONFIGS if any(r.config == c for r in results)]:
+    for config in configs:
         rows = [r for r in results if r.config == config]
         passed, tokens = sum(r.passed for r in rows), sum(r.tokens for r in rows)
         per_1k = passed / (tokens / 1000) if tokens else 0.0
-        lines.append(f"| {config} | {passed}/{len(rows)} | {tokens} | {per_1k:.2f} |")
-    failures = [r for r in results if r.error]
-    if failures:
-        lines.append("")
-        lines.append("Explicit failures:")
-        lines.extend(f"- {r.config}/{r.task}: {r.error}" for r in failures)
+        lines.append(f"| {config} | {_score_cell(rows)} | {tokens} | {per_1k:.2f} |")
+
+    families = sorted({r.family for r in results})
+    if len(families) > 1:
+        lines += [
+            "",
+            "Per family (score · tokens):",
+            "| config | " + " | ".join(families) + " |",
+            "|---" * (len(families) + 1) + "|",
+        ]
+        for config in configs:
+            cells = []
+            for family in families:
+                rows = [r for r in results if r.config == config and r.family == family]
+                cells.append(f"{_score_cell(rows)} · {sum(r.tokens for r in rows)} tok")
+            lines.append(f"| {config} | " + " | ".join(cells) + " |")
+
+    failed = [r for r in results if not r.passed]
+    if failed:
+        lines += ["", "Failure outcomes:"]
+        for config in configs:
+            counts = Counter(r.outcome for r in failed if r.config == config)
+            if counts:
+                summary = ", ".join(f"{o} ×{n}" for o, n in sorted(counts.items()))
+                lines.append(f"- {config}: {summary}")
+
+    if len(configs) > 1:
+        lines += _rescue_matrix(results, configs)
+
+    errors = [r for r in results if r.error]
+    if errors:
+        lines += ["", "Explicit failures:"]
+        lines.extend(f"- {r.config}/{r.task}: {r.error}" for r in errors)
     return "\n".join(lines)
+
+
+def _rescue_matrix(results: list[TaskResult], configs: list[str]) -> list[str]:
+    """Pass-fraction grid over tasks some run failed.
+
+    "Discriminating" = fully passed under at least one config AND fully failed
+    under at least one — the tasks that actually separate configs. The count is
+    the suite-quality headline the hardening cycle exists to move.
+    """
+    task_names = list(dict.fromkeys(r.task for r in results))
+    grid: dict[str, dict[str, tuple[int, int]]] = {}
+    for name in task_names:
+        per_config = {}
+        for config in configs:
+            rows = [r for r in results if r.task == name and r.config == config]
+            per_config[config] = (sum(r.passed for r in rows), len(rows))
+        if any(p < n for p, n in per_config.values()):
+            grid[name] = per_config
+    if not grid:
+        return ["", f"Discriminating tasks: 0/{len(task_names)}"]
+    discriminating = sum(
+        1
+        for per_config in grid.values()
+        if any(n > 0 and p == n for p, n in per_config.values())
+        and any(n > 0 and p == 0 for p, n in per_config.values())
+    )
+    lines = [
+        "",
+        f"Discriminating tasks: {discriminating}/{len(task_names)}",
+        "| task | " + " | ".join(configs) + " |",
+        "|---" * (len(configs) + 1) + "|",
+    ]
+    for name, per_config in grid.items():
+        cells = [f"{p}/{n}" for p, n in (per_config[c] for c in configs)]
+        lines.append(f"| {name} | " + " | ".join(cells) + " |")
+    return lines
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -252,9 +414,39 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--timeout", type=float, default=60.0, help="per-request timeout in seconds (default 60)"
     )
+    parser.add_argument("--repeats", type=int, default=1, help="runs per (config, task); default 1")
+    parser.add_argument(
+        "--tasks", type=Path, help="load tasks from this directory instead of the builtin suite"
+    )
+    parser.add_argument(
+        "--json", type=Path, help="append one JSON line per finished run to this file"
+    )
     args = parser.parse_args(argv)
+    if args.repeats < 1:
+        parser.error("--repeats must be >= 1")
     client = OpenAICompatible(base_url=args.base_url, model=args.model, timeout=args.timeout)
-    print(format_report(run_suite(client, configs=args.config)))
+
+    sink: Callable[[TaskResult], None] | None = None
+    jsonl = None
+    if args.json:
+        jsonl = args.json.open("a")
+
+        def sink(result: TaskResult) -> None:
+            jsonl.write(json.dumps(asdict(result)) + "\n")
+            jsonl.flush()
+
+    try:
+        results = run_suite(
+            client,
+            configs=args.config,
+            tasks_dir=args.tasks,
+            repeats=args.repeats,
+            on_result=sink,
+        )
+    finally:
+        if jsonl is not None:
+            jsonl.close()
+    print(format_report(results))
 
 
 if __name__ == "__main__":

@@ -68,10 +68,12 @@ class CritiqueGate:
         self.client = client
         self.max_rounds = max_rounds
         self._rounds = 0
+        self.rounds_used = 0
 
     def setup(self, agent: Agent) -> None:
         if self.client is None:
             self.client = agent.client
+        self.rounds_used = 0
         agent.add_post_hook(self)
 
     def __call__(self, task: str, output: str) -> str | None:
@@ -88,6 +90,7 @@ class CritiqueGate:
                 f"below threshold {self.rubric.threshold} after {self.max_rounds} rounds; "
                 f"last feedback: {verdict['feedback']}"
             )
+        self.rounds_used += 1
         return (
             f"A reviewer scored your answer {verdict['score']}/10 "
             f"(needs >= {self.rubric.threshold}). Feedback: {verdict['feedback']}\n"

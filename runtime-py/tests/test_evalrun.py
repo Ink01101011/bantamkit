@@ -1,9 +1,12 @@
+import json
+
 from conftest import FakeClient, assistant, call
 
 from bantamkit import evalrun
-from bantamkit.client import Message, ToolCall
+from bantamkit.client import BantamError, Message, ToolCall
 from bantamkit.evalrun import (
     CONFIGS,
+    TaskResult,
     TrackingClient,
     format_report,
     load_tasks,
@@ -109,6 +112,268 @@ CONTACT = '{"name": "Ann Chen", "email": "ann.chen@example.com"}'
 GOOD_VERDICT = '{"score": 9, "feedback": "looks good"}'
 
 
+def make_result(**kw):
+    base = dict(
+        task="t",
+        config="bare",
+        family="structured-extraction",
+        passed=True,
+        tokens=100,
+        outcome="pass",
+        model_calls=1,
+        tool_calls=0,
+        schema_retries=0,
+        critique_rounds=0,
+        error=None,
+    )
+    base.update(kw)
+    return TaskResult(**base)
+
+
+TINY_TASK = """\
+name: tiny
+family: structured-extraction
+prompt: say hi
+scoring:
+  kind: contains
+  expected: ["hi"]
+"""
+
+TINY_MEMORY_TASK = """\
+name: tinymem
+family: memory-recall
+prompt: recall the deploy command
+memory_setup:
+  - type: project
+    name: deploy-command
+    description: how we deploy to production
+    body: Deploy with make ship-prod.
+scoring:
+  kind: contains
+  expected: ["ship-prod"]
+"""
+
+
+def test_load_tasks_from_custom_dir(tmp_path):
+    (tmp_path / "tiny.yaml").write_text(TINY_TASK)
+    tasks = evalrun.load_tasks(tmp_path)
+    assert [t["name"] for t in tasks] == ["tiny"]
+
+
+def test_load_tasks_empty_dir_raises(tmp_path):
+    import pytest
+
+    from bantamkit.evalrun import EvalConfigError
+
+    with pytest.raises(EvalConfigError):
+        evalrun.load_tasks(tmp_path)
+
+
+def test_run_suite_repeats_and_streams_results(tmp_path):
+    taskdir = tmp_path / "tasks"
+    taskdir.mkdir()
+    (taskdir / "tiny.yaml").write_text(TINY_TASK)
+    client = FakeClient([assistant(content="hi")] * 3)
+    seen = []
+    results = evalrun.run_suite(
+        client,
+        configs=["bare"],
+        workdir=tmp_path / "work",
+        tasks_dir=taskdir,
+        repeats=3,
+        on_result=seen.append,
+    )
+    assert len(results) == 3
+    assert seen == results
+    assert all(r.passed for r in results)
+
+
+def test_run_suite_repeats_reseed_memory_freshly(tmp_path):
+    taskdir = tmp_path / "tasks"
+    taskdir.mkdir()
+    (taskdir / "tinymem.yaml").write_text(TINY_MEMORY_TASK)
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("memory_recall", {"query": "deploy"})]),
+            assistant(content="Run make ship-prod."),
+        ]
+        * 2
+    )
+    results = evalrun.run_suite(
+        client, configs=["memory"], workdir=tmp_path / "work", tasks_dir=taskdir, repeats=2
+    )
+    assert [r.passed for r in results] == [True, True]
+    assert (tmp_path / "work" / "repeat-0" / "tinymem-memory-mem").is_dir()
+    assert (tmp_path / "work" / "repeat-1" / "tinymem-memory-mem").is_dir()
+
+
+def test_cli_new_flags_reach_run_suite(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run_suite(client, configs=None, tasks_dir=None, repeats=1, on_result=None):
+        captured.update(configs=configs, tasks_dir=tasks_dir, repeats=repeats)
+        return []
+
+    monkeypatch.setattr(evalrun, "OpenAICompatible", lambda **kw: object())
+    monkeypatch.setattr(evalrun, "run_suite", fake_run_suite)
+    monkeypatch.setattr(evalrun, "format_report", lambda results: "")
+    evalrun.main(
+        [
+            "--base-url",
+            "http://x",
+            "--model",
+            "m",
+            "--repeats",
+            "3",
+            "--tasks",
+            str(tmp_path),
+        ]
+    )
+    assert captured["repeats"] == 3
+    assert captured["tasks_dir"] == tmp_path
+
+
+def test_cli_json_flag_appends_and_flushes(monkeypatch, tmp_path):
+    out = tmp_path / "results.jsonl"
+    out.write_text('{"task": "earlier-run"}\n')
+
+    def fake_run_suite(client, configs=None, tasks_dir=None, repeats=1, on_result=None):
+        result = make_result()
+        on_result(result)
+        # flushed mid-run: the line must be on disk before run_suite returns
+        assert out.read_text().count("\n") == 2
+        return [result]
+
+    monkeypatch.setattr(evalrun, "OpenAICompatible", lambda **kw: object())
+    monkeypatch.setattr(evalrun, "run_suite", fake_run_suite)
+    monkeypatch.setattr(evalrun, "format_report", lambda results: "")
+    evalrun.main(["--base-url", "http://x", "--model", "m", "--json", str(out)])
+    lines = out.read_text().splitlines()
+    assert len(lines) == 2
+    assert json.loads(lines[0]) == {"task": "earlier-run"}
+    data = json.loads(lines[1])
+    assert data["task"] == "t" and data["outcome"] == "pass" and data["tokens"] == 100
+
+
+def test_task_result_records_outcome_and_counters_on_pass(tmp_path):
+    client = FakeClient([assistant(content=CONTACT)])
+    result = run_task(client, get_task("extract-contact"), "bare", tmp_path)
+    assert result.outcome == "pass"
+    assert result.family == "structured-extraction"
+    assert result.model_calls == 1
+    assert result.tool_calls == 0
+    assert result.schema_retries == 0 and result.critique_rounds == 0
+
+
+def test_outcome_wrong_answer_vs_malformed_output(tmp_path):
+    task = get_task("extract-contact")
+    wrong = run_task(
+        FakeClient([assistant(content='{"name": "Bob", "email": "b@x.com"}')]),
+        task,
+        "bare",
+        tmp_path,
+    )
+    assert wrong.passed is False and wrong.outcome == "wrong-answer"
+    malformed = run_task(FakeClient([assistant(content="no json here")]), task, "bare", tmp_path)
+    assert malformed.passed is False and malformed.outcome == "malformed-output"
+
+
+def test_outcome_schema_exhausted_and_retry_count_structured(tmp_path):
+    client = FakeClient([assistant(content="not json")] * 3)
+    result = run_task(client, get_task("extract-contact"), "structured", tmp_path)
+    assert result.outcome == "schema-exhausted"
+    assert result.model_calls == 3
+    assert result.schema_retries == 2  # 3 attempts = 2 retries after the first
+
+
+def test_schema_gate_counts_retries_in_full(tmp_path):
+    client = FakeClient(
+        [
+            assistant(content='{"name": "Ann Chen"}'),  # missing email -> schema retry
+            assistant(content=CONTACT),
+            assistant(content=GOOD_VERDICT),
+        ]
+    )
+    result = run_task(client, get_task("extract-contact"), "full", tmp_path)
+    assert result.passed is True
+    assert result.schema_retries == 1
+    assert result.critique_rounds == 0
+    assert result.model_calls == 3
+
+
+def test_critique_rounds_counted_in_full(tmp_path):
+    client = FakeClient(
+        [
+            assistant(content='{"name": "Ann", "email": "wrong@example.com"}'),
+            assistant(content='{"score": 2, "feedback": "wrong email"}'),
+            assistant(content=CONTACT),
+            assistant(content=GOOD_VERDICT),
+        ]
+    )
+    result = run_task(client, get_task("extract-contact"), "full", tmp_path)
+    assert result.passed is True
+    assert result.critique_rounds == 1
+    assert result.model_calls == 4
+
+
+def test_outcome_critique_exhausted_counts_rounds(tmp_path):
+    bad_verdict = '{"score": 2, "feedback": "still wrong"}'
+    client = FakeClient(
+        [
+            assistant(content="answer one"),
+            assistant(content=bad_verdict),
+            assistant(content="answer two"),
+            assistant(content=bad_verdict),
+            assistant(content="answer three"),
+            assistant(content=bad_verdict),
+        ]
+    )
+    result = run_task(client, get_task("recall-owner"), "critique", tmp_path)
+    assert result.passed is False
+    assert result.outcome == "critique-exhausted"
+    assert result.critique_rounds == 2  # feedback issued twice; third violation raises
+
+
+def test_tool_calls_counted(tmp_path):
+    client = FakeClient(
+        [
+            assistant(
+                tool_calls=[
+                    call("price_lookup", {"item": "widget"}),
+                    call("price_lookup", {"item": "gadget"}),
+                ]
+            ),
+            assistant(content='{"cheaper": "widget"}'),
+        ]
+    )
+    result = run_task(client, get_task("shop-cheapest"), "bare", tmp_path)
+    assert result.passed is True
+    assert result.tool_calls == 2
+    assert result.model_calls == 2
+
+
+def test_outcome_transport_error(tmp_path):
+    class Boom:
+        def chat(self, messages, tools=None):
+            raise BantamError("connection refused")
+
+    result = run_task(Boom(), get_task("extract-contact"), "bare", tmp_path)
+    assert result.outcome == "transport-error"
+    assert "BantamError" in result.error
+
+
+def test_outcome_config_error(tmp_path):
+    task = {
+        "name": "synthetic-schema-trace2",
+        "family": "tool-use",
+        "prompt": "do the thing",
+        "schema": {"type": "object"},
+        "scoring": {"kind": "tool_trace", "expected": ["price_lookup"]},
+    }
+    result = run_task(FakeClient([]), task, "structured", tmp_path)
+    assert result.outcome == "config-error"
+
+
 def test_structured_config_schema_task_bypasses_agent(tmp_path):
     """`structured` is unchanged: one direct structured() call, no agent, no critique."""
     client = FakeClient([assistant(content=CONTACT)])
@@ -123,6 +388,7 @@ def test_structured_config_schema_with_tool_trace_scoring_is_explicit_failure(tm
     """The structured path has no transcript, so tool_trace scoring must fail loudly."""
     task = {
         "name": "synthetic-schema-trace",
+        "family": "tool-use",
         "prompt": "do the thing",
         "schema": {"type": "object"},
         "scoring": {"kind": "tool_trace", "expected": ["price_lookup"]},
@@ -182,6 +448,8 @@ def test_full_config_schema_violation_recorded_not_raised(tmp_path):
     assert "StructuredOutputError" in result.error
     assert "3 attempts" in result.error and "email" in result.error
     assert len(client.calls) == 3  # no critique call: the schema gate runs first
+    assert result.outcome == "schema-exhausted"
+    assert result.schema_retries == 2
 
 
 def test_full_config_non_json_output_recorded_not_raised(tmp_path):
@@ -192,13 +460,11 @@ def test_full_config_non_json_output_recorded_not_raised(tmp_path):
 
 
 def test_format_report_has_score_per_1k():
-    from bantamkit.evalrun import TaskResult
-
     results = [
-        TaskResult(task="t1", config="bare", passed=True, tokens=500, error=None),
-        TaskResult(task="t2", config="bare", passed=False, tokens=500, error=None),
-        TaskResult(task="t1", config="full", passed=True, tokens=250, error=None),
-        TaskResult(task="t2", config="full", passed=True, tokens=250, error=None),
+        make_result(task="t1", config="bare", passed=True, tokens=500),
+        make_result(task="t2", config="bare", passed=False, outcome="wrong-answer", tokens=500),
+        make_result(task="t1", config="full", passed=True, tokens=250),
+        make_result(task="t2", config="full", passed=True, tokens=250),
     ]
     report = format_report(results)
     assert "score/1k tok" in report
@@ -280,7 +546,7 @@ def test_cli_timeout_flag_reaches_client(monkeypatch):
             captured["timeout"] = timeout
 
     monkeypatch.setattr(evalrun, "OpenAICompatible", FakeAdapter)
-    monkeypatch.setattr(evalrun, "run_suite", lambda client, configs=None: [])
+    monkeypatch.setattr(evalrun, "run_suite", lambda client, **kw: [])
     monkeypatch.setattr(evalrun, "format_report", lambda results: "")
     evalrun.main(["--base-url", "http://x", "--model", "m", "--timeout", "120.5"])
     assert captured["base_url"] == "http://x"
@@ -299,7 +565,7 @@ def test_cli_timeout_flag_default_value(monkeypatch):
             captured["timeout"] = timeout
 
     monkeypatch.setattr(evalrun, "OpenAICompatible", FakeAdapter)
-    monkeypatch.setattr(evalrun, "run_suite", lambda client, configs=None: [])
+    monkeypatch.setattr(evalrun, "run_suite", lambda client, **kw: [])
     monkeypatch.setattr(evalrun, "format_report", lambda results: "")
     evalrun.main(["--base-url", "http://x", "--model", "m"])
     assert captured["base_url"] == "http://x"
@@ -321,4 +587,232 @@ def test_all_memory_setups_seed_without_jaccard_collisions(tmp_path):
                 f"task '{task['name']}': fact '{fact['name']}' collides with "
                 f"'{result.similar}' — make descriptions more distinct"
             )
-    assert seeded >= 6  # exactly 6 facts today (5 recall tasks); adjust when retiring
+    assert seeded >= 15  # exactly 15 facts today (9 recall tasks); adjust when retiring
+
+
+def test_missing_family_is_config_error(tmp_path):
+    task = {"name": "nofam", "prompt": "hi", "scoring": {"kind": "contains", "expected": ["hi"]}}
+    result = run_task(FakeClient([]), task, "bare", tmp_path)
+    assert result.passed is False
+    assert result.outcome == "config-error"
+    assert result.family == "unknown"
+    assert "family" in result.error
+
+
+def test_outcome_wrong_answer_for_contains_task(tmp_path):
+    result = run_task(
+        FakeClient([assistant(content="I have no idea who owns it")]),
+        get_task("recall-owner"),
+        "bare",
+        tmp_path,
+    )
+    assert result.passed is False and result.outcome == "wrong-answer"
+
+
+def test_gate_counters_reset_per_attach():
+    from bantamkit.critique import CritiqueGate
+    from bantamkit.evalrun import SchemaGate
+
+    class StubAgent:
+        def add_post_hook(self, hook):
+            pass
+
+    schema_gate = SchemaGate({"type": "object"})
+    schema_gate.retries_used = 5
+    schema_gate.setup(StubAgent())
+    assert schema_gate.retries_used == 0
+
+    critique_gate = CritiqueGate("task-completion", client=FakeClient([]))
+    critique_gate.rounds_used = 3
+    critique_gate.setup(StubAgent())
+    assert critique_gate.rounds_used == 0
+
+
+def test_cli_repeats_zero_rejected(monkeypatch):
+    import pytest
+
+    monkeypatch.setattr(evalrun, "OpenAICompatible", lambda **kw: object())
+    monkeypatch.setattr(evalrun, "run_suite", lambda client, **kw: [])
+    monkeypatch.setattr(evalrun, "format_report", lambda results: "")
+    with pytest.raises(SystemExit):
+        evalrun.main(["--base-url", "http://x", "--model", "m", "--repeats", "0"])
+
+
+def test_format_report_family_table():
+    results = [
+        make_result(task="e1", config="bare", passed=True, tokens=100),
+        make_result(
+            task="m1",
+            config="bare",
+            family="memory-recall",
+            passed=False,
+            outcome="wrong-answer",
+            tokens=50,
+        ),
+        make_result(task="e1", config="full", passed=True, tokens=200),
+        make_result(task="m1", config="full", family="memory-recall", passed=True, tokens=300),
+    ]
+    report = format_report(results)
+    assert "Per family (score · tokens):" in report
+    assert "memory-recall" in report and "structured-extraction" in report
+    assert "0/1 · 50 tok" in report
+    assert "1/1 · 300 tok" in report
+
+
+def test_format_report_family_table_omitted_for_single_family():
+    report = format_report([make_result()])
+    assert "Per family" not in report
+
+
+def test_format_report_outcome_histogram():
+    results = [
+        make_result(task="a", passed=False, outcome="wrong-answer"),
+        make_result(task="b", passed=False, outcome="wrong-answer"),
+        make_result(task="c", passed=False, outcome="malformed-output"),
+        make_result(task="d", passed=True),
+    ]
+    report = format_report(results)
+    assert "Failure outcomes:" in report
+    assert "- bare: malformed-output ×1, wrong-answer ×2" in report
+
+
+def test_format_report_rescue_matrix_counts_discriminating():
+    results = [
+        # e1: passes everywhere -> excluded from the matrix entirely
+        make_result(task="e1", config="bare", passed=True),
+        make_result(task="e1", config="full", passed=True),
+        # m1: bare fails, full passes -> discriminating
+        make_result(task="m1", config="bare", passed=False, outcome="wrong-answer"),
+        make_result(task="m1", config="full", passed=True),
+        # m2: fails everywhere -> shown in the matrix but NOT discriminating
+        make_result(task="m2", config="bare", passed=False, outcome="wrong-answer"),
+        make_result(task="m2", config="full", passed=False, outcome="wrong-answer"),
+    ]
+    report = format_report(results)
+    assert "Discriminating tasks: 1/3" in report
+    matrix = report.split("Discriminating tasks:")[1]
+    assert "| m1 | 0/1 | 1/1 |" in matrix
+    assert "| m2 | 0/1 | 0/1 |" in matrix
+    assert "| e1 |" not in matrix
+
+
+def test_format_report_rescue_matrix_shows_repeat_fractions():
+    results = (
+        [make_result(task="m1", config="bare", passed=False, outcome="wrong-answer")] * 2
+        + [make_result(task="m1", config="bare", passed=True)]
+        + [make_result(task="m1", config="full", passed=True)] * 3
+    )
+    report = format_report(results)
+    assert "| m1 | 1/3 | 3/3 |" in report
+    # 1/3 < 3/3 but bare did pass once: not fully-failed, so not "discriminating"
+    assert "Discriminating tasks: 0/1" in report
+
+
+def test_format_report_no_matrix_for_single_config():
+    report = format_report([make_result(passed=False, outcome="wrong-answer")])
+    assert "Discriminating" not in report
+
+
+def test_format_report_section_order():
+    results = [
+        make_result(task="e1", config="bare", passed=True),
+        make_result(
+            task="m1",
+            config="bare",
+            family="memory-recall",
+            passed=False,
+            outcome="wrong-answer",
+        ),
+        make_result(task="e1", config="full", passed=True),
+        make_result(
+            task="m1",
+            config="full",
+            family="memory-recall",
+            passed=False,
+            outcome="critique-exhausted",
+            error="CritiqueExhausted: below threshold",
+        ),
+    ]
+    report = format_report(results)
+    markers = [
+        "| config | score | tokens | score/1k tok |",
+        "Per family (score · tokens):",
+        "Failure outcomes:",
+        "Discriminating tasks:",
+        "Explicit failures:",
+    ]
+    positions = [report.index(m) for m in markers]
+    assert positions == sorted(positions)
+
+
+def test_format_report_config_rows_follow_configs_order():
+    results = [
+        make_result(task="t1", config="critique", passed=True),
+        make_result(task="t1", config="structured", passed=True),
+    ]
+    report = format_report(results)
+    assert report.index("| structured |") < report.index("| critique |")
+
+
+def test_format_report_family_cells_align_with_columns():
+    results = [
+        make_result(task="e1", config="bare", passed=True, tokens=100),
+        make_result(
+            task="m1",
+            config="bare",
+            family="memory-recall",
+            passed=False,
+            outcome="wrong-answer",
+            tokens=50,
+        ),
+        make_result(task="e1", config="full", passed=True, tokens=200),
+        make_result(task="m1", config="full", family="memory-recall", passed=True, tokens=300),
+    ]
+    report = format_report(results)
+    assert "| config | memory-recall | structured-extraction |" in report
+    assert "| bare | 0/1 · 50 tok | 1/1 · 100 tok |" in report
+    assert "| full | 1/1 · 300 tok | 1/1 · 200 tok |" in report
+
+
+def test_format_report_all_pass_still_prints_zero_headline():
+    results = [
+        make_result(task="e1", config="bare", passed=True),
+        make_result(task="e1", config="full", passed=True),
+    ]
+    report = format_report(results)
+    assert "Discriminating tasks: 0/1" in report
+
+
+def test_classify_outcome_returns_only_documented_outcomes(tmp_path):
+    from bantamkit.critique import CritiqueExhausted
+    from bantamkit.evalrun import OUTCOMES, EvalConfigError, classify_outcome
+    from bantamkit.structured import StructuredOutputError
+
+    task_json = {"scoring": {"kind": "json_equal", "expected": {}}}
+    task_txt = {"scoring": {"kind": "contains", "expected": ["x"]}}
+    cases = [
+        classify_outcome(task_txt, True, "x", None),
+        classify_outcome(task_txt, False, "nope", None),
+        classify_outcome(task_json, False, "not json", None),
+        classify_outcome(task_json, False, None, StructuredOutputError("s")),
+        classify_outcome(task_json, False, None, CritiqueExhausted("c")),
+        classify_outcome(task_json, False, None, EvalConfigError("e")),
+        classify_outcome(task_json, False, None, BantamError("t")),
+    ]
+    assert cases == [
+        "pass",
+        "wrong-answer",
+        "malformed-output",
+        "schema-exhausted",
+        "critique-exhausted",
+        "config-error",
+        "transport-error",
+    ]
+    assert set(cases) <= set(OUTCOMES)
+
+
+def test_score_contains_rejects_comma_grouped_superstrings():
+    task = get_task("recall-org-quota")  # expected ["200"]
+    assert score_output(task, "The quota is 200 requests per minute.", []) is True
+    assert score_output(task, "It handles 1,200 requests per minute.", []) is False
+    assert score_output(task, "About 200, give or take.", []) is True
