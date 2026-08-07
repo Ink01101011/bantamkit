@@ -27,3 +27,11 @@ Ask: "what words will future-me search with?" Put related memory names in links.
 
 If memory_save answers that a similar memory exists, either update it by
 saving under that SAME name, or skip — never rename to force a second copy.
+
+## Layers
+
+Recall results may be prefixed with their origin: `[project]` (this folder's
+store), `[extra:<name>]` (a read-only store this project was explicitly
+granted), or `[profile]` (your user-wide store). When facts conflict, prefer
+`[project]` — it is the closest to the work. Saves always go to the project
+store; the other layers are read-only.

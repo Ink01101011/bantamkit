@@ -155,4 +155,98 @@ committed store, or on startup.
 There is no automatic compression or summarization in v1 — archiving is the only
 lifecycle action, and you trigger it.
 
+## Layers
+
+`Memory(store=...)` reads and writes one directory. `Memory.layered()` builds
+the same component over three kinds of store — the project you are working in,
+any store that project was explicitly granted, and your user-wide profile:
+
+```python
+from bantamkit import Agent, Memory
+
+agent = Agent(client=client).use(Memory.layered())   # client as above
+```
+
+`Memory.layered(start=None, k=3, index_budget=4096)` is a classmethod; `k` and
+`index_budget` mean exactly what they do on `Memory(...)`.
+
+| Layer | Where | Written? |
+|---|---|---|
+| `project` | nearest `.bantamkit/memory` at or above `start` (default cwd) | yes — saves, recall stamps, `compact`, `lint` |
+| `extra:<name>` | each path listed in `.bantamkit/config.yaml` | never |
+| `profile` | `~/.bantamkit/memory` | never |
+
+### Discovery
+
+`discover_project_store(start)` resolves `start` (default cwd), then walks it
+and its parents looking for an existing `.bantamkit/memory` directory and
+returns the nearest one — so a sub-package shares its repo's store. If nothing
+up the tree has one, it designates `<start>/.bantamkit/memory` without creating
+anything; `Memory.layered()` then creates that directory, the same way
+`Memory(store=...)` creates the store you name.
+
+The ancestor chain is resolved, but the returned store path is **not** resolved
+further: a symlinked store keeps its config beside the symlink, not beside the
+symlink's target. Grant paths, by contrast, are fully resolved.
+
+### Grants
+
+Extra stores are opt-in per project and declared in a `config.yaml` sitting
+beside the project store:
+
+```yaml
+# companyA/.bantamkit/config.yaml
+extra_stores:
+  - ../../companyB/.bantamkit/memory   # read-only grant, relative to this file
+```
+
+Paths are relative to the config file and must already exist as directories. A
+missing config, an empty one, or one without an `extra_stores` key all mean *no
+grants*. A config that exists but is wrong raises `MemoryValidationError` at
+`Memory.layered()` construction rather than being silently dropped — that
+covers unparsable YAML, a top-level value that is not a mapping, an
+`extra_stores` that is not a list of strings, a listed path that does not exist
+or is not a directory, and a `config.yaml` that is itself a directory.
+
+The `<name>` in an `[extra:<name>]` prefix is the granted store's project
+directory — the parent of its `.bantamkit` — so the grant above shows up as
+`[extra:companyB]`. In v1 two grants whose project directories share a basename
+therefore carry the same label.
+
+### Recall across layers
+
+Every layer is queried with the **full** budget, and the results are merged in
+order — project, then extras in config order, then profile — deduped by fact
+name, with the earlier layer winning. The merged result is at most `k` facts
+total, so a project store that already answers the query spends the budget and
+the later layers are never even read.
+
+Results carry their origin: `[project] [deploy-command] (project) how we deploy
+…`. A plain `Memory(store=...)` prints no prefixes at all — the v1 output
+format is unchanged.
+
+Read-only means read-only. Recall never stamps `last_recalled` on a grant or
+profile fact and never creates a missing grant or profile directory — a missing
+one simply contributes nothing. A corrupt grant or profile layer is skipped so
+one bad neighbour cannot take down recall; a corrupt *project* layer still
+raises, exactly as in v1.
+
+### Writing stays in the project
+
+`memory_save` always writes to the project layer, and `mem.store` is that same
+writable store — so `mem.store.compact()` and `mem.store.lint()` target the
+project layer, never a grant and never your profile.
+
+Facts about *you* belong in the profile store, and putting them there is a
+deliberate human action rather than something the agent does:
+
+```python
+from pathlib import Path
+from bantamkit.memory.store import MemoryStore
+
+MemoryStore(Path.home() / ".bantamkit" / "memory").save(
+    "user", "prefers-thai", "answer in Thai with English tech terms", "…"
+)
+```
+
 Next: [Eval](eval.md).
