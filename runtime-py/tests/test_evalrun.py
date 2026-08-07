@@ -587,7 +587,7 @@ def test_all_memory_setups_seed_without_jaccard_collisions(tmp_path):
                 f"task '{task['name']}': fact '{fact['name']}' collides with "
                 f"'{result.similar}' — make descriptions more distinct"
             )
-    assert seeded >= 6  # exactly 6 facts today (5 recall tasks); adjust when retiring
+    assert seeded >= 15  # exactly 15 facts today (9 recall tasks); adjust when retiring
 
 
 def test_missing_family_is_config_error(tmp_path):

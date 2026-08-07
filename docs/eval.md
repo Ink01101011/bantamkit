@@ -353,12 +353,12 @@ Scoring kinds:
   **not** combine it with a `schema`: the `structured` config has no transcript
   to score and reports such a task as an explicit failure.
 
-The builtin tools read `assets/evals/fixtures/catalog.json` (`widget`, `gadget`,
+The builtin tools read `assets/evals/fixtures/catalog.json` (`widget`, `gadget`, `doohickey`, `sprocket`,
 each with `price` and `stock`), so tool-use tasks stay deterministic on the
 harness side.
 
 `runtime-py/tests/test_conformance.py` enforces the contract above and requires
-at least 15 tasks with all three families present, at least 2 each. Run it after
+at least 19 tasks with all three families present, at least 2 each. Run it after
 adding a task:
 
 ```bash
