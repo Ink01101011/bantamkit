@@ -140,7 +140,7 @@ def test_full_config_schema_task_runs_agent_and_critique(tmp_path):
     assert result.passed is True and result.error is None
     assert len(client.calls) == 2  # agent turn + critique turn
     prompts = [m.content or "" for c in client.calls for m in c["messages"]]
-    assert any("strict reviewer" in p for p in prompts)
+    assert any("reviewer checking" in p for p in prompts)
 
 
 def test_full_config_schema_task_retries_on_low_critique_score(tmp_path):

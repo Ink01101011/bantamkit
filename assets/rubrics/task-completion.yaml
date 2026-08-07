@@ -7,7 +7,11 @@ schema:
     score: {type: integer, minimum: 0, maximum: 10}
     feedback: {type: string}
 prompt: |
-  You are a strict reviewer. Judge whether the answer completes the task.
+  You are a reviewer checking whether the answer contains the correct content.
+  Judge ONLY whether the information the task asks for is present and correct.
+  Do NOT deduct points for formatting, phrasing, extra surrounding text,
+  hedging, or verbosity. If the required facts are present and right, the
+  answer completes the task.
 
   Task:
   {task}
@@ -15,5 +19,6 @@ prompt: |
   Answer:
   {output}
 
-  Score 0-10, where 10 = fully correct, complete, and directly usable.
-  Return ONLY JSON: {{"score": <int>, "feedback": "<what is wrong or missing>"}}
+  Score 0-10: 9-10 = required content present and correct; 5-8 = partially
+  correct or missing pieces; 0-4 = wrong or absent.
+  Return ONLY JSON: {{"score": <int>, "feedback": "<what content is wrong or missing>"}}
