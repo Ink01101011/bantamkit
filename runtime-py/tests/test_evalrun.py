@@ -10,6 +10,7 @@ from bantamkit.evalrun import (
     run_task,
     score_output,
 )
+from bantamkit.memory.store import MemoryStore
 
 
 def get_task(name):
@@ -304,3 +305,17 @@ def test_cli_timeout_flag_default_value(monkeypatch):
     assert captured["base_url"] == "http://x"
     assert captured["model"] == "m"
     assert captured["timeout"] == 60.0
+
+
+def test_all_memory_setups_seed_without_jaccard_collisions(tmp_path):
+    """save() silently returns 'duplicate' on similar facts — a task file that trips it
+    would seed an incomplete store and fail mysteriously only at eval time."""
+    for task in load_tasks():
+        facts = task.get("memory_setup") or []
+        store = MemoryStore(tmp_path / task["name"])
+        for fact in facts:
+            result = store.save(fact["type"], fact["name"], fact["description"], fact["body"])
+            assert result.status == "saved", (
+                f"task '{task['name']}': fact '{fact['name']}' collides with "
+                f"'{result.similar}' — make descriptions more distinct"
+            )

@@ -1,0 +1,9 @@
+name: shop-cheapest
+family: tool-use
+prompt: |
+  Use the tools to check the unit prices of "widget" and "gadget",
+  and answer with only the name of the cheaper item.
+tools: [price_lookup]
+scoring:
+  kind: contains
+  expected: ["widget"]

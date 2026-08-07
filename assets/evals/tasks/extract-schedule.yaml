@@ -1,0 +1,14 @@
+name: extract-schedule
+family: structured-extraction
+prompt: |
+  Extract the schedule as JSON with keys "day" (lowercase) and "time" (HH:MM).
+  Text: "Standup happens every Tuesday at 09:30 sharp."
+schema:
+  type: object
+  required: [day, time]
+  properties:
+    day: {type: string}
+    time: {type: string}
+scoring:
+  kind: json_equal
+  expected: {day: "tuesday", time: "09:30"}

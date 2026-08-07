@@ -106,3 +106,5 @@ def test_eval_fixture_catalog_shape():
             )
     # Enforce determinism invariant: widget stock value
     assert catalog["widget"]["price"] * catalog["widget"]["stock"] == 100
+    assert catalog["gadget"]["price"] > catalog["widget"]["price"]  # shop-cheapest depends on it
+    assert catalog["gadget"]["price"] * catalog["gadget"]["stock"] == 540  # shop-gadget-value
