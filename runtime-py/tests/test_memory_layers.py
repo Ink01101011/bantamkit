@@ -72,3 +72,44 @@ def test_load_grants_dangling_path_raises(tmp_path):
     (store.parent / "config.yaml").write_text("extra_stores:\n  - ../../nope/memory\n")
     with pytest.raises(MemoryValidationError):
         load_grants(store)
+
+
+def test_discover_with_start_as_store_directory(tmp_path):
+    store = _mkstore(tmp_path / "companyA")
+    result = discover_project_store(tmp_path / "companyA")
+    assert result == store
+
+
+def test_discover_skips_file_named_store(tmp_path):
+    real_store = _mkstore(tmp_path)
+    ancestor = tmp_path / "ancestor"
+    ancestor.mkdir()
+    (ancestor / ".bantamkit").mkdir()
+    (ancestor / ".bantamkit" / "memory").write_text("not a directory")
+
+    start = ancestor / "src"
+    start.mkdir()
+    assert discover_project_store(start) == real_store
+
+
+def test_discover_symlinked_start_resolves(tmp_path):
+    real_proj = _mkstore(tmp_path / "companyA")
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path / "companyA")
+
+    result = discover_project_store(link / "src")
+    assert result == real_proj
+    assert result == real_proj.resolve()
+
+
+def test_load_grants_config_as_directory_raises(tmp_path):
+    store = _mkstore(tmp_path / "companyA")
+    (store.parent / "config.yaml").mkdir()
+    with pytest.raises(MemoryValidationError):
+        load_grants(store)
+
+
+def test_load_grants_no_extra_stores_key_is_empty(tmp_path):
+    store = _mkstore(tmp_path / "companyA")
+    (store.parent / "config.yaml").write_text("some_other_key: value\n")
+    assert load_grants(store) == []

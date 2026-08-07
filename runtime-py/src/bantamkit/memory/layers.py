@@ -17,12 +17,13 @@ def discover_project_store(start: str | Path | None = None) -> Path:
 
     Returns the nearest existing store dir; if none exists anywhere up the
     tree, designates `start/.bantamkit/memory` without creating anything.
+    Returned paths are fully resolved.
     """
     base = (Path(start) if start is not None else Path.cwd()).resolve()
     for d in (base, *base.parents):
         candidate = d / PROJECT_STORE
         if candidate.is_dir():
-            return candidate
+            return candidate.resolve()
     return base / PROJECT_STORE
 
 
@@ -33,13 +34,16 @@ def load_grants(project_store: str | Path) -> list[Path]:
     not a mapping, non-list/non-str `extra_stores`, or a listed path that is not
     an existing directory — raises MemoryValidationError: a grant you wrote that
     is wrong is a mistake to surface at construction, not silently drop.
+    Returned paths are fully resolved.
     """
     config_path = Path(project_store).parent / CONFIG_NAME
     if not config_path.exists():
         return []
+    if not config_path.is_file():
+        raise MemoryValidationError(f"invalid memory config {config_path}: not a file")
     try:
         data = yaml.safe_load(config_path.read_text())
-    except yaml.YAMLError as e:
+    except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
         raise MemoryValidationError(f"invalid memory config {config_path}: {e}") from e
     if data is None:
         return []
