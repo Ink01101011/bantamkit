@@ -54,6 +54,7 @@ Each config is the same tasks with a different harness wrapped around them.
 | `structured` | Tasks with a `schema` bypass the loop and go through `structured()` |
 | `critique` | A `CritiqueGate` on the `task-completion` rubric scores each answer |
 | `memory` | Tasks with `memory_setup` get a seeded `Memory` store attached |
+| `lean` | memory + schema enforcement inside the agent loop — `full` without the critique gate |
 | `full` | critique + memory + schema enforcement, all inside the agent loop |
 
 A component only engages where the task gives it something to work with: no
@@ -95,6 +96,10 @@ Two details make that comparison fair rather than flattering:
 
 So `full` is the headline number: it is the only config where all three
 primitives are stacked on the same run, which is also what you would ship.
+
+`lean` exists to answer one question: how much of `full`'s token bill is the
+critique gate? `lean` runs the same agent loop with memory and `SchemaGate`
+but no critic, so `full − lean` isolates critique's cost and uplift.
 
 Memory stores are seeded fresh per task per config in a temp directory, so runs
 do not contaminate each other.

@@ -19,7 +19,7 @@ from bantamkit.critique import CritiqueGate
 from bantamkit.memory import Memory, MemoryStore
 from bantamkit.structured import StructuredOutputError, extract_json, structured
 
-CONFIGS = ["bare", "structured", "critique", "memory", "full"]
+CONFIGS = ["bare", "structured", "critique", "memory", "lean", "full"]
 
 
 # ---- deterministic eval fixture tools (fixture data lives in assets) ----
@@ -182,13 +182,13 @@ def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> Tas
     tools = [BUILTIN_TOOLS[name] for name in task.get("tools", [])]
     agent = Agent(client=tracking, tools=tools)
 
-    if config in ("memory", "full") and task.get("memory_setup"):
+    if config in ("memory", "lean", "full") and task.get("memory_setup"):
         store_dir = workdir / f"{task['name']}-{config}-mem"
         seed = MemoryStore(store_dir)
         for fact in task["memory_setup"]:
             seed.save(fact["type"], fact["name"], fact["description"], fact["body"])
         agent.use(Memory(store=store_dir))
-    if config == "full" and "schema" in task:
+    if config in ("lean", "full") and "schema" in task:
         # The agent owns the loop here, so it needs the same instruction structured() gives.
         # Gate registered before the critique gate: a malformed answer is fixed for free
         # rather than spending a critique call on it.
