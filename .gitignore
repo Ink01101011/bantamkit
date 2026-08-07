@@ -7,4 +7,4 @@ dist/
 .ruff_cache/
 .superpowers/
 .bantam-memory/
-.bantamkit/
+.bantamkit/memory/

@@ -9,7 +9,7 @@ export BANTAMKIT_BASE_URL=http://localhost:11434/v1   # must include the /v1 pre
 export BANTAMKIT_MODEL=qwen3:4b-instruct
 ```
 
-Setup (from the repo root, once):
+Setup (from the repo root, once — Python >= 3.11):
 
 ```bash
 python -m venv .venv
@@ -31,5 +31,6 @@ Run any script from the repo root:
 
 Scripts write memory stores under the directory you run them from
 (`./.bantam-memory`, `./.bantamkit/memory`) — both are gitignored patterns for
-scratch use; delete them freely. See the README's **Recommended defaults** for
-why none of these attach a `CritiqueGate`.
+scratch use; delete them freely. See the README's
+[Recommended defaults](../README.md#recommended-defaults) for why none of
+these attach a `CritiqueGate`.

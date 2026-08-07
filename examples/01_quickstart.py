@@ -1,7 +1,8 @@
 """Quickstart: an agent with one tool and persistent memory.
 
-This is the measured recommended shape ("lean"): Memory attached, no critique
-gate. On the bundled suite it scores 57/57 where the bare model gets 30/57.
+This is the measured recommended shape (the eval's "memory" config): Memory
+attached, no critique gate. On the bundled suite it scores 57/57 where the
+bare model gets 30/57.
 """
 
 import os
