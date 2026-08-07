@@ -24,5 +24,10 @@ client = OpenAICompatible(
 
 agent = Agent(client=client).use(Memory.layered())
 
-print(agent.run("Remember that the payments API is owned by the billing team.").output)
+print(
+    agent.run(
+        "Save this fact to memory with the memory_save tool: "
+        "the payments API is owned by the billing team."
+    ).output
+)
 print(agent.run("Which team owns the payments API? Check memory first.").output)

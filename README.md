@@ -61,10 +61,8 @@ Copy-paste start: [`examples/`](examples/).
 - [Memory](docs/memory.md) — on-disk layout, the four ops, dedupe and budget, compact/archive
 - [Eval](docs/eval.md) — running the suite, the config matrix, reading the report, adding tasks
 
-Latest measured numbers (19-task sweep on `qwen3:4b-instruct`, 3 repeats) are
-in [Eval → Current results](docs/eval.md#current-results): memory lifts 30/57 →
-57/57, while the critique gate adds 41% more tokens for zero extra passes — and
-per-run gate counters prove it never fired.
+The full measured tables behind the defaults above are in
+[Eval → Current results](docs/eval.md#current-results).
 
 ## Repo layout
 
