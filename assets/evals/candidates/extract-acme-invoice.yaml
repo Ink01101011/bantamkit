@@ -1,0 +1,19 @@
+name: extract-acme-invoice
+family: structured-extraction
+prompt: |
+  Three invoices came in today. Extract ONLY the one from Acme Corp as JSON
+  with keys "number" (string) and "total_cents" (integer — the amount in
+  cents).
+
+  "Invoice INV-88 from Globex: $120.00 due Friday. Invoice INV-91 from
+  Acme Corp: $84.50, net 30. Invoice INV-93 from Initech: $84.50 as well."
+schema:
+  type: object
+  additionalProperties: false
+  required: [number, total_cents]
+  properties:
+    number: {type: string}
+    total_cents: {type: integer}
+scoring:
+  kind: json_equal
+  expected: {number: INV-91, total_cents: 8450}

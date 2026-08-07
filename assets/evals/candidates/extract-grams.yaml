@@ -1,0 +1,18 @@
+name: extract-grams
+family: structured-extraction
+prompt: |
+  Extract the shipment as JSON with keys "sku" (string) and "weight_g"
+  (integer — the weight in grams).
+
+  "Shipment note: SKU-D42 weighs 2.4 kg (the label wrongly says 240 g;
+  ignore the label)."
+schema:
+  type: object
+  additionalProperties: false
+  required: [sku, weight_g]
+  properties:
+    sku: {type: string}
+    weight_g: {type: integer}
+scoring:
+  kind: json_equal
+  expected: {sku: SKU-D42, weight_g: 2400}

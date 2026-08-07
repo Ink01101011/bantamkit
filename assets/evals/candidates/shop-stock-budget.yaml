@@ -1,0 +1,10 @@
+name: shop-stock-budget
+family: tool-use
+prompt: |
+  Use the tools to find the total cost of buying out the ENTIRE current
+  stock of "doohickey" and "sprocket" (price × stock for each, summed).
+  Answer with ONLY this JSON, nothing else: {"cost": <number>}
+tools: [price_lookup, stock_lookup]
+scoring:
+  kind: json_equal
+  expected: {cost: 126}

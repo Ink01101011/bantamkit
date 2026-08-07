@@ -1,0 +1,33 @@
+name: extract-lineitems
+family: structured-extraction
+prompt: |
+  Below is a supplier email. Extract the confirmed order as JSON with keys
+  "order_id" (string) and "items" (array of objects with keys "sku" (string)
+  and "qty" (integer)), items in the order they appear.
+
+  "Hi team — quote QT-77 from last week is superseded. Confirming order
+  ORD-2209: 4 units of SKU-A11, 2 units of SKU-B07, and 12 units of SKU-C03.
+  The earlier draft ORD-2199 (3 units of SKU-A11) was cancelled. Thanks!"
+schema:
+  type: object
+  additionalProperties: false
+  required: [order_id, items]
+  properties:
+    order_id: {type: string}
+    items:
+      type: array
+      items:
+        type: object
+        additionalProperties: false
+        required: [sku, qty]
+        properties:
+          sku: {type: string}
+          qty: {type: integer}
+scoring:
+  kind: json_equal
+  expected:
+    order_id: ORD-2209
+    items:
+      - {sku: SKU-A11, qty: 4}
+      - {sku: SKU-B07, qty: 2}
+      - {sku: SKU-C03, qty: 12}

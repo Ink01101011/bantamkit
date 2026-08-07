@@ -1,0 +1,10 @@
+name: shop-audit-trace
+family: tool-use
+prompt: |
+  Audit the catalog in this exact order: first check the stock of "widget",
+  "gadget" and "sprocket" (in that order), then look up the price of
+  whichever has the LOWEST stock. Finish by naming that item.
+tools: [price_lookup, stock_lookup]
+scoring:
+  kind: tool_trace
+  expected: [stock_lookup, stock_lookup, stock_lookup, price_lookup]

@@ -95,7 +95,7 @@ def test_eval_tasks_are_valid():
 def test_eval_fixture_catalog_shape():
     catalog = json.loads((assets_root() / "evals" / "fixtures" / "catalog.json").read_text())
     # Ensure required items are present
-    assert {"widget", "gadget"} <= set(catalog)
+    assert {"widget", "gadget", "doohickey", "sprocket"} <= set(catalog)
     for item, entry in catalog.items():
         assert set(entry) == {"price", "stock"}, item
         # Validate price and stock are numbers (not bool)
