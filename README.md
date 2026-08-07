@@ -38,6 +38,22 @@ result = agent.run("What does a widget cost? Remember it for next time.")
 print(result.output, result.usage.total)
 ```
 
+## Recommended defaults
+
+Measured on the bundled 19-task suite (`qwen3:4b-instruct`, 3 repeats — full
+tables in [Eval → Current results](docs/eval.md#current-results)):
+
+- **Always attach `Memory`** — the one primitive that moves the score on this
+  suite (30/57 → 57/57).
+- **Use `structured()` when you need schema'd output** — enforcement costs
+  nothing extra when the model complies; on this model it never needed a retry.
+- **Skip `CritiqueGate` on small instruct models** — measured +41% tokens for
+  zero extra passes, and per-run counters show the gate never objected. Attach
+  it only with a rubric that catches failures you have actually observed, and
+  prefer instruct over thinking model variants when you do.
+
+Copy-paste start: [`examples/`](examples/).
+
 ## Docs
 
 - [Install](docs/install.md) — requirements, editable install, pointing at an endpoint, `BANTAMKIT_ASSETS`
@@ -45,10 +61,8 @@ print(result.output, result.usage.total)
 - [Memory](docs/memory.md) — on-disk layout, the four ops, dedupe and budget, compact/archive
 - [Eval](docs/eval.md) — running the suite, the config matrix, reading the report, adding tasks
 
-Latest measured numbers (19-task sweep on `qwen3:4b-instruct`, 3 repeats) are
-in [Eval → Current results](docs/eval.md#current-results): memory lifts 30/57 →
-57/57, while the critique gate adds 41% more tokens for zero extra passes — and
-per-run gate counters prove it never fired.
+The full measured tables behind the defaults above are in
+[Eval → Current results](docs/eval.md#current-results).
 
 ## Repo layout
 
@@ -56,6 +70,7 @@ per-run gate counters prove it never fired.
 |---|---|
 | `runtime-py/` | The Python runtime (`bantamkit` package) and its test suite |
 | `assets/` | Language-agnostic asset pack: skills, rubrics, tool schemas, eval tasks |
+| `examples/` | Runnable starter scripts (quickstart, structured output, layered memory) |
 | `docs/` | This runbook |
 
 Design notes live in `docs/superpowers/specs/`.

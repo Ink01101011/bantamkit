@@ -35,6 +35,28 @@ Check the install:
 .venv/bin/python -c "import bantamkit; print(bantamkit.Agent)"
 ```
 
+## Pinned install from a tag
+
+To use the library without a clone, install straight from a release tag over
+SSH (the repo is private, so this rides on your GitHub SSH key):
+
+```bash
+pip install "bantamkit @ git+ssh://git@github.com/Ink01101011/bantamkit.git@v0.2.0#subdirectory=runtime-py"
+```
+
+The wheel bundles the asset pack, so no checkout and no `BANTAMKIT_ASSETS` are
+needed. Pin a tag, not a branch — upgrades are then a deliberate edit.
+
+### Releasing (maintainers)
+
+After merging to `main`: bump `version` in `runtime-py/pyproject.toml` in the
+release PR if it was not already bumped, then
+
+```bash
+git tag -a v0.2.0 -m "bantamkit 0.2.0"
+git push origin v0.2.0
+```
+
 ## Point at an endpoint
 
 Every backend is reached through the one adapter, `OpenAICompatible`. Only
