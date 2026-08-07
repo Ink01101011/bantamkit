@@ -37,11 +37,18 @@ Check the install:
 
 ## Pinned install from a tag
 
-To use the library without a clone, install straight from a release tag over
-SSH (the repo is private, so this rides on your GitHub SSH key):
+To use the library without a clone, install straight from a release tag. The
+repo is private, so pip's clone rides on whichever GitHub auth your git
+already has — SSH key:
 
 ```bash
 pip install "bantamkit @ git+ssh://git@github.com/Ink01101011/bantamkit.git@v0.2.0#subdirectory=runtime-py"
+```
+
+or HTTPS (works with `gh auth login`'s credential helper or a PAT):
+
+```bash
+pip install "bantamkit @ git+https://github.com/Ink01101011/bantamkit.git@v0.2.0#subdirectory=runtime-py"
 ```
 
 The wheel bundles the asset pack, so no checkout and no `BANTAMKIT_ASSETS` are
