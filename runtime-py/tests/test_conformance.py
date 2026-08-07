@@ -48,7 +48,7 @@ def test_skill_assets_fit_budget():
 
 def test_eval_tasks_are_valid():
     task_files = sorted((assets_root() / "evals" / "tasks").glob("*.yaml"))
-    assert len(task_files) >= 6
+    assert len(task_files) >= 15
     families = []
     for f in task_files:
         task = yaml.safe_load(f.read_text())
@@ -106,3 +106,5 @@ def test_eval_fixture_catalog_shape():
             )
     # Enforce determinism invariant: widget stock value
     assert catalog["widget"]["price"] * catalog["widget"]["stock"] == 100
+    assert catalog["gadget"]["price"] > catalog["widget"]["price"]  # shop-cheapest depends on it
+    assert catalog["gadget"]["price"] * catalog["gadget"]["stock"] == 540  # shop-gadget-value

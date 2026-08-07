@@ -1,0 +1,9 @@
+name: shop-gadget-value
+family: tool-use
+prompt: |
+  Use the tools to find the unit price and stock count of "gadget",
+  then answer with the total value of the stock (price times stock) as a number.
+tools: [price_lookup, stock_lookup]
+scoring:
+  kind: contains
+  expected: ["540"]

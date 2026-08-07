@@ -45,9 +45,9 @@ print(result.output, result.usage.total)
 - [Memory](docs/memory.md) — on-disk layout, the four ops, dedupe and budget, compact/archive
 - [Eval](docs/eval.md) — running the suite, the config matrix, reading the report, adding tasks
 
-Latest measured numbers (sweeps on `qwen3:4b-instruct` and `qwen2.5:7b-instruct`)
-are in [Eval → Current results](docs/eval.md#current-results): memory lifts
-3/6 → 5/6 on both models, while the critique gate costs more tokens than it earns.
+Latest measured numbers (15-task sweep on `qwen3:4b-instruct`) are in
+[Eval → Current results](docs/eval.md#current-results): memory lifts 10/15 →
+15/15, while the critique gate adds 51% more tokens for zero extra passes.
 
 ## Repo layout
 

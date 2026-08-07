@@ -1,0 +1,9 @@
+name: shop-cheapest
+family: tool-use
+prompt: |
+  Use the tools to check the unit prices of "widget" and "gadget".
+  Answer with ONLY this JSON, nothing else: {"cheaper": "<item name>"}
+tools: [price_lookup]
+scoring:
+  kind: json_equal
+  expected: {cheaper: "widget"}

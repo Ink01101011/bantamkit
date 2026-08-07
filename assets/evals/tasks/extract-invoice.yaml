@@ -1,0 +1,14 @@
+name: extract-invoice
+family: structured-extraction
+prompt: |
+  Extract the invoice as JSON with keys "number" (string) and "total" (integer).
+  Text: "Invoice INV-42 came to 199 USD, paid by card."
+schema:
+  type: object
+  required: [number, total]
+  properties:
+    number: {type: string}
+    total: {type: integer}
+scoring:
+  kind: json_equal
+  expected: {number: "INV-42", total: 199}

@@ -10,6 +10,7 @@ from bantamkit.evalrun import (
     run_task,
     score_output,
 )
+from bantamkit.memory.store import MemoryStore
 
 
 def get_task(name):
@@ -140,7 +141,7 @@ def test_full_config_schema_task_runs_agent_and_critique(tmp_path):
     assert result.passed is True and result.error is None
     assert len(client.calls) == 2  # agent turn + critique turn
     prompts = [m.content or "" for c in client.calls for m in c["messages"]]
-    assert any("strict reviewer" in p for p in prompts)
+    assert any("reviewer checking" in p for p in prompts)
 
 
 def test_full_config_schema_task_retries_on_low_critique_score(tmp_path):
@@ -205,8 +206,67 @@ def test_format_report_has_score_per_1k():
     assert "1/2" in report and "2/2" in report
 
 
+def test_lean_config_schema_task_uses_schema_gate_without_critique(tmp_path):
+    task = {
+        "name": "t",
+        "family": "structured-extraction",
+        "prompt": "extract",
+        "schema": {"type": "object", "required": ["a"], "properties": {"a": {"type": "integer"}}},
+        "scoring": {"kind": "json_equal", "expected": {"a": 1}},
+    }
+    client = FakeClient([assistant(content='{"a": 1}')])
+    result = run_task(client, task, "lean", tmp_path)
+    assert result.passed is True
+    assert len(client.calls) == 1  # no critique-scoring call
+    joined = " ".join(m.content or "" for call in client.calls for m in call["messages"])
+    assert "strict reviewer" not in joined and "reviewer" not in joined.lower()
+    assert any("JSON Schema" in (m.content or "") for m in client.calls[0]["messages"])
+
+
+def test_lean_config_schema_violation_gets_revision_round(tmp_path):
+    task = {
+        "name": "t",
+        "family": "structured-extraction",
+        "prompt": "extract",
+        "schema": {"type": "object", "required": ["a"], "properties": {"a": {"type": "integer"}}},
+        "scoring": {"kind": "json_equal", "expected": {"a": 1}},
+    }
+    client = FakeClient([assistant(content="not json"), assistant(content='{"a": 1}')])
+    result = run_task(client, task, "lean", tmp_path)
+    assert result.passed is True
+    assert len(client.calls) == 2
+    assert "not parseable" in client.calls[1]["messages"][-1].content
+
+
+def test_lean_config_seeds_memory_store(tmp_path):
+    task = {
+        "name": "t",
+        "family": "memory-recall",
+        "prompt": "recall the deploy command",
+        "memory_setup": [
+            {
+                "type": "project",
+                "name": "deploy-command",
+                "description": "how we deploy to production",
+                "body": "Deploy with make ship-prod.",
+            }
+        ],
+        "scoring": {"kind": "contains", "expected": ["ship-prod"]},
+    }
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("memory_recall", {"query": "deploy command"})]),
+            assistant(content="Run make ship-prod."),
+        ]
+    )
+    result = run_task(client, task, "lean", tmp_path)
+    assert result.passed is True
+    observation = client.calls[1]["messages"][-1].content
+    assert "ship-prod" in observation  # recall actually hit the seeded store
+
+
 def test_configs_matrix():
-    assert CONFIGS == ["bare", "structured", "critique", "memory", "full"]
+    assert CONFIGS == ["bare", "structured", "critique", "memory", "lean", "full"]
 
 
 def test_cli_timeout_flag_reaches_client(monkeypatch):
@@ -245,3 +305,20 @@ def test_cli_timeout_flag_default_value(monkeypatch):
     assert captured["base_url"] == "http://x"
     assert captured["model"] == "m"
     assert captured["timeout"] == 60.0
+
+
+def test_all_memory_setups_seed_without_jaccard_collisions(tmp_path):
+    """save() silently returns 'duplicate' on similar facts — a task file that trips it
+    would seed an incomplete store and fail mysteriously only at eval time."""
+    seeded = 0
+    for task in load_tasks():
+        facts = task.get("memory_setup") or []
+        store = MemoryStore(tmp_path / task["name"])
+        for fact in facts:
+            result = store.save(fact["type"], fact["name"], fact["description"], fact["body"])
+            seeded += 1
+            assert result.status == "saved", (
+                f"task '{task['name']}': fact '{fact['name']}' collides with "
+                f"'{result.similar}' — make descriptions more distinct"
+            )
+    assert seeded >= 6  # exactly 6 facts today (5 recall tasks); adjust when retiring

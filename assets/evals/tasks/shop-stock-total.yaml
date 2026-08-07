@@ -1,0 +1,9 @@
+name: shop-stock-total
+family: tool-use
+prompt: |
+  Use the tools to find the stock counts of "widget" and "gadget",
+  then answer with the combined total stock as a number.
+tools: [stock_lookup]
+scoring:
+  kind: contains
+  expected: ["13"]
