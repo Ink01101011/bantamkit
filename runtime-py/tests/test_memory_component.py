@@ -343,3 +343,30 @@ def test_layered_short_circuits_and_does_not_query_profile_when_budget_filled(
     assert out.count("[project] [") == 4
     # Profile recall should NOT have been called (budget exhausted before reaching it)
     assert not recall_called, "Profile store recall should not be called when k budget is filled"
+
+
+def test_layered_readonly_layer_with_invalid_utf8_does_not_break_recall(tmp_path, fake_home):
+    """Regression test: a non-UTF-8 file in a granted read-only store must not crash recall.
+
+    A bad external layer (e.g., corrupted file with invalid bytes) raises UnicodeDecodeError
+    during store.recall() -> _facts() -> path.read_text(). The component's _recall method
+    must catch this (as well as BantamError) and skip the corrupt layer, allowing the
+    project layer to still return facts.
+    """
+    project = tmp_path / "companyA"
+    project.mkdir()
+    _seed(project / ".bantamkit" / "memory", "deploy", "project truth")
+
+    bad = tmp_path / "companyB" / ".bantamkit" / "memory"
+    (bad / "facts").mkdir(parents=True)
+    # Write a file with invalid UTF-8 bytes to trigger UnicodeDecodeError
+    (bad / "facts" / "corrupted.md").write_bytes(b"\xff\xfe")
+
+    (project / ".bantamkit" / "config.yaml").write_text(
+        "extra_stores:\n  - ../../companyB/.bantamkit/memory\n"
+    )
+
+    # Verify the project fact is returned despite the corrupt grant layer
+    out = Memory.layered(start=project)._recall("deploy")
+    assert "[project] [deploy]" in out
+    assert "project truth" in out

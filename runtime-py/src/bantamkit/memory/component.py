@@ -79,7 +79,7 @@ class Memory:
                 break  # budget spent: later (read-only) layers are never even read
             try:
                 facts = store.recall(query, budget, stamp=writable)
-            except BantamError:
+            except (BantamError, OSError, UnicodeDecodeError):
                 if writable:
                     raise  # the project layer failing is a real error, as in v1
                 continue  # a corrupt grant/profile layer must not take down recall
