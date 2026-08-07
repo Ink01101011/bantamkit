@@ -18,7 +18,7 @@ harness configurations against the same endpoint.
 |---|---|---|
 | `--base-url` | yes | OpenAI-compatible endpoint, including the path prefix |
 | `--model` | yes | Model name as the endpoint knows it |
-| `--config` | no | One of `bare`, `structured`, `critique`, `memory`, `full`. Repeatable. Default: all five |
+| `--config` | no | One of `bare`, `structured`, `critique`, `memory`, `lean`, `full`. Repeatable. Default: all six |
 | `--timeout` | no | Per-request timeout in seconds. Default: 60 |
 
 Narrow it while iterating:
@@ -29,8 +29,8 @@ Narrow it while iterating:
   --config bare --config full
 ```
 
-Every task runs against a live model, so a full sweep is 5 configs × 6 tasks =
-30 runs. Start with `--config bare --config full`.
+Every task runs against a live model, so a full sweep is 6 configs × 15 tasks =
+90 runs. Start with `--config bare --config full`.
 
 You can also drive it from Python:
 
@@ -145,7 +145,77 @@ fixed seed). Compare configs within one sweep, not across sweeps.
 ## Current results
 
 Reference sweep per spec §7 — `qwen3:4b-instruct` (4B class, non-thinking)
-served by Ollama, all five configs over the 6-task suite:
+served by Ollama, all six configs over the 15-task suite (5 tasks each of
+structured-extraction, tool-use, memory-recall):
+
+| config | score | tokens | score/1k tok |
+|---|---|---|---|
+| bare | 10/15 | 3468 | 2.88 |
+| structured | 10/15 | 3545 | 2.82 |
+| critique | 10/15 | 16034 | 0.62 |
+| memory | 15/15 | 9233 | 1.62 |
+| lean | 15/15 | 9500 | 1.58 |
+| full | 15/15 | 14350 | 1.05 |
+
+```
+Explicit failures:
+- critique/recall-cache-ttl: CritiqueExhausted: below threshold 7 after 3 rounds;
+  last feedback: The answer provides a number (0) but it is not valid or accurate
+  as a cache TTL in real-world systems. ...
+```
+
+The other 14 failures are plain wrong answers, not raised errors: `bare`,
+`structured` and `critique` have no memory store, so all five memory-recall
+tasks are unanswerable under them.
+
+The score column is entirely decided by the memory-recall family. Broken out
+by family, every config passes 10/10 on extraction and tool-use:
+
+| config | extraction | tool-use | memory-recall |
+|---|---|---|---|
+| bare | 5/5 · 351 tok | 5/5 · 2415 tok | 0/5 · 702 tok |
+| structured | 5/5 · 615 tok | 5/5 · 2403 tok | 0/5 · 527 tok |
+| critique | 5/5 · 2037 tok | 5/5 · 4030 tok | 0/5 · 9967 tok |
+| memory | 5/5 · 351 tok | 5/5 · 2408 tok | 5/5 · 6474 tok |
+| lean | 5/5 · 615 tok | 5/5 · 2421 tok | 5/5 · 6464 tok |
+| full | 5/5 · 2272 tok | 5/5 · 4042 tok | 5/5 · 8036 tok |
+
+Against spec §7, without spin:
+
+- **"Full toolkit scores measurably higher than bare": met.** `full` 15/15 vs
+  `bare` 10/15. But read the family table before celebrating: all five gained
+  tasks are memory-recall, and `memory` alone gets the same 15/15 for 36% fewer
+  tokens. On this suite the uplift *is* the memory primitive; nothing else
+  moves a task.
+- **Does `lean` beat `bare` on score? Yes — 15/15 vs 10/15, +5 tasks.**
+- **Is `lean`'s score/1k near `bare`'s? No — 1.58 vs 2.88, about 55% of it.**
+  The §7 "on par" bar is not met, but the gap is an artifact of how cheaply
+  `bare` fails: it disposes of the five recall tasks for 702 tokens total and
+  banks zero passes, while `lean` spends 6464 tokens injecting the store index
+  and wins all five. On the 10 tasks both configs pass, the efficiency gap
+  nearly closes (`bare` 3.62, `lean` 3.29) — and that residual 9% is the
+  schema instruction, not memory: `memory` matches `bare` at 3.62 exactly.
+  A config that skips work it would fail will always look efficient.
+- **`full − lean` — critique's marginal cost and uplift: +4850 tokens (+51%)
+  for +0 passes.** Same 15/15, score/1k falls 1.58 → 1.05. On this model and
+  suite the critique gate buys nothing it can be measured buying, so `lean` is
+  what you would ship; `full` is worth its bill only if your tasks have failure
+  modes this suite does not contain.
+- **Did the retuned rubric stop `critique` being net-negative? On score, yes.**
+  In the pre-cycle baseline below, adding the critic *destroyed* a pass —
+  `full` 4/6 sat under `memory` 5/6, and its `CritiqueExhausted` failures were
+  the critic rejecting correct answers over formatting. Now `full` 15/15
+  matches `memory` and `lean`, and the single `CritiqueExhausted` left is the
+  critic correctly refusing a fabricated answer (the `critique` config has no
+  memory, so the model invented a TTL of `0`). The rubric now fails content,
+  not format. On efficiency it is still net-negative: 0.62 standalone, and
+  −34% score/1k when stacked into `full`.
+- **Stretch ("competitive with a bare model one size class up"): not
+  re-measured.** The 7B comparison below is on the retired 6-task suite and is
+  not comparable to these numbers.
+
+Pre-cycle baseline — the same model on the **old 6-task suite with the old
+rubric**, kept for the before/after:
 
 | config | score | score/1k tok |
 |---|---|---|
@@ -155,23 +225,17 @@ served by Ollama, all five configs over the 6-task suite:
 | memory | 5/6 | 1.43 |
 | full | 4/6 | 0.38 |
 
-Against spec §7, without spin:
+Do not read the two tables as a controlled comparison. Three things changed
+between them: the suite grew 6 → 15 tasks with a different family balance, the
+`task-completion` rubric was retuned to judge content rather than format, and
+`lean` did not exist. The `critique` and `full` rows in particular are **not**
+apples-to-apples — their improvement is partly a better critic and partly an
+easier-to-satisfy scoring path. The `bare` row is the honest anchor: it moved
+3/6 → 10/15 (50% → 67%) purely because the expanded suite added families this
+model handles well.
 
-- **"Full toolkit scores measurably higher than bare": met.** `full` 4/6 vs
-  `bare` 3/6, and `memory` alone reaches 5/6. The uplift is real on the
-  4B reference class.
-- **Stretch ("competitive with a bare model one size class up"): met.**
-  Bare `qwen2.5:7b-instruct` scored 3/6 on the same suite (below); full-toolkit
-  4B beats it.
-- **Token efficiency ("full at least on par with bare on score/1k"): not
-  met.** 0.38 vs 2.27 — bare 4B answers are terse, so its efficiency bar is
-  high, and the critique gate's rounds dominate `full`'s spend. Both
-  `CritiqueExhausted` failures in this sweep are the critic rejecting answers
-  over format pedantry, which is rubric tuning, not harness correctness.
-- **Memory remains the best value primitive**: +2 passes for a modest spend
-  (5/6 at 1.43), though on this model even it does not clear bare's score/1k.
-
-Earlier sweep on the larger `qwen2.5:7b-instruct` for comparison:
+Earlier sweep on the larger `qwen2.5:7b-instruct`, also on the old 6-task
+suite, for comparison:
 
 | config | score | score/1k tok |
 |---|---|---|
@@ -184,8 +248,9 @@ Earlier sweep on the larger `qwen2.5:7b-instruct` for comparison:
 On the 7B, `memory` beat bare on *both* columns (the shape spec §2.4 asks
 for), and `structured` bought efficiency at equal score.
 
-A note on thinking models: the thinking variant `qwen3:4b` emits hundreds of
-reasoning tokens per call (counted in `tokens` — they are real cost). Its
+A note on thinking models (also measured on the old 6-task suite): the thinking
+variant `qwen3:4b` emits hundreds of reasoning tokens per call (counted in
+`tokens` — they are real cost). Its
 partial sweep (`bare` 3/6 @ 0.29, `structured` 3/6 @ 0.58, `memory` 5/6 @
 0.47) shows the same score shape at several times the token cost; the
 critique/full configs were impractical to measure — calls exceed the
@@ -193,8 +258,11 @@ adapter's default 60s timeout. Use `--timeout` to increase the limit for
 slow models. Prefer instruct variants for this suite.
 
 Caveats: single sweeps against a non-deterministic endpoint. Run-to-run
-variance is roughly ±1 task per config, which on a 6-task suite is a wide band
-— do not read a 1-task difference between configs as a result.
+variance is roughly ±1 task per config, which on the 15-task suite is about
+±7% — narrower than the retired 6-task suite's ±17%, but still wide enough
+that a 1-task difference between configs is noise. The differences load-bearing
+above are 5 tasks (memory families) and 0 tasks (`full − lean`), both well
+clear of that band; the token columns are not subject to it in the same way.
 
 ## Add a task
 
