@@ -20,6 +20,9 @@ harness configurations against the same endpoint.
 | `--model` | yes | Model name as the endpoint knows it |
 | `--config` | no | One of `bare`, `structured`, `critique`, `memory`, `lean`, `full`. Repeatable. Default: all six |
 | `--timeout` | no | Per-request timeout in seconds. Default: 60 |
+| `--repeats` | no | Runs per (config, task) pair. Default: 1. Repeats narrow the run-to-run noise band and are how candidate tasks are calibrated |
+| `--tasks` | no | Directory of task YAML files to run instead of the builtin suite |
+| `--json` | no | Append one JSON line per finished run (all `TaskResult` fields) to this file as the sweep progresses — a killed sweep keeps its partial results |
 
 Narrow it while iterating:
 
@@ -29,8 +32,9 @@ Narrow it while iterating:
   --config bare --config full
 ```
 
-Every task runs against a live model, so a full sweep is 6 configs × 15 tasks =
-90 runs. Start with `--config bare --config full`.
+Every task runs against a live model, so a full sweep is 6 configs × all tasks
+× `--repeats` runs. Start with `--config bare --config full`, and pass `--json`
+on long sweeps so partial results survive an interrupted run.
 
 You can also drive it from Python:
 

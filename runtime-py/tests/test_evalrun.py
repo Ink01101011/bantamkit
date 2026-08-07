@@ -1,3 +1,5 @@
+import json
+
 from conftest import FakeClient, assistant, call
 
 from bantamkit import evalrun
@@ -126,6 +128,125 @@ def make_result(**kw):
     )
     base.update(kw)
     return TaskResult(**base)
+
+
+TINY_TASK = """\
+name: tiny
+family: structured-extraction
+prompt: say hi
+scoring:
+  kind: contains
+  expected: ["hi"]
+"""
+
+TINY_MEMORY_TASK = """\
+name: tinymem
+family: memory-recall
+prompt: recall the deploy command
+memory_setup:
+  - type: project
+    name: deploy-command
+    description: how we deploy to production
+    body: Deploy with make ship-prod.
+scoring:
+  kind: contains
+  expected: ["ship-prod"]
+"""
+
+
+def test_load_tasks_from_custom_dir(tmp_path):
+    (tmp_path / "tiny.yaml").write_text(TINY_TASK)
+    tasks = evalrun.load_tasks(tmp_path)
+    assert [t["name"] for t in tasks] == ["tiny"]
+
+
+def test_load_tasks_empty_dir_raises(tmp_path):
+    import pytest
+
+    from bantamkit.evalrun import EvalConfigError
+
+    with pytest.raises(EvalConfigError):
+        evalrun.load_tasks(tmp_path)
+
+
+def test_run_suite_repeats_and_streams_results(tmp_path):
+    taskdir = tmp_path / "tasks"
+    taskdir.mkdir()
+    (taskdir / "tiny.yaml").write_text(TINY_TASK)
+    client = FakeClient([assistant(content="hi")] * 3)
+    seen = []
+    results = evalrun.run_suite(
+        client,
+        configs=["bare"],
+        workdir=tmp_path / "work",
+        tasks_dir=taskdir,
+        repeats=3,
+        on_result=seen.append,
+    )
+    assert len(results) == 3
+    assert seen == results
+    assert all(r.passed for r in results)
+
+
+def test_run_suite_repeats_reseed_memory_freshly(tmp_path):
+    taskdir = tmp_path / "tasks"
+    taskdir.mkdir()
+    (taskdir / "tinymem.yaml").write_text(TINY_MEMORY_TASK)
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("memory_recall", {"query": "deploy"})]),
+            assistant(content="Run make ship-prod."),
+        ]
+        * 2
+    )
+    results = evalrun.run_suite(
+        client, configs=["memory"], workdir=tmp_path / "work", tasks_dir=taskdir, repeats=2
+    )
+    assert [r.passed for r in results] == [True, True]
+
+
+def test_cli_new_flags_reach_run_suite(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run_suite(client, configs=None, tasks_dir=None, repeats=1, on_result=None):
+        captured.update(configs=configs, tasks_dir=tasks_dir, repeats=repeats)
+        return []
+
+    monkeypatch.setattr(evalrun, "OpenAICompatible", lambda **kw: object())
+    monkeypatch.setattr(evalrun, "run_suite", fake_run_suite)
+    monkeypatch.setattr(evalrun, "format_report", lambda results: "")
+    evalrun.main(
+        [
+            "--base-url",
+            "http://x",
+            "--model",
+            "m",
+            "--repeats",
+            "3",
+            "--tasks",
+            str(tmp_path),
+        ]
+    )
+    assert captured["repeats"] == 3
+    assert captured["tasks_dir"] == tmp_path
+
+
+def test_cli_json_flag_streams_jsonl(monkeypatch, tmp_path):
+    out = tmp_path / "results.jsonl"
+
+    def fake_run_suite(client, configs=None, tasks_dir=None, repeats=1, on_result=None):
+        result = make_result()
+        on_result(result)
+        return [result]
+
+    monkeypatch.setattr(evalrun, "OpenAICompatible", lambda **kw: object())
+    monkeypatch.setattr(evalrun, "run_suite", fake_run_suite)
+    monkeypatch.setattr(evalrun, "format_report", lambda results: "")
+    evalrun.main(["--base-url", "http://x", "--model", "m", "--json", str(out)])
+    lines = out.read_text().splitlines()
+    assert len(lines) == 1
+    data = json.loads(lines[0])
+    assert data["task"] == "t" and data["outcome"] == "pass" and data["tokens"] == 100
 
 
 def test_task_result_records_outcome_and_counters_on_pass(tmp_path):
@@ -417,7 +538,7 @@ def test_cli_timeout_flag_reaches_client(monkeypatch):
             captured["timeout"] = timeout
 
     monkeypatch.setattr(evalrun, "OpenAICompatible", FakeAdapter)
-    monkeypatch.setattr(evalrun, "run_suite", lambda client, configs=None: [])
+    monkeypatch.setattr(evalrun, "run_suite", lambda client, **kw: [])
     monkeypatch.setattr(evalrun, "format_report", lambda results: "")
     evalrun.main(["--base-url", "http://x", "--model", "m", "--timeout", "120.5"])
     assert captured["base_url"] == "http://x"
@@ -436,7 +557,7 @@ def test_cli_timeout_flag_default_value(monkeypatch):
             captured["timeout"] = timeout
 
     monkeypatch.setattr(evalrun, "OpenAICompatible", FakeAdapter)
-    monkeypatch.setattr(evalrun, "run_suite", lambda client, configs=None: [])
+    monkeypatch.setattr(evalrun, "run_suite", lambda client, **kw: [])
     monkeypatch.setattr(evalrun, "format_report", lambda results: "")
     evalrun.main(["--base-url", "http://x", "--model", "m"])
     assert captured["base_url"] == "http://x"

@@ -6,7 +6,8 @@ import argparse
 import json
 import re
 import tempfile
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import jsonschema
@@ -101,8 +102,11 @@ class TrackingClient:
         return resp
 
 
-def load_tasks() -> list[dict]:
-    files = sorted((assets_root() / "evals" / "tasks").glob("*.yaml"))
+def load_tasks(tasks_dir: Path | None = None) -> list[dict]:
+    tasks_dir = tasks_dir or assets_root() / "evals" / "tasks"
+    files = sorted(Path(tasks_dir).glob("*.yaml"))
+    if not files:
+        raise EvalConfigError(f"no task files found in {tasks_dir}")
     return [yaml.safe_load(f.read_text()) for f in files]
 
 
@@ -290,11 +294,26 @@ def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> Tas
 
 
 def run_suite(
-    client: ModelClient, configs: list[str] | None = None, workdir: Path | None = None
+    client: ModelClient,
+    configs: list[str] | None = None,
+    workdir: Path | None = None,
+    tasks_dir: Path | None = None,
+    repeats: int = 1,
+    on_result: Callable[[TaskResult], None] | None = None,
 ) -> list[TaskResult]:
     configs = configs or CONFIGS
     workdir = workdir or Path(tempfile.mkdtemp(prefix="bantamkit-eval-"))
-    return [run_task(client, task, config, workdir) for config in configs for task in load_tasks()]
+    tasks = load_tasks(tasks_dir)
+    results: list[TaskResult] = []
+    for config in configs:
+        for task in tasks:
+            for i in range(repeats):
+                # Fresh subdir per repeat: memory stores must not leak between repeats.
+                result = run_task(client, task, config, workdir / f"repeat-{i}")
+                results.append(result)
+                if on_result is not None:
+                    on_result(result)
+    return results
 
 
 def format_report(results: list[TaskResult]) -> str:
@@ -322,9 +341,39 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--timeout", type=float, default=60.0, help="per-request timeout in seconds (default 60)"
     )
+    parser.add_argument("--repeats", type=int, default=1, help="runs per (config, task); default 1")
+    parser.add_argument(
+        "--tasks", type=Path, help="load tasks from this directory instead of the builtin suite"
+    )
+    parser.add_argument(
+        "--json", type=Path, help="append one JSON line per finished run to this file"
+    )
     args = parser.parse_args(argv)
+    if args.repeats < 1:
+        parser.error("--repeats must be >= 1")
     client = OpenAICompatible(base_url=args.base_url, model=args.model, timeout=args.timeout)
-    print(format_report(run_suite(client, configs=args.config)))
+
+    sink: Callable[[TaskResult], None] | None = None
+    jsonl = None
+    if args.json:
+        jsonl = args.json.open("a")
+
+        def sink(result: TaskResult) -> None:
+            jsonl.write(json.dumps(asdict(result)) + "\n")
+            jsonl.flush()
+
+    try:
+        results = run_suite(
+            client,
+            configs=args.config,
+            tasks_dir=args.tasks,
+            repeats=args.repeats,
+            on_result=sink,
+        )
+    finally:
+        if jsonl is not None:
+            jsonl.close()
+    print(format_report(results))
 
 
 if __name__ == "__main__":
