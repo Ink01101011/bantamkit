@@ -172,7 +172,8 @@ Three further sections appear when the results give them something to say:
   all its runs and at least one passed none: those are the tasks that separate
   configs, and the `N/total` headline is the suite-quality number. Per-run gate
   counters (`schema_retries`, `critique_rounds` in the `--json` output) tell
-  you whether a gate actually fired on a task or just billed tokens.
+  you whether a gate ever objected on a task — both count revision feedbacks
+  handed back to the agent — or just billed tokens.
 
 Tokens are read from the endpoint's `usage` field. Servers that omit it report
 `0`, which makes `score/1k tok` read `0.00` — check the column is non-zero
@@ -262,12 +263,14 @@ token columns alone cannot — whether a gate did work or only billed for it:
   `full` runs. `full − lean` is +18369 tokens (+41%) for +0 passes, and the
   counters show the whole delta is scoring-call overhead: not one revision
   round was bought with it.
-- **Only the standalone `critique` config fired at all:** 27 critique rounds
-  across 15 runs, every one on a memory-recall task, where that config has no
-  store to answer from. Eleven of those runs ended `critique-exhausted` — the
-  critic *correctly* refusing a fabricated or absent answer, as the feedback
-  above shows — while the other 16 memory failures were wrong answers the
-  critic scored as good enough.
+- **Only the standalone `critique` config ever objected:** 27 revision rounds
+  across 15 runs (`critique_rounds` counts revisions handed back to the agent,
+  not scoring calls — an exhausted run records 2, not 3), every one on a
+  memory-recall task, where that config has no store to answer from. Eleven of
+  those runs ended `critique-exhausted` — the critic *correctly* refusing a
+  fabricated or absent answer, as the feedback above shows — while the other
+  16 memory failures were wrong answers the critic ultimately accepted (12 on
+  first pass, 4 after buying a revision round or two).
 - **Zero repeat variance.** Every one of the 114 (task, config) cells came out
   0/3 or 3/3: 87 at 3/3, 27 at 0/3, none split. At 3 repeats there is no noise
   band in this sweep for a difference to hide in.
@@ -372,7 +375,8 @@ rubric**:
 | memory | 5/6 | 1.43 |
 | full | 4/6 | 0.38 |
 
-Do not read those two tables as a controlled comparison. Three things changed
+Do not read the 15-task and 6-task headline tables as a controlled
+comparison. Three things changed
 between them: the suite grew 6 → 15 tasks with a different family balance, the
 `task-completion` rubric was retuned to judge content rather than format, and
 `lean` did not exist. The `critique` and `full` rows in particular are **not**
