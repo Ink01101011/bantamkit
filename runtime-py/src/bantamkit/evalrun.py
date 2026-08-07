@@ -257,6 +257,8 @@ def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> Tas
     messages: list[Message] = []
     caught: BantamError | None = None
     try:
+        if "family" not in task:
+            raise EvalConfigError(f"task '{task['name']}' is missing required key 'family'")
         if config == "structured" and "schema" in task:
             # structured() drives its own loop, so no agent transcript exists to score against.
             if task["scoring"]["kind"] == "tool_trace":
@@ -281,7 +283,7 @@ def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> Tas
     return TaskResult(
         task=task["name"],
         config=config,
-        family=task["family"],
+        family=task.get("family", "unknown"),
         passed=passed,
         tokens=tracking.usage.total,
         outcome=classify_outcome(task, passed, output, caught),

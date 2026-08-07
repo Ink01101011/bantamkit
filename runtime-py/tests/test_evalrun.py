@@ -203,6 +203,8 @@ def test_run_suite_repeats_reseed_memory_freshly(tmp_path):
         client, configs=["memory"], workdir=tmp_path / "work", tasks_dir=taskdir, repeats=2
     )
     assert [r.passed for r in results] == [True, True]
+    assert (tmp_path / "work" / "repeat-0" / "tinymem-memory-mem").is_dir()
+    assert (tmp_path / "work" / "repeat-1" / "tinymem-memory-mem").is_dir()
 
 
 def test_cli_new_flags_reach_run_suite(monkeypatch, tmp_path):
@@ -231,12 +233,15 @@ def test_cli_new_flags_reach_run_suite(monkeypatch, tmp_path):
     assert captured["tasks_dir"] == tmp_path
 
 
-def test_cli_json_flag_streams_jsonl(monkeypatch, tmp_path):
+def test_cli_json_flag_appends_and_flushes(monkeypatch, tmp_path):
     out = tmp_path / "results.jsonl"
+    out.write_text('{"task": "earlier-run"}\n')
 
     def fake_run_suite(client, configs=None, tasks_dir=None, repeats=1, on_result=None):
         result = make_result()
         on_result(result)
+        # flushed mid-run: the line must be on disk before run_suite returns
+        assert out.read_text().count("\n") == 2
         return [result]
 
     monkeypatch.setattr(evalrun, "OpenAICompatible", lambda **kw: object())
@@ -244,8 +249,9 @@ def test_cli_json_flag_streams_jsonl(monkeypatch, tmp_path):
     monkeypatch.setattr(evalrun, "format_report", lambda results: "")
     evalrun.main(["--base-url", "http://x", "--model", "m", "--json", str(out)])
     lines = out.read_text().splitlines()
-    assert len(lines) == 1
-    data = json.loads(lines[0])
+    assert len(lines) == 2
+    assert json.loads(lines[0]) == {"task": "earlier-run"}
+    data = json.loads(lines[1])
     assert data["task"] == "t" and data["outcome"] == "pass" and data["tokens"] == 100
 
 
@@ -442,6 +448,8 @@ def test_full_config_schema_violation_recorded_not_raised(tmp_path):
     assert "StructuredOutputError" in result.error
     assert "3 attempts" in result.error and "email" in result.error
     assert len(client.calls) == 3  # no critique call: the schema gate runs first
+    assert result.outcome == "schema-exhausted"
+    assert result.schema_retries == 2
 
 
 def test_full_config_non_json_output_recorded_not_raised(tmp_path):
@@ -580,3 +588,51 @@ def test_all_memory_setups_seed_without_jaccard_collisions(tmp_path):
                 f"'{result.similar}' — make descriptions more distinct"
             )
     assert seeded >= 6  # exactly 6 facts today (5 recall tasks); adjust when retiring
+
+
+def test_missing_family_is_config_error(tmp_path):
+    task = {"name": "nofam", "prompt": "hi", "scoring": {"kind": "contains", "expected": ["hi"]}}
+    result = run_task(FakeClient([]), task, "bare", tmp_path)
+    assert result.passed is False
+    assert result.outcome == "config-error"
+    assert result.family == "unknown"
+    assert "family" in result.error
+
+
+def test_outcome_wrong_answer_for_contains_task(tmp_path):
+    result = run_task(
+        FakeClient([assistant(content="I have no idea who owns it")]),
+        get_task("recall-owner"),
+        "bare",
+        tmp_path,
+    )
+    assert result.passed is False and result.outcome == "wrong-answer"
+
+
+def test_gate_counters_reset_per_attach():
+    from bantamkit.critique import CritiqueGate
+    from bantamkit.evalrun import SchemaGate
+
+    class StubAgent:
+        def add_post_hook(self, hook):
+            pass
+
+    schema_gate = SchemaGate({"type": "object"})
+    schema_gate.retries_used = 5
+    schema_gate.setup(StubAgent())
+    assert schema_gate.retries_used == 0
+
+    critique_gate = CritiqueGate("task-completion", client=FakeClient([]))
+    critique_gate.rounds_used = 3
+    critique_gate.setup(StubAgent())
+    assert critique_gate.rounds_used == 0
+
+
+def test_cli_repeats_zero_rejected(monkeypatch):
+    import pytest
+
+    monkeypatch.setattr(evalrun, "OpenAICompatible", lambda **kw: object())
+    monkeypatch.setattr(evalrun, "run_suite", lambda client, **kw: [])
+    monkeypatch.setattr(evalrun, "format_report", lambda results: "")
+    with pytest.raises(SystemExit):
+        evalrun.main(["--base-url", "http://x", "--model", "m", "--repeats", "0"])
