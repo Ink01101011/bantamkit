@@ -19,6 +19,7 @@ harness configurations against the same endpoint.
 | `--base-url` | yes | OpenAI-compatible endpoint, including the path prefix |
 | `--model` | yes | Model name as the endpoint knows it |
 | `--config` | no | One of `bare`, `structured`, `critique`, `memory`, `full`. Repeatable. Default: all five |
+| `--timeout` | no | Per-request timeout in seconds. Default: 60 |
 
 Narrow it while iterating:
 
@@ -183,8 +184,8 @@ reasoning tokens per call (counted in `tokens` — they are real cost). Its
 partial sweep (`bare` 3/6 @ 0.29, `structured` 3/6 @ 0.58, `memory` 5/6 @
 0.47) shows the same score shape at several times the token cost; the
 critique/full configs were impractical to measure — calls exceed the
-adapter's default 60s timeout (the CLI currently has no `--timeout` flag,
-a known gap). Prefer instruct variants for this suite.
+adapter's default 60s timeout. Use `--timeout` to increase the limit for
+slow models. Prefer instruct variants for this suite.
 
 Caveats: single sweeps against a non-deterministic endpoint. Run-to-run
 variance is roughly ±1 task per config, which on a 6-task suite is a wide band
