@@ -1,8 +1,10 @@
+import pytest
 from conftest import FakeClient, assistant, call
 
 from bantamkit.agent import Agent
 from bantamkit.assets import assets_root, load_skill, load_tool
 from bantamkit.memory import Memory
+from bantamkit.memory.store import MemoryStore, MemoryValidationError
 
 
 def test_assets_root_env_override(monkeypatch, tmp_path):
@@ -141,3 +143,111 @@ def test_duplicate_reply_guides_update(tmp_path):
     Agent(client=client).use(memory).run("t")
     obs = client.calls[1]["messages"][-1].content
     assert "deploy-command" in obs and "update" in obs
+
+
+@pytest.fixture
+def fake_home(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    return home
+
+
+def _seed(root, name, body, description="a fact about deploys"):
+    MemoryStore(root).save("project", name, description, body)
+
+
+def test_layered_project_wins_on_duplicate_name_and_prefixes_layers(tmp_path, fake_home):
+    project = tmp_path / "companyA"
+    project.mkdir()
+    _seed(project / ".bantamkit" / "memory", "deploy", "project truth")
+    profile_store = fake_home / ".bantamkit" / "memory"
+    _seed(profile_store, "deploy", "profile stale")
+    _seed(profile_store, "profile-only", "profile extra", description="deploy note extra")
+
+    mem = Memory.layered(start=project)
+    out = mem._recall("deploy")
+    assert "[project] [deploy]" in out
+    assert "project truth" in out
+    assert "profile stale" not in out  # deduped by name, project wins
+    assert "[profile] [profile-only]" in out
+
+
+def test_layered_k_budget_is_total_across_layers(tmp_path, fake_home):
+    project = tmp_path / "companyA"
+    project.mkdir()
+    store = project / ".bantamkit" / "memory"
+    descriptions = [
+        "deploy to main branch immediately",
+        "deploy to staging environment first",
+        "deploy procedure includes rollback",
+    ]
+    for i in range(3):
+        _seed(store, f"proj-{i}", "x", description=descriptions[i])
+    profile_store = fake_home / ".bantamkit" / "memory"
+    _seed(profile_store, "prof", "y", description="deploy to production at night")
+
+    out = Memory.layered(start=project, k=3)._recall("deploy")
+    assert out.count("[project] [") == 3
+    assert "[profile]" not in out  # budget spent before profile
+
+
+def test_layered_save_writes_project_layer_only(tmp_path, fake_home):
+    project = tmp_path / "companyA"
+    project.mkdir()
+    other = tmp_path / "companyB" / ".bantamkit" / "memory"
+    _seed(other, "b-fact", "b body", description="grant fact")
+    (project / ".bantamkit").mkdir()
+    (project / ".bantamkit" / "config.yaml").write_text(
+        "extra_stores:\n  - ../../companyB/.bantamkit/memory\n"
+    )
+    grant_before = sorted(p.name for p in (other / "facts").glob("*.md"))
+
+    mem = Memory.layered(start=project)
+    assert mem._save("project", "a-fact", "saved from A", "body") == "saved 'a-fact'"
+    assert (project / ".bantamkit" / "memory" / "facts" / "a-fact.md").exists()
+    assert sorted(p.name for p in (other / "facts").glob("*.md")) == grant_before
+    assert not (fake_home / ".bantamkit" / "memory" / "facts").exists()
+
+
+def test_layered_recall_does_not_stamp_readonly_layers(tmp_path, fake_home):
+    project = tmp_path / "companyA"
+    project.mkdir()
+    profile_store = fake_home / ".bantamkit" / "memory"
+    _seed(profile_store, "prof", "profile body", description="deploy fact")
+    before = (profile_store / "facts" / "prof.md").read_text()
+
+    Memory.layered(start=project)._recall("deploy")
+    assert (profile_store / "facts" / "prof.md").read_text() == before
+
+
+def test_layered_corrupt_grant_does_not_break_project_recall(tmp_path, fake_home):
+    project = tmp_path / "companyA"
+    project.mkdir()
+    _seed(project / ".bantamkit" / "memory", "deploy", "project truth")
+    bad = tmp_path / "companyB" / ".bantamkit" / "memory"
+    (bad / "facts").mkdir(parents=True)
+    (bad / "facts" / "junk.md").write_text("no frontmatter at all")
+    (project / ".bantamkit" / "config.yaml").write_text(
+        "extra_stores:\n  - ../../companyB/.bantamkit/memory\n"
+    )
+
+    out = Memory.layered(start=project)._recall("deploy")
+    assert "[project] [deploy]" in out
+
+
+def test_layered_dangling_grant_raises_at_construction(tmp_path, fake_home):
+    project = tmp_path / "companyA"
+    project.mkdir()
+    (project / ".bantamkit").mkdir()
+    (project / ".bantamkit" / "config.yaml").write_text("extra_stores:\n  - ../../nope\n")
+    with pytest.raises(MemoryValidationError):
+        Memory.layered(start=project)
+
+
+def test_v1_single_store_output_has_no_layer_prefixes(tmp_path):
+    mem = Memory(store=tmp_path / "m")
+    mem._save("project", "deploy", "how to deploy", "make ship")
+    out = mem._recall("deploy")
+    assert "[deploy]" in out
+    assert "[project]" not in out
