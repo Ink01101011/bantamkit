@@ -1,9 +1,10 @@
 from conftest import FakeClient, assistant, call
 
 from bantamkit import evalrun
-from bantamkit.client import Message, ToolCall
+from bantamkit.client import BantamError, Message, ToolCall
 from bantamkit.evalrun import (
     CONFIGS,
+    TaskResult,
     TrackingClient,
     format_report,
     load_tasks,
@@ -109,6 +110,143 @@ CONTACT = '{"name": "Ann Chen", "email": "ann.chen@example.com"}'
 GOOD_VERDICT = '{"score": 9, "feedback": "looks good"}'
 
 
+def make_result(**kw):
+    base = dict(
+        task="t",
+        config="bare",
+        family="structured-extraction",
+        passed=True,
+        tokens=100,
+        outcome="pass",
+        model_calls=1,
+        tool_calls=0,
+        schema_retries=0,
+        critique_rounds=0,
+        error=None,
+    )
+    base.update(kw)
+    return TaskResult(**base)
+
+
+def test_task_result_records_outcome_and_counters_on_pass(tmp_path):
+    client = FakeClient([assistant(content=CONTACT)])
+    result = run_task(client, get_task("extract-contact"), "bare", tmp_path)
+    assert result.outcome == "pass"
+    assert result.family == "structured-extraction"
+    assert result.model_calls == 1
+    assert result.tool_calls == 0
+    assert result.schema_retries == 0 and result.critique_rounds == 0
+
+
+def test_outcome_wrong_answer_vs_malformed_output(tmp_path):
+    task = get_task("extract-contact")
+    wrong = run_task(
+        FakeClient([assistant(content='{"name": "Bob", "email": "b@x.com"}')]),
+        task,
+        "bare",
+        tmp_path,
+    )
+    assert wrong.passed is False and wrong.outcome == "wrong-answer"
+    malformed = run_task(FakeClient([assistant(content="no json here")]), task, "bare", tmp_path)
+    assert malformed.passed is False and malformed.outcome == "malformed-output"
+
+
+def test_outcome_schema_exhausted_and_retry_count_structured(tmp_path):
+    client = FakeClient([assistant(content="not json")] * 3)
+    result = run_task(client, get_task("extract-contact"), "structured", tmp_path)
+    assert result.outcome == "schema-exhausted"
+    assert result.model_calls == 3
+    assert result.schema_retries == 2  # 3 attempts = 2 retries after the first
+
+
+def test_schema_gate_counts_retries_in_full(tmp_path):
+    client = FakeClient(
+        [
+            assistant(content='{"name": "Ann Chen"}'),  # missing email -> schema retry
+            assistant(content=CONTACT),
+            assistant(content=GOOD_VERDICT),
+        ]
+    )
+    result = run_task(client, get_task("extract-contact"), "full", tmp_path)
+    assert result.passed is True
+    assert result.schema_retries == 1
+    assert result.critique_rounds == 0
+    assert result.model_calls == 3
+
+
+def test_critique_rounds_counted_in_full(tmp_path):
+    client = FakeClient(
+        [
+            assistant(content='{"name": "Ann", "email": "wrong@example.com"}'),
+            assistant(content='{"score": 2, "feedback": "wrong email"}'),
+            assistant(content=CONTACT),
+            assistant(content=GOOD_VERDICT),
+        ]
+    )
+    result = run_task(client, get_task("extract-contact"), "full", tmp_path)
+    assert result.passed is True
+    assert result.critique_rounds == 1
+    assert result.model_calls == 4
+
+
+def test_outcome_critique_exhausted_counts_rounds(tmp_path):
+    bad_verdict = '{"score": 2, "feedback": "still wrong"}'
+    client = FakeClient(
+        [
+            assistant(content="answer one"),
+            assistant(content=bad_verdict),
+            assistant(content="answer two"),
+            assistant(content=bad_verdict),
+            assistant(content="answer three"),
+            assistant(content=bad_verdict),
+        ]
+    )
+    result = run_task(client, get_task("recall-owner"), "critique", tmp_path)
+    assert result.passed is False
+    assert result.outcome == "critique-exhausted"
+    assert result.critique_rounds == 2  # feedback issued twice; third violation raises
+
+
+def test_tool_calls_counted(tmp_path):
+    client = FakeClient(
+        [
+            assistant(
+                tool_calls=[
+                    call("price_lookup", {"item": "widget"}),
+                    call("price_lookup", {"item": "gadget"}),
+                ]
+            ),
+            assistant(content='{"cheaper": "widget"}'),
+        ]
+    )
+    result = run_task(client, get_task("shop-cheapest"), "bare", tmp_path)
+    assert result.passed is True
+    assert result.tool_calls == 2
+    assert result.model_calls == 2
+
+
+def test_outcome_transport_error(tmp_path):
+    class Boom:
+        def chat(self, messages, tools=None):
+            raise BantamError("connection refused")
+
+    result = run_task(Boom(), get_task("extract-contact"), "bare", tmp_path)
+    assert result.outcome == "transport-error"
+    assert "BantamError" in result.error
+
+
+def test_outcome_config_error(tmp_path):
+    task = {
+        "name": "synthetic-schema-trace2",
+        "family": "tool-use",
+        "prompt": "do the thing",
+        "schema": {"type": "object"},
+        "scoring": {"kind": "tool_trace", "expected": ["price_lookup"]},
+    }
+    result = run_task(FakeClient([]), task, "structured", tmp_path)
+    assert result.outcome == "config-error"
+
+
 def test_structured_config_schema_task_bypasses_agent(tmp_path):
     """`structured` is unchanged: one direct structured() call, no agent, no critique."""
     client = FakeClient([assistant(content=CONTACT)])
@@ -123,6 +261,7 @@ def test_structured_config_schema_with_tool_trace_scoring_is_explicit_failure(tm
     """The structured path has no transcript, so tool_trace scoring must fail loudly."""
     task = {
         "name": "synthetic-schema-trace",
+        "family": "tool-use",
         "prompt": "do the thing",
         "schema": {"type": "object"},
         "scoring": {"kind": "tool_trace", "expected": ["price_lookup"]},
@@ -192,13 +331,11 @@ def test_full_config_non_json_output_recorded_not_raised(tmp_path):
 
 
 def test_format_report_has_score_per_1k():
-    from bantamkit.evalrun import TaskResult
-
     results = [
-        TaskResult(task="t1", config="bare", passed=True, tokens=500, error=None),
-        TaskResult(task="t2", config="bare", passed=False, tokens=500, error=None),
-        TaskResult(task="t1", config="full", passed=True, tokens=250, error=None),
-        TaskResult(task="t2", config="full", passed=True, tokens=250, error=None),
+        make_result(task="t1", config="bare", passed=True, tokens=500),
+        make_result(task="t2", config="bare", passed=False, outcome="wrong-answer", tokens=500),
+        make_result(task="t1", config="full", passed=True, tokens=250),
+        make_result(task="t2", config="full", passed=True, tokens=250),
     ]
     report = format_report(results)
     assert "score/1k tok" in report

@@ -15,7 +15,7 @@ import yaml
 from bantamkit.agent import Agent, ToolDef
 from bantamkit.assets import assets_root
 from bantamkit.client import BantamError, Message, ModelClient, OpenAICompatible, Tool, Usage
-from bantamkit.critique import CritiqueGate
+from bantamkit.critique import CritiqueExhausted, CritiqueGate
 from bantamkit.memory import Memory, MemoryStore
 from bantamkit.structured import StructuredOutputError, extract_json, structured
 
@@ -75,21 +75,29 @@ BUILTIN_TOOLS = {
 class TaskResult:
     task: str
     config: str
+    family: str
     passed: bool
     tokens: int
+    outcome: str
+    model_calls: int
+    tool_calls: int
+    schema_retries: int
+    critique_rounds: int
     error: str | None
 
 
 class TrackingClient:
-    """Wraps any ModelClient and accumulates token usage across all calls."""
+    """Wraps any ModelClient and accumulates token usage and call count across all calls."""
 
     def __init__(self, inner: ModelClient):
         self.inner = inner
         self.usage = Usage()
+        self.calls = 0
 
     def chat(self, messages, tools=None):
         resp = self.inner.chat(messages, tools)
         self.usage = self.usage + resp.usage
+        self.calls += 1
         return resp
 
 
@@ -158,9 +166,11 @@ class SchemaGate:
     def __init__(self, schema: dict, max_attempts: int = 3):
         self.schema = schema
         self.max_attempts = max_attempts
+        self.retries_used = 0
         self._attempts = 0
 
     def setup(self, agent: Agent) -> None:
+        self.retries_used = 0
         agent.add_post_hook(self)
 
     def __call__(self, task: str, output: str) -> str | None:
@@ -174,7 +184,45 @@ class SchemaGate:
             raise StructuredOutputError(
                 f"no valid output after {self.max_attempts} attempts; last error: {error}"
             )
+        self.retries_used += 1
         return f"{error}\nReturn ONLY a JSON object matching the schema."
+
+
+OUTCOMES = [
+    "pass",
+    "wrong-answer",
+    "malformed-output",
+    "schema-exhausted",
+    "critique-exhausted",
+    "config-error",
+    "transport-error",
+]
+
+
+def classify_outcome(
+    task: dict, passed: bool, output: str | None, error: BantamError | None
+) -> str:
+    """One deterministic failure class per run (suite-hardening spec §3.2).
+
+    Splits "failed" into content-wrong vs format-broken vs gate-gave-up vs
+    infrastructure — each has a different remedy.
+    """
+    if passed:
+        return "pass"
+    if isinstance(error, EvalConfigError):
+        return "config-error"
+    if isinstance(error, StructuredOutputError):
+        return "schema-exhausted"
+    if isinstance(error, CritiqueExhausted):
+        return "critique-exhausted"
+    if error is not None:
+        return "transport-error"
+    if task["scoring"]["kind"] == "json_equal":
+        try:
+            extract_json(output or "")
+        except ValueError:
+            return "malformed-output"
+    return "wrong-answer"
 
 
 def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> TaskResult:
@@ -182,6 +230,8 @@ def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> Tas
     tools = [BUILTIN_TOOLS[name] for name in task.get("tools", [])]
     agent = Agent(client=tracking, tools=tools)
 
+    schema_gate: SchemaGate | None = None
+    critique_gate: CritiqueGate | None = None
     if config in ("memory", "lean", "full") and task.get("memory_setup"):
         store_dir = workdir / f"{task['name']}-{config}-mem"
         seed = MemoryStore(store_dir)
@@ -193,10 +243,15 @@ def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> Tas
         # Gate registered before the critique gate: a malformed answer is fixed for free
         # rather than spending a critique call on it.
         agent.add_system(SCHEMA_INSTRUCTION + json.dumps(task["schema"]))
-        agent.use(SchemaGate(task["schema"]))
+        schema_gate = SchemaGate(task["schema"])
+        agent.use(schema_gate)
     if config in ("critique", "full"):
-        agent.use(CritiqueGate("task-completion", client=tracking))
+        critique_gate = CritiqueGate("task-completion", client=tracking)
+        agent.use(critique_gate)
 
+    output: str | None = None
+    messages: list[Message] = []
+    caught: BantamError | None = None
     try:
         if config == "structured" and "schema" in task:
             # structured() drives its own loop, so no agent transcript exists to score against.
@@ -206,16 +261,31 @@ def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> Tas
                     "structured config cannot score: it has no agent transcript"
                 )
             data = structured(tracking, task["prompt"], task["schema"])
-            output, messages = json.dumps(data), []
+            output = json.dumps(data)
         else:
             result = agent.run(task["prompt"])
             output, messages = result.output, result.messages
         passed = score_output(task, output, messages)
-        error = None
     except BantamError as e:
-        passed, error = False, f"{type(e).__name__}: {e}"
+        passed, caught = False, e
+
+    if config == "structured" and "schema" in task:
+        # No gate object on this path; structured() makes exactly one call per attempt.
+        schema_retries = max(0, tracking.calls - 1)
+    else:
+        schema_retries = schema_gate.retries_used if schema_gate else 0
     return TaskResult(
-        task=task["name"], config=config, passed=passed, tokens=tracking.usage.total, error=error
+        task=task["name"],
+        config=config,
+        family=task["family"],
+        passed=passed,
+        tokens=tracking.usage.total,
+        outcome=classify_outcome(task, passed, output, caught),
+        model_calls=tracking.calls,
+        tool_calls=sum(len(m.tool_calls) for m in messages),
+        schema_retries=schema_retries,
+        critique_rounds=critique_gate.rounds_used if critique_gate else 0,
+        error=f"{type(caught).__name__}: {caught}" if caught else None,
     )
 
 
