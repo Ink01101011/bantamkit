@@ -310,12 +310,15 @@ def test_cli_timeout_flag_default_value(monkeypatch):
 def test_all_memory_setups_seed_without_jaccard_collisions(tmp_path):
     """save() silently returns 'duplicate' on similar facts — a task file that trips it
     would seed an incomplete store and fail mysteriously only at eval time."""
+    seeded = 0
     for task in load_tasks():
         facts = task.get("memory_setup") or []
         store = MemoryStore(tmp_path / task["name"])
         for fact in facts:
             result = store.save(fact["type"], fact["name"], fact["description"], fact["body"])
+            seeded += 1
             assert result.status == "saved", (
                 f"task '{task['name']}': fact '{fact['name']}' collides with "
                 f"'{result.similar}' — make descriptions more distinct"
             )
+    assert seeded >= 6  # memory-recall family carries seeded facts; 0 means the guard went blind

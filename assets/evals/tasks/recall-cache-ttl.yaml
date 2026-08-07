@@ -7,7 +7,7 @@ memory_setup:
   - type: project
     name: pricing-cache-ttl
     description: cache ttl seconds for the pricing service
-    body: The pricing service caches responses for 900 seconds.
+    body: The pricing service caches responses for 240 seconds.
 scoring:
   kind: contains
-  expected: ["900"]
+  expected: ["240"]
