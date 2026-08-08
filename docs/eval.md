@@ -18,7 +18,7 @@ harness configurations against the same endpoint.
 |---|---|---|
 | `--base-url` | yes | OpenAI-compatible endpoint, including the path prefix |
 | `--model` | yes | Model name as the endpoint knows it |
-| `--config` | no | One of `bare`, `structured`, `critique`, `memory`, `lean`, `full`. Repeatable. Default: all six |
+| `--config` | no | One of `bare`, `structured`, `critique`, `grounded`, `memory`, `lean`, `full`. Repeatable. Default: all seven |
 | `--timeout` | no | Per-request timeout in seconds. Default: 60 |
 | `--repeats` | no | Runs per (config, task) pair. Default: 1. Repeats narrow the run-to-run noise band and are how candidate tasks are calibrated |
 | `--tasks` | no | Directory of task YAML files to run instead of the builtin suite |
@@ -32,7 +32,7 @@ Narrow it while iterating:
   --config bare --config full
 ```
 
-Every task runs against a live model, so a full sweep is 6 configs × all tasks
+Every task runs against a live model, so a full sweep is 7 configs × all tasks
 × `--repeats` runs. Start with `--config bare --config full`, and pass `--json`
 on long sweeps so partial results survive an interrupted run.
 

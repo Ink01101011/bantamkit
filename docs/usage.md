@@ -139,6 +139,8 @@ print(agent.run("Which team owns the payments API? Check memory first.").output)
   YAML rubric (here `assets/rubrics/task-completion.yaml`, threshold 7/10).
   Below threshold, the score and feedback are fed back as a user message and the
   agent revises. It borrows the agent's client unless you pass `client=`.
+  When the agent has tools, prefer `GroundedCritiqueGate` (section 7), whose
+  critic also sees the tool evidence.
 
 Use a different rubric by name, or build one inline:
 
@@ -283,8 +285,8 @@ agent = Agent(client=client, tools=[price_lookup]).use(GroundedCritiqueGate())
 - Rounds, thresholds, feedback strings and `CritiqueExhausted` behave
   exactly like `CritiqueGate`.
 
-Prefer it over `CritiqueGate` whenever the agent has tools; the blind gate
-measurably accepted answers that contradicted tool output (see
-[Eval](eval.md)).
+Prefer it over `CritiqueGate` whenever the agent has tools: a blind critic
+cannot verify tool-derived facts, and in calibration it accepted answers
+that contradicted the tool output (see [Eval](eval.md)).
 
 Next: [Memory](memory.md) · [Eval](eval.md).

@@ -53,8 +53,8 @@ tables in [Eval → Current results](docs/eval.md#current-results)):
   prefer instruct over thinking model variants when you do.
 - **Prefer `GroundedCritiqueGate` over `CritiqueGate` when the agent has
   tools** — the critic sees tool call/observation pairs, letting it verify
-  facts the agent got from tools; the blind gate measurably accepted answers
-  that contradicted tool output.
+  facts the agent got from tools; the blind critic cannot, and accepted
+  wrong tool-derived numbers in calibration (see [Eval](docs/eval.md)).
 
 Copy-paste start: [`examples/`](examples/).
 
