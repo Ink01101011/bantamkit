@@ -120,6 +120,12 @@ def test_shipped_rubrics_survive_format(rubric_name):
     assert '{"score"' in formatted
 
 
+def test_shipped_grounded_rubric_survives_format():
+    rubric = load_rubric("grounded-completion")
+    formatted = rubric.prompt.format(task="t", output="o", evidence="e")
+    assert '{"score"' in formatted
+
+
 def lookup_tool(handler):
     return ToolDef(
         tool=Tool(
@@ -222,3 +228,21 @@ def test_grounded_gate_feedback_and_exhaustion_match_parent_semantics():
     assert gate.rounds_used == 2
     feedback_msg = client.calls[2]["messages"][-1].content
     assert "A reviewer scored your answer 2/10" in feedback_msg
+
+
+def test_grounded_gate_constructor_kwargs_reach_judge():
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("price_lookup", {"item": "widget"})]),
+            assistant(content="total is 25"),
+            assistant(content='{"score": 2, "feedback": "bad"}'),
+        ]
+    )
+    gate = GroundedCritiqueGate(
+        make_grounded_rubric(), client=client, max_rounds=1, evidence_budget=20
+    )
+    agent = Agent(client=client, tools=[lookup_tool(lambda item: "x" * 100)]).use(gate)
+    with pytest.raises(CritiqueExhausted):
+        agent.run("total?")
+    critic_prompt = client.calls[2]["messages"][-1].content
+    assert "[truncated" in critic_prompt
