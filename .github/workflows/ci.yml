@@ -25,7 +25,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install
-        run: pip install -e "runtime-py[dev]"
+        run: pip install -e "runtime-py[dev,mcp]"
       - name: Lint package
         run: ruff check .
         working-directory: runtime-py
