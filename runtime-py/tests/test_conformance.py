@@ -48,7 +48,7 @@ def test_skill_assets_fit_budget():
 
 def test_eval_tasks_are_valid():
     task_files = sorted((assets_root() / "evals" / "tasks").glob("*.yaml"))
-    assert len(task_files) >= 19
+    assert len(task_files) >= 20
     families = []
     for f in task_files:
         task = yaml.safe_load(f.read_text())

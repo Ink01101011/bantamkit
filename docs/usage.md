@@ -289,4 +289,7 @@ Prefer it over `CritiqueGate` whenever the agent has tools: a blind critic
 cannot verify tool-derived facts, and in calibration it accepted answers
 that contradicted the tool output (see [Eval](eval.md)).
 
+Hooks that declare `wants_transcript = True` receive the agent's live
+message list — treat it as read-only; mutating it corrupts the run.
+
 Next: [Memory](memory.md) · [Eval](eval.md).

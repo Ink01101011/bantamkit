@@ -484,7 +484,7 @@ The builtin tools read `assets/evals/fixtures/catalog.json` (`widget`,
 tasks stay deterministic on the harness side.
 
 `runtime-py/tests/test_conformance.py` enforces the contract above and requires
-at least 19 tasks with all three families present, at least 2 each. Run it after
+at least 20 tasks with all three families present, at least 2 each. Run it after
 adding a task:
 
 ```bash

@@ -1,7 +1,7 @@
 # Grounded Critique Design
 
 **Date:** 2026-08-09
-**Status:** Approved (evidence = tool call/observation pairs; additive gate; eval re-measurement in scope)
+**Status:** Approved (evidence = tool call/observation pairs; additive gate; eval re-measurement in scope). Post-calibration: rubric tuned once per §4 — verdict schema gained a required `reasoning` field (commit 9dc9346), diverging from §3.4's "same schema as task-completion".
 **Depends on:** MCP adapter (PR #7, v0.3.0)
 
 ## 1. Problem
