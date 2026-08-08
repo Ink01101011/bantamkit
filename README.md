@@ -54,12 +54,16 @@ tables in [Eval → Current results](docs/eval.md#current-results)):
 
 Copy-paste start: [`examples/`](examples/).
 
+Agent outside Python (Claude Code, Codex, …)? The same memory and validation
+ship as an [MCP server](docs/mcp.md).
+
 ## Docs
 
 - [Install](docs/install.md) — requirements, editable install, pointing at an endpoint, `BANTAMKIT_ASSETS`
 - [Usage](docs/usage.md) — the runbook: client, agent, tools, components, `structured()`, error types
 - [Memory](docs/memory.md) — on-disk layout, the four ops, dedupe and budget, compact/archive
 - [Eval](docs/eval.md) — running the suite, the config matrix, reading the report, adding tasks
+- [MCP](docs/mcp.md) — `bantamkit-mcp`: memory + validation for external agents (Claude Code, Codex, any MCP client)
 
 The full measured tables behind the defaults above are in
 [Eval → Current results](docs/eval.md#current-results).
