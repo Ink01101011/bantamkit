@@ -824,13 +824,13 @@ def test_configs_include_grounded_after_critique():
 
 
 def test_grounded_config_critic_sees_tool_evidence(tmp_path):
-    # shop-total: price_lookup tool, json_equal scoring
+    # shop-total: tools [price_lookup, stock_lookup], contains scoring on "100"
     client = FakeClient(
         [
             assistant(
                 tool_calls=[ToolCall(id="c1", name="price_lookup", arguments={"item": "widget"})]
             ),
-            assistant(content='{"total": 100}'),
+            assistant(content='{"total": 999}'),
             assistant(content='{"score": 2, "feedback": "evidence says widget costs 25"}'),
             assistant(content='{"total": 100}'),
             assistant(content='{"score": 9, "feedback": "consistent"}'),
