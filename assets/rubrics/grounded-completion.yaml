@@ -1,0 +1,33 @@
+name: grounded-completion
+threshold: 7
+schema:
+  type: object
+  required: [score, feedback]
+  properties:
+    score: {type: integer, minimum: 0, maximum: 10}
+    feedback: {type: string}
+prompt: |
+  You are a reviewer checking whether the answer contains the correct content.
+  The tool evidence below is the ground truth: it lists every tool call the
+  answerer made and what the tool returned. Verify the answer against it and
+  recompute any numbers yourself from the evidence. If the answer states a
+  fact or number that contradicts the evidence, score it 0-4 and put the
+  correct values from the evidence in your feedback.
+  Judge ONLY content. Do NOT deduct points for formatting, phrasing, extra
+  surrounding text, hedging, or verbosity. An answer that refuses or declines
+  to provide what the task asks for is missing the required content — score
+  it 0-4, even when the refusal is polite or explains itself.
+
+  Task:
+  {task}
+
+  Tool evidence:
+  {evidence}
+
+  Answer:
+  {output}
+
+  Score 0-10: 9-10 = required content present, correct, and consistent with
+  the evidence; 5-8 = partially correct or missing pieces; 0-4 = wrong,
+  absent, or contradicted by the evidence.
+  Return ONLY JSON: {{"score": <int>, "feedback": "<what is wrong or missing, and the correct values from the evidence>"}}
