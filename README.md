@@ -51,6 +51,10 @@ tables in [Eval → Current results](docs/eval.md#current-results)):
   zero extra passes, and per-run counters show the gate never objected. Attach
   it only with a rubric that catches failures you have actually observed, and
   prefer instruct over thinking model variants when you do.
+- **Prefer `GroundedCritiqueGate` over `CritiqueGate` when the agent has
+  tools** — the critic sees tool call/observation pairs, letting it verify
+  facts the agent got from tools; the blind gate measurably accepted answers
+  that contradicted tool output.
 
 Copy-paste start: [`examples/`](examples/).
 

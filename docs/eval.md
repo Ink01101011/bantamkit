@@ -57,6 +57,7 @@ Each config is the same tasks with a different harness wrapped around them.
 | `bare` | The agent loop and the task's tools only — the control |
 | `structured` | Tasks with a `schema` bypass the loop and go through `structured()` |
 | `critique` | A `CritiqueGate` on the `task-completion` rubric scores each answer |
+| `grounded` | `GroundedCritiqueGate` only — the critic sees tool call/observation pairs; isolates the evidence effect vs `critique` |
 | `memory` | Tasks with `memory_setup` get a seeded `Memory` store attached |
 | `lean` | memory + schema enforcement inside the agent loop — `full` without the critique gate |
 | `full` | critique + memory + schema enforcement, all inside the agent loop |

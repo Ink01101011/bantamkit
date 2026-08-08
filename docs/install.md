@@ -42,13 +42,13 @@ repo is private, so pip's clone rides on whichever GitHub auth your git
 already has — SSH key:
 
 ```bash
-pip install "bantamkit @ git+ssh://git@github.com/Ink01101011/bantamkit.git@v0.3.0#subdirectory=runtime-py"
+pip install "bantamkit @ git+ssh://git@github.com/Ink01101011/bantamkit.git@v0.4.0#subdirectory=runtime-py"
 ```
 
 or HTTPS (works with `gh auth login`'s credential helper or a PAT):
 
 ```bash
-pip install "bantamkit @ git+https://github.com/Ink01101011/bantamkit.git@v0.3.0#subdirectory=runtime-py"
+pip install "bantamkit @ git+https://github.com/Ink01101011/bantamkit.git@v0.4.0#subdirectory=runtime-py"
 ```
 
 The wheel bundles the asset pack, so no checkout and no `BANTAMKIT_ASSETS` are
@@ -63,8 +63,8 @@ After merging to `main`: bump `version` in `runtime-py/pyproject.toml` in the
 release PR if it was not already bumped, then
 
 ```bash
-git tag -a v0.3.0 -m "bantamkit 0.3.0"
-git push origin v0.3.0
+git tag -a v0.4.0 -m "bantamkit 0.4.0"
+git push origin v0.4.0
 ```
 
 ## Point at an endpoint
