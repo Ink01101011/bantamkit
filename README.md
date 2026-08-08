@@ -40,21 +40,22 @@ print(result.output, result.usage.total)
 
 ## Recommended defaults
 
-Measured on the bundled 19-task suite (`qwen3:4b-instruct`, 3 repeats — full
+Measured on the bundled 20-task suite (`qwen3:4b-instruct`, 3 repeats — full
 tables in [Eval → Current results](docs/eval.md#current-results)):
 
 - **Always attach `Memory`** — the one primitive that moves the score on this
-  suite (30/57 → 57/57).
+  suite (30/60 → 57/60).
 - **Use `structured()` when you need schema'd output** — enforcement costs
   nothing extra when the model complies; on this model it never needed a retry.
-- **Skip `CritiqueGate` on small instruct models** — measured +41% tokens for
-  zero extra passes, and per-run counters show the gate never objected. Attach
-  it only with a rubric that catches failures you have actually observed, and
-  prefer instruct over thinking model variants when you do.
+- **Skip `CritiqueGate` on small instruct models** — measured +47% tokens on
+  `full` vs `lean` for no extra passes. Attach it only with a rubric that
+  catches failures you have actually observed, and prefer instruct over
+  thinking model variants when you do.
 - **Prefer `GroundedCritiqueGate` over `CritiqueGate` when the agent has
   tools** — the critic sees tool call/observation pairs, letting it verify
-  facts the agent got from tools; the blind critic cannot, and accepted
-  wrong tool-derived numbers in calibration (see [Eval](docs/eval.md)).
+  facts the agent got from tools. Measured: it rescued the tool-arithmetic
+  task 3/3 that every other config — the blind critic included — failed 0/3
+  (see [Eval](docs/eval.md)).
 
 Copy-paste start: [`examples/`](examples/).
 
