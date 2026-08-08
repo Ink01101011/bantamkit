@@ -40,7 +40,7 @@ class Agent:
     system: str | None = None
     max_turns: int = 10
     observation_budget: int = 4096
-    _post_hooks: list[Callable[[str, str], str | None]] = field(default_factory=list)
+    _post_hooks: list[Callable[..., str | None]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.tools = list(self.tools or [])
@@ -56,7 +56,7 @@ class Agent:
     def add_system(self, text: str) -> None:
         self.system = f"{self.system}\n\n{text}" if self.system else text
 
-    def add_post_hook(self, hook: Callable[[str, str], str | None]) -> None:
+    def add_post_hook(self, hook: Callable[..., str | None]) -> None:
         self._post_hooks.append(hook)
 
     def run(self, prompt: str) -> AgentResult:
@@ -78,7 +78,7 @@ class Agent:
                 continue
 
             output = resp.message.content or ""
-            feedback = self._first_feedback(prompt, output)
+            feedback = self._first_feedback(prompt, output, messages)
             if feedback is None:
                 return AgentResult(output=output, messages=messages, usage=usage)
             messages.append(Message(role="user", content=feedback))
@@ -95,9 +95,14 @@ class Agent:
         except Exception as e:
             return f"error: {tc.name} failed: {e}. fix the arguments and retry."
 
-    def _first_feedback(self, task: str, output: str) -> str | None:
+    def _first_feedback(
+        self, task: str, output: str, messages: list[Message]
+    ) -> str | None:
         for hook in self._post_hooks:
-            feedback = hook(task, output)
+            if getattr(hook, "wants_transcript", False):
+                feedback = hook(task, output, messages)
+            else:
+                feedback = hook(task, output)
             if feedback is not None:
                 return feedback
         return None
