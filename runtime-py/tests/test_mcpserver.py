@@ -202,3 +202,54 @@ def test_missing_extra_yields_install_hint(tmp_path, monkeypatch):
     monkeypatch.setattr(m, "MCPServer", None)
     with pytest.raises(SystemExit, match=r"bantamkit\[mcp\]"):
         m.build_server(Memory(store=tmp_path / "store"))
+
+
+def test_recall_k_clamped_to_advertised_bounds(tmp_path):
+    seen = {}
+
+    class Probe(Memory):
+        def _recall(self, query, k=None):
+            seen["k"] = k
+            return "ok"
+
+    server = build_server(Probe(store=tmp_path / "store"))
+
+    async def scenario():
+        async with Client(server) as c:
+            await c.call_tool("memory_recall", {"query": "q", "k": 999})
+            assert seen["k"] == 5
+            await c.call_tool("memory_recall", {"query": "q", "k": 0})
+            assert seen["k"] == 1
+            await c.call_tool("memory_recall", {"query": "q"})
+            assert seen["k"] is None
+
+    run(scenario())
+
+
+def test_empty_store_flag_is_rejected():
+    with pytest.raises(SystemExit, match="non-empty"):
+        _build_memory(_parse_args(["--store", ""]))
+
+
+def test_stdio_subprocess_initializes(tmp_path):
+    import sys
+
+    from mcp import ClientSession
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+
+    params = StdioServerParameters(
+        command=sys.executable,
+        args=["-c", "from bantamkit.mcpserver import main; main()", "--start", str(tmp_path)],
+        cwd=str(tmp_path),
+    )
+
+    async def scenario():
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                init = await session.initialize()
+                assert init.server_info.name == "bantamkit"
+                assert (init.instructions or "").startswith("# Memory")
+                tools = await session.list_tools()
+                assert len(tools.tools) == 3
+
+    run(scenario())

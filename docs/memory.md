@@ -1,6 +1,6 @@
 # Memory
 
-← [README](../README.md) · [Install](install.md) · [Usage](usage.md) · [Eval](eval.md)
+← [README](../README.md) · [Install](install.md) · [Usage](usage.md) · [Eval](eval.md) · [MCP](mcp.md)
 
 The agent never writes memory files. It calls two narrow tools; the store
 enforces format, dedupe and budget. Judgment — *when* and *what* to save — is

@@ -1,6 +1,6 @@
 # Eval
 
-← [README](../README.md) · [Install](install.md) · [Usage](usage.md) · [Memory](memory.md)
+← [README](../README.md) · [Install](install.md) · [Usage](usage.md) · [Memory](memory.md) · [MCP](mcp.md)
 
 The point of the eval harness is one number: does the toolkit actually lift this
 model, and at what token cost? It runs the same task suite under several

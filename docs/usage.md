@@ -1,6 +1,6 @@
 # Usage
 
-← [README](../README.md) · [Install](install.md) · [Memory](memory.md) · [Eval](eval.md)
+← [README](../README.md) · [Install](install.md) · [Memory](memory.md) · [Eval](eval.md) · [MCP](mcp.md)
 
 The runbook for composing an agent. Every block below is copy-paste runnable
 once you have an endpoint from [Install](install.md).

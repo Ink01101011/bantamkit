@@ -1,6 +1,6 @@
 # Install
 
-← [README](../README.md) · [Usage](usage.md) · [Memory](memory.md) · [Eval](eval.md)
+← [README](../README.md) · [Usage](usage.md) · [Memory](memory.md) · [Eval](eval.md) · [MCP](mcp.md)
 
 ## Requirements
 

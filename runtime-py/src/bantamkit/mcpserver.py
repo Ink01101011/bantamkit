@@ -48,6 +48,8 @@ def build_server(memory: Memory) -> Any:
 
     @server.tool(name="memory_recall", description=recall_asset.description)
     def memory_recall(query: str, k: int | None = None) -> str:
+        if k is not None:
+            k = max(1, min(k, 5))  # the advertised schema's bounds; clients may ignore it
         return memory._recall(query, k)
 
     @server.tool(name="validate_json", description=VALIDATE_DESCRIPTION)
@@ -96,7 +98,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _build_memory(args: argparse.Namespace) -> Memory:
-    if args.store:
+    if args.store is not None:
+        if not args.store:
+            raise SystemExit("--store requires a non-empty path")
         return Memory(store=args.store, k=args.k)
     return Memory.layered(start=args.start, k=args.k)
 
