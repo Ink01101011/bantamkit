@@ -532,7 +532,7 @@ def test_lean_config_seeds_memory_store(tmp_path):
 
 
 def test_configs_matrix():
-    assert CONFIGS == ["bare", "structured", "critique", "memory", "lean", "full"]
+    assert CONFIGS == ["bare", "structured", "critique", "grounded", "memory", "lean", "full"]
 
 
 def test_cli_timeout_flag_reaches_client(monkeypatch):
@@ -816,3 +816,28 @@ def test_score_contains_rejects_comma_grouped_superstrings():
     assert score_output(task, "The quota is 200 requests per minute.", []) is True
     assert score_output(task, "It handles 1,200 requests per minute.", []) is False
     assert score_output(task, "About 200, give or take.", []) is True
+
+
+def test_configs_include_grounded_after_critique():
+    assert "grounded" in CONFIGS
+    assert CONFIGS.index("grounded") == CONFIGS.index("critique") + 1
+
+
+def test_grounded_config_critic_sees_tool_evidence(tmp_path):
+    # shop-total: price_lookup tool, json_equal scoring
+    client = FakeClient(
+        [
+            assistant(
+                tool_calls=[ToolCall(id="c1", name="price_lookup", arguments={"item": "widget"})]
+            ),
+            assistant(content='{"total": 100}'),
+            assistant(content='{"score": 2, "feedback": "evidence says widget costs 25"}'),
+            assistant(content='{"total": 100}'),
+            assistant(content='{"score": 9, "feedback": "consistent"}'),
+        ]
+    )
+    result = run_task(client, get_task("shop-total"), "grounded", tmp_path)
+    assert result.critique_rounds == 1
+    critic_prompt = client.calls[2]["messages"][-1].content
+    assert 'price_lookup({"item": "widget"})' in critic_prompt
+    assert result.passed is True

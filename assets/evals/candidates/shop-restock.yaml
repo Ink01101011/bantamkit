@@ -1,0 +1,10 @@
+name: shop-restock
+family: tool-use
+prompt: |
+  We restock every item up to 20 units. Use the tools to check the current
+  stock of "widget", "gadget" and "sprocket", then answer with ONLY this
+  JSON, nothing else: {"item": "<item needing the most units>", "units": <number>}
+tools: [stock_lookup]
+scoring:
+  kind: json_equal
+  expected: {item: sprocket, units: 17}
