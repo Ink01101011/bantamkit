@@ -253,3 +253,8 @@ def test_stdio_subprocess_initializes(tmp_path):
                 assert len(tools.tools) == 3
 
     run(scenario())
+
+
+def test_nonpositive_k_flag_is_rejected():
+    with pytest.raises(SystemExit, match=">= 1"):
+        _build_memory(_parse_args(["--k", "0"]))

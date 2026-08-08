@@ -98,6 +98,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _build_memory(args: argparse.Namespace) -> Memory:
+    if args.k < 1:
+        raise SystemExit("--k must be >= 1")
     if args.store is not None:
         if not args.store:
             raise SystemExit("--store requires a non-empty path")
