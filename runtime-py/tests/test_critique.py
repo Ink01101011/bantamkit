@@ -123,7 +123,8 @@ def test_shipped_rubrics_survive_format(rubric_name):
 def test_shipped_grounded_rubric_survives_format():
     rubric = load_rubric("grounded-completion")
     formatted = rubric.prompt.format(task="t", output="o", evidence="e")
-    assert '{"score"' in formatted
+    assert '{"reasoning"' in formatted and '"score"' in formatted
+    assert rubric.schema["required"] == ["reasoning", "score", "feedback"]
 
 
 def lookup_tool(handler):

@@ -2,8 +2,9 @@ name: grounded-completion
 threshold: 7
 schema:
   type: object
-  required: [score, feedback]
+  required: [reasoning, score, feedback]
   properties:
+    reasoning: {type: string}
     score: {type: integer, minimum: 0, maximum: 10}
     feedback: {type: string}
 prompt: |
@@ -13,6 +14,9 @@ prompt: |
   recompute any numbers yourself from the evidence. If the answer states a
   fact or number that contradicts the evidence, score it 0-4 and put the
   correct values from the evidence in your feedback.
+  In the reasoning field, first work out what the correct answer to the task
+  is, step by step, using ONLY the values in the evidence — do the arithmetic
+  and comparisons yourself. Then compare the given answer against your result.
   Judge ONLY content. Do NOT deduct points for formatting, phrasing, extra
   surrounding text, hedging, or verbosity. An answer that refuses or declines
   to provide what the task asks for is missing the required content — score
@@ -30,4 +34,4 @@ prompt: |
   Score 0-10: 9-10 = required content present, correct, and consistent with
   the evidence; 5-8 = partially correct or missing pieces; 0-4 = wrong,
   absent, or contradicted by the evidence.
-  Return ONLY JSON: {{"score": <int>, "feedback": "<what is wrong or missing, and the correct values from the evidence>"}}
+  Return ONLY JSON: {{"reasoning": "<derive the correct answer from the evidence, then compare the given answer to it>", "score": <int>, "feedback": "<what is wrong or missing, and the correct values from the evidence>"}}

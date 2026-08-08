@@ -831,9 +831,14 @@ def test_grounded_config_critic_sees_tool_evidence(tmp_path):
                 tool_calls=[ToolCall(id="c1", name="price_lookup", arguments={"item": "widget"})]
             ),
             assistant(content='{"total": 999}'),
-            assistant(content='{"score": 2, "feedback": "evidence says widget costs 25"}'),
+            assistant(
+                content='{"reasoning": "widget costs 25, not 999", '
+                '"score": 2, "feedback": "evidence says widget costs 25"}'
+            ),
             assistant(content='{"total": 100}'),
-            assistant(content='{"score": 9, "feedback": "consistent"}'),
+            assistant(
+                content='{"reasoning": "matches evidence", "score": 9, "feedback": "consistent"}'
+            ),
         ]
     )
     result = run_task(client, get_task("shop-total"), "grounded", tmp_path)
