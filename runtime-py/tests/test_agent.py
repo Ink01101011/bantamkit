@@ -1,7 +1,14 @@
 import pytest
 from conftest import FakeClient, assistant, call
 
-from bantamkit.agent import Agent, AgentResult, MaxTurnsExceeded, ToolDef, truncate
+from bantamkit.agent import (
+    Agent,
+    AgentResult,
+    MaxTurnsExceeded,
+    ToolDef,
+    coerce_arguments,
+    truncate,
+)
 from bantamkit.client import Tool
 
 
@@ -97,6 +104,24 @@ def test_max_turns_exceeded_raises():
         agent.run("t")
 
 
+def test_max_turns_exceeded_carries_the_transcript():
+    """The run most worth diagnosing must not be the one that records nothing."""
+    client = FakeClient(
+        [assistant(tool_calls=[call("lookup", {"item": "w"}, id=f"c{i}")]) for i in range(2)]
+    )
+    agent = Agent(client=client, tools=[lookup_tool(lambda item: "again")], max_turns=2)
+    with pytest.raises(MaxTurnsExceeded) as excinfo:
+        agent.run("t")
+    messages = excinfo.value.messages
+    assert [m.role for m in messages] == ["user", "assistant", "tool", "assistant", "tool"]
+    assert [tc.name for m in messages for tc in m.tool_calls] == ["lookup", "lookup"]
+
+
+def test_max_turns_exceeded_messages_defaults_to_empty():
+    """Constructed without a transcript (older callers, tests) it is still a list."""
+    assert MaxTurnsExceeded("no final answer").messages == []
+
+
 def test_post_hook_feedback_then_accept():
     client = FakeClient([assistant(content="draft"), assistant(content="final")])
     verdicts = iter(["too vague — add the number", None])
@@ -139,6 +164,112 @@ def test_transcript_hook_receives_tool_observations():
     assert seen["task"] == "price of widget?" and seen["output"] == "price is 25"
     tool_msgs = [m for m in seen["messages"] if m.role == "tool"]
     assert len(tool_msgs) == 1 and tool_msgs[0].content == "widget: 25"
+
+
+# ---- P1a: tool-argument schema coercion ----
+
+COERCION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "query": {"type": "string"},
+        "k": {"type": "integer"},
+        "ratio": {"type": "number"},
+        "deep": {"type": "boolean"},
+        "untyped": {},
+    },
+}
+
+
+@pytest.mark.parametrize(
+    "arguments,expected",
+    [
+        ({"k": "10"}, {"k": 10}),  # the measured 3b failure: k as a JSON string
+        ({"ratio": "1.5"}, {"ratio": 1.5}),
+        ({"ratio": "2"}, {"ratio": 2.0}),
+        ({"deep": "true"}, {"deep": True}),
+        ({"deep": "FALSE"}, {"deep": False}),
+        ({"k": 10, "deep": False}, {"k": 10, "deep": False}),  # well typed: byte-identical
+        ({"query": "10"}, {"query": "10"}),  # declared string: never touched
+        ({"unknown": "10"}, {"unknown": "10"}),  # not in the schema
+        ({"untyped": "10"}, {"untyped": "10"}),  # in the schema, no declared type
+        ({"k": "ten"}, {"k": "ten"}),  # unconvertible: original survives
+        ({"k": "1.5"}, {"k": "1.5"}),  # int("1.5") fails: original survives
+        ({"deep": "yes"}, {"deep": "yes"}),  # not a JSON boolean spelling
+        ({}, {}),
+    ],
+)
+def test_coerce_arguments_table(arguments, expected):
+    assert coerce_arguments(arguments, COERCION_SCHEMA) == expected
+
+
+def test_coerce_arguments_no_properties_is_a_noop():
+    for parameters in ({"type": "object"}, {}, {"properties": None}):
+        assert coerce_arguments({"k": "10"}, parameters) == {"k": "10"}
+
+
+def test_coerce_arguments_does_not_mutate_the_caller_dict():
+    arguments = {"k": "10"}
+    assert coerce_arguments(arguments, COERCION_SCHEMA) == {"k": 10}
+    assert arguments == {"k": "10"}
+
+
+def test_coerce_arguments_ignores_nested_objects():
+    """Top level only until a model is measured sending nested arguments wrong."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "opts": {"type": "object", "properties": {"k": {"type": "integer"}}},
+        },
+    }
+    assert coerce_arguments({"opts": {"k": "10"}}, schema) == {"opts": {"k": "10"}}
+
+
+def recall_tool(handler):
+    return ToolDef(
+        tool=Tool(
+            name="recall",
+            description="d",
+            parameters={
+                "type": "object",
+                "required": ["query"],
+                "properties": {"query": {"type": "string"}, "k": {"type": "integer"}},
+            },
+        ),
+        handler=handler,
+    )
+
+
+def test_dispatch_coerces_string_int_before_calling_the_handler():
+    seen = {}
+
+    def handler(query, k=3):
+        seen["k"] = k
+        return f"{query}:{k}"
+
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("recall", {"query": "deploy", "k": "10"})]),
+            assistant(content="done"),
+        ]
+    )
+    Agent(client=client, tools=[recall_tool(handler)]).run("t")
+    assert seen["k"] == 10 and isinstance(seen["k"], int)
+    assert client.calls[1]["messages"][-1].content == "deploy:10"
+
+
+def test_dispatch_leaves_unconvertible_arguments_to_the_existing_error_path():
+    def handler(query, k=3):
+        return "x" * k  # dies on a str k, exactly as today
+
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("recall", {"query": "deploy", "k": "many"})]),
+            assistant(content="recovered"),
+        ]
+    )
+    Agent(client=client, tools=[recall_tool(handler)]).run("t")
+    obs = client.calls[1]["messages"][-1].content
+    assert obs.startswith("error: recall failed:") and "retry" in obs
 
 
 def test_plain_hook_still_gets_two_args_alongside_transcript_hook():
