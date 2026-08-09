@@ -95,7 +95,8 @@ Two details make that comparison fair rather than flattering:
   can. Read the comparison as close, not exact. Exhausting the budget raises
   `StructuredOutputError`, which lands under explicit failures rather than
   crashing the sweep.
-- **Gate ordering.** `SchemaGate` is registered *ahead* of `CritiqueGate`, so
+- **Gate ordering.** `SchemaGate` is registered *ahead* of the critique gate
+  (`GroundedCritiqueGate` in `full`), so
   malformed output is repaired before a critique call is spent on it. Reviewing
   the quality of unparseable JSON would burn tokens to reach the same verdict.
 
@@ -201,7 +202,7 @@ selected this cycle's task sit beside it
 | grounded | 33/60 | 80494 | 0.41 |
 | memory | 57/60 | 45447 | 1.25 |
 | lean | 56/60 | 46344 | 1.21 |
-| full | 56/60 | 68070 | 0.82 |
+| full | 60/60* | 86162 | 0.70 |
 
 Per family (score · tokens):
 
@@ -213,7 +214,7 @@ Per family (score · tokens):
 | grounded | 0/27 · 46303 tok | 15/15 · 10460 tok | 18/18 · 23731 tok |
 | memory | 27/27 · 35557 tok | 15/15 · 1059 tok | 15/18 · 8831 tok |
 | lean | 27/27 · 35690 tok | 15/15 · 1830 tok | 14/18 · 8824 tok |
-| full | 26/27 · 46594 tok | 15/15 · 6826 tok | 15/18 · 14650 tok |
+| full | 27/27 · 52544 tok* | 15/15 · 11155 tok* | 18/18 · 22463 tok* |
 
 ```
 Failure outcomes:
@@ -223,8 +224,13 @@ Failure outcomes:
 - grounded: critique-exhausted ×4, wrong-answer ×23
 - memory: wrong-answer ×3
 - lean: wrong-answer ×4
-- full: critique-exhausted ×1, wrong-answer ×3
+- full: none*
 ```
+
+\* `full` rows re-measured 2026-08-09 after v0.5 swapped its blind
+`CritiqueGate` for `GroundedCritiqueGate` (60 runs,
+`docs/eval-data/2026-08-09-full-grounded-rerun.jsonl`); every other row is
+the original 420-run sweep, which the swap does not touch.
 
 Discriminating tasks: 11/20
 
@@ -233,13 +239,13 @@ Discriminating tasks: 11/20
 | recall-audit-retention | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
 | recall-cache-ttl | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
 | recall-db-port | 0/3 | 0/3 | 1/3 | 0/3 | 3/3 | 3/3 | 3/3 |
-| recall-deploy | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 2/3 |
+| recall-deploy | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3* |
 | recall-env-endpoint | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
 | recall-oncall | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
 | recall-oncall-rotation | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
 | recall-org-quota | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
 | recall-owner | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
-| shop-basket-total | 0/3 | 0/3 | 0/3 | 3/3 | 0/3 | 0/3 | 0/3 |
+| shop-basket-total | 0/3 | 0/3 | 0/3 | 3/3 | 0/3 | 0/3 | 3/3* |
 | shop-stock-total | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 2/3 | 3/3 |
 
 What the sweep says:
@@ -267,11 +273,13 @@ What the sweep says:
   blind critic's (10460 vs 6111 tokens for the same 15/15). Attach it when
   answers derive from tool output; attach `Memory` when answers derive
   from the past.
-- **`full`'s blind critic is now a measured liability**: `full` fails
-  shop-basket-total 0/3 while the grounded gate passes it 3/3. Whether
-  `full` should swap `CritiqueGate` for `GroundedCritiqueGate` is the open
-  question this data raises for a future cycle; it stays blind in this one
-  so the comparison stays clean.
+- **`full` adopted the grounded gate in v0.5 and re-measured 60/60 — the
+  suite's first perfect config.** The blind-critic `full` of the original
+  sweep failed shop-basket-total 0/3 and flaked recall-deploy 2/3; the
+  grounded `full` passes everything, spending 3 revision rounds and +27%
+  tokens over its blind self (86162 vs 68070). Score/1k is 0.70 vs `lean`'s
+  1.21 — `lean` remains the efficiency ship config; grounded `full` is what
+  you run when tool-derived correctness is worth the bill.
 - **The gates fire on this suite now.** Previous sweep: `critique_rounds
   == 0` in every `full` run. This sweep: 23 revision rounds under
   `critique`, 25 under `grounded`, 2 under `full`, and 13 runs ending
