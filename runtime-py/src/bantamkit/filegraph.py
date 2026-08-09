@@ -61,6 +61,8 @@ class FileAccessGraph:
         def handler(**kwargs):
             observation = str(inner(**kwargs))
             raw = kwargs.get(path_arg)
+            # `error:` is the harness-wide failure convention (Agent._dispatch emits it too),
+            # so genuine file content starting with "error:" is invisible to the ledger.
             if raw is None or observation.startswith("error:"):
                 return observation
             return self._record(tool_name, posixpath.normpath(str(raw)), observation)
@@ -101,5 +103,8 @@ class FileAccessGraph:
         Path(path).write_text(json.dumps([asdict(r) for r in self.reads.values()]))
 
     def load(self, path: str | Path) -> None:
+        """Restore a saved ledger. Precondition: only resume a ledger together with the
+        transcript it was built against — restored entries collapse repeat reads to markers,
+        which a model that never saw the original content cannot act on."""
         for entry in json.loads(Path(path).read_text()):
             self.reads[entry["path"]] = FileRead(**entry)
