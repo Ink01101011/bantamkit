@@ -855,8 +855,8 @@ score. `graph` and `structured` are the efficiency winners (~1.4/1k).
 ### The recall story across models
 
 The project's core claim — recall goes ~0/27 without a store to ~27/27
-with one — turns out to **scale with model size** rather than transfer
-flat:
+with one — turns out to **vary sharply by model** rather than transfer
+flat (and not monotonically with size — 7b lands below the smaller 4b):
 
 | | 3b | 4b (ref) | 7b | 14b |
 |---|---|---|---|---|
@@ -914,7 +914,7 @@ grounded) are blocked cross-model by the verdict-contract failure (P2).
    harness pins no temperature or seed (verified — neither `client.py`
    nor `evalrun.py` sends either), and the off-family code path is
    provably identical (`FileAccessGraph` only attaches workspace tools
-   when the task lists them; per-cell diffs are symmetric, both
+   when the task lists them; per-cell diffs go in both
    directions). The prediction's exact-equality framing over-assumed
    determinism; 4b's 0/20 was a peaked output distribution, i.e. luck.
    The honest form of the check is code-level wiring plus statistical

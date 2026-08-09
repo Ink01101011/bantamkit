@@ -48,17 +48,18 @@ per-claim transfer table in
 
 - **Always attach `Memory`** — the biggest single mover on every model
   measured (e.g. 30/66 → 57/66 on the 4b reference, 34/66 → 59/66 on
-  14b). How *much* of the recall family it rescues scales with model size
-  (6/27 on 3b → 27/27 on 4b); the gap is contract wording, not the store
-  — tracked as problems P1/P4 in the eval docs.
+  14b). How *much* of the recall family it rescues varies sharply by
+  model (6/27 on 3b, 9/27 on 7b, 23/27 on 14b, 27/27 on 4b — 7b scores
+  below the smaller 4b); the gap is contract wording, not the store —
+  tracked as problems P1/P4 in the eval docs.
 - **Skip the blind `CritiqueGate` on small instruct models** — on all
   four models it buys ≤6 passes at 2–3.5× bare's tokens. Attach a
   critique gate only with a rubric that catches failures you have
   actually observed, and prefer instruct over thinking variants.
 - **Use `structured()` when you need schema'd output** — enforcement
   costs nothing when the model complies: zero schema retries in 2,112
-  runs across all four models, and on 7b/14b it is the *most*
-  token-efficient config in the matrix.
+  runs across all four models; on 7b it is the most token-efficient
+  config in the matrix, on 14b second only to `graph`.
 - **Attach `FileAccessGraph` when the agent reads files — on ~4B-class
   models** — it rescued both file-nav tasks 0/3 → 3/3 at +26% tokens on
   the reference. Scope measured honestly: below that class the model
@@ -73,8 +74,8 @@ per-claim transfer table in
   (tiered contract + constrained decoding), not a fundamental limit.
 - **Prefer `GroundedCritiqueGate` over `CritiqueGate` when the agent has
   tools — same 4b scope** — the critic sees tool call/observation pairs
-  and rescued the tool-arithmetic task 3/3 that every other config failed
-  0/3. Cross-model it is gated on the same P2 fix.
+  and rescued the tool-arithmetic task 3/3 that every config without a
+  grounded critic failed 0/3. Cross-model it is gated on the same P2 fix.
 
 Copy-paste start: [`examples/`](examples/).
 
