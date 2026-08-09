@@ -52,8 +52,10 @@ evidence_empty: "(no tool calls were made)"
 New module `runtime-py/src/bantamkit/contract.py` (Layer-2 code: loading,
 rendering, outbound parsing):
 
-- `load_contract(name="default") -> Contract` (cached; `AssetNotFound` on
-  missing, missing-key validation on load)
+- `load_contract(name="default") -> Contract` (uncached — deliberate:
+  caching would freeze `BANTAMKIT_ASSETS` override semantics and the
+  files are tiny next to a model call; `AssetNotFound` on missing,
+  missing-key validation on load)
 - `schema_instruction(schema) -> str`, `schema_retry_feedback(error) -> str`,
   `critique_feedback(score, threshold, feedback) -> str`
 - `render_evidence(messages, budget=…) -> str` (moves from critique.py)
@@ -92,7 +94,8 @@ critique: {max_rounds: 3, evidence_budget: 4096}
 ```
 
 New module `runtime-py/src/bantamkit/profile.py`: `load_profile(name="default")
--> Profile` (cached, validated). Components resolve defaults through it:
+-> Profile` (uncached like `load_contract`, validated). Components
+resolve defaults through it:
 constructor signatures change from `max_turns: int = 10` to
 `max_turns: int | None = None`, resolving `None` from the default profile
 at construction. **Explicit arguments always win**; the default profile
