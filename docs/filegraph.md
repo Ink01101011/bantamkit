@@ -17,7 +17,9 @@ agent = Agent(client=client, tools=[read_file_tool]).use(graph)
 `readers` maps tool name → the argument holding the file path. Only
 declared readers are tracked; tools registered after `use(graph)` are
 still wrapped (registration is intercepted), but tools appended directly
-to `agent.tools` bypass the graph — the one documented gap.
+to `agent.tools` bypass the graph. Observations starting with `error:`
+(the harness-wide failure convention) are also never recorded — genuine
+file content beginning with that prefix is invisible to the ledger.
 
 ## The three mechanisms
 
@@ -25,7 +27,10 @@ Each is independently toggleable:
 
 - **`annotate`** — a repeat read gets a one-line prefix:
   `[file-graph] read #2 of config.yaml via read_file — unchanged since
-  your last read` (or `CHANGED`). First reads pass through byte-identical.
+  your last read` (or `CHANGED`). First reads pass through
+  byte-identical. With `cache` also on (the default), the unchanged case
+  collapses to the cache marker instead — the prefix form appears on
+  changed content, or when `cache=False`.
 - **`cache`** (verify-on-repeat) — the real handler runs on *every* call;
   when the fresh content hashes identical to the previous read, the
   observation is replaced with a short marker instead of repeating the
@@ -39,11 +44,14 @@ Each is independently toggleable:
 
 `graph.save(path)` / `graph.load(path)` round-trip the ledger as JSON.
 The core lifecycle is per-run; persistence is API only — no cross-session
-uplift is claimed or measured yet. Only resume a saved ledger together with the transcript it was built against — restored entries collapse repeat reads to markers a fresh model has never seen the content behind.
+uplift is claimed or measured yet. Only resume a saved ledger together
+with the transcript it was built against — restored entries collapse
+repeat reads to markers a fresh model has never seen the content behind.
 
 ## Measured
 
 See [Eval → Current results](eval.md#current-results): the `graph` config
-is `bare` + `FileAccessGraph` on the file-nav task family, with ablation
+is `bare` + `FileAccessGraph` on tasks with workspace file tools (the
+file-nav candidate family), with ablation
 configs (`graph-annotate`, `graph-cache`) used during calibration to
 attribute which mechanism moves the number.
