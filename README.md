@@ -85,6 +85,7 @@ ship as an [MCP server](docs/mcp.md).
 ## Docs
 
 - [Install](docs/install.md) — requirements, editable install, pointing at an endpoint, `BANTAMKIT_ASSETS`
+- [Architecture](docs/architecture.md) — the 5-layer model: what lives where, the no-mixing rule, what the TS port shares
 - [Usage](docs/usage.md) — the runbook: client, agent, tools, components, `structured()`, error types
 - [Memory](docs/memory.md) — on-disk layout, the four ops, dedupe and budget, compact/archive
 - [File-access graph](docs/filegraph.md) — the read ledger: repeat annotation, verify-on-repeat cache, `file_graph` query tool
