@@ -1,9 +1,9 @@
-# The conservative default profile. Every number here was calibrated on
-# qwen3:4b-instruct (the reference model) — the cross-model sweep measured
-# that honestly; per-model profiles are future work (P6).
-name: default
+# Default, but with a longer turn budget: for models that need more steps than
+# the 4b-calibrated default (measured: 3b file-nav and 7b recall died of turn
+# exhaustion under max_turns 10). Calibration-only until a bar says otherwise.
+name: patient
 agent:
-  max_turns: 10
+  max_turns: 16
   observation_budget: 4096
 structured:
   max_retries: 3
