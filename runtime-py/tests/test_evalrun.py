@@ -929,6 +929,22 @@ def test_graph_config_collapses_repeat_read(tmp_path):
     assert "file_graph" in [t.name for t in client.calls[0]["tools"]]
 
 
+def test_graph_annotate_ablation_annotates_without_collapsing(tmp_path):
+    """The calibration signal: cache=False keeps full content, query=False no file_graph tool."""
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("read_file", {"path": "notes/a.md"})]),
+            assistant(tool_calls=[call("read_file", {"path": "notes/a.md"}, id="c2")]),
+            assistant(content='{"x": 1}'),
+        ]
+    )
+    result = run_task(client, workspace_task(), "graph-annotate", tmp_path)
+    assert result.passed is True
+    second = client.calls[2]["messages"][-1].content
+    assert second.startswith("[file-graph]") and second.endswith("alpha")
+    assert "file_graph" not in [t.name for t in client.calls[0]["tools"]]
+
+
 def test_graph_config_is_noop_without_workspace_tools(tmp_path):
     client = FakeClient([assistant(content="The total stock value is 100.")])
     result = run_task(client, get_task("shop-total"), "graph", tmp_path)
