@@ -18,7 +18,7 @@ harness configurations against the same endpoint.
 |---|---|---|
 | `--base-url` | yes | OpenAI-compatible endpoint, including the path prefix |
 | `--model` | yes | Model name as the endpoint knows it |
-| `--config` | no | One of `bare`, `structured`, `critique`, `grounded`, `memory`, `lean`, `full`. Repeatable. Default: all seven |
+| `--config` | no | One of `bare`, `structured`, `critique`, `grounded`, `graph`, `memory`, `lean`, `full` (plus calibration-only `graph-annotate`, `graph-cache`). Repeatable. Default: the eight matrix configs |
 | `--timeout` | no | Per-request timeout in seconds. Default: 60 |
 | `--repeats` | no | Runs per (config, task) pair. Default: 1. Repeats narrow the run-to-run noise band and are how candidate tasks are calibrated |
 | `--tasks` | no | Directory of task YAML files to run instead of the builtin suite |
@@ -32,7 +32,7 @@ Narrow it while iterating:
   --config bare --config full
 ```
 
-Every task runs against a live model, so a full sweep is 7 configs × all tasks
+Every task runs against a live model, so a full sweep is 8 configs × all tasks
 × `--repeats` runs. Start with `--config bare --config full`, and pass `--json`
 on long sweeps so partial results survive an interrupted run.
 
@@ -267,7 +267,8 @@ What the sweep says:
   `grounded` 5/6, `full` 6/6 — and `graph` 6/6. What distinguishes
   `graph` is cost: 11776 file-nav tokens vs `critique`'s 15396,
   `grounded`'s 20078 and `full`'s 22839, with no gate calls at all. The
-  calibration ablations sharpen this: annotate-only and cache-only fail
+  calibration ablations sharpen this: annotate-only and cache+annotate
+  (query off) fail
   exactly like `bare`, so within the graph the rescue is the query
   mechanism (the `file_graph` tool + its system snippet) — and the data
   cannot separate "the ledger helped" from "any task-relevant system
@@ -288,7 +289,11 @@ What the sweep says:
   calibration measured `bare` 3/3 but `graph` 0/3 — ledger-guided runs
   consistently surfaced the stale value. A file-access ledger is not a
   relevance oracle: it tells the model what it read, not which read to
-  trust. Dropped per the bar; numbers in the tuned calibration JSONL.
+  trust. Dropped per the bar. The other two drops saturated after the
+  tuning pass — nav-owner-team and nav-quota-endpoint both measured
+  bare 3/3 vs graph 3/3, with graph *costing more* tokens (3918 vs 2631
+  and 6072 vs 4356), clearing neither bar. All numbers in the tuned
+  calibration JSONL.
 - **Repeat variance: one split cell in 176** (nav-prod-port `grounded`
   2/3). `schema_retries` is 0 in all 528 runs — the
   structured-instruction-tax negative stands through its sixth sweep.

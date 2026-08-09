@@ -62,7 +62,8 @@ The three mechanisms, each independently toggleable:
   content.
 - **`query`**: registers a `file_graph` tool (asset-pack schema, no
   required args) returning the compact map — one line per node:
-  `{path} — {count} read(s) via {tool}, last {unchanged|changed}`. Empty
+  `{path} — {count} read(s) via {tool}, {unchanged|changed}` (changed is
+  sticky: changed at least once). Empty
   graph returns `no files read yet`. When enabled, `add_system` attaches a
   short `file-graph` skill snippet (asset pack) telling the model the tool
   exists and to consult it before re-reading.

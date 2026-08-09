@@ -46,7 +46,8 @@ tables in [Eval → Current results](docs/eval.md#current-results)):
 - **Always attach `Memory`** — the biggest single mover on this suite
   (30/66 → 57/66).
 - **Attach `FileAccessGraph` when the agent reads files** — it rescued both
-  file-nav tasks 0/3 → 3/3 at +26% tokens over bare, and measures as an
+  file-nav tasks 0/3 → 3/3 — its whole uplift cost +26% tokens
+  suite-wide over bare — and measures as an
   exact no-op on tasks without file tools. Caveat measured honestly: its
   ledger is not a relevance oracle (a stale-config trap task got *worse*
   with it — recorded in the eval docs).

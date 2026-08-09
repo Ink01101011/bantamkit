@@ -37,7 +37,9 @@ Each is independently toggleable:
   content. What is saved is model tokens, not disk I/O — the marker can
   never be stale, because it is only issued after re-reading.
 - **`query`** — registers a `file_graph` tool returning the ledger
-  (`path — N read(s) via tool, unchanged|changed`) plus a system-prompt
+  (`path — N read(s) via tool, unchanged|changed`; *changed* is sticky —
+  it means changed at least once, not changed on the last read) plus a
+  system-prompt
   snippet telling the model to consult it before re-reading.
 
 ## Persistence (opt-in)
