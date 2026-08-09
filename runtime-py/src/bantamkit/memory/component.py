@@ -16,6 +16,20 @@ from bantamkit.memory.store import (
 )
 
 
+def normalize_name(name: str) -> str:
+    """The model's spelling adapted to the store's contract: lowercase, `_`/space → `-`.
+
+    The store's pattern `^[a-z0-9][a-z0-9-]*$` does not move; the component
+    bends the argument to it, the same direction as tool-argument coercion.
+    Measured cause: 5 of the 7b probe runs burned their whole turn budget
+    retrying `memory_save` with the snake_case names the model invents.
+    Non-strings are handed on untouched so store validation still speaks.
+    """
+    if not isinstance(name, str):
+        return name
+    return name.strip().lower().replace("_", "-").replace(" ", "-")
+
+
 def _layer_label(root: Path) -> str:
     if root.parent.name == ".bantamkit":
         return root.parent.parent.name
@@ -53,8 +67,10 @@ class Memory:
     def save(
         self, type: str, name: str, description: str, body: str, links: list[str] | None = None
     ) -> str:
+        name = normalize_name(name)
+        links = [normalize_name(link) for link in links or []]
         try:
-            result = self.store.save(type, name, description, body, tuple(links or ()))
+            result = self.store.save(type, name, description, body, tuple(links))
         except MemoryValidationError as e:
             return f"error: {e}"
         except MemoryBudgetExceeded as e:
