@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -139,6 +140,9 @@ class TaskResult:
     schema_retries: int
     critique_rounds: int
     error: str | None
+    # Trailing field: new JSONL columns are additive, old rows simply lack them.
+    # None means no seed was applied (a client that has no `seed` attribute to pin).
+    seed: int | None = None
 
 
 class TrackingClient:
@@ -277,6 +281,21 @@ def classify_outcome(
     return "wrong-answer"
 
 
+def run_seed(model: str, task_name: str, repeat: int) -> int:
+    """One deterministic sampling seed per (model, task, repeat).
+
+    SHA-256 rather than Python's `hash()`, which is salted per process — a seed that
+    changes between sweeps records nothing. Truncated to 32 bits, which every server
+    accepts.
+
+    **Config is deliberately excluded**: every config of a (task, repeat) shares one
+    seed, so `bare` vs `graph` off-family is exact-equality-falsifiable again instead
+    of paying a sampling-noise tax on the first call of each run (P9).
+    """
+    digest = hashlib.sha256(f"{model}\x1f{task_name}\x1f{repeat}".encode()).digest()
+    return int.from_bytes(digest[:4], "big")
+
+
 def _message_dict(message: Message) -> dict:
     """Exactly the `Message` fields, JSON-ready — the transcript is a post-hoc read, not a wire."""
     return {
@@ -310,6 +329,7 @@ def _write_transcript(
         "repeat": repeat,
         "passed": result.passed,
         "outcome": result.outcome,
+        "seed": result.seed,
         "output": output,
         "messages": [_message_dict(m) for m in messages],
     }
@@ -327,6 +347,15 @@ def run_task(
     transcripts_dir: Path | None = None,
     repeat: int = 0,
 ) -> TaskResult:
+    # Applied by duck typing, not by signature: a client that carries a `seed` attribute
+    # (OpenAICompatible does) gets this run's pinned seed; anything else is left alone and
+    # records `seed: None`, because a seed the client ignored would be provenance fiction.
+    # chat() is untouched either way.
+    applied_seed: int | None = None
+    if hasattr(client, "seed"):
+        applied_seed = run_seed(getattr(client, "model", ""), task["name"], repeat)
+        client.seed = applied_seed
+
     tracking = TrackingClient(client)
     workspace_tools = _workspace_tools(task.get("workspace") or {})
     tools = [
@@ -339,9 +368,9 @@ def run_task(
     critique_gate: CritiqueGate | None = None
     if config in ("memory", "lean", "full") and task.get("memory_setup"):
         store_dir = workdir / f"{task['name']}-{config}-mem"
-        seed = MemoryStore(store_dir)
+        store = MemoryStore(store_dir)
         for fact in task["memory_setup"]:
-            seed.save(fact["type"], fact["name"], fact["description"], fact["body"])
+            store.save(fact["type"], fact["name"], fact["description"], fact["body"])
         agent.use(Memory(store=store_dir))
     if config in ("lean", "full") and "schema" in task:
         # The agent owns the loop here, so it needs the same instruction structured() gives.
@@ -399,6 +428,7 @@ def run_task(
         schema_retries=schema_retries,
         critique_rounds=critique_gate.rounds_used if critique_gate else 0,
         error=f"{type(caught).__name__}: {caught}" if caught else None,
+        seed=applied_seed,
     )
     if transcripts_dir is not None:
         _write_transcript(transcripts_dir, result, repeat, output, messages)
