@@ -18,12 +18,13 @@ harness configurations against the same endpoint.
 |---|---|---|
 | `--base-url` | yes | OpenAI-compatible endpoint, including the path prefix |
 | `--model` | yes | Model name as the endpoint knows it |
-| `--config` | no | One of `bare`, `structured`, `critique`, `grounded`, `graph`, `memory`, `lean`, `full` (plus calibration-only `graph-annotate`, `graph-cache`). Repeatable. Default: the eight matrix configs |
+| `--config` | no | One of `bare`, `structured`, `critique`, `grounded`, `graph`, `memory`, `lean`, `full` (plus calibration-only `graph-annotate`, `graph-cache`, `budgeted` = `full` + `TokenBudget`). Repeatable. Default: the eight matrix configs |
 | `--timeout` | no | Per-request timeout in seconds. Default: 60 |
 | `--repeats` | no | Runs per (config, task) pair. Default: 1. Repeats narrow the run-to-run noise band and are how candidate tasks are calibrated |
 | `--tasks` | no | Directory of task YAML files to run instead of the builtin suite |
 | `--json` | no | Append one JSON line per finished run (all `TaskResult` fields) to this file as the sweep progresses — a killed sweep keeps its partial results |
 | `--transcripts` | no | Dump one `<config>--<task>--r<repeat>.json` per finished run into this directory (created if missing): the run's verdict, final output and full message list. This is how a failure gets diagnosed after the sweep instead of by re-running it |
+| `--eval-profile` | no | Run every component under a named profile from `assets/profiles/` (e.g. `patient`) instead of `default`. Calibration tool — headline results always use `default` |
 
 Narrow it while iterating:
 
@@ -1022,12 +1023,42 @@ the next cycle makes physical:
   the probe cell.
 - **P6 — 3b file-nav dies on turn budget.** `max_turns=10` is itself a
   4b-calibrated constant. Fix: per-profile turn budgets. (Policy.)
+  **Measured in v0.10.0 — hypothesis refuted.** Profiles are now
+  selectable (`--eval-profile`, `patient` profile with `max_turns: 16`),
+  and the measurement says more turns convert nothing: 3b `graph` under
+  `patient` still loses both `nav-release-bundle` repeats to
+  `turns-exhausted`, and 7b recall under `patient` converts 3
+  turn-exhaustions to 2 at the same 19/27 score for **+19% tokens**
+  (171k vs 144k). The residue is the model *looping*, not budget
+  starvation — the 4b-calibrated 10 was not the binding constraint.
+  Attack plan for the residue: loop detection (repeated identical tool
+  calls/answers), a future primitive; blind turn-budget raises are now
+  measured waste.
 - **P3 — no global token ceiling.** 3b `full`: 214,698 tokens for 15/66 —
   every gate has a local cap but composition multiplies them. Fix:
   `TokenBudget` primitive — soft degradation ladder + hard ceiling that
   still emits a scored best-effort answer. (Core mechanics + Policy
   numbers; attack after P2/P4 so the remaining real blowup is measured,
-  not the contract-retry waste.)
+  not the contract-retry waste.) **Shipped in v0.10.0, measured as a
+  tail-cutter.** First, the attack order paid off: the seeded 3b `full`
+  baseline is now 21/66 at 148k tokens — the P1/P2/P4 fixes compound to
+  +6 score and −31% tokens vs the pre-fix 15/66 at 215k
+  (`schema-exhausted` 22 → 1), so the blowup TokenBudget was drafted
+  against largely no longer exists. Against that baseline, `budgeted`
+  (= `full` + TokenBudget, ceiling 6000 / optional-cutoff 0.75) scores
+  the same 21/66 and truncated exactly one tail run
+  (`budget-exhausted` ×1, a run that burned 6.5k unbounded), but total
+  tokens came out +0.75% (149,335 vs 148,215) — the strictly-below bar
+  **missed**: the governor sees only agent-loop spend (critic calls are
+  invisible to it — first-class debt in the spec; attack: budget-aware
+  client wrapping), and on this suite's distribution the default
+  ceiling only catches the extreme tail. On 4b, `budgeted` is an exact
+  no-op: **byte-equal** to the seeded `full` cell (64/66, 111,382
+  tokens — incidentally a 66-run replay-determinism demonstration).
+  Cell replay: 2/3 repeats byte-identical, 1 diverged (llama.cpp server
+  nondeterminism — the documented P9 bound). Verdict: safety net
+  verified, economizer not yet — that claim waits on critic-spend
+  visibility, and TokenBudget stays out of the headline configs.
 
 (P5 — tool-use uplift on non-4b models — is not separately actionable: it
 is P2's shadow. Grounded critique can't rescue tool tasks on a model
