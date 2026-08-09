@@ -117,3 +117,42 @@ def test_agent_tools_none_normalized():
     client = FakeClient([assistant(content="ok")])
     result = Agent(client=client, tools=None).run("t")
     assert result.output == "ok"
+
+
+def test_transcript_hook_receives_tool_observations():
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("lookup", {"item": "widget"})]),
+            assistant(content="price is 25"),
+        ]
+    )
+    agent = Agent(client=client, tools=[lookup_tool(lambda item: f"{item}: 25")])
+    seen = {}
+
+    def hook(task, output, messages):
+        seen["task"], seen["output"], seen["messages"] = task, output, messages
+        return None
+
+    hook.wants_transcript = True
+    agent.add_post_hook(hook)
+    agent.run("price of widget?")
+    assert seen["task"] == "price of widget?" and seen["output"] == "price is 25"
+    tool_msgs = [m for m in seen["messages"] if m.role == "tool"]
+    assert len(tool_msgs) == 1 and tool_msgs[0].content == "widget: 25"
+
+
+def test_plain_hook_still_gets_two_args_alongside_transcript_hook():
+    client = FakeClient([assistant(content="ok")])
+    agent = Agent(client=client)
+    calls = []
+
+    def transcript_hook(task, output, messages):
+        calls.append(("transcript", len(messages)))
+        return None
+
+    transcript_hook.wants_transcript = True
+    agent.add_post_hook(transcript_hook)
+    agent.add_post_hook(lambda task, output: calls.append(("plain", task, output)) or None)
+    agent.run("t")
+    assert calls[0][0] == "transcript" and calls[0][1] >= 2
+    assert calls[1] == ("plain", "t", "ok")

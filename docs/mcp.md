@@ -13,7 +13,7 @@ The MCP dependency is an optional extra; the core library never needs it:
 
 ```bash
 .venv/bin/pip install -e "runtime-py[mcp]"        # from a clone
-pip install "bantamkit[mcp] @ git+https://github.com/Ink01101011/bantamkit.git@v0.3.0#subdirectory=runtime-py"
+pip install "bantamkit[mcp] @ git+https://github.com/Ink01101011/bantamkit.git@v0.4.0#subdirectory=runtime-py"
 ```
 
 (SSH form works the same — see [Install → Pinned install](install.md#pinned-install-from-a-tag).)

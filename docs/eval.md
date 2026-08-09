@@ -18,7 +18,7 @@ harness configurations against the same endpoint.
 |---|---|---|
 | `--base-url` | yes | OpenAI-compatible endpoint, including the path prefix |
 | `--model` | yes | Model name as the endpoint knows it |
-| `--config` | no | One of `bare`, `structured`, `critique`, `memory`, `lean`, `full`. Repeatable. Default: all six |
+| `--config` | no | One of `bare`, `structured`, `critique`, `grounded`, `memory`, `lean`, `full`. Repeatable. Default: all seven |
 | `--timeout` | no | Per-request timeout in seconds. Default: 60 |
 | `--repeats` | no | Runs per (config, task) pair. Default: 1. Repeats narrow the run-to-run noise band and are how candidate tasks are calibrated |
 | `--tasks` | no | Directory of task YAML files to run instead of the builtin suite |
@@ -32,7 +32,7 @@ Narrow it while iterating:
   --config bare --config full
 ```
 
-Every task runs against a live model, so a full sweep is 6 configs × all tasks
+Every task runs against a live model, so a full sweep is 7 configs × all tasks
 × `--repeats` runs. Start with `--config bare --config full`, and pass `--json`
 on long sweeps so partial results survive an interrupted run.
 
@@ -57,6 +57,7 @@ Each config is the same tasks with a different harness wrapped around them.
 | `bare` | The agent loop and the task's tools only — the control |
 | `structured` | Tasks with a `schema` bypass the loop and go through `structured()` |
 | `critique` | A `CritiqueGate` on the `task-completion` rubric scores each answer |
+| `grounded` | `GroundedCritiqueGate` only — the critic sees tool call/observation pairs; isolates the evidence effect vs `critique` |
 | `memory` | Tasks with `memory_setup` get a seeded `Memory` store attached |
 | `lean` | memory + schema enforcement inside the agent loop — `full` without the critique gate |
 | `full` | critique + memory + schema enforcement, all inside the agent loop |
@@ -183,6 +184,153 @@ Scores move between runs unless the endpoint is deterministic (temperature 0,
 fixed seed). Compare configs within one sweep, not across sweeps.
 
 ## Current results
+
+Reference sweep on the 20-task suite — `qwen3:4b-instruct` (4B class,
+non-thinking) served by Ollama, all seven configs at `--repeats 3`:
+7 × 20 × 3 = 420 runs. The suite is 5 structured-extraction, 6 tool-use and
+9 memory-recall tasks. Every per-run row is in
+`docs/eval-data/2026-08-09-grounded-sweep.jsonl`; the calibration runs that
+selected this cycle's task sit beside it
+(`2026-08-09-grounded-calibration.jsonl` and `-tuned.jsonl`).
+
+| config | score | tokens | score/1k tok |
+|---|---|---|---|
+| bare | 30/60 | 14125 | 2.12 |
+| structured | 30/60 | 14193 | 2.11 |
+| critique | 31/60 | 74724 | 0.41 |
+| grounded | 33/60 | 80494 | 0.41 |
+| memory | 57/60 | 45447 | 1.25 |
+| lean | 56/60 | 46344 | 1.21 |
+| full | 56/60 | 68070 | 0.82 |
+
+Per family (score · tokens):
+
+| config | memory-recall | structured-extraction | tool-use |
+|---|---|---|---|
+| bare | 0/27 · 4239 tok | 15/15 · 1059 tok | 15/18 · 8827 tok |
+| structured | 0/27 · 3527 tok | 15/15 · 1835 tok | 15/18 · 8831 tok |
+| critique | 1/27 · 53973 tok | 15/15 · 6111 tok | 15/18 · 14640 tok |
+| grounded | 0/27 · 46303 tok | 15/15 · 10460 tok | 18/18 · 23731 tok |
+| memory | 27/27 · 35557 tok | 15/15 · 1059 tok | 15/18 · 8831 tok |
+| lean | 27/27 · 35690 tok | 15/15 · 1830 tok | 14/18 · 8824 tok |
+| full | 26/27 · 46594 tok | 15/15 · 6826 tok | 15/18 · 14650 tok |
+
+```
+Failure outcomes:
+- bare: wrong-answer ×30
+- structured: wrong-answer ×30
+- critique: critique-exhausted ×8, wrong-answer ×21
+- grounded: critique-exhausted ×4, wrong-answer ×23
+- memory: wrong-answer ×3
+- lean: wrong-answer ×4
+- full: critique-exhausted ×1, wrong-answer ×3
+```
+
+Discriminating tasks: 11/20
+
+| task | bare | structured | critique | grounded | memory | lean | full |
+|---|---|---|---|---|---|---|---|
+| recall-audit-retention | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-cache-ttl | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-db-port | 0/3 | 0/3 | 1/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-deploy | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 2/3 |
+| recall-env-endpoint | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-oncall | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-oncall-rotation | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-org-quota | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-owner | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| shop-basket-total | 0/3 | 0/3 | 0/3 | 3/3 | 0/3 | 0/3 | 0/3 |
+| shop-stock-total | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 2/3 | 3/3 |
+
+What the sweep says:
+
+- **The headline: `shop-basket-total` — `grounded` 3/3, every other config
+  0/3, including `full`.** The model does its price lookups correctly and
+  then botches the three-item arithmetic; a critic that can see
+  `price_lookup({"item": "widget"}) -> widget price: 25` recomputes the
+  total, rejects the wrong one, and the model repairs it in one round
+  (rounds per run: 1, 2, 1). The blind critic in `critique` and `full`
+  accepted the wrong total in all six of their runs. That makes
+  shop-basket-total the suite's first non-memory discriminator — **two
+  families now discriminate** (9 memory-recall, 2 tool-use), meeting the
+  suite-hardening criterion (≥2 families) that the previous cycle conceded.
+- **`critique` vs `grounded` isolates the evidence effect.** Same gate
+  position, same threshold, same rounds budget; the only difference is
+  whether the critic sees tool evidence. Tool-use: 15/18 vs 18/18.
+  Score/1k ties at 0.41 — the evidence does not cost efficiency, it
+  relocates the same critique spend onto failures it can actually fix.
+- **What `grounded` is not: a general ship config.** On memory-recall
+  without a store it scores 0/27 like every other storeless config — a
+  critic cannot conjure facts, though it exhausts honestly (4
+  `critique-exhausted`, 3 of them refusing fabricated retention policies).
+  On saturated extraction its reasoning-field scoring costs more than the
+  blind critic's (10460 vs 6111 tokens for the same 15/15). Attach it when
+  answers derive from tool output; attach `Memory` when answers derive
+  from the past.
+- **`full`'s blind critic is now a measured liability**: `full` fails
+  shop-basket-total 0/3 while the grounded gate passes it 3/3. Whether
+  `full` should swap `CritiqueGate` for `GroundedCritiqueGate` is the open
+  question this data raises for a future cycle; it stays blind in this one
+  so the comparison stays clean.
+- **The gates fire on this suite now.** Previous sweep: `critique_rounds
+  == 0` in every `full` run. This sweep: 23 revision rounds under
+  `critique`, 25 under `grounded`, 2 under `full`, and 13 runs ending
+  `critique-exhausted`. `schema_retries` is still 0 in all 420 runs — the
+  structured-instruction-tax negative stands unchanged.
+- **The dropped candidate is a recorded negative, not a silent one.**
+  `shop-restock` needs a two-step derivation (20 − stock per item, then a
+  comparison). After a single rubric tune (a schema-forced `reasoning`
+  field making the critic derive the answer from evidence before scoring),
+  the grounded critic flags the wrong answer in 3/3 calibration runs — but
+  the model cannot repair it even with pointed feedback. Rescue requires a
+  better base model, not a better critic; dropped per the
+  tune-once-then-drop rule. Evidence in both calibration JSONLs.
+- **Repeat variance exists this sweep but stays off the headline.** 3 of
+  140 (task, config) cells split (recall-db-port `critique` 1/3,
+  recall-deploy `full` 2/3, shop-stock-total `lean` 2/3); every
+  shop-basket-total and every `memory`/`lean` recall cell is 0/3 or 3/3.
+- **The ship recommendation is unchanged**: `memory` 57/60 at 1.25/1k
+  (`lean` 56/60 at 1.21 — its one extra failure is the shop-stock-total
+  flake). `grounded` joins as the targeted gate for tool-heavy agents, not
+  as part of the default stack.
+
+### How the suite was hardened
+
+The four promoted recall tasks came out of a calibration pass, not authoring
+taste. Twelve candidate tasks were written to deliberately target the
+structured and critique weaknesses above — 4 hard-extraction, 4 tool-use, 4
+memory-recall — and each was run at 3 repeats across 5 configs
+(`docs/eval-data/2026-08-07-calibration.jsonl`, 180 runs). The promotion bar
+was: `bare` scores ≤1/3 **and** some config scores ≥2/3, i.e. the task must be
+hard for the control and rescuable by a primitive.
+
+All four hard-extraction candidates and two of the four tool-use candidates
+saturated — 3/3 under every config, including `bare` — so they measure nothing
+and were dropped. The remaining two tool-use candidates (multi-item basket
+arithmetic, largest-shortfall comparison) failed 0/3 under *every* config, and
+stayed 0/3 after a tuning pass
+(`docs/eval-data/2026-08-07-calibration-tuned-rerun.jsonl`, 30 runs). Live
+probes showed why: the model performs the tool lookups correctly and then gets
+the arithmetic or the comparison wrong, and the critic signs off on the wrong
+number — zero `critique-exhausted` outcomes on those runs, because
+`CritiqueGate` cannot see tool ground truth. Unrescuable by any current
+primitive, so they were not promoted. Only the four memory-recall candidates
+cleared the bar, which is why the hardened suite is 9 recall tasks and still
+5 + 5 elsewhere.
+
+This misses the cycle's own promotion goal of new discriminating tasks in at
+least two families — the calibration data is the evidence for why no other
+family could clear the bar on this model: extraction saturates bare, and
+tool-arithmetic failures have no rescuer while the critic cannot see tool
+results.
+
+### Previous sweep (2026-08-07, six configs, 19 tasks)
+
+The sweep below predates `GroundedCritiqueGate`, the `grounded` config and
+the promotion of `shop-basket-total`; its numbers are not comparable to the
+table above (different suite size and config list). Kept because the
+narrative documents the two measured negatives that motivated the
+grounded-critique cycle.
 
 Reference sweep on the hardened suite — `qwen3:4b-instruct` (4B class,
 non-thinking) served by Ollama, all six configs over the 19-task suite at
@@ -313,36 +461,6 @@ Against spec §7, without spin:
 - **Stretch ("competitive with a bare model one size class up"): still not
   re-measured.** The 7B comparison below is on the retired 6-task suite and is
   not comparable to these numbers.
-
-### How the suite was hardened
-
-The four promoted recall tasks came out of a calibration pass, not authoring
-taste. Twelve candidate tasks were written to deliberately target the
-structured and critique weaknesses above — 4 hard-extraction, 4 tool-use, 4
-memory-recall — and each was run at 3 repeats across 5 configs
-(`docs/eval-data/2026-08-07-calibration.jsonl`, 180 runs). The promotion bar
-was: `bare` scores ≤1/3 **and** some config scores ≥2/3, i.e. the task must be
-hard for the control and rescuable by a primitive.
-
-All four hard-extraction candidates and two of the four tool-use candidates
-saturated — 3/3 under every config, including `bare` — so they measure nothing
-and were dropped. The remaining two tool-use candidates (multi-item basket
-arithmetic, largest-shortfall comparison) failed 0/3 under *every* config, and
-stayed 0/3 after a tuning pass
-(`docs/eval-data/2026-08-07-calibration-tuned-rerun.jsonl`, 30 runs). Live
-probes showed why: the model performs the tool lookups correctly and then gets
-the arithmetic or the comparison wrong, and the critic signs off on the wrong
-number — zero `critique-exhausted` outcomes on those runs, because
-`CritiqueGate` cannot see tool ground truth. Unrescuable by any current
-primitive, so they were not promoted. Only the four memory-recall candidates
-cleared the bar, which is why the hardened suite is 9 recall tasks and still
-5 + 5 elsewhere.
-
-This misses the cycle's own promotion goal of new discriminating tasks in at
-least two families — the calibration data is the evidence for why no other
-family could clear the bar on this model: extraction saturates bare, and
-tool-arithmetic failures have no rescuer while the critic cannot see tool
-results.
 
 ### Prior baselines
 
@@ -483,7 +601,7 @@ The builtin tools read `assets/evals/fixtures/catalog.json` (`widget`,
 tasks stay deterministic on the harness side.
 
 `runtime-py/tests/test_conformance.py` enforces the contract above and requires
-at least 19 tasks with all three families present, at least 2 each. Run it after
+at least 20 tasks with all three families present, at least 2 each. Run it after
 adding a task:
 
 ```bash

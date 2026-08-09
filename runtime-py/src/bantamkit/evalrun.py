@@ -17,11 +17,11 @@ import yaml
 from bantamkit.agent import Agent, ToolDef
 from bantamkit.assets import assets_root
 from bantamkit.client import BantamError, Message, ModelClient, OpenAICompatible, Tool, Usage
-from bantamkit.critique import CritiqueExhausted, CritiqueGate
+from bantamkit.critique import CritiqueExhausted, CritiqueGate, GroundedCritiqueGate
 from bantamkit.memory import Memory, MemoryStore
 from bantamkit.structured import StructuredOutputError, extract_json, structured
 
-CONFIGS = ["bare", "structured", "critique", "memory", "lean", "full"]
+CONFIGS = ["bare", "structured", "critique", "grounded", "memory", "lean", "full"]
 
 
 # ---- deterministic eval fixture tools (fixture data lives in assets) ----
@@ -253,6 +253,9 @@ def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> Tas
         agent.use(schema_gate)
     if config in ("critique", "full"):
         critique_gate = CritiqueGate("task-completion", client=tracking)
+        agent.use(critique_gate)
+    if config == "grounded":
+        critique_gate = GroundedCritiqueGate(client=tracking)
         agent.use(critique_gate)
 
     output: str | None = None

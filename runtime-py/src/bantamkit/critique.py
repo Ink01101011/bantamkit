@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 import yaml
 
-from bantamkit.agent import Agent
+from bantamkit.agent import Agent, truncate
 from bantamkit.assets import AssetNotFound, assets_root
-from bantamkit.client import BantamError, ModelClient
+from bantamkit.client import BantamError, Message, ModelClient
 from bantamkit.structured import structured
 
 
@@ -31,6 +32,12 @@ def _validate_rubric(rubric: Rubric) -> None:
             f"rubric '{rubric.name}' prompt missing placeholder(s): "
             f"{', '.join('{' + p + '}' for p in missing)}"
         )
+
+
+def _validate_grounded_rubric(rubric: Rubric) -> None:
+    _validate_rubric(rubric)
+    if "{evidence}" not in rubric.prompt:
+        raise BantamError(f"rubric '{rubric.name}' prompt missing placeholder(s): {{evidence}}")
 
 
 @dataclass
@@ -56,6 +63,19 @@ def load_rubric(name: str) -> Rubric:
     return rubric
 
 
+def render_evidence(messages: list[Message], budget: int = 4096) -> str:
+    """Tool call/observation pairs from a run's transcript, as critic-readable lines."""
+    observations = {m.tool_call_id: m.content for m in messages if m.role == "tool"}
+    lines = []
+    for message in messages:
+        for tc in message.tool_calls:
+            observation = observations.get(tc.id, "(no observation)")
+            lines.append(f"{tc.name}({json.dumps(tc.arguments)}) -> {observation}")
+    if not lines:
+        return "(no tool calls were made)"
+    return truncate("\n".join(lines), budget)
+
+
 class CritiqueGate:
     def __init__(
         self, rubric: str | Rubric, client: ModelClient | None = None, max_rounds: int = 3
@@ -77,8 +97,11 @@ class CritiqueGate:
         agent.add_post_hook(self)
 
     def __call__(self, task: str, output: str) -> str | None:
+        return self._judge(task=task, output=output)
+
+    def _judge(self, **fields: str) -> str | None:
         verdict = structured(
-            self.client, self.rubric.prompt.format(task=task, output=output), self.rubric.schema
+            self.client, self.rubric.prompt.format(**fields), self.rubric.schema
         )
         if verdict["score"] >= self.rubric.threshold:
             self._rounds = 0
@@ -96,3 +119,24 @@ class CritiqueGate:
             f"(needs >= {self.rubric.threshold}). Feedback: {verdict['feedback']}\n"
             f"Revise and answer again."
         )
+
+
+class GroundedCritiqueGate(CritiqueGate):
+    """CritiqueGate whose critic also sees the run's tool call/observation pairs."""
+
+    wants_transcript = True
+
+    def __init__(
+        self,
+        rubric: str | Rubric = "grounded-completion",
+        client: ModelClient | None = None,
+        max_rounds: int = 3,
+        evidence_budget: int = 4096,
+    ):
+        super().__init__(rubric, client=client, max_rounds=max_rounds)
+        _validate_grounded_rubric(self.rubric)
+        self.evidence_budget = evidence_budget
+
+    def __call__(self, task: str, output: str, messages: list[Message]) -> str | None:
+        evidence = render_evidence(messages, self.evidence_budget)
+        return self._judge(task=task, output=output, evidence=evidence)

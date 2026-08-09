@@ -139,6 +139,8 @@ print(agent.run("Which team owns the payments API? Check memory first.").output)
   YAML rubric (here `assets/rubrics/task-completion.yaml`, threshold 7/10).
   Below threshold, the score and feedback are fed back as a user message and the
   agent revises. It borrows the agent's client unless you pass `client=`.
+  When the agent has tools, prefer `GroundedCritiqueGate` (section 7), whose
+  critic also sees the tool evidence.
 
 Use a different rubric by name, or build one inline:
 
@@ -259,5 +261,35 @@ Two things worth knowing:
   call on a client you already `close()`d (`RuntimeError`) will still surface as
   the underlying exception. Add a bare `except Exception` at
   your top level if the process must not die.
+
+## 7. GroundedCritiqueGate — critique that sees tool evidence
+
+`CritiqueGate`'s critic sees only the task and the answer, so it cannot
+verify facts the agent got from tools. `GroundedCritiqueGate` also shows the
+critic every tool call/observation pair from the run and instructs it to
+treat that evidence as ground truth:
+
+```python
+from bantamkit import Agent, GroundedCritiqueGate
+
+agent = Agent(client=client, tools=[price_lookup]).use(GroundedCritiqueGate())
+```
+
+- Default rubric is `grounded-completion`; grounded rubrics must contain
+  `{evidence}` in addition to `{task}` and `{output}`, or construction
+  raises `BantamError`.
+- Evidence is rendered one line per pair —
+  `price_lookup({"item": "widget"}) -> widget: 25` — and truncated at
+  `evidence_budget` bytes (default 4096). A run with no tool calls renders
+  `(no tool calls were made)`.
+- Rounds, thresholds, feedback strings and `CritiqueExhausted` behave
+  exactly like `CritiqueGate`.
+
+Prefer it over `CritiqueGate` whenever the agent has tools: a blind critic
+cannot verify tool-derived facts, and in calibration it accepted answers
+that contradicted the tool output (see [Eval](eval.md)).
+
+Hooks that declare `wants_transcript = True` receive the agent's live
+message list — treat it as read-only; mutating it corrupts the run.
 
 Next: [Memory](memory.md) · [Eval](eval.md).
