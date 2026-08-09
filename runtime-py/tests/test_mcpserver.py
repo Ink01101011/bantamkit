@@ -208,7 +208,7 @@ def test_recall_k_clamped_to_advertised_bounds(tmp_path):
     seen = {}
 
     class Probe(Memory):
-        def _recall(self, query, k=None):
+        def recall(self, query, k=None):
             seen["k"] = k
             return "ok"
 

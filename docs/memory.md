@@ -23,6 +23,16 @@ print(agent.run("Which team owns the payments API? Check memory first.").output)
 This registers `memory_recall` and `memory_save` as tools. The store directory
 is created if missing.
 
+## Programmatic API
+
+The `save` and `recall` methods are public and can be called directly. These are the same handlers the `memory_save`/`memory_recall` tools call, returning the same reply strings (duplicate nudge, budget error, validation error). Useful for seeding stores or scripting:
+
+```python
+memory = Memory(store="./.bantam-memory")
+memory.save("project", "db-port", "postgres port", "The port is 5433.")
+print(memory.recall("postgres port"))
+```
+
 ## Store layout
 
 ```

@@ -1,6 +1,7 @@
 import pytest
 
 from bantamkit.memory import (
+    Memory,
     MemoryBudgetExceeded,
     MemoryStore,
     MemoryValidationError,
@@ -132,3 +133,17 @@ def test_recall_stamp_false_leaves_files_unchanged(tmp_path):
     hits = store.recall("deploy", stamp=False)
     assert [f.name for f in hits] == ["deploy-cmd"]
     assert (tmp_path / "m" / "facts" / "deploy-cmd.md").read_text() == before
+
+
+def test_public_save_recall_round_trip(tmp_path):
+    memory = Memory(store=tmp_path)
+    reply = memory.save("project", "db-port", "postgres port", "The port is 5433.")
+    assert reply == "saved 'db-port'"
+    out = memory.recall("postgres port")
+    assert "5433" in out
+
+
+def test_private_aliases_delegate_to_public(tmp_path):
+    memory = Memory(store=tmp_path)
+    assert memory._save.__func__ is Memory.save
+    assert memory._recall.__func__ is Memory.recall
