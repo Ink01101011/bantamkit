@@ -201,3 +201,34 @@ def test_json_answer_gate_setup_resets_retries_between_runs():
         client = FakeClient([assistant(content="prose"), assistant(content='{"a": 1}')])
         Agent(client=client).use(gate).run("t")
         assert gate.retries_used == 1
+
+
+def test_json_answer_gate_budget_stays_latched_when_a_later_hook_extends_the_run():
+    """A critique gate after the fail-open must not re-arm this gate's budget.
+
+    Sequence: prose -> gate retry; prose -> gate fail-open, critic revises;
+    prose -> the gate must stay silent (latched), not fire a second retry.
+    """
+
+    class RejectOnce:
+        def __init__(self):
+            self.calls = 0
+
+        def setup(self, agent):
+            agent.add_post_hook(self)
+
+        def __call__(self, task, output):
+            self.calls += 1
+            return "revise once" if self.calls == 1 else None
+
+    client = FakeClient(
+        [
+            assistant(content="prose"),
+            assistant(content="still prose"),
+            assistant(content="prose forever"),
+        ]
+    )
+    gate = JsonAnswerGate()
+    result = Agent(client=client).use(gate, RejectOnce()).run("t")
+    assert result.output == "prose forever"
+    assert gate.retries_used == 1  # exactly one restatement for the whole run

@@ -108,19 +108,22 @@ class JsonAnswerGate:
 
     def setup(self, agent: Agent) -> None:
         self.retries_used = 0
+        self._attempts = 0
         agent.add_post_hook(self)
 
     def __call__(self, task: str, output: str) -> str | None:
+        # The budget is latched for the whole run (reset only in setup): when a
+        # later hook (e.g. a critique gate) keeps the run alive past this gate's
+        # fail-open, the budget must not re-arm and interleave retries with the
+        # critic's feedback.
         try:
             extract_json(output)
         except ValueError:
             pass
         else:
-            self._attempts = 0
             return None
         self._attempts += 1
         if self._attempts > self.max_attempts:
-            self._attempts = 0
             return None
         self.retries_used += 1
         return json_answer_retry()
