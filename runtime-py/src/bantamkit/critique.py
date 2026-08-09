@@ -89,17 +89,27 @@ class CritiqueGate:
         )
         self._rounds = 0
         self.rounds_used = 0
+        self.budget = None
 
     def setup(self, agent: Agent) -> None:
         if self.client is None:
             self.client = agent.client
         self.rounds_used = 0
+        # Duck-typed and optional: a run with no governor keeps every round it had.
+        # Attach the budget before this gate, or the handle is None for the whole run.
+        self.budget = getattr(agent, "budget", None)
         agent.add_post_hook(self)
 
     def __call__(self, task: str, output: str) -> str | None:
         return self._judge(task=task, output=output)
 
     def _judge(self, **fields: str) -> str | None:
+        # A critique round is optional work (see `TokenBudget`): it is the largest
+        # per-answer cost and the run is still correct without it. Denied means
+        # accept the answer, never an exception — and the round counters are left
+        # alone, because a round that was never spent is not a round.
+        if self.budget is not None and not self.budget.allow("optional"):
+            return None
         verdict = structured(
             self.client, self.rubric.prompt.format(**fields), self.rubric.schema
         )

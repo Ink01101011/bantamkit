@@ -13,6 +13,7 @@ REQUIRED = {
     "schema_gate": ("max_attempts",),
     "json_answer": ("max_attempts",),
     "critique": ("max_rounds", "evidence_budget"),
+    "token_budget": ("ceiling", "optional_cutoff"),
 }
 
 
@@ -32,3 +33,13 @@ def load_profile(name: str = "default") -> dict:
 
 def default(section: str, key: str) -> int:
     return int(load_profile()[section][key])
+
+
+def default_float(section: str, key: str) -> float:
+    """Same lookup for the numbers that are fractions, not counts.
+
+    Separate from `default` rather than loosening its return type: every existing
+    caller wants an int and an accidental 0.75 -> 0 truncation is exactly the kind
+    of silent policy change this layer exists to prevent.
+    """
+    return float(load_profile()[section][key])

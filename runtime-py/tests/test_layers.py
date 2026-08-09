@@ -18,6 +18,7 @@ from bantamkit.contract import (
     schema_retry_feedback,
 )
 from bantamkit.profile import default as profile_default
+from bantamkit.profile import default_float as profile_default_float
 from bantamkit.profile import load_profile
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "bantamkit"
@@ -46,7 +47,14 @@ MOVED_FRAGMENTS = (
     "not parseable JSON",
     "contains no JSON",
 )
-CORE_MODULES = ("agent.py", "structured.py", "critique.py", "evalrun.py", "mcpserver.py")
+CORE_MODULES = (
+    "agent.py",
+    "budget.py",
+    "structured.py",
+    "critique.py",
+    "evalrun.py",
+    "mcpserver.py",
+)
 LAYER_MODULES = ("contract.py", "profile.py")
 FORBIDDEN_IMPORTS = ("agent", "structured", "critique", "evalrun", "filegraph", "memory")
 
@@ -131,6 +139,25 @@ def test_profile_values_match_pre_split_defaults():
 def test_json_answer_default_is_one_attempt():
     """New in this cycle, so not a pre-split default — pinned separately, same intent."""
     assert profile_default("json_answer", "max_attempts") == 1
+
+
+def test_token_budget_ceiling_default():
+    """New in the policy/budget cycle — pinned separately, same intent as the pre-split guard."""
+    assert profile_default("token_budget", "ceiling") == 6000
+
+
+def test_token_budget_optional_cutoff_default():
+    assert profile_default_float("token_budget", "optional_cutoff") == 0.75
+
+
+def test_patient_profile_differs_from_default_only_in_max_turns():
+    """`patient` is a turn-budget hypothesis, not a second set of policy numbers."""
+    patient = load_profile("patient")
+    baseline = load_profile("default")
+    assert patient["name"] == "patient"
+    assert patient["agent"]["max_turns"] == 16
+    patient["name"], patient["agent"]["max_turns"] = "default", baseline["agent"]["max_turns"]
+    assert patient == baseline
 
 
 def test_load_contract_missing_asset(tmp_path, monkeypatch):

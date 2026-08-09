@@ -2,6 +2,7 @@ import pytest
 from conftest import FakeClient, assistant, call
 
 from bantamkit.agent import Agent, ToolDef
+from bantamkit.budget import TokenBudget
 from bantamkit.client import BantamError, Message, Tool
 from bantamkit.critique import (
     CritiqueExhausted,
@@ -275,3 +276,63 @@ def test_render_evidence_duplicate_ids_in_one_assistant_message():
         Message(role="tool", content="second", tool_call_id="c1"),
     ]
     assert render_evidence(messages) == 'f({"n": 1}) -> first\nf({"n": 2}) -> second'
+
+
+# ---- P3: critique rounds are optional work and must ask the budget ----
+
+
+def test_critique_round_is_skipped_when_the_budget_denies_optional_work():
+    """Denied means accept the answer: no critic call, no exception, no round spent."""
+    client = FakeClient([assistant(content="answer")])  # no verdict is scripted
+    gate = CritiqueGate(make_rubric(), client=client)
+    budget = TokenBudget(ceiling=20, optional_cutoff=0.5)  # cutoff = 10, one answer = 15
+    agent = Agent(client=client).use(budget, gate)
+    result = agent.run("t")
+    assert result.output == "answer"
+    assert len(client.calls) == 1  # the critic was never called
+    assert gate.rounds_used == 0
+    assert budget.exhausted is False  # the cutoff band is degradation, not exhaustion
+
+
+def test_critique_round_still_runs_under_the_cutoff():
+    client = FakeClient(
+        [assistant(content="answer"), assistant(content='{"score": 9, "feedback": "fine"}')]
+    )
+    gate = CritiqueGate(make_rubric(), client=client)
+    agent = Agent(client=client).use(TokenBudget(ceiling=6000), gate)
+    assert agent.run("t").output == "answer"
+    assert len(client.calls) == 2
+
+
+def test_rounds_used_stays_honest_when_a_later_round_is_denied():
+    """Round one is spent and counted; round two is denied and must not be counted."""
+    client = FakeClient(
+        [
+            assistant(content="answer one", prompt_tokens=30),
+            assistant(content='{"score": 2, "feedback": "thin"}', prompt_tokens=30),
+            assistant(content="answer two", prompt_tokens=30),
+        ]
+    )
+    gate = CritiqueGate(make_rubric(), client=client)
+    # 35 tokens per agent turn; cutoff = 50, ceiling = 100. Critic spend is not
+    # recorded (structured() is unbudgeted this cycle), so only turns move `spent`.
+    budget = TokenBudget(ceiling=100, optional_cutoff=0.5)
+    agent = Agent(client=client).use(budget, gate)
+    result = agent.run("t")
+    assert result.output == "answer two"
+    assert gate.rounds_used == 1
+    assert budget.spent == 70 and budget.exhausted is False
+
+
+def test_grounded_gate_inherits_the_budget_check():
+    client = FakeClient([assistant(content="total is 25")])  # no verdict is scripted
+    gate = GroundedCritiqueGate(make_grounded_rubric(), client=client)
+    agent = Agent(client=client).use(TokenBudget(ceiling=20, optional_cutoff=0.5), gate)
+    assert agent.run("total?").output == "total is 25"
+    assert len(client.calls) == 1 and gate.rounds_used == 0
+
+
+def test_gate_without_a_budget_keeps_every_round():
+    gate = CritiqueGate(make_rubric(), client=FakeClient([]))
+    gate.setup(Agent(client=FakeClient([])))
+    assert gate.budget is None

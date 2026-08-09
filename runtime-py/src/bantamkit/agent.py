@@ -78,6 +78,10 @@ class Agent:
     system: str | None = None
     max_turns: int | None = None
     observation_budget: int | None = None
+    # Optional spend governor (`bantamkit.budget.TokenBudget`), attached by `use(...)`.
+    # Typed loosely and duck-typed at the call sites on purpose: core must not depend
+    # on the component, and an agent without one is byte-identical to before.
+    budget: object | None = None
     _post_hooks: list[Callable[..., str | None]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -107,11 +111,21 @@ class Agent:
             messages.append(Message(role="system", content=self.system))
         messages.append(Message(role="user", content=prompt))
         usage = Usage()
+        last_content = ""
 
         for _ in range(self.max_turns):
+            if self.budget is not None and not self.budget.allow("required"):
+                # Past the hard ceiling. Stop iterating and hand back what the run
+                # already produced: a truncated answer is still scorable, and an
+                # exception here would convert a scorable answer into a loss.
+                return AgentResult(output=last_content, messages=messages, usage=usage)
             resp = self.client.chat(messages, tools=[t.tool for t in self.tools] or None)
             usage = usage + resp.usage
+            if self.budget is not None:
+                self.budget.record(resp.usage)
             messages.append(resp.message)
+            if resp.message.content:
+                last_content = resp.message.content
 
             if resp.message.tool_calls:
                 for tc in resp.message.tool_calls:
