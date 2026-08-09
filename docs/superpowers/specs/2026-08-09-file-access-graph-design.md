@@ -45,19 +45,20 @@ FileAccessGraph(readers={"read_file": "path"}, annotate=True,
 
 The three mechanisms, each independently toggleable:
 
-- **`annotate`** (accuracy): on a *repeat* read, append one line to the
-  observation: `[file-graph] read #N of {path} via {tool} — unchanged
-  since read #1` (or `— CHANGED`). First reads pass through byte-identical
+- **`annotate`** (accuracy): on a *repeat* read, prefix the observation
+  with one line: `[file-graph] read #N of {path} via {tool} — unchanged
+  since your last read` (or `— CHANGED`). First reads pass through byte-identical
   to a graph-less run, so a run with no repeats is indistinguishable from
   `bare` — clean comparability.
 - **`cache`** (speed, verify-on-repeat): the wrapper **always executes the
   real handler**, hashes the result, and only when the hash matches the
   previous read returns the short marker
-  `[file-graph] {path} unchanged since read #1 ({n} bytes not repeated)`
+  `[file-graph] {path} unchanged since your last read ({n} bytes not
+  repeated)`
   instead of the full content. Changed content passes through in full.
   What is saved is model tokens, not disk I/O — staleness is impossible by
   construction. `cache=True` implies the annotate line lives inside the
-  marker; `annotate=True, cache=False` appends the note but returns full
+  marker; `annotate=True, cache=False` prefixes the note but returns full
   content.
 - **`query`**: registers a `file_graph` tool (asset-pack schema, no
   required args) returning the compact map — one line per node:
@@ -93,7 +94,8 @@ recall family.
   files, with prompts that induce full exploration — sized so a graph-less
   4B run re-reads and bloats context.
 - New eval config `graph` = `bare` + `FileAccessGraph` (all three
-  mechanisms on, `readers` covering the two file tools) — joins `CONFIGS`.
+  mechanisms on, `readers` declaring `read_file`; `list_files` takes no
+  path argument and is not a reader) — joins `CONFIGS`.
   On tasks without file tools the graph wraps nothing, so `graph` must
   match `bare` there — a falsifiable no-op check the sweep verifies.
 - Calibration (qwen3:4b-instruct, 3 repeats) also runs two ablations that
@@ -143,8 +145,8 @@ post-merge on the user's word.
   path error shape.
 - Conformance: `workspace` shape validated for `file-nav` tasks; family
   balance and suite floor updated with promotions.
-- Config wiring: `graph` config attaches `FileAccessGraph` with both
-  readers; fake-client test asserting the cache marker appears on a
+- Config wiring: `graph` config attaches `FileAccessGraph` with
+  `read_file` declared as reader; fake-client test asserting the cache marker appears on a
   scripted repeat read.
 
 ## 4. Success criteria
