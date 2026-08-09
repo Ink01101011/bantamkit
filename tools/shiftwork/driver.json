@@ -1,0 +1,28 @@
+{
+  "_comment": "Driver config. JSON, not YAML, because the driver is stdlib-only (see driver.py docstring). Role -> model/allowed tools is Layer-4 profile data living with the driver: sessions never pick their own model. dangerously_skip_permissions stays false outside fully sandboxed environments.",
+  "roles": {
+    "planner": {"model": "opus", "allowed_tools": ["Read", "Grep", "Glob", "Write"], "max_turns": 40},
+    "implementer": {
+      "model": "haiku",
+      "allowed_tools": ["Read", "Grep", "Glob", "Edit", "Write", "Bash"],
+      "max_turns": 60
+    },
+    "reviewer": {"model": "sonnet", "allowed_tools": ["Read", "Grep", "Glob"], "max_turns": 30}
+  },
+  "max_sessions": 20,
+  "max_wall_clock_seconds": 14400,
+  "max_retries": 3,
+  "session_timeout_seconds": 1800,
+  "external_timeout_seconds": 3600,
+  "notify_cmd": [
+    "osascript",
+    "-e",
+    "on run argv",
+    "-e",
+    "display notification (item 1 of argv) with title \"shift-work driver\"",
+    "-e",
+    "end run",
+    "--"
+  ],
+  "dangerously_skip_permissions": false
+}

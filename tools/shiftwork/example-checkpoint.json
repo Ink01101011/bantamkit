@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "job": {
+    "id": "bk-restructure",
+    "goal": "Extract Layer-2 contract code out of core with byte-identical behavior.",
+    "done_definition": "All 240 offline tests green AND boundary test passes AND PR merged.",
+    "constraints": [
+      "5-layer no-mixing rule: one diff = one layer",
+      "additive changes preferred"
+    ]
+  },
+  "plan": {
+    "cursor": "U3",
+    "units": [
+      {
+        "id": "U1",
+        "title": "Extract verdict schema from critique.py",
+        "brief_path": ".shiftwork/briefs/U1.md",
+        "status": "done",
+        "role": "implementer",
+        "depends_on": [],
+        "verify": "pytest tests/test_critique.py -q",
+        "commits": ["abc1234"]
+      },
+      {
+        "id": "U3",
+        "title": "Move SCHEMA_INSTRUCTION to contracts/",
+        "brief_path": ".shiftwork/briefs/U3.md",
+        "status": "todo",
+        "role": "implementer",
+        "depends_on": ["U1"],
+        "verify": "pytest tests/test_structured.py -q"
+      },
+      {
+        "id": "U4",
+        "title": "Review the extraction diff for layer mixing",
+        "brief_path": ".shiftwork/briefs/U4.md",
+        "status": "todo",
+        "role": "reviewer",
+        "depends_on": ["U3"],
+        "verify": "pytest tests/test_layers.py -q"
+      }
+    ]
+  },
+  "state": {
+    "repo": {"branch": "feat/restructure", "head_sha": "def5678", "dirty": false},
+    "artifacts": [
+      {"path": "docs/superpowers/specs/2026-08-10-restructure-design.md", "role": "spec"},
+      {"path": ".superpowers/sdd/progress.md", "role": "ledger"}
+    ],
+    "external": [
+      {
+        "kind": "process",
+        "ref": "pid 13031 log $SCRATCH/xmodel-sweep.log",
+        "until_cmd": "grep -q 'ALL SWEEPS DONE' $SCRATCH/xmodel-sweep.log",
+        "status": "running"
+      },
+      {"kind": "pr", "ref": "#12", "status": "open"}
+    ]
+  },
+  "history": [
+    {"unit": "U1", "outcome": "done", "notes": "reviewer flagged import cycle; fixed in-place"}
+  ],
+  "retro": [
+    {
+      "trigger": "U1 reviewer found import cycle",
+      "patch_applied_to": ".shiftwork/prompts/implementer.md (add import-direction rule)"
+    }
+  ],
+  "handoff": {
+    "next_action": "Read briefs/U3.md, implement on branch feat/restructure, run verify, commit.",
+    "open_questions": [],
+    "do_not": [
+      "Do not touch critique.py gate logic — Layer 1 is frozen this job"
+    ]
+  }
+}
