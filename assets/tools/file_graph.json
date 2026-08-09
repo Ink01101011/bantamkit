@@ -1,0 +1,5 @@
+{
+  "name": "file_graph",
+  "description": "List every file you have already read this session: path, read count, the tool that read it, and whether it changed since. Consult this before re-reading any file.",
+  "parameters": {"type": "object", "properties": {}}
+}
