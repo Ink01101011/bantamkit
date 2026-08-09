@@ -871,7 +871,7 @@ def test_grounded_config_critic_sees_tool_evidence(tmp_path):
 
 
 RECALL_TASKS = sorted(t["name"] for t in load_tasks() if t["family"] == "memory-recall")
-assert len(RECALL_TASKS) >= 9  # collection-time guard: the family must not silently shrink
+assert len(RECALL_TASKS) >= 9, "memory-recall family shrank below 9"
 
 
 @pytest.mark.parametrize("name", RECALL_TASKS)
@@ -880,3 +880,11 @@ def test_recall_tasks_score_json_equal(name):
     task = get_task(name)
     assert task["scoring"]["kind"] == "json_equal"
     assert "Answer with ONLY this JSON" in task["prompt"]
+
+
+def test_recall_store_dump_containing_the_fact_scores_false():
+    """The failure mode the conversion kills: a dump that contains the right fact is not a pass."""
+    task = get_task("recall-owner")
+    dump = "[service-owner] The checkout service is owned by Team Atlas. [db-port] port 5433."
+    assert score_output(task, dump, []) is False
+    assert score_output(task, '{"team": "Atlas"}', []) is True

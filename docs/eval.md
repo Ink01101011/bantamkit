@@ -256,8 +256,8 @@ What the sweep says:
   all nine candidates) predicted exactly this.
 - **Zero split cells.** All 140 (task, config) cells are 0/3 or 3/3 — the
   first sweep with no repeat variance at all (the previous sweep had 3
-  split cells). The stricter scoring removed noise rather than adding it:
-  `lean`'s shop-stock-total flake did not recur, so `memory` and `lean` now
+  split cells). The stricter scoring added no noise, and `lean`'s
+  shop-stock-total flake did not recur this sweep, so `memory` and `lean`
   tie at 57/60 · 1.22/1k.
 - **`contains` was hiding a lucky pass and a chatter tax.** Blind
   `critique` loses its 1/27 recall pass (recall-db-port 1/3 — a verbose
