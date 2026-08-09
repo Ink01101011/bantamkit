@@ -103,7 +103,7 @@ Two details make that comparison fair rather than flattering:
 So `full` stacks all three primitives on one run — see
 [Current results](#current-results) for whether that stack earns its bill
 (on the current suite, `full` is the only 60/60 config; `lean` reaches
-56/60 for 46% fewer tokens).
+57/60 for 46% fewer tokens).
 
 `lean` exists to answer one question: how much of `full`'s token bill is the
 critique gate? `lean` runs the same agent loop with memory and `SchemaGate`
@@ -190,10 +190,106 @@ fixed seed). Compare configs within one sweep, not across sweeps.
 Reference sweep on the 20-task suite — `qwen3:4b-instruct` (4B class,
 non-thinking) served by Ollama, all seven configs at `--repeats 3`:
 7 × 20 × 3 = 420 runs. The suite is 5 structured-extraction, 6 tool-use and
-9 memory-recall tasks. Every per-run row is in
-`docs/eval-data/2026-08-09-grounded-sweep.jsonl`; the calibration runs that
-selected this cycle's task sit beside it
-(`2026-08-09-grounded-calibration.jsonl` and `-tuned.jsonl`).
+9 memory-recall tasks. This sweep follows the recall scoring conversion: all
+nine memory-recall tasks now demand an exact JSON answer and score
+`json_equal` instead of `contains`, so an agent that recalls correctly but
+dumps the whole store no longer passes. Every per-run row is in
+`docs/eval-data/2026-08-09-recall-json-sweep.jsonl`; the 81-run calibration
+that gated the conversion sits beside it
+(`2026-08-09-recall-json-calibration.jsonl`).
+
+| config | score | tokens | score/1k tok |
+|---|---|---|---|
+| bare | 30/60 | 11434 | 2.62 |
+| structured | 30/60 | 12192 | 2.46 |
+| critique | 30/60 | 32068 | 0.94 |
+| grounded | 33/60 | 75157 | 0.44 |
+| memory | 57/60 | 46767 | 1.22 |
+| lean | 57/60 | 46668 | 1.22 |
+| full | 60/60 | 86500 | 0.69 |
+
+Per family (score · tokens):
+
+| config | memory-recall | structured-extraction | tool-use |
+|---|---|---|---|
+| bare | 0/27 · 1543 tok | 15/15 · 1053 tok | 15/18 · 8838 tok |
+| structured | 0/27 · 1522 tok | 15/15 · 1840 tok | 15/18 · 8830 tok |
+| critique | 0/27 · 11293 tok | 15/15 · 6111 tok | 15/18 · 14664 tok |
+| grounded | 0/27 · 42186 tok | 15/15 · 10359 tok | 18/18 · 22612 tok |
+| memory | 27/27 · 36867 tok | 15/15 · 1065 tok | 15/18 · 8835 tok |
+| lean | 27/27 · 36004 tok | 15/15 · 1840 tok | 15/18 · 8824 tok |
+| full | 27/27 · 52850 tok | 15/15 · 11133 tok | 18/18 · 22517 tok |
+
+```
+Failure outcomes:
+- bare: wrong-answer ×30
+- structured: wrong-answer ×30
+- critique: wrong-answer ×30
+- grounded: wrong-answer ×19, critique-exhausted ×8
+- memory: wrong-answer ×3
+- lean: wrong-answer ×3
+- full: none
+```
+
+Discriminating tasks: 10/20
+
+| task | bare | structured | critique | grounded | memory | lean | full |
+|---|---|---|---|---|---|---|---|
+| recall-audit-retention | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-cache-ttl | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-db-port | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-deploy | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-env-endpoint | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-oncall | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-oncall-rotation | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-org-quota | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-owner | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| shop-basket-total | 0/3 | 0/3 | 0/3 | 3/3 | 0/3 | 0/3 | 3/3 |
+
+What the sweep says:
+
+- **The conversion held its falsifiable prediction.** Every `memory`,
+  `lean` and `full` recall cell stayed 3/3 under the stricter scoring, and
+  every storeless config stayed 0/27 — the same separation as before, now
+  proven against exact-answer extraction instead of substring luck. The
+  calibration that gated promotion (bare 0/27, memory 27/27, lean 27/27,
+  all nine candidates) predicted exactly this.
+- **Zero split cells.** All 140 (task, config) cells are 0/3 or 3/3 — the
+  first sweep with no repeat variance at all (the previous sweep had 3
+  split cells). The stricter scoring added no noise, and `lean`'s
+  shop-stock-total flake did not recur this sweep, so `memory` and `lean`
+  tie at 57/60 · 1.22/1k.
+- **`contains` was hiding a lucky pass and a chatter tax.** Blind
+  `critique` loses its 1/27 recall pass (recall-db-port 1/3 — a verbose
+  near-miss that substring matching rewarded); `json_equal` kills it, and
+  30/60 puts `critique` exactly at `bare`'s score. Meanwhile the
+  answer-with-only-this-JSON instruction collapses storeless recall
+  chatter: `bare`'s recall spend drops 4239 → 1543 tokens and blind
+  `critique`'s 53973 → 11293, which is why the storeless rows' totals look
+  cheaper than the previous sweep's.
+- **`grounded` exhausts honestly rather than passing falsely.** 8 of its
+  27 recall failures end `critique-exhausted` (up from 4) — with an exact
+  JSON object demanded, the grounded critic refuses to sign off fabricated
+  facts more often. It still scores 0/27 there: a critic cannot conjure
+  facts, only reject them. Its tool-use 18/18 and shop-basket-total 3/3
+  (one revision round per run) are unchanged.
+- **`full` stays 60/60 — now measured inside one sweep.** No provenance
+  footnote needed anymore: 86500 tokens, 0.69/1k, three critique rounds
+  total (the three shop-basket-total repairs). `lean` delivers 57/60 for
+  46% fewer tokens and remains the efficiency ship config.
+- **Standing negatives stand.** `schema_retries` is 0 in all 420 runs
+  (structured remains pure instruction tax on this model), and
+  shop-basket-total is still rescued only by evidence-sighted critique —
+  `memory`/`lean`'s three failures are exactly its arithmetic.
+
+### Previous sweep (2026-08-09, seven configs, contains-scored recall)
+
+The sweep below ran the same 20-task suite and config list but predates the
+recall scoring conversion: its nine memory-recall tasks scored `contains`,
+so recall rows — scores and tokens — are not comparable to the table above
+(storeless configs wrote longer prose answers, and substring matching could
+reward near-misses). Kept because its narrative documents the
+grounded-critique measurements that motivated v0.5.
 
 | config | score | tokens | score/1k tok |
 |---|---|---|---|

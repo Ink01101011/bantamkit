@@ -1,17 +1,17 @@
 name: recall-db-port
 family: memory-recall
-prompt: |
-  What port does the STAGING database listen on? If you have a memory tool,
-  check memory first. Answer with the port number.
+prompt: 'What port does the STAGING database listen on? If you have a memory tool,
+  check memory first. Answer with ONLY this JSON, nothing else: {"port": <number>}'
 memory_setup:
-  - type: project
-    name: staging-db-port
-    description: staging database port number
-    body: The staging database listens on port 5433.
-  - type: project
-    name: prod-db-connection
-    description: production postgres connection endpoint
-    body: Production postgres is at db.prod.internal on port 5432.
+- type: project
+  name: staging-db-port
+  description: staging database port number
+  body: The staging database listens on port 5433.
+- type: project
+  name: prod-db-connection
+  description: production postgres connection endpoint
+  body: Production postgres is at db.prod.internal on port 5432.
 scoring:
-  kind: contains
-  expected: ["5433"]
+  kind: json_equal
+  expected:
+    port: 5433

@@ -1,17 +1,17 @@
 name: recall-audit-retention
 family: memory-recall
-prompt: |
-  How many days do we keep AUDIT logs? If you have a memory tool, check
-  memory first. Answer with the number of days.
+prompt: 'How many days do we keep AUDIT logs? If you have a memory tool, check memory
+  first. Answer with ONLY this JSON, nothing else: {"days": <number>}'
 memory_setup:
-  - type: project
-    name: log-retention-default
-    description: how long ordinary application logs are kept
-    body: Application logs are kept for 45 days.
-  - type: project
-    name: log-retention-audit
-    description: retention exception for the audit trail
-    body: Audit logs are the exception and are kept for 400 days.
+- type: project
+  name: log-retention-default
+  description: how long ordinary application logs are kept
+  body: Application logs are kept for 45 days.
+- type: project
+  name: log-retention-audit
+  description: retention exception for the audit trail
+  body: Audit logs are the exception and are kept for 400 days.
 scoring:
-  kind: contains
-  expected: ["400"]
+  kind: json_equal
+  expected:
+    days: 400

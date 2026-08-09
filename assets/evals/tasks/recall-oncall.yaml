@@ -1,13 +1,13 @@
 name: recall-oncall
 family: memory-recall
-prompt: |
-  Who is on-call for infrastructure this quarter? If you have a memory tool,
-  check memory first. Answer with the person's name.
+prompt: 'Who is on-call for infrastructure this quarter? If you have a memory tool,
+  check memory first. Answer with ONLY this JSON, nothing else: {"name": "<name>"}'
 memory_setup:
-  - type: project
-    name: infra-oncall
-    description: who is on-call for infrastructure this quarter
-    body: Nadia is on-call for infrastructure until end of Q3.
+- type: project
+  name: infra-oncall
+  description: who is on-call for infrastructure this quarter
+  body: Nadia is on-call for infrastructure until end of Q3.
 scoring:
-  kind: contains
-  expected: ["nadia"]
+  kind: json_equal
+  expected:
+    name: Nadia

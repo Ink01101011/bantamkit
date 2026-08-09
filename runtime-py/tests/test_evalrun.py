@@ -1,5 +1,6 @@
 import json
 
+import pytest
 from conftest import FakeClient, assistant, call
 
 from bantamkit import evalrun
@@ -33,15 +34,19 @@ def test_score_json_equal():
     assert score_output(task, "not json", []) is False
 
 
+def contains_task(expected):
+    return {"scoring": {"kind": "contains", "expected": expected}}
+
+
 def test_score_contains_case_insensitive():
-    task = get_task("recall-owner")
+    task = contains_task(["atlas"])
     assert score_output(task, "It is owned by Team ATLAS.", []) is True
     assert score_output(task, "no idea", []) is False
 
 
 def test_score_contains_matches_on_word_boundaries_not_substrings():
-    """`100` inside `1000` is a wrong answer, not a pass (shop-total's expected value)."""
-    task = get_task("shop-total")
+    """`100` inside `1000` is a wrong answer, not a pass."""
+    task = contains_task(["100"])
     assert score_output(task, "The total stock value is 100.", []) is True
     assert score_output(task, "The total stock value is 1000", []) is False
     assert score_output(task, "It is 4100 in total", []) is False
@@ -49,7 +54,7 @@ def test_score_contains_matches_on_word_boundaries_not_substrings():
 
 
 def test_score_contains_allows_punctuation_and_hyphens_around_the_term():
-    task = get_task("recall-deploy")
+    task = contains_task(["ship-prod"])
     assert score_output(task, "Run `make ship-prod` from the root.", []) is True
     assert score_output(task, "Run make ship-production.", []) is False
 
@@ -89,7 +94,7 @@ def test_run_task_memory_config_seeds_store(tmp_path):
     client = FakeClient(
         [
             assistant(tool_calls=[call("memory_recall", {"query": "deploy production"})]),
-            assistant(content="Run make ship-prod."),
+            assistant(content='{"command": "make ship-prod"}'),
         ]
     )
     result = run_task(client, get_task("recall-deploy"), "memory", tmp_path)
@@ -618,8 +623,8 @@ def test_missing_family_is_config_error(tmp_path):
 
 def test_outcome_wrong_answer_for_contains_task(tmp_path):
     result = run_task(
-        FakeClient([assistant(content="I have no idea who owns it")]),
-        get_task("recall-owner"),
+        FakeClient([assistant(content="I have no idea what the total is")]),
+        get_task("shop-total"),
         "bare",
         tmp_path,
     )
@@ -829,7 +834,7 @@ def test_classify_outcome_returns_only_documented_outcomes(tmp_path):
 
 
 def test_score_contains_rejects_comma_grouped_superstrings():
-    task = get_task("recall-org-quota")  # expected ["200"]
+    task = contains_task(["200"])
     assert score_output(task, "The quota is 200 requests per minute.", []) is True
     assert score_output(task, "It handles 1,200 requests per minute.", []) is False
     assert score_output(task, "About 200, give or take.", []) is True
@@ -863,3 +868,23 @@ def test_grounded_config_critic_sees_tool_evidence(tmp_path):
     critic_prompt = client.calls[2]["messages"][-1].content
     assert 'price_lookup({"item": "widget"})' in critic_prompt
     assert result.passed is True
+
+
+RECALL_TASKS = sorted(t["name"] for t in load_tasks() if t["family"] == "memory-recall")
+assert len(RECALL_TASKS) >= 9, "memory-recall family shrank below 9"
+
+
+@pytest.mark.parametrize("name", RECALL_TASKS)
+def test_recall_tasks_score_json_equal(name):
+    """Dump-the-store answers must not pass: recall tasks demand an exact JSON answer."""
+    task = get_task(name)
+    assert task["scoring"]["kind"] == "json_equal"
+    assert "Answer with ONLY this JSON" in task["prompt"]
+
+
+def test_recall_store_dump_containing_the_fact_scores_false():
+    """The failure mode the conversion kills: a dump that contains the right fact is not a pass."""
+    task = get_task("recall-owner")
+    dump = "[service-owner] The checkout service is owned by Team Atlas. [db-port] port 5433."
+    assert score_output(task, dump, []) is False
+    assert score_output(task, '{"team": "Atlas"}', []) is True

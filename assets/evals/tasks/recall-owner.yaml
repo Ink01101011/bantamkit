@@ -1,13 +1,13 @@
 name: recall-owner
 family: memory-recall
-prompt: |
-  Which team owns the payments API? If you have a memory tool, check memory
-  first. Answer with the team name.
+prompt: 'Which team owns the payments API? If you have a memory tool, check memory
+  first. Answer with ONLY this JSON, nothing else: {"team": "<team name>"}'
 memory_setup:
-  - type: project
-    name: payments-api-owner
-    description: which team owns the payments api
-    body: The payments API is owned by team Atlas.
+- type: project
+  name: payments-api-owner
+  description: which team owns the payments api
+  body: The payments API is owned by team Atlas.
 scoring:
-  kind: contains
-  expected: ["atlas"]
+  kind: json_equal
+  expected:
+    team: Atlas

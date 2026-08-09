@@ -1,21 +1,21 @@
 name: recall-oncall-rotation
 family: memory-recall
-prompt: |
-  Who is on call for the PAYMENTS service this week? If you have a memory
-  tool, check memory first. Answer with the name.
+prompt: 'Who is on call for the PAYMENTS service this week? If you have a memory
+  tool, check memory first. Answer with ONLY this JSON, nothing else: {"name": "<name>"}'
 memory_setup:
-  - type: project
-    name: oncall-payments
-    description: current pager duty for the payments service
-    body: Payments on-call this week is Priya.
-  - type: project
-    name: oncall-search
-    description: rotation owner covering search infrastructure
-    body: Search on-call this week is Marcus.
-  - type: project
-    name: oncall-ingest
-    description: escalation contact for the ingest pipeline
-    body: Ingest on-call this week is Dana.
+- type: project
+  name: oncall-payments
+  description: current pager duty for the payments service
+  body: Payments on-call this week is Priya.
+- type: project
+  name: oncall-search
+  description: rotation owner covering search infrastructure
+  body: Search on-call this week is Marcus.
+- type: project
+  name: oncall-ingest
+  description: escalation contact for the ingest pipeline
+  body: Ingest on-call this week is Dana.
 scoring:
-  kind: contains
-  expected: ["Priya"]
+  kind: json_equal
+  expected:
+    name: Priya
