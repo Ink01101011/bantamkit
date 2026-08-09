@@ -18,7 +18,7 @@ harness configurations against the same endpoint.
 |---|---|---|
 | `--base-url` | yes | OpenAI-compatible endpoint, including the path prefix |
 | `--model` | yes | Model name as the endpoint knows it |
-| `--config` | no | One of `bare`, `structured`, `critique`, `grounded`, `memory`, `lean`, `full`. Repeatable. Default: all seven |
+| `--config` | no | One of `bare`, `structured`, `critique`, `grounded`, `graph`, `memory`, `lean`, `full` (plus calibration-only `graph-annotate`, `graph-cache`). Repeatable. Default: the eight matrix configs |
 | `--timeout` | no | Per-request timeout in seconds. Default: 60 |
 | `--repeats` | no | Runs per (config, task) pair. Default: 1. Repeats narrow the run-to-run noise band and are how candidate tasks are calibrated |
 | `--tasks` | no | Directory of task YAML files to run instead of the builtin suite |
@@ -32,7 +32,7 @@ Narrow it while iterating:
   --config bare --config full
 ```
 
-Every task runs against a live model, so a full sweep is 7 configs × all tasks
+Every task runs against a live model, so a full sweep is 8 configs × all tasks
 × `--repeats` runs. Start with `--config bare --config full`, and pass `--json`
 on long sweeps so partial results survive an interrupted run.
 
@@ -58,6 +58,7 @@ Each config is the same tasks with a different harness wrapped around them.
 | `structured` | Tasks with a `schema` bypass the loop and go through `structured()` |
 | `critique` | A `CritiqueGate` on the `task-completion` rubric scores each answer |
 | `grounded` | `GroundedCritiqueGate` only — the critic sees tool call/observation pairs; isolates the evidence effect vs `critique` |
+| `graph` | `FileAccessGraph` on tasks with workspace file tools — repeat-read annotation, verify-on-repeat cache, `file_graph` query tool |
 | `memory` | Tasks with `memory_setup` get a seeded `Memory` store attached |
 | `lean` | memory + schema enforcement inside the agent loop — `full` without the critique gate |
 | `full` | memory + schema + `GroundedCritiqueGate` (evidence-seeing critic), all inside the agent loop |
@@ -102,8 +103,8 @@ Two details make that comparison fair rather than flattering:
 
 So `full` stacks all three primitives on one run — see
 [Current results](#current-results) for whether that stack earns its bill
-(on the current suite, `full` is the only 60/60 config; `lean` reaches
-57/60 for 46% fewer tokens).
+(on the current suite, `full` is the only 66/66 config; `lean` reaches
+57/66 for 50% fewer tokens).
 
 `lean` exists to answer one question: how much of `full`'s token bill is the
 critique gate? `lean` runs the same agent loop with memory and `SchemaGate`
@@ -186,6 +187,127 @@ Scores move between runs unless the endpoint is deterministic (temperature 0,
 fixed seed). Compare configs within one sweep, not across sweeps.
 
 ## Current results
+
+Reference sweep on the 22-task suite — `qwen3:4b-instruct` (4B class,
+non-thinking) served by Ollama, all eight configs at `--repeats 3`:
+8 × 22 × 3 = 528 runs. The suite is 5 structured-extraction, 6 tool-use,
+9 memory-recall and 2 file-nav tasks. This sweep follows the file-access
+graph cycle: the new `file-nav` family (workspace file tools, pointer-chain
+prompts) and the `graph` config (`bare` + `FileAccessGraph`) join the
+matrix. Every per-run row is in
+`docs/eval-data/2026-08-09-filegraph-sweep.jsonl`; the 120-run calibration
+that selected the family sits beside it
+(`2026-08-09-filegraph-calibration.jsonl` and `-tuned.jsonl`).
+
+| config | score | tokens | score/1k tok |
+|---|---|---|---|
+| bare | 30/66 | 18380 | 1.63 |
+| structured | 30/66 | 19601 | 1.53 |
+| critique | 36/66 | 47366 | 0.76 |
+| grounded | 38/66 | 96698 | 0.39 |
+| graph | 36/66 | 23200 | 1.55 |
+| memory | 57/66 | 54254 | 1.05 |
+| lean | 57/66 | 54543 | 1.05 |
+| full | 66/66 | 109243 | 0.60 |
+
+Per family (score · tokens):
+
+| config | file-nav | memory-recall | structured-extraction | tool-use |
+|---|---|---|---|---|
+| bare | 0/6 · 6928 tok | 0/27 · 1544 tok | 15/15 · 1059 tok | 15/18 · 8849 tok |
+| structured | 0/6 · 7408 tok | 0/27 · 1523 tok | 15/15 · 1830 tok | 15/18 · 8840 tok |
+| critique | 6/6 · 15396 tok | 0/27 · 11228 tok | 15/15 · 6111 tok | 15/18 · 14631 tok |
+| grounded | 5/6 · 20078 tok | 0/27 · 43511 tok | 15/15 · 10501 tok | 18/18 · 22608 tok |
+| graph | 6/6 · 11776 tok | 0/27 · 1521 tok | 15/15 · 1065 tok | 15/18 · 8838 tok |
+| memory | 0/6 · 8338 tok | 27/27 · 36026 tok | 15/15 · 1053 tok | 15/18 · 8837 tok |
+| lean | 0/6 · 7868 tok | 27/27 · 36033 tok | 15/15 · 1835 tok | 15/18 · 8807 tok |
+| full | 6/6 · 22839 tok | 27/27 · 52784 tok | 15/15 · 11150 tok | 18/18 · 22470 tok |
+
+```
+Failure outcomes:
+- bare: wrong-answer ×30, malformed-output ×6
+- structured: wrong-answer ×31, malformed-output ×5
+- critique: wrong-answer ×30
+- grounded: wrong-answer ×19, critique-exhausted ×8, malformed-output ×1
+- graph: wrong-answer ×30
+- memory: malformed-output ×6, wrong-answer ×3
+- lean: malformed-output ×5, wrong-answer ×4
+- full: none
+```
+
+Discriminating tasks: 12/22
+
+| task | bare | structured | critique | grounded | graph | memory | lean | full |
+|---|---|---|---|---|---|---|---|---|
+| nav-prod-port | 0/3 | 0/3 | 3/3 | 2/3 | 3/3 | 0/3 | 0/3 | 3/3 |
+| nav-release-bundle | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 | 0/3 | 0/3 | 3/3 |
+| recall-audit-retention | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-cache-ttl | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-db-port | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-deploy | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-env-endpoint | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-oncall | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-oncall-rotation | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-org-quota | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| recall-owner | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| shop-basket-total | 0/3 | 0/3 | 0/3 | 3/3 | 0/3 | 0/3 | 0/3 | 3/3 |
+
+What the sweep says:
+
+- **The promoted cells hold, and the no-op check passes exactly.** Both
+  file-nav tasks stay `bare` 0/3 vs `graph` 3/3, reproducing the
+  calibration. Off-family, `graph` matches `bare` on every single cell —
+  identical scores everywhere, 11424 vs 11452 total tokens (0.2%) — the
+  spec's falsifiable prediction that the component is a true no-op where
+  no task gives it file tools.
+- **The honest attribution: file-nav's rescue channel is not unique to
+  the graph.** `bare` fails file-nav as `malformed-output` — after
+  exploring, the model narrates instead of emitting the exact JSON.
+  Everything that adds a revision loop fixes that: blind `critique` 6/6,
+  `grounded` 5/6, `full` 6/6 — and `graph` 6/6. What distinguishes
+  `graph` is cost: 11776 file-nav tokens vs `critique`'s 15396,
+  `grounded`'s 20078 and `full`'s 22839, with no gate calls at all. The
+  calibration ablations sharpen this: annotate-only and cache+annotate
+  (query off) fail
+  exactly like `bare`, so within the graph the rescue is the query
+  mechanism (the `file_graph` tool + its system snippet) — and the data
+  cannot separate "the ledger helped" from "any task-relevant system
+  snippet would have re-anchored the JSON format." Recorded as measured,
+  not assumed.
+- **`memory` and `lean` are no longer near-perfect on the grown suite:
+  57/66.** Their six new misses are all file-nav (no store to attach, so
+  they run as `bare` there and inherit its malformed-output failures) plus
+  the standing shop-basket-total arithmetic. **`full` is the only perfect
+  config again: 66/66** — the grounded gate covers file-nav too, at 0.60/1k.
+- **Blind `critique` posts its first standalone uplift on this suite:
+  30 → 36.** Every one of the six is file-nav format repair (7 revision
+  rounds total). The gate that measured as pure overhead for five cycles
+  finally has a failure mode it can fix — worth knowing, but `graph` buys
+  the same six passes at half `critique`'s total bill (23200 vs 47366).
+- **The dropped candidate is the cycle's sharpest negative.**
+  `nav-retry-budget` plants an obsolete config next to the live one;
+  calibration measured `bare` 3/3 but `graph` 0/3 — ledger-guided runs
+  consistently surfaced the stale value. A file-access ledger is not a
+  relevance oracle: it tells the model what it read, not which read to
+  trust. Dropped per the bar. The other two drops saturated after the
+  tuning pass — nav-owner-team and nav-quota-endpoint both measured
+  bare 3/3 vs graph 3/3, with graph *costing more* tokens (3918 vs 2631
+  and 6072 vs 4356), clearing neither bar. All numbers in the tuned
+  calibration JSONL.
+- **Repeat variance: one split cell in 176** (nav-prod-port `grounded`
+  2/3). `schema_retries` is 0 in all 528 runs — the
+  structured-instruction-tax negative stands through its sixth sweep.
+- **Ship guidance updates**: `lean` remains the efficiency pick for
+  memory-driven agents (57/66 · 1.05/1k), `graph` is the cheap attach for
+  file-reading agents (its whole uplift costs +26% tokens over `bare`),
+  and `full` is what perfection costs: 0.60/1k, double `lean`'s bill.
+
+### Previous sweep (2026-08-09, seven configs, 20 tasks)
+
+The sweep below predates the file-nav family and the `graph` config: 20
+tasks, seven configs, 420 runs. Totals are /60 and are not comparable to
+the /66 table above. Kept because it is the recall-conversion reference
+measurement (json_equal recall scoring landed there).
 
 Reference sweep on the 20-task suite — `qwen3:4b-instruct` (4B class,
 non-thinking) served by Ollama, all seven configs at `--repeats 3`:

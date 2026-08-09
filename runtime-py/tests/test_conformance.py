@@ -10,10 +10,13 @@ import jsonschema
 import yaml
 
 from bantamkit.assets import assets_root
+from bantamkit.evalrun import load_tasks
 
 SKILL_BUDGET_BYTES = 6000  # "kept to a page"
 SCORING_KINDS = {"json_equal", "contains", "tool_trace"}
-FAMILIES = {"structured-extraction", "tool-use", "memory-recall"}
+# file-nav is forward-declared: its tasks land via calibration promotion.
+FAMILIES = {"structured-extraction", "tool-use", "memory-recall", "file-nav"}
+CORE_FAMILIES = {"structured-extraction", "tool-use", "memory-recall"}
 MEMORY_TYPES = {"user", "feedback", "project", "reference"}
 
 
@@ -48,7 +51,7 @@ def test_skill_assets_fit_budget():
 
 def test_eval_tasks_are_valid():
     task_files = sorted((assets_root() / "evals" / "tasks").glob("*.yaml"))
-    assert len(task_files) >= 20
+    assert len(task_files) >= 22
     families = []
     for f in task_files:
         task = yaml.safe_load(f.read_text())
@@ -59,7 +62,8 @@ def test_eval_tasks_are_valid():
         assert task["scoring"]["kind"] in SCORING_KINDS
         assert "expected" in task["scoring"]
         # Validate tools
-        assert set(task.get("tools", [])) <= {"price_lookup", "stock_lookup"}
+        allowed_tools = {"price_lookup", "stock_lookup", "read_file", "list_files"}
+        assert set(task.get("tools", [])) <= allowed_tools
         # Validate scoring expected shape per kind
         scoring_kind = task["scoring"]["kind"]
         expected = task["scoring"]["expected"]
@@ -86,9 +90,9 @@ def test_eval_tasks_are_valid():
             assert set(fact) >= {"type", "name", "description", "body"}
     # Verify all families covered and balanced (at least 2 each)
     family_counts = Counter(families)
-    assert set(family_counts.keys()) == FAMILIES  # all three families present
-    for family in FAMILIES:
-        count = family_counts[family]
+    assert set(family_counts.keys()) <= FAMILIES
+    assert CORE_FAMILIES <= set(family_counts.keys())  # core families always present
+    for family, count in family_counts.items():
         assert count >= 2, f"{family} appears {count} times, need >= 2"
 
 
@@ -108,3 +112,17 @@ def test_eval_fixture_catalog_shape():
     assert catalog["widget"]["price"] * catalog["widget"]["stock"] == 100
     assert catalog["gadget"]["price"] > catalog["widget"]["price"]  # shop-cheapest depends on it
     assert catalog["gadget"]["price"] * catalog["gadget"]["stock"] == 540  # shop-gadget-value
+
+
+def test_workspace_tasks_are_well_formed():
+    """Tasks using the workspace file tools carry a valid workspace; others carry none."""
+    for task in load_tasks():
+        uses_workspace = any(t in ("read_file", "list_files") for t in task.get("tools", []))
+        if not uses_workspace:
+            assert "workspace" not in task, task["name"]
+            continue
+        assert "workspace" in task, task["name"]
+        ws = task["workspace"]
+        assert isinstance(ws, dict) and ws, f"{task['name']}: workspace must be non-empty"
+        assert all(isinstance(k, str) and isinstance(v, str) for k, v in ws.items()), task["name"]
+        assert task["family"] == "file-nav", task["name"]

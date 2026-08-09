@@ -18,10 +18,11 @@ from bantamkit.agent import Agent, ToolDef
 from bantamkit.assets import assets_root
 from bantamkit.client import BantamError, Message, ModelClient, OpenAICompatible, Tool, Usage
 from bantamkit.critique import CritiqueExhausted, CritiqueGate, GroundedCritiqueGate
+from bantamkit.filegraph import FileAccessGraph
 from bantamkit.memory import Memory, MemoryStore
 from bantamkit.structured import StructuredOutputError, extract_json, structured
 
-CONFIGS = ["bare", "structured", "critique", "grounded", "memory", "lean", "full"]
+CONFIGS = ["bare", "structured", "critique", "grounded", "graph", "memory", "lean", "full"]
 
 
 # ---- deterministic eval fixture tools (fixture data lives in assets) ----
@@ -68,6 +69,56 @@ BUILTIN_TOOLS = {
     "price_lookup": _PRICE_TOOL,
     "stock_lookup": _STOCK_TOOL,
 }
+
+WORKSPACE_TOOLS = ("read_file", "list_files")
+
+_PATH_SCHEMA = {
+    "type": "object",
+    "required": ["path"],
+    "properties": {"path": {"type": "string"}},
+}
+
+
+def _workspace_tools(workspace: dict) -> dict[str, ToolDef]:
+    """Per-task file tools over the task's `workspace:` mapping (path -> content)."""
+
+    def read_file(path: str) -> str:
+        content = workspace.get(path)
+        if content is None:
+            return f"error: unknown file '{path}'. available: {sorted(workspace)}"
+        return content
+
+    def list_files() -> str:
+        return "\n".join(sorted(workspace))
+
+    return {
+        "read_file": ToolDef(
+            tool=Tool(
+                name="read_file",
+                description="Read the full content of one file by its exact path",
+                parameters=_PATH_SCHEMA,
+            ),
+            handler=read_file,
+        ),
+        "list_files": ToolDef(
+            tool=Tool(
+                name="list_files",
+                description="List all file paths in the workspace",
+                parameters={"type": "object", "properties": {}},
+            ),
+            handler=list_files,
+        ),
+    }
+
+
+GRAPH_CONFIGS = {
+    "graph": {"annotate": True, "cache": True, "query": True},
+    "graph-annotate": {"annotate": True, "cache": False, "query": False},
+    "graph-cache": {"annotate": True, "cache": True, "query": False},
+}
+
+# Every config name run_task accepts: the permanent matrix plus calibration-only ablations.
+CONFIG_CHOICES = CONFIGS + sorted(set(GRAPH_CONFIGS) - set(CONFIGS))
 
 
 # ---- suite ----
@@ -233,7 +284,11 @@ def classify_outcome(
 
 def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> TaskResult:
     tracking = TrackingClient(client)
-    tools = [BUILTIN_TOOLS[name] for name in task.get("tools", [])]
+    workspace_tools = _workspace_tools(task.get("workspace") or {})
+    tools = [
+        workspace_tools[name] if name in workspace_tools else BUILTIN_TOOLS[name]
+        for name in task.get("tools", [])
+    ]
     agent = Agent(client=tracking, tools=tools)
 
     schema_gate: SchemaGate | None = None
@@ -257,6 +312,8 @@ def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> Tas
     if config in ("grounded", "full"):
         critique_gate = GroundedCritiqueGate(client=tracking)
         agent.use(critique_gate)
+    if config in GRAPH_CONFIGS and any(n in WORKSPACE_TOOLS for n in task.get("tools", [])):
+        agent.use(FileAccessGraph(readers={"read_file": "path"}, **GRAPH_CONFIGS[config]))
 
     output: str | None = None
     messages: list[Message] = []
@@ -329,7 +386,9 @@ def _score_cell(rows: list[TaskResult]) -> str:
 
 
 def format_report(results: list[TaskResult]) -> str:
-    configs = [c for c in CONFIGS if any(r.config == c for r in results)]
+    seen = {r.config for r in results}
+    configs = [c for c in CONFIG_CHOICES if c in seen]
+    configs += sorted(seen - set(CONFIG_CHOICES))  # never silently drop a result row
     lines = ["| config | score | tokens | score/1k tok |", "|---|---|---|---|"]
     for config in configs:
         rows = [r for r in results if r.config == config]
@@ -412,7 +471,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument(
-        "--config", action="append", choices=CONFIGS, help="repeatable; default: all configs"
+        "--config", action="append", choices=CONFIG_CHOICES, help="repeatable; default: all configs"
     )
     parser.add_argument(
         "--timeout", type=float, default=60.0, help="per-request timeout in seconds (default 60)"

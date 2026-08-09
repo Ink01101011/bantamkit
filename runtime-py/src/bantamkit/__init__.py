@@ -20,5 +20,6 @@ from bantamkit.critique import (
     render_evidence,
 )
 from bantamkit.evalrun import CONFIGS, format_report, run_suite
+from bantamkit.filegraph import FileAccessGraph
 from bantamkit.memory import Memory, MemoryStore
 from bantamkit.structured import StructuredOutputError, extract_json, structured

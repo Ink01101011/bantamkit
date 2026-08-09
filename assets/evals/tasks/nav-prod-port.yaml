@@ -1,0 +1,84 @@
+name: nav-prod-port
+family: file-nav
+tools:
+- read_file
+- list_files
+workspace:
+  README.md: '# billing-svc
+
+
+    Billing service. Deployment details live in docs/deploy.md.
+
+    Development setup is in docs/dev.md (local only).
+
+
+    For coding conventions see style.md.'
+  docs/deploy.md: '# Deploying billing-svc
+
+
+    Production settings are NOT here. Every environment value
+
+    (host, port, pool sizes) is read from config/prod.yaml at boot.
+
+    Staging mirrors production except where config/staging.yaml overrides.'
+  config/prod.yaml: "host: billing.internal.example.com\nport: 9443\npool:\n  min: 4\n  max: 32\ntls: required\n"
+  config/staging.yaml: "host: billing.staging.example.com\nport: 8443\npool:\n  min: 1\n  max: 8\ntls: optional\n"
+  style.md: '# Style guide (excerpt)
+
+
+    Prefer small modules with one clear responsibility. Public functions carry
+
+    docstrings describing behavior, not implementation. Errors are values where
+
+    practical; exceptions for programmer mistakes. Log lines are structured
+
+    key=value pairs, lowercase keys. Feature flags default off and are removed
+
+    within two releases of full rollout. Database migrations are forward-only;
+
+    rollbacks happen by writing a new migration. Review comments prefixed nit:
+
+    are optional. Vendored code lives under third_party/ and is never edited in
+
+    place — patch files only. Commit subjects use the imperative mood and stay
+
+    under 68 characters. Squash-merge is the default; merge commits are for
+
+    release branches only. Generated files carry a do-not-edit header and are
+
+    regenerated in CI, never by hand.
+
+    '
+  ci.md: '# CI pipeline notes
+
+
+    The pipeline runs on every push: lint, unit tests, integration tests, and a
+
+    packaging step. Caching of the dependency layer cut average build time from
+
+    11 minutes to 6. Flaky tests are quarantined under tests/flaky/ and re-run
+
+    three times before being reported as failures. The nightly job additionally
+
+    runs the slow property-based suite and publishes coverage to the internal
+
+    dashboard. Artifacts older than 30 days are pruned automatically. If a
+
+    release tag is pushed, the pipeline also builds the signed bundle and
+
+    uploads it to the artifact store with a 90-day retention override. Secrets
+
+    are injected via the runner''s OIDC exchange; never commit tokens. When the
+
+    integration environment is unavailable the pipeline degrades to unit tests
+
+    only and marks the run amber, not red. Amber runs do not block merges but
+
+    three consecutive ambers page the on-call.
+
+    '
+prompt: 'Find the production port of billing-svc from the workspace files. Start with list_files, then follow the documentation to the right file. Use list_files first, then read_file on every file you need — follow each pointer the files give you; do not answer from memory or guess. Answer with ONLY this JSON, nothing else: {"port": <number>}'
+scoring:
+  kind: json_equal
+  expected:
+    port: 9443

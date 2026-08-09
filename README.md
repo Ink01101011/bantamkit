@@ -40,20 +40,28 @@ print(result.output, result.usage.total)
 
 ## Recommended defaults
 
-Measured on the bundled 20-task suite (`qwen3:4b-instruct`, 3 repeats — full
+Measured on the bundled 22-task suite (`qwen3:4b-instruct`, 3 repeats — full
 tables in [Eval → Current results](docs/eval.md#current-results)):
 
-- **Always attach `Memory`** — the one primitive that moves the score on this
-  suite (30/60 → 57/60).
+- **Always attach `Memory`** — the biggest single mover on this suite
+  (30/66 → 57/66).
+- **Attach `FileAccessGraph` when the agent reads files** — it rescued both
+  file-nav tasks 0/3 → 3/3 — its whole uplift cost +26% tokens
+  suite-wide over bare — and measures as an
+  exact no-op on tasks without file tools. Caveat measured honestly: its
+  ledger is not a relevance oracle (a stale-config trap task got *worse*
+  with it — recorded in the eval docs).
 - **Use `structured()` when you need schema'd output** — enforcement costs
-  nothing extra when the model complies; on this model it never needed a retry.
-- **Skip the blind `CritiqueGate` on small instruct models** — standalone it
-  buys nothing here (30/60, exactly bare's score, at ~3× the tokens). Attach
-  a critique gate only with a rubric that catches failures you have actually
-  observed, and prefer instruct over thinking model variants when you do.
-- **`full` (memory + schema + grounded critique) measures 60/60** — the
-  suite's first perfect config, at +85% tokens over `lean`'s 57/60. Pay it
-  when tool-derived correctness matters more than tokens.
+  nothing extra when the model complies; on this model it never needed a
+  retry in six sweeps.
+- **Skip the blind `CritiqueGate` on small instruct models** — its one
+  measured uplift (file-nav format repair, 30/66 → 36/66) is the same six
+  passes `graph` buys at half the total bill. Attach a critique gate only
+  with a rubric that catches failures you have actually observed, and
+  prefer instruct over thinking model variants when you do.
+- **`full` (memory + schema + grounded critique) measures 66/66** — the
+  only perfect config, at double `lean`'s tokens (`lean` 57/66). Pay it
+  when correctness matters more than tokens.
 - **Prefer `GroundedCritiqueGate` over `CritiqueGate` when the agent has
   tools** — the critic sees tool call/observation pairs, letting it verify
   facts the agent got from tools. Measured: it rescued the tool-arithmetic
@@ -70,6 +78,7 @@ ship as an [MCP server](docs/mcp.md).
 - [Install](docs/install.md) — requirements, editable install, pointing at an endpoint, `BANTAMKIT_ASSETS`
 - [Usage](docs/usage.md) — the runbook: client, agent, tools, components, `structured()`, error types
 - [Memory](docs/memory.md) — on-disk layout, the four ops, dedupe and budget, compact/archive
+- [File-access graph](docs/filegraph.md) — the read ledger: repeat annotation, verify-on-repeat cache, `file_graph` query tool
 - [Eval](docs/eval.md) — running the suite, the config matrix, reading the report, adding tasks
 - [MCP](docs/mcp.md) — `bantamkit-mcp`: memory + validation for external agents (Claude Code, Codex, any MCP client)
 
