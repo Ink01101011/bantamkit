@@ -1,0 +1,75 @@
+"""Layer 1 — a global spend governor for one agent run: `TokenBudget`."""
+
+from __future__ import annotations
+
+from bantamkit.client import Usage
+from bantamkit.profile import default as profile_default
+from bantamkit.profile import default_float as profile_default_float
+
+__all__ = ["TokenBudget"]
+
+
+class TokenBudget:
+    """A governor, not an odometer: it decides what a run may still spend.
+
+    Every gate already caps its own retries; composition multiplies those caps
+    and nothing bounded the total (3b `full`: 214,698 tokens for 15/66). This
+    component bounds the run and degrades it in two steps instead of one:
+
+    - past ``ceiling * optional_cutoff`` spent, ``allow("optional")`` is denied,
+      so optional work is skipped and a `full` run degrades toward `lean`/`bare`;
+    - past ``ceiling``, everything is denied and `Agent.run` stops at the top of
+      the next turn, returning the last assistant content as a best-effort result.
+
+    The gap between the cutoff and the ceiling **is** the reserve: the final
+    answer emission always fits.
+
+    Priority classification (v1, deliberately coarse — no cost estimation, which
+    would be guesswork until a measured need exists):
+
+    - ``"optional"`` — critique rounds, blind and grounded. Denied means "accept
+      the answer", never an exception.
+    - ``"required"`` — the agent's own turns and the schema / json-answer retries.
+      Cheap, high-value, and denied only past the hard ceiling.
+
+    `structured()` is not budgeted this cycle: its loop is already bounded by
+    `max_retries`.
+
+    Attach with `Agent.use(...)`; `setup` resets per-run state, so one instance
+    may not measure two runs at once but can be reused across sequential ones.
+    """
+
+    def __init__(self, ceiling: int | None = None, optional_cutoff: float | None = None):
+        self.ceiling = (
+            ceiling if ceiling is not None else profile_default("token_budget", "ceiling")
+        )
+        self.optional_cutoff = (
+            optional_cutoff
+            if optional_cutoff is not None
+            else profile_default_float("token_budget", "optional_cutoff")
+        )
+        self.spent = 0
+        self.exhausted = False
+
+    def setup(self, agent) -> None:
+        self.spent = 0
+        self.exhausted = False
+        agent.budget = self
+
+    def record(self, usage: Usage) -> None:
+        """Book one chat response against the budget. Called by `Agent.run`."""
+        self.spent += usage.total
+
+    def allow(self, priority: str) -> bool:
+        """Ask before spending. `priority` is ``"required"`` or ``"optional"``."""
+        if priority not in ("required", "optional"):
+            raise ValueError(f"unknown budget priority {priority!r}")
+        if self.spent >= self.ceiling:
+            # Latched for the run: the hard ceiling denied work, which is what
+            # `budget-exhausted` reports. Cutoff-band denials are degradation,
+            # not exhaustion, and deliberately do not set this.
+            self.exhausted = True
+            return False
+        if priority == "optional":
+            return self.spent < self.ceiling * self.optional_cutoff
+        return True

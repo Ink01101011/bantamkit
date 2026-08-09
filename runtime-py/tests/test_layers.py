@@ -47,7 +47,14 @@ MOVED_FRAGMENTS = (
     "not parseable JSON",
     "contains no JSON",
 )
-CORE_MODULES = ("agent.py", "structured.py", "critique.py", "evalrun.py", "mcpserver.py")
+CORE_MODULES = (
+    "agent.py",
+    "budget.py",
+    "structured.py",
+    "critique.py",
+    "evalrun.py",
+    "mcpserver.py",
+)
 LAYER_MODULES = ("contract.py", "profile.py")
 FORBIDDEN_IMPORTS = ("agent", "structured", "critique", "evalrun", "filegraph", "memory")
 
