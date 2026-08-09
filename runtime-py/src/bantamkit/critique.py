@@ -11,6 +11,7 @@ from bantamkit.assets import AssetNotFound, assets_root
 from bantamkit.client import BantamError, Message, ModelClient
 from bantamkit.contract import critique_feedback as _critique_feedback
 from bantamkit.contract import render_evidence
+from bantamkit.profile import default as profile_default
 from bantamkit.structured import structured
 
 __all__ = [
@@ -75,7 +76,7 @@ def load_rubric(name: str) -> Rubric:
 
 class CritiqueGate:
     def __init__(
-        self, rubric: str | Rubric, client: ModelClient | None = None, max_rounds: int = 3
+        self, rubric: str | Rubric, client: ModelClient | None = None, max_rounds: int | None = None
     ):
         if isinstance(rubric, Rubric):
             _validate_rubric(rubric)
@@ -83,7 +84,9 @@ class CritiqueGate:
         else:
             self.rubric = load_rubric(rubric)
         self.client = client
-        self.max_rounds = max_rounds
+        self.max_rounds = (
+            max_rounds if max_rounds is not None else profile_default("critique", "max_rounds")
+        )
         self._rounds = 0
         self.rounds_used = 0
 
@@ -127,12 +130,16 @@ class GroundedCritiqueGate(CritiqueGate):
         self,
         rubric: str | Rubric = "grounded-completion",
         client: ModelClient | None = None,
-        max_rounds: int = 3,
-        evidence_budget: int = 4096,
+        max_rounds: int | None = None,
+        evidence_budget: int | None = None,
     ):
         super().__init__(rubric, client=client, max_rounds=max_rounds)
         _validate_grounded_rubric(self.rubric)
-        self.evidence_budget = evidence_budget
+        self.evidence_budget = (
+            evidence_budget
+            if evidence_budget is not None
+            else profile_default("critique", "evidence_budget")
+        )
 
     def __call__(self, task: str, output: str, messages: list[Message]) -> str | None:
         evidence = render_evidence(messages, self.evidence_budget)

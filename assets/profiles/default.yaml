@@ -1,0 +1,14 @@
+# The conservative default profile. Every number here was calibrated on
+# qwen3:4b-instruct (the reference model) — the cross-model sweep measured
+# that honestly; per-model profiles are future work (P6).
+name: default
+agent:
+  max_turns: 10
+  observation_budget: 4096
+structured:
+  max_retries: 3
+schema_gate:
+  max_attempts: 3
+critique:
+  max_rounds: 3
+  evidence_budget: 4096

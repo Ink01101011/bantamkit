@@ -20,6 +20,7 @@ from bantamkit.contract import schema_error, schema_instruction, schema_retry_fe
 from bantamkit.critique import CritiqueExhausted, CritiqueGate, GroundedCritiqueGate
 from bantamkit.filegraph import FileAccessGraph
 from bantamkit.memory import Memory, MemoryStore
+from bantamkit.profile import default as profile_default
 from bantamkit.structured import StructuredOutputError, extract_json, structured
 
 CONFIGS = ["bare", "structured", "critique", "grounded", "graph", "memory", "lean", "full"]
@@ -203,9 +204,13 @@ class SchemaGate:
     compliance and the config comparison measures the components, not the retry budget.
     """
 
-    def __init__(self, schema: dict, max_attempts: int = 3):
+    def __init__(self, schema: dict, max_attempts: int | None = None):
         self.schema = schema
-        self.max_attempts = max_attempts
+        self.max_attempts = (
+            max_attempts
+            if max_attempts is not None
+            else profile_default("schema_gate", "max_attempts")
+        )
         self.retries_used = 0
         self._attempts = 0
 

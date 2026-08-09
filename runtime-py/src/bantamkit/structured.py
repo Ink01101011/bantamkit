@@ -12,6 +12,7 @@ from bantamkit.contract import (
     schema_retry_feedback,
     validation_error_message,
 )
+from bantamkit.profile import default as profile_default
 
 __all__ = ["StructuredOutputError", "extract_json", "structured"]
 
@@ -20,7 +21,11 @@ class StructuredOutputError(BantamError):
     """No schema-valid output within the retry budget."""
 
 
-def structured(client: ModelClient, prompt: str, schema: dict, *, max_retries: int = 3) -> dict:
+def structured(
+    client: ModelClient, prompt: str, schema: dict, *, max_retries: int | None = None
+) -> dict:
+    if max_retries is None:
+        max_retries = profile_default("structured", "max_retries")
     messages = [
         Message(role="system", content=schema_instruction(schema)),
         Message(role="user", content=prompt),
