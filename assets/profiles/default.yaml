@@ -9,6 +9,10 @@ structured:
   max_retries: 3
 schema_gate:
   max_attempts: 3
+# One retry only: the gate rescues a missing-JSON restatement, and a second
+# miss is format abandonment that more nagging does not fix (spec §2.4).
+json_answer:
+  max_attempts: 1
 critique:
   max_rounds: 3
   evidence_budget: 4096

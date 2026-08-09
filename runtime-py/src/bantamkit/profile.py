@@ -11,6 +11,7 @@ REQUIRED = {
     "agent": ("max_turns", "observation_budget"),
     "structured": ("max_retries",),
     "schema_gate": ("max_attempts",),
+    "json_answer": ("max_attempts",),
     "critique": ("max_rounds", "evidence_budget"),
 }
 

@@ -18,6 +18,7 @@ REQUIRED_KEYS = (
     "critique_feedback",
     "parse_error",
     "validation_error",
+    "json_answer_retry",
     "evidence_line",
     "evidence_no_observation",
     "evidence_empty",
@@ -47,6 +48,11 @@ def critique_feedback(score: int, threshold: int, feedback: str) -> str:
     return load_contract()["critique_feedback"].format(
         score=score, threshold=threshold, feedback=feedback
     )
+
+
+def json_answer_retry() -> str:
+    """Feedback for a final answer with no extractable JSON at all (P4)."""
+    return load_contract()["json_answer_retry"]
 
 
 def parse_error_message(detail: object) -> str:

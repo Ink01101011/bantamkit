@@ -23,7 +23,12 @@ from bantamkit.critique import CritiqueExhausted, CritiqueGate, GroundedCritique
 from bantamkit.filegraph import FileAccessGraph
 from bantamkit.memory import Memory, MemoryStore
 from bantamkit.profile import default as profile_default
-from bantamkit.structured import StructuredOutputError, extract_json, structured
+from bantamkit.structured import (
+    JsonAnswerGate,
+    StructuredOutputError,
+    extract_json,
+    structured,
+)
 
 CONFIGS = ["bare", "structured", "critique", "grounded", "graph", "memory", "lean", "full"]
 
@@ -153,8 +158,24 @@ class TrackingClient:
         self.usage = Usage()
         self.calls = 0
 
-    def chat(self, messages, tools=None):
-        resp = self.inner.chat(messages, tools)
+    @property
+    def _response_format_unsupported(self) -> bool:
+        """Mirror the inner client's capability memo, live.
+
+        Callers duck-type on this attribute, and they see the wrapper, not the
+        wrapped client. Raising AttributeError when the inner has no memo is the
+        point: `hasattr` then reads False and the wrapper is as transparent to the
+        constrained-decoding tier as it already is to `seed`.
+        """
+        return self.inner._response_format_unsupported
+
+    def chat(self, messages, tools=None, response_format=None):
+        # Forwarded only when asked for AND understood: fake clients whose chat()
+        # takes two arguments must keep working, and they never carry the memo.
+        if response_format is not None and hasattr(self.inner, "_response_format_unsupported"):
+            resp = self.inner.chat(messages, tools, response_format=response_format)
+        else:
+            resp = self.inner.chat(messages, tools)
         self.usage = self.usage + resp.usage
         self.calls += 1
         return resp
@@ -379,6 +400,12 @@ def run_task(
         agent.add_system(schema_instruction(task["schema"]))
         schema_gate = SchemaGate(task["schema"])
         agent.use(schema_gate)
+    if config in ("memory", "lean", "full") and task["scoring"]["kind"] == "json_equal":
+        # Registered after the schema gate on purpose: where a task has a schema, the
+        # schema-aware error is strictly more informative, so this is the fallback for
+        # json_equal tasks that carry no schema (every memory-recall task). `bare` does
+        # not get it — it stays the floor.
+        agent.use(JsonAnswerGate())
     if config == "critique":
         critique_gate = CritiqueGate("task-completion", client=tracking)
         agent.use(critique_gate)
@@ -431,7 +458,13 @@ def run_task(
         seed=applied_seed,
     )
     if transcripts_dir is not None:
-        _write_transcript(transcripts_dir, result, repeat, output, messages)
+        # The run most worth reading used to record nothing: `agent.run` raising left
+        # `messages` empty, so every turns-exhausted transcript was `messages: []`.
+        # TaskResult.tool_calls above still reads the loop's own list, so the JSONL
+        # columns keep their documented semantics this cycle — only the dump improves.
+        _write_transcript(
+            transcripts_dir, result, repeat, output, messages or getattr(caught, "messages", [])
+        )
     return result
 
 

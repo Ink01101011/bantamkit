@@ -10,6 +10,7 @@ import pytest
 from bantamkit.client import BantamError, Message, ToolCall
 from bantamkit.contract import (
     critique_feedback,
+    json_answer_retry,
     load_contract,
     render_evidence,
     schema_error,
@@ -30,9 +31,21 @@ GOLDEN_CRITIQUE = (
     "Revise and answer again."
 )
 GOLDEN_EVIDENCE_EMPTY = "(no tool calls were made)"
+# New in the contract-robustness cycle (P4), so not a "pre-split" literal — but it is
+# model-facing wording and pinned here for the same reason all the others are.
+GOLDEN_JSON_ANSWER_RETRY = (
+    "Your answer contains no JSON. Restate your final answer as ONLY the JSON "
+    "requested by the task, with no prose around it."
+)
 
 # Fragments that must never reappear in core sources.
-MOVED_FRAGMENTS = ("Return ONLY", "A reviewer scored", "(no tool calls", "not parseable JSON")
+MOVED_FRAGMENTS = (
+    "Return ONLY",
+    "A reviewer scored",
+    "(no tool calls",
+    "not parseable JSON",
+    "contains no JSON",
+)
 CORE_MODULES = ("agent.py", "structured.py", "critique.py", "evalrun.py", "mcpserver.py")
 LAYER_MODULES = ("contract.py", "profile.py")
 FORBIDDEN_IMPORTS = ("agent", "structured", "critique", "evalrun", "filegraph", "memory")
@@ -73,6 +86,10 @@ def test_render_evidence_bytes():
     assert render_evidence([]) == GOLDEN_EVIDENCE_EMPTY
 
 
+def test_json_answer_retry_bytes():
+    assert json_answer_retry() == GOLDEN_JSON_ANSWER_RETRY
+
+
 def test_schema_error_bytes():
     err = schema_error("not json at all", {"type": "object"})
     assert err is not None and err.startswith("output was not parseable JSON: ")
@@ -109,6 +126,11 @@ def test_profile_values_match_pre_split_defaults():
             f"profile {section}.{key} changed from the pre-split default {expected} — "
             "recalibration must be an explicit, measured decision, not a refactor side effect"
         )
+
+
+def test_json_answer_default_is_one_attempt():
+    """New in this cycle, so not a pre-split default — pinned separately, same intent."""
+    assert profile_default("json_answer", "max_attempts") == 1
 
 
 def test_load_contract_missing_asset(tmp_path, monkeypatch):

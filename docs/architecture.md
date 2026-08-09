@@ -64,4 +64,7 @@ so* instead of silent constants.
   model-facing, but it measured fine cross-model, so it moves in a later
   contract cycle, not this one.
 - Only the `default` contract and profile exist. Per-model/per-tier
-  variants are the P2 and P6 work that lands on top of this seam.
+  variants are the P6 work that lands on top of this seam. (P2's tier —
+  constrained decoding via `response_format` with a 400-fallback memo —
+  shipped in v0.9.0; the tool-argument boundary is covered generically
+  by `Agent`'s schema coercion from the same cycle.)

@@ -74,11 +74,29 @@ def test_save_then_recall_round_trip(tmp_path):
 def test_save_reports_validation_error_as_text(tmp_path):
     async def scenario():
         async with Client(make_server(tmp_path)) as c:
+            # `BAD NAME` used to belong here; P1b normalization now saves it as
+            # `bad-name` (see test_save_normalizes_over_mcp below). A name with
+            # characters no normalization can rescue keeps this test's subject —
+            # validation errors come back as text, not as a raised tool error.
+            saved = await c.call_tool(
+                "memory_save",
+                {"type": "project", "name": "bad/name!", "description": "d", "body": "b"},
+            )
+            assert saved.content[0].text.startswith("error:")
+
+    run(scenario())
+
+
+def test_save_normalizes_over_mcp(tmp_path):
+    """The MCP surface goes through the same component, so P1b applies there too."""
+
+    async def scenario():
+        async with Client(make_server(tmp_path)) as c:
             saved = await c.call_tool(
                 "memory_save",
                 {"type": "project", "name": "BAD NAME", "description": "d", "body": "b"},
             )
-            assert saved.content[0].text.startswith("error:")
+            assert saved.content[0].text == "saved 'bad-name'"
 
     run(scenario())
 

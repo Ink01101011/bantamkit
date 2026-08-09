@@ -11,13 +11,57 @@ from bantamkit.textutil import truncate
 
 
 class MaxTurnsExceeded(BantamError):
-    """The loop ended without a final answer inside the turn budget."""
+    """The loop ended without a final answer inside the turn budget.
+
+    Carries the transcript up to the raise. Without it, the runs most worth
+    diagnosing are the ones that record nothing: v0.8.1's probes wrote
+    `messages: []` for every turns-exhausted run.
+    """
+
+    def __init__(self, message: str, messages: list[Message] | None = None):
+        super().__init__(message)
+        self.messages: list[Message] = list(messages or [])
 
 
 @dataclass
 class ToolDef:
     tool: Tool
     handler: Callable[..., str]
+
+
+_STRING_COERCIONS: dict[str, Callable[[str], object]] = {
+    "integer": int,
+    "number": float,
+    "boolean": lambda v: {"true": True, "false": False}[v.strip().lower()],
+}
+
+
+def coerce_arguments(arguments: dict, parameters: dict) -> dict:
+    """Adapt string-spelled scalars to the tool's declared parameter schema.
+
+    Small models send `k` as the JSON string `"10"` and the handler dies
+    comparing int to str — 17 of the 18 tool-argument failures in the 3b probe.
+    Only strings under an `integer`/`number`/`boolean` property are touched,
+    top level only; a conversion that fails passes the original value through
+    so today's error observation fires unchanged. Well-typed calls are no-ops.
+    """
+    properties = parameters.get("properties") if isinstance(parameters, dict) else None
+    if not isinstance(properties, dict):
+        return arguments
+    coerced = dict(arguments)
+    for key, value in arguments.items():
+        schema = properties.get(key)
+        if not isinstance(value, str) or not isinstance(schema, dict):
+            continue
+        declared = schema.get("type")
+        convert = _STRING_COERCIONS.get(declared) if isinstance(declared, str) else None
+        if convert is None:
+            continue
+        try:
+            coerced[key] = convert(value)
+        except (ValueError, KeyError):
+            pass  # unconvertible: hand the handler what the model actually sent
+    return coerced
 
 
 @dataclass
@@ -81,15 +125,16 @@ class Agent:
                 return AgentResult(output=output, messages=messages, usage=usage)
             messages.append(Message(role="user", content=feedback))
 
-        raise MaxTurnsExceeded(f"no final answer within {self.max_turns} turns")
+        raise MaxTurnsExceeded(f"no final answer within {self.max_turns} turns", messages)
 
     def _dispatch(self, tc) -> str:
-        handler = next((t.handler for t in self.tools if t.tool.name == tc.name), None)
-        if handler is None:
+        tooldef = next((t for t in self.tools if t.tool.name == tc.name), None)
+        if tooldef is None:
             names = [t.tool.name for t in self.tools]
             return f"error: unknown tool '{tc.name}'. available tools: {names}"
         try:
-            return str(handler(**tc.arguments))
+            arguments = coerce_arguments(tc.arguments, tooldef.tool.parameters)
+            return str(tooldef.handler(**arguments))
         except Exception as e:
             return f"error: {tc.name} failed: {e}. fix the arguments and retry."
 

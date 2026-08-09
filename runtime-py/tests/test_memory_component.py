@@ -4,6 +4,7 @@ from conftest import FakeClient, assistant, call
 from bantamkit.agent import Agent
 from bantamkit.assets import assets_root, load_skill, load_tool
 from bantamkit.memory import Memory
+from bantamkit.memory.component import normalize_name
 from bantamkit.memory.store import MemoryStore, MemoryValidationError
 
 
@@ -143,6 +144,81 @@ def test_duplicate_reply_guides_update(tmp_path):
     Agent(client=client).use(memory).run("t")
     obs = client.calls[1]["messages"][-1].content
     assert "deploy-command" in obs and "update" in obs
+
+
+# ---- P1b: name normalization ----
+
+
+@pytest.mark.parametrize(
+    "given,expected",
+    [
+        ("deploy_command", "deploy-command"),
+        ("Deploy Command", "deploy-command"),
+        ("DEPLOY_COMMAND", "deploy-command"),
+        ("  deploy command  ", "deploy-command"),
+        ("deploy-command", "deploy-command"),  # already canonical: no-op
+        ("db-port-5432", "db-port-5432"),
+    ],
+)
+def test_normalize_name_table(given, expected):
+    assert normalize_name(given) == expected
+
+
+def test_normalize_name_passes_non_strings_through_to_store_validation():
+    assert normalize_name(None) is None
+    assert normalize_name(7) == 7
+
+
+def test_save_normalizes_invented_snake_case_name(tmp_path):
+    """The store's pattern does not move; the component adapts the model's spelling."""
+    memory = Memory(store=tmp_path / "mem")
+    result = memory.save(type="project", name="Deploy_Command", description="d", body="b")
+    assert result == "saved 'deploy-command'"  # the model is told the canonical form
+    assert memory.store.recall("deploy", 1)[0].name == "deploy-command"
+
+
+def test_save_normalizes_links(tmp_path):
+    memory = Memory(store=tmp_path / "mem")
+    memory.save(
+        type="project",
+        name="ship_steps",
+        description="how we ship",
+        body="b",
+        links=["Deploy_Command", "db port"],
+    )
+    fact = memory.store.recall("ship", 1)[0]
+    assert fact.links == ["deploy-command", "db-port"]
+
+
+def test_save_invalid_name_still_reaches_store_validation(tmp_path):
+    """Normalization is not leniency: characters the pattern rejects still error."""
+    memory = Memory(store=tmp_path / "mem")
+    result = memory.save(type="project", name="deploy/command!", description="d", body="b")
+    assert result.startswith("error:") and "invalid name" in result
+
+
+def test_save_normalized_name_survives_the_agent_loop(tmp_path):
+    client = FakeClient(
+        [
+            assistant(
+                tool_calls=[
+                    call(
+                        "memory_save",
+                        {
+                            "type": "project",
+                            "name": "deploy_command",
+                            "description": "how we deploy to prod",
+                            "body": "make ship-prod",
+                        },
+                    )
+                ]
+            ),
+            assistant(content="ok"),
+        ]
+    )
+    Agent(client=client).use(Memory(store=tmp_path / "mem")).run("t")
+    obs = client.calls[1]["messages"][-1].content
+    assert obs == "saved 'deploy-command'"
 
 
 @pytest.fixture

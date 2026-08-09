@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from bantamkit.client import (
+    APIError,
     Message,
     OpenAICompatible,
     Response,
@@ -172,6 +173,95 @@ def test_seed_does_not_disturb_the_rest_of_the_payload():
     assert bodies[0]["model"] == "m"
     assert bodies[0]["messages"] == [{"role": "user", "content": "x"}]
     assert bodies[0]["tools"] == [tool.to_wire()]
+
+
+# ---- P2: response_format passthrough + 400-fallback memo ----
+
+RF = {"type": "json_schema", "json_schema": {"name": "output", "schema": {"type": "object"}}}
+
+
+def test_response_format_is_absent_from_the_payload_by_default():
+    bodies = []
+    client = make_client(capturing_transport(bodies))
+    client.chat([Message(role="user", content="x")])
+    assert "response_format" not in bodies[0]
+    assert client._response_format_unsupported is False
+
+
+def test_response_format_is_sent_verbatim_when_given():
+    bodies = []
+    client = make_client(capturing_transport(bodies))
+    client.chat([Message(role="user", content="x")], response_format=RF)
+    assert bodies[0]["response_format"] == RF
+
+
+def test_four_hundred_retries_once_without_response_format_and_memoizes(monkeypatch):
+    """The single 400-retry is the capability detection: no probe, no allowlist."""
+    sleeps: list[float] = []
+    monkeypatch.setattr("bantamkit.client.time.sleep", sleeps.append)
+    bodies = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        bodies.append(body)
+        if "response_format" in body:
+            return httpx.Response(400, text="unsupported parameter")
+        return httpx.Response(200, json=OK_BODY)
+
+    client = make_client(httpx.MockTransport(handler))
+    assert client.chat([Message(role="user", content="x")], response_format=RF).message.content
+    assert len(bodies) == 2
+    assert "response_format" in bodies[0] and "response_format" not in bodies[1]
+    assert client._response_format_unsupported is True
+    assert sleeps == []  # the fallback is not a transport retry
+
+
+def test_four_hundred_fallback_does_not_consume_the_retry_budget():
+    bodies = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        bodies.append(body)
+        if "response_format" in body:
+            return httpx.Response(400, text="unsupported parameter")
+        return httpx.Response(200, json=OK_BODY)
+
+    client = make_client(httpx.MockTransport(handler), max_retries=1)
+    assert client.chat([Message(role="user", content="x")], response_format=RF).message.content
+    assert len(bodies) == 2
+
+
+def test_four_hundred_without_response_format_still_raises_api_error():
+    client = make_client(httpx.MockTransport(lambda request: httpx.Response(400, text="bad")))
+    with pytest.raises(APIError) as excinfo:
+        client.chat([Message(role="user", content="x")])
+    assert excinfo.value.status_code == 400
+    assert client._response_format_unsupported is False
+
+
+def test_four_hundred_surviving_the_fallback_raises_api_error():
+    """A 400 that is not about response_format must still be a real error."""
+    bodies = []
+
+    def handler(request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(400, text="bad request")
+
+    client = make_client(httpx.MockTransport(handler))
+    with pytest.raises(APIError):
+        client.chat([Message(role="user", content="x")], response_format=RF)
+    assert len(bodies) == 2
+    assert client._response_format_unsupported is True
+
+
+def test_response_format_does_not_disturb_the_rest_of_the_payload():
+    bodies = []
+    client = make_client(capturing_transport(bodies), seed=42)
+    tool = Tool(name="lookup", description="d", parameters={"type": "object"})
+    client.chat([Message(role="user", content="x")], tools=[tool], response_format=RF)
+    assert bodies[0]["model"] == "m" and bodies[0]["seed"] == 42
+    assert bodies[0]["tools"] == [tool.to_wire()]
+    assert bodies[0]["messages"] == [{"role": "user", "content": "x"}]
 
 
 def test_single_attempt_client_never_sleeps(monkeypatch):

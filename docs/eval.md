@@ -64,6 +64,14 @@ Each config is the same tasks with a different harness wrapped around them.
 | `lean` | memory + schema enforcement inside the agent loop — `full` without the critique gate |
 | `full` | memory + schema + `GroundedCritiqueGate` (evidence-seeing critic), all inside the agent loop |
 
+Since v0.9.0, `memory`, `lean` and `full` also attach `JsonAnswerGate` on
+tasks scored `json_equal`: a fail-open post-hook that asks for exactly one
+restatement when the final answer contains no extractable JSON at all
+(the measured 7b failure mechanism — right fact, fluent prose, no JSON).
+`bare` deliberately does not get it and stays the floor. This changes
+what those three config names measure; sweeps before and after v0.9.0 are
+not directly comparable on those cells.
+
 A component only engages where the task gives it something to work with: no
 `schema`, no schema enforcement; no `memory_setup`, no memory store. So a
 component is measured against `bare` on its own task family, and the off-family
@@ -972,14 +980,46 @@ the next cycle makes physical:
   constrained decoding where the server supports `format` (capability
   detection in transport), else prompt+parse, else repair-retry — instead
   of per-model prompt forks. (Contract + Transport; the headline fix
-  candidate of the restructure cycle.)
+  candidate of the restructure cycle.) **Fixed in v0.9.0** — `structured()`
+  sends `response_format: json_schema` when the server accepts it
+  (detected by a cached 400-fallback, no probe request): `schema-exhausted`
+  went ×17 → **0** on 3b `grounded` and ×10 → **0** on 7b, at −38% / −24%
+  tokens and +1 / **+9** score (see the calibration table below).
 - **P1 — 3b recalls but answers wrong.** Store content reaches the
   context; the answer still fails. Needs P8 transcripts to split
   retrieval failure from synthesis failure before choosing a fix.
-  (Contract, probably.)
+  (Contract, probably.) **Diagnosed and reframed in v0.9.0** — the first
+  `--transcripts` probe (27 seeded runs, 3b `memory` on the recall tasks,
+  `2026-08-10-p1-probe-3b-memory.jsonl`) showed the hypothesis was wrong:
+  18/27 failures never searched the store at all — `memory_recall`
+  crashed on argument types (17× the model sent `k` as the JSON string
+  `"10"`; 1× it dropped `query`); 6/27 emitted pseudo-tool-calls as
+  prose; only 3/27 were genuine synthesis failures, and retrieval was
+  first-hit perfect whenever a recall actually executed. The fix is
+  Layer 1, not contract wording: `Agent` now coerces string-typed
+  integer/number/boolean arguments against the tool's declared schema
+  before dispatch (plus `Memory.save` normalizes model-invented
+  snake_case names to the store's kebab contract). Bar: convertible
+  argument crashes 17 → **0**; passes 0/27 → 5/27 on the probe cell.
+  Residual, honestly: one uncoercible crash (`k: "staging-db-port"` —
+  semantic garbage no coercion should guess at), `memory_save`
+  signature misuse burning turns, the 6 prose pseudo-calls, and the 3
+  synthesis failures — the cell's ceiling on this model is far below
+  27/27 and says so here.
 - **P4 — exact-JSON answer compliance tax on 7b.** `malformed-output`
   ×13–16 in `memory`/`lean`/`full`. Fix candidate: answer-side repair
-  tier (same ladder as P2). (Contract.)
+  tier (same ladder as P2). (Contract.) **Diagnosed and fixed in
+  v0.9.0** — the 7b probe (`2026-08-10-p4-probe-7b-memory.jsonl`)
+  refined the mechanism: 7b does not write broken JSON, it *abandons*
+  JSON — 11/16 failures had the correct fact in a fluent prose final
+  answer with no `{` anywhere, after spurious `memory_save` narration
+  displaced the one-turn-old "ONLY this JSON" instruction. Extractor
+  leniency cannot help (there is nothing to extract). Fix:
+  `JsonAnswerGate` — a fail-open post-hook that asks for exactly one
+  restatement when the final answer has no extractable JSON, attached in
+  `memory`/`lean`/`full` for `json_equal`-scored tasks (`bare` stays the
+  floor). Bar: malformed finals 11 → **3**, passes 11/27 → **19/27** on
+  the probe cell.
 - **P6 — 3b file-nav dies on turn budget.** `max_turns=10` is itself a
   4b-calibrated constant. Fix: per-profile turn budgets. (Policy.)
 - **P3 — no global token ceiling.** 3b `full`: 214,698 tokens for 15/66 —
@@ -992,6 +1032,39 @@ the next cycle makes physical:
 (P5 — tool-use uplift on non-4b models — is not separately actionable: it
 is P2's shadow. Grounded critique can't rescue tool tasks on a model
 whose verdicts it can't parse.)
+
+### Contract-robustness calibration (v0.9.0)
+
+Targeted before/after bars for the P1/P2/P4 fixes — seeded runs (P9),
+evidence JSONLs beside this file (`2026-08-10-*.jsonl`). "Before" for
+the recall cells is the same-seed diagnostic probe; "before" for
+`grounded` is the unseeded cross-model sweep cell:
+
+| bar | cell | before | after | verdict |
+|---|---|---|---|---|
+| P1a/P1b | 3b `memory`, 9 recall tasks ×3 | 0/27; 18 arg-crash failures | 5/27; convertible crashes **0** | met |
+| P4 | 7b `memory`, 9 recall tasks ×3 | 11/27; 11 JSON-less finals | **19/27**; 3 JSON-less | met |
+| P2 | 3b `grounded`, full suite ×3 | 13/66; schema-exhausted ×17; 168k tok | 14/66; **×0**; 105k tok | met |
+| P2 | 7b `grounded`, full suite ×3 | 24/66; schema-exhausted ×10; 94k tok | **33/66**; **×0**; 72k tok | met |
+| no-regression | 4b `memory`, full suite ×3 | 57/66 (unseeded sweep) | **59/66** | met |
+| no-regression | 4b `full`, full suite ×3 | 66/66 (unseeded sweep) | **64/66** | **missed — investigated** |
+
+The missed bar, mechanically: both misses are `nav-release-bundle`,
+outcome `critique-exhausted` — the agent answered with a wildcard
+version without reading `VERSION`, and the grounded critic *correctly*
+refused to bless a fabricated filename. Replay with the same seeds
+reproduces the same two failures with near-identical critic feedback
+(`2026-08-10-replay-4b-nav.jsonl` — P9 replayability working as
+designed); the same cell on pre-cycle code with the same seeds gives
+2/3 (`…-replay-4b-nav-main.jsonl`), so at most one run of the gap
+traces to this cycle (constrained verdict decoding words the critic's
+feedback differently, and one borderline recovery trajectory did not
+converge inside the turn budget). The historical 66/66 was an unseeded
+draw on a cell that is genuinely marginal: under pinned seeds the agent
+sometimes skips the second hop, and no critic can rescue an answer the
+agent never derived. Recorded as a watch item for the next full
+re-baseline — if the cell stays red, the attack is rubric feedback
+wording (Layer 2), not gate mechanics.
 
 ### What this means for the architecture
 
