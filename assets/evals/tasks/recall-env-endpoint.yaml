@@ -1,18 +1,18 @@
 name: recall-env-endpoint
 family: memory-recall
-prompt: |
-  What is the full base URL for the reports API in PRODUCTION, including
-  the version prefix? If you have a memory tool, check memory first. Answer
-  with the URL.
+prompt: 'What is the full base URL for the reports API in PRODUCTION, including
+  the version prefix? If you have a memory tool, check memory first. Answer with
+  ONLY this JSON, nothing else: {"url": "<url>"}'
 memory_setup:
-  - type: project
-    name: prod-api-host
-    description: hostname serving production traffic
-    body: Production traffic is served from https://api.example-prod.io.
-  - type: project
-    name: reports-version-prefix
-    description: version path segment used by the reports service
-    body: The reports service is mounted under /v3/reports on every host.
+- type: project
+  name: prod-api-host
+  description: hostname serving production traffic
+  body: Production traffic is served from https://api.example-prod.io.
+- type: project
+  name: reports-version-prefix
+  description: version path segment used by the reports service
+  body: The reports service is mounted under /v3/reports on every host.
 scoring:
-  kind: contains
-  expected: ["api.example-prod.io", "v3"]
+  kind: json_equal
+  expected:
+    url: https://api.example-prod.io/v3/reports
