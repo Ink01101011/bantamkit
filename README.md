@@ -91,6 +91,7 @@ ship as an [MCP server](docs/mcp.md).
 - [File-access graph](docs/filegraph.md) — the read ledger: repeat annotation, verify-on-repeat cache, `file_graph` query tool
 - [Eval](docs/eval.md) — running the suite, the config matrix, reading the report, adding tasks
 - [MCP](docs/mcp.md) — `bantamkit-mcp`: memory + validation for external agents (Claude Code, Codex, any MCP client)
+- [Shift-work](docs/shiftwork.md) — checkpoint contract + driver for clock-in/clock-out session cycling (experimental)
 
 The full measured tables behind the defaults above are in
 [Eval → Current results](docs/eval.md#current-results).
@@ -102,6 +103,7 @@ The full measured tables behind the defaults above are in
 | `runtime-py/` | The Python runtime (`bantamkit` package) and its test suite |
 | `assets/` | Language-agnostic asset pack: skills, rubrics, tool schemas, eval tasks |
 | `examples/` | Runnable starter scripts (quickstart, structured output, layered memory) |
+| `tools/` | Repo tools that ship outside the wheel (e.g. the shift-work driver) |
 | `docs/` | This runbook |
 
 Design notes live in `docs/superpowers/specs/`.
