@@ -10,6 +10,7 @@ import pytest
 from bantamkit.client import BantamError, Message, ToolCall
 from bantamkit.contract import (
     critique_feedback,
+    json_answer_retry,
     load_contract,
     render_evidence,
     schema_error,
@@ -30,9 +31,21 @@ GOLDEN_CRITIQUE = (
     "Revise and answer again."
 )
 GOLDEN_EVIDENCE_EMPTY = "(no tool calls were made)"
+# New in the contract-robustness cycle (P4), so not a "pre-split" literal — but it is
+# model-facing wording and pinned here for the same reason all the others are.
+GOLDEN_JSON_ANSWER_RETRY = (
+    "Your answer contains no JSON. Restate your final answer as ONLY the JSON "
+    "requested by the task, with no prose around it."
+)
 
 # Fragments that must never reappear in core sources.
-MOVED_FRAGMENTS = ("Return ONLY", "A reviewer scored", "(no tool calls", "not parseable JSON")
+MOVED_FRAGMENTS = (
+    "Return ONLY",
+    "A reviewer scored",
+    "(no tool calls",
+    "not parseable JSON",
+    "contains no JSON",
+)
 CORE_MODULES = ("agent.py", "structured.py", "critique.py", "evalrun.py", "mcpserver.py")
 LAYER_MODULES = ("contract.py", "profile.py")
 FORBIDDEN_IMPORTS = ("agent", "structured", "critique", "evalrun", "filegraph", "memory")
@@ -71,6 +84,10 @@ def test_render_evidence_bytes():
     ]
     assert render_evidence(messages) == 'lookup({"key": "port"}) -> 5432'
     assert render_evidence([]) == GOLDEN_EVIDENCE_EMPTY
+
+
+def test_json_answer_retry_bytes():
+    assert json_answer_retry() == GOLDEN_JSON_ANSWER_RETRY
 
 
 def test_schema_error_bytes():
