@@ -251,10 +251,10 @@ def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> Tas
         agent.add_system(SCHEMA_INSTRUCTION + json.dumps(task["schema"]))
         schema_gate = SchemaGate(task["schema"])
         agent.use(schema_gate)
-    if config in ("critique", "full"):
+    if config == "critique":
         critique_gate = CritiqueGate("task-completion", client=tracking)
         agent.use(critique_gate)
-    if config == "grounded":
+    if config in ("grounded", "full"):
         critique_gate = GroundedCritiqueGate(client=tracking)
         agent.use(critique_gate)
 

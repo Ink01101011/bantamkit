@@ -60,7 +60,7 @@ Each config is the same tasks with a different harness wrapped around them.
 | `grounded` | `GroundedCritiqueGate` only — the critic sees tool call/observation pairs; isolates the evidence effect vs `critique` |
 | `memory` | Tasks with `memory_setup` get a seeded `Memory` store attached |
 | `lean` | memory + schema enforcement inside the agent loop — `full` without the critique gate |
-| `full` | critique + memory + schema enforcement, all inside the agent loop |
+| `full` | memory + schema + `GroundedCritiqueGate` (evidence-seeing critic), all inside the agent loop |
 
 A component only engages where the task gives it something to work with: no
 `schema`, no schema enforcement; no `memory_setup`, no memory store. So a
