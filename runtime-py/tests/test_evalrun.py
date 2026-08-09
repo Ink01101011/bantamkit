@@ -981,6 +981,124 @@ def test_ablation_configs_are_choices_but_not_in_configs():
     assert "graph-annotate" not in CONFIGS and "graph-cache" not in CONFIGS
 
 
+# ---- P8: --transcripts ----
+
+
+def read_transcript(directory, config, task, repeat=0):
+    return json.loads((directory / f"{config}--{task}--r{repeat}.json").read_text())
+
+
+def test_transcript_written_with_run_fields(tmp_path):
+    transcripts = tmp_path / "t"
+    transcripts.mkdir()
+    client = FakeClient([assistant(content=CONTACT)])
+    result = run_task(
+        client, get_task("extract-contact"), "bare", tmp_path, transcripts_dir=transcripts
+    )
+    data = read_transcript(transcripts, "bare", "extract-contact")
+    assert data["task"] == "extract-contact" and data["config"] == "bare"
+    assert data["repeat"] == 0
+    assert data["passed"] is result.passed is True
+    assert data["outcome"] == result.outcome == "pass"
+    assert data["output"] == CONTACT
+    assert [m["role"] for m in data["messages"]] == ["user", "assistant"]
+    assert data["messages"][-1]["content"] == CONTACT
+
+
+def test_transcript_records_tool_calls_and_repeat_index(tmp_path):
+    transcripts = tmp_path / "t"
+    transcripts.mkdir()
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("price_lookup", {"item": "widget"})]),
+            assistant(content='{"cheaper": "widget"}'),
+        ]
+    )
+    run_task(
+        client,
+        get_task("shop-cheapest"),
+        "bare",
+        tmp_path,
+        transcripts_dir=transcripts,
+        repeat=2,
+    )
+    data = read_transcript(transcripts, "bare", "shop-cheapest", repeat=2)
+    assert data["repeat"] == 2
+    tool_calls = [tc for m in data["messages"] for tc in m["tool_calls"]]
+    assert tool_calls == [{"id": "c1", "name": "price_lookup", "arguments": {"item": "widget"}}]
+    observation = next(m for m in data["messages"] if m["role"] == "tool")
+    assert observation["tool_call_id"] == "c1"
+
+
+def test_transcript_written_for_gate_raising_run(tmp_path):
+    transcripts = tmp_path / "t"
+    transcripts.mkdir()
+    client = FakeClient([assistant(content="not json")] * 3)
+    result = run_task(
+        client,
+        get_task("extract-contact"),
+        "structured",
+        tmp_path,
+        transcripts_dir=transcripts,
+    )
+    data = read_transcript(transcripts, "structured", "extract-contact")
+    assert result.passed is False
+    assert data["passed"] is False and data["outcome"] == "schema-exhausted"
+    assert data["output"] is None
+    # structured() drives its own loop: documented limitation, but the file still exists.
+    assert data["messages"] == []
+
+
+def test_transcript_write_failure_does_not_change_the_result(tmp_path, capsys):
+    """Measurement must not change what it measures: an unwritable dir only warns."""
+    missing = tmp_path / "nope" / "deeper"
+    client = FakeClient([assistant(content=CONTACT)])
+    result = run_task(
+        client, get_task("extract-contact"), "bare", tmp_path, transcripts_dir=missing
+    )
+    assert result.passed is True and result.outcome == "pass" and result.error is None
+    assert not missing.exists()
+    assert "could not write transcript" in capsys.readouterr().err
+
+
+def test_run_suite_passes_transcripts_dir_and_repeat_index(tmp_path):
+    taskdir = tmp_path / "tasks"
+    taskdir.mkdir()
+    (taskdir / "tiny.yaml").write_text(TINY_TASK)
+    transcripts = tmp_path / "t"
+    transcripts.mkdir()
+    client = FakeClient([assistant(content="hi")] * 2)
+    evalrun.run_suite(
+        client,
+        configs=["bare"],
+        workdir=tmp_path / "work",
+        tasks_dir=taskdir,
+        repeats=2,
+        transcripts_dir=transcripts,
+    )
+    assert sorted(p.name for p in transcripts.iterdir()) == [
+        "bare--tiny--r0.json",
+        "bare--tiny--r1.json",
+    ]
+    assert read_transcript(transcripts, "bare", "tiny", repeat=1)["repeat"] == 1
+
+
+def test_cli_transcripts_flag_creates_dir_and_reaches_run_suite(monkeypatch, tmp_path):
+    captured = {}
+    target = tmp_path / "dumps" / "run-1"
+
+    def fake_run_suite(client, transcripts_dir=None, **kw):
+        captured["transcripts_dir"] = transcripts_dir
+        return []
+
+    monkeypatch.setattr(evalrun, "OpenAICompatible", lambda **kw: object())
+    monkeypatch.setattr(evalrun, "run_suite", fake_run_suite)
+    monkeypatch.setattr(evalrun, "format_report", lambda results: "")
+    evalrun.main(["--base-url", "http://x", "--model", "m", "--transcripts", str(target)])
+    assert captured["transcripts_dir"] == target
+    assert target.is_dir()  # created with parents=True
+
+
 def test_format_report_keeps_ablation_config_rows():
     results = [
         TaskResult(
