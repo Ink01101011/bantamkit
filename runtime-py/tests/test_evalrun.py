@@ -109,7 +109,7 @@ def test_run_task_explicit_failure_recorded_not_raised(tmp_path):
 
 
 CONTACT = '{"name": "Ann Chen", "email": "ann.chen@example.com"}'
-GOOD_VERDICT = '{"score": 9, "feedback": "looks good"}'
+GROUNDED_VERDICT = '{"reasoning": "checked against evidence", "score": 9, "feedback": "ok"}'
 
 
 def make_result(**kw):
@@ -291,7 +291,7 @@ def test_schema_gate_counts_retries_in_full(tmp_path):
         [
             assistant(content='{"name": "Ann Chen"}'),  # missing email -> schema retry
             assistant(content=CONTACT),
-            assistant(content=GOOD_VERDICT),
+            assistant(content=GROUNDED_VERDICT),
         ]
     )
     result = run_task(client, get_task("extract-contact"), "full", tmp_path)
@@ -305,9 +305,11 @@ def test_critique_rounds_counted_in_full(tmp_path):
     client = FakeClient(
         [
             assistant(content='{"name": "Ann", "email": "wrong@example.com"}'),
-            assistant(content='{"score": 2, "feedback": "wrong email"}'),
+            assistant(
+                content='{"reasoning": "wrong email", "score": 2, "feedback": "wrong email"}'
+            ),
             assistant(content=CONTACT),
-            assistant(content=GOOD_VERDICT),
+            assistant(content=GROUNDED_VERDICT),
         ]
     )
     result = run_task(client, get_task("extract-contact"), "full", tmp_path)
@@ -402,7 +404,7 @@ def test_structured_config_schema_with_tool_trace_scoring_is_explicit_failure(tm
 
 def test_full_config_schema_task_runs_agent_and_critique(tmp_path):
     """`full` must exercise the agent so CritiqueGate actually participates."""
-    client = FakeClient([assistant(content=CONTACT), assistant(content=GOOD_VERDICT)])
+    client = FakeClient([assistant(content=CONTACT), assistant(content=GROUNDED_VERDICT)])
     result = run_task(client, get_task("extract-contact"), "full", tmp_path)
     assert result.passed is True and result.error is None
     assert len(client.calls) == 2  # agent turn + critique turn
@@ -414,9 +416,11 @@ def test_full_config_schema_task_retries_on_low_critique_score(tmp_path):
     client = FakeClient(
         [
             assistant(content='{"name": "Ann", "email": "wrong@example.com"}'),
-            assistant(content='{"score": 2, "feedback": "wrong email"}'),
+            assistant(
+                content='{"reasoning": "wrong email", "score": 2, "feedback": "wrong email"}'
+            ),
             assistant(content=CONTACT),
-            assistant(content=GOOD_VERDICT),
+            assistant(content=GROUNDED_VERDICT),
         ]
     )
     result = run_task(client, get_task("extract-contact"), "full", tmp_path)
@@ -431,7 +435,7 @@ def test_full_config_schema_violation_triggers_revision_round(tmp_path):
         [
             assistant(content='{"name": "Ann Chen"}'),  # missing email
             assistant(content=CONTACT),
-            assistant(content=GOOD_VERDICT),
+            assistant(content=GROUNDED_VERDICT),
         ]
     )
     result = run_task(client, get_task("extract-contact"), "full", tmp_path)
@@ -457,6 +461,19 @@ def test_full_config_non_json_output_recorded_not_raised(tmp_path):
     result = run_task(client, get_task("extract-contact"), "full", tmp_path)
     assert result.passed is False
     assert "StructuredOutputError" in result.error and "not parseable JSON" in result.error
+
+
+def test_full_config_uses_grounded_gate(tmp_path):
+    client = FakeClient(
+        [
+            assistant(content=CONTACT),
+            assistant(content=GROUNDED_VERDICT),
+        ]
+    )
+    result = run_task(client, get_task("extract-contact"), "full", tmp_path)
+    assert result.passed is True
+    critic_prompt = client.calls[1]["messages"][-1].content
+    assert "(no tool calls were made)" in critic_prompt
 
 
 def test_format_report_has_score_per_1k():

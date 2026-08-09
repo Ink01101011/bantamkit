@@ -47,10 +47,13 @@ tables in [Eval → Current results](docs/eval.md#current-results)):
   suite (30/60 → 57/60).
 - **Use `structured()` when you need schema'd output** — enforcement costs
   nothing extra when the model complies; on this model it never needed a retry.
-- **Skip `CritiqueGate` on small instruct models** — measured +47% tokens on
-  `full` vs `lean` for no extra passes. Attach it only with a rubric that
-  catches failures you have actually observed, and prefer instruct over
-  thinking model variants when you do.
+- **Skip the blind `CritiqueGate` on small instruct models** — standalone it
+  buys almost nothing here (31/60 vs bare's 30/60 at 5× the tokens). Attach
+  a critique gate only with a rubric that catches failures you have actually
+  observed, and prefer instruct over thinking model variants when you do.
+- **`full` (memory + schema + grounded critique) measures 60/60** — the
+  suite's first perfect config, at +86% tokens over `lean`'s 56/60. Pay it
+  when tool-derived correctness matters more than tokens.
 - **Prefer `GroundedCritiqueGate` over `CritiqueGate` when the agent has
   tools** — the critic sees tool call/observation pairs, letting it verify
   facts the agent got from tools. Measured: it rescued the tool-arithmetic

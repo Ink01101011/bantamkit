@@ -46,11 +46,11 @@ class Memory:
         return mem
 
     def setup(self, agent: Agent) -> None:
-        agent.register_tool(ToolDef(tool=load_tool("memory_save"), handler=self._save))
-        agent.register_tool(ToolDef(tool=load_tool("memory_recall"), handler=self._recall))
+        agent.register_tool(ToolDef(tool=load_tool("memory_save"), handler=self.save))
+        agent.register_tool(ToolDef(tool=load_tool("memory_recall"), handler=self.recall))
         agent.add_system(load_skill("memory"))
 
-    def _save(
+    def save(
         self, type: str, name: str, description: str, body: str, links: list[str] | None = None
     ) -> str:
         try:
@@ -70,7 +70,7 @@ class Memory:
             )
         return f"saved '{result.name}'"
 
-    def _recall(self, query: str, k: int | None = None) -> str:
+    def recall(self, query: str, k: int | None = None) -> str:
         budget = k if k is not None else self.k
         picked: list[tuple[str, Fact]] = []
         seen: set[str] = set()
@@ -91,6 +91,10 @@ class Memory:
         if not picked:
             return "no memories matched. Try different words, or proceed without."
         return "\n\n".join(self._format(label, fact) for label, fact in picked)
+
+    # Back-compat aliases: the component's API predates the public names.
+    _save = save
+    _recall = recall
 
     def _format(self, label: str, fact: Fact) -> str:
         tag = f"[{label}] " if self._show_layers else ""

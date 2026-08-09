@@ -160,11 +160,13 @@ def test_rubric_resource_serves_yaml_verbatim(tmp_path):
     run(scenario())
 
 
-def test_unknown_rubric_errors_cleanly(tmp_path):
+def test_missing_resource_errors_name_the_asset(tmp_path):
     async def scenario():
         async with Client(make_server(tmp_path)) as c:
-            with pytest.raises(MCPError):
+            with pytest.raises(MCPError, match="unknown rubric asset: nope"):
                 await c.read_resource("bantamkit://rubrics/nope")
+            with pytest.raises(MCPError, match="unknown skill asset: nope"):
+                await c.read_resource("bantamkit://skills/nope")
 
     run(scenario())
 
@@ -208,7 +210,7 @@ def test_recall_k_clamped_to_advertised_bounds(tmp_path):
     seen = {}
 
     class Probe(Memory):
-        def _recall(self, query, k=None):
+        def recall(self, query, k=None):
             seen["k"] = k
             return "ok"
 
