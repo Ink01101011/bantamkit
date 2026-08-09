@@ -83,12 +83,25 @@ contract-retry waste.
 - Layer split: mechanics = Layer 1 (`budget.py`, `agent.py` hook);
   numbers = Layer 4 (`token_budget` profile section); no Layer 2
   surface (the model never sees the budget).
-- Bars (seeded): on 3b, `budgeted` (ceiling 6000) scores ≥ the seeded
-  `full` cell at ≤ 1/3 of its tokens; on 4b, a loose ceiling (24000)
-  must not regress the seeded 64/66 `full` cell; P9-composed
-  falsifiable check: replaying one budgeted 3b cell with identical
-  seeds reproduces identical outcomes (the degradation point is
-  deterministic given the seed, modulo server nondeterminism).
+- **Known limit, first-class:** the governor sees only agent-loop
+  spend — critic calls go through `structured()` (exempt per Q2) and
+  never move `spent`, while the JSONL `tokens` column includes them.
+  TokenBudget v1 is therefore a **tail-cutter and safety net**, not an
+  economizer of critic spend. Attack plan for the gap (later cycle):
+  budget-aware client wrapping so `record()` sees every call.
+- Bars (seeded; corrected at review time — the draft's "≤ 1/3 tokens"
+  bar was derived from the *pre-P2* 214k blowup, had no seeded
+  baseline, and review arithmetic showed even total-capping at 6000
+  yields only ~10% on the old distribution): first run the **seeded 3b
+  `full` baseline** (66 runs — did not exist), then: (1) 3b `budgeted`
+  scores ≥ the seeded 3b `full` score with total tokens strictly
+  below it — the reduction reported as measured, whatever it is;
+  (2) 4b `budgeted` does not regress the seeded 64/66 `full` cell
+  (4b's per-run spend sits under the ceiling, making it the loose-cap
+  no-op test); (3) P9-composed determinism: replaying one budgeted 3b
+  cell with identical seeds reproduces identical outcomes (the
+  degradation point is deterministic given the seed, modulo server
+  nondeterminism).
 
 ## 3. Testing
 
