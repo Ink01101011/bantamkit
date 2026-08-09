@@ -265,3 +265,13 @@ def test_render_evidence_observation_before_call_does_not_pair():
         Message(role="assistant", tool_calls=[call("f", {})]),
     ]
     assert render_evidence(messages) == 'f({}) -> (no observation)'
+
+
+def test_render_evidence_duplicate_ids_in_one_assistant_message():
+    """Two calls sharing an id in ONE assistant message must consume observations in order."""
+    messages = [
+        Message(role="assistant", tool_calls=[call("f", {"n": 1}), call("f", {"n": 2})]),
+        Message(role="tool", content="first", tool_call_id="c1"),
+        Message(role="tool", content="second", tool_call_id="c1"),
+    ]
+    assert render_evidence(messages) == 'f({"n": 1}) -> first\nf({"n": 2}) -> second'
