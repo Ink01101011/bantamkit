@@ -870,17 +870,8 @@ def test_grounded_config_critic_sees_tool_evidence(tmp_path):
     assert result.passed is True
 
 
-RECALL_TASKS = [
-    "recall-audit-retention",
-    "recall-cache-ttl",
-    "recall-db-port",
-    "recall-deploy",
-    "recall-env-endpoint",
-    "recall-oncall",
-    "recall-oncall-rotation",
-    "recall-org-quota",
-    "recall-owner",
-]
+RECALL_TASKS = sorted(t["name"] for t in load_tasks() if t["family"] == "memory-recall")
+assert len(RECALL_TASKS) >= 9  # collection-time guard: the family must not silently shrink
 
 
 @pytest.mark.parametrize("name", RECALL_TASKS)
