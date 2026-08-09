@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 
 import yaml
 
-from bantamkit.agent import Agent, truncate
+from bantamkit.agent import Agent
 from bantamkit.assets import AssetNotFound, assets_root
 from bantamkit.client import BantamError, Message, ModelClient
+from bantamkit.contract import critique_feedback as _critique_feedback
+from bantamkit.contract import render_evidence
 from bantamkit.structured import structured
+
+__all__ = [
+    "CritiqueExhausted",
+    "CritiqueGate",
+    "GroundedCritiqueGate",
+    "Rubric",
+    "load_rubric",
+    "render_evidence",
+]
 
 
 class CritiqueExhausted(BantamError):
@@ -63,29 +73,6 @@ def load_rubric(name: str) -> Rubric:
     return rubric
 
 
-def render_evidence(messages: list[Message], budget: int = 4096) -> str:
-    """Tool call/observation pairs from a run's transcript, as critic-readable lines."""
-    lines = []
-    consumed: set[int] = set()
-    for position, message in enumerate(messages):
-        for tc in message.tool_calls:
-            observation = "(no observation)"
-            for later in range(position + 1, len(messages)):
-                candidate = messages[later]
-                if (
-                    later not in consumed
-                    and candidate.role == "tool"
-                    and candidate.tool_call_id == tc.id
-                ):
-                    observation = candidate.content
-                    consumed.add(later)
-                    break
-            lines.append(f"{tc.name}({json.dumps(tc.arguments)}) -> {observation}")
-    if not lines:
-        return "(no tool calls were made)"
-    return truncate("\n".join(lines), budget)
-
-
 class CritiqueGate:
     def __init__(
         self, rubric: str | Rubric, client: ModelClient | None = None, max_rounds: int = 3
@@ -124,10 +111,10 @@ class CritiqueGate:
                 f"last feedback: {verdict['feedback']}"
             )
         self.rounds_used += 1
-        return (
-            f"A reviewer scored your answer {verdict['score']}/10 "
-            f"(needs >= {self.rubric.threshold}). Feedback: {verdict['feedback']}\n"
-            f"Revise and answer again."
+        return _critique_feedback(
+            score=verdict["score"],
+            threshold=self.rubric.threshold,
+            feedback=verdict["feedback"],
         )
 
 

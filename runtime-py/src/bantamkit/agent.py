@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from bantamkit.client import BantamError, Message, ModelClient, Tool, Usage
+from bantamkit.textutil import truncate
 
 
 class MaxTurnsExceeded(BantamError):
@@ -23,14 +24,6 @@ class AgentResult:
     output: str
     messages: list[Message]
     usage: Usage
-
-
-def truncate(text: str, budget: int) -> str:
-    raw = text.encode()
-    if len(raw) <= budget:
-        return text
-    kept = raw[:budget].decode(errors="ignore")
-    return f"{kept}\n[truncated {len(raw) - budget} bytes]"
 
 
 @dataclass

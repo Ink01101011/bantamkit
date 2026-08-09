@@ -11,12 +11,12 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-import jsonschema
 import yaml
 
 from bantamkit.agent import Agent, ToolDef
 from bantamkit.assets import assets_root
 from bantamkit.client import BantamError, Message, ModelClient, OpenAICompatible, Tool, Usage
+from bantamkit.contract import schema_error, schema_instruction, schema_retry_feedback
 from bantamkit.critique import CritiqueExhausted, CritiqueGate, GroundedCritiqueGate
 from bantamkit.filegraph import FileAccessGraph
 from bantamkit.memory import Memory, MemoryStore
@@ -191,25 +191,8 @@ def score_output(task: dict, output: str, messages: list[Message]) -> bool:
     raise ValueError(f"unknown scoring kind '{kind}'")
 
 
-SCHEMA_INSTRUCTION = "Return ONLY a JSON object matching this JSON Schema. No prose.\n"
-
-
 class EvalConfigError(BantamError):
     """A task and a config combine into something the harness cannot score."""
-
-
-def schema_error(output: str, schema: dict) -> str | None:
-    """Return a pointed validation error for `output`, or None if it satisfies `schema`."""
-    try:
-        data = extract_json(output)
-    except ValueError as e:
-        return f"output was not parseable JSON: {e}"
-    try:
-        jsonschema.validate(data, schema)
-    except jsonschema.ValidationError as e:
-        where = "/".join(str(p) for p in e.absolute_path) or "root"
-        return f"JSON does not match schema at '{where}': {e.message}"
-    return None
 
 
 class SchemaGate:
@@ -242,7 +225,7 @@ class SchemaGate:
                 f"no valid output after {self.max_attempts} attempts; last error: {error}"
             )
         self.retries_used += 1
-        return f"{error}\nReturn ONLY a JSON object matching the schema."
+        return schema_retry_feedback(error)
 
 
 OUTCOMES = [
@@ -303,7 +286,7 @@ def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> Tas
         # The agent owns the loop here, so it needs the same instruction structured() gives.
         # Gate registered before the critique gate: a malformed answer is fixed for free
         # rather than spending a critique call on it.
-        agent.add_system(SCHEMA_INSTRUCTION + json.dumps(task["schema"]))
+        agent.add_system(schema_instruction(task["schema"]))
         schema_gate = SchemaGate(task["schema"])
         agent.use(schema_gate)
     if config == "critique":
