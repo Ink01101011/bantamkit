@@ -128,6 +128,11 @@ def test_profile_values_match_pre_split_defaults():
         )
 
 
+def test_json_answer_default_is_one_attempt():
+    """New in this cycle, so not a pre-split default — pinned separately, same intent."""
+    assert profile_default("json_answer", "max_attempts") == 1
+
+
 def test_load_contract_missing_asset(tmp_path, monkeypatch):
     monkeypatch.setenv("BANTAMKIT_ASSETS", str(tmp_path))
     from bantamkit.assets import AssetNotFound
