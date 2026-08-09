@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 
@@ -123,6 +125,53 @@ def test_backoff_sleeps_between_a_failure_and_a_later_success(monkeypatch):
     client = make_client(httpx.MockTransport(lambda request: responses.pop(0)), max_retries=3)
     assert client.chat([Message(role="user", content="x")]).message.content == "hi"
     assert sleeps == [0.5]
+
+
+# ---- seed passthrough ----
+
+
+def capturing_transport(bodies):
+    def handler(request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json=OK_BODY)
+
+    return httpx.MockTransport(handler)
+
+
+def test_seed_is_absent_from_the_payload_by_default():
+    bodies = []
+    client = make_client(capturing_transport(bodies))
+    client.chat([Message(role="user", content="x")])
+    assert "seed" not in bodies[0]
+
+
+def test_seed_is_sent_when_set_on_the_client():
+    bodies = []
+    client = make_client(capturing_transport(bodies), seed=1234567890)
+    client.chat([Message(role="user", content="x")])
+    assert bodies[0]["seed"] == 1234567890
+
+
+def test_seed_assigned_after_construction_reaches_the_next_request():
+    """The eval harness pins one seed per run on an already-built client."""
+    bodies = []
+    client = make_client(capturing_transport(bodies))
+    client.seed = 7
+    client.chat([Message(role="user", content="x")])
+    client.seed = None
+    client.chat([Message(role="user", content="y")])
+    assert bodies[0]["seed"] == 7
+    assert "seed" not in bodies[1]
+
+
+def test_seed_does_not_disturb_the_rest_of_the_payload():
+    bodies = []
+    client = make_client(capturing_transport(bodies), seed=42)
+    tool = Tool(name="lookup", description="d", parameters={"type": "object"})
+    client.chat([Message(role="user", content="x")], tools=[tool])
+    assert bodies[0]["model"] == "m"
+    assert bodies[0]["messages"] == [{"role": "user", "content": "x"}]
+    assert bodies[0]["tools"] == [tool.to_wire()]
 
 
 def test_single_attempt_client_never_sleeps(monkeypatch):

@@ -113,11 +113,16 @@ class OpenAICompatible:
         timeout: float = 60.0,
         max_retries: int = 3,
         transport: httpx.BaseTransport | None = None,
+        seed: int | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key
         self.max_retries = max_retries
+        # Sampling seed, sent only when set. OpenAI chat-completions and Ollama's
+        # OpenAI-compat endpoint both accept it; servers that ignore it degrade to
+        # unseeded sampling. Writable per run — the eval harness pins it per task.
+        self.seed = seed
         self._http = httpx.Client(timeout=timeout, transport=transport)
 
     def close(self) -> None:
@@ -134,6 +139,8 @@ class OpenAICompatible:
         payload: dict = {"model": self.model, "messages": [m.to_wire() for m in messages]}
         if tools:
             payload["tools"] = [t.to_wire() for t in tools]
+        if self.seed is not None:
+            payload["seed"] = self.seed
         last_err: Exception | None = None
         for attempt in range(self.max_retries):
             try:
