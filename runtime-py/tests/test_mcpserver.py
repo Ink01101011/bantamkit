@@ -169,6 +169,17 @@ def test_unknown_rubric_errors_cleanly(tmp_path):
     run(scenario())
 
 
+def test_missing_rubric_error_names_the_asset(tmp_path):
+    async def scenario():
+        async with Client(make_server(tmp_path)) as c:
+            with pytest.raises(MCPError, match="unknown rubric asset: nope"):
+                await c.read_resource("bantamkit://rubrics/nope")
+            with pytest.raises(MCPError, match="unknown skill asset: nope"):
+                await c.read_resource("bantamkit://skills/nope")
+
+    run(scenario())
+
+
 def test_resource_templates_listed(tmp_path):
     async def scenario():
         async with Client(make_server(tmp_path)) as c:

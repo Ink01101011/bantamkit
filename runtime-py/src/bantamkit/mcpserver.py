@@ -7,14 +7,16 @@ import asyncio
 from importlib import metadata
 from typing import Any
 
-from bantamkit.assets import assets_root, load_skill, load_tool
+from bantamkit.assets import AssetNotFound, assets_root, load_skill, load_tool
 from bantamkit.evalrun import schema_error
 from bantamkit.memory import Memory
 
 try:
     from mcp.server import MCPServer
+    from mcp.server.mcpserver.exceptions import ResourceError
 except ImportError:  # surfaced as a clear SystemExit in main()
     MCPServer = None  # type: ignore[assignment]
+    ResourceError = None  # type: ignore[assignment]
 
 _INSTALL_HINT = 'bantamkit-mcp needs the MCP extra: pip install "bantamkit[mcp]"'
 
@@ -71,13 +73,16 @@ def build_server(memory: Memory) -> Any:
 
     @server.resource("bantamkit://skills/{name}")
     def skill_resource(name: str) -> str:
-        return load_skill(name)
+        try:
+            return load_skill(name)
+        except AssetNotFound:
+            raise ResourceError(f"unknown skill asset: {name}") from None
 
     @server.resource("bantamkit://rubrics/{name}")
     def rubric_resource(name: str) -> str:
         path = assets_root() / "rubrics" / f"{name}.yaml"
         if not path.is_file():
-            raise FileNotFoundError(f"unknown rubric asset: {name}")
+            raise ResourceError(f"unknown rubric asset: {name}")
         return path.read_text()
 
     return server
