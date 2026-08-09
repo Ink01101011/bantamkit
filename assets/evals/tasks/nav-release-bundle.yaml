@@ -1,30 +1,29 @@
-name: nav-quota-endpoint
+name: nav-release-bundle
 family: file-nav
 tools:
 - read_file
 - list_files
 workspace:
-  README.md: '# quota-api
+  README.md: '# imgproc
 
 
-    Quota service. The public endpoints are listed in docs/api.md;
-
-    environment hosts are in config/hosts.yaml.'
-  docs/api.md: '# API
+    Image processing CLI. Release process: docs/release.md.'
+  docs/release.md: '# Releasing imgproc
 
 
-    All endpoints are served under the versioned prefix /v2.
+    The bundle name is assembled as <name>-<version>.tar.gz where <name>
 
-    - GET /v2/quota/{org} — current quota
+    comes from package.cfg and <version> comes from VERSION. Both files
 
-    - PUT /v2/quota/{org} — set quota (admin)
+    live at the repo root. Never hardcode either value.'
+  package.cfg: '[package]
 
-    The production host is defined in config/hosts.yaml; combine host,
+    name = imgproc-cli
 
-    prefix and path to form a full URL.'
-  config/hosts.yaml: 'production: https://quota.prod.example.io
+    license = apache-2.0
 
-    staging: https://quota.stg.example.io
+    '
+  VERSION: '2.9.1
 
     '
   docs/ci.md: '# CI pipeline notes
@@ -81,8 +80,8 @@ workspace:
     regenerated in CI, never by hand.
 
     '
-prompt: 'What is the full production URL for reading the quota of an org (use {org} as the placeholder)? Explore the workspace files and assemble it exactly. Answer with ONLY this JSON, nothing else: {"url": "<full url>"}'
+prompt: 'What is the exact release bundle filename for the current version? Follow the release documentation and assemble it from the files it names. Use list_files first, then read_file on every file you need — follow each pointer the files give you; do not answer from memory or guess. Answer with ONLY this JSON, nothing else: {"bundle": "<filename>"}'
 scoring:
   kind: json_equal
   expected:
-    url: https://quota.prod.example.io/v2/quota/{org}
+    bundle: imgproc-cli-2.9.1.tar.gz

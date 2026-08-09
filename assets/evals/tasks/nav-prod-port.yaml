@@ -77,7 +77,7 @@ workspace:
     three consecutive ambers page the on-call.
 
     '
-prompt: 'Find the production port of billing-svc from the workspace files. Start with list_files, then follow the documentation to the right file. Answer with ONLY this JSON, nothing else: {"port": <number>}'
+prompt: 'Find the production port of billing-svc from the workspace files. Start with list_files, then follow the documentation to the right file. Use list_files first, then read_file on every file you need — follow each pointer the files give you; do not answer from memory or guess. Answer with ONLY this JSON, nothing else: {"port": <number>}'
 scoring:
   kind: json_equal
   expected:
