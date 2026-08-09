@@ -1250,3 +1250,157 @@ def test_format_report_keeps_ablation_config_rows():
     ]
     report = format_report(results)
     assert "graph-annotate" in report
+
+
+# ---- P2: response_format forwarding through TrackingClient ----
+
+
+class ConstrainedClient(FakeClient):
+    """A fake that understands the kwarg, like OpenAICompatible."""
+
+    def __init__(self, responses, unsupported=False):
+        super().__init__(responses)
+        self._response_format_unsupported = unsupported
+        self.response_formats = []
+
+    def chat(self, messages, tools=None, response_format=None):
+        self.response_formats.append(response_format)
+        return super().chat(messages, tools)
+
+
+def test_tracking_client_forwards_response_format_to_a_capable_inner():
+    inner = ConstrainedClient([assistant(content="a")])
+    TrackingClient(inner).chat([Message(role="user", content="x")], response_format={"t": 1})
+    assert inner.response_formats == [{"t": 1}]
+
+
+def test_tracking_client_omits_response_format_when_not_asked_for():
+    inner = ConstrainedClient([assistant(content="a")])
+    TrackingClient(inner).chat([Message(role="user", content="x")])
+    assert inner.response_formats == [None]
+
+
+def test_tracking_client_never_sends_the_kwarg_to_a_two_arg_fake():
+    """conftest's FakeClient takes (messages, tools); passing more would be a TypeError."""
+    inner = FakeClient([assistant(content="a")])
+    tracking = TrackingClient(inner)
+    tracking.chat([Message(role="user", content="x")], response_format={"t": 1})
+    assert tracking.calls == 1 and len(inner.calls) == 1
+
+
+def test_tracking_client_mirrors_the_capability_memo_of_its_inner():
+    inner = ConstrainedClient([])
+    tracking = TrackingClient(inner)
+    assert hasattr(tracking, "_response_format_unsupported")
+    assert tracking._response_format_unsupported is False
+    inner._response_format_unsupported = True  # as a 400 fallback would
+    assert tracking._response_format_unsupported is True  # live, not snapshotted
+    assert not hasattr(TrackingClient(FakeClient([])), "_response_format_unsupported")
+
+
+def test_structured_config_reaches_the_inner_client_with_response_format(tmp_path):
+    """End to end: the tier survives the wrapper the harness always puts in the way."""
+    inner = ConstrainedClient([assistant(content=CONTACT)])
+    run_task(inner, get_task("extract-contact"), "structured", tmp_path)
+    assert inner.response_formats[0]["json_schema"]["name"] == "output"
+    assert inner.response_formats[0]["json_schema"]["schema"] == get_task("extract-contact")[
+        "schema"
+    ]
+
+
+# ---- P4: JsonAnswerGate wiring ----
+
+JSON_TASK = {
+    "name": "t",
+    "family": "memory-recall",
+    "prompt": "answer",
+    "scoring": {"kind": "json_equal", "expected": {"a": 1}},
+}
+CONTAINS_TASK = {
+    "name": "t",
+    "family": "memory-recall",
+    "prompt": "answer",
+    "scoring": {"kind": "contains", "expected": ["a"]},
+}
+
+
+@pytest.mark.parametrize("config", ["memory", "lean", "full"])
+def test_json_answer_gate_rescues_a_prose_answer(config, tmp_path):
+    client = FakeClient(
+        [assistant(content="the answer is a=1"), assistant(content='{"a": 1}')]
+        # `full` also runs the grounded critic on the rescued answer
+        + [assistant(content=GROUNDED_VERDICT)]
+    )
+    result = run_task(client, dict(JSON_TASK), config, tmp_path)
+    assert result.passed is True
+    assert "contains no JSON" in client.calls[1]["messages"][-1].content
+
+
+def test_bare_stays_the_floor_and_gets_no_json_answer_gate(tmp_path):
+    client = FakeClient([assistant(content="the answer is a=1")])
+    result = run_task(client, dict(JSON_TASK), "bare", tmp_path)
+    assert result.passed is False and result.outcome == "malformed-output"
+    assert len(client.calls) == 1
+
+
+def test_json_answer_gate_not_attached_for_non_json_scoring(tmp_path):
+    client = FakeClient([assistant(content="the answer is a")])
+    result = run_task(client, dict(CONTAINS_TASK), "memory", tmp_path)
+    assert result.passed is True and len(client.calls) == 1
+
+
+def test_json_answer_gate_fails_open_and_the_run_is_still_scored(tmp_path):
+    """A second prose answer is a scorable wrong answer, never an exception."""
+    client = FakeClient([assistant(content="prose one"), assistant(content="prose two")])
+    result = run_task(client, dict(JSON_TASK), "memory", tmp_path)
+    assert result.passed is False and result.error is None
+    assert result.outcome == "malformed-output"
+
+
+def test_schema_gate_still_owns_schema_tasks_in_lean(tmp_path):
+    """Where a schema exists its error is more informative, so it is registered first."""
+    task = {
+        "name": "t",
+        "family": "structured-extraction",
+        "prompt": "extract",
+        "schema": {"type": "object", "required": ["a"], "properties": {"a": {"type": "integer"}}},
+        "scoring": {"kind": "json_equal", "expected": {"a": 1}},
+    }
+    client = FakeClient([assistant(content="not json"), assistant(content='{"a": 1}')])
+    result = run_task(client, task, "lean", tmp_path)
+    assert result.passed is True
+    assert "not parseable" in client.calls[1]["messages"][-1].content
+    assert "contains no JSON" not in client.calls[1]["messages"][-1].content
+
+
+# ---- P7 follow-up: turns-exhausted transcripts are no longer empty ----
+
+
+def test_turns_exhausted_transcript_carries_the_messages(tmp_path):
+    transcripts = tmp_path / "t"
+    transcripts.mkdir()
+
+    class NeverAnswers:
+        def chat(self, messages, tools=None):
+            return assistant(tool_calls=[call("price_lookup", {"item": "widget"})])
+
+    result = run_task(
+        NeverAnswers(), get_task("shop-cheapest"), "bare", tmp_path, transcripts_dir=transcripts
+    )
+    assert result.outcome == "turns-exhausted"
+    data = read_transcript(transcripts, "bare", "shop-cheapest")
+    assert data["messages"], "turns-exhausted runs used to write messages: []"
+    assert any(m["tool_calls"] for m in data["messages"])
+    # JSONL semantics unchanged this cycle: the column still reads 0 for a raised run.
+    assert result.tool_calls == 0
+
+
+def test_gate_raised_transcript_stays_empty_without_a_messages_attribute(tmp_path):
+    transcripts = tmp_path / "t"
+    transcripts.mkdir()
+    client = FakeClient([assistant(content="not json")] * 3)
+    result = run_task(
+        client, get_task("extract-contact"), "structured", tmp_path, transcripts_dir=transcripts
+    )
+    assert result.outcome == "schema-exhausted"
+    assert read_transcript(transcripts, "structured", "extract-contact")["messages"] == []
