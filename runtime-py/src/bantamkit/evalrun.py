@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
+import sys
 import tempfile
 from collections import Counter
 from collections.abc import Callable
@@ -13,7 +15,7 @@ from pathlib import Path
 
 import yaml
 
-from bantamkit.agent import Agent, ToolDef
+from bantamkit.agent import Agent, MaxTurnsExceeded, ToolDef
 from bantamkit.assets import assets_root
 from bantamkit.client import BantamError, Message, ModelClient, OpenAICompatible, Tool, Usage
 from bantamkit.contract import schema_error, schema_instruction, schema_retry_feedback
@@ -138,6 +140,9 @@ class TaskResult:
     schema_retries: int
     critique_rounds: int
     error: str | None
+    # Trailing field: new JSONL columns are additive, old rows simply lack them.
+    # None means no seed was applied (a client that has no `seed` attribute to pin).
+    seed: int | None = None
 
 
 class TrackingClient:
@@ -239,6 +244,7 @@ OUTCOMES = [
     "malformed-output",
     "schema-exhausted",
     "critique-exhausted",
+    "turns-exhausted",
     "config-error",
     "transport-error",
 ]
@@ -260,6 +266,11 @@ def classify_outcome(
         return "schema-exhausted"
     if isinstance(error, CritiqueExhausted):
         return "critique-exhausted"
+    if isinstance(error, MaxTurnsExceeded):
+        # Agent behaviour, not infrastructure. Before the generic branch below, which
+        # would otherwise file turn exhaustion under `transport-error` and point the
+        # diagnosis at the server (P7 — all 10 of the 3b sweep's "transport errors").
+        return "turns-exhausted"
     if error is not None:
         return "transport-error"
     if task["scoring"]["kind"] == "json_equal":
@@ -270,7 +281,81 @@ def classify_outcome(
     return "wrong-answer"
 
 
-def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> TaskResult:
+def run_seed(model: str, task_name: str, repeat: int) -> int:
+    """One deterministic sampling seed per (model, task, repeat).
+
+    SHA-256 rather than Python's `hash()`, which is salted per process — a seed that
+    changes between sweeps records nothing. Truncated to 32 bits, which every server
+    accepts.
+
+    **Config is deliberately excluded**: every config of a (task, repeat) shares one
+    seed, so `bare` vs `graph` off-family is exact-equality-falsifiable again instead
+    of paying a sampling-noise tax on the first call of each run (P9).
+    """
+    digest = hashlib.sha256(f"{model}\x1f{task_name}\x1f{repeat}".encode()).digest()
+    return int.from_bytes(digest[:4], "big")
+
+
+def _message_dict(message: Message) -> dict:
+    """Exactly the `Message` fields, JSON-ready — the transcript is a post-hoc read, not a wire."""
+    return {
+        "role": message.role,
+        "content": message.content,
+        "tool_calls": [
+            {"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in message.tool_calls
+        ],
+        "tool_call_id": message.tool_call_id,
+    }
+
+
+def _write_transcript(
+    transcripts_dir: Path,
+    result: TaskResult,
+    repeat: int,
+    output: str | None,
+    messages: list[Message],
+) -> None:
+    """Dump one run's messages beside its scoring verdict.
+
+    One file per run, `<config>--<task>--r<repeat>.json`, written on pass and on
+    failure alike (the `structured` path has no agent transcript, so `messages` is
+    `[]` there — the file still appears). Any write failure warns and returns:
+    measurement must never change what it measures.
+    """
+    path = transcripts_dir / f"{result.config}--{result.task}--r{repeat}.json"
+    payload = {
+        "task": result.task,
+        "config": result.config,
+        "repeat": repeat,
+        "passed": result.passed,
+        "outcome": result.outcome,
+        "seed": result.seed,
+        "output": output,
+        "messages": [_message_dict(m) for m in messages],
+    }
+    try:
+        path.write_text(json.dumps(payload, indent=2))
+    except (OSError, TypeError, ValueError) as e:
+        print(f"warning: could not write transcript {path}: {e}", file=sys.stderr)
+
+
+def run_task(
+    client: ModelClient,
+    task: dict,
+    config: str,
+    workdir: Path,
+    transcripts_dir: Path | None = None,
+    repeat: int = 0,
+) -> TaskResult:
+    # Applied by duck typing, not by signature: a client that carries a `seed` attribute
+    # (OpenAICompatible does) gets this run's pinned seed; anything else is left alone and
+    # records `seed: None`, because a seed the client ignored would be provenance fiction.
+    # chat() is untouched either way.
+    applied_seed: int | None = None
+    if hasattr(client, "seed"):
+        applied_seed = run_seed(getattr(client, "model", ""), task["name"], repeat)
+        client.seed = applied_seed
+
     tracking = TrackingClient(client)
     workspace_tools = _workspace_tools(task.get("workspace") or {})
     tools = [
@@ -283,9 +368,9 @@ def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> Tas
     critique_gate: CritiqueGate | None = None
     if config in ("memory", "lean", "full") and task.get("memory_setup"):
         store_dir = workdir / f"{task['name']}-{config}-mem"
-        seed = MemoryStore(store_dir)
+        store = MemoryStore(store_dir)
         for fact in task["memory_setup"]:
-            seed.save(fact["type"], fact["name"], fact["description"], fact["body"])
+            store.save(fact["type"], fact["name"], fact["description"], fact["body"])
         agent.use(Memory(store=store_dir))
     if config in ("lean", "full") and "schema" in task:
         # The agent owns the loop here, so it needs the same instruction structured() gives.
@@ -330,7 +415,7 @@ def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> Tas
         schema_retries = max(0, tracking.calls - 1)
     else:
         schema_retries = schema_gate.retries_used if schema_gate else 0
-    return TaskResult(
+    result = TaskResult(
         task=task["name"],
         config=config,
         family=task.get("family", "unknown"),
@@ -343,7 +428,11 @@ def run_task(client: ModelClient, task: dict, config: str, workdir: Path) -> Tas
         schema_retries=schema_retries,
         critique_rounds=critique_gate.rounds_used if critique_gate else 0,
         error=f"{type(caught).__name__}: {caught}" if caught else None,
+        seed=applied_seed,
     )
+    if transcripts_dir is not None:
+        _write_transcript(transcripts_dir, result, repeat, output, messages)
+    return result
 
 
 def run_suite(
@@ -353,6 +442,7 @@ def run_suite(
     tasks_dir: Path | None = None,
     repeats: int = 1,
     on_result: Callable[[TaskResult], None] | None = None,
+    transcripts_dir: Path | None = None,
 ) -> list[TaskResult]:
     configs = configs or CONFIGS
     workdir = workdir or Path(tempfile.mkdtemp(prefix="bantamkit-eval-"))
@@ -362,7 +452,14 @@ def run_suite(
         for task in tasks:
             for i in range(repeats):
                 # Fresh subdir per repeat: memory stores must not leak between repeats.
-                result = run_task(client, task, config, workdir / f"repeat-{i}")
+                result = run_task(
+                    client,
+                    task,
+                    config,
+                    workdir / f"repeat-{i}",
+                    transcripts_dir=transcripts_dir,
+                    repeat=i,
+                )
                 results.append(result)
                 if on_result is not None:
                     on_result(result)
@@ -471,6 +568,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--json", type=Path, help="append one JSON line per finished run to this file"
     )
+    parser.add_argument(
+        "--transcripts",
+        type=Path,
+        help="dump one JSON transcript per finished run into this directory",
+    )
     args = parser.parse_args(argv)
     if args.repeats < 1:
         parser.error("--repeats must be >= 1")
@@ -485,6 +587,12 @@ def main(argv: list[str] | None = None) -> None:
             jsonl.write(json.dumps(asdict(result)) + "\n")
             jsonl.flush()
 
+    # Passed only when the flag is given, so callers (and fakes) that predate it keep working.
+    suite_kwargs: dict = {}
+    if args.transcripts:
+        args.transcripts.mkdir(parents=True, exist_ok=True)
+        suite_kwargs["transcripts_dir"] = args.transcripts
+
     try:
         results = run_suite(
             client,
@@ -492,6 +600,7 @@ def main(argv: list[str] | None = None) -> None:
             tasks_dir=args.tasks,
             repeats=args.repeats,
             on_result=sink,
+            **suite_kwargs,
         )
     finally:
         if jsonl is not None:

@@ -12,6 +12,7 @@ from bantamkit.evalrun import (
     TrackingClient,
     format_report,
     load_tasks,
+    run_seed,
     run_task,
     score_output,
 )
@@ -979,6 +980,264 @@ def test_recall_store_dump_containing_the_fact_scores_false():
 def test_ablation_configs_are_choices_but_not_in_configs():
     assert "graph-annotate" in CONFIG_CHOICES and "graph-cache" in CONFIG_CHOICES
     assert "graph-annotate" not in CONFIGS and "graph-cache" not in CONFIGS
+
+
+# ---- P7: turns-exhausted ----
+
+
+def test_outcome_turns_exhausted_not_transport_error(tmp_path):
+    """Turn exhaustion is agent behaviour; filing it under transport blames the server."""
+
+    class NeverAnswers:
+        """Always calls a tool, never gives a final answer — the agent runs out of turns."""
+
+        def chat(self, messages, tools=None):
+            return assistant(tool_calls=[call("price_lookup", {"item": "widget"})])
+
+    result = run_task(NeverAnswers(), get_task("shop-cheapest"), "bare", tmp_path)
+    assert result.passed is False
+    assert result.outcome == "turns-exhausted"
+    assert "MaxTurnsExceeded" in result.error
+
+
+def test_outcome_transport_error_still_classifies_transport(tmp_path):
+    from bantamkit.client import TransportError
+
+    class Boom:
+        def chat(self, messages, tools=None):
+            raise TransportError("chat failed after 3 attempts")
+
+    result = run_task(Boom(), get_task("extract-contact"), "bare", tmp_path)
+    assert result.outcome == "transport-error"
+
+
+def test_classify_outcome_maps_max_turns_to_its_own_bucket():
+    from bantamkit.agent import MaxTurnsExceeded
+    from bantamkit.evalrun import OUTCOMES, classify_outcome
+
+    task = {"scoring": {"kind": "contains", "expected": ["x"]}}
+    outcome = classify_outcome(task, False, None, MaxTurnsExceeded("no final answer"))
+    assert outcome == "turns-exhausted"
+    assert outcome in OUTCOMES
+
+
+# ---- P8: --transcripts ----
+
+
+def read_transcript(directory, config, task, repeat=0):
+    return json.loads((directory / f"{config}--{task}--r{repeat}.json").read_text())
+
+
+def test_transcript_written_with_run_fields(tmp_path):
+    transcripts = tmp_path / "t"
+    transcripts.mkdir()
+    client = FakeClient([assistant(content=CONTACT)])
+    result = run_task(
+        client, get_task("extract-contact"), "bare", tmp_path, transcripts_dir=transcripts
+    )
+    data = read_transcript(transcripts, "bare", "extract-contact")
+    assert data["task"] == "extract-contact" and data["config"] == "bare"
+    assert data["repeat"] == 0
+    assert data["passed"] is result.passed is True
+    assert data["outcome"] == result.outcome == "pass"
+    assert data["output"] == CONTACT
+    assert [m["role"] for m in data["messages"]] == ["user", "assistant"]
+    assert data["messages"][-1]["content"] == CONTACT
+
+
+def test_transcript_records_tool_calls_and_repeat_index(tmp_path):
+    transcripts = tmp_path / "t"
+    transcripts.mkdir()
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("price_lookup", {"item": "widget"})]),
+            assistant(content='{"cheaper": "widget"}'),
+        ]
+    )
+    run_task(
+        client,
+        get_task("shop-cheapest"),
+        "bare",
+        tmp_path,
+        transcripts_dir=transcripts,
+        repeat=2,
+    )
+    data = read_transcript(transcripts, "bare", "shop-cheapest", repeat=2)
+    assert data["repeat"] == 2
+    tool_calls = [tc for m in data["messages"] for tc in m["tool_calls"]]
+    assert tool_calls == [{"id": "c1", "name": "price_lookup", "arguments": {"item": "widget"}}]
+    observation = next(m for m in data["messages"] if m["role"] == "tool")
+    assert observation["tool_call_id"] == "c1"
+
+
+def test_transcript_written_for_gate_raising_run(tmp_path):
+    transcripts = tmp_path / "t"
+    transcripts.mkdir()
+    client = FakeClient([assistant(content="not json")] * 3)
+    result = run_task(
+        client,
+        get_task("extract-contact"),
+        "structured",
+        tmp_path,
+        transcripts_dir=transcripts,
+    )
+    data = read_transcript(transcripts, "structured", "extract-contact")
+    assert result.passed is False
+    assert data["passed"] is False and data["outcome"] == "schema-exhausted"
+    assert data["output"] is None
+    # structured() drives its own loop: documented limitation, but the file still exists.
+    assert data["messages"] == []
+
+
+def test_transcript_write_failure_does_not_change_the_result(tmp_path, capsys):
+    """Measurement must not change what it measures: an unwritable dir only warns."""
+    missing = tmp_path / "nope" / "deeper"
+    client = FakeClient([assistant(content=CONTACT)])
+    result = run_task(
+        client, get_task("extract-contact"), "bare", tmp_path, transcripts_dir=missing
+    )
+    assert result.passed is True and result.outcome == "pass" and result.error is None
+    assert not missing.exists()
+    assert "could not write transcript" in capsys.readouterr().err
+
+
+def test_run_suite_passes_transcripts_dir_and_repeat_index(tmp_path):
+    taskdir = tmp_path / "tasks"
+    taskdir.mkdir()
+    (taskdir / "tiny.yaml").write_text(TINY_TASK)
+    transcripts = tmp_path / "t"
+    transcripts.mkdir()
+    client = FakeClient([assistant(content="hi")] * 2)
+    evalrun.run_suite(
+        client,
+        configs=["bare"],
+        workdir=tmp_path / "work",
+        tasks_dir=taskdir,
+        repeats=2,
+        transcripts_dir=transcripts,
+    )
+    assert sorted(p.name for p in transcripts.iterdir()) == [
+        "bare--tiny--r0.json",
+        "bare--tiny--r1.json",
+    ]
+    assert read_transcript(transcripts, "bare", "tiny", repeat=1)["repeat"] == 1
+
+
+def test_cli_transcripts_flag_creates_dir_and_reaches_run_suite(monkeypatch, tmp_path):
+    captured = {}
+    target = tmp_path / "dumps" / "run-1"
+
+    def fake_run_suite(client, transcripts_dir=None, **kw):
+        captured["transcripts_dir"] = transcripts_dir
+        return []
+
+    monkeypatch.setattr(evalrun, "OpenAICompatible", lambda **kw: object())
+    monkeypatch.setattr(evalrun, "run_suite", fake_run_suite)
+    monkeypatch.setattr(evalrun, "format_report", lambda results: "")
+    evalrun.main(["--base-url", "http://x", "--model", "m", "--transcripts", str(target)])
+    assert captured["transcripts_dir"] == target
+    assert target.is_dir()  # created with parents=True
+
+
+# ---- P9: deterministic per-(model, task, repeat) seed ----
+
+
+class SeedableClient(FakeClient):
+    """A fake with the one attribute `run_task` duck-types on, plus a `model` name."""
+
+    def __init__(self, responses, model="qwen3:4b-instruct"):
+        super().__init__(responses)
+        self.model = model
+        self.seed = None
+
+    def chat(self, messages, tools=None):
+        self.calls.append(
+            {"messages": list(messages), "tools": list(tools or []), "seed": self.seed}
+        )
+        return self.responses.pop(0)
+
+
+def test_run_seed_golden_values():
+    """Hardcoded on purpose: the point of the seed is stability across processes."""
+    assert run_seed("qwen3:4b-instruct", "extract-contact", 0) == 1861749954
+    assert run_seed("llama3.2:3b", "recall-owner", 0) == 1390078982
+
+
+def test_run_seed_is_32_bit_and_stable_within_a_process():
+    value = run_seed("m", "t", 0)
+    assert 0 <= value < 2**32
+    assert value == run_seed("m", "t", 0)
+
+
+def test_run_seed_varies_with_repeat_and_model():
+    assert run_seed("m", "t", 0) != run_seed("m", "t", 1)
+    assert run_seed("m", "t", 0) != run_seed("other", "t", 0)
+    assert run_seed("m", "t", 0) != run_seed("m", "other", 0)
+
+
+def test_run_seed_excludes_config_so_configs_share_it(tmp_path):
+    """bare vs graph on the same (task, repeat) must sample identically to be comparable."""
+    seeds = []
+    for config in ("bare", "graph"):
+        client = SeedableClient([assistant(content=CONTACT)])
+        run_task(client, get_task("extract-contact"), config, tmp_path, repeat=1)
+        seeds.append(client.seed)
+    assert seeds[0] == seeds[1] == run_seed("qwen3:4b-instruct", "extract-contact", 1)
+
+
+def test_run_task_pins_the_seed_before_the_first_call_and_records_it(tmp_path):
+    client = SeedableClient([assistant(content=CONTACT)])
+    result = run_task(client, get_task("extract-contact"), "bare", tmp_path)
+    assert result.seed == 1861749954
+    assert client.calls[0]["seed"] == 1861749954  # pinned before the run, not after
+
+
+def test_run_task_leaves_seedless_clients_alone_and_records_none(tmp_path):
+    """A seed the client ignored would be provenance fiction, so it is not recorded."""
+    client = FakeClient([assistant(content=CONTACT)])
+    result = run_task(client, get_task("extract-contact"), "bare", tmp_path)
+    assert result.seed is None
+    assert not hasattr(client, "seed")
+
+
+def test_run_suite_reseeds_per_repeat(tmp_path):
+    taskdir = tmp_path / "tasks"
+    taskdir.mkdir()
+    (taskdir / "tiny.yaml").write_text(TINY_TASK)
+    client = SeedableClient([assistant(content="hi")] * 2)
+    results = evalrun.run_suite(
+        client, configs=["bare"], workdir=tmp_path / "work", tasks_dir=taskdir, repeats=2
+    )
+    assert [r.seed for r in results] == [
+        run_seed("qwen3:4b-instruct", "tiny", 0),
+        run_seed("qwen3:4b-instruct", "tiny", 1),
+    ]
+
+
+def test_seed_lands_in_the_jsonl_line_as_the_last_field(monkeypatch, tmp_path):
+    out = tmp_path / "results.jsonl"
+
+    def fake_run_suite(client, configs=None, tasks_dir=None, repeats=1, on_result=None):
+        on_result(make_result(seed=1861749954))
+        return []
+
+    monkeypatch.setattr(evalrun, "OpenAICompatible", lambda **kw: object())
+    monkeypatch.setattr(evalrun, "run_suite", fake_run_suite)
+    monkeypatch.setattr(evalrun, "format_report", lambda results: "")
+    evalrun.main(["--base-url", "http://x", "--model", "m", "--json", str(out)])
+    data = json.loads(out.read_text().splitlines()[0])
+    assert data["seed"] == 1861749954
+    assert list(data)[-1] == "seed"  # additive: appended, never inserted mid-row
+
+
+def test_seed_lands_in_the_transcript(tmp_path):
+    transcripts = tmp_path / "t"
+    transcripts.mkdir()
+    client = SeedableClient([assistant(content=CONTACT)])
+    run_task(
+        client, get_task("extract-contact"), "bare", tmp_path, transcripts_dir=transcripts
+    )
+    assert read_transcript(transcripts, "bare", "extract-contact")["seed"] == 1861749954
 
 
 def test_format_report_keeps_ablation_config_rows():
