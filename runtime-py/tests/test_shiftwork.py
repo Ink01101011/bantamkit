@@ -134,6 +134,15 @@ def test_history_entries_allow_extra_annotation(schema, example):
     assert schema_error(json.dumps(ckpt), schema) is None
 
 
+def test_history_beyond_five_entries_rejected(schema, example):
+    """The ring buffer is structural: a journal in `history` is a rejected file."""
+    ckpt = copy.deepcopy(example)
+    entry = ckpt["history"][0]
+    six = [dict(entry, unit=f"U{i}") for i in range(6)]
+    assert schema_error(json.dumps(mutate(example, ["history"], six)), schema) is not None
+    assert schema_error(json.dumps(mutate(example, ["history"], six[:5])), schema) is None
+
+
 # --- driver: harness -------------------------------------------------------
 
 
@@ -410,6 +419,29 @@ def test_second_driver_refuses_to_start(tmp_path):
     assert json.loads((tmp_path / "driver.lock").read_text())["pid"] == 999
 
 
+def test_lock_refusal_notifies_naming_the_holder(tmp_path):
+    """A refusal that only prints to stderr is invisible to whoever walked away."""
+    h = make_driver(tmp_path, base_checkpoint(), alive=True)
+    (tmp_path / "driver.lock").write_text(json.dumps({"pid": 999, "started": 1.0}))
+    assert h.driver.run() == shiftwork.EXIT_LOCKED
+    message = h.runner.notifications[0][-1]
+    assert message.startswith("shift-work refused to start:")
+    assert "pid 999" in message
+
+
+def test_lock_acquisition_is_atomic(tmp_path):
+    """Two drivers racing on a free lock: exactly one wins, no read-then-write gap."""
+    lock = tmp_path / "driver.lock"
+    first = shiftwork.DriverLock(lock, pid=1001, now=lambda: 1.0, is_alive=lambda pid: True)
+    second = shiftwork.DriverLock(lock, pid=1002, now=lambda: 2.0, is_alive=lambda pid: True)
+    assert first.acquire() is None
+    assert "pid 1001" in second.acquire()
+    assert second.held is False
+    assert json.loads(lock.read_text())["pid"] == 1001
+    second.release()  # a loser must never delete the winner's lock
+    assert lock.exists()
+
+
 def test_stale_lock_is_taken_over(tmp_path):
     ckpt = base_checkpoint()
     for unit in ckpt["plan"]["units"]:
@@ -473,6 +505,8 @@ def test_clock_in_prompt_is_constant_and_carries_no_unit_state(tmp_path):
     assert str(h.path) in prompt
     assert "U3" not in prompt
     assert prompt == shiftwork.CLOCK_IN_PROMPT.replace("<path>", str(h.path))
+    # v1 reads the checkpoint with `json` alone, so the prompt must say so.
+    assert "keeping it JSON" in prompt
 
 
 def test_notify_cmd_receives_the_terminal_message(tmp_path):

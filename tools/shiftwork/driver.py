@@ -59,7 +59,8 @@ ROLES = ("planner", "implementer", "reviewer")
 CLOCK_IN_PROMPT = (
     "Clock in. Read the checkpoint at `<path>` and the artifacts it lists. "
     "Execute ONLY the unit at `plan.cursor` per its brief. Run its `verify`. "
-    "Update the checkpoint (atomic temp-file + rename), set `next_action`, and "
+    "Update the checkpoint (atomic temp-file + rename, keeping it JSON), set "
+    "`next_action`, and "
     "clock out. If blocked, set the unit blocked with a reason and fill "
     "`open_questions` instead of improvising."
 )
@@ -234,14 +235,40 @@ class DriverLock:
         self.held = False
 
     def acquire(self) -> str | None:
-        """Return None when acquired, else the refusal reason."""
+        """Return None when acquired, else the refusal reason.
+
+        The create is atomic (O_EXCL), so two drivers starting at the same
+        instant cannot both win: exactly one create succeeds and the loser
+        takes the refusal path below. Read-then-write would let both pass.
+        """
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self._create():
+            return None
         owner = self._read_owner()
         if owner is not None and owner != self.pid and self.is_alive(owner):
+            # Fails safe on pid reuse: if the recorded pid was recycled by an
+            # unrelated live process the lock reads as held, so we refuse a
+            # legitimate takeover. Refusing costs a rerun; guessing wrong the
+            # other way runs two drivers on one checkpoint.
             return f"another driver (pid {owner}) already holds {self.path}"
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps({"pid": self.pid, "started": self.now()}))
+        # Holder is dead (or the lock is unreadable): clear it and retry the
+        # atomic create exactly once. A driver that wins that race between our
+        # unlink and our create keeps the lock, and we refuse.
+        self.path.unlink(missing_ok=True)
+        if self._create():
+            return None
+        return f"another driver (pid {self._read_owner()}) already holds {self.path}"
+
+    def _create(self) -> bool:
+        """Atomically create the lock with our pid. False if it already exists."""
+        try:
+            fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            return False
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps({"pid": self.pid, "started": self.now()}))
         self.held = True
-        return None
+        return True
 
     def release(self) -> None:
         if not self.held:
@@ -297,7 +324,10 @@ class Driver:
         )
         refusal = lock.acquire()
         if refusal:
-            self._say(f"refusing to start: {refusal}")
+            # A refusal is as silent as a terminal exit otherwise: same notify.
+            message = f"shift-work refused to start: {refusal}"
+            self._say(message)
+            self._notify(message)
             return EXIT_LOCKED
         try:
             return self._loop()

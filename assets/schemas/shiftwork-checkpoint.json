@@ -137,6 +137,7 @@
     "history": {
       "type": "array",
       "description": "Ring buffer, last 5 units only — the full record is git plus the ledger.",
+      "maxItems": 5,
       "items": {
         "type": "object",
         "required": ["unit", "outcome"],

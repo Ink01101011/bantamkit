@@ -59,7 +59,10 @@ free-text annotation space.
    working tree at clock-in; a mismatch escalates, it never fixes forward.
 5. **`state.external`.** Detached processes, PRs, CI — world-state git cannot
    witness. `until_cmd` makes each one machine-checkable (exit 0 = met), so
-   the driver can wait on things it does not understand.
+   the driver can wait on things it does not understand. Only `status:
+   running` entries are waited on, so a session must move an external off
+   `running` (or drop it) once it stops gating work — a finished process left
+   marked `running` stalls the loop until the wait times out and escalates.
 6. **`handoff.do_not`.** Negative space transfers worst across sessions, so it
    is a first-class field, not prose buried in notes.
 7. **`handoff.open_questions` is the autonomy switch.** Empty = the driver
@@ -125,7 +128,7 @@ and testable, and means the driver cannot smuggle state past the checkpoint.
 | 0 | SUCCESS | Every unit `done` or `dropped` |
 | 10 | ESCALATE | `open_questions` non-empty, unusable checkpoint, dangling cursor, unknown role, or an external wait that timed out |
 | 20 | BUDGET | Session cap or wall-clock cap hit |
-| 30 | STALLED | `max_retries` sessions on one cursor with no hash delta |
+| 30 | STALLED | `max_retries` + 1 sessions on one cursor with no hash delta (the first try, then every retry) |
 | 40 | (refusal) | Another live driver holds `driver.lock` — not a loop outcome |
 
 All four loop exits are terminal and notify: the driver never "handles" a
