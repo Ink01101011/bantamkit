@@ -102,7 +102,8 @@ Two details make that comparison fair rather than flattering:
 
 So `full` stacks all three primitives on one run — see
 [Current results](#current-results) for whether that stack earns its bill
-(on the current suite, `lean` does the same work for 29% fewer tokens).
+(on the current suite, `full` is the only 60/60 config; `lean` reaches
+56/60 for 46% fewer tokens).
 
 `lean` exists to answer one question: how much of `full`'s token bill is the
 critique gate? `lean` runs the same agent loop with memory and `SchemaGate`
@@ -256,6 +257,7 @@ What the sweep says:
   `price_lookup({"item": "widget"}) -> widget price: 25` recomputes the
   total, rejects the wrong one, and the model repairs it in one round
   (rounds per run: 1, 2, 1). The blind critic in `critique` and `full`
+  (the blind-critic `full` of that sweep — since swapped, see below)
   accepted the wrong total in all six of their runs. That makes
   shop-basket-total the suite's first non-memory discriminator — **two
   families now discriminate** (9 memory-recall, 2 tool-use), meeting the
