@@ -109,7 +109,6 @@ def test_run_task_explicit_failure_recorded_not_raised(tmp_path):
 
 
 CONTACT = '{"name": "Ann Chen", "email": "ann.chen@example.com"}'
-GOOD_VERDICT = '{"score": 9, "feedback": "looks good"}'
 GROUNDED_VERDICT = '{"reasoning": "checked against evidence", "score": 9, "feedback": "ok"}'
 
 
