@@ -554,7 +554,8 @@ def test_lean_config_seeds_memory_store(tmp_path):
 
 
 def test_configs_matrix():
-    assert CONFIGS == ["bare", "structured", "critique", "grounded", "memory", "lean", "full"]
+    expected = ["bare", "structured", "critique", "grounded", "graph", "memory", "lean", "full"]
+    assert CONFIGS == expected
 
 
 def test_cli_timeout_flag_reaches_client(monkeypatch):
@@ -868,6 +869,74 @@ def test_grounded_config_critic_sees_tool_evidence(tmp_path):
     critic_prompt = client.calls[2]["messages"][-1].content
     assert 'price_lookup({"item": "widget"})' in critic_prompt
     assert result.passed is True
+
+
+def workspace_task(**overrides):
+    task = {
+        "name": "nav-fixture",
+        "family": "file-nav",
+        "tools": ["read_file", "list_files"],
+        "workspace": {"notes/a.md": "alpha", "b.txt": "bravo"},
+        "prompt": 'Answer with ONLY this JSON, nothing else: {"x": 1}',
+        "scoring": {"kind": "json_equal", "expected": {"x": 1}},
+    }
+    task.update(overrides)
+    return task
+
+
+def test_workspace_read_file_and_list_files(tmp_path):
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("list_files", {})]),
+            assistant(tool_calls=[call("read_file", {"path": "notes/a.md"}, id="c2")]),
+            assistant(content='{"x": 1}'),
+        ]
+    )
+    result = run_task(client, workspace_task(), "bare", tmp_path)
+    assert result.passed is True
+    listing = client.calls[1]["messages"][-1].content
+    assert "b.txt" in listing and "notes/a.md" in listing
+    assert client.calls[2]["messages"][-1].content == "alpha"
+
+
+def test_workspace_read_file_unknown_path_error(tmp_path):
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("read_file", {"path": "nope.txt"})]),
+            assistant(content='{"x": 1}'),
+        ]
+    )
+    run_task(client, workspace_task(), "bare", tmp_path)
+    obs = client.calls[1]["messages"][-1].content
+    assert obs.startswith("error: unknown file 'nope.txt'")
+    assert "b.txt" in obs and "notes/a.md" in obs
+
+
+def test_graph_config_collapses_repeat_read(tmp_path):
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("read_file", {"path": "notes/a.md"})]),
+            assistant(tool_calls=[call("read_file", {"path": "notes/a.md"}, id="c2")]),
+            assistant(content='{"x": 1}'),
+        ]
+    )
+    result = run_task(client, workspace_task(), "graph", tmp_path)
+    assert result.passed is True
+    assert client.calls[1]["messages"][-1].content == "alpha"
+    second = client.calls[2]["messages"][-1].content
+    assert second.startswith("[file-graph]") and "alpha" not in second
+    assert "file_graph" in [t.name for t in client.calls[0]["tools"]]
+
+
+def test_graph_config_is_noop_without_workspace_tools(tmp_path):
+    client = FakeClient([assistant(content="The total stock value is 100.")])
+    result = run_task(client, get_task("shop-total"), "graph", tmp_path)
+    assert result.passed is True
+    assert "file_graph" not in [t.name for t in client.calls[0]["tools"]]
+
+
+def test_graph_config_in_configs():
+    assert "graph" in CONFIGS
 
 
 RECALL_TASKS = sorted(t["name"] for t in load_tasks() if t["family"] == "memory-recall")

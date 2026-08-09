@@ -10,6 +10,7 @@ import jsonschema
 import yaml
 
 from bantamkit.assets import assets_root
+from bantamkit.evalrun import load_tasks
 
 SKILL_BUDGET_BYTES = 6000  # "kept to a page"
 SCORING_KINDS = {"json_equal", "contains", "tool_trace"}
@@ -59,7 +60,8 @@ def test_eval_tasks_are_valid():
         assert task["scoring"]["kind"] in SCORING_KINDS
         assert "expected" in task["scoring"]
         # Validate tools
-        assert set(task.get("tools", [])) <= {"price_lookup", "stock_lookup"}
+        allowed_tools = {"price_lookup", "stock_lookup", "read_file", "list_files"}
+        assert set(task.get("tools", [])) <= allowed_tools
         # Validate scoring expected shape per kind
         scoring_kind = task["scoring"]["kind"]
         expected = task["scoring"]["expected"]
@@ -108,3 +110,16 @@ def test_eval_fixture_catalog_shape():
     assert catalog["widget"]["price"] * catalog["widget"]["stock"] == 100
     assert catalog["gadget"]["price"] > catalog["widget"]["price"]  # shop-cheapest depends on it
     assert catalog["gadget"]["price"] * catalog["gadget"]["stock"] == 540  # shop-gadget-value
+
+
+def test_workspace_tasks_are_well_formed():
+    """Tasks using the workspace file tools carry a valid workspace; others carry none."""
+    for task in load_tasks():
+        uses_workspace = any(t in ("read_file", "list_files") for t in task.get("tools", []))
+        if not uses_workspace:
+            assert "workspace" not in task, task["name"]
+            continue
+        ws = task["workspace"]
+        assert isinstance(ws, dict) and ws, f"{task['name']}: workspace must be non-empty"
+        assert all(isinstance(k, str) and isinstance(v, str) for k, v in ws.items()), task["name"]
+        assert task["family"] == "file-nav", task["name"]
