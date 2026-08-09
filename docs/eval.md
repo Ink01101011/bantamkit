@@ -23,6 +23,7 @@ harness configurations against the same endpoint.
 | `--repeats` | no | Runs per (config, task) pair. Default: 1. Repeats narrow the run-to-run noise band and are how candidate tasks are calibrated |
 | `--tasks` | no | Directory of task YAML files to run instead of the builtin suite |
 | `--json` | no | Append one JSON line per finished run (all `TaskResult` fields) to this file as the sweep progresses — a killed sweep keeps its partial results |
+| `--transcripts` | no | Dump one `<config>--<task>--r<repeat>.json` per finished run into this directory (created if missing): the run's verdict, final output and full message list. This is how a failure gets diagnosed after the sweep instead of by re-running it |
 
 Narrow it while iterating:
 
@@ -170,8 +171,13 @@ Three further sections appear when the results give them something to say:
 - **Failure outcomes** — non-pass runs classified: `wrong-answer` (content
   wrong), `malformed-output` (a `json_equal` task whose output was not
   parseable JSON), `schema-exhausted` / `critique-exhausted` (a gate spent its
-  budget), `config-error`, `transport-error`. Content-wrong and format-broken
-  have opposite remedies, so they are never lumped together.
+  budget), `turns-exhausted` (the agent loop hit `max_turns` without producing
+  a final answer — agent behaviour, not infrastructure), `config-error`,
+  `transport-error`. Content-wrong and format-broken
+  have opposite remedies, so they are never lumped together. `turns-exhausted`
+  was split out of `transport-error` after v0.8.0; sweeps recorded before that
+  file turn exhaustion under `transport-error`, and their JSONLs are not
+  rewritten.
 - **Discriminating tasks** — a pass-fraction grid over tasks that at least one
   run failed. A task counts as *discriminating* when at least one config passed
   all its runs and at least one passed none: those are the tasks that separate
@@ -186,6 +192,25 @@ before drawing conclusions.
 
 Scores move between runs unless the endpoint is deterministic (temperature 0,
 fixed seed). Compare configs within one sweep, not across sweeps.
+
+### Seeds
+
+Each run sends a deterministic sampling seed, `run_seed(model, task, repeat)` —
+a truncated SHA-256 of those three, so it is stable across processes and
+machines — and records it as `seed` in the `--json` row and the transcript.
+
+- **What is pinned:** the seed, per (model, task, repeat). **Config is
+  deliberately excluded**, so `bare` and `graph` sample identically on the same
+  (task, repeat) and an off-family no-op check is exact-equality-falsifiable
+  again rather than a similarity argument.
+- **What is not:** temperature. Pinning it would change what the suite
+  measures — the harness is evaluated at the server's own sampling settings.
+- **The honesty bound:** llama.cpp and Ollama under concurrent load are not
+  bit-deterministic even with a seed. The invariant is *replayable modulo
+  server nondeterminism*: hold exact equality where it holds, and investigate a
+  divergence rather than waving it through as noise.
+- `seed` is `null` for clients that do not accept one, and absent from JSONLs
+  written before v0.8.1. A seed the server ignored is not recorded as applied.
 
 ## Current results
 
