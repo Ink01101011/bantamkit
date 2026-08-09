@@ -14,7 +14,7 @@ from pathlib import Path
 
 import yaml
 
-from bantamkit.agent import Agent, ToolDef
+from bantamkit.agent import Agent, MaxTurnsExceeded, ToolDef
 from bantamkit.assets import assets_root
 from bantamkit.client import BantamError, Message, ModelClient, OpenAICompatible, Tool, Usage
 from bantamkit.contract import schema_error, schema_instruction, schema_retry_feedback
@@ -240,6 +240,7 @@ OUTCOMES = [
     "malformed-output",
     "schema-exhausted",
     "critique-exhausted",
+    "turns-exhausted",
     "config-error",
     "transport-error",
 ]
@@ -261,6 +262,11 @@ def classify_outcome(
         return "schema-exhausted"
     if isinstance(error, CritiqueExhausted):
         return "critique-exhausted"
+    if isinstance(error, MaxTurnsExceeded):
+        # Agent behaviour, not infrastructure. Before the generic branch below, which
+        # would otherwise file turn exhaustion under `transport-error` and point the
+        # diagnosis at the server (P7 — all 10 of the 3b sweep's "transport errors").
+        return "turns-exhausted"
     if error is not None:
         return "transport-error"
     if task["scoring"]["kind"] == "json_equal":

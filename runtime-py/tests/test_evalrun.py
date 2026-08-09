@@ -981,6 +981,45 @@ def test_ablation_configs_are_choices_but_not_in_configs():
     assert "graph-annotate" not in CONFIGS and "graph-cache" not in CONFIGS
 
 
+# ---- P7: turns-exhausted ----
+
+
+def test_outcome_turns_exhausted_not_transport_error(tmp_path):
+    """Turn exhaustion is agent behaviour; filing it under transport blames the server."""
+
+    class NeverAnswers:
+        """Always calls a tool, never gives a final answer — the agent runs out of turns."""
+
+        def chat(self, messages, tools=None):
+            return assistant(tool_calls=[call("price_lookup", {"item": "widget"})])
+
+    result = run_task(NeverAnswers(), get_task("shop-cheapest"), "bare", tmp_path)
+    assert result.passed is False
+    assert result.outcome == "turns-exhausted"
+    assert "MaxTurnsExceeded" in result.error
+
+
+def test_outcome_transport_error_still_classifies_transport(tmp_path):
+    from bantamkit.client import TransportError
+
+    class Boom:
+        def chat(self, messages, tools=None):
+            raise TransportError("chat failed after 3 attempts")
+
+    result = run_task(Boom(), get_task("extract-contact"), "bare", tmp_path)
+    assert result.outcome == "transport-error"
+
+
+def test_classify_outcome_maps_max_turns_to_its_own_bucket():
+    from bantamkit.agent import MaxTurnsExceeded
+    from bantamkit.evalrun import OUTCOMES, classify_outcome
+
+    task = {"scoring": {"kind": "contains", "expected": ["x"]}}
+    outcome = classify_outcome(task, False, None, MaxTurnsExceeded("no final answer"))
+    assert outcome == "turns-exhausted"
+    assert outcome in OUTCOMES
+
+
 # ---- P8: --transcripts ----
 
 
