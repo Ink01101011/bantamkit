@@ -40,33 +40,41 @@ print(result.output, result.usage.total)
 
 ## Recommended defaults
 
-Measured on the bundled 22-task suite (`qwen3:4b-instruct`, 3 repeats — full
-tables in [Eval → Current results](docs/eval.md#current-results)):
+Measured on the bundled 22-task suite across **four models** —
+`llama3.2:3b`, `qwen3:4b-instruct` (reference), `qwen2.5:7b-instruct`,
+`qwen2.5:14b-instruct`; 528 runs each, frozen suite — full tables and the
+per-claim transfer table in
+[Eval → Cross-model results](docs/eval.md#cross-model-results):
 
-- **Always attach `Memory`** — the biggest single mover on this suite
-  (30/66 → 57/66).
-- **Attach `FileAccessGraph` when the agent reads files** — it rescued both
-  file-nav tasks 0/3 → 3/3 — its whole uplift cost +26% tokens
-  suite-wide over bare — and measures as an
-  exact no-op on tasks without file tools. Caveat measured honestly: its
-  ledger is not a relevance oracle (a stale-config trap task got *worse*
-  with it — recorded in the eval docs).
-- **Use `structured()` when you need schema'd output** — enforcement costs
-  nothing extra when the model complies; on this model it never needed a
-  retry in six sweeps.
-- **Skip the blind `CritiqueGate` on small instruct models** — its one
-  measured uplift (file-nav format repair, 30/66 → 36/66) is the same six
-  passes `graph` buys at half the total bill. Attach a critique gate only
-  with a rubric that catches failures you have actually observed, and
-  prefer instruct over thinking model variants when you do.
-- **`full` (memory + schema + grounded critique) measures 66/66** — the
-  only perfect config, at double `lean`'s tokens (`lean` 57/66). Pay it
-  when correctness matters more than tokens.
+- **Always attach `Memory`** — the biggest single mover on every model
+  measured (e.g. 30/66 → 57/66 on the 4b reference, 34/66 → 59/66 on
+  14b). How *much* of the recall family it rescues scales with model size
+  (6/27 on 3b → 27/27 on 4b); the gap is contract wording, not the store
+  — tracked as problems P1/P4 in the eval docs.
+- **Skip the blind `CritiqueGate` on small instruct models** — on all
+  four models it buys ≤6 passes at 2–3.5× bare's tokens. Attach a
+  critique gate only with a rubric that catches failures you have
+  actually observed, and prefer instruct over thinking variants.
+- **Use `structured()` when you need schema'd output** — enforcement
+  costs nothing when the model complies: zero schema retries in 2,112
+  runs across all four models, and on 7b/14b it is the *most*
+  token-efficient config in the matrix.
+- **Attach `FileAccessGraph` when the agent reads files — on ~4B-class
+  models** — it rescued both file-nav tasks 0/3 → 3/3 at +26% tokens on
+  the reference. Scope measured honestly: below that class the model
+  can't exploit the ledger (3b: 1/6 → 2/6), above it the tasks saturate
+  under `bare` (7b/14b: 5/6). Off-family it is a code-level no-op; exact
+  score equality additionally requires seed pinning (problem P9).
+- **`full` (memory + schema + grounded critique) is a 4b-reference
+  result** — 66/66 there, the only perfect config. It does not transfer
+  yet: 15/66 at 8.9× bare's tokens on 3b, 36/66 on 7b, and on 14b it ties
+  plain `memory` at +77% tokens. The blocker is one measured defect — the
+  critic's verdict contract is 4b-calibrated (P2) — with a planned fix
+  (tiered contract + constrained decoding), not a fundamental limit.
 - **Prefer `GroundedCritiqueGate` over `CritiqueGate` when the agent has
-  tools** — the critic sees tool call/observation pairs, letting it verify
-  facts the agent got from tools. Measured: it rescued the tool-arithmetic
-  task 3/3 that every other config — the blind critic included — failed 0/3
-  (see [Eval](docs/eval.md)).
+  tools — same 4b scope** — the critic sees tool call/observation pairs
+  and rescued the tool-arithmetic task 3/3 that every other config failed
+  0/3. Cross-model it is gated on the same P2 fix.
 
 Copy-paste start: [`examples/`](examples/).
 

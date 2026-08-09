@@ -103,8 +103,9 @@ Two details make that comparison fair rather than flattering:
 
 So `full` stacks all three primitives on one run — see
 [Current results](#current-results) for whether that stack earns its bill
-(on the current suite, `full` is the only 66/66 config; `lean` reaches
-57/66 for 50% fewer tokens).
+(on the current suite, `full` is the only 66/66 config on the 4b
+reference — [Cross-model results](#cross-model-results) for where that
+does and does not transfer; `lean` reaches 57/66 for 50% fewer tokens).
 
 `lean` exists to answer one question: how much of `full`'s token bill is the
 critique gate? `lean` runs the same agent loop with memory and `SchemaGate`
@@ -772,6 +773,219 @@ is still a non-deterministic endpoint, though: zero observed variance at 3
 repeats is not a guarantee of determinism, and nothing here is reproducible
 run-for-run on another day or another server. Compare configs within one
 sweep, not across sweeps.
+
+## Cross-model results
+
+The reference sweep above is one model. This section re-runs the **frozen
+v0.7.0 suite** — same 22 tasks, same rubrics, same prompts, same eight
+configs, 3 repeats, 528 runs per model — on three more models, and re-scopes
+every Recommended-defaults claim to the models it actually holds on
+(spec: `docs/superpowers/specs/2026-08-09-cross-model-sweep-design.md`).
+The suite was frozen before measuring: a model that fails a task or rubric
+is a data point, not a bug, and nothing was tuned per model.
+
+| model | class | evidence |
+|---|---|---|
+| `llama3.2:3b` | cross-family, small end | `docs/eval-data/2026-08-09-crossmodel-llama32-3b.jsonl` |
+| `qwen3:4b-instruct` | reference (reused, not re-run) | `docs/eval-data/2026-08-09-filegraph-sweep.jsonl` |
+| `qwen2.5:7b-instruct` | size up, near-family | `docs/eval-data/2026-08-09-crossmodel-qwen25-7b.jsonl` |
+| `qwen2.5:14b-instruct` | ceiling reference, outside the 1–8B target band | `docs/eval-data/2026-08-09-crossmodel-qwen25-14b.jsonl` |
+
+### Per-model summaries
+
+`llama3.2:3b` — everything is hard for this model, and the critique-family
+configs are actively harmful:
+
+| config | score | tokens | score/1k tok |
+|---|---|---|---|
+| bare | 14/66 | 24145 | 0.58 |
+| structured | 18/66 | 37080 | 0.49 |
+| critique | 17/66 | 83382 | 0.20 |
+| grounded | 13/66 | 168109 | 0.08 |
+| graph | 19/66 | 40360 | 0.47 |
+| memory | 24/66 | 52949 | 0.45 |
+| lean | 24/66 | 68791 | 0.35 |
+| full | 15/66 | 214698 | 0.07 |
+
+`memory` is still the best config (24/66), but recall with a store reaches
+only 6/27. `full` collapses: 214,698 tokens — 8.9× `bare`'s bill — for one
+more pass than `bare`, with `schema-exhausted` ×22 (the critic's verdict
+contract failing, not the tasks). `grounded` lands *below* `bare` (13 vs
+14). See P2/P3 in Measured problems.
+
+`qwen2.5:7b-instruct` — competent baseline, but the answer-format contract
+starts costing real passes:
+
+| config | score | tokens | score/1k tok |
+|---|---|---|---|
+| bare | 35/66 | 34059 | 1.03 |
+| structured | 33/66 | 25980 | 1.27 |
+| critique | 36/66 | 68272 | 0.53 |
+| grounded | 24/66 | 93854 | 0.26 |
+| graph | 31/66 | 37360 | 0.83 |
+| memory | 44/66 | 139385 | 0.32 |
+| lean | 44/66 | 141207 | 0.31 |
+| full | 36/66 | 205402 | 0.18 |
+
+`memory`/`lean` lead at 44/66, but recall with a store is only 9–12/27,
+and `memory`/`lean`/`full` each lose 13–16 runs to `malformed-output` —
+the "answer with ONLY this JSON" convention that 4b obeys is a measurable
+tax on 7b (P4). `grounded` is strongly net-negative (24 vs bare 35;
+`schema-exhausted` ×10). `structured` is the efficiency winner (1.27/1k).
+
+`qwen2.5:14b-instruct` — the ceiling reference mostly saturates the
+non-recall families:
+
+| config | score | tokens | score/1k tok |
+|---|---|---|---|
+| bare | 34/66 | 32426 | 1.05 |
+| structured | 36/66 | 25958 | 1.39 |
+| critique | 34/66 | 69501 | 0.49 |
+| grounded | 34/66 | 93029 | 0.37 |
+| graph | 36/66 | 25443 | 1.42 |
+| memory | 59/66 | 73130 | 0.81 |
+| lean | 55/66 | 79353 | 0.69 |
+| full | 59/66 | 129772 | 0.46 |
+
+`memory` and `full` tie at 59/66 — `full`'s critique layer buys nothing
+here for +77% tokens over `memory`. Recall with a store reaches 23/27.
+Both critique configs price in at 2–2.9× `bare` for exactly `bare`'s
+score. `graph` and `structured` are the efficiency winners (~1.4/1k).
+
+### The recall story across models
+
+The project's core claim — recall goes ~0/27 without a store to ~27/27
+with one — turns out to **scale with model size** rather than transfer
+flat:
+
+| | 3b | 4b (ref) | 7b | 14b |
+|---|---|---|---|---|
+| memory-recall, storeless (`bare`) | 0/27 | 0/27 | 0/27 | 0/27 |
+| memory-recall, with store (`memory`) | 6/27 | 27/27 | 9/27 | 23/27 |
+
+The floor is universal (no model passes recall without a store — the tasks
+measure what they claim). The rescue is not: 3b retrieves but answers
+wrong (P1), and 7b loses most of its gap to `malformed-output` on the
+exact-JSON answer convention (P4), scoring *below* the smaller 4b. The
+numbers say the store mechanism works everywhere and the surrounding
+contract wording is what's 4b-calibrated.
+
+### Claims-transfer table
+
+Every README Recommended-defaults bullet, against every model. "Holds" =
+the guidance as written is what you should do on that model.
+
+| claim | 3b | 4b (ref) | 7b | 14b |
+|---|---|---|---|---|
+| Always attach `Memory` | **holds** — biggest mover, +10 (14→24), but recall only 6/27 | **holds** (+27, 30→57) | **holds** — biggest mover, +9 (35→44), recall 9/27 | **holds** (+25, 34→59, recall 23/27) |
+| Attach `FileAccessGraph` for file work | **does not hold** — file-nav 1/6→2/6, nothing rescues it | **holds** (0/6→6/6, +26% tokens) | **does not hold** — bare already 5/6 (saturated) | **does not hold** — bare already 5/6 (saturated) |
+| `structured()` is free when the model complies | **holds** — `schema_retries=0` | **holds** — `schema_retries=0` | **holds** — 0 retries, best score/1k (1.27) | **holds** — 0 retries, 2nd-best score/1k (1.39) |
+| Skip the blind `CritiqueGate` | **holds** — +3 at 3.5× tokens | **holds** — +6 at 2.6× tokens | **holds** — +1 at 2.0× tokens | **holds** — ±0 at 2.1× tokens |
+| `full` measures 66/66 | **does not hold** — 15/66 at 8.9× bare tokens | **holds** (66/66) | **does not hold** — 36/66 | **does not hold** — 59/66, ties `memory` at +77% tokens |
+| Prefer `GroundedCritiqueGate` with tools | **does not hold** — 13/66 < bare 14/66 | **holds** — rescued shop-basket-total 0/3→3/3 | **does not hold** — 24/66 < bare 35/66 | **does not hold** — 34/66 = bare at 2.9× tokens |
+
+Two claims survive all four models unqualified (`Memory` as the biggest
+single mover; skip the blind critic — now *stronger* cross-model). One
+survives as exactly-as-written on all four (`structured()`: zero schema
+retries in 2,112 runs across four models). Three are 4b-scoped:
+`FileAccessGraph`'s value window is the ~4B class (below it the model
+can't use the ledger, above it the tasks saturate — spec prediction 3
+confirmed for file-nav), and both critique-dependent claims (`full`,
+grounded) are blocked cross-model by the verdict-contract failure (P2).
+
+### Prediction scorecard (spec §2.3, written before measuring)
+
+1. **Memory transfers** — *partially confirmed.* The mover claim holds on
+   all four models; the ~27/27 magnitude claim is refuted (6/27 on 3b,
+   9/27 on 7b, 23/27 on 14b). Re-scoped into problems P1 and P4, not into
+   a smaller claim.
+2. **Structured tax holds** — *confirmed, and on 3b too.*
+   `schema_retries = 0` in all 2,112 runs; SchemaGate's retry loop has
+   still never fired on any model.
+3. **Saturation on the big end** — *confirmed for file-nav* (7b/14b pass
+   5/6 under `bare`). shop-basket-total saturates on 7b (`bare` 3/3) but
+   stays flaky on 14b (`bare` 1/3) with no config rescuing it there.
+4. **Critique risk on the small end** — *confirmed, worse than predicted.*
+   3b `full` is a score *collapse* (15/66 at 214k tokens), and `grounded`
+   lands below `bare` on both 3b and 7b.
+5. **Graph no-op check is structural** — *reframed.* Off-family, `graph`
+   diverged from `bare` in 8/20 cells (3b), 3/20 (7b) and 4/20 (14b),
+   with zero on 4b. This is **sampling variance, not leakage**: the
+   harness pins no temperature or seed (verified — neither `client.py`
+   nor `evalrun.py` sends either), and the off-family code path is
+   provably identical (`FileAccessGraph` only attaches workspace tools
+   when the task lists them; per-cell diffs are symmetric, both
+   directions). The prediction's exact-equality framing over-assumed
+   determinism; 4b's 0/20 was a peaked output distribution, i.e. luck.
+   The honest form of the check is code-level wiring plus statistical
+   similarity — until P9 (seed pinning) restores exact equality's teeth.
+
+### Measured problems → attack plan
+
+Frozen-suite rules mean none of this was patched mid-sweep. Each negative
+becomes a problem with an owner-fix, ordered; the layer names refer to the
+5-layer model (core / contract / transport / policy / composition) that
+the next cycle makes physical:
+
+- **P8 — no post-hoc transcripts.** `evalrun` discards transcripts, so
+  failures like P1 can't be probed after the fact. Fix: `--transcripts
+  DIR`. (Measurement. First, because every other diagnosis needs it.)
+- **P7 — MaxTurnsExceeded counted as `transport-error`.** The 3b sweep's
+  transport-error column mixes real timeouts with turn exhaustion.
+  Deliberately left frozen mid-sweep for JSONL consistency; fix is a
+  taxonomy split. (Measurement.)
+- **P9 — no temperature/seed pinning.** Cause of the no-op check reframe
+  above. Fix: deterministic seed = stable hash(model, task, config,
+  repeat) passed as client options, recorded in the JSONL; `bare`/`graph`
+  share the seed per (task, repeat) so exact equality becomes meaningful
+  again. Limit: llama.cpp under concurrency is not bit-deterministic —
+  "replayable modulo server nondeterminism". (Transport + Measurement.)
+- **P2 — the critic's verdict contract is 4b-calibrated.** Verdict
+  parsing (`reasoning`-first JSON) dies cross-model: `schema-exhausted`
+  ×22/×17 on 3b `full`/`grounded`, ×15/×10 on 7b. Every critique-family
+  negative above routes through this. Fix: tiered contract — decode-level
+  constrained decoding where the server supports `format` (capability
+  detection in transport), else prompt+parse, else repair-retry — instead
+  of per-model prompt forks. (Contract + Transport; the headline fix
+  candidate of the restructure cycle.)
+- **P1 — 3b recalls but answers wrong.** Store content reaches the
+  context; the answer still fails. Needs P8 transcripts to split
+  retrieval failure from synthesis failure before choosing a fix.
+  (Contract, probably.)
+- **P4 — exact-JSON answer compliance tax on 7b.** `malformed-output`
+  ×13–16 in `memory`/`lean`/`full`. Fix candidate: answer-side repair
+  tier (same ladder as P2). (Contract.)
+- **P6 — 3b file-nav dies on turn budget.** `max_turns=10` is itself a
+  4b-calibrated constant. Fix: per-profile turn budgets. (Policy.)
+- **P3 — no global token ceiling.** 3b `full`: 214,698 tokens for 15/66 —
+  every gate has a local cap but composition multiplies them. Fix:
+  `TokenBudget` primitive — soft degradation ladder + hard ceiling that
+  still emits a scored best-effort answer. (Core mechanics + Policy
+  numbers; attack after P2/P4 so the remaining real blowup is measured,
+  not the contract-retry waste.)
+
+(P5 — tool-use uplift on non-4b models — is not separately actionable: it
+is P2's shadow. Grounded critique can't rescue tool tasks on a model
+whose verdicts it can't parse.)
+
+### What this means for the architecture
+
+The cross-model failures cluster in one place: **wording and parsing that
+talk to the model** (verdict contract, exact-JSON answer convention,
+schema instruction) — all of it currently inlined inside core files and
+all of it implicitly 4b-calibrated. The mechanics underneath (store,
+gates' control flow, ledger, accounting) transfer fine — the recall floor
+table above is the cleanest evidence. That is the case for the layer
+split (core / contract / transport / policy / composition) becoming
+physical structure: contract code moves out of core so it can be improved
+per the P2/P4 ladder without touching proven mechanics, and tunables like
+`max_turns` become profile data. The restructure is the next cycle;
+P1–P9 land after it, into the separated layers.
+
+Caveat, as for every sweep here: non-deterministic endpoint, no seed
+pinning yet (P9), 3 repeats. Compare configs within one sweep, not across
+sweeps; treat single-cell differences as noise unless they repeat across
+models.
 
 ## Add a task
 
