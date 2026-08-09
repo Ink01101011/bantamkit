@@ -58,6 +58,7 @@ Each config is the same tasks with a different harness wrapped around them.
 | `structured` | Tasks with a `schema` bypass the loop and go through `structured()` |
 | `critique` | A `CritiqueGate` on the `task-completion` rubric scores each answer |
 | `grounded` | `GroundedCritiqueGate` only — the critic sees tool call/observation pairs; isolates the evidence effect vs `critique` |
+| `graph` | `FileAccessGraph` on tasks with workspace file tools — repeat-read annotation, verify-on-repeat cache, `file_graph` query tool |
 | `memory` | Tasks with `memory_setup` get a seeded `Memory` store attached |
 | `lean` | memory + schema enforcement inside the agent loop — `full` without the critique gate |
 | `full` | memory + schema + `GroundedCritiqueGate` (evidence-seeing critic), all inside the agent loop |
