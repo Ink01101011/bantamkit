@@ -960,10 +960,10 @@ the next cycle makes physical:
   Deliberately left frozen mid-sweep for JSONL consistency; fix is a
   taxonomy split. (Measurement.)
 - **P9 — no temperature/seed pinning.** Cause of the no-op check reframe
-  above. Fix: deterministic seed = stable hash(model, task, config,
-  repeat) passed as client options, recorded in the JSONL; `bare`/`graph`
-  share the seed per (task, repeat) so exact equality becomes meaningful
-  again. Limit: llama.cpp under concurrency is not bit-deterministic —
+  above. Fix: deterministic seed = stable hash(model, task, repeat) —
+  config deliberately excluded — passed as client options, recorded in
+  the JSONL; all configs of a (task, repeat) share the seed, so
+  `bare`-vs-`graph` exact equality becomes meaningful again. Limit: llama.cpp under concurrency is not bit-deterministic —
   "replayable modulo server nondeterminism". (Transport + Measurement.)
 - **P2 — the critic's verdict contract is 4b-calibrated.** Verdict
   parsing (`reasoning`-first JSON) dies cross-model: `schema-exhausted`
