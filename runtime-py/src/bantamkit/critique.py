@@ -65,11 +65,21 @@ def load_rubric(name: str) -> Rubric:
 
 def render_evidence(messages: list[Message], budget: int = 4096) -> str:
     """Tool call/observation pairs from a run's transcript, as critic-readable lines."""
-    observations = {m.tool_call_id: m.content for m in messages if m.role == "tool"}
     lines = []
-    for message in messages:
+    consumed: set[int] = set()
+    for position, message in enumerate(messages):
         for tc in message.tool_calls:
-            observation = observations.get(tc.id, "(no observation)")
+            observation = "(no observation)"
+            for later in range(position + 1, len(messages)):
+                candidate = messages[later]
+                if (
+                    later not in consumed
+                    and candidate.role == "tool"
+                    and candidate.tool_call_id == tc.id
+                ):
+                    observation = candidate.content
+                    consumed.add(later)
+                    break
             lines.append(f"{tc.name}({json.dumps(tc.arguments)}) -> {observation}")
     if not lines:
         return "(no tool calls were made)"

@@ -247,3 +247,21 @@ def test_grounded_gate_constructor_kwargs_reach_judge():
         agent.run("total?")
     critic_prompt = client.calls[2]["messages"][-1].content
     assert "[truncated" in critic_prompt
+
+
+def test_render_evidence_duplicate_ids_pair_in_order():
+    messages = [
+        Message(role="assistant", tool_calls=[call("f", {"n": 1})]),
+        Message(role="tool", content="first", tool_call_id="c1"),
+        Message(role="assistant", tool_calls=[call("f", {"n": 2})]),
+        Message(role="tool", content="second", tool_call_id="c1"),
+    ]
+    assert render_evidence(messages) == 'f({"n": 1}) -> first\nf({"n": 2}) -> second'
+
+
+def test_render_evidence_observation_before_call_does_not_pair():
+    messages = [
+        Message(role="tool", content="stray", tool_call_id="c1"),
+        Message(role="assistant", tool_calls=[call("f", {})]),
+    ]
+    assert render_evidence(messages) == 'f({}) -> (no observation)'
