@@ -17,6 +17,7 @@ from bantamkit.evalrun import (
     score_output,
 )
 from bantamkit.memory.store import MemoryStore
+from bantamkit.profile import load_profile
 
 
 def get_task(name):
@@ -1404,3 +1405,197 @@ def test_gate_raised_transcript_stays_empty_without_a_messages_attribute(tmp_pat
     )
     assert result.outcome == "schema-exhausted"
     assert read_transcript(transcripts, "structured", "extract-contact")["messages"] == []
+
+
+# ---- P6: --eval-profile threads explicit constructor args ----
+
+
+class NeverAnswers:
+    """Always calls a tool, never gives a final answer — the run dies of turn exhaustion."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def chat(self, messages, tools=None):
+        self.calls += 1
+        return assistant(tool_calls=[call("price_lookup", {"item": "widget"})])
+
+
+def test_no_profile_keeps_the_default_turn_budget(tmp_path):
+    client = NeverAnswers()
+    result = run_task(client, get_task("shop-cheapest"), "bare", tmp_path)
+    assert result.outcome == "turns-exhausted" and client.calls == 10
+
+
+def test_patient_profile_max_turns_reaches_the_agent(tmp_path):
+    client = NeverAnswers()
+    result = run_task(
+        client, get_task("shop-cheapest"), "bare", tmp_path, profile=load_profile("patient")
+    )
+    assert result.outcome == "turns-exhausted" and client.calls == 16
+
+
+def test_profile_critique_rounds_reach_the_gate(tmp_path):
+    """Profile threading is not agent-only: gates get explicit args too."""
+    profile = load_profile()
+    profile["critique"]["max_rounds"] = 1
+    bad_verdict = '{"score": 2, "feedback": "still wrong"}'
+    client = FakeClient([assistant(content="answer one"), assistant(content=bad_verdict)])
+    result = run_task(client, get_task("recall-owner"), "critique", tmp_path, profile=profile)
+    assert result.outcome == "critique-exhausted"
+    assert result.critique_rounds == 0  # max_rounds=1: the first violation raises
+
+
+def test_run_suite_threads_the_profile_to_every_task(tmp_path, monkeypatch):
+    taskdir = tmp_path / "tasks"
+    taskdir.mkdir()
+    (taskdir / "tiny.yaml").write_text(TINY_TASK)
+    seen = {}
+
+    def spy(client, task, config, workdir, transcripts_dir=None, repeat=0, profile=None):
+        seen["profile"] = profile
+        return make_result()
+
+    monkeypatch.setattr(evalrun, "run_task", spy)
+    evalrun.run_suite(
+        FakeClient([]),
+        configs=["bare"],
+        workdir=tmp_path / "work",
+        tasks_dir=taskdir,
+        profile={"marker": True},
+    )
+    assert seen["profile"] == {"marker": True}
+
+
+def test_cli_eval_profile_flag_loads_and_reaches_run_suite(monkeypatch):
+    captured = {}
+
+    def fake_run_suite(client, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(evalrun, "OpenAICompatible", lambda **kw: object())
+    monkeypatch.setattr(evalrun, "run_suite", fake_run_suite)
+    monkeypatch.setattr(evalrun, "format_report", lambda results: "")
+    evalrun.main(["--base-url", "http://x", "--model", "m", "--eval-profile", "patient"])
+    assert captured["profile"]["agent"]["max_turns"] == 16
+
+
+def test_cli_without_eval_profile_sends_no_profile_kwarg(monkeypatch):
+    captured = {}
+
+    def fake_run_suite(client, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(evalrun, "OpenAICompatible", lambda **kw: object())
+    monkeypatch.setattr(evalrun, "run_suite", fake_run_suite)
+    monkeypatch.setattr(evalrun, "format_report", lambda results: "")
+    evalrun.main(["--base-url", "http://x", "--model", "m"])
+    assert "profile" not in captured
+
+
+def test_cli_unknown_eval_profile_fails_loudly(monkeypatch):
+    from bantamkit.assets import AssetNotFound
+
+    monkeypatch.setattr(evalrun, "OpenAICompatible", lambda **kw: object())
+    monkeypatch.setattr(evalrun, "run_suite", lambda client, **kw: [])
+    monkeypatch.setattr(evalrun, "format_report", lambda results: "")
+    with pytest.raises(AssetNotFound):
+        evalrun.main(["--base-url", "http://x", "--model", "m", "--eval-profile", "nope"])
+
+
+# ---- P3: the `budgeted` calibration config ----
+
+
+def budget_profile(ceiling, optional_cutoff=0.75):
+    profile = load_profile()
+    profile["token_budget"] = {"ceiling": ceiling, "optional_cutoff": optional_cutoff}
+    return profile
+
+
+def test_budgeted_is_a_choice_but_not_in_the_default_matrix():
+    assert "budgeted" in CONFIG_CHOICES and "budgeted" not in CONFIGS
+
+
+def test_budgeted_is_full_plus_a_budget(tmp_path):
+    """Same script as the `full` schema-retry test, same counters — only the label differs."""
+    client = FakeClient(
+        [
+            assistant(content='{"name": "Ann Chen"}'),  # missing email -> schema retry
+            assistant(content=CONTACT),
+            assistant(content=GROUNDED_VERDICT),
+        ]
+    )
+    result = run_task(client, get_task("extract-contact"), "budgeted", tmp_path)
+    assert result.config == "budgeted"
+    assert result.passed is True and result.outcome == "pass"
+    assert result.schema_retries == 1 and result.critique_rounds == 0
+    assert result.model_calls == 3
+
+
+def test_budgeted_skips_the_critic_past_the_cutoff(tmp_path):
+    """Also the ordering guard: a budget attached after the gate would never be asked."""
+    client = FakeClient([assistant(content=CONTACT)])  # no critic verdict is scripted
+    result = run_task(
+        client,
+        get_task("extract-contact"),
+        "budgeted",
+        tmp_path,
+        profile=budget_profile(ceiling=20, optional_cutoff=0.5),
+    )
+    assert result.passed is True and result.model_calls == 1
+
+
+def test_budget_exhausted_outcome_on_a_failed_truncated_run(tmp_path):
+    client = FakeClient(
+        [
+            assistant(content='{"name": "Ann Chen"}'),  # schema retry keeps the loop alive
+            assistant(content=CONTACT),  # never reached: the ceiling fires first
+        ]
+    )
+    result = run_task(
+        client,
+        get_task("extract-contact"),
+        "budgeted",
+        tmp_path,
+        profile=budget_profile(ceiling=10),
+    )
+    assert result.passed is False
+    assert result.outcome == "budget-exhausted"
+    assert result.model_calls == 1
+
+
+def test_a_budget_truncated_but_correct_answer_still_counts_pass(tmp_path):
+    """P7 lesson: the answer is scored first, so nothing swallows a scorable answer."""
+    client = FakeClient(
+        [
+            assistant(content='{"name": "Ann Chen"}', prompt_tokens=100),  # schema retry
+            assistant(content=CONTACT, prompt_tokens=100),  # correct, and past the ceiling
+        ]
+    )
+    result = run_task(
+        client,
+        get_task("extract-contact"),
+        "budgeted",
+        tmp_path,
+        profile=budget_profile(ceiling=200, optional_cutoff=0.5),
+    )
+    assert result.passed is True and result.outcome == "pass"
+    assert result.model_calls == 2
+
+
+def test_headline_configs_carry_no_budget(tmp_path):
+    """`full` is untouched: no governor, so no round is ever denied."""
+    client = FakeClient(
+        [
+            assistant(content=CONTACT, prompt_tokens=10_000),
+            assistant(content=GROUNDED_VERDICT),
+        ]
+    )
+    result = run_task(client, get_task("extract-contact"), "full", tmp_path)
+    assert result.passed is True and result.model_calls == 2
+
+
+def test_budget_exhausted_is_a_known_outcome():
+    assert "budget-exhausted" in evalrun.OUTCOMES

@@ -17,12 +17,14 @@ import yaml
 
 from bantamkit.agent import Agent, MaxTurnsExceeded, ToolDef
 from bantamkit.assets import assets_root
+from bantamkit.budget import TokenBudget
 from bantamkit.client import BantamError, Message, ModelClient, OpenAICompatible, Tool, Usage
 from bantamkit.contract import schema_error, schema_instruction, schema_retry_feedback
 from bantamkit.critique import CritiqueExhausted, CritiqueGate, GroundedCritiqueGate
 from bantamkit.filegraph import FileAccessGraph
 from bantamkit.memory import Memory, MemoryStore
 from bantamkit.profile import default as profile_default
+from bantamkit.profile import load_profile
 from bantamkit.structured import (
     JsonAnswerGate,
     StructuredOutputError,
@@ -125,8 +127,13 @@ GRAPH_CONFIGS = {
     "graph-cache": {"annotate": True, "cache": True, "query": False},
 }
 
+# Calibration-only too (same precedent as GRAPH_CONFIGS): each name maps to the headline
+# config it mirrors exactly, plus a TokenBudget. `budgeted` is `full` under a ceiling —
+# it earns a place in CONFIGS only once the calibration bars say the ceiling holds.
+BUDGET_CONFIGS = {"budgeted": "full"}
+
 # Every config name run_task accepts: the permanent matrix plus calibration-only ablations.
-CONFIG_CHOICES = CONFIGS + sorted(set(GRAPH_CONFIGS) - set(CONFIGS))
+CONFIG_CHOICES = CONFIGS + sorted((set(GRAPH_CONFIGS) | set(BUDGET_CONFIGS)) - set(CONFIGS))
 
 
 # ---- suite ----
@@ -266,13 +273,18 @@ OUTCOMES = [
     "schema-exhausted",
     "critique-exhausted",
     "turns-exhausted",
+    "budget-exhausted",
     "config-error",
     "transport-error",
 ]
 
 
 def classify_outcome(
-    task: dict, passed: bool, output: str | None, error: BantamError | None
+    task: dict,
+    passed: bool,
+    output: str | None,
+    error: BantamError | None,
+    budget: TokenBudget | None = None,
 ) -> str:
     """One deterministic failure class per run (suite-hardening spec §3.2).
 
@@ -294,6 +306,12 @@ def classify_outcome(
         return "turns-exhausted"
     if error is not None:
         return "transport-error"
+    if budget is not None and budget.exhausted:
+        # Reached only on a failed run, because `passed` is decided above by scoring the
+        # answer the ceiling left behind — a budget-truncated but correct answer counts
+        # `pass` (the P7 lesson: nothing swallows a scorable answer). Below the raised
+        # classes on purpose: an exception explains itself better than the ceiling does.
+        return "budget-exhausted"
     if task["scoring"]["kind"] == "json_equal":
         try:
             extract_json(output or "")
@@ -367,6 +385,7 @@ def run_task(
     workdir: Path,
     transcripts_dir: Path | None = None,
     repeat: int = 0,
+    profile: dict | None = None,
 ) -> TaskResult:
     # Applied by duck typing, not by signature: a client that carries a `seed` attribute
     # (OpenAICompatible does) gets this run's pinned seed; anything else is left alone and
@@ -377,40 +396,73 @@ def run_task(
         applied_seed = run_seed(getattr(client, "model", ""), task["name"], repeat)
         client.seed = applied_seed
 
+    def policy(section: str, key: str):
+        """Explicit-wins profile threading (P6).
+
+        `None` keeps every component resolving the `default` profile itself, so a run
+        without `--eval-profile` is byte-identical to the one before the flag existed.
+        """
+        return None if profile is None else profile[section][key]
+
+    # Calibration-only configs mirror a headline config exactly, plus one component.
+    # Resolving the name here keeps every membership test below reading as it did;
+    # `config` itself stays the label the TaskResult records.
+    effective = BUDGET_CONFIGS.get(config, config)
+
     tracking = TrackingClient(client)
     workspace_tools = _workspace_tools(task.get("workspace") or {})
     tools = [
         workspace_tools[name] if name in workspace_tools else BUILTIN_TOOLS[name]
         for name in task.get("tools", [])
     ]
-    agent = Agent(client=tracking, tools=tools)
+    agent = Agent(
+        client=tracking,
+        tools=tools,
+        max_turns=policy("agent", "max_turns"),
+        observation_budget=policy("agent", "observation_budget"),
+    )
 
     schema_gate: SchemaGate | None = None
     critique_gate: CritiqueGate | None = None
-    if config in ("memory", "lean", "full") and task.get("memory_setup"):
+    budget: TokenBudget | None = None
+    if config in BUDGET_CONFIGS:
+        # Before every gate: `CritiqueGate.setup` reads `agent.budget` once, so a budget
+        # attached after it would be a governor nothing ever asks.
+        budget = TokenBudget(
+            ceiling=policy("token_budget", "ceiling"),
+            optional_cutoff=policy("token_budget", "optional_cutoff"),
+        )
+        agent.use(budget)
+    if effective in ("memory", "lean", "full") and task.get("memory_setup"):
         store_dir = workdir / f"{task['name']}-{config}-mem"
         store = MemoryStore(store_dir)
         for fact in task["memory_setup"]:
             store.save(fact["type"], fact["name"], fact["description"], fact["body"])
         agent.use(Memory(store=store_dir))
-    if config in ("lean", "full") and "schema" in task:
+    if effective in ("lean", "full") and "schema" in task:
         # The agent owns the loop here, so it needs the same instruction structured() gives.
         # Gate registered before the critique gate: a malformed answer is fixed for free
         # rather than spending a critique call on it.
         agent.add_system(schema_instruction(task["schema"]))
-        schema_gate = SchemaGate(task["schema"])
+        schema_gate = SchemaGate(task["schema"], max_attempts=policy("schema_gate", "max_attempts"))
         agent.use(schema_gate)
-    if config in ("memory", "lean", "full") and task["scoring"]["kind"] == "json_equal":
+    if effective in ("memory", "lean", "full") and task["scoring"]["kind"] == "json_equal":
         # Registered after the schema gate on purpose: where a task has a schema, the
         # schema-aware error is strictly more informative, so this is the fallback for
         # json_equal tasks that carry no schema (every memory-recall task). `bare` does
         # not get it — it stays the floor.
-        agent.use(JsonAnswerGate())
-    if config == "critique":
-        critique_gate = CritiqueGate("task-completion", client=tracking)
+        agent.use(JsonAnswerGate(max_attempts=policy("json_answer", "max_attempts")))
+    if effective == "critique":
+        critique_gate = CritiqueGate(
+            "task-completion", client=tracking, max_rounds=policy("critique", "max_rounds")
+        )
         agent.use(critique_gate)
-    if config in ("grounded", "full"):
-        critique_gate = GroundedCritiqueGate(client=tracking)
+    if effective in ("grounded", "full"):
+        critique_gate = GroundedCritiqueGate(
+            client=tracking,
+            max_rounds=policy("critique", "max_rounds"),
+            evidence_budget=policy("critique", "evidence_budget"),
+        )
         agent.use(critique_gate)
     if config in GRAPH_CONFIGS and any(n in WORKSPACE_TOOLS for n in task.get("tools", [])):
         agent.use(FileAccessGraph(readers={"read_file": "path"}, **GRAPH_CONFIGS[config]))
@@ -421,14 +473,19 @@ def run_task(
     try:
         if "family" not in task:
             raise EvalConfigError(f"task '{task['name']}' is missing required key 'family'")
-        if config == "structured" and "schema" in task:
+        if effective == "structured" and "schema" in task:
             # structured() drives its own loop, so no agent transcript exists to score against.
             if task["scoring"]["kind"] == "tool_trace":
                 raise EvalConfigError(
                     f"task '{task['name']}' uses schema + tool_trace scoring, which the "
                     "structured config cannot score: it has no agent transcript"
                 )
-            data = structured(tracking, task["prompt"], task["schema"])
+            data = structured(
+                tracking,
+                task["prompt"],
+                task["schema"],
+                max_retries=policy("structured", "max_retries"),
+            )
             output = json.dumps(data)
         else:
             result = agent.run(task["prompt"])
@@ -437,7 +494,7 @@ def run_task(
     except BantamError as e:
         passed, caught = False, e
 
-    if config == "structured" and "schema" in task:
+    if effective == "structured" and "schema" in task:
         # No gate object on this path; structured() makes exactly one call per attempt.
         schema_retries = max(0, tracking.calls - 1)
     else:
@@ -448,7 +505,7 @@ def run_task(
         family=task.get("family", "unknown"),
         passed=passed,
         tokens=tracking.usage.total,
-        outcome=classify_outcome(task, passed, output, caught),
+        outcome=classify_outcome(task, passed, output, caught, budget),
         model_calls=tracking.calls,
         # messages stays [] when agent.run raises, so tool_calls reads 0 on gate-exhausted runs.
         tool_calls=sum(len(m.tool_calls) for m in messages),
@@ -476,6 +533,7 @@ def run_suite(
     repeats: int = 1,
     on_result: Callable[[TaskResult], None] | None = None,
     transcripts_dir: Path | None = None,
+    profile: dict | None = None,
 ) -> list[TaskResult]:
     configs = configs or CONFIGS
     workdir = workdir or Path(tempfile.mkdtemp(prefix="bantamkit-eval-"))
@@ -492,6 +550,7 @@ def run_suite(
                     workdir / f"repeat-{i}",
                     transcripts_dir=transcripts_dir,
                     repeat=i,
+                    profile=profile,
                 )
                 results.append(result)
                 if on_result is not None:
@@ -606,6 +665,10 @@ def main(argv: list[str] | None = None) -> None:
         type=Path,
         help="dump one JSON transcript per finished run into this directory",
     )
+    parser.add_argument(
+        "--eval-profile",
+        help="run under this named profile asset instead of `default` (e.g. `patient`)",
+    )
     args = parser.parse_args(argv)
     if args.repeats < 1:
         parser.error("--repeats must be >= 1")
@@ -625,6 +688,11 @@ def main(argv: list[str] | None = None) -> None:
     if args.transcripts:
         args.transcripts.mkdir(parents=True, exist_ok=True)
         suite_kwargs["transcripts_dir"] = args.transcripts
+    if args.eval_profile:
+        # Loaded (and validated) once here, then passed down as explicit constructor
+        # args: profile *selection* is the harness's business, never global state that
+        # the library reads. Core keeps resolving `default` for everyone else.
+        suite_kwargs["profile"] = load_profile(args.eval_profile)
 
     try:
         results = run_suite(
