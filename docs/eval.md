@@ -1026,8 +1026,9 @@ the next cycle makes physical:
   **Measured in v0.10.0 — hypothesis refuted.** Profiles are now
   selectable (`--eval-profile`, `patient` profile with `max_turns: 16`),
   and the measurement says more turns convert nothing: 3b `graph` under
-  `patient` still loses both `nav-release-bundle` repeats to
-  `turns-exhausted`, and 7b recall under `patient` converts 3
+  `patient` still loses two of three `nav-release-bundle` repeats to
+  `turns-exhausted` (the third fails as wrong-answer — 0/3 pass), and
+  7b recall under `patient` converts 3
   turn-exhaustions to 2 at the same 19/27 score for **+19% tokens**
   (171k vs 144k). The residue is the model *looping*, not budget
   starvation — the 4b-calibrated 10 was not the binding constraint.
@@ -1047,7 +1048,8 @@ the next cycle makes physical:
   against largely no longer exists. Against that baseline, `budgeted`
   (= `full` + TokenBudget, ceiling 6000 / optional-cutoff 0.75) scores
   the same 21/66 and truncated exactly one tail run
-  (`budget-exhausted` ×1, a run that burned 6.5k unbounded), but total
+  (`budget-exhausted` ×1 — a run that burned 7.5k unbounded, cut at
+  6.5k), but total
   tokens came out +0.75% (149,335 vs 148,215) — the strictly-below bar
   **missed**: the governor sees only agent-loop spend (critic calls are
   invisible to it — first-class debt in the spec; attack: budget-aware
