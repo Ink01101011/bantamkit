@@ -2,15 +2,26 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 
 import yaml
 
-from bantamkit.agent import Agent, truncate
+from bantamkit.agent import Agent
 from bantamkit.assets import AssetNotFound, assets_root
 from bantamkit.client import BantamError, Message, ModelClient
+from bantamkit.contract import critique_feedback as _critique_feedback
+from bantamkit.contract import render_evidence
+from bantamkit.profile import default as profile_default
 from bantamkit.structured import structured
+
+__all__ = [
+    "CritiqueExhausted",
+    "CritiqueGate",
+    "GroundedCritiqueGate",
+    "Rubric",
+    "load_rubric",
+    "render_evidence",
+]
 
 
 class CritiqueExhausted(BantamError):
@@ -63,32 +74,9 @@ def load_rubric(name: str) -> Rubric:
     return rubric
 
 
-def render_evidence(messages: list[Message], budget: int = 4096) -> str:
-    """Tool call/observation pairs from a run's transcript, as critic-readable lines."""
-    lines = []
-    consumed: set[int] = set()
-    for position, message in enumerate(messages):
-        for tc in message.tool_calls:
-            observation = "(no observation)"
-            for later in range(position + 1, len(messages)):
-                candidate = messages[later]
-                if (
-                    later not in consumed
-                    and candidate.role == "tool"
-                    and candidate.tool_call_id == tc.id
-                ):
-                    observation = candidate.content
-                    consumed.add(later)
-                    break
-            lines.append(f"{tc.name}({json.dumps(tc.arguments)}) -> {observation}")
-    if not lines:
-        return "(no tool calls were made)"
-    return truncate("\n".join(lines), budget)
-
-
 class CritiqueGate:
     def __init__(
-        self, rubric: str | Rubric, client: ModelClient | None = None, max_rounds: int = 3
+        self, rubric: str | Rubric, client: ModelClient | None = None, max_rounds: int | None = None
     ):
         if isinstance(rubric, Rubric):
             _validate_rubric(rubric)
@@ -96,7 +84,9 @@ class CritiqueGate:
         else:
             self.rubric = load_rubric(rubric)
         self.client = client
-        self.max_rounds = max_rounds
+        self.max_rounds = (
+            max_rounds if max_rounds is not None else profile_default("critique", "max_rounds")
+        )
         self._rounds = 0
         self.rounds_used = 0
 
@@ -124,10 +114,10 @@ class CritiqueGate:
                 f"last feedback: {verdict['feedback']}"
             )
         self.rounds_used += 1
-        return (
-            f"A reviewer scored your answer {verdict['score']}/10 "
-            f"(needs >= {self.rubric.threshold}). Feedback: {verdict['feedback']}\n"
-            f"Revise and answer again."
+        return _critique_feedback(
+            score=verdict["score"],
+            threshold=self.rubric.threshold,
+            feedback=verdict["feedback"],
         )
 
 
@@ -140,12 +130,16 @@ class GroundedCritiqueGate(CritiqueGate):
         self,
         rubric: str | Rubric = "grounded-completion",
         client: ModelClient | None = None,
-        max_rounds: int = 3,
-        evidence_budget: int = 4096,
+        max_rounds: int | None = None,
+        evidence_budget: int | None = None,
     ):
         super().__init__(rubric, client=client, max_rounds=max_rounds)
         _validate_grounded_rubric(self.rubric)
-        self.evidence_budget = evidence_budget
+        self.evidence_budget = (
+            evidence_budget
+            if evidence_budget is not None
+            else profile_default("critique", "evidence_budget")
+        )
 
     def __call__(self, task: str, output: str, messages: list[Message]) -> str | None:
         evidence = render_evidence(messages, self.evidence_budget)

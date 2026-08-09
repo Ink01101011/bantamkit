@@ -6,6 +6,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from bantamkit.client import BantamError, Message, ModelClient, Tool, Usage
+from bantamkit.profile import default as profile_default
+from bantamkit.textutil import truncate
 
 
 class MaxTurnsExceeded(BantamError):
@@ -25,25 +27,21 @@ class AgentResult:
     usage: Usage
 
 
-def truncate(text: str, budget: int) -> str:
-    raw = text.encode()
-    if len(raw) <= budget:
-        return text
-    kept = raw[:budget].decode(errors="ignore")
-    return f"{kept}\n[truncated {len(raw) - budget} bytes]"
-
-
 @dataclass
 class Agent:
     client: ModelClient
     tools: list[ToolDef] = field(default_factory=list)
     system: str | None = None
-    max_turns: int = 10
-    observation_budget: int = 4096
+    max_turns: int | None = None
+    observation_budget: int | None = None
     _post_hooks: list[Callable[..., str | None]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.tools = list(self.tools or [])
+        if self.max_turns is None:
+            self.max_turns = profile_default("agent", "max_turns")
+        if self.observation_budget is None:
+            self.observation_budget = profile_default("agent", "observation_budget")
 
     def use(self, *components) -> Agent:
         for component in components:

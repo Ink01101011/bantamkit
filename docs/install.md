@@ -131,9 +131,17 @@ assets/
   skills/<name>.md            # loaded by bantamkit.assets.load_skill
   rubrics/<name>.yaml         # loaded by load_rubric / CritiqueGate("<name>")
   tools/<name>.json           # loaded by bantamkit.assets.load_tool
+  contracts/default.yaml      # model-facing wording (loaded by bantamkit.contract)
+  profiles/default.yaml       # tunable defaults (loaded by bantamkit.profile)
   evals/tasks/<name>.yaml     # the eval suite
   evals/fixtures/catalog.json # fixture data for the eval tools
 ```
+
+As of v0.8.0 every override pack must include `contracts/default.yaml` and
+`profiles/default.yaml`: constructing an `Agent` resolves its default
+budgets from the profile, and `structured()`/the gates load their wording
+from the contract — a pack without them fails with `AssetNotFound` at
+construction. Copy both from this repo's `assets/` as a starting point.
 
 Verify which pack is live:
 

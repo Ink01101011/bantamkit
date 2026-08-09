@@ -1,0 +1,9 @@
+name: default
+schema_instruction: "Return ONLY a JSON object matching this JSON Schema. No prose.\n"
+schema_retry: "{error}\nReturn ONLY a JSON object matching the schema."
+critique_feedback: "A reviewer scored your answer {score}/10 (needs >= {threshold}). Feedback: {feedback}\nRevise and answer again."
+parse_error: "output was not parseable JSON: {detail}"
+validation_error: "JSON does not match schema at '{where}': {detail}"
+evidence_line: "{name}({arguments}) -> {observation}"
+evidence_no_observation: "(no observation)"
+evidence_empty: "(no tool calls were made)"

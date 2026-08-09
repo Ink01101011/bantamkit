@@ -2,44 +2,32 @@
 
 from __future__ import annotations
 
-import json
-import re
-
 import jsonschema
 
 from bantamkit.client import BantamError, Message, ModelClient
+from bantamkit.contract import (
+    extract_json,
+    parse_error_message,
+    schema_instruction,
+    schema_retry_feedback,
+    validation_error_message,
+)
+from bantamkit.profile import default as profile_default
+
+__all__ = ["StructuredOutputError", "extract_json", "structured"]
 
 
 class StructuredOutputError(BantamError):
     """No schema-valid output within the retry budget."""
 
 
-def extract_json(text: str) -> dict | list:
-    text = text.strip()
-    fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
-    if fence:
-        text = fence.group(1).strip()
-    start_brace = text.find("{")
-    start_bracket = text.find("[")
-    if start_brace == -1 and start_bracket == -1:
-        raise ValueError("no JSON object found in output")
-    elif start_brace == -1:
-        start = start_bracket
-    elif start_bracket == -1:
-        start = start_brace
-    else:
-        start = min(start_brace, start_bracket)
-    obj, _ = json.JSONDecoder().raw_decode(text[start:])
-    return obj
-
-
-def structured(client: ModelClient, prompt: str, schema: dict, *, max_retries: int = 3) -> dict:
+def structured(
+    client: ModelClient, prompt: str, schema: dict, *, max_retries: int | None = None
+) -> dict:
+    if max_retries is None:
+        max_retries = profile_default("structured", "max_retries")
     messages = [
-        Message(
-            role="system",
-            content="Return ONLY a JSON object matching this JSON Schema. No prose.\n"
-            + json.dumps(schema),
-        ),
+        Message(role="system", content=schema_instruction(schema)),
         Message(role="user", content=prompt),
     ]
     error = "no attempts made"
@@ -51,14 +39,12 @@ def structured(client: ModelClient, prompt: str, schema: dict, *, max_retries: i
             jsonschema.validate(data, schema)
             return data
         except ValueError as e:
-            error = f"output was not parseable JSON: {e}"
+            error = parse_error_message(e)
         except jsonschema.ValidationError as e:
             where = "/".join(str(p) for p in e.absolute_path) or "root"
-            error = f"JSON does not match schema at '{where}': {e.message}"
+            error = validation_error_message(where, e.message)
         messages.append(resp.message)
-        messages.append(
-            Message(role="user", content=f"{error}\nReturn ONLY a JSON object matching the schema.")
-        )
+        messages.append(Message(role="user", content=schema_retry_feedback(error)))
     raise StructuredOutputError(
         f"no valid output after {max_retries} attempts; last error: {error}"
     )

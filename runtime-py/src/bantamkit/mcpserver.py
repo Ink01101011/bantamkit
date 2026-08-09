@@ -8,7 +8,7 @@ from importlib import metadata
 from typing import Any
 
 from bantamkit.assets import AssetNotFound, assets_root, load_skill, load_tool
-from bantamkit.evalrun import schema_error
+from bantamkit.contract import schema_error, schema_retry_feedback
 from bantamkit.memory import Memory
 
 try:
@@ -61,7 +61,7 @@ def build_server(memory: Memory) -> Any:
             return {"valid": True, "feedback": None}
         return {
             "valid": False,
-            "feedback": f"{error}\nReturn ONLY a JSON object matching the schema.",
+            "feedback": schema_retry_feedback(error),
         }
 
     # Advertise the asset pack's schemas verbatim: one source of truth for every
