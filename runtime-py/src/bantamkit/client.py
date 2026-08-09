@@ -123,6 +123,10 @@ class OpenAICompatible:
         # OpenAI-compat endpoint both accept it; servers that ignore it degrade to
         # unseeded sampling. Writable per run — the eval harness pins it per task.
         self.seed = seed
+        # Capability memo for the constrained-decoding tier, flipped by the first
+        # HTTP 400 on a request that carried `response_format`. Its presence is also
+        # the duck-typed signal callers test before sending the kwarg at all.
+        self._response_format_unsupported = False
         self._http = httpx.Client(timeout=timeout, transport=transport)
 
     def close(self) -> None:
@@ -135,20 +139,38 @@ class OpenAICompatible:
     def __exit__(self, *exc_info: object) -> None:
         self.close()
 
-    def chat(self, messages: list[Message], tools: list[Tool] | None = None) -> Response:
+    def _post(self, payload: dict) -> httpx.Response:
+        return self._http.post(
+            f"{self.base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            json=payload,
+        )
+
+    def chat(
+        self,
+        messages: list[Message],
+        tools: list[Tool] | None = None,
+        response_format: dict | None = None,
+    ) -> Response:
         payload: dict = {"model": self.model, "messages": [m.to_wire() for m in messages]}
         if tools:
             payload["tools"] = [t.to_wire() for t in tools]
         if self.seed is not None:
             payload["seed"] = self.seed
+        if response_format is not None:
+            payload["response_format"] = response_format
         last_err: Exception | None = None
         for attempt in range(self.max_retries):
             try:
-                r = self._http.post(
-                    f"{self.base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                    json=payload,
-                )
+                r = self._post(payload)
+                if r.status_code == 400 and "response_format" in payload:
+                    # That single 400 IS the capability detection — no probe request,
+                    # no server allowlist. Drop the field, remember it for every later
+                    # call on this client, and let this call still succeed. A 400 that
+                    # survives the drop was never about response_format and raises below.
+                    self._response_format_unsupported = True
+                    del payload["response_format"]
+                    r = self._post(payload)
                 if r.status_code == 429 or r.status_code >= 500:
                     raise TransportError(f"server error {r.status_code}: {r.text[:BODY_SNIPPET]}")
                 if not r.is_success:
