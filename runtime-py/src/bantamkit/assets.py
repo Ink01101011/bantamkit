@@ -34,6 +34,14 @@ def load_tool(name: str) -> Tool:
     return Tool(name=data["name"], description=data["description"], parameters=data["parameters"])
 
 
+def load_schema(name: str) -> dict:
+    """Return a JSON Schema asset (parsed) — e.g. the shift-work checkpoint contract."""
+    path = assets_root() / "schemas" / f"{name}.json"
+    if not path.exists():
+        raise AssetNotFound(f"schema asset not found: {path}")
+    return json.loads(path.read_text())
+
+
 def load_skill(name: str) -> str:
     path = assets_root() / "skills" / f"{name}.md"
     if not path.exists():

@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bantamkit.dev/schemas/shiftwork-checkpoint.json",
+  "title": "Shift-work checkpoint contract v1",
+  "$comment": "Encodes checkpoint contract v1 (docs/superpowers/specs/2026-08-10-shift-work-checkpoint-contract-draft.md) plus the two driver-forced deltas: plan.units[].role (model dispatch without reading briefs) and state.external[].until_cmd (machine-checkable wait, replacing prose `until`). Re-planning needs no schema change: a planner unit is just a unit. STRICTNESS POSTURE: `version` is const-pinned to 1 so a reader can refuse unknown majors; every object the driver or a session reads by field name sets additionalProperties:false, and every field the draft's schema block shows on every instance is required (empty arrays are legal, so a fresh checkpoint is cheap to write). The two exceptions are `history[]` and `retro[]` items: those are the free-text annotation space the draft treats as notes, so they allow extra keys (e.g. a session adding `seq` or `tokens`) while still requiring their load-bearing fields. `units[].commits` is optional because the draft only carries it on completed units. `state.external[].status` is a non-empty string rather than an enum: the draft closes the enum for unit status (the driver's SUCCESS test) but never enumerates external status, and inventing values here would reject honest checkpoints. `plan.cursor` must name an existing unit id — JSON Schema cannot express that cross-reference, so the driver checks it structurally and escalates on a dangling cursor. Serialization: checkpoints are YAML for humans per the draft, but the v1 driver reads JSON only (stdlib-only rule), so sessions driven by driver.py write .json; this schema validates the parsed document either way.",
+  "type": "object",
+  "required": ["version", "job", "plan", "state", "history", "retro", "handoff"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": 1,
+      "description": "Contract major version. A reader that does not know this value must refuse the file."
+    },
+    "job": {
+      "type": "object",
+      "required": ["id", "goal", "done_definition", "constraints"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "description": "Stable job slug."},
+        "goal": {"type": "string", "minLength": 1, "description": "One sentence, never edited mid-job."},
+        "done_definition": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Ground truth that ends the job — a check, not a vibe."
+        },
+        "constraints": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "description": "Invariants binding every unit, copied verbatim into each session."
+        }
+      }
+    },
+    "plan": {
+      "type": "object",
+      "required": ["cursor", "units"],
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "type": "string",
+          "minLength": 1,
+          "description": "THE next unit id. Single pointer — the executor never chooses."
+        },
+        "units": {
+          "type": "array",
+          "description": "Flat list, soft cap ~30 units; bigger jobs re-cut via a planner unit.",
+          "items": {
+            "type": "object",
+            "required": ["id", "title", "brief_path", "status", "role", "depends_on", "verify"],
+            "additionalProperties": false,
+            "properties": {
+              "id": {"type": "string", "minLength": 1},
+              "title": {"type": "string", "minLength": 1},
+              "brief_path": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Full brief lives in a file, not in the checkpoint."
+              },
+              "status": {
+                "type": "string",
+                "enum": ["todo", "in_progress", "done", "blocked", "dropped"]
+              },
+              "role": {
+                "type": "string",
+                "enum": ["planner", "implementer", "reviewer"],
+                "description": "Driver dispatch key: role -> model/allowed tools, set in driver config."
+              },
+              "depends_on": {"type": "array", "items": {"type": "string", "minLength": 1}},
+              "verify": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Command proving done-ness. Done-ness is a command, not a claim."
+              },
+              "commits": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+                "description": "Present once a unit has landed work."
+              }
+            }
+          }
+        }
+      }
+    },
+    "state": {
+      "type": "object",
+      "required": ["repo", "artifacts", "external"],
+      "additionalProperties": false,
+      "properties": {
+        "repo": {
+          "type": "object",
+          "required": ["branch", "head_sha", "dirty"],
+          "additionalProperties": false,
+          "description": "Staleness guard: must match the working tree at clock-in.",
+          "properties": {
+            "branch": {"type": "string", "minLength": 1},
+            "head_sha": {"type": "string", "minLength": 1},
+            "dirty": {"type": "boolean"}
+          }
+        },
+        "artifacts": {
+          "type": "array",
+          "description": "Files the next session MUST read, with roles.",
+          "items": {
+            "type": "object",
+            "required": ["path", "role"],
+            "additionalProperties": false,
+            "properties": {
+              "path": {"type": "string", "minLength": 1},
+              "role": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Free-form reading role (spec, ledger, ...) — not the unit role enum."
+              }
+            }
+          }
+        },
+        "external": {
+          "type": "array",
+          "description": "World-state git cannot see: detached processes, PRs, CI.",
+          "items": {
+            "type": "object",
+            "required": ["kind", "ref", "status"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": {"type": "string", "enum": ["process", "pr", "ci"]},
+              "ref": {"type": "string", "minLength": 1},
+              "until_cmd": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Wait condition as a shell command; exit 0 = met. The driver waits on this."
+              },
+              "status": {"type": "string", "minLength": 1}
+            }
+          }
+        }
+      }
+    },
+    "history": {
+      "type": "array",
+      "description": "Ring buffer, last 5 units only — the full record is git plus the ledger.",
+      "items": {
+        "type": "object",
+        "required": ["unit", "outcome"],
+        "additionalProperties": true,
+        "properties": {
+          "unit": {"type": "string", "minLength": 1},
+          "outcome": {"type": "string", "minLength": 1},
+          "notes": {"type": "string"}
+        }
+      }
+    },
+    "retro": {
+      "type": "array",
+      "description": "What this job taught the loop; patches already applied.",
+      "items": {
+        "type": "object",
+        "required": ["trigger", "patch_applied_to"],
+        "additionalProperties": true,
+        "properties": {
+          "trigger": {"type": "string", "minLength": 1},
+          "patch_applied_to": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "handoff": {
+      "type": "object",
+      "required": ["next_action", "open_questions", "do_not"],
+      "additionalProperties": false,
+      "properties": {
+        "next_action": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Imperative first move — zero re-derivation."
+        },
+        "open_questions": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "description": "The autonomy switch: empty = driver keeps cycling, non-empty = STOP and ask."
+        },
+        "do_not": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "description": "Negative space — near-mistakes past sessions made."
+        }
+      }
+    }
+  }
+}
