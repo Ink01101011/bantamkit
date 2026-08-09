@@ -14,7 +14,9 @@ from bantamkit.evalrun import load_tasks
 
 SKILL_BUDGET_BYTES = 6000  # "kept to a page"
 SCORING_KINDS = {"json_equal", "contains", "tool_trace"}
-FAMILIES = {"structured-extraction", "tool-use", "memory-recall"}
+# file-nav is forward-declared: its tasks land via calibration promotion.
+FAMILIES = {"structured-extraction", "tool-use", "memory-recall", "file-nav"}
+CORE_FAMILIES = {"structured-extraction", "tool-use", "memory-recall"}
 MEMORY_TYPES = {"user", "feedback", "project", "reference"}
 
 
@@ -88,9 +90,9 @@ def test_eval_tasks_are_valid():
             assert set(fact) >= {"type", "name", "description", "body"}
     # Verify all families covered and balanced (at least 2 each)
     family_counts = Counter(families)
-    assert set(family_counts.keys()) == FAMILIES  # all three families present
-    for family in FAMILIES:
-        count = family_counts[family]
+    assert set(family_counts.keys()) <= FAMILIES
+    assert CORE_FAMILIES <= set(family_counts.keys())  # core families always present
+    for family, count in family_counts.items():
         assert count >= 2, f"{family} appears {count} times, need >= 2"
 
 
@@ -119,6 +121,7 @@ def test_workspace_tasks_are_well_formed():
         if not uses_workspace:
             assert "workspace" not in task, task["name"]
             continue
+        assert "workspace" in task, task["name"]
         ws = task["workspace"]
         assert isinstance(ws, dict) and ws, f"{task['name']}: workspace must be non-empty"
         assert all(isinstance(k, str) and isinstance(v, str) for k, v in ws.items()), task["name"]

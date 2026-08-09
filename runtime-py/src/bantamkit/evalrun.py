@@ -117,6 +117,9 @@ GRAPH_CONFIGS = {
     "graph-cache": {"annotate": True, "cache": True, "query": False},
 }
 
+# Every config name run_task accepts: the permanent matrix plus calibration-only ablations.
+CONFIG_CHOICES = CONFIGS + sorted(set(GRAPH_CONFIGS) - set(CONFIGS))
+
 
 # ---- suite ----
 
@@ -383,7 +386,9 @@ def _score_cell(rows: list[TaskResult]) -> str:
 
 
 def format_report(results: list[TaskResult]) -> str:
-    configs = [c for c in CONFIGS if any(r.config == c for r in results)]
+    seen = {r.config for r in results}
+    configs = [c for c in CONFIG_CHOICES if c in seen]
+    configs += sorted(seen - set(CONFIG_CHOICES))  # never silently drop a result row
     lines = ["| config | score | tokens | score/1k tok |", "|---|---|---|---|"]
     for config in configs:
         rows = [r for r in results if r.config == config]
@@ -466,7 +471,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument(
-        "--config", action="append", choices=CONFIGS, help="repeatable; default: all configs"
+        "--config", action="append", choices=CONFIG_CHOICES, help="repeatable; default: all configs"
     )
     parser.add_argument(
         "--timeout", type=float, default=60.0, help="per-request timeout in seconds (default 60)"

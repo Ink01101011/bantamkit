@@ -6,6 +6,7 @@ from conftest import FakeClient, assistant, call
 from bantamkit import evalrun
 from bantamkit.client import BantamError, Message, ToolCall
 from bantamkit.evalrun import (
+    CONFIG_CHOICES,
     CONFIGS,
     TaskResult,
     TrackingClient,
@@ -957,3 +958,20 @@ def test_recall_store_dump_containing_the_fact_scores_false():
     dump = "[service-owner] The checkout service is owned by Team Atlas. [db-port] port 5433."
     assert score_output(task, dump, []) is False
     assert score_output(task, '{"team": "Atlas"}', []) is True
+
+
+def test_ablation_configs_are_choices_but_not_in_configs():
+    assert "graph-annotate" in CONFIG_CHOICES and "graph-cache" in CONFIG_CHOICES
+    assert "graph-annotate" not in CONFIGS and "graph-cache" not in CONFIGS
+
+
+def test_format_report_keeps_ablation_config_rows():
+    results = [
+        TaskResult(
+            task="nav-x", config="graph-annotate", family="file-nav", passed=True,
+            tokens=100, outcome="pass", model_calls=1, tool_calls=0,
+            schema_retries=0, critique_rounds=0, error=None,
+        )
+    ]
+    report = format_report(results)
+    assert "graph-annotate" in report
