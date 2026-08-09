@@ -147,3 +147,31 @@ def test_private_aliases_delegate_to_public(tmp_path):
     memory = Memory(store=tmp_path)
     assert memory._save.__func__ is Memory.save
     assert memory._recall.__func__ is Memory.recall
+
+
+def test_agent_setup_and_mcp_dispatch_honor_save_override(tmp_path):
+    """setup()/mcpserver must register the public names, not the aliases."""
+    calls = []
+
+    class Probe(Memory):
+        def save(self, type, name, description, body, links=None):
+            calls.append(name)
+            return "ok"
+
+    probe = Probe(store=tmp_path)
+
+    class FakeAgent:
+        def __init__(self):
+            self.tools = []
+
+        def register_tool(self, tooldef):
+            self.tools.append(tooldef)
+
+        def add_system(self, text):
+            pass
+
+    agent = FakeAgent()
+    probe.setup(agent)
+    save_handler = next(t.handler for t in agent.tools if t.tool.name == "memory_save")
+    save_handler("project", "x", "d", "b")
+    assert calls == ["x"]

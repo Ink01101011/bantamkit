@@ -25,7 +25,10 @@ is created if missing.
 
 ## Programmatic API
 
-The `save` and `recall` methods are public and can be called directly. These are the same handlers the `memory_save`/`memory_recall` tools call, returning the same reply strings (duplicate nudge, budget error, validation error). Useful for seeding stores or scripting:
+The `save` and `recall` methods are public and can be called directly.
+These are the same handlers the `memory_save`/`memory_recall` tools call,
+returning the same reply strings (duplicate nudge, budget error, validation
+error). Useful for seeding stores or scripting:
 
 ```python
 memory = Memory(store="./.bantam-memory")
