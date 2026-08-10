@@ -96,7 +96,9 @@ class CritiqueGate:
             self.client = agent.client
         self.rounds_used = 0
         # Duck-typed and optional: a run with no governor keeps every round it had.
-        # Attach the budget before this gate, or the handle is None for the whole run.
+        # Attach the budget before this gate, or the handle is None for the whole
+        # run — and the client captured above is the unwrapped one, so critic
+        # spend never reaches the governor either. Budget first, always.
         self.budget = getattr(agent, "budget", None)
         agent.add_post_hook(self)
 

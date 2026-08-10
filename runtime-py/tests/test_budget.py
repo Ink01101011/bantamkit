@@ -233,12 +233,14 @@ def test_setup_twice_leaves_one_wrapper_and_one_count():
 
 def test_a_second_budget_replaces_the_first_wrapper():
     inner = FakeClient([assistant(content="done")])
-    agent = Agent(client=inner).use(TokenBudget(ceiling=6000))
+    first = TokenBudget(ceiling=6000)
+    agent = Agent(client=inner).use(first)
     second = TokenBudget(ceiling=6000)
     agent.use(second)
     assert agent.client.inner is inner
     agent.run("task")
     assert second.spent == 15
+    assert first.spent == 0  # the replaced wrapper keeps no second ledger
 
 
 def test_budget_is_reusable_across_sequential_runs():
