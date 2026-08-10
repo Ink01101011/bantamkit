@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from bantamkit.agent import Agent, ToolDef
@@ -62,7 +64,30 @@ class Memory:
     def setup(self, agent: Agent) -> None:
         agent.register_tool(ToolDef(tool=load_tool("memory_save"), handler=self.save))
         agent.register_tool(ToolDef(tool=load_tool("memory_recall"), handler=self.recall))
+        agent.add_batch_scope(self.batch)
         agent.add_system(load_skill("memory"))
+
+    @contextmanager
+    def batch(self) -> Iterator[None]:
+        """One assistant turn's recalls read the store as it was before the turn.
+
+        Measured cause (RB-P1, seed 2418578173): the model dispatched recall / save /
+        recall in a single turn, the speculative save updated `payments-api-owner`
+        between the two reads, and it then answered `finance-team` off its own
+        fabrication instead of the seeded `Atlas`. Nothing was wrong with the write —
+        `save` is doing its documented job — the defect is that a batch the model
+        composed from one view of memory got answered from another.
+
+        Only writable layers are pinned. A read-only grant cannot be written by
+        `save`, so it cannot be poisoned, and pinning it would move a corrupt-layer
+        error from `recall` (where it is caught and the layer skipped) to the batch
+        boundary (where it would take down the run).
+        """
+        with ExitStack() as stack:
+            for _, store, writable in self._layers:
+                if writable:
+                    stack.enter_context(store.snapshot())
+            yield
 
     def save(
         self, type: str, name: str, description: str, body: str, links: list[str] | None = None

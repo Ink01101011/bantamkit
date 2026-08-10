@@ -507,3 +507,91 @@ def test_malformed_k_still_becomes_an_error_observation(tmp_path):
     )
     Agent(client=client).use(Memory(store=tmp_path / "mem")).run("t")
     assert client.calls[1]["messages"][-1].content.startswith("error:")
+
+
+# ---- RB-P1 P-B: a save is not visible to a recall in the same tool-call batch ----
+
+
+def test_same_batch_save_does_not_poison_a_later_recall(tmp_path):
+    """Measured on seed 2418578173: recall / save / recall in one assistant turn, and the
+    speculative save overwrote the ground-truth fact between the two reads."""
+    mem = Memory(store=tmp_path / "mem")
+    mem.store.save("project", "payments-api-owner", "which team owns the payments api", "Atlas")
+    client = FakeClient(
+        [
+            assistant(
+                tool_calls=[
+                    call("memory_recall", {"query": "owns payments api"}, id="c1"),
+                    call(
+                        "memory_save",
+                        {
+                            "type": "project",
+                            "name": "payments-api-owner",
+                            "description": "which team owns the payments api",
+                            "body": "finance-team",
+                        },
+                        id="c2",
+                    ),
+                    call("memory_recall", {"query": "owns payments api"}, id="c3"),
+                ]
+            ),
+            assistant(content="Atlas"),
+        ]
+    )
+    Agent(client=client).use(mem).run("t")
+    observations = [m.content for m in client.calls[1]["messages"] if m.role == "tool"]
+    assert "Atlas" in observations[0]
+    assert observations[2] == observations[0], "the second read saw the same-turn write"
+    assert "finance-team" not in observations[2]
+
+
+def test_the_save_still_lands_and_is_visible_on_the_next_turn(tmp_path):
+    mem = Memory(store=tmp_path / "mem")
+    client = FakeClient(
+        [
+            assistant(
+                tool_calls=[
+                    call(
+                        "memory_save",
+                        {
+                            "type": "project",
+                            "name": "deploy-command",
+                            "description": "how we deploy to prod",
+                            "body": "make ship-prod",
+                        },
+                        id="c1",
+                    ),
+                    call("memory_recall", {"query": "deploy prod"}, id="c2"),
+                ]
+            ),
+            assistant(tool_calls=[call("memory_recall", {"query": "deploy prod"}, id="c3")]),
+            assistant(content="ok"),
+        ]
+    )
+    Agent(client=client).use(mem).run("t")
+    first_turn = [m.content for m in client.calls[1]["messages"] if m.role == "tool"]
+    second_turn = [m.content for m in client.calls[2]["messages"] if m.role == "tool"]
+    assert "saved 'deploy-command'" in first_turn[0]
+    assert "no memories matched" in first_turn[1]
+    assert "make ship-prod" in second_turn[-1]
+
+
+def test_batch_isolation_does_not_snapshot_read_only_layers(tmp_path, fake_home):
+    """A corrupt grant must still be skipped, not raised at batch entry."""
+    project = tmp_path / "companyA"
+    project.mkdir()
+    _seed(project / ".bantamkit" / "memory", "deploy", "project truth")
+    bad = tmp_path / "companyB" / ".bantamkit" / "memory"
+    (bad / "facts").mkdir(parents=True)
+    (bad / "facts" / "junk.md").write_text("no frontmatter at all")
+    (project / ".bantamkit" / "config.yaml").write_text(
+        "extra_stores:\n  - ../../companyB/.bantamkit/memory\n"
+    )
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("memory_recall", {"query": "deploy"})]),
+            assistant(content="ok"),
+        ]
+    )
+    Agent(client=client).use(Memory.layered(start=project)).run("t")
+    assert "[project] [deploy]" in client.calls[1]["messages"][-1].content

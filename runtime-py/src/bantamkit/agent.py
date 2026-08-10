@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass, field
 
 from bantamkit.client import BantamError, Message, ModelClient, Tool, Usage
@@ -131,6 +132,10 @@ class Agent:
     # already happened, and the decode worth constraining is the first one.
     response_format: dict | None = None
     _post_hooks: list[Callable[..., str | None]] = field(default_factory=list)
+    # Component state that must be scoped to one assistant turn's tool calls rather
+    # than to the whole run — see `add_batch_scope`. An agent that registers none
+    # behaves exactly as it did before the hook existed.
+    _batch_scopes: list[Callable[[], AbstractContextManager]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.tools = list(self.tools or [])
@@ -153,6 +158,18 @@ class Agent:
     def add_post_hook(self, hook: Callable[..., str | None]) -> None:
         self._post_hooks.append(hook)
 
+    def add_batch_scope(self, scope: Callable[[], AbstractContextManager]) -> None:
+        """Register a context-manager factory entered around each tool-call batch.
+
+        The model emits a whole batch of tool calls from one view of the world, and
+        this loop then dispatches them one after another — so a write early in the
+        batch is visible to a read later in the same batch, which the model has no
+        way to anticipate. A component whose state must not move under its own feet
+        mid-turn registers the boundary here; only the component knows what "not
+        moving" means for it, and only the loop knows where the turn ends.
+        """
+        self._batch_scopes.append(scope)
+
     def run(self, prompt: str) -> AgentResult:
         messages: list[Message] = []
         if self.system:
@@ -174,9 +191,14 @@ class Agent:
                 last_content = resp.message.content
 
             if resp.message.tool_calls:
-                for tc in resp.message.tool_calls:
-                    observation = truncate(self._dispatch(tc), self.observation_budget)
-                    messages.append(Message(role="tool", content=observation, tool_call_id=tc.id))
+                with ExitStack() as stack:
+                    for scope in self._batch_scopes:
+                        stack.enter_context(scope())
+                    for tc in resp.message.tool_calls:
+                        observation = truncate(self._dispatch(tc), self.observation_budget)
+                        messages.append(
+                            Message(role="tool", content=observation, tool_call_id=tc.id)
+                        )
                 continue
 
             output = resp.message.content or ""

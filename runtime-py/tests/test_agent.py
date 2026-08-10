@@ -445,3 +445,84 @@ def test_tools_still_travel_with_a_constrained_call():
     )
     agent.run("t")
     assert [t.name for t in client.calls[0]["tools"]] == ["lookup"]
+
+
+# ---- RB-P1 P-B: per-tool-call-batch scopes ----
+
+
+def _scope_recorder(events, label):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def scope():
+        events.append(f"enter-{label}")
+        try:
+            yield
+        finally:
+            events.append(f"exit-{label}")
+
+    return scope
+
+
+def test_batch_scope_wraps_the_whole_tool_call_batch():
+    events = []
+    client = FakeClient(
+        [
+            assistant(
+                tool_calls=[
+                    call("lookup", {"key": "a"}, id="c1"),
+                    call("lookup", {"key": "b"}, id="c2"),
+                ]
+            ),
+            assistant(content="done"),
+        ]
+    )
+    agent = Agent(client=client, tools=[lookup_tool(lambda key: events.append(key) or key)])
+    agent.add_batch_scope(_scope_recorder(events, "s"))
+    agent.run("t")
+    assert events == ["enter-s", "a", "b", "exit-s"]
+
+
+def test_batch_scope_is_re_entered_per_turn_and_skipped_on_a_toolless_turn():
+    events = []
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("lookup", {"key": "a"})]),
+            assistant(tool_calls=[call("lookup", {"key": "b"})]),
+            assistant(content="done"),
+        ]
+    )
+    agent = Agent(client=client, tools=[lookup_tool(lambda key: key)])
+    agent.add_batch_scope(_scope_recorder(events, "s"))
+    agent.run("t")
+    assert events == ["enter-s", "exit-s", "enter-s", "exit-s"]
+
+
+def test_batch_scope_exits_even_when_a_handler_explodes():
+    events = []
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("lookup", {"key": "a"})]),
+            assistant(content="done"),
+        ]
+    )
+
+    def boom(key):
+        raise ValueError("nope")
+
+    agent = Agent(client=client, tools=[lookup_tool(boom)])
+    agent.add_batch_scope(_scope_recorder(events, "s"))
+    agent.run("t")
+    assert events == ["enter-s", "exit-s"]
+
+
+def test_an_agent_with_no_batch_scope_is_unchanged():
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("lookup", {"key": "port"})]),
+            assistant(content="5432"),
+        ]
+    )
+    agent = Agent(client=client, tools=[lookup_tool(lambda key: "5432")])
+    assert agent.run("t").output == "5432"
+    assert client.calls[1]["messages"][-1].content == "5432"
