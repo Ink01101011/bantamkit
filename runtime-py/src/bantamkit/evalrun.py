@@ -426,8 +426,9 @@ def run_task(
     critique_gate: CritiqueGate | None = None
     budget: TokenBudget | None = None
     if config in BUDGET_CONFIGS:
-        # Before every gate: `CritiqueGate.setup` reads `agent.budget` once, so a budget
-        # attached after it would be a governor nothing ever asks.
+        # Before every gate: `CritiqueGate.setup` reads `agent.budget` and `agent.client`
+        # once, so a budget attached after it would be a governor nothing ever asks —
+        # and would leave the gate holding the unwrapped client, invisible again.
         budget = TokenBudget(
             ceiling=policy("token_budget", "ceiling"),
             optional_cutoff=policy("token_budget", "optional_cutoff"),
@@ -452,14 +453,17 @@ def run_task(
         # json_equal tasks that carry no schema (every memory-recall task). `bare` does
         # not get it — it stays the floor.
         agent.use(JsonAnswerGate(max_attempts=policy("json_answer", "max_attempts")))
+    # The gates take no explicit client: `CritiqueGate.setup` inherits `agent.client`,
+    # which is the tracking client — wrapped by the budget in the `budgeted` config,
+    # bare tracking everywhere else (identical to the `client=tracking` they used to be
+    # handed). Inheriting is what puts critic spend in front of the governor.
     if effective == "critique":
         critique_gate = CritiqueGate(
-            "task-completion", client=tracking, max_rounds=policy("critique", "max_rounds")
+            "task-completion", max_rounds=policy("critique", "max_rounds")
         )
         agent.use(critique_gate)
     if effective in ("grounded", "full"):
         critique_gate = GroundedCritiqueGate(
-            client=tracking,
             max_rounds=policy("critique", "max_rounds"),
             evidence_budget=policy("critique", "evidence_budget"),
         )
