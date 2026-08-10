@@ -79,6 +79,29 @@ def test_structured_budget_exhausted_raises():
     assert len(client.calls) == 3
 
 
+def test_structured_output_error_messages_defaults_to_empty():
+    """Declares the `MaxTurnsExceeded` transcript slot, so the agent can fill it in."""
+    assert StructuredOutputError("no valid output").messages == []
+
+
+def test_structured_output_error_carries_the_transcript_from_a_gate(tmp_path):
+    """`SchemaGate` raises from inside `_first_feedback`: the run must not record nothing."""
+    from bantamkit.evalrun import SchemaGate
+
+    client = FakeClient([assistant(content='{"name": "Ann"}')] * 3)
+    agent = Agent(client=client).use(SchemaGate(SCHEMA))
+    with pytest.raises(StructuredOutputError) as excinfo:
+        agent.run("extract")
+    assert [m.role for m in excinfo.value.messages] == [
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ]
+
+
 # ---- P2: the constrained-decoding tier ----
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import jsonschema
 
-from bantamkit.agent import Agent
+from bantamkit.agent import Agent, _supports_response_format, response_format_for
 from bantamkit.client import BantamError, Message, ModelClient
 from bantamkit.contract import (
     extract_json,
@@ -20,20 +20,19 @@ __all__ = ["JsonAnswerGate", "StructuredOutputError", "extract_json", "structure
 
 
 class StructuredOutputError(BantamError):
-    """No schema-valid output within the retry budget."""
+    """No schema-valid output within the retry budget.
 
-
-def _supports_response_format(client: ModelClient) -> bool:
-    """Duck-typed capability check, same spirit as `seed`.
-
-    A client that understands the kwarg exposes the memo (`OpenAICompatible`
-    initializes it `False`); one that has met a 400 has flipped it to `True`.
-    Fake clients and adapters that never heard of the kwarg lack the attribute
-    entirely and are never sent it.
+    Carries the transcript up to the raise, same payload and same reason as
+    `MaxTurnsExceeded`: when a schema gate gives up it raises from inside the
+    agent's post-hook chain, and without a slot for the transcript every
+    `schema-exhausted` run wrote `{"output": null, "messages": []}` — the runs
+    most worth diagnosing recording nothing. The agent fills the slot in
+    (`Agent.run`); a raiser that already has the transcript may pass it here.
     """
-    return hasattr(client, "_response_format_unsupported") and not (
-        client._response_format_unsupported
-    )
+
+    def __init__(self, message: str, messages: list[Message] | None = None):
+        super().__init__(message)
+        self.messages: list[Message] = list(messages or [])
 
 
 def structured(
@@ -47,10 +46,7 @@ def structured(
     """
     if max_retries is None:
         max_retries = profile_default("structured", "max_retries")
-    response_format = {
-        "type": "json_schema",
-        "json_schema": {"name": "output", "schema": schema},
-    }
+    response_format = response_format_for(schema)
     messages = [
         Message(role="system", content=schema_instruction(schema)),
         Message(role="user", content=prompt),

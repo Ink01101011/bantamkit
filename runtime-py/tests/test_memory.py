@@ -163,9 +163,13 @@ def test_agent_setup_and_mcp_dispatch_honor_save_override(tmp_path):
     class FakeAgent:
         def __init__(self):
             self.tools = []
+            self.scopes = []
 
         def register_tool(self, tooldef):
             self.tools.append(tooldef)
+
+        def add_batch_scope(self, scope):
+            self.scopes.append(scope)
 
         def add_system(self, text):
             pass
@@ -175,3 +179,79 @@ def test_agent_setup_and_mcp_dispatch_honor_save_override(tmp_path):
     save_handler = next(t.handler for t in agent.tools if t.tool.name == "memory_save")
     save_handler("project", "x", "d", "b")
     assert calls == ["x"]
+
+
+# ---- RB-P1 P-B: batch-scoped read isolation ----
+
+
+def test_snapshot_pins_the_read_set_for_the_scope(store):
+    store.save("project", "payments-api-owner", "which team owns the payments api", "team Atlas")
+    with store.snapshot():
+        before = store.recall("who owns the payments api", k=1)
+        store.save("project", "payments-api-owner", "which team owns the payments api", "finance")
+        after = store.recall("who owns the payments api", k=1)
+    assert before[0].body == "team Atlas"
+    assert after[0].body == "team Atlas", "a write inside the scope must not be read back in it"
+
+
+def test_snapshot_does_not_hide_the_write_from_the_next_scope(store):
+    store.save("project", "payments-api-owner", "which team owns the payments api", "team Atlas")
+    with store.snapshot():
+        store.save("project", "payments-api-owner", "which team owns the payments api", "finance")
+    assert store.recall("who owns the payments api", k=1)[0].body == "finance"
+
+
+def test_snapshot_leaves_save_semantics_untouched(store):
+    """Same-name-is-update still holds inside the scope: one file, latest content."""
+    store.save("project", "db-port", "port the database listens on", "5432")
+    with store.snapshot():
+        result = store.save("project", "db-port", "port the database listens on", "6543")
+    assert result.status == "saved"
+    assert sorted(p.name for p in (store.root / "facts").glob("*.md")) == ["db-port.md"]
+    assert "6543" in (store.root / "facts" / "db-port.md").read_text()
+
+
+def test_snapshot_stamp_never_writes_pinned_content_back(store):
+    """The reverse poisoning: stamping a pinned hit must not revert the live file."""
+    store.save("project", "db-port", "port the database listens on", "5432")
+    with store.snapshot():
+        store.save("project", "db-port", "port the database listens on", "6543")
+        store.recall("database port", k=1)
+    text = (store.root / "facts" / "db-port.md").read_text()
+    assert "6543" in text and "5432" not in text
+    assert "last_recalled: '2026-08-06'" in text
+
+
+def test_snapshot_skips_stamping_a_fact_the_scope_deleted(store):
+    store.save("project", "db-port", "port the database listens on", "5432")
+    with store.snapshot():
+        (store.root / "facts" / "db-port.md").unlink()
+        assert store.recall("database port", k=1)[0].body == "5432"
+    assert not (store.root / "facts" / "db-port.md").exists()
+
+
+def test_snapshot_restores_live_reads_on_exit_even_after_an_error(store):
+    store.save("project", "db-port", "port the database listens on", "5432")
+    with pytest.raises(RuntimeError):
+        with store.snapshot():
+            raise RuntimeError("boom")
+    store.save("project", "db-port", "port the database listens on", "6543")
+    assert store.recall("database port", k=1)[0].body == "6543"
+
+
+def test_snapshot_of_an_unreadable_store_falls_back_to_live_reads(tmp_path):
+    """Pinning is an isolation nicety; a corrupt store must still raise where it always did."""
+    store = MemoryStore(tmp_path / "mem")
+    (store.root / "facts" / "broken.md").write_text("no frontmatter at all")
+    with store.snapshot():
+        with pytest.raises(MemoryValidationError):
+            store.recall("anything")
+
+
+def test_nested_snapshot_keeps_the_outermost_pin(store):
+    store.save("project", "db-port", "port the database listens on", "5432")
+    with store.snapshot():
+        store.save("project", "db-port", "port the database listens on", "6543")
+        with store.snapshot():
+            assert store.recall("database port", k=1)[0].body == "5432"
+        assert store.recall("database port", k=1)[0].body == "5432"

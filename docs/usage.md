@@ -141,6 +141,14 @@ print(agent.run("Which team owns the payments API? Check memory first.").output)
   agent revises. It borrows the agent's client unless you pass `client=`.
   When the agent has tools, prefer `GroundedCritiqueGate` (section 7), whose
   critic also sees the tool evidence.
+- `deterministic_sampling=True` (both gates, default `False`) tells the gate it
+  may reuse a verdict instead of re-buying it when a round re-judges a
+  byte-identical critic prompt — typically the answerer repeating itself, where
+  every repeat costs a critic call for a verdict already in hand. Affirm it only
+  where your endpoint reproduces a sample exactly for a fixed request and a
+  pinned `seed` (a local Ollama or llama.cpp does; a batching vLLM or a hosted
+  router is best-effort). The gate also checks that a seed is actually pinned on
+  the client, and pays for the call whenever either half is missing.
 
 Use a different rubric by name, or build one inline:
 

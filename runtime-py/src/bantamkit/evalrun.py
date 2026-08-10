@@ -15,7 +15,7 @@ from pathlib import Path
 
 import yaml
 
-from bantamkit.agent import Agent, MaxTurnsExceeded, ToolDef
+from bantamkit.agent import Agent, MaxTurnsExceeded, ToolDef, response_format_for
 from bantamkit.assets import assets_root
 from bantamkit.budget import TokenBudget
 from bantamkit.client import BantamError, Message, ModelClient, OpenAICompatible, Tool, Usage
@@ -442,17 +442,25 @@ def run_task(
             optional_cutoff=policy("token_budget", "optional_cutoff"),
         )
         agent.use(budget)
+    memory_attached = False
     if effective in ("memory", "lean", "full") and task.get("memory_setup"):
         store_dir = workdir / f"{task['name']}-{config}-mem"
         store = MemoryStore(store_dir)
         for fact in task["memory_setup"]:
             store.save(fact["type"], fact["name"], fact["description"], fact["body"])
         agent.use(Memory(store=store_dir))
+        memory_attached = True
     if effective in ("lean", "full") and "schema" in task:
         # The agent owns the loop here, so it needs the same instruction structured() gives.
         # Gate registered before the critique gate: a malformed answer is fixed for free
         # rather than spending a critique call on it.
         agent.add_system(schema_instruction(task["schema"]))
+        # Tier 1 on the loop's own call, the same tier `structured` has always had.
+        # It belongs here and not inside `SchemaGate`: a gate only ever sees a violation
+        # that already happened, so a gate-owned decision could never constrain the first
+        # decode — and on 3b that first decode is where the run was lost (RP1 wire capture:
+        # all three POSTs of a schema-exhausted cell carried only `{model, messages, seed}`).
+        agent.response_format = response_format_for(task["schema"])
         schema_gate = SchemaGate(task["schema"], max_attempts=policy("schema_gate", "max_attempts"))
         agent.use(schema_gate)
     if effective in ("memory", "lean", "full") and task["scoring"]["kind"] == "json_equal":
@@ -465,15 +473,46 @@ def run_task(
     # which is the tracking client — wrapped by the budget in the `budgeted` config,
     # bare tracking everywhere else (identical to the `client=tracking` they used to be
     # handed). Inheriting is what puts critic spend in front of the governor.
+    # `deterministic_sampling=True` on both gates below is this harness affirming what
+    # the library will not assume for a consumer: that the endpoint reproduces a sample
+    # exactly for a fixed request under the seed pinned above. It is the harness's claim
+    # to make and it costs nothing new — every bar here is already stated as a seeded
+    # number, and a run against a backend that resamples has an unreproducible bar with
+    # or without the critic memo. A consumer whose backend batches gets the safe default
+    # instead (RP5b; `CritiqueGate._verdict`).
     if effective == "critique":
         critique_gate = CritiqueGate(
-            "task-completion", max_rounds=policy("critique", "max_rounds")
+            "task-completion",
+            max_rounds=policy("critique", "max_rounds"),
+            deterministic_sampling=True,
         )
         agent.use(critique_gate)
-    if effective in ("grounded", "full"):
+    # RB-P8. A `memory_setup` task keeps its answer in a store; a config that attaches
+    # no store hands the agent a question whose only source it withheld. That is the
+    # deliberate control arm — `bare`, `critique` and `grounded` all run those tasks
+    # storeless, which is how the memory component's uplift gets measured. What is not
+    # deliberate is then asking a critic that verifies answers *against sources* to
+    # bless one, because there is no source for it to check and refusing is the only
+    # honest verdict it can reach. On 4b `grounded` that spent ten `critique-exhausted`
+    # runs, three rounds each, on answers no round could ever have fixed.
+    #
+    # Composition, not library: `GroundedCritiqueGate` is behaving correctly, and a
+    # library-side degrade ("pass when the evidence set is empty") would make every
+    # consumer's grounded gate defeatable by calling no tools — the one thing it is
+    # attached to prevent. The defect is that this recipe pairs a source-checking
+    # critic with a task whose source it removed, so the recipe is what changes.
+    #
+    # Scoped to the measured cell on purpose. Toolless `structured-extraction` tasks
+    # also reach the critic with an empty evidence set, but their source is the task
+    # prompt itself, they burn no exhausted runs, and there is no finding to act on —
+    # so they keep the gate. `full` never trips this, because a `memory_setup` task
+    # under `full` always gets its store.
+    source_withheld = bool(task.get("memory_setup")) and not memory_attached
+    if effective in ("grounded", "full") and not source_withheld:
         critique_gate = GroundedCritiqueGate(
             max_rounds=policy("critique", "max_rounds"),
             evidence_budget=policy("critique", "evidence_budget"),
+            deterministic_sampling=True,
         )
         agent.use(critique_gate)
     if effective in GRAPH_CONFIGS and any(n in WORKSPACE_TOOLS for n in task.get("tools", [])):

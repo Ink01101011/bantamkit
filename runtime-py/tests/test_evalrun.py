@@ -4,6 +4,7 @@ import pytest
 from conftest import FakeClient, assistant, call
 
 from bantamkit import evalrun
+from bantamkit.agent import response_format_for
 from bantamkit.budget import _BudgetedClient
 from bantamkit.client import BantamError, Message, ToolCall
 from bantamkit.contract import loop_note
@@ -343,7 +344,9 @@ def test_outcome_critique_exhausted_counts_rounds(tmp_path):
     result = run_task(client, get_task("recall-owner"), "critique", tmp_path)
     assert result.passed is False
     assert result.outcome == "critique-exhausted"
-    assert result.critique_rounds == 2  # feedback issued twice; third violation raises
+    # Three critic calls, three rounds recorded — the column used to read 2 while the
+    # error text beside it said "after 3 rounds".
+    assert result.critique_rounds == 3
 
 
 def test_tool_calls_counted(tmp_path):
@@ -1398,7 +1401,8 @@ def test_turns_exhausted_transcript_carries_the_messages(tmp_path):
     assert result.tool_calls == 0
 
 
-def test_gate_raised_transcript_stays_empty_without_a_messages_attribute(tmp_path):
+def test_gate_raised_transcript_stays_empty_without_an_agent_loop(tmp_path):
+    """The `structured` config has no agent transcript to fill the slot with."""
     transcripts = tmp_path / "t"
     transcripts.mkdir()
     client = FakeClient([assistant(content="not json")] * 3)
@@ -1407,6 +1411,52 @@ def test_gate_raised_transcript_stays_empty_without_a_messages_attribute(tmp_pat
     )
     assert result.outcome == "schema-exhausted"
     assert read_transcript(transcripts, "structured", "extract-contact")["messages"] == []
+
+
+# ---- RP4a: gate-exhausted transcripts are no longer empty either ----
+
+
+def test_schema_exhausted_transcript_carries_the_messages(tmp_path):
+    """RP1 probe: a `lean` schema-exhausted run wrote `{"output": null, "messages": []}`."""
+    transcripts = tmp_path / "t"
+    transcripts.mkdir()
+    client = FakeClient([assistant(content='{"name": "Ann"}')] * 3)
+    result = run_task(
+        client, get_task("extract-contact"), "lean", tmp_path, transcripts_dir=transcripts
+    )
+    assert result.outcome == "schema-exhausted"
+    data = read_transcript(transcripts, "lean", "extract-contact")
+    assert data["messages"], "schema-exhausted runs used to write messages: []"
+    assert [m["role"] for m in data["messages"]].count("assistant") == 3
+    assert data["messages"][-1]["content"] == '{"name": "Ann"}'
+
+
+def test_critique_exhausted_transcript_carries_the_messages(tmp_path):
+    """Same gap on the other gate: RP2 had to monkeypatch the runtime to see this run."""
+    transcripts = tmp_path / "t"
+    transcripts.mkdir()
+    bad_verdict = '{"score": 2, "feedback": "still wrong"}'
+    client = FakeClient(
+        [
+            assistant(content="answer one"),
+            assistant(content=bad_verdict),
+            assistant(content="answer two"),
+            assistant(content=bad_verdict),
+            assistant(content="answer three"),
+            assistant(content=bad_verdict),
+        ]
+    )
+    result = run_task(
+        client, get_task("recall-owner"), "critique", tmp_path, transcripts_dir=transcripts
+    )
+    assert result.outcome == "critique-exhausted"
+    data = read_transcript(transcripts, "critique", "recall-owner")
+    assert data["messages"], "critique-exhausted runs used to write messages: []"
+    assert [m["content"] for m in data["messages"] if m["role"] == "assistant"] == [
+        "answer one",
+        "answer two",
+        "answer three",
+    ]
 
 
 # ---- P6: --eval-profile threads explicit constructor args ----
@@ -1445,7 +1495,7 @@ def test_profile_critique_rounds_reach_the_gate(tmp_path):
     client = FakeClient([assistant(content="answer one"), assistant(content=bad_verdict)])
     result = run_task(client, get_task("recall-owner"), "critique", tmp_path, profile=profile)
     assert result.outcome == "critique-exhausted"
-    assert result.critique_rounds == 0  # max_rounds=1: the first violation raises
+    assert result.critique_rounds == 1  # max_rounds=1: the first violation raises, and counts
 
 
 def test_run_suite_threads_the_profile_to_every_task(tmp_path, monkeypatch):
@@ -1646,6 +1696,38 @@ def test_full_gate_client_is_the_tracking_client(tmp_path, monkeypatch):
     assert result.passed is True and result.model_calls == 2 and result.tokens == 30
 
 
+def test_both_critique_gates_affirm_deterministic_sampling(tmp_path, monkeypatch):
+    """RP5b: the memo is off in the library until a caller affirms, and the harness is
+    the caller that can. It pins a seed per run and measures against a seed-honouring
+    local endpoint, so a bar it produced is already unreproducible on a backend that
+    resamples — the affirmation adds no assumption the methodology did not already make.
+    Without it the RP4e livelock bar (10,571 tokens, 7 model calls per run) would not
+    reproduce."""
+    grounded = capture_gate(monkeypatch, "GroundedCritiqueGate")
+    blind = capture_gate(monkeypatch, "CritiqueGate")
+    run_task(
+        FakeClient([assistant(content=CONTACT), assistant(content=GROUNDED_VERDICT)]),
+        get_task("extract-contact"),
+        "full",
+        tmp_path,
+    )
+    run_task(
+        FakeClient(
+            [
+                assistant(content='{"team": "Atlas"}'),
+                assistant(content='{"score": 9, "feedback": "ok"}'),
+            ]
+        ),
+        get_task("recall-owner"),
+        "critique",
+        tmp_path,
+    )
+    (grounded_gate,) = grounded
+    (blind_gate,) = blind
+    assert grounded_gate.deterministic_sampling is True
+    assert blind_gate.deterministic_sampling is True
+
+
 def test_critique_gate_client_is_the_tracking_client(tmp_path, monkeypatch):
     captured = capture_gate(monkeypatch, "CritiqueGate")
     client = FakeClient(
@@ -1799,3 +1881,129 @@ def test_headline_configs_carry_no_guard(tmp_path):
     obs = [client.calls[i]["messages"][-1].content for i in (1, 2, 3)]
     assert obs[0] == obs[1] == obs[2]
     assert result.passed is True
+
+
+# ---- RB-P3: lean/full engage the constrained-decoding tier ----
+# (reuses `ConstrainedClient` above — the same fake that pins TrackingClient's forwarding)
+
+
+@pytest.mark.parametrize("config", ["lean", "full"])
+def test_schema_configs_constrain_the_first_decode(config, tmp_path):
+    """RP1's finding: the gate can only react, so the FIRST call has to be constrained."""
+    task = get_task("extract-contact")
+    client = ConstrainedClient([assistant(content=CONTACT), assistant(content=GROUNDED_VERDICT)])
+    result = run_task(client, task, config, tmp_path)
+    assert result.passed is True
+    assert client.response_formats[0] == response_format_for(task["schema"])
+
+
+def test_the_gate_retry_is_constrained_too(tmp_path):
+    task = get_task("extract-contact")
+    client = ConstrainedClient(
+        [assistant(content='{"name": "Ann Chen"}'), assistant(content=CONTACT)]
+    )
+    run_task(client, task, "lean", tmp_path)
+    assert client.response_formats == [response_format_for(task["schema"])] * 2
+
+
+def test_the_critique_verdict_keeps_its_own_schema(tmp_path):
+    """`full` sends two different schemas: the task's on the answer, the rubric's on the verdict."""
+    task = get_task("extract-contact")
+    client = ConstrainedClient([assistant(content=CONTACT), assistant(content=GROUNDED_VERDICT)])
+    run_task(client, task, "full", tmp_path)
+    task_rf, verdict_rf = client.response_formats
+    assert task_rf == response_format_for(task["schema"])
+    assert verdict_rf != task_rf
+    assert "score" in verdict_rf["json_schema"]["schema"]["properties"]
+
+
+@pytest.mark.parametrize("config", ["bare", "critique", "grounded", "graph", "memory"])
+def test_non_schema_configs_are_left_unconstrained(config, tmp_path):
+    """The tier rides on the schema gate's registration, nowhere else."""
+    client = ConstrainedClient(
+        [assistant(content=CONTACT), assistant(content=GROUNDED_VERDICT)] * 2
+    )
+    run_task(client, get_task("extract-contact"), config, tmp_path)
+    assert client.response_formats[0] is None
+
+
+def test_structured_config_is_untouched(tmp_path):
+    """It already drove its own constrained loop; this change must not move it."""
+    task = get_task("extract-contact")
+    client = ConstrainedClient([assistant(content=CONTACT)])
+    result = run_task(client, task, "structured", tmp_path)
+    assert result.passed is True
+    assert client.response_formats == [response_format_for(task["schema"])]
+
+
+def test_a_schemaless_task_stays_unconstrained_under_lean(tmp_path):
+    client = ConstrainedClient([assistant(content="The total is 42 dollars.")])
+    run_task(client, get_task("shop-total"), "lean", tmp_path)
+    assert client.response_formats == [None]
+
+
+# ---- RB-P8: the grounded critic needs a source, and this recipe removed it ----
+
+
+LOW_GROUNDED_VERDICT = (
+    '{"reasoning": "nothing supports this", "score": 2, "feedback": "unverified"}'
+)
+
+
+def test_grounded_skips_the_critic_when_it_withheld_the_answer_source(tmp_path):
+    """`grounded` runs `memory_setup` tasks storeless, so the critic has nothing to check."""
+    client = FakeClient([assistant(content='{"team": "Atlas"}')])
+    result = run_task(client, get_task("recall-owner"), "grounded", tmp_path)
+    assert len(client.calls) == 1  # the agent answered; no critic was asked
+    assert result.critique_rounds == 0
+    assert result.passed is True and result.outcome == "pass"
+
+
+def test_grounded_scores_a_wrong_storeless_recall_instead_of_exhausting_a_critic(tmp_path):
+    """The ten runs RB-P8 measured: honest verdicts, three rounds, unfixable answers."""
+    client = FakeClient([assistant(content='{"team": "Nobody"}')])
+    result = run_task(client, get_task("recall-owner"), "grounded", tmp_path)
+    assert result.passed is False
+    assert result.outcome == "wrong-answer" and result.error is None
+    assert result.critique_rounds == 0 and len(client.calls) == 1
+
+
+def test_full_still_critiques_a_memory_task_because_it_attached_the_store(tmp_path):
+    """`full` never trips the guard: a `memory_setup` task under `full` gets its store."""
+    client = FakeClient(
+        [assistant(content='{"team": "Atlas"}'), assistant(content=GROUNDED_VERDICT)]
+    )
+    result = run_task(client, get_task("recall-owner"), "full", tmp_path)
+    assert len(client.calls) == 2
+    assert "score" in client.calls[1]["messages"][-1].content
+    assert result.passed is True
+
+
+def test_grounded_still_critiques_a_task_that_has_tools(tmp_path):
+    client = FakeClient(
+        [
+            assistant(content="the total is 999"),
+            assistant(content=LOW_GROUNDED_VERDICT),
+            assistant(content="the total is 100"),
+            assistant(content=GROUNDED_VERDICT),
+        ]
+    )
+    result = run_task(client, get_task("shop-total"), "grounded", tmp_path)
+    assert result.critique_rounds == 1 and result.passed is True
+
+
+def test_grounded_still_critiques_a_toolless_task_whose_source_is_its_prompt(tmp_path):
+    """Deliberate scope boundary: extraction reaches the critic with empty evidence too,
+    but its source is the prompt and it burns no exhausted runs, so it keeps the gate."""
+    client = FakeClient([assistant(content=CONTACT), assistant(content=GROUNDED_VERDICT)])
+    result = run_task(client, get_task("extract-contact"), "grounded", tmp_path)
+    assert len(client.calls) == 2 and result.passed is True
+    assert "(no tool calls were made)" in client.calls[1]["messages"][-1].content
+
+
+def test_memory_and_bare_configs_are_untouched_by_the_guard(tmp_path):
+    """The guard gates one gate, not the control arms: `grounded` still runs the task."""
+    for config in ("bare", "critique", "memory"):
+        client = FakeClient([assistant(content='{"team": "Atlas"}')] * 4)
+        result = run_task(client, get_task("recall-owner"), config, tmp_path)
+        assert result.task == "recall-owner" and result.config == config

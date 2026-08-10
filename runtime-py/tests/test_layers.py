@@ -29,9 +29,17 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "bantamkit"
 # changed prompt bytes — that is a defect in the refactor, never in this file.
 GOLDEN_SCHEMA_INSTRUCTION = "Return ONLY a JSON object matching this JSON Schema. No prose.\n"
 GOLDEN_SCHEMA_RETRY = "boom\nReturn ONLY a JSON object matching the schema."
+# Updated deliberately in the RB-P5 cycle (RP4d): the retry verb was the defect.
+# "Revise and answer again." points the answerer at its own previous string, so a
+# 4b told "the version is not present in the evidence" edited `imgproc-cli-0.1.0`
+# into `imgproc-cli-<version>` instead of reading the VERSION file it had never
+# opened. The replacement names the missing-evidence case and its remedy.
 GOLDEN_CRITIQUE = (
     "A reviewer scored your answer 2/10 (needs >= 7). Feedback: too short\n"
-    "Revise and answer again."
+    "If the feedback says a value is missing, unverified, or absent from your "
+    "evidence, that is a fact you never looked up: call your tools and read the "
+    "source that has it. Do not reword, generalise, or hedge the previous answer "
+    "to work around the gap. Then answer again."
 )
 GOLDEN_EVIDENCE_EMPTY = "(no tool calls were made)"
 # New in the contract-robustness cycle (P4), so not a "pre-split" literal — but it is

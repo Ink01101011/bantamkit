@@ -1,7 +1,7 @@
 name: default
 schema_instruction: "Return ONLY a JSON object matching this JSON Schema. No prose.\n"
 schema_retry: "{error}\nReturn ONLY a JSON object matching the schema."
-critique_feedback: "A reviewer scored your answer {score}/10 (needs >= {threshold}). Feedback: {feedback}\nRevise and answer again."
+critique_feedback: "A reviewer scored your answer {score}/10 (needs >= {threshold}). Feedback: {feedback}\nIf the feedback says a value is missing, unverified, or absent from your evidence, that is a fact you never looked up: call your tools and read the source that has it. Do not reword, generalise, or hedge the previous answer to work around the gap. Then answer again."
 parse_error: "output was not parseable JSON: {detail}"
 validation_error: "JSON does not match schema at '{where}': {detail}"
 json_answer_retry: "Your answer contains no JSON. Restate your final answer as ONLY the JSON requested by the task, with no prose around it."

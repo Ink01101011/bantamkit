@@ -3,11 +3,35 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass, field
 
 from bantamkit.client import BantamError, Message, ModelClient, Tool, Usage
 from bantamkit.profile import default as profile_default
 from bantamkit.textutil import truncate
+
+
+def response_format_for(schema: dict) -> dict:
+    """The wire shape of the constrained-decoding tier, in one place.
+
+    Lives here rather than in `structured.py` so both core callers — the one-shot
+    `structured()` loop and the agent loop — send byte-identical bodies; a second
+    spelling would make "same tier" unfalsifiable across the two paths.
+    """
+    return {"type": "json_schema", "json_schema": {"name": "output", "schema": schema}}
+
+
+def _supports_response_format(client: ModelClient) -> bool:
+    """Duck-typed capability check, same spirit as `seed`.
+
+    A client that understands the kwarg exposes the memo (`OpenAICompatible`
+    initializes it `False`); one that has met a 400 has flipped it to `True`.
+    Fake clients and adapters that never heard of the kwarg lack the attribute
+    entirely and are never sent it.
+    """
+    return hasattr(client, "_response_format_unsupported") and not (
+        client._response_format_unsupported
+    )
 
 
 class MaxTurnsExceeded(BantamError):
@@ -21,6 +45,25 @@ class MaxTurnsExceeded(BantamError):
     def __init__(self, message: str, messages: list[Message] | None = None):
         super().__init__(message)
         self.messages: list[Message] = list(messages or [])
+
+
+def _attach_transcript(error: BantamError, messages: list[Message]) -> None:
+    """Fill in a gate-raised error's transcript slot from the agent's own messages.
+
+    A post hook raises from inside `_first_feedback`, where the agent is the last
+    holder of the transcript — the hook was never handed one, and `run_task`'s own
+    `messages` list is still empty. Without this, every `schema-exhausted` and
+    `critique-exhausted` run recorded `messages: []`.
+
+    Opt-in by declaration, and fill-once: only an error that already carries a
+    `messages` list (the `MaxTurnsExceeded` shape) is filled, and only while that
+    list is empty. An error that declares no slot is left exactly as raised — a
+    transport failure is not a gate giving up, and measurement must not invent a
+    payload for it.
+    """
+    existing = getattr(error, "messages", None)
+    if isinstance(existing, list) and not existing:
+        error.messages = list(messages)
 
 
 @dataclass
@@ -82,7 +125,17 @@ class Agent:
     # Typed loosely and duck-typed at the call sites on purpose: core must not depend
     # on the component, and an agent without one is byte-identical to before.
     budget: object | None = None
+    # Optional constrained-decoding request for the loop's own model call
+    # (`response_format_for(schema)`). Unset by default and forwarded only to a client
+    # that understands the kwarg, so every existing caller stays byte-identical.
+    # It has to live on the loop, not on a gate: a gate only ever sees a violation that
+    # already happened, and the decode worth constraining is the first one.
+    response_format: dict | None = None
     _post_hooks: list[Callable[..., str | None]] = field(default_factory=list)
+    # Component state that must be scoped to one assistant turn's tool calls rather
+    # than to the whole run — see `add_batch_scope`. An agent that registers none
+    # behaves exactly as it did before the hook existed.
+    _batch_scopes: list[Callable[[], AbstractContextManager]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.tools = list(self.tools or [])
@@ -105,6 +158,18 @@ class Agent:
     def add_post_hook(self, hook: Callable[..., str | None]) -> None:
         self._post_hooks.append(hook)
 
+    def add_batch_scope(self, scope: Callable[[], AbstractContextManager]) -> None:
+        """Register a context-manager factory entered around each tool-call batch.
+
+        The model emits a whole batch of tool calls from one view of the world, and
+        this loop then dispatches them one after another — so a write early in the
+        batch is visible to a read later in the same batch, which the model has no
+        way to anticipate. A component whose state must not move under its own feet
+        mid-turn registers the boundary here; only the component knows what "not
+        moving" means for it, and only the loop knows where the turn ends.
+        """
+        self._batch_scopes.append(scope)
+
     def run(self, prompt: str) -> AgentResult:
         messages: list[Message] = []
         if self.system:
@@ -119,25 +184,47 @@ class Agent:
                 # already produced: a truncated answer is still scorable, and an
                 # exception here would convert a scorable answer into a loss.
                 return AgentResult(output=last_content, messages=messages, usage=usage)
-            resp = self.client.chat(messages, tools=[t.tool for t in self.tools] or None)
+            resp = self._chat(messages)
             usage = usage + resp.usage
             messages.append(resp.message)
             if resp.message.content:
                 last_content = resp.message.content
 
             if resp.message.tool_calls:
-                for tc in resp.message.tool_calls:
-                    observation = truncate(self._dispatch(tc), self.observation_budget)
-                    messages.append(Message(role="tool", content=observation, tool_call_id=tc.id))
+                with ExitStack() as stack:
+                    for scope in self._batch_scopes:
+                        stack.enter_context(scope())
+                    for tc in resp.message.tool_calls:
+                        observation = truncate(self._dispatch(tc), self.observation_budget)
+                        messages.append(
+                            Message(role="tool", content=observation, tool_call_id=tc.id)
+                        )
                 continue
 
             output = resp.message.content or ""
-            feedback = self._first_feedback(prompt, output, messages)
+            try:
+                feedback = self._first_feedback(prompt, output, messages)
+            except BantamError as e:
+                # Recording only. The exception propagates unchanged — same type,
+                # same message, same traceback — so no verdict can move.
+                _attach_transcript(e, messages)
+                raise
             if feedback is None:
                 return AgentResult(output=output, messages=messages, usage=usage)
             messages.append(Message(role="user", content=feedback))
 
         raise MaxTurnsExceeded(f"no final answer within {self.max_turns} turns", messages)
+
+    def _chat(self, messages: list[Message]):
+        """One model call, with the constrained-decoding tier when it is available.
+
+        Re-checked per turn, as `structured()` does: a 400 on turn 1 flips the client's
+        memo and silently drops the tier from there on.
+        """
+        tools = [t.tool for t in self.tools] or None
+        if self.response_format is not None and _supports_response_format(self.client):
+            return self.client.chat(messages, tools=tools, response_format=self.response_format)
+        return self.client.chat(messages, tools=tools)
 
     def _dispatch(self, tc) -> str:
         tooldef = next((t for t in self.tools if t.tool.name == tc.name), None)

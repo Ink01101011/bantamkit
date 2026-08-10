@@ -7,9 +7,10 @@ from bantamkit.agent import (
     MaxTurnsExceeded,
     ToolDef,
     coerce_arguments,
+    response_format_for,
     truncate,
 )
-from bantamkit.client import Tool
+from bantamkit.client import BantamError, Message, Tool
 
 
 def lookup_tool(handler):
@@ -120,6 +121,64 @@ def test_max_turns_exceeded_carries_the_transcript():
 def test_max_turns_exceeded_messages_defaults_to_empty():
     """Constructed without a transcript (older callers, tests) it is still a list."""
     assert MaxTurnsExceeded("no final answer").messages == []
+
+
+class GateGaveUp(BantamError):
+    """A gate error shaped like `MaxTurnsExceeded`: it declares a transcript slot."""
+
+    def __init__(self, message, messages=None):
+        super().__init__(message)
+        self.messages = list(messages or [])
+
+
+def test_post_hook_error_gets_the_agent_transcript():
+    """A gate raises from inside `_first_feedback`; only the agent still holds the run."""
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("lookup", {"item": "w"})]),
+            assistant(content="draft"),
+        ]
+    )
+    agent = Agent(client=client, tools=[lookup_tool(lambda item: "obs")])
+
+    def gate(task, output):
+        raise GateGaveUp("gave up")
+
+    agent.add_post_hook(gate)
+    with pytest.raises(GateGaveUp) as excinfo:
+        agent.run("t")
+    messages = excinfo.value.messages
+    assert [m.role for m in messages] == ["user", "assistant", "tool", "assistant"]
+    assert [tc.name for m in messages for tc in m.tool_calls] == ["lookup"]
+
+
+def test_post_hook_error_keeps_a_transcript_it_already_carries():
+    """Opt-in and fill-once: a slot the raiser populated is never overwritten."""
+    client = FakeClient([assistant(content="draft")])
+    agent = Agent(client=client)
+    own = [Message(role="assistant", content="the raiser's own record")]
+
+    def gate(task, output):
+        raise GateGaveUp("gave up", own)
+
+    agent.add_post_hook(gate)
+    with pytest.raises(GateGaveUp) as excinfo:
+        agent.run("t")
+    assert [m.content for m in excinfo.value.messages] == ["the raiser's own record"]
+
+
+def test_post_hook_error_without_a_transcript_slot_is_left_alone():
+    """No slot declared, no payload grafted on: transport errors are not gate failures."""
+    client = FakeClient([assistant(content="draft")])
+    agent = Agent(client=client)
+
+    def gate(task, output):
+        raise BantamError("something else entirely")
+
+    agent.add_post_hook(gate)
+    with pytest.raises(BantamError) as excinfo:
+        agent.run("t")
+    assert not hasattr(excinfo.value, "messages")
 
 
 def test_post_hook_feedback_then_accept():
@@ -287,3 +346,183 @@ def test_plain_hook_still_gets_two_args_alongside_transcript_hook():
     agent.run("t")
     assert calls[0][0] == "transcript" and calls[0][1] >= 2
     assert calls[1] == ("plain", "t", "ok")
+
+
+# ---- RB-P3: constrained decoding on the loop's own call ----
+
+SCHEMA = {"type": "object", "required": ["item"], "properties": {"item": {"type": "string"}}}
+
+
+class ConstrainedClient(FakeClient):
+    """A client that understands the kwarg, like OpenAICompatible."""
+
+    def __init__(self, responses, unsupported=False):
+        super().__init__(responses)
+        self._response_format_unsupported = unsupported
+        self.response_formats = []
+
+    def chat(self, messages, tools=None, response_format=None):
+        self.response_formats.append(response_format)
+        return super().chat(messages, tools)
+
+
+def test_response_format_for_matches_the_shape_structured_already_sends():
+    assert response_format_for(SCHEMA) == {
+        "type": "json_schema",
+        "json_schema": {"name": "output", "schema": SCHEMA},
+    }
+
+
+def test_agent_forwards_response_format_when_the_client_understands_it():
+    client = ConstrainedClient([assistant(content='{"item": "widget"}')])
+    Agent(client=client, response_format=response_format_for(SCHEMA)).run("t")
+    assert client.response_formats == [response_format_for(SCHEMA)]
+
+
+def test_agent_constrains_every_turn_not_just_the_first():
+    """The gate's feedback turn is a decode too, and it is the one that kept failing."""
+    client = ConstrainedClient(
+        [
+            assistant(tool_calls=[call("lookup", {"query": "q"})]),
+            assistant(content='{"item": "widget"}'),
+        ]
+    )
+    agent = Agent(client=client, tools=[lookup_tool(lambda query: "obs")])
+    agent.response_format = response_format_for(SCHEMA)
+    agent.run("t")
+    assert client.response_formats == [response_format_for(SCHEMA)] * 2
+
+
+def test_agent_omits_response_format_once_the_client_memoized_a_400():
+    client = ConstrainedClient([assistant(content="prose")], unsupported=True)
+    Agent(client=client, response_format=response_format_for(SCHEMA)).run("t")
+    assert client.response_formats == [None]
+
+
+def test_agent_drops_the_tier_mid_run_when_the_memo_flips():
+    client = ConstrainedClient(
+        [
+            assistant(tool_calls=[call("lookup", {"query": "q"})]),
+            assistant(content="done"),
+        ]
+    )
+    inner_chat = client.chat
+
+    def chat(messages, tools=None, response_format=None):
+        resp = inner_chat(messages, tools, response_format)
+        client._response_format_unsupported = True  # as the 400 fallback would
+        return resp
+
+    client.chat = chat
+    agent = Agent(client=client, tools=[lookup_tool(lambda query: "obs")])
+    agent.response_format = response_format_for(SCHEMA)
+    agent.run("t")
+    assert client.response_formats[0] is not None
+    assert client.response_formats[1] is None
+
+
+def test_an_agent_that_sets_nothing_never_sends_the_kwarg():
+    """The field is opt-in: today's callers must stay byte-identical."""
+    client = ConstrainedClient([assistant(content="done")])
+    assert Agent(client=client).response_format is None
+    Agent(client=client).run("t")
+    assert client.response_formats == [None]
+
+
+def test_clients_without_the_kwarg_are_never_sent_it():
+    """conftest's FakeClient has a 2-arg chat: forwarding would be a TypeError."""
+    client = FakeClient([assistant(content="done")])
+    agent = Agent(client=client, response_format=response_format_for(SCHEMA))
+    assert agent.run("t").output == "done"
+
+
+def test_tools_still_travel_with_a_constrained_call():
+    client = ConstrainedClient([assistant(content="done")])
+    agent = Agent(
+        client=client,
+        tools=[lookup_tool(lambda query: "obs")],
+        response_format=response_format_for(SCHEMA),
+    )
+    agent.run("t")
+    assert [t.name for t in client.calls[0]["tools"]] == ["lookup"]
+
+
+# ---- RB-P1 P-B: per-tool-call-batch scopes ----
+
+
+def _scope_recorder(events, label):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def scope():
+        events.append(f"enter-{label}")
+        try:
+            yield
+        finally:
+            events.append(f"exit-{label}")
+
+    return scope
+
+
+def test_batch_scope_wraps_the_whole_tool_call_batch():
+    events = []
+    client = FakeClient(
+        [
+            assistant(
+                tool_calls=[
+                    call("lookup", {"key": "a"}, id="c1"),
+                    call("lookup", {"key": "b"}, id="c2"),
+                ]
+            ),
+            assistant(content="done"),
+        ]
+    )
+    agent = Agent(client=client, tools=[lookup_tool(lambda key: events.append(key) or key)])
+    agent.add_batch_scope(_scope_recorder(events, "s"))
+    agent.run("t")
+    assert events == ["enter-s", "a", "b", "exit-s"]
+
+
+def test_batch_scope_is_re_entered_per_turn_and_skipped_on_a_toolless_turn():
+    events = []
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("lookup", {"key": "a"})]),
+            assistant(tool_calls=[call("lookup", {"key": "b"})]),
+            assistant(content="done"),
+        ]
+    )
+    agent = Agent(client=client, tools=[lookup_tool(lambda key: key)])
+    agent.add_batch_scope(_scope_recorder(events, "s"))
+    agent.run("t")
+    assert events == ["enter-s", "exit-s", "enter-s", "exit-s"]
+
+
+def test_batch_scope_exits_even_when_a_handler_explodes():
+    events = []
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("lookup", {"key": "a"})]),
+            assistant(content="done"),
+        ]
+    )
+
+    def boom(key):
+        raise ValueError("nope")
+
+    agent = Agent(client=client, tools=[lookup_tool(boom)])
+    agent.add_batch_scope(_scope_recorder(events, "s"))
+    agent.run("t")
+    assert events == ["enter-s", "exit-s"]
+
+
+def test_an_agent_with_no_batch_scope_is_unchanged():
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("lookup", {"key": "port"})]),
+            assistant(content="5432"),
+        ]
+    )
+    agent = Agent(client=client, tools=[lookup_tool(lambda key: "5432")])
+    assert agent.run("t").output == "5432"
+    assert client.calls[1]["messages"][-1].content == "5432"

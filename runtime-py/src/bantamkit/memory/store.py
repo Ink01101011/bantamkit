@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -65,8 +66,35 @@ class MemoryStore:
         self.index_budget = index_budget
         self.k = k
         self._today = today or (lambda: date.today().isoformat())
+        self._snapshot: list[Fact] | None = None
         if create:
             self._ensure_dirs()
+
+    @contextmanager
+    def snapshot(self) -> Iterator[None]:
+        """Reads inside this scope see the facts as of scope entry; writes stay live.
+
+        Measured cause (RB-P1, seed 2418578173): one assistant turn dispatched
+        recall / save / recall, the speculative save updated the ground-truth fact
+        between the two reads, and the model answered from its own fabrication.
+        Pinning the read set makes a write speculative *for the scope only* — `save`
+        still reads and writes live state, so same-name-is-update is untouched, and
+        the next scope reads the write.
+
+        Nesting keeps the outermost pin: a scope entered twice is still one turn.
+        A store that cannot be read is simply not pinned, so an unreadable store
+        still raises out of `recall`, exactly where it always did.
+        """
+        previous = self._snapshot
+        if previous is None:
+            try:
+                self._snapshot = self._facts()
+            except (BantamError, OSError, UnicodeDecodeError):
+                self._snapshot = None
+        try:
+            yield
+        finally:
+            self._snapshot = previous
 
     def _ensure_dirs(self) -> None:
         (self.root / "facts").mkdir(parents=True, exist_ok=True)
@@ -124,7 +152,7 @@ class MemoryStore:
         k = k if k is not None else self.k
         q = _tokens(query)
         scored = []
-        for fact in self._facts():
+        for fact in self._snapshot if self._snapshot is not None else self._facts():
             score = len(q & _tokens(f"{fact.name} {fact.description}"))
             if score > 0:
                 scored.append((score, fact))
@@ -132,8 +160,7 @@ class MemoryStore:
         hits = [fact for _, fact in scored[:k]]
         if stamp:
             for fact in hits:
-                fact.last_recalled = self._today()
-                self._write_fact(fact)
+                self._stamp(fact)
         return hits
 
     def lint(self) -> None:
@@ -190,6 +217,24 @@ class MemoryStore:
             except (ValueError, KeyError, yaml.YAMLError) as e:
                 raise MemoryValidationError(f"malformed fact file {path.name}: {e}") from e
         return facts
+
+    def _stamp(self, fact: Fact) -> None:
+        """Date the recall without ever writing pinned content back.
+
+        Inside `snapshot()` a hit is a pre-scope copy of the file, so writing it
+        verbatim would silently revert a `save` made in the same scope — the same
+        poisoning, in reverse. The date therefore lands on whatever is on disk now,
+        and a fact that is no longer there is left alone rather than resurrected.
+        """
+        fact.last_recalled = self._today()
+        if self._snapshot is None:
+            self._write_fact(fact)
+            return
+        live = next((f for f in self._facts() if f.name == fact.name), None)
+        if live is None:
+            return
+        live.last_recalled = fact.last_recalled
+        self._write_fact(live)
 
     def _write_fact(self, fact: Fact) -> None:
         meta = {

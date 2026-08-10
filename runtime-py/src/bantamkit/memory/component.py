@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from bantamkit.agent import Agent, ToolDef
@@ -62,7 +64,30 @@ class Memory:
     def setup(self, agent: Agent) -> None:
         agent.register_tool(ToolDef(tool=load_tool("memory_save"), handler=self.save))
         agent.register_tool(ToolDef(tool=load_tool("memory_recall"), handler=self.recall))
+        agent.add_batch_scope(self.batch)
         agent.add_system(load_skill("memory"))
+
+    @contextmanager
+    def batch(self) -> Iterator[None]:
+        """One assistant turn's recalls read the store as it was before the turn.
+
+        Measured cause (RB-P1, seed 2418578173): the model dispatched recall / save /
+        recall in a single turn, the speculative save updated `payments-api-owner`
+        between the two reads, and it then answered `finance-team` off its own
+        fabrication instead of the seeded `Atlas`. Nothing was wrong with the write —
+        `save` is doing its documented job — the defect is that a batch the model
+        composed from one view of memory got answered from another.
+
+        Only writable layers are pinned. A read-only grant cannot be written by
+        `save`, so it cannot be poisoned, and pinning it would move a corrupt-layer
+        error from `recall` (where it is caught and the layer skipped) to the batch
+        boundary (where it would take down the run).
+        """
+        with ExitStack() as stack:
+            for _, store, writable in self._layers:
+                if writable:
+                    stack.enter_context(store.snapshot())
+            yield
 
     def save(
         self, type: str, name: str, description: str, body: str, links: list[str] | None = None
@@ -87,7 +112,20 @@ class Memory:
         return f"saved '{result.name}'"
 
     def recall(self, query: str, k: int | None = None) -> str:
-        budget = k if k is not None else self.k
+        """`k` is the model asking for *more*, never for less than the store's default.
+
+        Measured cause (RB-P1, qwen2.5:14b-instruct): 57 of 60 `memory_recall` calls
+        across 12 seeded runs sent `k: 1`, and honouring it truncated recall to the
+        single best-scoring fact. Every two-fact task then answered from half its
+        evidence — `recall-org-quota` never once saw `org-seat-count`, which was on
+        disk the whole time. Same direction as `normalize_name` above: the component
+        bends the model's argument to the store's contract, and `MemoryStore.recall`
+        stays honest about returning exactly the `k` it was told.
+
+        The floor is the operator's configured default, not a constant, so a consumer
+        who really wants top-1 says so once at construction (`Memory(store, k=1)`).
+        """
+        budget = self.k if k is None else max(k, self.k)
         picked: list[tuple[str, Fact]] = []
         seen: set[str] = set()
         for label, store, writable in self._layers:
