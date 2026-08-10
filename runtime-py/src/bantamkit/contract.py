@@ -19,6 +19,8 @@ REQUIRED_KEYS = (
     "parse_error",
     "validation_error",
     "json_answer_retry",
+    "loop_note",
+    "loop_warn",
     "evidence_line",
     "evidence_no_observation",
     "evidence_empty",
@@ -53,6 +55,16 @@ def critique_feedback(score: int, threshold: int, feedback: str) -> str:
 def json_answer_retry() -> str:
     """Feedback for a final answer with no extractable JSON at all (P4)."""
     return load_contract()["json_answer_retry"]
+
+
+def loop_note(count: int) -> str:
+    """Injected when a tool has returned the same observation `count` times in a row."""
+    return load_contract()["loop_note"].format(count=count)
+
+
+def loop_warn() -> str:
+    """The hard wording, past the warn threshold: stop calling tools, answer now."""
+    return load_contract()["loop_warn"]
 
 
 def parse_error_message(detail: object) -> str:
