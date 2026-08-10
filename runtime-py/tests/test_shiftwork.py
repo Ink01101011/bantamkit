@@ -293,6 +293,70 @@ def test_clock_out_unknown_unit_errors_without_writing(tmp_path, example):
     assert read_log(path) == []
 
 
+def test_clock_out_rejects_a_non_cursor_unit(tmp_path, example):
+    """The contract is execute-the-cursor-unit (driver parity), never pick-a-unit.
+
+    The accept side is the round-trip test above: U3 IS the cursor and clocks out fine.
+    """
+    path = write_checkpoint(tmp_path, example)
+    before = path.read_bytes()
+    r = ops.clock_out(str(path), "U4", "done", {}, {"unit": "U4", "outcome": "done"})
+    assert r == {"result": "error", "reason": "unit U4 is not the cursor unit U3"}
+    assert path.read_bytes() == before
+    assert read_log(path) == []
+
+
+def test_clock_out_read_only_dir_is_a_structured_refusal(tmp_path, example):
+    """A write-path OSError mirrors the read side: structured error, never an exception."""
+    path = write_checkpoint(tmp_path, example)
+    before = path.read_bytes()
+    tmp_path.chmod(0o555)
+    try:
+        r = ops.clock_out(str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"})
+    finally:
+        tmp_path.chmod(0o755)
+    assert r["result"] == "error"
+    assert "unwritable" in r["reason"]
+    assert path.read_bytes() == before
+    assert read_log(path) == []
+
+
+def test_clock_out_unwritable_log_leaves_the_checkpoint_untouched(tmp_path, example):
+    """Log-then-commit, leg one: if the accounting line cannot land, nothing lands."""
+    path = write_checkpoint(tmp_path, example)
+    before = path.read_bytes()
+    Path(str(path) + ".log.jsonl").mkdir()  # a directory: open("a") raises OSError
+    r = ops.clock_out(str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"})
+    assert r["result"] == "error"
+    assert "accounting log unwritable" in r["reason"]
+    assert path.read_bytes() == before
+
+
+def test_clock_out_commit_failure_keeps_prior_bytes_and_the_orphan_log_line(
+    tmp_path, monkeypatch, example
+):
+    """Log-then-commit, leg two: a failed rename loses the commit, never the accounting.
+
+    The orphan line is the documented recovery semantic — re-reading the
+    checkpoint shows its unit still non-terminal at the cursor.
+    """
+    path = write_checkpoint(tmp_path, example)
+    before = path.read_bytes()
+
+    def refuse(self, target):
+        raise OSError("simulated rename failure")
+
+    monkeypatch.setattr(Path, "replace", refuse)
+    r = ops.clock_out(str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, ACCOUNTING)
+    assert r["result"] == "error"
+    assert "uncommitted" in r["reason"]
+    assert path.read_bytes() == before  # atomicity: the prior checkpoint survives
+    lines = read_log(path)
+    assert len(lines) == 1 and lines[0]["unit"] == "U3"  # the accounting line landed
+    assert not Path(str(path) + ".tmp").exists()  # the temp file is cleaned up
+    assert ops.clock_in(str(path))["unit"]["id"] == "U3"  # the orphan is detectable
+
+
 def test_clock_out_appends_one_accounting_line_per_success(tmp_path, example):
     path = write_checkpoint(tmp_path, example)
     ops.clock_out(str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, ACCOUNTING)

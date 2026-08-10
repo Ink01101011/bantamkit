@@ -9,13 +9,27 @@ asset, same discipline:
   + the `schema_error` engine sessions use under the driver);
 * ESCALATE (non-empty `handoff.open_questions`) and SUCCESS (every unit
   done/dropped) come back as structured refusals, never exceptions;
+* clock-out only accepts the cursor unit — the contract is
+  execute-the-cursor-unit (driver parity), never pick-a-unit;
 * clock-out validates the ENTIRE mutated document before writing, then writes
   atomically (temp file + rename, the driver's pattern) — a validation failure
-  writes nothing;
-* every successful clock-out appends one line to `<checkpoint>.log.jsonl`
-  beside the checkpoint (unit, role, status, ts, plus orchestrator-reported
-  accounting) — the driver-log shape, so the history ring's 5-entry cap never
-  loses measurement data. The log is append-only and never read here.
+  writes nothing, and every write-path OSError comes back as a structured
+  `{"result": "error"}` refusal, mirroring the read side;
+* every clock-out appends one line to `<checkpoint>.log.jsonl` beside the
+  checkpoint (unit, role, status, ts, plus orchestrator-reported accounting)
+  — the driver-log shape, so the history ring's 5-entry cap never loses
+  measurement data. The log is append-only and never read here.
+
+Log-then-commit ordering: the accounting line is appended BEFORE the atomic
+checkpoint rename, so a partial failure can lose the commit but never the
+accounting. The recovery semantic is one line: a log line whose commit failed
+is detectable by re-reading the checkpoint (its unit is still the non-terminal
+cursor unit), so a retried clock-out may leave one duplicate log line — never
+a missing one.
+
+Cursor advance is v1-linear: it moves to the first non-terminal unit in plan
+order and ignores `depends_on` — non-linear plans need a planner unit to
+reorder `plan.units` first.
 
 No lock: the MCP topology has one orchestrator by construction. The driver's
 O_EXCL lock guards cross-process races this shape does not have, and clock-out
@@ -24,6 +38,7 @@ re-validates before writing so a concurrent driver run fails validation-visibly.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import time
 from pathlib import Path
@@ -112,14 +127,19 @@ def clock_out(
     history_entry: dict[str, Any],
     accounting: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Apply a session's result to the checkpoint, validate whole, write atomically.
+    """Apply the cursor unit's result to the checkpoint, validate whole, write atomically.
 
-    Mutations: set the unit's status, advance `plan.cursor` to the first
-    non-terminal unit, shallow-merge `handoff_patch` into `handoff`, push
-    `history_entry` onto the 5-entry ring. The mutated document is validated
-    against the full schema BEFORE the atomic write — any failure returns a
-    structured error and writes nothing. Success appends one accounting line
-    to `<checkpoint>.log.jsonl`.
+    `unit_id` must name the cursor unit — the contract is execute-the-cursor
+    (driver parity); anything else is a structured error. Mutations: set the
+    unit's status, advance `plan.cursor` to the first non-terminal unit
+    (v1-linear, `depends_on` is ignored), shallow-merge `handoff_patch` into
+    `handoff`, push `history_entry` onto the 5-entry ring. The mutated
+    document is validated against the full schema BEFORE any write — a
+    validation failure writes nothing. Then log-then-commit: the accounting
+    line is appended to `<checkpoint>.log.jsonl` first, the checkpoint is
+    renamed into place second, and either step's OSError is a structured
+    error that leaves the prior checkpoint bytes intact (a log line whose
+    commit failed is the detectable, tolerable leftover).
     """
     path = Path(checkpoint)
     document, refusal = _read_valid(path)
@@ -128,6 +148,9 @@ def clock_out(
     unit = _find_unit(document, unit_id)
     if unit is None:
         return _error(f"unit {unit_id} is not in the plan")
+    cursor = document["plan"]["cursor"]
+    if unit_id != cursor:
+        return _error(f"unit {unit_id} is not the cursor unit {cursor}")
 
     unit["status"] = status
     remaining = [u for u in document["plan"]["units"] if u["status"] not in TERMINAL_UNIT_STATUS]
@@ -139,10 +162,6 @@ def clock_out(
     if problem is not None:
         return _error(f"refused to write: {problem}")
 
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(document, indent=2) + "\n")
-    tmp.replace(path)
-
     record: dict[str, Any] = {
         "ts": _timestamp(time.time()),
         "unit": unit_id,
@@ -151,8 +170,20 @@ def clock_out(
     }
     record.update(accounting or {})
     log_path = Path(str(path) + ".log.jsonl")
-    with log_path.open("a") as fh:
-        fh.write(json.dumps(record, sort_keys=True) + "\n")
+    try:
+        with log_path.open("a") as fh:
+            fh.write(json.dumps(record, sort_keys=True) + "\n")
+    except OSError as e:
+        return _error(f"accounting log unwritable, checkpoint untouched: {e}")
+
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp.write_text(json.dumps(document, indent=2) + "\n")
+        tmp.replace(path)
+    except OSError as e:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        return _error(f"checkpoint unwritable, last log line uncommitted: {e}")
 
     return {
         "result": "ok",
