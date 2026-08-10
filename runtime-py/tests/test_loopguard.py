@@ -218,7 +218,7 @@ def test_consecutive_raises_never_streak():
 
 
 def test_a_run_below_the_threshold_is_byte_identical():
-    """The guard may only append, never alter: with no streak reaching inject_at,
+    """The guard may only prepend, never alter: with no streak reaching inject_at,
     the full request stream is byte-identical to no guard."""
 
     def responses():
