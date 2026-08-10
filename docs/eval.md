@@ -1196,6 +1196,78 @@ a problem with an owner-direction, and the layer names refer to the
   tokens on exactly this model and task family. **Attack:** LoopGuard's
   pending cross-model promotion sweep — this re-baseline is the "before"
   it was waiting for. (Policy + composition.)
+
+  **Outcome (2026-08-11, RP6 — promotion HELD, scoped to 7b and 3b):**
+  the paired sweep ran, and `memory-guarded` stays calibration-only. 4b
+  and 14b were not run, so nothing below is a claim about them.
+
+  The before-arm is *not* the re-baseline row above: this branch already
+  carries RP4c's recall `k`-floor and batch isolation, which attack the
+  same population, so `--config memory` was re-measured at branch head
+  against the same server and the same seeds
+  (`2026-08-11-rbp6-{7b,3b}-memory-before.jsonl`). Staleness measured:
+  7b `memory` moved 169,452 → **164,624** at 56 → **57**/66, and all
+  three `turns-exhausted` rows came back *field-identical* to the
+  re-baseline. RP4c did not touch this loop population on 7b — so the
+  headroom question is answered by the guard's own arms, below. A
+  control matters here: a second identical `memory` arm reproduced the
+  first **byte-identically on all 66 rows**, so the noise floor is zero
+  and every changed row below is the guard, not sampling.
+
+  | model | score | tokens | turns-exhausted | rows changed |
+  |---|---|---|---|---|
+  | 7b `memory` → `memory-guarded` | 57/66 → **59/66** | 164,624 → 162,593 (**−1.2%**) | 3 → **1** | 8/66 |
+  | 3b `memory` → `memory-guarded` | 22/66 → 22/66 | 70,581 → 69,398 (−1.7%) | 1 → 1 | 3/66 |
+
+  Flips, paired per seed, both directions: 7b **+2 / −0** —
+  `recall-audit-retention` (seed 775726587) `turns-exhausted` 11,106 →
+  **pass** 8,211 and `recall-org-quota` (seed 1883253963)
+  `turns-exhausted` 11,063 → **pass** 9,515. 3b: **zero flips either
+  way**; its three changed rows are `nav-prod-port` ×2 and
+  `shop-compare`, all `wrong-answer` before and after, ~−1.2k tokens.
+  No row anywhere flipped to failing under the guard.
+
+  The bar was written before the numbers were read: no score regression
+  on either model; suite tokens **−10% or better on at least one** model
+  with the other no worse than +5%; `turns-exhausted` not up; and no
+  pass→fail flip outnumbering the fail→pass flips. Score, exhaustion and
+  flip discipline all cleared. **The token bar missed by roughly 8×** —
+  −1.2% and −1.7% against −10%. That is the finding: the v0.12.0
+  −37.7% was measured on a *two-task probe cell*, and it does not
+  survive dilution to a 66-row suite, because the guard only ever
+  touches the 8 rows (7b) and 3 rows (3b) that actually loop. The
+  per-row conversion replicated exactly; the suite-level economics did
+  not, and quoting −38% as a sweep number would have been wrong.
+
+  Honest negative, and the reason the third exhaustion survives:
+  `recall-org-quota` (seed 2178735184) stays `turns-exhausted`, and a
+  transcript repro shows the note **does** fire at streak 3 and the run
+  exhausts anyway. It is an *absent*-answer loop — the model never
+  recalls the seeded fact, it re-`memory_save`s its own invention under
+  drifting names — which is exactly the v0.12.0 limitation ("injection
+  converts held-answer loops, not absent-answer ones") reproducing at
+  sweep scale. Its own drifting names also break the identity streak,
+  so the guard fires late and only once.
+
+  **Trigger conditions to revisit (numeric, either route is sufficient):**
+  - *Promote `memory-guarded` as a 9th headline config* — it must earn
+    a permanent extra suite pass per model. Requires ≥ **−10%** suite
+    tokens versus `memory` at equal seeds on at least one model, no
+    model worse than +5%, and no score regression. Measured this round:
+    7b −2,031 tokens; the trigger needs ≥ **16,462** on 7b.
+  - *Fold LoopGuard into the `memory` headline config instead* — the
+    cheaper change, and the one the +2/−0 flip record actually
+    supports; it buys the score with no new column. Requires the paired
+    arms on the two models this unit was scoped out of: **4b** and
+    **14b**, each with score after ≥ before and **zero** pass→fail
+    flips, plus 7b's +2 replicating. 4b was byte-identical under the
+    guard in v0.12.0 (a no-op, so cost-free); **14b is unmeasured and
+    is the real gate**. Folding also changes the meaning of an existing
+    headline cell, so it needs its own before/after on record.
+
+  Evidence: `2026-08-11-rbp6-{7b,3b}-memory-{before,guarded}.jsonl`,
+  seeded by `run_seed(model, task, repeat)` and therefore paired
+  cell-for-cell across configs.
 - **RB-P7 — 3b's store rescue ceiling is unchanged at 5–6/27.** The
   `memory` recall cell splits 5 pass / 19 `wrong-answer` / 2
   `malformed-output` / 1 `turns-exhausted`, field-identical on all 27 rows
@@ -1351,7 +1423,11 @@ the next cycle makes physical:
   `read #N` marker and so never streak — the guard fires via the other
   tools, and it hashes what the model sees (graph markers included).
   LoopGuard stays out of the headline configs pending a cross-model
-  sweep.
+  sweep. **That sweep ran (RP6, 2026-08-11) on 7b and 3b and the hold
+  stands** — the per-row conversion replicated, the −37.7% did not
+  survive dilution to the full suite (−1.2% / −1.7%). Numbers, bar and
+  trigger conditions under RB-P6 above; these probe-cell percentages
+  are not suite percentages and must not be quoted as such.
 - **P3 — no global token ceiling.** 3b `full`: 214,698 tokens for 15/66 —
   every gate has a local cap but composition multiplies them. Fix:
   `TokenBudget` primitive — soft degradation ladder + hard ceiling that
