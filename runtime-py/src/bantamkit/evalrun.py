@@ -442,12 +442,14 @@ def run_task(
             optional_cutoff=policy("token_budget", "optional_cutoff"),
         )
         agent.use(budget)
+    memory_attached = False
     if effective in ("memory", "lean", "full") and task.get("memory_setup"):
         store_dir = workdir / f"{task['name']}-{config}-mem"
         store = MemoryStore(store_dir)
         for fact in task["memory_setup"]:
             store.save(fact["type"], fact["name"], fact["description"], fact["body"])
         agent.use(Memory(store=store_dir))
+        memory_attached = True
     if effective in ("lean", "full") and "schema" in task:
         # The agent owns the loop here, so it needs the same instruction structured() gives.
         # Gate registered before the critique gate: a malformed answer is fixed for free
@@ -476,7 +478,28 @@ def run_task(
             "task-completion", max_rounds=policy("critique", "max_rounds")
         )
         agent.use(critique_gate)
-    if effective in ("grounded", "full"):
+    # RB-P8. A `memory_setup` task keeps its answer in a store; a config that attaches
+    # no store hands the agent a question whose only source it withheld. That is the
+    # deliberate control arm — `bare`, `critique` and `grounded` all run those tasks
+    # storeless, which is how the memory component's uplift gets measured. What is not
+    # deliberate is then asking a critic that verifies answers *against sources* to
+    # bless one, because there is no source for it to check and refusing is the only
+    # honest verdict it can reach. On 4b `grounded` that spent ten `critique-exhausted`
+    # runs, three rounds each, on answers no round could ever have fixed.
+    #
+    # Composition, not library: `GroundedCritiqueGate` is behaving correctly, and a
+    # library-side degrade ("pass when the evidence set is empty") would make every
+    # consumer's grounded gate defeatable by calling no tools — the one thing it is
+    # attached to prevent. The defect is that this recipe pairs a source-checking
+    # critic with a task whose source it removed, so the recipe is what changes.
+    #
+    # Scoped to the measured cell on purpose. Toolless `structured-extraction` tasks
+    # also reach the critic with an empty evidence set, but their source is the task
+    # prompt itself, they burn no exhausted runs, and there is no finding to act on —
+    # so they keep the gate. `full` never trips this, because a `memory_setup` task
+    # under `full` always gets its store.
+    source_withheld = bool(task.get("memory_setup")) and not memory_attached
+    if effective in ("grounded", "full") and not source_withheld:
         critique_gate = GroundedCritiqueGate(
             max_rounds=policy("critique", "max_rounds"),
             evidence_budget=policy("critique", "evidence_budget"),

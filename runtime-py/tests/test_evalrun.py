@@ -1908,3 +1908,70 @@ def test_a_schemaless_task_stays_unconstrained_under_lean(tmp_path):
     client = ConstrainedClient([assistant(content="The total is 42 dollars.")])
     run_task(client, get_task("shop-total"), "lean", tmp_path)
     assert client.response_formats == [None]
+
+
+# ---- RB-P8: the grounded critic needs a source, and this recipe removed it ----
+
+
+LOW_GROUNDED_VERDICT = (
+    '{"reasoning": "nothing supports this", "score": 2, "feedback": "unverified"}'
+)
+
+
+def test_grounded_skips_the_critic_when_it_withheld_the_answer_source(tmp_path):
+    """`grounded` runs `memory_setup` tasks storeless, so the critic has nothing to check."""
+    client = FakeClient([assistant(content='{"team": "Atlas"}')])
+    result = run_task(client, get_task("recall-owner"), "grounded", tmp_path)
+    assert len(client.calls) == 1  # the agent answered; no critic was asked
+    assert result.critique_rounds == 0
+    assert result.passed is True and result.outcome == "pass"
+
+
+def test_grounded_scores_a_wrong_storeless_recall_instead_of_exhausting_a_critic(tmp_path):
+    """The ten runs RB-P8 measured: honest verdicts, three rounds, unfixable answers."""
+    client = FakeClient([assistant(content='{"team": "Nobody"}')])
+    result = run_task(client, get_task("recall-owner"), "grounded", tmp_path)
+    assert result.passed is False
+    assert result.outcome == "wrong-answer" and result.error is None
+    assert result.critique_rounds == 0 and len(client.calls) == 1
+
+
+def test_full_still_critiques_a_memory_task_because_it_attached_the_store(tmp_path):
+    """`full` never trips the guard: a `memory_setup` task under `full` gets its store."""
+    client = FakeClient(
+        [assistant(content='{"team": "Atlas"}'), assistant(content=GROUNDED_VERDICT)]
+    )
+    result = run_task(client, get_task("recall-owner"), "full", tmp_path)
+    assert len(client.calls) == 2
+    assert "score" in client.calls[1]["messages"][-1].content
+    assert result.passed is True
+
+
+def test_grounded_still_critiques_a_task_that_has_tools(tmp_path):
+    client = FakeClient(
+        [
+            assistant(content="the total is 999"),
+            assistant(content=LOW_GROUNDED_VERDICT),
+            assistant(content="the total is 100"),
+            assistant(content=GROUNDED_VERDICT),
+        ]
+    )
+    result = run_task(client, get_task("shop-total"), "grounded", tmp_path)
+    assert result.critique_rounds == 1 and result.passed is True
+
+
+def test_grounded_still_critiques_a_toolless_task_whose_source_is_its_prompt(tmp_path):
+    """Deliberate scope boundary: extraction reaches the critic with empty evidence too,
+    but its source is the prompt and it burns no exhausted runs, so it keeps the gate."""
+    client = FakeClient([assistant(content=CONTACT), assistant(content=GROUNDED_VERDICT)])
+    result = run_task(client, get_task("extract-contact"), "grounded", tmp_path)
+    assert len(client.calls) == 2 and result.passed is True
+    assert "(no tool calls were made)" in client.calls[1]["messages"][-1].content
+
+
+def test_memory_and_bare_configs_are_untouched_by_the_guard(tmp_path):
+    """The guard gates one gate, not the control arms: `grounded` still runs the task."""
+    for config in ("bare", "critique", "memory"):
+        client = FakeClient([assistant(content='{"team": "Atlas"}')] * 4)
+        result = run_task(client, get_task("recall-owner"), config, tmp_path)
+        assert result.task == "recall-owner" and result.config == config
