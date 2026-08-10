@@ -15,7 +15,7 @@ from pathlib import Path
 
 import yaml
 
-from bantamkit.agent import Agent, MaxTurnsExceeded, ToolDef
+from bantamkit.agent import Agent, MaxTurnsExceeded, ToolDef, response_format_for
 from bantamkit.assets import assets_root
 from bantamkit.budget import TokenBudget
 from bantamkit.client import BantamError, Message, ModelClient, OpenAICompatible, Tool, Usage
@@ -453,6 +453,12 @@ def run_task(
         # Gate registered before the critique gate: a malformed answer is fixed for free
         # rather than spending a critique call on it.
         agent.add_system(schema_instruction(task["schema"]))
+        # Tier 1 on the loop's own call, the same tier `structured` has always had.
+        # It belongs here and not inside `SchemaGate`: a gate only ever sees a violation
+        # that already happened, so a gate-owned decision could never constrain the first
+        # decode — and on 3b that first decode is where the run was lost (RP1 wire capture:
+        # all three POSTs of a schema-exhausted cell carried only `{model, messages, seed}`).
+        agent.response_format = response_format_for(task["schema"])
         schema_gate = SchemaGate(task["schema"], max_attempts=policy("schema_gate", "max_attempts"))
         agent.use(schema_gate)
     if effective in ("memory", "lean", "full") and task["scoring"]["kind"] == "json_equal":

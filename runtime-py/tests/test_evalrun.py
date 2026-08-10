@@ -4,6 +4,7 @@ import pytest
 from conftest import FakeClient, assistant, call
 
 from bantamkit import evalrun
+from bantamkit.agent import response_format_for
 from bantamkit.budget import _BudgetedClient
 from bantamkit.client import BantamError, Message, ToolCall
 from bantamkit.contract import loop_note
@@ -1848,3 +1849,62 @@ def test_headline_configs_carry_no_guard(tmp_path):
     obs = [client.calls[i]["messages"][-1].content for i in (1, 2, 3)]
     assert obs[0] == obs[1] == obs[2]
     assert result.passed is True
+
+
+# ---- RB-P3: lean/full engage the constrained-decoding tier ----
+# (reuses `ConstrainedClient` above — the same fake that pins TrackingClient's forwarding)
+
+
+@pytest.mark.parametrize("config", ["lean", "full"])
+def test_schema_configs_constrain_the_first_decode(config, tmp_path):
+    """RP1's finding: the gate can only react, so the FIRST call has to be constrained."""
+    task = get_task("extract-contact")
+    client = ConstrainedClient([assistant(content=CONTACT), assistant(content=GROUNDED_VERDICT)])
+    result = run_task(client, task, config, tmp_path)
+    assert result.passed is True
+    assert client.response_formats[0] == response_format_for(task["schema"])
+
+
+def test_the_gate_retry_is_constrained_too(tmp_path):
+    task = get_task("extract-contact")
+    client = ConstrainedClient(
+        [assistant(content='{"name": "Ann Chen"}'), assistant(content=CONTACT)]
+    )
+    run_task(client, task, "lean", tmp_path)
+    assert client.response_formats == [response_format_for(task["schema"])] * 2
+
+
+def test_the_critique_verdict_keeps_its_own_schema(tmp_path):
+    """`full` sends two different schemas: the task's on the answer, the rubric's on the verdict."""
+    task = get_task("extract-contact")
+    client = ConstrainedClient([assistant(content=CONTACT), assistant(content=GROUNDED_VERDICT)])
+    run_task(client, task, "full", tmp_path)
+    task_rf, verdict_rf = client.response_formats
+    assert task_rf == response_format_for(task["schema"])
+    assert verdict_rf != task_rf
+    assert "score" in verdict_rf["json_schema"]["schema"]["properties"]
+
+
+@pytest.mark.parametrize("config", ["bare", "critique", "grounded", "graph", "memory"])
+def test_non_schema_configs_are_left_unconstrained(config, tmp_path):
+    """The tier rides on the schema gate's registration, nowhere else."""
+    client = ConstrainedClient(
+        [assistant(content=CONTACT), assistant(content=GROUNDED_VERDICT)] * 2
+    )
+    run_task(client, get_task("extract-contact"), config, tmp_path)
+    assert client.response_formats[0] is None
+
+
+def test_structured_config_is_untouched(tmp_path):
+    """It already drove its own constrained loop; this change must not move it."""
+    task = get_task("extract-contact")
+    client = ConstrainedClient([assistant(content=CONTACT)])
+    result = run_task(client, task, "structured", tmp_path)
+    assert result.passed is True
+    assert client.response_formats == [response_format_for(task["schema"])]
+
+
+def test_a_schemaless_task_stays_unconstrained_under_lean(tmp_path):
+    client = ConstrainedClient([assistant(content="The total is 42 dollars.")])
+    run_task(client, get_task("shop-total"), "lean", tmp_path)
+    assert client.response_formats == [None]
