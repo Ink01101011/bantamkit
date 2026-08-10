@@ -1721,7 +1721,7 @@ def test_guard_note_fires_at_the_default_threshold(tmp_path):
     result = run_task(client, workspace_task(), "graph-guarded", tmp_path)
     obs = [client.calls[i]["messages"][-1].content for i in (1, 2, 3)]
     assert obs[0] == obs[1]  # below the threshold: byte-unchanged
-    assert obs[2] == f"{obs[0]}\n{loop_note(3)}"
+    assert obs[2] == f"{loop_note(3)}\n{obs[0]}"
     assert result.passed is True and result.outcome == "pass"  # injection-only
 
 
@@ -1740,7 +1740,7 @@ def test_guard_wraps_the_late_registered_memory_tools(tmp_path):
     result = run_task(client, get_task("recall-deploy"), "memory-guarded", tmp_path)
     obs = [client.calls[i]["messages"][-1].content for i in (1, 2, 3)]
     assert obs[0] == obs[1]
-    assert obs[2] == f"{obs[0]}\n{loop_note(3)}"
+    assert obs[2] == f"{loop_note(3)}\n{obs[0]}"
     assert result.passed is True
 
 
@@ -1760,7 +1760,28 @@ def test_guard_thresholds_come_from_the_profile(tmp_path):
         profile=guard_profile(inject_at=2),
     )
     second = client.calls[2]["messages"][-1].content
-    assert second.endswith(loop_note(2))
+    assert second.startswith(loop_note(2))
+    assert result.passed is True
+
+
+def test_guard_hashes_the_graph_output_not_the_raw_reader_bytes(tmp_path):
+    """Ordering pin: in run_task the graph wraps first and the guard wraps LAST,
+    so the guard hashes what the model sees — the graph's markers, which carry a
+    per-repeat read # and therefore never streak on cached repeats of one
+    unchanged file. If the attach orders were swapped, the guard would see the
+    raw 'alpha' three times and inject its note, and the graph would then book
+    the note-carrying bytes as a CHANGED read — this test fails both ways."""
+    reads = [call("read_file", {"path": "notes/a.md"}, id=f"c{i}") for i in range(4)]
+    client = FakeClient(
+        [assistant(tool_calls=[r]) for r in reads] + [assistant(content='{"x": 1}')]
+    )
+    result = run_task(client, workspace_task(), "graph-guarded", tmp_path)
+    obs = [client.calls[i]["messages"][-1].content for i in (1, 2, 3, 4)]
+    assert obs[0] == "alpha"
+    for repeat, o in zip((2, 3, 4), obs[1:], strict=True):
+        assert o.startswith("[file-graph]") and f"read #{repeat}" in o
+        assert "unchanged" in o and "CHANGED" not in o
+    assert not any(loop_note(n) in o for n in (2, 3, 4) for o in obs)
     assert result.passed is True
 
 
