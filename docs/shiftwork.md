@@ -160,11 +160,70 @@ it exists only behind the explicit config opt-in, for sandboxed environments.
 | Driver itself killed | `driver-state.json` + checkpoint both survive; rerunning resumes cleanly |
 | Two drivers on one checkpoint | `driver.lock` (pid + start ts); the second refuses to start. A lock whose pid is dead is taken over |
 
+## Orchestrator flavor
+
+The driver spawns sessions from outside; the MCP flavor serves the inverse
+topology: an already-running Claude session orchestrates subagents and
+keeps clock-in/clock-out discipline through three tools on
+[`bantamkit-mcp`](mcp.md#shift-work-tools) — same checkpoint contract,
+same schema validation, mirrored refusal semantics (structured
+`escalate`/`success` results instead of exit codes 10/0).
+
+The workflow, per unit:
+
+1. Plan once into a schema-valid checkpoint — the planner role is the
+   orchestrating session itself.
+2. `shiftwork_clock_in(checkpoint)` → get `{unit, role, invariants,
+   handoff, do_not, files}`. On `escalate`, stop and surface to the user;
+   on `success`, the job is done.
+3. Spawn the subagent with the returned brief verbatim, picking the model
+   from the unit's `role`.
+4. `shiftwork_clock_out(checkpoint, unit_id, status, handoff_patch,
+   history_entry, accounting)` — the whole mutated document is validated
+   before an atomic write, and one accounting line is appended to
+   `<checkpoint>.log.jsonl`.
+
+**Role → model mapping — never random, never silently inherited.** The
+orchestrator maps role to model when spawning. Recommendation: planner =
+the session's own model; implementer = the cheapest tier the brief
+supports (a brief with complete code is transcription); reviewer =
+mid-tier floor, judgment-heavy review = the session model. Whatever you
+choose, `clock_out`'s accounting line records the **model actually used**
+per unit, so every run is auditable after the fact. This mirrors the
+driver's explicit `driver.json` role dispatch — the MCP flavor moves the
+decision into the orchestrator but keeps it explicit and logged.
+
+**Code-fix template.** `tools/shiftwork/example-codefix-checkpoint.json`
+is a schema-valid starting point for the classic fix-a-bug job: units
+reproduce → locate → fix → verify, where the fix lands under an
+implementer and is gated by the reviewer unit (verify reviews the diff
+against the constraints and runs the full suite). Copy it to
+`.shiftwork/checkpoint.json` in the target repo, fill in `job`,
+`state.repo`, and the briefs, and clock in.
+
+**Standing policy** (committed in this repo's `CLAUDE.md` and installed
+user-level in `~/.claude/CLAUDE.md`; copy this block into any other
+machine or project):
+
+> Any multi-unit orchestration — ≥2 planned units, or any
+> spec→plan→implement / bugfix / code-trace job that fans out agents —
+> MUST run its agent spawns through the shiftwork MCP tools:
+> `shiftwork_clock_in` → spawn the subagent with the returned brief
+> verbatim → `shiftwork_clock_out` with status, handoff patch, history
+> entry, and accounting (tokens, duration, and the model actually used).
+> Exempt: one-off ad-hoc spawns (a single search or review with no plan
+> behind it) — no unit to clock.
+
+No lock, deliberately: this topology has one orchestrator by
+construction; `driver.lock` guards cross-process races the single-session
+shape does not have, and clock-out re-validates before writing so a
+concurrent driver run fails validation-visibly rather than corrupting.
+
 ## Conventions and future work
 
 Per-role prompt files (`.shiftwork/prompts/<role>.md`) and tunables
 (`.shiftwork/profiles/*.yaml`) are conventions only in v1 — a retro patch is a
-commit whose message cites its trigger. Not shipped: the MCP flavor
-(`clock_in`/`clock_out` as MCP tools), retro automation, Windows support,
-notification transports beyond `notify_cmd`, and the N-sessions experiment
-itself.
+commit whose message cites its trigger. Not shipped: retro automation,
+Windows support, notification transports beyond `notify_cmd`, and the
+N-sessions experiment itself (the MCP flavor above ships its instrument:
+the per-unit accounting log).

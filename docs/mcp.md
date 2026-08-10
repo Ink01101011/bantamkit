@@ -25,9 +25,82 @@ pip install "bantamkit[mcp] @ git+https://github.com/Ink01101011/bantamkit.git@v
 | `memory_save` | Save one durable fact to the writable project store — identical semantics to the library component, including the duplicate nudge and budget errors |
 | `memory_recall` | Search across layers: project store (writable), configured read-only grants, read-only `~/.bantamkit/memory` profile |
 | `validate_json` | Validate output text against a JSON Schema; returns `{valid, feedback}` where `feedback` is the same pointed revision message the eval's `SchemaGate` issues — feed it back to your model and retry |
+| `shiftwork_clock_in` | Validate a shift-work checkpoint and return the cursor unit's brief — see [Shift-work tools](#shift-work-tools) |
+| `shiftwork_clock_out` | Record a finished unit: validate-whole, atomic write, append an accounting line |
+| `shiftwork_status` | Read-only progress summary of a checkpoint |
 
 The `memory_save`/`memory_recall` input schemas are the asset pack's
 `assets/tools/*.json` verbatim — the same contract agents see in-process.
+
+## Shift-work tools
+
+The [shift-work](shiftwork.md) driver spawns sessions from outside; these
+three tools serve the inverse topology — an already-running Claude session
+orchestrating subagents under checkpoint discipline (the
+[orchestrator flavor](shiftwork.md#orchestrator-flavor)). Every call
+full-schema-validates the checkpoint against
+`assets/schemas/shiftwork-checkpoint.json` with the same `schema_error`
+engine sessions use under the driver.
+
+**`shiftwork_clock_in(checkpoint)`** — returns one of:
+
+- `{"result": "brief", "unit", "role", "invariants", "handoff", "do_not",
+  "files"}` — the cursor unit's brief; hand it to the spawned agent
+  verbatim. `invariants` = `job.constraints`, `files` = `state.artifacts`.
+- `{"result": "escalate", "reason", ...}` — `handoff.open_questions` is
+  non-empty (or the cursor dangles): stop and ask the user. Mirrors the
+  driver's ESCALATE exit.
+- `{"result": "success", "reason"}` — every unit is `done`/`dropped`; the
+  job is over. Mirrors the driver's SUCCESS exit.
+- `{"result": "error", "reason"}` — the checkpoint is unreadable or fails
+  the schema.
+
+Refusals are structured results, never raised errors — the orchestrator
+branches on `result`.
+
+**`shiftwork_clock_out(checkpoint, unit_id, status, handoff_patch,
+history_entry, accounting=None)`** — applies a unit's outcome: sets the
+unit's `status` (schema enum: `todo | in_progress | done | blocked |
+dropped`), advances `plan.cursor` to the first non-terminal unit,
+shallow-merges `handoff_patch` into `handoff`, pushes `history_entry`
+(requires `unit` + `outcome`; extra keys legal) onto the 5-entry ring.
+The **entire mutated document is validated before writing**; the write is
+atomic (temp file + rename). Any failure returns `{"result": "error"}` and
+writes nothing — the prior bytes survive.
+
+Every successful clock-out appends one line to `<checkpoint>.log.jsonl`
+beside the checkpoint: `{ts, unit, role, status}` plus whatever you pass
+in `accounting` (report `tokens`, `duration`, and `model` — the model
+actually used). Same shape as the driver's per-session log, so
+driver-flavor and MCP-flavor runs compare on one format and the history
+ring's 5-entry cap never loses measurement data. The log is append-only
+and never read by the tools.
+
+**`shiftwork_status(checkpoint)`** — read-only:
+`{"result": "status", "cursor", "units": {status: count}, "open_questions":
+<count>, "last_history"}`. Never mutates.
+
+No lock tool, deliberately: this topology has one orchestrator by
+construction. The driver's `driver.lock` guards cross-process races;
+clock_out's validate-before-write means a concurrent driver run fails
+validation-visibly instead of corrupting.
+
+### Scopes
+
+- **Project scope (this repo):** the committed `.mcp.json` points at
+  `.venv/bin/bantamkit-mcp` — every bantamkit session sees the tools with
+  zero setup.
+- **User scope (every other project):** register the server once against a
+  [pinned install](install.md#pinned-install-from-a-tag):
+
+  ```bash
+  claude mcp add bantamkit --scope user -- /path/to/pinned-venv/bin/bantamkit-mcp
+  ```
+
+  Checkpoint path convention for arbitrary projects:
+  `.shiftwork/checkpoint.json` in the target repo (the log lands beside
+  it). The tools take an explicit path, so the convention is
+  documentation, not code.
 
 | Resource | Serves |
 |---|---|
