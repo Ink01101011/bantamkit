@@ -27,19 +27,25 @@ looping — conversion is sitting there.
   args — the 7b paraphrase churn makes args-identity blind).
 - **Two-stage intervention, injection-only** (a component cannot and
   must not stop the agent loop — never swallow a scorable answer):
-  - streak hits `inject_at` (default 3): append the loop note to the
-    observation — "(you have now received this exact result {count}
+  - streak hits `inject_at` (default 3): prepend the loop note to the
+    observation (prepended, not appended — review finding: an appended
+    note is eaten by observation truncation exactly on the oversized
+    no-info tails it targets; FileAccessGraph's markers survive for the
+    same reason) — "(you have now received this exact result {count}
     times; it will not change. Do something different or give your
     final answer now)".
-  - streak hits `warn_at` (default 5): append the hard wording — "(STOP
-    calling tools. Give your final answer now, in exactly the format
-    the task asked for.)".
+  - streak hits `warn_at` (default 5): prepend the hard wording —
+    "(STOP calling tools. Give your final answer now, in exactly the
+    format the task asked for.)".
 - Wording = two new contract templates (`loop_note`, `loop_warn` —
   Layer 2 asset); thresholds = new profile section `loop_guard`
   (Layer 4). Counters reset per `setup` (per run) and on any
   non-identical observation from that tool (streaks, not totals — a
   legitimately repeated read later in a long run must not trip it;
-  probe data shows streaks are what discriminate).
+  probe data shows streaks are what discriminate). v1 exception-path
+  limitation: raising errors and unknown-tool observations do not
+  streak — the guard counts only observations produced by tool
+  returns, and the wrapper resets that tool's streak on a raise.
 - **Eval wiring (Measurement):** calibration-only configs
   `graph-guarded` (= `graph` + LoopGuard) and `memory-guarded`
   (= `memory` + LoopGuard), mirroring the BUDGET_CONFIGS mapping
