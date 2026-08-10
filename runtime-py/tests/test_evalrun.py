@@ -6,6 +6,7 @@ from conftest import FakeClient, assistant, call
 from bantamkit import evalrun
 from bantamkit.budget import _BudgetedClient
 from bantamkit.client import BantamError, Message, ToolCall
+from bantamkit.contract import loop_note
 from bantamkit.evalrun import (
     CONFIG_CHOICES,
     CONFIGS,
@@ -1658,3 +1659,143 @@ def test_critique_gate_client_is_the_tracking_client(tmp_path, monkeypatch):
     assert isinstance(gate.client, TrackingClient)
     assert gate.client.inner is client
     assert result.passed is True and result.model_calls == 2
+
+
+# ---- LoopGuard: the `graph-guarded` / `memory-guarded` calibration configs ----
+
+
+def guard_profile(inject_at, warn_at=5):
+    profile = load_profile()
+    profile["loop_guard"] = {"inject_at": inject_at, "warn_at": warn_at}
+    return profile
+
+
+def test_guarded_configs_are_choices_but_not_in_the_default_matrix():
+    for name in ("graph-guarded", "memory-guarded"):
+        assert name in CONFIG_CHOICES and name not in CONFIGS
+
+
+def test_graph_guarded_is_graph_plus_a_guard(tmp_path):
+    """Same script as the graph collapse test, same collapse — only the label differs."""
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("read_file", {"path": "notes/a.md"})]),
+            assistant(tool_calls=[call("read_file", {"path": "notes/a.md"}, id="c2")]),
+            assistant(content='{"x": 1}'),
+        ]
+    )
+    result = run_task(client, workspace_task(), "graph-guarded", tmp_path)
+    assert result.config == "graph-guarded"
+    assert result.passed is True
+    second = client.calls[2]["messages"][-1].content
+    assert second.startswith("[file-graph]") and "alpha" not in second
+    assert "file_graph" in [t.name for t in client.calls[0]["tools"]]
+
+
+def test_memory_guarded_is_memory_plus_a_guard(tmp_path):
+    """Same script as the memory seeding test: the seeded fact still comes back."""
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("memory_recall", {"query": "deploy production"})]),
+            assistant(content='{"command": "make ship-prod"}'),
+        ]
+    )
+    result = run_task(client, get_task("recall-deploy"), "memory-guarded", tmp_path)
+    assert result.config == "memory-guarded"
+    assert result.passed is True
+    recall_obs = client.calls[1]["messages"][-1].content
+    assert "[deploy-command]" in recall_obs
+    assert "make ship-prod" in recall_obs
+
+
+def test_guard_note_fires_at_the_default_threshold(tmp_path):
+    """Three identical listings: the third carries the note, and the run still scores."""
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("list_files", {})]),
+            assistant(tool_calls=[call("list_files", {}, id="c2")]),
+            assistant(tool_calls=[call("list_files", {}, id="c3")]),
+            assistant(content='{"x": 1}'),
+        ]
+    )
+    result = run_task(client, workspace_task(), "graph-guarded", tmp_path)
+    obs = [client.calls[i]["messages"][-1].content for i in (1, 2, 3)]
+    assert obs[0] == obs[1]  # below the threshold: byte-unchanged
+    assert obs[2] == f"{loop_note(3)}\n{obs[0]}"
+    assert result.passed is True and result.outcome == "pass"  # injection-only
+
+
+def test_guard_wraps_the_late_registered_memory_tools(tmp_path):
+    """memory_recall is registered by Memory.setup, so the note firing on it proves
+    the guard attached last — after every other component put its tools in place."""
+    query = call("memory_recall", {"query": "deploy production"})
+    client = FakeClient(
+        [
+            assistant(tool_calls=[query]),
+            assistant(tool_calls=[call("memory_recall", query.arguments, id="c2")]),
+            assistant(tool_calls=[call("memory_recall", query.arguments, id="c3")]),
+            assistant(content='{"command": "make ship-prod"}'),
+        ]
+    )
+    result = run_task(client, get_task("recall-deploy"), "memory-guarded", tmp_path)
+    obs = [client.calls[i]["messages"][-1].content for i in (1, 2, 3)]
+    assert obs[0] == obs[1]
+    assert obs[2] == f"{loop_note(3)}\n{obs[0]}"
+    assert result.passed is True
+
+
+def test_guard_thresholds_come_from_the_profile(tmp_path):
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("list_files", {})]),
+            assistant(tool_calls=[call("list_files", {}, id="c2")]),
+            assistant(content='{"x": 1}'),
+        ]
+    )
+    result = run_task(
+        client,
+        workspace_task(),
+        "graph-guarded",
+        tmp_path,
+        profile=guard_profile(inject_at=2),
+    )
+    second = client.calls[2]["messages"][-1].content
+    assert second.startswith(loop_note(2))
+    assert result.passed is True
+
+
+def test_guard_hashes_the_graph_output_not_the_raw_reader_bytes(tmp_path):
+    """Ordering pin: in run_task the graph wraps first and the guard wraps LAST,
+    so the guard hashes what the model sees — the graph's markers, which carry a
+    per-repeat read # and therefore never streak on cached repeats of one
+    unchanged file. If the attach orders were swapped, the guard would see the
+    raw 'alpha' three times and inject its note, and the graph would then book
+    the note-carrying bytes as a CHANGED read — this test fails both ways."""
+    reads = [call("read_file", {"path": "notes/a.md"}, id=f"c{i}") for i in range(4)]
+    client = FakeClient(
+        [assistant(tool_calls=[r]) for r in reads] + [assistant(content='{"x": 1}')]
+    )
+    result = run_task(client, workspace_task(), "graph-guarded", tmp_path)
+    obs = [client.calls[i]["messages"][-1].content for i in (1, 2, 3, 4)]
+    assert obs[0] == "alpha"
+    for repeat, o in zip((2, 3, 4), obs[1:], strict=True):
+        assert o.startswith("[file-graph]") and f"read #{repeat}" in o
+        assert "unchanged" in o and "CHANGED" not in o
+    assert not any(loop_note(n) in o for n in (2, 3, 4) for o in obs)
+    assert result.passed is True
+
+
+def test_headline_configs_carry_no_guard(tmp_path):
+    """`graph` is untouched: three identical listings come back byte-unchanged."""
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("list_files", {})]),
+            assistant(tool_calls=[call("list_files", {}, id="c2")]),
+            assistant(tool_calls=[call("list_files", {}, id="c3")]),
+            assistant(content='{"x": 1}'),
+        ]
+    )
+    result = run_task(client, workspace_task(), "graph", tmp_path)
+    obs = [client.calls[i]["messages"][-1].content for i in (1, 2, 3)]
+    assert obs[0] == obs[1] == obs[2]
+    assert result.passed is True

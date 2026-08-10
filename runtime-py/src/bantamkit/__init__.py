@@ -21,5 +21,6 @@ from bantamkit.critique import (
 )
 from bantamkit.evalrun import CONFIGS, format_report, run_suite
 from bantamkit.filegraph import FileAccessGraph
+from bantamkit.loopguard import LoopGuard
 from bantamkit.memory import Memory, MemoryStore
 from bantamkit.structured import StructuredOutputError, extract_json, structured

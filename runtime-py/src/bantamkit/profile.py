@@ -14,6 +14,7 @@ REQUIRED = {
     "json_answer": ("max_attempts",),
     "critique": ("max_rounds", "evidence_budget"),
     "token_budget": ("ceiling", "optional_cutoff"),
+    "loop_guard": ("inject_at", "warn_at"),
 }
 
 

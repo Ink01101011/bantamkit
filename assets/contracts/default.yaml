@@ -5,6 +5,8 @@ critique_feedback: "A reviewer scored your answer {score}/10 (needs >= {threshol
 parse_error: "output was not parseable JSON: {detail}"
 validation_error: "JSON does not match schema at '{where}': {detail}"
 json_answer_retry: "Your answer contains no JSON. Restate your final answer as ONLY the JSON requested by the task, with no prose around it."
+loop_note: "(you have now received this exact result {count} times; it will not change. Do something different or give your final answer now)"
+loop_warn: "(STOP calling tools. Give your final answer now, in exactly the format the task asked for.)"
 evidence_line: "{name}({arguments}) -> {observation}"
 evidence_no_observation: "(no observation)"
 evidence_empty: "(no tool calls were made)"

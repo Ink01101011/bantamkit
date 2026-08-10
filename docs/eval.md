@@ -1035,6 +1035,54 @@ the next cycle makes physical:
   Attack plan for the residue: loop detection (repeated identical tool
   calls/answers), a future primitive; blind turn-budget raises are now
   measured waste.
+
+  **Outcome (2026-08-10, LoopGuard cycle, v0.12.0):** the residue was
+  attacked with transcript evidence first. A 12-run probe (3b `graph`
+  nav + 7b `memory` recall, both under `patient`) showed looping is a
+  *tool-observation* phenomenon: looping runs burn 6–16-call tails of
+  byte-identical observations, every passing run's maximum
+  observation-repeat streak is 2, prose repetition never occurs, and
+  args-identity is blind to 7b's paraphrase churn. Critically, both 7b
+  turn-exhausted runs already **held the correct answer** while
+  looping. `LoopGuard` (Layer 1, `loopguard.py`) wraps tool handlers,
+  hashes observations, and on a per-tool consecutive-identity streak
+  of 3 prepends the `loop_note` contract template ("this exact result
+  {count} times; it will not change…"); at 5 the harder `loop_warn`
+  ("STOP calling tools…"). Injection-only — it never stops the loop.
+  Prepended, not appended: head-keeping observation truncation would
+  eat an appended note on exactly the oversized no-info tails it
+  targets (review-caught). Calibration bars, seeded, probes as the
+  before (`2026-08-10-lg-*.jsonl`):
+
+  - **7b `memory-guarded`** (the two held-answer tasks ×3): **2/6 →
+    4/6 at −37.7% tokens** (73,979 → 46,059). Both held-answer loops
+    converted — `turns-exhausted` 22,947 → **pass** 8,211 and 22,700 →
+    **pass** 9,515 — and the note demonstrably fired in both
+    transcripts. Stable cells identical in every field but the config
+    label. Honest negative: the
+    cell that was already failing short (`wrong-answer` 15,195) fired
+    through note and warn and still failed (`malformed-output`,
+    15,196) — injection converts held-answer loops, not absent-answer
+    ones.
+  - **3b `graph-guarded`** (nav probe cells ×3): score unchanged 1/6 —
+    the spec's hedge ("3b's flail may resist wording") measured true —
+    but `turns-exhausted` 2 → 0 and tokens **−21.1%** (48,245 →
+    38,074): injected runs stop looping and answer (wrongly) instead
+    of burning to the turn cap.
+  - **4b `memory-guarded`** (full suite ×3, no-regression):
+    **identical in every field but the config label on all 66 rows**
+    vs the seeded 59/66 @ 55,525 memory cell — the guard was silent
+    everywhere, exactly as the probe predicted (4b max streak ≤ 2),
+    and a fired injection would itself have been a finding.
+
+  v1 limitations, documented and pinned by tests: observations from
+  raising handlers and unknown tools cannot streak (the wrapper resets
+  on a raise — no false "identical" claim the transcript contradicts);
+  under `graph-guarded`, collapsed repeat reads embed the graph's
+  `read #N` marker and so never streak — the guard fires via the other
+  tools, and it hashes what the model sees (graph markers included).
+  LoopGuard stays out of the headline configs pending a cross-model
+  sweep.
 - **P3 — no global token ceiling.** 3b `full`: 214,698 tokens for 15/66 —
   every gate has a local cap but composition multiplies them. Fix:
   `TokenBudget` primitive — soft degradation ladder + hard ceiling that

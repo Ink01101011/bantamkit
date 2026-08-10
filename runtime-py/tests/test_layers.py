@@ -12,6 +12,8 @@ from bantamkit.contract import (
     critique_feedback,
     json_answer_retry,
     load_contract,
+    loop_note,
+    loop_warn,
     render_evidence,
     schema_error,
     schema_instruction,
@@ -38,6 +40,15 @@ GOLDEN_JSON_ANSWER_RETRY = (
     "Your answer contains no JSON. Restate your final answer as ONLY the JSON "
     "requested by the task, with no prose around it."
 )
+# The LoopGuard injection wording (spec §2), pinned before the component exists:
+# the words are the contract, the streak mechanics are not.
+GOLDEN_LOOP_NOTE = (
+    "(you have now received this exact result 4 times; it will not change. "
+    "Do something different or give your final answer now)"
+)
+GOLDEN_LOOP_WARN = (
+    "(STOP calling tools. Give your final answer now, in exactly the format the task asked for.)"
+)
 
 # Fragments that must never reappear in core sources.
 MOVED_FRAGMENTS = (
@@ -46,17 +57,28 @@ MOVED_FRAGMENTS = (
     "(no tool calls",
     "not parseable JSON",
     "contains no JSON",
+    "you have now received",
+    "STOP calling tools",
 )
 CORE_MODULES = (
     "agent.py",
     "budget.py",
+    "loopguard.py",
     "structured.py",
     "critique.py",
     "evalrun.py",
     "mcpserver.py",
 )
 LAYER_MODULES = ("contract.py", "profile.py")
-FORBIDDEN_IMPORTS = ("agent", "structured", "critique", "evalrun", "filegraph", "memory")
+FORBIDDEN_IMPORTS = (
+    "agent",
+    "structured",
+    "critique",
+    "evalrun",
+    "filegraph",
+    "loopguard",
+    "memory",
+)
 
 PRE_SPLIT_DEFAULTS = {
     ("agent", "max_turns"): 10,
@@ -96,6 +118,14 @@ def test_render_evidence_bytes():
 
 def test_json_answer_retry_bytes():
     assert json_answer_retry() == GOLDEN_JSON_ANSWER_RETRY
+
+
+def test_loop_note_bytes():
+    assert loop_note(4) == GOLDEN_LOOP_NOTE
+
+
+def test_loop_warn_bytes():
+    assert loop_warn() == GOLDEN_LOOP_WARN
 
 
 def test_schema_error_bytes():
@@ -148,6 +178,12 @@ def test_token_budget_ceiling_default():
 
 def test_token_budget_optional_cutoff_default():
     assert profile_default_float("token_budget", "optional_cutoff") == 0.75
+
+
+def test_loop_guard_defaults():
+    """New in the loop-guard cycle — pinned separately, same intent as the pre-split guard."""
+    assert profile_default("loop_guard", "inject_at") == 3
+    assert profile_default("loop_guard", "warn_at") == 5
 
 
 def test_patient_profile_differs_from_default_only_in_max_turns():

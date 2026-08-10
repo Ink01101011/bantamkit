@@ -22,6 +22,7 @@ from bantamkit.client import BantamError, Message, ModelClient, OpenAICompatible
 from bantamkit.contract import schema_error, schema_instruction, schema_retry_feedback
 from bantamkit.critique import CritiqueExhausted, CritiqueGate, GroundedCritiqueGate
 from bantamkit.filegraph import FileAccessGraph
+from bantamkit.loopguard import LoopGuard
 from bantamkit.memory import Memory, MemoryStore
 from bantamkit.profile import default as profile_default
 from bantamkit.profile import load_profile
@@ -132,8 +133,15 @@ GRAPH_CONFIGS = {
 # it earns a place in CONFIGS only once the calibration bars say the ceiling holds.
 BUDGET_CONFIGS = {"budgeted": "full"}
 
+# Same precedent once more: each guarded name mirrors its headline config exactly, plus
+# a LoopGuard — attached last in run_task so it wraps every tool (v1 wraps only what is
+# registered at setup). Calibration-only until the conversion bars say otherwise.
+GUARD_CONFIGS = {"graph-guarded": "graph", "memory-guarded": "memory"}
+
 # Every config name run_task accepts: the permanent matrix plus calibration-only ablations.
-CONFIG_CHOICES = CONFIGS + sorted((set(GRAPH_CONFIGS) | set(BUDGET_CONFIGS)) - set(CONFIGS))
+CONFIG_CHOICES = CONFIGS + sorted(
+    (set(GRAPH_CONFIGS) | set(BUDGET_CONFIGS) | set(GUARD_CONFIGS)) - set(CONFIGS)
+)
 
 
 # ---- suite ----
@@ -407,7 +415,7 @@ def run_task(
     # Calibration-only configs mirror a headline config exactly, plus one component.
     # Resolving the name here keeps every membership test below reading as it did;
     # `config` itself stays the label the TaskResult records.
-    effective = BUDGET_CONFIGS.get(config, config)
+    effective = GUARD_CONFIGS.get(config, BUDGET_CONFIGS.get(config, config))
 
     tracking = TrackingClient(client)
     workspace_tools = _workspace_tools(task.get("workspace") or {})
@@ -468,8 +476,19 @@ def run_task(
             evidence_budget=policy("critique", "evidence_budget"),
         )
         agent.use(critique_gate)
-    if config in GRAPH_CONFIGS and any(n in WORKSPACE_TOOLS for n in task.get("tools", [])):
-        agent.use(FileAccessGraph(readers={"read_file": "path"}, **GRAPH_CONFIGS[config]))
+    if effective in GRAPH_CONFIGS and any(n in WORKSPACE_TOOLS for n in task.get("tools", [])):
+        # `effective`, not `config`: `graph-guarded` gets exactly the headline graph.
+        agent.use(FileAccessGraph(readers={"read_file": "path"}, **GRAPH_CONFIGS[effective]))
+    if config in GUARD_CONFIGS:
+        # Attached LAST on purpose: LoopGuard wraps only the tools registered by the
+        # time its setup runs, and last means all of them — the memory tools, the
+        # graph-wrapped readers, and the file_graph query tool alike.
+        agent.use(
+            LoopGuard(
+                inject_at=policy("loop_guard", "inject_at"),
+                warn_at=policy("loop_guard", "warn_at"),
+            )
+        )
 
     output: str | None = None
     messages: list[Message] = []
