@@ -247,3 +247,37 @@ def test_budget_is_reusable_across_sequential_runs():
         agent = Agent(client=FakeClient([assistant(content="done")])).use(budget)
         assert agent.run("task").output == "done"
         assert budget.spent == 15  # reset by setup, not carried between runs
+
+
+def test_a_budget_that_never_denies_changes_no_request():
+    """The governor may only cut, never alter: with the ceiling out of reach, the
+    full request stream through gates and retries is byte-identical to no budget."""
+    import json
+
+    from bantamkit.critique import GroundedCritiqueGate
+    from bantamkit.structured import JsonAnswerGate
+
+    def responses():
+        reject = {"score": 1, "feedback": "unit missing", "reasoning": "checked"}
+        accept = {"score": 10, "feedback": "ok", "reasoning": "checked"}
+        return [
+            assistant(content="the ttl is 300 seconds"),  # prose: JsonAnswerGate fires
+            assistant(content='{"ttl": 300}'),
+            assistant(content=json.dumps(reject)),  # critic round 1
+            assistant(content='{"ttl": 300, "unit": "seconds"}'),
+            assistant(content=json.dumps(accept)),  # critic round 2
+        ]
+
+    def run(with_budget):
+        client = FakeClient(responses())
+        agent = Agent(client=client)
+        if with_budget:
+            agent.use(TokenBudget(ceiling=10_000_000))
+        agent.use(JsonAnswerGate())
+        agent.use(GroundedCritiqueGate())
+        return agent.run("recall the ttl"), client.calls
+
+    bare_result, bare_calls = run(with_budget=False)
+    governed_result, governed_calls = run(with_budget=True)
+    assert governed_result.output == bare_result.output
+    assert governed_calls == bare_calls
