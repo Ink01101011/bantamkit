@@ -7,6 +7,7 @@ import asyncio
 from importlib import metadata
 from typing import Any
 
+from bantamkit import shiftwork
 from bantamkit.assets import AssetNotFound, assets_root, load_skill, load_tool
 from bantamkit.contract import schema_error, schema_retry_feedback
 from bantamkit.memory import Memory
@@ -23,6 +24,28 @@ _INSTALL_HINT = 'bantamkit-mcp needs the MCP extra: pip install "bantamkit[mcp]"
 VALIDATE_DESCRIPTION = (
     "Validate candidate output text against a JSON Schema. Returns {valid, feedback}; "
     "when invalid, feed the feedback back to the model and retry."
+)
+
+CLOCK_IN_DESCRIPTION = (
+    "Shift-work clock-in: schema-validate the checkpoint file and return the brief for "
+    "the unit at plan.cursor — {unit, role, invariants, handoff, do_not, files} — to hand "
+    "to the spawned agent verbatim. Structured refusals, never exceptions: "
+    "result=escalate when handoff.open_questions is non-empty, result=success when every "
+    "unit is done or dropped, result=error when the checkpoint fails validation."
+)
+
+CLOCK_OUT_DESCRIPTION = (
+    "Shift-work clock-out: record a finished unit — set its status, advance plan.cursor, "
+    "merge handoff_patch, push history_entry onto the 5-entry ring — validating the whole "
+    "mutated document against the checkpoint schema BEFORE an atomic write (a failure "
+    "writes nothing and returns result=error). Every success appends one accounting line "
+    "(unit, role, status, ts, plus your accounting fields, e.g. tokens/duration/model) to "
+    "<checkpoint>.log.jsonl."
+)
+
+STATUS_DESCRIPTION = (
+    "Shift-work status: read-only progress summary of a checkpoint — units by status, "
+    "cursor, open-question count, last history entry. Never mutates."
 )
 
 
@@ -63,6 +86,27 @@ def build_server(memory: Memory) -> Any:
             "valid": False,
             "feedback": schema_retry_feedback(error),
         }
+
+    @server.tool(name="shiftwork_clock_in", description=CLOCK_IN_DESCRIPTION)
+    def shiftwork_clock_in(checkpoint: str) -> dict[str, Any]:
+        return shiftwork.clock_in(checkpoint)
+
+    @server.tool(name="shiftwork_clock_out", description=CLOCK_OUT_DESCRIPTION)
+    def shiftwork_clock_out(
+        checkpoint: str,
+        unit_id: str,
+        status: str,
+        handoff_patch: dict[str, Any],
+        history_entry: dict[str, Any],
+        accounting: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return shiftwork.clock_out(
+            checkpoint, unit_id, status, handoff_patch, history_entry, accounting
+        )
+
+    @server.tool(name="shiftwork_status", description=STATUS_DESCRIPTION)
+    def shiftwork_status(checkpoint: str) -> dict[str, Any]:
+        return shiftwork.status(checkpoint)
 
     # Advertise the asset pack's schemas verbatim: one source of truth for every
     # transport. Call-time argument validation still follows the handler signatures

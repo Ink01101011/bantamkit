@@ -1,6 +1,7 @@
 """MCP surface: tools mirror the asset pack, memory round-trips, validation feedback."""
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -29,11 +30,20 @@ VALID_SCHEMA = {
 }
 
 
-def test_lists_exactly_the_three_tools(tmp_path):
+def test_lists_exactly_the_six_tools(tmp_path):
+    """One server, one entry point: memory and shiftwork ride the same instance."""
+
     async def scenario():
         async with Client(make_server(tmp_path)) as c:
             names = sorted(t.name for t in (await c.list_tools()).tools)
-            assert names == ["memory_recall", "memory_save", "validate_json"]
+            assert names == [
+                "memory_recall",
+                "memory_save",
+                "shiftwork_clock_in",
+                "shiftwork_clock_out",
+                "shiftwork_status",
+                "validate_json",
+            ]
 
     run(scenario())
 
@@ -199,6 +209,78 @@ def test_resource_templates_listed(tmp_path):
     run(scenario())
 
 
+EXAMPLE_CHECKPOINT = (
+    Path(__file__).resolve().parents[2] / "tools" / "shiftwork" / "example-checkpoint.json"
+)
+
+
+def checkpoint_copy(tmp_path):
+    path = tmp_path / "checkpoint.json"
+    path.write_text(EXAMPLE_CHECKPOINT.read_text())
+    return path
+
+
+def test_shiftwork_round_trip_beside_memory_on_one_server(tmp_path):
+    """The whole workflow over MCP, on the same instance that serves memory_save."""
+
+    async def scenario():
+        path = checkpoint_copy(tmp_path)
+        async with Client(make_server(tmp_path)) as c:
+            saved = await c.call_tool(
+                "memory_save",
+                {"type": "project", "name": "shiftwork-job", "description": "d", "body": "b"},
+            )
+            assert "saved" in saved.content[0].text
+            brief = (await c.call_tool("shiftwork_clock_in", {"checkpoint": str(path)}))
+            assert brief.structured_content["result"] == "brief"
+            assert brief.structured_content["unit"]["id"] == "U3"
+            out = await c.call_tool(
+                "shiftwork_clock_out",
+                {
+                    "checkpoint": str(path),
+                    "unit_id": "U3",
+                    "status": "done",
+                    "handoff_patch": {"next_action": "Review the diff per briefs/U4.md."},
+                    "history_entry": {"unit": "U3", "outcome": "done"},
+                    "accounting": {"tokens": 99, "duration": 1.5, "model": "haiku"},
+                },
+            )
+            assert out.structured_content["result"] == "ok"
+            assert out.structured_content["cursor"] == "U4"
+            again = (await c.call_tool("shiftwork_clock_in", {"checkpoint": str(path)}))
+            assert again.structured_content["unit"]["id"] == "U4"
+            status = await c.call_tool("shiftwork_status", {"checkpoint": str(path)})
+            assert status.structured_content["units"] == {"done": 2, "todo": 1}
+        log = json.loads((tmp_path / "checkpoint.json.log.jsonl").read_text().splitlines()[0])
+        assert log["model"] == "haiku" and log["unit"] == "U3"
+
+    run(scenario())
+
+
+def test_shiftwork_refusals_come_back_structured_not_raised(tmp_path):
+    async def scenario():
+        path = checkpoint_copy(tmp_path)
+        ckpt = json.loads(path.read_text())
+        ckpt["handoff"]["open_questions"] = ["ask the user"]
+        path.write_text(json.dumps(ckpt))
+        async with Client(make_server(tmp_path)) as c:
+            r = await c.call_tool("shiftwork_clock_in", {"checkpoint": str(path)})
+            assert r.structured_content["result"] == "escalate"
+            bad = await c.call_tool(
+                "shiftwork_clock_out",
+                {
+                    "checkpoint": str(path),
+                    "unit_id": "U3",
+                    "status": "not-a-status",
+                    "handoff_patch": {},
+                    "history_entry": {"unit": "U3", "outcome": "done"},
+                },
+            )
+            assert bad.structured_content["result"] == "error"
+
+    run(scenario())
+
+
 def test_store_and_start_are_mutually_exclusive():
     with pytest.raises(SystemExit):
         _parse_args(["--store", "a", "--start", "b"])
@@ -270,7 +352,7 @@ def test_stdio_subprocess_initializes(tmp_path):
                 assert init.server_info.name == "bantamkit"
                 assert (init.instructions or "").startswith("# Memory")
                 tools = await session.list_tools()
-                assert len(tools.tools) == 3
+                assert len(tools.tools) == 6
 
     run(scenario())
 

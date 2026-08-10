@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "job": {
+    "id": "codefix-template",
+    "goal": "Fix the reported bug with a minimal diff and a regression test.",
+    "done_definition": "Repro test passes, full suite green, reviewer unit signed off.",
+    "constraints": [
+      "Minimal diff: touch only what the bug requires",
+      "Every fix lands with a regression test that failed before it",
+      "Never weaken an existing test to make the suite pass"
+    ]
+  },
+  "plan": {
+    "cursor": "CF1",
+    "units": [
+      {
+        "id": "CF1",
+        "title": "Reproduce the bug as a failing test",
+        "brief_path": ".shiftwork/briefs/CF1.md",
+        "status": "todo",
+        "role": "implementer",
+        "depends_on": [],
+        "verify": "pytest tests/test_regression.py -q; test $? -ne 0"
+      },
+      {
+        "id": "CF2",
+        "title": "Locate the root cause (trace the code path, name file:line)",
+        "brief_path": ".shiftwork/briefs/CF2.md",
+        "status": "todo",
+        "role": "implementer",
+        "depends_on": ["CF1"],
+        "verify": "test -f .shiftwork/notes/CF2-root-cause.md"
+      },
+      {
+        "id": "CF3",
+        "title": "Fix the root cause; make the repro test pass",
+        "brief_path": ".shiftwork/briefs/CF3.md",
+        "status": "todo",
+        "role": "implementer",
+        "depends_on": ["CF2"],
+        "verify": "pytest tests/test_regression.py -q"
+      },
+      {
+        "id": "CF4",
+        "title": "Verify: review the fix diff against the constraints, run the full suite",
+        "brief_path": ".shiftwork/briefs/CF4.md",
+        "status": "todo",
+        "role": "reviewer",
+        "depends_on": ["CF3"],
+        "verify": "pytest -q"
+      }
+    ]
+  },
+  "state": {
+    "repo": {"branch": "fix/BUG-ID", "head_sha": "REPLACE-AT-PLAN-TIME", "dirty": false},
+    "artifacts": [
+      {"path": ".shiftwork/briefs/CF1.md", "role": "brief"},
+      {"path": "docs/bug-report.md", "role": "spec"}
+    ],
+    "external": []
+  },
+  "history": [],
+  "retro": [],
+  "handoff": {
+    "next_action": "Read briefs/CF1.md and write the failing repro test first.",
+    "open_questions": [],
+    "do_not": [
+      "Do not fix anything while reproducing — CF1 ends with a failing test, nothing else"
+    ]
+  }
+}
