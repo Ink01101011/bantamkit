@@ -131,13 +131,20 @@ class CritiqueGate:
             self._rounds = 0
             return None
         self._rounds += 1
+        # Counted before the exhaustion check, not after: the round that raises is a
+        # round that was spent. Counting it afterwards meant every exhausted run
+        # recorded one round fewer than the critic calls its own error text quoted
+        # ("after 3 rounds" beside a recorded 2), and per-round token attribution
+        # computed from the column came out a third too high. `rounds_used` is
+        # "critique rounds that judged the answer below threshold" — a round the
+        # budget denied is still not counted, because it was never spent.
+        self.rounds_used += 1
         if self._rounds >= self.max_rounds:
             self._rounds = 0
             raise CritiqueExhausted(
                 f"below threshold {self.rubric.threshold} after {self.max_rounds} rounds; "
                 f"last feedback: {verdict['feedback']}"
             )
-        self.rounds_used += 1
         return _critique_feedback(
             score=verdict["score"],
             threshold=self.rubric.threshold,
