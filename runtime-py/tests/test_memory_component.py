@@ -446,3 +446,64 @@ def test_layered_readonly_layer_with_invalid_utf8_does_not_break_recall(tmp_path
     out = Memory.layered(start=project)._recall("deploy")
     assert "[project] [deploy]" in out
     assert "project truth" in out
+
+
+# ---- RB-P1 P-A: the model-supplied k is floored at the component default ----
+
+
+def test_recall_floors_a_model_supplied_k_at_the_component_default(tmp_path):
+    """Measured: 57 of 60 `memory_recall` calls across 12 seeded 14b runs sent `k: 1`."""
+    mem = Memory(store=tmp_path / "mem", k=3)
+    mem.store.save("project", "gateway-user-quota", "per-user rate limit on the api gateway", "40")
+    mem.store.save("project", "org-seat-count", "how many seats one org licence includes", "5")
+    out = mem.recall("api gateway quota per user seats org licence", k=1)
+    assert "[gateway-user-quota]" in out and "[org-seat-count]" in out
+
+
+def test_recall_leaves_a_k_above_the_default_alone(tmp_path):
+    mem = Memory(store=tmp_path / "mem", k=1)
+    for i, description in enumerate(["alpha fact one", "alpha fact two", "alpha fact three"]):
+        mem.store.save("project", f"f-{i}", description, "b")
+    assert mem.recall("alpha fact", k=3).count("[f-") == 3
+
+
+def test_recall_without_k_is_unchanged(tmp_path):
+    mem = Memory(store=tmp_path / "mem", k=2)
+    for i, description in enumerate(["alpha fact one", "alpha fact two", "alpha fact three"]):
+        mem.store.save("project", f"f-{i}", description, "b")
+    assert mem.recall("alpha fact").count("[f-") == 2
+
+
+def test_component_floor_does_not_reach_into_the_store(tmp_path):
+    """The store stays honest about doing what it was told; only the agent-facing layer bends."""
+    store = MemoryStore(tmp_path / "mem")
+    store.save("project", "alpha", "alpha fact one", "b")
+    store.save("project", "beta", "alpha fact two", "b")
+    assert len(store.recall("alpha fact", k=1)) == 1
+
+
+def test_recall_floor_survives_the_agent_loop(tmp_path):
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("memory_recall", {"query": "quota seats org", "k": 1})]),
+            assistant(content="200"),
+        ]
+    )
+    mem = Memory(store=tmp_path / "mem")
+    mem.store.save("project", "gateway-user-quota", "per-user quota on the api gateway", "40")
+    mem.store.save("project", "org-seat-count", "seats one org licence includes", "5")
+    Agent(client=client).use(mem).run("t")
+    obs = client.calls[1]["messages"][-1].content
+    assert "[gateway-user-quota]" in obs and "[org-seat-count]" in obs
+
+
+def test_malformed_k_still_becomes_an_error_observation(tmp_path):
+    """Flooring must not swallow a nonsense argument — the error path is unchanged."""
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("memory_recall", {"query": "x", "k": "lots"})]),
+            assistant(content="ok"),
+        ]
+    )
+    Agent(client=client).use(Memory(store=tmp_path / "mem")).run("t")
+    assert client.calls[1]["messages"][-1].content.startswith("error:")

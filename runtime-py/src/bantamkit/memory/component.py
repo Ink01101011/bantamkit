@@ -87,7 +87,20 @@ class Memory:
         return f"saved '{result.name}'"
 
     def recall(self, query: str, k: int | None = None) -> str:
-        budget = k if k is not None else self.k
+        """`k` is the model asking for *more*, never for less than the store's default.
+
+        Measured cause (RB-P1, qwen2.5:14b-instruct): 57 of 60 `memory_recall` calls
+        across 12 seeded runs sent `k: 1`, and honouring it truncated recall to the
+        single best-scoring fact. Every two-fact task then answered from half its
+        evidence — `recall-org-quota` never once saw `org-seat-count`, which was on
+        disk the whole time. Same direction as `normalize_name` above: the component
+        bends the model's argument to the store's contract, and `MemoryStore.recall`
+        stays honest about returning exactly the `k` it was told.
+
+        The floor is the operator's configured default, not a constant, so a consumer
+        who really wants top-1 says so once at construction (`Memory(store, k=1)`).
+        """
+        budget = self.k if k is None else max(k, self.k)
         picked: list[tuple[str, Fact]] = []
         seen: set[str] = set()
         for label, store, writable in self._layers:
