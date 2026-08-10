@@ -171,6 +171,12 @@ def test_token_budget_optional_cutoff_default():
     assert profile_default_float("token_budget", "optional_cutoff") == 0.75
 
 
+def test_loop_guard_defaults():
+    """New in the loop-guard cycle — pinned separately, same intent as the pre-split guard."""
+    assert profile_default("loop_guard", "inject_at") == 3
+    assert profile_default("loop_guard", "warn_at") == 5
+
+
 def test_patient_profile_differs_from_default_only_in_max_turns():
     """`patient` is a turn-budget hypothesis, not a second set of policy numbers."""
     patient = load_profile("patient")

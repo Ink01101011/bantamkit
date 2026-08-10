@@ -23,3 +23,9 @@ critique:
 token_budget:
   ceiling: 6000
   optional_cutoff: 0.75
+# Loop-detection thresholds, applied only when a LoopGuard is attached. Probe-
+# calibrated: max observation-repeat streak in every passing run was 2, looping
+# runs burned 6-16 — so the note fires at 3 and the hard warning at 5.
+loop_guard:
+  inject_at: 3
+  warn_at: 5
