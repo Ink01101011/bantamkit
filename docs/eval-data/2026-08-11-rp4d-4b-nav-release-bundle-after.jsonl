@@ -1,0 +1,3 @@
+{"task": "nav-release-bundle", "config": "full", "family": "file-nav", "passed": true, "tokens": 4834, "outcome": "pass", "model_calls": 9, "tool_calls": 4, "schema_retries": 0, "critique_rounds": 1, "error": null, "seed": 3590861830}
+{"task": "nav-release-bundle", "config": "full", "family": "file-nav", "passed": true, "tokens": 5041, "outcome": "pass", "model_calls": 9, "tool_calls": 4, "schema_retries": 0, "critique_rounds": 1, "error": null, "seed": 2248991587}
+{"task": "nav-release-bundle", "config": "full", "family": "file-nav", "passed": true, "tokens": 4878, "outcome": "pass", "model_calls": 9, "tool_calls": 4, "schema_retries": 0, "critique_rounds": 1, "error": null, "seed": 4264928414}
