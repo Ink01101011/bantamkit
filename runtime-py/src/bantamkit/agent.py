@@ -10,6 +10,29 @@ from bantamkit.profile import default as profile_default
 from bantamkit.textutil import truncate
 
 
+def response_format_for(schema: dict) -> dict:
+    """The wire shape of the constrained-decoding tier, in one place.
+
+    Lives here rather than in `structured.py` so both core callers — the one-shot
+    `structured()` loop and the agent loop — send byte-identical bodies; a second
+    spelling would make "same tier" unfalsifiable across the two paths.
+    """
+    return {"type": "json_schema", "json_schema": {"name": "output", "schema": schema}}
+
+
+def _supports_response_format(client: ModelClient) -> bool:
+    """Duck-typed capability check, same spirit as `seed`.
+
+    A client that understands the kwarg exposes the memo (`OpenAICompatible`
+    initializes it `False`); one that has met a 400 has flipped it to `True`.
+    Fake clients and adapters that never heard of the kwarg lack the attribute
+    entirely and are never sent it.
+    """
+    return hasattr(client, "_response_format_unsupported") and not (
+        client._response_format_unsupported
+    )
+
+
 class MaxTurnsExceeded(BantamError):
     """The loop ended without a final answer inside the turn budget.
 
@@ -101,6 +124,12 @@ class Agent:
     # Typed loosely and duck-typed at the call sites on purpose: core must not depend
     # on the component, and an agent without one is byte-identical to before.
     budget: object | None = None
+    # Optional constrained-decoding request for the loop's own model call
+    # (`response_format_for(schema)`). Unset by default and forwarded only to a client
+    # that understands the kwarg, so every existing caller stays byte-identical.
+    # It has to live on the loop, not on a gate: a gate only ever sees a violation that
+    # already happened, and the decode worth constraining is the first one.
+    response_format: dict | None = None
     _post_hooks: list[Callable[..., str | None]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -138,7 +167,7 @@ class Agent:
                 # already produced: a truncated answer is still scorable, and an
                 # exception here would convert a scorable answer into a loss.
                 return AgentResult(output=last_content, messages=messages, usage=usage)
-            resp = self.client.chat(messages, tools=[t.tool for t in self.tools] or None)
+            resp = self._chat(messages)
             usage = usage + resp.usage
             messages.append(resp.message)
             if resp.message.content:
@@ -163,6 +192,17 @@ class Agent:
             messages.append(Message(role="user", content=feedback))
 
         raise MaxTurnsExceeded(f"no final answer within {self.max_turns} turns", messages)
+
+    def _chat(self, messages: list[Message]):
+        """One model call, with the constrained-decoding tier when it is available.
+
+        Re-checked per turn, as `structured()` does: a 400 on turn 1 flips the client's
+        memo and silently drops the tier from there on.
+        """
+        tools = [t.tool for t in self.tools] or None
+        if self.response_format is not None and _supports_response_format(self.client):
+            return self.client.chat(messages, tools=tools, response_format=self.response_format)
+        return self.client.chat(messages, tools=tools)
 
     def _dispatch(self, tc) -> str:
         tooldef = next((t for t in self.tools if t.tool.name == tc.name), None)

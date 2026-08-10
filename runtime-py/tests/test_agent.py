@@ -7,6 +7,7 @@ from bantamkit.agent import (
     MaxTurnsExceeded,
     ToolDef,
     coerce_arguments,
+    response_format_for,
     truncate,
 )
 from bantamkit.client import BantamError, Message, Tool
@@ -345,3 +346,102 @@ def test_plain_hook_still_gets_two_args_alongside_transcript_hook():
     agent.run("t")
     assert calls[0][0] == "transcript" and calls[0][1] >= 2
     assert calls[1] == ("plain", "t", "ok")
+
+
+# ---- RB-P3: constrained decoding on the loop's own call ----
+
+SCHEMA = {"type": "object", "required": ["item"], "properties": {"item": {"type": "string"}}}
+
+
+class ConstrainedClient(FakeClient):
+    """A client that understands the kwarg, like OpenAICompatible."""
+
+    def __init__(self, responses, unsupported=False):
+        super().__init__(responses)
+        self._response_format_unsupported = unsupported
+        self.response_formats = []
+
+    def chat(self, messages, tools=None, response_format=None):
+        self.response_formats.append(response_format)
+        return super().chat(messages, tools)
+
+
+def test_response_format_for_matches_the_shape_structured_already_sends():
+    assert response_format_for(SCHEMA) == {
+        "type": "json_schema",
+        "json_schema": {"name": "output", "schema": SCHEMA},
+    }
+
+
+def test_agent_forwards_response_format_when_the_client_understands_it():
+    client = ConstrainedClient([assistant(content='{"item": "widget"}')])
+    Agent(client=client, response_format=response_format_for(SCHEMA)).run("t")
+    assert client.response_formats == [response_format_for(SCHEMA)]
+
+
+def test_agent_constrains_every_turn_not_just_the_first():
+    """The gate's feedback turn is a decode too, and it is the one that kept failing."""
+    client = ConstrainedClient(
+        [
+            assistant(tool_calls=[call("lookup", {"query": "q"})]),
+            assistant(content='{"item": "widget"}'),
+        ]
+    )
+    agent = Agent(client=client, tools=[lookup_tool(lambda query: "obs")])
+    agent.response_format = response_format_for(SCHEMA)
+    agent.run("t")
+    assert client.response_formats == [response_format_for(SCHEMA)] * 2
+
+
+def test_agent_omits_response_format_once_the_client_memoized_a_400():
+    client = ConstrainedClient([assistant(content="prose")], unsupported=True)
+    Agent(client=client, response_format=response_format_for(SCHEMA)).run("t")
+    assert client.response_formats == [None]
+
+
+def test_agent_drops_the_tier_mid_run_when_the_memo_flips():
+    client = ConstrainedClient(
+        [
+            assistant(tool_calls=[call("lookup", {"query": "q"})]),
+            assistant(content="done"),
+        ]
+    )
+    inner_chat = client.chat
+
+    def chat(messages, tools=None, response_format=None):
+        resp = inner_chat(messages, tools, response_format)
+        client._response_format_unsupported = True  # as the 400 fallback would
+        return resp
+
+    client.chat = chat
+    agent = Agent(client=client, tools=[lookup_tool(lambda query: "obs")])
+    agent.response_format = response_format_for(SCHEMA)
+    agent.run("t")
+    assert client.response_formats[0] is not None
+    assert client.response_formats[1] is None
+
+
+def test_an_agent_that_sets_nothing_never_sends_the_kwarg():
+    """The field is opt-in: today's callers must stay byte-identical."""
+    client = ConstrainedClient([assistant(content="done")])
+    assert Agent(client=client).response_format is None
+    Agent(client=client).run("t")
+    assert client.response_formats == [None]
+
+
+def test_clients_without_the_kwarg_are_never_sent_it():
+    """conftest's FakeClient has a 2-arg chat: forwarding would be a TypeError."""
+    client = FakeClient([assistant(content="done")])
+    agent = Agent(client=client, response_format=response_format_for(SCHEMA))
+    assert agent.run("t").output == "done"
+
+
+def test_tools_still_travel_with_a_constrained_call():
+    client = ConstrainedClient([assistant(content="done")])
+    agent = Agent(
+        client=client,
+        tools=[lookup_tool(lambda query: "obs")],
+        response_format=response_format_for(SCHEMA),
+    )
+    agent.run("t")
+    assert [t.name for t in client.calls[0]["tools"]] == ["lookup"]

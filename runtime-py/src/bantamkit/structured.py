@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import jsonschema
 
-from bantamkit.agent import Agent
+from bantamkit.agent import Agent, _supports_response_format, response_format_for
 from bantamkit.client import BantamError, Message, ModelClient
 from bantamkit.contract import (
     extract_json,
@@ -35,19 +35,6 @@ class StructuredOutputError(BantamError):
         self.messages: list[Message] = list(messages or [])
 
 
-def _supports_response_format(client: ModelClient) -> bool:
-    """Duck-typed capability check, same spirit as `seed`.
-
-    A client that understands the kwarg exposes the memo (`OpenAICompatible`
-    initializes it `False`); one that has met a 400 has flipped it to `True`.
-    Fake clients and adapters that never heard of the kwarg lack the attribute
-    entirely and are never sent it.
-    """
-    return hasattr(client, "_response_format_unsupported") and not (
-        client._response_format_unsupported
-    )
-
-
 def structured(
     client: ModelClient, prompt: str, schema: dict, *, max_retries: int | None = None
 ) -> dict:
@@ -59,10 +46,7 @@ def structured(
     """
     if max_retries is None:
         max_retries = profile_default("structured", "max_retries")
-    response_format = {
-        "type": "json_schema",
-        "json_schema": {"name": "output", "schema": schema},
-    }
+    response_format = response_format_for(schema)
     messages = [
         Message(role="system", content=schema_instruction(schema)),
         Message(role="user", content=prompt),
