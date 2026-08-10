@@ -1408,8 +1408,10 @@ a problem with an owner-direction, and the layer names refer to the
   passes with — and the critic scored it down purely on format, once
   self-refutingly. The committed row for seed 634446002 carries the
   verdict verbatim: *"Answer should be in format `{"port": <number>}`, not
-  `{"port": 9443}`"*. It is literal-matching the placeholder token copied
-  out of the task prompt.
+  `{"port": 9443}` without JSON structure. Correct answer format wasn't
+  followed but required content was identified correctly."* The answer it
+  is describing as lacking JSON structure **is** `{"port": 9443}`. It is
+  literal-matching the placeholder token copied out of the task prompt.
 
   **The rubric rewording was written once, measured, and reverted.** It
   named the placeholder conflict, stated that a literal value substituted
@@ -1432,8 +1434,9 @@ a problem with an owner-direction, and the layer names refer to the
   shipped**. The rewording drove the score on a byte-identical,
   byte-*correct* answer from 5/10 to 0/10 on all three seeds, and made the
   critic invent a new non-content requirement — its committed feedback on
-  seed 4094558621 adds *"no explanation or listing of steps taken to find
-  the port"*. The lone `rubric only` pass was **not the fix working**: the
+  seed 4094558621 adds *"Additionally, no explanation or listing of steps
+  taken to find the port in workspace files was provided as per task
+  instructions."* The lone `rubric only` pass was **not the fix working**: the
   critic still scored 0/10 on format and the *answerer* appeased it by
   re-emitting the same `{"port": 9443}` pretty-printed across three lines,
   which then scored ≥ 7. Under the RB-P5 contract wording that same seed
