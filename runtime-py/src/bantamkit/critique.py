@@ -66,6 +66,10 @@ def _validate_grounded_rubric(rubric: Rubric) -> None:
 def _sampling_is_pinned(client: object) -> bool:
     """Whether the critic's own calls carry a pinned sampling seed, seen through wrappers.
 
+    Exactly that and no more: a seed is *set*, which is not the same claim as sampling
+    being deterministic. Whether the backend honours the pin is not visible from here —
+    that half is the caller's to affirm (`CritiqueGate(deterministic_sampling=...)`).
+
     Duck-typed, the same spirit as `agent._supports_response_format` and as the eval
     harness's own `hasattr(client, "seed")`: `OpenAICompatible` carries a `seed` and
     the harness pins it per run, while a client that has none is free to resample.
@@ -110,14 +114,25 @@ def load_rubric(name: str) -> Rubric:
 
 class CritiqueGate:
     def __init__(
-        self, rubric: str | Rubric, client: ModelClient | None = None, max_rounds: int | None = None
+        self,
+        rubric: str | Rubric,
+        client: ModelClient | None = None,
+        max_rounds: int | None = None,
+        deterministic_sampling: bool = False,
     ):
+        """`deterministic_sampling` affirms that this critic's backend reproduces a
+        sample exactly for a fixed request and a pinned seed. It is off by default and
+        it is the caller's claim to make, because the library cannot check it: one
+        adapter covers Ollama, vLLM, llama.cpp and OpenRouter, and on the batching ones
+        a seed is best-effort. See `_verdict` for what the affirmation buys.
+        """
         if isinstance(rubric, Rubric):
             _validate_rubric(rubric)
             self.rubric = rubric
         else:
             self.rubric = load_rubric(rubric)
         self.client = client
+        self.deterministic_sampling = deterministic_sampling
         self.max_rounds = (
             max_rounds if max_rounds is not None else profile_default("critique", "max_rounds")
         )
@@ -179,7 +194,7 @@ class CritiqueGate:
     def _verdict(self, prompt: str) -> dict:
         """The critic's judgement of this prompt — bought once per distinct prompt.
 
-        With the sampling seed pinned, the critic is a deterministic function of its
+        Where sampling is deterministic, the critic is a deterministic function of its
         prompt, so a round that re-judges an unchanged answer is spend for a verdict
         already in hand. RP2 measured the shape: on the 14b `nav-prod-port` cell every
         round judged the identical `{"port": 9443}` and got back the identical verdict,
@@ -203,13 +218,29 @@ class CritiqueGate:
         pretty-printed). Byte equality is the only equality this layer can prove;
         semantic equality is a judgement, and judging is the critic's job.
 
-        Conditional on a pinned seed, and off without one. Unseeded, the same text may
-        legitimately draw a different sample, and a consumer whose next round would
-        have scored above threshold must keep that round: this may only skip a call
-        whose result it can predict, never one it merely expects.
+        Off by default, and on only when both halves of "the verdict is predictable"
+        hold. That rule — this may only skip a call whose result it can predict, never
+        one it merely expects — is the whole justification, and one half of it is not
+        checkable from inside the library:
+
+        - the caller affirmed `deterministic_sampling`, i.e. this backend reproduces a
+          sample exactly for a fixed request and a pinned seed. Ollama does; `client.py`
+          covers vLLM and OpenRouter with the same adapter, and there a seed is
+          best-effort (continuous batching, upstream fingerprint drift). A seed being
+          *set* proves nothing about that, so the affirmation cannot be inferred — it
+          has to be stated, and stating it wrongly is the one way to lose a round;
+        - and a seed is in fact pinned for this run (`_sampling_is_pinned`). Mechanical,
+          so the gate checks it rather than taking it on trust: the affirmation is about
+          the backend, this is about the client actually in hand.
+
+        Without both, the same text may legitimately draw a different sample, and a
+        consumer whose next round would have scored above threshold keeps that round.
+        The cost of defaulting off is one re-judged verdict per repeat; the cost of
+        defaulting on is a lucky would-pass turned into an exhaustion, on a backend the
+        library advertises support for. Fail closed: pay for the call.
         """
         if self._last_prompt == prompt and self._last_verdict is not None:
-            if _sampling_is_pinned(self.client):
+            if self.deterministic_sampling and _sampling_is_pinned(self.client):
                 return self._last_verdict
         verdict = structured(self.client, prompt, self.rubric.schema)
         self._last_prompt, self._last_verdict = prompt, verdict
@@ -227,8 +258,14 @@ class GroundedCritiqueGate(CritiqueGate):
         client: ModelClient | None = None,
         max_rounds: int | None = None,
         evidence_budget: int | None = None,
+        deterministic_sampling: bool = False,
     ):
-        super().__init__(rubric, client=client, max_rounds=max_rounds)
+        super().__init__(
+            rubric,
+            client=client,
+            max_rounds=max_rounds,
+            deterministic_sampling=deterministic_sampling,
+        )
         _validate_grounded_rubric(self.rubric)
         self.evidence_budget = (
             evidence_budget

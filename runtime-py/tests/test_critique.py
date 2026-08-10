@@ -412,7 +412,7 @@ def test_gate_without_a_budget_keeps_every_round():
     assert gate.budget is None
 
 
-# ---- RP4e: under a pinned seed, an unchanged answer is a settled question ----
+# ---- RP4e: under affirmed deterministic sampling, an unchanged answer is settled ----
 
 
 class SeededFakeClient(FakeClient):
@@ -427,7 +427,7 @@ def critic_calls(client, marker="Task:t"):
     return sum(1 for c in client.calls if marker in (c["messages"][-1].content or ""))
 
 
-def test_unchanged_answer_under_a_pinned_seed_is_not_rejudged():
+def test_unchanged_answer_under_affirmed_determinism_is_not_rejudged():
     """RP2: all three rounds judged the identical string and returned the identical verdict."""
     client = SeededFakeClient(
         [
@@ -437,7 +437,9 @@ def test_unchanged_answer_under_a_pinned_seed_is_not_rejudged():
             assistant(content="same answer"),
         ]
     )
-    gate = CritiqueGate(make_rubric(), client=client, max_rounds=3)
+    gate = CritiqueGate(
+        make_rubric(), client=client, max_rounds=3, deterministic_sampling=True
+    )
     agent = Agent(client=client, max_turns=20).use(gate)
     with pytest.raises(CritiqueExhausted, match="thin") as excinfo:
         agent.run("t")
@@ -459,7 +461,9 @@ def test_unchanged_answer_still_feeds_the_same_bytes_back_to_the_answerer():
             assistant(content='{"score": 9, "feedback": "ok"}'),
         ]
     )
-    gate = CritiqueGate(make_rubric(), client=client, max_rounds=4)
+    gate = CritiqueGate(
+        make_rubric(), client=client, max_rounds=4, deterministic_sampling=True
+    )
     agent = Agent(client=client, max_turns=20).use(gate)
     assert agent.run("t").output == "finally different"
     first_feedback = client.calls[2]["messages"][-1].content
@@ -468,9 +472,33 @@ def test_unchanged_answer_still_feeds_the_same_bytes_back_to_the_answerer():
     assert critic_calls(client) == 2  # round two reused; the changed answer was paid for
 
 
-def test_unchanged_answer_is_rejudged_when_the_client_is_not_seeded():
-    """Unpinned sampling may legitimately score the same text differently — keep the round."""
+def test_affirming_determinism_does_not_cover_a_client_with_no_pinned_seed():
+    """RP5b: both halves are required. The affirmation is about the backend; whether a
+    seed is actually pinned for *this* run is mechanical, so the gate still checks it.
+    Unpinned sampling may legitimately score the same text differently — keep the round."""
     client = FakeClient(
+        [
+            assistant(content="same answer"),
+            assistant(content='{"score": 5, "feedback": "thin"}'),
+            assistant(content="same answer"),
+            assistant(content='{"score": 9, "feedback": "fine on a second look"}'),
+        ]
+    )
+    gate = CritiqueGate(make_rubric(), client=client, deterministic_sampling=True)
+    assert Agent(client=client, max_turns=20).use(gate).run("t").output == "same answer"
+    assert critic_calls(client) == 2 and gate.rounds_used == 1
+
+
+def test_the_memo_is_off_unless_the_caller_affirms_deterministic_sampling():
+    """RP5b: a seed being *set* is not proof that sampling is deterministic.
+
+    `OpenAICompatible` covers vLLM and OpenRouter, where a seed is best-effort
+    (continuous batching, upstream fingerprint drift). There a below-threshold verdict
+    could be reused where a fresh sample might have cleared threshold on a
+    byte-identical answer — a lucky would-pass converted into an exhaustion. The gate
+    may only skip a call whose result it can predict, so the default is to pay.
+    """
+    client = SeededFakeClient(
         [
             assistant(content="same answer"),
             assistant(content='{"score": 5, "feedback": "thin"}'),
@@ -497,14 +525,14 @@ def test_a_textually_changed_answer_is_rejudged_even_when_it_means_the_same_thin
             assistant(content='{"score": 9, "feedback": "clear now"}'),
         ]
     )
-    gate = CritiqueGate(make_rubric(), client=client)
+    gate = CritiqueGate(make_rubric(), client=client, deterministic_sampling=True)
     assert Agent(client=client, max_turns=20).use(gate).run("t").output == '{"port": 9443}'
     assert critic_calls(client) == 2
 
 
 def test_the_verdict_memo_does_not_survive_into_the_next_run():
     """`setup` resets it with the round counters: a memo across runs would be a cache."""
-    gate = CritiqueGate(make_rubric())
+    gate = CritiqueGate(make_rubric(), deterministic_sampling=True)
     for _ in range(2):
         client = SeededFakeClient(
             [assistant(content="answer"), assistant(content='{"score": 9, "feedback": "ok"}')]
@@ -526,7 +554,7 @@ def test_the_guard_reads_a_pinned_seed_through_the_harness_wrappers():
             assistant(content="same answer"),
         ]
     )
-    gate = CritiqueGate(make_rubric(), max_rounds=2)
+    gate = CritiqueGate(make_rubric(), max_rounds=2, deterministic_sampling=True)
     agent = Agent(client=TrackingClient(client), max_turns=20).use(
         TokenBudget(ceiling=10**6), gate
     )
@@ -547,7 +575,9 @@ def test_grounded_gate_rejudges_when_only_the_evidence_changed():
             assistant(content='{"score": 9, "feedback": "backed now"}'),
         ]
     )
-    gate = GroundedCritiqueGate(make_grounded_rubric(), client=client)
+    gate = GroundedCritiqueGate(
+        make_grounded_rubric(), client=client, deterministic_sampling=True
+    )
     agent = Agent(
         client=client, max_turns=20, tools=[lookup_tool(lambda item: f"{item}: 25")]
     ).use(gate)
@@ -565,7 +595,9 @@ def test_grounded_gate_short_circuits_an_unchanged_answer_and_unchanged_evidence
             assistant(content="25"),
         ]
     )
-    gate = GroundedCritiqueGate(make_grounded_rubric(), client=client)
+    gate = GroundedCritiqueGate(
+        make_grounded_rubric(), client=client, deterministic_sampling=True
+    )
     agent = Agent(
         client=client, max_turns=20, tools=[lookup_tool(lambda item: f"{item}: 25")]
     ).use(gate)
@@ -583,7 +615,7 @@ def test_short_circuit_never_runs_ahead_of_the_budget():
             assistant(content="same answer", prompt_tokens=30),
         ]
     )
-    gate = CritiqueGate(make_rubric(), client=client)
+    gate = CritiqueGate(make_rubric(), client=client, deterministic_sampling=True)
     budget = TokenBudget(ceiling=100, optional_cutoff=0.5)
     result = Agent(client=client).use(budget, gate).run("t")
     assert result.output == "same answer"  # round two denied: accepted, not memo-judged
