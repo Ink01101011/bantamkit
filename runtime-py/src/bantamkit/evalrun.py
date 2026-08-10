@@ -473,9 +473,18 @@ def run_task(
     # which is the tracking client — wrapped by the budget in the `budgeted` config,
     # bare tracking everywhere else (identical to the `client=tracking` they used to be
     # handed). Inheriting is what puts critic spend in front of the governor.
+    # `deterministic_sampling=True` on both gates below is this harness affirming what
+    # the library will not assume for a consumer: that the endpoint reproduces a sample
+    # exactly for a fixed request under the seed pinned above. It is the harness's claim
+    # to make and it costs nothing new — every bar here is already stated as a seeded
+    # number, and a run against a backend that resamples has an unreproducible bar with
+    # or without the critic memo. A consumer whose backend batches gets the safe default
+    # instead (RP5b; `CritiqueGate._verdict`).
     if effective == "critique":
         critique_gate = CritiqueGate(
-            "task-completion", max_rounds=policy("critique", "max_rounds")
+            "task-completion",
+            max_rounds=policy("critique", "max_rounds"),
+            deterministic_sampling=True,
         )
         agent.use(critique_gate)
     # RB-P8. A `memory_setup` task keeps its answer in a store; a config that attaches
@@ -503,6 +512,7 @@ def run_task(
         critique_gate = GroundedCritiqueGate(
             max_rounds=policy("critique", "max_rounds"),
             evidence_budget=policy("critique", "evidence_budget"),
+            deterministic_sampling=True,
         )
         agent.use(critique_gate)
     if effective in GRAPH_CONFIGS and any(n in WORKSPACE_TOOLS for n in task.get("tools", [])):

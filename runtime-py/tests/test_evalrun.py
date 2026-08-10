@@ -1696,6 +1696,38 @@ def test_full_gate_client_is_the_tracking_client(tmp_path, monkeypatch):
     assert result.passed is True and result.model_calls == 2 and result.tokens == 30
 
 
+def test_both_critique_gates_affirm_deterministic_sampling(tmp_path, monkeypatch):
+    """RP5b: the memo is off in the library until a caller affirms, and the harness is
+    the caller that can. It pins a seed per run and measures against a seed-honouring
+    local endpoint, so a bar it produced is already unreproducible on a backend that
+    resamples — the affirmation adds no assumption the methodology did not already make.
+    Without it the RP4e livelock bar (10,571 tokens, 7 model calls per run) would not
+    reproduce."""
+    grounded = capture_gate(monkeypatch, "GroundedCritiqueGate")
+    blind = capture_gate(monkeypatch, "CritiqueGate")
+    run_task(
+        FakeClient([assistant(content=CONTACT), assistant(content=GROUNDED_VERDICT)]),
+        get_task("extract-contact"),
+        "full",
+        tmp_path,
+    )
+    run_task(
+        FakeClient(
+            [
+                assistant(content='{"team": "Atlas"}'),
+                assistant(content='{"score": 9, "feedback": "ok"}'),
+            ]
+        ),
+        get_task("recall-owner"),
+        "critique",
+        tmp_path,
+    )
+    (grounded_gate,) = grounded
+    (blind_gate,) = blind
+    assert grounded_gate.deterministic_sampling is True
+    assert blind_gate.deterministic_sampling is True
+
+
 def test_critique_gate_client_is_the_tracking_client(tmp_path, monkeypatch):
     captured = capture_gate(monkeypatch, "CritiqueGate")
     client = FakeClient(
