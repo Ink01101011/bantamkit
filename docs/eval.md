@@ -1062,6 +1062,45 @@ the next cycle makes physical:
   verified, economizer not yet — that claim waits on critic-spend
   visibility, and TokenBudget stays out of the headline configs.
 
+  **Outcome (2026-08-10, budget-visibility cycle, v0.11.1):** the debt
+  is paid mechanically — `TokenBudget.setup` wraps the agent's client,
+  so the governor now books every call including critic spend
+  (`2026-08-10-bv-*.jsonl`). Measured against the same seeds:
+
+  - **4b `budgeted`: 64/66 at 109,201 tokens (was 111,382).** 64 of 66
+    rows byte-identical to the blind-governor cell; the two
+    `nav-release-bundle` marginal failures each had their third critic
+    call denied at the now-visible cutoff (mc 10 → 9,
+    `critique-exhausted` → `wrong-answer`, −2,181 tokens, −2.0%).
+    Score unchanged. This is the visibility fix doing exactly its job.
+  - **3b `budgeted`: 21/66 at 161,736 tokens — the strictly-below-148,215
+    bar MISSED**, and the miss is a measurement lesson, not a code
+    defect. 53/66 rows are byte-identical to the blind cell. The gap is
+    six marginal cells whose critic verdict flipped reject-ward vs the
+    baseline sweep, extending runs the governor then capped at the
+    ceiling (`budget-exhausted` ×6 at 6.1–6.5k). Two independent checks
+    exonerate the code: (1) an offline invariant test pins that a
+    never-denying governor leaves the request stream byte-identical to
+    no governor at all (the budget can only cut, never alter); (2) a
+    back-to-back ×2 rerun of the four flipped cells on identical code
+    (`bv-flip-probe-1/2`) diverged from *itself* on 5/12 rows,
+    reproducing both the short and the long trajectory byte-for-byte in
+    different sweeps — llama.cpp server nondeterminism on
+    marginal-verdict cells, the documented P9 bound. Where trajectories
+    did match, visibility cut spend exactly as designed: a critique
+    round denied at the cutoff (`recall-oncall` mc 9 → 8, −779 and
+    −1,034) and a hard-ceiling stop (`shop-basket-total` 7,209 → 6,128).
+  - **Measurement lesson (recorded as method, like the P3 bar
+    correction before it):** on a server with verdict-flip
+    nondeterminism, a suite-total bar across reruns conflates the
+    governor's effect (±1–3%) with trajectory variance (a single flip
+    swings a run ±3–4k tokens). The honest instrument is the paired
+    per-seed comparison on trajectory-stable rows — which is how both
+    cells above are reported. Scores are unchanged on both models;
+    the economizer claim is now *measurable* and measured small on this
+    suite (critic spend is only worth denying near the cutoff), and the
+    flip-prone long tails are LoopGuard's target, not the governor's.
+
 (P5 — tool-use uplift on non-4b models — is not separately actionable: it
 is P2's shadow. Grounded critique can't rescue tool tasks on a model
 whose verdicts it can't parse.)
