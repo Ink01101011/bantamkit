@@ -9,7 +9,7 @@ from bantamkit.agent import (
     coerce_arguments,
     truncate,
 )
-from bantamkit.client import Tool
+from bantamkit.client import BantamError, Message, Tool
 
 
 def lookup_tool(handler):
@@ -120,6 +120,64 @@ def test_max_turns_exceeded_carries_the_transcript():
 def test_max_turns_exceeded_messages_defaults_to_empty():
     """Constructed without a transcript (older callers, tests) it is still a list."""
     assert MaxTurnsExceeded("no final answer").messages == []
+
+
+class GateGaveUp(BantamError):
+    """A gate error shaped like `MaxTurnsExceeded`: it declares a transcript slot."""
+
+    def __init__(self, message, messages=None):
+        super().__init__(message)
+        self.messages = list(messages or [])
+
+
+def test_post_hook_error_gets_the_agent_transcript():
+    """A gate raises from inside `_first_feedback`; only the agent still holds the run."""
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("lookup", {"item": "w"})]),
+            assistant(content="draft"),
+        ]
+    )
+    agent = Agent(client=client, tools=[lookup_tool(lambda item: "obs")])
+
+    def gate(task, output):
+        raise GateGaveUp("gave up")
+
+    agent.add_post_hook(gate)
+    with pytest.raises(GateGaveUp) as excinfo:
+        agent.run("t")
+    messages = excinfo.value.messages
+    assert [m.role for m in messages] == ["user", "assistant", "tool", "assistant"]
+    assert [tc.name for m in messages for tc in m.tool_calls] == ["lookup"]
+
+
+def test_post_hook_error_keeps_a_transcript_it_already_carries():
+    """Opt-in and fill-once: a slot the raiser populated is never overwritten."""
+    client = FakeClient([assistant(content="draft")])
+    agent = Agent(client=client)
+    own = [Message(role="assistant", content="the raiser's own record")]
+
+    def gate(task, output):
+        raise GateGaveUp("gave up", own)
+
+    agent.add_post_hook(gate)
+    with pytest.raises(GateGaveUp) as excinfo:
+        agent.run("t")
+    assert [m.content for m in excinfo.value.messages] == ["the raiser's own record"]
+
+
+def test_post_hook_error_without_a_transcript_slot_is_left_alone():
+    """No slot declared, no payload grafted on: transport errors are not gate failures."""
+    client = FakeClient([assistant(content="draft")])
+    agent = Agent(client=client)
+
+    def gate(task, output):
+        raise BantamError("something else entirely")
+
+    agent.add_post_hook(gate)
+    with pytest.raises(BantamError) as excinfo:
+        agent.run("t")
+    assert not hasattr(excinfo.value, "messages")
 
 
 def test_post_hook_feedback_then_accept():

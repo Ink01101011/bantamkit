@@ -23,6 +23,25 @@ class MaxTurnsExceeded(BantamError):
         self.messages: list[Message] = list(messages or [])
 
 
+def _attach_transcript(error: BantamError, messages: list[Message]) -> None:
+    """Fill in a gate-raised error's transcript slot from the agent's own messages.
+
+    A post hook raises from inside `_first_feedback`, where the agent is the last
+    holder of the transcript — the hook was never handed one, and `run_task`'s own
+    `messages` list is still empty. Without this, every `schema-exhausted` and
+    `critique-exhausted` run recorded `messages: []`.
+
+    Opt-in by declaration, and fill-once: only an error that already carries a
+    `messages` list (the `MaxTurnsExceeded` shape) is filled, and only while that
+    list is empty. An error that declares no slot is left exactly as raised — a
+    transport failure is not a gate giving up, and measurement must not invent a
+    payload for it.
+    """
+    existing = getattr(error, "messages", None)
+    if isinstance(existing, list) and not existing:
+        error.messages = list(messages)
+
+
 @dataclass
 class ToolDef:
     tool: Tool
@@ -132,7 +151,13 @@ class Agent:
                 continue
 
             output = resp.message.content or ""
-            feedback = self._first_feedback(prompt, output, messages)
+            try:
+                feedback = self._first_feedback(prompt, output, messages)
+            except BantamError as e:
+                # Recording only. The exception propagates unchanged — same type,
+                # same message, same traceback — so no verdict can move.
+                _attach_transcript(e, messages)
+                raise
             if feedback is None:
                 return AgentResult(output=output, messages=messages, usage=usage)
             messages.append(Message(role="user", content=feedback))

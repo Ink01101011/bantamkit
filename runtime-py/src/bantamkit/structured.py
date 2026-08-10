@@ -20,7 +20,19 @@ __all__ = ["JsonAnswerGate", "StructuredOutputError", "extract_json", "structure
 
 
 class StructuredOutputError(BantamError):
-    """No schema-valid output within the retry budget."""
+    """No schema-valid output within the retry budget.
+
+    Carries the transcript up to the raise, same payload and same reason as
+    `MaxTurnsExceeded`: when a schema gate gives up it raises from inside the
+    agent's post-hook chain, and without a slot for the transcript every
+    `schema-exhausted` run wrote `{"output": null, "messages": []}` — the runs
+    most worth diagnosing recording nothing. The agent fills the slot in
+    (`Agent.run`); a raiser that already has the transcript may pass it here.
+    """
+
+    def __init__(self, message: str, messages: list[Message] | None = None):
+        super().__init__(message)
+        self.messages: list[Message] = list(messages or [])
 
 
 def _supports_response_format(client: ModelClient) -> bool:

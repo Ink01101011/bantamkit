@@ -343,7 +343,9 @@ def test_outcome_critique_exhausted_counts_rounds(tmp_path):
     result = run_task(client, get_task("recall-owner"), "critique", tmp_path)
     assert result.passed is False
     assert result.outcome == "critique-exhausted"
-    assert result.critique_rounds == 2  # feedback issued twice; third violation raises
+    # Three critic calls, three rounds recorded — the column used to read 2 while the
+    # error text beside it said "after 3 rounds".
+    assert result.critique_rounds == 3
 
 
 def test_tool_calls_counted(tmp_path):
@@ -1398,7 +1400,8 @@ def test_turns_exhausted_transcript_carries_the_messages(tmp_path):
     assert result.tool_calls == 0
 
 
-def test_gate_raised_transcript_stays_empty_without_a_messages_attribute(tmp_path):
+def test_gate_raised_transcript_stays_empty_without_an_agent_loop(tmp_path):
+    """The `structured` config has no agent transcript to fill the slot with."""
     transcripts = tmp_path / "t"
     transcripts.mkdir()
     client = FakeClient([assistant(content="not json")] * 3)
@@ -1407,6 +1410,52 @@ def test_gate_raised_transcript_stays_empty_without_a_messages_attribute(tmp_pat
     )
     assert result.outcome == "schema-exhausted"
     assert read_transcript(transcripts, "structured", "extract-contact")["messages"] == []
+
+
+# ---- RP4a: gate-exhausted transcripts are no longer empty either ----
+
+
+def test_schema_exhausted_transcript_carries_the_messages(tmp_path):
+    """RP1 probe: a `lean` schema-exhausted run wrote `{"output": null, "messages": []}`."""
+    transcripts = tmp_path / "t"
+    transcripts.mkdir()
+    client = FakeClient([assistant(content='{"name": "Ann"}')] * 3)
+    result = run_task(
+        client, get_task("extract-contact"), "lean", tmp_path, transcripts_dir=transcripts
+    )
+    assert result.outcome == "schema-exhausted"
+    data = read_transcript(transcripts, "lean", "extract-contact")
+    assert data["messages"], "schema-exhausted runs used to write messages: []"
+    assert [m["role"] for m in data["messages"]].count("assistant") == 3
+    assert data["messages"][-1]["content"] == '{"name": "Ann"}'
+
+
+def test_critique_exhausted_transcript_carries_the_messages(tmp_path):
+    """Same gap on the other gate: RP2 had to monkeypatch the runtime to see this run."""
+    transcripts = tmp_path / "t"
+    transcripts.mkdir()
+    bad_verdict = '{"score": 2, "feedback": "still wrong"}'
+    client = FakeClient(
+        [
+            assistant(content="answer one"),
+            assistant(content=bad_verdict),
+            assistant(content="answer two"),
+            assistant(content=bad_verdict),
+            assistant(content="answer three"),
+            assistant(content=bad_verdict),
+        ]
+    )
+    result = run_task(
+        client, get_task("recall-owner"), "critique", tmp_path, transcripts_dir=transcripts
+    )
+    assert result.outcome == "critique-exhausted"
+    data = read_transcript(transcripts, "critique", "recall-owner")
+    assert data["messages"], "critique-exhausted runs used to write messages: []"
+    assert [m["content"] for m in data["messages"] if m["role"] == "assistant"] == [
+        "answer one",
+        "answer two",
+        "answer three",
+    ]
 
 
 # ---- P6: --eval-profile threads explicit constructor args ----
@@ -1445,7 +1494,7 @@ def test_profile_critique_rounds_reach_the_gate(tmp_path):
     client = FakeClient([assistant(content="answer one"), assistant(content=bad_verdict)])
     result = run_task(client, get_task("recall-owner"), "critique", tmp_path, profile=profile)
     assert result.outcome == "critique-exhausted"
-    assert result.critique_rounds == 0  # max_rounds=1: the first violation raises
+    assert result.critique_rounds == 1  # max_rounds=1: the first violation raises, and counts
 
 
 def test_run_suite_threads_the_profile_to_every_task(tmp_path, monkeypatch):
