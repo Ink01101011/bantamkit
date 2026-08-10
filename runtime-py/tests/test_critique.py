@@ -410,3 +410,181 @@ def test_gate_without_a_budget_keeps_every_round():
     gate = CritiqueGate(make_rubric(), client=FakeClient([]))
     gate.setup(Agent(client=FakeClient([])))
     assert gate.budget is None
+
+
+# ---- RP4e: under a pinned seed, an unchanged answer is a settled question ----
+
+
+class SeededFakeClient(FakeClient):
+    """A FakeClient carrying a pinned sampling seed, the way `OpenAICompatible` does."""
+
+    def __init__(self, responses, seed=1234):
+        super().__init__(responses)
+        self.seed = seed
+
+
+def critic_calls(client, marker="Task:t"):
+    return sum(1 for c in client.calls if marker in (c["messages"][-1].content or ""))
+
+
+def test_unchanged_answer_under_a_pinned_seed_is_not_rejudged():
+    """RP2: all three rounds judged the identical string and returned the identical verdict."""
+    client = SeededFakeClient(
+        [
+            assistant(content="same answer"),
+            assistant(content='{"score": 5, "feedback": "thin"}'),
+            assistant(content="same answer"),
+            assistant(content="same answer"),
+        ]
+    )
+    gate = CritiqueGate(make_rubric(), client=client, max_rounds=3)
+    agent = Agent(client=client, max_turns=20).use(gate)
+    with pytest.raises(CritiqueExhausted, match="thin") as excinfo:
+        agent.run("t")
+    # Rounds two and three reused the verdict round one already paid for.
+    assert critic_calls(client) == 1
+    # ...and nothing else moved: same rounds, same error bytes as three paid rounds.
+    assert gate.rounds_used == 3
+    assert str(excinfo.value) == "below threshold 7 after 3 rounds; last feedback: thin"
+
+
+def test_unchanged_answer_still_feeds_the_same_bytes_back_to_the_answerer():
+    """The reused verdict produces the retry wrapper the paid one would have."""
+    client = SeededFakeClient(
+        [
+            assistant(content="same answer"),
+            assistant(content='{"score": 5, "feedback": "thin"}'),
+            assistant(content="same answer"),
+            assistant(content="finally different"),
+            assistant(content='{"score": 9, "feedback": "ok"}'),
+        ]
+    )
+    gate = CritiqueGate(make_rubric(), client=client, max_rounds=4)
+    agent = Agent(client=client, max_turns=20).use(gate)
+    assert agent.run("t").output == "finally different"
+    first_feedback = client.calls[2]["messages"][-1].content
+    reused_feedback = client.calls[3]["messages"][-1].content
+    assert first_feedback == reused_feedback
+    assert critic_calls(client) == 2  # round two reused; the changed answer was paid for
+
+
+def test_unchanged_answer_is_rejudged_when_the_client_is_not_seeded():
+    """Unpinned sampling may legitimately score the same text differently — keep the round."""
+    client = FakeClient(
+        [
+            assistant(content="same answer"),
+            assistant(content='{"score": 5, "feedback": "thin"}'),
+            assistant(content="same answer"),
+            assistant(content='{"score": 9, "feedback": "fine on a second look"}'),
+        ]
+    )
+    gate = CritiqueGate(make_rubric(), client=client)
+    assert Agent(client=client, max_turns=20).use(gate).run("t").output == "same answer"
+    assert critic_calls(client) == 2 and gate.rounds_used == 1
+
+
+def test_a_textually_changed_answer_is_rejudged_even_when_it_means_the_same_thing():
+    """RP4d: the answerer appeases the critic by re-emitting the same value pretty-printed.
+
+    The guard keys on the critic prompt's exact bytes, so that is a new question and
+    is paid for. Byte equality is the only equality this layer can prove.
+    """
+    client = SeededFakeClient(
+        [
+            assistant(content='{"port":9443}'),
+            assistant(content='{"score": 5, "feedback": "thin"}'),
+            assistant(content='{"port": 9443}'),
+            assistant(content='{"score": 9, "feedback": "clear now"}'),
+        ]
+    )
+    gate = CritiqueGate(make_rubric(), client=client)
+    assert Agent(client=client, max_turns=20).use(gate).run("t").output == '{"port": 9443}'
+    assert critic_calls(client) == 2
+
+
+def test_the_verdict_memo_does_not_survive_into_the_next_run():
+    """`setup` resets it with the round counters: a memo across runs would be a cache."""
+    gate = CritiqueGate(make_rubric())
+    for _ in range(2):
+        client = SeededFakeClient(
+            [assistant(content="answer"), assistant(content='{"score": 9, "feedback": "ok"}')]
+        )
+        gate.client = client
+        assert Agent(client=client).use(gate).run("t").output == "answer"
+        assert critic_calls(client) == 1
+
+
+def test_the_guard_reads_a_pinned_seed_through_the_harness_wrappers():
+    """The gate inherits `agent.client`: `_BudgetedClient` over `TrackingClient` over the
+    adapter that actually holds the seed. Neither wrapper is where the seed lives."""
+    from bantamkit.evalrun import TrackingClient
+
+    client = SeededFakeClient(
+        [
+            assistant(content="same answer"),
+            assistant(content='{"score": 5, "feedback": "thin"}'),
+            assistant(content="same answer"),
+        ]
+    )
+    gate = CritiqueGate(make_rubric(), max_rounds=2)
+    agent = Agent(client=TrackingClient(client), max_turns=20).use(
+        TokenBudget(ceiling=10**6), gate
+    )
+    with pytest.raises(CritiqueExhausted):
+        agent.run("t")
+    assert critic_calls(client) == 1 and gate.rounds_used == 2
+
+
+def test_grounded_gate_rejudges_when_only_the_evidence_changed():
+    """The memo keys on the whole critic prompt, so new observations are a new question."""
+    client = SeededFakeClient(
+        [
+            assistant(tool_calls=[call("price_lookup", {"item": "widget"})]),
+            assistant(content="25"),
+            assistant(content='{"score": 5, "feedback": "thin"}'),
+            assistant(tool_calls=[call("price_lookup", {"item": "gadget"}, id="c2")]),
+            assistant(content="25"),
+            assistant(content='{"score": 9, "feedback": "backed now"}'),
+        ]
+    )
+    gate = GroundedCritiqueGate(make_grounded_rubric(), client=client)
+    agent = Agent(
+        client=client, max_turns=20, tools=[lookup_tool(lambda item: f"{item}: 25")]
+    ).use(gate)
+    assert agent.run("t").output == "25"
+    assert critic_calls(client, "Evidence:") == 2
+
+
+def test_grounded_gate_short_circuits_an_unchanged_answer_and_unchanged_evidence():
+    client = SeededFakeClient(
+        [
+            assistant(tool_calls=[call("price_lookup", {"item": "widget"})]),
+            assistant(content="25"),
+            assistant(content='{"score": 2, "feedback": "contradicts evidence"}'),
+            assistant(content="25"),
+            assistant(content="25"),
+        ]
+    )
+    gate = GroundedCritiqueGate(make_grounded_rubric(), client=client)
+    agent = Agent(
+        client=client, max_turns=20, tools=[lookup_tool(lambda item: f"{item}: 25")]
+    ).use(gate)
+    with pytest.raises(CritiqueExhausted, match="contradicts evidence"):
+        agent.run("t")
+    assert critic_calls(client, "Evidence:") == 1 and gate.rounds_used == 3
+
+
+def test_short_circuit_never_runs_ahead_of_the_budget():
+    """A denied round is still accepted-and-skipped, memo or no memo."""
+    client = SeededFakeClient(
+        [
+            assistant(content="same answer", prompt_tokens=30),
+            assistant(content='{"score": 2, "feedback": "thin"}', prompt_tokens=30),
+            assistant(content="same answer", prompt_tokens=30),
+        ]
+    )
+    gate = CritiqueGate(make_rubric(), client=client)
+    budget = TokenBudget(ceiling=100, optional_cutoff=0.5)
+    result = Agent(client=client).use(budget, gate).run("t")
+    assert result.output == "same answer"  # round two denied: accepted, not memo-judged
+    assert gate.rounds_used == 1

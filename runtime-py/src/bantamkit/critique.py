@@ -63,6 +63,28 @@ def _validate_grounded_rubric(rubric: Rubric) -> None:
         raise BantamError(f"rubric '{rubric.name}' prompt missing placeholder(s): {{evidence}}")
 
 
+def _sampling_is_pinned(client: object) -> bool:
+    """Whether the critic's own calls carry a pinned sampling seed, seen through wrappers.
+
+    Duck-typed, the same spirit as `agent._supports_response_format` and as the eval
+    harness's own `hasattr(client, "seed")`: `OpenAICompatible` carries a `seed` and
+    the harness pins it per run, while a client that has none is free to resample.
+
+    The walk down `.inner` is not decoration. A gate inherits `agent.client`, which in
+    the eval harness is `TrackingClient` — no seed of its own and, unlike
+    `_BudgetedClient`, no attribute passthrough — wrapped around the adapter that
+    actually holds the seed. Reading only the outermost object would report every
+    seeded eval run as unseeded.
+    """
+    seen: set[int] = set()
+    while client is not None and id(client) not in seen:
+        seen.add(id(client))
+        if getattr(client, "seed", None) is not None:
+            return True
+        client = getattr(client, "inner", None)
+    return False
+
+
 @dataclass
 class Rubric:
     name: str
@@ -102,11 +124,16 @@ class CritiqueGate:
         self._rounds = 0
         self.rounds_used = 0
         self.budget = None
+        # Per-run: the last critic prompt and the verdict it bought. See `_verdict`.
+        self._last_prompt: str | None = None
+        self._last_verdict: dict | None = None
 
     def setup(self, agent: Agent) -> None:
         if self.client is None:
             self.client = agent.client
         self.rounds_used = 0
+        self._last_prompt = None
+        self._last_verdict = None
         # Duck-typed and optional: a run with no governor keeps every round it had.
         # Attach the budget before this gate, or the handle is None for the whole
         # run — and the client captured above is the unwrapped one, so critic
@@ -124,9 +151,7 @@ class CritiqueGate:
         # alone, because a round that was never spent is not a round.
         if self.budget is not None and not self.budget.allow("optional"):
             return None
-        verdict = structured(
-            self.client, self.rubric.prompt.format(**fields), self.rubric.schema
-        )
+        verdict = self._verdict(self.rubric.prompt.format(**fields))
         if verdict["score"] >= self.rubric.threshold:
             self._rounds = 0
             return None
@@ -150,6 +175,45 @@ class CritiqueGate:
             threshold=self.rubric.threshold,
             feedback=verdict["feedback"],
         )
+
+    def _verdict(self, prompt: str) -> dict:
+        """The critic's judgement of this prompt — bought once per distinct prompt.
+
+        With the sampling seed pinned, the critic is a deterministic function of its
+        prompt, so a round that re-judges an unchanged answer is spend for a verdict
+        already in hand. RP2 measured the shape: on the 14b `nav-prod-port` cell every
+        round judged the identical `{"port": 9443}` and got back the identical verdict,
+        and each of those rounds was a provably unwinnable one, because an unchanged
+        answer guarantees an unchanged verdict guarantees exhaustion.
+
+        Reuse, never a short cut around the loop. The reused verdict runs the same
+        counting and the same exhaustion check the paid one would have, so
+        `rounds_used`, the feedback bytes and the raised error come out exactly as they
+        did — one model call fewer is the entire difference. Stopping the loop early
+        instead would be the cheaper fix and the wrong one: the answerer sees a longer
+        conversation each round and may still change its answer on the round after a
+        repeat, so raising there could turn a run that would have passed into a loss.
+
+        The key is the rendered prompt's exact bytes, which is the literal input the
+        critic would have received — for `GroundedCritiqueGate` that includes the
+        evidence, so a new tool observation is correctly a new question even under an
+        unchanged answer. An answer that changed *textually* is likewise a new question
+        and is paid for, even when it means the same thing as the last one (RP4d: the
+        answerer sometimes appeases the critic by re-emitting the same value
+        pretty-printed). Byte equality is the only equality this layer can prove;
+        semantic equality is a judgement, and judging is the critic's job.
+
+        Conditional on a pinned seed, and off without one. Unseeded, the same text may
+        legitimately draw a different sample, and a consumer whose next round would
+        have scored above threshold must keep that round: this may only skip a call
+        whose result it can predict, never one it merely expects.
+        """
+        if self._last_prompt == prompt and self._last_verdict is not None:
+            if _sampling_is_pinned(self.client):
+                return self._last_verdict
+        verdict = structured(self.client, prompt, self.rubric.schema)
+        self._last_prompt, self._last_verdict = prompt, verdict
+        return verdict
 
 
 class GroundedCritiqueGate(CritiqueGate):
