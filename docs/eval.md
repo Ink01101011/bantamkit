@@ -810,151 +810,420 @@ sweep, not across sweeps.
 
 ## Cross-model results
 
-The reference sweep above is one model. This section re-runs the **frozen
+The reference sweep above is one model. This section runs the **frozen
 v0.7.0 suite** — same 22 tasks, same rubrics, same prompts, same eight
-configs, 3 repeats, 528 runs per model — on three more models, and re-scopes
+configs, 3 repeats, 528 runs per model — across four models, and re-scopes
 every Recommended-defaults claim to the models it actually holds on
 (spec: `docs/superpowers/specs/2026-08-09-cross-model-sweep-design.md`).
 The suite was frozen before measuring: a model that fails a task or rubric
 is a data point, not a bug, and nothing was tuned per model.
 
-| model | class | evidence |
-|---|---|---|
-| `llama3.2:3b` | cross-family, small end | `docs/eval-data/2026-08-09-crossmodel-llama32-3b.jsonl` |
-| `qwen3:4b-instruct` | reference (reused, not re-run) | `docs/eval-data/2026-08-09-filegraph-sweep.jsonl` |
-| `qwen2.5:7b-instruct` | size up, near-family | `docs/eval-data/2026-08-09-crossmodel-qwen25-7b.jsonl` |
-| `qwen2.5:14b-instruct` | ceiling reference, outside the 1–8B target band | `docs/eval-data/2026-08-09-crossmodel-qwen25-14b.jsonl` |
+**Provenance — re-baselined 2026-08-10 against v0.13.0.** Every number
+below is recomputed from one re-baseline sweep run after the whole P-queue
+had landed (P1/P2/P4 contract fixes, P7/P8/P9 measurement work, P3/P6
+policy work, LoopGuard): four models × eight configs × 22 tasks × 3
+repeats = **2,112 runs**, 528 per model. All of them are **seeded (P9)** —
+66 seeds per model, one per (task, repeat), shared by all eight configs of
+that pair — so every comparison *within* this sweep is paired rather than
+sampled, and `bare`-vs-`graph` exact equality has its teeth back
+(prediction 5 below). These numbers replace the 2026-08-09 sweep's; the
+older evidence files stay in `docs/eval-data/`, and the claims that broke
+are stated as broken rather than re-scoped.
+
+**Caveat — the v0.9.0 semantics break on `memory`/`lean`/`full`.** v0.9.0
+attached `JsonAnswerGate` to those three configs for `json_equal`-scored
+tasks (P4 below). They are therefore **not the same measurement** they
+were on 2026-08-09: any pre→post delta on a `memory`, `lean` or `full`
+cell is labelled **post-break** and is never reported here as an
+"improvement" or a "regression" — the gate changed what the config *is*.
+The five storeless configs (`bare`, `structured`, `critique`, `grounded`,
+`graph`) are comparable in code semantics, but the 2026-08-09 sweep was
+**unseeded**, so those deltas are directional only; the size of that
+sampling bar is itself a measured problem (RB-P9). The only exact
+comparisons available are against the *seeded* 2026-08-10 cells, and those
+are reported separately under "Reproduction" below.
+
+| model | class | evidence (2026-08-10 re-baseline) | previous sweep (2026-08-09, unseeded) |
+|---|---|---|---|
+| `llama3.2:3b` | cross-family, small end | `docs/eval-data/2026-08-10-rebaseline-3b.jsonl` | `…/2026-08-09-crossmodel-llama32-3b.jsonl` |
+| `qwen3:4b-instruct` | reference (re-run, not reused) | `docs/eval-data/2026-08-10-rebaseline-4b.jsonl` | `…/2026-08-09-filegraph-sweep.jsonl` |
+| `qwen2.5:7b-instruct` | size up, near-family | `docs/eval-data/2026-08-10-rebaseline-7b.jsonl` | `…/2026-08-09-crossmodel-qwen25-7b.jsonl` |
+| `qwen2.5:14b-instruct` | ceiling reference, outside the 1–8B target band | `docs/eval-data/2026-08-10-rebaseline-14b.jsonl` | `…/2026-08-09-crossmodel-qwen25-14b.jsonl` |
 
 ### Per-model summaries
 
-`llama3.2:3b` — everything is hard for this model, and the critique-family
-configs are actively harmful:
+`llama3.2:3b` — everything is still hard for this model, but the
+critique-family collapse is gone: the P2 constrained-decoding tier and the
+P1 argument coercion turned `full` from the sweep's worst config into a
+tied-best one:
 
 | config | score | tokens | score/1k tok |
 |---|---|---|---|
-| bare | 14/66 | 24145 | 0.58 |
-| structured | 18/66 | 37080 | 0.49 |
-| critique | 17/66 | 83382 | 0.20 |
-| grounded | 13/66 | 168109 | 0.08 |
-| graph | 19/66 | 40360 | 0.47 |
-| memory | 24/66 | 52949 | 0.45 |
-| lean | 24/66 | 68791 | 0.35 |
-| full | 15/66 | 214698 | 0.07 |
+| bare | 13/66 | 31,229 | 0.42 |
+| structured | 17/66 | 30,564 | 0.56 |
+| critique | 14/66 | 64,857 | 0.22 |
+| grounded | 14/66 | 104,629 | 0.13 |
+| graph | 14/66 | 45,296 | 0.31 |
+| memory | 21/66 | 71,693 | 0.29 |
+| lean | 21/66 | 70,320 | 0.30 |
+| full | 21/66 | 154,474 | 0.14 |
 
-`memory` is still the best config (24/66), but recall with a store reaches
-only 6/27. `full` collapses: 214,698 tokens — 8.9× `bare`'s bill — for one
-more pass than `bare`, with `schema-exhausted` ×22 (the critic's verdict
-contract failing, not the tasks). `grounded` lands *below* `bare` (13 vs
-14). See P2/P3 in Measured problems.
+Best score is a three-way tie at 21/66 (`memory`/`lean`/`full`), and
+`lean` is the cheapest of the three at 70,320 tokens — `full` pays 2.2×
+`lean`'s bill for exactly the same score. Efficiency winner: `structured`
+(0.56/1k). Recall with a store reaches only 5/27 (6/27 under `full`) —
+the P1-banked ceiling, unchanged and re-confirmed at sweep scale
+(RB-P7) — and this is the only model in the sweep whose `SchemaGate`
+retry loop fires at all (RB-P3).
 
-`qwen2.5:7b-instruct` — competent baseline, but the answer-format contract
-starts costing real passes:
-
-| config | score | tokens | score/1k tok |
-|---|---|---|---|
-| bare | 35/66 | 34059 | 1.03 |
-| structured | 33/66 | 25980 | 1.27 |
-| critique | 36/66 | 68272 | 0.53 |
-| grounded | 24/66 | 93854 | 0.26 |
-| graph | 31/66 | 37360 | 0.83 |
-| memory | 44/66 | 139385 | 0.32 |
-| lean | 44/66 | 141207 | 0.31 |
-| full | 36/66 | 205402 | 0.18 |
-
-`memory`/`lean` lead at 44/66, but recall with a store is only 9–12/27,
-and `memory`/`lean`/`full` each lose 13–16 runs to `malformed-output` —
-the "answer with ONLY this JSON" convention that 4b obeys is a measurable
-tax on 7b (P4). `grounded` is strongly net-negative (24 vs bare 35;
-`schema-exhausted` ×10). `structured` is the efficiency winner (1.27/1k).
-
-`qwen2.5:14b-instruct` — the ceiling reference mostly saturates the
-non-recall families:
+`qwen3:4b-instruct` — the reference model, re-run rather than reused:
 
 | config | score | tokens | score/1k tok |
 |---|---|---|---|
-| bare | 34/66 | 32426 | 1.05 |
-| structured | 36/66 | 25958 | 1.39 |
-| critique | 34/66 | 69501 | 0.49 |
-| grounded | 34/66 | 93029 | 0.37 |
-| graph | 36/66 | 25443 | 1.42 |
-| memory | 59/66 | 73130 | 0.81 |
-| lean | 55/66 | 79353 | 0.69 |
-| full | 59/66 | 129772 | 0.46 |
+| bare | 30/66 | 18,809 | 1.59 |
+| structured | 30/66 | 19,573 | 1.53 |
+| critique | 35/66 | 47,435 | 0.74 |
+| grounded | 38/66 | 102,656 | 0.37 |
+| graph | 36/66 | 23,182 | 1.55 |
+| memory | 59/66 | 55,525 | 1.06 |
+| lean | 59/66 | 56,289 | 1.05 |
+| full | **64/66** | 111,382 | 0.57 |
 
-`memory` and `full` tie at 59/66 — `full`'s critique layer buys nothing
-here for +77% tokens over `memory`. Recall with a store reaches 23/27.
-Both critique configs price in at 2–2.9× `bare` for exactly `bare`'s
-score. `graph` and `structured` are the efficiency winners (~1.4/1k).
+`full` leads at 64/66; the two misses are the same marginal
+`nav-release-bundle` `critique-exhausted` pair the v0.9.0 no-regression
+bar recorded as a watch item — it stayed red (RB-P5). This is the only
+model where the store rescue is at ceiling (27/27). Efficiency winner:
+`bare` (1.59/1k), with `graph` (1.55) and `structured` (1.53) inside a
+hair. `grounded` buys +8 over `bare` and the only clean tool-use sweep
+outside `full` (18/18), but it burns 11 `critique-exhausted` runs on
+storeless recall tasks that cannot produce evidence (RB-P8).
+
+`qwen2.5:7b-instruct` — the P2/P4 fixes land hardest here, and so does the
+token bill:
+
+| config | score | tokens | score/1k tok |
+|---|---|---|---|
+| bare | 31/66 | 24,693 | 1.26 |
+| structured | 33/66 | 24,823 | 1.33 |
+| critique | 33/66 | 55,783 | 0.59 |
+| grounded | 33/66 | 71,653 | 0.46 |
+| graph | 32/66 | 28,381 | 1.13 |
+| memory | 56/66 | 169,452 | 0.33 |
+| lean | 57/66 | 169,319 | 0.34 |
+| full | **58/66** | 222,105 | 0.26 |
+
+`full` leads at 58/66 and the answer-format tax that used to cost 7b whole
+cells is mostly paid off: the three store configs lose 3 runs each to
+`malformed-output`, down from 16 / 15 / 13 — post-break, and
+`JsonAnswerGate` is exactly the mechanism, so this is the semantics change
+showing up rather than the model improving. What replaces it is cost:
+`memory`/`lean` spend **3.0×** the 4b bill for a lower score, and `full`
+spends 2.0× — with 10 of the model's 11 `turns-exhausted` runs sitting in
+store-config recall at 10.4–11.6k tokens each (RB-P6). Efficiency winner:
+`structured` (1.33/1k).
+
+`qwen2.5:14b-instruct` — the ceiling reference saturates the non-recall
+families and is the model where two claims broke:
+
+| config | score | tokens | score/1k tok |
+|---|---|---|---|
+| bare | 36/66 | 26,824 | 1.34 |
+| structured | 36/66 | 26,942 | 1.34 |
+| critique | 35/66 | 68,496 | 0.51 |
+| grounded | 36/66 | 90,626 | 0.40 |
+| graph | 36/66 | 31,825 | 1.13 |
+| memory | 52/66 | 93,192 | 0.56 |
+| lean | 52/66 | 93,310 | 0.56 |
+| full | **58/66** | 159,290 | 0.36 |
+
+`full` now clearly beats `memory` (+6) at +71% tokens — and unlike the
+previous sweep, the gap is *earned*: tool-use goes 13/18 → 18/18 under the
+grounded critic, plus one recall task. The blind `critique` config is the
+sweep's only negative single-attach (−1 at 2.6× tokens), and it does it by
+destroying a solved cell: `nav-prod-port` 3/3 under `bare` → 0/3
+`critique-exhausted` on pure format nitpicking (RB-P4). Storeless recall is
+no longer 0/27 here (2/27 — the model *guesses* one task's answer, RB-P2),
+and store-config recall sits at 18/27 with concentrated named failures
+(RB-P1). Efficiency winners: `bare`/`structured` (1.34/1k).
+
+### Outcome taxonomy (528 rows per model)
+
+| outcome | 3b | 4b | 7b | 14b |
+|---|---|---|---|---|
+| pass | 135 | 351 | 333 | 341 |
+| wrong-answer | 306 | 154 | 149 | 166 |
+| malformed-output | 57 | 10 | 35 | 14 |
+| turns-exhausted | 16 | 0 | 11 | 0 |
+| critique-exhausted | 12 | 13 | 0 | 7 |
+| schema-exhausted | 2 | 0 | 0 | 0 |
+
+The P7 taxonomy split is visible working: 3b's 16 `MaxTurnsExceeded` runs
+are labelled `turns-exhausted` with no `transport-error` conflation, and
+no run in the sweep is a transport failure. `budget-exhausted` cannot
+appear — `budgeted` is not a headline config. The concentrations are
+where the problems are: 7b's 11 `turns-exhausted` (RB-P6), 4b's 13
+`critique-exhausted` (11 in `grounded` — RB-P8 — plus the 2 known `full`
+nav rows, RB-P5), 14b's 7 (3 of them the `nav-prod-port` format kills,
+RB-P4), and the 2 `schema-exhausted` (RB-P3 — and note these are
+`SchemaGate` *answer-schema* exhaustions with `schema_retries` 2 apiece,
+a different mechanism from the 2026-08-09 sweep's `schema-exhausted`
+rows, which were verdict-contract failures at `schema_retries` 0 and
+were what P2 fixed).
+
+Sweep totals for the two retry counters: **4 `schema_retries` in 2,112
+runs** (all four on 3b, in the two `schema-exhausted` rows) and
+`critique_rounds` 64 / 60 / 9 / 47 on 3b / 4b / 7b / 14b. 7b's 9 rounds
+say its critic accepts almost everything first-pass — consistent with
+`critique` buying it only +2.
+
+### Reproduction: the seeded overlap cells
+
+Seven (model, config) cells in this sweep have a *seeded* 2026-08-10
+baseline from the P-queue's calibration bars — same code semantics, same
+seeds, so these are exact comparisons rather than directional ones.
+Row-identical = `passed`, `tokens`, `outcome`, `model_calls` and
+`tool_calls` all equal for the same (task, seed); seed overlap was
+verified 100% before pairing.
+
+| cell | baseline | n | score | tokens | row-identical | pass-flips |
+|---|---|---|---|---|---|---|
+| 3b `full` | `pb-3b-full-baseline` | 66 | 21 → 21 | 148,215 → 154,474 | 58/66 | 0 |
+| 3b `grounded` | `bar-p2-3b-grounded` | 66 | 14 → 14 | 104,701 → 104,629 | 65/66 | 0 |
+| 7b `grounded` | `bar-p2-7b-grounded` | 66 | 33 → 33 | 71,660 → 71,653 | 65/66 | 0 |
+| 4b `full` | `bar-noreg-4b-full` | 66 | 64 → 64 | 111,382 → 111,382 | **66/66** | 0 |
+| 4b `memory` | `bar-noreg-4b-memory` | 66 | 59 → 59 | 55,525 → 55,525 | **66/66** | 0 |
+| 3b `memory` (recall subset) | `bar-p1-3b-memory` | 27 | 5 → 5 | 41,071 → 41,071 | **27/27** | 0 |
+| 7b `memory` (recall subset) | `bar-p4-7b-memory` | 27 | 19 → 19 | 144,391 → 144,391 | **27/27** | 0 |
+
+**Zero pass-flips across all seven cells — 384 paired rows.** Four cells
+are field-identical on every row (P9 replay determinism at cell scale);
+the ten non-identical rows (8 on 3b `full`, 1 on each grounded cell) are
+token/trajectory divergences with unchanged pass/fail — the documented
+llama.cpp nondeterminism bound. Where a seeded baseline exists, the
+re-baseline reproduces it exactly at the score level.
+
+Against the *unseeded* 2026-08-09 sweep the biggest movers are 7b `full`
+36→58, 7b `lean` 44→57 and 7b `memory` 44→56 (all **post-break**), 7b
+`grounded` 24→33 at −24% tokens and 3b `grounded` 13→14 at −38% tokens
+(the P2 fix, comparable semantics), and 3b `full` 15→21 at −28% tokens
+(post-break, P1+P2+P4 compounding). The biggest negative mover is 14b
+`memory` 59→52 (post-break, and a real problem regardless — RB-P1). 4b
+moves by at most one task on every storeless config (`bare` 30→30,
+`structured` 30→30, `critique` 36→35, `grounded` 38→38, `graph` 36→36) —
+the no-regression story holding at sweep scale.
 
 ### The recall story across models
 
 The project's core claim — recall goes ~0/27 without a store to ~27/27
-with one — turns out to **vary sharply by model** rather than transfer
-flat (and not monotonically with size — 7b lands below the smaller 4b):
+with one — **varies sharply by model, and its floor half now has a hole**:
 
-| | 3b | 4b (ref) | 7b | 14b |
+| memory-recall (n=27) | 3b | 4b (ref) | 7b | 14b |
 |---|---|---|---|---|
-| memory-recall, storeless (`bare`) | 0/27 | 0/27 | 0/27 | 0/27 |
-| memory-recall, with store (`memory`) | 6/27 | 27/27 | 9/27 | 23/27 |
+| storeless (`bare`) | 0/27 | 0/27 | 0/27 | **2/27** |
+| `memory` | 5/27 | **27/27** | 19/27 | 18/27 |
+| `lean` | 5/27 | 27/27 | 19/27 | 18/27 |
+| `full` | 6/27 | 27/27 | 19/27 | 19/27 |
 
-The floor is universal (no model passes recall without a store — the tasks
-measure what they claim). The rescue is not: 3b retrieves but answers
-wrong (P1), and 7b loses most of its gap to `malformed-output` on the
-exact-JSON answer convention (P4), scoring *below* the smaller 4b. The
-numbers say the store mechanism works everywhere and the surrounding
-contract wording is what's 4b-calibrated.
+**The universal-floor claim BROKE on 14b.** Two of its 27 storeless runs
+pass — both `recall-db-port`, at 75 tokens, with no store and no tools;
+`structured` and `graph` pass the same task on the same two seeds at the
+same 75 tokens, and `critique` passes it too. The model is *guessing* a
+plausible port, which makes that task a rubric leak rather than a recall
+measurement (RB-P2). The floor holds on the other three models and on
+every other recall task.
+
+The rescue half remains model-dependent and non-monotonic in size: 4b is
+the only model at ceiling; 7b holds its post-P4 19/27 (seeded-identical to
+the bar-p4 cell); 3b holds its post-P1 5/27 (seeded-identical to bar-p1);
+and 14b — the biggest model — sits *below* 7b at 18/27, with all nine
+misses landing as `wrong-answer` on four named tasks (RB-P1).
 
 ### Claims-transfer table
+
+Single-attach deltas vs `bare`, all four models (composition configs
+`lean`/`full` shown for context):
+
+| model | structured | critique | grounded | graph | memory | (lean) | (full) |
+|---|---|---|---|---|---|---|---|
+| 3b | +4 | +1 | +1 | +1 | **+8** | +8 | +8 |
+| 4b | 0 | +5 | +8 | +6 | **+29** | +29 | +34 |
+| 7b | +2 | +2 | +2 | +1 | **+25** | +26 | +27 |
+| 14b | 0 | −1 | 0 | 0 | **+16** | +16 | +22 |
 
 Every README Recommended-defaults bullet, against every model. "Holds" =
 the guidance as written is what you should do on that model.
 
 | claim | 3b | 4b (ref) | 7b | 14b |
 |---|---|---|---|---|
-| Always attach `Memory` | **holds** — biggest mover, +10 (14→24), but recall only 6/27 | **holds** (+27, 30→57) | **holds** — biggest mover, +9 (35→44), recall 9/27 | **holds** (+25, 34→59, recall 23/27) |
-| Attach `FileAccessGraph` for file work | **does not hold** — file-nav 1/6→2/6, nothing rescues it | **holds** (0/6→6/6, +26% tokens) | **does not hold** — bare already 5/6 (saturated) | **does not hold** — bare already 5/6 (saturated) |
-| `structured()` is free when the model complies | **holds** — `schema_retries=0` | **holds** — `schema_retries=0` | **holds** — 0 retries, best score/1k (1.27) | **holds** — 0 retries, 2nd-best score/1k (1.39) |
-| Skip the blind `CritiqueGate` | **holds** — +3 at 3.5× tokens | **holds** — +6 at 2.6× tokens | **holds** — +1 at 2.0× tokens | **holds** — ±0 at 2.1× tokens |
-| `full` measures 66/66 | **does not hold** — 15/66 at 8.9× bare tokens | **holds** (66/66) | **does not hold** — 36/66 | **does not hold** — 59/66, ties `memory` at +77% tokens |
-| Prefer `GroundedCritiqueGate` with tools | **does not hold** — 13/66 < bare 14/66 | **holds** — rescued shop-basket-total 0/3→3/3 | **does not hold** — 24/66 < bare 35/66 | **does not hold** — 34/66 = bare at 2.9× tokens |
+| Always attach `Memory` | **holds** — biggest single mover, +8 (13→21), but recall only 5/27 | **holds** (+29, 30→59, recall 27/27) | **holds** — biggest single mover, +25 (31→56), recall 19/27 | **holds** (+16, 36→52, recall 18/27) |
+| Attach `FileAccessGraph` for file work | **does not hold** — file-nav 0/6→1/6, the ledger is unusable here | **holds** — file-nav 0/6→**6/6** at +23% tokens | **marginal** — 5/6→6/6, +1 inside repeat noise | **does not hold** — `bare` already 6/6 (saturated) |
+| `structured()` is free when the model complies | **config-level holds** (0 retries in 66 runs, +4) — but SchemaGate *exhausted* twice inside `lean`/`full` (RB-P3) | **holds** — 0 retries in 528 runs | **holds** — 0 retries in 528 runs, best score/1k (1.33) | **holds** — 0 retries in 528 runs, joint-best score/1k (1.34) |
+| Skip the blind `CritiqueGate` | **holds** — +1 at 2.1× tokens | **holds** — +5 at 2.5× tokens | **holds** — +2 at 2.3× tokens | **holds, hardest** — **−1** at 2.6× tokens (kills a solved cell, RB-P4) |
+| `full` measures 66/66 | **does not hold** — 21/66 (though tied best) | **does not hold** — 64/66; the watch-item cell stayed red (RB-P5) | **does not hold** — 58/66 (top config) | **does not hold** — 58/66 (top config) |
+| Prefer `GroundedCritiqueGate` with tools | **does not hold as value** — no longer *harmful* (+1 vs bare) but +1 at 3.4× tokens | **holds** — +8, tool-use 18/18 | **does not hold as value** — no longer harmful, +2 at 2.9× tokens | **does not hold standalone** — ±0 at 3.4×; its value here appears only inside `full` (+6) |
 
-Two claims survive all four models unqualified (`Memory` as the biggest
-single mover; skip the blind critic — now *stronger* cross-model). One
-survives as exactly-as-written on all four (`structured()`: zero schema
-retries in 2,112 runs across four models). Three are 4b-scoped:
-`FileAccessGraph`'s value window is the ~4B class (below it the model
-can't use the ledger, above it the tasks saturate — spec prediction 3
-confirmed for file-nav), and both critique-dependent claims (`full`,
-grounded) are blocked cross-model by the verdict-contract failure (P2).
+Two claims survive all four models unqualified: `Memory` as the biggest
+single mover, and skipping the blind critic (now *stronger* — on 14b the
+blind critic is measurably negative). `structured()` survives as written
+at the config level on all four, but the sweep-level phrasing it used to
+carry ("the retry loop has never fired on any model") is **false as of
+this sweep** — see prediction 2. `FileAccessGraph` is confirmed ~4B-scoped
+with the window exactly where it was: below it the model can't use the
+ledger (3b 1/6), above it the tasks saturate (14b `bare` 6/6). `full`'s
+66/66 breaks everywhere, but its *standing* improved — top config on 4b,
+7b and 14b, tied top on 3b. Grounded critique is no longer harmful
+anywhere (the P2 fix held), yet standalone it still only pays on 4b.
 
 ### Prediction scorecard (spec §2.3, written before measuring)
 
-1. **Memory transfers** — *partially confirmed.* The mover claim holds on
-   all four models; the ~27/27 magnitude claim is refuted (6/27 on 3b,
-   9/27 on 7b, 23/27 on 14b). Re-scoped into problems P1 and P4, not into
-   a smaller claim.
-2. **Structured tax holds** — *confirmed, and on 3b too.*
-   `schema_retries = 0` in all 2,112 runs; SchemaGate's retry loop has
-   still never fired on any model.
-3. **Saturation on the big end** — *confirmed for file-nav* (7b/14b pass
-   5/6 under `bare`). shop-basket-total saturates on 7b (`bare` 3/3) but
-   stays flaky on 14b (`bare` 1/3) with no config rescuing it there.
-4. **Critique risk on the small end** — *confirmed, worse than predicted.*
-   3b `full` is a score *collapse* (15/66 at 214k tokens), and `grounded`
-   lands below `bare` on both 3b and 7b.
-5. **Graph no-op check is structural** — *reframed.* Off-family, `graph`
-   diverged from `bare` in 8/20 cells (3b), 3/20 (7b) and 4/20 (14b),
-   with zero on 4b. This is **sampling variance, not leakage**: the
-   harness pins no temperature or seed (verified — neither `client.py`
-   nor `evalrun.py` sends either), and the off-family code path is
-   provably identical (`FileAccessGraph` only attaches workspace tools
-   when the task lists them; per-cell diffs go in both
-   directions). The prediction's exact-equality framing over-assumed
-   determinism; 4b's 0/20 was a peaked output distribution, i.e. luck.
-   The honest form of the check is code-level wiring plus statistical
-   similarity — until P9 (seed pinning) restores exact equality's teeth.
+1. **Memory transfers** — *partially confirmed, unchanged verdict.* The
+   mover claim holds on all four models (+8 / +29 / +25 / +16); the
+   ~27/27 magnitude claim is refuted on three of four (5/27 on 3b, 19/27
+   on 7b, 18/27 on 14b). Carried as problems RB-P1 and RB-P7, not as a
+   smaller claim.
+2. **Structured tax holds** — *broken as stated.* The config-level claim
+   survives (0 `schema_retries` in all 264 `structured` runs, and 0 in
+   all 528 runs on each of 4b, 7b and 14b), but the sweep-level wording
+   "SchemaGate's retry loop has still never fired on any model" is now
+   false: on 3b it fired **4 times** — `lean` and `full`, both on
+   `extract-order`, seed 4084933696, 2 retries each, both ending
+   `schema-exhausted` on `'item' is a required property`. Honest total:
+   **4 retries in 2,112 runs**, not 0 — and the `full` firing was already
+   sitting in a seeded cell from the previous cycle, so the claim had
+   been stale before this sweep measured it. RB-P3.
+3. **Saturation on the big end** — *confirmed for file-nav, refuted for
+   tool-use.* File-nav under `bare` is 5/6 on 7b and now **6/6** on 14b —
+   fully saturated, which is why `graph` can buy nothing there.
+   `shop-basket-total` saturates nowhere storeless (`bare` 0/3 on 3b, 4b
+   and 14b; 1/3 on 7b) and needs a whole config to rescue it: `grounded`
+   3/3 on 4b, `memory` 3/3 on 7b, `full` 3/3 on 14b.
+4. **Critique risk on the small end** — *no longer holds in its measured
+   form.* 3b `full` is not a collapse any more (21/66 at 154k, tied for
+   best, vs 15/66 at 215k pre-queue) and `grounded` no longer lands below
+   `bare` on either 3b or 7b. What survives is narrower and moved up the
+   size range: the **blind** critic is worthless-to-harmful everywhere
+   (+1 / +5 / +2 / −1), and its one destructive cell is on the *largest*
+   model, not the smallest (RB-P4).
+5. **Graph no-op check is structural** — *now confirmed exactly, as P9
+   promised.* With seeds pinned, `bare` and `graph` are field-identical
+   (`passed`, `tokens`, `outcome`, `model_calls`, `tool_calls`) on **all
+   60 off-family cells on all four models — 240/240**, zero divergence.
+   The 2026-08-09 reframe was right: the earlier 8/20, 3/20 and 4/20
+   divergences were sampling variance under an unpinned endpoint, not
+   leakage, and exact equality is a usable check again.
 
-### Measured problems → attack plan
+### Measured problems (re-baseline 2026-08-10) → attack plan
+
+Same rule as the P1–P9 block below: nothing measured negative is
+re-scoped into a smaller claim. Each negative from the re-baseline becomes
+a problem with an owner-direction, and the layer names refer to the
+5-layer model (core / contract / transport / policy / composition).
+
+- **RB-P1 — 14b store-config recall sits at 18/27 with concentrated,
+  named failures.** Under `memory`: `recall-env-endpoint` 0/3,
+  `recall-org-quota` 0/3, `recall-owner` 1/3, `recall-cache-ttl` 2/3 —
+  nine misses, **all of them `wrong-answer`**, none malformed. `lean` is
+  identical task-for-task; `full` rescues one `recall-owner` repeat
+  (19/27). Pre-P-queue the same model measured 23/27 (misses:
+  `recall-org-quota` ×3, `recall-oncall` ×1), so the post-break label
+  applies — but `recall-env-endpoint` going 3/3 → 0/3 and `recall-owner`
+  3/3 → 1/3 on the *ceiling* model is a measured negative regardless of
+  comparability, and it puts the largest model below the 7b. Because
+  every miss is `wrong-answer`, `JsonAnswerGate` is not obviously the
+  mechanism — but it is the main code delta on this path. **Attack:**
+  seeded `--transcripts` probe of 14b `memory` on
+  env-endpoint / owner / org-quota (the P1/P4 playbook, 27 runs), and
+  split store-retrieval damage from synthesis damage from
+  gate-restatement damage *before* touching any layer.
+- **RB-P2 — `recall-db-port` is guessable storeless: a rubric leak.** 14b
+  passes it 2/3 under `bare`, `structured` and `graph` — same two seeds,
+  75 tokens each, no store, no tools — and 2/3 under `critique` at ~400
+  tokens. The recall family's floor claim ("no model passes recall without
+  a store, so the tasks measure what they claim") now has a measured hole
+  on exactly one task. **Attack:** change the stored fact to a
+  non-default, non-guessable value (eval task data). Frozen-suite rules
+  mean this lands in the *next* suite version with the break documented,
+  not as a mid-flight patch.
+- **RB-P3 — `SchemaGate` exhausts on 3b `lean`/`full` `extract-order`,
+  and the sweep-level "never fired" claim is dead.** Seed 4084933696, 2
+  retries each, both ending `schema-exhausted` (`JSON does not match
+  schema at 'root': 'item' is a required property`). Two corrections to
+  how this could be reported: it is **not** the first firing in project
+  history — the `full` row is field-identical to the seeded 3b `full`
+  cell from the policy/budget cycle
+  (`2026-08-10-pb-3b-full-baseline.jsonl`, and it reproduces again in
+  `pb-3b-budgeted` / `bv-3b-budgeted`), so this sweep *reproduces* a
+  firing that was already on disk and adds one new composition (`lean`);
+  and it is not the first `schema-exhausted` **outcome** either — the
+  2026-08-09 sweep had 41 / 25 / 1 such rows on 3b / 7b / 14b, but those
+  carried `schema_retries` 0 because they were verdict-contract failures
+  (the P2 path), a different mechanism. What is genuinely new is that a
+  full cross-model sweep now records nonzero `schema_retries` at all, so
+  the claim this doc carried — "the retry loop has still never fired on
+  any model" — is false and is retired here. v0.9.0's P2 fix wired
+  `response_format:
+  json_schema` into `structured()`, and constrained decoding should make a
+  missing *required* key impossible while it is active. **Attack:**
+  transcript the cell and verify the constrained-decoding path actually
+  engages for `SchemaGate` inside the `lean`/`full` composition rather
+  than silently falling back to the prompt+parse tier; if it does engage,
+  this is a llama.cpp `json_schema` enforcement gap and belongs in a
+  pinned test. (Contract + Transport.)
+- **RB-P4 — the blind critic kills a solved cell on 14b, on format
+  nitpicks.** `nav-prod-port` is 3/3 under `bare` and 0/3 under
+  `critique`, all three `critique-exhausted`. The recorded feedback demands
+  a JSON shape the rubric does not require, and two of the three verdicts
+  say so outright — "Required content present but incorrectly formatted"
+  and "Correct answer format wasn't followed but required content was
+  identified correctly". Same failure family as RB-P5. **Attack:** critic
+  rubric wording (Layer 2 / contract) — score content, not format, unless
+  the task's rubric is itself format-scored; one wording change, then
+  re-run the two nav cells seeded.
+- **RB-P5 — the 4b `full` watch item stayed red.** The two
+  `nav-release-bundle` `critique-exhausted` rows (seeds 3590861830 and
+  2248991587) reappear field-identical to the seeded bar-noreg cell. The
+  trigger recorded in the contract-robustness calibration below — "if the
+  cell stays red, the attack is rubric feedback wording (Layer 2), not
+  gate mechanics" — has now fired. **Attack:** as written there, jointly
+  with RB-P4.
+- **RB-P6 — 7b's store-config token bill is 3× the 4b bill for a lower
+  score.** `memory` 169,452 and `lean` 169,319 against 4b's 55,525 /
+  56,289 (3.0×) at 56–57/66 vs 59/66; `full` 222,105 vs 111,382 (2.0×).
+  Ten of the model's eleven `turns-exhausted` runs are store-config recall
+  at 10.4–11.6k tokens each, with `recall-org-quota` exhausting twice in
+  every store config. This is the LoopGuard target population, and the
+  lg-* calibration already measured held-answer loop conversion at −38%
+  tokens on exactly this model and task family. **Attack:** LoopGuard's
+  pending cross-model promotion sweep — this re-baseline is the "before"
+  it was waiting for. (Policy + composition.)
+- **RB-P7 — 3b's store rescue ceiling is unchanged at 5–6/27.** The
+  `memory` recall cell splits 5 pass / 19 `wrong-answer` / 2
+  `malformed-output` / 1 `turns-exhausted`, field-identical on all 27 rows
+  to the seeded bar-p1 cell. Not a new problem — the point is that it
+  re-confirms at sweep scale: the P1 coercion fix is fully banked and the
+  remaining ceiling is prose pseudo-calls plus synthesis failure.
+  **Attack:** unchanged from the P1 residue list below; this sweep adds no
+  evidence that would reprioritize it.
+- **RB-P8 — 4b `grounded` burns 11 `critique-exhausted` runs on tasks that
+  cannot produce evidence.** Ten of the eleven are storeless
+  `memory-recall` (`recall-env-endpoint` ×3, `recall-audit-retention` ×2,
+  `recall-cache-ttl` ×2, plus deploy / db-port / org-quota), where the
+  critic *correctly* refuses to bless an evidence-free answer — honest
+  verdicts, pure token waste, and a visible part of `grounded`'s 102,656
+  tokens. **Attack:** composition policy — don't attach an
+  evidence-demanding critic to tasks whose config provides no evidence
+  path. Cheap guard, measurable as token savings at unchanged score.
+- **RB-P9 (measurement note) — 3b's storeless configs drift −1 to −5
+  against the unseeded 2026-08-09 sweep on identical task code**
+  (`graph` 19→14, `critique` 17→14, `structured` 18→17, `bare` 14→13).
+  Unseeded-versus-seeded means this is *not* interpretable as a
+  regression: it is the size of the sampling-variance bar the old 3b
+  numbers silently carried, measured. From this re-baseline forward all
+  four models have seeded baselines, so this class of ambiguity ends
+  here — which is also why every pre→post comparison above is labelled
+  directional.
+
+### Measured problems → attack plan (P1–P9, previous sweep)
 
 Frozen-suite rules mean none of this was patched mid-sweep. Each negative
 becomes a problem with an owner-fix, ordered; the layer names refer to the
