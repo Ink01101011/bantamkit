@@ -179,9 +179,31 @@ The workflow, per unit:
 3. Spawn the subagent with the returned brief verbatim, picking the model
    from the unit's `role`.
 4. `shiftwork_clock_out(checkpoint, unit_id, status, handoff_patch,
-   history_entry, accounting)` — the whole mutated document is validated
-   before an atomic write, and one accounting line is appended to
-   `<checkpoint>.log.jsonl`.
+   history_entry, accounting)` — `unit_id` must be the cursor unit
+   (execute-the-cursor, driver parity). The whole mutated document is
+   validated before any write; then one accounting line is appended to
+   `<checkpoint>.log.jsonl` and the checkpoint is renamed into place, in
+   that order (log-then-commit) — a partial failure can lose the commit
+   but never the accounting, and a log line whose commit failed is
+   detectable by re-reading the checkpoint.
+
+Cursor advance is v1-linear: clock-out moves the cursor to the first
+non-terminal unit in plan order and ignores `depends_on` — a non-linear
+plan needs a planner unit to reorder `plan.units` first.
+
+**Log-line comparability with the driver.** Both flavors log one JSONL
+line per session, in deliberately different shapes; the N-sessions
+experiment reads both logs through this mapping:
+
+| driver `driver-log.jsonl` | MCP `<checkpoint>.log.jsonl` | note |
+|---|---|---|
+| `ts` | `ts` | same UTC `...Z` format |
+| `cursor` | `unit` | the unit the session executed |
+| `role` | `role` | identical |
+| `exit` + `progressed` | `status` | the driver observes exit + hash delta; the MCP flavor records the reported unit status |
+| `duration` | `accounting.duration` | driver-measured vs orchestrator-reported |
+| `seq` | — | driver-only session counter |
+| — | `tokens`, `model` | MCP-only orchestrator accounting |
 
 **Role → model mapping — never random, never silently inherited.** The
 orchestrator maps role to model when spawning. Recommendation: planner =
@@ -199,11 +221,14 @@ reproduce → locate → fix → verify, where the fix lands under an
 implementer and is gated by the reviewer unit (verify reviews the diff
 against the constraints and runs the full suite). Copy it to
 `.shiftwork/checkpoint.json` in the target repo, fill in `job`,
-`state.repo`, and the briefs, and clock in.
+`state.repo`, and the briefs, and clock in. The template targets the MCP
+flavor; under the driver, CF4's `pytest -q` verify step needs a role
+whose `allowed_tools` includes Bash (the stock reviewer whitelist is
+read-only).
 
-**Standing policy** (committed in this repo's `CLAUDE.md` and installed
-user-level in `~/.claude/CLAUDE.md`; copy this block into any other
-machine or project):
+**Standing policy** (committed in this repo's `CLAUDE.md`; the same
+block gets installed user-level in `~/.claude/CLAUDE.md` as part of the
+post-merge live smoke — copy it into any other machine or project):
 
 > Any multi-unit orchestration — ≥2 planned units, or any
 > spec→plan→implement / bugfix / code-trace job that fans out agents —
