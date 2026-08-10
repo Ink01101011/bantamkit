@@ -51,6 +51,9 @@ contract-retry waste.
   `Agent.run` calls `self.budget.record(resp.usage)` after every chat
   response when a budget is attached (duck-typed `getattr`, `None`
   default field — agents without a budget are byte-identical).
+  *(Recording moved in v0.11.1: `Agent.run` no longer records — the
+  budget's client wrapper is the single recording point; see the
+  debt-paid note below.)*
 - **API (resolved from draft Q1): no cost estimation in v1.**
   `budget.allow(priority: str) -> bool` with `priority` ∈
   `{"required", "optional"}`; decisions come from remaining-fraction
