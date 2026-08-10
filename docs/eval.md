@@ -1058,7 +1058,8 @@ the next cycle makes physical:
     4/6 at −37.7% tokens** (73,979 → 46,059). Both held-answer loops
     converted — `turns-exhausted` 22,947 → **pass** 8,211 and 22,700 →
     **pass** 9,515 — and the note demonstrably fired in both
-    transcripts. Stable cells byte-identical. Honest negative: the
+    transcripts. Stable cells identical in every field but the config
+    label. Honest negative: the
     cell that was already failing short (`wrong-answer` 15,195) fired
     through note and warn and still failed (`malformed-output`,
     15,196) — injection converts held-answer loops, not absent-answer
@@ -1069,10 +1070,10 @@ the next cycle makes physical:
     38,074): injected runs stop looping and answer (wrongly) instead
     of burning to the turn cap.
   - **4b `memory-guarded`** (full suite ×3, no-regression):
-    **byte-identical on all 66 rows** to the seeded 59/66 @ 55,525
-    memory cell — the guard was silent everywhere, exactly as the
-    probe predicted (4b max streak ≤ 2), and a fired injection would
-    itself have been a finding.
+    **identical in every field but the config label on all 66 rows**
+    vs the seeded 59/66 @ 55,525 memory cell — the guard was silent
+    everywhere, exactly as the probe predicted (4b max streak ≤ 2),
+    and a fired injection would itself have been a finding.
 
   v1 limitations, documented and pinned by tests: observations from
   raising handlers and unknown tools cannot streak (the wrapper resets
