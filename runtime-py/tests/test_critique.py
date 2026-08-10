@@ -314,8 +314,9 @@ def test_rounds_used_stays_honest_when_a_later_round_is_denied():
         ]
     )
     gate = CritiqueGate(make_rubric(), client=client)
-    # 35 tokens per agent turn; cutoff = 50, ceiling = 100. Critic spend is not
-    # recorded (structured() is unbudgeted this cycle), so only turns move `spent`.
+    # 35 tokens per agent turn; cutoff = 50, ceiling = 100. The gate holds an
+    # explicit unwrapped client, so its critic calls bypass the governor's wrapper
+    # and only turns move `spent` — which is what this denial arithmetic needs.
     budget = TokenBudget(ceiling=100, optional_cutoff=0.5)
     agent = Agent(client=client).use(budget, gate)
     result = agent.run("t")

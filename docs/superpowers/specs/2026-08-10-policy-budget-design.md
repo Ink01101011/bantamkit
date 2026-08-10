@@ -51,6 +51,9 @@ contract-retry waste.
   `Agent.run` calls `self.budget.record(resp.usage)` after every chat
   response when a budget is attached (duck-typed `getattr`, `None`
   default field — agents without a budget are byte-identical).
+  *(Recording moved in v0.11.1: `Agent.run` no longer records — the
+  budget's client wrapper is the single recording point; see the
+  debt-paid note below.)*
 - **API (resolved from draft Q1): no cost estimation in v1.**
   `budget.allow(priority: str) -> bool` with `priority` ∈
   `{"required", "optional"}`; decisions come from remaining-fraction
@@ -89,6 +92,10 @@ contract-retry waste.
   TokenBudget v1 is therefore a **tail-cutter and safety net**, not an
   economizer of critic spend. Attack plan for the gap (later cycle):
   budget-aware client wrapping so `record()` sees every call.
+  **(Debt paid 2026-08-10 by the budget-visibility cycle, v0.11.1 —
+  `2026-08-10-budget-visibility-design.md`: setup wraps the client,
+  the wrapper is the single recording point, and the measured outcome
+  lives in eval.md's P3 entry.)**
 - Bars (seeded; corrected at review time — the draft's "≤ 1/3 tokens"
   bar was derived from the *pre-P2* 214k blowup, had no seeded
   baseline, and review arithmetic showed even total-capping at 6000

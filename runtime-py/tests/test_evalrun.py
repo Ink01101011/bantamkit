@@ -4,6 +4,7 @@ import pytest
 from conftest import FakeClient, assistant, call
 
 from bantamkit import evalrun
+from bantamkit.budget import _BudgetedClient
 from bantamkit.client import BantamError, Message, ToolCall
 from bantamkit.evalrun import (
     CONFIG_CHOICES,
@@ -1599,3 +1600,61 @@ def test_headline_configs_carry_no_budget(tmp_path):
 
 def test_budget_exhausted_is_a_known_outcome():
     assert "budget-exhausted" in evalrun.OUTCOMES
+
+
+# ---- the gates inherit `agent.client`, so the governor sees the critic ----
+
+
+def capture_gate(monkeypatch, name):
+    """Grab the gate instance `run_task` builds, at the moment it is set up."""
+    captured = []
+    original = getattr(evalrun, name)
+
+    class Capturing(original):
+        def setup(self, agent):
+            super().setup(agent)
+            captured.append(self)
+
+    monkeypatch.setattr(evalrun, name, Capturing)
+    return captured
+
+
+def test_budgeted_gate_client_is_the_budget_wrapper(tmp_path, monkeypatch):
+    """The point of the cycle: the critic call goes through the governor's wrapper."""
+    captured = capture_gate(monkeypatch, "GroundedCritiqueGate")
+    client = FakeClient([assistant(content=CONTACT), assistant(content=GROUNDED_VERDICT)])
+    result = run_task(client, get_task("extract-contact"), "budgeted", tmp_path)
+    (gate,) = captured
+    assert isinstance(gate.client, _BudgetedClient)
+    assert gate.client.budget is gate.budget
+    assert isinstance(gate.client.inner, TrackingClient)
+    # One agent turn (15) plus one critic call (15): the critic used to be invisible.
+    assert gate.budget.spent == 30
+    assert result.passed is True and result.model_calls == 2 and result.tokens == 30
+
+
+def test_full_gate_client_is_the_tracking_client(tmp_path, monkeypatch):
+    """Behaviour pin for the non-budgeted configs: exactly what `client=tracking` gave."""
+    captured = capture_gate(monkeypatch, "GroundedCritiqueGate")
+    client = FakeClient([assistant(content=CONTACT), assistant(content=GROUNDED_VERDICT)])
+    result = run_task(client, get_task("extract-contact"), "full", tmp_path)
+    (gate,) = captured
+    assert isinstance(gate.client, TrackingClient)
+    assert gate.client.inner is client
+    assert gate.budget is None
+    assert result.passed is True and result.model_calls == 2 and result.tokens == 30
+
+
+def test_critique_gate_client_is_the_tracking_client(tmp_path, monkeypatch):
+    captured = capture_gate(monkeypatch, "CritiqueGate")
+    client = FakeClient(
+        [
+            assistant(content='{"team": "Atlas"}'),
+            assistant(content='{"score": 9, "feedback": "ok"}'),
+        ]
+    )
+    result = run_task(client, get_task("recall-owner"), "critique", tmp_path)
+    (gate,) = captured
+    assert isinstance(gate.client, TrackingClient)
+    assert gate.client.inner is client
+    assert result.passed is True and result.model_calls == 2

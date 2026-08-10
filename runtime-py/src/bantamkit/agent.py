@@ -121,8 +121,6 @@ class Agent:
                 return AgentResult(output=last_content, messages=messages, usage=usage)
             resp = self.client.chat(messages, tools=[t.tool for t in self.tools] or None)
             usage = usage + resp.usage
-            if self.budget is not None:
-                self.budget.record(resp.usage)
             messages.append(resp.message)
             if resp.message.content:
                 last_content = resp.message.content
