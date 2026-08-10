@@ -72,6 +72,79 @@ def test_exhausted_rounds_raises():
         agent.run("t")
 
 
+def test_rounds_used_counts_the_round_that_raises():
+    """RP2: an exhausted gate recorded 2 for the 3 critic calls its own error text quoted."""
+    script = []
+    for i in range(3):
+        script.append(assistant(content=f"draft {i}"))
+        script.append(assistant(content='{"score": 2, "feedback": "bad"}'))
+    client = FakeClient(script)
+    gate = CritiqueGate(make_rubric(), client=client, max_rounds=3)
+    agent = Agent(client=client, max_turns=20).use(gate)
+    with pytest.raises(CritiqueExhausted, match="3 rounds"):
+        agent.run("t")
+    critic_calls = sum(1 for c in client.calls if "Task:t" in c["messages"][-1].content)
+    assert critic_calls == 3
+    assert gate.rounds_used == 3
+
+
+def test_rounds_used_counts_every_below_threshold_round_short_of_the_cap():
+    """Unchanged where the gate does not exhaust: one objection, one round."""
+    client = FakeClient(
+        [
+            assistant(content="draft"),
+            assistant(content='{"score": 4, "feedback": "thin"}'),
+            assistant(content="final"),
+            assistant(content='{"score": 8, "feedback": "ok"}'),
+        ]
+    )
+    gate = CritiqueGate(make_rubric(), client=client)
+    assert Agent(client=client).use(gate).run("t").output == "final"
+    assert gate.rounds_used == 1
+
+
+def test_critique_exhausted_messages_defaults_to_empty():
+    """Declares the `MaxTurnsExceeded` transcript slot, so the agent can fill it in."""
+    assert CritiqueExhausted("below threshold").messages == []
+
+
+def test_critique_exhausted_carries_the_transcript():
+    """The run RP2 had to monkeypatch the runtime to see must record itself."""
+    script = []
+    for i in range(3):
+        script.append(assistant(content=f"draft {i}"))
+        script.append(assistant(content='{"score": 2, "feedback": "bad"}'))
+    client = FakeClient(script)
+    agent = Agent(client=client, max_turns=20).use(
+        CritiqueGate(make_rubric(), client=client, max_rounds=3)
+    )
+    with pytest.raises(CritiqueExhausted) as excinfo:
+        agent.run("t")
+    contents = [m.content for m in excinfo.value.messages if m.role == "assistant"]
+    assert contents == ["draft 0", "draft 1", "draft 2"]
+
+
+def test_grounded_critique_exhausted_carries_the_transcript():
+    """The grounded gate inherits the payload, tool calls and all."""
+    responses = [assistant(tool_calls=[call("price_lookup", {"item": "widget"})])]
+    for i in range(3):
+        responses.append(assistant(content=f"answer {i}"))
+        responses.append(assistant(content='{"score": 2, "feedback": "contradicts evidence"}'))
+    client = FakeClient(responses)
+    agent = Agent(
+        client=client, max_turns=20, tools=[lookup_tool(lambda item: f"{item}: 25")]
+    ).use(GroundedCritiqueGate(make_grounded_rubric(), client=client))
+    with pytest.raises(CritiqueExhausted) as excinfo:
+        agent.run("t")
+    messages = excinfo.value.messages
+    assert [tc.name for m in messages for tc in m.tool_calls] == ["price_lookup"]
+    assert [m.content for m in messages if m.role == "assistant" and m.content] == [
+        "answer 0",
+        "answer 1",
+        "answer 2",
+    ]
+
+
 def test_gate_defaults_to_agent_client():
     client = FakeClient(
         [assistant(content="answer"), assistant(content='{"score": 9, "feedback": "fine"}')]
@@ -227,7 +300,7 @@ def test_grounded_gate_feedback_and_exhaustion_match_parent_semantics():
     agent = Agent(client=client, max_turns=20).use(gate)
     with pytest.raises(CritiqueExhausted, match="contradicts evidence"):
         agent.run("t")
-    assert gate.rounds_used == 2
+    assert gate.rounds_used == 3  # two feedback rounds plus the round that raised
     feedback_msg = client.calls[2]["messages"][-1].content
     assert "A reviewer scored your answer 2/10" in feedback_msg
 

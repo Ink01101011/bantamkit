@@ -25,7 +25,19 @@ __all__ = [
 
 
 class CritiqueExhausted(BantamError):
-    """Output stayed below threshold for max_rounds critiques."""
+    """Output stayed below threshold for max_rounds critiques.
+
+    Carries the transcript up to the raise, same payload and same reason as
+    `MaxTurnsExceeded` and `StructuredOutputError`: the gate raises from inside
+    the agent's post-hook chain, so without a slot every `critique-exhausted`
+    run recorded `messages: []` and RP2 had to monkeypatch the runtime to read
+    one. `Agent.run` fills the slot in — the gate itself is handed only the
+    task and the answer.
+    """
+
+    def __init__(self, message: str, messages: list[Message] | None = None):
+        super().__init__(message)
+        self.messages: list[Message] = list(messages or [])
 
 
 def _validate_rubric(rubric: Rubric) -> None:
