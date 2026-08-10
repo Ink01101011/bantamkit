@@ -63,13 +63,22 @@ MOVED_FRAGMENTS = (
 CORE_MODULES = (
     "agent.py",
     "budget.py",
+    "loopguard.py",
     "structured.py",
     "critique.py",
     "evalrun.py",
     "mcpserver.py",
 )
 LAYER_MODULES = ("contract.py", "profile.py")
-FORBIDDEN_IMPORTS = ("agent", "structured", "critique", "evalrun", "filegraph", "memory")
+FORBIDDEN_IMPORTS = (
+    "agent",
+    "structured",
+    "critique",
+    "evalrun",
+    "filegraph",
+    "loopguard",
+    "memory",
+)
 
 PRE_SPLIT_DEFAULTS = {
     ("agent", "max_turns"): 10,
