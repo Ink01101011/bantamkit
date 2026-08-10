@@ -192,8 +192,13 @@ Three further sections appear when the results give them something to say:
   all its runs and at least one passed none: those are the tasks that separate
   configs, and the `N/total` headline is the suite-quality number. Per-run gate
   counters (`schema_retries`, `critique_rounds` in the `--json` output) tell
-  you whether a gate ever objected on a task — both count revision feedbacks
-  handed back to the agent — or just billed tokens.
+  you whether a gate ever objected on a task — or just billed tokens.
+  `schema_retries` counts revision feedbacks handed back to the agent.
+  `critique_rounds` counts **critique rounds that judged the answer below
+  threshold, including the round that raises** — so a `critique-exhausted`
+  row records `max_rounds`. That changed on 2026-08-11 (`51c6594`); see
+  [Reporting-semantics changes](#reporting-semantics-changes-2026-08-11-v0140)
+  for what the older JSONLs mean.
 
 Tokens are read from the endpoint's `usage` field. Servers that omit it report
 `0`, which makes `score/1k tok` read `0.00` — check the column is non-zero
@@ -220,6 +225,50 @@ machines — and records it as `seed` in the `--json` row and the transcript.
   divergence rather than waving it through as noise.
 - `seed` is `null` for clients that do not accept one, and absent from JSONLs
   written before v0.8.1. A seed the server ignored is not recorded as applied.
+
+### Reporting-semantics changes (2026-08-11, v0.14.0)
+
+Round 1 of the RB-P attack queue moved four things about what a row *means*.
+None of them is a scoring change; all of them break pre/post comparability on
+some subset of cells, and every comparison in this document that spans one of
+them is labelled **directional**. Committed evidence under `docs/eval-data/`
+is deliberately **not** retro-edited — each file stays as it was measured, on
+the semantics in force that day.
+
+1. **`critique_rounds` counts the round that raises** (`51c6594`, Core). The
+   column now means "critique rounds that judged the answer below threshold,
+   including the one that raised". `critique-exhausted` rows read `max_rounds`
+   where they used to read `max_rounds - 1` — with the default `max_rounds: 3`
+   a known-exhausted row now reads 3, not 2, and under `max_rounds: 1` it reads
+   1, not 0. Rows that never exhausted are unchanged, and a round whose verdict
+   *clears* threshold is still not counted, so the column remains a count of
+   objections rather than of critic calls. Per-round token attribution computed
+   off the old column was wrong by a third on every exhausted run.
+2. **`lean` and `full` constrain the first decode on schema-carrying tasks**
+   (`2782af3`, Composition). `schema_retries`, `model_calls`, `tokens` and
+   `outcome` all shift on any cell where the model previously needed
+   `SchemaGate` to reach compliance, so pre/post numbers for those two configs
+   on schema tasks are **not comparable**. On a server that enforces
+   `json_schema`, `lean` now converges to `structured` on schema tasks *by
+   construction*. Schemaless tasks and every other config are unaffected
+   (pinned by test). One trap when reading a `full` token delta on a schema
+   task: it mixes two effects, because a run that no longer dies in the schema
+   gate goes on to reach the grounded critique it never previously got to.
+3. **`grounded` no longer attaches its critic to storeless `memory_setup`
+   tasks** (`f3b2d07`, Composition). `grounded` × memory-recall cells before
+   and after this commit measure **different compositions** and are not
+   comparable on score, tokens, `critique_rounds` or outcome mix;
+   `critique-exhausted` cannot occur in those cells any more. Every other
+   `grounded` cell and every `full` cell is unmoved — under `full` a
+   `memory_setup` task always gets its store, so the guard never trips there.
+4. **`schema-exhausted` and `critique-exhausted` rows carry a transcript**
+   (`4a8b816`, `670d8ca`, Core). Both exceptions now carry the run transcript,
+   so those runs write a non-empty `messages` array where they previously wrote
+   `[]`. Recording only — the exceptions propagate unchanged, so no score can
+   move. One gap remains and is deliberate: the `structured` config drives its
+   own loop with no agent, so *its* `schema-exhausted` transcripts still record
+   `messages: []` (pinned by
+   `test_gate_raised_transcript_stays_empty_without_an_agent_loop`).
 
 ## Current results
 
@@ -675,8 +724,12 @@ token columns alone cannot — whether a gate did work or only billed for it:
   counters show the whole delta is scoring-call overhead: not one revision
   round was bought with it.
 - **Only the standalone `critique` config ever objected:** 27 revision rounds
-  across 15 runs (`critique_rounds` counts revisions handed back to the agent,
-  not scoring calls — an exhausted run records 2, not 3), every one on a
+  across 15 runs (`critique_rounds` as recorded then counted revisions handed
+  back to the agent, not scoring calls — an exhausted run recorded 2, not 3;
+  since `51c6594` the raising round is counted too, so the same runs would
+  record 3 today and this total would read higher — see
+  [Reporting-semantics changes](#reporting-semantics-changes-2026-08-11-v0140)),
+  every one on a
   memory-recall task, where that config has no store to answer from. Eleven of
   those runs ended `critique-exhausted` — the critic *correctly* refusing a
   fabricated or absent answer, as the feedback above shows — while the other
@@ -830,6 +883,16 @@ sampled, and `bare`-vs-`graph` exact equality has its teeth back
 older evidence files stay in `docs/eval-data/`, and the claims that broke
 are stated as broken rather than re-scoped.
 
+**This sweep is a v0.13.0 measurement and v0.14.0 is not comparable to it
+cell-for-cell.** Round 1 of the RB-P attack queue (2026-08-11) shipped
+four reporting-semantics changes and several behaviour fixes on top of the
+code that produced these numbers. The sweep is not re-run here — the
+round's bars are seeded cell-level before/afters, and the attack outcomes
+are recorded against each RB-P bullet below. Before quoting any number in
+this section against v0.14.0 code, read
+[Reporting-semantics changes](#reporting-semantics-changes-2026-08-11-v0140)
+and check whether the cell is one of the ones that moved.
+
 **Caveat — the v0.9.0 semantics break on `memory`/`lean`/`full`.** v0.9.0
 attached `JsonAnswerGate` to those three configs for `json_equal`-scored
 tasks (P4 below). They are therefore **not the same measurement** they
@@ -974,7 +1037,12 @@ Sweep totals for the two retry counters: **4 `schema_retries` in 2,112
 runs** (all four on 3b, in the two `schema-exhausted` rows) and
 `critique_rounds` 64 / 60 / 9 / 47 on 3b / 4b / 7b / 14b. 7b's 9 rounds
 say its critic accepts almost everything first-pass — consistent with
-`critique` buying it only +2.
+`critique` buying it only +2. (These `critique_rounds` totals are on the
+**old** semantics: this sweep predates `51c6594`, so every
+`critique-exhausted` row here undercounts by one and the totals would read
+higher if re-measured today. See
+[Reporting-semantics changes](#reporting-semantics-changes-2026-08-11-v0140).
+The JSONLs are not retro-edited.)
 
 ### Reproduction: the seeded overlap cells
 
@@ -1074,6 +1142,18 @@ ledger (3b 1/6), above it the tasks saturate (14b `bare` 6/6). `full`'s
 7b and 14b, tied top on 3b. Grounded critique is no longer harmful
 anywhere (the P2 fix held), yet standalone it still only pays on 4b.
 
+**Two cells in this table have moved since it was measured (2026-08-11,
+round 1 of the RB-P queue). The table itself is left as measured — it is
+the 2026-08-10 record — and the moves are noted here instead:** the 3b
+`structured()` qualifier (`SchemaGate` exhausted twice inside
+`lean`/`full`) is **fixed** — the gate never fired because the constrained
+decode never engaged there, and RB-P3's fix converts both rows; and 4b's
+`full` watch-item cell is **no longer red** — RB-P5's contract fix takes
+`nav-release-bundle` 1/3 → 3/3. The 14b blind-critic row stands: RB-P4 is
+confirmed, its attempted fix measured harmful, and the cell is still 0/3.
+Neither move has been re-measured at sweep scale, so this table is not
+rewritten off two cell bars.
+
 ### Prediction scorecard (spec §2.3, written before measuring)
 
 1. **Memory transfers** — *partially confirmed, unchanged verdict.* The
@@ -1135,6 +1215,82 @@ a problem with an owner-direction, and the layer names refer to the
   env-endpoint / owner / org-quota (the P1/P4 playbook, 27 runs), and
   split store-retrieval damage from synthesis damage from
   gate-restatement damage *before* touching any layer.
+
+  **Outcome (2026-08-11, RP3 probe + RP4c fix — mechanism CONFIRMED and
+  FIXED, attribution CORRECTED, the framing above PARTLY REFUTED):**
+
+  The three-way split the attack asked for came back
+  **retrieval 6 / synthesis 2 / gate-restatement 0** across the eight
+  misses on the three probed tasks (per-task pass counts in
+  `2026-08-11-rp4c-14b-memory-recall-before.jsonl`; the attribution itself
+  is read off the probe transcripts, which are not committed, so no other
+  number from them appears here). **`JsonAnswerGate` is exonerated.** It
+  fired in one of the eight misses, and there it restated a wrong *prose*
+  answer into a wrong *JSON* answer — it never turned a right answer
+  wrong. Its only real effect on this family is taxonomy, and it is
+  precisely *why* "every miss is `wrong-answer`, none malformed" held. The
+  bullet above named it as "the main code delta on this path"; that was a
+  proximity argument and the probe killed it.
+
+  Root cause, 6 of 8: **the 14b sends `k: 1` and `Memory.recall` obeyed
+  it.** Every two-fact recall task then answered from half its evidence.
+  The store was never defective — offline, `k=3` returns both facts for
+  every query string those transcripts actually used. The other 2 of 8 are
+  **same-turn write-back poisoning**: one assistant turn dispatches
+  recall / save / recall, the speculative save moves the fact between the
+  two reads, and the model answers off its own fabrication.
+
+  Fixes, both Core: `4761109` floors the model-supplied `k` at the store's
+  configured default, and `2dbe162` gives `Agent` a batch scope so reads
+  are served from the facts as of batch entry while writes stay live from
+  the next batch on.
+
+  Bar, `qwen2.5:14b-instruct --config memory --repeats 3`, seeded per
+  `run_seed(model, task, repeat)`, before-arm run from a clean tree at
+  `2782af3` so RP4a/RP4b sit in both arms — **18/27 → 23/27, no task
+  down**, tool calls 139 → 63, tokens 67,160 → 49,506:
+
+  | task | before | after |
+  |---|---|---|
+  | `recall-env-endpoint` | 0/3 | 1/3 |
+  | `recall-org-quota` | 0/3 | 2/3 |
+  | `recall-owner` | 1/3 | **3/3** |
+  | `recall-cache-ttl` | 2/3 | 2/3 |
+  | the other five recall tasks | 3/3 | 3/3 |
+
+  The model's habit did not change and was never expected to: 40 of 42
+  `memory_recall` calls in the after-arm still carry `k: 1` and 15 batches
+  still mix a save with a recall — the component floors the one and the
+  scope isolates the other. Evidence:
+  `2026-08-11-rp4c-14b-memory-recall-{before,after}.jsonl`.
+
+  **The residue is honest, and it is a different residue.** All four
+  remaining misses now *receive* both seeded facts and lose them
+  afterwards — **retrieval misses: zero**. Two are synthesis errors on
+  `recall-env-endpoint` (`/v3` and `/reports/v3` for `/v3/reports`), one
+  is an arithmetic error on `recall-org-quota` (20480 for 40×5), and one
+  is a `recall-cache-ttl` run that calls no tool at all and answers in
+  Thai, byte-identical before and after.
+
+  **What is refuted in the framing above.** Three corrections, and they
+  matter because the bullet was written as if a code delta explained the
+  drop:
+  - `git diff 3728a70 HEAD -- assets/evals/tasks assets/skills assets/tools`
+    is **empty**. The model-facing surface is byte-identical across the
+    whole P-queue, so nothing in it can explain the *first* assistant
+    message, which is where `k: 1` is decided. The `k: 1` habit is the
+    model's, not something the queue taught it.
+  - `recall-owner` 3/3 → 1/3 does not survive re-sampling: an unseeded
+    repeat probe did not reproduce the drop. Those probe rows were not
+    committed as evidence, so no number for them is quoted here — but the
+    claim that this task regressed is retired.
+  - `recall-env-endpoint` 3/3 → 0/3 **is** real and reproducible, and its
+    mechanism (`k: 1` truncation) pre-existed the P-queue.
+  - The headline "23/27 → 18/27" mixes a code delta with a
+    **sampling-regime delta**: the pre-queue 23/27 was measured
+    *unseeded*. It is therefore **directional**, not a measurement of
+    damage done by the queue. The 18/27 → 23/27 bar above is not — both
+    arms are seeded and paired.
 - **RB-P2 — `recall-db-port` is guessable storeless: a rubric leak.** 14b
   passes it 2/3 under `bare`, `structured` and `graph` — same two seeds,
   75 tokens each, no store, no tools — and 2/3 under `critique` at ~400
@@ -1144,6 +1300,10 @@ a problem with an owner-direction, and the layer names refer to the
   non-default, non-guessable value (eval task data). Frozen-suite rules
   mean this lands in the *next* suite version with the break documented,
   not as a mid-flight patch.
+
+  **Status after round 1 (2026-08-11): UNTOUCHED.** Out of scope by the
+  job's own frozen-suite constraint, so nothing was probed, measured or
+  changed. The problem stands exactly as written above.
 - **RB-P3 — `SchemaGate` exhausts on 3b `lean`/`full` `extract-order`,
   and the sweep-level "never fired" claim is dead.** Seed 4084933696, 2
   retries each, both ending `schema-exhausted` (`JSON does not match
@@ -1169,23 +1329,195 @@ a problem with an owner-direction, and the layer names refer to the
   than silently falling back to the prompt+parse tier; if it does engage,
   this is a llama.cpp `json_schema` enforcement gap and belongs in a
   pinned test. (Contract + Transport.)
+
+  **Outcome (2026-08-11, RP1 probe + RP4b fix — CONFIRMED and FIXED, and
+  the server is exonerated):** the probe took the first of the two forks,
+  not the second. **Constrained decoding never engaged on the `lean`/`full`
+  path at all.** Wire capture of the failing cell showed its three POSTs
+  carrying only `{model, messages, seed}` — no `response_format`
+  parameter of any kind. `structured()` was called only when the resolved
+  config was `structured`; `lean` and `full` fell through to `agent.run()`,
+  whose single model call had no way to ask for a constrained decode. The
+  tier was alive in-process the whole time — `GroundedCritiqueGate` sends
+  it at `critique.py:115` — but with the *verdict* schema, never the task
+  schema. So the doc's own hypothesis ("silently falling back to the
+  prompt+parse tier") was right in substance and understated in degree:
+  there was no fallback, there was no tier.
+
+  **Not a llama.cpp / Ollama enforcement gap.** Ollama 0.18.0 does enforce
+  `json_schema`: a one-shot with the task schema returned bare
+  schema-valid objects 3/3 where the unconstrained call returned 0/3. The
+  pinned test the attack asked for is therefore a *wiring* test, and it
+  landed as one.
+
+  Fix in two commits, one layer each: `f7918ab` (Core) gives `Agent` an
+  optional `response_format` forwarded to its own model call behind the
+  same duck-typed capability memo `structured()` already used, re-checked
+  per turn so a 400 drops the tier mid-run; `2782af3` (Composition) sets
+  it from `task["schema"]` at the one place the schema gate is registered.
+  Deliberately *not* inside `SchemaGate`: the gate reacts to a violation
+  that already exists, and the decode worth constraining is the first one.
+
+  Bar, `llama3.2:3b` / `extract-order`, seeds 1729841256 / 2166512753 /
+  4084933696, before-arm reproducing `2026-08-10-rebaseline-3b.jsonl`
+  row for row:
+
+  | config | seed | before | after |
+  |---|---|---|---|
+  | `lean` | 4084933696 | `schema-exhausted`, 2 retries, 3 calls, 674 tok | **pass**, 0 retries, 1 call, 119 tok |
+  | `full` | 4084933696 | `schema-exhausted`, 2 retries, 3 calls, 524 tok | **pass**, 0 retries, 2 calls, 681 tok |
+  | `lean`/`full` | 1729841256, 2166512753 | — | byte-identical to before |
+  | `structured` (control) | all three | — | unmoved |
+
+  `schema-exhausted` is gone from the cell. **One prediction corrected:**
+  RP1 expected the win to convert to a clean `wrong-answer`, because 3b
+  answers `"Widgets"` where the suite expects `"widget"`. That defect
+  belongs to a *different* seed — 1729841256, which is `wrong-answer`
+  before and after — and on 4084933696 the constrained decode passes
+  outright. Evidence:
+  `2026-08-11-rbp3-3b-extract-order-lean-full.jsonl`,
+  `2026-08-11-rbp3-3b-extract-order-structured.jsonl`.
+
+  **Semantics moved** — see change 2 in
+  [Reporting-semantics changes](#reporting-semantics-changes-2026-08-11-v0140).
+  `lean`/`full` numbers on schema-carrying tasks are not comparable across
+  `2782af3`.
 - **RB-P4 — the blind critic kills a solved cell on 14b, on format
   nitpicks.** `nav-prod-port` is 3/3 under `bare` and 0/3 under
   `critique`, all three `critique-exhausted`. The recorded feedback demands
   a JSON shape the rubric does not require, and two of the three verdicts
   say so outright — "Required content present but incorrectly formatted"
   and "Correct answer format wasn't followed but required content was
-  identified correctly". Same failure family as RB-P5. **Attack:** critic
-  rubric wording (Layer 2 / contract) — score content, not format, unless
-  the task's rubric is itself format-scored; one wording change, then
-  re-run the two nav cells seeded.
+  identified correctly". ~~Same failure family as RB-P5.~~ **RETIRED
+  2026-08-11 — this claim is false.** RP2's probe refuted it and RP4d's
+  arms confirmed the refutation: RB-P5 is a *correct* verdict followed by
+  an unactionable retry verb, RB-P4 is a critic scoring a correct answer
+  wrong, and the RB-P5 contract fix left the RB-P4 cell bit-for-bit where
+  it was (`2026-08-11-rp4d-14b-nav-prod-port-{before,after}.jsonl`, last
+  feedback byte-identical on all three seeds). **Attack (as written at the
+  time):** critic rubric wording (Layer 2 / contract) — score content, not
+  format, unless the task's rubric is itself format-scored; one wording
+  change, then re-run the two nav cells seeded.
+
+  **Outcome (2026-08-11, RP2 probe + RP4d attempt — CONFIRMED, then the
+  fix MEASURED HARMFUL and REVERTED). This is a measured negative, not a
+  deferral.**
+
+  Confirmed in the strongest available form: on all three seeds the
+  pre-critique answer was `{"port": 9443}` — byte-identical to what `bare`
+  passes with — and the critic scored it down purely on format, once
+  self-refutingly. The committed row for seed 634446002 carries the
+  verdict verbatim: *"Answer should be in format `{"port": <number>}`, not
+  `{"port": 9443}`"*. It is literal-matching the placeholder token copied
+  out of the task prompt.
+
+  **The rubric rewording was written once, measured, and reverted.** It
+  named the placeholder conflict, stated that a literal value substituted
+  for a placeholder satisfies the template, used a neutral `{"key": 42}`
+  example that leaks no port, and was placed after `{output}` for recency.
+  It was not re-tuned against the bar. Four arms, 14b / `nav-prod-port` /
+  `--config critique`, seeds 2331795949 / 4094558621 / 634446002:
+
+  | arm | score | tokens | evidence |
+  |---|---|---|---|
+  | before (`9f614ad`) | 0/3 | 12,390 | `...-before.jsonl` |
+  | rubric only | 1/3 | 12,692 | `...-reverted-rubric-only.jsonl` |
+  | rubric + RB-P5 contract | 0/3 | 15,257 | `...-reverted-rubric-and-contract.jsonl` |
+  | **shipped** (contract only, rubric reverted) | 0/3 | 12,885 | `...-after.jsonl` |
+
+  Per-round critic scores, read off the run transcripts (those are not
+  committed — the JSONLs carry only the last feedback string, so this one
+  number has weaker provenance than the rest of this section and is
+  labelled as such): **5,5 before → 0,0 under either rubric arm → 5,5
+  shipped**. The rewording drove the score on a byte-identical,
+  byte-*correct* answer from 5/10 to 0/10 on all three seeds, and made the
+  critic invent a new non-content requirement — its committed feedback on
+  seed 4094558621 adds *"no explanation or listing of steps taken to find
+  the port"*. The lone `rubric only` pass was **not the fix working**: the
+  critic still scored 0/10 on format and the *answerer* appeased it by
+  re-emitting the same `{"port": 9443}` pretty-printed across three lines,
+  which then scored ≥ 7. Under the RB-P5 contract wording that same seed
+  re-read `config/prod.yaml` instead of reformatting, answered
+  identically, and exhausted — which is how a 1/3 became a 0/3.
+
+  `assets/rubrics/task-completion.yaml` is byte-identical to `main` on
+  this branch (verified independently by the reviewer). Both reverted arms
+  are committed as the evidence for the negative result.
+
+  **Mechanism now believed** (and it is not the one the bullet assumed):
+  the blind `critique` critic sees no tool evidence and exactly one
+  content token, and that token is already correct — so its score is not a
+  content measure at all. Compact `{"port": 9443}` scores 0–5 and the same
+  value pretty-printed scores ≥ 7. It compares literal strings. More
+  prohibition prose cannot fix that, and naming the placeholder is
+  actively counterproductive because it puts the template in front of the
+  judge a second time.
+
+  **Attack direction — structural, not lexical, and not attempted:** give
+  `task-completion` the `reasoning` field `grounded-completion` already
+  has, and require the critic to state the fact the task asks for and the
+  answer's value for it *before* scoring. The grounded critic, forced to
+  derive first, judged content correctly on the 4b cell throughout —
+  including on the answer it had to fail. (Contract, Layer 2.) The
+  problem stays open.
 - **RB-P5 — the 4b `full` watch item stayed red.** The two
   `nav-release-bundle` `critique-exhausted` rows (seeds 3590861830 and
   2248991587) reappear field-identical to the seeded bar-noreg cell. The
   trigger recorded in the contract-robustness calibration below — "if the
   cell stays red, the attack is rubric feedback wording (Layer 2), not
-  gate mechanics" — has now fired. **Attack:** as written there, jointly
-  with RB-P4.
+  gate mechanics" — has now fired. **Attack:** as written there, ~~jointly
+  with RB-P4~~ — **the "jointly with RB-P4" half is RETIRED 2026-08-11**,
+  see the retirement note in the RB-P4 bullet above; the two are separate
+  defects and the fix below moved this one alone.
+
+  **Outcome (2026-08-11, RP2 probe + RP4d fix — the original hypothesis
+  REFUTED, a different defect found and FIXED):**
+
+  This was never a format-conflict case, so the "same family as RB-P4"
+  framing that routed it here was wrong twice over. What the transcripts
+  show: `qwen3:4b-instruct` answered `imgproc-cli-0.1.0.tar.gz` (expected
+  `2.9.1`) **having never called `read_file(VERSION)`** — a hallucination,
+  and the grounded critic caught it *correctly* at 4/10 with untruncated
+  429-byte evidence. The critic was right. The defect was that the retry
+  made the answer **worse**: told the version is not present in the
+  evidence, the model edited its own string to `imgproc-cli-*.tar.gz` and
+  then `imgproc-cli-<version>.tar.gz`, generalising away the gap instead
+  of closing it, and burned all three rounds.
+
+  Two controls pin the diagnosis to the retry verb rather than the
+  critic: the control seed 4264928414 responded to the same feedback
+  *class* by issuing `read_file(VERSION)` and passing; and the same model
+  and seed under non-grounded `critique` passes at round 1, because there
+  the feedback says the answer is "missing the required content entirely"
+  rather than pointing at the string.
+
+  Fix: `1cf5210` (Contract, `assets/contracts/default.yaml`, the
+  `critique_feedback` tail only). "Revise and answer again." — a verb that
+  points the answerer at the string it just wrote — becomes an instruction
+  that names the missing-evidence case and its remedy: if a value is
+  missing, unverified, or absent from the evidence, that is a fact you
+  never looked up; call your tools and read the source, and do not reword,
+  generalise or hedge around it. `grounded-completion.yaml` was
+  deliberately left untouched so the critic's round-1 verdict stays
+  byte-stable across the arms and the retry wrapper is the only variable.
+
+  Bar, `qwen3:4b-instruct` / `nav-release-bundle` / `--config full
+  --repeats 3`, before-arm from a clean tree at `9f614ad` so
+  RP4a/RP4b/RP4c sit in both arms — **1/3 → 3/3, control held**:
+
+  | seed | before | after |
+  |---|---|---|
+  | 3590861830 | `critique-exhausted`, 3 rounds, 6,267 tok | **pass**, 1 round, 4,834 tok |
+  | 2248991587 | `critique-exhausted`, 3 rounds, 6,416 tok | **pass**, 1 round, 5,041 tok |
+  | 4264928414 (control) | pass, 1 round, 4,768 tok | pass, 1 round, 4,878 tok |
+
+  All three after-transcripts show the identical repair path: hallucinated
+  `0.1.0` → verdict → `read_file(VERSION)` → `2.9.1` → correct bundle
+  name. Blast-radius check on the 14b `critique` cell: unmoved, 0/3, last
+  feedback byte-identical per seed, at a cost of +165 tokens per run — the
+  length of the added wording. `test_layers.py::GOLDEN_CRITIQUE` was
+  updated deliberately with the reason recorded in the file. Evidence:
+  `2026-08-11-rp4d-4b-nav-release-bundle-{before,after}.jsonl`.
 - **RB-P6 — 7b's store-config token bill is 3× the 4b bill for a lower
   score.** `memory` 169,452 and `lean` 169,319 against 4b's 55,525 /
   56,289 (3.0×) at 56–57/66 vs 59/66; `full` 222,105 vs 111,382 (2.0×).
@@ -1276,6 +1608,13 @@ a problem with an owner-direction, and the layer names refer to the
   remaining ceiling is prose pseudo-calls plus synthesis failure.
   **Attack:** unchanged from the P1 residue list below; this sweep adds no
   evidence that would reprioritize it.
+
+  **Status after round 1 (2026-08-11): UNTOUCHED.** Not in the job's
+  scope; nothing was probed, measured or changed on 3b's rescue ceiling.
+  Note that RP4c's `k`-floor (RB-P1) is a Core change on the recall path
+  and *could* move this cell — it was not re-measured on 3b, so the
+  5–6/27 figure above is now a pre-`4761109` number and any re-quote of
+  it is **directional** until the cell is re-run.
 - **RB-P8 — 4b `grounded` burns 11 `critique-exhausted` runs on tasks that
   cannot produce evidence.** Ten of the eleven are storeless
   `memory-recall` (`recall-env-endpoint` ×3, `recall-audit-retention` ×2,
@@ -1285,6 +1624,63 @@ a problem with an owner-direction, and the layer names refer to the
   tokens. **Attack:** composition policy — don't attach an
   evidence-demanding critic to tasks whose config provides no evidence
   path. Cheap guard, measurable as token savings at unchanged score.
+
+  **Outcome (2026-08-11, RP4e — FIXED at Composition):** the guard
+  landed as `f3b2d07`. A `memory_setup` task keeps its answer in a store;
+  `grounded` attaches no store and no tools; so `source_withheld` is true
+  and the gate is simply not attached. `full` never trips it, because a
+  `memory_setup` task under `full` always gets its store.
+
+  **Composition was chosen over Library, deliberately.** The cheaper-looking
+  fix — degrade `GroundedCritiqueGate` to pass through on an empty evidence
+  set — would make every consumer's grounded gate defeatable by calling no
+  tools, which is precisely the thing it is attached to prevent. The critic
+  is behaving correctly here; the *recipe* that pairs a source-checking
+  critic with a task whose source it withheld is what is wrong, so the
+  recipe is what changed.
+
+  Bar, 4b `grounded` × memory-recall, 27 runs — **−97.2% tokens at
+  unchanged score**:
+
+  | | before | after |
+  |---|---|---|
+  | tokens | 53,929 | **1,520** |
+  | model calls | 132 | 27 |
+  | critique rounds | 55 | 0 |
+  | score | 0/27 | 0/27 |
+  | outcomes | `critique-exhausted` ×16 + `wrong-answer` ×11 | `wrong-answer` ×27 |
+
+  **Note the exhausted count: 16, not the 11/10 recorded in this bullet.**
+  The bullet's figure came from the 2026-08-10 re-baseline
+  (`2026-08-10-rebaseline-4b.jsonl`: 10 exhausted in this family, 46,293
+  tokens); the before-arm above is branch head `625cfe5`, where RP4c and
+  RP4d are already in, and the population had grown. The problem was
+  bigger than it was written down as.
+
+  Controls, both byte-identical across the arms: 4b `grounded`+`full` on
+  structured-extraction, 30 runs, 15/15 each at 21,478 tokens; 4b
+  `grounded` on file-nav, 6 runs, 6/6 at 23,846 tokens with
+  `critique_rounds == 1` on every run — the critic objects once, the
+  answer changes, the run is rescued. Evidence:
+  `2026-08-11-rp4e-4b-memory-recall-grounded-{before,after}.jsonl`,
+  `2026-08-11-rp4e-4b-{extract,file-nav-grounded}-control-{before,after}.jsonl`.
+
+  **Semantics change, not a bugfix in the numbers** — see change 3 in
+  [Reporting-semantics changes](#reporting-semantics-changes-2026-08-11-v0140).
+
+  **Deliberate scoping, recorded so it is not mistaken for coverage:**
+  toolless `structured-extraction` tasks also reach the critic with an
+  empty evidence set and they **keep** the gate. Their source is the task
+  prompt, they burn zero exhausted runs, and no confirmed finding said to
+  touch them, so extending the guard there would have been a speculative
+  semantics break. The same structural mismatch is nonetheless present and
+  may bite on a model whose critic is less lenient about "(no tool calls
+  were made)". **Attack if it ever does:** widen the guard from "source
+  withheld" to "no evidence path at all", with a measured before/after on
+  the extraction family. Related: `source_withheld` keys on `memory_setup`
+  alone, so a future task combining `memory_setup` with workspace tools
+  under `grounded` would drop the critic despite having real evidence. No
+  such task exists today.
 - **RB-P9 (measurement note) — 3b's storeless configs drift −1 to −5
   against the unseeded 2026-08-09 sweep on identical task code**
   (`graph` 19→14, `critique` 17→14, `structured` 18→17, `bare` 14→13).
@@ -1294,6 +1690,63 @@ a problem with an owner-direction, and the layer names refer to the
   four models have seeded baselines, so this class of ambiguity ends
   here — which is also why every pre→post comparison above is labelled
   directional.
+
+  **Status after round 1 (2026-08-11): UNTOUCHED.** Nothing was probed,
+  measured or changed. It is a standing measurement note rather than a
+  defect, and round 1 leaned on it twice — the RB-P1 headline and the
+  pre-queue 23/27 it rests on are exactly this ambiguity, and are labelled
+  directional for exactly this reason.
+
+#### New measured problems from round 1 (2026-08-11)
+
+Found while attacking the block above; none of them is fixed, and each
+carries an attack direction rather than a re-scoped claim.
+
+- **RB-P10 — `memory_save` without a `name` leaks a raw Python
+  `TypeError` into a model-facing observation.** The model sees
+  `Memory.save() missing 1 required positional argument: 'name'` — an
+  implementation detail of the handler's signature, in the place where a
+  schema-shaped error belongs. Observed burning turns in both of the 14b
+  failures that survive RP4c (`recall-env-endpoint` and
+  `recall-org-quota`; transcript evidence, and the rows themselves are in
+  `2026-08-11-rp4c-14b-memory-recall-after.jsonl`). **Attack:** the
+  argument-boundary layer that already owns `coerce_arguments` should
+  reject a call missing a `required` property with a message that names
+  the field, instead of letting the handler's signature speak. (Contract,
+  Layer 2, plus the Core boundary that calls it.)
+- **RB-P11 — no task in the suite carries both a `schema` and `tools`, so
+  the tools-plus-`response_format` combination is unit-tested but has
+  never been measured against a real server.** RB-P3's fix makes this
+  reachable in `lean` and `full` for the first time. Unit tests pin that
+  tools still travel alongside a constrained call; nothing measures
+  whether a server honours both at once. **Attack:** a probe cell before
+  any schema task gains tools. Frozen-suite rules put the task change in
+  the next suite version. (Transport + Measurement.)
+- **RB-P12 — the `structured` config's `schema-exhausted` transcripts
+  still record `messages: []`.** Change 4 in
+  [Reporting-semantics changes](#reporting-semantics-changes-2026-08-11-v0140)
+  fixed this everywhere an agent loop owns the transcript;
+  `structured` drives its own loop with no agent, so it is the one
+  remaining blind spot. Deliberately left — no probe finding asked for it —
+  and pinned by
+  `test_gate_raised_transcript_stays_empty_without_an_agent_loop` so it
+  cannot rot silently. **Attack:** give the one-shot loop a transcript of
+  its own shape, or route it through the agent. (Core.)
+- **RB-P13 (ledger honesty, not a product defect) — two intermediate
+  commits on `feat/rbp-round-1` are red in isolation and two commit
+  bodies misdescribe their tests.** `4a8b816` fails 3 tests and
+  `670d8ca` fails 4 when checked out alone, because `4a8b816`'s
+  `test_evalrun.py` edits assert behaviour of both later commits and
+  `670d8ca` lands `51c6594`'s counting tests a commit early; `51c6594`'s
+  body then calls a test "(new)" in a commit that touches only
+  `critique.py`. Everything from `51c6594` onward is green and the branch
+  head is unaffected, but bisectability is broken across those two
+  commits and the "failing before / passing after" lists in those bodies
+  are not accurate as committed. History was **not** rewritten — in a
+  project whose method is claims-verified-by-evidence, an inaccurate
+  evidence list is worth recording rather than editing away. **Attack:**
+  none needed beyond the discipline itself — land tests in the commit
+  whose behaviour they assert.
 
 ### Measured problems → attack plan (P1–P9, previous sweep)
 

@@ -42,6 +42,26 @@ profile". The default profile ships today's values, which are
 4b-calibrated — that calibration is now *named data with a comment saying
 so* instead of silent constants.
 
+Two rules got sharper in the 2026-08-11 RB-P round, without any boundary
+moving:
+
+- **Core may not assume a property of the deployment; Composition affirms
+  it.** `CritiqueGate`'s verdict memo needs sampling to be *deterministic*,
+  and one adapter (`OpenAICompatible`) covers Ollama, llama.cpp, vLLM and
+  OpenRouter — where a pinned seed is best-effort. Layer 1 can check the
+  seed mechanically and does; it cannot check the backend, so it refuses to
+  guess. `CritiqueGate(deterministic_sampling=...)` defaults **off**, and
+  the eval harness — Layer 5, which chose the endpoint — affirms it for
+  itself. A library correctness argument that rests on a deployment choice
+  the library does not make belongs at the layer that made the choice.
+- **A critic paired with a task whose source was withheld is a recipe
+  defect, not a gate defect.** RB-P8's guard lives in Layer 5 for that
+  reason. Degrading `GroundedCritiqueGate` to pass through on empty
+  evidence would have been a Layer-1 change that made every consumer's
+  grounded gate defeatable by calling no tools — the opposite of what it is
+  attached to do. When the mechanism is behaving correctly and the
+  composition is wrong, the composition is what changes.
+
 ## What this buys
 
 - **Contract iteration without core risk.** The P2/P4 fixes (tiered
@@ -63,6 +83,12 @@ so* instead of silent constants.
   annotations) and `memory/component.py` (save feedback). It is
   model-facing, but it measured fine cross-model, so it moves in a later
   contract cycle, not this one.
+- The agent↔component protocol is duck-typed and undeclared, so it can
+  widen silently. `Memory.setup` now hard-requires `Agent.add_batch_scope`
+  (`2dbe162`); nothing states that requirement except the `AttributeError`
+  a non-conforming agent would raise. A declared protocol for what a
+  component may expect of its agent is Layer-1 work waiting for a second
+  component to need it.
 - Only the `default` contract and profile exist. Per-model/per-tier
   variants are the P6 work that lands on top of this seam. (P2's tier —
   constrained decoding via `response_format` with a 400-fallback memo —
