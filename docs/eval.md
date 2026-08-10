@@ -1077,12 +1077,16 @@ the next cycle makes physical:
     bar MISSED**, and the miss is a measurement lesson, not a code
     defect. 53/66 rows are byte-identical to the blind cell. The gap is
     six marginal cells whose critic verdict flipped reject-ward vs the
-    baseline sweep, extending runs the governor then capped at the
-    ceiling (`budget-exhausted` ×6 at 6.1–6.5k). Two independent checks
+    baseline sweep, extending their runs; the governor capped four of
+    them at the ceiling (the other two ended uncapped — `wrong-answer`
+    at 5,484 and `turns-exhausted` at 6,003), and the sweep's
+    `budget-exhausted` ×6 (at 6.1–6.6k) comprises those four plus two
+    non-flip trajectory divergences. Two independent checks
     exonerate the code: (1) an offline invariant test pins that a
     never-denying governor leaves the request stream byte-identical to
     no governor at all (the budget can only cut, never alter); (2) a
-    back-to-back ×2 rerun of the four flipped cells on identical code
+    back-to-back ×2 rerun of the four budget-capped flip cells on
+    identical code
     (`bv-flip-probe-1/2`) diverged from *itself* on 5/12 rows,
     reproducing both the short and the long trajectory byte-for-byte in
     different sweeps — llama.cpp server nondeterminism on
