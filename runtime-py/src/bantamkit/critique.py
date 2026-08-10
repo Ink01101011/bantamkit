@@ -147,6 +147,12 @@ class CritiqueGate:
         if self.client is None:
             self.client = agent.client
         self.rounds_used = 0
+        # The consecutive-below-threshold streak, and the one piece of per-run state
+        # this reset used to miss. It is zeroed by a passing verdict or by the raise,
+        # neither of which happens to a run whose turn budget expires while the gate is
+        # still feeding back — so on a reused instance the next run started part-way to
+        # exhaustion and could raise "after N rounds" having spent one.
+        self._rounds = 0
         self._last_prompt = None
         self._last_verdict = None
         # Duck-typed and optional: a run with no governor keeps every round it had.

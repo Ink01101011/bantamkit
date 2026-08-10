@@ -1,7 +1,7 @@
 import pytest
 from conftest import FakeClient, assistant, call
 
-from bantamkit.agent import Agent, ToolDef
+from bantamkit.agent import Agent, MaxTurnsExceeded, ToolDef
 from bantamkit.budget import TokenBudget
 from bantamkit.client import BantamError, Message, Tool
 from bantamkit.critique import (
@@ -619,4 +619,45 @@ def test_short_circuit_never_runs_ahead_of_the_budget():
     budget = TokenBudget(ceiling=100, optional_cutoff=0.5)
     result = Agent(client=client).use(budget, gate).run("t")
     assert result.output == "same answer"  # round two denied: accepted, not memo-judged
+    assert gate.rounds_used == 1
+
+
+# ---- RP5b: a reused gate starts every run with a full round budget ----
+
+
+def test_setup_resets_the_streak_counter_for_a_reused_gate():
+    """RP5 Minor 7: `setup` reset `rounds_used` and the verdict memo but never
+    `_rounds`, the consecutive-below-threshold streak.
+
+    A run can end while the streak is live: the gate hands back feedback, the answerer
+    is given another turn, and the turn budget runs out before any verdict clears
+    threshold. `_rounds` is only zeroed by a passing verdict or by the raise, so it
+    survived into the next run on the same instance — which then exhausted after one
+    objection the answerer went on to fix, and quoted "after 3 rounds" beside a
+    `rounds_used` of 1.
+    """
+    gate = CritiqueGate(make_rubric(), max_rounds=3)
+
+    first = FakeClient(
+        [
+            assistant(content="draft 0"),
+            assistant(content='{"score": 2, "feedback": "bad"}'),
+            assistant(content="draft 1"),
+            assistant(content='{"score": 2, "feedback": "bad"}'),
+        ]
+    )
+    with pytest.raises(MaxTurnsExceeded):
+        Agent(client=first, max_turns=2).use(gate).run("t")
+    assert gate.rounds_used == 2  # the streak is live, and the run is over
+
+    second = FakeClient(
+        [
+            assistant(content="draft"),
+            assistant(content='{"score": 4, "feedback": "thin"}'),
+            assistant(content="fixed"),
+            assistant(content='{"score": 9, "feedback": "ok"}'),
+        ]
+    )
+    gate.client = second
+    assert Agent(client=second, max_turns=10).use(gate).run("t").output == "fixed"
     assert gate.rounds_used == 1
