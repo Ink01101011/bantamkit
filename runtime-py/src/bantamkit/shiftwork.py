@@ -65,7 +65,7 @@ def _read_valid(path: Path) -> tuple[dict | None, dict[str, Any] | None]:
     try:
         document = json.loads(text)
     except json.JSONDecodeError as e:
-        return None, _error(f"checkpoint is not parseable JSON: {e}")
+        return None, _error(f"checkpoint is not parseable as JSON: {e}")
     problem = schema_error(text, load_schema(SCHEMA_NAME))
     if problem is not None:
         return None, _error(f"checkpoint invalid: {problem}")

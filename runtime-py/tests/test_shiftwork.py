@@ -184,7 +184,7 @@ def test_clock_in_refuses_success_when_all_units_terminal(tmp_path, example):
 def test_clock_in_errors_on_unparseable_checkpoint(tmp_path):
     r = ops.clock_in(str(write_checkpoint(tmp_path, "{not json at all")))
     assert r["result"] == "error"
-    assert "not parseable JSON" in r["reason"]
+    assert "not parseable as JSON" in r["reason"]
 
 
 def test_clock_in_errors_on_schema_invalid_checkpoint(tmp_path, example):
