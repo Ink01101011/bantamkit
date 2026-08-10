@@ -1,4 +1,4 @@
-"""Shift-work: the checkpoint schema asset, its loader, and the driver loop."""
+"""Shift-work: the checkpoint schema asset, its loader, the driver loop, the MCP-flavor ops."""
 
 import copy
 import json
@@ -10,12 +10,14 @@ from types import SimpleNamespace
 import jsonschema
 import pytest
 
+from bantamkit import shiftwork as ops
 from bantamkit.assets import AssetNotFound, load_schema
 from bantamkit.contract import schema_error
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SHIFTWORK = REPO_ROOT / "tools" / "shiftwork"
 EXAMPLE = SHIFTWORK / "example-checkpoint.json"
+CODEFIX = SHIFTWORK / "example-codefix-checkpoint.json"
 
 sys.path.insert(0, str(SHIFTWORK))
 import driver as shiftwork  # noqa: E402  (repo tool, not a package on the wheel)
@@ -141,6 +143,253 @@ def test_history_beyond_five_entries_rejected(schema, example):
     six = [dict(entry, unit=f"U{i}") for i in range(6)]
     assert schema_error(json.dumps(mutate(example, ["history"], six)), schema) is not None
     assert schema_error(json.dumps(mutate(example, ["history"], six[:5])), schema) is None
+
+
+# --- MCP flavor: clock_in --------------------------------------------------
+
+
+def write_checkpoint(tmp_path, ckpt):
+    path = tmp_path / "checkpoint.json"
+    path.write_text(json.dumps(ckpt) if isinstance(ckpt, dict) else ckpt)
+    return path
+
+
+def test_clock_in_returns_the_cursor_units_brief_faithfully(tmp_path, example):
+    path = write_checkpoint(tmp_path, example)
+    brief = ops.clock_in(str(path))
+    assert brief["result"] == "brief"
+    assert brief["unit"] == example["plan"]["units"][1]  # U3, the cursor unit, verbatim
+    assert brief["role"] == "implementer"
+    assert brief["invariants"] == example["job"]["constraints"]
+    assert brief["handoff"] == example["handoff"]
+    assert brief["do_not"] == example["handoff"]["do_not"]
+    assert brief["files"] == example["state"]["artifacts"]
+
+
+def test_clock_in_escalates_on_open_questions(tmp_path, example):
+    example["handoff"]["open_questions"] = ["Which layer owns SCHEMA_INSTRUCTION?"]
+    r = ops.clock_in(str(write_checkpoint(tmp_path, example)))
+    assert r["result"] == "escalate"
+    assert "Which layer owns SCHEMA_INSTRUCTION?" in r["reason"]
+    assert r["open_questions"] == example["handoff"]["open_questions"]
+
+
+def test_clock_in_refuses_success_when_all_units_terminal(tmp_path, example):
+    for unit in example["plan"]["units"]:
+        unit["status"] = "dropped" if unit["id"] == "U4" else "done"
+    r = ops.clock_in(str(write_checkpoint(tmp_path, example)))
+    assert r == {"result": "success", "reason": "all units done or dropped"}
+
+
+def test_clock_in_errors_on_unparseable_checkpoint(tmp_path):
+    r = ops.clock_in(str(write_checkpoint(tmp_path, "{not json at all")))
+    assert r["result"] == "error"
+    assert "not parseable JSON" in r["reason"]
+
+
+def test_clock_in_errors_on_schema_invalid_checkpoint(tmp_path, example):
+    example["version"] = 2
+    r = ops.clock_in(str(write_checkpoint(tmp_path, example)))
+    assert r["result"] == "error"
+    assert "checkpoint invalid" in r["reason"]
+
+
+def test_clock_in_errors_on_missing_file(tmp_path):
+    r = ops.clock_in(str(tmp_path / "nope.json"))
+    assert r["result"] == "error"
+    assert "unreadable" in r["reason"]
+
+
+def test_clock_in_escalates_on_dangling_cursor(tmp_path, example):
+    example["plan"]["cursor"] = "U99"
+    r = ops.clock_in(str(write_checkpoint(tmp_path, example)))
+    assert r == {"result": "escalate", "reason": "cursor U99 names no unit"}
+
+
+# --- MCP flavor: clock_out --------------------------------------------------
+
+
+ACCOUNTING = {"tokens": 1234, "duration": 88.2, "model": "haiku"}
+
+
+def read_log(path):
+    log = Path(str(path) + ".log.jsonl")
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in log.read_text().splitlines()]
+
+
+def test_clock_out_round_trips_a_valid_update(tmp_path, schema, example):
+    path = write_checkpoint(tmp_path, example)
+    r = ops.clock_out(
+        str(path),
+        "U3",
+        "done",
+        {"next_action": "Review the U3 diff per briefs/U4.md."},
+        {"unit": "U3", "outcome": "done", "notes": "moved in one commit"},
+        ACCOUNTING,
+    )
+    assert r["result"] == "ok"
+    assert r["cursor"] == "U4"
+    written = path.read_text()
+    assert schema_error(written, schema) is None  # the re-read passes the full schema
+    doc = json.loads(written)
+    assert doc["plan"]["units"][1]["status"] == "done"
+    assert doc["plan"]["cursor"] == "U4"
+    assert doc["handoff"]["next_action"] == "Review the U3 diff per briefs/U4.md."
+    assert doc["history"][-1]["unit"] == "U3"
+
+
+def test_clock_out_rejects_bad_status_enum_without_writing(tmp_path, example):
+    path = write_checkpoint(tmp_path, example)
+    before = path.read_bytes()
+    r = ops.clock_out(str(path), "U3", "in-progress", {}, {"unit": "U3", "outcome": "done"})
+    assert r["result"] == "error"
+    assert "refused to write" in r["reason"]
+    assert path.read_bytes() == before  # atomicity: failure leaves the prior bytes
+    assert read_log(path) == []
+
+
+def test_clock_out_rejects_overlong_history_ring_without_writing(tmp_path, example):
+    entry = {"unit": "U0", "outcome": "done"}
+    example["history"] = [dict(entry, unit=f"U{i}") for i in range(6)]
+    path = write_checkpoint(tmp_path, example)
+    before = path.read_bytes()
+    r = ops.clock_out(str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"})
+    assert r["result"] == "error"
+    assert "checkpoint invalid" in r["reason"]
+    assert path.read_bytes() == before
+    assert read_log(path) == []
+
+
+def test_clock_out_rejects_invalid_handoff_patch_without_writing(tmp_path, example):
+    path = write_checkpoint(tmp_path, example)
+    before = path.read_bytes()
+    entry = {"unit": "U3", "outcome": "done"}
+    r = ops.clock_out(str(path), "U3", "done", {"journal": "strays are a smell"}, entry)
+    assert r["result"] == "error"
+    assert path.read_bytes() == before
+    assert read_log(path) == []
+
+
+def test_clock_out_pushes_the_history_ring_with_driver_identical_truncation(
+    tmp_path, schema, example
+):
+    example["history"] = [{"unit": f"H{i}", "outcome": "done"} for i in range(5)]
+    path = write_checkpoint(tmp_path, example)
+    r = ops.clock_out(str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"})
+    assert r["result"] == "ok"
+    doc = json.loads(path.read_text())
+    assert [h["unit"] for h in doc["history"]] == ["H1", "H2", "H3", "H4", "U3"]
+    assert schema_error(path.read_text(), schema) is None
+
+
+def test_clock_out_unknown_unit_errors_without_writing(tmp_path, example):
+    path = write_checkpoint(tmp_path, example)
+    before = path.read_bytes()
+    r = ops.clock_out(str(path), "U99", "done", {}, {"unit": "U99", "outcome": "done"})
+    assert r == {"result": "error", "reason": "unit U99 is not in the plan"}
+    assert path.read_bytes() == before
+    assert read_log(path) == []
+
+
+def test_clock_out_appends_one_accounting_line_per_success(tmp_path, example):
+    path = write_checkpoint(tmp_path, example)
+    ops.clock_out(str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, ACCOUNTING)
+    ops.clock_out(str(path), "U4", "done", {}, {"unit": "U4", "outcome": "done"})
+    lines = read_log(path)
+    assert len(lines) == 2
+    first, second = lines
+    assert first["unit"] == "U3" and first["role"] == "implementer" and first["status"] == "done"
+    assert first["tokens"] == 1234 and first["duration"] == 88.2 and first["model"] == "haiku"
+    assert first["ts"].endswith("Z")
+    assert set(second) == {"ts", "unit", "role", "status"}  # accounting omitted -> base shape
+    assert second["role"] == "reviewer"
+
+
+def test_blocked_clock_out_keeps_the_cursor_on_the_blocked_unit(tmp_path, example):
+    path = write_checkpoint(tmp_path, example)
+    r = ops.clock_out(
+        str(path),
+        "U3",
+        "blocked",
+        {"open_questions": ["head_sha moved under us"]},
+        {"unit": "U3", "outcome": "blocked"},
+    )
+    assert r["result"] == "ok"
+    assert r["cursor"] == "U3"  # non-terminal: still THE next unit
+    assert ops.clock_in(str(path))["result"] == "escalate"
+
+
+def test_full_cycle_on_the_v1_example(tmp_path, example):
+    """Bar 2: the shipped example drives clock_in -> clock_out -> clock_in."""
+    path = write_checkpoint(tmp_path, example)
+    first = ops.clock_in(str(path))
+    assert first["result"] == "brief" and first["unit"]["id"] == "U3"
+    out = ops.clock_out(
+        str(path),
+        "U3",
+        "done",
+        {"next_action": "Review the extraction diff per briefs/U4.md."},
+        {"unit": "U3", "outcome": "done"},
+        ACCOUNTING,
+    )
+    assert out["result"] == "ok"
+    second = ops.clock_in(str(path))
+    assert second["result"] == "brief" and second["unit"]["id"] == "U4"
+    assert second["role"] == "reviewer"
+    assert ops.clock_out(str(path), "U4", "done", {}, {"unit": "U4", "outcome": "done"})[
+        "result"
+    ] == "ok"
+    assert ops.clock_in(str(path))["result"] == "success"
+    assert len(read_log(path)) == 2
+
+
+# --- MCP flavor: status -----------------------------------------------------
+
+
+def test_status_summarizes_without_mutating(tmp_path, example):
+    path = write_checkpoint(tmp_path, example)
+    before = path.read_bytes()
+    r = ops.status(str(path))
+    assert r == {
+        "result": "status",
+        "cursor": "U3",
+        "units": {"done": 1, "todo": 2},
+        "open_questions": 0,
+        "last_history": example["history"][-1],
+    }
+    assert path.read_bytes() == before
+    assert read_log(path) == []
+
+
+def test_status_reports_empty_history_as_none(tmp_path, example):
+    example["history"] = []
+    r = ops.status(str(write_checkpoint(tmp_path, example)))
+    assert r["last_history"] is None
+
+
+def test_status_errors_on_invalid_checkpoint(tmp_path):
+    r = ops.status(str(write_checkpoint(tmp_path, "{not json at all")))
+    assert r["result"] == "error"
+
+
+# --- the code-fix example checkpoint ----------------------------------------
+
+
+def test_codefix_example_validates(schema):
+    assert schema_error(CODEFIX.read_text(), schema) is None
+
+
+def test_codefix_example_shapes_the_job(schema):
+    ckpt = json.loads(CODEFIX.read_text())
+    units = ckpt["plan"]["units"]
+    assert [u["id"] for u in units] == ["CF1", "CF2", "CF3", "CF4"]
+    assert ckpt["plan"]["cursor"] == "CF1"
+    # reproduce -> locate -> fix are implementer; the fix is gated by the reviewer unit.
+    assert [u["role"] for u in units] == ["implementer", "implementer", "implementer", "reviewer"]
+    brief = ops.clock_in(str(CODEFIX))
+    assert brief["result"] == "brief" and brief["unit"]["id"] == "CF1"
 
 
 # --- driver: harness -------------------------------------------------------
