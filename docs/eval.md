@@ -1962,6 +1962,56 @@ carries an attack direction rather than a re-scoped claim.
   before any rubric edit is called a fix. (Measurement.) Evidence:
   `2026-08-11-sa3-14b-nav-prod-port-whitespace-null-control.jsonl`,
   `2026-08-11-sa3-14b-nav-prod-port-critic-replay.json`.
+
+  **Outcome (2026-08-11) — the instrument was built and it confirmed the
+  diagnosis, but not the predicted verdict.** `criticreplay.py` scores a
+  12-point perturbation family (`assets/evals/perturbations/task-completion.yaml`,
+  sha `340ce4db`) over three `task-completion` variants on 14b
+  `nav-prod-port` at the three pinned seeds 2331795949 / 4094558621 /
+  634446002: `A-asfiled` (`d2f78b7`), `B-nonewline` (`A` minus the template's
+  trailing newline), `C-attempted` (`e57f1a6`, the withdrawn
+  derive-before-score rubric). 141 requests, 63,342 tokens. The reproduction
+  gate held exactly — identity scores 5,5,5 / 9,9,9 / 7,10,10 against the
+  committed SA3 record, five replays each, zero spread within any cell — and
+  the internal cross-check held: `B`'s identity and `A`'s
+  `W1-trailing-newline` are the same prompt bytes by two routes
+  (`prompt_sha256` `3e3a55af…`) and score 9 on all three seeds.
+  **The measured noise band is the whole scale.** Meaning-preserving edits to
+  the critic's *own* prompt move the score from 0 to 9 on `A` and `B` and 0 to
+  10 on `C`, on every seed; all three families straddle threshold 7, so all
+  three are `fragile: true` and all nine pairwise comparisons come back
+  `attributable: false`. `A-asfiled` passes 1/12, 4/12, 3/12 of its own
+  family. That settles the sharper question: **the 0/3-versus-3/3 that RB-P4
+  rested on was never a measurement** — the as-filed rubric fails most
+  meaning-preserving rewordings of itself on this cell, and the one that
+  flips it to 3/3 is a deleted newline sitting inside that noise.
+  **The predicted verdict did not land, and is recorded rather than
+  re-scoped.** §10 expected `B-nonewline` vs `C-attempted` to read
+  `indistinguishable` on every cell; it reads `indistinguishable` on seed
+  4094558621 only (7/11 vs 7/11) and `inconclusive` on the other two (7/11 vs
+  10/11 both times), because `C` passes at a *higher* rate than `B` without
+  reaching the `F/F`-versus-`0/F` bar that rule 1 requires. So the pair is
+  **distinguishable on zero of three cells** — by rule 3 it is not
+  distinguishable on the change, and by rule 2 every family is fragile, so no
+  attribution was available either way. The load-bearing conclusion is
+  unchanged and the gate text was simply too strong: "no separation" is what
+  was measured, "equal pass rates" is what was predicted, and only the first
+  is a property of the world. **Attack:** the `inconclusive` band is doing
+  real work here and the spec gave it no reporting duty beyond a label — a
+  pair that differs by 3/11 on two cells and 0/11 on a third is not the same
+  finding as one that differs nowhere, and the summary cannot currently say
+  so. Give `inconclusive` a reported effect size and re-state §10's
+  expectation as "not distinguishable" rather than "indistinguishable"
+  before the widened cell set runs, or the next bar will fail its own gate
+  for being right. One point is separately suspect: `P3-right-correct`
+  violates the manifest's shared-token guard on exactly this cell (it removes
+  *right*, and the task prompt says "follow the documentation to the **right**
+  file"), and ships that way pinned by a test. Dropping it changes no verdict
+  — B vs C stays 6/10 vs 6/10 on 4094558621 and 6/10 vs 9/10 on the other two
+  — so no conclusion here rests on it, but it should be fixed before the
+  family is reused. Evidence:
+  `2026-08-11-pb14-14b-nav-prod-port-perturbation.jsonl`,
+  `2026-08-11-pb14-14b-nav-prod-port-perturbation-summary.json`.
 - **RB-P15 — seeded sampling here is score-stable, not byte-stable across
   processes, and the harness affirms more than that.** At seed 4094558621
   the reviewer's before-rubric replay produced different feedback *text*
@@ -1986,6 +2036,22 @@ carries an attack direction rather than a re-scoped claim.
   rather than discovered. (Measurement, plus one docstring in Core that
   currently overclaims.) Evidence:
   `2026-08-11-sa3-14b-nav-prod-port-critic-replay.json`.
+
+  **Status (2026-08-11): both halves landed.** The affirmation is narrowed to
+  the verdict's *decision* everywhere it was stated — `critique.py` (Core,
+  three places), `run_task` in `evalrun.py` (Measurement) and `docs/usage.md`.
+  **The standing check is
+  `python -m bantamkit.criticreplay --identity-only`**, run over a bar's
+  `--transcripts` directory after the bar finishes: it replays the one pinned
+  critic request `--identity-replays` times per cell and reports the score
+  spread, without touching the run it measures (wiring it into `evalrun`
+  would have changed the `tokens` column and broken comparability with every
+  historical JSONL). Cost on a 3-seed cell at the default 5 replays: 15
+  requests. The RB-P14 acceptance run exercised it as the `identity` point of
+  every family — 45 identity replays over nine (variant, cell) pairs, **zero
+  score spread within any cell**, which is the same result the narrowed
+  affirmation claims. Evidence:
+  `2026-08-11-pb14-14b-nav-prod-port-perturbation.jsonl`.
 
 ### Measured problems → attack plan (P1–P9, previous sweep)
 
