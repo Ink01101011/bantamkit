@@ -121,10 +121,20 @@ class CritiqueGate:
         deterministic_sampling: bool = False,
     ):
         """`deterministic_sampling` affirms that this critic's backend reproduces a
-        sample exactly for a fixed request and a pinned seed. It is off by default and
-        it is the caller's claim to make, because the library cannot check it: one
-        adapter covers Ollama, vLLM, llama.cpp and OpenRouter, and on the batching ones
-        a seed is best-effort. See `_verdict` for what the affirmation buys.
+        verdict's *decision* — its score — for a fixed request and a pinned seed.
+
+        Narrowed to that, and no wider, because that is what is measured (RB-P15).
+        Across 30 replay requests over six cells the score never moved within a cell;
+        the verdict *text* did, at an identical request payload sha, both inside one
+        process and across five. So the old wording — "reproduces a sample exactly" —
+        claimed byte stability this backend does not deliver. The score is the only
+        thing the gate branches on, so the narrower claim is also the only one the memo
+        needs.
+
+        It is off by default and it is the caller's claim to make, because the library
+        cannot check it: one adapter covers Ollama, vLLM, llama.cpp and OpenRouter, and
+        on the batching ones a seed is best-effort. See `_verdict` for what the
+        affirmation buys.
         """
         if isinstance(rubric, Rubric):
             _validate_rubric(rubric)
@@ -200,17 +210,23 @@ class CritiqueGate:
     def _verdict(self, prompt: str) -> dict:
         """The critic's judgement of this prompt — bought once per distinct prompt.
 
-        Where sampling is deterministic, the critic is a deterministic function of its
-        prompt, so a round that re-judges an unchanged answer is spend for a verdict
-        already in hand. RP2 measured the shape: on the 14b `nav-prod-port` cell every
-        round judged the identical `{"port": 9443}` and got back the identical verdict,
-        and each of those rounds was a provably unwinnable one, because an unchanged
-        answer guarantees an unchanged verdict guarantees exhaustion.
+        Where sampling is deterministic, the critic's *decision* is a deterministic
+        function of its prompt, so a round that re-judges an unchanged answer is spend
+        for a verdict already in hand. RP2 measured the shape: on the 14b
+        `nav-prod-port` cell every round judged the identical `{"port": 9443}` and got
+        back the identical score, and each of those rounds was a provably unwinnable
+        one, because an unchanged answer guarantees an unchanged score guarantees
+        exhaustion.
 
         Reuse, never a short cut around the loop. The reused verdict runs the same
         counting and the same exhaustion check the paid one would have, so
-        `rounds_used`, the feedback bytes and the raised error come out exactly as they
-        did — one model call fewer is the entire difference. Stopping the loop early
+        `rounds_used` and the raised error come out exactly as they did — one model call
+        fewer is the entire difference. The *feedback bytes* are one of the samples the
+        backend would have produced at that score, not necessarily the one this round
+        would have drawn (RB-P15): verdict text is not byte-stable across processes.
+        Nothing branches on those bytes; they are relayed to the answerer, and the
+        alternative — paying for a call whose decision is already known — buys a
+        different wording, not a different outcome. Stopping the loop early
         instead would be the cheaper fix and the wrong one: the answerer sees a longer
         conversation each round and may still change its answer on the round after a
         repeat, so raising there could turn a run that would have passed into a loss.
@@ -230,7 +246,8 @@ class CritiqueGate:
         checkable from inside the library:
 
         - the caller affirmed `deterministic_sampling`, i.e. this backend reproduces a
-          sample exactly for a fixed request and a pinned seed. Ollama does; `client.py`
+          verdict's decision — its score, not its bytes — for a fixed request and a
+          pinned seed. Ollama does at the score level; `client.py`
           covers vLLM and OpenRouter with the same adapter, and there a seed is
           best-effort (continuous batching, upstream fingerprint drift). A seed being
           *set* proves nothing about that, so the affirmation cannot be inferred — it
