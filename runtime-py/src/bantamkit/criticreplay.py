@@ -563,7 +563,7 @@ def replay_scores(client: ModelClient, rubric: Rubric, case: Case, replays: int 
 _ROW_KEYS = (
     "bar", "variant", "rubric_ref", "rubric_sha256", "manifest_sha256", "task", "seed",
     "repeat", "model", "point", "class", "rule", "replay", "prompt_sha256", "payload_sha256",
-    "score", "threshold", "passed", "feedback", "tokens_in", "tokens_out",
+    "score", "threshold", "passed", "feedback", "tokens_in", "tokens_out", "calls",
 )
 
 
@@ -590,6 +590,7 @@ class ReplayRow:
     feedback: str
     tokens_in: int
     tokens_out: int
+    calls: int  # wire calls behind this one row: 1, or more if `structured()` retried
 
     def row(self) -> dict:
         data = dict(vars(self))
@@ -684,6 +685,7 @@ def run(
                         feedback=verdict.feedback,
                         tokens_in=verdict.tokens_in,
                         tokens_out=verdict.tokens_out,
+                        calls=verdict.calls,
                     )
                     rows.append(row)
                     if on_row is not None:
@@ -774,7 +776,11 @@ def summarize(result: RunResult, manifest_sha256: str) -> dict:
         "bar": BAR,
         "threshold": threshold,
         "manifest_sha256": manifest_sha256,
+        # `requests` is the row count — one row per (variant, cell, point, replay).
+        # `wire_calls` is what actually went out: they differ exactly when `structured()`
+        # retried, which would otherwise inflate `tokens_total` invisibly.
         "requests": len(result.rows),
+        "wire_calls": sum(r.calls for r in result.rows),
         "tokens_total": sum(r.tokens_in + r.tokens_out for r in result.rows),
         "variants": [
             {
@@ -907,8 +913,8 @@ def format_table(summary: dict) -> str:
             )
     lines += [
         "",
-        f"requests: {summary['requests']}  tokens: {summary['tokens_total']}  "
-        f"manifest: {summary['manifest_sha256'][:12]}",
+        f"requests: {summary['requests']}  wire calls: {summary['wire_calls']}  "
+        f"tokens: {summary['tokens_total']}  manifest: {summary['manifest_sha256'][:12]}",
     ]
     return "\n".join(lines)
 

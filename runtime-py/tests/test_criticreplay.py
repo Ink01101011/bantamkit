@@ -496,6 +496,18 @@ class ScriptedCritic:
         )
 
 
+class RetryOnceCritic(ScriptedCritic):
+    """Unparseable on the very first call, so `structured()` retries exactly once."""
+
+    def chat(self, messages, tools=None, response_format=None):
+        response = super().chat(messages, tools, response_format=response_format)
+        if len(self.calls) == 1:
+            return Response(
+                message=Message(role="assistant", content="not json"), usage=Usage(100, 20)
+            )
+        return response
+
+
 def _rubric(prompt, threshold=7):
     return Rubric(
         name="task-completion",
@@ -672,6 +684,7 @@ def test_rows_carry_the_columns_the_spec_names(rig):
         "bar", "variant", "rubric_ref", "rubric_sha256", "manifest_sha256", "task", "seed",
         "repeat", "model", "point", "class", "rule", "replay", "prompt_sha256",
         "payload_sha256", "score", "threshold", "passed", "feedback", "tokens_in", "tokens_out",
+        "calls",
     }
     assert row["bar"] == "perturbation" and row["threshold"] == 7
     assert row["class"] in ("identity", "whitespace", "order", "paraphrase")
@@ -716,6 +729,24 @@ def test_summary_reports_pass_rate_spread_margin_zero_and_fragility(rig):
     assert cell["identity_spread"] == 0
     assert cell["fragile"] is True
     assert cell["margin_zero"] == 0
+
+
+def test_a_retried_request_shows_up_as_more_wire_calls_than_rows(rig):
+    """`requests` counts rows; a `structured()` retry only moves `wire_calls`.
+
+    Without this the tokens column can inflate while `requests` stays put, and a reader
+    cannot tell a retry from a more expensive prompt (N4's minor 4).
+    """
+    client = RetryOnceCritic(lambda p: 9)
+    result = criticreplay.run(
+        client, rig["variants"], rig["manifest"], rig["cases"], model=client.model
+    )
+    summary = criticreplay.summarize(result, rig["manifest"].sha256)
+    assert summary["requests"] == len(result.rows)
+    assert summary["wire_calls"] == summary["requests"] + 1
+    retried = [r for r in result.rows if r.calls == 2]
+    assert len(retried) == 1
+    assert all(r.calls == 1 for r in result.rows if r is not retried[0])
 
 
 def test_margin_zero_counts_points_within_one_of_threshold(rig):
