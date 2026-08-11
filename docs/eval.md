@@ -262,10 +262,11 @@ Read three fields per cell, in this order:
 3. **`attributable`** — the two above, combined. `false` means the claim does
    not get written.
 
-Cost is why this is a rule and not a suggestion: **~96 requests, ~35k tokens,
-about three minutes** for a two-variant before/after on a 3-seed cell — 22% of
-what the `critique`-config suite arms behind RB-P4 cost, with no answerer, no
-tools and no suite run. A cycle in a hurry can afford it.
+Cost is why this is a rule and not a suggestion: **≤ 96 requests and about
+three minutes** for a two-variant before/after on a 3-seed cell — measured at
+93 requests and 35,523 tokens on the RB-P14 cell, which is **25%** of the
+143,711 tokens the 14b before+after suite arms behind RB-P4 cost, with no
+answerer, no tools and no suite run. A cycle in a hurry can afford it.
 
 It exists because the alternative was measured. RB-P4's structural rubric edit
 cleared a pre-registered bar, two no-regression arms and an independent

@@ -328,7 +328,10 @@ The driver is `C-attempted` at ~580 tokens/request against `A-asfiled`'s 384 —
 the "+13.5% order" guess above is badly low for a rubric that also emits a
 `reasoning` field, and the per-request cost, not just the suite cost, moves.
 The routine two-variant profile measured 93 requests / 35,523 tokens against the
-96-request bound and ~32.0k, **+11%** on tokens.
+96-request bound and ~32.0k, **+11%** on tokens. The two percentages above move
+with them: the routine check is **25%** of the 14b arm pair, not 22%, and the
+three-variant acceptance run is **44%**, not 33%. Still cheap enough to use
+routinely, which was the load-bearing claim; the estimates were not.
 Estimate token cost per *variant* from a rendered probe of that variant, not by
 scaling one variant's number.
 
