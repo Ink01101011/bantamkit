@@ -1,0 +1,576 @@
+rubric: task-completion
+spec: docs/superpowers/specs/2026-08-11-perturbation-bar-spec.md
+note: 'Perturbation family for the RB-P14 bar. Measurement input, NOT a Contract asset: no product code
+  path loads it, and criticreplay.py is its only reader. Every point is a declared, text-anchored transformation
+  with a stable rule id, applicable to any template that contains its anchor, so the same family lands
+  on every rubric variant under comparison. A point whose anchor is absent from a variant is dropped from
+  BOTH families of a pairwise comparison and named in the summary.'
+requirement_inventory_note: 'The requirement inventory of the AS-FILED task-completion rubric (spec section
+  3.3 step 1), committed before any paraphrase was authored. Admissibility test for every P point: re-derive
+  this list from the perturbed text alone; it must come out the same - same count, same directive per
+  item, same bands, same key names. A variant that changes the inventory (C-attempted adds a required
+  `reasoning` key) is a different rubric under test, not a perturbation.'
+requirement_inventory:
+- Judge whether the information the task asks for is present and correct.
+- Do not deduct for formatting.
+- Do not deduct for phrasing.
+- Do not deduct for extra surrounding text.
+- Do not deduct for hedging.
+- Do not deduct for verbosity.
+- Facts present and right => the task is complete.
+- A refusal or decline => 0-4, however polite.
+- Hedging instead of an answer => missing content; hedging around an answer => fine.
+- 'Bands: 9-10 present and correct; 5-8 partial or missing pieces; 0-4 wrong or absent.'
+- Output only JSON with keys score (int) and feedback (string).
+materialized_variants:
+  A-asfiled:
+    source: git:d2f78b7:assets/rubrics/task-completion.yaml
+    note: byte-identical to the shipped assets/rubrics/task-completion.yaml
+    base_sha256: e018854368c1b675e7cff5109a3dce715d59c86d871cd3d1d83b9083188a065e
+  B-nonewline:
+    source: A-asfiled with the template's single trailing newline removed
+    note: 'materialize as the same YAML with `prompt: |-`'
+    base_sha256: d1f32ad2947b4d6f6079833847eae96c79fddeb2683ceda322940bdc8cbf13a6
+  C-attempted:
+    source: git:e57f1a6:assets/rubrics/task-completion.yaml
+    note: the withdrawn derive-before-score rubric; requires `reasoning` on the wire
+    base_sha256: 5f588e4a07a6fa29572ed2e3bdbd39132c0a8f9908b0ce47408ad72c015d2298
+points:
+- id: identity
+  class: identity
+  rule: identity
+  op: identity
+  note: Mandatory member, not a perturbation class (spec section 3.4). Zero edits. Its replays give the
+    pure within-cell replay spread RB-P15 asks for, and anchor the family against the committed SA3 replay
+    record.
+  variants:
+    A-asfiled:
+      applicable: true
+      sha256: e018854368c1b675e7cff5109a3dce715d59c86d871cd3d1d83b9083188a065e
+      diff: ''
+    B-nonewline:
+      applicable: true
+      sha256: d1f32ad2947b4d6f6079833847eae96c79fddeb2683ceda322940bdc8cbf13a6
+      diff: ''
+    C-attempted:
+      applicable: true
+      sha256: 5f588e4a07a6fa29572ed2e3bdbd39132c0a8f9908b0ce47408ad72c015d2298
+      diff: ''
+- id: W1-trailing-newline
+  class: whitespace
+  rule: strip-trailing-newline
+  op: strip-trailing-newline
+  note: THE NULL CONTROL, and a mandatory member. This is the edit that reproduced the entire RB-P4 pass
+    signature while changing no word of the rubric. Shortening.
+  variants:
+    A-asfiled:
+      applicable: true
+      sha256: d1f32ad2947b4d6f6079833847eae96c79fddeb2683ceda322940bdc8cbf13a6
+      diff: |-
+        --- A-asfiled
+        +++ W1-trailing-newline
+        @@ -19 +19,2 @@
+         Return ONLY JSON: {{"score": <int>, "feedback": "<what content is wrong or missing>"}}
+        +\ No newline at end of file
+    B-nonewline:
+      applicable: false
+    C-attempted:
+      applicable: true
+      sha256: 4054b3b6c5c328a4bcfc0f7191958f10b6f9ad4fd2f3f0f4dbdbd0c231c4d94f
+      diff: |-
+        --- C-attempted
+        +++ W1-trailing-newline
+        @@ -27 +27,2 @@
+         Return ONLY JSON: {{"reasoning": "<the fact the task asks for, then the value the answer supplies for it>", "score": <int>, "feedback": "<what content is wrong or missing>"}}
+        +\ No newline at end of file
+- id: W2-double-trailing
+  class: whitespace
+  rule: append-trailing-newline
+  op: append-trailing-newline
+  note: Lengthening. Paired with W1 so the family is not biased in one direction.
+  variants:
+    A-asfiled:
+      applicable: true
+      sha256: 447e5be27613ef5cd090f12e8e5d0616ff838bc22ef43c0001b625743b88b303
+      diff: |-
+        --- A-asfiled
+        +++ W2-double-trailing
+        @@ -19 +19,2 @@
+         Return ONLY JSON: {{"score": <int>, "feedback": "<what content is wrong or missing>"}}
+        +
+    B-nonewline:
+      applicable: true
+      sha256: e018854368c1b675e7cff5109a3dce715d59c86d871cd3d1d83b9083188a065e
+      diff: |-
+        --- B-nonewline
+        +++ W2-double-trailing
+        @@ -19,2 +19 @@
+         Return ONLY JSON: {{"score": <int>, "feedback": "<what content is wrong or missing>"}}
+        -\ No newline at end of file
+    C-attempted:
+      applicable: true
+      sha256: 03bfdcb7b224a03e3e9d832e8b6bb0a0b77f375062498cc766084504a0e46a95
+      diff: |-
+        --- C-attempted
+        +++ W2-double-trailing
+        @@ -27 +27,2 @@
+         Return ONLY JSON: {{"reasoning": "<the fact the task asks for, then the value the answer supplies for it>", "score": <int>, "feedback": "<what content is wrong or missing>"}}
+        +
+- id: W3-unwrap-opening
+  class: whitespace
+  rule: unwrap-hard-wrapped-run
+  op: replace
+  replace:
+  - from: |-
+      Do NOT deduct points for formatting, phrasing, extra surrounding text,
+      hedging, or verbosity. If the required facts are present and right, the
+      answer completes the task.
+    to: Do NOT deduct points for formatting, phrasing, extra surrounding text, hedging, or verbosity.
+      If the required facts are present and right, the answer completes the task.
+  note: 'Anchored to the first hard-wrapped run of the SHARED opening paragraph rather than to the whole
+    opening paragraph the spec''s table names, because the whole paragraph differs between A-asfiled and
+    C-attempted and an anchor absent from a variant would drop this rule from the very comparison the
+    bar exists for (spec section 4.1). Length-neutral: newline -> space.'
+  variants:
+    A-asfiled:
+      applicable: true
+      sha256: 0a41447a57d8b987e170275280eafe6e2568c7cc3d3bdbd9583ffcddef29e067
+      diff: |-
+        --- A-asfiled
+        +++ W3-unwrap-opening
+        @@ -2,5 +2,3 @@
+         Judge ONLY whether the information the task asks for is present and correct.
+        -Do NOT deduct points for formatting, phrasing, extra surrounding text,
+        -hedging, or verbosity. If the required facts are present and right, the
+        -answer completes the task.
+        +Do NOT deduct points for formatting, phrasing, extra surrounding text, hedging, or verbosity. If the required facts are present and right, the answer completes the task.
+         An answer that refuses or declines to provide what the task asks for is
+    B-nonewline:
+      applicable: true
+      sha256: dc6d35d1e4570a53a33a8b3c3bbacc6020fb305ecb3dd3c3fb94c27b891c0384
+      diff: |-
+        --- B-nonewline
+        +++ W3-unwrap-opening
+        @@ -2,5 +2,3 @@
+         Judge ONLY whether the information the task asks for is present and correct.
+        -Do NOT deduct points for formatting, phrasing, extra surrounding text,
+        -hedging, or verbosity. If the required facts are present and right, the
+        -answer completes the task.
+        +Do NOT deduct points for formatting, phrasing, extra surrounding text, hedging, or verbosity. If the required facts are present and right, the answer completes the task.
+         An answer that refuses or declines to provide what the task asks for is
+    C-attempted:
+      applicable: true
+      sha256: c137757ae33652de54184d36e9e02a704150903952d8a53ef54fdc4ef3273309
+      diff: |-
+        --- C-attempted
+        +++ W3-unwrap-opening
+        @@ -10,5 +10,3 @@
+         Judge ONLY whether the information the task asks for is present and correct.
+        -Do NOT deduct points for formatting, phrasing, extra surrounding text,
+        -hedging, or verbosity. If the required facts are present and right, the
+        -answer completes the task.
+        +Do NOT deduct points for formatting, phrasing, extra surrounding text, hedging, or verbosity. If the required facts are present and right, the answer completes the task.
+         An answer that refuses or declines to provide what the task asks for is
+- id: W4-double-space
+  class: whitespace
+  rule: double-space-after-period
+  op: replace
+  replace:
+  - from: '. '
+    to: '.  '
+    occurrences: all
+  note: Position-independent. Lengthening. Every sentence-terminating period.
+  variants:
+    A-asfiled:
+      applicable: true
+      sha256: 4c54e4d49cf74a0f5ed3bfabf347c405cd0a54eb2dd10c693b6a19e5dee23792
+      diff: |-
+        --- A-asfiled
+        +++ W4-double-space
+        @@ -3,3 +3,3 @@
+         Do NOT deduct points for formatting, phrasing, extra surrounding text,
+        -hedging, or verbosity. If the required facts are present and right, the
+        +hedging, or verbosity.  If the required facts are present and right, the
+         answer completes the task.
+        @@ -7,3 +7,3 @@
+         missing the required content — score it 0-4, even when the refusal is
+        -polite or explains itself. Hedging around a real answer is fine; hedging
+        +polite or explains itself.  Hedging around a real answer is fine; hedging
+         instead of an answer is not.
+    B-nonewline:
+      applicable: true
+      sha256: 82309ca57ce8d5ae23ce3ee1f7788eec0eabf1c7e8d0b91e8557052ec9b3a55a
+      diff: |-
+        --- B-nonewline
+        +++ W4-double-space
+        @@ -3,3 +3,3 @@
+         Do NOT deduct points for formatting, phrasing, extra surrounding text,
+        -hedging, or verbosity. If the required facts are present and right, the
+        +hedging, or verbosity.  If the required facts are present and right, the
+         answer completes the task.
+        @@ -7,3 +7,3 @@
+         missing the required content — score it 0-4, even when the refusal is
+        -polite or explains itself. Hedging around a real answer is fine; hedging
+        +polite or explains itself.  Hedging around a real answer is fine; hedging
+         instead of an answer is not.
+    C-attempted:
+      applicable: true
+      sha256: 44458e5ed6b1848464940598900f9956c841ae1cad72cc0f10df2759233b1338
+      diff: |-
+        --- C-attempted
+        +++ W4-double-space
+        @@ -4,6 +4,6 @@
+         written in; second, the value the answer supplies for that fact, quoted from
+        -the answer. Then say whether that value is present and responsive to what was
+        -asked. You cannot check the value against records: you have no files, no
+        +the answer.  Then say whether that value is present and responsive to what was
+        +asked.  You cannot check the value against records: you have no files, no
+         tools, and no evidence here, so do not try to work out what the value should
+        -have been — a value you invented would be a guess. You are checking that the
+        +have been — a value you invented would be a guess.  You are checking that the
+         answer supplies the fact that was asked for.
+        @@ -11,3 +11,3 @@
+         Do NOT deduct points for formatting, phrasing, extra surrounding text,
+        -hedging, or verbosity. If the required facts are present and right, the
+        +hedging, or verbosity.  If the required facts are present and right, the
+         answer completes the task.
+        @@ -15,3 +15,3 @@
+         missing the required content — score it 0-4, even when the refusal is
+        -polite or explains itself. Hedging around a real answer is fine; hedging
+        +polite or explains itself.  Hedging around a real answer is fine; hedging
+         instead of an answer is not.
+- id: W5-blank-line-before-bands
+  class: whitespace
+  rule: extra-blank-line-before-anchor
+  op: replace
+  replace:
+  - from: |2-
+
+
+      Score 0-10:
+    to: |2-
+
+
+
+      Score 0-10:
+  note: Anchored. Lengthening. Does not move any structural block.
+  variants:
+    A-asfiled:
+      applicable: true
+      sha256: f55493678f7d4f418291b885b16899251c0ad58fad78705eb915eb38393234f5
+      diff: "--- A-asfiled\n+++ W5-blank-line-before-bands\n@@ -16,2 +16,3 @@\n \n+\n Score 0-10: 9-10\
+        \ = required content present and correct; 5-8 = partially"
+    B-nonewline:
+      applicable: true
+      sha256: 92dbe03ae12ba4d56c3808e8e51190f1ba6d2b0a7a9256395eece3df351d44f9
+      diff: "--- B-nonewline\n+++ W5-blank-line-before-bands\n@@ -16,2 +16,3 @@\n \n+\n Score 0-10: 9-10\
+        \ = required content present and correct; 5-8 = partially"
+    C-attempted:
+      applicable: true
+      sha256: bab6a5c4f792037d4c0df2d335c7e298b51bb676afc2d0bc416293be17ecfcb7
+      diff: "--- C-attempted\n+++ W5-blank-line-before-bands\n@@ -24,2 +24,3 @@\n \n+\n Score 0-10: 9-10\
+        \ = required content present and correct; 5-8 = partially"
+- id: O1-swap-format-refusal
+  class: order
+  rule: swap-sentences
+  op: swap
+  swap:
+    a: |-
+      Do NOT deduct points for formatting, phrasing, extra surrounding text,
+      hedging, or verbosity.
+    b: |-
+      An answer that refuses or declines to provide what the task asks for is
+      missing the required content — score it 0-4, even when the refusal is
+      polite or explains itself.
+  note: 'Both units are whole sentences inside ONE contiguous prose paragraph and neither carries an anaphor
+    or discourse connective pointing outside itself. No structural block moves: Task:/Answer:/Return ONLY
+    JSON: keep their positions.'
+  variants:
+    A-asfiled:
+      applicable: true
+      sha256: b6a0693eacbd525df6e53b8021c39af9d6c7b15504fe3d975c0d0e17d5e847c0
+      diff: |-
+        --- A-asfiled
+        +++ O1-swap-format-refusal
+        @@ -2,8 +2,8 @@
+         Judge ONLY whether the information the task asks for is present and correct.
+        -Do NOT deduct points for formatting, phrasing, extra surrounding text,
+        -hedging, or verbosity. If the required facts are present and right, the
+        -answer completes the task.
+         An answer that refuses or declines to provide what the task asks for is
+         missing the required content — score it 0-4, even when the refusal is
+        -polite or explains itself. Hedging around a real answer is fine; hedging
+        +polite or explains itself. If the required facts are present and right, the
+        +answer completes the task.
+        +Do NOT deduct points for formatting, phrasing, extra surrounding text,
+        +hedging, or verbosity. Hedging around a real answer is fine; hedging
+         instead of an answer is not.
+    B-nonewline:
+      applicable: true
+      sha256: f8fecf8b2315bbe7b0505a6642e9dcc65dee259b18eac146302ebbe6b305fd5d
+      diff: |-
+        --- B-nonewline
+        +++ O1-swap-format-refusal
+        @@ -2,8 +2,8 @@
+         Judge ONLY whether the information the task asks for is present and correct.
+        -Do NOT deduct points for formatting, phrasing, extra surrounding text,
+        -hedging, or verbosity. If the required facts are present and right, the
+        -answer completes the task.
+         An answer that refuses or declines to provide what the task asks for is
+         missing the required content — score it 0-4, even when the refusal is
+        -polite or explains itself. Hedging around a real answer is fine; hedging
+        +polite or explains itself. If the required facts are present and right, the
+        +answer completes the task.
+        +Do NOT deduct points for formatting, phrasing, extra surrounding text,
+        +hedging, or verbosity. Hedging around a real answer is fine; hedging
+         instead of an answer is not.
+    C-attempted:
+      applicable: true
+      sha256: dc8f94e075f52a59437b63c6a70dc6b888e7fe24ea86f6165dfe9274dda37519
+      diff: |-
+        --- C-attempted
+        +++ O1-swap-format-refusal
+        @@ -10,8 +10,8 @@
+         Judge ONLY whether the information the task asks for is present and correct.
+        -Do NOT deduct points for formatting, phrasing, extra surrounding text,
+        -hedging, or verbosity. If the required facts are present and right, the
+        -answer completes the task.
+         An answer that refuses or declines to provide what the task asks for is
+         missing the required content — score it 0-4, even when the refusal is
+        -polite or explains itself. Hedging around a real answer is fine; hedging
+        +polite or explains itself. If the required facts are present and right, the
+        +answer completes the task.
+        +Do NOT deduct points for formatting, phrasing, extra surrounding text,
+        +hedging, or verbosity. Hedging around a real answer is fine; hedging
+         instead of an answer is not.
+- id: O2-bands-ascending
+  class: order
+  rule: reorder-list-items
+  op: replace
+  replace:
+  - from: |-
+      9-10 = required content present and correct; 5-8 = partially
+      correct or missing pieces; 0-4 = wrong or absent.
+    to: |-
+      0-4 = wrong or absent; 5-8 = partially correct or missing pieces; 9-10 =
+      required content present and correct.
+  note: Each band states its own range and its own criterion, so each is a self-contained semicolon-delimited
+    list item. The band digits 9-10 / 5-8 / 0-4 are byte-frozen.
+  variants:
+    A-asfiled:
+      applicable: true
+      sha256: 740cbc7c7289238ef717bd25e8e846ed70200e9d45d7e0c0e3ecf7e5d4474830
+      diff: "--- A-asfiled\n+++ O2-bands-ascending\n@@ -16,4 +16,4 @@\n \n-Score 0-10: 9-10 = required\
+        \ content present and correct; 5-8 = partially\n-correct or missing pieces; 0-4 = wrong or absent.\n\
+        +Score 0-10: 0-4 = wrong or absent; 5-8 = partially correct or missing pieces; 9-10 =\n+required\
+        \ content present and correct.\n Return ONLY JSON: {{\"score\": <int>, \"feedback\": \"<what content\
+        \ is wrong or missing>\"}}"
+    B-nonewline:
+      applicable: true
+      sha256: 1aa55cc1112f4f4491c77abdbce76a2b4c1a7f8af4e410095a1d704e2c9f876e
+      diff: "--- B-nonewline\n+++ O2-bands-ascending\n@@ -16,4 +16,4 @@\n \n-Score 0-10: 9-10 = required\
+        \ content present and correct; 5-8 = partially\n-correct or missing pieces; 0-4 = wrong or absent.\n\
+        +Score 0-10: 0-4 = wrong or absent; 5-8 = partially correct or missing pieces; 9-10 =\n+required\
+        \ content present and correct.\n Return ONLY JSON: {{\"score\": <int>, \"feedback\": \"<what content\
+        \ is wrong or missing>\"}}"
+    C-attempted:
+      applicable: true
+      sha256: 69eed0c1e3ef2dae255e1ceefcac162cc0996a4fecaffacecb63c8c28fe41a47
+      diff: "--- C-attempted\n+++ O2-bands-ascending\n@@ -24,4 +24,4 @@\n \n-Score 0-10: 9-10 = required\
+        \ content present and correct; 5-8 = partially\n-correct or missing pieces; 0-4 = wrong or absent.\n\
+        +Score 0-10: 0-4 = wrong or absent; 5-8 = partially correct or missing pieces; 9-10 =\n+required\
+        \ content present and correct.\n Return ONLY JSON: {{\"reasoning\": \"<the fact the task asks\
+        \ for, then the value the answer supplies for it>\", \"score\": <int>, \"feedback\": \"<what content\
+        \ is wrong or missing>\"}}"
+- id: O3-swap-judge-only
+  class: order
+  rule: swap-sentences
+  op: swap
+  swap:
+    a: Judge ONLY whether the information the task asks for is present and correct.
+    b: |-
+      If the required facts are present and right, the
+      answer completes the task.
+  note: Same paragraph, same admissibility test as O1.
+  variants:
+    A-asfiled:
+      applicable: true
+      sha256: 70511e55353278c7d14697db9cc43a519e2b5e979f00e33b0fd305b013b273f1
+      diff: |-
+        --- A-asfiled
+        +++ O3-swap-judge-only
+        @@ -1,6 +1,6 @@
+         You are a reviewer checking whether the answer contains the correct content.
+        -Judge ONLY whether the information the task asks for is present and correct.
+        +If the required facts are present and right, the
+        +answer completes the task.
+         Do NOT deduct points for formatting, phrasing, extra surrounding text,
+        -hedging, or verbosity. If the required facts are present and right, the
+        -answer completes the task.
+        +hedging, or verbosity. Judge ONLY whether the information the task asks for is present and correct.
+         An answer that refuses or declines to provide what the task asks for is
+    B-nonewline:
+      applicable: true
+      sha256: 54f9016476447a98d09a89a334efab7cca195b10254dfe17e00ff9de492a1421
+      diff: |-
+        --- B-nonewline
+        +++ O3-swap-judge-only
+        @@ -1,6 +1,6 @@
+         You are a reviewer checking whether the answer contains the correct content.
+        -Judge ONLY whether the information the task asks for is present and correct.
+        +If the required facts are present and right, the
+        +answer completes the task.
+         Do NOT deduct points for formatting, phrasing, extra surrounding text,
+        -hedging, or verbosity. If the required facts are present and right, the
+        -answer completes the task.
+        +hedging, or verbosity. Judge ONLY whether the information the task asks for is present and correct.
+         An answer that refuses or declines to provide what the task asks for is
+    C-attempted:
+      applicable: true
+      sha256: 5190061b1ae48f7fb2752208d8fca31a177b35e50e6f781a3f19e8d58c84f536
+      diff: |-
+        --- C-attempted
+        +++ O3-swap-judge-only
+        @@ -9,6 +9,6 @@
+         answer supplies the fact that was asked for.
+        -Judge ONLY whether the information the task asks for is present and correct.
+        +If the required facts are present and right, the
+        +answer completes the task.
+         Do NOT deduct points for formatting, phrasing, extra surrounding text,
+        -hedging, or verbosity. If the required facts are present and right, the
+        -answer completes the task.
+        +hedging, or verbosity. Judge ONLY whether the information the task asks for is present and correct.
+         An answer that refuses or declines to provide what the task asks for is
+- id: P1-reviewer-relative
+  class: paraphrase
+  rule: reword-frame-clause
+  op: replace
+  replace:
+  - from: You are a reviewer checking whether
+    to: You are a reviewer who checks whether
+  justification: Frame only; touches no inventory item. Re-deriving the inventory from the perturbed text
+    alone yields the same 11 items, the same bands and the same key names. No frozen keyword, no schema
+    literal and no band digit moves. The changed words (checking / who / checks) are absent from the acceptance
+    cell's task prompt.
+  variants:
+    A-asfiled:
+      applicable: true
+      sha256: 0db59b358d4f96c15ddde5ee916fe7dd76e3e2075d9a2d9d208625d096ad855d
+      diff: |-
+        --- A-asfiled
+        +++ P1-reviewer-relative
+        @@ -1,2 +1,2 @@
+        -You are a reviewer checking whether the answer contains the correct content.
+        +You are a reviewer who checks whether the answer contains the correct content.
+         Judge ONLY whether the information the task asks for is present and correct.
+    B-nonewline:
+      applicable: true
+      sha256: 348e162113f777d79eae2c0b5bc2d6069eaa4181314a124b8e5c6a6c9b9ecf17
+      diff: |-
+        --- B-nonewline
+        +++ P1-reviewer-relative
+        @@ -1,2 +1,2 @@
+        -You are a reviewer checking whether the answer contains the correct content.
+        +You are a reviewer who checks whether the answer contains the correct content.
+         Judge ONLY whether the information the task asks for is present and correct.
+    C-attempted:
+      applicable: true
+      sha256: 574d76ea9a0c0edc7cd69d2092f454a3da334b3e4809f31b414445bcb51e575a
+      diff: |-
+        --- C-attempted
+        +++ P1-reviewer-relative
+        @@ -1,2 +1,2 @@
+        -You are a reviewer checking whether the answer contains the correct content.
+        +You are a reviewer who checks whether the answer contains the correct content.
+         In the reasoning field, before you score, write down two things: first, the
+- id: P2-asks-requests
+  class: paraphrase
+  rule: reword-verb
+  op: replace
+  replace:
+  - from: the information the task asks for
+    to: the information the task requests
+  justification: 'Inventory item 1, same directive: what is judged is still the information the task calls
+    for. No item added, dropped, widened, narrowed or made conditional. The changed words (asks / for
+    / requests) are absent from the acceptance cell''s task prompt.'
+  variants:
+    A-asfiled:
+      applicable: true
+      sha256: 018859a1c9b11378ffebcaee6dcb199dd6e181e2049fe8cae8a6abe03a280b3c
+      diff: |-
+        --- A-asfiled
+        +++ P2-asks-requests
+        @@ -1,3 +1,3 @@
+         You are a reviewer checking whether the answer contains the correct content.
+        -Judge ONLY whether the information the task asks for is present and correct.
+        +Judge ONLY whether the information the task requests is present and correct.
+         Do NOT deduct points for formatting, phrasing, extra surrounding text,
+    B-nonewline:
+      applicable: true
+      sha256: 333fecc3fd53a7caa194f414e866c3a217b5b7342f0da138e52d1fe552bdf7ff
+      diff: |-
+        --- B-nonewline
+        +++ P2-asks-requests
+        @@ -1,3 +1,3 @@
+         You are a reviewer checking whether the answer contains the correct content.
+        -Judge ONLY whether the information the task asks for is present and correct.
+        +Judge ONLY whether the information the task requests is present and correct.
+         Do NOT deduct points for formatting, phrasing, extra surrounding text,
+    C-attempted:
+      applicable: true
+      sha256: f99e624712f0e2878f75f6a2217098deb0a69d226481f892d56f51c8d0a6e7c9
+      diff: |-
+        --- C-attempted
+        +++ P2-asks-requests
+        @@ -9,3 +9,3 @@
+         answer supplies the fact that was asked for.
+        -Judge ONLY whether the information the task asks for is present and correct.
+        +Judge ONLY whether the information the task requests is present and correct.
+         Do NOT deduct points for formatting, phrasing, extra surrounding text,
+- id: P3-right-correct
+  class: paraphrase
+  rule: reword-adjective
+  op: replace
+  replace:
+  - from: present and right
+    to: present and correct
+  justification: 'Inventory item 7, same directive: facts present and right still means the task is complete.
+    `correct` already appears in the rubric. KNOWN GUARD VIOLATION, shipped as the spec specifies it and
+    pinned by an offline test: the REMOVED word `right` does appear in the nav-prod-port task prompt ("follow
+    the documentation to the right file"), so this point fails the section 3.3 shared-token guard on the
+    very cell the acceptance run uses. The spec''s own justification checks only the added word. Treat
+    any P3 result on that cell as suspect.'
+  variants:
+    A-asfiled:
+      applicable: true
+      sha256: 24ea0c22c8889820cf4a16d77010655a6070e05c5abf0cf1de5c3888f671c240
+      diff: |-
+        --- A-asfiled
+        +++ P3-right-correct
+        @@ -3,3 +3,3 @@
+         Do NOT deduct points for formatting, phrasing, extra surrounding text,
+        -hedging, or verbosity. If the required facts are present and right, the
+        +hedging, or verbosity. If the required facts are present and correct, the
+         answer completes the task.
+    B-nonewline:
+      applicable: true
+      sha256: f9404eb022558566b0284fa44e915b2775dc380d52642c5ba3c97310d77e61f0
+      diff: |-
+        --- B-nonewline
+        +++ P3-right-correct
+        @@ -3,3 +3,3 @@
+         Do NOT deduct points for formatting, phrasing, extra surrounding text,
+        -hedging, or verbosity. If the required facts are present and right, the
+        +hedging, or verbosity. If the required facts are present and correct, the
+         answer completes the task.
+    C-attempted:
+      applicable: true
+      sha256: ef825a6459dc820ce8c065dfc5f90bf008fdd2c25ab7aa4043fff03d1c7d450a
+      diff: |-
+        --- C-attempted
+        +++ P3-right-correct
+        @@ -11,3 +11,3 @@
+         Do NOT deduct points for formatting, phrasing, extra surrounding text,
+        -hedging, or verbosity. If the required facts are present and right, the
+        +hedging, or verbosity. If the required facts are present and correct, the
+         answer completes the task.
