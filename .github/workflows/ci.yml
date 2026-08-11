@@ -21,6 +21,12 @@ jobs:
         python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The perturbation bar reads rubric variants as `git:<ref>:<path>`, and its
+          # tests pin real refs (d2f78b7, e57f1a6). A depth-1 checkout has neither, so
+          # those tests either fail outright or silently skip the thing they exist to
+          # check. Full history is the only way CI actually runs them.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}

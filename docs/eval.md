@@ -226,6 +226,62 @@ machines — and records it as `seed` in the `--json` row and the transcript.
 - `seed` is `null` for clients that do not accept one, and absent from JSONLs
   written before v0.8.1. A seed the server ignored is not recorded as applied.
 
+### Crediting a rubric edit (2026-08-12)
+
+Two standing rules already say what a number here is allowed to mean: the
+**suite is frozen** before measuring (a model that fails a task or rubric is a
+data point, not a bug — nothing under `assets/evals/tasks/` is tuned mid-cycle),
+and **runs are seeded**, one seed per (model, task, repeat), quoted with the
+result. This is the third, and it is the one that has already been broken:
+
+> **No edit to a rubric or to a critic-facing contract string may be credited
+> with moving a cell until the perturbation bar has been run on that cell and
+> reports the family as non-fragile.** Not "should be run" — *credited* means
+> the sentence "this change moved this cell" may not be written, in this
+> document or in a PR body, without that run committed beside it.
+
+Run it before the attribution, not after the argument:
+
+```bash
+.venv/bin/python -m bantamkit.criticreplay \
+  --rubric before=git:<ref>:assets/rubrics/<name>.yaml \
+  --rubric after=assets/rubrics/<name>.yaml \
+  --transcripts <the bar's --transcripts dir> \
+  --base-url http://localhost:11434/v1 --model <model> \
+  --json docs/eval-data/<date>-<label>-perturbation.jsonl \
+  --summary docs/eval-data/<date>-<label>-perturbation-summary.json
+```
+
+Read three fields per cell, in this order:
+
+1. **`fragile`** — if `true` for either variant, stop. The family's scores
+   straddle the rubric's own threshold, so the cell cannot carry an
+   attribution at all and no verdict below it means anything.
+2. **`verdict`** — `distinguishable` requires `F/F` against `0/F`. Anything
+   else, including a large and consistent `inconclusive`, is not a separation.
+3. **`attributable`** — the two above, combined. `false` means the claim does
+   not get written.
+
+Cost is why this is a rule and not a suggestion: **≤ 96 requests and about
+three minutes** for a two-variant before/after on a 3-seed cell — measured at
+93 requests and 35,523 tokens on the RB-P14 cell, which is **25%** of the
+143,711 tokens the 14b before+after suite arms behind RB-P4 cost, with no
+answerer, no tools and no suite run. A cycle in a hurry can afford it.
+
+It exists because the alternative was measured. RB-P4's structural rubric edit
+cleared a pre-registered bar, two no-regression arms and an independent
+reviewer — and then a **deleted trailing newline** reproduced its entire pass
+signature. Run against that history the bar returns `A-asfiled` `fragile: true`
+on all three cells, passing 1/12, 4/12 and 3/12 of its *own* meaning-preserving
+family, and `attributable: false` on every pair: the attribution could not have
+been stated through this instrument. The tool supplies the bar; this rule is
+what makes it get run.
+
+**Where it currently stands: `nav-prod-port` on 14b is fragile, so no rubric
+edit is creditable on that cell today.** Fixing that means finding a cell whose
+family does not straddle the threshold, not re-running until the number is
+liked. The bar is also RB-P15's standing check with `--identity-only`.
+
 ### Reporting-semantics changes (2026-08-11, v0.14.0)
 
 Round 1 of the RB-P attack queue moved four things about what a row *means*.
@@ -888,8 +944,10 @@ cell-for-cell.** Round 1 of the RB-P attack queue (2026-08-11) shipped
 four reporting-semantics changes and several behaviour fixes on top of the
 code that produced these numbers. The sweep is not re-run here — the
 round's bars are seeded cell-level before/afters, and the attack outcomes
-are recorded against each RB-P bullet below. Before quoting any number in
-this section against v0.14.0 code, read
+are recorded against each RB-P bullet below. **v0.15.0 does not move this
+further**: it adds a Measurement tool and changes no code any config runs, so
+the v0.14.0 caveat is still the whole caveat. Before quoting any number in
+this section against v0.14.0-or-later code, read
 [Reporting-semantics changes](#reporting-semantics-changes-2026-08-11-v0140)
 and check whether the cell is one of the ones that moved.
 
@@ -1962,6 +2020,90 @@ carries an attack direction rather than a re-scoped claim.
   before any rubric edit is called a fix. (Measurement.) Evidence:
   `2026-08-11-sa3-14b-nav-prod-port-whitespace-null-control.jsonl`,
   `2026-08-11-sa3-14b-nav-prod-port-critic-replay.json`.
+
+  **Outcome (2026-08-11) — the instrument was built and it confirmed the
+  diagnosis, but not the predicted verdict.** `criticreplay.py` scores a
+  12-point perturbation family (`assets/evals/perturbations/task-completion.yaml`,
+  sha `340ce4db`) over three `task-completion` variants on 14b
+  `nav-prod-port` at the three pinned seeds 2331795949 / 4094558621 /
+  634446002: `A-asfiled` (`d2f78b7`), `B-nonewline` (`A` minus the template's
+  trailing newline), `C-attempted` (`e57f1a6`, the withdrawn
+  derive-before-score rubric). 141 requests, 63,342 tokens. The reproduction
+  gate held exactly — identity scores 5,5,5 / 9,9,9 / 7,10,10 against the
+  committed SA3 record, five replays each, zero spread within any cell — and
+  the internal cross-check held: `B`'s identity and `A`'s
+  `W1-trailing-newline` are the same prompt bytes by two routes
+  (`prompt_sha256` `3e3a55af…`) and score 9 on all three seeds.
+  **The measured noise band is the whole scale.** Meaning-preserving edits to
+  the critic's *own* prompt move the score from 0 to 9 on `A` and `B` and 0 to
+  10 on `C`, on every seed; all three families straddle threshold 7, so all
+  three are `fragile: true` and all nine pairwise comparisons come back
+  `attributable: false`. `A-asfiled` passes 1/12, 4/12, 3/12 of its own
+  family. That settles the sharper question: **the 0/3-versus-3/3 that RB-P4
+  rested on was never a measurement** — the as-filed rubric fails most
+  meaning-preserving rewordings of itself on this cell, and the one that
+  flips it to 3/3 is a deleted newline sitting inside that noise.
+  **The predicted verdict did not land, and is recorded rather than
+  re-scoped.** §10 expected `B-nonewline` vs `C-attempted` to read
+  `indistinguishable` on every cell; it reads `indistinguishable` on seed
+  4094558621 only (7/11 vs 7/11) and `inconclusive` on the other two (7/11 vs
+  10/11 both times), because `C` passes at a *higher* rate than `B` without
+  reaching the `F/F`-versus-`0/F` bar that rule 1 requires. So the pair is
+  **distinguishable on zero of three cells** — by rule 3 it is not
+  distinguishable on the change, and by rule 2 every family is fragile, so no
+  attribution was available either way. The load-bearing conclusion is
+  unchanged and the gate text was simply too strong: "no separation" is what
+  was measured, "equal pass rates" is what was predicted, and only the first
+  is a property of the world. **Attack:** the `inconclusive` band is doing
+  real work here and the spec gave it no reporting duty beyond a label — a
+  pair that differs by 3/11 on two cells and 0/11 on a third is not the same
+  finding as one that differs nowhere, and the summary cannot currently say
+  so. Give `inconclusive` a reported effect size and re-state §10's
+  expectation as "not distinguishable" rather than "indistinguishable"
+  before the widened cell set runs, or the next bar will fail its own gate
+  for being right. One point is separately suspect: `P3-right-correct`
+  violates the manifest's shared-token guard on exactly this cell (it removes
+  *right*, and the task prompt says "follow the documentation to the **right**
+  file"), and ships that way pinned by a test. Dropping it changes no verdict
+  — B vs C stays 6/10 vs 6/10 on 4094558621 and 6/10 vs 9/10 on the other two
+  — so no conclusion here rests on it, but it should be fixed before the
+  family is reused (filed as RB-P19). Evidence:
+  `2026-08-11-pb14-14b-nav-prod-port-perturbation.jsonl`,
+  `2026-08-11-pb14-14b-nav-prod-port-perturbation-summary.json`.
+
+  **The gate re-reading, ratified by the user 2026-08-12.** Gates 0 and 1 test
+  the *instrument* and both held exactly. Gate 2's fragility half held and is
+  the finding the tool was built to produce. Gate 2's `indistinguishable`
+  clause was **a prediction about the world wearing an instrument-test's
+  clothes, and it was wrong** — it is recorded as a missed prediction, not
+  re-scoped into "partially met", because the only thing that makes a
+  pre-registered bar worth anything is that a miss stays on the record.
+  The spec's own amendment section
+  (`docs/superpowers/specs/2026-08-11-perturbation-bar-spec.md` §12.2) quotes
+  the failed clause verbatim beside what was measured. **What the instrument
+  is now used for is a rule, not a suggestion:**
+  [Crediting a rubric edit](#crediting-a-rubric-edit-2026-08-12) — no rubric or
+  critic-prompt edit is credited with moving a cell until the bar has run on
+  that cell and reported the family non-fragile. A tool nobody is obliged to
+  run does not survive contact with a cycle that is in a hurry, and RB-P4 is
+  the measured proof.
+
+  **The one-replay default was checked rather than assumed (2026-08-12).** The
+  acceptance run scored each perturbation point once, justified by the
+  *identity* point's zero spread — evidence about one prompt, not about the
+  eleven perturbed ones. Re-run at **R = 3 on every point** of `A-asfiled` and
+  `B-nonewline` over all three seeds (207 requests, 78,885 tokens, `wire_calls`
+  equal to `requests`, so nothing retried): **69 points, zero within-point
+  spread, and zero disagreement with the acceptance run** — the extreme
+  0-scoring order points included (`O2-bands-ascending` on both variants and
+  `O1-swap-format-refusal` on `B`, 0,0,0 every time), and every per-cell pass
+  rate identical (`A` 1/12, 4/12, 3/12; `B` 7/11 on all three). So the whole
+  0-to-9 band above is prompt-sensitivity, not sampling noise, and the
+  headline fragility numbers are not a one-draw artifact. This holds for one
+  cell on one model and is not a licence to skip replays on an unchecked
+  family. Evidence:
+  `2026-08-12-pb14-14b-nav-prod-port-replay3.jsonl`,
+  `2026-08-12-pb14-14b-nav-prod-port-replay3-summary.json`.
 - **RB-P15 — seeded sampling here is score-stable, not byte-stable across
   processes, and the harness affirms more than that.** At seed 4094558621
   the reviewer's before-rubric replay produced different feedback *text*
@@ -1986,6 +2128,92 @@ carries an attack direction rather than a re-scoped claim.
   rather than discovered. (Measurement, plus one docstring in Core that
   currently overclaims.) Evidence:
   `2026-08-11-sa3-14b-nav-prod-port-critic-replay.json`.
+
+  **Status (2026-08-11): both halves landed.** The affirmation is narrowed to
+  the verdict's *decision* everywhere it was stated — `critique.py` (Core,
+  three places), `run_task` in `evalrun.py` (Measurement) and `docs/usage.md`.
+  **The standing check is
+  `python -m bantamkit.criticreplay --identity-only`**, run over a bar's
+  `--transcripts` directory after the bar finishes: it replays the one pinned
+  critic request `--identity-replays` times per cell and reports the score
+  spread, without touching the run it measures (wiring it into `evalrun`
+  would have changed the `tokens` column and broken comparability with every
+  historical JSONL). Cost on a 3-seed cell at the default 5 replays: 15
+  requests. The RB-P14 acceptance run exercised it as the `identity` point of
+  every family — 45 identity replays over nine (variant, cell) pairs, **zero
+  score spread within any cell**, which is the same result the narrowed
+  affirmation claims. Evidence:
+  `2026-08-11-pb14-14b-nav-prod-port-perturbation.jsonl`.
+
+#### New measured problems from the perturbation bar (2026-08-12)
+
+Found while building and reviewing the RB-P14 instrument. They are defects **in
+the instrument**, which is the one place this project cannot afford them: every
+claim the bar is about to gate rests on them. None is fixed unless it says so,
+and each carries an attack direction.
+
+- **RB-P16 — `inconclusive` carries no effect size, so a consistent
+  directional gap and a one-point wobble get the same label.** The
+  acceptance run reports `B-nonewline` vs `C-attempted` as `inconclusive` on
+  two cells at 7/11 vs 10/11 — the same sign, the same size, twice — and the
+  summary says exactly what it would say for 7/11 vs 6/11 on one cell and
+  nothing on the others. §7's decision rule gives the band no reporting duty
+  beyond the word, so a reader cannot tell "nearly separated, consistently"
+  from "noise". This is the instrument's **largest real gap**: the bar's whole
+  job is to grade evidence, and it currently has one grade for everything that
+  is neither `F/F` nor `0/F`. **Attack:** report the pass-rate difference and
+  its per-cell sign alongside the label, and require the sign to agree across
+  cells before an `inconclusive` may be described as directional at all —
+  then re-state the spec's expectation as "not distinguishable" rather than
+  "indistinguishable", which is the wording that made a correct measurement
+  read as a failed gate. (Measurement.)
+- **RB-P17 — a rubric variant's provenance is a path, and a path is not a
+  rule.** The bar's `--rubric LABEL=SPEC` admits a filesystem path or
+  `git:<ref>:<path>`. `B-nonewline` — the null control, and the variant the
+  whole RB-P14 finding turns on — is expressible as neither, so it was
+  materialized to a scratch file and the committed summary records
+  `rubric_ref` as a session temp path that no longer exists. The bytes are not
+  lost: the manifest's `materialized_variants` block records the recipe and
+  `base_sha256` `d1f32ad2…`, re-verified 2026-08-12 to reproduce exactly from
+  `git:d2f78b7`, and Gate 1 ties it to `A-asfiled`'s `W1` point at an equal
+  `prompt_sha256`. But an evidence file that points at nothing is one
+  cleanup away from an unreproducible claim. **Attack:** add a
+  `derive:<label>:<rule-id>` spec form so the control is written as
+  `derive:A-asfiled:W1-trailing-newline` — a rule, applied to a committed ref,
+  recorded as such in every row. (Measurement.)
+- **RB-P18 — `payload_sha256` is not comparable across records, and its name
+  says nothing about that.** SA3's payload shas do not match this bar's for
+  identical cells, at identical `prompt_sha256`, identical seeds and identical
+  scores, because the two recipes serialize different dicts under the same
+  field name. Nothing here is wrong-by-the-numbers — the field is honest
+  *within* a run, captured off the request `structured()` actually sends — but
+  a reader comparing two evidence files on it would conclude the requests
+  differed when they did not. `prompt_sha256` is the cross-record identity.
+  **Attack:** publish the recipe wherever the field appears (done for the spec
+  §6.3), or version the field name so two recipes cannot share one.
+  (Measurement.)
+- **RB-P19 — `P3-right-correct` ships violating the manifest's own
+  shared-token guard on the acceptance cell.** The guard forbids an added or
+  removed word from appearing in the cell's `{task}`; `P3` removes *right*,
+  and `nav-prod-port`'s prompt says "follow the documentation to the **right**
+  file". It ships that way, pinned by a test asserting exactly
+  `{'P3-right-correct': ['right']}` so it stays visible and cannot grow, and
+  dropping it changes no verdict anywhere in the acceptance run. It is still a
+  point that the manifest's own admissibility procedure rejects. **Attack:**
+  re-author the paraphrase against a word absent from every frozen task, or
+  make the guard a load-time error rather than a test-time observation — an
+  admissibility rule that ships violated is a rule the next family will
+  violate too. (Measurement.)
+
+Two of the review's findings were fixed in this cycle rather than filed:
+`requests` counted JSONL rows while `Verdict.calls` was dropped from the row
+schema, so a `structured()` retry could have inflated `tokens_total` with
+nothing in the report to show for it — rows now carry `calls` and the summary
+carries `wire_calls` beside `requests` (`9a2312e`). And the spec's token
+estimates ran 32% low on the acceptance run and 11% low on the routine profile,
+against exact request counts; the spec now carries the measured numbers and the
+reason (`C-attempted` costs ~580 tokens/request against `A-asfiled`'s 384, so
+per-*variant* estimates cannot be scaled from one variant).
 
 ### Measured problems → attack plan (P1–P9, previous sweep)
 
