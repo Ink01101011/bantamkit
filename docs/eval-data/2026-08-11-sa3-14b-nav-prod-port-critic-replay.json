@@ -1,0 +1,634 @@
+{
+  "what": "SA3 evidence for the RB-P4 critic-only replay, persisted because it was load-bearing and existed only as prose. The critic alone scores the byte-identical answer {\"port\": 9443} for nav-prod-port on qwen2.5:14b-instruct, at the three pinned seeds, under the before-rubric (d2f78b7) and the shipped after-rubric (e57f1a6). The answerer is never re-run: the answer string is held fixed, which is the point of the replay. Each cell was run in FIVE separate OS processes to separate a stable score from a lucky sample, and the exact request payload of every call is hashed so a replay that judged a different question is detectable rather than assumed away.",
+  "model": "qwen2.5:14b-instruct",
+  "base_url": "http://localhost:11434/v1",
+  "task": "nav-prod-port",
+  "answer_replayed": "{\"port\": 9443}",
+  "task_prompt": "Find the production port of billing-svc from the workspace files. Start with list_files, then follow the documentation to the right file. Use list_files first, then read_file on every file you need — follow each pointer the files give you; do not answer from memory or guess. Answer with ONLY this JSON, nothing else: {\"port\": <number>}",
+  "threshold": 7,
+  "provenance": {
+    "before_rubric_commit": "d2f78b710aea17961944fd26c7ed7769e8c47df7",
+    "before_rubric_blob": "ab8886fe1ce62c3a9e2331469a48b7e471414b5e",
+    "after_rubric_commit": "e57f1a6b2416a3e10aeed8d44946dd5ad697b61d",
+    "after_rubric_blob": "780df9f4e0dae7596e50d88ae2708e35e20e7869",
+    "sa1_before_arm_worktree_head": "d2f78b710aea17961944fd26c7ed7769e8c47df7",
+    "sa1_before_arm_worktree_head_note": "SA1's pristine worktree was deleted after the run and .git/worktrees kept no record of it, so the sha was recorded nowhere. Re-established by measurement, not by assertion: a fresh worktree at d2f78b7 re-run today on this cell reproduces SA1's committed before-arm rows field-for-field, including tokens (3596/3441/3534) and the three last-feedback strings byte-for-byte. See 2026-08-11-sa3-14b-nav-prod-port-d2f78b7-repro.jsonl."
+  },
+  "replay_verdicts": [
+    {
+      "ref": "d2f78b7",
+      "repeat": 0,
+      "seed": 2331795949,
+      "threshold": 7,
+      "score": 5,
+      "passes": false,
+      "payload_sha256": [
+        "4eb56220e883d5718bd816b5b00106d1abc127a8a5f72a7d305f8db9fafef906"
+      ],
+      "verdict": {
+        "score": 5,
+        "feedback": "The answer should be in the format {\"port\": <number>}, but was a plain number. Also, list_files and read_file commands were not shown to justify how the port was found."
+      }
+    },
+    {
+      "ref": "d2f78b7",
+      "repeat": 0,
+      "seed": 2331795949,
+      "threshold": 7,
+      "score": 5,
+      "passes": false,
+      "payload_sha256": [
+        "4eb56220e883d5718bd816b5b00106d1abc127a8a5f72a7d305f8db9fafef906"
+      ],
+      "verdict": {
+        "score": 5,
+        "feedback": "The answer should be in the format {\"port\": <number>}, but was a plain number. Also, list_files and read_file commands were not shown to justify how the port was found."
+      }
+    },
+    {
+      "ref": "d2f78b7",
+      "repeat": 0,
+      "seed": 2331795949,
+      "threshold": 7,
+      "score": 5,
+      "passes": false,
+      "payload_sha256": [
+        "4eb56220e883d5718bd816b5b00106d1abc127a8a5f72a7d305f8db9fafef906"
+      ],
+      "verdict": {
+        "score": 5,
+        "feedback": "The answer should be in the format {\"port\": <number>}, but was a plain number. Also, list_files and read_file commands were not shown to justify how the port was found."
+      }
+    },
+    {
+      "ref": "d2f78b7",
+      "repeat": 0,
+      "seed": 2331795949,
+      "threshold": 7,
+      "score": 5,
+      "passes": false,
+      "payload_sha256": [
+        "4eb56220e883d5718bd816b5b00106d1abc127a8a5f72a7d305f8db9fafef906"
+      ],
+      "verdict": {
+        "score": 5,
+        "feedback": "The answer should be in the format {\"port\": <number>}, but was a plain number. Also, list_files and read_file commands were not shown to justify how the port was found."
+      }
+    },
+    {
+      "ref": "d2f78b7",
+      "repeat": 0,
+      "seed": 2331795949,
+      "threshold": 7,
+      "score": 5,
+      "passes": false,
+      "payload_sha256": [
+        "4eb56220e883d5718bd816b5b00106d1abc127a8a5f72a7d305f8db9fafef906"
+      ],
+      "verdict": {
+        "score": 5,
+        "feedback": "The answer should be in the format {\"port\": <number>}, but was a plain number. Also, list_files and read_file commands were not shown to justify how the port was found."
+      }
+    },
+    {
+      "ref": "d2f78b7",
+      "repeat": 1,
+      "seed": 4094558621,
+      "threshold": 7,
+      "score": 5,
+      "passes": false,
+      "payload_sha256": [
+        "8faa7b09cf93e1e32baab6c81a67bc49a7ec72054bd785bc0ff9cd6a8274ba5e"
+      ],
+      "verdict": {
+        "score": 5,
+        "feedback": "The answer should be in JSON format with key 'port', not a direct port number."
+      }
+    },
+    {
+      "ref": "d2f78b7",
+      "repeat": 1,
+      "seed": 4094558621,
+      "threshold": 7,
+      "score": 5,
+      "passes": false,
+      "payload_sha256": [
+        "8faa7b09cf93e1e32baab6c81a67bc49a7ec72054bd785bc0ff9cd6a8274ba5e"
+      ],
+      "verdict": {
+        "score": 5,
+        "feedback": "The answer should be in JSON format with key 'port', not a direct port number."
+      }
+    },
+    {
+      "ref": "d2f78b7",
+      "repeat": 1,
+      "seed": 4094558621,
+      "threshold": 7,
+      "score": 5,
+      "passes": false,
+      "payload_sha256": [
+        "8faa7b09cf93e1e32baab6c81a67bc49a7ec72054bd785bc0ff9cd6a8274ba5e"
+      ],
+      "verdict": {
+        "score": 5,
+        "feedback": "The answer should be in JSON format with key 'port', not a direct port number."
+      }
+    },
+    {
+      "ref": "d2f78b7",
+      "repeat": 1,
+      "seed": 4094558621,
+      "threshold": 7,
+      "score": 5,
+      "passes": false,
+      "payload_sha256": [
+        "8faa7b09cf93e1e32baab6c81a67bc49a7ec72054bd785bc0ff9cd6a8274ba5e"
+      ],
+      "verdict": {
+        "score": 5,
+        "feedback": "The answer should be in JSON format with key 'port', not a direct port number."
+      }
+    },
+    {
+      "ref": "d2f78b7",
+      "repeat": 1,
+      "seed": 4094558621,
+      "threshold": 7,
+      "score": 5,
+      "passes": false,
+      "payload_sha256": [
+        "8faa7b09cf93e1e32baab6c81a67bc49a7ec72054bd785bc0ff9cd6a8274ba5e"
+      ],
+      "verdict": {
+        "score": 5,
+        "feedback": "The answer should be in JSON format with key 'port', not a direct port number."
+      }
+    },
+    {
+      "ref": "d2f78b7",
+      "repeat": 2,
+      "seed": 634446002,
+      "threshold": 7,
+      "score": 5,
+      "passes": false,
+      "payload_sha256": [
+        "0deaa1885fe66278ec123f780708ad3f611f3639adf356ce323f04def88b4b87"
+      ],
+      "verdict": {
+        "score": 5,
+        "feedback": "Answer should be in format {\"port\": <number>}, not {\"port\": 9443} without JSON structure. Correct answer format wasn't followed but required content was identified correctly."
+      }
+    },
+    {
+      "ref": "d2f78b7",
+      "repeat": 2,
+      "seed": 634446002,
+      "threshold": 7,
+      "score": 5,
+      "passes": false,
+      "payload_sha256": [
+        "0deaa1885fe66278ec123f780708ad3f611f3639adf356ce323f04def88b4b87"
+      ],
+      "verdict": {
+        "score": 5,
+        "feedback": "Answer should be in format {\"port\": <number>}, not {\"port\": 9443} without JSON structure. Correct answer format wasn't followed but required content was identified correctly."
+      }
+    },
+    {
+      "ref": "d2f78b7",
+      "repeat": 2,
+      "seed": 634446002,
+      "threshold": 7,
+      "score": 5,
+      "passes": false,
+      "payload_sha256": [
+        "0deaa1885fe66278ec123f780708ad3f611f3639adf356ce323f04def88b4b87"
+      ],
+      "verdict": {
+        "score": 5,
+        "feedback": "Answer should be in format {\"port\": <number>}, not {\"port\": 9443} without JSON structure. Correct answer format wasn't followed but required content was identified correctly."
+      }
+    },
+    {
+      "ref": "d2f78b7",
+      "repeat": 2,
+      "seed": 634446002,
+      "threshold": 7,
+      "score": 5,
+      "passes": false,
+      "payload_sha256": [
+        "0deaa1885fe66278ec123f780708ad3f611f3639adf356ce323f04def88b4b87"
+      ],
+      "verdict": {
+        "score": 5,
+        "feedback": "Answer should be in format {\"port\": <number>}, not {\"port\": 9443} without JSON structure. Correct answer format wasn't followed but required content was identified correctly."
+      }
+    },
+    {
+      "ref": "d2f78b7",
+      "repeat": 2,
+      "seed": 634446002,
+      "threshold": 7,
+      "score": 5,
+      "passes": false,
+      "payload_sha256": [
+        "0deaa1885fe66278ec123f780708ad3f611f3639adf356ce323f04def88b4b87"
+      ],
+      "verdict": {
+        "score": 5,
+        "feedback": "Answer should be in format {\"port\": <number>}, not {\"port\": 9443} without JSON structure. Correct answer format wasn't followed but required content was identified correctly."
+      }
+    },
+    {
+      "ref": "e57f1a6",
+      "repeat": 0,
+      "seed": 2331795949,
+      "threshold": 7,
+      "score": 7,
+      "passes": true,
+      "payload_sha256": [
+        "f21d86882f8cbb493b2adddc812273c8e35a679d35d32e5e4078d68579a8ef36"
+      ],
+      "verdict": {
+        "reasoning": "Find the production port of billing-svc from the workspace files; the provided answer is: {\"port\": 9443}. No additional details are available in this unformatted answer to determine whether 9443 is correct or not. However, it addresses the fact asked for.",
+        "score": 7,
+        "feedback": "The required content (the production port of billing-svc) is present but correctness cannot be verified due to lack of documentation and workspace files."
+      }
+    },
+    {
+      "ref": "e57f1a6",
+      "repeat": 0,
+      "seed": 2331795949,
+      "threshold": 7,
+      "score": 7,
+      "passes": true,
+      "payload_sha256": [
+        "f21d86882f8cbb493b2adddc812273c8e35a679d35d32e5e4078d68579a8ef36"
+      ],
+      "verdict": {
+        "reasoning": "Find the production port of billing-svc from the workspace files; the provided value is \"9443\". This value seems to address the fact asked but I have no means to verify if this was found through list_files and read_file commands as instructed.",
+        "score": 7,
+        "feedback": "The task requests finding the production port using specific commands from workspace files, but lacks evidence of following those steps precisely."
+      }
+    },
+    {
+      "ref": "e57f1a6",
+      "repeat": 0,
+      "seed": 2331795949,
+      "threshold": 7,
+      "score": 7,
+      "passes": true,
+      "payload_sha256": [
+        "f21d86882f8cbb493b2adddc812273c8e35a679d35d32e5e4078d68579a8ef36"
+      ],
+      "verdict": {
+        "reasoning": "Find the production port of billing-svc from the workspace files; the provided value is \"9443\". This value seems to address the fact asked but I have no means to verify if this was found through list_files and read_file commands as instructed.",
+        "score": 7,
+        "feedback": "The task requests finding the production port using specific commands from workspace files, but lacks evidence of following those steps precisely."
+      }
+    },
+    {
+      "ref": "e57f1a6",
+      "repeat": 0,
+      "seed": 2331795949,
+      "threshold": 7,
+      "score": 7,
+      "passes": true,
+      "payload_sha256": [
+        "f21d86882f8cbb493b2adddc812273c8e35a679d35d32e5e4078d68579a8ef36"
+      ],
+      "verdict": {
+        "reasoning": "Find the production port of billing-svc from the workspace files; the provided value is \"9443\". This value seems to address the fact asked but I have no means to verify if this was found through list_files and read_file commands as instructed.",
+        "score": 7,
+        "feedback": "The task requests finding the production port using specific commands from workspace files, but lacks evidence of following those steps precisely."
+      }
+    },
+    {
+      "ref": "e57f1a6",
+      "repeat": 0,
+      "seed": 2331795949,
+      "threshold": 7,
+      "score": 7,
+      "passes": true,
+      "payload_sha256": [
+        "f21d86882f8cbb493b2adddc812273c8e35a679d35d32e5e4078d68579a8ef36"
+      ],
+      "verdict": {
+        "reasoning": "Find the production port of billing-svc from the workspace files; the provided value is \"9443\". This value seems to address the fact asked but I have no means to verify if this was found through list_files and read_file commands as instructed.",
+        "score": 7,
+        "feedback": "The task requests finding the production port using specific commands from workspace files, but lacks evidence of following those steps precisely."
+      }
+    },
+    {
+      "ref": "e57f1a6",
+      "repeat": 1,
+      "seed": 4094558621,
+      "threshold": 7,
+      "score": 10,
+      "passes": true,
+      "payload_sha256": [
+        "7593740dc6786fbbe9045fdb7b8e5d3af2977e25a42f8004b81fb71309eea9eb"
+      ],
+      "verdict": {
+        "reasoning": "The production port of billing-svc from the workspace files; \"9443\". The document provides a specific number as requested by the task, which matches an expected format for such a query.",
+        "score": 10,
+        "feedback": ""
+      }
+    },
+    {
+      "ref": "e57f1a6",
+      "repeat": 1,
+      "seed": 4094558621,
+      "threshold": 7,
+      "score": 10,
+      "passes": true,
+      "payload_sha256": [
+        "7593740dc6786fbbe9045fdb7b8e5d3af2977e25a42f8004b81fb71309eea9eb"
+      ],
+      "verdict": {
+        "reasoning": "The production port of billing-svc from the workspace files; \"9443\". The document provides a specific number as requested by the task, which matches an expected format for such a query.",
+        "score": 10,
+        "feedback": ""
+      }
+    },
+    {
+      "ref": "e57f1a6",
+      "repeat": 1,
+      "seed": 4094558621,
+      "threshold": 7,
+      "score": 10,
+      "passes": true,
+      "payload_sha256": [
+        "7593740dc6786fbbe9045fdb7b8e5d3af2977e25a42f8004b81fb71309eea9eb"
+      ],
+      "verdict": {
+        "reasoning": "The production port of billing-svc from the workspace files; \"9443\". The document provides a specific number as requested by the task, which matches an expected format for such a query.",
+        "score": 10,
+        "feedback": ""
+      }
+    },
+    {
+      "ref": "e57f1a6",
+      "repeat": 1,
+      "seed": 4094558621,
+      "threshold": 7,
+      "score": 10,
+      "passes": true,
+      "payload_sha256": [
+        "7593740dc6786fbbe9045fdb7b8e5d3af2977e25a42f8004b81fb71309eea9eb"
+      ],
+      "verdict": {
+        "reasoning": "The production port of billing-svc from the workspace files; \"9443\". The document provides a specific number as requested by the task, which matches an expected format for such a query.",
+        "score": 10,
+        "feedback": ""
+      }
+    },
+    {
+      "ref": "e57f1a6",
+      "repeat": 1,
+      "seed": 4094558621,
+      "threshold": 7,
+      "score": 10,
+      "passes": true,
+      "payload_sha256": [
+        "7593740dc6786fbbe9045fdb7b8e5d3af2977e25a42f8004b81fb71309eea9eb"
+      ],
+      "verdict": {
+        "reasoning": "The production port of billing-svc from the workspace files; \"9443\". The document provides a specific number as requested by the task, which matches an expected format for such a query.",
+        "score": 10,
+        "feedback": ""
+      }
+    },
+    {
+      "ref": "e57f1a6",
+      "repeat": 2,
+      "seed": 634446002,
+      "threshold": 7,
+      "score": 10,
+      "passes": true,
+      "payload_sha256": [
+        "4e8a67012b596cc37313b42e2e10dcf608cd01a189c22565b9a68124367b5c5f"
+      ],
+      "verdict": {
+        "reasoning": "Find the production port of billing-svc from the workspace files; {\"port\": 9443}. The answer provides a port number, which matches the fact requested.",
+        "score": 10,
+        "feedback": ""
+      }
+    },
+    {
+      "ref": "e57f1a6",
+      "repeat": 2,
+      "seed": 634446002,
+      "threshold": 7,
+      "score": 10,
+      "passes": true,
+      "payload_sha256": [
+        "4e8a67012b596cc37313b42e2e10dcf608cd01a189c22565b9a68124367b5c5f"
+      ],
+      "verdict": {
+        "reasoning": "Find the production port of billing-svc from the workspace files; {\"port\": 9443}. The answer provides a port number, which matches the fact requested.",
+        "score": 10,
+        "feedback": ""
+      }
+    },
+    {
+      "ref": "e57f1a6",
+      "repeat": 2,
+      "seed": 634446002,
+      "threshold": 7,
+      "score": 10,
+      "passes": true,
+      "payload_sha256": [
+        "4e8a67012b596cc37313b42e2e10dcf608cd01a189c22565b9a68124367b5c5f"
+      ],
+      "verdict": {
+        "reasoning": "Find the production port of billing-svc from the workspace files; {\"port\": 9443}. The answer provides a port number, which matches the fact requested.",
+        "score": 10,
+        "feedback": ""
+      }
+    },
+    {
+      "ref": "e57f1a6",
+      "repeat": 2,
+      "seed": 634446002,
+      "threshold": 7,
+      "score": 10,
+      "passes": true,
+      "payload_sha256": [
+        "4e8a67012b596cc37313b42e2e10dcf608cd01a189c22565b9a68124367b5c5f"
+      ],
+      "verdict": {
+        "reasoning": "Find the production port of billing-svc from the workspace files; {\"port\": 9443}. The answer provides a port number, which matches the fact requested.",
+        "score": 10,
+        "feedback": ""
+      }
+    },
+    {
+      "ref": "e57f1a6",
+      "repeat": 2,
+      "seed": 634446002,
+      "threshold": 7,
+      "score": 10,
+      "passes": true,
+      "payload_sha256": [
+        "4e8a67012b596cc37313b42e2e10dcf608cd01a189c22565b9a68124367b5c5f"
+      ],
+      "verdict": {
+        "reasoning": "Find the production port of billing-svc from the workspace files; {\"port\": 9443}. The answer provides a port number, which matches the fact requested.",
+        "score": 10,
+        "feedback": ""
+      }
+    }
+  ],
+  "whitespace_null_control_replay": {
+    "what": "The same before-rubric with ONE byte removed — the rubric FILE's trailing newline, which the YAML block scalar carries into the end of the critic prompt. Semantically null: no word of the rubric changes. Three fresh processes per seed.",
+    "verdicts": [
+      {
+        "variant": "rubric-prompt-minus-trailing-newline",
+        "ref": "d2f78b7",
+        "repeat": 0,
+        "seed": 2331795949,
+        "threshold": 7,
+        "score": 9,
+        "passes": true,
+        "prompt_sha256_asfiled": "8fb6c98412f14a892f51b3f4d0d895bc872de4805185f62c3c2fdb3403ce7eeb",
+        "prompt_sha256_variant": "3e3a55af8168dbc4e29b085cb67e873805f17f5adc224789c10aa5e581b9fbac",
+        "bytes_differing": 1,
+        "verdict": {
+          "score": 9,
+          "feedback": "\"port\" key is present but answer format is not exact as required by task."
+        }
+      },
+      {
+        "variant": "rubric-prompt-minus-trailing-newline",
+        "ref": "d2f78b7",
+        "repeat": 0,
+        "seed": 2331795949,
+        "threshold": 7,
+        "score": 9,
+        "passes": true,
+        "prompt_sha256_asfiled": "8fb6c98412f14a892f51b3f4d0d895bc872de4805185f62c3c2fdb3403ce7eeb",
+        "prompt_sha256_variant": "3e3a55af8168dbc4e29b085cb67e873805f17f5adc224789c10aa5e581b9fbac",
+        "bytes_differing": 1,
+        "verdict": {
+          "score": 9,
+          "feedback": "\"port\" key is present but answer format is not exact as required by task."
+        }
+      },
+      {
+        "variant": "rubric-prompt-minus-trailing-newline",
+        "ref": "d2f78b7",
+        "repeat": 0,
+        "seed": 2331795949,
+        "threshold": 7,
+        "score": 9,
+        "passes": true,
+        "prompt_sha256_asfiled": "8fb6c98412f14a892f51b3f4d0d895bc872de4805185f62c3c2fdb3403ce7eeb",
+        "prompt_sha256_variant": "3e3a55af8168dbc4e29b085cb67e873805f17f5adc224789c10aa5e581b9fbac",
+        "bytes_differing": 1,
+        "verdict": {
+          "score": 9,
+          "feedback": "\"port\" key is present but answer format is not exact as required by task."
+        }
+      },
+      {
+        "variant": "rubric-prompt-minus-trailing-newline",
+        "ref": "d2f78b7",
+        "repeat": 1,
+        "seed": 4094558621,
+        "threshold": 7,
+        "score": 9,
+        "passes": true,
+        "prompt_sha256_asfiled": "8fb6c98412f14a892f51b3f4d0d895bc872de4805185f62c3c2fdb3403ce7eeb",
+        "prompt_sha256_variant": "3e3a55af8168dbc4e29b085cb67e873805f17f5adc224789c10aa5e581b9fbac",
+        "bytes_differing": 1,
+        "verdict": {
+          "score": 9,
+          "feedback": "\"port\" key is present with the correct value but response format does not match request exactly (missing '\"score\": \"\", '\"feedback\": \"')"
+        }
+      },
+      {
+        "variant": "rubric-prompt-minus-trailing-newline",
+        "ref": "d2f78b7",
+        "repeat": 1,
+        "seed": 4094558621,
+        "threshold": 7,
+        "score": 9,
+        "passes": true,
+        "prompt_sha256_asfiled": "8fb6c98412f14a892f51b3f4d0d895bc872de4805185f62c3c2fdb3403ce7eeb",
+        "prompt_sha256_variant": "3e3a55af8168dbc4e29b085cb67e873805f17f5adc224789c10aa5e581b9fbac",
+        "bytes_differing": 1,
+        "verdict": {
+          "score": 9,
+          "feedback": "\"port\" key is present with the correct value but response format does not match request exactly (missing '\"score\": \"\", '\"feedback\": \"')"
+        }
+      },
+      {
+        "variant": "rubric-prompt-minus-trailing-newline",
+        "ref": "d2f78b7",
+        "repeat": 1,
+        "seed": 4094558621,
+        "threshold": 7,
+        "score": 9,
+        "passes": true,
+        "prompt_sha256_asfiled": "8fb6c98412f14a892f51b3f4d0d895bc872de4805185f62c3c2fdb3403ce7eeb",
+        "prompt_sha256_variant": "3e3a55af8168dbc4e29b085cb67e873805f17f5adc224789c10aa5e581b9fbac",
+        "bytes_differing": 1,
+        "verdict": {
+          "score": 9,
+          "feedback": "\"port\" key is present with the correct value but response format does not match request exactly (missing '\"score\": \"\", '\"feedback\": \"')"
+        }
+      },
+      {
+        "variant": "rubric-prompt-minus-trailing-newline",
+        "ref": "d2f78b7",
+        "repeat": 2,
+        "seed": 634446002,
+        "threshold": 7,
+        "score": 9,
+        "passes": true,
+        "prompt_sha256_asfiled": "8fb6c98412f14a892f51b3f4d0d895bc872de4805185f62c3c2fdb3403ce7eeb",
+        "prompt_sha256_variant": "3e3a55af8168dbc4e29b085cb67e873805f17f5adc224789c10aa5e581b9fbac",
+        "bytes_differing": 1,
+        "verdict": {
+          "score": 9,
+          "feedback": "Answer should be in the format {\"port\": <number>} without any additional text."
+        }
+      },
+      {
+        "variant": "rubric-prompt-minus-trailing-newline",
+        "ref": "d2f78b7",
+        "repeat": 2,
+        "seed": 634446002,
+        "threshold": 7,
+        "score": 9,
+        "passes": true,
+        "prompt_sha256_asfiled": "8fb6c98412f14a892f51b3f4d0d895bc872de4805185f62c3c2fdb3403ce7eeb",
+        "prompt_sha256_variant": "3e3a55af8168dbc4e29b085cb67e873805f17f5adc224789c10aa5e581b9fbac",
+        "bytes_differing": 1,
+        "verdict": {
+          "score": 9,
+          "feedback": "Answer should be in the format {\"port\": <number>} without any additional text."
+        }
+      },
+      {
+        "variant": "rubric-prompt-minus-trailing-newline",
+        "ref": "d2f78b7",
+        "repeat": 2,
+        "seed": 634446002,
+        "threshold": 7,
+        "score": 9,
+        "passes": true,
+        "prompt_sha256_asfiled": "8fb6c98412f14a892f51b3f4d0d895bc872de4805185f62c3c2fdb3403ce7eeb",
+        "prompt_sha256_variant": "3e3a55af8168dbc4e29b085cb67e873805f17f5adc224789c10aa5e581b9fbac",
+        "bytes_differing": 1,
+        "verdict": {
+          "score": 9,
+          "feedback": "Answer should be in the format {\"port\": <number>} without any additional text."
+        }
+      }
+    ]
+  },
+  "how_to_reproduce": "scratchpad scripts sa3_one.py (one request per process, before/after rubric read from git by ref) and sa3_ws.py (same, minus the file's trailing newline). Both hash the wire payload; every cell here shows exactly one payload sha across its processes, so any score spread is the server's, not the prompt's."
+}

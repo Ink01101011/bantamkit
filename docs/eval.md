@@ -1149,10 +1149,15 @@ the 2026-08-10 record — and the moves are noted here instead:** the 3b
 `lean`/`full`) is **fixed** — the gate never fired because the constrained
 decode never engaged there, and RB-P3's fix converts both rows; and 4b's
 `full` watch-item cell is **no longer red** — RB-P5's contract fix takes
-`nav-release-bundle` 1/3 → 3/3. The 14b blind-critic row stands: RB-P4 is
-confirmed, its attempted fix measured harmful, and the cell is still 0/3.
-Neither move has been re-measured at sweep scale, so this table is not
-rewritten off two cell bars.
+`nav-release-bundle` 1/3 → 3/3. The 14b blind-critic row stands as
+measured, and the cell is still 0/3 on shipped code: RB-P4 is confirmed,
+round 1's lexical fix was measured harmful, and round 2's structural
+attempt took the cell 0/3 → 3/3 on the same seeds — but a semantically
+null one-byte edit does the same, so that attempt was **withdrawn** and
+the row is not rewritten off it either (see the RB-P4 outcome above and
+RB-P14). Neither
+move has been re-measured at sweep scale, so this table is not rewritten
+off two cell bars.
 
 ### Prediction scorecard (spec §2.3, written before measuring)
 
@@ -1463,6 +1468,192 @@ a problem with an owner-direction, and the layer names refer to the
   derive first, judged content correctly on the 4b cell throughout —
   including on the answer it had to fail. (Contract, Layer 2.) The
   problem stays open.
+
+  **Outcome (2026-08-11, round 2 — SA1 measured, SA2 reviewed, SA3
+  controlled, and the change was WITHDRAWN. The target cell moved 0/3 →
+  3/3, a semantically null one-byte edit moves it just as far, so the gain
+  is not attributable; the cost is. RB-P4 stays OPEN.)**
+
+  **What was attempted.** `task-completion` gained the `reasoning` field
+  `grounded-completion` already has — required and listed first — plus one
+  step before scoring: name the fact the task asks for, quote the value the
+  answer supplies for it, then judge. The blind critic was explicitly *not*
+  asked to derive the correct answer — it has no evidence, and for
+  `nav-prod-port` no way whatsoever to know the port is 9443, so deriving
+  would mean guessing. Extract-and-compare is the blind analogue of the
+  grounded critic's derive-first step. Written as `e57f1a6`, withdrawn as
+  `9ced4ab`, which puts `assets/rubrics/task-completion.yaml` back
+  byte-identical with `main`. Both commits stay in the branch log on
+  purpose: the attempt is part of the measured record, and the null control
+  below only means something standing next to the thing it voids.
+
+  **It was a Contract (Layer 2) change with suite-wide reach**, which is
+  why the no-regression arms were part of the bar rather than an extra.
+  `task-completion` is the rubric the `critique` config loads on *every*
+  model, so the edit changed every `critique` run everywhere, not just the
+  cell it was aimed at. It also changed the rubric's *schema*: `reasoning`
+  was `required`, so a critic that did not emit it would fail
+  `structured()`. Seven test updates existed only to track that schema
+  change, and went back with it.
+
+  **The bar was pre-registered in writing before any arm finished.** Four
+  arms, `--config critique --repeats 3` over the frozen 22-task suite,
+  before-arms from a pristine worktree at `d2f78b7`:
+
+  | arm | model | suite | `nav-prod-port` | tokens |
+  |---|---|---|---|---|
+  | before | 14b | 35/66 | **0/3** (`critique-exhausted`) | 67,312 |
+  | after | 14b | **38/66** | **3/3** | 76,399 (+13.5%) |
+  | before | 7b | 33/66 | 3/3 | 56,066 |
+  | after | 7b | 33/66 | 3/3 | 64,888 (+15.7%) |
+
+  Bar 1 (the target cell) moved and Bars 2 and 3 (no regression, two
+  models) held: all three 14b gains are the target cell, no 3/3 task fell
+  on either model, and no critique round hit `StructuredOutputError` on the
+  new required field. **"No other cell moved" is true at pass/fail level
+  only** — six rows changed *failure mode* without changing pass/fail, and
+  they are part of the record:
+
+  | model | task | seed | before → after |
+  |---|---|---|---|
+  | 14b | `recall-oncall` | 2831155312 | `critique-exhausted` → `wrong-answer` |
+  | 14b | `recall-oncall` | 4070734686 | `critique-exhausted` → `wrong-answer` |
+  | 14b | `recall-oncall-rotation` | 1977305293 | `wrong-answer` → `critique-exhausted` |
+  | 14b | `shop-basket-total` | 337707843 | `wrong-answer` → `malformed-output` |
+  | 14b | `shop-basket-total` | 1022600830 | `wrong-answer` → `malformed-output` |
+  | 7b | `shop-cheapest` | 2253311894 | `turns-exhausted` → `malformed-output` |
+
+  **The critic changed its verdict; the answerer did not change its
+  answer.** On all three seeds the answerer emitted exactly
+  `{"port": 9443}`, byte-identical to the before-arm's first answer, and
+  all three passes carried `critique_rounds == 0`: zero feedback was ever
+  injected, so round 1's appeasement pattern is excluded by construction.
+  A replay of the critic alone on that byte-identical answer, at the same
+  pinned seeds, scores **5,5,5 → 7,10,10** — re-run by the reviewer, then
+  re-run again by SA3 in **five separate processes per cell** (30 requests,
+  one request payload sha per cell, no spread within any cell) and
+  **committed** as
+  `2026-08-11-sa3-14b-nav-prod-port-critic-replay.json`. It had previously
+  existed only as prose here and in a commit body, which is exactly what
+  this ledger is supposed to prevent. Seed 634446002 — whose before-verdict
+  was the self-refuting one quoted above — reasoned under the attempted
+  rubric: *"Find the production port of billing-svc from the workspace
+  files; {"port": 9443}. The answer provides a port number, which matches
+  the fact requested."* Having written the fact and the value down, it did
+  not reach for the format.
+
+  **The null control that voids the attribution (SA3).** Take the *before*
+  rubric and delete one byte — the rubric file's trailing newline, which
+  the YAML block scalar carries into the tail of the critic prompt. No word
+  of the rubric changes; nothing about it is semantic. Measured on the same
+  cell, the same harness, and the same three seeds (2331795949, 4094558621,
+  634446002, in that order in the token column):
+
+  | rubric | `nav-prod-port` (14b, 3 seeds) | `critique_rounds` | tokens |
+  |---|---|---|---|
+  | `d2f78b7` as filed | 0/3 `critique-exhausted` | 3,3,3 | 3,596 / 3,441 / 3,534 |
+  | `d2f78b7` minus one trailing newline | **3/3 pass** | 0,0,0 | 1,646 / 2,026 / 2,018 |
+  | `e57f1a6` as attempted | 3/3 pass | 0,0,0 | 2,361 / 2,215 / 2,210 |
+
+  The null edit reproduces the attempted change's entire pass signature —
+  0/3 → 3/3 at `critique_rounds == 0` — and the critic-only replay of that
+  variant scores **9,9,9** against threshold 7 on all three seeds, stable
+  across three processes each. Evidence:
+  `2026-08-11-sa3-14b-nav-prod-port-whitespace-null-control.jsonl` and the
+  `whitespace_null_control_replay` block of the replay JSON.
+
+  What that costs the claim, stated plainly: `critique_rounds == 0` on
+  three seeds was SA1's discriminator, and it does **not** discriminate —
+  a change with no content passes it. The +3 is therefore **not
+  attributable** to derive-before-score. This does not show that the
+  reasoning field does nothing; it shows that this cell cannot tell whether
+  it does, and that the cell's before-state was **byte-fragile rather than
+  semantic** — the 0/3 was never a stable property of the rubric's wording.
+  Recorded as **RB-P14** below.
+
+  **The decision: withdraw the rubric, keep the evidence.** Both
+  no-regression arms held, so there is no measured *harm*. The cost,
+  however, is measured: **+13.5% tokens on 14b and +15.7% on 7b**, on the
+  `critique` config of every model. On 7b it is pure overhead — 7b gained
+  nothing (0 gains, 0 losses) and its `nav-prod-port` held at 3/3, a named
+  do-not-ship condition, while its tokens still rose 15.7%, which is the
+  proof the new field was emitted there. **On a model without the defect
+  the reasoning field is pure token overhead.** This project does not pay a
+  measured cost for a benefit it cannot attribute, so the rubric goes back
+  and the measurements stay. **No version bump** — with the rubric
+  withdrawn this is a docs-and-evidence cycle, and PR #21 is the no-bump
+  precedent; `runtime-py` stays at 0.14.0. Every JSONL and JSON under
+  `docs/eval-data/` from this job is kept, **including the arms that
+  measured the withdrawn change**, because without them the null control is
+  not legible. The deliverable of this round is the null control and what
+  it invalidates, not the rubric.
+
+  **One observation the next attempt may want, offered as a lead and not as
+  a result.** Under the attempted rubric, on 14b `recall-*` cells that were
+  never the target, the critic failed answers *for the right reason* —
+  *"The answer provided 'null', which does not correctly identify a
+  person's name as requested by the task"* and *"no name supplied where a
+  specific person's name was asked for"* — on answers that genuinely lack
+  the fact, in a storeless config where no answer could contain it. No
+  pass/fail move is attributable to that, and after the null control the
+  same caution applies to it as to the target cell: reasoning strings that
+  read like the mechanism are not evidence of the mechanism.
+
+  **What the before-arm actually was.** SA1's pristine worktree was deleted
+  after the run and `.git/worktrees` kept no record, so its sha lived
+  nowhere. Re-established by measurement rather than assertion: a fresh
+  worktree at `d2f78b7`, re-run on this cell, reproduces SA1's committed
+  before-arm rows field-for-field — tokens 3,596 / 3,441 / 3,534 and all
+  three last-feedback strings byte-identical
+  (`2026-08-11-sa3-14b-nav-prod-port-d2f78b7-repro.jsonl`).
+
+  **Which fields are comparable across the arms, and which are not.** The
+  last-feedback string, `outcome` and `passed` are comparable everywhere
+  and are byte-identical for this cell across all three before-measurements
+  (`2026-08-10-rebaseline-14b`, round 1's `rp4d` arms, SA1's arm A). Three
+  columns are not, and a reader diffing rows will trip on them:
+  `critique_rounds` reads 2 in the 2026-08-10 rebaseline and 3 afterwards
+  (change 1 in [Reporting-semantics
+  changes](#reporting-semantics-changes-2026-08-11-v0140)); `model_calls`
+  reads 9 before `144c484` and 7 after, with `tokens` 4,205/4,020/4,165 →
+  3,596/3,441/3,534, because the gate stopped re-buying a verdict for an
+  unchanged answer; and `tool_calls` reads 0 on every `critique-exhausted`
+  row by construction (the counter reads the loop's own message list, which
+  is empty when the gate raises), so it is meaningless in any
+  exhausted-vs-passing comparison. SA1's "field-identical" claim was about
+  the feedback strings and is accurate as stated.
+
+  **The zero-margin pass, recorded not smoothed:** in the after-arm seed
+  2331795949 scored exactly 7 against a threshold of 7 — one point from a
+  loss. It held at 7 across five separate processes in the SA3 replay, so
+  it is not a lucky sample; it is a stable knife-edge, and one of the three
+  passes the +3 was built on sat on it. Its reasoning hedges honestly about
+  what a blind critic cannot check (*"correctness cannot be verified due to
+  lack of documentation and workspace files"*), which is the right
+  epistemic move and also the one that costs it points. The blind critic's
+  ceiling on evidence-dependent tasks is that hedge, not the format
+  confusion. Evidence for this whole round:
+  `2026-08-11-sa1-{14b,7b}-critique-suite-{before,after}.jsonl`,
+  `2026-08-11-sa3-14b-nav-prod-port-{critic-replay.json,d2f78b7-repro.jsonl,whitespace-null-control.jsonl}`.
+
+  **Status — RB-P4 stays OPEN, with two exhausted attack directions and a
+  named blocker.** The defect is unchanged and unfixed: the blind critic
+  kills a solved cell on 14b. Two directions at the rubric surface are now
+  spent, both measured, both recorded above — **lexical** (round 1: the
+  rewording drove a byte-correct answer from 5/10 to 0/10, measured harmful
+  and reverted) and **structural** (round 2: derive-before-score, measured
+  unattributable and withdrawn). A third wording is not what is missing.
+  What is missing is an instrument: a one-cell, three-seed, single-model
+  bar cannot separate a mechanism from a perturbation, and this cell has
+  now failed to do so twice — in round 1 an appeasing reformat counted as a
+  pass, and in round 2 a null edit scored the same as the attempted fix.
+  That blocker
+  is **RB-P14**. Stated plainly: **RB-P4 is not attackable again until
+  RB-P14 gives it an instrument** — the blind critic's verdict measured as
+  a *distribution* over meaning-preserving perturbations of its own prompt,
+  reported as a pass rate with its spread, across a target wider than one
+  cell. Until that exists, any rubric edit proposed here cannot be shown to
+  have worked, however plausible its reasoning strings read.
 - **RB-P5 — the 4b `full` watch item stayed red.** The two
   `nav-release-bundle` `critique-exhausted` rows (seeds 3590861830 and
   2248991587) reappear field-identical to the seeded bar-noreg cell. The
@@ -1750,6 +1941,51 @@ carries an attack direction rather than a re-scoped claim.
   evidence list is worth recording rather than editing away. **Attack:**
   none needed beyond the discipline itself — land tests in the commit
   whose behaviour they assert.
+- **RB-P14 — a blind critic's verdict on a single cell is byte-fragile, so
+  a one-cell bar cannot tell a mechanism from a perturbation.** Deleting
+  one semantically null byte from the `task-completion` rubric — the
+  file's trailing newline — moves 14b `critique` `nav-prod-port` from 0/3
+  `critique-exhausted` to 3/3 pass at `critique_rounds == 0` on all three
+  pinned seeds, which is the whole pass signature the RB-P4 structural
+  attempt claimed as proof of mechanism. Critic-only replay of that
+  variant: 9,9,9 against threshold 7, stable across three processes per
+  seed. This does not say the withdrawn change was empty — it says the
+  *bar* cannot see the
+  difference, and that a 5/10 sitting two points under a threshold is one
+  perturbation away from a 9/10 either way. **Attack:** stop treating one
+  verdict as a measurement. Score the critic over a small family of
+  meaning-preserving perturbations of its own prompt (whitespace,
+  clause order, a paraphrase that changes no requirement) and report the
+  pass *rate* across that family with its spread, so a rubric edit has to
+  beat the noise band it lives in. Cheap — the critic-only replay is one
+  request per point and needs no answerer. Widen the target beyond one cell
+  before any rubric edit is called a fix. (Measurement.) Evidence:
+  `2026-08-11-sa3-14b-nav-prod-port-whitespace-null-control.jsonl`,
+  `2026-08-11-sa3-14b-nav-prod-port-critic-replay.json`.
+- **RB-P15 — seeded sampling here is score-stable, not byte-stable across
+  processes, and the harness affirms more than that.** At seed 4094558621
+  the reviewer's before-rubric replay produced different feedback *text*
+  than arm A's transcript at the same seed and the same prompt, at the same
+  score; SA3 saw the same shape twice — an identical request payload sha
+  yielding two different verdict strings at an identical score within one
+  process, and two distinct verdict texts at a stable score 7 across the
+  five processes of the attempted-rubric seed 2331795949 cell. What has held
+  everywhere measured is the *score*: 30 replay requests, six cells, zero
+  score spread within a cell. Two things depend on the stronger reading and
+  should not: the zero-margin 7-against-7 pass, which is one drift from a
+  loss and is now known to hold across processes rather than merely assumed
+  to; and `run_task`'s `deterministic_sampling=True` affirmation (RP5b),
+  which lets `CritiqueGate` reuse a verdict for a byte-identical prompt.
+  That affirmation is *safe* on the evidence — reuse is keyed on the prompt
+  bytes and the score is what the gate branches on — but it is stated as
+  "reproduces a sample exactly", which this backend does not do.
+  **Attack:** narrow the affirmation to what is measured (the verdict's
+  *decision* is reproducible under a pinned seed, not its bytes), and add a
+  standing check that re-issues one pinned critic request N times and
+  records the score spread beside every seeded bar, so drift is detected
+  rather than discovered. (Measurement, plus one docstring in Core that
+  currently overclaims.) Evidence:
+  `2026-08-11-sa3-14b-nav-prod-port-critic-replay.json`.
 
 ### Measured problems → attack plan (P1–P9, previous sweep)
 
