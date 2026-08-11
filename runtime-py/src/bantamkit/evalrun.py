@@ -474,12 +474,15 @@ def run_task(
     # bare tracking everywhere else (identical to the `client=tracking` they used to be
     # handed). Inheriting is what puts critic spend in front of the governor.
     # `deterministic_sampling=True` on both gates below is this harness affirming what
-    # the library will not assume for a consumer: that the endpoint reproduces a sample
-    # exactly for a fixed request under the seed pinned above. It is the harness's claim
-    # to make and it costs nothing new — every bar here is already stated as a seeded
-    # number, and a run against a backend that resamples has an unreproducible bar with
-    # or without the critic memo. A consumer whose backend batches gets the safe default
-    # instead (RP5b; `CritiqueGate._verdict`).
+    # the library will not assume for a consumer: that the endpoint reproduces a
+    # verdict's *decision* — its score — for a fixed request under the seed pinned
+    # above. Narrowed to the score and no wider, because that is what is measured
+    # (RB-P15): the verdict text moved at an identical request payload sha, the score
+    # never did. It is the harness's claim to make and it costs nothing new — every bar
+    # here is already stated as a seeded number, and a run against a backend that
+    # resamples has an unreproducible bar with or without the critic memo. A consumer
+    # whose backend batches gets the safe default instead (RP5b;
+    # `CritiqueGate._verdict`).
     if effective == "critique":
         critique_gate = CritiqueGate(
             "task-completion",
