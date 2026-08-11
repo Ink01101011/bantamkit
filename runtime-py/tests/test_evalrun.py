@@ -121,12 +121,6 @@ def test_run_task_explicit_failure_recorded_not_raised(tmp_path):
 
 CONTACT = '{"name": "Ann Chen", "email": "ann.chen@example.com"}'
 GROUNDED_VERDICT = '{"reasoning": "checked against evidence", "score": 9, "feedback": "ok"}'
-# Blind-critic verdicts below carry `reasoning` too, since SA1: `task-completion` now
-# requires the field, `structured()` validates every verdict against the rubric schema,
-# and a scripted verdict without it would be rejected and retried rather than judged.
-# These fixtures stand in for the shipped rubric's output, so they track its shape.
-BLIND_VERDICT_BAD = '{"reasoning": "no owner in the answer", "score": 2, "feedback": "still wrong"}'
-BLIND_VERDICT_OK = '{"reasoning": "answer supplies Atlas", "score": 9, "feedback": "ok"}'
 
 
 def make_result(**kw):
@@ -336,7 +330,7 @@ def test_critique_rounds_counted_in_full(tmp_path):
 
 
 def test_outcome_critique_exhausted_counts_rounds(tmp_path):
-    bad_verdict = BLIND_VERDICT_BAD
+    bad_verdict = '{"score": 2, "feedback": "still wrong"}'
     client = FakeClient(
         [
             assistant(content="answer one"),
@@ -1441,7 +1435,7 @@ def test_critique_exhausted_transcript_carries_the_messages(tmp_path):
     """Same gap on the other gate: RP2 had to monkeypatch the runtime to see this run."""
     transcripts = tmp_path / "t"
     transcripts.mkdir()
-    bad_verdict = BLIND_VERDICT_BAD
+    bad_verdict = '{"score": 2, "feedback": "still wrong"}'
     client = FakeClient(
         [
             assistant(content="answer one"),
@@ -1497,7 +1491,7 @@ def test_profile_critique_rounds_reach_the_gate(tmp_path):
     """Profile threading is not agent-only: gates get explicit args too."""
     profile = load_profile()
     profile["critique"]["max_rounds"] = 1
-    bad_verdict = BLIND_VERDICT_BAD
+    bad_verdict = '{"score": 2, "feedback": "still wrong"}'
     client = FakeClient([assistant(content="answer one"), assistant(content=bad_verdict)])
     result = run_task(client, get_task("recall-owner"), "critique", tmp_path, profile=profile)
     assert result.outcome == "critique-exhausted"
@@ -1721,7 +1715,7 @@ def test_both_critique_gates_affirm_deterministic_sampling(tmp_path, monkeypatch
         FakeClient(
             [
                 assistant(content='{"team": "Atlas"}'),
-                assistant(content=BLIND_VERDICT_OK),
+                assistant(content='{"score": 9, "feedback": "ok"}'),
             ]
         ),
         get_task("recall-owner"),
@@ -1739,7 +1733,7 @@ def test_critique_gate_client_is_the_tracking_client(tmp_path, monkeypatch):
     client = FakeClient(
         [
             assistant(content='{"team": "Atlas"}'),
-            assistant(content=BLIND_VERDICT_OK),
+            assistant(content='{"score": 9, "feedback": "ok"}'),
         ]
     )
     result = run_task(client, get_task("recall-owner"), "critique", tmp_path)

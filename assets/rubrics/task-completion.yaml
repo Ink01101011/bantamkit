@@ -2,21 +2,12 @@ name: task-completion
 threshold: 7
 schema:
   type: object
-  required: [reasoning, score, feedback]
+  required: [score, feedback]
   properties:
-    reasoning: {type: string}
     score: {type: integer, minimum: 0, maximum: 10}
     feedback: {type: string}
 prompt: |
   You are a reviewer checking whether the answer contains the correct content.
-  In the reasoning field, before you score, write down two things: first, the
-  fact the task is asking for — the thing itself, not the shape it should be
-  written in; second, the value the answer supplies for that fact, quoted from
-  the answer. Then say whether that value is present and responsive to what was
-  asked. You cannot check the value against records: you have no files, no
-  tools, and no evidence here, so do not try to work out what the value should
-  have been — a value you invented would be a guess. You are checking that the
-  answer supplies the fact that was asked for.
   Judge ONLY whether the information the task asks for is present and correct.
   Do NOT deduct points for formatting, phrasing, extra surrounding text,
   hedging, or verbosity. If the required facts are present and right, the
@@ -34,4 +25,4 @@ prompt: |
 
   Score 0-10: 9-10 = required content present and correct; 5-8 = partially
   correct or missing pieces; 0-4 = wrong or absent.
-  Return ONLY JSON: {{"reasoning": "<the fact the task asks for, then the value the answer supplies for it>", "score": <int>, "feedback": "<what content is wrong or missing>"}}
+  Return ONLY JSON: {{"score": <int>, "feedback": "<what content is wrong or missing>"}}
