@@ -1,0 +1,205 @@
+{
+  "bar": "perturbation",
+  "threshold": 7,
+  "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+  "requests": 207,
+  "wire_calls": 207,
+  "tokens_total": 78885,
+  "variants": [
+    {
+      "label": "A-asfiled",
+      "rubric_ref": "d2f78b7",
+      "rubric_sha256": "55f700e09bab0cfac01cb18d4cfb54666ff942598035697e0383726fe82c2868",
+      "dropped_rules": []
+    },
+    {
+      "label": "B-nonewline",
+      "rubric_ref": "/private/tmp/claude-501/-Users-kktest/8f592274-11af-4ea1-9bea-e41c8cbc4c29/scratchpad/n5-b-nonewline.yaml",
+      "rubric_sha256": "29f299707fd63b0e0e2fcaac3064db7752856c8d2146fbb659d24f0b1bbb4b67",
+      "dropped_rules": [
+        "W1-trailing-newline"
+      ]
+    }
+  ],
+  "cells": [
+    {
+      "task": "nav-prod-port",
+      "repeat": 0,
+      "seed": 2331795949,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/12",
+          "passed": 1,
+          "family_size": 12,
+          "score_min": 0,
+          "score_max": 9,
+          "spread": 9,
+          "margin_zero": 0,
+          "identity_scores": [
+            5,
+            5,
+            5
+          ],
+          "identity_spread": 0,
+          "fragile": true
+        },
+        "B-nonewline": {
+          "pass_rate": "7/11",
+          "passed": 7,
+          "family_size": 11,
+          "score_min": 0,
+          "score_max": 9,
+          "spread": 9,
+          "margin_zero": 0,
+          "identity_scores": [
+            9,
+            9,
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": true
+        }
+      },
+      "comparisons": [
+        {
+          "a": "A-asfiled",
+          "b": "B-nonewline",
+          "verdict": "inconclusive",
+          "family_size": 11,
+          "dropped_rules": [
+            {
+              "rule": "W1-trailing-newline",
+              "variant": "B-nonewline"
+            }
+          ],
+          "a_pass_rate": "0/11",
+          "b_pass_rate": "7/11",
+          "fragile": [
+            "B-nonewline"
+          ],
+          "attributable": false
+        }
+      ]
+    },
+    {
+      "task": "nav-prod-port",
+      "repeat": 1,
+      "seed": 4094558621,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "4/12",
+          "passed": 4,
+          "family_size": 12,
+          "score_min": 0,
+          "score_max": 9,
+          "spread": 9,
+          "margin_zero": 0,
+          "identity_scores": [
+            5,
+            5,
+            5
+          ],
+          "identity_spread": 0,
+          "fragile": true
+        },
+        "B-nonewline": {
+          "pass_rate": "7/11",
+          "passed": 7,
+          "family_size": 11,
+          "score_min": 0,
+          "score_max": 9,
+          "spread": 9,
+          "margin_zero": 0,
+          "identity_scores": [
+            9,
+            9,
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": true
+        }
+      },
+      "comparisons": [
+        {
+          "a": "A-asfiled",
+          "b": "B-nonewline",
+          "verdict": "inconclusive",
+          "family_size": 11,
+          "dropped_rules": [
+            {
+              "rule": "W1-trailing-newline",
+              "variant": "B-nonewline"
+            }
+          ],
+          "a_pass_rate": "3/11",
+          "b_pass_rate": "7/11",
+          "fragile": [
+            "A-asfiled",
+            "B-nonewline"
+          ],
+          "attributable": false
+        }
+      ]
+    },
+    {
+      "task": "nav-prod-port",
+      "repeat": 2,
+      "seed": 634446002,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "3/12",
+          "passed": 3,
+          "family_size": 12,
+          "score_min": 0,
+          "score_max": 9,
+          "spread": 9,
+          "margin_zero": 0,
+          "identity_scores": [
+            5,
+            5,
+            5
+          ],
+          "identity_spread": 0,
+          "fragile": true
+        },
+        "B-nonewline": {
+          "pass_rate": "7/11",
+          "passed": 7,
+          "family_size": 11,
+          "score_min": 0,
+          "score_max": 9,
+          "spread": 9,
+          "margin_zero": 0,
+          "identity_scores": [
+            9,
+            9,
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": true
+        }
+      },
+      "comparisons": [
+        {
+          "a": "A-asfiled",
+          "b": "B-nonewline",
+          "verdict": "inconclusive",
+          "family_size": 11,
+          "dropped_rules": [
+            {
+              "rule": "W1-trailing-newline",
+              "variant": "B-nonewline"
+            }
+          ],
+          "a_pass_rate": "2/11",
+          "b_pass_rate": "7/11",
+          "fragile": [
+            "A-asfiled",
+            "B-nonewline"
+          ],
+          "attributable": false
+        }
+      ]
+    }
+  ]
+}
