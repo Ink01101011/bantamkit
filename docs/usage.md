@@ -145,10 +145,14 @@ print(agent.run("Which team owns the payments API? Check memory first.").output)
   may reuse a verdict instead of re-buying it when a round re-judges a
   byte-identical critic prompt — typically the answerer repeating itself, where
   every repeat costs a critic call for a verdict already in hand. Affirm it only
-  where your endpoint reproduces a sample exactly for a fixed request and a
-  pinned `seed` (a local Ollama or llama.cpp does; a batching vLLM or a hosted
-  router is best-effort). The gate also checks that a seed is actually pinned on
-  the client, and pays for the call whenever either half is missing.
+  where your endpoint reproduces a verdict's *decision* — its score — for a fixed
+  request and a pinned `seed` (a local Ollama or llama.cpp does; a batching vLLM
+  or a hosted router is best-effort). It is the score, not the bytes: measured on
+  Ollama, one request payload sha yielded different feedback strings at an
+  identical score, so a reused verdict reproduces the decision and relays one of
+  the samples the backend would have produced at that score. Nothing branches on
+  those bytes. The gate also checks that a seed is actually pinned on the client,
+  and pays for the call whenever either half is missing.
 
 Use a different rubric by name, or build one inline:
 
