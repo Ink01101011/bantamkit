@@ -1,7 +1,11 @@
 # Perturbation Bar Design (RB-P14, and RB-P15's standing check)
 
 **Date:** 2026-08-11
-**Status:** Approved for implementation (RB-P14 is the ratified attack in
+**Amended:** 2026-08-12 — see [§12 Amendments](#12-amendments-2026-08-12).
+The instrument was built, run and reviewed; §12 records where this document was
+wrong, including **an acceptance gate that stated a prediction and missed it**.
+Read §12 before treating any sentence here as current.
+**Status:** Built and accepted. (RB-P14 is the ratified attack in
 eval.md; this spec is unit N1 of job `rbp14-perturbation-bar`)
 **Layer:** Measurement. It reads Contract assets (rubrics) and the frozen
 suite read-only, calls Transport (`client.py`) and Core (`structured()`),
@@ -94,7 +98,7 @@ Instances on `task-completion`:
 |---|---|
 | `W1-trailing-newline` | delete the template's trailing newline (**the null control; mandatory member**) |
 | `W2-double-trailing` | append a second trailing newline |
-| `W3-unwrap-opening` | join the hard-wrapped opening paragraph's lines into one long line (newline → space) |
+| `W3-unwrap-opening` | join the hard-wrapped opening paragraph's lines into one long line (newline → space). **Amended 2026-08-12:** anchored to the first hard-wrapped run of the paragraph *shared by all three variants*, not to the whole paragraph — §12.3 |
 | `W4-double-space` | two spaces after every sentence-terminating period |
 | `W5-blank-line-before-bands` | one extra blank line before the `Score 0-10:` paragraph |
 
@@ -268,9 +272,13 @@ rule id**, applicable to any template that contains its anchor.
   post-drop count and is reported per comparison.
 
 **The whole family is materialized and committed.** The manifest (§6) records,
-per point: `id`, `class`, `rule`, the anchor(s), and — per variant, from the
-acceptance run — a **unified diff** against that variant's base template and
-the `sha256` of the result. A reader audits the exact bytes without re-running
+per point: `id`, `class`, `rule`, the anchor(s), and — per variant — a
+**unified diff** against that variant's base template and the `sha256` of the
+result. (**Amended 2026-08-12:** originally "from the acceptance run". They
+carry no run-dependent information, so they are computed offline, re-derived
+and compared by a test on every suite run, and re-verified against the manifest
+at execution time so a drifted manifest is a hard error rather than a
+misleading audit trail.) A reader audits the exact bytes without re-running
 anything, and a rule change shows up as a manifest diff.
 
 ## 5. Cost — measured, not estimated
@@ -312,6 +320,18 @@ cost more (SA1 measured +13.5% suite tokens for that rubric — take the same
 order for the replay). Paired dropping (§4.1) can only shrink F, so the
 request counts are upper bounds.
 
+**Amended 2026-08-12 — the request counts above were exact and the token
+estimates were low.** Measured on the §10 acceptance run: **141 requests**
+(the 144 upper bound minus the three `W1` rows paired-dropped from
+`B-nonewline`) and **63,342 tokens** against the ~48.0k estimated, **+32%**.
+The driver is `C-attempted` at ~580 tokens/request against `A-asfiled`'s 384 —
+the "+13.5% order" guess above is badly low for a rubric that also emits a
+`reasoning` field, and the per-request cost, not just the suite cost, moves.
+The routine two-variant profile measured 93 requests / 35,523 tokens against the
+96-request bound and ~32.0k, **+11%** on tokens.
+Estimate token cost per *variant* from a rendered probe of that variant, not by
+scaling one variant's number.
+
 **The honest number is cheap enough to use routinely, so no redesign is
 needed.** If a future family grows past ~20 points, drop `--replays` to 1
 everywhere except `identity` before growing F further — family breadth buys
@@ -345,13 +365,23 @@ invoked as `.venv/bin/python -m bantamkit.criticreplay`. **No console script**
 | flag | meaning |
 |---|---|
 | `--rubric LABEL=SPEC` (repeatable) | a rubric variant. `SPEC` is a filesystem path **or** `git:<ref>:<path>` (e.g. `git:d2f78b7:assets/rubrics/task-completion.yaml`), because the acceptance test needs rubrics that exist only in history. Parsed into a `Rubric` and passed as an instance — `load_rubric` is name-only and has no path hook. |
-| `--manifest PATH` | the perturbation manifest. Default `assets/perturbations/<rubric-name>.yaml`. |
+| `--manifest PATH` | the perturbation manifest. Default `assets/evals/perturbations/<rubric-name>.yaml` (**amended 2026-08-12**, §12.1). |
 | `--transcripts DIR` | directory of P8 transcripts; each supplies `task`, `seed`, and the byte-exact `output`. |
 | `--task NAME` (repeatable) | restrict to these tasks. The task *prompt* is loaded read-only from `assets/evals/tasks/<name>.yaml`. |
 | `--model`, `--base-url`, `--timeout` | as `evalrun`. |
 | `--replays N` (default 1), `--identity-replays N` (default 5) | §5. |
 | `--json PATH`, `--summary PATH` | outputs, below. |
 | `--identity-only` | run only the `identity` point — the RB-P15 standing check (§8). |
+
+**Gap, found in implementation and still open (2026-08-12).** `SPEC` admits a
+path or `git:<ref>:<path>`, and §10 then requires `B-nonewline` — a variant
+that exists in neither form. It has to be materialized to a file first, so the
+`rubric_ref` recorded for it is whatever path the operator used. No flag was
+invented mid-implementation; the fix direction is a `derive:<label>:<rule-id>`
+form that names a base label and a manifest rule, which would make `B-nonewline`
+expressible as `derive:A-asfiled:W1-trailing-newline` and self-describing in the
+output. Until then the manifest's `materialized_variants` block is what ties the
+variant to committed bytes (§12.5).
 
 Feeding cases from P8 transcripts rather than hand-copied strings is
 deliberate: it is what makes "byte-identical answer" true by construction
@@ -380,6 +410,21 @@ is the wire payload. The SA3 file used `payload_sha256` in one block and
 `prompt_sha256_asfiled` / `prompt_sha256_variant` in another; normalize on
 these two names and record both.
 
+**Amended 2026-08-12 — `payload_sha256` is comparable within a record, not
+across records.** Here it is `sha256` of `json.dumps({"model", "messages",
+"seed"?, "response_format"?}, ensure_ascii=False)` captured off the request
+`structured()` actually sends. SA3's field of the same name was built by a
+different recipe, so SA3 and this bar disagree on it for cells where the prompt
+sha, the seed and the score are all identical. **`prompt_sha256` is the
+cross-record identity**; treat `payload_sha256` as an intra-run check that the
+whole request — seed and `response_format` included — was the one intended, and
+state the recipe wherever the field is published.
+
+**Amended 2026-08-12 — rows also carry `calls`, and the summary `wire_calls`.**
+`requests` is the row count; `wire_calls` is what went out. They differ exactly
+when `structured()` retried, which would otherwise inflate `tokens_total` with
+nothing in the report to show for it.
+
 **`--summary`** — one JSON object, `docs/eval-data/<date>-<label>-perturbation-summary.json`,
 carrying per (variant, cell): `pass_rate` (`k/F`), `score_min`, `score_max`,
 `spread` (`max − min`), `margin_zero` (count of points within 1 of threshold),
@@ -393,12 +438,26 @@ answer without opening a file.
 
 ### 6.4 Layer call, named as a judgement call
 
-The manifest lives at `assets/perturbations/<rubric-name>.yaml` for
-locatability, but it is **Measurement input, not a Contract asset**. It is
-never loaded by any product code path, and `test_layers.py`'s golden
-byte-identity guard over contract strings and rubrics does not extend to it. A
-test must assert that `criticreplay.py` is the only module that reads
-`assets/perturbations/`. *Rejected alternative:* `docs/eval-data/`, which is
+**Amended 2026-08-12. The manifest lives at
+`assets/evals/perturbations/<rubric-name>.yaml`**, not the
+`assets/perturbations/` this section originally specified. The planner flagged
+its own choice as a judgement call sitting in Contract territory; the
+orchestrator settled it before implementation, and the reason is that
+`assets/evals/` is already the established home for **measurement input inside
+the shipped asset pack** — `assets/evals/tasks/`, `assets/evals/fixtures/` —
+while `assets/rubrics/` and `assets/contracts/` are what the product reads.
+`pyproject.toml` force-includes `../assets` as `bantamkit/assets`, so the
+manifest ships either way; what the path buys is that a reader can tell
+measurement input from Contract asset by looking at it. **Do not move it back
+to match this document** — the implementation is the current artifact and a
+test asserts `assets/perturbations/` does not exist, so a re-split would fail
+the suite.
+
+Either way the layer call is unchanged: the manifest is **Measurement input,
+not a Contract asset**. It is never loaded by any product code path, and
+`test_layers.py`'s golden byte-identity guard over contract strings and rubrics
+does not extend to it. A test must assert that `criticreplay.py` is the only
+module that reads it. *Rejected alternative:* `docs/eval-data/`, which is
 evidence output, not input.
 
 ## 7. What is reported, and what makes it a decision
@@ -453,9 +512,11 @@ RB-P15 asks for "a standing check that re-issues one pinned critic request N
 times and records the score spread beside every seeded bar". **The measurement
 falls out of this instrument for free; the plumbing does not.**
 
-- The shared primitive is `replay_scores(rubric, case, replays) -> list[int]`.
-  The `identity` point is one call to it. Nothing extra is needed to *compute*
-  the number.
+- The shared primitive is `replay_scores(client, rubric, case, replays) ->
+  list[int]`. The `identity` point is one call to it. Nothing extra is needed
+  to *compute* the number. (**Amended 2026-08-12:** the signature as first
+  written omitted `client` and so had no way to reach a model; it takes the
+  client first, matching `structured()`'s precedent. §12.4.)
 - The standing check is the same module with `--identity-only`, run over a
   bar's `--transcripts` directory after the bar finishes. Cost at
   `--identity-replays 5` on a 3-seed cell: **15 requests, ~5.0k tokens, ~30 s**
@@ -531,6 +592,13 @@ original 0/3-versus-3/3 comparison was never a measurement.
 
 **The instrument works** iff Gates 0, 1, and 2 all hold.
 
+> **Result, 2026-08-12 — Gates 0 and 1 held exactly; Gate 2 did not hold as
+> written, and the sentence above is wrong about why that matters.** Gates 0
+> and 1 test the *instrument*. Gate 2's first clause is a claim about the
+> world, so it cannot be part of a definition of "the instrument works". The
+> ratified re-reading is §12.2; the prediction that failed is written out
+> there verbatim rather than repaired here.
+
 ### If Gate 2 reports B vs C as *distinguishable*
 
 The spec must say how the implementer tells "wrong" from "found something".
@@ -565,8 +633,9 @@ checkable:
 2. `runtime-py/src/bantamkit/criticreplay.py` exists;
    `.venv/bin/python -m bantamkit.criticreplay --help` runs; no product module
    imports it, and a test asserts it is the only reader of
-   `assets/perturbations/`.
-3. `assets/perturbations/task-completion.yaml` is committed with **F = 12**
+   `assets/evals/perturbations/` (§6.4, amended).
+3. `assets/evals/perturbations/task-completion.yaml` (§6.4, amended) is
+   committed with **F = 12**
    points including `identity` and `W1-trailing-newline`, at least one
    lengthening and one shortening whitespace point, the full requirement
    inventory from §3.3, and a written justification on every `P` point. Each
@@ -589,6 +658,11 @@ checkable:
    all three seeds with equal `prompt_sha256`; the summary reports
    `A-asfiled` `fragile: true` and `B-nonewline` vs `C-attempted`
    `indistinguishable`.
+   **Not met as written, and deliberately not rewritten to fit — §12.2.** The
+   Gate 1 clause and the `fragile: true` clause both hold; the
+   `indistinguishable` clause is the failed prediction. A criterion that
+   asserts a fact about the world is not an acceptance criterion, and the
+   lesson is worth more than the criterion.
 9. The summary records `requests` and `tokens_total`, and the routine
    before/after profile (2 variants × 3 cells, default replay counts) costs
    **≤ 96 requests**.
@@ -599,3 +673,114 @@ checkable:
 12. The RB-P15 Core docstring narrowing (§8) is either done as its own
     single-layer commit or explicitly carried as a named follow-up — not
     silently dropped.
+
+## 12. Amendments (2026-08-12)
+
+The instrument was implemented, run against a live model and adversarially
+reviewed after this document was written. Where the two disagree, **the
+implementation is the current artifact and this section says so** — a spec that
+is quietly edited into agreement teaches nothing, and a spec left stale sends
+the next reader to the wrong file.
+
+### 12.1 The manifest path
+
+`assets/evals/perturbations/`, not `assets/perturbations/`. Decided by the
+orchestrator before implementation, for the reason recorded in §6.4: inside the
+shipped asset pack, `assets/evals/` is already where measurement *input* lives.
+§6.4 and success criterion 3 were the stale text and are corrected in place. The
+manifest is **not** moved to match the original wording — a test asserts
+`assets/perturbations/` does not exist.
+
+### 12.2 Gate 2 — one half was an instrument test, the other was a prediction
+
+**Ratified by the user, 2026-08-12.** Gates 0 and 1 test the instrument and both
+held exactly: identity scores reproduced the committed SA3 record
+(`A` 5,5,5 / `B` 9,9,9 / `C` 7,10,10) with zero spread over five replays per
+cell, and `B`'s identity matched `A`'s `W1-trailing-newline` at an equal
+`prompt_sha256` and an equal `payload_sha256` on all three seeds.
+
+Gate 2's fragility half held, and it is the finding the tool was built to
+produce: `A-asfiled` is `fragile: true` on all three cells, passing **1/12,
+4/12 and 3/12** of its own meaning-preserving family.
+
+**Gate 2's other half was a prediction about the world wearing an
+instrument-test's clothes, and it was wrong.** As written, §10 said:
+
+> **Gate 2 — the expected finding.** The instrument must report
+> **`B-nonewline` vs `C-attempted` as indistinguishable** […]
+
+**What was measured instead:** `B` vs `C` reads `indistinguishable` on seed
+4094558621 only (7/11 vs 7/11) and `inconclusive` on the other two (7/11 vs
+10/11, twice), because `C` passes at a *higher* rate than `B` without reaching
+rule 1's `F/F`-versus-`0/F` bar. The pair is **distinguishable on zero of three
+cells**, so the load-bearing conclusion — no separation, and no attribution
+available in either direction, every family being fragile — is unchanged. But
+"indistinguishable" and "not distinguishable" are different claims, and this
+document asserted the stronger one in advance and missed.
+
+Two things follow, and neither is a softening:
+
+1. **"Partially met" is not the record.** The prediction was stated in advance,
+   in writing, and it was wrong. That is the most valuable line in this file:
+   it is the only place the project can see its own forecasting error rate.
+2. **An acceptance criterion may not assert a fact about the world.** Gates 0
+   and 1 are checks on the tool and belong in an acceptance test. Gate 2's first
+   clause was a hypothesis, and a hypothesis in the acceptance test converts
+   "we were surprised" into "the build failed". Future specs state expected
+   findings in their own block, marked as predictions, scored afterwards — the
+   [prediction scorecard](../../eval.md) pattern this project already uses for
+   sweeps.
+
+### 12.3 W3's anchor
+
+§3.1 as written anchored `W3-unwrap-opening` to the whole hard-wrapped opening
+paragraph. `A-asfiled`'s opening paragraph is **not** a substring of
+`C-attempted`'s — `C` inserts seven lines into it — so a literal anchor would
+have been `applicable: false` on `C`, and paired dropping (§4.1) would have
+removed `W3` from the very `B`-versus-`C` comparison Gate 2 needed. Re-anchored
+during implementation to the first hard-wrapped run of the paragraph the three
+variants *share*: still literal, still whitespace-only, applicable on all three.
+**This is a deviation from the spec, made deliberately and correctly**, not an
+implementation of it.
+
+### 12.4 `replay_scores`' signature
+
+§8 wrote `replay_scores(rubric, case, replays)`, which has no way to reach a
+model. Implemented as `replay_scores(client, rubric, case, replays=1)`, client
+first, matching `structured()`. **Also a deviation, also correct.**
+
+Those two are the deviations. The rest of what the implementation flagged —
+`P3-right-correct`'s guard violation, the missing `derive:` form for
+`B-nonewline`, the diff-provenance wording in §4.1 — was built as specified and
+reported rather than quietly improved.
+
+### 12.5 Open gaps, filed rather than fixed
+
+Each is filed in `docs/eval.md` with an attack direction; listed here so a
+reader of the spec is not the last to know.
+
+- **`inconclusive` carries no effect size.** The largest real gap in the
+  instrument. 7/11-versus-10/11 — consistent and directional across two cells —
+  and a one-point wobble produce the same label, and §7's decision rule gives
+  the band no reporting duty beyond the word.
+- **`B-nonewline`'s provenance is a label, not a path.** §6.2 above. The
+  summary's `rubric_ref` for it is a session scratchpad path that will vanish.
+  The bytes are recoverable — the manifest's `materialized_variants` block
+  records the recipe and `base_sha256` `d1f32ad2…`, verified 2026-08-12 to
+  reproduce from `git:d2f78b7` — but the evidence file points at nothing.
+- **`payload_sha256` is not cross-record comparable.** §6.3 above.
+- **Single-replay extrapolation — checked 2026-08-12, and it holds on this
+  cell.** `--replays 1` on perturbation points was justified by the *identity*
+  point's measured zero spread, which is evidence about one prompt and not
+  about the eleven perturbed ones. Re-run at **R = 3 on every point** of
+  `A-asfiled` and `B-nonewline` across all three seeds — 207 requests, 78,885
+  tokens, `wire_calls == requests` so nothing retried: **69 points, zero
+  within-point spread, zero disagreement with the acceptance run**, including
+  the extreme 0-scoring order points (`O2-bands-ascending` on both variants and
+  `O1-swap-format-refusal` on `B`, all 0,0,0). Every per-cell pass rate is
+  identical to the R = 1 run (`A` 1/12, 4/12, 3/12; `B` 7/11 on all three).
+  The default stands, and the justification is now evidence about the
+  perturbed prompts rather than an extrapolation from one.
+  (`docs/eval-data/2026-08-12-pb14-14b-nav-prod-port-replay3.jsonl`.) This is
+  a property of one cell and one model; it is not a licence to skip replays on
+  a family that has never been checked.
