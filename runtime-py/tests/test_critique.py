@@ -18,7 +18,12 @@ def test_load_rubric_from_assets():
     rubric = load_rubric("task-completion")
     assert rubric.name == "task-completion" and rubric.threshold == 7
     assert "{task}" in rubric.prompt and "{output}" in rubric.prompt
-    assert rubric.schema["required"] == ["score", "feedback"]
+    # `reasoning` is required and leads, mirroring `grounded-completion` (SA1, the
+    # structural attack on RB-P4): the blind critic must state the fact the task asks
+    # for and the value the answer supplies for it *before* it scores. `structured()`
+    # enforces the schema, so the field being required is what makes the step
+    # unskippable — leaving it optional would make it decoration.
+    assert rubric.schema["required"] == ["reasoning", "score", "feedback"]
 
 
 def make_rubric(threshold=7):
@@ -191,7 +196,10 @@ def test_shipped_rubrics_survive_format(rubric_name):
     """Shipped rubrics can be formatted and produce valid JSON schema."""
     rubric = load_rubric(rubric_name)
     formatted = rubric.prompt.format(task="t", output="o")
-    assert '{"score"' in formatted
+    # Not `'{"score"'`: `task-completion` now leads its return template with
+    # `reasoning` (SA1), so `score` is no longer the first key. What this test pins is
+    # that the doubled braces survive interpolation, not which key comes first.
+    assert '"score"' in formatted
 
 
 def test_shipped_grounded_rubric_survives_format():

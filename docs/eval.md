@@ -1463,6 +1463,53 @@ a problem with an owner-direction, and the layer names refer to the
   derive first, judged content correctly on the 4b cell throughout —
   including on the answer it had to fail. (Contract, Layer 2.) The
   problem stays open.
+
+  **Outcome (2026-08-11, SA1 — the structural attack WORKED. RB-P4 is
+  CLOSED.)** `task-completion` gained the `reasoning` field, required and
+  listed first, plus one step before scoring: name the fact the task asks
+  for, quote the value the answer supplies for it, then judge. The blind
+  critic is explicitly *not* asked to derive the correct answer — it has
+  no evidence, and for `nav-prod-port` no way whatsoever to know the port
+  is 9443, so deriving would mean guessing. Extract-and-compare is the
+  blind analogue of the grounded critic's derive-first step.
+
+  Four arms, `--config critique --repeats 3` over the frozen 22-task
+  suite, before-arms from a pristine worktree at `d2f78b7`. The bar was
+  pre-registered in writing before any arm finished.
+
+  | arm | model | suite | `nav-prod-port` | tokens |
+  |---|---|---|---|---|
+  | before | 14b | 35/66 | **0/3** (`critique-exhausted`) | 67,312 |
+  | after | 14b | **38/66** | **3/3** | 76,399 (+13.5%) |
+  | before | 7b | 33/66 | 3/3 | 56,066 |
+  | after | 7b | 33/66 | 3/3 | 64,888 (+15.7%) |
+
+  All three 14b gains are the target cell; **no other cell moved in
+  either direction on either model**, no 3/3 task fell, and no critique
+  round hit `StructuredOutputError` on the new required field.
+
+  **The critic changed its verdict; the answerer did not change its
+  answer** — the round-1 appeasement pattern is excluded on the evidence,
+  not assumed. On all three seeds the answerer emitted exactly
+  `{"port": 9443}`, byte-identical to the before-arm's first answer, and
+  all three passes carry `critique_rounds == 0`: zero feedback was ever
+  injected, so there was nothing for the answerer to appease. A
+  deterministic replay of the critic alone on that byte-identical answer,
+  at the same pinned seeds, scores **5,5,5 → 7,10,10**. Seed 634446002 —
+  whose before-verdict was the self-refuting one quoted above — now
+  reasons: *"Find the production port of billing-svc from the workspace
+  files; {"port": 9443}. The answer provides a port number, which matches
+  the fact requested."* Having written the fact and the value down, it no
+  longer reaches for the format.
+
+  **Residual risk, recorded not smoothed:** seed 2331795949 scores
+  exactly 7 against a threshold of 7 — a zero-margin pass. Its reasoning
+  hedges honestly about what a blind critic cannot check (*"correctness
+  cannot be verified due to lack of documentation and workspace
+  files"*), which is the right epistemic move and also the one that costs
+  it points. The blind critic's ceiling on evidence-dependent tasks is
+  now that hedge, not the format confusion. Evidence:
+  `2026-08-11-sa1-{14b,7b}-critique-suite-{before,after}.jsonl`.
 - **RB-P5 — the 4b `full` watch item stayed red.** The two
   `nav-release-bundle` `critique-exhausted` rows (seeds 3590861830 and
   2248991587) reappear field-identical to the seeded bar-noreg cell. The
