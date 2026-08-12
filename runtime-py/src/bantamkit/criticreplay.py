@@ -138,7 +138,14 @@ GUARD_DECISION_RULE = (
 
 NO_NEWLINE = "\\ No newline at end of file"
 
-_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
+# §3.3 guard 2's "tokenize on word boundaries". A HYPHEN IS A WORD BOUNDARY: with it
+# word-internal, `requests-per-minute` was one token, so the guard could not see
+# `requests` inside it and reported clean on `recall-org-quota` — a false negative,
+# the direction this guard exists to prevent, and true under both readings. The four
+# compounds in the frozen prompts (`requests-per-minute`, `on-call`, `billing-svc`,
+# `INV-42`) hid seven words between them. Pinned by
+# `test_a_hyphen_does_not_hide_the_words_inside_a_compound`.
+_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 class PerturbationError(BantamError):

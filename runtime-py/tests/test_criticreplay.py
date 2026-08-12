@@ -7,6 +7,7 @@ model is a separate, deliberately fresh-eyed pass (spec §10).
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -211,11 +212,9 @@ def test_paraphrase_points_edit_exactly_one_sentence(manifest):
 #   who       recall-oncall ("who is on-call"), recall-oncall-rotation
 #   for       nav-release-bundle, recall-cache-ttl, recall-env-endpoint, recall-oncall,
 #             recall-oncall-rotation, recall-org-quota
-#   requests  recall-org-quota ("requests-per-minute") — NOT YET REACHABLE: the module's
-#             tokenizer treats a hyphen as word-internal, so `requests-per-minute` is one
-#             token and neither reading can see `requests` in it. That is a false
-#             negative (C2) and it is the next commit's concern; these tables are pinned
-#             here as they read TODAY so that commit's diff shows exactly what it moves.
+#   requests  recall-org-quota ("requests-per-minute"). Reachable since the tokenizer
+#             stopped treating a hyphen as word-internal (C2): under whole-text this is
+#             P2's ONLY violation, and it is the row M1's committed screen recorded.
 #   right     nav-prod-port ("follow the documentation to the right file")
 #   asks / checking / checks / correct  — none of the 22
 WHOLE_TEXT_TABLE = {
@@ -223,6 +222,7 @@ WHOLE_TEXT_TABLE = {
         "recall-oncall": ["who"],
         "recall-oncall-rotation": ["who"],
     },
+    "P2-asks-requests": {"recall-org-quota": ["requests"]},
     "P3-right-correct": {"nav-prod-port": ["right"]},
 }
 
@@ -237,7 +237,7 @@ SUBSTITUTION_PAIR_TABLE = {
         "recall-env-endpoint": ["for"],
         "recall-oncall": ["for"],
         "recall-oncall-rotation": ["for"],
-        "recall-org-quota": ["for"],
+        "recall-org-quota": ["for", "requests"],
     },
     "P3-right-correct": {"nav-prod-port": ["right"]},
 }
@@ -254,7 +254,7 @@ UNION_TABLE = {
         "recall-env-endpoint": ["for"],
         "recall-oncall": ["for"],
         "recall-oncall-rotation": ["for"],
-        "recall-org-quota": ["for"],
+        "recall-org-quota": ["for", "requests"],
     },
     "P3-right-correct": {"nav-prod-port": ["right"]},
 }
@@ -328,6 +328,70 @@ def test_the_union_of_both_readings_is_what_the_decision_rule_acts_on(manifest):
                 merged = set(union.setdefault(point, {}).get(task, [])) | set(words)
                 union[point][task] = sorted(merged)
     assert union == UNION_TABLE
+
+
+def test_both_tables_reproduce_under_a_tokenizer_written_from_the_spec_not_the_module(
+    manifest,
+):
+    """The reviewer's objection, made mechanical.
+
+    A golden table produced by calling `shared_token_violations` pins whatever that
+    function happens to do. This re-derives both tables with a tokenizer written from
+    §3.3's own words — "tokenize on word boundaries" — that shares no code with the
+    module, and requires the literal tables above to come out of it too. It is also
+    what caught C2: a tokenizer that reads `requests-per-minute` as three words finds
+    `requests` where the module's found nothing.
+    """
+    spec_words = lambda text: set(re.findall(r"[a-z]+", text.lower()))  # noqa: E731
+    base = _shipped_template()
+    tables: dict[str, dict[str, dict[str, list[str]]]] = {"whole-text": {}, "substitution-pair": {}}
+    for point in manifest.points:
+        perturbed = criticreplay.apply_point(point, base)
+        if perturbed is None:
+            continue
+        moved = {"whole-text": spec_words(base) ^ spec_words(perturbed), "substitution-pair": set()}
+        for op in point.replace:
+            moved["substitution-pair"] |= spec_words(op["from"]) ^ spec_words(op["to"])
+        for name, prompt in _frozen_prompts().items():
+            for reading, words in moved.items():
+                shared = sorted(words & spec_words(prompt))
+                if shared:
+                    tables[reading].setdefault(point.id, {})[name] = shared
+    assert tables["whole-text"] == WHOLE_TEXT_TABLE
+    assert tables["substitution-pair"] == SUBSTITUTION_PAIR_TABLE
+
+
+# C2. Every hyphenated compound that occurs in a frozen task prompt. A tokenizer that
+# treats the hyphen as word-internal reads each of these as ONE token, so a point that
+# adds or removes `requests`, `call`, `svc`, `per`, `minute` or `billing` shares a word
+# with the cell and the guard reports clean. That is a FALSE NEGATIVE — the direction
+# guard 2 exists to prevent — and it is true under both readings.
+HYPHENATED_IN_THE_FROZEN_SUITE = {
+    "INV-42": ("extract-invoice",),
+    "billing-svc": ("nav-prod-port",),
+    "on-call": ("recall-oncall",),
+    "requests-per-minute": ("recall-org-quota",),
+}
+
+
+def test_the_hyphenated_compounds_this_covers_are_the_whole_frozen_inventory():
+    """Derived from the prompts, not asserted about them: a new compound fails here."""
+    found: dict[str, set[str]] = {}
+    for name, text in _frozen_prompts().items():
+        for compound in re.findall(r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+", text):
+            found.setdefault(compound, set()).add(name)
+    assert {k: tuple(sorted(v)) for k, v in sorted(found.items())} == (
+        HYPHENATED_IN_THE_FROZEN_SUITE
+    )
+
+
+def test_a_hyphen_does_not_hide_the_words_inside_a_compound(manifest):
+    """C2: the guard must see `requests` in `requests-per-minute`."""
+    for compound in HYPHENATED_IN_THE_FROZEN_SUITE:
+        expected = {part for part in compound.lower().split("-") if part[:1].isalpha()}
+        assert criticreplay._words(compound) == expected, compound
+    quota = _frozen_prompts()["recall-org-quota"]
+    assert {"requests", "per", "minute"} <= criticreplay._words(quota)
 
 
 def test_materialization_matches_a_recomputation_from_the_rubric_texts(manifest):
