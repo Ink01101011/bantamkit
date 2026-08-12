@@ -307,10 +307,18 @@ on all four arms and per-row tokens sum exactly to each summary total, so there
 are no unlogged requests. Every claim below was independently re-derived from the committed
 JSONLs by a reviewer who did not run the screen; the catalogue reproduced with
 zero mismatches on all 20 cells and all 132 ground-truth flags. One thing that
-review did **not** catch and this write-up does: the screen's shared-token
-guard table is wrong, and re-deriving it *by the screen's own method*
-reproduced the error rather than exposing it (deviation 7, and RB-P19). The
-catalogue's numbers are sound; one of the analyses beside them was not.
+review did **not** catch: the screen's shared-token guard table is **one of two
+defensible readings of §3.3, not an error**, and every re-derivation of it up to
+that point had inherited the method of the one before it, so each raised
+confidence while adding no independence. It took a reviewer *forbidden from
+importing the module* to surface the ambiguity at all, and an independently
+written tokenizer to find a false negative that both readings shared (deviation
+7, and RB-P19, where all four derivations are laid out side by side).
+**RETRACTION (2026-08-12):** this paragraph originally said the table "is
+wrong" and that re-deriving it by the screen's own method "reproduced the error
+rather than exposing it". Withdrawn — the catalogue's numbers were sound and so
+was the table; what was not sound was stating a contested reading with a
+confidence the method could not support.
 
 #### The headline, stated so it cannot be misread
 
@@ -2625,11 +2633,14 @@ and each carries an attack direction.
   screen or in the anchor set depends on a guard-violating point under either
   reading. `docs/eval-data/2026-08-12-nonfragile-anchor-set.json` carries
   per-cell guard data computed the substitution-pair way; its `guard_note`
-  and per-cell notes call that set "the CORRECTED violation set" and say the
-  screen "under-reported `P2-asks-requests`". **Those two phrases are
-  retracted by this entry.** The file itself is committed evidence and is not
-  retro-edited; the 2026-08-12 `rbp19b` runs supersede it by carrying both
-  readings as fields.
+  and per-cell notes called that set "the CORRECTED violation set" and said
+  the screen "under-reported `P2-asks-requests`". **Those two phrases are
+  retracted by this entry, and — on the user's ruling, 2026-08-12 — they are
+  retracted in that file too rather than only here.** See "the one
+  retro-edit, and the rule it was decided under" in CLOSED below: the
+  amendment moves prose and nothing else, every measured field is
+  byte-identical to `b439053`, and the 2026-08-12 `rbp19b` runs remain the
+  live per-(point, cell) record because they carry both readings as fields.
   **This strengthens the attack rather than changing it:** a guard whose own
   filing was restated twice before the ambiguity in the rule was noticed is
   not a rule that survives as a test-time observation. Compute it **over every
@@ -2738,6 +2749,122 @@ and each carries an attack direction.
   cells still run with every `expect_pass_rate`, `measured_min`,
   `measured_max` and `fragile` unchanged under both readings
   (`docs/eval-data/2026-08-12-rbp19b-anchors-{14b,4b}*`). (Measurement.)
+
+  **CLOSED (2026-08-12).** The filed defect was "an admissibility rule that
+  ships as a test-time observation on one cell". It is now computed on the run
+  path over every (point, cell) a run touches, under both readings the spec
+  admits, before the first request. What ships violating is the *manifest*, not
+  the guard, and that is now visible in every artifact rather than derivable by
+  hand. The residual is filed as RB-P23 and RB-P24 below, and the manifest
+  re-authoring attack stands unchanged. Three things are worth carrying
+  forward.
+
+  **1. The transferable finding: this table was derived four times, and the
+  first three were one derivation.** Each re-derivation inherited the method of
+  the one before it, so each raised confidence and added no independence.
+
+  | # | who | method | answer |
+  |---|---|---|---|
+  | D1 | M1's pre-registered screen (`b439053`), §6 | by hand, from §3.3's wording | whole-text: `P1` on two `recall-oncall*`, `P2` on `recall-org-quota` (*requests*), `P3` on `nav-prod-port` |
+  | D2 | the anchor set's `guard_note`, same job | called `criticreplay.shared_token_violations` | substitution-pair: `P2` on six tasks via *for* — **and labelled D1 "under-reported"** |
+  | D3 | R1's golden test over all 22 prompts | computed the expected table *by calling the function under test*, then froze it | D2's, necessarily |
+  | D4 | R2's adversarial review, **forbidden from importing the module** | re-derived from §3.3's operative Test sentence alone | D1's — which is how the ambiguity surfaced at all |
+
+  D3 was written specifically to stop this table drifting again, and it could
+  not have caught it: a golden test whose expectation is produced by the
+  implementation pins the author's *method*, not the spec, and it converts a
+  contested reading into a fact with a green tick next to it. That is the
+  mechanism, not the incident — **a check that inherits the method of the thing
+  it checks is not a check of that thing, and repeating it does not make it
+  one.** Both tables now ship as literal expected data derived from §3.3's
+  wording and the frozen prompt texts, with a third test re-deriving them under
+  a tokenizer written from §3.3's own phrase "tokenize on word boundaries" that
+  shares no code with the module.
+
+  And the strongest evidence for the rule is what that independent tokenizer
+  found: the hyphen false negative (C2) was invisible to **both** readings and
+  to all four derivations, because every one of them tokenized the same way.
+  The disagreement between D1 and D4 was a disagreement about the *rule*; the
+  hyphen was a defect in the *shared substrate under both readings*, and only a
+  component written from the spec rather than from the code could see it. A
+  second opinion computed on the first opinion's inputs is one opinion.
+
+  **2. What the guard is now.** Both readings are named in every artifact —
+  `whole-text` (§3.3's operative Test sentence: the symmetric difference of the
+  base and perturbed *template* word sets) and `substitution-pair` (§3.3 step
+  4's `from` → `to` pair form, and the manifest's own P2 justification prose) —
+  and **neither is declared wrong**, per the user's ruling. The decision rule
+  is their **union**, and the asymmetry is the reason: over-detection costs one
+  point out of the guard-clean family, bounded and safe, because §7 rule 1
+  makes `distinguishable` all-versus-none so dropping a point can only shrink a
+  separation and never manufacture one — and `pass_rate` still reports the full
+  family, so every committed number stays comparable. Under-detection is
+  unbounded, and it is RB-P4's measured mechanism scoring itself and being
+  credited for it. **Neither reading is a subset of the other in general**, so
+  the union is not a formality: substitution-pair is blind to a substitution
+  landing inside a word and to any point whose op is not `replace`, whole-text
+  is blind to a word removed from one clause that survives elsewhere, and both
+  blind spots are pinned by rigs rather than argued. On the shipped 12-point
+  family the union happens to equal the substitution-pair table, so no
+  committed number moves.
+
+  The hyphen fix moved exactly one row and moved no measurement. Whole-text
+  `P2` went from flagging nowhere to flagging `recall-org-quota` via
+  *requests* — **exactly the row D1 committed by hand** — and
+  substitution-pair's `recall-org-quota` entry became `["for","requests"]`. No
+  other cell in either table moved, the union gained no new (point, cell) pair,
+  and comparing the pre-fix and post-fix anchor runs cell by cell
+  (`2026-08-12-rbp19-guard-anchors-{14b,4b}-summary.json` against
+  `2026-08-12-rbp19b-anchors-{14b,4b}-summary.json`) **no `pass_rate`,
+  `score_min`, `score_max`, `fragile`, `guard_violations` or `guard_dropped`
+  block differs on any of the twelve.** The false negative was in the guard's
+  sight, not in anything the guard had already scored.
+
+  Guards 3 and 4 were inverted on real input and are fixed, each with the probe
+  that showed it: guard 4 aborted on the template's own hard-wrapped anchor
+  sentence *"Judge ONLY whether the information the task asks for is present
+  and correct."* while returning clean on two whole sentences joined by a
+  newline; guard 3 counted substrings, so `"explains itself"` →
+  `"explains everything"` aborted claiming *every* had moved, while
+  `"Judge ONLY whether"` → `"Judge whether ONLY"` — a real scope change —
+  returned clean. Both now run at word boundaries, case-sensitively (§3.6 X3
+  makes case load-bearing), with keyword *ordinal position* compared between
+  `from` and `to`.
+
+  Guards 1, 3 and 4 run inside `apply_point` — the one public route from a
+  `Point` to a template — so a consumer who never calls `run()` still gets
+  them. `check=False` is the documented, deliberate bypass, and it is
+  deliberate on principle: **a guard nobody can turn off is a guard people
+  route around**, and a bypass with a name in the signature is one that shows
+  up in a diff. Guard 2 cannot ride there — it is a (point, *cell*) property
+  and `apply_point` never sees a cell — so it ships as one public call,
+  `guard_table`, which `run()` uses too.
+
+  **3. The one retro-edit, and the rule it was decided under.** Two standing
+  instructions met head-on: "no committed artifact may still assert one reading
+  as the corrected one" against "do not retro-edit committed evidence". They
+  meet on `2026-08-12-nonfragile-anchor-set.json`, the file an author actually
+  opens before crediting a rubric edit, whose `guard_note` and three per-cell
+  notes still called D2's table "the CORRECTED violation set". **The user's
+  ruling: the invariant protects measurements from being refitted to
+  conclusions; it does not protect a prose annotation that has become a live
+  misdirection.** So the prose was amended in place under a visible `amended`
+  block naming what changed and why, and **nothing else was**: the amendment
+  was applied by a script that re-reads the committed bytes, rewrites four
+  prose sites, and refuses to write if any other field differs. Verified
+  independently afterwards against `git show HEAD:` — exactly five string
+  values changed and five keys were added, all of them prose; every `answer`,
+  `answer_sha256`, `seed`, `expect_pass_rate`, `measured_min`, `measured_max`,
+  `fragile`, `guard_violations`, `guard_dropped`,
+  `guard_dropped_verdict_unchanged`, `transcript`, every `caveats` entry, the
+  whole `coverage` block and every hash under `measured_under` are
+  byte-identical to `b439053`. The superseded `rule` is kept verbatim beside
+  the new one as `rule_as_committed`, and git history is not rewritten:
+  `25ce48b`'s message and `9ca1576`'s "their wrong P2 row" stand as written and
+  are wrong on this point. `2026-08-12-rbp19b-guard2-both-readings-22-prompts.json`
+  had one prose field of its own asserting that the anchor file "is not
+  retro-edited"; that clause is amended too, under the same marker, because the
+  alternative was shipping a record that contradicts the repo. (Measurement.)
 - **RB-P20 — the `critique` config deletes the only evidence of its own
   rejections, so any screen run through it is biased against finding a
   critic defect.** When the `critique` gate exhausts its rounds `agent.run`
@@ -2833,9 +2960,37 @@ and each carries an attack direction.
   "measured, with violations" so CI cannot pass it by ignoring stdout; (2)
   amend the anchor procedure to pass `--guard error` on a first pass and, when
   it refuses, to diff the `guard_dropped` blocks cell by cell against the
-  committed ones. Not fixed here: (1) changes the CLI's contract with every
-  caller and (2) edits a committed evidence file's procedure, and neither is
-  this unit's concern. (Measurement.)
+  committed ones.
+
+  **HALF CLOSED (2026-08-12) — (2) is done, (1) is open and is the one that
+  matters for CI.** The anchor file's `how_to_use` now runs `--guard error`
+  as a first pass and states what it is *expected* to refuse on, so a
+  different refusal list is itself the signal that the manifest or a frozen
+  prompt moved; its `rule` now requires diffing every violating cell's
+  `guard_dropped` block and its `guard_readings` against the committed ones,
+  with the reason stated — `pass_rate` is deliberately the full family, so a
+  guard-clean family can change shape underneath an unchanged
+  `expect_pass_rate` and the old procedure would pass it. Measured while
+  writing it: `--guard error` refuses **before the first request** and exits
+  1, naming all three violating anchors and no others, at zero spend. A third
+  defect surfaced in the same block and is fixed there rather than filed
+  separately: **the committed `command` never selected these twelve cells** —
+  it selects by transcript directory, and `load_cases` returns 14 cells from
+  the 14b stage-2 directory and 6 from the 4b one, so the procedure as
+  published did not reproduce its own floor. The `--task` flags that do are
+  now given, together with the one non-anchor cell the CLI cannot exclude
+  (4b `nav-prod-port` r1 — the filter is by task, not by repeat).
+  **Still open, and unchanged: (1).** A `warn`-mode run exits 0 whether or
+  not guard 2 fired, so the guard is invisible to anything that reads an exit
+  code, and every procedure that depends on a human reading stdout is a
+  procedure a hurried cycle skips — the same failure mode RB-P14 was made a
+  rule to prevent. **Attack, unchanged:** give "measured, with violations" a
+  distinct non-zero exit status, so `--guard error` is not the only
+  machine-readable verdict and a passing run cannot mean two different things.
+  Not done here because it changes the CLI's contract with every existing
+  caller, including the committed anchor and `rbp19b` invocations, and that
+  is a Contract-surface decision with its own migration note, not a docs
+  amendment. (Measurement.)
 
 Two of the review's findings were fixed in this cycle rather than filed:
 `requests` counted JSONL rows while `Verdict.calls` was dropped from the row
