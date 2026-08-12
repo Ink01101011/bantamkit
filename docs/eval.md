@@ -2992,6 +2992,63 @@ and each carries an attack direction.
   is a Contract-surface decision with its own migration note, not a docs
   amendment. (Measurement.)
 
+- **RB-P25 — nothing in this repo distinguishes guard 2's `(task, repeat)`
+  cell key from a `task`-only one, so half the key is unmeasured.** Measured
+  2026-08-12 by mutation: replace the unit's cell lookup with one that takes
+  the first entry of the union table whose *task* matches, ignoring `repeat`,
+  and **the whole suite passes (707/708 — the one failure is the mutation
+  harness's own `PYTHONPATH`, not a finding), the byte-identity floor against
+  `f8404ab` passes, and all 12 committed anchor cells produce byte-identical
+  rows, summaries and printed tables.** The reason is a fixture gap, not a
+  clever mutation: **no fixture anywhere has two cells of one task with
+  DIFFERENT guard results.** The floor's three cells are three distinct tasks
+  at one repeat each; the only same-task pair carrying a violation anywhere in
+  the cells the anchor procedure runs is 4b `nav-prod-port` r0/r1, and both
+  violate on the same point with the same word (`['right']`), while every 14b
+  task with several repeats is clean on all of them; the
+  `--guard error` first pass reads the table directly and so cannot see the
+  difference either. This is **pre-existing and NOT a regression of the
+  guarded-family refactor** — the key was `(task, repeat)` before and after —
+  but the refactor moved it into a new local (`criticreplay.py:1157`), which
+  is exactly the kind of move a fixture set ought to be able to catch and this
+  one cannot. **Attack:** add one two-repeat cell pair whose `{output}` texts
+  differ in a shared token, so that r0 is tainted and r1 is clean on the same
+  task. That single fixture makes the `repeat` half of the key AND the
+  `{output}` half of `cell_guard_violations` load-bearing at once.
+
+  **Note, same shape, and a live trap for a future cycle:** two of the five
+  mutations that establish the byte-identity floor's sensitivity — the union
+  rule collapsed to one reading, and the guard no longer reading the cell's
+  `{output}` — **fail only through the synthetic in-memory family** the floor
+  harness adds (`test_criticreplay.py:1537-1546` is where that section's
+  disagreement is asserted). On the shipped 12 points the union equals the
+  substitution-pair table by coincidence, and the `{output}` half adds zero
+  violations over the committed transcripts. So deleting that synthetic
+  section as redundant would silently re-open both blind spots while every
+  test stayed green. Do not delete it; extend the real fixtures until it is
+  genuinely redundant. (Measurement.)
+- **RB-P26 — `materialize_manifest` is a public SECOND derivation of the
+  perturbed family, one artifact removed from the run path.** `run()` is
+  `guarded_family` plus `unit.replay` and re-derives nothing, which is what
+  RB-P19's transferable finding demands. But `materialize_manifest`
+  (`criticreplay.py:598`, public, in `__all__`, what `--manifest` writes)
+  walks points x variants through `apply_point` on its own path — with
+  `check=True` where `_variant_family` uses `check=False`, and with no
+  collision check — and the two are cross-checked only where the manifest
+  already records a sha for that (point, variant), via
+  `_check_materialization`. So the audit artifact a reader trusts to tell
+  them what the run measured is produced by a different derivation than the
+  run's, and a divergence on any (point, variant) the manifest has NOT
+  materialized is invisible. Same shape as RB-P19, one level out. **Not fixed
+  in the G3 cycle deliberately** — the review that found it ruled reword-only,
+  because a refactor of the audit path belongs with its own byte-identity
+  evidence, not bolted onto a docstring correction. **Attack:** build
+  `materialize_manifest` from `_variant_family` so there is one derivation and
+  the artifact is a rendering of it; or, if the two must stay separate, pin
+  them against each other over the frozen 12 points and the three committed
+  variants, so a drift is a test failure rather than a silent difference in a
+  file nobody diffs. (Measurement.)
+
 Two of the review's findings were fixed in this cycle rather than filed:
 `requests` counted JSONL rows while `Verdict.calls` was dropped from the row
 schema, so a `structured()` retry could have inflated `tokens_total` with
