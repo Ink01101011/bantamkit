@@ -3549,9 +3549,11 @@ and each carries an attack direction.
       os._exit(status)
   ```
 
-  `pytest`'s `tmp_path` lives under a `pytest-of-<user>` directory, and both
-  status harnesses pass that path to the child on its command line, so the tell
-  arrives by a route `_child_env` does not filter and cannot filter. Against the
+  `pytest`'s `tmp_path` lives under a `pytest-of-<user>` directory, and every
+  node that exercises the handler runs the CLI with rig paths under `tmp_path`
+  (`_cli` puts `--rubric` and `--transcripts` there), so the tell reaches the
+  child **on its command line** — a route `_child_env` does not filter and, being
+  the run's own arguments, cannot. Against the
   **scrubbed** harness that patch scores a full **`739 passed`** on
   `.venv/bin/python -m pytest runtime-py/tests -q --runxfail` — every node in the
   repaired suite, the three RB-P27 spec nodes and the scrub node included — while

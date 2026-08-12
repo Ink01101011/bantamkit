@@ -2551,10 +2551,12 @@ def _child_env(**extra: str) -> dict[str, str]:
     scores `739 passed` on the WHOLE suite under `--runxfail` — every node here, the
     three RB-P27 spec nodes and the scrub node above included — while the same tree
     field-measures 120 where real HEAD gives 3. `tmp_path` lives under a
-    `pytest-of-<user>` directory and both harnesses hand that path to the child ON ITS
-    COMMAND LINE, so the tell never passes through this function and no filter written
-    here can reach it. So this scrub closed ONE signal out of at LEAST two, and a patch
-    containing none of the fix still scores a full green suite. That is why RB-P27's
+    `pytest-of-<user>` directory, and every node that exercises the handler runs the CLI
+    with rig paths under it (`_cli` puts `--rubric` and `--transcripts` there), so the
+    tell reaches the child ON ITS COMMAND LINE: it never passes through this function,
+    and no filter written here can reach it. So this scrub closed ONE signal out of at
+    LEAST two, and a patch containing none of the fix still scores a full green suite.
+    That is why RB-P27's
     closure in docs/eval.md rests on a field measurement and not on this file: a fake
     patch can fake every node in this repo, and it cannot fake a real shell's `$?` on a
     process with no pytest anywhere in it. Nothing here is repaired by knowing that —
