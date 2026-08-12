@@ -550,20 +550,32 @@ strengthen without breaking, which makes this cell the attack's own guard rail.
    before stage 1** — it is in the pre-registration commit itself. All 20
    stage-2 cells: stage-1 identity score equals all five R=5 replays, 100/100,
    zero within-cell spread.
-7. **Guard violations changed no verdict — but the guard analysis itself was
-   wrong, and is corrected here.** The screen recorded 5 affected cells.
-   Recomputed offline with `criticreplay.shared_token_violations` over all 22
-   frozen task prompts, the true figure is **8 of the 20**. The screen's §6
-   table got `P2-asks-requests` wrong in both halves: it recorded the
-   symmetric difference as "+ `requests`" and the violation as
-   `recall-org-quota` (*requests*), when in fact `requests` violates nowhere
-   (`recall-org-quota` says "requests-per-minute", one token) and the omitted
-   word `for` violates on **six** tasks. On all eight cells the fragility
-   verdict is identical with and without the violating points, so **no
-   conclusion here rests on a guard-violating point** — but the pre-registered
-   re-check that set out specifically to widen RB-P19 under-reported it a
-   second time. Full correction under RB-P19 below; the corrected per-cell
-   data ships inside the anchor artifact, not in the screen's table.
+7. **Guard violations changed no verdict — and the guard rule turned out to
+   have two readings, so the screen's table is one of them, not an error.**
+   The screen recorded 5 affected cells against §3.3's *whole-text* reading —
+   the symmetric difference of the base and perturbed TEMPLATE word sets,
+   which is the spec's operative Test sentence. Recomputed over all 22 frozen
+   task prompts under the *substitution-pair* reading — the symmetric
+   difference of each point's own `from`/`to` strings, which §3.3 step 4 and
+   the manifest's P2 prose imply — the figure is **8 of the 20**, because
+   `for` leaves the P2 instance while surviving elsewhere in the template.
+   Both readings are defensible and the user ruled (2026-08-12) that both are
+   computed and reported and neither is wrong.
+
+   > **RETRACTION (2026-08-12).** This item originally read "the guard
+   > analysis itself was wrong, and is corrected here", and said the screen
+   > "got `P2-asks-requests` wrong in both halves" and that "`requests`
+   > violates nowhere". **Withdrawn.** `requests` does violate on
+   > `recall-org-quota` — it was hidden by a tokenizer that treated the hyphen
+   > in "requests-per-minute" as word-internal, which was a separate false
+   > negative, since fixed. The screen's row was the whole-text reading and it
+   > was right about it.
+
+   On all eight cells the fragility verdict is identical with and without the
+   violating points under either reading, so **no conclusion here rests on a
+   guard-violating point**. Both tables ship machine-readably in
+   `docs/eval-data/2026-08-12-rbp19b-guard2-both-readings-22-prompts.json`.
+   Full treatment under RB-P19 below.
 8. **Coverage, stated plainly as not exhaustive.** 2 of 4 models (`llama3.2:3b`
    and `qwen2.5:7b-instruct` unscreened); 132 of 264 possible cells at
    identity; 20 of 132 at full family (15%); on 14b, 4 of 43 near-band cells
