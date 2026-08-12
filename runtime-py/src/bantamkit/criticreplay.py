@@ -80,11 +80,15 @@ from bantamkit.evalrun import TrackingClient
 from bantamkit.structured import structured
 
 __all__ = [
+    "ARTIFACT_WRITE_EXIT",
     "GUARD_DECISION_RULE",
     "GUARD_MODES",
+    "GUARD_VIOLATION_EXIT",
     "IN_MEMORY_REF",
     "READINGS",
     "READING_RULES",
+    "REFUSAL_EXIT",
+    "USAGE_EXIT",
     "Case",
     "GuardedFamily",
     "GuardedReplay",
@@ -97,6 +101,7 @@ __all__ = [
     "Verdict",
     "apply_point",
     "cell_guard_violations",
+    "exit_status",
     "guard_table",
     "guard_union",
     "guarded_family",
@@ -143,6 +148,52 @@ CLASSES = ("identity", "whitespace", "order", "paraphrase")
 # What a run does when a point violates §3.3's shared-token guard on a cell. See
 # `guard_table` for why `warn` is the default and `error` is not.
 GUARD_MODES = ("warn", "error")
+
+# ---- the exit-status contract (§6.2, RB-P24) ----
+#
+# Five outcomes a CI job has to tell apart. Four of them are meanings this tool
+# chooses, and TWO MEANINGS MAY NOT SHARE ONE NUMBER — which is exactly what was
+# wrong: a run where guard 2 fired on eight cells exited 0, indistinguishable from a
+# clean one, so `--guard error` (which refuses instead of measuring) was the only
+# machine-readable verdict there was.
+#
+#   0  measured, and guard 2 fired on nothing that ran
+#   1  DID NOT COMPLETE A MEASUREMENT — every `BantamError` path, `--guard error`
+#      included, and every abort in the middle of one. The perturbation-bar spec
+#      §6/§11 rest on this family being non-zero. It does NOT promise that nothing
+#      was written: the JSONL sink flushes per row on purpose, so a run that dies
+#      mid-family (a refused connection on request 40 of 80) exits 1 with rows
+#      already on disk. 1 means the run owes you no conclusion, not that it left
+#      no trace. Read it as "fix the input and run it again", and treat any
+#      artifact from a 1 as partial.
+#   2  usage error. Not this module's to choose: it is argparse's, and it is recorded
+#      here as a MEASURED number (`--not-a-flag` exits 2), pinned from a shell by
+#      `test_argparses_usage_status_is_measured_not_assumed`, so that the statuses this
+#      module does choose cannot silently collide with it. argparse also owns this
+#      module's own `parser.error` validations (`--replays 0` exits 2, measured).
+#   3  measured, WITH violations. Every artifact is written — the JSONL, the summary,
+#      the printed table — and the status says the guard fired, never that the run
+#      failed. A violating cell (`nav-prod-port` is one) has to stay measurable.
+#   4  measured, but AN ARTIFACT COULD NOT BE WRITTEN — today, exactly: the
+#      `--summary` file. The measurement completed and the table is still printed;
+#      what is missing is the file a later reader would diff. It is a separate
+#      number because it used to be an unhandled `OSError`, i.e. a 1, on a run that
+#      had already flushed every JSONL row — the refusal status on a run that
+#      measured (RB-P24 review, C1). It OUTRANKS 3: "every artifact is written" is
+#      the one thing 3 promises, and here it is false. `--violations-exit-zero`
+#      cannot suppress it — the hatch is an opt-out from 3 alone.
+#
+# A CI job writes against these directly: 0 clean, 1 fix the input and re-run (any
+# artifacts are partial), 2 fix the command line, 3 the run happened and the GUARD
+# section and the `guard_dropped` blocks have to be read before anything is credited,
+# 4 the run happened but its summary is not on disk. Anything outside 0-4 did not come
+# from this tool: 130 is SIGINT, 143 is SIGTERM, and a stdout that goes away mid-table
+# is the interpreter's number, not one of these — a CI job should branch on this range
+# and treat everything else as "did not run to completion".
+REFUSAL_EXIT = 1
+USAGE_EXIT = 2
+GUARD_VIOLATION_EXIT = 3
+ARTIFACT_WRITE_EXIT = 4
 
 # §3.3 guard 2 has two defensible readings of "a word the point adds or removes", and
 # the spec supports each in a different sentence. The user's ruling (2026-08-12) is that
@@ -1683,16 +1734,66 @@ def format_table(summary: dict) -> str:
     return "\n".join(lines)
 
 
+def exit_status(result: RunResult) -> int:
+    """The status a run that MEASURED something leaves behind: 0, or `GUARD_VIOLATION_EXIT`.
+
+    **What counts, and it is the rows.** Guard 2's union is non-empty on a (point, cell)
+    pair the run ACTUALLY REPLAYED. Every row carries that pair's verdict already
+    (`GuardedReplay.replay` stamps it), so this reads the run's own answer rather than
+    re-deriving one beside it — RB-P19's finding is that a second derivation which
+    happens to agree corroborates nothing.
+
+    Three consequences, each deliberate:
+
+    - **A point dropped from every variant's family does not count.** `guard_table` runs
+      over every selected point, before `_variant_family` drops the ones whose anchor is
+      absent, and the substitution-pair reading is a function of the point's own
+      `from`/`to` pair — so `result.guard` can flag a point that reached no request and
+      entered no statistic. Statusing on that table would be a verdict about a pair that
+      never ran. It is still in the summary, and the drop is still in `dropped_rules`.
+    - **`--identity-only` is always 0.** The identity point moves no words and cannot
+      violate; RB-P15's standing check keeps the status it has always had.
+    - **A violation on a variant whose rows were all dropped does not count for the
+      status, but a violation on any variant that DID replay the pair does.** The union
+      is across variants exactly as `guard_table` computes it.
+
+    This is a statement about the GUARD FIRING, not about whether the conclusion survived
+    dropping the point. Whether the separation holds on the guard-clean family is
+    `_compare`'s `guard_verdict`/`attributable`, it is already in the summary, and it is
+    not re-decided here: a run whose attribution survives its violations still fired the
+    guard, and a reader who is told otherwise by an exit code learns the wrong thing.
+    """
+    return GUARD_VIOLATION_EXIT if any(row.guard_violations for row in result.rows) else 0
+
+
 # ---- CLI (§6.2) ----
+
+_EXIT_CONTRACT = f"""exit status (RB-P24):
+  0  measured; guard 2 fired on nothing that ran
+  {REFUSAL_EXIT}  did not complete a measurement (bad input, --guard error on a violating
+     cell, or an abort mid-run). Artifacts from a {REFUSAL_EXIT} are PARTIAL, not absent:
+     the --json sink flushes per row so a killed run keeps what it got.
+  {USAGE_EXIT}  usage error (argparse's number, including this module's own validations)
+  {GUARD_VIOLATION_EXIT}  measured, WITH guard-2 violations - every artifact is still written,
+     and the GUARD section names each violating (point, cell)
+  {ARTIFACT_WRITE_EXIT}  measured, but an artifact could not be written (the --summary file).
+     The table is still printed. Outranks {GUARD_VIOLATION_EXIT}; --violations-exit-zero
+     does not suppress it.
+Anything outside 0-{ARTIFACT_WRITE_EXIT} is the interpreter or a signal (130 SIGINT, 143
+SIGTERM), not this tool: branch on this range, treat the rest as "did not run to
+completion".
+"""
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="python -m bantamkit.criticreplay",
         description=(
-            "Perturbation bar: replay one critic over a family of meaning-preserving "
+            "Perturbation bar: replay one critic over a family of meaning-preserving\n"
             "edits to its own prompt and report the pass rate with its spread."
         ),
+        epilog=_EXIT_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--rubric",
@@ -1727,6 +1828,16 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--json", type=Path, help="append one JSON line per replay to this file")
     parser.add_argument("--summary", type=Path, help="write the summary JSON here")
+    parser.add_argument(
+        "--violations-exit-zero",
+        action="store_true",
+        help=(
+            f"exit 0 instead of {GUARD_VIOLATION_EXIT} when guard 2 fired on a replayed "
+            "pair, for a procedure whose violations are EXPECTED and recorded (the anchor "
+            "set's second pass is one). Changes nothing that is written, and prints what "
+            "it suppressed on stderr"
+        ),
+    )
     args = parser.parse_args(argv)
     if args.replays < 1 or args.identity_replays < 1:
         parser.error("--replays and --identity-replays must be >= 1")
@@ -1773,10 +1884,46 @@ def main(argv: list[str] | None = None) -> None:
         if jsonl is not None:
             jsonl.close()
 
+    # RB-P24 review, C1: this write is the one artifact produced AFTER the measurement,
+    # and it used to sit outside every handler — so an unwritable `--summary` raised an
+    # unhandled OSError and the process exited 1, the REFUSAL status, on a run that had
+    # already flushed every JSONL row. A run that measured may not report that it
+    # refused. The failure gets its own number and the table is still printed, because
+    # the measurement happened and stdout is where it is readable.
+    write_failure: OSError | None = None
     if args.summary:
-        args.summary.parent.mkdir(parents=True, exist_ok=True)
-        args.summary.write_text(json.dumps(summary, indent=2) + "\n")
+        try:
+            args.summary.parent.mkdir(parents=True, exist_ok=True)
+            args.summary.write_text(json.dumps(summary, indent=2) + "\n")
+        except OSError as e:
+            write_failure = e
+            print(
+                f"error: measured, but the summary could not be written to "
+                f"{args.summary}: {e}. The table below is the measurement; the JSONL "
+                "rows, if --json was passed, are on disk.",
+                file=sys.stderr,
+            )
     print(format_table(summary))
+
+    # RB-P24. LAST, after every artifact that could be written exists: the JSONL (whose
+    # sink already flushed per row), the summary and the table. Non-zero here means
+    # "measured, and the guard fired" or "measured, and a file could not be written" —
+    # never "nothing happened". Nothing that is written depends on this.
+    status = exit_status(result)
+    if status and args.violations_exit_zero:
+        print(
+            f"note: guard 2 fired on a replayed pair; suppressing status {status} because "
+            "--violations-exit-zero was passed. The violations are in the GUARD section "
+            "above and in the artifacts.",
+            file=sys.stderr,
+        )
+        status = 0
+    if write_failure is not None:
+        # Outranks the guard status and survives the hatch: 3 promises "every artifact
+        # is written", and the hatch is an opt-out from 3 alone.
+        status = ARTIFACT_WRITE_EXIT
+    if status:
+        raise SystemExit(status)
 
 
 if __name__ == "__main__":
