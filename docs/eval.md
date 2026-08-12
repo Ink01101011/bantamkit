@@ -2596,6 +2596,36 @@ and each carries an attack direction.
   over every frozen task**, computed from the manifest, so no future family
   can ship violating it and no future author has to derive the word list by
   hand. (Measurement.)
+
+  **ADDRESSED (2026-08-12), and the attack was modified on measurement.** The
+  guard now runs on the run path (`_guard_table`, called from `run()` before
+  any request), and the corrected table is pinned by a test over all 22 frozen
+  prompts rather than one cell. **The "load-time error" half of the attack was
+  tried and rejected as written:** 8 of the 20 screened cells violate,
+  including `nav-prod-port` and 3 of the 12 committed anchor cells, so an
+  abort makes the canonical cell of this line of work unrunnable — a
+  regression against the anchor floor, not a stricter guard. The status quo
+  did produce measurements; what it failed to do was make the violation
+  impossible to miss. So the enforced property is **non-silence**, not
+  refusal: every row a violating point produces carries `guard_violations`,
+  the summary carries a `guard` block and a per-(variant, cell)
+  `guard_dropped` recomputation, `format_table` prints a GUARD section, and
+  attribution requires the separation to survive dropping the tainted points.
+  `pass_rate` stays the full family so every committed number remains
+  comparable. `--guard error` is the strict reading, opt-in, refusing before
+  any spend. Verified end to end: 14b `nav-prod-port` reports the violation in
+  its committed JSONL and summary
+  (`docs/eval-data/2026-08-12-rbp19-guard-nav-prod-port-14b*`), and all 12
+  anchor cells still run with every `expect_pass_rate` unchanged
+  (`docs/eval-data/2026-08-12-rbp19-guard-anchors-{14b,4b}*`) — including all
+  three hand-computed `guard_dropped` blocks, which the tool now reproduces
+  mechanically.
+  **What remains open:** the manifest still ships three points that violate
+  their own admissibility procedure. Making the violation visible is not the
+  same as not having it. **Attack, unchanged in substance:** re-author `P1`,
+  `P2` and `P3` against words absent from all 22 frozen prompts, then the
+  guard-clean family is the full family on every cell and the question of what
+  a run should do about a violation stops arising. (Measurement.)
 - **RB-P20 — the `critique` config deletes the only evidence of its own
   rejections, so any screen run through it is biased against finding a
   critic defect.** When the `critique` gate exhausts its rounds `agent.run`
