@@ -1,0 +1,147 @@
+{
+  "name": "rbp19b-guard2-both-readings-22-prompts",
+  "created": "2026-08-12",
+  "job": "rbp19-guard-load-time",
+  "layer": "Measurement",
+  "what_this_is": "Spec \u00a73.3 step 3, guard 2 over the shipped 12-point perturbation family and all 22 frozen task prompts, under BOTH readings of 'a word the point adds or removes'. The user's ruling (2026-08-12) is that both are computed, both are reported, and NEITHER is wrong. This file supersedes any earlier artifact that labels one of them 'the corrected table'.",
+  "retraction": "docs/eval-data/2026-08-12-nonfragile-anchor-set.json's `guard_note` and per-cell notes called the substitution-pair set 'the CORRECTED violation set' and said M1's screen 'under-reported P2-asks-requests'. Both phrases are RETRACTED. Commit 25ce48b's message and 9ca1576's 'their wrong P2 row' stand in git history as written and are wrong on this point; git history is not rewritten. AMENDED 2026-08-12 (this field only; no table in this file changed): this field previously read \u201cThat file is committed evidence and is not retro-edited; this file and docs/eval.md's RB-P19 entry carry the correction.\u201d That is no longer true and would misdirect a reader. On the user's ruling of 2026-08-12 the anchor set's `guard_note`, its three per-cell notes and its `how_to_use` were amended IN PLACE, with a visible `amended` block, because the invariant protects measurements from being refitted to conclusions and not a prose annotation that has become a live misdirection in the file operators actually open. Every measured field in that file is byte-identical to b439053. The correction is carried in three places now: that file's `amended` block, this file, and docs/eval.md's RB-P19 entry.",
+  "readings": {
+    "whole-text": "symmetric difference of the base and perturbed TEMPLATE word sets \u2014 \u00a73.3's operative Test sentence, and what an independent re-derivation from the spec produced",
+    "substitution-pair": "symmetric difference of the point's own `from`/`to` word sets \u2014 what \u00a73.3 step 4's substitution-pair form and the manifest's P2 justification imply"
+  },
+  "decision_rule": "union \u2014 a (point, cell) is tainted if EITHER reading flags it, because under-detection is the direction this guard exists to prevent",
+  "tokenizer": "A hyphen is a word boundary. Before 2026-08-12 it was word-internal, so `requests-per-minute` was one token and `requests` was invisible to BOTH readings \u2014 a false negative. Fixed; this table is post-fix.",
+  "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+  "rubric": "assets/rubrics/task-completion.yaml (A-asfiled)",
+  "rubric_sha256": "55f700e09bab0cfac01cb18d4cfb54666ff942598035697e0383726fe82c2868",
+  "frozen_prompts": 22,
+  "moved_words_per_point": {
+    "P1-reviewer-relative": {
+      "whole-text": [
+        "checking",
+        "checks",
+        "who"
+      ],
+      "substitution-pair": [
+        "checking",
+        "checks",
+        "who"
+      ]
+    },
+    "P2-asks-requests": {
+      "whole-text": [
+        "requests"
+      ],
+      "substitution-pair": [
+        "asks",
+        "for",
+        "requests"
+      ]
+    },
+    "P3-right-correct": {
+      "whole-text": [
+        "right"
+      ],
+      "substitution-pair": [
+        "correct",
+        "right"
+      ]
+    }
+  },
+  "violations": {
+    "by_reading": {
+      "whole-text": {
+        "P1-reviewer-relative": {
+          "recall-oncall-rotation": [
+            "who"
+          ],
+          "recall-oncall": [
+            "who"
+          ]
+        },
+        "P2-asks-requests": {
+          "recall-org-quota": [
+            "requests"
+          ]
+        },
+        "P3-right-correct": {
+          "nav-prod-port": [
+            "right"
+          ]
+        }
+      },
+      "substitution-pair": {
+        "P1-reviewer-relative": {
+          "recall-oncall-rotation": [
+            "who"
+          ],
+          "recall-oncall": [
+            "who"
+          ]
+        },
+        "P2-asks-requests": {
+          "nav-release-bundle": [
+            "for"
+          ],
+          "recall-cache-ttl": [
+            "for"
+          ],
+          "recall-env-endpoint": [
+            "for"
+          ],
+          "recall-oncall-rotation": [
+            "for"
+          ],
+          "recall-oncall": [
+            "for"
+          ],
+          "recall-org-quota": [
+            "for",
+            "requests"
+          ]
+        },
+        "P3-right-correct": {
+          "nav-prod-port": [
+            "right"
+          ]
+        }
+      }
+    },
+    "union": {
+      "P1-reviewer-relative": {
+        "recall-oncall-rotation": [
+          "who"
+        ],
+        "recall-oncall": [
+          "who"
+        ]
+      },
+      "P2-asks-requests": {
+        "nav-release-bundle": [
+          "for"
+        ],
+        "recall-cache-ttl": [
+          "for"
+        ],
+        "recall-env-endpoint": [
+          "for"
+        ],
+        "recall-oncall-rotation": [
+          "for"
+        ],
+        "recall-oncall": [
+          "for"
+        ],
+        "recall-org-quota": [
+          "for",
+          "requests"
+        ]
+      },
+      "P3-right-correct": {
+        "nav-prod-port": [
+          "right"
+        ]
+      }
+    }
+  }
+}

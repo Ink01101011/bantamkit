@@ -1,0 +1,303 @@
+{
+  "bar": "perturbation",
+  "threshold": 7,
+  "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+  "guard": {
+    "rule": "spec \u00a73.3 step 3, guard 2 \u2014 no word a point adds or removes may appear in the cell's {task} or {output}",
+    "mode": "warn",
+    "violations": [
+      {
+        "task": "recall-oncall-rotation",
+        "repeat": 1,
+        "point": "P1-reviewer-relative",
+        "words": [
+          "who"
+        ]
+      },
+      {
+        "task": "recall-oncall-rotation",
+        "repeat": 1,
+        "point": "P2-asks-requests",
+        "words": [
+          "for"
+        ]
+      }
+    ]
+  },
+  "requests": 128,
+  "wire_calls": 128,
+  "tokens_total": 46183,
+  "variants": [
+    {
+      "label": "after",
+      "rubric_ref": "assets/rubrics/task-completion.yaml",
+      "rubric_sha256": "55f700e09bab0cfac01cb18d4cfb54666ff942598035697e0383726fe82c2868",
+      "dropped_rules": []
+    }
+  ],
+  "cells": [
+    {
+      "task": "extract-contact",
+      "repeat": 0,
+      "seed": 2259705935,
+      "guard_violations": {},
+      "variants": {
+        "after": {
+          "pass_rate": "12/12",
+          "passed": 12,
+          "family_size": 12,
+          "score_min": 9,
+          "score_max": 10,
+          "spread": 1,
+          "margin_zero": 0,
+          "identity_scores": [
+            10,
+            10,
+            10,
+            10,
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false,
+          "guard_violations": {},
+          "guard_dropped": null
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-contact",
+      "repeat": 1,
+      "seed": 3497327120,
+      "guard_violations": {},
+      "variants": {
+        "after": {
+          "pass_rate": "12/12",
+          "passed": 12,
+          "family_size": 12,
+          "score_min": 9,
+          "score_max": 10,
+          "spread": 1,
+          "margin_zero": 0,
+          "identity_scores": [
+            10,
+            10,
+            10,
+            10,
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false,
+          "guard_violations": {},
+          "guard_dropped": null
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-contact",
+      "repeat": 2,
+      "seed": 2660316194,
+      "guard_violations": {},
+      "variants": {
+        "after": {
+          "pass_rate": "12/12",
+          "passed": 12,
+          "family_size": 12,
+          "score_min": 9,
+          "score_max": 10,
+          "spread": 1,
+          "margin_zero": 0,
+          "identity_scores": [
+            9,
+            9,
+            9,
+            9,
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false,
+          "guard_violations": {},
+          "guard_dropped": null
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-invoice",
+      "repeat": 0,
+      "seed": 1357191355,
+      "guard_violations": {},
+      "variants": {
+        "after": {
+          "pass_rate": "12/12",
+          "passed": 12,
+          "family_size": 12,
+          "score_min": 9,
+          "score_max": 10,
+          "spread": 1,
+          "margin_zero": 0,
+          "identity_scores": [
+            9,
+            9,
+            9,
+            9,
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false,
+          "guard_violations": {},
+          "guard_dropped": null
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-invoice",
+      "repeat": 1,
+      "seed": 3927040636,
+      "guard_violations": {},
+      "variants": {
+        "after": {
+          "pass_rate": "12/12",
+          "passed": 12,
+          "family_size": 12,
+          "score_min": 9,
+          "score_max": 10,
+          "spread": 1,
+          "margin_zero": 0,
+          "identity_scores": [
+            10,
+            10,
+            10,
+            10,
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false,
+          "guard_violations": {},
+          "guard_dropped": null
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-order",
+      "repeat": 1,
+      "seed": 2555329956,
+      "guard_violations": {},
+      "variants": {
+        "after": {
+          "pass_rate": "12/12",
+          "passed": 12,
+          "family_size": 12,
+          "score_min": 9,
+          "score_max": 10,
+          "spread": 1,
+          "margin_zero": 0,
+          "identity_scores": [
+            10,
+            10,
+            10,
+            10,
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false,
+          "guard_violations": {},
+          "guard_dropped": null
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-oncall-rotation",
+      "repeat": 1,
+      "seed": 3203733254,
+      "guard_violations": {
+        "P1-reviewer-relative": [
+          "who"
+        ],
+        "P2-asks-requests": [
+          "for"
+        ]
+      },
+      "variants": {
+        "after": {
+          "pass_rate": "0/12",
+          "passed": 0,
+          "family_size": 12,
+          "score_min": 0,
+          "score_max": 2,
+          "spread": 2,
+          "margin_zero": 0,
+          "identity_scores": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "identity_spread": 0,
+          "fragile": false,
+          "guard_violations": {
+            "P1-reviewer-relative": [
+              "who"
+            ],
+            "P2-asks-requests": [
+              "for"
+            ]
+          },
+          "guard_dropped": {
+            "pass_rate": "0/10",
+            "passed": 0,
+            "family_size": 10,
+            "score_min": 0,
+            "score_max": 2,
+            "spread": 2,
+            "margin_zero": 0,
+            "identity_scores": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "identity_spread": 0,
+            "fragile": false
+          }
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "shop-compare",
+      "repeat": 2,
+      "seed": 4118104234,
+      "guard_violations": {},
+      "variants": {
+        "after": {
+          "pass_rate": "0/12",
+          "passed": 0,
+          "family_size": 12,
+          "score_min": 0,
+          "score_max": 2,
+          "spread": 2,
+          "margin_zero": 0,
+          "identity_scores": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "identity_spread": 0,
+          "fragile": false,
+          "guard_violations": {},
+          "guard_dropped": null
+        }
+      },
+      "comparisons": []
+    }
+  ]
+}
