@@ -2947,6 +2947,78 @@ and each carries an attack direction.
   templates already paired with their guard verdicts — and demote
   `apply_point`/`replay_verdicts` in the docs to the primitives it is built
   from, so the guarded path is the short one. (Measurement.)
+
+  **CLOSED (2026-08-12).** The filed defect was "a guard a consumer can skip
+  because reaching it means knowing a second call exists". There is now one
+  public call from (variants, points, cells) to units that carry their own
+  verdict: `guarded_family` returns a `GuardedReplay` per (variant, point,
+  cell) holding the exact `Rubric` to replay, the cell, the replay count that
+  point's class earns, and guard 2's verdict under both readings.
+  `unit.replay(client)` stamps that verdict onto every `Verdict` it returns, so
+  the taint rides the object the consumer serializes instead of sitting in a
+  second table they have to join on (point, cell). `run()` is those two calls
+  and nothing else, and that is pinned by a byte-identity floor against
+  `f8404ab` rather than by reading it — a second derivation that happens to
+  agree is RB-P19's finding wearing new clothes. `replay_verdicts` stays blind
+  and now says so in its own docstring: the `Verdict`s it returns carry EMPTY
+  `guard_violations` — **blank, not clean**. A cold reader lands on the guarded
+  call: the module docstring's API section opens *Start at `guarded_family`*,
+  and `apply_point`, `guard_table` and `replay_verdicts` each name themselves a
+  PRIMITIVE of it in their first paragraph.
+
+  **The measurement: 2 steps guarded against 3 unguarded, from an equal
+  start.** Not counted by eye.
+  `test_the_unguarded_route_still_reaches_the_wire_and_is_the_longer_one`
+  EXECUTES both routes from one `Rubric` a consumer already holds, with every
+  name in `__all__` wrapped by a counter that records a call only when the
+  calling frame is outside `criticreplay.py`, so the module's own internal
+  calls inflate neither route: `apply_point`, `Rubric`,
+  `replay_verdicts` against `guarded_family`, `unit.replay`. It goes red the
+  moment either route needs a step it does not need today, because a route that
+  cannot be executed raises instead of being re-counted.
+
+  **And it was a TIE at 3 until the last feature commit of this cycle.** The
+  attack as filed — build the constructor, demote the primitives in the docs —
+  was executed faithfully, and `guarded_family` took `list[RubricVariant]`. A
+  consumer holding a `Rubric` therefore owed a five-field `RubricVariant`
+  construction, `sha256` included, that the unguarded route never charged:
+  charge both routes their construction or charge neither, and the two were the
+  same length. The 3-vs-2 first reported was real only for a consumer starting
+  from a rubric FILE — the CLI's situation, not the hand-rolling library
+  consumer RB-P23 is about. The count above holds because `guarded_family` now
+  accepts a bare `Rubric` too (`53fc831`), deriving `label` from the rubric's
+  own name, `ref` as `<in-memory>` and `sha256` blank rather than inventing a
+  file that was never read. The first version of the residual test compared two
+  tuples of hand-typed strings and asserted `2 < 3`; it was constant-true, and
+  it stayed green through the whole period in which the claim was false.
+
+  **The residual, named in the same breath, because it is not gone.** Python
+  has no private functions: `apply_point` -> hand-assembled `Rubric` ->
+  `replay_verdicts` still reaches the wire on a tainted (point, cell) pair, and
+  the verdicts come back with blank guard fields and nothing recording why.
+  `unit.rubric` can still be handed to `replay_verdicts` by hand, and the taint
+  stays behind on the unit. **This is a length claim and a
+  taint-travels-with-the-object claim. It is not an impossibility claim and may
+  not be quoted as one.** The next lever is not the API: refusing to score
+  without a point breaks RB-P15's identity-only replay, which legitimately has
+  no point to guard against, and threading a `Point` into `replay_verdicts`
+  puts a parameter in the replay primitive that the primitive does not use —
+  both were rejected when this was filed and neither improved. The next lever is
+  **RB-P24's open half, the exit code**: a `warn`-mode run exits 0 whether or
+  not guard 2 fired, and no API shape reaches a CI job that reads a status.
+
+  **The transferable finding: a "make the good path shorter" fix is only
+  shorter from some starting point, and the starting point that counts is the
+  consumer's, not the one you happen to have.** The filed attack was carried
+  out to the letter and left both routes at 3. What made the claim true was an
+  affordance nobody had filed — the bare `Rubric` — which removed a
+  construction the guarded route charged and the unguarded route did not. Two
+  rules follow. **Count from the consumer's start:** this repo's own caller is
+  a CLI holding a rubric file, so every count taken from where the code already
+  stood agreed with the fix, and none of them tested it. **And a length claim
+  needs a test that can go red:** a comparison of hand-typed step lists
+  restates the claim instead of measuring it, and the difference between the
+  two was the entire finding here. (Measurement.)
 - **RB-P24 — a guard-violating run exits 0 and the anchor set's procedure
   never asks anyone to look.** `criticreplay` returns success whether or not
   guard 2 fired; the only signals are a GUARD section in stdout and fields in
