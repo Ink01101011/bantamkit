@@ -1492,6 +1492,58 @@ def test_guard_table_is_public_so_a_hand_rolled_loop_can_call_it(asset_tree, tmp
     assert "guard_table" in criticreplay.__all__
 
 
+# ---- the byte-identity floor: the whole offline run, against `f8404ab` ----
+#
+# The baseline in `data/` was produced by running `perturbation_baseline_harness.py`
+# against a `git worktree` of `f8404ab` — the commit before the guarded-family
+# refactor — NOT by re-running the refactored code and freezing its answer. That
+# distinction is the whole value of the file: a golden expectation computed by the
+# thing it checks pins the author's method, not the behaviour (RB-P19's transferable
+# finding). It covers the JSONL rows, the summary dict, the printed guard sections,
+# the identity-only path and the zero-spend `--guard error` refusal.
+
+BASELINE = Path(__file__).resolve().parent / "data" / "f8404ab-perturbation-baseline.json"
+
+
+def test_the_whole_offline_run_is_byte_identical_to_f8404ab(tmp_path):
+    from perturbation_baseline_harness import produce, serialize
+
+    expected = json.loads(BASELINE.read_text())
+    produced = produce(criticreplay, tmp_path / "rubrics")
+    for section in (
+        "rows", "summary", "table", "identity_only", "guard_error_refusal", "synthetic",
+    ):
+        assert produced[section] == expected[section], section
+    assert serialize(produced) == BASELINE.read_text()
+
+
+def test_the_baseline_covers_a_populated_guard_table_and_a_zero_spend_refusal():
+    """A floor that measured nothing would pass any refactor."""
+    expected = json.loads(BASELINE.read_text())
+    assert len(expected["rows"]) == 75
+    assert len(expected["summary"]["guard"]["violations"]) >= 3
+    readings = {r["point"]: r["readings"] for r in expected["summary"]["guard"]["violations"]}
+    # The two readings disagree inside the baseline, so a refactor that collapsed them
+    # into one could not pass it.
+    assert readings["P2-asks-requests"]["whole-text"] != (
+        readings["P2-asks-requests"]["substitution-pair"]
+    )
+    assert expected["guard_error_wire_calls"] == 0
+    assert expected["guard_error_refusal"].startswith("shared-token guard")
+    assert expected["dropped"] == {"L1": [], "L2": ["W1-trailing-newline"]}
+    # And the union rule is load-bearing in the synthetic section, which the frozen
+    # family cannot make it: there, union == substitution-pair by coincidence.
+    synthetic = {
+        v["point"]: v for v in expected["synthetic"]["summary"]["guard"]["violations"]
+    }
+    assert synthetic["P-survivor"]["readings"] == {
+        "whole-text": [], "substitution-pair": ["two"]
+    }
+    assert synthetic["P-inword"]["readings"] == {
+        "whole-text": ["brisk"], "substitution-pair": []
+    }
+
+
 # ---- the guard's three siblings in the RUN path (§3.3 step 3, guards 1, 3, 4) ----
 #
 # Guard 2 was defined-but-uncalled; so was guard 3's `FROZEN_KEYWORDS`, which lived in
