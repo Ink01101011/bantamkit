@@ -3368,6 +3368,14 @@ and each carries an attack direction.
   read end is closed before the child prints. Not done here: it is a change
   to what the process does at shutdown, and this cycle's remit was the status
   a completed run chooses. (Measurement.)
+  **In progress on `feat/rbp27-broken-pipe`.** Lever (2) has an executable
+  spec — three `xfail` closed-pipe tests in `test_criticreplay.py`, measured
+  at `120` on `c7d0b72` for a run that earned `0`, one that earned `3` and one
+  that earned `4` — and the same branch runs it as the first measured cell of
+  the `qwen-implementer` backlog item. The bar for that cell, its arms and what
+  a pass would and would not demonstrate are pre-registered in
+  `docs/eval-data/2026-08-12-rbp27-qwen-cell-prereg.md`, committed before any
+  arm ran. Lever (1) — the contract sentence — is not done either.
 
 Two of the review's findings were fixed in this cycle rather than filed:
 `requests` counted JSONL rows while `Verdict.calls` was dropped from the row
