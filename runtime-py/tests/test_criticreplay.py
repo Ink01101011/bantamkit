@@ -2411,29 +2411,40 @@ def test_cli_rejects_a_replay_count_below_one(rig, monkeypatch):
 
 # ---- RB-P24: the exit-status contract (§6.2) ----
 #
-# Four outcomes a CI job has to tell apart, and until this they shared two numbers: a
+# Five outcomes a CI job has to tell apart, and until this they shared two numbers: a
 # run where guard 2 fired on eight cells exited 0, exactly like a clean one, so the
 # only machine-readable verdict was `--guard error`, which refuses instead of
 # measuring. The contract now is:
 #
 #   0  measured, and guard 2 fired on nothing that ran
-#   1  refused, nothing measured — every `BantamError` path, `--guard error` included
+#   1  DID NOT COMPLETE A MEASUREMENT — every `BantamError` path, `--guard error`
+#      included, and every mid-run abort. It does NOT promise nothing was written: the
+#      JSONL sink flushes per row, so a 1 can leave partial rows on disk.
 #   2  usage error — argparse's own status, MEASURED below rather than assumed
 #   3  measured, WITH violations — every artifact written, the guard fired
+#   4  measured, but an artifact could not be written (the `--summary` file). Its own
+#      number because it used to be an unhandled OSError, i.e. a 1, on a run that had
+#      already flushed every row (RB-P24 review, C1). Outranks 3; the hatch cannot
+#      suppress it.
 #
-# Three meanings may not share one number, so 3 is the first free one above the two
-# that are taken. What the status is about is the GUARD FIRING on a (point, cell) the
-# run actually replayed — not whether the conclusion survived dropping the point, which
+# Two meanings may not share one number, so each new one takes the first free value
+# above those already taken. What the guard status is about is the GUARD FIRING on a
+# (point, cell) the run actually replayed — not whether the conclusion survived dropping
+# the point, which
 # is `_compare`'s job and stays there.
 
 
 def test_the_guard_status_is_distinct_from_the_refusal_and_the_usage_status():
-    """Three meanings, three numbers. The usage number is measured in the shell below."""
+    """Four meanings, four numbers. The usage number is measured in the shell below."""
     assert criticreplay.REFUSAL_EXIT == 1
     assert criticreplay.USAGE_EXIT == 2
     assert criticreplay.GUARD_VIOLATION_EXIT not in (0, criticreplay.REFUSAL_EXIT,
                                                      criticreplay.USAGE_EXIT)
+    assert criticreplay.ARTIFACT_WRITE_EXIT not in (0, criticreplay.REFUSAL_EXIT,
+                                                    criticreplay.USAGE_EXIT,
+                                                    criticreplay.GUARD_VIOLATION_EXIT)
     assert "exit_status" in criticreplay.__all__
+    assert "ARTIFACT_WRITE_EXIT" in criticreplay.__all__
 
 
 def test_exit_status_is_zero_when_nothing_that_ran_violated(rig):
@@ -2624,9 +2635,181 @@ def test_the_escape_hatch_exits_zero_and_leaves_a_trace_on_stderr(guard_rig, tmp
 
 
 def test_identity_only_over_a_violating_cell_exits_zero_in_a_real_shell(guard_rig, tmp_path):
-    """RB-P15's standing check keeps its status: no `P` point runs, so nothing violated."""
+    """RB-P15's standing check keeps its status: no `P` point runs, so nothing violated.
+
+    **What this establishes, and what it does not** (RB-P24 review, M2). It establishes
+    end to end, through a real process, that `--identity-only` over a cell that WOULD
+    violate exits 0. It does NOT discriminate a rows-derived status from a
+    table-derived one: `guarded_family` filters the points by `identity_only` BEFORE
+    `guard_table` runs (`criticreplay.py`, `points = [...]` then `full_guard = ...`), so
+    on this run the guard table is empty too and a status derived from the table would
+    also be 0. The discriminating case for rows-vs-table is
+    `test_exit_status_ignores_a_violation_on_a_point_dropped_from_every_family`, which
+    builds a run whose table flags a point that no variant replayed.
+    """
     status, out, err = _shell_status(
         _cli(guard_rig, "--identity-only"), tmp_path, "identity-only"
     )
     assert status == 0, err
     assert "GUARD VIOLATIONS" not in out
+
+
+# ---- RB-P24 review, C1: a run that MEASURED may not report the refusal status ----
+#
+# `--summary` is written after the measurement is complete, and the write used to sit
+# outside every handler: an OSError there was an unhandled traceback, i.e. status 1, on
+# a run that had already flushed every JSONL row. 1 is the "did not complete a
+# measurement" status, so that was a run reporting a verdict it had disproved.
+
+
+def _unwritable(tmp_path: Path) -> Path:
+    """A `--summary` path whose PARENT is a regular file, so `mkdir` raises OSError.
+
+    Portable and independent of the uid: a permission-denied directory does not fail
+    for root, and `/dev/null/x` assumes a device node. A file where a directory has to
+    be is an `OSError` for everyone.
+    """
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory\n")
+    return blocker / "summary.json"
+
+
+def test_a_measured_run_whose_summary_cannot_be_written_does_not_report_the_refusal_status(
+    guard_rig, tmp_path
+):
+    """C1, pinned from a shell with rows on disk: the status is 4, and it is not 1.
+
+    The measurement completed — every row is written and the table is printed — and
+    only the summary file is missing. Reporting 1 here would say "did not complete a
+    measurement" about a run whose artifacts are on disk, which is the exact confusion
+    the whole contract exists to prevent.
+    """
+    rows_path = tmp_path / "rows.jsonl"
+    status, out, err = _shell_status(
+        _cli(
+            guard_rig,
+            "--json", str(rows_path),
+            "--summary", str(_unwritable(tmp_path)),
+        ),
+        tmp_path,
+        "unwritable-summary",
+    )
+    assert status == criticreplay.ARTIFACT_WRITE_EXIT, err
+    assert status != criticreplay.REFUSAL_EXIT
+    rows = [json.loads(line) for line in rows_path.read_text().splitlines()]
+    assert len(rows) > 0  # it MEASURED, which is the whole point of the finding
+    assert "| variant |" in out  # and the table is still the measurement's report
+    assert "could not be written" in err
+    assert "Traceback" not in err
+
+
+def test_the_write_status_outranks_the_guard_status(guard_rig, tmp_path):
+    """A violating run whose summary failed reports 4, not 3.
+
+    3's one promise is that every artifact was written. Here it was not, so 3 would be
+    the false half of a true statement; 4 is the honest one, and the GUARD section is
+    still on stdout for whoever reads it.
+    """
+    status, out, err = _shell_status(
+        _cli(guard_rig, "--summary", str(_unwritable(tmp_path))), tmp_path, "outranks"
+    )
+    assert status == criticreplay.ARTIFACT_WRITE_EXIT, err
+    assert "GUARD VIOLATIONS" in out
+
+
+def test_a_clean_run_whose_summary_cannot_be_written_is_not_a_zero(rig, tmp_path):
+    """The write status does not need a violation to fire — a clean run reports it too."""
+    status, out, err = _shell_status(
+        _cli(rig, "--summary", str(_unwritable(tmp_path))), tmp_path, "clean-unwritable"
+    )
+    assert status == criticreplay.ARTIFACT_WRITE_EXIT, err
+    assert "| variant |" in out
+
+
+# ---- RB-P24 review, I4: the hatch is an opt-out from the GUARD status ALONE ----
+#
+# That is the hatch's load-bearing defence — a named opt-out from 3 beats `|| true`,
+# which swallows 1 and 2 as well — and only the violating case was pinned. These are
+# the cases that go red if a refactor moves the hatch above the error handler or turns
+# it into a blanket "exit 0".
+
+
+def test_the_hatch_does_not_suppress_a_refusal(rig, tmp_path):
+    argv = _cli(
+        rig, "--violations-exit-zero", entry=[sys.executable, "-m", "bantamkit.criticreplay"]
+    )
+    argv[argv.index(str(rig["transcripts"]))] = str(tmp_path / "nope")
+    status, out, err = _shell_status(argv, tmp_path, "hatch-refusal")
+    assert status == criticreplay.REFUSAL_EXIT
+    assert "no transcripts" in err
+
+
+def test_the_hatch_does_not_suppress_guard_error(guard_rig, tmp_path):
+    status, out, err = _shell_status(
+        _cli(
+            guard_rig,
+            "--guard", "error",
+            "--violations-exit-zero",
+            entry=[sys.executable, "-m", "bantamkit.criticreplay"],
+        ),
+        tmp_path,
+        "hatch-guard-error",
+    )
+    assert status == criticreplay.REFUSAL_EXIT
+    assert "shared-token guard" in err
+
+
+def test_the_hatch_does_not_suppress_a_usage_error(tmp_path):
+    status, out, err = _shell_status(
+        [sys.executable, "-m", "bantamkit.criticreplay", "--violations-exit-zero", "--not-a-flag"],
+        tmp_path,
+        "hatch-usage",
+    )
+    assert status == criticreplay.USAGE_EXIT
+
+
+def test_the_hatch_does_not_suppress_an_unwritable_summary(guard_rig, tmp_path):
+    """The hatch says "these violations are expected", never "this run wrote its files"."""
+    status, out, err = _shell_status(
+        _cli(guard_rig, "--violations-exit-zero", "--summary", str(_unwritable(tmp_path))),
+        tmp_path,
+        "hatch-unwritable",
+    )
+    assert status == criticreplay.ARTIFACT_WRITE_EXIT, err
+    assert "--violations-exit-zero" in err  # it did suppress the guard status
+    assert "could not be written" in err
+
+
+# ---- RB-P24 review, M1: the epilog is part of the contract, so it is pinned ----
+
+
+def test_help_prints_the_exit_status_contract(tmp_path):
+    """`--help` is where a caller reads the statuses; without this the epilog is undefended."""
+    status, out, err = _shell_status(
+        [sys.executable, "-m", "bantamkit.criticreplay", "--help"], tmp_path, "help"
+    )
+    assert status == 0
+    assert "exit status (RB-P24)" in out
+    for value in (
+        criticreplay.REFUSAL_EXIT,
+        criticreplay.USAGE_EXIT,
+        criticreplay.GUARD_VIOLATION_EXIT,
+        criticreplay.ARTIFACT_WRITE_EXIT,
+    ):
+        assert f"\n  {value}  " in out, f"status {value} is not in the epilog"
+    assert "did not complete a measurement" in out
+
+
+def test_this_modules_own_validation_errors_are_argparses_number(tmp_path):
+    """M3: `parser.error` is argparse's exit path, so a bad `--replays` is a 2, not a 1."""
+    status, out, err = _shell_status(
+        [
+            sys.executable, "-m", "bantamkit.criticreplay",
+            "--rubric", "a=x", "--transcripts", str(tmp_path),
+            "--base-url", "http://x", "--model", "m", "--replays", "0",
+        ],
+        tmp_path,
+        "replays-zero",
+    )
+    assert status == criticreplay.USAGE_EXIT
+    assert "--replays and --identity-replays must be >= 1" in err
