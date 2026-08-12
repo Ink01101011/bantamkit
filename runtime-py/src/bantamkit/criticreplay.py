@@ -28,6 +28,14 @@ An independent re-derivation from the spec's Test sentence produced one table; t
 module's original implementation produced another; the user's ruling (2026-08-12) is
 that both are computed, both are named in the artifacts, and neither is declared wrong.
 `moved_words` defines them; `guard_union` is what the run acts on when they differ.
+
+**Where the guards live on the public API.** Guards 1, 3 and 4 are properties of a
+point, so they run inside `apply_point` — the one public route from a `Point` to a
+template — and a consumer who never calls `run()` still gets them. `check=False` is the
+documented deliberate bypass. Guard 2 is a property of a (point, CELL) pair, so it
+cannot ride along there; `guard_table` is its one-call public form, and `run()` uses
+that same call. A consumer who assembles `apply_point` + `replay_verdicts` by hand and
+never calls `guard_table` still gets no guard 2 — filed as RB-P22.
 """
 
 from __future__ import annotations
@@ -322,13 +330,26 @@ def load_manifest(path: Path | None = None, rubric_name: str | None = None) -> M
     )
 
 
-def apply_point(point: Point, template: str) -> str | None:
+def apply_point(point: Point, template: str, *, check: bool = True) -> str | None:
     """Apply one declared, text-anchored transformation to one template.
 
     Returns the perturbed template, or `None` when the point's anchor is absent from
     this variant (§4.1: `applicable: false`, which paired dropping then handles). Never
     a silent no-op — a transformation that fires and changes nothing is an error, not a
     point, and so is an anchor that matches in more places than it claims.
+
+    **Guards 1, 3 and 4 run here** (`check=True`, the default). They are properties of
+    the POINT, not of any cell, so they ride with the transformation itself rather than
+    living only inside `run()`. This is the public route from a `Point` to a template,
+    so a library consumer with a hand-rolled manifest gets them without knowing they
+    exist — the case `3420384` claimed to close for `--manifest` and left open here.
+
+    Guard 2 cannot ride along: it is a property of a (point, CELL) pair and this
+    function never sees a cell. `guard_table` is its one-call public form.
+
+    `check=False` is the deliberate bypass, and it is deliberate on purpose: a guard
+    nobody can turn off is a guard people route around. `run()` uses it so that
+    `_variant_family` can raise a message naming the variant as well as the point.
     """
     new = _transform(point, template)
     if new is None:
@@ -338,6 +359,15 @@ def apply_point(point: Point, template: str) -> str | None:
             f"point '{point.id}' is a no-op on a variant whose anchor it matched — "
             "a transformation that changes nothing is an error, not a point"
         )
+    if check:
+        problems = point_admissibility_violations(point, template, new)
+        if problems:
+            raise PerturbationError(
+                f"point '{point.id}' is inadmissible (spec §3.3 step 3): it "
+                f"{'; it '.join(problems)} — a point that is not meaning-preserving "
+                "measures a requirement edit, not a perturbation. Pass check=False to "
+                "apply it anyway."
+            )
     return new
 
 
@@ -1048,7 +1078,9 @@ def _variant_family(
     dropped: list[str] = []
     seen: dict[str, str] = {}
     for point in points:
-        template = apply_point(point, variant.rubric.prompt)
+        # check=False so the message below can name the variant as well as the point;
+        # the same guards run either way, and neither route can reach a request.
+        template = apply_point(point, variant.rubric.prompt, check=False)
         if template is None:
             dropped.append(point.id)
             continue

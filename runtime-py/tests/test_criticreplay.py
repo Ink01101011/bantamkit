@@ -1621,7 +1621,7 @@ def test_guard_four_refuses_an_anchor_spanning_two_sentences_across_a_newline():
     point = _paraphrase(
         "Judge the answer.\nBe brief about it", "Judge the reply.\nBe brief about it"
     )
-    perturbed = criticreplay.apply_point(point, base)
+    perturbed = criticreplay.apply_point(point, base, check=False)
     problems = criticreplay.point_admissibility_violations(point, base, perturbed)
     assert any("more than one sentence" in p for p in problems), problems
 
@@ -1630,7 +1630,7 @@ def test_guard_four_refuses_a_replacement_that_splits_one_sentence_into_two():
     """The `to` side is an instance too: a paraphrase may not add a sentence boundary."""
     base = "Judge the answer well today.\nT:{task}\nA:{output}\n"
     point = _paraphrase("the answer well today", "the answer. Consider it well today")
-    perturbed = criticreplay.apply_point(point, base)
+    perturbed = criticreplay.apply_point(point, base, check=False)
     problems = criticreplay.point_admissibility_violations(point, base, perturbed)
     assert any("more than one sentence" in p for p in problems), problems
 
@@ -1654,7 +1654,7 @@ def test_guard_three_refuses_a_keyword_reordered_inside_the_instance():
     """
     base = "Judge ONLY whether it is right.\nT:{task}\nA:{output}\n"
     point = _paraphrase("Judge ONLY whether", "Judge whether ONLY")
-    perturbed = criticreplay.apply_point(point, base)
+    perturbed = criticreplay.apply_point(point, base, check=False)
     assert perturbed.count("ONLY") == base.count("ONLY")
     problems = criticreplay.point_admissibility_violations(point, base, perturbed)
     assert any("frozen keyword" in p for p in problems), problems
@@ -1684,6 +1684,84 @@ def test_a_run_is_not_aborted_by_a_paraphrase_anchored_on_one_whole_sentence(
     result = criticreplay.run(*args, model="m")
     assert {r.point for r in result.rows} == {"identity", "P-whole-sentence"}
     assert client.calls
+
+
+# ---- I6: the guards a LIBRARY consumer gets, without going through `run()` ----
+#
+# `apply_point`, `replay_verdicts` and `replay_scores` are in `__all__`, and until now
+# all four guards lived in `run()`'s helpers. `3420384` closed the `--manifest` hole; a
+# consumer with a hand-rolled manifest calling the primitives directly still got zero
+# guards, which is the same case that commit claimed to close.
+
+
+def test_apply_point_refuses_an_inadmissible_point_without_going_through_run():
+    """Guards 1, 3 and 4 are properties of the POINT, so they ride with the transform.
+
+    `apply_point` is the only public route from a `Point` to a template. A consumer who
+    never calls `run()` now cannot get an inadmissible template out of this module by
+    accident.
+    """
+    base = "Judge the answer.\nBe brief about it.\nT:{task}\nA:{output}\n"
+    point = _paraphrase(
+        "Judge the answer.\nBe brief about it", "Judge the reply.\nBe brief about it"
+    )
+    with pytest.raises(criticreplay.PerturbationError, match="one sentence"):
+        criticreplay.apply_point(point, base)
+
+
+def test_apply_point_refuses_a_point_that_moves_a_frozen_contract_literal():
+    """Guard 1, on the same public route, in every class."""
+    base = "Score 9-10 = good.\nT:{task}\nA:{output}\n"
+    point = criticreplay.Point(
+        id="O-endash", point_class="order", rule="reorder", op="replace",
+        replace=[{"from": "Score 9-10", "to": "Score 9–10"}],
+    )
+    with pytest.raises(criticreplay.PerturbationError, match="frozen contract literal"):
+        criticreplay.apply_point(point, base)
+
+
+def test_apply_point_check_false_is_the_documented_deliberate_bypass():
+    """A consumer with a good reason still has a way through — a named one.
+
+    The guards must not become impossible to bypass on purpose; what they must stop is
+    bypassing them by not knowing they exist.
+    """
+    base = "Judge the answer.\nBe brief about it.\nT:{task}\nA:{output}\n"
+    point = _paraphrase(
+        "Judge the answer.\nBe brief about it", "Judge the reply.\nBe brief about it"
+    )
+    template = criticreplay.apply_point(point, base, check=False)
+    assert template is not None and "Judge the reply." in template
+    assert criticreplay.point_admissibility_violations(point, base, template) != []
+
+
+def test_materialize_manifest_refuses_an_inadmissible_family():
+    """The offline audit route is the same route: a bad manifest cannot be materialized."""
+    base = "Score 9-10 = good.\nT:{task}\nA:{output}\n"
+    point = criticreplay.Point(
+        id="O-endash", point_class="order", rule="reorder", op="replace",
+        replace=[{"from": "Score 9-10", "to": "Score 9–10"}],
+    )
+    with pytest.raises(criticreplay.PerturbationError, match="frozen contract literal"):
+        criticreplay.materialize_manifest([point], {"v": base})
+
+
+def test_run_still_names_the_variant_when_a_point_is_inadmissible(asset_tree, tmp_path):
+    """`_variant_family` keeps its own richer message: which variant, not just which point."""
+    client, args = _admissibility_rig(
+        asset_tree, tmp_path,
+        {
+            "id": "P-two-sentences", "class": "paraphrase", "rule": "reword",
+            "op": "replace",
+            "replace": [
+                {"from": "Judge ONLY the answer. Score", "to": "Judge ONLY the reply. Score"}
+            ],
+            "justification": "spans a sentence boundary",
+        },
+    )
+    with pytest.raises(criticreplay.PerturbationError, match="inadmissible on variant 'v'"):
+        criticreplay.run(*args, model="m")
+    assert client.calls == []
 
 
 def test_the_shipped_manifest_passes_all_three_cell_independent_guards(manifest):
