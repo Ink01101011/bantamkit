@@ -2521,6 +2521,30 @@ def test_exit_status_ignores_a_violation_on_a_point_dropped_from_every_family(
 PROBE = Path(__file__).resolve().parent / "cli_exit_status_probe.py"
 
 
+def _child_env(**extra: str) -> dict[str, str]:
+    """The environment every shell-status child gets: this process's, minus `PYTEST_*`.
+
+    RB-P28, and the half of it that is closeable here. Both status harnesses used to
+    hand the child `{**os.environ, ...}`, and pytest puts `PYTEST_CURRENT_TEST` in
+    `os.environ` while a test is running — so the code under test could SEE that it was
+    being observed. That is not hypothetical: the J3 review passed all five clauses of
+    the acceptance oracle with a patch that read `PYTEST_CURRENT_TEST`, flushed, and
+    called `os._exit(status)`, while its field behaviour stayed at 120. The oracle was
+    measuring the harness, not the fix.
+
+    The scrub kills that exploit; it does NOT kill the class. A patch can still key on
+    `sys.argv[0]`, on a tmp-dir-shaped path, on the absence of a TTY, or on any other
+    tell that "under a test runner" leaves behind. Only an oracle phase measured
+    OUTSIDE pytest closes the class, and RB-P28 stays open for it. What is pinned here
+    is the scrub itself — `test_the_status_harnesses_hand_the_child_no_pytest_marker`
+    goes red if this function stops removing the keys.
+    """
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
+    env["PYTHONPATH"] = str(SRC.parent)
+    env.update(extra)
+    return env
+
+
 def _shell_status(argv: list[str], tmp_path: Path, label: str = "run") -> tuple[int, str, str]:
     """Run `argv` in /bin/sh; return the status the SHELL read, plus stdout and stderr.
 
@@ -2534,12 +2558,7 @@ def _shell_status(argv: list[str], tmp_path: Path, label: str = "run") -> tuple[
         ["/bin/sh", "-c", '"$@" >"$BK_OUT" 2>"$BK_ERR"; echo "status=$?"', "sh", *argv],
         capture_output=True,
         text=True,
-        env={
-            **os.environ,
-            "BK_OUT": str(out),
-            "BK_ERR": str(err),
-            "PYTHONPATH": str(SRC.parent),
-        },
+        env=_child_env(BK_OUT=str(out), BK_ERR=str(err)),
     )
     assert proc.returncode == 0, proc.stderr  # the shell itself ran
     assert proc.stdout.startswith("status="), proc.stdout
@@ -2875,12 +2894,7 @@ def _closed_pipe_status(argv: list[str], tmp_path: Path, label: str) -> tuple[in
         proc = subprocess.Popen(
             ["/bin/sh", "-c", '"$@" 2>"$BK_ERR"; echo "status=$?" >"$BK_STATUS"', "sh", *argv],
             stdout=write_fd,
-            env={
-                **os.environ,
-                "BK_ERR": str(err),
-                "BK_STATUS": str(status_file),
-                "PYTHONPATH": str(SRC.parent),
-            },
+            env=_child_env(BK_ERR=str(err), BK_STATUS=str(status_file)),
         )
     finally:
         os.close(write_fd)
@@ -2888,6 +2902,39 @@ def _closed_pipe_status(argv: list[str], tmp_path: Path, label: str) -> tuple[in
     text = status_file.read_text()
     assert text.startswith("status="), text
     return int(text.split("=", 1)[1]), err.read_text()
+
+
+_DUMP_PYTEST_KEYS = (
+    "import os, sys; "
+    "sys.{stream}.write(repr(sorted(k for k in os.environ if k.startswith('PYTEST_'))))"
+)
+
+
+def test_the_status_harnesses_hand_the_child_no_pytest_marker(tmp_path):
+    """RB-P28's closeable half, PINNED — a test that goes red, not a comment (`_child_env`).
+
+    The child is asked to report its own `PYTEST_*` keys, through BOTH harnesses, and the
+    answer has to be the empty list. The parent assertion is what makes this
+    non-vacuous: `PYTEST_CURRENT_TEST` IS in this process's environment right now, so an
+    empty list downstream is the scrub working and not the variable being absent. Delete
+    the filter in `_child_env` and both halves go red.
+
+    The closed-pipe half reports on STDERR because its stdout is a pipe with no reader —
+    the one stream that harness leaves readable.
+    """
+    assert "PYTEST_CURRENT_TEST" in os.environ  # the thing being scrubbed exists here
+
+    status, out, err = _shell_status(
+        [sys.executable, "-c", _DUMP_PYTEST_KEYS.format(stream="stdout")], tmp_path, "envscrub"
+    )
+    assert status == 0, err
+    assert out == "[]", out
+
+    status, err = _closed_pipe_status(
+        [sys.executable, "-c", _DUMP_PYTEST_KEYS.format(stream="stderr")], tmp_path, "envscrub"
+    )
+    assert status == 0, err
+    assert err == "[]", err
 
 
 @_CLOSED_PIPE_XFAIL
