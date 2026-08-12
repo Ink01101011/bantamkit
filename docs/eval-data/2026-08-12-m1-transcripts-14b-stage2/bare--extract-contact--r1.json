@@ -1,0 +1,23 @@
+{
+  "task": "extract-contact",
+  "config": "bare",
+  "repeat": 1,
+  "passed": true,
+  "outcome": "pass",
+  "seed": 3497327120,
+  "output": "Here's the extracted contact information in JSON format:\n\n```json\n{\n  \"name\": \"Ann Chen\",\n  \"email\": \"ann.chen@example.com\"\n}\n```",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Extract the contact as JSON with keys \"name\" and \"email\".\nText: \"Reach out to Ann Chen, she is at ann.chen@example.com, usually after 2pm.\"\n",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "Here's the extracted contact information in JSON format:\n\n```json\n{\n  \"name\": \"Ann Chen\",\n  \"email\": \"ann.chen@example.com\"\n}\n```",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

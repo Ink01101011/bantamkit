@@ -1,0 +1,23 @@
+{
+  "task": "extract-invoice",
+  "config": "bare",
+  "repeat": 1,
+  "passed": true,
+  "outcome": "pass",
+  "seed": 3927040636,
+  "output": "Here is the extracted information in JSON format based on your text:\n\n{\n  \"number\": \"INV-42\",\n  \"total\": 199\n}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Extract the invoice as JSON with keys \"number\" (string) and \"total\" (integer).\nText: \"Invoice INV-42 came to 199 USD, paid by card.\"\n",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "Here is the extracted information in JSON format based on your text:\n\n{\n  \"number\": \"INV-42\",\n  \"total\": 199\n}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

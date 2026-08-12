@@ -1,0 +1,56 @@
+{
+  "task": "shop-stock-total",
+  "config": "bare",
+  "repeat": 1,
+  "passed": true,
+  "outcome": "pass",
+  "seed": 2514557078,
+  "output": "The combined total stock of \"widget\" and \"gadget\" is 4 + 9 = 13.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Use the tools to find the stock counts of \"widget\" and \"gadget\",\nthen answer with the combined total stock as a number.\n",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_n9bth2f6",
+          "name": "stock_lookup",
+          "arguments": {
+            "item": "widget"
+          }
+        },
+        {
+          "id": "call_k3jhf53z",
+          "name": "stock_lookup",
+          "arguments": {
+            "item": "gadget"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "widget stock: 4",
+      "tool_calls": [],
+      "tool_call_id": "call_n9bth2f6"
+    },
+    {
+      "role": "tool",
+      "content": "gadget stock: 9",
+      "tool_calls": [],
+      "tool_call_id": "call_k3jhf53z"
+    },
+    {
+      "role": "assistant",
+      "content": "The combined total stock of \"widget\" and \"gadget\" is 4 + 9 = 13.",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

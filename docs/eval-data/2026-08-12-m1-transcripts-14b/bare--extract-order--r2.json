@@ -1,0 +1,23 @@
+{
+  "task": "extract-order",
+  "config": "bare",
+  "repeat": 2,
+  "passed": true,
+  "outcome": "pass",
+  "seed": 4242122136,
+  "output": "Here is the extracted information in JSON format based on the provided text:\n\n```json\n{\n  \"item\": \"widget\",\n  \"quantity\": 3\n}\n```\n\nNote that \"Widgets\" is converted to lowercase singular form \"widget\", and the quantity, \"three,\" is represented as the integer `3`.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Extract the order as JSON with keys \"item\" (singular, lowercase) and\n\"quantity\" (integer).\nText: \"Customer wants three Widgets shipped by Friday.\"\n",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "Here is the extracted information in JSON format based on the provided text:\n\n```json\n{\n  \"item\": \"widget\",\n  \"quantity\": 3\n}\n```\n\nNote that \"Widgets\" is converted to lowercase singular form \"widget\", and the quantity, \"three,\" is represented as the integer `3`.",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

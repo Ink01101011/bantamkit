@@ -1,0 +1,660 @@
+{
+ "cells": [
+  {
+   "task": "extract-contact",
+   "repeat": 0,
+   "seed": 1861749954,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-contact",
+   "repeat": 1,
+   "seed": 3552401145,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-contact",
+   "repeat": 2,
+   "seed": 981099319,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-invoice",
+   "repeat": 0,
+   "seed": 606440471,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-invoice",
+   "repeat": 1,
+   "seed": 2835605449,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-invoice",
+   "repeat": 2,
+   "seed": 3893064577,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-order",
+   "repeat": 0,
+   "seed": 2249407173,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-order",
+   "repeat": 1,
+   "seed": 3086319419,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-order",
+   "repeat": 2,
+   "seed": 3332221086,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-schedule",
+   "repeat": 0,
+   "seed": 3437784621,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-schedule",
+   "repeat": 1,
+   "seed": 2741227498,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-schedule",
+   "repeat": 2,
+   "seed": 2529501483,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-versions",
+   "repeat": 0,
+   "seed": 4278139717,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-versions",
+   "repeat": 1,
+   "seed": 829703583,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-versions",
+   "repeat": 2,
+   "seed": 2584394127,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "nav-prod-port",
+   "repeat": 0,
+   "seed": 1908598355,
+   "identity": 0,
+   "margin": -7,
+   "correct": false,
+   "outcome": "malformed-output"
+  },
+  {
+   "task": "nav-prod-port",
+   "repeat": 1,
+   "seed": 4009445633,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "nav-prod-port",
+   "repeat": 2,
+   "seed": 1895317366,
+   "identity": 4,
+   "margin": -3,
+   "correct": false,
+   "outcome": "malformed-output"
+  },
+  {
+   "task": "nav-release-bundle",
+   "repeat": 0,
+   "seed": 3590861830,
+   "identity": 0,
+   "margin": -7,
+   "correct": false,
+   "outcome": "malformed-output"
+  },
+  {
+   "task": "nav-release-bundle",
+   "repeat": 1,
+   "seed": 2248991587,
+   "identity": 0,
+   "margin": -7,
+   "correct": false,
+   "outcome": "malformed-output"
+  },
+  {
+   "task": "nav-release-bundle",
+   "repeat": 2,
+   "seed": 4264928414,
+   "identity": 0,
+   "margin": -7,
+   "correct": false,
+   "outcome": "malformed-output"
+  },
+  {
+   "task": "recall-audit-retention",
+   "repeat": 0,
+   "seed": 302995500,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-audit-retention",
+   "repeat": 1,
+   "seed": 1504359924,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-audit-retention",
+   "repeat": 2,
+   "seed": 1107739221,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-cache-ttl",
+   "repeat": 0,
+   "seed": 560251157,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-cache-ttl",
+   "repeat": 1,
+   "seed": 1864415957,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-cache-ttl",
+   "repeat": 2,
+   "seed": 2156679821,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-db-port",
+   "repeat": 0,
+   "seed": 3166373547,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-db-port",
+   "repeat": 1,
+   "seed": 3653941762,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-db-port",
+   "repeat": 2,
+   "seed": 1071910887,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-deploy",
+   "repeat": 0,
+   "seed": 932005762,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-deploy",
+   "repeat": 1,
+   "seed": 3061529794,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-deploy",
+   "repeat": 2,
+   "seed": 3929596030,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-env-endpoint",
+   "repeat": 0,
+   "seed": 3518761392,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-env-endpoint",
+   "repeat": 1,
+   "seed": 1136019295,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-env-endpoint",
+   "repeat": 2,
+   "seed": 2313426321,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-oncall",
+   "repeat": 0,
+   "seed": 2043228096,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-oncall",
+   "repeat": 1,
+   "seed": 2824502161,
+   "identity": 0,
+   "margin": -7,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-oncall",
+   "repeat": 2,
+   "seed": 2880017356,
+   "identity": 0,
+   "margin": -7,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-oncall-rotation",
+   "repeat": 0,
+   "seed": 1681487114,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-oncall-rotation",
+   "repeat": 1,
+   "seed": 574597740,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-oncall-rotation",
+   "repeat": 2,
+   "seed": 4040888053,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-org-quota",
+   "repeat": 0,
+   "seed": 1417243334,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-org-quota",
+   "repeat": 1,
+   "seed": 651139243,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-org-quota",
+   "repeat": 2,
+   "seed": 2531887799,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-owner",
+   "repeat": 0,
+   "seed": 2589453988,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-owner",
+   "repeat": 1,
+   "seed": 2404113302,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-owner",
+   "repeat": 2,
+   "seed": 2586770416,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "shop-basket-total",
+   "repeat": 0,
+   "seed": 1692775691,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "shop-basket-total",
+   "repeat": 1,
+   "seed": 1751828190,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "shop-basket-total",
+   "repeat": 2,
+   "seed": 3327157924,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "shop-cheapest",
+   "repeat": 0,
+   "seed": 3516925827,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-cheapest",
+   "repeat": 1,
+   "seed": 1440606846,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-cheapest",
+   "repeat": 2,
+   "seed": 1434466410,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-compare",
+   "repeat": 0,
+   "seed": 1079046936,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-compare",
+   "repeat": 1,
+   "seed": 1657280734,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-compare",
+   "repeat": 2,
+   "seed": 3683101259,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-gadget-value",
+   "repeat": 0,
+   "seed": 1201249486,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-gadget-value",
+   "repeat": 1,
+   "seed": 4204893680,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-gadget-value",
+   "repeat": 2,
+   "seed": 3008353794,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-stock-total",
+   "repeat": 0,
+   "seed": 2384822880,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-stock-total",
+   "repeat": 1,
+   "seed": 2514557078,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-stock-total",
+   "repeat": 2,
+   "seed": 64253244,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-total",
+   "repeat": 0,
+   "seed": 1656224755,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-total",
+   "repeat": 1,
+   "seed": 2924426239,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-total",
+   "repeat": 2,
+   "seed": 3850395976,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  }
+ ],
+ "promoted": [
+  {
+   "task": "extract-contact",
+   "repeat": 0,
+   "seed": 1861749954,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass",
+   "stratum": "A1"
+  },
+  {
+   "task": "extract-contact",
+   "repeat": 1,
+   "seed": 3552401145,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass",
+   "stratum": "A1"
+  },
+  {
+   "task": "nav-prod-port",
+   "repeat": 0,
+   "seed": 1908598355,
+   "identity": 0,
+   "margin": -7,
+   "correct": false,
+   "outcome": "malformed-output",
+   "stratum": "A2"
+  },
+  {
+   "task": "nav-release-bundle",
+   "repeat": 0,
+   "seed": 3590861830,
+   "identity": 0,
+   "margin": -7,
+   "correct": false,
+   "outcome": "malformed-output",
+   "stratum": "A2"
+  },
+  {
+   "task": "nav-prod-port",
+   "repeat": 1,
+   "seed": 4009445633,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer",
+   "stratum": "D2"
+  },
+  {
+   "task": "recall-audit-retention",
+   "repeat": 0,
+   "seed": 302995500,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer",
+   "stratum": "D2"
+  }
+ ]
+}

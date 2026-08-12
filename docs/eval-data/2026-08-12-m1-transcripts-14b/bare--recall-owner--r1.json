@@ -1,0 +1,23 @@
+{
+  "task": "recall-owner",
+  "config": "bare",
+  "repeat": 1,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 2418578173,
+  "output": "{\"team\": \"Financial Services\"}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Which team owns the payments API? If you have a memory tool, check memory first. Answer with ONLY this JSON, nothing else: {\"team\": \"<team name>\"}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "{\"team\": \"Financial Services\"}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

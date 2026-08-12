@@ -1,0 +1,740 @@
+{
+ "cells": [
+  {
+   "task": "extract-contact",
+   "repeat": 0,
+   "seed": 2259705935,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-contact",
+   "repeat": 1,
+   "seed": 3497327120,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-contact",
+   "repeat": 2,
+   "seed": 2660316194,
+   "identity": 9,
+   "margin": 2,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-invoice",
+   "repeat": 0,
+   "seed": 1357191355,
+   "identity": 9,
+   "margin": 2,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-invoice",
+   "repeat": 1,
+   "seed": 3927040636,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-invoice",
+   "repeat": 2,
+   "seed": 2743656613,
+   "identity": 9,
+   "margin": 2,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-order",
+   "repeat": 0,
+   "seed": 955537242,
+   "identity": 9,
+   "margin": 2,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-order",
+   "repeat": 1,
+   "seed": 2555329956,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-order",
+   "repeat": 2,
+   "seed": 4242122136,
+   "identity": 9,
+   "margin": 2,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-schedule",
+   "repeat": 0,
+   "seed": 4223175415,
+   "identity": 9,
+   "margin": 2,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-schedule",
+   "repeat": 1,
+   "seed": 2425076921,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-schedule",
+   "repeat": 2,
+   "seed": 942824817,
+   "identity": 9,
+   "margin": 2,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-versions",
+   "repeat": 0,
+   "seed": 3013859756,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-versions",
+   "repeat": 1,
+   "seed": 1145149304,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "extract-versions",
+   "repeat": 2,
+   "seed": 3989306955,
+   "identity": 9,
+   "margin": 2,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "nav-prod-port",
+   "repeat": 0,
+   "seed": 2331795949,
+   "identity": 5,
+   "margin": -2,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "nav-prod-port",
+   "repeat": 1,
+   "seed": 4094558621,
+   "identity": 5,
+   "margin": -2,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "nav-prod-port",
+   "repeat": 2,
+   "seed": 634446002,
+   "identity": 5,
+   "margin": -2,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "nav-release-bundle",
+   "repeat": 0,
+   "seed": 3315971216,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "nav-release-bundle",
+   "repeat": 1,
+   "seed": 2295343474,
+   "identity": 9,
+   "margin": 2,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "nav-release-bundle",
+   "repeat": 2,
+   "seed": 2335649282,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "recall-audit-retention",
+   "repeat": 0,
+   "seed": 1946877837,
+   "identity": 9,
+   "margin": 2,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-audit-retention",
+   "repeat": 1,
+   "seed": 2464148468,
+   "identity": 9,
+   "margin": 2,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-audit-retention",
+   "repeat": 2,
+   "seed": 1510450835,
+   "identity": 9,
+   "margin": 2,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-cache-ttl",
+   "repeat": 0,
+   "seed": 2825330101,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-cache-ttl",
+   "repeat": 1,
+   "seed": 190906032,
+   "identity": 9,
+   "margin": 2,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-cache-ttl",
+   "repeat": 2,
+   "seed": 3117808452,
+   "identity": 9,
+   "margin": 2,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-db-port",
+   "repeat": 0,
+   "seed": 1770058012,
+   "identity": 9,
+   "margin": 2,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "recall-db-port",
+   "repeat": 1,
+   "seed": 4023478678,
+   "identity": 9,
+   "margin": 2,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "recall-db-port",
+   "repeat": 2,
+   "seed": 1328387732,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-deploy",
+   "repeat": 0,
+   "seed": 3076189074,
+   "identity": 9,
+   "margin": 2,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-deploy",
+   "repeat": 1,
+   "seed": 1107033986,
+   "identity": 9,
+   "margin": 2,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-deploy",
+   "repeat": 2,
+   "seed": 1150705719,
+   "identity": 2,
+   "margin": -5,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-env-endpoint",
+   "repeat": 0,
+   "seed": 2451981973,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-env-endpoint",
+   "repeat": 1,
+   "seed": 2924235111,
+   "identity": 9,
+   "margin": 2,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-env-endpoint",
+   "repeat": 2,
+   "seed": 1818762694,
+   "identity": 9,
+   "margin": 2,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-oncall",
+   "repeat": 0,
+   "seed": 2831155312,
+   "identity": 2,
+   "margin": -5,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-oncall",
+   "repeat": 1,
+   "seed": 4070734686,
+   "identity": 2,
+   "margin": -5,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-oncall",
+   "repeat": 2,
+   "seed": 4142544292,
+   "identity": 2,
+   "margin": -5,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-oncall-rotation",
+   "repeat": 0,
+   "seed": 1977305293,
+   "identity": 9,
+   "margin": 2,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-oncall-rotation",
+   "repeat": 1,
+   "seed": 3203733254,
+   "identity": 0,
+   "margin": -7,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-oncall-rotation",
+   "repeat": 2,
+   "seed": 1248356679,
+   "identity": 2,
+   "margin": -5,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-org-quota",
+   "repeat": 0,
+   "seed": 1427990350,
+   "identity": 9,
+   "margin": 2,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-org-quota",
+   "repeat": 1,
+   "seed": 1587131660,
+   "identity": 9,
+   "margin": 2,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-org-quota",
+   "repeat": 2,
+   "seed": 2243150770,
+   "identity": 9,
+   "margin": 2,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-owner",
+   "repeat": 0,
+   "seed": 903960846,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-owner",
+   "repeat": 1,
+   "seed": 2418578173,
+   "identity": 9,
+   "margin": 2,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "recall-owner",
+   "repeat": 2,
+   "seed": 866805701,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "shop-basket-total",
+   "repeat": 0,
+   "seed": 4171005978,
+   "identity": 9,
+   "margin": 2,
+   "correct": false,
+   "outcome": "malformed-output"
+  },
+  {
+   "task": "shop-basket-total",
+   "repeat": 1,
+   "seed": 1022600830,
+   "identity": 7,
+   "margin": 0,
+   "correct": false,
+   "outcome": "malformed-output"
+  },
+  {
+   "task": "shop-basket-total",
+   "repeat": 2,
+   "seed": 337707843,
+   "identity": 6,
+   "margin": -1,
+   "correct": false,
+   "outcome": "malformed-output"
+  },
+  {
+   "task": "shop-cheapest",
+   "repeat": 0,
+   "seed": 3626387035,
+   "identity": 9,
+   "margin": 2,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-cheapest",
+   "repeat": 1,
+   "seed": 3857385584,
+   "identity": 9,
+   "margin": 2,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-cheapest",
+   "repeat": 2,
+   "seed": 249543462,
+   "identity": 9,
+   "margin": 2,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-compare",
+   "repeat": 0,
+   "seed": 1492014504,
+   "identity": 9,
+   "margin": 2,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-compare",
+   "repeat": 1,
+   "seed": 294733297,
+   "identity": 9,
+   "margin": 2,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-compare",
+   "repeat": 2,
+   "seed": 4118104234,
+   "identity": 0,
+   "margin": -7,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "shop-gadget-value",
+   "repeat": 0,
+   "seed": 2549822007,
+   "identity": 9,
+   "margin": 2,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-gadget-value",
+   "repeat": 1,
+   "seed": 551625722,
+   "identity": 9,
+   "margin": 2,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-gadget-value",
+   "repeat": 2,
+   "seed": 4082573743,
+   "identity": 9,
+   "margin": 2,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-stock-total",
+   "repeat": 0,
+   "seed": 159718182,
+   "identity": 9,
+   "margin": 2,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-stock-total",
+   "repeat": 1,
+   "seed": 1974153941,
+   "identity": 9,
+   "margin": 2,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-stock-total",
+   "repeat": 2,
+   "seed": 1580598053,
+   "identity": 9,
+   "margin": 2,
+   "correct": false,
+   "outcome": "wrong-answer"
+  },
+  {
+   "task": "shop-total",
+   "repeat": 0,
+   "seed": 3250378042,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-total",
+   "repeat": 1,
+   "seed": 1076854854,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass"
+  },
+  {
+   "task": "shop-total",
+   "repeat": 2,
+   "seed": 3451057703,
+   "identity": 9,
+   "margin": 2,
+   "correct": true,
+   "outcome": "pass"
+  }
+ ],
+ "promoted": [
+  {
+   "task": "extract-contact",
+   "repeat": 0,
+   "seed": 2259705935,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass",
+   "stratum": "A1"
+  },
+  {
+   "task": "extract-contact",
+   "repeat": 1,
+   "seed": 3497327120,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass",
+   "stratum": "A1"
+  },
+  {
+   "task": "extract-invoice",
+   "repeat": 1,
+   "seed": 3927040636,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass",
+   "stratum": "A1"
+  },
+  {
+   "task": "extract-order",
+   "repeat": 1,
+   "seed": 2555329956,
+   "identity": 10,
+   "margin": 3,
+   "correct": true,
+   "outcome": "pass",
+   "stratum": "A1"
+  },
+  {
+   "task": "recall-oncall-rotation",
+   "repeat": 1,
+   "seed": 3203733254,
+   "identity": 0,
+   "margin": -7,
+   "correct": false,
+   "outcome": "wrong-answer",
+   "stratum": "A2"
+  },
+  {
+   "task": "shop-compare",
+   "repeat": 2,
+   "seed": 4118104234,
+   "identity": 0,
+   "margin": -7,
+   "correct": false,
+   "outcome": "wrong-answer",
+   "stratum": "A2"
+  },
+  {
+   "task": "recall-deploy",
+   "repeat": 2,
+   "seed": 1150705719,
+   "identity": 2,
+   "margin": -5,
+   "correct": false,
+   "outcome": "wrong-answer",
+   "stratum": "A2"
+  },
+  {
+   "task": "recall-cache-ttl",
+   "repeat": 0,
+   "seed": 2825330101,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer",
+   "stratum": "D2"
+  },
+  {
+   "task": "recall-db-port",
+   "repeat": 2,
+   "seed": 1328387732,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer",
+   "stratum": "D2"
+  },
+  {
+   "task": "recall-env-endpoint",
+   "repeat": 0,
+   "seed": 2451981973,
+   "identity": 10,
+   "margin": 3,
+   "correct": false,
+   "outcome": "wrong-answer",
+   "stratum": "D2"
+  },
+  {
+   "task": "extract-contact",
+   "repeat": 2,
+   "seed": 2660316194,
+   "identity": 9,
+   "margin": 2,
+   "correct": true,
+   "outcome": "pass",
+   "stratum": "C"
+  },
+  {
+   "task": "extract-invoice",
+   "repeat": 0,
+   "seed": 1357191355,
+   "identity": 9,
+   "margin": 2,
+   "correct": true,
+   "outcome": "pass",
+   "stratum": "C"
+  },
+  {
+   "task": "nav-prod-port",
+   "repeat": 1,
+   "seed": 4094558621,
+   "identity": 5,
+   "margin": -2,
+   "correct": true,
+   "outcome": "pass",
+   "stratum": "C"
+  },
+  {
+   "task": "nav-prod-port",
+   "repeat": 2,
+   "seed": 634446002,
+   "identity": 5,
+   "margin": -2,
+   "correct": true,
+   "outcome": "pass",
+   "stratum": "C"
+  }
+ ]
+}

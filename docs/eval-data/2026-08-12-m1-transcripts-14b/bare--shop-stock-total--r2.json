@@ -1,0 +1,56 @@
+{
+  "task": "shop-stock-total",
+  "config": "bare",
+  "repeat": 2,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 1580598053,
+  "output": "\"widget\"\u7684\u5e93\u5b58\u6570\u91cf\u662f4\uff0c\u800c\"gadget\"\u7684\u5e93\u5b58\u6570\u91cf\u662f9\u3002\u6240\u4ee5\u5408\u5e76\u540e\u7684\u603b\u5e93\u5b58\u6570\u91cf\u4e3a13\u3002",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Use the tools to find the stock counts of \"widget\" and \"gadget\",\nthen answer with the combined total stock as a number.\n",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "\u8303\u51b0\uff0c\u6211\u4eec\u5c06\u5206\u4e24\u6b21\u8c03\u7528`stock_lookup`\u5de5\u5177\u6765\u67e5\u8be2\u201cwidget\u201d\u548c\u201cgadget\u201d\u7684\u5e93\u5b58\u6570\u91cf\u3002\u7136\u540e\u6211\u4f1a\u5c06\u8fd9\u4e24\u4e2a\u6570\u5b57\u52a0\u8d77\u6765\u7ed9\u51fa\u6700\u7ec8\u7684\u7b54\u6848\u3002\n\n\u9996\u5148\u662f\u201cwidget\u201d\u7684\u5e93\u5b58\uff1a\n",
+      "tool_calls": [
+        {
+          "id": "call_14b8tli5",
+          "name": "stock_lookup",
+          "arguments": {
+            "item": "widget"
+          }
+        },
+        {
+          "id": "call_mw565wgl",
+          "name": "stock_lookup",
+          "arguments": {
+            "item": "gadget"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "widget stock: 4",
+      "tool_calls": [],
+      "tool_call_id": "call_14b8tli5"
+    },
+    {
+      "role": "tool",
+      "content": "gadget stock: 9",
+      "tool_calls": [],
+      "tool_call_id": "call_mw565wgl"
+    },
+    {
+      "role": "assistant",
+      "content": "\"widget\"\u7684\u5e93\u5b58\u6570\u91cf\u662f4\uff0c\u800c\"gadget\"\u7684\u5e93\u5b58\u6570\u91cf\u662f9\u3002\u6240\u4ee5\u5408\u5e76\u540e\u7684\u603b\u5e93\u5b58\u6570\u91cf\u4e3a13\u3002",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "task": "shop-cheapest",
+  "config": "bare",
+  "repeat": 2,
+  "passed": true,
+  "outcome": "pass",
+  "seed": 1434466410,
+  "output": "{\"cheaper\": \"widget\"}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Use the tools to check the unit prices of \"widget\" and \"gadget\".\nAnswer with ONLY this JSON, nothing else: {\"cheaper\": \"<item name>\"}\n",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_1n9bpd35",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "widget"
+          }
+        },
+        {
+          "id": "call_078he1jo",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "gadget"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "widget price: 25",
+      "tool_calls": [],
+      "tool_call_id": "call_1n9bpd35"
+    },
+    {
+      "role": "tool",
+      "content": "gadget price: 60",
+      "tool_calls": [],
+      "tool_call_id": "call_078he1jo"
+    },
+    {
+      "role": "assistant",
+      "content": "{\"cheaper\": \"widget\"}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

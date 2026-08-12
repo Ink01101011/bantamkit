@@ -1,0 +1,56 @@
+{
+  "task": "shop-gadget-value",
+  "config": "bare",
+  "repeat": 2,
+  "passed": true,
+  "outcome": "pass",
+  "seed": 3008353794,
+  "output": "The total value of the stock for \"gadget\" is 60 * 9 = 540.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Use the tools to find the unit price and stock count of \"gadget\",\nthen answer with the total value of the stock (price times stock) as a number.\n",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_v6efe0sf",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "gadget"
+          }
+        },
+        {
+          "id": "call_2scghasd",
+          "name": "stock_lookup",
+          "arguments": {
+            "item": "gadget"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "gadget price: 60",
+      "tool_calls": [],
+      "tool_call_id": "call_v6efe0sf"
+    },
+    {
+      "role": "tool",
+      "content": "gadget stock: 9",
+      "tool_calls": [],
+      "tool_call_id": "call_2scghasd"
+    },
+    {
+      "role": "assistant",
+      "content": "The total value of the stock for \"gadget\" is 60 * 9 = 540.",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

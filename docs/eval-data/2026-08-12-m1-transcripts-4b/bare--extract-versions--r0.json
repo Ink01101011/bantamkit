@@ -1,0 +1,23 @@
+{
+  "task": "extract-versions",
+  "config": "bare",
+  "repeat": 0,
+  "passed": true,
+  "outcome": "pass",
+  "seed": 4278139717,
+  "output": "{\n  \"package\": \"foo\",\n  \"versions\": [\n    \"1.2\",\n    \"1.3\",\n    \"2.0\"\n  ]\n}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Extract as JSON with keys \"package\" (string) and \"versions\" (array of strings,\nin the order mentioned).\nText: \"Package foo supports versions 1.2, 1.3 and 2.0.\"\n",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "{\n  \"package\": \"foo\",\n  \"versions\": [\n    \"1.2\",\n    \"1.3\",\n    \"2.0\"\n  ]\n}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

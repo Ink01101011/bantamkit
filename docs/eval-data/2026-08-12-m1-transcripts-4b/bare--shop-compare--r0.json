@@ -1,0 +1,56 @@
+{
+  "task": "shop-compare",
+  "config": "bare",
+  "repeat": 0,
+  "passed": true,
+  "outcome": "pass",
+  "seed": 1079046936,
+  "output": "The more expensive item is \"gadget\".",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Use the tools to check the unit prices of \"widget\" and \"gadget\",\nand answer with the name of the more expensive item.\n",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_gpm72iox",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "widget"
+          }
+        },
+        {
+          "id": "call_0cclfpv1",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "gadget"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "widget price: 25",
+      "tool_calls": [],
+      "tool_call_id": "call_gpm72iox"
+    },
+    {
+      "role": "tool",
+      "content": "gadget price: 60",
+      "tool_calls": [],
+      "tool_call_id": "call_0cclfpv1"
+    },
+    {
+      "role": "assistant",
+      "content": "The more expensive item is \"gadget\".",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

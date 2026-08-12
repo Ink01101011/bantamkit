@@ -1,0 +1,23 @@
+{
+  "task": "recall-audit-retention",
+  "config": "bare",
+  "repeat": 0,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 302995500,
+  "output": "{\"days\": 90}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "How many days do we keep AUDIT logs? If you have a memory tool, check memory first. Answer with ONLY this JSON, nothing else: {\"days\": <number>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "{\"days\": 90}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

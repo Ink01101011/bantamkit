@@ -1,0 +1,76 @@
+{
+  "task": "shop-basket-total",
+  "config": "bare",
+  "repeat": 0,
+  "passed": false,
+  "outcome": "malformed-output",
+  "seed": 4171005978,
+  "output": "{\n  \"total\": (2 * 25) + (3 * 7) + (1 * 60)\n}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A customer orders 2 widgets, 3 doohickeys and 1 gadget. Use the tools to\nlook up unit prices, then answer with ONLY this JSON, nothing else:\n{\"total\": <number>}\n",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "To calculate the total cost for the order, I need to know how to look up the unit prices of each item first. Let's start by looking up the price for one widget.\n\n",
+      "tool_calls": [
+        {
+          "id": "call_l5bpvc9l",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "widget"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "widget price: 25",
+      "tool_calls": [],
+      "tool_call_id": "call_l5bpvc9l"
+    },
+    {
+      "role": "assistant",
+      "content": "Now let\u2019s check the price of a doohickey.\n",
+      "tool_calls": [
+        {
+          "id": "call_2j448gy6",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "doohickey"
+          }
+        },
+        {
+          "id": "call_g0x9ybrj",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "gadget"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "doohickey price: 7",
+      "tool_calls": [],
+      "tool_call_id": "call_2j448gy6"
+    },
+    {
+      "role": "tool",
+      "content": "gadget price: 60",
+      "tool_calls": [],
+      "tool_call_id": "call_g0x9ybrj"
+    },
+    {
+      "role": "assistant",
+      "content": "{\n  \"total\": (2 * 25) + (3 * 7) + (1 * 60)\n}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

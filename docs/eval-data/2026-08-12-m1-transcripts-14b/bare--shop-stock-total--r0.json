@@ -1,0 +1,56 @@
+{
+  "task": "shop-stock-total",
+  "config": "bare",
+  "repeat": 0,
+  "passed": true,
+  "outcome": "pass",
+  "seed": 159718182,
+  "output": "\u0e1c\u0e25\u0e23\u0e27\u0e21\u0e02\u0e2d\u0e07\u0e2a\u0e15\u0e47\u0e2d\u0e01\u0e2d\u0e34\u0e40\u0e17\u0e21 \"widget\" \u0e41\u0e25\u0e30 \"gadget\" \u0e04\u0e37\u0e2d \\(4 + 9 = 13\\).\n\n\u0e04\u0e33\u0e15\u0e2d\u0e1a\u0e01\u0e31\u0e1a\u0e40\u0e25\u0e02\u0e08\u0e33\u0e19\u0e27\u0e19\u0e17\u0e31\u0e49\u0e07\u0e2b\u0e21\u0e14\u0e04\u0e37\u0e2d **13**.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Use the tools to find the stock counts of \"widget\" and \"gadget\",\nthen answer with the combined total stock as a number.\n",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "\u0e04\u0e13\u0e30\u0e01\u0e23\u0e23\u0e21\u0e01\u0e32\u0e23\u0e17\u0e33\u0e15\u0e32\u0e21\u0e04\u0e33\u0e02\u0e2d\u0e02\u0e2d\u0e07\u0e04\u0e38\u0e13\u0e14\u0e49\u0e27\u0e22\u0e01\u0e32\u0e23\u0e2b\u0e32\u0e08\u0e33\u0e19\u0e27\u0e19\u0e2a\u0e15\u0e47\u0e2d\u0e01\u0e02\u0e2d\u0e07\u0e2d\u0e34\u0e40\u0e17\u0e21\u0e17\u0e31\u0e49\u0e07\u0e2a\u0e2d\u0e07 \u0e0b\u0e36\u0e48\u0e07\u0e19\u0e35\u0e48\u0e40\u0e1b\u0e47\u0e19\u0e02\u0e31\u0e49\u0e19\u0e15\u0e2d\u0e19:\n\n1. \u0e43\u0e0a\u0e49\u0e07\u0e32\u0e19\u0e1f\u0e31\u0e07\u0e01\u0e4c\u0e0a\u0e31\u0e19 `stock_lookup` \u0e40\u0e1e\u0e37\u0e48\u0e2d\u0e04\u0e49\u0e19\u0e2b\u0e32\u0e08\u0e33\u0e19\u0e27\u0e19\u0e2a\u0e15\u0e47\u0e2d\u0e01\u0e02\u0e2d\u0e07 \"widget\".\n2. \u0e43\u0e0a\u0e49\u0e07\u0e32\u0e19\u0e1f\u0e31\u0e07\u0e01\u0e4c\u0e0a\u0e31\u0e19 `stock_lookup` \u0e40\u0e1e\u0e34\u0e48\u0e21\u0e40\u0e15\u0e34\u0e21\u0e40\u0e1e\u0e37\u0e48\u0e2d\u0e04\u0e49\u0e19\u0e2b\u0e32\u0e08\u0e33\u0e19\u0e27\u0e19\u0e2a\u0e15\u0e47\u0e2d\u0e01\u0e02\u0e2d\u0e07 \"gadget\".\n3. \u0e2a\u0e31\u0e07\u0e40\u0e04\u0e23\u0e32\u0e30\u0e2b\u0e4c\u0e1c\u0e25\u0e25\u0e31\u0e1e\u0e18\u0e4c\u0e42\u0e14\u0e22\u0e23\u0e27\u0e21\u0e40\u0e1b\u0e47\u0e19\u0e15\u0e31\u0e27\u0e40\u0e25\u0e02\u0e2b\u0e19\u0e36\u0e48\u0e07\u0e40\u0e14\u0e35\u0e22\u0e27.\n\n\u0e40\u0e23\u0e34\u0e48\u0e21\u0e14\u0e49\u0e27\u0e22\u0e02\u0e31\u0e49\u0e19\u0e15\u0e2d\u0e19\u0e17\u0e35\u0e48 1:\n",
+      "tool_calls": [
+        {
+          "id": "call_8oqwro9z",
+          "name": "stock_lookup",
+          "arguments": {
+            "item": "widget"
+          }
+        },
+        {
+          "id": "call_0qh078av",
+          "name": "stock_lookup",
+          "arguments": {
+            "item": "gadget"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "widget stock: 4",
+      "tool_calls": [],
+      "tool_call_id": "call_8oqwro9z"
+    },
+    {
+      "role": "tool",
+      "content": "gadget stock: 9",
+      "tool_calls": [],
+      "tool_call_id": "call_0qh078av"
+    },
+    {
+      "role": "assistant",
+      "content": "\u0e1c\u0e25\u0e23\u0e27\u0e21\u0e02\u0e2d\u0e07\u0e2a\u0e15\u0e47\u0e2d\u0e01\u0e2d\u0e34\u0e40\u0e17\u0e21 \"widget\" \u0e41\u0e25\u0e30 \"gadget\" \u0e04\u0e37\u0e2d \\(4 + 9 = 13\\).\n\n\u0e04\u0e33\u0e15\u0e2d\u0e1a\u0e01\u0e31\u0e1a\u0e40\u0e25\u0e02\u0e08\u0e33\u0e19\u0e27\u0e19\u0e17\u0e31\u0e49\u0e07\u0e2b\u0e21\u0e14\u0e04\u0e37\u0e2d **13**.",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

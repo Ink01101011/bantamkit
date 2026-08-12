@@ -1,0 +1,23 @@
+{
+  "task": "extract-schedule",
+  "config": "bare",
+  "repeat": 0,
+  "passed": true,
+  "outcome": "pass",
+  "seed": 4223175415,
+  "output": "Based on the provided text, here is the extracted schedule in JSON format:\n\n```json\n{\n  \"day\": \"tuesday\",\n  \"time\": \"09:30\"\n}\n```",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Extract the schedule as JSON with keys \"day\" (lowercase) and \"time\" (HH:MM).\nText: \"Standup happens every Tuesday at 09:30 sharp.\"\n",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "Based on the provided text, here is the extracted schedule in JSON format:\n\n```json\n{\n  \"day\": \"tuesday\",\n  \"time\": \"09:30\"\n}\n```",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

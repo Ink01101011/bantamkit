@@ -1,0 +1,100 @@
+{
+  "task": "nav-release-bundle",
+  "config": "bare",
+  "repeat": 1,
+  "passed": true,
+  "outcome": "pass",
+  "seed": 2295343474,
+  "output": "{\n  \"bundle\": \"imgproc-cli-2.9.1.tar.gz\"\n}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the exact release bundle filename for the current version? Follow the release documentation and assemble it from the files it names. Use list_files first, then read_file on every file you need \u2014 follow each pointer the files give you; do not answer from memory or guess. Answer with ONLY this JSON, nothing else: {\"bundle\": \"<filename>\"}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_bqhm33vg",
+          "name": "list_files",
+          "arguments": {}
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "README.md\nVERSION\ndocs/ci.md\ndocs/release.md\ndocs/style.md\npackage.cfg",
+      "tool_calls": [],
+      "tool_call_id": "call_bqhm33vg"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_rm9bhk3m",
+          "name": "read_file",
+          "arguments": {
+            "path": "VERSION"
+          }
+        },
+        {
+          "id": "call_hb0issfl",
+          "name": "read_file",
+          "arguments": {
+            "path": "docs/release.md"
+          }
+        },
+        {
+          "id": "call_te0anmng",
+          "name": "read_file",
+          "arguments": {
+            "path": "README.md"
+          }
+        },
+        {
+          "id": "call_81xns55i",
+          "name": "read_file",
+          "arguments": {
+            "path": "package.cfg"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "2.9.1\n",
+      "tool_calls": [],
+      "tool_call_id": "call_rm9bhk3m"
+    },
+    {
+      "role": "tool",
+      "content": "# Releasing imgproc\n\nThe bundle name is assembled as <name>-<version>.tar.gz where <name>\ncomes from package.cfg and <version> comes from VERSION. Both files\nlive at the repo root. Never hardcode either value.",
+      "tool_calls": [],
+      "tool_call_id": "call_hb0issfl"
+    },
+    {
+      "role": "tool",
+      "content": "# imgproc\n\nImage processing CLI. Release process: docs/release.md.",
+      "tool_calls": [],
+      "tool_call_id": "call_te0anmng"
+    },
+    {
+      "role": "tool",
+      "content": "[package]\nname = imgproc-cli\nlicense = apache-2.0\n",
+      "tool_calls": [],
+      "tool_call_id": "call_81xns55i"
+    },
+    {
+      "role": "assistant",
+      "content": "{\n  \"bundle\": \"imgproc-cli-2.9.1.tar.gz\"\n}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

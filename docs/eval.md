@@ -280,7 +280,307 @@ what makes it get run.
 **Where it currently stands: `nav-prod-port` on 14b is fragile, so no rubric
 edit is creditable on that cell today.** Fixing that means finding a cell whose
 family does not straddle the threshold, not re-running until the number is
-liked. The bar is also RB-P15's standing check with `--identity-only`.
+liked. The bar is also RB-P15's standing check with `--identity-only`. The
+search for a cell where it *is* creditable is the next section.
+
+**The standing no-regression floor is
+`docs/eval-data/2026-08-12-nonfragile-anchor-set.json`** — 12 cells whose
+family is non-fragile under the as-filed rubric, so a rubric or critic-prompt
+edit that moves any of them has broken something that was stable. Run it before
+proposing an edit. It is a **floor, not an instrument**: green there is not a
+credit, it only means nothing stable was broken, and its own file carries the
+three caveats that bound it.
+
+### The non-fragile screen and the standing anchor set (2026-08-12)
+
+Pre-registered at `docs/eval-data/2026-08-12-m1-screen.md` and committed before
+the first request went out (screen commit `3b3d7f7` 11:35:55, first arm
+evidence 11:40:32 — the ordering is checkable in the log and was checked).
+**132 cells screened at identity** — 22 tasks × 3 repeats × `qwen2.5:14b-instruct`
+and `qwen3:4b-instruct` — of which **20 were characterised over the full
+12-point perturbation family**. Cost **452 critic requests / 204,982 tokens**
+against a registered cap of ≤ 628 critic requests / ≤ 286,785 tokens — 71.5% of
+budget, 18.2 min against ~22 predicted. The token figure is the whole job:
+159,349 across the four critic arms (23,735 + 21,981 identity, 79,812 + 33,821
+family) plus the 45,633 the answerer spent in stage 0. `wire_calls == requests`
+on all four arms and per-row tokens sum exactly to each summary total, so there
+are no unlogged requests. Every claim below was independently re-derived from the committed
+JSONLs by a reviewer who did not run the screen; the catalogue reproduced with
+zero mismatches on all 20 cells and all 132 ground-truth flags. One thing that
+review did **not** catch and this write-up does: the screen's shared-token
+guard table is wrong, and re-deriving it *by the screen's own method*
+reproduced the error rather than exposing it (deviation 7, and RB-P19). The
+catalogue's numbers are sound; one of the analyses beside them was not.
+
+#### The headline, stated so it cannot be misread
+
+The pre-registered target was a **defect bar**: a cell that is non-fragile *and*
+where the critic robustly scores a correct answer below threshold — the RB-P4
+shape. Stratum D1 was given the largest cap of any stratum. **Its pool is
+zero, across all 132 cells.**
+
+The closure is stronger than "none sampled". The shape requires family
+`max < 7`, hence identity `< 7`. Of the 132 cells, 66 carry a correct answer;
+**63 of those sit at identity ≥ 7 and are ruled out outright by stage 1**, not
+merely unsampled. The remaining three are 14b `nav-prod-port` r0/r1/r2, all at
+identity 5, and all three came back **fragile** (1/12 committed for r0 from the
+RB-P14 run; 4/12 and 3/12 measured here for r1 and r2). There is no cell at
+identity 6 with a correct answer anywhere on the suite.
+
+**What that sentence does and does not license.** It is tempting to write "the
+RB-P4 shape is reproducible nowhere on this suite". *Do not.* That is true only
+under the pre-registered technical definition — non-fragile **and** `0/F`
+**and** correct — and false under the plain reading of the same words. The
+defect itself reproduces perfectly well:
+
+- **3/3 under `bare`**, all three pinned seeds, a correct `{"port": 9443}`
+  (`2026-08-12-m1-bare-14b.jsonl`, seeds 2331795949 / 4094558621 / 634446002);
+- **3/3 under `critique`**, all three `critique-exhausted`, on already-committed
+  evidence from two days earlier (`2026-08-10-rebaseline-14b.jsonl`, same seeds).
+
+**What is absent is a *non-fragile instance*. Fragile is not absent.** That
+distinction carries the whole decision: "no rubric work is measurable here" is
+what the first phrasing implies and it closes the file; "the one cell that
+exhibits the defect is too noisy to carry an attribution *yet*" is what was
+measured, and it names the thing to attack. The screen did not find that
+RB-P4 is unreal. It found that RB-P4 has no instrument, which is what RB-P14
+already said, and it added the reason: the cell sits two points under threshold.
+
+**A consequence for round 2 that has to be said out loud.** Round 2's rubric
+rewording was withdrawn as *measured harmful* on the strength of **this same
+cell**. Under this document's own crediting rule, that harm verdict is no
+better supported than the verdict it replaced — both were read off a family
+now committed at 1/12, 4/12, 3/12 of itself. **The change stays withdrawn**;
+nothing here re-credits it, and no evidence has been produced that it helped.
+What changes is the label: its effect is **unmeasured**, not **known-bad**. A
+withdrawal is cheap and reversible; a false "we measured this and it hurt"
+entered into the record is neither.
+
+#### What the 20 cells are
+
+| verdict | cells | where |
+|---|---|---|
+| **anchor** — non-fragile, critic right | 12 | 8 robust accepts (`12/12`, min 9–10 vs T=7), 4 robust rejects (`0/12`, max 0–2) |
+| **fragile** | 5 | all five on 14b: `nav-prod-port` r1/r2, `recall-db-port` r2, `recall-env-endpoint` r0, `recall-deploy` r2 |
+| **defect-bar candidate, refused** | 3 | 14b `recall-cache-ttl` r0, 4b `nav-prod-port` r1, 4b `recall-audit-retention` r0 |
+
+The three refusals are all false-*accepts*, and all three were declined for the
+same reason: **the correct answer is absent from the critic's own inputs.**
+Only `{task}` and `{output}` reach it — no `memory_setup` store, no workspace,
+no tool trace, verified per cell against `render_prompt`'s actual
+interpolation. 14b `recall-cache-ttl` r0 answers `300` where the expected 240
+lives in a store `bare` never attaches; 4b `recall-audit-retention` r0 answers
+90 against 400, same shape; 4b `nav-prod-port` r1 answers 9499 against 9443,
+which lives in a workspace the critic never sees. **A critic that cannot know
+an answer is wrong is not committing a rubric defect by accepting it**, so
+scoring these 9–10 is not something a rubric edit could be credited for moving.
+
+#### Finding — robust verdicts are decided by the answer's *form*
+
+Across all 15 non-fragile cells, without exception:
+
+- **11 robust accepts** are all well-formed and non-empty — 8 of them correct
+  and **3 of them wrong** (the 3 refused candidates above). Form, not
+  correctness, is what all eleven have in common.
+- **4 robust rejects** are all empty or malformed: `{"name": ""}`,
+  `{"port": 94oire}`, the empty string, and a stray tool-call fragment.
+
+So the *direction* of a robust verdict is predicted by the answer's form. This
+holds on 15/15 and it is why the anchor set below is the shape it is: eight
+accepts of well-formed text, four rejects of garbage.
+
+#### Retired claim — "the critic is stable exactly where it does not have to judge correctness"
+
+The screen's own report went one step further and concluded that the critic
+*wavers precisely where it must judge correctness*, and drew from that an
+attack direction of "no rubric edit can help; give the critic the source or
+change what it does under unverifiable input". **That second half is retired.
+It is contradicted by the feedback strings committed alongside it.**
+
+Every sub-threshold row on all five fragile cells was read
+(`2026-08-12-m1-family-14b.jsonl`):
+
+| fragile cell | sub-threshold points | what the critic actually complained about |
+|---|---|---|
+| 14b `nav-prod-port` r1 | 12 of 12 | **format**, zero content |
+| 14b `nav-prod-port` r2 | 13 of 13 | **format**, zero content |
+| 14b `recall-db-port` r2 | 2 of 2 | **format** |
+| 14b `recall-env-endpoint` r0 | 1 of 1 | **provenance** |
+| 14b `recall-deploy` r2 | 12 of 12 | genuine correctness dispute |
+
+**In four of the five fragile cells the critic never judged correctness at
+all.** And on the two `nav-prod-port` cells the complaint is not merely
+off-charter, it is *false about the answer in front of it*. The answer is
+`{"port": 9443}`. The task demands `Answer with ONLY this JSON, nothing else:
+{"port": <number>}`. The answer is correct, and is already in the demanded
+format. The critic writes:
+
+> "The answer format should be {'port': number} not just the port number"
+
+> "Answer should be in format {\"port\": <number>}, not {\"port\": 9443} without
+> JSON structure. **Correct answer format wasn't followed but required content
+> was identified correctly.**"
+
+The second string names its own error: it grants the content is right and
+deducts anyway. It also quotes the answer back verbatim as the counter-example
+to a format the answer *is*. This is a hallucinated defect, not a judgement
+call. The same string is in the already-committed re-baseline two days earlier
+as the terminal `CritiqueExhausted` feedback on the same cell, so it is not an
+artifact of the replay harness.
+
+And this is exactly what the rubric forbids, in its own words
+(`assets/rubrics/task-completion.yaml`, unchanged blob
+`ab8886fe1ce62c3a9e2331469a48b7e471414b5e`):
+
+> Judge ONLY whether the information the task asks for is present and correct.
+> **Do NOT deduct points for formatting**, phrasing, extra surrounding text,
+> hedging, or verbosity.
+
+**The retired claim also fails as a predictor even where it describes.** Two
+cells, both well-formed, both wrong: 14b `recall-cache-ttl` r0
+(`{"seconds": 300}`) is **12/12 non-fragile**, and 14b `recall-db-port` r2
+(`{"port": 3307}`) is **10/12 fragile**. Same form, same correctness status,
+opposite verdicts. Form predicts the *direction* of a robust verdict **when one
+exists**; it does not predict *whether* one exists. On a sample of 20, "the
+critic had to judge correctness here" was doing unfalsifiable post-hoc work.
+
+#### The live attack direction this reopens
+
+The unstable axis is **format-compliance judgement the rubric does not ask for
+and explicitly prohibits**, applied to answers that already comply. That is a
+rubric-addressable defect, and it is the one RB-P4 was chasing all along.
+Filed against RB-P4 below as the third and only unexhausted direction, with the
+target stated in advance: **12 of 12 and 13 of 13 of that cell's failing points
+are format complaints**, so an instruction that suppresses format deduction has
+a directly measurable surface, not a plausible story.
+
+Two things this does *not* license, both binding:
+
+1. It is **not** a licence to write the edit and credit it. `nav-prod-port` on
+   14b is fragile, so the crediting rule still refuses the attribution. What
+   changed is that there is now a live hypothesis with a named target; the
+   instrument is still missing.
+2. The anchor set below **cannot** measure it — see caveat C2 there.
+
+#### The anchor set — a floor, and named as one
+
+`docs/eval-data/2026-08-12-nonfragile-anchor-set.json` — **the first committed
+no-regression set the project has.** Twelve cells whose family is non-fragile
+under the as-filed rubric: eight robust accepts of correct answers (`12/12`,
+score min 9–10 against threshold 7) and four robust rejects of wrong ones
+(`0/12`, max 0–2). Every cell carries its model, task, repeat, seed, answer
+bytes, answer sha256, family pass rate, min/max and transcript path. 192
+requests, ~74k tokens to re-run.
+
+**Its status is `FLOOR, NOT INSTRUMENT`, and its three caveats live inside the
+file** — as `caveats[]`, not in this prose, so a future cycle that reads the
+artifact and skips the document still meets them:
+
+- **C1** — `shop-compare` r2's `answer_correct: false` comes from `tool_trace`,
+  not from the answer text the critic reads. It is a valid robust reject of a
+  malformed answer; it is not evidence the critic judged correctness, and it is
+  the weakest of the twelve.
+- **C2** — the 12 cells reduce to **9 distinct answer texts**. The accept side
+  is 8 cells / 5 distinct texts / 3 tasks / **one family**
+  (`structured-extraction`; three 14b `extract-contact` cells share
+  byte-identical output), and the reject side is empty-or-malformed garbage.
+  **Nothing on the accept side exercises `file-nav` or `memory-recall`** —
+  near-zero coverage of the format-deduction mode above. Filed as RB-P21.
+- **C3** — passing all 12 is **necessary and nowhere near sufficient**. It
+  proves an edit broke nothing stable. It says nothing about whether the edit
+  moved the cell it was written for; that still needs the perturbation bar on
+  *that* cell reporting its family non-fragile.
+
+The strongest single cell is 14b `extract-contact` r2: a correct answer wrapped
+in prose *and* a code fence, accepted 12/12. It pins a **named directive** of
+the rubric — "Do NOT deduct points for formatting, phrasing, extra surrounding
+text" — so an edit that breaks it breaks something the rubric explicitly
+promises. That is also the directive the format-deduction attack has to
+strengthen without breaking, which makes this cell the attack's own guard rail.
+
+#### Deviations, amendments and limits — recorded, not smoothed
+
+1. **Unregistered C-stratum substitution.** §4 of the screen selects control
+   cells as the two lowest-scoring of stratum N, ties broken `(task asc,
+   repeat asc)`. Applied to the committed stage-1 scores that rule selects
+   14b `nav-prod-port` **r0 and r1** (three cells sit at identity 5, so the tie
+   break decides). What ran was **r1 and r2**. Nothing disclosed it. The
+   conclusion survives — r0's family is committed at 1/12 from the RB-P14 run,
+   `min 0 / max 9`, fragile, and r1/r2 reproduce that shape at 4/12 and 3/12 —
+   but the substituted-out cell is the project's canonical RB-P4 cell, dropped
+   from the one stratum the screen itself calls "the point of the exercise".
+   A pre-registered screen that silently drops its most load-bearing cell has
+   to say so, whether or not the answer changes.
+2. **The refusal criterion is a post-hoc amendment.** "The critic cannot see
+   the ground truth, so accepting a wrong answer is not a rubric defect" is
+   sound and is adopted. It was **not pre-registered**, and it was applied only
+   to the defect-bar side. Applied consistently it also questions the anchor
+   side: `shop-compare` r2's `correct=False` is likewise invisible to the
+   critic, since it comes from `tool_trace`. Recorded as caveat C1 rather than
+   used to drop the cell, because its 0/12 is real and its reject is right for
+   a reason the ground-truth flag does not encode.
+3. **The 4b arm does not corroborate the fragility result.** Its identity
+   distribution is bimodal — 59 cells at 10, 6 at 0, 1 at 4, **nothing in
+   5–9** — so stratum N is empty, no control cells ran, and all five fragile
+   cells are 14b. 4b structurally cannot exhibit the near-threshold behaviour
+   that produced every fragile cell in the catalogue. The two-model framing
+   therefore adds much less independent support than it reads as. Filed as
+   RB-P22.
+4. **"No third case" is a one-way implication, not an identity.** §1 of the
+   screen argues non-fragile ⟺ pass rate exactly `0/F` or `F/F`, and uses that
+   equivalence to call the two cell kinds exhaustive. Only the forward
+   direction holds: non-fragile (`min ≥ T` or `max < T`) does force `F/F` or
+   `0/F`. The converse does not — a family could in principle score all-pass
+   with a `min` below `T` under a different pass predicate. Nothing in the
+   catalogue turns on it (`criticreplay._family_stats` defines both from the
+   same min/max), but the argument as written is stronger than the definition.
+5. **The pre-screen heuristic failed and is retired by its own criterion.**
+   "Far from threshold ⇒ likely non-fragile" scored 70% vs 50% on 10 and 4
+   cells — no signal. Its failure is concrete rather than statistical: it
+   **would have discarded two confirmed anchors** (14b `extract-contact` r2 and
+   `extract-invoice` r0, both identity 9, both 12/12) drawn from the single
+   largest identity block on the model — 38 of 66 cells sit at identity 9, two
+   were sampled, and both were anchors. §4 pre-registered the failure condition
+   ("if any control cell comes back non-fragile the heuristic leaks and is
+   reported as failed") and it fired as written. 132 requests / 45,716 tokens
+   for a rule that points away from the best anchors. **Replacement: stratify
+   by answer *form*,** which is what the surviving half of the mechanism
+   finding says actually predicts a robust verdict.
+6. **The `--identity-replays 1` deviation is validated, and was registered
+   before stage 1** — it is in the pre-registration commit itself. All 20
+   stage-2 cells: stage-1 identity score equals all five R=5 replays, 100/100,
+   zero within-cell spread.
+7. **Guard violations changed no verdict — but the guard analysis itself was
+   wrong, and is corrected here.** The screen recorded 5 affected cells.
+   Recomputed offline with `criticreplay.shared_token_violations` over all 22
+   frozen task prompts, the true figure is **8 of the 20**. The screen's §6
+   table got `P2-asks-requests` wrong in both halves: it recorded the
+   symmetric difference as "+ `requests`" and the violation as
+   `recall-org-quota` (*requests*), when in fact `requests` violates nowhere
+   (`recall-org-quota` says "requests-per-minute", one token) and the omitted
+   word `for` violates on **six** tasks. On all eight cells the fragility
+   verdict is identical with and without the violating points, so **no
+   conclusion here rests on a guard-violating point** — but the pre-registered
+   re-check that set out specifically to widen RB-P19 under-reported it a
+   second time. Full correction under RB-P19 below; the corrected per-cell
+   data ships inside the anchor artifact, not in the screen's table.
+8. **Coverage, stated plainly as not exhaustive.** 2 of 4 models (`llama3.2:3b`
+   and `qwen2.5:7b-instruct` unscreened); 132 of 264 possible cells at
+   identity; 20 of 132 at full family (15%); on 14b, 4 of 43 near-band cells
+   and 2 of the 38-cell identity-9 block. **One rubric variant only**, so no
+   attribution claim is possible here and none is made. Answers come from
+   `bare`, so these are the critic's round-0 decisions.
+9. **Two predictions are recorded as wrong rather than smoothed.** 14b latency
+   ran 2.50 s/request at stage 2 against 1.95 budgeted (stage 1 hit 1.95
+   exactly — perturbed prompts are longer than identity, so the spec's warm
+   figure understates a family run). And **D1 being empty was not anticipated
+   at all**: it was given the largest cap of any stratum and none of it was
+   spent.
+
+One thing the budget bought for free: stage 0 was budgeted from the *measured*
+`bare` totals of the 2026-08-10 re-baseline rather than from an estimate, and
+the seeded re-run reproduced that arm **per-run, token-for-token** — a
+determinism check obtained by budgeting from measurement instead of guesswork.
 
 ### Reporting-semantics changes (2026-08-11, v0.14.0)
 
@@ -1712,6 +2012,54 @@ a problem with an owner-direction, and the layer names refer to the
   reported as a pass rate with its spread, across a target wider than one
   cell. Until that exists, any rubric edit proposed here cannot be shown to
   have worked, however plausible its reasoning strings read.
+
+  **Status update (2026-08-12, the non-fragile screen) — RB-P4 stays OPEN and
+  a third attack direction is now NAMED, with its target counted in advance.**
+  See [The non-fragile screen and the standing anchor
+  set](#the-non-fragile-screen-and-the-standing-anchor-set-2026-08-12) for the
+  full derivation. Three things move here:
+
+  1. **The defect reproduces; what is missing is a non-fragile instance of
+     it.** Across 132 screened cells, stratum D1 — non-fragile, correct
+     answer, robustly below threshold — is empty, and 63 of the 66
+     correct-answer cells are ruled out outright at stage 1 because the shape
+     needs identity `< 7`. But the cell itself is still 3/3 correct under
+     `bare` and 3/3 `critique-exhausted` under `critique`. **"Not
+     reproducible" is the wrong reading and must not be written; "fragile, not
+     absent" is the measured one.** RB-P4 is not refuted, it is un-instrumented.
+  2. **The failing points are format complaints, and the rubric forbids
+     exactly that.** Every sub-threshold row on the cell's own perturbation
+     family was read: **12 of 12** on r1 and **13 of 13** on r2 are format
+     complaints; **zero** dispute the content. The answer is `{"port": 9443}`
+     — correct, and already in the format the task demands — and one verdict
+     states the contradiction itself: *"Correct answer format wasn't followed
+     but required content was identified correctly."* The rubric's own text
+     says "Do NOT deduct points for formatting". So the critic is not hitting
+     a limit of blind judgement here; it is violating a directive it was
+     given, about a defect that is not present.
+  3. **Attack (third direction, unexhausted):** strengthen the
+     anti-format-deduction instruction — make "the answer already satisfies
+     the task's stated format" a case the critic must check before deducting,
+     rather than a prohibition stated once in the preamble and ignored under
+     load. Unlike directions 1 and 2 this one has a **counted target**: **all
+     25 of the 25** sub-threshold points across r1 and r2 are format
+     complaints, with no content complaint among them to confound the
+     reading, so the edit either moves them or it does not.
+     **The blocker is unchanged.**
+     The cell is fragile (1/12, 4/12, 3/12), so the crediting rule still
+     refuses the attribution, and the anchor set below cannot substitute —
+     its accept side is entirely `structured-extraction` and touches no
+     `file-nav` cell (RB-P21). This is a live hypothesis with a measurable
+     surface, **not** a licence to write the edit and credit it.
+
+  **And a correction that runs the other way.** Round 2's rewording was
+  withdrawn as *measured harmful* on the strength of this same cell. Under
+  this document's own crediting rule that verdict is no better supported than
+  the one it replaced. **The change stays withdrawn** — nothing here
+  re-credits it and no evidence has been produced that it helped — but its
+  effect is properly recorded as **unmeasured**, not **known-bad**. Evidence:
+  `2026-08-12-m1-family-14b.jsonl`, `2026-08-12-m1-bare-14b.jsonl`,
+  `2026-08-10-rebaseline-14b.jsonl`, `2026-08-12-nonfragile-anchor-set.json`.
 - **RB-P5 — the 4b `full` watch item stayed red.** The two
   `nav-release-bundle` `critique-exhausted` rows (seeds 3590861830 and
   2248991587) reappear field-identical to the seeded bar-noreg cell. The
@@ -2204,6 +2552,111 @@ and each carries an attack direction.
   make the guard a load-time error rather than a test-time observation — an
   admissibility rule that ships violated is a rule the next family will
   violate too. (Measurement.)
+
+  **BROADER THAN FILED (2026-08-12) — three points violate, not one, and the
+  first re-statement of that was also wrong.** The guard is a word-set
+  symmetric difference, so a paraphrase violates on any word it *adds or
+  removes*, not only on the word it adds. Recomputed offline with
+  `criticreplay.shared_token_violations` against **all 22 frozen task
+  prompts**:
+
+  | point | symmetric difference | violates on |
+  |---|---|---|
+  | `P1-reviewer-relative` | `checking` / `who`, `checks` | `recall-oncall`, `recall-oncall-rotation` (*who*) |
+  | `P2-asks-requests` | `asks`, `for` / `requests` | `nav-release-bundle`, `recall-cache-ttl`, `recall-env-endpoint`, `recall-oncall`, `recall-oncall-rotation`, `recall-org-quota` (*for*) |
+  | `P3-right-correct` | `right` / `correct` | `nav-prod-port` (*right*) |
+
+  So **8 tasks are affected, not 1**, and `P2` alone violates on six of them.
+  The 2026-08-12 screen's §6 table caught P1 and P3 correctly but got P2
+  wrong in both halves: it recorded the difference as "+ `requests`" and the
+  violation as `recall-org-quota` (*requests*). Neither holds. `requests`
+  violates **nowhere** — `recall-org-quota`'s prompt says
+  "requests-per-minute", which tokenises as one word — while `for`, which the
+  table omitted from the difference entirely, violates on six tasks including
+  `recall-org-quota`. The screen reached the right *task* by the wrong word
+  and missed five others.
+
+  **The conclusions survive; the analysis behind them did not.** Under the
+  corrected set, **8 of the 20 screened cells violate, not the 5 recorded** —
+  the four newly affected are 14b `recall-cache-ttl` r0, 14b
+  `recall-env-endpoint` r0, 4b `nav-release-bundle` r0, and 14b
+  `recall-oncall-rotation` r1 (flagged for P1, but not for P2). Every one was
+  re-derived from the committed JSONLs with the violating points dropped,
+  and **the fragility verdict is unchanged on all eight** — `recall-cache-ttl`
+  r0 12/12→11/11 non-fragile, `recall-env-endpoint` r0 11/12→10/11 fragile,
+  `nav-release-bundle` r0 0/12→0/11 non-fragile, `recall-oncall-rotation` r1
+  0/12→0/10 non-fragile. No result in the screen or in the anchor set depends
+  on a guard-violating point. `docs/eval-data/2026-08-12-nonfragile-anchor-set.json`
+  carries the **corrected** per-cell guard data with the dropped-point
+  recomputation beside it, not the screen's table.
+  **This strengthens the attack rather than changing it:** a guard whose own
+  filing was under-reported twice — once in the original RB-P19 and once in a
+  pre-registered re-check that set out specifically to widen it — is not a
+  rule that survives as a test-time observation. Make it a **load-time error
+  over every frozen task**, computed from the manifest, so no future family
+  can ship violating it and no future author has to derive the word list by
+  hand. (Measurement.)
+- **RB-P20 — the `critique` config deletes the only evidence of its own
+  rejections, so any screen run through it is biased against finding a
+  critic defect.** When the `critique` gate exhausts its rounds `agent.run`
+  raises, `output` is never set (`evalrun.py:535` initialises it to `None`,
+  `:556-560` catches `BantamError` without setting it), the transcript
+  records `"output": null`, and `criticreplay.load_cases` skips the row
+  (`criticreplay.py:419-420`). **A `critique`-config transcript can therefore
+  never contain an answer the critic rejected.** The consequence is not
+  cosmetic: the RB-P4 shape *is* "the critic robustly rejects a correct
+  answer", so screening `critique` transcripts makes that shape unreachable
+  **by construction**, and "no defect bar found" would then have been
+  reported from a sample that could not have contained one — a null result
+  manufactured by the instrument, pointing in the exact direction of the
+  hypothesis under test. 14b `nav-prod-port` is the proof: `critique` scores
+  `XXX` with nothing recorded, `bare` on the same model, task and seeds
+  scores `PPP` with the correct answer recorded. The 2026-08-12 screen caught
+  this while designing and took answers from `bare` instead; the 14b
+  `critique` arm alone would have dropped 5 cells and the whole shape.
+  **Attack:** record the rejected `output` on the exception path so an
+  exhausted run keeps the answer it was rejecting — the transcript already
+  carries `messages` for both exhaustion taxonomies since `4a8b816`/`670d8ca`,
+  so this is the same fix applied to one more field. Until then, **any screen
+  of critic behaviour must draw its cells from an ungated config, and must
+  say so.** (Measurement — the fix itself is Core.)
+- **RB-P21 — the anchor set has near-zero coverage of the one failure mode
+  it sits next to.** `2026-08-12-nonfragile-anchor-set.json` is 12 cells, and
+  they reduce to **9 distinct answer texts**. The accept side — the half that
+  could catch an over-strict edit — is 8 cells / 5 distinct texts / 3 tasks /
+  **one family**, `structured-extraction`, with three 14b `extract-contact`
+  cells sharing byte-identical output. The reject side is 4 cells of empty or
+  malformed garbage. **No accept-side cell exercises `file-nav` or
+  `memory-recall`**, which is precisely where the format-deduction defect
+  (RB-P4, third direction) lives. So the format-suppression edit that RB-P4
+  now points at can pass all twelve anchors and still be entirely unmeasured,
+  and an edit that over-corrects into accepting garbage would be caught only
+  by four cells that are all trivially malformed. The set is a floor and is
+  labelled one in its own `status` field; it is not an instrument. **Attack:**
+  widen the accept side deliberately rather than by sampling — the screen
+  promoted by identity margin, which concentrated on whatever the critic
+  scores 9–10, and that is structurally the extraction family. Screen for
+  *non-fragile accepts on `file-nav` and `memory-recall` specifically*, at
+  R=1 identity over the whole suite first, and accept a smaller yield.
+  (Measurement.)
+- **RB-P22 — `qwen3:4b-instruct` cannot host a bar that discriminates
+  anything subtler than well-formed-vs-not, so the two-model framing of the
+  2026-08-12 screen carries less independent weight than it reads as.** Its
+  identity distribution over 66 cells is bimodal to the point of being
+  degenerate: **59 at 10, 6 at 0, 1 at 4, and nothing at all in 5–9.** The
+  screen's control stratum N is therefore **empty on 4b** — no control cell
+  ran there — and **all five fragile cells in the catalogue are 14b**. This
+  is not a sampling accident; a critic with no mass near its own threshold
+  cannot produce a family that straddles it, so 4b is structurally incapable
+  of exhibiting the near-threshold behaviour that generated every fragile
+  cell. Its four anchors are real and are kept, but **"the finding holds on
+  two models" is not what was measured** — it holds on one model and is not
+  contradicted by a second that could not have contradicted it. **Attack:**
+  when a screen needs corroboration on a second model, pick it on the shape
+  of its *identity distribution* (mass in the near band), not on cost or on
+  being a different generation — and report that distribution before
+  promoting anything, since it is one cheap R=1 pass and it decides whether
+  the second arm can answer the question at all. (Measurement.)
 
 Two of the review's findings were fixed in this cycle rather than filed:
 `requests` counted JSONL rows while `Verdict.calls` was dropped from the row

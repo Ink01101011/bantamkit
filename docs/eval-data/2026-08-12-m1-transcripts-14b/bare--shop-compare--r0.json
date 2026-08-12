@@ -1,0 +1,56 @@
+{
+  "task": "shop-compare",
+  "config": "bare",
+  "repeat": 0,
+  "passed": true,
+  "outcome": "pass",
+  "seed": 1492014504,
+  "output": "The gadget is more expensive than the widget.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Use the tools to check the unit prices of \"widget\" and \"gadget\",\nand answer with the name of the more expensive item.\n",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_nkmu2g8g",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "widget"
+          }
+        },
+        {
+          "id": "call_p219aux5",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "gadget"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "widget price: 25",
+      "tool_calls": [],
+      "tool_call_id": "call_nkmu2g8g"
+    },
+    {
+      "role": "tool",
+      "content": "gadget price: 60",
+      "tool_calls": [],
+      "tool_call_id": "call_p219aux5"
+    },
+    {
+      "role": "assistant",
+      "content": "The gadget is more expensive than the widget.",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

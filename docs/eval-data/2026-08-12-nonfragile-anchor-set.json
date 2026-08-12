@@ -1,0 +1,398 @@
+{
+  "name": "task-completion non-fragile anchor set",
+  "id": "anchors-2026-08-12",
+  "created": "2026-08-12",
+  "job": "nonfragile-bar-cells",
+  "layer": "Measurement",
+  "what_this_is": "Twelve (critic model, task, repeat, answer bytes) cells whose 12-point perturbation family under `assets/rubrics/task-completion.yaml` is NON-FRAGILE \u2014 pass rate exactly 12/12 or 0/12, never straddling threshold 7. Eight are robust accepts of a correct answer; four are robust rejects of a wrong one. A rubric or critic-prompt edit that moves any of these twelve has broken something that was stable.",
+  "status": "FLOOR, NOT INSTRUMENT \u2014 read `caveats` before quoting this file.",
+  "caveats": [
+    {
+      "id": "C1-shop-compare-provenance",
+      "severity": "must-read",
+      "text": "`shop-compare` r2's `answer_correct: false` comes from `tool_trace`, not from the answer text the critic reads. Its ground truth is a property of the trace; the critic never sees the trace. The cell is a valid robust reject of a malformed answer, but it is NOT evidence that the critic judged correctness, and it is the weakest of the twelve. Do not offer it as a bar."
+    },
+    {
+      "id": "C2-accept-side-covers-one-family-only",
+      "severity": "must-read",
+      "text": "The 12 cells reduce to 9 DISTINCT ANSWER TEXTS. The accept side is 8 cells / 5 distinct texts / 3 tasks / ONE family: `structured-extraction` (three 14b `extract-contact` cells share byte-identical output). The reject side is 4 cells of empty or malformed garbage. NOTHING on the accept side exercises `file-nav` or `memory-recall` \u2014 i.e. this set has near-zero coverage of the format-deduction failure mode it was screened alongside (RB-P20). An edit that fixes that failure mode can pass all twelve of these and still be unmeasured."
+    },
+    {
+      "id": "C3-necessary-not-sufficient",
+      "severity": "must-read",
+      "text": "Passing all 12 is NECESSARY and nowhere near SUFFICIENT. This set proves an edit did not break twelve stable cells. It proves nothing about whether the edit moved the cell it was written for \u2014 that still requires the perturbation bar on THAT cell reporting its family non-fragile (docs/eval.md, 'Crediting a rubric edit'). Green here is a floor, not a credit."
+    }
+  ],
+  "how_to_use": {
+    "rule": "Before crediting any edit to `assets/rubrics/task-completion.yaml` or to a critic-facing contract string, re-run the perturbation family over these 12 cells and check every `expect_pass_rate` still holds. Any change is a regression until explained.",
+    "command": ".venv/bin/python -m bantamkit.criticreplay --rubric after=assets/rubrics/task-completion.yaml --transcripts docs/eval-data/2026-08-12-m1-transcripts-<model>-stage2 --base-url http://localhost:11434/v1 --model <model> --json docs/eval-data/<date>-anchors-<model>.jsonl --summary docs/eval-data/<date>-anchors-<model>-summary.json",
+    "cost": "12 cells x 16 requests = 192 requests; ~74k tokens at the measured 384 tokens/request for `A-asfiled`. No answerer, no tools, no suite run."
+  },
+  "measured_under": {
+    "rubric": "assets/rubrics/task-completion.yaml",
+    "rubric_blob": "ab8886fe1ce62c3a9e2331469a48b7e471414b5e",
+    "rubric_sha256": "55f700e09bab0cfac01cb18d4cfb54666ff942598035697e0383726fe82c2868",
+    "rubric_note": "Byte-identical to `d2f78b7:` \u2014 the round-2 edit was withdrawn, so this is `A-asfiled`.",
+    "perturbation_manifest": "assets/evals/perturbations/task-completion.yaml",
+    "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+    "threshold": 7,
+    "family_points": 12,
+    "identity_replays": 5,
+    "answer_provenance": "`--config bare`, replayed byte-exact. These are the critic's ROUND-0 decisions; cells where the critic revised an answer across rounds are out of scope (see docs/eval-data/2026-08-12-m1-screen.md \u00a72.2 for why `critique` transcripts cannot supply them).",
+    "evidence": [
+      "docs/eval-data/2026-08-12-m1-screen.md",
+      "docs/eval-data/2026-08-12-m1-family-14b.jsonl",
+      "docs/eval-data/2026-08-12-m1-family-4b.jsonl",
+      "docs/eval-data/2026-08-12-m1-catalogue-14b.json",
+      "docs/eval-data/2026-08-12-m1-catalogue-4b.json"
+    ],
+    "guard_note": "Every cell's `guard_violations` was recomputed offline against all 22 frozen task prompts with `criticreplay.shared_token_violations`, NOT copied from the screen's \u00a76 table, which under-reported `P2-asks-requests` (see RB-P19). Where a cell violates, `guard_dropped` gives the family recomputed with the violating points removed; the verdict is unchanged on every one of the twelve."
+  },
+  "coverage": {
+    "cells": 12,
+    "distinct_answer_texts": 9,
+    "accept_side": {
+      "cells": 8,
+      "distinct_texts": 5,
+      "tasks": 3,
+      "families": [
+        "structured-extraction"
+      ],
+      "score_min_range": [
+        9,
+        10
+      ],
+      "threshold": 7
+    },
+    "reject_side": {
+      "cells": 4,
+      "distinct_texts": 4,
+      "families": [
+        "memory-recall",
+        "tool-use",
+        "file-nav"
+      ],
+      "answer_shapes": [
+        "empty",
+        "malformed",
+        "tool-call fragment"
+      ],
+      "score_max_range": [
+        0,
+        2
+      ],
+      "threshold": 7
+    },
+    "models": [
+      "qwen2.5:14b-instruct",
+      "qwen3:4b-instruct"
+    ],
+    "models_not_covered": [
+      "llama3.2:3b",
+      "qwen2.5:7b-instruct"
+    ],
+    "not_covered_on_accept_side": [
+      "file-nav",
+      "memory-recall",
+      "tool-use"
+    ]
+  },
+  "cells": [
+    {
+      "model": "qwen2.5:14b-instruct",
+      "task": "extract-contact",
+      "repeat": 0,
+      "seed": 2259705935,
+      "answer": "Here's the extracted contact information in JSON format:\n\n```json\n{\n  \"name\": \"Ann Chen\",\n  \"email\": \"ann.chen@example.com\"\n}\n```",
+      "answer_sha256": "7bbd9ee6d3b5671644b3059c18b2a92a784e5dc44bc547530f57526befb97e93",
+      "answer_correct": true,
+      "answer_correct_source": "answer_text",
+      "expect": "accept",
+      "expect_pass_rate": "12/12",
+      "measured_min": 9,
+      "measured_max": 10,
+      "fragile": false,
+      "stratum_2026_08_12": "A1",
+      "guard_violations": {},
+      "guard_dropped_verdict_unchanged": null,
+      "transcript": "docs/eval-data/2026-08-12-m1-transcripts-14b-stage2/bare--extract-contact--r0.json",
+      "notes": [
+        "Pins a NAMED rubric directive: the answer is correct but wrapped in prose and a code fence, and the critic accepts it 12/12. An edit that breaks this cell breaks `Do NOT deduct points for formatting, phrasing, extra surrounding text` \u2014 something the rubric explicitly promises."
+      ],
+      "guard_dropped": null
+    },
+    {
+      "model": "qwen2.5:14b-instruct",
+      "task": "extract-contact",
+      "repeat": 1,
+      "seed": 3497327120,
+      "answer": "Here's the extracted contact information in JSON format:\n\n```json\n{\n  \"name\": \"Ann Chen\",\n  \"email\": \"ann.chen@example.com\"\n}\n```",
+      "answer_sha256": "7bbd9ee6d3b5671644b3059c18b2a92a784e5dc44bc547530f57526befb97e93",
+      "answer_correct": true,
+      "answer_correct_source": "answer_text",
+      "expect": "accept",
+      "expect_pass_rate": "12/12",
+      "measured_min": 9,
+      "measured_max": 10,
+      "fragile": false,
+      "stratum_2026_08_12": "A1",
+      "guard_violations": {},
+      "guard_dropped_verdict_unchanged": null,
+      "transcript": "docs/eval-data/2026-08-12-m1-transcripts-14b-stage2/bare--extract-contact--r1.json",
+      "notes": [
+        "Pins a NAMED rubric directive: the answer is correct but wrapped in prose and a code fence, and the critic accepts it 12/12. An edit that breaks this cell breaks `Do NOT deduct points for formatting, phrasing, extra surrounding text` \u2014 something the rubric explicitly promises."
+      ],
+      "guard_dropped": null
+    },
+    {
+      "model": "qwen2.5:14b-instruct",
+      "task": "extract-invoice",
+      "repeat": 1,
+      "seed": 3927040636,
+      "answer": "Here is the extracted information in JSON format based on your text:\n\n{\n  \"number\": \"INV-42\",\n  \"total\": 199\n}",
+      "answer_sha256": "b16ac2439b873f1231351a3954ef76134feff4c02a4ce2d2c650b0be0a5738a9",
+      "answer_correct": true,
+      "answer_correct_source": "answer_text",
+      "expect": "accept",
+      "expect_pass_rate": "12/12",
+      "measured_min": 9,
+      "measured_max": 10,
+      "fragile": false,
+      "stratum_2026_08_12": "A1",
+      "guard_violations": {},
+      "guard_dropped_verdict_unchanged": null,
+      "transcript": "docs/eval-data/2026-08-12-m1-transcripts-14b-stage2/bare--extract-invoice--r1.json",
+      "notes": [],
+      "guard_dropped": null
+    },
+    {
+      "model": "qwen2.5:14b-instruct",
+      "task": "extract-order",
+      "repeat": 1,
+      "seed": 2555329956,
+      "answer": "Here is the extracted order in JSON format based on the provided text:\n```json\n{\n  \"item\": \"widget\",\n  \"quantity\": 3\n}\n```\nNote that I changed \"Widgets\" to lowercase singular (\"widget\") as instructed and assumed that the customer wants three of a single item type.",
+      "answer_sha256": "6f45cb2ecb35b9e4157f841ae86fe604510db9e05be63ba99eba020bb36e6c0e",
+      "answer_correct": true,
+      "answer_correct_source": "answer_text",
+      "expect": "accept",
+      "expect_pass_rate": "12/12",
+      "measured_min": 9,
+      "measured_max": 10,
+      "fragile": false,
+      "stratum_2026_08_12": "A1",
+      "guard_violations": {},
+      "guard_dropped_verdict_unchanged": null,
+      "transcript": "docs/eval-data/2026-08-12-m1-transcripts-14b-stage2/bare--extract-order--r1.json",
+      "notes": [],
+      "guard_dropped": null
+    },
+    {
+      "model": "qwen2.5:14b-instruct",
+      "task": "recall-oncall-rotation",
+      "repeat": 1,
+      "seed": 3203733254,
+      "answer": "{\"name\": \"\"}",
+      "answer_sha256": "f8aeebb949d80c6664e94bc3f0e35aba2157a3e14c8ba7fde2b7a8fc836e27f3",
+      "answer_correct": false,
+      "answer_correct_source": "answer_text",
+      "expect": "reject",
+      "expect_pass_rate": "0/12",
+      "measured_min": 0,
+      "measured_max": 2,
+      "fragile": false,
+      "stratum_2026_08_12": "A2",
+      "guard_violations": {
+        "P1-reviewer-relative": [
+          "who"
+        ],
+        "P2-asks-requests": [
+          "for"
+        ]
+      },
+      "guard_dropped_verdict_unchanged": true,
+      "transcript": "docs/eval-data/2026-08-12-m1-transcripts-14b-stage2/bare--recall-oncall-rotation--r1.json",
+      "notes": [
+        "Manifest shared-token guard violated by `P1-reviewer-relative` (shares who); `P2-asks-requests` (shares for) on this task's `{task}`. Recomputed with those points dropped the family reads 0/10 min 0 max 2, fragile=false \u2014 verdict UNCHANGED, so this cell's expectation does not rest on a guard-violating point. NOTE: this is the CORRECTED violation set; the 2026-08-12 screen's \u00a76 table under-reported `P2-asks-requests`. See RB-P19."
+      ],
+      "guard_dropped": {
+        "pass_rate": "0/10",
+        "min": 0,
+        "max": 2,
+        "fragile": false
+      }
+    },
+    {
+      "model": "qwen2.5:14b-instruct",
+      "task": "shop-compare",
+      "repeat": 2,
+      "seed": 4118104234,
+      "answer": "\u7421\n{\"name\": \"price_lookup\", \"arguments\": {\"item\": \"widget\"}}\n</tool_call>\n",
+      "answer_sha256": "6997115a1fc5da19eea36d8972fbf9271e10cf94b0a116a4df2f39e85b206d49",
+      "answer_correct": false,
+      "answer_correct_source": "tool_trace",
+      "expect": "reject",
+      "expect_pass_rate": "0/12",
+      "measured_min": 0,
+      "measured_max": 2,
+      "fragile": false,
+      "stratum_2026_08_12": "A2",
+      "guard_violations": {},
+      "guard_dropped_verdict_unchanged": null,
+      "transcript": "docs/eval-data/2026-08-12-m1-transcripts-14b-stage2/bare--shop-compare--r2.json",
+      "notes": [
+        "WEAKEST CELL. `shop-compare` scores by `tool_trace` (`assets/evals/tasks/shop-compare.yaml`), so `answer_correct: false` is a property of the trace, NOT of the answer text the critic reads. The critic rejects this cell on the answer text alone (garbage tool-call fragment), which is the right call for a reason the ground-truth flag does not encode. Do not lean on this cell; it is retained because its 0/12 is real, and flagged because its provenance is not what the label says."
+      ],
+      "guard_dropped": null
+    },
+    {
+      "model": "qwen2.5:14b-instruct",
+      "task": "extract-contact",
+      "repeat": 2,
+      "seed": 2660316194,
+      "answer": "Here's the extracted contact information in JSON format:\n\n```json\n{\n  \"name\": \"Ann Chen\",\n  \"email\": \"ann.chen@example.com\"\n}\n```",
+      "answer_sha256": "7bbd9ee6d3b5671644b3059c18b2a92a784e5dc44bc547530f57526befb97e93",
+      "answer_correct": true,
+      "answer_correct_source": "answer_text",
+      "expect": "accept",
+      "expect_pass_rate": "12/12",
+      "measured_min": 9,
+      "measured_max": 10,
+      "fragile": false,
+      "stratum_2026_08_12": "C",
+      "guard_violations": {},
+      "guard_dropped_verdict_unchanged": null,
+      "transcript": "docs/eval-data/2026-08-12-m1-transcripts-14b-stage2/bare--extract-contact--r2.json",
+      "notes": [
+        "Pins a NAMED rubric directive: the answer is correct but wrapped in prose and a code fence, and the critic accepts it 12/12. An edit that breaks this cell breaks `Do NOT deduct points for formatting, phrasing, extra surrounding text` \u2014 something the rubric explicitly promises."
+      ],
+      "guard_dropped": null
+    },
+    {
+      "model": "qwen2.5:14b-instruct",
+      "task": "extract-invoice",
+      "repeat": 0,
+      "seed": 1357191355,
+      "answer": "Here is the extracted information from the given text, formatted as a JSON object:\n\n```json\n{\n  \"number\": \"INV-42\",\n  \"total\": 199\n}\n```",
+      "answer_sha256": "ba435821edf3cd6b8dca266a7b634d1a1238058c20515fcf9b6e3b0e60a73171",
+      "answer_correct": true,
+      "answer_correct_source": "answer_text",
+      "expect": "accept",
+      "expect_pass_rate": "12/12",
+      "measured_min": 9,
+      "measured_max": 10,
+      "fragile": false,
+      "stratum_2026_08_12": "C",
+      "guard_violations": {},
+      "guard_dropped_verdict_unchanged": null,
+      "transcript": "docs/eval-data/2026-08-12-m1-transcripts-14b-stage2/bare--extract-invoice--r0.json",
+      "notes": [],
+      "guard_dropped": null
+    },
+    {
+      "model": "qwen3:4b-instruct",
+      "task": "extract-contact",
+      "repeat": 0,
+      "seed": 1861749954,
+      "answer": "{\n  \"name\": \"Ann Chen\",\n  \"email\": \"ann.chen@example.com\"\n}",
+      "answer_sha256": "f59cd40f88e46084c2639fb04f2016a69d7f989ba755bcf334ef3cf273b749c0",
+      "answer_correct": true,
+      "answer_correct_source": "answer_text",
+      "expect": "accept",
+      "expect_pass_rate": "12/12",
+      "measured_min": 10,
+      "measured_max": 10,
+      "fragile": false,
+      "stratum_2026_08_12": "A1",
+      "guard_violations": {},
+      "guard_dropped_verdict_unchanged": null,
+      "transcript": "docs/eval-data/2026-08-12-m1-transcripts-4b-stage2/bare--extract-contact--r0.json",
+      "notes": [],
+      "guard_dropped": null
+    },
+    {
+      "model": "qwen3:4b-instruct",
+      "task": "extract-contact",
+      "repeat": 1,
+      "seed": 3552401145,
+      "answer": "{\n  \"name\": \"Ann Chen\",\n  \"email\": \"ann.chen@example.com\"\n}",
+      "answer_sha256": "f59cd40f88e46084c2639fb04f2016a69d7f989ba755bcf334ef3cf273b749c0",
+      "answer_correct": true,
+      "answer_correct_source": "answer_text",
+      "expect": "accept",
+      "expect_pass_rate": "12/12",
+      "measured_min": 10,
+      "measured_max": 10,
+      "fragile": false,
+      "stratum_2026_08_12": "A1",
+      "guard_violations": {},
+      "guard_dropped_verdict_unchanged": null,
+      "transcript": "docs/eval-data/2026-08-12-m1-transcripts-4b-stage2/bare--extract-contact--r1.json",
+      "notes": [],
+      "guard_dropped": null
+    },
+    {
+      "model": "qwen3:4b-instruct",
+      "task": "nav-prod-port",
+      "repeat": 0,
+      "seed": 1908598355,
+      "answer": "{\"port\": 94oire}",
+      "answer_sha256": "efc1a8ce2a1387523122d00e58ecf8bea9f0b8ca1860fd0097161a1bce361cd0",
+      "answer_correct": false,
+      "answer_correct_source": "answer_text",
+      "expect": "reject",
+      "expect_pass_rate": "0/12",
+      "measured_min": 0,
+      "measured_max": 0,
+      "fragile": false,
+      "stratum_2026_08_12": "A2",
+      "guard_violations": {
+        "P3-right-correct": [
+          "right"
+        ]
+      },
+      "guard_dropped_verdict_unchanged": true,
+      "transcript": "docs/eval-data/2026-08-12-m1-transcripts-4b-stage2/bare--nav-prod-port--r0.json",
+      "notes": [
+        "Manifest shared-token guard violated by `P3-right-correct` (shares right) on this task's `{task}`. Recomputed with those points dropped the family reads 0/11 min 0 max 0, fragile=false \u2014 verdict UNCHANGED, so this cell's expectation does not rest on a guard-violating point. NOTE: this is the CORRECTED violation set; the 2026-08-12 screen's \u00a76 table under-reported `P2-asks-requests`. See RB-P19."
+      ],
+      "guard_dropped": {
+        "pass_rate": "0/11",
+        "min": 0,
+        "max": 0,
+        "fragile": false
+      }
+    },
+    {
+      "model": "qwen3:4b-instruct",
+      "task": "nav-release-bundle",
+      "repeat": 0,
+      "seed": 3590861830,
+      "answer": "",
+      "answer_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "answer_correct": false,
+      "answer_correct_source": "answer_text",
+      "expect": "reject",
+      "expect_pass_rate": "0/12",
+      "measured_min": 0,
+      "measured_max": 0,
+      "fragile": false,
+      "stratum_2026_08_12": "A2",
+      "guard_violations": {
+        "P2-asks-requests": [
+          "for"
+        ]
+      },
+      "guard_dropped_verdict_unchanged": true,
+      "transcript": "docs/eval-data/2026-08-12-m1-transcripts-4b-stage2/bare--nav-release-bundle--r0.json",
+      "notes": [
+        "Manifest shared-token guard violated by `P2-asks-requests` (shares for) on this task's `{task}`. Recomputed with those points dropped the family reads 0/11 min 0 max 0, fragile=false \u2014 verdict UNCHANGED, so this cell's expectation does not rest on a guard-violating point. NOTE: this is the CORRECTED violation set; the 2026-08-12 screen's \u00a76 table under-reported `P2-asks-requests`. See RB-P19."
+      ],
+      "guard_dropped": {
+        "pass_rate": "0/11",
+        "min": 0,
+        "max": 0,
+        "fragile": false
+      }
+    }
+  ]
+}

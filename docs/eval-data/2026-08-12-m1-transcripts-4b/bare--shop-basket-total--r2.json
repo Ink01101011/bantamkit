@@ -1,0 +1,69 @@
+{
+  "task": "shop-basket-total",
+  "config": "bare",
+  "repeat": 2,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 3327157924,
+  "output": "{\"total\": 239}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A customer orders 2 widgets, 3 doohickeys and 1 gadget. Use the tools to\nlook up unit prices, then answer with ONLY this JSON, nothing else:\n{\"total\": <number>}\n",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_jya7q4sx",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "widget"
+          }
+        },
+        {
+          "id": "call_cgey36yz",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "doohickey"
+          }
+        },
+        {
+          "id": "call_k7mjqzdf",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "gadget"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "widget price: 25",
+      "tool_calls": [],
+      "tool_call_id": "call_jya7q4sx"
+    },
+    {
+      "role": "tool",
+      "content": "doohickey price: 7",
+      "tool_calls": [],
+      "tool_call_id": "call_cgey36yz"
+    },
+    {
+      "role": "tool",
+      "content": "gadget price: 60",
+      "tool_calls": [],
+      "tool_call_id": "call_k7mjqzdf"
+    },
+    {
+      "role": "assistant",
+      "content": "{\"total\": 239}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "task": "recall-cache-ttl",
+  "config": "bare",
+  "repeat": 2,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 3117808452,
+  "output": "{\"seconds\": 3600}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the cache TTL for the pricing service? If you have a memory tool, check memory first. Answer with ONLY this JSON, nothing else: {\"seconds\": <number>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "{\"seconds\": 3600}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

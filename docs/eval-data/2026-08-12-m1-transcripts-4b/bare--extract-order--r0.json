@@ -1,0 +1,23 @@
+{
+  "task": "extract-order",
+  "config": "bare",
+  "repeat": 0,
+  "passed": true,
+  "outcome": "pass",
+  "seed": 2249407173,
+  "output": "{\n  \"item\": \"widget\",\n  \"quantity\": 3\n}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Extract the order as JSON with keys \"item\" (singular, lowercase) and\n\"quantity\" (integer).\nText: \"Customer wants three Widgets shipped by Friday.\"\n",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "{\n  \"item\": \"widget\",\n  \"quantity\": 3\n}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}
