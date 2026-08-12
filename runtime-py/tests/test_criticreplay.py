@@ -10,6 +10,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -1490,6 +1491,521 @@ def test_guard_table_is_public_so_a_hand_rolled_loop_can_call_it(asset_tree, tmp
     }
     assert criticreplay.guard_union(table[("gamma", 0)]["P-survivor"]) == ["two"]
     assert "guard_table" in criticreplay.__all__
+
+
+# ---- the byte-identity floor: the whole offline run, against `f8404ab` ----
+#
+# The baseline in `data/` was produced by running `perturbation_baseline_harness.py`
+# against a `git worktree` of `f8404ab` — the commit before the guarded-family
+# refactor — NOT by re-running the refactored code and freezing its answer. That
+# distinction is the whole value of the file: a golden expectation computed by the
+# thing it checks pins the author's method, not the behaviour (RB-P19's transferable
+# finding). It covers the JSONL rows, the summary dict, the printed guard sections,
+# the identity-only path and the zero-spend `--guard error` refusal.
+
+BASELINE = Path(__file__).resolve().parent / "data" / "f8404ab-perturbation-baseline.json"
+
+
+def test_the_whole_offline_run_is_byte_identical_to_f8404ab(tmp_path):
+    from perturbation_baseline_harness import produce, serialize
+
+    expected = json.loads(BASELINE.read_text())
+    produced = produce(criticreplay, tmp_path / "rubrics")
+    for section in (
+        "rows", "summary", "table", "identity_only", "guard_error_refusal", "synthetic",
+    ):
+        assert produced[section] == expected[section], section
+    assert serialize(produced) == BASELINE.read_text()
+
+
+def test_the_baseline_covers_a_populated_guard_table_and_a_zero_spend_refusal():
+    """A floor that measured nothing would pass any refactor."""
+    expected = json.loads(BASELINE.read_text())
+    assert len(expected["rows"]) == 75
+    assert len(expected["summary"]["guard"]["violations"]) >= 3
+    readings = {r["point"]: r["readings"] for r in expected["summary"]["guard"]["violations"]}
+    # The two readings disagree inside the baseline, so a refactor that collapsed them
+    # into one could not pass it.
+    assert readings["P2-asks-requests"]["whole-text"] != (
+        readings["P2-asks-requests"]["substitution-pair"]
+    )
+    assert expected["guard_error_wire_calls"] == 0
+    assert expected["guard_error_refusal"].startswith("shared-token guard")
+    assert expected["dropped"] == {"L1": [], "L2": ["W1-trailing-newline"]}
+    # And the union rule is load-bearing in the synthetic section, which the frozen
+    # family cannot make it: there, union == substitution-pair by coincidence.
+    synthetic = {
+        v["point"]: v for v in expected["synthetic"]["summary"]["guard"]["violations"]
+    }
+    assert synthetic["P-survivor"]["readings"] == {
+        "whole-text": [], "substitution-pair": ["two"]
+    }
+    assert synthetic["P-inword"]["readings"] == {
+        "whole-text": ["brisk"], "substitution-pair": []
+    }
+
+
+# ---- RB-P23: the guarded family constructor ----
+#
+# `guard_table` being public is not enough: it is a SECOND call a consumer has to know
+# exists, and the route that skips it is the shorter one. `guarded_family` inverts that
+# — one call from (variants, points, cells) to units that each carry a ready-to-replay
+# `Rubric` and guard 2's verdict on that exact (point, cell) pair, so the verdict is in
+# hand before the rubric is. The target property is a LENGTH comparison, not an
+# impossibility claim: Python has no private functions and the unguarded route below
+# still runs. What changes is which route is shorter.
+
+
+def _family(rig, **kw):
+    return criticreplay.guarded_family(rig["variants"], rig["manifest"], rig["cases"], **kw)
+
+
+def test_the_constructor_hands_back_no_replayable_rubric_without_its_guard_verdict(guard_rig):
+    """The return shape: per (variant, point, cell), never templates plus a side table.
+
+    A structure that hands back templates and a separate guard table closes nothing —
+    the consumer can still ignore half of it. Every unit here carries both.
+    """
+    family = _family(guard_rig)
+    assert family.units
+    for unit in family.units:
+        assert isinstance(unit.rubric, Rubric)
+        assert unit.rubric.prompt not in ("", None)
+        assert set(unit.guard_readings) == set(criticreplay.READINGS)
+        assert unit.guard_violations == (["alpha"] if unit.point.id == "P-taskword" else [])
+        assert unit.tainted is (unit.point.id == "P-taskword")
+
+
+def test_a_unit_carries_the_point_id_class_and_cell_it_belongs_to(guard_rig):
+    family = _family(guard_rig)
+    unit = next(u for u in family.units if u.point.id == "P-taskword")
+    assert (unit.point.point_class, unit.point.rule) == ("paraphrase", "reword")
+    assert (unit.case.task, unit.case.repeat, unit.case.seed) == ("alpha", 0, 111)
+    assert unit.variant.label in ("before", "after")
+
+
+def test_a_hand_rolled_consumer_replaying_the_units_always_has_the_tainted_pair_in_hand(
+    guard_rig,
+):
+    """The whole guarded route, spelled out: load_manifest -> guarded_family -> replay.
+
+    Two module calls after the manifest, and the second one takes its arguments straight
+    off the unit. The consumer never has to know `guard_table` exists.
+
+    IN HAND, not recorded: this consumer calls `replay_verdicts` off the unit, so the
+    taint is beside the rubric but the `Verdict`s come back blank — which is exactly what
+    `test_the_replay_primitive_alone_still_carries_no_guard_verdict` below asserts.
+    `unit.replay` is the call that puts it in the artifact.
+    """
+    client = ScriptedCritic(lambda p: 9)
+    family = _family(guard_rig)
+    seen = []
+    for unit in family.units:
+        verdicts = criticreplay.replay_verdicts(client, unit.rubric, unit.case, unit.replays)
+        seen.append((unit.point.id, unit.case.task, tuple(unit.guard_violations), len(verdicts)))
+    assert ("P-taskword", "alpha", ("alpha",), 1) in seen
+    assert len(client.calls) == sum(u.replays for u in family.units)
+
+
+def _consumer_steps(monkeypatch) -> list[str]:
+    """Count the calls a CONSUMER makes into the module. Nothing here is typed by hand.
+
+    Every public function in `__all__`, plus `Rubric.__init__` (the object the unguarded
+    route has to build) and `GuardedReplay.replay` (the guarded route's second step), is
+    wrapped; a call is recorded only when its caller frame is outside `criticreplay.py`,
+    so the module's own internal calls — `guarded_family` building a `Rubric`,
+    `unit.replay` calling `replay_verdicts` — do not inflate anyone's count.
+
+    Classes are patched on `__init__` rather than replaced, because replacing the module
+    global would break the module's own `isinstance` checks and measure a different
+    module than the one that ships.
+    """
+    steps: list[str] = []
+    module_file = criticreplay.__file__
+
+    def wrap(name, target):
+        def counted(*args, **kwargs):
+            if sys._getframe(1).f_code.co_filename != module_file:
+                steps.append(name)
+            return target(*args, **kwargs)
+
+        return counted
+
+    for name in criticreplay.__all__:
+        target = getattr(criticreplay, name)
+        if callable(target) and not isinstance(target, type):
+            monkeypatch.setattr(criticreplay, name, wrap(name, target))
+    monkeypatch.setattr(Rubric, "__init__", wrap("Rubric", Rubric.__init__))
+    monkeypatch.setattr(
+        criticreplay.GuardedReplay,
+        "replay",
+        wrap("unit.replay", criticreplay.GuardedReplay.replay),
+    )
+    return steps
+
+
+def test_the_unguarded_route_still_reaches_the_wire_and_is_the_longer_one(
+    guard_rig, monkeypatch
+):
+    """RB-P23's honest residual, kept measured rather than declared closed.
+
+    A consumer can always hand-roll around any API in a language without private
+    functions, so this is not an impossibility claim. It is a LENGTH claim, and it is
+    measured by EXECUTING both routes from one common starting object — the `Rubric` the
+    consumer already holds — and counting the module calls each one actually makes. An
+    earlier version of this test compared two tuples of strings the author typed, which
+    no change to the module could turn red; this one goes red the moment either route
+    needs a step it does not need today, because the route that cannot be executed
+    raises instead of being re-counted.
+    """
+    manifest = guard_rig["manifest"]
+    rubric = guard_rig["variants"][0].rubric  # the common starting point for BOTH routes
+    point = next(p for p in manifest.points if p.id == "P-taskword")
+    case = guard_rig["cases"][0]
+    steps = _consumer_steps(monkeypatch)
+
+    # The unguarded route: apply_point -> hand-assemble a Rubric -> replay_verdicts.
+    unguarded_client = ScriptedCritic(lambda p: 9)
+    template = criticreplay.apply_point(point, rubric.prompt)
+    hand_rolled = Rubric(
+        name=rubric.name,
+        threshold=rubric.threshold,
+        prompt=template,
+        schema=rubric.schema,
+    )
+    unguarded_verdicts = criticreplay.replay_verdicts(unguarded_client, hand_rolled, case, 1)
+    unguarded, steps[:] = list(steps), []
+
+    # The guarded route, from the SAME bare Rubric: guarded_family -> unit.replay.
+    guarded_client = ScriptedCritic(lambda p: 9)
+    family = criticreplay.guarded_family([rubric], manifest, [case])
+    unit = next(u for u in family.units if u.point.id == "P-taskword")
+    guarded_verdicts = unit.replay(guarded_client)
+    guarded, steps[:] = list(steps), []
+
+    assert unguarded == ["apply_point", "Rubric", "replay_verdicts"]
+    assert guarded == ["guarded_family", "unit.replay"]
+    assert len(guarded) < len(unguarded)
+    # Both reached the wire — the unguarded one tainted, with nothing recording it.
+    assert len(unguarded_client.calls) == 1 and len(guarded_client.calls) == 1
+    assert unguarded_verdicts[0].guard_violations == []
+    assert guarded_verdicts[0].guard_violations == ["alpha"]
+
+
+def test_the_constructor_takes_a_bare_rubric_so_the_guarded_route_owes_no_construction(
+    guard_rig,
+):
+    """The asymmetry the length claim used to hide: `RubricVariant` is five fields.
+
+    A consumer holding a `Rubric` had to build one — including a `sha256` they compute —
+    before the guarded route was available at all, a construction the unguarded route
+    never charged. The family a bare `Rubric` produces is the same family its
+    `RubricVariant` produces, field for field, apart from the provenance columns.
+    """
+    variant = guard_rig["variants"][0]
+    kwargs = dict(manifest=guard_rig["manifest"], cases=guard_rig["cases"])
+    from_variant = criticreplay.guarded_family([variant], **kwargs)
+    from_rubric = criticreplay.guarded_family([variant.rubric], **kwargs)
+    assert [
+        (u.point.id, u.case.task, u.case.repeat, u.rubric.prompt, u.replays, u.guard_violations)
+        for u in from_rubric.units
+    ] == [
+        (u.point.id, u.case.task, u.case.repeat, u.rubric.prompt, u.replays, u.guard_violations)
+        for u in from_variant.units
+    ]
+    assert from_rubric.threshold == from_variant.threshold
+    assert list(from_rubric.dropped.values()) == list(from_variant.dropped.values())
+
+
+def test_a_bare_rubrics_derived_provenance_says_there_is_no_file_instead_of_inventing_one(
+    guard_rig,
+):
+    """`label` is the rubric's own name; `ref` names the absence; `sha256` is BLANK.
+
+    The populated `rubric_sha256` column is the sha of a rubric FILE's bytes, so hashing
+    the prompt into it would put two meanings under one column name. Blank, not wrong —
+    `prompt_sha256` still pins the exact text that went on the wire.
+    """
+    rubric = guard_rig["variants"][0].rubric
+    family = criticreplay.guarded_family([rubric], guard_rig["manifest"], guard_rig["cases"])
+    assert len({id(u.variant) for u in family.units}) == 1
+    variant = family.units[0].variant
+    assert (variant.label, variant.ref, variant.spec) == (
+        rubric.name,
+        criticreplay.IN_MEMORY_REF,
+        criticreplay.IN_MEMORY_REF,
+    )
+    assert variant.sha256 == "" and variant.rubric is rubric
+    # And that is what a row built off it says, rather than a sha of some other thing.
+    client = ScriptedCritic(lambda p: 9)
+    result = criticreplay.run(client, [rubric], guard_rig["manifest"], guard_rig["cases"])
+    assert {(r.variant, r.rubric_ref, r.rubric_sha256) for r in result.rows} == {
+        (rubric.name, criticreplay.IN_MEMORY_REF, "")
+    }
+    assert all(r.prompt_sha256 for r in result.rows)
+
+
+def test_two_variants_sharing_a_label_are_refused_rather_than_silently_collapsed(guard_rig):
+    """The hazard the derived label introduces, closed where the preconditions live.
+
+    Every per-label table is keyed on the label, so two variants sharing one would both
+    be replayed with whichever rubric was built last — a comparison that silently
+    measures one arm twice. Both of `guard_rig`'s rubric files carry the same `name`,
+    which is exactly the in-memory before/after comparison a consumer would try.
+    """
+    rubrics = [v.rubric for v in guard_rig["variants"]]
+    assert rubrics[0].name == rubrics[1].name and rubrics[0].prompt != rubrics[1].prompt
+    with pytest.raises(criticreplay.PerturbationError, match="share the label"):
+        criticreplay.guarded_family(rubrics, guard_rig["manifest"], guard_rig["cases"])
+    # The labelled route is how you compare two rubrics of one name, and it still works.
+    labelled = criticreplay.guarded_family(
+        guard_rig["variants"], guard_rig["manifest"], guard_rig["cases"]
+    )
+    assert labelled.labels == ["before", "after"]
+
+
+def test_the_constructor_refuses_something_that_is_neither_a_variant_nor_a_rubric(guard_rig):
+    with pytest.raises(criticreplay.PerturbationError, match="RubricVariant or Rubric"):
+        criticreplay.guarded_family(["before"], guard_rig["manifest"], guard_rig["cases"])
+
+
+def test_a_unit_replays_itself_and_stamps_the_guard_verdict_on_every_verdict(guard_rig):
+    """The gap the constructor alone leaves: present is not the same as recorded.
+
+    `guarded_family` puts the verdict in the consumer's hand, but a consumer writing
+    their own artifact from `replay_verdicts` still has to CHOOSE to copy it across, and
+    the thing this whole line of work is about is a violation that lives in prose instead
+    of in the artifact. `unit.replay()` closes that: the `Verdict` objects come back
+    already carrying the taint, so an artifact built from them records it by default.
+    """
+    client = ScriptedCritic(lambda p: 9)
+    family = _family(guard_rig)
+    tainted = next(u for u in family.units if u.point.id == "P-taskword")
+    clean = next(u for u in family.units if u.point.id == "identity")
+    for verdict in tainted.replay(client):
+        assert verdict.guard_violations == ["alpha"]
+        assert verdict.guard_readings == {"whole-text": ["alpha"], "substitution-pair": ["alpha"]}
+    for verdict in clean.replay(client):
+        assert verdict.guard_violations == []
+    assert len(clean.replay(client)) == clean.replays
+
+
+def test_a_unit_copies_its_guard_lists_into_every_verdict_rather_than_aliasing_them(guard_rig):
+    """The defensive copy in `GuardedReplay.replay`, which nothing else defends.
+
+    Aliasing passes every equality assertion in this file: the lists compare equal
+    because they are the same object. What it does not survive is a consumer editing the
+    artifact they were handed — one appended word would reach back into the unit and into
+    every sibling `Verdict` of the same replay, so the taint recorded for five identity
+    replays would depend on what the consumer did to the first one.
+    """
+    client = ScriptedCritic(lambda p: 9)
+    family = _family(guard_rig)
+    tainted = next(u for u in family.units if u.point.id == "P-taskword")
+    for verdict in tainted.replay(client):
+        assert verdict.guard_violations == ["alpha"]
+        assert verdict.guard_violations is not tainted.guard_violations
+        assert verdict.guard_readings is not tainted.guard_readings
+        for reading, words in verdict.guard_readings.items():
+            assert words is not tainted.guard_readings[reading]
+
+    identity = next(u for u in family.units if u.point.id == "identity")
+    verdicts = identity.replay(client)
+    assert len(verdicts) > 1
+    verdicts[0].guard_violations.append("EDITED-BY-THE-CONSUMER")
+    verdicts[0].guard_readings["whole-text"].append("EDITED-BY-THE-CONSUMER")
+    assert identity.guard_violations == [] and identity.guard_readings["whole-text"] == []
+    assert verdicts[1].guard_violations == []
+    assert verdicts[1].guard_readings["whole-text"] == []
+
+
+def test_the_replay_primitive_alone_still_carries_no_guard_verdict(guard_rig):
+    """And it is honest about it: `replay_verdicts` holds a Rubric and a Case, and cannot
+    re-derive which point produced the template. Blank, not wrong."""
+    client = ScriptedCritic(lambda p: 9)
+    unit = next(u for u in _family(guard_rig).units if u.point.id == "P-taskword")
+    verdicts = criticreplay.replay_verdicts(client, unit.rubric, unit.case, 1)
+    assert verdicts[0].guard_violations == [] and verdicts[0].guard_readings == {}
+
+
+def test_run_is_the_constructor_plus_replay_not_a_second_derivation(guard_rig, monkeypatch):
+    """ONE DERIVATION, NOT TWO THAT AGREE (RB-P19's transferable finding).
+
+    Dropping a unit from what the constructor returns must delete that point's rows: a
+    `run()` that re-derived the family would emit them anyway and the two would agree.
+    """
+    real = criticreplay.guarded_family
+    calls = []
+
+    def spy(*args, **kwargs):
+        family = real(*args, **kwargs)
+        calls.append((args, kwargs))
+        family.units = [u for u in family.units if u.point.id != "X-anchored"]
+        return family
+
+    monkeypatch.setattr(criticreplay, "guarded_family", spy)
+    _, result = _run(guard_rig, lambda p: 9)
+    assert len(calls) == 1
+    assert {r.point for r in result.rows} == {"identity", "P-taskword"}
+
+
+def test_run_issues_every_request_through_the_units_own_replay(guard_rig, monkeypatch):
+    """The routing itself, which the row bytes cannot see.
+
+    `run()` calling `replay_verdicts(client, unit.rubric, unit.case, unit.replays)` and
+    filling the row's guard columns from the family's table produces IDENTICAL rows — the
+    byte-identity floor and every other test here stay green through that revert. What it
+    loses is the property the change was made for: the taint on the `Verdict` objects
+    themselves. So the route is asserted directly, unit by unit and in order.
+    """
+    seen = []
+    real = criticreplay.GuardedReplay.replay
+
+    def spy(self, client):
+        seen.append((self.variant.label, self.point.id, self.case.task, self.case.repeat))
+        return real(self, client)
+
+    monkeypatch.setattr(criticreplay.GuardedReplay, "replay", spy)
+    _, result = _run(guard_rig, lambda p: 9)
+    assert result.rows
+    assert seen == [
+        (u.variant.label, u.point.id, u.case.task, u.case.repeat)
+        for u in _family(guard_rig).units
+    ]
+
+
+def test_a_rows_taint_is_the_units_own_and_not_a_re_join_of_the_guard_table(
+    guard_rig, monkeypatch
+):
+    """ONE DERIVATION, for the guard VALUES and not only for family membership.
+
+    Deleting a unit already fails a `run()` that re-derives the family, but a `run()` that
+    kept iterating `family.units` and re-joined `family.guard` on `(task, repeat,
+    point.id)` would agree with the constructor on every shipped input while ignoring
+    what the unit actually carries. Editing one unit's verdict after construction is what
+    separates them: the row follows the UNIT, or the join wins and the edit vanishes.
+    """
+    real = criticreplay.guarded_family
+    injected = {reading: ["INJECTED"] for reading in criticreplay.READINGS}
+
+    def spy(*args, **kwargs):
+        family = real(*args, **kwargs)
+        for unit in family.units:
+            if unit.point.id == "identity":  # a point the guard table has NO entry for
+                unit.guard_violations = ["INJECTED"]
+                unit.guard_readings = {reading: list(w) for reading, w in injected.items()}
+        return family
+
+    monkeypatch.setattr(criticreplay, "guarded_family", spy)
+    _, result = _run(guard_rig, lambda p: 9)
+    by_point = {row.point: row for row in result.rows}
+    assert by_point["identity"].guard_violations == ["INJECTED"]
+    assert by_point["identity"].guard_readings == injected
+    # and only the edited units moved: the guard table is still where the rest come from
+    assert by_point["P-taskword"].guard_violations == ["alpha"]
+    assert by_point["X-anchored"].guard_violations == []
+    assert result.guard[("alpha", 0)] == {"P-taskword": ["alpha"]}
+
+
+def test_every_unit_carries_the_replay_count_the_bar_uses(rig):
+    """A consumer who gets this wrong measures a different thing than the bar does."""
+    family = _family(rig, replays=2, identity_replays=7)
+    assert {u.point.id: u.replays for u in family.units} == {
+        "identity": 7,
+        "W1-trailing-newline": 2,
+        "X-anchored": 2,
+    }
+
+
+def test_the_constructor_refuses_in_error_mode_before_it_builds_a_single_rubric(guard_rig):
+    """`error` mode refuses in the constructor, so no unit is ever handed out tainted."""
+    with pytest.raises(criticreplay.PerturbationError, match="shared-token guard"):
+        _family(guard_rig, guard="error")
+
+
+def test_identity_only_replay_needs_no_point_to_guard_against(rig):
+    """RB-P15's standing check: a design that refuses to score without a point breaks it."""
+    family = _family(rig, identity_only=True, identity_replays=3)
+    assert {u.point.id for u in family.units} == {"identity"}
+    assert all(u.guard_violations == [] for u in family.units)
+    unit = family.units[0]
+    client = ScriptedCritic(lambda p: 9)
+    assert criticreplay.replay_scores(client, unit.rubric, unit.case, unit.replays) == [9, 9, 9]
+
+
+def test_the_constructor_materializes_one_rubric_per_variant_point_not_per_cell(rig):
+    """The cost of the per-(variant, point, cell) shape, measured rather than asserted.
+
+    Units are cells x points x variants, but the `Rubric` each one carries is SHARED by
+    reference across cells — the materialization is one small object per unit, not one
+    template copy.
+    """
+    family = _family(rig)
+    assert len(family.units) == 2 * 2 * 3  # variants x cells x points
+    assert len({id(u.rubric) for u in family.units}) == 2 * 3  # variants x points
+
+
+def test_the_constructor_reports_the_points_it_dropped_per_variant(tmp_path, asset_tree):
+    """§4.1 paired dropping: an anchor absent from one variant is dropped, and named."""
+    manifest = criticreplay.load_manifest(_write_manifest(asset_tree))
+    kept = criticreplay.parse_rubric_arg(f"kept={_write_rubric(tmp_path, 'kept', BASE_PROMPT)}")
+    # No trailing newline, so W1 has no anchor here.
+    gone = criticreplay.parse_rubric_arg(
+        f"gone={_write_rubric(tmp_path, 'gone', BASE_PROMPT[:-1])}"
+    )
+    transcripts = tmp_path / "t"
+    _transcript(transcripts, "critique", "alpha", 0, 111, "OUT")
+    family = criticreplay.guarded_family(
+        [kept, gone], manifest, criticreplay.load_cases(transcripts)
+    )
+    assert family.dropped == {"kept": [], "gone": ["W1-trailing-newline"]}
+    assert {(u.variant.label, u.point.id) for u in family.units} == {
+        ("kept", "identity"), ("kept", "W1-trailing-newline"), ("kept", "X-anchored"),
+        ("gone", "identity"), ("gone", "X-anchored"),
+    }
+
+
+def test_the_constructor_refuses_an_inadmissible_point_naming_the_variant(asset_tree, tmp_path):
+    """Guards 1/3/4 and the collision and materialization checks sit here now."""
+    _, args = _admissibility_rig(
+        asset_tree, tmp_path,
+        {
+            "id": "P-two-sentences", "class": "paraphrase", "rule": "reword",
+            "op": "replace",
+            "replace": [
+                {"from": "Judge ONLY the answer. Score", "to": "Judge ONLY the reply. Score"}
+            ],
+            "justification": "spans a sentence boundary",
+        },
+    )
+    _, variants, manifest, cases = args
+    with pytest.raises(criticreplay.PerturbationError, match="inadmissible on variant 'v'"):
+        criticreplay.guarded_family(variants, manifest, cases)
+
+
+def test_the_constructor_is_where_the_run_preconditions_live(rig):
+    for kwargs, expected in (
+        ({"guard": "explode"}, "guard mode"),
+        ({}, "no rubric variants"),
+    ):
+        with pytest.raises(criticreplay.PerturbationError, match=expected):
+            criticreplay.guarded_family(
+                rig["variants"] if "guard" in kwargs else [],
+                rig["manifest"],
+                rig["cases"],
+                **kwargs,
+            )
+    with pytest.raises(criticreplay.PerturbationError, match="no cells"):
+        criticreplay.guarded_family(rig["variants"], rig["manifest"], [])
+
+
+def test_the_primitives_are_documented_as_the_constructors_primitives():
+    """The docs half of the attack: the guarded path has to be the one a reader finds."""
+    assert "guarded_family" in criticreplay.__all__
+    assert "GuardedFamily" in criticreplay.__all__ and "GuardedReplay" in criticreplay.__all__
+    assert "guarded_family" in criticreplay.__doc__
+    for primitive in (criticreplay.apply_point, criticreplay.replay_verdicts):
+        assert "guarded_family" in primitive.__doc__, primitive.__name__
 
 
 # ---- the guard's three siblings in the RUN path (§3.3 step 3, guards 1, 3, 4) ----

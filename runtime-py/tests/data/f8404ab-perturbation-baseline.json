@@ -1,0 +1,3964 @@
+{
+  "dropped": {
+    "L1": [],
+    "L2": [
+      "W1-trailing-newline"
+    ]
+  },
+  "guard_error_refusal": "shared-token guard (spec \u00a73.3 step 3, guard 2) violated on 3 cell(s) \u2014 nav-prod-port r0: P3-right-correct shares ['right'] (whole-text=['right'], substitution-pair=['right']); recall-oncall-rotation r1: P1-reviewer-relative shares ['who'] (whole-text=['who'], substitution-pair=['who']); recall-oncall-rotation r1: P2-asks-requests shares ['for'] (whole-text=[], substitution-pair=['for']); recall-org-quota r0: P2-asks-requests shares ['for', 'requests'] (whole-text=['requests'], substitution-pair=['for', 'requests']). Decision rule: union \u2014 a (point, cell) is tainted if EITHER reading flags it, because under-detection is the direction this guard exists to prevent. Re-run with the default guard mode to measure them anyway, with every violating row and the guard-dropped family recorded.",
+  "guard_error_wire_calls": 0,
+  "identity_only": {
+    "rows": [
+      {
+        "bar": "perturbation",
+        "calls": 1,
+        "class": "identity",
+        "feedback": "7f20d1",
+        "guard_readings": {
+          "substitution-pair": [],
+          "whole-text": []
+        },
+        "guard_violations": [],
+        "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+        "model": "fake-14b",
+        "passed": false,
+        "payload_sha256": "524509e200e7be1f0b865c4aca89af35fcdca5ea3df79038760f2732578a8d8d",
+        "point": "identity",
+        "prompt_sha256": "85dd2344604fa84254522ce92a0cf550b9dac0fd15e0ea60c81e621d331ca69a",
+        "repeat": 0,
+        "replay": 0,
+        "rubric_ref": "<workdir>/L1.yaml",
+        "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+        "rule": "identity",
+        "score": 1,
+        "seed": 2331795949,
+        "task": "nav-prod-port",
+        "threshold": 7,
+        "tokens_in": 101,
+        "tokens_out": 21,
+        "variant": "L1"
+      },
+      {
+        "bar": "perturbation",
+        "calls": 1,
+        "class": "identity",
+        "feedback": "7f20d1",
+        "guard_readings": {
+          "substitution-pair": [],
+          "whole-text": []
+        },
+        "guard_violations": [],
+        "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+        "model": "fake-14b",
+        "passed": false,
+        "payload_sha256": "524509e200e7be1f0b865c4aca89af35fcdca5ea3df79038760f2732578a8d8d",
+        "point": "identity",
+        "prompt_sha256": "85dd2344604fa84254522ce92a0cf550b9dac0fd15e0ea60c81e621d331ca69a",
+        "repeat": 0,
+        "replay": 1,
+        "rubric_ref": "<workdir>/L1.yaml",
+        "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+        "rule": "identity",
+        "score": 1,
+        "seed": 2331795949,
+        "task": "nav-prod-port",
+        "threshold": 7,
+        "tokens_in": 101,
+        "tokens_out": 21,
+        "variant": "L1"
+      },
+      {
+        "bar": "perturbation",
+        "calls": 1,
+        "class": "identity",
+        "feedback": "7f20d1",
+        "guard_readings": {
+          "substitution-pair": [],
+          "whole-text": []
+        },
+        "guard_violations": [],
+        "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+        "model": "fake-14b",
+        "passed": false,
+        "payload_sha256": "524509e200e7be1f0b865c4aca89af35fcdca5ea3df79038760f2732578a8d8d",
+        "point": "identity",
+        "prompt_sha256": "85dd2344604fa84254522ce92a0cf550b9dac0fd15e0ea60c81e621d331ca69a",
+        "repeat": 0,
+        "replay": 2,
+        "rubric_ref": "<workdir>/L1.yaml",
+        "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+        "rule": "identity",
+        "score": 1,
+        "seed": 2331795949,
+        "task": "nav-prod-port",
+        "threshold": 7,
+        "tokens_in": 101,
+        "tokens_out": 21,
+        "variant": "L1"
+      },
+      {
+        "bar": "perturbation",
+        "calls": 1,
+        "class": "identity",
+        "feedback": "75362d",
+        "guard_readings": {
+          "substitution-pair": [],
+          "whole-text": []
+        },
+        "guard_violations": [],
+        "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+        "model": "fake-14b",
+        "passed": true,
+        "payload_sha256": "5db4fb06930b744ad47c6a51a1a021b394c59c98aa0200352e734ed1ed0577f7",
+        "point": "identity",
+        "prompt_sha256": "143b8de43c0217b804b5529cbbae635095e96ee72b8e5e61cfd76f28b1ed95ab",
+        "repeat": 1,
+        "replay": 0,
+        "rubric_ref": "<workdir>/L1.yaml",
+        "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+        "rule": "identity",
+        "score": 10,
+        "seed": 4094558621,
+        "task": "recall-oncall-rotation",
+        "threshold": 7,
+        "tokens_in": 110,
+        "tokens_out": 30,
+        "variant": "L1"
+      },
+      {
+        "bar": "perturbation",
+        "calls": 1,
+        "class": "identity",
+        "feedback": "75362d",
+        "guard_readings": {
+          "substitution-pair": [],
+          "whole-text": []
+        },
+        "guard_violations": [],
+        "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+        "model": "fake-14b",
+        "passed": true,
+        "payload_sha256": "5db4fb06930b744ad47c6a51a1a021b394c59c98aa0200352e734ed1ed0577f7",
+        "point": "identity",
+        "prompt_sha256": "143b8de43c0217b804b5529cbbae635095e96ee72b8e5e61cfd76f28b1ed95ab",
+        "repeat": 1,
+        "replay": 1,
+        "rubric_ref": "<workdir>/L1.yaml",
+        "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+        "rule": "identity",
+        "score": 10,
+        "seed": 4094558621,
+        "task": "recall-oncall-rotation",
+        "threshold": 7,
+        "tokens_in": 110,
+        "tokens_out": 30,
+        "variant": "L1"
+      },
+      {
+        "bar": "perturbation",
+        "calls": 1,
+        "class": "identity",
+        "feedback": "75362d",
+        "guard_readings": {
+          "substitution-pair": [],
+          "whole-text": []
+        },
+        "guard_violations": [],
+        "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+        "model": "fake-14b",
+        "passed": true,
+        "payload_sha256": "5db4fb06930b744ad47c6a51a1a021b394c59c98aa0200352e734ed1ed0577f7",
+        "point": "identity",
+        "prompt_sha256": "143b8de43c0217b804b5529cbbae635095e96ee72b8e5e61cfd76f28b1ed95ab",
+        "repeat": 1,
+        "replay": 2,
+        "rubric_ref": "<workdir>/L1.yaml",
+        "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+        "rule": "identity",
+        "score": 10,
+        "seed": 4094558621,
+        "task": "recall-oncall-rotation",
+        "threshold": 7,
+        "tokens_in": 110,
+        "tokens_out": 30,
+        "variant": "L1"
+      },
+      {
+        "bar": "perturbation",
+        "calls": 1,
+        "class": "identity",
+        "feedback": "3ae9b0",
+        "guard_readings": {
+          "substitution-pair": [],
+          "whole-text": []
+        },
+        "guard_violations": [],
+        "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+        "model": "fake-14b",
+        "passed": false,
+        "payload_sha256": "61a9989298505d8a872a3fd2816857f10fa7acf4c7f9c3e0408a73ed6ac72366",
+        "point": "identity",
+        "prompt_sha256": "b7bb593e720d7a639faa7cf4b30280d884f8f304da1bdb37c9a1373fdcf693f4",
+        "repeat": 0,
+        "replay": 0,
+        "rubric_ref": "<workdir>/L1.yaml",
+        "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+        "rule": "identity",
+        "score": 1,
+        "seed": 634446002,
+        "task": "recall-org-quota",
+        "threshold": 7,
+        "tokens_in": 101,
+        "tokens_out": 21,
+        "variant": "L1"
+      },
+      {
+        "bar": "perturbation",
+        "calls": 1,
+        "class": "identity",
+        "feedback": "3ae9b0",
+        "guard_readings": {
+          "substitution-pair": [],
+          "whole-text": []
+        },
+        "guard_violations": [],
+        "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+        "model": "fake-14b",
+        "passed": false,
+        "payload_sha256": "61a9989298505d8a872a3fd2816857f10fa7acf4c7f9c3e0408a73ed6ac72366",
+        "point": "identity",
+        "prompt_sha256": "b7bb593e720d7a639faa7cf4b30280d884f8f304da1bdb37c9a1373fdcf693f4",
+        "repeat": 0,
+        "replay": 1,
+        "rubric_ref": "<workdir>/L1.yaml",
+        "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+        "rule": "identity",
+        "score": 1,
+        "seed": 634446002,
+        "task": "recall-org-quota",
+        "threshold": 7,
+        "tokens_in": 101,
+        "tokens_out": 21,
+        "variant": "L1"
+      },
+      {
+        "bar": "perturbation",
+        "calls": 1,
+        "class": "identity",
+        "feedback": "3ae9b0",
+        "guard_readings": {
+          "substitution-pair": [],
+          "whole-text": []
+        },
+        "guard_violations": [],
+        "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+        "model": "fake-14b",
+        "passed": false,
+        "payload_sha256": "61a9989298505d8a872a3fd2816857f10fa7acf4c7f9c3e0408a73ed6ac72366",
+        "point": "identity",
+        "prompt_sha256": "b7bb593e720d7a639faa7cf4b30280d884f8f304da1bdb37c9a1373fdcf693f4",
+        "repeat": 0,
+        "replay": 2,
+        "rubric_ref": "<workdir>/L1.yaml",
+        "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+        "rule": "identity",
+        "score": 1,
+        "seed": 634446002,
+        "task": "recall-org-quota",
+        "threshold": 7,
+        "tokens_in": 101,
+        "tokens_out": 21,
+        "variant": "L1"
+      },
+      {
+        "bar": "perturbation",
+        "calls": 1,
+        "class": "identity",
+        "feedback": "a7ce1e",
+        "guard_readings": {
+          "substitution-pair": [],
+          "whole-text": []
+        },
+        "guard_violations": [],
+        "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+        "model": "fake-14b",
+        "passed": false,
+        "payload_sha256": "bb55cfedba17f4db5405cbfaa16a5cd607dca388ba68681e61c2a543a05f90e8",
+        "point": "identity",
+        "prompt_sha256": "91cad3d31b0ca7de8b39f2260f1ef5a6e62aff83a95d0947d5f4210ce68d8576",
+        "repeat": 0,
+        "replay": 0,
+        "rubric_ref": "<workdir>/L2.yaml",
+        "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+        "rule": "identity",
+        "score": 1,
+        "seed": 2331795949,
+        "task": "nav-prod-port",
+        "threshold": 7,
+        "tokens_in": 101,
+        "tokens_out": 21,
+        "variant": "L2"
+      },
+      {
+        "bar": "perturbation",
+        "calls": 1,
+        "class": "identity",
+        "feedback": "a7ce1e",
+        "guard_readings": {
+          "substitution-pair": [],
+          "whole-text": []
+        },
+        "guard_violations": [],
+        "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+        "model": "fake-14b",
+        "passed": false,
+        "payload_sha256": "bb55cfedba17f4db5405cbfaa16a5cd607dca388ba68681e61c2a543a05f90e8",
+        "point": "identity",
+        "prompt_sha256": "91cad3d31b0ca7de8b39f2260f1ef5a6e62aff83a95d0947d5f4210ce68d8576",
+        "repeat": 0,
+        "replay": 1,
+        "rubric_ref": "<workdir>/L2.yaml",
+        "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+        "rule": "identity",
+        "score": 1,
+        "seed": 2331795949,
+        "task": "nav-prod-port",
+        "threshold": 7,
+        "tokens_in": 101,
+        "tokens_out": 21,
+        "variant": "L2"
+      },
+      {
+        "bar": "perturbation",
+        "calls": 1,
+        "class": "identity",
+        "feedback": "a7ce1e",
+        "guard_readings": {
+          "substitution-pair": [],
+          "whole-text": []
+        },
+        "guard_violations": [],
+        "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+        "model": "fake-14b",
+        "passed": false,
+        "payload_sha256": "bb55cfedba17f4db5405cbfaa16a5cd607dca388ba68681e61c2a543a05f90e8",
+        "point": "identity",
+        "prompt_sha256": "91cad3d31b0ca7de8b39f2260f1ef5a6e62aff83a95d0947d5f4210ce68d8576",
+        "repeat": 0,
+        "replay": 2,
+        "rubric_ref": "<workdir>/L2.yaml",
+        "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+        "rule": "identity",
+        "score": 1,
+        "seed": 2331795949,
+        "task": "nav-prod-port",
+        "threshold": 7,
+        "tokens_in": 101,
+        "tokens_out": 21,
+        "variant": "L2"
+      },
+      {
+        "bar": "perturbation",
+        "calls": 1,
+        "class": "identity",
+        "feedback": "d8a261",
+        "guard_readings": {
+          "substitution-pair": [],
+          "whole-text": []
+        },
+        "guard_violations": [],
+        "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+        "model": "fake-14b",
+        "passed": false,
+        "payload_sha256": "ef88a7d5cb90090f14981823415f0a7cd7cb19e86f18b4fe81dc2165dda8e2f8",
+        "point": "identity",
+        "prompt_sha256": "b80b9e25a8474e982eb3612cf3190f7b157b935e9407cb8e983822f35c18262e",
+        "repeat": 1,
+        "replay": 0,
+        "rubric_ref": "<workdir>/L2.yaml",
+        "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+        "rule": "identity",
+        "score": 6,
+        "seed": 4094558621,
+        "task": "recall-oncall-rotation",
+        "threshold": 7,
+        "tokens_in": 106,
+        "tokens_out": 26,
+        "variant": "L2"
+      },
+      {
+        "bar": "perturbation",
+        "calls": 1,
+        "class": "identity",
+        "feedback": "d8a261",
+        "guard_readings": {
+          "substitution-pair": [],
+          "whole-text": []
+        },
+        "guard_violations": [],
+        "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+        "model": "fake-14b",
+        "passed": false,
+        "payload_sha256": "ef88a7d5cb90090f14981823415f0a7cd7cb19e86f18b4fe81dc2165dda8e2f8",
+        "point": "identity",
+        "prompt_sha256": "b80b9e25a8474e982eb3612cf3190f7b157b935e9407cb8e983822f35c18262e",
+        "repeat": 1,
+        "replay": 1,
+        "rubric_ref": "<workdir>/L2.yaml",
+        "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+        "rule": "identity",
+        "score": 6,
+        "seed": 4094558621,
+        "task": "recall-oncall-rotation",
+        "threshold": 7,
+        "tokens_in": 106,
+        "tokens_out": 26,
+        "variant": "L2"
+      },
+      {
+        "bar": "perturbation",
+        "calls": 1,
+        "class": "identity",
+        "feedback": "d8a261",
+        "guard_readings": {
+          "substitution-pair": [],
+          "whole-text": []
+        },
+        "guard_violations": [],
+        "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+        "model": "fake-14b",
+        "passed": false,
+        "payload_sha256": "ef88a7d5cb90090f14981823415f0a7cd7cb19e86f18b4fe81dc2165dda8e2f8",
+        "point": "identity",
+        "prompt_sha256": "b80b9e25a8474e982eb3612cf3190f7b157b935e9407cb8e983822f35c18262e",
+        "repeat": 1,
+        "replay": 2,
+        "rubric_ref": "<workdir>/L2.yaml",
+        "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+        "rule": "identity",
+        "score": 6,
+        "seed": 4094558621,
+        "task": "recall-oncall-rotation",
+        "threshold": 7,
+        "tokens_in": 106,
+        "tokens_out": 26,
+        "variant": "L2"
+      },
+      {
+        "bar": "perturbation",
+        "calls": 1,
+        "class": "identity",
+        "feedback": "be01bb",
+        "guard_readings": {
+          "substitution-pair": [],
+          "whole-text": []
+        },
+        "guard_violations": [],
+        "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+        "model": "fake-14b",
+        "passed": false,
+        "payload_sha256": "cc931581b7c4ec0d2b54756b9ce55d6ea4c4b49cff19ff352bbac7c498cfedd2",
+        "point": "identity",
+        "prompt_sha256": "05e529f2937ff11c4934d1d1cedf0a61319f9afcd1719b3b0457462d01c17c9a",
+        "repeat": 0,
+        "replay": 0,
+        "rubric_ref": "<workdir>/L2.yaml",
+        "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+        "rule": "identity",
+        "score": 1,
+        "seed": 634446002,
+        "task": "recall-org-quota",
+        "threshold": 7,
+        "tokens_in": 101,
+        "tokens_out": 21,
+        "variant": "L2"
+      },
+      {
+        "bar": "perturbation",
+        "calls": 1,
+        "class": "identity",
+        "feedback": "be01bb",
+        "guard_readings": {
+          "substitution-pair": [],
+          "whole-text": []
+        },
+        "guard_violations": [],
+        "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+        "model": "fake-14b",
+        "passed": false,
+        "payload_sha256": "cc931581b7c4ec0d2b54756b9ce55d6ea4c4b49cff19ff352bbac7c498cfedd2",
+        "point": "identity",
+        "prompt_sha256": "05e529f2937ff11c4934d1d1cedf0a61319f9afcd1719b3b0457462d01c17c9a",
+        "repeat": 0,
+        "replay": 1,
+        "rubric_ref": "<workdir>/L2.yaml",
+        "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+        "rule": "identity",
+        "score": 1,
+        "seed": 634446002,
+        "task": "recall-org-quota",
+        "threshold": 7,
+        "tokens_in": 101,
+        "tokens_out": 21,
+        "variant": "L2"
+      },
+      {
+        "bar": "perturbation",
+        "calls": 1,
+        "class": "identity",
+        "feedback": "be01bb",
+        "guard_readings": {
+          "substitution-pair": [],
+          "whole-text": []
+        },
+        "guard_violations": [],
+        "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+        "model": "fake-14b",
+        "passed": false,
+        "payload_sha256": "cc931581b7c4ec0d2b54756b9ce55d6ea4c4b49cff19ff352bbac7c498cfedd2",
+        "point": "identity",
+        "prompt_sha256": "05e529f2937ff11c4934d1d1cedf0a61319f9afcd1719b3b0457462d01c17c9a",
+        "repeat": 0,
+        "replay": 2,
+        "rubric_ref": "<workdir>/L2.yaml",
+        "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+        "rule": "identity",
+        "score": 1,
+        "seed": 634446002,
+        "task": "recall-org-quota",
+        "threshold": 7,
+        "tokens_in": 101,
+        "tokens_out": 21,
+        "variant": "L2"
+      }
+    ],
+    "summary": {
+      "bar": "perturbation",
+      "cells": [
+        {
+          "comparisons": [
+            {
+              "a": "L1",
+              "a_pass_rate": "0/1",
+              "attributable": false,
+              "b": "L2",
+              "b_pass_rate": "0/1",
+              "dropped_rules": [],
+              "family_size": 1,
+              "fragile": [],
+              "guard_dropped_rules": [],
+              "guard_family_size": 1,
+              "guard_verdict": "indistinguishable",
+              "verdict": "indistinguishable"
+            }
+          ],
+          "guard_readings": {
+            "substitution-pair": {},
+            "whole-text": {}
+          },
+          "guard_violations": {},
+          "repeat": 0,
+          "seed": 2331795949,
+          "task": "nav-prod-port",
+          "variants": {
+            "L1": {
+              "family_size": 1,
+              "fragile": false,
+              "guard_dropped": null,
+              "guard_readings": {
+                "substitution-pair": {},
+                "whole-text": {}
+              },
+              "guard_violations": {},
+              "identity_scores": [
+                1,
+                1,
+                1
+              ],
+              "identity_spread": 0,
+              "margin_zero": 0,
+              "pass_rate": "0/1",
+              "passed": 0,
+              "score_max": 1,
+              "score_min": 1,
+              "spread": 0
+            },
+            "L2": {
+              "family_size": 1,
+              "fragile": false,
+              "guard_dropped": null,
+              "guard_readings": {
+                "substitution-pair": {},
+                "whole-text": {}
+              },
+              "guard_violations": {},
+              "identity_scores": [
+                1,
+                1,
+                1
+              ],
+              "identity_spread": 0,
+              "margin_zero": 0,
+              "pass_rate": "0/1",
+              "passed": 0,
+              "score_max": 1,
+              "score_min": 1,
+              "spread": 0
+            }
+          }
+        },
+        {
+          "comparisons": [
+            {
+              "a": "L1",
+              "a_pass_rate": "1/1",
+              "attributable": true,
+              "b": "L2",
+              "b_pass_rate": "0/1",
+              "dropped_rules": [],
+              "family_size": 1,
+              "fragile": [],
+              "guard_dropped_rules": [],
+              "guard_family_size": 1,
+              "guard_verdict": "distinguishable",
+              "verdict": "distinguishable"
+            }
+          ],
+          "guard_readings": {
+            "substitution-pair": {},
+            "whole-text": {}
+          },
+          "guard_violations": {},
+          "repeat": 1,
+          "seed": 4094558621,
+          "task": "recall-oncall-rotation",
+          "variants": {
+            "L1": {
+              "family_size": 1,
+              "fragile": false,
+              "guard_dropped": null,
+              "guard_readings": {
+                "substitution-pair": {},
+                "whole-text": {}
+              },
+              "guard_violations": {},
+              "identity_scores": [
+                10,
+                10,
+                10
+              ],
+              "identity_spread": 0,
+              "margin_zero": 0,
+              "pass_rate": "1/1",
+              "passed": 1,
+              "score_max": 10,
+              "score_min": 10,
+              "spread": 0
+            },
+            "L2": {
+              "family_size": 1,
+              "fragile": false,
+              "guard_dropped": null,
+              "guard_readings": {
+                "substitution-pair": {},
+                "whole-text": {}
+              },
+              "guard_violations": {},
+              "identity_scores": [
+                6,
+                6,
+                6
+              ],
+              "identity_spread": 0,
+              "margin_zero": 1,
+              "pass_rate": "0/1",
+              "passed": 0,
+              "score_max": 6,
+              "score_min": 6,
+              "spread": 0
+            }
+          }
+        },
+        {
+          "comparisons": [
+            {
+              "a": "L1",
+              "a_pass_rate": "0/1",
+              "attributable": false,
+              "b": "L2",
+              "b_pass_rate": "0/1",
+              "dropped_rules": [],
+              "family_size": 1,
+              "fragile": [],
+              "guard_dropped_rules": [],
+              "guard_family_size": 1,
+              "guard_verdict": "indistinguishable",
+              "verdict": "indistinguishable"
+            }
+          ],
+          "guard_readings": {
+            "substitution-pair": {},
+            "whole-text": {}
+          },
+          "guard_violations": {},
+          "repeat": 0,
+          "seed": 634446002,
+          "task": "recall-org-quota",
+          "variants": {
+            "L1": {
+              "family_size": 1,
+              "fragile": false,
+              "guard_dropped": null,
+              "guard_readings": {
+                "substitution-pair": {},
+                "whole-text": {}
+              },
+              "guard_violations": {},
+              "identity_scores": [
+                1,
+                1,
+                1
+              ],
+              "identity_spread": 0,
+              "margin_zero": 0,
+              "pass_rate": "0/1",
+              "passed": 0,
+              "score_max": 1,
+              "score_min": 1,
+              "spread": 0
+            },
+            "L2": {
+              "family_size": 1,
+              "fragile": false,
+              "guard_dropped": null,
+              "guard_readings": {
+                "substitution-pair": {},
+                "whole-text": {}
+              },
+              "guard_violations": {},
+              "identity_scores": [
+                1,
+                1,
+                1
+              ],
+              "identity_spread": 0,
+              "margin_zero": 0,
+              "pass_rate": "0/1",
+              "passed": 0,
+              "score_max": 1,
+              "score_min": 1,
+              "spread": 0
+            }
+          }
+        }
+      ],
+      "guard": {
+        "by_reading": {
+          "substitution-pair": [],
+          "whole-text": []
+        },
+        "decision_rule": "union \u2014 a (point, cell) is tainted if EITHER reading flags it, because under-detection is the direction this guard exists to prevent",
+        "mode": "warn",
+        "readings": {
+          "substitution-pair": "symmetric difference of the point's own `from`/`to` word sets \u2014 what \u00a73.3 step 4's substitution-pair form and the manifest's P2 justification imply",
+          "whole-text": "symmetric difference of the base and perturbed TEMPLATE word sets \u2014 \u00a73.3's operative Test sentence, and what an independent re-derivation from the spec produced"
+        },
+        "rule": "spec \u00a73.3 step 3, guard 2 \u2014 no word a point adds or removes may appear in the cell's {task} or {output}. 'A word a point adds or removes' has two defensible readings and the spec supports each in a different sentence; both are computed and reported here and NEITHER is wrong.",
+        "violations": []
+      },
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "requests": 18,
+      "threshold": 7,
+      "tokens_total": 2280,
+      "variants": [
+        {
+          "dropped_rules": [],
+          "label": "L1",
+          "rubric_ref": "<workdir>/L1.yaml",
+          "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89"
+        },
+        {
+          "dropped_rules": [],
+          "label": "L2",
+          "rubric_ref": "<workdir>/L2.yaml",
+          "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc"
+        }
+      ],
+      "wire_calls": 18
+    },
+    "wire_calls": 18
+  },
+  "rows": [
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "identity",
+      "feedback": "7f20d1",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "524509e200e7be1f0b865c4aca89af35fcdca5ea3df79038760f2732578a8d8d",
+      "point": "identity",
+      "prompt_sha256": "85dd2344604fa84254522ce92a0cf550b9dac0fd15e0ea60c81e621d331ca69a",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "identity",
+      "score": 1,
+      "seed": 2331795949,
+      "task": "nav-prod-port",
+      "threshold": 7,
+      "tokens_in": 101,
+      "tokens_out": 21,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "identity",
+      "feedback": "7f20d1",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "524509e200e7be1f0b865c4aca89af35fcdca5ea3df79038760f2732578a8d8d",
+      "point": "identity",
+      "prompt_sha256": "85dd2344604fa84254522ce92a0cf550b9dac0fd15e0ea60c81e621d331ca69a",
+      "repeat": 0,
+      "replay": 1,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "identity",
+      "score": 1,
+      "seed": 2331795949,
+      "task": "nav-prod-port",
+      "threshold": 7,
+      "tokens_in": 101,
+      "tokens_out": 21,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "a7ce1e",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "bb55cfedba17f4db5405cbfaa16a5cd607dca388ba68681e61c2a543a05f90e8",
+      "point": "W1-trailing-newline",
+      "prompt_sha256": "91cad3d31b0ca7de8b39f2260f1ef5a6e62aff83a95d0947d5f4210ce68d8576",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "strip-trailing-newline",
+      "score": 1,
+      "seed": 2331795949,
+      "task": "nav-prod-port",
+      "threshold": 7,
+      "tokens_in": 101,
+      "tokens_out": 21,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "5afb9a",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "7080736fa13a6aa3b469cc605dd97ed666b27553bcaf5216b15179430e4d4349",
+      "point": "W2-double-trailing",
+      "prompt_sha256": "4219c40f7048da9be3992e81b865f0b05d6147c32cc48b3ec6b74c4739cb5d9f",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "append-trailing-newline",
+      "score": 0,
+      "seed": 2331795949,
+      "task": "nav-prod-port",
+      "threshold": 7,
+      "tokens_in": 100,
+      "tokens_out": 20,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "eef63e",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "24f817a0a39ca4549e977e5c262016f20772256adff161157b70babdb2a0c56a",
+      "point": "W3-unwrap-opening",
+      "prompt_sha256": "cd8fc0432acd81f56932c2cd2efeb358f5b2e7421f9e7ca8a1e8cc1b9f7a931f",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "unwrap-hard-wrapped-run",
+      "score": 0,
+      "seed": 2331795949,
+      "task": "nav-prod-port",
+      "threshold": 7,
+      "tokens_in": 100,
+      "tokens_out": 20,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "9a10a4",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "1c0fd746ff999c2d6ce6caa8086c2b35d4930b0c5c45e0e59c6a30465f098eb4",
+      "point": "W4-double-space",
+      "prompt_sha256": "c5692dd2223163aa458e664d0e89d23b896eb710dd948acab0b750f2bbe9753d",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "double-space-after-period",
+      "score": 3,
+      "seed": 2331795949,
+      "task": "nav-prod-port",
+      "threshold": 7,
+      "tokens_in": 103,
+      "tokens_out": 23,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "eff1d1",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "d9226e945e73f63bb5ff0a412e7b3eca054e1dffe7bb75de0cca3817094fa5da",
+      "point": "W5-blank-line-before-bands",
+      "prompt_sha256": "d1ee86c0dcad0d86a82a663700452d6cf0928fe11f3e0efe9d0a79f64ab36f0a",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "extra-blank-line-before-anchor",
+      "score": 6,
+      "seed": 2331795949,
+      "task": "nav-prod-port",
+      "threshold": 7,
+      "tokens_in": 106,
+      "tokens_out": 26,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "order",
+      "feedback": "15d2b0",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "c461e7b9770695be86f656e66abe253ca58b54c0fd7c3fa4c4c2af22c7f6026a",
+      "point": "O1-swap-format-refusal",
+      "prompt_sha256": "9ba1b03d80b06f20ccdbd4f2cfcbd6ceb82d7fcd5813ae9033807e4ce7764f62",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "swap-sentences",
+      "score": 1,
+      "seed": 2331795949,
+      "task": "nav-prod-port",
+      "threshold": 7,
+      "tokens_in": 101,
+      "tokens_out": 21,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "order",
+      "feedback": "d4552c",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": true,
+      "payload_sha256": "bce483d9a7cce940c052cb152495778f4827ad5c7a5803cf9607a5309cac3f16",
+      "point": "O2-bands-ascending",
+      "prompt_sha256": "c3a157ce3ac3ce9b2439a16585c5dc17e6ba710c121e41897513886547d06431",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "reorder-list-items",
+      "score": 9,
+      "seed": 2331795949,
+      "task": "nav-prod-port",
+      "threshold": 7,
+      "tokens_in": 109,
+      "tokens_out": 29,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "order",
+      "feedback": "b0f58b",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": true,
+      "payload_sha256": "e9b1a601bf56e4aab0ac07a785330409ddbf0477e56e5405fb5d02478c57b436",
+      "point": "O3-swap-judge-only",
+      "prompt_sha256": "e0342860bfe6378a74748f826e1e3ae92cf8061d7f97d77bca48c8c6ea71db87",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "swap-sentences",
+      "score": 8,
+      "seed": 2331795949,
+      "task": "nav-prod-port",
+      "threshold": 7,
+      "tokens_in": 108,
+      "tokens_out": 28,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "paraphrase",
+      "feedback": "a66675",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "1bcc046722b0cc62428fa34575bb25252be50b0e4956a993e067acb58773faa5",
+      "point": "P1-reviewer-relative",
+      "prompt_sha256": "eabc2c9ec44a942444d170f29458f5a6eee264846f6ebd39b2dff2a4af48fc5d",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "reword-frame-clause",
+      "score": 5,
+      "seed": 2331795949,
+      "task": "nav-prod-port",
+      "threshold": 7,
+      "tokens_in": 105,
+      "tokens_out": 25,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "paraphrase",
+      "feedback": "d7d5c4",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "af1739a4cb47897461f3ef55df0aa21b681b364e02494109c72d10e429511341",
+      "point": "P2-asks-requests",
+      "prompt_sha256": "78b8b43a202187a53d2b725b141e2c9aa92b6d1d4008de4e6d3aef8c2273a31a",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "reword-verb",
+      "score": 1,
+      "seed": 2331795949,
+      "task": "nav-prod-port",
+      "threshold": 7,
+      "tokens_in": 101,
+      "tokens_out": 21,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "paraphrase",
+      "feedback": "70eb63",
+      "guard_readings": {
+        "substitution-pair": [
+          "right"
+        ],
+        "whole-text": [
+          "right"
+        ]
+      },
+      "guard_violations": [
+        "right"
+      ],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "2b66f9f558bddafb0e82e621f769b48ce3d3a7417255c444e933bd9c381c6c18",
+      "point": "P3-right-correct",
+      "prompt_sha256": "87a51e3e055db75a4947b47c7c31254ac46d7938c2923e7cb68f29f0efbf5d11",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "reword-adjective",
+      "score": 2,
+      "seed": 2331795949,
+      "task": "nav-prod-port",
+      "threshold": 7,
+      "tokens_in": 102,
+      "tokens_out": 22,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "identity",
+      "feedback": "75362d",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": true,
+      "payload_sha256": "5db4fb06930b744ad47c6a51a1a021b394c59c98aa0200352e734ed1ed0577f7",
+      "point": "identity",
+      "prompt_sha256": "143b8de43c0217b804b5529cbbae635095e96ee72b8e5e61cfd76f28b1ed95ab",
+      "repeat": 1,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "identity",
+      "score": 10,
+      "seed": 4094558621,
+      "task": "recall-oncall-rotation",
+      "threshold": 7,
+      "tokens_in": 110,
+      "tokens_out": 30,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "identity",
+      "feedback": "75362d",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": true,
+      "payload_sha256": "5db4fb06930b744ad47c6a51a1a021b394c59c98aa0200352e734ed1ed0577f7",
+      "point": "identity",
+      "prompt_sha256": "143b8de43c0217b804b5529cbbae635095e96ee72b8e5e61cfd76f28b1ed95ab",
+      "repeat": 1,
+      "replay": 1,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "identity",
+      "score": 10,
+      "seed": 4094558621,
+      "task": "recall-oncall-rotation",
+      "threshold": 7,
+      "tokens_in": 110,
+      "tokens_out": 30,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "d8a261",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "ef88a7d5cb90090f14981823415f0a7cd7cb19e86f18b4fe81dc2165dda8e2f8",
+      "point": "W1-trailing-newline",
+      "prompt_sha256": "b80b9e25a8474e982eb3612cf3190f7b157b935e9407cb8e983822f35c18262e",
+      "repeat": 1,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "strip-trailing-newline",
+      "score": 6,
+      "seed": 4094558621,
+      "task": "recall-oncall-rotation",
+      "threshold": 7,
+      "tokens_in": 106,
+      "tokens_out": 26,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "a48bf6",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "b9b489c6c3dcc02351e4391efda17483154d7096b90534020de5b42b54a903eb",
+      "point": "W2-double-trailing",
+      "prompt_sha256": "4494f67824cf818313d0fbf109ae2b67feb8a7d5673ddbf2bc6c148cb16c18f5",
+      "repeat": 1,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "append-trailing-newline",
+      "score": 1,
+      "seed": 4094558621,
+      "task": "recall-oncall-rotation",
+      "threshold": 7,
+      "tokens_in": 101,
+      "tokens_out": 21,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "aba873",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "964d1bbc7e85e818425a3cc081060547263029a6fe422eb01a15279eb7b854d2",
+      "point": "W3-unwrap-opening",
+      "prompt_sha256": "6b5f688cfdf3a9fd404b6bbe83cec5388151ce7787227f4cb89b31df85c25f14",
+      "repeat": 1,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "unwrap-hard-wrapped-run",
+      "score": 5,
+      "seed": 4094558621,
+      "task": "recall-oncall-rotation",
+      "threshold": 7,
+      "tokens_in": 105,
+      "tokens_out": 25,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "190828",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": true,
+      "payload_sha256": "0210f3865f4a5bcf6d289d07c332c04c2baf671ea80f93064e92f03b8882b0bb",
+      "point": "W4-double-space",
+      "prompt_sha256": "2ac26e7d819b6956eaa81c29cadc889e1e1958c819caf01e66fce65a55fa5447",
+      "repeat": 1,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "double-space-after-period",
+      "score": 8,
+      "seed": 4094558621,
+      "task": "recall-oncall-rotation",
+      "threshold": 7,
+      "tokens_in": 108,
+      "tokens_out": 28,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "e24f72",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "d2dd7110c1f5b4d758e8aead9a26b9b9e4bd387ae74b7607306c339349b2a82d",
+      "point": "W5-blank-line-before-bands",
+      "prompt_sha256": "7019c75dd9a0aeded0a443fdf774b699782c4003f49a88d727510cca4389abd0",
+      "repeat": 1,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "extra-blank-line-before-anchor",
+      "score": 0,
+      "seed": 4094558621,
+      "task": "recall-oncall-rotation",
+      "threshold": 7,
+      "tokens_in": 100,
+      "tokens_out": 20,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "order",
+      "feedback": "c51983",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "8a763f073b3fd0c669c8d7c66e33e2d138f35a10988b9b68f80a8ddda0e3cdae",
+      "point": "O1-swap-format-refusal",
+      "prompt_sha256": "d36bd0a83eb9b1aa9caa17c8c18b110568a9ce99e52e8a09be26ff069adad1da",
+      "repeat": 1,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "swap-sentences",
+      "score": 3,
+      "seed": 4094558621,
+      "task": "recall-oncall-rotation",
+      "threshold": 7,
+      "tokens_in": 103,
+      "tokens_out": 23,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "order",
+      "feedback": "074f81",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "c3eb8b4428099a00f40a27510d59c49db3d8603e190e28166da6b000cbf46431",
+      "point": "O2-bands-ascending",
+      "prompt_sha256": "ac2a9a05d31ff538d60516f3f955c7958c67094d6e6a0315cad5038f2852eacb",
+      "repeat": 1,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "reorder-list-items",
+      "score": 4,
+      "seed": 4094558621,
+      "task": "recall-oncall-rotation",
+      "threshold": 7,
+      "tokens_in": 104,
+      "tokens_out": 24,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "order",
+      "feedback": "0da564",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "f65081a8ad5eba9d2e40159ada0d289b2fe46d2c38622153e60f6d7110faae2c",
+      "point": "O3-swap-judge-only",
+      "prompt_sha256": "6d06653c877f5dc38a1dfa9a7ff4a5c5de3168fdb7bf22462ef322249342031f",
+      "repeat": 1,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "swap-sentences",
+      "score": 0,
+      "seed": 4094558621,
+      "task": "recall-oncall-rotation",
+      "threshold": 7,
+      "tokens_in": 100,
+      "tokens_out": 20,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "paraphrase",
+      "feedback": "81a17f",
+      "guard_readings": {
+        "substitution-pair": [
+          "who"
+        ],
+        "whole-text": [
+          "who"
+        ]
+      },
+      "guard_violations": [
+        "who"
+      ],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "5b1ed45be3a54a786ceb8cca65385dcf9c023c7d7d8d2bf889ec44112d2d19d6",
+      "point": "P1-reviewer-relative",
+      "prompt_sha256": "90572cfe593f4f868de5c180991bb436b6f82fbe74118825ea3b3d546fe3c9fe",
+      "repeat": 1,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "reword-frame-clause",
+      "score": 5,
+      "seed": 4094558621,
+      "task": "recall-oncall-rotation",
+      "threshold": 7,
+      "tokens_in": 105,
+      "tokens_out": 25,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "paraphrase",
+      "feedback": "af9638",
+      "guard_readings": {
+        "substitution-pair": [
+          "for"
+        ],
+        "whole-text": []
+      },
+      "guard_violations": [
+        "for"
+      ],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": true,
+      "payload_sha256": "de4c57f5e088e5dbf38692e176352d3df8c642d3c24facfd5d36c9d69f9ff945",
+      "point": "P2-asks-requests",
+      "prompt_sha256": "03a370cb1cf33d4aa334cfa5789e9c2e3218ae4539690a1c89c03a5a56840ce9",
+      "repeat": 1,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "reword-verb",
+      "score": 10,
+      "seed": 4094558621,
+      "task": "recall-oncall-rotation",
+      "threshold": 7,
+      "tokens_in": 110,
+      "tokens_out": 30,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "paraphrase",
+      "feedback": "fc1ecd",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": true,
+      "payload_sha256": "061ef592ee17eb80aad0da759f0f8b30b1675f9e805eecb8ff681d234ca96803",
+      "point": "P3-right-correct",
+      "prompt_sha256": "70de29ac47dfb138d774833f4f0a348f3b905ccd1fd7c4231552dbc1fd34598b",
+      "repeat": 1,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "reword-adjective",
+      "score": 7,
+      "seed": 4094558621,
+      "task": "recall-oncall-rotation",
+      "threshold": 7,
+      "tokens_in": 107,
+      "tokens_out": 27,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "identity",
+      "feedback": "3ae9b0",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "61a9989298505d8a872a3fd2816857f10fa7acf4c7f9c3e0408a73ed6ac72366",
+      "point": "identity",
+      "prompt_sha256": "b7bb593e720d7a639faa7cf4b30280d884f8f304da1bdb37c9a1373fdcf693f4",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "identity",
+      "score": 1,
+      "seed": 634446002,
+      "task": "recall-org-quota",
+      "threshold": 7,
+      "tokens_in": 101,
+      "tokens_out": 21,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "identity",
+      "feedback": "3ae9b0",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "61a9989298505d8a872a3fd2816857f10fa7acf4c7f9c3e0408a73ed6ac72366",
+      "point": "identity",
+      "prompt_sha256": "b7bb593e720d7a639faa7cf4b30280d884f8f304da1bdb37c9a1373fdcf693f4",
+      "repeat": 0,
+      "replay": 1,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "identity",
+      "score": 1,
+      "seed": 634446002,
+      "task": "recall-org-quota",
+      "threshold": 7,
+      "tokens_in": 101,
+      "tokens_out": 21,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "be01bb",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "cc931581b7c4ec0d2b54756b9ce55d6ea4c4b49cff19ff352bbac7c498cfedd2",
+      "point": "W1-trailing-newline",
+      "prompt_sha256": "05e529f2937ff11c4934d1d1cedf0a61319f9afcd1719b3b0457462d01c17c9a",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "strip-trailing-newline",
+      "score": 1,
+      "seed": 634446002,
+      "task": "recall-org-quota",
+      "threshold": 7,
+      "tokens_in": 101,
+      "tokens_out": 21,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "26ce6e",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "f5ec9d336b9ac53008908059b7065bd354bd7a9a2dd4a01840e75aed0ad8f11b",
+      "point": "W2-double-trailing",
+      "prompt_sha256": "365bd2e47d0e04801423f42eed2cd3854b5dab10f8ef87e7ac5da3a71c39d92b",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "append-trailing-newline",
+      "score": 1,
+      "seed": 634446002,
+      "task": "recall-org-quota",
+      "threshold": 7,
+      "tokens_in": 101,
+      "tokens_out": 21,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "2ac01b",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": true,
+      "payload_sha256": "6f0eb8b4ef7f1229800123b0987599ed63af85e496a87b238a8eb340a249d561",
+      "point": "W3-unwrap-opening",
+      "prompt_sha256": "8aa880379bfa7002e41540000c3fa5065830dd0f7679db384ab0bb9e54796ea7",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "unwrap-hard-wrapped-run",
+      "score": 7,
+      "seed": 634446002,
+      "task": "recall-org-quota",
+      "threshold": 7,
+      "tokens_in": 107,
+      "tokens_out": 27,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "76c44f",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "527c7f0d47d7257976a67303d64f769729209a666c708e5c93adad16eee60477",
+      "point": "W4-double-space",
+      "prompt_sha256": "5d52ae19608ccb0b5adeb02c6421bc0849a98d40a454b5c31776d5b24bc31a86",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "double-space-after-period",
+      "score": 0,
+      "seed": 634446002,
+      "task": "recall-org-quota",
+      "threshold": 7,
+      "tokens_in": 100,
+      "tokens_out": 20,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "49c731",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "0e637b3c9ae441065bb4da5b6ae00a8ba753886418d7b806b1bc4fec65be19b6",
+      "point": "W5-blank-line-before-bands",
+      "prompt_sha256": "c944704691824a779a1868f4a5929e6d03b139e2dccb083e4ab885abe5331b1e",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "extra-blank-line-before-anchor",
+      "score": 4,
+      "seed": 634446002,
+      "task": "recall-org-quota",
+      "threshold": 7,
+      "tokens_in": 104,
+      "tokens_out": 24,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "order",
+      "feedback": "3251bc",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": true,
+      "payload_sha256": "e4d1ecdf4b8dd2d7c4b17caaf9c5bf3b3eae99bda703a27c0193ef296302af52",
+      "point": "O1-swap-format-refusal",
+      "prompt_sha256": "24fc22acb04393dfbf162d0a3756a90bcdf2e7b1480ee6ad9e6f9026bfaa1f7b",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "swap-sentences",
+      "score": 9,
+      "seed": 634446002,
+      "task": "recall-org-quota",
+      "threshold": 7,
+      "tokens_in": 109,
+      "tokens_out": 29,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "order",
+      "feedback": "81bdad",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "5357bf80d4ce6da579706645136de24f794c0a3f636eb62ebc06bdcb7c4650d7",
+      "point": "O2-bands-ascending",
+      "prompt_sha256": "25528fbbe6c1562fd225ca1dd75d7cb98bc7be17ff88b0dc3f1fd18923863f32",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "reorder-list-items",
+      "score": 5,
+      "seed": 634446002,
+      "task": "recall-org-quota",
+      "threshold": 7,
+      "tokens_in": 105,
+      "tokens_out": 25,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "order",
+      "feedback": "5e4e16",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "9bf4657f82ff615d377c52f04ddd1674725f7aef65dae872fb77bfc4022e12d1",
+      "point": "O3-swap-judge-only",
+      "prompt_sha256": "a907f566b22691342e7ffe1cae8a5d8525c937e45398dd4fba797463ee93b3b8",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "swap-sentences",
+      "score": 3,
+      "seed": 634446002,
+      "task": "recall-org-quota",
+      "threshold": 7,
+      "tokens_in": 103,
+      "tokens_out": 23,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "paraphrase",
+      "feedback": "a017c8",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "a30e6dc7db1753a4bf604972bf8b511bb13ce77981b456b2f40b2be05e898daa",
+      "point": "P1-reviewer-relative",
+      "prompt_sha256": "15459757eeccc8a2883a9810e75b48dea9d262657a235ea83d96434c9e6d2533",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "reword-frame-clause",
+      "score": 0,
+      "seed": 634446002,
+      "task": "recall-org-quota",
+      "threshold": 7,
+      "tokens_in": 100,
+      "tokens_out": 20,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "paraphrase",
+      "feedback": "fcb51d",
+      "guard_readings": {
+        "substitution-pair": [
+          "for",
+          "requests"
+        ],
+        "whole-text": [
+          "requests"
+        ]
+      },
+      "guard_violations": [
+        "for",
+        "requests"
+      ],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": true,
+      "payload_sha256": "0b48895a3baa84f5f546eefe92ee41613018add705e347f89353b8f61f2a5ee2",
+      "point": "P2-asks-requests",
+      "prompt_sha256": "1b890b42d69d838aa78187ef0e366e1946b0817d4ed5ad8bce846375f5b0431d",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "reword-verb",
+      "score": 9,
+      "seed": 634446002,
+      "task": "recall-org-quota",
+      "threshold": 7,
+      "tokens_in": 109,
+      "tokens_out": 29,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "paraphrase",
+      "feedback": "cc672e",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "22a43e6fdb3f53e552ab3753af2f5adedba3b63e55ca872546ad831d9422f7a8",
+      "point": "P3-right-correct",
+      "prompt_sha256": "eb57bd2be29f9eb944d75ca0b867061babed0c531d71ac43087a7182c7931225",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L1.yaml",
+      "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89",
+      "rule": "reword-adjective",
+      "score": 4,
+      "seed": 634446002,
+      "task": "recall-org-quota",
+      "threshold": 7,
+      "tokens_in": 104,
+      "tokens_out": 24,
+      "variant": "L1"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "identity",
+      "feedback": "a7ce1e",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "bb55cfedba17f4db5405cbfaa16a5cd607dca388ba68681e61c2a543a05f90e8",
+      "point": "identity",
+      "prompt_sha256": "91cad3d31b0ca7de8b39f2260f1ef5a6e62aff83a95d0947d5f4210ce68d8576",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "identity",
+      "score": 1,
+      "seed": 2331795949,
+      "task": "nav-prod-port",
+      "threshold": 7,
+      "tokens_in": 101,
+      "tokens_out": 21,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "identity",
+      "feedback": "a7ce1e",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "bb55cfedba17f4db5405cbfaa16a5cd607dca388ba68681e61c2a543a05f90e8",
+      "point": "identity",
+      "prompt_sha256": "91cad3d31b0ca7de8b39f2260f1ef5a6e62aff83a95d0947d5f4210ce68d8576",
+      "repeat": 0,
+      "replay": 1,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "identity",
+      "score": 1,
+      "seed": 2331795949,
+      "task": "nav-prod-port",
+      "threshold": 7,
+      "tokens_in": 101,
+      "tokens_out": 21,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "7f20d1",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "524509e200e7be1f0b865c4aca89af35fcdca5ea3df79038760f2732578a8d8d",
+      "point": "W2-double-trailing",
+      "prompt_sha256": "85dd2344604fa84254522ce92a0cf550b9dac0fd15e0ea60c81e621d331ca69a",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "append-trailing-newline",
+      "score": 1,
+      "seed": 2331795949,
+      "task": "nav-prod-port",
+      "threshold": 7,
+      "tokens_in": 101,
+      "tokens_out": 21,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "357ffb",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "9cc33433a01e34d8a04034144eeaa5110677c38f1e189d5cca67c84bf8d3a33e",
+      "point": "W3-unwrap-opening",
+      "prompt_sha256": "9e6aeb81e53d5ae6624793776ff46739785e138c9326890f3f811c6b88df7c10",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "unwrap-hard-wrapped-run",
+      "score": 6,
+      "seed": 2331795949,
+      "task": "nav-prod-port",
+      "threshold": 7,
+      "tokens_in": 106,
+      "tokens_out": 26,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "c5ae46",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": true,
+      "payload_sha256": "c7cae6a9ce2ea38c9a652770dae70533abc5c55e7af601d8a280a87c186425a8",
+      "point": "W4-double-space",
+      "prompt_sha256": "0aa1bd62ea276b67562893d5412a91cf2d842091df7f65e54b89ca638a1a07ef",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "double-space-after-period",
+      "score": 9,
+      "seed": 2331795949,
+      "task": "nav-prod-port",
+      "threshold": 7,
+      "tokens_in": 109,
+      "tokens_out": 29,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "b0ee4d",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "72669fd558b7135ca482294bb76ef1f6fc0d5728951b894c1bea789a494a300e",
+      "point": "W5-blank-line-before-bands",
+      "prompt_sha256": "7fd0063b0d4f87cbbdd7492211bf2bac217ed371206ed52a33d5c4c4c2e35b50",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "extra-blank-line-before-anchor",
+      "score": 4,
+      "seed": 2331795949,
+      "task": "nav-prod-port",
+      "threshold": 7,
+      "tokens_in": 104,
+      "tokens_out": 24,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "order",
+      "feedback": "a88ad7",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "dd48442c1d6a07707ad159d472f1aabbc783075c47b2c9dc215e5c9f740decf6",
+      "point": "O1-swap-format-refusal",
+      "prompt_sha256": "b831127a572897330d806f2ed1ec052a26dd3ac2c771bfad9180c0f2ab89dd80",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "swap-sentences",
+      "score": 0,
+      "seed": 2331795949,
+      "task": "nav-prod-port",
+      "threshold": 7,
+      "tokens_in": 100,
+      "tokens_out": 20,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "order",
+      "feedback": "9d8560",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "c785dcd1523ae6eb08c2310391083a1094779a4916ed7a911e6278f9c01abaaa",
+      "point": "O2-bands-ascending",
+      "prompt_sha256": "562a71e3d7d53358afed351f48f01a0873ac39d3c0f2580f3720fccb0b1459be",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "reorder-list-items",
+      "score": 6,
+      "seed": 2331795949,
+      "task": "nav-prod-port",
+      "threshold": 7,
+      "tokens_in": 106,
+      "tokens_out": 26,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "order",
+      "feedback": "8d3f3a",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "06330a1fc85c0d41aea63e2c381c8cd8840c8141fecbfdfe5ced6c57e0c251f8",
+      "point": "O3-swap-judge-only",
+      "prompt_sha256": "f389ad0f4eefa8dd81116d81fb62db93e728df1a4bc6aa846f6378b9d3235f69",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "swap-sentences",
+      "score": 6,
+      "seed": 2331795949,
+      "task": "nav-prod-port",
+      "threshold": 7,
+      "tokens_in": 106,
+      "tokens_out": 26,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "paraphrase",
+      "feedback": "185d28",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "61e7b189cc23b59bbf5f7eabbc09742492b5c33c67bf7ee262afd01f2ad12e3a",
+      "point": "P1-reviewer-relative",
+      "prompt_sha256": "d4033dce3b9de29f60efc486960bcb2c65cfb441efdd4aa03ce1f7f760f7fd7d",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "reword-frame-clause",
+      "score": 4,
+      "seed": 2331795949,
+      "task": "nav-prod-port",
+      "threshold": 7,
+      "tokens_in": 104,
+      "tokens_out": 24,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "paraphrase",
+      "feedback": "bfcf6b",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": true,
+      "payload_sha256": "c584c51f926ff19903f3615a8539500297177f14bf25cfa2801b3dc345acb26a",
+      "point": "P2-asks-requests",
+      "prompt_sha256": "8fcb8205308914030f043a3c0ad45e21d1351234c7a0c25460de14eb732c2f8c",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "reword-verb",
+      "score": 8,
+      "seed": 2331795949,
+      "task": "nav-prod-port",
+      "threshold": 7,
+      "tokens_in": 108,
+      "tokens_out": 28,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "paraphrase",
+      "feedback": "76fdf7",
+      "guard_readings": {
+        "substitution-pair": [
+          "right"
+        ],
+        "whole-text": [
+          "right"
+        ]
+      },
+      "guard_violations": [
+        "right"
+      ],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "7bf3bba403cb0c189723937d9c5156f55f34dc3b2bcaa3b9a1dc50839f161286",
+      "point": "P3-right-correct",
+      "prompt_sha256": "d83cc395fc37c5ec53ec937c4986b585a12a34795bec86052bbdb9b208a4e818",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "reword-adjective",
+      "score": 5,
+      "seed": 2331795949,
+      "task": "nav-prod-port",
+      "threshold": 7,
+      "tokens_in": 105,
+      "tokens_out": 25,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "identity",
+      "feedback": "d8a261",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "ef88a7d5cb90090f14981823415f0a7cd7cb19e86f18b4fe81dc2165dda8e2f8",
+      "point": "identity",
+      "prompt_sha256": "b80b9e25a8474e982eb3612cf3190f7b157b935e9407cb8e983822f35c18262e",
+      "repeat": 1,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "identity",
+      "score": 6,
+      "seed": 4094558621,
+      "task": "recall-oncall-rotation",
+      "threshold": 7,
+      "tokens_in": 106,
+      "tokens_out": 26,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "identity",
+      "feedback": "d8a261",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "ef88a7d5cb90090f14981823415f0a7cd7cb19e86f18b4fe81dc2165dda8e2f8",
+      "point": "identity",
+      "prompt_sha256": "b80b9e25a8474e982eb3612cf3190f7b157b935e9407cb8e983822f35c18262e",
+      "repeat": 1,
+      "replay": 1,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "identity",
+      "score": 6,
+      "seed": 4094558621,
+      "task": "recall-oncall-rotation",
+      "threshold": 7,
+      "tokens_in": 106,
+      "tokens_out": 26,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "75362d",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": true,
+      "payload_sha256": "5db4fb06930b744ad47c6a51a1a021b394c59c98aa0200352e734ed1ed0577f7",
+      "point": "W2-double-trailing",
+      "prompt_sha256": "143b8de43c0217b804b5529cbbae635095e96ee72b8e5e61cfd76f28b1ed95ab",
+      "repeat": 1,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "append-trailing-newline",
+      "score": 10,
+      "seed": 4094558621,
+      "task": "recall-oncall-rotation",
+      "threshold": 7,
+      "tokens_in": 110,
+      "tokens_out": 30,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "a3aee6",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "8d879447fb1158509dcb0fbd77ee84b0fb07d8f7c6a2903c26a9132a446ab031",
+      "point": "W3-unwrap-opening",
+      "prompt_sha256": "82a4d2b78fe1fc041010c018d9f8f2ba28a2132358c9f6fda451dbc0652a0e9e",
+      "repeat": 1,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "unwrap-hard-wrapped-run",
+      "score": 1,
+      "seed": 4094558621,
+      "task": "recall-oncall-rotation",
+      "threshold": 7,
+      "tokens_in": 101,
+      "tokens_out": 21,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "bf706a",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "e8a76a8b5f1c51f53f24f2ab6659484b318862dac88c9a270df8067a8e101859",
+      "point": "W4-double-space",
+      "prompt_sha256": "714b7758c4c21cbd7157c1d10dd85c448dd43c4ccc47338efbc112782b264989",
+      "repeat": 1,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "double-space-after-period",
+      "score": 2,
+      "seed": 4094558621,
+      "task": "recall-oncall-rotation",
+      "threshold": 7,
+      "tokens_in": 102,
+      "tokens_out": 22,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "bda28f",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "588b573b7df6cc49f55c6a63527b947e52099d4b6b9057ea0d19af084528f250",
+      "point": "W5-blank-line-before-bands",
+      "prompt_sha256": "bf561eda2decda5aee93230e435950a90fb920e7327debf9944366b302d37517",
+      "repeat": 1,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "extra-blank-line-before-anchor",
+      "score": 2,
+      "seed": 4094558621,
+      "task": "recall-oncall-rotation",
+      "threshold": 7,
+      "tokens_in": 102,
+      "tokens_out": 22,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "order",
+      "feedback": "4f460c",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": true,
+      "payload_sha256": "f70dbc64ca92e9227e92a4b0c38d22989ccf6550be8a12402510134459aca88d",
+      "point": "O1-swap-format-refusal",
+      "prompt_sha256": "e472b42e2a442803fdd4ff94d4f191afe4493af712286180dd83d5cefc6c7542",
+      "repeat": 1,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "swap-sentences",
+      "score": 10,
+      "seed": 4094558621,
+      "task": "recall-oncall-rotation",
+      "threshold": 7,
+      "tokens_in": 110,
+      "tokens_out": 30,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "order",
+      "feedback": "be4c66",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": true,
+      "payload_sha256": "3dc1554ed9011bc50165791c8837aabca3630c0935b3b2bf81a0460a0079de8b",
+      "point": "O2-bands-ascending",
+      "prompt_sha256": "d8172688c063590dea7f0c12126db7f2b11b8a1e9a89076ca5a3b6922748aab3",
+      "repeat": 1,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "reorder-list-items",
+      "score": 9,
+      "seed": 4094558621,
+      "task": "recall-oncall-rotation",
+      "threshold": 7,
+      "tokens_in": 109,
+      "tokens_out": 29,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "order",
+      "feedback": "758810",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": true,
+      "payload_sha256": "0accc907228b8241333ee9c0fcada3d3e6eb20ce8f79fcdf12e2da6fd26d6088",
+      "point": "O3-swap-judge-only",
+      "prompt_sha256": "8d63b5fda90d7864fc2067a15ccfe41bc43fa77cd684694318014babb39d0636",
+      "repeat": 1,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "swap-sentences",
+      "score": 7,
+      "seed": 4094558621,
+      "task": "recall-oncall-rotation",
+      "threshold": 7,
+      "tokens_in": 107,
+      "tokens_out": 27,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "paraphrase",
+      "feedback": "3787af",
+      "guard_readings": {
+        "substitution-pair": [
+          "who"
+        ],
+        "whole-text": [
+          "who"
+        ]
+      },
+      "guard_violations": [
+        "who"
+      ],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "3d11e1da5b5714ae17b735443cc2be019851ecd354ef5557ce40362edafe8d0a",
+      "point": "P1-reviewer-relative",
+      "prompt_sha256": "b50ce04944889cb40f0cf73bdde516ea174ce633ce7668b0d5605e0762e144a5",
+      "repeat": 1,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "reword-frame-clause",
+      "score": 1,
+      "seed": 4094558621,
+      "task": "recall-oncall-rotation",
+      "threshold": 7,
+      "tokens_in": 101,
+      "tokens_out": 21,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "paraphrase",
+      "feedback": "3d7a04",
+      "guard_readings": {
+        "substitution-pair": [
+          "for"
+        ],
+        "whole-text": []
+      },
+      "guard_violations": [
+        "for"
+      ],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "7eba23d78630d2c1fa041bb9b9610754916b1d505ce685b05ee00f21972ed7ec",
+      "point": "P2-asks-requests",
+      "prompt_sha256": "b26efd3c328b83d0051a0a8a949d8e13770fa2ca8e5c3db39734ee4b280d8f49",
+      "repeat": 1,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "reword-verb",
+      "score": 1,
+      "seed": 4094558621,
+      "task": "recall-oncall-rotation",
+      "threshold": 7,
+      "tokens_in": 101,
+      "tokens_out": 21,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "paraphrase",
+      "feedback": "dbf987",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": true,
+      "payload_sha256": "0bcb6beb309188226598774194fea0ab2268edefc97a45039a4c00d58dc7649e",
+      "point": "P3-right-correct",
+      "prompt_sha256": "4598fcde5da06ed6a6ee6e02768dd328fb04a833e06afd420c6c65cf49c0b547",
+      "repeat": 1,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "reword-adjective",
+      "score": 10,
+      "seed": 4094558621,
+      "task": "recall-oncall-rotation",
+      "threshold": 7,
+      "tokens_in": 110,
+      "tokens_out": 30,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "identity",
+      "feedback": "be01bb",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "cc931581b7c4ec0d2b54756b9ce55d6ea4c4b49cff19ff352bbac7c498cfedd2",
+      "point": "identity",
+      "prompt_sha256": "05e529f2937ff11c4934d1d1cedf0a61319f9afcd1719b3b0457462d01c17c9a",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "identity",
+      "score": 1,
+      "seed": 634446002,
+      "task": "recall-org-quota",
+      "threshold": 7,
+      "tokens_in": 101,
+      "tokens_out": 21,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "identity",
+      "feedback": "be01bb",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "cc931581b7c4ec0d2b54756b9ce55d6ea4c4b49cff19ff352bbac7c498cfedd2",
+      "point": "identity",
+      "prompt_sha256": "05e529f2937ff11c4934d1d1cedf0a61319f9afcd1719b3b0457462d01c17c9a",
+      "repeat": 0,
+      "replay": 1,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "identity",
+      "score": 1,
+      "seed": 634446002,
+      "task": "recall-org-quota",
+      "threshold": 7,
+      "tokens_in": 101,
+      "tokens_out": 21,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "3ae9b0",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "61a9989298505d8a872a3fd2816857f10fa7acf4c7f9c3e0408a73ed6ac72366",
+      "point": "W2-double-trailing",
+      "prompt_sha256": "b7bb593e720d7a639faa7cf4b30280d884f8f304da1bdb37c9a1373fdcf693f4",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "append-trailing-newline",
+      "score": 1,
+      "seed": 634446002,
+      "task": "recall-org-quota",
+      "threshold": 7,
+      "tokens_in": 101,
+      "tokens_out": 21,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "9b6c3c",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": true,
+      "payload_sha256": "b808b9011ea9cfdcdd035f9ae65ff6d9a82d99345338929cd95a99542d4b1243",
+      "point": "W3-unwrap-opening",
+      "prompt_sha256": "1b3b2e7e9a6bdf4d013496063aeade3cb153190191f39aaa22c253162b1f8944",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "unwrap-hard-wrapped-run",
+      "score": 7,
+      "seed": 634446002,
+      "task": "recall-org-quota",
+      "threshold": 7,
+      "tokens_in": 107,
+      "tokens_out": 27,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "07f6f3",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": true,
+      "payload_sha256": "8ca3f3f71ba5389c18a2a24d9bca55fd95691b3779dab976b537c8aedffb18c2",
+      "point": "W4-double-space",
+      "prompt_sha256": "c2197fd5fff5e3e51aea290ecfec9c479bdfae99a667d34067dd51e1c715bebd",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "double-space-after-period",
+      "score": 10,
+      "seed": 634446002,
+      "task": "recall-org-quota",
+      "threshold": 7,
+      "tokens_in": 110,
+      "tokens_out": 30,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "whitespace",
+      "feedback": "859cc8",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "56c96100a3c6650a2020ee65a31f850b4c34c5e56cf85d109331307ab367f681",
+      "point": "W5-blank-line-before-bands",
+      "prompt_sha256": "adc737f4bbcff9ae5fca474cfa1cf8bf3c29872c8bfd0c334bfcbf0223c180f3",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "extra-blank-line-before-anchor",
+      "score": 4,
+      "seed": 634446002,
+      "task": "recall-org-quota",
+      "threshold": 7,
+      "tokens_in": 104,
+      "tokens_out": 24,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "order",
+      "feedback": "bf73e3",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": true,
+      "payload_sha256": "de4c3f80d18a9e6b9980b08ae3344614bf9eeec4a57e774ceab45fcecc190e24",
+      "point": "O1-swap-format-refusal",
+      "prompt_sha256": "fbc806f11bf12bfa7866340297475b97fffffabb1f868455c3e9998df6280070",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "swap-sentences",
+      "score": 7,
+      "seed": 634446002,
+      "task": "recall-org-quota",
+      "threshold": 7,
+      "tokens_in": 107,
+      "tokens_out": 27,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "order",
+      "feedback": "32296a",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "ee54b66154be6245b6e2808d93b677e563196acad1409b3885ab4da09198f8ab",
+      "point": "O2-bands-ascending",
+      "prompt_sha256": "31786d7f7e56577e8ed486ecc75d278998adf82f3472aed2d1b3756589f8a570",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "reorder-list-items",
+      "score": 2,
+      "seed": 634446002,
+      "task": "recall-org-quota",
+      "threshold": 7,
+      "tokens_in": 102,
+      "tokens_out": 22,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "order",
+      "feedback": "a1b82a",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "7c6efca86ce7fad530a0d8c620d3033b0ededd94680c9d25fb53919a8053f268",
+      "point": "O3-swap-judge-only",
+      "prompt_sha256": "c2d201b02e81b59c0c6384e36b94ec1a1c5ddce07d10931acc8fb1aa0674f540",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "swap-sentences",
+      "score": 6,
+      "seed": 634446002,
+      "task": "recall-org-quota",
+      "threshold": 7,
+      "tokens_in": 106,
+      "tokens_out": 26,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "paraphrase",
+      "feedback": "7d9e42",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": true,
+      "payload_sha256": "a49d91e7fef48379edcce4fe8feac734f620d4cf39d43f270f40535fdcc06ab2",
+      "point": "P1-reviewer-relative",
+      "prompt_sha256": "0d442a4e79c0d96c74a53d836f26c00af2c60e53e00af7c65a48605b353d9e62",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "reword-frame-clause",
+      "score": 9,
+      "seed": 634446002,
+      "task": "recall-org-quota",
+      "threshold": 7,
+      "tokens_in": 109,
+      "tokens_out": 29,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "paraphrase",
+      "feedback": "ba5684",
+      "guard_readings": {
+        "substitution-pair": [
+          "for",
+          "requests"
+        ],
+        "whole-text": [
+          "requests"
+        ]
+      },
+      "guard_violations": [
+        "for",
+        "requests"
+      ],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": false,
+      "payload_sha256": "39756aba81e1ef9c5b721d54479de6426822b634fc772421a62f054acef6f8fe",
+      "point": "P2-asks-requests",
+      "prompt_sha256": "acf1d4108284200ba70cb2d036896550885a20a1267adef46f57dcd0fa4667cd",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "reword-verb",
+      "score": 3,
+      "seed": 634446002,
+      "task": "recall-org-quota",
+      "threshold": 7,
+      "tokens_in": 103,
+      "tokens_out": 23,
+      "variant": "L2"
+    },
+    {
+      "bar": "perturbation",
+      "calls": 1,
+      "class": "paraphrase",
+      "feedback": "9dcfd7",
+      "guard_readings": {
+        "substitution-pair": [],
+        "whole-text": []
+      },
+      "guard_violations": [],
+      "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+      "model": "fake-14b",
+      "passed": true,
+      "payload_sha256": "4ef41dd01d2efd147d41093fd15bb366b6fae84bad09111d1c31ad0e69f8e130",
+      "point": "P3-right-correct",
+      "prompt_sha256": "ab55545a74a29b35c5c792ab2446f819fa0e619999809dc4c3eb7d6a501241d8",
+      "repeat": 0,
+      "replay": 0,
+      "rubric_ref": "<workdir>/L2.yaml",
+      "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc",
+      "rule": "reword-adjective",
+      "score": 9,
+      "seed": 634446002,
+      "task": "recall-org-quota",
+      "threshold": 7,
+      "tokens_in": 109,
+      "tokens_out": 29,
+      "variant": "L2"
+    }
+  ],
+  "selected": [
+    "identity",
+    "W1-trailing-newline",
+    "W2-double-trailing",
+    "W3-unwrap-opening",
+    "W4-double-space",
+    "W5-blank-line-before-bands",
+    "O1-swap-format-refusal",
+    "O2-bands-ascending",
+    "O3-swap-judge-only",
+    "P1-reviewer-relative",
+    "P2-asks-requests",
+    "P3-right-correct"
+  ],
+  "summary": {
+    "bar": "perturbation",
+    "cells": [
+      {
+        "comparisons": [
+          {
+            "a": "L1",
+            "a_pass_rate": "2/11",
+            "attributable": false,
+            "b": "L2",
+            "b_pass_rate": "2/11",
+            "dropped_rules": [
+              {
+                "rule": "W1-trailing-newline",
+                "variant": "L2"
+              }
+            ],
+            "family_size": 11,
+            "fragile": [
+              "L1",
+              "L2"
+            ],
+            "guard_dropped_rules": [
+              {
+                "reason": "shared-token",
+                "rule": "P3-right-correct",
+                "words": [
+                  "right"
+                ]
+              }
+            ],
+            "guard_family_size": 10,
+            "guard_verdict": "indistinguishable",
+            "verdict": "indistinguishable"
+          }
+        ],
+        "guard_readings": {
+          "substitution-pair": {
+            "P3-right-correct": [
+              "right"
+            ]
+          },
+          "whole-text": {
+            "P3-right-correct": [
+              "right"
+            ]
+          }
+        },
+        "guard_violations": {
+          "P3-right-correct": [
+            "right"
+          ]
+        },
+        "repeat": 0,
+        "seed": 2331795949,
+        "task": "nav-prod-port",
+        "variants": {
+          "L1": {
+            "family_size": 12,
+            "fragile": true,
+            "guard_dropped": {
+              "family_size": 11,
+              "fragile": true,
+              "identity_scores": [
+                1,
+                1
+              ],
+              "identity_spread": 0,
+              "margin_zero": 2,
+              "pass_rate": "2/11",
+              "passed": 2,
+              "score_max": 9,
+              "score_min": 0,
+              "spread": 9
+            },
+            "guard_readings": {
+              "substitution-pair": {
+                "P3-right-correct": [
+                  "right"
+                ]
+              },
+              "whole-text": {
+                "P3-right-correct": [
+                  "right"
+                ]
+              }
+            },
+            "guard_violations": {
+              "P3-right-correct": [
+                "right"
+              ]
+            },
+            "identity_scores": [
+              1,
+              1
+            ],
+            "identity_spread": 0,
+            "margin_zero": 2,
+            "pass_rate": "2/12",
+            "passed": 2,
+            "score_max": 9,
+            "score_min": 0,
+            "spread": 9
+          },
+          "L2": {
+            "family_size": 11,
+            "fragile": true,
+            "guard_dropped": {
+              "family_size": 10,
+              "fragile": true,
+              "identity_scores": [
+                1,
+                1
+              ],
+              "identity_spread": 0,
+              "margin_zero": 4,
+              "pass_rate": "2/10",
+              "passed": 2,
+              "score_max": 9,
+              "score_min": 0,
+              "spread": 9
+            },
+            "guard_readings": {
+              "substitution-pair": {
+                "P3-right-correct": [
+                  "right"
+                ]
+              },
+              "whole-text": {
+                "P3-right-correct": [
+                  "right"
+                ]
+              }
+            },
+            "guard_violations": {
+              "P3-right-correct": [
+                "right"
+              ]
+            },
+            "identity_scores": [
+              1,
+              1
+            ],
+            "identity_spread": 0,
+            "margin_zero": 4,
+            "pass_rate": "2/11",
+            "passed": 2,
+            "score_max": 9,
+            "score_min": 0,
+            "spread": 9
+          }
+        }
+      },
+      {
+        "comparisons": [
+          {
+            "a": "L1",
+            "a_pass_rate": "4/11",
+            "attributable": false,
+            "b": "L2",
+            "b_pass_rate": "5/11",
+            "dropped_rules": [
+              {
+                "rule": "W1-trailing-newline",
+                "variant": "L2"
+              }
+            ],
+            "family_size": 11,
+            "fragile": [
+              "L1",
+              "L2"
+            ],
+            "guard_dropped_rules": [
+              {
+                "reason": "shared-token",
+                "rule": "P1-reviewer-relative",
+                "words": [
+                  "who"
+                ]
+              },
+              {
+                "reason": "shared-token",
+                "rule": "P2-asks-requests",
+                "words": [
+                  "for"
+                ]
+              }
+            ],
+            "guard_family_size": 9,
+            "guard_verdict": "inconclusive",
+            "verdict": "inconclusive"
+          }
+        ],
+        "guard_readings": {
+          "substitution-pair": {
+            "P1-reviewer-relative": [
+              "who"
+            ],
+            "P2-asks-requests": [
+              "for"
+            ]
+          },
+          "whole-text": {
+            "P1-reviewer-relative": [
+              "who"
+            ]
+          }
+        },
+        "guard_violations": {
+          "P1-reviewer-relative": [
+            "who"
+          ],
+          "P2-asks-requests": [
+            "for"
+          ]
+        },
+        "repeat": 1,
+        "seed": 4094558621,
+        "task": "recall-oncall-rotation",
+        "variants": {
+          "L1": {
+            "family_size": 12,
+            "fragile": true,
+            "guard_dropped": {
+              "family_size": 10,
+              "fragile": true,
+              "identity_scores": [
+                10,
+                10
+              ],
+              "identity_spread": 0,
+              "margin_zero": 3,
+              "pass_rate": "3/10",
+              "passed": 3,
+              "score_max": 10,
+              "score_min": 0,
+              "spread": 10
+            },
+            "guard_readings": {
+              "substitution-pair": {
+                "P1-reviewer-relative": [
+                  "who"
+                ],
+                "P2-asks-requests": [
+                  "for"
+                ]
+              },
+              "whole-text": {
+                "P1-reviewer-relative": [
+                  "who"
+                ]
+              }
+            },
+            "guard_violations": {
+              "P1-reviewer-relative": [
+                "who"
+              ],
+              "P2-asks-requests": [
+                "for"
+              ]
+            },
+            "identity_scores": [
+              10,
+              10
+            ],
+            "identity_spread": 0,
+            "margin_zero": 3,
+            "pass_rate": "4/12",
+            "passed": 4,
+            "score_max": 10,
+            "score_min": 0,
+            "spread": 10
+          },
+          "L2": {
+            "family_size": 11,
+            "fragile": true,
+            "guard_dropped": {
+              "family_size": 9,
+              "fragile": true,
+              "identity_scores": [
+                6,
+                6
+              ],
+              "identity_spread": 0,
+              "margin_zero": 2,
+              "pass_rate": "5/9",
+              "passed": 5,
+              "score_max": 10,
+              "score_min": 1,
+              "spread": 9
+            },
+            "guard_readings": {
+              "substitution-pair": {
+                "P1-reviewer-relative": [
+                  "who"
+                ],
+                "P2-asks-requests": [
+                  "for"
+                ]
+              },
+              "whole-text": {
+                "P1-reviewer-relative": [
+                  "who"
+                ]
+              }
+            },
+            "guard_violations": {
+              "P1-reviewer-relative": [
+                "who"
+              ],
+              "P2-asks-requests": [
+                "for"
+              ]
+            },
+            "identity_scores": [
+              6,
+              6
+            ],
+            "identity_spread": 0,
+            "margin_zero": 2,
+            "pass_rate": "5/11",
+            "passed": 5,
+            "score_max": 10,
+            "score_min": 1,
+            "spread": 9
+          }
+        }
+      },
+      {
+        "comparisons": [
+          {
+            "a": "L1",
+            "a_pass_rate": "3/11",
+            "attributable": false,
+            "b": "L2",
+            "b_pass_rate": "5/11",
+            "dropped_rules": [
+              {
+                "rule": "W1-trailing-newline",
+                "variant": "L2"
+              }
+            ],
+            "family_size": 11,
+            "fragile": [
+              "L1",
+              "L2"
+            ],
+            "guard_dropped_rules": [
+              {
+                "reason": "shared-token",
+                "rule": "P2-asks-requests",
+                "words": [
+                  "for",
+                  "requests"
+                ]
+              }
+            ],
+            "guard_family_size": 10,
+            "guard_verdict": "inconclusive",
+            "verdict": "inconclusive"
+          }
+        ],
+        "guard_readings": {
+          "substitution-pair": {
+            "P2-asks-requests": [
+              "for",
+              "requests"
+            ]
+          },
+          "whole-text": {
+            "P2-asks-requests": [
+              "requests"
+            ]
+          }
+        },
+        "guard_violations": {
+          "P2-asks-requests": [
+            "for",
+            "requests"
+          ]
+        },
+        "repeat": 0,
+        "seed": 634446002,
+        "task": "recall-org-quota",
+        "variants": {
+          "L1": {
+            "family_size": 12,
+            "fragile": true,
+            "guard_dropped": {
+              "family_size": 11,
+              "fragile": true,
+              "identity_scores": [
+                1,
+                1
+              ],
+              "identity_spread": 0,
+              "margin_zero": 1,
+              "pass_rate": "2/11",
+              "passed": 2,
+              "score_max": 9,
+              "score_min": 0,
+              "spread": 9
+            },
+            "guard_readings": {
+              "substitution-pair": {
+                "P2-asks-requests": [
+                  "for",
+                  "requests"
+                ]
+              },
+              "whole-text": {
+                "P2-asks-requests": [
+                  "requests"
+                ]
+              }
+            },
+            "guard_violations": {
+              "P2-asks-requests": [
+                "for",
+                "requests"
+              ]
+            },
+            "identity_scores": [
+              1,
+              1
+            ],
+            "identity_spread": 0,
+            "margin_zero": 1,
+            "pass_rate": "3/12",
+            "passed": 3,
+            "score_max": 9,
+            "score_min": 0,
+            "spread": 9
+          },
+          "L2": {
+            "family_size": 11,
+            "fragile": true,
+            "guard_dropped": {
+              "family_size": 10,
+              "fragile": true,
+              "identity_scores": [
+                1,
+                1
+              ],
+              "identity_spread": 0,
+              "margin_zero": 3,
+              "pass_rate": "5/10",
+              "passed": 5,
+              "score_max": 10,
+              "score_min": 1,
+              "spread": 9
+            },
+            "guard_readings": {
+              "substitution-pair": {
+                "P2-asks-requests": [
+                  "for",
+                  "requests"
+                ]
+              },
+              "whole-text": {
+                "P2-asks-requests": [
+                  "requests"
+                ]
+              }
+            },
+            "guard_violations": {
+              "P2-asks-requests": [
+                "for",
+                "requests"
+              ]
+            },
+            "identity_scores": [
+              1,
+              1
+            ],
+            "identity_spread": 0,
+            "margin_zero": 3,
+            "pass_rate": "5/11",
+            "passed": 5,
+            "score_max": 10,
+            "score_min": 1,
+            "spread": 9
+          }
+        }
+      }
+    ],
+    "guard": {
+      "by_reading": {
+        "substitution-pair": [
+          {
+            "point": "P3-right-correct",
+            "repeat": 0,
+            "task": "nav-prod-port",
+            "words": [
+              "right"
+            ]
+          },
+          {
+            "point": "P1-reviewer-relative",
+            "repeat": 1,
+            "task": "recall-oncall-rotation",
+            "words": [
+              "who"
+            ]
+          },
+          {
+            "point": "P2-asks-requests",
+            "repeat": 1,
+            "task": "recall-oncall-rotation",
+            "words": [
+              "for"
+            ]
+          },
+          {
+            "point": "P2-asks-requests",
+            "repeat": 0,
+            "task": "recall-org-quota",
+            "words": [
+              "for",
+              "requests"
+            ]
+          }
+        ],
+        "whole-text": [
+          {
+            "point": "P3-right-correct",
+            "repeat": 0,
+            "task": "nav-prod-port",
+            "words": [
+              "right"
+            ]
+          },
+          {
+            "point": "P1-reviewer-relative",
+            "repeat": 1,
+            "task": "recall-oncall-rotation",
+            "words": [
+              "who"
+            ]
+          },
+          {
+            "point": "P2-asks-requests",
+            "repeat": 0,
+            "task": "recall-org-quota",
+            "words": [
+              "requests"
+            ]
+          }
+        ]
+      },
+      "decision_rule": "union \u2014 a (point, cell) is tainted if EITHER reading flags it, because under-detection is the direction this guard exists to prevent",
+      "mode": "warn",
+      "readings": {
+        "substitution-pair": "symmetric difference of the point's own `from`/`to` word sets \u2014 what \u00a73.3 step 4's substitution-pair form and the manifest's P2 justification imply",
+        "whole-text": "symmetric difference of the base and perturbed TEMPLATE word sets \u2014 \u00a73.3's operative Test sentence, and what an independent re-derivation from the spec produced"
+      },
+      "rule": "spec \u00a73.3 step 3, guard 2 \u2014 no word a point adds or removes may appear in the cell's {task} or {output}. 'A word a point adds or removes' has two defensible readings and the spec supports each in a different sentence; both are computed and reported here and NEITHER is wrong.",
+      "violations": [
+        {
+          "point": "P3-right-correct",
+          "readings": {
+            "substitution-pair": [
+              "right"
+            ],
+            "whole-text": [
+              "right"
+            ]
+          },
+          "repeat": 0,
+          "task": "nav-prod-port",
+          "words": [
+            "right"
+          ]
+        },
+        {
+          "point": "P1-reviewer-relative",
+          "readings": {
+            "substitution-pair": [
+              "who"
+            ],
+            "whole-text": [
+              "who"
+            ]
+          },
+          "repeat": 1,
+          "task": "recall-oncall-rotation",
+          "words": [
+            "who"
+          ]
+        },
+        {
+          "point": "P2-asks-requests",
+          "readings": {
+            "substitution-pair": [
+              "for"
+            ],
+            "whole-text": []
+          },
+          "repeat": 1,
+          "task": "recall-oncall-rotation",
+          "words": [
+            "for"
+          ]
+        },
+        {
+          "point": "P2-asks-requests",
+          "readings": {
+            "substitution-pair": [
+              "for",
+              "requests"
+            ],
+            "whole-text": [
+              "requests"
+            ]
+          },
+          "repeat": 0,
+          "task": "recall-org-quota",
+          "words": [
+            "for",
+            "requests"
+          ]
+        }
+      ]
+    },
+    "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+    "requests": 75,
+    "threshold": 7,
+    "tokens_total": 9656,
+    "variants": [
+      {
+        "dropped_rules": [],
+        "label": "L1",
+        "rubric_ref": "<workdir>/L1.yaml",
+        "rubric_sha256": "870a1b694d3a46e1d387f5e7d930320d58ca6b29900b65cf890e882adb0b5a89"
+      },
+      {
+        "dropped_rules": [
+          "W1-trailing-newline"
+        ],
+        "label": "L2",
+        "rubric_ref": "<workdir>/L2.yaml",
+        "rubric_sha256": "5c6370b84793b83a268f3c5ea1f4af9fbcda192dfa46c84e00147eba85008dfc"
+      }
+    ],
+    "wire_calls": 75
+  },
+  "synthetic": {
+    "rows": [
+      {
+        "bar": "perturbation",
+        "calls": 1,
+        "class": "identity",
+        "feedback": "e42f21",
+        "guard_readings": {
+          "substitution-pair": [],
+          "whole-text": []
+        },
+        "guard_violations": [],
+        "manifest_sha256": "48aed1c2eae8df0adf13bb8a411dd7bc811db05138163f718d77c5fe8aebc17e",
+        "model": "fake-14b",
+        "passed": true,
+        "payload_sha256": "6b591f1d1cec2e88760e33348c6ef90c808f2d75862839581466b35cf7c69cd3",
+        "point": "identity",
+        "prompt_sha256": "776bcdd0cd91638a76a4529c63a7673536a050dfe238ca8a5341f431937c7260",
+        "repeat": 0,
+        "replay": 0,
+        "rubric_ref": "<workdir>/synthetic.yaml",
+        "rubric_sha256": "e6554291a1b702362d130b1c9f9a0c11cdade78303911906c0f606b72479b3e7",
+        "rule": "identity",
+        "score": 8,
+        "seed": 13,
+        "task": "gamma",
+        "threshold": 7,
+        "tokens_in": 108,
+        "tokens_out": 28,
+        "variant": "S"
+      },
+      {
+        "bar": "perturbation",
+        "calls": 1,
+        "class": "identity",
+        "feedback": "e42f21",
+        "guard_readings": {
+          "substitution-pair": [],
+          "whole-text": []
+        },
+        "guard_violations": [],
+        "manifest_sha256": "48aed1c2eae8df0adf13bb8a411dd7bc811db05138163f718d77c5fe8aebc17e",
+        "model": "fake-14b",
+        "passed": true,
+        "payload_sha256": "6b591f1d1cec2e88760e33348c6ef90c808f2d75862839581466b35cf7c69cd3",
+        "point": "identity",
+        "prompt_sha256": "776bcdd0cd91638a76a4529c63a7673536a050dfe238ca8a5341f431937c7260",
+        "repeat": 0,
+        "replay": 1,
+        "rubric_ref": "<workdir>/synthetic.yaml",
+        "rubric_sha256": "e6554291a1b702362d130b1c9f9a0c11cdade78303911906c0f606b72479b3e7",
+        "rule": "identity",
+        "score": 8,
+        "seed": 13,
+        "task": "gamma",
+        "threshold": 7,
+        "tokens_in": 108,
+        "tokens_out": 28,
+        "variant": "S"
+      },
+      {
+        "bar": "perturbation",
+        "calls": 1,
+        "class": "paraphrase",
+        "feedback": "470346",
+        "guard_readings": {
+          "substitution-pair": [
+            "two"
+          ],
+          "whole-text": []
+        },
+        "guard_violations": [
+          "two"
+        ],
+        "manifest_sha256": "48aed1c2eae8df0adf13bb8a411dd7bc811db05138163f718d77c5fe8aebc17e",
+        "model": "fake-14b",
+        "passed": true,
+        "payload_sha256": "4fb6d37ec4c3bc600b9b1beb6b80b75e07ad7732811dd1916bc33cde5ab0a95a",
+        "point": "P-survivor",
+        "prompt_sha256": "999d62ac0d42077d17a6f06119ae67b084c83bc2981453b540a797f05b7ba67e",
+        "repeat": 0,
+        "replay": 0,
+        "rubric_ref": "<workdir>/synthetic.yaml",
+        "rubric_sha256": "e6554291a1b702362d130b1c9f9a0c11cdade78303911906c0f606b72479b3e7",
+        "rule": "reword",
+        "score": 10,
+        "seed": 13,
+        "task": "gamma",
+        "threshold": 7,
+        "tokens_in": 110,
+        "tokens_out": 30,
+        "variant": "S"
+      },
+      {
+        "bar": "perturbation",
+        "calls": 1,
+        "class": "paraphrase",
+        "feedback": "fab682",
+        "guard_readings": {
+          "substitution-pair": [],
+          "whole-text": [
+            "brisk"
+          ]
+        },
+        "guard_violations": [
+          "brisk"
+        ],
+        "manifest_sha256": "48aed1c2eae8df0adf13bb8a411dd7bc811db05138163f718d77c5fe8aebc17e",
+        "model": "fake-14b",
+        "passed": true,
+        "payload_sha256": "729a4cfbe53928ec4d56b0875c82db1119b4725b390678c1fba4524d67517810",
+        "point": "P-inword",
+        "prompt_sha256": "ce91b007795495b32af46ec2aa2cc5212f26dbbb91304bd739c4bf1e5aa82cdd",
+        "repeat": 0,
+        "replay": 0,
+        "rubric_ref": "<workdir>/synthetic.yaml",
+        "rubric_sha256": "e6554291a1b702362d130b1c9f9a0c11cdade78303911906c0f606b72479b3e7",
+        "rule": "reword",
+        "score": 9,
+        "seed": 13,
+        "task": "gamma",
+        "threshold": 7,
+        "tokens_in": 109,
+        "tokens_out": 29,
+        "variant": "S"
+      }
+    ],
+    "summary": {
+      "bar": "perturbation",
+      "cells": [
+        {
+          "comparisons": [],
+          "guard_readings": {
+            "substitution-pair": {
+              "P-survivor": [
+                "two"
+              ]
+            },
+            "whole-text": {
+              "P-inword": [
+                "brisk"
+              ]
+            }
+          },
+          "guard_violations": {
+            "P-inword": [
+              "brisk"
+            ],
+            "P-survivor": [
+              "two"
+            ]
+          },
+          "repeat": 0,
+          "seed": 13,
+          "task": "gamma",
+          "variants": {
+            "S": {
+              "family_size": 3,
+              "fragile": false,
+              "guard_dropped": {
+                "family_size": 1,
+                "fragile": false,
+                "identity_scores": [
+                  8,
+                  8
+                ],
+                "identity_spread": 0,
+                "margin_zero": 1,
+                "pass_rate": "1/1",
+                "passed": 1,
+                "score_max": 8,
+                "score_min": 8,
+                "spread": 0
+              },
+              "guard_readings": {
+                "substitution-pair": {
+                  "P-survivor": [
+                    "two"
+                  ]
+                },
+                "whole-text": {
+                  "P-inword": [
+                    "brisk"
+                  ]
+                }
+              },
+              "guard_violations": {
+                "P-inword": [
+                  "brisk"
+                ],
+                "P-survivor": [
+                  "two"
+                ]
+              },
+              "identity_scores": [
+                8,
+                8
+              ],
+              "identity_spread": 0,
+              "margin_zero": 1,
+              "pass_rate": "3/3",
+              "passed": 3,
+              "score_max": 10,
+              "score_min": 8,
+              "spread": 2
+            }
+          }
+        }
+      ],
+      "guard": {
+        "by_reading": {
+          "substitution-pair": [
+            {
+              "point": "P-survivor",
+              "repeat": 0,
+              "task": "gamma",
+              "words": [
+                "two"
+              ]
+            }
+          ],
+          "whole-text": [
+            {
+              "point": "P-inword",
+              "repeat": 0,
+              "task": "gamma",
+              "words": [
+                "brisk"
+              ]
+            }
+          ]
+        },
+        "decision_rule": "union \u2014 a (point, cell) is tainted if EITHER reading flags it, because under-detection is the direction this guard exists to prevent",
+        "mode": "warn",
+        "readings": {
+          "substitution-pair": "symmetric difference of the point's own `from`/`to` word sets \u2014 what \u00a73.3 step 4's substitution-pair form and the manifest's P2 justification imply",
+          "whole-text": "symmetric difference of the base and perturbed TEMPLATE word sets \u2014 \u00a73.3's operative Test sentence, and what an independent re-derivation from the spec produced"
+        },
+        "rule": "spec \u00a73.3 step 3, guard 2 \u2014 no word a point adds or removes may appear in the cell's {task} or {output}. 'A word a point adds or removes' has two defensible readings and the spec supports each in a different sentence; both are computed and reported here and NEITHER is wrong.",
+        "violations": [
+          {
+            "point": "P-inword",
+            "readings": {
+              "substitution-pair": [],
+              "whole-text": [
+                "brisk"
+              ]
+            },
+            "repeat": 0,
+            "task": "gamma",
+            "words": [
+              "brisk"
+            ]
+          },
+          {
+            "point": "P-survivor",
+            "readings": {
+              "substitution-pair": [
+                "two"
+              ],
+              "whole-text": []
+            },
+            "repeat": 0,
+            "task": "gamma",
+            "words": [
+              "two"
+            ]
+          }
+        ]
+      },
+      "manifest_sha256": "48aed1c2eae8df0adf13bb8a411dd7bc811db05138163f718d77c5fe8aebc17e",
+      "requests": 4,
+      "threshold": 7,
+      "tokens_total": 550,
+      "variants": [
+        {
+          "dropped_rules": [],
+          "label": "S",
+          "rubric_ref": "<workdir>/synthetic.yaml",
+          "rubric_sha256": "e6554291a1b702362d130b1c9f9a0c11cdade78303911906c0f606b72479b3e7"
+        }
+      ],
+      "wire_calls": 4
+    },
+    "wire_calls": 4
+  },
+  "table": "| variant | task | repeat | seed | pass | min | max | spread | margin0 | identity | fragile |\n|---|---|---|---|---|---|---|---|---|---|---|\n| L1 | nav-prod-port | 0 | 2331795949 | 2/12 | 0 | 9 | 9 | 2 | 1,1 | True |\n| L2 | nav-prod-port | 0 | 2331795949 | 2/11 | 0 | 9 | 9 | 4 | 1,1 | True |\n| L1 | recall-oncall-rotation | 1 | 4094558621 | 4/12 | 0 | 10 | 10 | 3 | 10,10 | True |\n| L2 | recall-oncall-rotation | 1 | 4094558621 | 5/11 | 1 | 10 | 9 | 2 | 6,6 | True |\n| L1 | recall-org-quota | 0 | 634446002 | 3/12 | 0 | 9 | 9 | 1 | 1,1 | True |\n| L2 | recall-org-quota | 0 | 634446002 | 5/11 | 1 | 10 | 9 | 3 | 1,1 | True |\n\nGUARD VIOLATIONS (warn mode) \u2014 spec \u00a73.3 step 3, guard 2, BOTH readings; decision: union \u2014 a (point, cell) is tainted if EITHER reading flags it, because under-detection is the direction this guard exists to prevent\n- nav-prod-port r0: P3-right-correct shares right with the cell [whole-text: right; substitution-pair: right] \u2014 dropped from the guard-clean family, attribution void unless the separation survives it\n- recall-oncall-rotation r1: P1-reviewer-relative shares who with the cell [whole-text: who; substitution-pair: who] \u2014 dropped from the guard-clean family, attribution void unless the separation survives it\n- recall-oncall-rotation r1: P2-asks-requests shares for with the cell [whole-text: (none); substitution-pair: for] \u2014 dropped from the guard-clean family, attribution void unless the separation survives it\n- recall-org-quota r0: P2-asks-requests shares for, requests with the cell [whole-text: requests; substitution-pair: for, requests] \u2014 dropped from the guard-clean family, attribution void unless the separation survives it\n  L1 nav-prod-port r0: 2/12 full -> 2/11 guard-clean\n  L2 nav-prod-port r0: 2/11 full -> 2/10 guard-clean\n  L1 recall-oncall-rotation r1: 4/12 full -> 3/10 guard-clean\n  L2 recall-oncall-rotation r1: 5/11 full -> 5/9 guard-clean\n  L1 recall-org-quota r0: 3/12 full -> 2/11 guard-clean\n  L2 recall-org-quota r0: 5/11 full -> 5/10 guard-clean\n\nPairwise (post-drop family):\n- nav-prod-port r0: L1 2/11 vs L2 2/11 -> indistinguishable (F=11; dropped W1-trailing-newline (absent from L2))\n- recall-oncall-rotation r1: L1 4/11 vs L2 5/11 -> inconclusive (F=11; dropped W1-trailing-newline (absent from L2))\n- recall-org-quota r0: L1 3/11 vs L2 5/11 -> inconclusive (F=11; dropped W1-trailing-newline (absent from L2))\n\nrequests: 75  wire calls: 75  tokens: 9656  manifest: 340ce4dbf1c9",
+  "wire_calls": 75
+}
