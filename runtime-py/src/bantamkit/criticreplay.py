@@ -38,18 +38,23 @@ cannot ride along there.
 **Start at `guarded_family`.** It is the one call from (variants, points, cells) to
 `GuardedReplay` units, each carrying the exact `Rubric` to replay, the cell, the replay
 count the bar uses, and guard 2's verdict on that pair under both readings. `unit.replay
-(client)` issues it and stamps that verdict onto every `Verdict` it returns, so an
-artifact built off them records the taint by default. `run()` is those two calls and
-nothing else — there is no second derivation of the family anywhere in this module.
+(client)` issues it and stamps that verdict onto every `Verdict` it returns, so it puts
+the taint on the object the consumer serializes, rather than in a second table they must
+join. `run()` is those two calls and nothing else — there is no second derivation of the
+family ON THE RUN PATH. (`materialize_manifest` derives it again for the `--manifest`
+audit artifact; `_check_materialization` is what keeps the two from drifting.)
 `apply_point`, `guard_table` and `replay_verdicts` are the primitives they are built
 from, and they stay public because an offline audit needs them; but the guarded route is
-now the SHORT one, which is the whole of RB-P23's fix.
+now the SHORT one — two public calls against three, from the same starting object, since
+`guarded_family` takes a bare `Rubric` as well as a `RubricVariant` — which is the whole
+of RB-P23's fix.
 
 RB-P23 is a defence-in-depth hole, not a soundness bug, and this does not make it
 impossible: Python has no private functions, so `apply_point` -> hand-assembled `Rubric`
 -> `replay_verdicts` still reaches the wire with a tainted pair and nothing recording it.
 What changed is the length comparison. That residual is measured, not claimed, by
-`test_the_unguarded_route_still_reaches_the_wire_and_is_now_the_longer_one`.
+`test_the_unguarded_route_still_reaches_the_wire_and_is_the_longer_one`, which EXECUTES
+both routes from one `Rubric` and counts the module calls each one makes.
 """
 
 from __future__ import annotations
@@ -77,6 +82,7 @@ from bantamkit.structured import structured
 __all__ = [
     "GUARD_DECISION_RULE",
     "GUARD_MODES",
+    "IN_MEMORY_REF",
     "READINGS",
     "READING_RULES",
     "Case",
@@ -368,7 +374,9 @@ def apply_point(point: Point, template: str, *, check: bool = True) -> str | Non
     scoring a family should call — it is built from this function and returns templates
     already paired with guard 2's verdict on each cell. Reaching a request from here
     instead means assembling the `Rubric` by hand and getting no guard 2 at all, which is
-    RB-P23's residual: possible, and now the longer of the two routes.
+    RB-P23's residual: possible, and now the longer of the two routes — three public
+    calls (`apply_point`, `Rubric`, `replay_verdicts`) against the guarded route's two
+    (`guarded_family`, `unit.replay`), from the same starting `Rubric`.
 
     `check=False` is the deliberate bypass, and it is deliberate on purpose: a guard
     nobody can turn off is a guard people route around. `_variant_family` uses it so it
@@ -759,8 +767,8 @@ class Verdict:
     # §3.3 guard 2's verdict for the (point, cell) this replay came from. EMPTY when the
     # replay was issued through `replay_verdicts` directly, which holds a `Rubric` and a
     # `Case` and cannot re-derive which point produced the template — blank, not clean.
-    # `GuardedReplay.replay` fills them, so an artifact a hand-rolled consumer builds off
-    # its verdicts records the taint without the consumer choosing to add it.
+    # `GuardedReplay.replay` fills them, so the taint is on the object the consumer
+    # serializes, rather than in a second table they must join.
     guard_violations: list[str] = field(default_factory=list)
     guard_readings: dict[str, list[str]] = field(default_factory=dict)
 
@@ -993,8 +1001,48 @@ class GuardedFamily:
     guard_mode: str = "warn"
 
 
+IN_MEMORY_REF = "<in-memory>"
+
+
+def _as_variant(entry: RubricVariant | Rubric) -> RubricVariant:
+    """A bare `Rubric` is a variant with no file behind it, and the derived fields say so.
+
+    `guarded_family` takes either. Requiring a `RubricVariant` charged the guarded route a
+    construction the unguarded route never charges — five fields including a `sha256` the
+    consumer computes — so from an equal starting point (a `Rubric`, a `Manifest`, a
+    `Case`) the two routes were the SAME length, and the length claim was true only for a
+    consumer whose rubric is a file, which is the CLI and not the hand-rolling library
+    consumer RB-P23 is about.
+
+    The derived fields are the honest ones, not invented ones:
+
+    - `label` is the rubric's own `name`. Two variants that share a label are refused in
+      `guarded_family` rather than silently collapsing into one entry of the per-label
+      tables.
+    - `ref` is `<in-memory>`. There is no path and no git ref to record, and naming a file
+      that was never read is worse than saying there is none.
+    - `sha256` is EMPTY. The populated column is the sha of a rubric FILE's bytes
+      (`parse_rubric_arg`), and an object has no file; hashing the prompt instead would put
+      two different meanings under one column name. Blank, not wrong — and every row still
+      carries `prompt_sha256`, which pins the exact text that went on the wire.
+    """
+    if isinstance(entry, RubricVariant):
+        return entry
+    if isinstance(entry, Rubric):
+        return RubricVariant(
+            label=entry.name,
+            spec=IN_MEMORY_REF,
+            ref=IN_MEMORY_REF,
+            rubric=entry,
+            sha256="",
+        )
+    raise PerturbationError(
+        f"variants must be RubricVariant or Rubric, got {type(entry).__name__}"
+    )
+
+
 def guarded_family(
-    variants: list[RubricVariant],
+    variants: list[RubricVariant | Rubric],
     manifest: Manifest,
     cases: list[Case],
     *,
@@ -1010,10 +1058,16 @@ def guarded_family(
     `apply_point` -> hand-built `Rubric` -> `replay_verdicts`, which touches guard 2
     nowhere; getting the guard meant knowing that a SECOND call, `guard_table`, exists
     and joining its table to the (point, cell) key by hand. The unguarded route was the
-    short one. Now the guarded route is: this call, then `replay_verdicts` with the
-    arguments taken straight off each unit. The unguarded route still works — a consumer
-    can always hand-roll around any API in a language without private functions — and
-    that residual is measured by a test rather than argued away.
+    short one. Now the guarded route is: this call, then `unit.replay(client)`. The
+    unguarded route still works — a consumer can always hand-roll around any API in a
+    language without private functions — and that residual is measured by a test rather
+    than argued away.
+
+    **`variants` takes `RubricVariant` OR a bare `Rubric`** (`_as_variant` normalizes,
+    and documents what the derived `label`/`ref`/`sha256` mean). That is what makes the
+    length claim true for the consumer RB-P23 is about rather than only for the CLI: a
+    consumer holding a `Rubric` used to owe a `RubricVariant` construction the unguarded
+    route never charged, which made the two routes the same length from an equal start.
 
     Everything a run decides before it spends anything happens here, in the order it
     happened in `run()`: the mode and threshold preconditions, then guard 2 over every
@@ -1040,6 +1094,17 @@ def guarded_family(
         raise PerturbationError("nothing to replay: no rubric variants")
     if not cases:
         raise PerturbationError("nothing to replay: no cells")
+    variants = [_as_variant(entry) for entry in variants]
+    labels = [v.label for v in variants]
+    duplicates = sorted({label for label in labels if labels.count(label) > 1})
+    if duplicates:
+        raise PerturbationError(
+            f"two variants share the label {', '.join(repr(d) for d in duplicates)} — every "
+            "per-label table here (templates, dropped, the rubric cache, the summary) is "
+            "keyed on it, so both would be replayed with whichever rubric was built last. "
+            "A bare Rubric takes its label from its name; pass RubricVariant with distinct "
+            "labels to compare two rubrics of one name."
+        )
     thresholds = {v.rubric.threshold for v in variants}
     if len(thresholds) != 1:
         raise PerturbationError(
@@ -1123,7 +1188,7 @@ def guarded_family(
 
 def run(
     client: ModelClient,
-    variants: list[RubricVariant],
+    variants: list[RubricVariant | Rubric],
     manifest: Manifest,
     cases: list[Case],
     *,
@@ -1134,7 +1199,7 @@ def run(
     guard: str = "warn",
     on_row: Callable[[ReplayRow], None] | None = None,
 ) -> RunResult:
-    """`guarded_family` plus `replay_verdicts` over what it returns. Nothing else.
+    """`guarded_family` plus `unit.replay` over what it returns. Nothing else.
 
     ONE DERIVATION, NOT TWO THAT AGREE. The family, the guard tables and the replay
     counts are whatever the constructor said they are; this function re-derives none of
