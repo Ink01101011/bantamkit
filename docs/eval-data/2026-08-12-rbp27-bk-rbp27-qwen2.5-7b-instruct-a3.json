@@ -1,0 +1,22 @@
+{
+  "model": "bk-rbp27-qwen2.5-7b-instruct",
+  "attempt": 3,
+  "seed": 1000965075,
+  "prompt_sha256": "a65efda6d59dcb824f7ee56bf7c4c53addc7d931efdbd08c533b9f053d38f615",
+  "verdict": "fail",
+  "reason": "spec-red: 3 failed, 4 passed, 155 deselected in 1.07s",
+  "raw_completion": "<<<<<<< SEARCH\n        raise SystemExit(1) from e\n    finally:\n        if jsonl is not None:\n            jsonl.close()\n\n    # RB-P24 review, C1: this write is the one artifact produced AFTER the measurement,\n    # and it used to sit outside every handler \u2014 so an unwritable `--summary` raised an\n    # unhandled OSError and the process exited 1, the REFUSAL status, on a run that had\n    # already flushed every JSONL row. A run that measured may not report that it\n    # refused. The failure gets its own number and the table is still printed, because\n    # the measurement happened and stdout is where it is readable.\n=======\n        if jsonl is not None:\n            jsonl.close()\n\n    # RB-P24 review, C1: this write is the one artifact produced AFTER the measurement,\n    # and it used to sit outside every handler \u2014 so an unwritable `--summary` raised an\n    # unhandled OSError and the process exited 1, the REFUSAL status, on a run that had\n    # already flushed every JSONL row. A run that measured may not report that it\n    # refused. The failure gets its own number and the table is still printed, because\n    # the measurement happened and stdout is where it is readable.\n    if sys.stdout.closed:\n        status = 1\n>>>>>>> REPLACE",
+  "patch": "<<<<<<< SEARCH\n        raise SystemExit(1) from e\n    finally:\n        if jsonl is not None:\n            jsonl.close()\n\n    # RB-P24 review, C1: this write is the one artifact produced AFTER the measurement,\n    # and it used to sit outside every handler \u2014 so an unwritable `--summary` raised an\n    # unhandled OSError and the process exited 1, the REFUSAL status, on a run that had\n    # already flushed every JSONL row. A run that measured may not report that it\n    # refused. The failure gets its own number and the table is still printed, because\n    # the measurement happened and stdout is where it is readable.\n=======\n        if jsonl is not None:\n            jsonl.close()\n\n    # RB-P24 review, C1: this write is the one artifact produced AFTER the measurement,\n    # and it used to sit outside every handler \u2014 so an unwritable `--summary` raised an\n    # unhandled OSError and the process exited 1, the REFUSAL status, on a run that had\n    # already flushed every JSONL row. A run that measured may not report that it\n    # refused. The failure gets its own number and the table is still printed, because\n    # the measurement happened and stdout is where it is readable.\n    if sys.stdout.closed:\n        status = 1\n>>>>>>> REPLACE",
+  "touched": [
+    "runtime-py/src/bantamkit/criticreplay.py"
+  ],
+  "prompt_tokens": 3374,
+  "completion_tokens": 296,
+  "wall_clock_s": 9.151,
+  "model_call_s": 7.295,
+  "oracle_s": 1.854,
+  "phases": {
+    "ruff": 0.028,
+    "spec": 1.296
+  }
+}

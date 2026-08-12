@@ -1,0 +1,21 @@
+{
+  "model": "bk-rbp27-qwen2.5-7b-instruct",
+  "attempt": 8,
+  "seed": 2463864635,
+  "prompt_sha256": "a65efda6d59dcb824f7ee56bf7c4c53addc7d931efdbd08c533b9f053d38f615",
+  "verdict": "fail",
+  "reason": "ruff-failed: F821 Undefined name `guard_status`\n    --> runtime-py/src/bantamkit/criticreplay.py:1882:22\n     |\n1880 |     except BantamError as e:\n1881 |         if isinstance(e, PerturbationError):\n1882 |             status = guard_status(result.guards)\n     |                      ^^^^^^^^^^^^\n1883 |         else:\n1884 |             print(f\"error: {e}\", file=sys.stderr)\n     |\n\nFound 1 error.",
+  "raw_completion": "<<<<<<< SEARCH\n        print(f\"error: {e}\", file=sys.stderr)\n        raise SystemExit(1) from e\n=======\n        if isinstance(e, PerturbationError):\n            status = guard_status(result.guards)\n        else:\n            print(f\"error: {e}\", file=sys.stderr)\n            raise SystemExit(1) from e\n>>>>>>> REPLACE",
+  "patch": "<<<<<<< SEARCH\n        print(f\"error: {e}\", file=sys.stderr)\n        raise SystemExit(1) from e\n=======\n        if isinstance(e, PerturbationError):\n            status = guard_status(result.guards)\n        else:\n            print(f\"error: {e}\", file=sys.stderr)\n            raise SystemExit(1) from e\n>>>>>>> REPLACE",
+  "touched": [
+    "runtime-py/src/bantamkit/criticreplay.py"
+  ],
+  "prompt_tokens": 3374,
+  "completion_tokens": 74,
+  "wall_clock_s": 2.486,
+  "model_call_s": 1.896,
+  "oracle_s": 0.586,
+  "phases": {
+    "ruff": 0.032
+  }
+}

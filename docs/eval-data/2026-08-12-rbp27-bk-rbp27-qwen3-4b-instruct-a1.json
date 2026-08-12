@@ -1,0 +1,21 @@
+{
+  "model": "bk-rbp27-qwen3-4b-instruct",
+  "attempt": 1,
+  "seed": 1130876398,
+  "prompt_sha256": "a65efda6d59dcb824f7ee56bf7c4c53addc7d931efdbd08c533b9f053d38f615",
+  "verdict": "fail",
+  "reason": "ruff-failed: eplay.py:1937:17\n     |\n1935 |             if e.errno == 9:  # EBADF: bad file descriptor\n1936 |                 # stdout is closed, no reader; exit with earned status\n1937 |                 raise SystemExit(status)\n     |                 ^^^^^^^^^^^^^^^^^^^^^^^^\n1938 |             else:\n1939 |                 # Another error: re-raise\n     |\n\nFound 2 errors.\n[*] 1 fixable with the `--fix` option.",
+  "raw_completion": "<<<<<<< SEARCH\n    if write_failure is not None:\n        # Outranks the guard status and survives the hatch: 3 promises \"every artifact\n        # is written\", and the hatch is an opt-out from 3 alone.\n        status = ARTIFACT_WRITE_EXIT\n    if status:\n        raise SystemExit(status)\n\n\nif __name__ == \"__main__\":\n    main()\n=======\n    if write_failure is not None:\n        # Outranks the guard status and survives the hatch: 3 promises \"every artifact\n        # is written\", and the hatch is an opt-out from 3 alone.\n        status = ARTIFACT_WRITE_EXIT\n    if status:\n        # Only exit with the earned status if stdout has no reader; otherwise, let the\n        # original status flow through unchanged.\n        try:\n            sys.stdout.flush()\n            # If we reach here, stdout has a reader\n            raise SystemExit(status)\n        except (OSError, IOError) as e:\n            # If stdout is closed, we have no reader; exit with the earned status\n            # only if it was earned during execution, not due to stdout closure\n            if e.errno == 9:  # EBADF: bad file descriptor\n                # stdout is closed, no reader; exit with earned status\n                raise SystemExit(status)\n            else:\n                # Another error: re-raise\n                raise\n    if __name__ == \"__main__\":\n        main()\n>>>>>>> REPLACE",
+  "patch": "<<<<<<< SEARCH\n    if write_failure is not None:\n        # Outranks the guard status and survives the hatch: 3 promises \"every artifact\n        # is written\", and the hatch is an opt-out from 3 alone.\n        status = ARTIFACT_WRITE_EXIT\n    if status:\n        raise SystemExit(status)\n\n\nif __name__ == \"__main__\":\n    main()\n=======\n    if write_failure is not None:\n        # Outranks the guard status and survives the hatch: 3 promises \"every artifact\n        # is written\", and the hatch is an opt-out from 3 alone.\n        status = ARTIFACT_WRITE_EXIT\n    if status:\n        # Only exit with the earned status if stdout has no reader; otherwise, let the\n        # original status flow through unchanged.\n        try:\n            sys.stdout.flush()\n            # If we reach here, stdout has a reader\n            raise SystemExit(status)\n        except (OSError, IOError) as e:\n            # If stdout is closed, we have no reader; exit with the earned status\n            # only if it was earned during execution, not due to stdout closure\n            if e.errno == 9:  # EBADF: bad file descriptor\n                # stdout is closed, no reader; exit with earned status\n                raise SystemExit(status)\n            else:\n                # Another error: re-raise\n                raise\n    if __name__ == \"__main__\":\n        main()\n>>>>>>> REPLACE",
+  "touched": [
+    "runtime-py/src/bantamkit/criticreplay.py"
+  ],
+  "prompt_tokens": 3377,
+  "completion_tokens": 303,
+  "wall_clock_s": 6.529,
+  "model_call_s": 5.755,
+  "oracle_s": 0.77,
+  "phases": {
+    "ruff": 0.033
+  }
+}
