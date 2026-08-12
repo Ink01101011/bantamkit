@@ -1622,8 +1622,41 @@ def test_the_unguarded_route_still_reaches_the_wire_and_is_now_the_longer_one(gu
     assert len(client.calls) == 1  # it reached the wire, tainted, with nothing recording it
 
     unguarded_steps = ("apply_point", "Rubric(...)", "replay_verdicts")
-    guarded_steps = ("guarded_family", "replay_verdicts")
+    guarded_steps = ("guarded_family", "unit.replay")
     assert len(guarded_steps) < len(unguarded_steps)
+    # And the unguarded route's verdicts carry no taint to copy into an artifact, while
+    # the guarded route's carry it whether the consumer asks or not.
+    assert criticreplay.replay_verdicts(client, rubric, case, 1)[0].guard_violations == []
+
+
+def test_a_unit_replays_itself_and_stamps_the_guard_verdict_on_every_verdict(guard_rig):
+    """The gap the constructor alone leaves: present is not the same as recorded.
+
+    `guarded_family` puts the verdict in the consumer's hand, but a consumer writing
+    their own artifact from `replay_verdicts` still has to CHOOSE to copy it across, and
+    the thing this whole line of work is about is a violation that lives in prose instead
+    of in the artifact. `unit.replay()` closes that: the `Verdict` objects come back
+    already carrying the taint, so an artifact built from them records it by default.
+    """
+    client = ScriptedCritic(lambda p: 9)
+    family = _family(guard_rig)
+    tainted = next(u for u in family.units if u.point.id == "P-taskword")
+    clean = next(u for u in family.units if u.point.id == "identity")
+    for verdict in tainted.replay(client):
+        assert verdict.guard_violations == ["alpha"]
+        assert verdict.guard_readings == {"whole-text": ["alpha"], "substitution-pair": ["alpha"]}
+    for verdict in clean.replay(client):
+        assert verdict.guard_violations == []
+    assert len(clean.replay(client)) == clean.replays
+
+
+def test_the_replay_primitive_alone_still_carries_no_guard_verdict(guard_rig):
+    """And it is honest about it: `replay_verdicts` holds a Rubric and a Case, and cannot
+    re-derive which point produced the template. Blank, not wrong."""
+    client = ScriptedCritic(lambda p: 9)
+    unit = next(u for u in _family(guard_rig).units if u.point.id == "P-taskword")
+    verdicts = criticreplay.replay_verdicts(client, unit.rubric, unit.case, 1)
+    assert verdicts[0].guard_violations == [] and verdicts[0].guard_readings == {}
 
 
 def test_run_is_the_constructor_plus_replay_not_a_second_derivation(guard_rig, monkeypatch):

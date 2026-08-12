@@ -37,11 +37,13 @@ cannot ride along there.
 
 **Start at `guarded_family`.** It is the one call from (variants, points, cells) to
 `GuardedReplay` units, each carrying the exact `Rubric` to replay, the cell, the replay
-count the bar uses, and guard 2's verdict on that pair under both readings. `run()` is
-that call plus `replay_verdicts` over what it returns — there is no second derivation of
-the family anywhere in this module. `apply_point`, `guard_table` and `replay_verdicts`
-are the primitives it is built from, and they stay public because an offline audit needs
-them; but the guarded route is now the SHORT one, which is the whole of RB-P23's fix.
+count the bar uses, and guard 2's verdict on that pair under both readings. `unit.replay
+(client)` issues it and stamps that verdict onto every `Verdict` it returns, so an
+artifact built off them records the taint by default. `run()` is those two calls and
+nothing else — there is no second derivation of the family anywhere in this module.
+`apply_point`, `guard_table` and `replay_verdicts` are the primitives they are built
+from, and they stay public because an offline audit needs them; but the guarded route is
+now the SHORT one, which is the whole of RB-P23's fix.
 
 RB-P23 is a defence-in-depth hole, not a soundness bug, and this does not make it
 impossible: Python has no private functions, so `apply_point` -> hand-assembled `Rubric`
@@ -754,6 +756,13 @@ class Verdict:
     calls: int
     prompt_sha256: str
     payload_sha256: str
+    # §3.3 guard 2's verdict for the (point, cell) this replay came from. EMPTY when the
+    # replay was issued through `replay_verdicts` directly, which holds a `Rubric` and a
+    # `Case` and cannot re-derive which point produced the template — blank, not clean.
+    # `GuardedReplay.replay` fills them, so an artifact a hand-rolled consumer builds off
+    # its verdicts records the taint without the consumer choosing to add it.
+    guard_violations: list[str] = field(default_factory=list)
+    guard_readings: dict[str, list[str]] = field(default_factory=dict)
 
 
 def _payload_sha(model: str, seed: int | None, messages: list[Message], response_format) -> str:
@@ -808,9 +817,10 @@ def replay_verdicts(
 
     **A PRIMITIVE, not the route to a family.** It holds a `Rubric` and a `Case` and
     cannot re-derive which point produced the template, so guard 2 cannot live here and
-    threading a `Point` in would add a parameter this function does not use. Take the
-    arguments off a `GuardedReplay` from `guarded_family` instead — `rubric`, `case` and
-    `replays` are on the unit, and so is the verdict.
+    threading a `Point` in would add a parameter this function does not use. The
+    `Verdict`s it returns therefore carry EMPTY `guard_violations` — blank, not clean.
+    Call `GuardedReplay.replay` from `guarded_family` instead: same request, same count,
+    and the pair's verdict stamped on every one of them.
     """
     if replays < 1:
         raise PerturbationError(f"replays must be >= 1, got {replays}")
@@ -940,6 +950,24 @@ class GuardedReplay:
     def tainted(self) -> bool:
         """§3.3 guard 2 fired on this (point, cell) under at least one reading."""
         return bool(self.guard_violations)
+
+    def replay(self, client: ModelClient) -> list[Verdict]:
+        """Replay this unit the number of times the bar uses, taint already stamped on.
+
+        `guarded_family` puts the verdict in the consumer's HAND; this puts it in their
+        ARTIFACT. A consumer who calls `replay_verdicts` off the unit still has to choose
+        to copy `guard_violations` into whatever they write, and a violation that lives
+        anywhere except the artifact is the exact failure mode this line of work exists
+        to stop. Every `Verdict` this returns carries the pair's verdict under both
+        readings, so the default is recorded rather than dropped.
+        """
+        verdicts = replay_verdicts(client, self.rubric, self.case, self.replays)
+        for verdict in verdicts:
+            verdict.guard_violations = list(self.guard_violations)
+            verdict.guard_readings = {
+                reading: list(words) for reading, words in self.guard_readings.items()
+            }
+        return verdicts
 
 
 @dataclass
@@ -1127,9 +1155,7 @@ def run(
     model = model or getattr(client, "model", "")
     rows: list[ReplayRow] = []
     for unit in family.units:
-        for index, verdict in enumerate(
-            replay_verdicts(client, unit.rubric, unit.case, unit.replays)
-        ):
+        for index, verdict in enumerate(unit.replay(client)):
             row = ReplayRow(
                 bar=BAR,
                 variant=unit.variant.label,
@@ -1153,10 +1179,8 @@ def run(
                 tokens_in=verdict.tokens_in,
                 tokens_out=verdict.tokens_out,
                 calls=verdict.calls,
-                guard_violations=list(unit.guard_violations),
-                guard_readings={
-                    reading: list(words) for reading, words in unit.guard_readings.items()
-                },
+                guard_violations=verdict.guard_violations,
+                guard_readings=verdict.guard_readings,
             )
             rows.append(row)
             if on_row is not None:
