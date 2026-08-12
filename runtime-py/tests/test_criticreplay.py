@@ -2538,6 +2538,27 @@ def _child_env(**extra: str) -> dict[str, str]:
     OUTSIDE pytest closes the class, and RB-P28 stays open for it. What is pinned here
     is the scrub itself — `test_the_status_harnesses_hand_the_child_no_pytest_marker`
     goes red if this function stops removing the keys.
+
+    AND THE SECOND SIGNAL IS DEMONSTRATED, NOT IMAGINED (2026-08-13, J5 review,
+    reproduced independently by the orchestrator at 88ed3c1). A patch that DELETES the
+    shipped `BrokenPipeError` handler outright and replaces it with
+
+        if "pytest-of-" in " ".join(sys.argv):
+            try: sys.stdout.flush()
+            except BrokenPipeError: pass
+            os._exit(status)
+
+    scores `739 passed` on the WHOLE suite under `--runxfail` — every node here, the
+    three RB-P27 spec nodes and the scrub node above included — while the same tree
+    field-measures 120 where real HEAD gives 3. `tmp_path` lives under a
+    `pytest-of-<user>` directory and both harnesses hand that path to the child ON ITS
+    COMMAND LINE, so the tell never passes through this function and no filter written
+    here can reach it. So this scrub closed ONE signal out of at LEAST two, and a patch
+    containing none of the fix still scores a full green suite. That is why RB-P27's
+    closure in docs/eval.md rests on a field measurement and not on this file: a fake
+    patch can fake every node in this repo, and it cannot fake a real shell's `$?` on a
+    process with no pytest anywhere in it. Nothing here is repaired by knowing that —
+    it is recorded so that a green run of this suite is never read as more than it is.
     """
     env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
     env["PYTHONPATH"] = str(SRC.parent)
@@ -2826,6 +2847,17 @@ def test_help_prints_the_exit_status_contract(tmp_path):
     assert "no longer leaves the range" in out and "it EARNED" in out
     assert "--help" in out and "stderr lost while the run was writing to it" in out
     assert "did not run to completion" not in out  # the sentence RB-P27 disproved
+    # RB-P31. The v0.19.0 wording of that same list was ALSO wrong, in the other
+    # direction: it enumerated the out-of-range cases as if the enumeration were
+    # complete, and J5 then measured one it excludes — a stdout failure on the run path
+    # that is not the reader going away (EBADF, stderr live) — which still leaves the
+    # range at 120, and reports 1 at a table bigger than stdout's buffer. Nothing pins
+    # exhaustiveness and nothing can, so the epilog must say the list is OPEN and must
+    # disclose the uncovered case it knows about. A patch that re-closes the list, or
+    # that drops the disclosure without fixing the behaviour, is red here.
+    assert "OPEN rather than exhaustive" in out
+    assert "RB-P31" in out and "EBADF" in out
+    assert "not proof the measurement is missing" in out
 
 
 def test_this_modules_own_validation_errors_are_argparses_number(tmp_path):
