@@ -252,6 +252,16 @@ Run it before the attribution, not after the argument:
   --summary docs/eval-data/<date>-<label>-perturbation-summary.json
 ```
 
+**Read the exit status first — it is machine-readable and the three fields
+below are not.** Since RB-P24 closed (2026-08-12) this command exits `3` when
+guard 2 fired on a (point, cell) it actually replayed, `1` when it refused and
+measured nothing, `2` on a usage error, and `0` only when it measured and the
+guard fired on nothing. A `3` is not a failed run: every artifact is written,
+and it says the GUARD section below the table has to be read before an
+attribution is credited. `--violations-exit-zero` is the named opt-out, for a
+procedure whose violations are expected and recorded. Full contract: RB-P24
+under "New measured problems from the perturbation bar (2026-08-12)".
+
 Read three fields per cell, in this order:
 
 1. **`fragile`** — if `true` for either variant, stop. The family's scores
@@ -3063,6 +3073,125 @@ and each carries an attack direction.
   caller, including the committed anchor and `rbp19b` invocations, and that
   is a Contract-surface decision with its own migration note, not a docs
   amendment. (Measurement.)
+
+  **CLOSED (2026-08-12) — (1) is done: the exit status now carries the
+  verdict.** The contract, which is new prose beside the filing above and
+  replaces nothing in it:
+
+  | status | meaning |
+  |---|---|
+  | `0` | measured, and guard 2 fired on nothing that ran |
+  | `1` | refused, and measured nothing — every `BantamError` path, `--guard error` included |
+  | `2` | usage error — argparse's, not this tool's |
+  | `3` | **measured, WITH violations** — every artifact written, the guard fired |
+
+  **Three meanings may not share one number, and the third number was
+  measured rather than assumed.** `1` is the refusal status the
+  perturbation-bar spec's §6/§11 conditions already rest on, and it is
+  untouched. `2` is argparse's, and it was read from a shell
+  (`python -m bantamkit.criticreplay --not-a-flag; echo $?` -> `2`) rather
+  than taken from a manual, because a guard status that collided with the
+  "you typed the command wrong" status would be a third meaning wearing a
+  second one's number. `3` is the first free value above the two that are
+  taken. What a CI job writes against it: `0` clean, `1` fix the input, `2`
+  fix the command line, `3` the run HAPPENED and the GUARD section and the
+  `guard_dropped` blocks must be read before anything is credited.
+
+  **What counts, for status purposes: guard 2's union non-empty on a (point,
+  cell) the run ACTUALLY REPLAYED**, read off the rows the run wrote —
+  `criticreplay.exit_status`. Reading the rows rather than re-deriving a
+  table is RB-P19's rule applied to this: every row already carries the pair's
+  verdict, stamped by `GuardedReplay.replay`, so the status is the run's own
+  answer and not a second derivation that happens to agree with it. Three
+  consequences, each chosen: a point **dropped from every variant's family**
+  before any request does not set the status even though `guard_table` flags
+  it (the substitution-pair reading is a function of the point's own
+  `from`/`to` pair, so it flags points that never apply) — statusing on that
+  table would be a verdict about a pair that never ran, and the drop is
+  already reported in `dropped_rules` and the summary's guard block;
+  **`--identity-only` is always `0`**, because the identity point moves no
+  words and RB-P15's standing check replays nothing else; and the status is
+  about the **guard firing**, never about whether the attribution survived
+  dropping the point — that is `_compare`'s `guard_verdict`/`attributable`,
+  it is already in the summary, and a run whose separation survives its
+  violations still fired the guard.
+
+  **A violating run is still a measured run.** The status is decided LAST,
+  after the JSONL (whose sink already flushed per row), the summary and the
+  printed table all exist. Non-zero means "measured, and the guard fired",
+  never "nothing happened" — a design where it meant "no artifacts" would
+  make `nav-prod-port`, the canonical cell of this whole line of work,
+  unmeasurable, which is the regression `warn` mode exists to avoid. Nothing
+  written moved: the `f8404ab` byte-identity floor over stdout, the rows and
+  the summary dict is untouched and green, and its harness calls `run` /
+  `summarize` / `format_table`, never `main()`.
+
+  **The escape hatch: `--violations-exit-zero`, and it is defended, not
+  assumed.** Default off, a long flag with no short form, no env var and no
+  default value, it changes nothing that is written, and taking it prints on
+  stderr the status it suppressed — so a run that used it cannot be mistaken
+  for a clean one, in a log or in review. The reason it exists is not
+  symmetry with `apply_point(check=False)`: it is that the ad-hoc route
+  around a mandatory status, `|| true`, is **strictly worse than a flag**,
+  because it swallows `1` and `2` as well and hides refusals and typos along
+  with violations. And there is a legitimate caller — the anchor set's second
+  pass deliberately runs over violating cells and records them. A named,
+  visible opt-out from `3` alone beats an invisible opt-out from everything.
+
+  **Verified by an independent method: a shell's `$?`, not a caught
+  `SystemExit`.** A test that calls `main()` and catches `SystemExit`
+  verifies a return path; what a CI job branches on is the process status. So
+  every outcome class is pinned by a real process run through `/bin/sh`,
+  whose echoed `$?` the test reads
+  (`runtime-py/tests/cli_exit_status_probe.py` is the shipped `main()` with
+  only the client constructor replaced; the refusal and usage classes use the
+  real `-m bantamkit.criticreplay` and need no client at all). Measured
+  offline against the **committed anchor transcripts**: the 4b anchor
+  selection in `warn` mode exits **3** with all 80 rows, the summary and the
+  table written; the 14b anchor selection exits **3**; `--guard error` over
+  the same 4b cells exits **1** before the first request; `--identity-only`
+  exits **0**. Tests were written first and confirmed red (11 failing before
+  the implementation existed); 720 tests.
+
+  **Migration note — every committed invocation whose status changes,
+  grepped rather than reasoned about** (`grep -rn "bantamkit.criticreplay"`,
+  whole repo):
+
+  1. `docs/eval-data/2026-08-12-nonfragile-anchor-set.json` ->
+     `how_to_use.command`, the second pass: **0 -> 3**, measured on both
+     models' committed transcripts. It runs `warn` mode over cells that
+     include three violating anchors, which is deliberate. Its
+     `guard_first_pass.command` is **unchanged at 1**, but
+     `guard_first_pass.why` now describes a state of the world that has
+     ended ("that half of RB-P24 is OPEN"). **Both belong to H3**, under the
+     visible `amended:` marker that file already carries; they are not
+     touched here.
+  2. `docs/eval.md`'s credit command (the "Run it before the attribution"
+     block): **0 -> 3** on any cell where guard 2 fires on a replayed pair —
+     `nav-prod-port` is one. A pointer to this contract is added beside that
+     block; the command itself is unchanged.
+  3. `docs/eval.md`'s M1 screen command, `--identity-only`: **unchanged at
+     0**, measured, because no `P` point runs.
+  4. `docs/superpowers/specs/2026-08-11-perturbation-bar-spec.md` §11
+     acceptance item 2 (`--help` runs): **unchanged at 0**. §6's and §11's
+     "must exit non-zero" conditions: **unchanged at 1**. Neither acceptance
+     item is retro-edited.
+  5. Nothing else invokes the CLI: `.github/workflows/ci.yml` runs `ruff`
+     and `pytest` only, and there is no script or Makefile in the repo that
+     calls it. The `rbp19b` runs have committed **artifacts** but no
+     committed command line of their own — the anchor set's `command` is the
+     one they were run from, which is item 1.
+
+  **Found and not fixed, with an attack direction.** A violation on a point
+  dropped from *every* variant's family is in the summary and in the guard
+  table but not in the status, by the rule above — so an operator who reads
+  only `$?` learns nothing about it. That is the right call for a pair that
+  entered no statistic, but the honest description is "the status covers what
+  ran, and something the status does not cover is reported only in the
+  artifact". **Attack:** if that gap ever matters, the lever is not a fourth
+  number — it is the anchor procedure's step 3, which already diffs
+  `guard_dropped` cell by cell, extended to diff `dropped_rules` too, so a
+  family that silently changed shape is caught by the same read. (Measurement.)
 
 - **RB-P25 — nothing in this repo distinguishes guard 2's `(task, repeat)`
   cell key from a `task`-only one, so half the key is unmeasured.** Measured
