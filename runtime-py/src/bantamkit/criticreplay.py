@@ -35,7 +35,7 @@ template — and a consumer who never calls `run()` still gets them. `check=Fals
 documented deliberate bypass. Guard 2 is a property of a (point, CELL) pair, so it
 cannot ride along there; `guard_table` is its one-call public form, and `run()` uses
 that same call. A consumer who assembles `apply_point` + `replay_verdicts` by hand and
-never calls `guard_table` still gets no guard 2 — filed as RB-P22.
+never calls `guard_table` still gets no guard 2 — filed as RB-P23.
 """
 
 from __future__ import annotations

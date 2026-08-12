@@ -2553,53 +2553,81 @@ and each carries an attack direction.
   admissibility rule that ships violated is a rule the next family will
   violate too. (Measurement.)
 
-  **BROADER THAN FILED (2026-08-12) — three points violate, not one, and the
-  first re-statement of that was also wrong.** The guard is a word-set
-  symmetric difference, so a paraphrase violates on any word it *adds or
-  removes*, not only on the word it adds. Recomputed offline with
-  `criticreplay.shared_token_violations` against **all 22 frozen task
+  **BROADER THAN FILED (2026-08-12) — three points violate, not one.** The
+  guard is a word-set symmetric difference, so a paraphrase violates on any
+  word it *adds or removes*, not only on the word it adds. Recomputed offline
+  with `criticreplay.shared_token_violations` against **all 22 frozen task
   prompts**:
 
   | point | symmetric difference | violates on |
   |---|---|---|
   | `P1-reviewer-relative` | `checking` / `who`, `checks` | `recall-oncall`, `recall-oncall-rotation` (*who*) |
-  | `P2-asks-requests` | `asks`, `for` / `requests` | `nav-release-bundle`, `recall-cache-ttl`, `recall-env-endpoint`, `recall-oncall`, `recall-oncall-rotation`, `recall-org-quota` (*for*) |
+  | `P2-asks-requests` | `asks`, `for` / `requests` | `nav-release-bundle`, `recall-cache-ttl`, `recall-env-endpoint`, `recall-oncall`, `recall-oncall-rotation`, `recall-org-quota` (*for*, and *requests* on `recall-org-quota`) |
   | `P3-right-correct` | `right` / `correct` | `nav-prod-port` (*right*) |
 
   So **8 tasks are affected, not 1**, and `P2` alone violates on six of them.
-  The 2026-08-12 screen's §6 table caught P1 and P3 correctly but got P2
-  wrong in both halves: it recorded the difference as "+ `requests`" and the
-  violation as `recall-org-quota` (*requests*). Neither holds. `requests`
-  violates **nowhere** — `recall-org-quota`'s prompt says
-  "requests-per-minute", which tokenises as one word — while `for`, which the
-  table omitted from the difference entirely, violates on six tasks including
-  `recall-org-quota`. The screen reached the right *task* by the wrong word
-  and missed five others.
 
-  **The conclusions survive; the analysis behind them did not.** Under the
-  corrected set, **8 of the 20 screened cells violate, not the 5 recorded** —
-  the four newly affected are 14b `recall-cache-ttl` r0, 14b
-  `recall-env-endpoint` r0, 4b `nav-release-bundle` r0, and 14b
+  > **RETRACTION (2026-08-12, later the same day).** This paragraph
+  > originally continued: *"The 2026-08-12 screen's §6 table … got P2 wrong in
+  > both halves … `requests` violates nowhere … The screen reached the right
+  > task by the wrong word and missed five others."* **That characterisation
+  > is withdrawn.** It is not an error in the screen; it is the **other
+  > reading of the same spec sentence**, and the sentence supports both. The
+  > text above has been corrected in place rather than left standing, because
+  > a doc that asserts one reading as "the corrected" one is the artifact the
+  > next reader inherits. Nothing in git history is rewritten: commit
+  > `25ce48b`'s message and `9ca1576`'s "their wrong P2 row" stand as
+  > written and are wrong on this point. See **both readings**, below.
+
+  **BOTH READINGS (2026-08-12) — the guard has two, the spec supports each in
+  a different sentence, and neither is wrong.** An adversarial review that was
+  forbidden from importing `criticreplay` re-derived the violation table from
+  §3.3's wording alone and got a different answer — the one M1's
+  pre-registered screen had already committed. Both readings are defensible:
+
+  | reading | what it is | where the spec says it | P2 violates on |
+  |---|---|---|---|
+  | **whole-text** | symmetric difference of the base and perturbed **template** word sets | §3.3's operative Test sentence: *"the symmetric difference of the base and perturbed word sets must be disjoint from the task prompt's word set"* | `recall-org-quota` only, via *requests* |
+  | **substitution-pair** | symmetric difference of the point's own `from`/`to` strings | §3.3 step 4: *"each P point is expressed as a literal `from` → `to` substitution pair"*, and the manifest's own P2 justification prose | six tasks, via *for* |
+
+  They differ because `asks` and `for` both survive **elsewhere in the
+  template** — "what the task asks for is missing the required content", "Do
+  NOT deduct points for formatting" — so under whole-text neither word leaves
+  the critic's input, while under substitution-pair the instance is the pair
+  and the pair drops them. `P1` and `P3` come out identical under both.
+
+  **The user's ruling (2026-08-12): compute both, report both side by side,
+  declare neither wrong.** Implemented — see ADDRESSED, ROUND 2 below.
+
+  **The conclusions survive under either reading.** Under the
+  substitution-pair set, **8 of the 20 screened cells violate, not the 5
+  recorded** — the four additionally affected are 14b `recall-cache-ttl` r0,
+  14b `recall-env-endpoint` r0, 4b `nav-release-bundle` r0, and 14b
   `recall-oncall-rotation` r1 (flagged for P1, but not for P2). Every one was
   re-derived from the committed JSONLs with the violating points dropped,
   and **the fragility verdict is unchanged on all eight** — `recall-cache-ttl`
   r0 12/12→11/11 non-fragile, `recall-env-endpoint` r0 11/12→10/11 fragile,
   `nav-release-bundle` r0 0/12→0/11 non-fragile, `recall-oncall-rotation` r1
-  0/12→0/10 non-fragile. No result in the screen or in the anchor set depends
-  on a guard-violating point. `docs/eval-data/2026-08-12-nonfragile-anchor-set.json`
-  carries the **corrected** per-cell guard data with the dropped-point
-  recomputation beside it, not the screen's table.
+  0/12→0/10 non-fragile. Under the whole-text set the violating set is a
+  subset of that one, so the same verdicts hold a fortiori. No result in the
+  screen or in the anchor set depends on a guard-violating point under either
+  reading. `docs/eval-data/2026-08-12-nonfragile-anchor-set.json` carries
+  per-cell guard data computed the substitution-pair way; its `guard_note`
+  and per-cell notes call that set "the CORRECTED violation set" and say the
+  screen "under-reported `P2-asks-requests`". **Those two phrases are
+  retracted by this entry.** The file itself is committed evidence and is not
+  retro-edited; the 2026-08-12 `rbp19b` runs supersede it by carrying both
+  readings as fields.
   **This strengthens the attack rather than changing it:** a guard whose own
-  filing was under-reported twice — once in the original RB-P19 and once in a
-  pre-registered re-check that set out specifically to widen it — is not a
-  rule that survives as a test-time observation. Make it a **load-time error
-  over every frozen task**, computed from the manifest, so no future family
-  can ship violating it and no future author has to derive the word list by
-  hand. (Measurement.)
+  filing was restated twice before the ambiguity in the rule was noticed is
+  not a rule that survives as a test-time observation. Compute it **over every
+  frozen task, from the manifest, under every reading the spec admits**, so no
+  future family can ship violating it and no future author has to derive the
+  word list by hand. (Measurement.)
 
   **ADDRESSED (2026-08-12), and the attack was modified on measurement.** The
-  guard now runs on the run path (`_guard_table`, called from `run()` before
-  any request), and the corrected table is pinned by a test over all 22 frozen
+  guard now runs on the run path (`guard_table`, called from `run()` before
+  any request), and the table is pinned by a test over all 22 frozen
   prompts rather than one cell. **The "load-time error" half of the attack was
   tried and rejected as written:** 8 of the 20 screened cells violate,
   including `nav-prod-port` and 3 of the 12 committed anchor cells, so an
@@ -2626,6 +2654,78 @@ and each carries an attack direction.
   `P2` and `P3` against words absent from all 22 frozen prompts, then the
   guard-clean family is the full family on every cell and the question of what
   a run should do about a violation stops arising. (Measurement.)
+
+  **ADDRESSED, ROUND 2 (2026-08-12) — both readings ship, and three defects
+  found underneath.** The user's ruling was implemented as written: guard 2 is
+  computed under **both** readings on every (point, cell), both are named in
+  every artifact, and **neither is declared wrong**.
+
+  - **Machine-readable, by name.** Every JSONL row carries `guard_readings`
+    (`{"whole-text": […], "substitution-pair": […]}`) beside
+    `guard_violations`; the summary's `guard` block carries `readings` (what
+    each one means), `decision_rule`, a per-violation `readings` map, and
+    `by_reading` — the whole violation list under each reading separately;
+    each cell and each (variant, cell) carries `guard_readings`;
+    `format_table` prints both for every violation.
+  - **Decision rule when they disagree: the UNION.** A (point, cell) is
+    tainted if *either* reading flags it. The trade-off, stated: over-detection
+    costs a point out of the guard-clean family — `pass_rate` still reports the
+    FULL family, so every committed number stays comparable, and §7 rule 1
+    makes the drop safe because `distinguishable` is all-versus-none, so
+    dropping can never manufacture a separation, only shrink one. Under-
+    detection is unbounded: a tainted point that reads clean is RB-P4's
+    measured mechanism scoring itself and being credited. Neither reading is a
+    subset of the other in general — substitution-pair is blind to a
+    substitution landing inside a word and to any point whose op is not
+    `replace`; whole-text is blind to a word removed from one clause that
+    survives elsewhere — so the union is not a formality. On the shipped
+    12-point family it happens to equal the substitution-pair table, so no
+    committed number moves.
+  - **C2, a false negative under both readings — fixed.** The tokenizer
+    treated a hyphen as word-internal, so `requests-per-minute` was one token
+    and `requests` was invisible. The four hyphenated compounds in the frozen
+    prompts (`requests-per-minute`, `on-call`, `billing-svc`, `INV-42`) hid
+    seven words between them. After the fix the whole-text reading flags `P2`
+    on `recall-org-quota` via *requests* — the row M1's screen committed — and
+    substitution-pair's `recall-org-quota` entry becomes `["for","requests"]`.
+    No other cell in either table moves, and the union gains no new (cell,
+    point) pair.
+  - **I4, guard 4 was inverted on real input — fixed.** It flagged `". "` and
+    a trailing `.`; the template is hard-wrapped, so the anchor *"Judge ONLY
+    whether the information the task asks for is present and correct."* —
+    exactly one complete sentence, exactly what the guard demands — raised and
+    aborted the run, while two whole sentences joined by a newline returned
+    clean. Now: a terminator followed by whitespace or end-of-string, flagged
+    only when the instance continues past it, and the `to` side is checked too.
+  - **I3, guard 3 counted substrings — fixed.** `"explains itself"` →
+    `"explains everything"` aborted claiming `every` had moved; `"Judge ONLY
+    whether"` → `"Judge whether ONLY"` — a real scope change — returned clean.
+    Counting is now word-boundary and case-sensitive (§3.6 X3 makes case
+    load-bearing), and each keyword's ordinal position within the instance is
+    compared between `from` and `to`, which catches the reorder while still
+    admitting `"Do NOT deduct"` → `"Do NOT subtract"`.
+  - **I6, the API hole — half closed, half filed.** Guards 1, 3 and 4 are
+    properties of the point, so they now run inside `apply_point`, the one
+    public route from a `Point` to a template; `check=False` is the documented
+    deliberate bypass, because a guard nobody can turn off is a guard people
+    route around. Guard 2 cannot ride there — it needs a cell — so it ships as
+    one public call, `guard_table`, which `run()` uses too. The residual is
+    filed as **RB-P23**.
+  - **The golden test no longer calls the function under test.** It computed
+    the expected table by calling `shared_token_violations` and froze the
+    answer, which pins the author's *method*, not the spec — the reviewer's
+    objection, and the shape that let this be restated twice. Both tables now
+    ship as literal expected data derived from §3.3's wording and the frozen
+    prompt texts, with a third test re-deriving them under a tokenizer written
+    from §3.3's own phrase "tokenize on word boundaries" that shares no code
+    with the module. That cross-check is what caught C2.
+
+  Verified end to end at the same manifest sha, on the two screened models:
+  14b `nav-prod-port` reports both readings in its JSONL and summary
+  (`docs/eval-data/2026-08-12-rbp19b-nav-prod-port-14b*`), and all 12 anchor
+  cells still run with every `expect_pass_rate`, `measured_min`,
+  `measured_max` and `fragile` unchanged under both readings
+  (`docs/eval-data/2026-08-12-rbp19b-anchors-{14b,4b}*`). (Measurement.)
 - **RB-P20 — the `critique` config deletes the only evidence of its own
   rejections, so any screen run through it is biased against finding a
   critic defect.** When the `critique` gate exhausts its rounds `agent.run`
@@ -2687,6 +2787,43 @@ and each carries an attack direction.
   being a different generation — and report that distribution before
   promoting anything, since it is one cheap R=1 pass and it decides whether
   the second arm can answer the question at all. (Measurement.)
+- **RB-P23 — guard 2 is the one guard a library consumer can still skip by
+  not knowing it exists.** Guards 1, 3 and 4 are properties of a *point*, so
+  they ride inside `apply_point` and a hand-rolled consumer gets them
+  unconditionally (`check=False` is the named, deliberate bypass). Guard 2 is
+  a property of a *(point, cell) pair*: `apply_point` never sees a cell, and
+  by the time `replay_verdicts` is called the point is gone — it holds a
+  `Rubric` and a `Case` and cannot re-derive which point produced the
+  template. So guard 2 ships as one public call, `guard_table`, which `run()`
+  uses too; a consumer who assembles `apply_point` + `replay_verdicts` by hand
+  and never calls it replays tainted (point, cell) pairs with nothing in the
+  artifact to say so. This is the same *shape* as the hole `3420384` claimed
+  to close for `--manifest`, one level up. **Not closed now because both ways
+  of closing it cost more than the hole:** threading a `Point` through
+  `replay_verdicts` puts a parameter in the replay primitive that the replay
+  primitive does not use, and refusing to score without one breaks
+  `identity`-only replay (RB-P15's standing check), which legitimately has no
+  point to guard against. **Attack:** give the module a guarded family
+  constructor — one call that takes (variants, points, cells) and returns
+  templates already paired with their guard verdicts — and demote
+  `apply_point`/`replay_verdicts` in the docs to the primitives it is built
+  from, so the guarded path is the short one. (Measurement.)
+- **RB-P24 — a guard-violating run exits 0 and the anchor set's procedure
+  never asks anyone to look.** `criticreplay` returns success whether or not
+  guard 2 fired; the only signals are a GUARD section in stdout and fields in
+  the artifacts. `2026-08-12-nonfragile-anchor-set.json`'s `how_to_use`
+  compounds it: its `command` does not pass `--guard error`, and its `rule`
+  says only "check every `expect_pass_rate` still holds" — a re-run whose
+  guard-clean families changed shape underneath an unchanged `pass_rate`
+  passes the stated procedure. The floor is checked; the reason the floor is
+  trustworthy is not. **Attack:** two independent halves — (1) make the exit
+  code carry the verdict, e.g. a distinct non-zero status for
+  "measured, with violations" so CI cannot pass it by ignoring stdout; (2)
+  amend the anchor procedure to pass `--guard error` on a first pass and, when
+  it refuses, to diff the `guard_dropped` blocks cell by cell against the
+  committed ones. Not fixed here: (1) changes the CLI's contract with every
+  caller and (2) edits a committed evidence file's procedure, and neither is
+  this unit's concern. (Measurement.)
 
 Two of the review's findings were fixed in this cycle rather than filed:
 `requests` counted JSONL rows while `Verdict.calls` was dropped from the row
