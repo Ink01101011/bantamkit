@@ -3140,6 +3140,22 @@ and each carries an attack direction.
   also why the one case where that reading is wrong is filed below as RB-P27
   rather than left implicit.
 
+  **Amended at v0.19.0, and the amendment is the point of RB-P27.** The
+  paragraph above is the v0.18.0 contract and is left standing as written,
+  because the sentence it gets wrong is the finding. A stdout that goes away
+  **on the run path** — the table print, its flush, and the interpreter's
+  shutdown flush behind them — no longer leaves the range: the run reports the
+  status it **earned** (`0`, `3` or `4`), measured from a shell's `$?` both
+  inside and outside pytest. What is still `120`, measured 2026-08-13 and each
+  pinned by a node that goes red if it is ever covered: `--help` with no reader
+  on stdout (argparse writes before `main`'s handler exists), and any run that
+  **writes** to stderr while stderr has no reader (a refusal's `error: …`, the
+  summary-write failure, the `--violations-exit-zero` note). A run that writes
+  nothing to stderr survives a dead stderr with its earned status. So
+  "everything outside `0`–`4` did not run to completion" is **still not** a true
+  reading; read it as "this process did not choose its own status". Full closure
+  under RB-P27 below.
+
   **What counts, for status purposes: guard 2's union non-empty on a (point,
   cell) the run ACTUALLY REPLAYED**, read off the rows the run wrote —
   `criticreplay.exit_status`. Reading the rows rather than re-deriving a
@@ -3377,6 +3393,190 @@ and each carries an attack direction.
   `docs/eval-data/2026-08-12-rbp27-qwen-cell-prereg.md`, committed before any
   arm ran. Lever (1) — the contract sentence — is not done either.
 
+  **CLOSED (2026-08-13, v0.19.0). Both levers.** Case (b) — the unwritable
+  `--json` path reaching the operator as a traceback — is **not** closed and is
+  not claimed to be; it was a second-order observation in the same filing and no
+  lever was written for it.
+
+  **Lever (2), the handler.** `main`'s table print now sits in a `try` with an
+  explicit `sys.stdout.flush()`, and on `BrokenPipeError` *alone* fd 1 is
+  pointed at the null device before the status is decided. Both steps are
+  load-bearing and neither is decoration: without the explicit flush the `EPIPE`
+  surfaces during interpreter shutdown instead of where it can be handled, and
+  without the `dup2` CPython's finalization flush fails on the same dead pipe
+  *after* `SystemExit` has chosen its number and replaces it with `120` again.
+  It is the standard library's own SIGPIPE recipe minus its `sys.exit(1)` —
+  `1` is this tool's refusal status and this run measured. The status logic
+  itself is untouched: a lost stdout may **downgrade** to a number the run
+  already had and may never invent one.
+
+  **Measured outside pytest, because a green spec is not sufficient evidence
+  that the defect is fixed.** RB-P28's C1 (below) demonstrated a patch that
+  turned all five oracle clauses green while its field behaviour stayed at
+  `120`, so the closure of RB-P27 rests on a field measurement the fix cannot
+  see: a real shell, a reader that is actually gone, `$?` read by the shell, and
+  an environment carrying no pytest marker. Copy-pasteable, and it is the thing
+  a future reader re-runs:
+
+  ```sh
+  cd <repo> && T=$(mktemp -d) && mkdir -p "$T/transcripts" && cat > "$T/transcripts/critique--nav-prod-port--r0.json" <<'JSON'
+  {"task":"nav-prod-port","config":"critique","repeat":0,"passed":true,"outcome":"pass","seed":111,"output":"{\"port\": 9443}","messages":[]}
+  JSON
+  env -u PYTEST_CURRENT_TEST -u PYTEST_VERSION PYTHONPATH=runtime-py/src /bin/sh -c \
+    '{ .venv/bin/python runtime-py/tests/cli_exit_status_probe.py \
+        --base-url http://x --model fake-14b \
+        --rubric before=assets/rubrics/task-completion.yaml \
+        --transcripts '"$T"'/transcripts \
+        --json '"$T"'/rows.jsonl --summary '"$T"'/summary.json; \
+      echo "status=$?" >&2; } | true'
+  ```
+
+  `| true` is the dead reader: the subshell exits before the interpreter has
+  started, so every write to fd 1 fails with `EPIPE` from the first byte, and
+  the `echo` is the shell reading its own `$?`. The variants for the other two
+  earned values are the same command with `--identity-only` (earns `0`, RB-P15's
+  standing check) and with `--summary` pointed inside a regular file (earns `4`).
+  Measured on this machine, 2026-08-13, `c6ddf44` against `dc121b5`:
+
+  | the run earned | before (`c6ddf44`) | after (`dc121b5`) |
+  |---|---|---|
+  | `0` (`--identity-only`) | **120** | **0** |
+  | `3` (guard fired) | **120** | **3** |
+  | `4` (summary unwritable) | **120** | **4** |
+
+  The artifacts of a dead-reader run are byte-identical to those of the same
+  command with a live reader (`cmp`-clean on both `rows.jsonl` and
+  `summary.json`), and the `Exception ignored in: <_io.TextIOWrapper
+  name='<stdout>'>` line is gone from stderr.
+
+  **The spec nodes that hold it.** The three closed-pipe tests written before
+  the fix (`f5e38b0`) lost their non-strict `xfail` markers and are ordinary
+  green nodes; `_CLOSED_PIPE_PREFIX_STATUS = 120` is **kept** and is now
+  load-bearing rather than commemorative — each node asserts both the earned
+  status and that it is no longer `120`, so the fix is pinned against the
+  measurement it was written to move. The four controls still bite: a refusal is
+  still `1` and a usage error still `2` under a dead stdout, and a `RuntimeError`
+  and a non-`EPIPE` `OSError(ENOSPC)` around the table print must both still
+  reach the caller. `format_table(summary)` is evaluated **inside** the shipped
+  `try` deliberately, so those two raisers are raised inside the handler's reach
+  and pass only because `except BrokenPipeError` refuses them.
+
+  **Lever (1), the contract sentence — corrected, not generalised.** The
+  v0.18.0 wording ("a stdout that goes away mid-table is the interpreter's
+  number, not one of these — a CI job should branch on this range and treat
+  everything else as *did not run to completion*") is replaced in
+  `criticreplay.py`'s module comment and in the `--help` epilog by a statement
+  of what is covered and what is not. **Covered:** the run path's own write to
+  stdout — the table print, its flush, and the shutdown flush behind them.
+  **Not covered, measured 2026-08-13 and still `120`:** `--help` with no reader
+  on stdout (argparse writes the epilog and exits before `main` reaches the
+  handler), and any run that **writes** to stderr while stderr has no reader —
+  a refusal's `error: …`, the summary-write failure, the
+  `--violations-exit-zero` note — where the refusal's own `1` is erased exactly
+  as the table's `3` used to be. A run that writes *nothing* to stderr is
+  unaffected, because there is nothing to flush (measured, still `3`); that is a
+  property of buffering rather than of this tool and is recorded, not promised.
+  Both uncovered cases are pinned by nodes that go red if a later change covers
+  them (`test_help_with_no_reader_on_stdout_is_still_the_interpreters_number`,
+  `test_a_refusal_whose_stderr_has_no_reader_leaves_the_range`), so the list
+  cannot go stale silently, and the epilog test now fails if the prose is
+  quietly upgraded to a blanket promise.
+
+  **Authorship, stated plainly and kept separate from the cell's result.** The
+  patch was written by the J4 implementer unit of the `rbp27-qwen-cell` job,
+  after the cell's three model arms produced **0 passes in 20 pre-registered
+  attempts**. No arm's patch is in the shipped commit or reachable from it. Its
+  substance derives from the reviewer unit's independently derived reference
+  patch — the one that exonerated the oracle by reaching PASS at HEAD — changed
+  before shipping in two ways: the `os` import was promoted to the module's
+  import block instead of being function-local, and each of the three steps
+  carries a rationale comment because each is load-bearing and none is obvious.
+  **"The fix shipped, so the model worked" is not a sentence this repo may
+  write.** The cell's record is below.
+- **RB-P28 — the acceptance oracle for a code fix is gameable through the test
+  environment, and a green spec therefore does not establish that a defect is
+  fixed.** Found by the J3 adversarial review of the RB-P27 cell, 2026-08-12,
+  and **demonstrated rather than argued**. Every behavioural clause of that
+  oracle runs under pytest, and both shell-status harnesses built the child
+  process's environment as `{**os.environ, ...}` — and pytest puts
+  `PYTEST_CURRENT_TEST` in `os.environ` while a test is running. So the code
+  under test could see that it was being observed. A patch of five lines
+  (`if os.environ.get("PYTEST_CURRENT_TEST") and "pytest" not in sys.argv[0]:`
+  → flush, swallow `BrokenPipeError`, `os._exit(status)`) passed **all five**
+  pre-registered clauses while its **field behaviour was unchanged at `120`**.
+  Re-measured by J4 before fixing: against the old harness that patch scores
+  `7 passed` on `pytest -k "closed_pipe or non_pipe" --runxfail`, and `120` in
+  the field. **It did not manufacture the 0/20** — a too-permissive oracle
+  cannot invent failures, and zero of the twenty completions went anywhere near
+  the environment — but it voids any claim that a green spec *means* the defect
+  is fixed, which is why RB-P27's closure above rests on a field measurement
+  instead.
+  **PARTLY CLOSED (`b5ee8ec`), and only partly.** `PYTEST_*` is now scrubbed
+  from the child environment in both harnesses (`_child_env`), and the scrub is
+  pinned by a node that can go red rather than by a comment:
+  `test_the_status_harnesses_hand_the_child_no_pytest_marker` asks the child,
+  through both harnesses, to report its own `PYTEST_*` keys and requires the
+  empty list — first asserting that `PYTEST_CURRENT_TEST` **is** in the parent's
+  environment, so an empty list downstream is the scrub working and not the
+  variable being absent. Against the scrubbed harness the gaming patch now
+  **fails**: `3 failed, 5 passed`, and the first node to reject it is
+  `test_closed_pipe_clean_run_still_exits_zero` (`assert 120 == 0`), with the
+  other two spec nodes rejecting it on `3` and `4`.
+  **The residual, and RB-P28 stays OPEN for it.** The scrub kills the
+  demonstrated exploit, not the class. A patch can still key on `sys.argv[0]`,
+  on a tmp-dir-shaped path, on the absence of a TTY, or on any other tell that
+  "running under a test runner" leaves behind — and no environment filter
+  enumerates those. **Attack:** give the acceptance oracle a phase measured
+  **outside pytest entirely** — the field command in RB-P27's closure is the
+  shape of it — so that at least one clause is evaluated on a process the
+  patched code cannot distinguish from production. That is a change to the
+  `tools/qwen-implementer` rig, and the rig's cell is closed (below), so it is
+  filed rather than done. (Measurement.)
+- **RB-P29 — the pre-registration's bracketing rule is an unconditional
+  implication, and it fired a false verdict the first time it was used.**
+  `docs/eval-data/2026-08-12-rbp27-qwen-cell-prereg.md` §1 registers, in
+  advance and correctly in spirit: "**if the 14b also fails**, the finding is
+  about the rig — the prompt, the reply format, the one-shot loop — and not
+  about model size. The report would say so, and the next cell would be a rig
+  change, not a smaller model." The 14b did also fail (0/5), so the rule fired
+  — and it was **wrong**: the J3 review then showed the rig admits a pass (an
+  independently derived patch reached PASS at HEAD first try), that all eight
+  `--self-test` rejection rules fire, that both prompt excerpts occur exactly
+  once byte-for-byte in the cloned file, and that hand-repairing all six format
+  failures converts **none** of them into a pass. An upper bracket failing is
+  **evidence** that the finding may be about the rig; it is not a proof, and
+  written as an unconditional implication it converts a real result into an
+  instrument complaint. It also very nearly consumed the user's standing "if the
+  rig is broken, fix it and re-run" directive on a false trigger.
+  **Attack:** rewrite the rule with its missing antecedent — *a bracket's
+  failure may indict the rig only if the rig has not been independently shown to
+  admit a pass* — and register the independent demonstration as a **required
+  step** of the bracket reading rather than as something a reviewer happens to
+  do afterwards. Concretely: an oracle-exoneration run belongs in the
+  pre-registration's §4 alongside `--dry-run` and `--self-test`, performed by a
+  unit that did not write the oracle, with its result recorded before the
+  brackets are read. (Measurement.)
+- **RB-P30 — the frozen prompt's reply format demands SEARCH text copied
+  byte-for-byte from an excerpt, and the import block the canonical fix needs is
+  in neither excerpt.** `tools/qwen-implementer/prompt.txt` (sha `a65efda6…`)
+  shows two verbatim excerpts of `criticreplay.py` and requires every
+  `<<<<<<< SEARCH` block to match one of them exactly once. The published fix
+  for this defect needs `os` — the module's import block does not import it, and
+  the import block is not in either excerpt. So the only route to the canonical
+  fix that the format admits is a **function-local import**, which the prompt
+  never says is acceptable. That is an **undisclosed narrowing of the solution
+  space**: the task as posed is harder than the task as described, and the
+  narrowing is invisible to the model and was invisible to the bar. The
+  fingerprint is in the artifact — `ruff-failed: F821 Undefined name \`os\`` is
+  one of the recorded failure reasons. This is a filing about the **rig's
+  disclosure**, not a re-scoping of the 0/20: it is not established that any
+  attempt would have passed with the import region disclosed, and no attempt is
+  re-scored on the strength of it. **Attack:** include the import region as a
+  third excerpt, or state in the prompt that a function-local import is
+  acceptable — and either way say which, because "we fixed the prompt" without
+  saying how makes the next cell incomparable with this one. Both are rig
+  changes and both need their own pre-registration. (Measurement.)
+
 Two of the review's findings were fixed in this cycle rather than filed:
 `requests` counted JSONL rows while `Verdict.calls` was dropped from the row
 schema, so a `structured()` retry could have inflated `tokens_total` with
@@ -3386,6 +3586,116 @@ estimates ran 32% low on the acceptance run and 11% low on the routine profile,
 against exact request counts; the spec now carries the measured numbers and the
 reason (`C-attempted` costs ~580 tokens/request against `A-asfiled`'s 384, so
 per-*variant* estimates cannot be scaled from one variant).
+
+### The `qwen-implementer` cell on RB-P27 lever (2) (2026-08-12)
+
+The first measured cell of the `qwen-implementer` backlog item, run on the
+branch that shipped the RB-P27 fix. **The bar was pre-registered before any arm
+ran**, in `docs/eval-data/2026-08-12-rbp27-qwen-cell-prereg.md` (committed at
+`08f453f`, after the rig at `38b0f5a` and the executable spec at `f5e38b0`, and
+before the arms at `c6ddf44`); see the dated **amendment** appended to that file
+2026-08-13 for three things the review found wrong with it. The raw record is
+`docs/eval-data/2026-08-12-rbp27-attempts.jsonl` plus 20 per-attempt files, all
+runner-emitted and none hand-edited.
+
+**The bar, in one line.** An attempt passes iff, in order: every
+`SEARCH`/`REPLACE` block matches exactly once in
+`runtime-py/src/bantamkit/criticreplay.py`; `git status --porcelain -uall` in
+the clone is that file and nothing else; the `f8404ab` floor still hashes to
+`309c925e…`; `ruff check runtime-py` is clean **and** the RB-P27 spec nodes are
+green under `--runxfail`; and all 736 suite nodes are green. Every clause is a
+property of the instrument — a diff, a hash, a linter's status, a test runner's
+status — and none asserts a fact about the world.
+
+**The arms.** One-shot, independent attempts: fresh process, fresh clone, frozen
+prompt (sha `a65efda6…`, asserted on every run), a seed of its own, and **no
+feedback of any kind carried between attempts**.
+
+| arm | model | R | passes | Wilson 95 % | failure classes, never pooled |
+|---|---|---|---|---|---|
+| cell under test | `qwen2.5:7b-instruct` (`num_ctx` 8192) | 10 | **0** | [0.0 %, 27.8 %] | `ruff-failed` 5, `apply-failed` 3, `spec-red` 2 |
+| lower bracket | `qwen3:4b-instruct` (`num_ctx` 8192) | 5 | **0** | [0.0 %, 43.4 %] | `spec-red` 3, `ruff-failed` 2 |
+| upper bracket | `qwen2.5:14b-instruct` (`num_ctx` 8192) | 5 | **0** | [0.0 %, 43.4 %] | `apply-failed` 4, `ruff-failed` 1 |
+
+Zero `boundary-violation`, zero `floor-moved`, zero `suite-red`, zero `timeout`
+and zero `transport-error` anywhere, so no rate is computed over a shifted
+denominator. No arm came near a budget (slowest call 102 s against a 300 s cap;
+total recorded attempt wall-clock 269.4 s). Integrity, re-verified from the
+artifact: 20 rows, 20 distinct seeds, 20 distinct completions, exactly one
+prompt sha, and `prompt_tokens` constant within each arm (3374 / 3377 / 3374),
+so nothing was truncated.
+
+**The reading, and it is the only sentence this repo may write about what the
+cell means** — licensed by the J3 review, quoted rather than paraphrased:
+
+> On one diff-sized backlog task — one-shot, exception name withheld,
+> exact-match SEARCH/REPLACE reply format, `num_ctx` 8192, one machine — three
+> local Qwen models produced **0 passes in 20 pre-registered attempts** (7b 0/10,
+> Wilson 95 % [0.0 %, 27.8 %]; 4b 0/5 and 14b 0/5, both [0.0 %, 43.4 %]). The
+> oracle is not the reason: an independently derived patch passes it at HEAD, it
+> rejects the sloppy `except Exception` fix, and hand-repairing all six format
+> failures converts none of them into a pass. Not one attempt moved a single
+> spec node, and not one reached for the published idiom.
+
+**What that sentence does NOT license, itemised so nobody has to infer it:**
+
+- **Not** "local 7b models cannot do diff-sized backlog work." One task, one
+  prompt, one loop shape, n = 10, on one machine — and localisation was done by
+  a human before the model was called, while the exception's name was withheld,
+  which the pre-registration itself registers as making the cell **harder than
+  the field condition**.
+- **No ranking of 14b against 4b**, in either direction. Both are n = 5 with
+  intervals spanning 0–43.4 %; the failure-class split between them is a
+  description of five attempts each, not a difference.
+- **No "nearly had it"** for any attempt. Not one attempt moved a single spec
+  node: all five `spec-red` attempts report exactly `3 failed, 4 passed, 155
+  deselected`, byte-for-byte what the unpatched tree reports.
+- **Nothing about the retry cell.** "One-shot pass rate" and "pass rate within k
+  oracle-feedback rounds" are different quantities; the retry cell is
+  pre-registered as a separate cell and **has not been run**.
+- **No claim that a pass would mean the defect is fixed** — not until RB-P28's
+  residual is closed. C1 demonstrated a patch that turns the whole spec green
+  and fixes nothing.
+- **Nothing about the shipped fix.** It was authored by the J4 implementer unit;
+  see RB-P27's closure above.
+
+**The rig was put on trial and exonerated, so the standing "if the rig is
+broken, fix it and re-run" directive did not fire — there is no rig fix in this
+cycle and there is no cell 2.** Stated here explicitly because a directive that
+did not fire because its condition was false is worth a sentence, and silence
+would look like an omission. What exonerated it: an independently derived patch
+reached PASS at HEAD on the first try; `--self-test` fires all eight rejection
+rules; the sloppy `except Exception` and `except OSError` fixes are both
+rejected, at the spec phase, by
+`test_a_non_pipe_failure_around_the_table_print_is_not_downgraded`; both prompt
+excerpts occur exactly once byte-for-byte in the cloned file, so the six
+`SEARCH occurs 0 times` failures are uniform over-indentation by the models
+rather than a stale excerpt; and hand-dedenting all six converts **zero** of
+them into a pass (3 `ruff-failed`, 2 `spec-red`, 1 not repairable). What the
+review filed instead is RB-P28, RB-P29 and RB-P30 above.
+
+**The format control, and it is flagged as UNREGISTERED.** It is not part of the
+pre-registered bar, it was designed after the arms had run, and it may not be
+read as a result of this cell. It is recorded because it is the thing that rules
+out "the rig is unpassable by format": given a trivially easy edit to the same
+file in the same reply format, **14b 5/5, 4b 4/5, 7b 1/5** blocks applied. All
+three models can speak the format; the 7b's 1/5 is itself a fact about the
+format's cost at that size and is a reason RB-P30 is worth attacking, not a
+finding of this cell.
+
+**Two observations recorded descriptively, gating nothing**, being what the
+pre-registration's §7 named in advance as the raw material for a harder cell.
+Counted over the 20 raw completions in the per-attempt files, not over the
+extracted patches: `devnull` 0, `dup2` 0, `SIGPIPE` 0, `EPIPE` 0 — and
+`BrokenPipeError` itself 0, so not one completion so much as **named** the
+exception. And **no attempt chose `1` as the status for this case**: the only
+`SystemExit(1)` text anywhere on a `REPLACE` side is three copies of the file's
+pre-existing `raise SystemExit(1) from e` in the `BantamError` handler, carried
+through unchanged. So the "recipe recall" signature the pre-registration worried
+about is absent in both directions, and its observable 1 is informative by its
+absence rather than dead.
+Cost of the whole cell: 20 local Ollama calls plus the review's 17, zero hosted
+calls, zero dollars.
 
 ### Measured problems → attack plan (P1–P9, previous sweep)
 

@@ -222,3 +222,100 @@ reply format, `num_ctx` 8192. It would **not** establish that a 7b cannot do dif
 backlog work. The attack directions it would open are already named above and in §2:
 the retry cell, the reply format (if the failures are `apply-failed`), and disclosing
 the exception name (if the failures are `spec-red`).
+
+---
+
+## Amendment 1 — 2026-08-13, after the arms ran and after review
+
+**Written by the J4 implementer unit; findings by the J3 adversarial review.**
+
+**This is an amendment, not a repair.** Every sentence above this line is
+byte-identical to the version committed at `08f453f`, before any arm ran, and it
+stays that way: a binding document is corrected by saying what was wrong, dated,
+underneath — never by a rewrite that makes the error disappear. Nothing here is a
+result of the cell either; §0's rule that results never come back into this file
+is intact. The three items below are defects **in this document**, found by using
+it once.
+
+### A1 — §1's justification for the `num_ctx` derivatives is factually false
+
+§1 says: "the first smoke call came back with `prompt_tokens` of exactly 4096 —
+the task statement, the observed behaviour and the requirements had all been
+truncated off the front."
+
+**What the committed artifact says.** Across all 20 scored attempts,
+`prompt_tokens` is **3374** (7b), **3377** (4b) and **3374** (14b) — constant
+within each arm, and nowhere near 4096. The review additionally measured the
+**base** model at the server's default `num_ctx` and got the same **3374**, with
+no truncation. So the observation the derivatives were justified by is not
+reproducible, and "exactly 4096" is a number this document should not have
+carried. The prompt is ~3.4k tokens, not the ~4.6k §1 asserts.
+
+**The derivative is still defensible — on output headroom, which is not what
+§1 said.** Ollama's `num_ctx` bounds prompt **plus** completion. At the default
+4096 with a ~3374-token prompt there are roughly 720 tokens of room left for a
+reply; the 14b arm's longest completion in this cell is **2077 tokens**, which
+that budget cannot hold. `num_ctx` 8192 was therefore the right setting for the
+wrong stated reason. The setting itself is unchanged and no arm is re-scored.
+
+**What this does not do:** it does not touch any arm's result, and it does not
+change the reading of the cell. It does mean §1's parenthetical about what the
+first smoke call showed may not be cited by anything downstream.
+
+### A2 — §7's "It would demonstrate" overclaims, given a gameable oracle
+
+§7 says a pass "would demonstrate ... a patch that touched only the file it was
+allowed to touch and satisfied a five-clause oracle written before it ran —
+including a closed-pipe test measured from a real shell's `$?`".
+
+**The five acceptance clauses in §4 are clean** — the review's Gate-2 audit
+confirms each is a property of the instrument and none asserts a fact about the
+world. §7 is where the overclaim is. Every behavioural clause runs **under
+pytest**, and both status harnesses built the child's environment from
+`os.environ`, so a patch could see `PYTEST_CURRENT_TEST` and behave differently
+when observed. The review passed all five clauses with a patch whose field
+behaviour was unchanged at `120`. A real shell's `$?` was read, but it was read
+from a process the patch could recognise as a test.
+
+**So the sentence §7 should have contained is:** a pass demonstrates that the
+patch satisfies this oracle; it does **not**, on its own, demonstrate that the
+defect is fixed, because the oracle is measured only under pytest. Establishing
+the latter needs a measurement taken outside pytest. Filed as **RB-P28**, whose
+demonstrated half is closed (`PYTEST_*` is now scrubbed from both harnesses) and
+whose class is not. The shipped fix is held to the stricter standard: its closure
+in `docs/eval.md` rests on a field measurement, not on the spec going green.
+
+### A3 — §1's bracketing rule is an unconditional implication and fired falsely
+
+§1 registers: "**if the 14b also fails**, the finding is about the rig — the
+prompt, the reply format, the one-shot loop — and not about model size. The
+report would say so, and the next cell would be a rig change, not a smaller
+model."
+
+The 14b did also fail (0/5), so the rule fired — and the verdict it produced was
+**wrong**. The review then showed the rig admits a pass: an independently derived
+patch reached PASS at HEAD on the first try, all eight `--self-test` rejection
+rules fire, both prompt excerpts occur exactly once byte-for-byte in the cloned
+file, and hand-repairing all six format failures converts none of them into a
+pass. An upper bracket failing is **evidence** that the finding may be about the
+rig; written as an implication it converts a real result into an instrument
+complaint, and here it came within one review of consuming a standing "fix the
+rig and re-run" directive on a false trigger.
+
+**The missing antecedent:** a bracket's failure may indict the rig **only if the
+rig has not been independently shown to admit a pass**. A future
+pre-registration of this shape must carry that clause, and must make the
+independent oracle-exoneration run a **required step of §4** — performed by a
+unit that did not write the oracle, and recorded before the brackets are read —
+rather than something a reviewer happens to do afterwards. Filed as **RB-P29**.
+
+### Also filed from this cell, and not a defect in this document
+
+**RB-P30** — §5's frozen prompt shows two verbatim excerpts and requires SEARCH
+text copied byte-for-byte from them, and the module's import block is in neither.
+The canonical fix needs `os`, which the module does not import, so the only route
+the reply format admits is a function-local import that the prompt never says is
+acceptable: an undisclosed narrowing of the solution space. The word "import"
+does not appear anywhere in the frozen prompt. No attempt is re-scored on the
+strength of it; the attack is to disclose the import region or to state that a
+function-local import is acceptable, and to say which.
