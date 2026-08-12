@@ -55,7 +55,20 @@ per-claim transfer table in
 - **Skip the blind `CritiqueGate` on small instruct models** — on all
   four models it buys ≤6 passes at 2–3.5× bare's tokens. Attach a
   critique gate only with a rubric that catches failures you have
-  actually observed, and prefer instruct over thinking variants.
+  actually observed, and prefer instruct over thinking variants. And
+  expect it to deduct for *format* on answers that already comply, even
+  when the rubric forbids exactly that: on the one cell measured in
+  depth, 25 of 25 of the critic's sub-threshold complaints were about
+  format and none disputed the content —
+  [Eval → the non-fragile screen](docs/eval.md#the-non-fragile-screen-and-the-standing-anchor-set-2026-08-12).
+- **Don't credit a rubric edit without a bar.** A verdict on one cell is
+  not a measurement: a deleted trailing newline reproduced a whole pass
+  signature once already. Before/after runs on a cell whose perturbation
+  family straddles the threshold say nothing, and the standing
+  no-regression floor is
+  [`2026-08-12-nonfragile-anchor-set.json`](docs/eval-data/2026-08-12-nonfragile-anchor-set.json)
+  — 12 cells that are stable under meaning-preserving rewordings of the
+  critic's own prompt. Passing it is necessary, not sufficient.
 - **Use `structured()` when you need schema'd output** — enforcement
   costs nothing when the model complies: zero schema retries in 2,112
   runs across all four models; on 7b it is the most token-efficient
