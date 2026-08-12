@@ -298,10 +298,13 @@ the first request went out (screen commit `3b3d7f7` 11:35:55, first arm
 evidence 11:40:32 — the ordering is checkable in the log and was checked).
 **132 cells screened at identity** — 22 tasks × 3 repeats × `qwen2.5:14b-instruct`
 and `qwen3:4b-instruct` — of which **20 were characterised over the full
-12-point perturbation family**. Cost **452 requests / 204,982 tokens** against a
-registered cap of ≤ 628 / ≤ 286,785; `wire_calls == requests` on all four arms,
-and per-row tokens sum exactly to each summary total, so there are no unlogged
-requests. Every claim below was independently re-derived from the committed
+12-point perturbation family**. Cost **452 critic requests / 204,982 tokens**
+against a registered cap of ≤ 628 critic requests / ≤ 286,785 tokens — 71.5% of
+budget, 18.2 min against ~22 predicted. The token figure is the whole job:
+159,349 across the four critic arms (23,735 + 21,981 identity, 79,812 + 33,821
+family) plus the 45,633 the answerer spent in stage 0. `wire_calls == requests`
+on all four arms and per-row tokens sum exactly to each summary total, so there
+are no unlogged requests. Every claim below was independently re-derived from the committed
 JSONLs by a reviewer who did not run the screen; the catalogue reproduced with
 zero mismatches on all 20 cells and all 132 ground-truth flags. One thing that
 review did **not** catch and this write-up does: the screen's shared-token
