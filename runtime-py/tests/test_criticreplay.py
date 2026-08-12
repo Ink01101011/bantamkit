@@ -1131,6 +1131,107 @@ def test_the_table_names_the_guard_drop_so_a_reader_cannot_miss_it(guard_rig):
     assert "P-taskword" in table and "alpha" in table
 
 
+# ---- the guard's three siblings in the RUN path (§3.3 step 3, guards 1, 3, 4) ----
+#
+# Guard 2 was defined-but-uncalled; so was guard 3's `FROZEN_KEYWORDS`, which lived in
+# the run module and was read only by a test. Guards 1 and 4 had no definition at all.
+# All three are properties of the POINT, independent of any cell, so unlike guard 2 they
+# do not admit a per-cell drop: a point that moves a band digit is not meaning-preserving
+# on any cell and there is nothing to salvage. They are refused at family construction,
+# before any request.
+
+GUARDED_PROMPT = (
+    'Judge ONLY the answer. Score 9-10 = good; 5-8 = partial; 0-4 = bad.\n'
+    'T:{task}\nA:{output}\nReturn {{"score": 1}}\n'
+)
+
+
+def _admissibility_rig(asset_tree, tmp_path, point):
+    manifest = criticreplay.load_manifest(
+        _write_manifest(asset_tree, points=[GUARD_POINTS[0], point])
+    )
+    variant = criticreplay.parse_rubric_arg(f"v={_write_rubric(tmp_path, 'v', GUARDED_PROMPT)}")
+    transcripts = tmp_path / "t"
+    _transcript(transcripts, "critique", "alpha", 0, 111, "OUT")
+    client = ScriptedCritic(lambda p: 9)
+    return client, (client, [variant], manifest, criticreplay.load_cases(transcripts))
+
+
+def test_run_refuses_a_point_that_moves_a_frozen_contract_literal(asset_tree, tmp_path):
+    """Guard 1. Band digits and schema keys are byte-frozen, in every class."""
+    client, args = _admissibility_rig(
+        asset_tree, tmp_path,
+        {
+            "id": "O-endash", "class": "order", "rule": "reorder", "op": "replace",
+            "replace": [{"from": "Score 9-10", "to": "Score 9–10"}],
+        },
+    )
+    with pytest.raises(criticreplay.PerturbationError, match="frozen contract literal"):
+        criticreplay.run(*args, model="m")
+    assert client.calls == []
+
+
+def test_run_refuses_a_paraphrase_that_moves_a_frozen_keyword(asset_tree, tmp_path):
+    """Guard 3 — whose keyword list already lived in this module, read only by a test."""
+    client, args = _admissibility_rig(
+        asset_tree, tmp_path,
+        {
+            "id": "P-lowercase-only", "class": "paraphrase", "rule": "reword",
+            "op": "replace", "replace": [{"from": "Judge ONLY", "to": "Judge only"}],
+            "justification": "changes the force of a directive, which is not a paraphrase",
+        },
+    )
+    with pytest.raises(criticreplay.PerturbationError, match="frozen keyword"):
+        criticreplay.run(*args, model="m")
+    assert client.calls == []
+
+
+def test_run_refuses_a_paraphrase_that_spans_two_sentences(asset_tree, tmp_path):
+    """Guard 4: an instance a reader cannot check at a glance is not defensible."""
+    client, args = _admissibility_rig(
+        asset_tree, tmp_path,
+        {
+            "id": "P-two-sentences", "class": "paraphrase", "rule": "reword",
+            "op": "replace",
+            "replace": [{"from": "the answer. Score 9-10", "to": "the reply. Score 9-10"}],
+            "justification": "spans a sentence boundary",
+        },
+    )
+    with pytest.raises(criticreplay.PerturbationError, match="one sentence"):
+        criticreplay.run(*args, model="m")
+    assert client.calls == []
+
+
+def test_run_refuses_a_paraphrase_expressed_as_anything_but_one_substitution(
+    asset_tree, tmp_path
+):
+    """§3.3 step 4: each P point is ONE literal from -> to pair."""
+    client, args = _admissibility_rig(
+        asset_tree, tmp_path,
+        {
+            "id": "P-swapped", "class": "paraphrase", "rule": "reword", "op": "swap",
+            "swap": {"a": "good", "b": "bad"},
+            "justification": "a swap is not a substitution pair",
+        },
+    )
+    with pytest.raises(criticreplay.PerturbationError, match="one sentence"):
+        criticreplay.run(*args, model="m")
+    assert client.calls == []
+
+
+def test_the_shipped_manifest_passes_all_three_cell_independent_guards(manifest):
+    """The floor: wiring these in must not make the committed family inadmissible."""
+    for label, base in variant_templates().items():
+        for point in manifest.points:
+            new = criticreplay.apply_point(point, base)
+            if new is None:
+                continue
+            assert criticreplay.point_admissibility_violations(point, base, new) == [], (
+                point.id,
+                label,
+            )
+
+
 # ---- CLI (§6.2, §6.3) ----
 
 

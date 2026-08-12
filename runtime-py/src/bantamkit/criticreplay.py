@@ -62,6 +62,7 @@ __all__ = [
     "materialize_manifest",
     "normalize_whitespace",
     "parse_rubric_arg",
+    "point_admissibility_violations",
     "render_prompt",
     "replay_scores",
     "replay_verdicts",
@@ -70,6 +71,10 @@ __all__ = [
 ]
 
 BAR = "perturbation"
+
+# §3.3 step 3, guard 1. The schema keys, the JSON braces and the band digits are the
+# rubric's contract with the wire; a point that moves one is a requirement edit.
+FROZEN_LITERALS = ('"score"', '"feedback"', "9-10", "5-8", "0-4", "{{", "}}")
 
 # §3.3 step 3, guard 3. "should not" for "do NOT" changes the force of a directive, so a
 # paraphrase that moves any of these is a requirement edit wearing a paraphrase's clothes.
@@ -308,6 +313,35 @@ def shared_token_violations(point: Point, text: str) -> list[str]:
     for op in point.replace:
         changed |= _words(op["from"]) ^ _words(op["to"])
     return sorted(changed & _words(text))
+
+
+def point_admissibility_violations(point: Point, base: str, perturbed: str) -> list[str]:
+    """§3.3 step 3, guards 1, 3 and 4: what makes a point inadmissible on ANY cell.
+
+    Unlike guard 2 these need no cell, so they cannot be drop-and-report: a point that
+    moves a band digit is not meaning-preserving anywhere, and a run has nothing to
+    salvage from it. `_variant_family` raises on them, before any request.
+
+    Guard 3's keyword list has lived in this module since the bar shipped and was read
+    only by an offline test over the three committed variants — the same
+    defined-but-uncalled shape as guard 2. Guards 1 and 4 had no definition here at all.
+    """
+    problems = []
+    for literal in FROZEN_LITERALS:
+        if perturbed.count(literal) != base.count(literal):
+            problems.append(f"moves the frozen contract literal {literal!r}")
+    if point.point_class != "paraphrase":
+        return problems
+    for word in FROZEN_KEYWORDS:
+        if perturbed.count(word) != base.count(word):
+            problems.append(f"moves the frozen keyword {word!r}")
+    if point.op != "replace" or len(point.replace) != 1:
+        problems.append("is not one sentence expressed as one literal from -> to pair")
+    else:
+        anchor = point.replace[0]["from"]
+        if anchor.count(". ") or anchor.strip().endswith("."):
+            problems.append("spans more than one sentence")
+    return problems
 
 
 def cell_guard_violations(point: Point, case: Case) -> list[str]:
@@ -794,6 +828,13 @@ def _variant_family(
             raise PerturbationError(
                 f"points '{collision}' and '{point.id}' produce the same template on variant "
                 f"'{variant.label}' — a point that changed nothing measures nothing"
+            )
+        problems = point_admissibility_violations(point, variant.rubric.prompt, template)
+        if problems:
+            raise PerturbationError(
+                f"point '{point.id}' is inadmissible on variant '{variant.label}' "
+                f"(spec §3.3 step 3): it {'; it '.join(problems)} — a point that is not "
+                "meaning-preserving measures a requirement edit, not a perturbation"
             )
         seen[template] = point.id
         family[point.id] = template
