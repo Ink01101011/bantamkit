@@ -1,0 +1,1470 @@
+{
+  "bar": "perturbation",
+  "threshold": 7,
+  "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+  "requests": 66,
+  "wire_calls": 66,
+  "tokens_total": 23735,
+  "variants": [
+    {
+      "label": "A-asfiled",
+      "rubric_ref": "assets/rubrics/task-completion.yaml",
+      "rubric_sha256": "55f700e09bab0cfac01cb18d4cfb54666ff942598035697e0383726fe82c2868",
+      "dropped_rules": []
+    }
+  ],
+  "cells": [
+    {
+      "task": "extract-contact",
+      "repeat": 0,
+      "seed": 2259705935,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 10,
+          "score_max": 10,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-contact",
+      "repeat": 1,
+      "seed": 3497327120,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 10,
+          "score_max": 10,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-contact",
+      "repeat": 2,
+      "seed": 2660316194,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-invoice",
+      "repeat": 0,
+      "seed": 1357191355,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-invoice",
+      "repeat": 1,
+      "seed": 3927040636,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 10,
+          "score_max": 10,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-invoice",
+      "repeat": 2,
+      "seed": 2743656613,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-order",
+      "repeat": 0,
+      "seed": 955537242,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-order",
+      "repeat": 1,
+      "seed": 2555329956,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 10,
+          "score_max": 10,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-order",
+      "repeat": 2,
+      "seed": 4242122136,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-schedule",
+      "repeat": 0,
+      "seed": 4223175415,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-schedule",
+      "repeat": 1,
+      "seed": 2425076921,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 10,
+          "score_max": 10,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-schedule",
+      "repeat": 2,
+      "seed": 942824817,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-versions",
+      "repeat": 0,
+      "seed": 3013859756,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 10,
+          "score_max": 10,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-versions",
+      "repeat": 1,
+      "seed": 1145149304,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 10,
+          "score_max": 10,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-versions",
+      "repeat": 2,
+      "seed": 3989306955,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "nav-prod-port",
+      "repeat": 0,
+      "seed": 2331795949,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "0/1",
+          "passed": 0,
+          "family_size": 1,
+          "score_min": 5,
+          "score_max": 5,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            5
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "nav-prod-port",
+      "repeat": 1,
+      "seed": 4094558621,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "0/1",
+          "passed": 0,
+          "family_size": 1,
+          "score_min": 5,
+          "score_max": 5,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            5
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "nav-prod-port",
+      "repeat": 2,
+      "seed": 634446002,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "0/1",
+          "passed": 0,
+          "family_size": 1,
+          "score_min": 5,
+          "score_max": 5,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            5
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "nav-release-bundle",
+      "repeat": 0,
+      "seed": 3315971216,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 10,
+          "score_max": 10,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "nav-release-bundle",
+      "repeat": 1,
+      "seed": 2295343474,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "nav-release-bundle",
+      "repeat": 2,
+      "seed": 2335649282,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 10,
+          "score_max": 10,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-audit-retention",
+      "repeat": 0,
+      "seed": 1946877837,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-audit-retention",
+      "repeat": 1,
+      "seed": 2464148468,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-audit-retention",
+      "repeat": 2,
+      "seed": 1510450835,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-cache-ttl",
+      "repeat": 0,
+      "seed": 2825330101,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 10,
+          "score_max": 10,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-cache-ttl",
+      "repeat": 1,
+      "seed": 190906032,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-cache-ttl",
+      "repeat": 2,
+      "seed": 3117808452,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-db-port",
+      "repeat": 0,
+      "seed": 1770058012,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-db-port",
+      "repeat": 1,
+      "seed": 4023478678,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-db-port",
+      "repeat": 2,
+      "seed": 1328387732,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 10,
+          "score_max": 10,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-deploy",
+      "repeat": 0,
+      "seed": 3076189074,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-deploy",
+      "repeat": 1,
+      "seed": 1107033986,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-deploy",
+      "repeat": 2,
+      "seed": 1150705719,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "0/1",
+          "passed": 0,
+          "family_size": 1,
+          "score_min": 2,
+          "score_max": 2,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            2
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-env-endpoint",
+      "repeat": 0,
+      "seed": 2451981973,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 10,
+          "score_max": 10,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-env-endpoint",
+      "repeat": 1,
+      "seed": 2924235111,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-env-endpoint",
+      "repeat": 2,
+      "seed": 1818762694,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-oncall",
+      "repeat": 0,
+      "seed": 2831155312,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "0/1",
+          "passed": 0,
+          "family_size": 1,
+          "score_min": 2,
+          "score_max": 2,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            2
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-oncall",
+      "repeat": 1,
+      "seed": 4070734686,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "0/1",
+          "passed": 0,
+          "family_size": 1,
+          "score_min": 2,
+          "score_max": 2,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            2
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-oncall",
+      "repeat": 2,
+      "seed": 4142544292,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "0/1",
+          "passed": 0,
+          "family_size": 1,
+          "score_min": 2,
+          "score_max": 2,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            2
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-oncall-rotation",
+      "repeat": 0,
+      "seed": 1977305293,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-oncall-rotation",
+      "repeat": 1,
+      "seed": 3203733254,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "0/1",
+          "passed": 0,
+          "family_size": 1,
+          "score_min": 0,
+          "score_max": 0,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            0
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-oncall-rotation",
+      "repeat": 2,
+      "seed": 1248356679,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "0/1",
+          "passed": 0,
+          "family_size": 1,
+          "score_min": 2,
+          "score_max": 2,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            2
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-org-quota",
+      "repeat": 0,
+      "seed": 1427990350,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-org-quota",
+      "repeat": 1,
+      "seed": 1587131660,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-org-quota",
+      "repeat": 2,
+      "seed": 2243150770,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-owner",
+      "repeat": 0,
+      "seed": 903960846,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 10,
+          "score_max": 10,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-owner",
+      "repeat": 1,
+      "seed": 2418578173,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-owner",
+      "repeat": 2,
+      "seed": 866805701,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 10,
+          "score_max": 10,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "shop-basket-total",
+      "repeat": 0,
+      "seed": 4171005978,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "shop-basket-total",
+      "repeat": 1,
+      "seed": 1022600830,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 7,
+          "score_max": 7,
+          "spread": 0,
+          "margin_zero": 1,
+          "identity_scores": [
+            7
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "shop-basket-total",
+      "repeat": 2,
+      "seed": 337707843,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "0/1",
+          "passed": 0,
+          "family_size": 1,
+          "score_min": 6,
+          "score_max": 6,
+          "spread": 0,
+          "margin_zero": 1,
+          "identity_scores": [
+            6
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "shop-cheapest",
+      "repeat": 0,
+      "seed": 3626387035,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "shop-cheapest",
+      "repeat": 1,
+      "seed": 3857385584,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "shop-cheapest",
+      "repeat": 2,
+      "seed": 249543462,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "shop-compare",
+      "repeat": 0,
+      "seed": 1492014504,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "shop-compare",
+      "repeat": 1,
+      "seed": 294733297,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "shop-compare",
+      "repeat": 2,
+      "seed": 4118104234,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "0/1",
+          "passed": 0,
+          "family_size": 1,
+          "score_min": 0,
+          "score_max": 0,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            0
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "shop-gadget-value",
+      "repeat": 0,
+      "seed": 2549822007,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "shop-gadget-value",
+      "repeat": 1,
+      "seed": 551625722,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "shop-gadget-value",
+      "repeat": 2,
+      "seed": 4082573743,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "shop-stock-total",
+      "repeat": 0,
+      "seed": 159718182,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "shop-stock-total",
+      "repeat": 1,
+      "seed": 1974153941,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "shop-stock-total",
+      "repeat": 2,
+      "seed": 1580598053,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "shop-total",
+      "repeat": 0,
+      "seed": 3250378042,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 10,
+          "score_max": 10,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "shop-total",
+      "repeat": 1,
+      "seed": 1076854854,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 10,
+          "score_max": 10,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "shop-total",
+      "repeat": 2,
+      "seed": 3451057703,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "1/1",
+          "passed": 1,
+          "family_size": 1,
+          "score_min": 9,
+          "score_max": 9,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    }
+  ]
+}

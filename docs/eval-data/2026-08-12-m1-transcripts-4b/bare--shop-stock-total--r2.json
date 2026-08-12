@@ -1,0 +1,56 @@
+{
+  "task": "shop-stock-total",
+  "config": "bare",
+  "repeat": 2,
+  "passed": true,
+  "outcome": "pass",
+  "seed": 64253244,
+  "output": "13",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Use the tools to find the stock counts of \"widget\" and \"gadget\",\nthen answer with the combined total stock as a number.\n",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_58gb3g10",
+          "name": "stock_lookup",
+          "arguments": {
+            "item": "widget"
+          }
+        },
+        {
+          "id": "call_djytonqq",
+          "name": "stock_lookup",
+          "arguments": {
+            "item": "gadget"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "widget stock: 4",
+      "tool_calls": [],
+      "tool_call_id": "call_58gb3g10"
+    },
+    {
+      "role": "tool",
+      "content": "gadget stock: 9",
+      "tool_calls": [],
+      "tool_call_id": "call_djytonqq"
+    },
+    {
+      "role": "assistant",
+      "content": "13",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "task": "recall-oncall",
+  "config": "bare",
+  "repeat": 2,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 4142544292,
+  "output": "{\"name\": \"null\"}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Who is on-call for infrastructure this quarter? If you have a memory tool, check memory first. Answer with ONLY this JSON, nothing else: {\"name\": \"<name>\"}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "{\"name\": \"null\"}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

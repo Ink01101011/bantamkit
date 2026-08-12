@@ -1,0 +1,154 @@
+{
+  "task": "shop-basket-total",
+  "config": "bare",
+  "repeat": 1,
+  "passed": false,
+  "outcome": "malformed-output",
+  "seed": 1022600830,
+  "output": "{\"total\": (2 * 25) + (3 * 7) + (1 * 60)}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A customer orders 2 widgets, 3 doohickeys and 1 gadget. Use the tools to\nlook up unit prices, then answer with ONLY this JSON, nothing else:\n{\"total\": <number>}\n",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_c0whn8ts",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "widgets"
+          }
+        },
+        {
+          "id": "call_u4zpbzzj",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "doohickeys"
+          }
+        },
+        {
+          "id": "call_02or7kag",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "gadget"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "error: unknown item 'widgets'. known items: ['doohickey', 'gadget', 'sprocket', 'widget']",
+      "tool_calls": [],
+      "tool_call_id": "call_c0whn8ts"
+    },
+    {
+      "role": "tool",
+      "content": "error: unknown item 'doohickeys'. known items: ['doohickey', 'gadget', 'sprocket', 'widget']",
+      "tool_calls": [],
+      "tool_call_id": "call_u4zpbzzj"
+    },
+    {
+      "role": "tool",
+      "content": "gadget price: 60",
+      "tool_calls": [],
+      "tool_call_id": "call_02or7kag"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_lwv17e9f",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "widget"
+          }
+        },
+        {
+          "id": "call_dz0nghht",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "doohickey"
+          }
+        },
+        {
+          "id": "call_bhvjw0je",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "sprocket"
+          }
+        },
+        {
+          "id": "call_364lnmtf",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "widget"
+          }
+        },
+        {
+          "id": "call_h5wwbxpb",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "doohickey"
+          }
+        },
+        {
+          "id": "call_skf852bj",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "gadget"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "widget price: 25",
+      "tool_calls": [],
+      "tool_call_id": "call_lwv17e9f"
+    },
+    {
+      "role": "tool",
+      "content": "doohickey price: 7",
+      "tool_calls": [],
+      "tool_call_id": "call_dz0nghht"
+    },
+    {
+      "role": "tool",
+      "content": "sprocket price: 14",
+      "tool_calls": [],
+      "tool_call_id": "call_bhvjw0je"
+    },
+    {
+      "role": "tool",
+      "content": "widget price: 25",
+      "tool_calls": [],
+      "tool_call_id": "call_364lnmtf"
+    },
+    {
+      "role": "tool",
+      "content": "doohickey price: 7",
+      "tool_calls": [],
+      "tool_call_id": "call_h5wwbxpb"
+    },
+    {
+      "role": "tool",
+      "content": "gadget price: 60",
+      "tool_calls": [],
+      "tool_call_id": "call_skf852bj"
+    },
+    {
+      "role": "assistant",
+      "content": "{\"total\": (2 * 25) + (3 * 7) + (1 * 60)}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

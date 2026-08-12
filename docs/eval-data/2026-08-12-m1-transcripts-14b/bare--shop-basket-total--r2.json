@@ -1,0 +1,69 @@
+{
+  "task": "shop-basket-total",
+  "config": "bare",
+  "repeat": 2,
+  "passed": false,
+  "outcome": "malformed-output",
+  "seed": 337707843,
+  "output": "{\n  \"total\": (2 * 25) + (3 * 7) + (1 * 60)\n}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A customer orders 2 widgets, 3 doohickeys and 1 gadget. Use the tools to\nlook up unit prices, then answer with ONLY this JSON, nothing else:\n{\"total\": <number>}\n",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_ku7hfpd1",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "widget"
+          }
+        },
+        {
+          "id": "call_3axe8p4n",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "doohickey"
+          }
+        },
+        {
+          "id": "call_5kngzjmg",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "gadget"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "widget price: 25",
+      "tool_calls": [],
+      "tool_call_id": "call_ku7hfpd1"
+    },
+    {
+      "role": "tool",
+      "content": "doohickey price: 7",
+      "tool_calls": [],
+      "tool_call_id": "call_3axe8p4n"
+    },
+    {
+      "role": "tool",
+      "content": "gadget price: 60",
+      "tool_calls": [],
+      "tool_call_id": "call_5kngzjmg"
+    },
+    {
+      "role": "assistant",
+      "content": "{\n  \"total\": (2 * 25) + (3 * 7) + (1 * 60)\n}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

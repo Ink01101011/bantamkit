@@ -1,0 +1,150 @@
+[
+ {
+  "task": "extract-contact",
+  "repeat": 0,
+  "seed": 1861749954,
+  "stratum": "A1",
+  "stage1_identity": 10,
+  "identity_scores": [
+   10,
+   10,
+   10,
+   10,
+   10
+  ],
+  "correct": true,
+  "outcome": "pass",
+  "verdict": "ANCHOR (accepts correct)",
+  "pass_rate": "12/12",
+  "min": 10,
+  "max": 10,
+  "fragile": false
+ },
+ {
+  "task": "extract-contact",
+  "repeat": 1,
+  "seed": 3552401145,
+  "stratum": "A1",
+  "stage1_identity": 10,
+  "identity_scores": [
+   10,
+   10,
+   10,
+   10,
+   10
+  ],
+  "correct": true,
+  "outcome": "pass",
+  "verdict": "ANCHOR (accepts correct)",
+  "pass_rate": "12/12",
+  "min": 10,
+  "max": 10,
+  "fragile": false
+ },
+ {
+  "task": "nav-prod-port",
+  "repeat": 0,
+  "seed": 1908598355,
+  "stratum": "A2",
+  "stage1_identity": 0,
+  "identity_scores": [
+   0,
+   0,
+   0,
+   0,
+   0
+  ],
+  "correct": false,
+  "outcome": "malformed-output",
+  "verdict": "ANCHOR (rejects wrong)",
+  "pass_rate": "0/12",
+  "min": 0,
+  "max": 0,
+  "fragile": false,
+  "guard_violations": {
+   "P3-right-correct": [
+    "right"
+   ]
+  },
+  "without_P3-right-correct": {
+   "pass_rate": "0/11",
+   "min": 0,
+   "max": 0,
+   "fragile": false
+  }
+ },
+ {
+  "task": "nav-release-bundle",
+  "repeat": 0,
+  "seed": 3590861830,
+  "stratum": "A2",
+  "stage1_identity": 0,
+  "identity_scores": [
+   0,
+   0,
+   0,
+   0,
+   0
+  ],
+  "correct": false,
+  "outcome": "malformed-output",
+  "verdict": "ANCHOR (rejects wrong)",
+  "pass_rate": "0/12",
+  "min": 0,
+  "max": 0,
+  "fragile": false
+ },
+ {
+  "task": "nav-prod-port",
+  "repeat": 1,
+  "seed": 4009445633,
+  "stratum": "D2",
+  "stage1_identity": 10,
+  "identity_scores": [
+   10,
+   10,
+   10,
+   10,
+   10
+  ],
+  "correct": false,
+  "outcome": "wrong-answer",
+  "verdict": "DEFECT-BAR (accepts wrong)",
+  "pass_rate": "12/12",
+  "min": 10,
+  "max": 10,
+  "fragile": false,
+  "guard_violations": {
+   "P3-right-correct": [
+    "right"
+   ]
+  },
+  "without_P3-right-correct": {
+   "pass_rate": "11/11",
+   "min": 10,
+   "max": 10,
+   "fragile": false
+  }
+ },
+ {
+  "task": "recall-audit-retention",
+  "repeat": 0,
+  "seed": 302995500,
+  "stratum": "D2",
+  "stage1_identity": 10,
+  "identity_scores": [
+   10,
+   10,
+   10,
+   10,
+   10
+  ],
+  "correct": false,
+  "outcome": "wrong-answer",
+  "verdict": "DEFECT-BAR (accepts wrong)",
+  "pass_rate": "12/12",
+  "min": 10,
+  "max": 10,
+  "fragile": false
+ }
+]

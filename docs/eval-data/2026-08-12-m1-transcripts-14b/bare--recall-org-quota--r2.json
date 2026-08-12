@@ -1,0 +1,23 @@
+{
+  "task": "recall-org-quota",
+  "config": "bare",
+  "repeat": 2,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 2243150770,
+  "output": "{\"total\": 10000}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the TOTAL requests-per-minute quota for one full org on the api gateway? If you have a memory tool, check memory first, then compute the answer. Answer with ONLY this JSON, nothing else: {\"total\": <number>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "{\"total\": 10000}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

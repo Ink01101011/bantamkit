@@ -1,0 +1,174 @@
+{
+  "bar": "perturbation",
+  "threshold": 7,
+  "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+  "requests": 96,
+  "wire_calls": 96,
+  "tokens_total": 33821,
+  "variants": [
+    {
+      "label": "A-asfiled",
+      "rubric_ref": "assets/rubrics/task-completion.yaml",
+      "rubric_sha256": "55f700e09bab0cfac01cb18d4cfb54666ff942598035697e0383726fe82c2868",
+      "dropped_rules": []
+    }
+  ],
+  "cells": [
+    {
+      "task": "extract-contact",
+      "repeat": 0,
+      "seed": 1861749954,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "12/12",
+          "passed": 12,
+          "family_size": 12,
+          "score_min": 10,
+          "score_max": 10,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            10,
+            10,
+            10,
+            10,
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-contact",
+      "repeat": 1,
+      "seed": 3552401145,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "12/12",
+          "passed": 12,
+          "family_size": 12,
+          "score_min": 10,
+          "score_max": 10,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            10,
+            10,
+            10,
+            10,
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "nav-prod-port",
+      "repeat": 0,
+      "seed": 1908598355,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "0/12",
+          "passed": 0,
+          "family_size": 12,
+          "score_min": 0,
+          "score_max": 0,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "nav-prod-port",
+      "repeat": 1,
+      "seed": 4009445633,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "12/12",
+          "passed": 12,
+          "family_size": 12,
+          "score_min": 10,
+          "score_max": 10,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            10,
+            10,
+            10,
+            10,
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "nav-release-bundle",
+      "repeat": 0,
+      "seed": 3590861830,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "0/12",
+          "passed": 0,
+          "family_size": 12,
+          "score_min": 0,
+          "score_max": 0,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-audit-retention",
+      "repeat": 0,
+      "seed": 302995500,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "12/12",
+          "passed": 12,
+          "family_size": 12,
+          "score_min": 10,
+          "score_max": 10,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            10,
+            10,
+            10,
+            10,
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    }
+  ]
+}

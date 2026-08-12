@@ -1,0 +1,23 @@
+{
+  "task": "extract-invoice",
+  "config": "bare",
+  "repeat": 2,
+  "passed": true,
+  "outcome": "pass",
+  "seed": 2743656613,
+  "output": "Based on the given text, here's how you can represent the extracted information in a JSON format as requested:\n\n```json\n{\n  \"number\": \"INV-42\",\n  \"total\": 199\n}\n```\n\nThis JSON object captures the invoice number and total amount from the provided text. Note that we consider the currency mentioned (USD) to be implicit based on context rather than part of a strict key-value extraction as specified.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Extract the invoice as JSON with keys \"number\" (string) and \"total\" (integer).\nText: \"Invoice INV-42 came to 199 USD, paid by card.\"\n",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "Based on the given text, here's how you can represent the extracted information in a JSON format as requested:\n\n```json\n{\n  \"number\": \"INV-42\",\n  \"total\": 199\n}\n```\n\nThis JSON object captures the invoice number and total amount from the provided text. Note that we consider the currency mentioned (USD) to be implicit based on context rather than part of a strict key-value extraction as specified.",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

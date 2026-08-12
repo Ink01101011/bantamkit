@@ -1,0 +1,23 @@
+{
+  "task": "recall-env-endpoint",
+  "config": "bare",
+  "repeat": 1,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 1136019295,
+  "output": "{\"url\": \"https://api.example.com/v1/reports\"}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the full base URL for the reports API in PRODUCTION, including the version prefix? If you have a memory tool, check memory first. Answer with ONLY this JSON, nothing else: {\"url\": \"<url>\"}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "{\"url\": \"https://api.example.com/v1/reports\"}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

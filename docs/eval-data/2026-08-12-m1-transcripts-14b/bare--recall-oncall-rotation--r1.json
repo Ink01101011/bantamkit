@@ -1,0 +1,23 @@
+{
+  "task": "recall-oncall-rotation",
+  "config": "bare",
+  "repeat": 1,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 3203733254,
+  "output": "{\"name\": \"\"}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Who is on call for the PAYMENTS service this week? If you have a memory tool, check memory first. Answer with ONLY this JSON, nothing else: {\"name\": \"<name>\"}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "{\"name\": \"\"}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

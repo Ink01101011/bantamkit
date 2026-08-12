@@ -1,0 +1,56 @@
+{
+  "task": "shop-total",
+  "config": "bare",
+  "repeat": 1,
+  "passed": true,
+  "outcome": "pass",
+  "seed": 2924426239,
+  "output": "The total value of the stock is 25 * 4 = 100.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Use the tools to find the unit price and stock count of \"widget\",\nthen answer with the total value of the stock (price times stock) as a number.\n",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_aji3gkg2",
+          "name": "price_lookup",
+          "arguments": {
+            "item": "widget"
+          }
+        },
+        {
+          "id": "call_s1vaj5uy",
+          "name": "stock_lookup",
+          "arguments": {
+            "item": "widget"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "widget price: 25",
+      "tool_calls": [],
+      "tool_call_id": "call_aji3gkg2"
+    },
+    {
+      "role": "tool",
+      "content": "widget stock: 4",
+      "tool_calls": [],
+      "tool_call_id": "call_s1vaj5uy"
+    },
+    {
+      "role": "assistant",
+      "content": "The total value of the stock is 25 * 4 = 100.",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

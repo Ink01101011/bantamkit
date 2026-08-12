@@ -1,0 +1,23 @@
+{
+  "task": "recall-deploy",
+  "config": "bare",
+  "repeat": 2,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 1150705719,
+  "output": "{\"command\": \"deploy_project_to_production\"}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "How do we deploy this project to production? If you have a memory tool, check memory first. Answer with ONLY this JSON, nothing else: {\"command\": \"<command>\"}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "{\"command\": \"deploy_project_to_production\"}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "task": "recall-db-port",
+  "config": "bare",
+  "repeat": 1,
+  "passed": true,
+  "outcome": "pass",
+  "seed": 4023478678,
+  "output": "{\"port\": 5433}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What port does the STAGING database listen on? If you have a memory tool, check memory first. Answer with ONLY this JSON, nothing else: {\"port\": <number>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "{\"port\": 5433}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

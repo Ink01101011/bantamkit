@@ -1,0 +1,382 @@
+{
+  "bar": "perturbation",
+  "threshold": 7,
+  "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+  "requests": 224,
+  "wire_calls": 224,
+  "tokens_total": 79812,
+  "variants": [
+    {
+      "label": "A-asfiled",
+      "rubric_ref": "assets/rubrics/task-completion.yaml",
+      "rubric_sha256": "55f700e09bab0cfac01cb18d4cfb54666ff942598035697e0383726fe82c2868",
+      "dropped_rules": []
+    }
+  ],
+  "cells": [
+    {
+      "task": "extract-contact",
+      "repeat": 0,
+      "seed": 2259705935,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "12/12",
+          "passed": 12,
+          "family_size": 12,
+          "score_min": 9,
+          "score_max": 10,
+          "spread": 1,
+          "margin_zero": 0,
+          "identity_scores": [
+            10,
+            10,
+            10,
+            10,
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-contact",
+      "repeat": 1,
+      "seed": 3497327120,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "12/12",
+          "passed": 12,
+          "family_size": 12,
+          "score_min": 9,
+          "score_max": 10,
+          "spread": 1,
+          "margin_zero": 0,
+          "identity_scores": [
+            10,
+            10,
+            10,
+            10,
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-contact",
+      "repeat": 2,
+      "seed": 2660316194,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "12/12",
+          "passed": 12,
+          "family_size": 12,
+          "score_min": 9,
+          "score_max": 10,
+          "spread": 1,
+          "margin_zero": 0,
+          "identity_scores": [
+            9,
+            9,
+            9,
+            9,
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-invoice",
+      "repeat": 0,
+      "seed": 1357191355,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "12/12",
+          "passed": 12,
+          "family_size": 12,
+          "score_min": 9,
+          "score_max": 10,
+          "spread": 1,
+          "margin_zero": 0,
+          "identity_scores": [
+            9,
+            9,
+            9,
+            9,
+            9
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-invoice",
+      "repeat": 1,
+      "seed": 3927040636,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "12/12",
+          "passed": 12,
+          "family_size": 12,
+          "score_min": 9,
+          "score_max": 10,
+          "spread": 1,
+          "margin_zero": 0,
+          "identity_scores": [
+            10,
+            10,
+            10,
+            10,
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-order",
+      "repeat": 1,
+      "seed": 2555329956,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "12/12",
+          "passed": 12,
+          "family_size": 12,
+          "score_min": 9,
+          "score_max": 10,
+          "spread": 1,
+          "margin_zero": 0,
+          "identity_scores": [
+            10,
+            10,
+            10,
+            10,
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "nav-prod-port",
+      "repeat": 1,
+      "seed": 4094558621,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "4/12",
+          "passed": 4,
+          "family_size": 12,
+          "score_min": 0,
+          "score_max": 9,
+          "spread": 9,
+          "margin_zero": 0,
+          "identity_scores": [
+            5,
+            5,
+            5,
+            5,
+            5
+          ],
+          "identity_spread": 0,
+          "fragile": true
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "nav-prod-port",
+      "repeat": 2,
+      "seed": 634446002,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "3/12",
+          "passed": 3,
+          "family_size": 12,
+          "score_min": 0,
+          "score_max": 9,
+          "spread": 9,
+          "margin_zero": 0,
+          "identity_scores": [
+            5,
+            5,
+            5,
+            5,
+            5
+          ],
+          "identity_spread": 0,
+          "fragile": true
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-cache-ttl",
+      "repeat": 0,
+      "seed": 2825330101,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "12/12",
+          "passed": 12,
+          "family_size": 12,
+          "score_min": 9,
+          "score_max": 10,
+          "spread": 1,
+          "margin_zero": 0,
+          "identity_scores": [
+            10,
+            10,
+            10,
+            10,
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-db-port",
+      "repeat": 2,
+      "seed": 1328387732,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "10/12",
+          "passed": 10,
+          "family_size": 12,
+          "score_min": 2,
+          "score_max": 10,
+          "spread": 8,
+          "margin_zero": 0,
+          "identity_scores": [
+            10,
+            10,
+            10,
+            10,
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": true
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-deploy",
+      "repeat": 2,
+      "seed": 1150705719,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "4/12",
+          "passed": 4,
+          "family_size": 12,
+          "score_min": 0,
+          "score_max": 9,
+          "spread": 9,
+          "margin_zero": 0,
+          "identity_scores": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "identity_spread": 0,
+          "fragile": true
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-env-endpoint",
+      "repeat": 0,
+      "seed": 2451981973,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "11/12",
+          "passed": 11,
+          "family_size": 12,
+          "score_min": 0,
+          "score_max": 10,
+          "spread": 10,
+          "margin_zero": 0,
+          "identity_scores": [
+            10,
+            10,
+            10,
+            10,
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": true
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "recall-oncall-rotation",
+      "repeat": 1,
+      "seed": 3203733254,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "0/12",
+          "passed": 0,
+          "family_size": 12,
+          "score_min": 0,
+          "score_max": 2,
+          "spread": 2,
+          "margin_zero": 0,
+          "identity_scores": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "shop-compare",
+      "repeat": 2,
+      "seed": 4118104234,
+      "variants": {
+        "A-asfiled": {
+          "pass_rate": "0/12",
+          "passed": 0,
+          "family_size": 12,
+          "score_min": 0,
+          "score_max": 2,
+          "spread": 2,
+          "margin_zero": 0,
+          "identity_scores": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "identity_spread": 0,
+          "fragile": false
+        }
+      },
+      "comparisons": []
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "task": "shop-compare",
+  "config": "bare",
+  "repeat": 2,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 4118104234,
+  "output": "\u7421\n{\"name\": \"price_lookup\", \"arguments\": {\"item\": \"widget\"}}\n</tool_call>\n",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Use the tools to check the unit prices of \"widget\" and \"gadget\",\nand answer with the name of the more expensive item.\n",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "\u7421\n{\"name\": \"price_lookup\", \"arguments\": {\"item\": \"widget\"}}\n</tool_call>\n",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}
