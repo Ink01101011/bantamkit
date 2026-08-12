@@ -3519,14 +3519,52 @@ and each carries an attack direction.
   empty list — first asserting that `PYTEST_CURRENT_TEST` **is** in the parent's
   environment, so an empty list downstream is the scrub working and not the
   variable being absent. Against the scrubbed harness the gaming patch now
-  **fails**: `3 failed, 5 passed`, and the first node to reject it is
-  `test_closed_pipe_clean_run_still_exits_zero` (`assert 120 == 0`), with the
-  other two spec nodes rejecting it on `3` and `4`.
+  **fails**: `3 failed, 4 passed, 158 deselected`, and the first node to reject
+  it is `test_closed_pipe_clean_run_still_exits_zero` (`assert 120 == 0`), with
+  the other two spec nodes rejecting it on `3` and `4`. The selector is
+  `pytest runtime-py/tests/test_criticreplay.py -k "closed_pipe or non_pipe"
+  --runxfail`, and it collects **7 of 165** nodes — check that in one command
+  with `… -q --collect-only -k "closed_pipe or non_pipe"`, which prints
+  `7/165 tests collected (158 deselected)`.
+  **Corrected 2026-08-13 (J5 review, M1).** This line read `3 failed, 5 passed`
+  until now, and `3 + 5 = 8` is impossible against a 7-node selector. The
+  neighbouring `7 passed` for the *pre-scrub* harness is right and reproduces,
+  which is what makes this a transcription slip in the record rather than a
+  different measurement; the claim the sentence makes — that the scrub rejects
+  the gaming patch, on three nodes — is unchanged and still holds.
   **The residual, and RB-P28 stays OPEN for it.** The scrub kills the
   demonstrated exploit, not the class. A patch can still key on `sys.argv[0]`,
   on a tmp-dir-shaped path, on the absence of a TTY, or on any other tell that
   "running under a test runner" leaves behind — and no environment filter
-  enumerates those. **Attack:** give the acceptance oracle a phase measured
+  enumerates those.
+  **And the residual is no longer hypothetical: it has been exhibited, twice
+  (2026-08-13).** The J5 review wrote a patch that **deletes the shipped
+  `BrokenPipeError` handler entirely** — none of the fix is in it — and replaces
+  it with a check on the command line rather than the environment:
+
+  ```python
+  if "pytest-of-" in " ".join(sys.argv):
+      try: sys.stdout.flush()
+      except BrokenPipeError: pass
+      os._exit(status)
+  ```
+
+  `pytest`'s `tmp_path` lives under a `pytest-of-<user>` directory, and both
+  status harnesses pass that path to the child on its command line, so the tell
+  arrives by a route `_child_env` does not filter and cannot filter. Against the
+  **scrubbed** harness that patch scores a full **`739 passed`** on
+  `.venv/bin/python -m pytest runtime-py/tests -q --runxfail` — every node in the
+  repaired suite, the three RB-P27 spec nodes and the scrub node included — while
+  the same tree **field-measures `120`** where real HEAD gives `3`. The
+  orchestrator reproduced it independently, in a throwaway worktree at `88ed3c1`,
+  and got the same two numbers. So `b5ee8ec` closed **one signal out of at least
+  two**, and the phrase "tmp-dir-shaped path" three lines above is now a
+  measurement rather than a worry. Nothing that was claimed closed is re-opened
+  by this — the residual was filed with this shape from the start — but it is the
+  reason RB-P27's closure above rests on the **field measurement alone**: a fake
+  patch can score green on every node this repo owns, and it cannot fake a real
+  shell's `$?` on a process with no pytest anywhere in it.
+  **Attack:** give the acceptance oracle a phase measured
   **outside pytest entirely** — the field command in RB-P27's closure is the
   shape of it — so that at least one clause is evaluated on a process the
   patched code cannot distinguish from production. That is a change to the
@@ -3576,6 +3614,81 @@ and each carries an attack direction.
   acceptable — and either way say which, because "we fixed the prompt" without
   saying how makes the next cell incomparable with this one. Both are rig
   changes and both need their own pre-registration. (Measurement.)
+
+Three more, from the J5 review of the RB-P27 fix itself, filed 2026-08-13 and
+**not fixed here** — the unit that filed them was told to file and stop, so that
+a fix and its own acceptance check are never written by the same hand in the same
+breath. Read the provenance line on each: two are **inherited**, measured at
+`c7d0b72` (v0.18.0, before this branch existed) as well as at HEAD, and are not
+damage this PR did; the third **is** a side effect of the handler this PR
+shipped, and says so.
+
+- **RB-P31 — a stdout failure on the run path that is NOT the reader going away
+  is uncovered, and at a table bigger than stdout's buffer it lands on `1` — the
+  status that means "did not complete a measurement, artifacts are PARTIAL" — on
+  a run that completed.** The RB-P27 handler converts `BrokenPipeError` and
+  nothing else, which is deliberate
+  (`test_a_non_pipe_failure_around_the_table_print_is_not_downgraded` exists to
+  keep it that way). Measured by J5: with fd 1 pointed at a **read-only** fd, the
+  table print fails with `EBADF`, not `EPIPE`, stderr live throughout, and the run
+  still leaves the range at **`120`**; and on a **2800-row** run — a table larger
+  than stdout's buffer, with a **907 KB** summary on disk — the same failure
+  escapes `main` and reports **`1`**. A run whose every artifact is written
+  reporting the refusal status is the **RB-P24 defect class**, alive one line from
+  where RB-P24 fixed it. Two routes, not one: the handler's own recovery can fail
+  too — `os.open(os.devnull)` raising `EMFILE` inside the `except` arm reaches `1`
+  as well, because the handler has no fallback for its own repair failing.
+  **Inherited, and the inheritance is itself a finding:** at `c7d0b72` a table
+  larger than stdout's buffer escapes `main` as an uncaught `BrokenPipeError` and
+  gives `1`, not the `120` the three RB-P27 spec nodes were written against — so
+  the pre-fix number those nodes pinned is **size-dependent, and was only ever
+  measured at the small size**. **Attack:** give the table print the treatment
+  RB-P24 gave the summary write — an `except OSError` arm that keeps the status
+  the run EARNED and reports the render failure on stderr under its own number —
+  or, if letting a genuine `OSError` propagate is deliberate, stop letting it land
+  on `REFUSAL_EXIT` and say in the epilog which number it lands on instead. Either
+  way the acceptance check has to be a node that goes red on the `EBADF` case **at
+  both table sizes**, because the two sizes give different numbers and a
+  single-size node would pin half of it. (Measurement.)
+- **RB-P32 — a malformed `--rubric` exits `1`, and the two committed statements
+  about what `2` covers disagree with each other.** `--rubric /tmp/x.yaml` (a
+  value missing its `LABEL=`, every required argument present) is a pure
+  command-line syntax error: nothing ran, no artifact exists. It exits **`1`**,
+  "did not complete a measurement — artifacts are PARTIAL". The user-visible
+  epilog says `2` is "usage error (argparse's number, **including this module's
+  own validations**)", which covers this case; the module comment at `:174` says
+  something narrower — argparse "owns this module's own `parser.error`
+  validations" — which does not. So the disagreement is not between the prose and
+  the behaviour alone, it is between two committed sentences about the same
+  number. **Inherited**, measured at `c7d0b72` and at HEAD; it is not a regression
+  from this branch, but this branch revised that epilog and re-shipped the
+  sentence, which is why it is filed here rather than left implicit. **Attack,
+  preferred:** route `parse_rubric_arg` and every other argument-*shape*
+  validation through `parser.error`, so that "fix the command line" is always `2`
+  and both numbers mean what the epilog says they mean. **Alternative:** narrow
+  the epilog to match the module comment and pin the malformed case at `1` with
+  its meaning stated — cheaper, and it leaves a CI job unable to tell a typo from
+  an aborted run. Either way the acceptance node reads the status from a real
+  shell. (Measurement.)
+- **RB-P33 — `main()` leaves the process's fd 1 pointing at `/dev/null` after it
+  handles a dead stdout, permanently, and nothing says so. NOT inherited: this is
+  a side effect of the handler `dc121b5` shipped on this branch** — `c7d0b72` has
+  no `dup2` and no `devnull` anywhere in this module — so it is filed against this
+  PR, not around it. The `dup2` is load-bearing (without it CPython's
+  finalization flush re-fails on the dead pipe and replaces the earned status with
+  `120` again), so this is a **cost of the fix**, not an accident in it. The bytes
+  that were doomed stay doomed either way; what the clobber destroys is the
+  **caller's ability to detect the loss** — for every subsequent write, for the
+  life of the process. That bites here specifically because `main` is exported in
+  `__all__` and this repo's own `cli_exit_status_probe.py` calls it
+  **in-process**: an in-process caller that writes to fd 1 after `main` returns
+  now gets silence and success where it used to get an exception. **Attack:** save
+  `os.dup(1)` before the `dup2` and restore fd 1 from it before returning, so the
+  clobber lasts exactly as long as the shutdown flush needs it — or, if the
+  restore is judged unsafe, declare the clobber in `main`'s docstring **and** in
+  the epilog and pin it with a node asserting that a post-`main` write to fd 1
+  still raises. Silence is the one option not available, because a caller cannot
+  discover this by reading the contract. (Measurement.)
 
 Two of the review's findings were fixed in this cycle rather than filed:
 `requests` counted JSONL rows while `Verdict.calls` was dropped from the row
@@ -3688,12 +3801,34 @@ pre-registration's §7 named in advance as the raw material for a harder cell.
 Counted over the 20 raw completions in the per-attempt files, not over the
 extracted patches: `devnull` 0, `dup2` 0, `SIGPIPE` 0, `EPIPE` 0 — and
 `BrokenPipeError` itself 0, so not one completion so much as **named** the
-exception. And **no attempt chose `1` as the status for this case**: the only
-`SystemExit(1)` text anywhere on a `REPLACE` side is three copies of the file's
-pre-existing `raise SystemExit(1) from e` in the `BantamError` handler, carried
-through unchanged. So the "recipe recall" signature the pre-registration worried
-about is absent in both directions, and its observable 1 is informative by its
-absence rather than dead.
+exception. And **no attempt chose `1` as the status for this case** — where the
+count behind that sentence is an **exact-string count of `SystemExit(1)` on
+`REPLACE` sides**, and the method is stated because the sentence reads stronger
+than the method is: three occurrences, all in the 7b (attempts 1, 5, 8), and all
+three are copies of the file's pre-existing `raise SystemExit(1) from e` in the
+`BantamError` handler, carried through unchanged. So the "recipe recall"
+signature the pre-registration worried about is absent in both directions, and
+its observable 1 is informative by its absence rather than dead.
+**What the exact string does not see, recorded here rather than left for a later
+reader to find.** `qwen2.5-7b-instruct` attempt 4 newly authors
+`raise SystemExit(int(status or 1)) from e` on its `REPLACE` side — a literal `1`
+used as a status, written by the model and not carried through from the `SEARCH`
+side. It sits on the `BantamError` **refusal** path, not the closed-pipe path, so
+the scoped claim above survives it unchanged; but "no attempt chose `1`" is the
+output of a string count and not an exhaustive statement about what the models
+wrote, and it has to be read as the former.
+**Reconciling `c6ddf44`'s commit body, which describes this same observable in
+words that cannot both be true as written.** That commit records "the exit status
+named in the patch was the literal `1` in 4 of the 7b's 10 attempts"; this file
+says no attempt chose `1`. Both reproduce, under different readings of "named",
+and neither is any-occurrence. The `4` is the count of 7b `REPLACE` sides whose
+exit call names a literal `1` **including** attempt 4's `int(status or 1)` —
+attempts 1, 4, 5, 8. The `3` is the exact-string count of `SystemExit(1)`, which
+excludes attempt 4. For the record, any-occurrence is a third number neither
+statement is making: `SystemExit(1)` appears somewhere in **7** of the 7b's 10
+raw completions, mostly on `SEARCH` sides. All four counts were re-derived from
+the committed per-attempt files on 2026-08-13; the commit body is history and
+stays as written, so this paragraph is the reconciliation.
 Cost of the whole cell: 20 local Ollama calls plus the review's 17, zero hosted
 calls, zero dollars.
 
