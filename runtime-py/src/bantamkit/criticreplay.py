@@ -199,6 +199,53 @@ def _words(text: str) -> set[str]:
     return set(_WORD.findall(text.lower()))
 
 
+# §3.3 step 3, guard 4. A sentence ends at `.`/`!`/`?` followed by whitespace OR the end
+# of the string — a NEWLINE is whitespace, which is the whole point: the template is
+# hard-wrapped, so the predicate this replaces (`". " in anchor` or a trailing `.`) was
+# inverted on real input. It raised on an anchor that is exactly one complete sentence,
+# and passed an anchor spanning two sentences joined by a newline.
+_SENTENCE_END = re.compile(r"[.!?](?=\s|$)")
+
+# §3.3 step 3, guard 3, at WORD boundaries and case-sensitively (§3.6 X3: case here does
+# illocutionary work). Substring counting reported `every` as moved when `itself` became
+# `everything`.
+_FROZEN_KEYWORD_RE = {
+    word: re.compile(rf"(?<![A-Za-z0-9_]){re.escape(word)}(?![A-Za-z0-9_])")
+    for word in FROZEN_KEYWORDS
+}
+
+
+def _spans_a_sentence_boundary(text: str) -> bool:
+    """True when `text` continues past a sentence terminator.
+
+    "One sentence per instance" admits a whole sentence — an instance that IS one
+    complete sentence is the easiest thing there is to check at a glance. What it
+    forbids is an instance that runs past a boundary into a second sentence.
+    """
+    stripped = text.strip()
+    return any(match.end() != len(stripped) for match in _SENTENCE_END.finditer(stripped))
+
+
+def _keyword_positions(text: str) -> list[tuple[str, int]]:
+    """Every frozen keyword in `text`, with its ordinal position in the word sequence.
+
+    Counting can only see a keyword appear or vanish. `"Judge ONLY whether"` ->
+    `"Judge whether ONLY"` changes what `ONLY` scopes over while leaving every count
+    identical, and that is a requirement edit wearing a paraphrase's clothes — exactly
+    what guard 3 is for. Comparing positions across the instance catches it, and still
+    admits rewording the words a keyword governs (`"Do NOT deduct"` -> `"Do NOT
+    subtract"` leaves `NOT` at index 1).
+    """
+    words = _WORD.findall(text)
+    found: list[tuple[str, int]] = []
+    for keyword in FROZEN_KEYWORDS:
+        parts = keyword.split()
+        for index in range(len(words) - len(parts) + 1):
+            if words[index : index + len(parts)] == parts:
+                found.append((keyword, index))
+    return sorted(found)
+
+
 # ---- the manifest (§3, §4.1) ----
 
 
@@ -437,6 +484,15 @@ def point_admissibility_violations(point: Point, base: str, perturbed: str) -> l
     Guard 3's keyword list has lived in this module since the bar shipped and was read
     only by an offline test over the three committed variants — the same
     defined-but-uncalled shape as guard 2. Guards 1 and 4 had no definition here at all.
+
+    Guards 3 and 4 were both written from the spec with no measured defect behind them,
+    and once they could abort a run they aborted it on legitimate input. Guard 4 was
+    INVERTED on the real template: it flagged `". "` and a trailing `.`, so an anchor
+    that is exactly one complete sentence raised, while an anchor spanning two sentences
+    joined by a newline — which is how the hard-wrapped template joins them — passed.
+    Guard 3 counted substrings, so `itself` -> `everything` "moved" the keyword `every`,
+    and reordering `ONLY` inside the instance moved nothing. See `_spans_a_sentence_
+    boundary` and `_keyword_positions`.
     """
     problems = []
     for literal in FROZEN_LITERALS:
@@ -445,14 +501,21 @@ def point_admissibility_violations(point: Point, base: str, perturbed: str) -> l
     if point.point_class != "paraphrase":
         return problems
     for word in FROZEN_KEYWORDS:
-        if perturbed.count(word) != base.count(word):
+        pattern = _FROZEN_KEYWORD_RE[word]
+        if len(pattern.findall(perturbed)) != len(pattern.findall(base)):
             problems.append(f"moves the frozen keyword {word!r}")
     if point.op != "replace" or len(point.replace) != 1:
         problems.append("is not one sentence expressed as one literal from -> to pair")
-    else:
-        anchor = point.replace[0]["from"]
-        if anchor.count(". ") or anchor.strip().endswith("."):
-            problems.append("spans more than one sentence")
+        return problems
+    anchor, replacement = point.replace[0]["from"], point.replace[0]["to"]
+    if _keyword_positions(anchor) != _keyword_positions(replacement):
+        problems.append(
+            "moves a frozen keyword within the instance it edits, changing what the "
+            "directive scopes over"
+        )
+    for side, label in ((anchor, "from"), (replacement, "to")):
+        if _spans_a_sentence_boundary(side):
+            problems.append(f"spans more than one sentence (the {label} side)")
     return problems
 
 

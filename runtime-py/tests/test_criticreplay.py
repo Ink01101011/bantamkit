@@ -169,14 +169,21 @@ def test_paraphrase_points_change_no_negation_quantifier_or_modal(manifest):
 
 
 def test_paraphrase_points_edit_exactly_one_sentence(manifest):
-    """§3.3 step 3: an instance a reader cannot check at a glance is not defensible."""
+    """§3.3 step 3: an instance a reader cannot check at a glance is not defensible.
+
+    The predecessor of this test asserted the shipped anchors have no `". "` and no
+    trailing `.` — which pins the ACCIDENT that all three happen to anchor on
+    sub-sentence fragments, not the rule. "One sentence per instance" admits a whole
+    sentence; what it forbids is an instance that runs past a sentence boundary, and
+    the boundary can be a newline, because the template is hard-wrapped.
+    """
     for point in manifest.points:
         if point.point_class != "paraphrase":
             continue
         assert point.op == "replace" and len(point.replace) == 1, point.id
         for op in point.replace:
-            assert op["from"].count(". ") == 0, point.id
-            assert not op["from"].strip().endswith("."), point.id
+            assert not criticreplay._spans_a_sentence_boundary(op["from"]), point.id
+            assert not criticreplay._spans_a_sentence_boundary(op["to"]), point.id
 
 
 # §3.3 step 3, guard 2 — the two tables, over all 22 frozen prompts, as LITERAL data.
@@ -1571,6 +1578,112 @@ def test_run_refuses_a_paraphrase_expressed_as_anything_but_one_substitution(
     with pytest.raises(criticreplay.PerturbationError, match="one sentence"):
         criticreplay.run(*args, model="m")
     assert client.calls == []
+
+
+# ---- I3 and I4: the two guards that aborted runs on legitimate input ----
+#
+# Both were written from the spec with no measured defect behind them, and since
+# `3420384` they can stop a run. Guard 4 was INVERTED on the real template, which is
+# hard-wrapped: it flagged on `". "` and a trailing `.`, so an anchor that is exactly one
+# complete sentence raised, and an anchor genuinely spanning two sentences across a
+# newline returned clean. Guard 3 counted SUBSTRINGS, so `every` "moved" into
+# `everything` and a keyword reordered inside the instance did not move at all.
+
+ONE_SENTENCE_ANCHOR = "Judge ONLY whether the information the task asks for is present and correct."
+
+
+def _paraphrase(anchor, replacement, pid="P-probe"):
+    return criticreplay.Point(
+        id=pid, point_class="paraphrase", rule="reword", op="replace",
+        replace=[{"from": anchor, "to": replacement}], justification="probe",
+    )
+
+
+def test_guard_four_admits_an_anchor_that_is_exactly_one_complete_sentence():
+    """I4: this anchor is one complete sentence — exactly what guard 4 demands.
+
+    It is the shipped template's first line, verbatim. Under the old predicate its
+    trailing `.` raised `PerturbationError` and aborted the whole run.
+    """
+    base = _shipped_template()
+    assert ONE_SENTENCE_ANCHOR in base
+    point = _paraphrase(ONE_SENTENCE_ANCHOR, ONE_SENTENCE_ANCHOR.replace("Judge", "Assess"))
+    perturbed = criticreplay.apply_point(point, base)
+    assert criticreplay.point_admissibility_violations(point, base, perturbed) == []
+
+
+def test_guard_four_refuses_an_anchor_spanning_two_sentences_across_a_newline():
+    """I4, the other half: the template is hard-wrapped, so `". "` never appears there.
+
+    Under the old predicate this anchor — two whole sentences — returned CLEAN.
+    """
+    base = "Judge the answer.\nBe brief about it.\nT:{task}\nA:{output}\n"
+    point = _paraphrase(
+        "Judge the answer.\nBe brief about it", "Judge the reply.\nBe brief about it"
+    )
+    perturbed = criticreplay.apply_point(point, base)
+    problems = criticreplay.point_admissibility_violations(point, base, perturbed)
+    assert any("more than one sentence" in p for p in problems), problems
+
+
+def test_guard_four_refuses_a_replacement_that_splits_one_sentence_into_two():
+    """The `to` side is an instance too: a paraphrase may not add a sentence boundary."""
+    base = "Judge the answer well today.\nT:{task}\nA:{output}\n"
+    point = _paraphrase("the answer well today", "the answer. Consider it well today")
+    perturbed = criticreplay.apply_point(point, base)
+    problems = criticreplay.point_admissibility_violations(point, base, perturbed)
+    assert any("more than one sentence" in p for p in problems), problems
+
+
+def test_guard_three_does_not_fire_on_a_frozen_keyword_inside_a_longer_word():
+    """I3: `every` is a frozen keyword; `everything` is not a use of it.
+
+    Substring counting aborted this run claiming the keyword `every` had moved.
+    """
+    base = "Score it, even when the answer explains itself.\nT:{task}\nA:{output}\n"
+    point = _paraphrase("explains itself", "explains everything")
+    perturbed = criticreplay.apply_point(point, base)
+    assert criticreplay.point_admissibility_violations(point, base, perturbed) == []
+
+
+def test_guard_three_refuses_a_keyword_reordered_inside_the_instance():
+    """I3, the other half: a real scope change that substring counting reports clean.
+
+    "Judge ONLY whether" -> "Judge whether ONLY" moves what `ONLY` scopes over, and the
+    count of `ONLY` in the template is identical before and after.
+    """
+    base = "Judge ONLY whether it is right.\nT:{task}\nA:{output}\n"
+    point = _paraphrase("Judge ONLY whether", "Judge whether ONLY")
+    perturbed = criticreplay.apply_point(point, base)
+    assert perturbed.count("ONLY") == base.count("ONLY")
+    problems = criticreplay.point_admissibility_violations(point, base, perturbed)
+    assert any("frozen keyword" in p for p in problems), problems
+
+
+def test_guard_three_still_admits_a_paraphrase_beside_a_keyword_it_leaves_in_place():
+    """The rule is scope, not proximity: rewording the verb `NOT` governs is allowed."""
+    base = "Do NOT deduct points for formatting.\nT:{task}\nA:{output}\n"
+    point = _paraphrase("Do NOT deduct points", "Do NOT subtract points")
+    perturbed = criticreplay.apply_point(point, base)
+    assert criticreplay.point_admissibility_violations(point, base, perturbed) == []
+
+
+def test_a_run_is_not_aborted_by_a_paraphrase_anchored_on_one_whole_sentence(
+    asset_tree, tmp_path
+):
+    """The end of the abort: the same probe, through `run()`, spends and reports."""
+    client, args = _admissibility_rig(
+        asset_tree, tmp_path,
+        {
+            "id": "P-whole-sentence", "class": "paraphrase", "rule": "reword",
+            "op": "replace",
+            "replace": [{"from": "Judge ONLY the answer.", "to": "Judge ONLY the reply."}],
+            "justification": "exactly one complete sentence, which is what guard 4 demands",
+        },
+    )
+    result = criticreplay.run(*args, model="m")
+    assert {r.point for r in result.rows} == {"identity", "P-whole-sentence"}
+    assert client.calls
 
 
 def test_the_shipped_manifest_passes_all_three_cell_independent_guards(manifest):
