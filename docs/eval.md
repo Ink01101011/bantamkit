@@ -254,13 +254,17 @@ Run it before the attribution, not after the argument:
 
 **Read the exit status first — it is machine-readable and the three fields
 below are not.** Since RB-P24 closed (2026-08-12) this command exits `3` when
-guard 2 fired on a (point, cell) it actually replayed, `1` when it refused and
-measured nothing, `2` on a usage error, and `0` only when it measured and the
-guard fired on nothing. A `3` is not a failed run: every artifact is written,
-and it says the GUARD section below the table has to be read before an
-attribution is credited. `--violations-exit-zero` is the named opt-out, for a
-procedure whose violations are expected and recorded. Full contract: RB-P24
-under "New measured problems from the perturbation bar (2026-08-12)".
+guard 2 fired on a (point, cell) it actually replayed, `1` when it did not
+complete a measurement, `2` on a usage error, `4` when it measured but could
+not write the summary file, and `0` when it measured and the guard fired on
+nothing. A `3` is not a failed run: every artifact is written, and it says the
+GUARD section below the table has to be read before an attribution is
+credited. A `1` is not a promise that nothing was written — the `--json` sink
+flushes per row, so an aborted run leaves partial rows behind; treat any
+artifact from a `1` as partial. `--violations-exit-zero` is the named opt-out
+from `3` alone, for a procedure whose violations are expected and recorded.
+Full contract: RB-P24 under "New measured problems from the perturbation bar
+(2026-08-12)".
 
 Read three fields per cell, in this order:
 
@@ -3075,27 +3079,66 @@ and each carries an attack direction.
   amendment. (Measurement.)
 
   **CLOSED (2026-08-12) — (1) is done: the exit status now carries the
-  verdict.** The contract, which is new prose beside the filing above and
-  replaces nothing in it:
+  verdict, AND the committed caller it changes has been migrated.** The
+  second clause is what makes the word CLOSED true rather than aspirational:
+  an implementation that leaves
+  `docs/eval-data/2026-08-12-nonfragile-anchor-set.json` telling an operator
+  "that half of RB-P24 is OPEN" is a repo that contradicts itself, and the
+  review of this entry rejected the closure on exactly that ground. Migration
+  note item 1 below is the amendment; it landed before this word did. The
+  contract, which is new prose beside the filing above and replaces nothing
+  in it — and which the review then corrected in two places, marked (a) and
+  (b) under the table:
 
   | status | meaning |
   |---|---|
   | `0` | measured, and guard 2 fired on nothing that ran |
-  | `1` | refused, and measured nothing — every `BantamError` path, `--guard error` included |
-  | `2` | usage error — argparse's, not this tool's |
+  | `1` | **did not complete a measurement** — every `BantamError` path and every mid-run abort. Artifacts are PARTIAL, not absent |
+  | `2` | usage error — argparse's, not this tool's, `parser.error` included |
   | `3` | **measured, WITH violations** — every artifact written, the guard fired |
+  | `4` | **measured, but an artifact could not be written** — the `--summary` file. Outranks `3` |
 
-  **Three meanings may not share one number, and the third number was
-  measured rather than assumed.** `1` is the refusal status the
-  perturbation-bar spec's §6/§11 conditions already rest on, and it is
-  untouched. `2` is argparse's, and it was read from a shell
-  (`python -m bantamkit.criticreplay --not-a-flag; echo $?` -> `2`) rather
-  than taken from a manual, because a guard status that collided with the
-  "you typed the command wrong" status would be a third meaning wearing a
-  second one's number. `3` is the first free value above the two that are
-  taken. What a CI job writes against it: `0` clean, `1` fix the input, `2`
-  fix the command line, `3` the run HAPPENED and the GUARD section and the
-  `guard_dropped` blocks must be read before anything is credited.
+  **Two meanings may not share one number, and every number here was
+  measured rather than assumed.** `2` is argparse's, and it was read from a
+  shell (`python -m bantamkit.criticreplay --not-a-flag; echo $?` -> `2`)
+  rather than taken from a manual, because a guard status that collided with
+  the "you typed the command wrong" status would be a third meaning wearing a
+  second one's number. It is argparse's number **for this module's own
+  validations too**, because they are raised through `parser.error` and not
+  through `PerturbationError`: measured, `--replays 0` exits `2`, not `1`,
+  and that is pinned from a shell as well. `3` is the first free value above
+  the two that were taken; `4` is the next one after `3`. What a CI job
+  writes against them: `0` clean, `1` fix the input and run it again (and do
+  not trust the artifacts it left), `2` fix the command line, `3` the run
+  HAPPENED and the GUARD section and the `guard_dropped` blocks must be read
+  before anything is credited, `4` the run happened but its summary is not on
+  disk.
+
+  **`1` says "did not complete a measurement" and NOT "refused, and measured
+  nothing", because the second sentence was false** — found by the H2 review
+  of this entry, in two independent ways, and both are fixed rather than
+  filed. (a) The `--summary` write sat outside every handler, so an
+  unwritable path was an unhandled `OSError`, i.e. a `1`, on a run that had
+  already flushed every JSONL row. Measured at `ccde670`, violating 4b
+  `nav-prod-port` with a `--summary` whose parent is a regular file: `status=1`,
+  **32 rows on disk**, and — because the traceback preceded the `print` — an
+  empty stdout, so the run also lost its table. That is `4` now, measured at
+  `status=4` with the same 32 rows and the GUARD section printed. (b) Even with
+  (a) fixed, "measured nothing" overclaims for EVERY mid-run abort: the sink's
+  `flush()` carries the comment "a killed run keeps its partials" and is there
+  on purpose, so a run that dies on request 40 of 80 — a refused connection is
+  the review's own reproduced case — exits `1` with rows already written. The
+  contract now says plainly that artifacts from a `1` are partial, in the
+  module comment, in the `--help` epilog, and here.
+
+  **The range is the tool's, and everything outside it is not.** `0`–`4` are
+  this tool's to choose (`2` excepted, which is argparse's and is recorded
+  rather than chosen). Anything else came from the interpreter or from a
+  signal — measured on this interpreter, 2026-08-12: SIGINT `130`, SIGTERM
+  `143`, and a stdout that goes away mid-table `120`. A CI job should branch on
+  `0`–`4` and treat everything else as "did not run to completion", which is
+  also why the one case where that reading is wrong is filed below as RB-P27
+  rather than left implicit.
 
   **What counts, for status purposes: guard 2's union non-empty on a (point,
   cell) the run ACTUALLY REPLAYED**, read off the rows the run wrote —
@@ -3129,14 +3172,22 @@ and each carries an attack direction.
   **The escape hatch: `--violations-exit-zero`, and it is defended, not
   assumed.** Default off, a long flag with no short form, no env var and no
   default value, it changes nothing that is written, and taking it prints on
-  stderr the status it suppressed — so a run that used it cannot be mistaken
-  for a clean one, in a log or in review. The reason it exists is not
-  symmetry with `apply_point(check=False)`: it is that the ad-hoc route
+  stderr the status it suppressed — so a run that used it is distinguishable
+  from a clean one **in any log that keeps stderr**. It is **not** recorded in
+  the artifacts — the `f8404ab` floor pins the summary dict — so a reader
+  holding only the summary JSON and `$?` cannot tell a suppressed `3` from a
+  `0`. **Attack:** the lever is the anchor procedure recording the flag beside
+  the command it runs, not a new summary field. The reason the hatch exists is
+  not symmetry with `apply_point(check=False)`: it is that the ad-hoc route
   around a mandatory status, `|| true`, is **strictly worse than a flag**,
   because it swallows `1` and `2` as well and hides refusals and typos along
   with violations. And there is a legitimate caller — the anchor set's second
   pass deliberately runs over violating cells and records them. A named,
-  visible opt-out from `3` alone beats an invisible opt-out from everything.
+  visible opt-out from `3` alone beats an invisible opt-out from everything,
+  and "from `3` alone" is now pinned rather than asserted: with the flag
+  passed, a refusal is still `1`, `--guard error` is still `1`, a usage error
+  is still `2`, and an unwritable summary is still `4` — four shell tests that
+  go red if a refactor moves the hatch above the error handler.
 
   **Verified by an independent method: a shell's `$?`, not a caught
   `SystemExit`.** A test that calls `main()` and catches `SystemExit`
@@ -3150,22 +3201,44 @@ and each carries an attack direction.
   selection in `warn` mode exits **3** with all 80 rows, the summary and the
   table written; the 14b anchor selection exits **3**; `--guard error` over
   the same 4b cells exits **1** before the first request; `--identity-only`
-  exits **0**. Tests were written first and confirmed red (11 failing before
-  the implementation existed); 720 tests.
+  exits **0**; a violating run whose `--summary` cannot be written exits
+  **4** with its 32 rows and its table intact; `--replays 0` exits **2**;
+  `--help` exits **0** and prints the statuses. Tests were written first and
+  confirmed red (11 failing before the implementation existed); the C1 fix
+  was measured on the pre-fix source through the same command before it was
+  written. **729 tests**, nine of them added by the review's findings.
+
+  One method note, because it cost a false negative once: the grep that
+  built the migration list below read `bantamkit.criticreplay`, and
+  `docs/eval-data/2026-08-12-m1-screen.md` writes its invocations as bare
+  `criticreplay …`. Grep the **bare word** as well as the module path, or a
+  committed caller stays invisible.
 
   **Migration note — every committed invocation whose status changes,
-  grepped rather than reasoned about** (`grep -rn "bantamkit.criticreplay"`,
-  whole repo):
+  grepped rather than reasoned about** (`grep -rn "bantamkit.criticreplay"`
+  AND `grep -rIn "criticreplay"` for the bare word, whole repo — the second
+  grep is what found item 6, and the first alone did not):
 
   1. `docs/eval-data/2026-08-12-nonfragile-anchor-set.json` ->
      `how_to_use.command`, the second pass: **0 -> 3**, measured on both
      models' committed transcripts. It runs `warn` mode over cells that
      include three violating anchors, which is deliberate. Its
      `guard_first_pass.command` is **unchanged at 1**, but
-     `guard_first_pass.why` now describes a state of the world that has
-     ended ("that half of RB-P24 is OPEN"). **Both belong to H3**, under the
-     visible `amended:` marker that file already carries; they are not
-     touched here.
+     `guard_first_pass.why` described a state of the world that had ended
+     ("that half of RB-P24 is OPEN"). **MIGRATED (2026-08-12)**, under the
+     visible `amended:` marker that file already carries and by a script that
+     lists every key that moved and refuses to write if one moved outside a
+     declared set: `guard_first_pass.why` now quotes its own old text and
+     says what stopped being true, and gives the first pass a reason that
+     does not depend on the status (it names the tainted pairs at zero spend,
+     before you commit 208 requests); a new `command_exit_status` records
+     that the second pass now exits **3**, that 3 is EXPECTED there, that a
+     **0** there is itself a stop signal, and that
+     `--violations-exit-zero` must not be passed there; and `rule` step (2)
+     sends the operator to it. Eight keys moved, all prose; `command`,
+     `cost`, `rule_as_committed`, `cell_selection`, `caveats`, `cells`,
+     `coverage` and `measured_under` are byte-identical to `ccde670`,
+     re-verified after the fact.
   2. `docs/eval.md`'s credit command (the "Run it before the attribution"
      block): **0 -> 3** on any cell where guard 2 fires on a replayed pair —
      `nav-prod-port` is one. A pointer to this contract is added beside that
@@ -3176,11 +3249,23 @@ and each carries an attack direction.
      acceptance item 2 (`--help` runs): **unchanged at 0**. §6's and §11's
      "must exit non-zero" conditions: **unchanged at 1**. Neither acceptance
      item is retro-edited.
-  5. Nothing else invokes the CLI: `.github/workflows/ci.yml` runs `ruff`
+  5. Nothing else executes the CLI: `.github/workflows/ci.yml` runs `ruff`
      and `pytest` only, and there is no script or Makefile in the repo that
      calls it. The `rbp19b` runs have committed **artifacts** but no
      committed command line of their own — the anchor set's `command` is the
      one they were run from, which is item 1.
+  6. `docs/eval-data/2026-08-12-m1-screen.md:118,132` — the screen's own
+     stage commands, **missed by the first grep** because they are written
+     `criticreplay …` without the module prefix. Stage 2 ("`criticreplay` at
+     defaults") is **0 -> 3** on both committed stage-2 transcript
+     directories, measured; stage 1
+     (`--identity-only --identity-replays 1`) is **unchanged at 0**,
+     measured on both. **That file is committed evidence of a run already
+     taken and is NOT amended** — the run it records happened under the old
+     contract and its numbers are what they were. This item is the migration
+     note doing its job: a future re-run of that screen will exit 3 where the
+     document says nothing about a status, and this is where they find out
+     why.
 
   **Found and not fixed, with an attack direction.** A violation on a point
   dropped from *every* variant's family is in the summary and in the guard
@@ -3188,10 +3273,13 @@ and each carries an attack direction.
   only `$?` learns nothing about it. That is the right call for a pair that
   entered no statistic, but the honest description is "the status covers what
   ran, and something the status does not cover is reported only in the
-  artifact". **Attack:** if that gap ever matters, the lever is not a fourth
-  number — it is the anchor procedure's step 3, which already diffs
+  artifact". **Attack:** if that gap ever matters, the lever is not another
+  status number — it is the anchor procedure's step 3, which already diffs
   `guard_dropped` cell by cell, extended to diff `dropped_rules` too, so a
-  family that silently changed shape is caught by the same read. (Measurement.)
+  family that silently changed shape is caught by the same read. (The `4`
+  added later in this entry is not that lever and does not close this gap:
+  it is about a file that could not be written, not about a pair that did not
+  run.) (Measurement.)
 
 - **RB-P25 — nothing in this repo distinguishes guard 2's `(task, repeat)`
   cell key from a `task`-only one, so half the key is unmeasured.** Measured
@@ -3249,6 +3337,37 @@ and each carries an attack direction.
   them against each other over the frozen 12 points and the three committed
   variants, so a drift is a test failure rather than a silent difference in a
   file nobody diffs. (Measurement.)
+- **RB-P27 — the write status covers the summary FILE, and the printed table
+  is an artifact the contract names but the status cannot speak for.** What
+  survives RB-P24's C1 fix, measured 2026-08-12 from a shell reading its own
+  `$?`, on the real CLI over the committed 4b anchor transcripts:
+  (a) with the reader of its stdout gone, a violating run **completes**,
+  writes all 32 of its JSONL rows and a summary carrying both its guard
+  violations, and exits **120** — the
+  interpreter's number for "flushing stdout at shutdown failed"
+  (`Exception ignored in: <_io.TextIOWrapper name='<stdout>'>`,
+  `BrokenPipeError`), not `3`, not `4`, and outside the tool's own range;
+  (b) an unwritable `--json` path fails in `Path.mkdir` **before the first
+  request**, so it exits `1` through an unhandled traceback — the number is
+  honest under the restated `1` ("did not complete a measurement"), but it
+  reaches the operator as a stack trace rather than as `error: …`.
+  Case (a) is the one that matters, and it is precisely the case where the
+  contract's own advice ("treat anything outside `0`–`4` as *did not run to
+  completion*") is **wrong**: the run ran to completion, and its summary is
+  on disk to prove it. `4` does not cover it — `4` is raised by catching
+  `OSError` around a write the tool controls, and a broken stdout fails
+  during interpreter shutdown, after `main` has returned.
+  **Attack, and it is not a sixth number.** Two levers, in order: (1) state
+  in the contract that `120` means "the tool finished but its stdout went
+  away", which costs one sentence and makes the range advice correct instead
+  of nearly-correct; (2) if a caller ever needs to branch on it, install a
+  `BrokenPipeError` handler around the table print that exits with the status
+  the run had already **earned** (`0`/`3`/`4`), so a lost stdout downgrades
+  to a known number instead of an unknown one — and pin it with the same
+  closed-pipe harness that measured (a), which is a `subprocess.Popen` whose
+  read end is closed before the child prints. Not done here: it is a change
+  to what the process does at shutdown, and this cycle's remit was the status
+  a completed run chooses. (Measurement.)
 
 Two of the review's findings were fixed in this cycle rather than filed:
 `requests` counted JSONL rows while `Verdict.calls` was dropped from the row
