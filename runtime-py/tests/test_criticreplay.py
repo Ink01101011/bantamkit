@@ -178,50 +178,156 @@ def test_paraphrase_points_edit_exactly_one_sentence(manifest):
             assert not op["from"].strip().endswith("."), point.id
 
 
-def test_shared_token_guard_table_over_every_frozen_task_prompt(manifest):
-    """§3.3 step 3, guard 2 — the WHOLE table, over all 22 frozen prompts.
+# §3.3 step 3, guard 2 — the two tables, over all 22 frozen prompts, as LITERAL data.
+#
+# Guard 2 forbids a word "the point adds or removes" from appearing in the cell. The
+# spec says that twice, in two sentences that do not agree, and the user's ruling
+# (2026-08-12) is that both readings are computed and reported and NEITHER is called
+# wrong. These two dicts are the tables each reading produces. They are derived from the
+# spec's wording and from the frozen prompt texts — NOT by calling the function under
+# test — because a golden table written by calling the implementation pins the author's
+# method, which is exactly how this guard came to be under-reported twice.
+#
+# WHOLE-TEXT (§3.3's operative Test sentence: "the symmetric difference of the base and
+# perturbed word sets must be disjoint from the task prompt's word set"). The word sets
+# are of the whole template, so a word the edit removes from one clause but which still
+# occurs elsewhere in the template is not in the difference:
+#
+#   P1  "You are a reviewer checking whether" -> "...who checks whether".
+#       `checking` occurs only there, `who`/`checks` are new  -> {checking, checks, who}
+#   P2  "the information the task asks for" -> "the information the task requests".
+#       `asks` survives in "what the task asks for is missing the required content";
+#       `for` survives in "Do NOT deduct points for formatting"          -> {requests}
+#   P3  "present and right" -> "present and correct".
+#       `correct` already occurs in "present and correct" in the opening -> {right}
+#
+# SUBSTITUTION-PAIR (§3.3 step 4's form: the instance IS the `from` -> `to` pair, so the
+# words it moves are the pair's symmetric difference, whatever the rest of the template
+# still says):
+#
+#   P1 -> {checking, checks, who}   P2 -> {asks, for, requests}   P3 -> {right, correct}
+#
+# The frozen prompts that contain those words:
+#   who       recall-oncall ("who is on-call"), recall-oncall-rotation
+#   for       nav-release-bundle, recall-cache-ttl, recall-env-endpoint, recall-oncall,
+#             recall-oncall-rotation, recall-org-quota
+#   requests  recall-org-quota ("requests-per-minute") — NOT YET REACHABLE: the module's
+#             tokenizer treats a hyphen as word-internal, so `requests-per-minute` is one
+#             token and neither reading can see `requests` in it. That is a false
+#             negative (C2) and it is the next commit's concern; these tables are pinned
+#             here as they read TODAY so that commit's diff shows exactly what it moves.
+#   right     nav-prod-port ("follow the documentation to the right file")
+#   asks / checking / checks / correct  — none of the 22
+WHOLE_TEXT_TABLE = {
+    "P1-reviewer-relative": {
+        "recall-oncall": ["who"],
+        "recall-oncall-rotation": ["who"],
+    },
+    "P3-right-correct": {"nav-prod-port": ["right"]},
+}
 
-    Three SPEC DEFECTS pinned here rather than papered over. The guard is "no added or
-    removed word may appear in the cell's {task}", and the spec's own per-point
-    justifications check only the *added* word, on the acceptance cell only:
+SUBSTITUTION_PAIR_TABLE = {
+    "P1-reviewer-relative": {
+        "recall-oncall": ["who"],
+        "recall-oncall-rotation": ["who"],
+    },
+    "P2-asks-requests": {
+        "nav-release-bundle": ["for"],
+        "recall-cache-ttl": ["for"],
+        "recall-env-endpoint": ["for"],
+        "recall-oncall": ["for"],
+        "recall-oncall-rotation": ["for"],
+        "recall-org-quota": ["for"],
+    },
+    "P3-right-correct": {"nav-prod-port": ["right"]},
+}
 
-    - `P1` moves `who`/`checks`/`checking`; `who` is in both on-call prompts.
-    - `P2` moves `asks`/`for`/`requests`. `requests` violates NOWHERE —
-      `recall-org-quota` says "requests-per-minute", which tokenizes as one word. The
-      violating word is the preposition `for`, on six tasks.
-    - `P3` removes `right`; `nav-prod-port` says "follow the documentation to the right
-      file".
+# What the run's decision rule acts on: tainted if EITHER reading flags it.
+UNION_TABLE = {
+    "P1-reviewer-relative": {
+        "recall-oncall": ["who"],
+        "recall-oncall-rotation": ["who"],
+    },
+    "P2-asks-requests": {
+        "nav-release-bundle": ["for"],
+        "recall-cache-ttl": ["for"],
+        "recall-env-endpoint": ["for"],
+        "recall-oncall": ["for"],
+        "recall-oncall-rotation": ["for"],
+        "recall-org-quota": ["for"],
+    },
+    "P3-right-correct": {"nav-prod-port": ["right"]},
+}
 
-    The predecessor of this test asserted `{"P3-right-correct": ["right"]}` against
-    `nav-prod-port` alone, so five of the eight violating (point, task) pairs were
-    unpinned and the violation table was under-reported twice downstream (RB-P19). The
-    points ship as the spec specifies them; this table is what keeps the cost visible,
-    and a manifest edit that adds a violation now fails here instead of being discovered
-    three units later.
-    """
-    table: dict[str, dict[str, list[str]]] = {}
-    for path in sorted((ASSETS / "evals" / "tasks").glob("*.yaml")):
-        task_prompt = yaml.safe_load(path.read_text())["prompt"]
-        for point in manifest.points:
-            words = criticreplay.shared_token_violations(point, task_prompt)
-            if words:
-                table.setdefault(point.id, {})[path.stem] = words
-    assert table == {
-        "P1-reviewer-relative": {
-            "recall-oncall": ["who"],
-            "recall-oncall-rotation": ["who"],
-        },
-        "P2-asks-requests": {
-            "nav-release-bundle": ["for"],
-            "recall-cache-ttl": ["for"],
-            "recall-env-endpoint": ["for"],
-            "recall-oncall": ["for"],
-            "recall-oncall-rotation": ["for"],
-            "recall-org-quota": ["for"],
-        },
-        "P3-right-correct": {"nav-prod-port": ["right"]},
+
+def _frozen_prompts() -> dict[str, str]:
+    return {
+        path.stem: yaml.safe_load(path.read_text())["prompt"]
+        for path in sorted((ASSETS / "evals" / "tasks").glob("*.yaml"))
     }
-    assert len(list((ASSETS / "evals" / "tasks").glob("*.yaml"))) == 22
+
+
+def _measured_tables(manifest) -> dict[str, dict[str, dict[str, list[str]]]]:
+    base = _shipped_template()
+    tables: dict[str, dict[str, dict[str, list[str]]]] = {r: {} for r in criticreplay.READINGS}
+    for name, prompt in _frozen_prompts().items():
+        for point in manifest.points:
+            hit = criticreplay.shared_token_violations(point, prompt, base)
+            for reading, words in hit.items():
+                if words:
+                    tables[reading].setdefault(point.id, {})[name] = words
+    return tables
+
+
+def test_the_frozen_suite_is_still_the_twenty_two_prompts_these_tables_cover():
+    assert len(_frozen_prompts()) == 22
+
+
+def test_guard_two_whole_text_reading_over_every_frozen_task_prompt(manifest):
+    """The reading an independent reviewer derived from §3.3's Test sentence alone.
+
+    It matches the table already committed in M1's pre-registered screen. Under it `P2`
+    violates via the added word `requests` on `recall-org-quota` only — `asks` and `for`
+    both survive elsewhere in the template, so neither leaves the critic's input.
+    """
+    assert _measured_tables(manifest)["whole-text"] == WHOLE_TEXT_TABLE
+
+
+def test_guard_two_substitution_pair_reading_over_every_frozen_task_prompt(manifest):
+    """The reading the manifest's own P2 justification prose implies.
+
+    Under it the preposition `for` violates on six tasks, because the instance is the
+    `from` -> `to` pair and the pair drops `for` whatever the rest of the template says.
+    """
+    assert _measured_tables(manifest)["substitution-pair"] == SUBSTITUTION_PAIR_TABLE
+
+
+def test_the_two_readings_disagree_on_p2_which_is_why_both_are_reported(manifest):
+    """The whole reason the user ruled 'report both': the readings disagree, on P2.
+
+    Neither is wrong. `for` is flagged by substitution-pair and not by whole-text
+    because it survives elsewhere in the template; both are defensible readings of the
+    same spec section, in two different sentences of it.
+    """
+    tables = _measured_tables(manifest)
+    assert tables["whole-text"].get("P2-asks-requests") != tables["substitution-pair"].get(
+        "P2-asks-requests"
+    )
+    assert tables["whole-text"]["P1-reviewer-relative"] == tables["substitution-pair"][
+        "P1-reviewer-relative"
+    ]
+
+
+def test_the_union_of_both_readings_is_what_the_decision_rule_acts_on(manifest):
+    """Pinned as its own table: the set a run treats as tainted on the frozen suite."""
+    tables = _measured_tables(manifest)
+    union: dict[str, dict[str, list[str]]] = {}
+    for reading in criticreplay.READINGS:
+        for point, hits in tables[reading].items():
+            for task, words in hits.items():
+                merged = set(union.setdefault(point, {}).get(task, [])) | set(words)
+                union[point][task] = sorted(merged)
+    assert union == UNION_TABLE
 
 
 def test_materialization_matches_a_recomputation_from_the_rubric_texts(manifest):
@@ -710,9 +816,10 @@ def test_rows_carry_the_columns_the_spec_names(rig):
         "bar", "variant", "rubric_ref", "rubric_sha256", "manifest_sha256", "task", "seed",
         "repeat", "model", "point", "class", "rule", "replay", "prompt_sha256",
         "payload_sha256", "score", "threshold", "passed", "feedback", "tokens_in", "tokens_out",
-        "calls", "guard_violations",
+        "calls", "guard_violations", "guard_readings",
     }
     assert row["guard_violations"] == []
+    assert row["guard_readings"] == {"whole-text": [], "substitution-pair": []}
     assert row["bar"] == "perturbation" and row["threshold"] == 7
     assert row["class"] in ("identity", "whitespace", "order", "paraphrase")
     assert json.dumps(row)  # JSONL-writable
@@ -1039,7 +1146,13 @@ def test_summary_reports_the_guard_dropped_family_beside_the_full_one(guard_rig)
     assert stats["guard_dropped"]["family_size"] == 2
     assert summary["guard"]["mode"] == "warn"
     assert summary["guard"]["violations"] == [
-        {"task": "alpha", "repeat": 0, "point": "P-taskword", "words": ["alpha"]}
+        {
+            "task": "alpha",
+            "repeat": 0,
+            "point": "P-taskword",
+            "words": ["alpha"],
+            "readings": {"whole-text": ["alpha"], "substitution-pair": ["alpha"]},
+        }
     ]
     assert json.dumps(summary)
 
@@ -1129,6 +1242,183 @@ def test_the_table_names_the_guard_drop_so_a_reader_cannot_miss_it(guard_rig):
     table = criticreplay.format_table(criticreplay.summarize(result, guard_rig["manifest"].sha256))
     assert "GUARD" in table
     assert "P-taskword" in table and "alpha" in table
+
+
+# ---- guard 2's TWO readings, reported side by side (the user's ruling, 2026-08-12) ----
+#
+# `gamma`'s prompt is "TWO STEP GAMMA" and the template says TWO twice, so the point's
+# edit removes `TWO` from the anchor while `TWO` survives elsewhere in the template.
+# substitution-pair flags it; whole-text does not. That is the disagreement in
+# miniature, and it is the same disagreement the shipped `P2-asks-requests` has.
+SURVIVOR_PROMPT = "TWO GAMMA. ONE TWO\nT:{task}\nA:{output}\n"
+SURVIVOR_POINT = {
+    "id": "P-survivor",
+    "class": "paraphrase",
+    "rule": "reword",
+    "op": "replace",
+    "replace": [{"from": "ONE TWO", "to": "ONE THREE"}],
+    "justification": "removes TWO from the anchor, but TWO survives elsewhere in the template",
+}
+# The mirror case. The substitution lands INSIDE a word, so the pair's word sets are
+# {ght} / {sk} and the pair reading sees nothing the cell could share; the whole-text
+# reading sees `bright` leave and `brisk` arrive, and the cell says BRISK.
+INWORD_PROMPT = "A BRIGHT answer. ONE\nT:{task}\nA:{output}\n"
+INWORD_POINT = {
+    "id": "P-inword",
+    "class": "paraphrase",
+    "rule": "reword",
+    "op": "replace",
+    "replace": [{"from": "IGHT", "to": "ISK"}],
+    "justification": "a substitution that lands inside a word, invisible to the pair reading",
+}
+
+
+def _reading_rig(asset_tree, tmp_path, prompt, point, task, task_prompt, output):
+    (asset_tree / "evals" / "tasks" / f"{task}.yaml").write_text(
+        yaml.safe_dump({"name": task, "family": "f", "prompt": task_prompt})
+    )
+    manifest = criticreplay.load_manifest(
+        _write_manifest(asset_tree, points=[GUARD_POINTS[0], point])
+    )
+    variant = criticreplay.parse_rubric_arg(f"v={_write_rubric(tmp_path, 'v', prompt)}")
+    transcripts = tmp_path / "t"
+    _transcript(transcripts, "critique", task, 0, 111, output)
+    return criticreplay.run(
+        ScriptedCritic(lambda p: 9), [variant], manifest,
+        criticreplay.load_cases(transcripts), model="m",
+    ), manifest
+
+
+def test_a_word_the_edit_removes_but_the_template_keeps_splits_the_two_readings(
+    asset_tree, tmp_path
+):
+    """Both readings are computed, named, and disagree — and neither is dropped."""
+    result, _ = _reading_rig(
+        asset_tree, tmp_path, SURVIVOR_PROMPT, SURVIVOR_POINT, "gamma", "TWO STEP GAMMA", "OUT"
+    )
+    assert result.guard_readings["substitution-pair"] == {("gamma", 0): {"P-survivor": ["two"]}}
+    assert result.guard_readings["whole-text"] == {}
+    assert result.guard == {("gamma", 0): {"P-survivor": ["two"]}}
+
+
+def test_a_substitution_inside_a_word_is_seen_only_by_the_whole_text_reading(
+    asset_tree, tmp_path
+):
+    """The mirror: whole-text is not a subset of substitution-pair either.
+
+    This is why the decision rule is the union rather than a choice: each reading is
+    blind somewhere the other is not, and under-detection is the failure this guard
+    exists to prevent.
+    """
+    result, _ = _reading_rig(
+        asset_tree, tmp_path, INWORD_PROMPT, INWORD_POINT, "gamma", "A BRISK TASK", "OUT"
+    )
+    assert result.guard_readings["whole-text"] == {("gamma", 0): {"P-inword": ["brisk"]}}
+    assert result.guard_readings["substitution-pair"] == {}
+    assert result.guard == {("gamma", 0): {"P-inword": ["brisk"]}}
+
+
+def test_every_row_carries_both_readings_by_name_beside_the_union(asset_tree, tmp_path):
+    """Machine-readable in the committed JSONL, per point and per cell, by name."""
+    result, _ = _reading_rig(
+        asset_tree, tmp_path, SURVIVOR_PROMPT, SURVIVOR_POINT, "gamma", "TWO STEP GAMMA", "OUT"
+    )
+    tainted = [r for r in result.rows if r.point == "P-survivor"]
+    assert tainted
+    for row in tainted:
+        assert row.guard_violations == ["two"]
+        assert row.row()["guard_readings"] == {
+            "whole-text": [],
+            "substitution-pair": ["two"],
+        }
+    for row in result.rows:
+        if row.point != "P-survivor":
+            assert row.row()["guard_readings"] == {"whole-text": [], "substitution-pair": []}
+
+
+def test_the_summary_names_both_readings_the_decision_rule_and_calls_neither_wrong(
+    asset_tree, tmp_path
+):
+    result, manifest = _reading_rig(
+        asset_tree, tmp_path, SURVIVOR_PROMPT, SURVIVOR_POINT, "gamma", "TWO STEP GAMMA", "OUT"
+    )
+    summary = criticreplay.summarize(result, manifest.sha256)
+    guard = summary["guard"]
+    assert sorted(guard["readings"]) == ["substitution-pair", "whole-text"]
+    assert "union" in guard["decision_rule"]
+    assert "NEITHER is wrong" in guard["rule"]
+    assert guard["by_reading"]["substitution-pair"] == [
+        {"task": "gamma", "repeat": 0, "point": "P-survivor", "words": ["two"]}
+    ]
+    assert guard["by_reading"]["whole-text"] == []
+    assert guard["violations"][0]["words"] == ["two"]
+    assert guard["violations"][0]["readings"] == {
+        "whole-text": [],
+        "substitution-pair": ["two"],
+    }
+    cell = summary["cells"][0]
+    assert cell["guard_readings"] == {
+        "whole-text": {},
+        "substitution-pair": {"P-survivor": ["two"]},
+    }
+    assert cell["variants"]["v"]["guard_readings"] == {
+        "whole-text": {},
+        "substitution-pair": {"P-survivor": ["two"]},
+    }
+    assert json.dumps(summary)
+
+
+def test_the_printed_table_shows_both_readings_for_every_violation(asset_tree, tmp_path):
+    result, manifest = _reading_rig(
+        asset_tree, tmp_path, SURVIVOR_PROMPT, SURVIVOR_POINT, "gamma", "TWO STEP GAMMA", "OUT"
+    )
+    table = criticreplay.format_table(criticreplay.summarize(result, manifest.sha256))
+    assert "whole-text: (none)" in table
+    assert "substitution-pair: two" in table
+    assert "union" in table
+
+
+def test_guard_error_mode_names_the_reading_that_flagged(asset_tree, tmp_path):
+    """The strict reading still refuses before any spend, and says which reading fired."""
+    (asset_tree / "evals" / "tasks" / "gamma.yaml").write_text(
+        yaml.safe_dump({"name": "gamma", "family": "f", "prompt": "TWO STEP GAMMA"})
+    )
+    manifest = criticreplay.load_manifest(
+        _write_manifest(asset_tree, points=[GUARD_POINTS[0], SURVIVOR_POINT])
+    )
+    variant = criticreplay.parse_rubric_arg(f"v={_write_rubric(tmp_path, 'v', SURVIVOR_PROMPT)}")
+    transcripts = tmp_path / "t"
+    _transcript(transcripts, "critique", "gamma", 0, 111, "OUT")
+    client = ScriptedCritic(lambda p: 9)
+    with pytest.raises(criticreplay.PerturbationError) as excinfo:
+        criticreplay.run(
+            client, [variant], manifest, criticreplay.load_cases(transcripts),
+            model="m", guard="error",
+        )
+    message = str(excinfo.value)
+    assert "substitution-pair=['two']" in message and "whole-text=[]" in message
+    assert client.calls == []
+
+
+def test_guard_table_is_public_so_a_hand_rolled_loop_can_call_it(asset_tree, tmp_path):
+    """I6: guard 2 needs a cell, so it cannot ride inside `apply_point` — it ships as
+    one public call instead, and `run()` uses the same one."""
+    (asset_tree / "evals" / "tasks" / "gamma.yaml").write_text(
+        yaml.safe_dump({"name": "gamma", "family": "f", "prompt": "TWO STEP GAMMA"})
+    )
+    manifest = criticreplay.load_manifest(
+        _write_manifest(asset_tree, points=[GUARD_POINTS[0], SURVIVOR_POINT])
+    )
+    transcripts = tmp_path / "t"
+    _transcript(transcripts, "critique", "gamma", 0, 111, "OUT")
+    table = criticreplay.guard_table(
+        manifest.points, criticreplay.load_cases(transcripts), {"v": SURVIVOR_PROMPT}
+    )
+    assert table == {
+        ("gamma", 0): {"P-survivor": {"whole-text": [], "substitution-pair": ["two"]}}
+    }
+    assert criticreplay.guard_union(table[("gamma", 0)]["P-survivor"]) == ["two"]
+    assert "guard_table" in criticreplay.__all__
 
 
 # ---- the guard's three siblings in the RUN path (§3.3 step 3, guards 1, 3, 4) ----

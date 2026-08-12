@@ -20,6 +20,14 @@ Two constraints that are not optional (spec §6.1):
 
 Not a whole-suite sweeper: its job is validating one change's attribution on a named
 cell or a small task set.
+
+**Guard 2 has two readings and this module reports both.** §3.3's shared-token guard
+forbids a word "the point adds or removes" from appearing in the cell, and the spec says
+that in two sentences which do not agree about what "the point adds or removes" means.
+An independent re-derivation from the spec's Test sentence produced one table; this
+module's original implementation produced another; the user's ruling (2026-08-12) is
+that both are computed, both are named in the artifacts, and neither is declared wrong.
+`moved_words` defines them; `guard_union` is what the run acts on when they differ.
 """
 
 from __future__ import annotations
@@ -45,7 +53,10 @@ from bantamkit.evalrun import TrackingClient
 from bantamkit.structured import structured
 
 __all__ = [
+    "GUARD_DECISION_RULE",
     "GUARD_MODES",
+    "READINGS",
+    "READING_RULES",
     "Case",
     "Manifest",
     "PerturbationError",
@@ -56,10 +67,13 @@ __all__ = [
     "Verdict",
     "apply_point",
     "cell_guard_violations",
+    "guard_table",
+    "guard_union",
     "load_cases",
     "load_manifest",
     "main",
     "materialize_manifest",
+    "moved_words",
     "normalize_whitespace",
     "parse_rubric_arg",
     "point_admissibility_violations",
@@ -67,7 +81,9 @@ __all__ = [
     "replay_scores",
     "replay_verdicts",
     "run",
+    "substitution_pair_moved_words",
     "summarize",
+    "whole_text_moved_words",
 ]
 
 BAR = "perturbation"
@@ -94,8 +110,31 @@ FROZEN_KEYWORDS = (
 CLASSES = ("identity", "whitespace", "order", "paraphrase")
 
 # What a run does when a point violates §3.3's shared-token guard on a cell. See
-# `_guard_table` for why `warn` is the default and `error` is not.
+# `guard_table` for why `warn` is the default and `error` is not.
 GUARD_MODES = ("warn", "error")
+
+# §3.3 guard 2 has two defensible readings of "a word the point adds or removes", and
+# the spec supports each in a different sentence. The user's ruling (2026-08-12) is that
+# both are computed and reported side by side and neither is called wrong; `guard_union`
+# is the decision rule that has to act when they disagree. See `moved_words`.
+READINGS = ("whole-text", "substitution-pair")
+
+READING_RULES = {
+    "whole-text": (
+        "symmetric difference of the base and perturbed TEMPLATE word sets — §3.3's "
+        "operative Test sentence, and what an independent re-derivation from the spec "
+        "produced"
+    ),
+    "substitution-pair": (
+        "symmetric difference of the point's own `from`/`to` word sets — what §3.3 "
+        "step 4's substitution-pair form and the manifest's P2 justification imply"
+    ),
+}
+
+GUARD_DECISION_RULE = (
+    "union — a (point, cell) is tainted if EITHER reading flags it, because "
+    "under-detection is the direction this guard exists to prevent"
+)
 
 NO_NEWLINE = "\\ No newline at end of file"
 
@@ -298,21 +337,87 @@ def _swap(point_id: str, template: str, swap: dict) -> str | None:
     return template.replace(a, _SENTINEL).replace(b, a).replace(_SENTINEL, b)
 
 
-def shared_token_violations(point: Point, text: str) -> list[str]:
-    """§3.3 step 3, guard 2, against one text: the words this point moves that appear in it.
+def whole_text_moved_words(base: str, perturbed: str) -> list[str]:
+    """Reading 1 of "the words this point moves": base vs perturbed TEMPLATE word sets.
+
+    This is §3.3's operative Test sentence read literally — "the symmetric difference of
+    the base and perturbed word sets must be disjoint from the task prompt's word set" —
+    and it is what an independent reviewer, forbidden from reading this module, derived
+    from the spec alone. A word the edit drops from one clause but that still occurs
+    elsewhere in the template has not moved out of the critic's input, so this reading
+    does not count it.
+    """
+    return sorted(_words(base) ^ _words(perturbed))
+
+
+def substitution_pair_moved_words(point: Point) -> list[str]:
+    """Reading 2: the symmetric difference of the point's own `from`/`to` strings.
+
+    This is what §3.3 step 4 ("each P point is expressed as a literal `from` -> `to`
+    substitution pair") and the manifest's own P2 justification prose imply: the
+    instance is the pair, so the words the instance moves are the pair's. It is blind to
+    anything that is not a `replace` op, and to a substitution landing inside a word.
+    """
+    changed: set[str] = set()
+    for op in point.replace:
+        changed |= _words(op["from"]) ^ _words(op["to"])
+    return sorted(changed)
+
+
+def moved_words(point: Point, base: str, perturbed: str) -> dict[str, list[str]]:
+    """Both readings of §3.3 guard 2's "added or removed word", by name.
+
+    The user's ruling (2026-08-12) after the two readings were found to disagree on
+    `P2-asks-requests`: **compute both, report both, declare neither wrong.** The spec
+    supports each in a different sentence and they answer different questions —
+    whole-text asks what changed in the bytes the critic reads, substitution-pair asks
+    what the author declared they were changing. Neither is a superset of the other in
+    general: substitution-pair sees a word the edit removes from one clause that
+    survives elsewhere; whole-text sees an edit that lands inside a word, and any point
+    whose op is not `replace`.
+    """
+    return {
+        "whole-text": whole_text_moved_words(base, perturbed),
+        "substitution-pair": substitution_pair_moved_words(point),
+    }
+
+
+def guard_union(readings: dict[str, list[str]]) -> list[str]:
+    """The decision rule when the readings disagree: taint if EITHER flags (§3.3 g2).
+
+    Under-detection is the direction this guard exists to prevent — a tainted point that
+    reads clean is RB-P4's mechanism scoring itself — so the union is the conservative
+    choice, and the cost of a false taint is bounded: `pass_rate` still reports the full
+    family, only the *attribution* claim has to survive dropping the point.
+    """
+    out: set[str] = set()
+    for words in readings.values():
+        out |= set(words)
+    return sorted(out)
+
+
+def shared_token_violations(
+    point: Point, text: str, base: str, perturbed: str | None = None
+) -> dict[str, list[str]]:
+    """§3.3 step 3, guard 2, against one text — both readings, keyed by name.
 
     RB-P4's measured mechanism was literal matching against a token copied from the task
     prompt, so a paraphrase that changes the shared-token surface is changing the
     mechanism under test.
 
-    The primitive. It takes one text so the offline table over all 22 frozen task
+    The primitive. It takes one text so the offline tables over all 22 frozen task
     prompts can be pinned against it directly; `cell_guard_violations` is what the run
     path calls, because the guard the spec writes is about the whole cell.
     """
-    changed: set[str] = set()
-    for op in point.replace:
-        changed |= _words(op["from"]) ^ _words(op["to"])
-    return sorted(changed & _words(text))
+    if perturbed is None:
+        perturbed = _transform(point, base)
+        if perturbed is None:  # the anchor is absent: this point moves nothing here
+            perturbed = base
+    text_words = _words(text)
+    return {
+        reading: sorted(set(words) & text_words)
+        for reading, words in moved_words(point, base, perturbed).items()
+    }
 
 
 def point_admissibility_violations(point: Point, base: str, perturbed: str) -> list[str]:
@@ -344,7 +449,9 @@ def point_admissibility_violations(point: Point, base: str, perturbed: str) -> l
     return problems
 
 
-def cell_guard_violations(point: Point, case: Case) -> list[str]:
+def cell_guard_violations(
+    point: Point, case: Case, base: str, perturbed: str | None = None
+) -> dict[str, list[str]]:
     """The same guard against a whole cell: §3.3's `{task}` **or** `{output}`.
 
     Checking `{task}` alone is how this guard was under-implemented; the spec names both
@@ -352,10 +459,9 @@ def cell_guard_violations(point: Point, case: Case) -> list[str]:
     `{output}` half adds nothing today (zero extra violations over 20 cells), which is
     the point: a guard is not allowed to be right only by luck.
     """
-    return sorted(
-        set(shared_token_violations(point, case.prompt))
-        | set(shared_token_violations(point, case.output))
-    )
+    task = shared_token_violations(point, case.prompt, base, perturbed)
+    output = shared_token_violations(point, case.output, base, perturbed)
+    return {reading: sorted(set(task[reading]) | set(output[reading])) for reading in READINGS}
 
 
 def materialize_manifest(points: list[Point], templates: dict[str, str]) -> dict:
@@ -621,7 +727,7 @@ _ROW_KEYS = (
     "bar", "variant", "rubric_ref", "rubric_sha256", "manifest_sha256", "task", "seed",
     "repeat", "model", "point", "class", "rule", "replay", "prompt_sha256", "payload_sha256",
     "score", "threshold", "passed", "feedback", "tokens_in", "tokens_out", "calls",
-    "guard_violations",
+    "guard_violations", "guard_readings",
 )
 
 
@@ -651,8 +757,11 @@ class ReplayRow:
     calls: int  # wire calls behind this one row: 1, or more if `structured()` retried
     # §3.3 guard 2's verdict for THIS (point, cell): the shared words, or empty. The row
     # is the artifact a later reader has; a violation that lives only in prose is how
-    # this one got under-reported twice.
+    # this one got under-reported twice. `guard_violations` is the decision the run acts
+    # on — the union of the two readings — and `guard_readings` carries each reading
+    # under its own name, because the readings disagree and neither is wrong.
     guard_violations: list[str] = field(default_factory=list)
+    guard_readings: dict[str, list[str]] = field(default_factory=dict)
 
     def row(self) -> dict:
         data = dict(vars(self))
@@ -668,8 +777,13 @@ class RunResult:
     labels: list[str]
     threshold: int
     cells: list[Case]
-    # (task, repeat) -> {point id: shared words}. Empty when every point is clean.
+    # (task, repeat) -> {point id: shared words}. Empty when every point is clean. This
+    # is the UNION of the two readings: the set the decision rule acts on.
     guard: dict[tuple[str, int], dict[str, list[str]]] = field(default_factory=dict)
+    # reading name -> the same table under that reading alone. Both ship, side by side.
+    guard_readings: dict[str, dict[tuple[str, int], dict[str, list[str]]]] = field(
+        default_factory=dict
+    )
     guard_mode: str = "warn"
 
 
@@ -701,7 +815,21 @@ def run(
     threshold = thresholds.pop()
     points = [p for p in manifest.points if p.point_class == "identity" or not identity_only]
     selected = [p.id for p in points]
-    guard_table = _guard_table(points, cases, guard)
+    full_guard = guard_table(
+        points, cases, {v.label: v.rubric.prompt for v in variants}, mode=guard
+    )
+    union_guard = {
+        cell: {pid: guard_union(hit) for pid, hit in hits.items()}
+        for cell, hits in full_guard.items()
+    }
+    reading_guards = {
+        reading: {
+            cell: {pid: hit[reading] for pid, hit in hits.items() if hit[reading]}
+            for cell, hits in full_guard.items()
+            if any(hit[reading] for hit in hits.values())
+        }
+        for reading in READINGS
+    }
 
     templates: dict[str, dict[str, str]] = {}
     dropped: dict[str, list[str]] = {}
@@ -756,8 +884,16 @@ def run(
                         tokens_out=verdict.tokens_out,
                         calls=verdict.calls,
                         guard_violations=list(
-                            guard_table.get((case.task, case.repeat), {}).get(point.id, [])
+                            union_guard.get((case.task, case.repeat), {}).get(point.id, [])
                         ),
+                        guard_readings={
+                            reading: list(
+                                full_guard.get((case.task, case.repeat), {})
+                                .get(point.id, {})
+                                .get(reading, [])
+                            )
+                            for reading in READINGS
+                        },
                     )
                     rows.append(row)
                     if on_row is not None:
@@ -769,15 +905,29 @@ def run(
         labels=[v.label for v in variants],
         threshold=threshold,
         cells=list(cases),
-        guard=guard_table,
+        guard=union_guard,
+        guard_readings=reading_guards,
         guard_mode=guard,
     )
 
 
-def _guard_table(
-    points: list[Point], cases: list[Case], mode: str
-) -> dict[tuple[str, int], dict[str, list[str]]]:
+def guard_table(
+    points: list[Point], cases: list[Case], templates: dict[str, str], mode: str = "warn"
+) -> dict[tuple[str, int], dict[str, dict[str, list[str]]]]:
     """§3.3 guard 2 for every (point, cell), decided before a single request goes out.
+
+    Public because it is the one call a library consumer assembling their own replay
+    loop needs in order to get guard 2: it is a property of a (point, cell) pair, so
+    unlike guards 1/3/4 it cannot ride along inside `apply_point`, which never sees a
+    cell (see the module docstring on the API surface).
+
+    `templates` maps variant label to that variant's BASE template. The whole-text
+    reading is a function of the template, so it is computed per variant and unioned:
+    a word that moves on one variant under comparison is a word that moves.
+
+    Returns `{(task, repeat): {point id: {reading: shared words}}}`, carrying only the
+    (cell, point) pairs at least one reading flags. `guard_union` collapses a value to
+    the decision the run acts on.
 
     **`warn` is the default, and a hard error is the wrong default.** Eight of the
     twenty M1-screened cells violate this guard, `nav-prod-port` — the canonical cell of
@@ -792,22 +942,31 @@ def _guard_table(
     `error` is available for callers who want the strict reading, and it refuses here,
     before any spend.
     """
-    table: dict[tuple[str, int], dict[str, list[str]]] = {}
+    if mode not in GUARD_MODES:
+        raise PerturbationError(f"unknown guard mode {mode!r}; expected one of {GUARD_MODES}")
+    table: dict[tuple[str, int], dict[str, dict[str, list[str]]]] = {}
     for case in cases:
         for point in points:
-            words = cell_guard_violations(point, case)
-            if words:
-                table.setdefault((case.task, case.repeat), {})[point.id] = words
+            readings: dict[str, set[str]] = {reading: set() for reading in READINGS}
+            for base in templates.values():
+                for reading, words in cell_guard_violations(point, case, base).items():
+                    readings[reading] |= set(words)
+            hit = {reading: sorted(words) for reading, words in readings.items()}
+            if guard_union(hit):
+                table.setdefault((case.task, case.repeat), {})[point.id] = hit
     if table and mode == "error":
         named = "; ".join(
-            f"{task} r{repeat}: {pid} shares {words}"
+            f"{task} r{repeat}: {pid} shares {guard_union(hit)} ("
+            + ", ".join(f"{reading}={hit[reading]}" for reading in READINGS)
+            + ")"
             for (task, repeat), hits in sorted(table.items())
-            for pid, words in sorted(hits.items())
+            for pid, hit in sorted(hits.items())
         )
         raise PerturbationError(
             f"shared-token guard (spec §3.3 step 3, guard 2) violated on {len(table)} cell(s) "
-            f"— {named}. Re-run with the default guard mode to measure them anyway, with "
-            "every violating row and the guard-dropped family recorded."
+            f"— {named}. Decision rule: {GUARD_DECISION_RULE}. Re-run with the default guard "
+            "mode to measure them anyway, with every violating row and the guard-dropped "
+            "family recorded."
         )
     return table
 
@@ -873,17 +1032,23 @@ def summarize(result: RunResult, manifest_sha256: str) -> dict:
         key = (case.task, case.repeat)
         per_variant = by_cell.get(key, {})
         violations = result.guard.get(key, {})
+        readings = {
+            reading: dict(result.guard_readings.get(reading, {}).get(key, {}))
+            for reading in READINGS
+        }
         block = {
             "task": case.task,
             "repeat": case.repeat,
             "seed": case.seed,
             "guard_violations": dict(violations),
+            "guard_readings": readings,
             "variants": {
                 label: _variant_stats(
                     per_variant.get(label, {}),
                     [p for p in result.selected if p not in result.dropped[label]],
                     threshold,
                     violations,
+                    readings,
                 )
                 for label in result.labels
             },
@@ -900,13 +1065,38 @@ def summarize(result: RunResult, manifest_sha256: str) -> dict:
         "manifest_sha256": manifest_sha256,
         "guard": {
             "rule": "spec §3.3 step 3, guard 2 — no word a point adds or removes may "
-            "appear in the cell's {task} or {output}",
+            "appear in the cell's {task} or {output}. 'A word a point adds or removes' "
+            "has two defensible readings and the spec supports each in a different "
+            "sentence; both are computed and reported here and NEITHER is wrong.",
+            "readings": dict(READING_RULES),
+            "decision_rule": GUARD_DECISION_RULE,
             "mode": result.guard_mode,
             "violations": [
-                {"task": task, "repeat": repeat, "point": pid, "words": words}
+                {
+                    "task": task,
+                    "repeat": repeat,
+                    "point": pid,
+                    "words": words,
+                    "readings": {
+                        reading: result.guard_readings.get(reading, {})
+                        .get((task, repeat), {})
+                        .get(pid, [])
+                        for reading in READINGS
+                    },
+                }
                 for (task, repeat), hits in sorted(result.guard.items())
                 for pid, words in sorted(hits.items())
             ],
+            "by_reading": {
+                reading: [
+                    {"task": task, "repeat": repeat, "point": pid, "words": words}
+                    for (task, repeat), hits in sorted(
+                        result.guard_readings.get(reading, {}).items()
+                    )
+                    for pid, words in sorted(hits.items())
+                ]
+                for reading in READINGS
+            },
         },
         # `requests` is the row count — one row per (variant, cell, point, replay).
         # `wire_calls` is what actually went out: they differ exactly when `structured()`
@@ -933,6 +1123,7 @@ def _variant_stats(
     family: list[str],
     threshold: int,
     violations: dict[str, list[str]],
+    readings: dict[str, dict[str, list[str]]],
 ) -> dict:
     """One (variant, cell) block, plus the same statistic with tainted points removed.
 
@@ -940,10 +1131,17 @@ def _variant_stats(
     number, including the anchor set's `expect_pass_rate`. `guard_dropped` is the
     recomputation a reader would otherwise have to do by hand — and did, in prose, in
     `docs/eval.md`, because the artifacts could not carry it.
+
+    `guard_violations` is the union decision; `guard_readings` names each reading, so a
+    reader who prefers one of them can recompute `guard_dropped` for it without a run.
     """
     stats = _family_stats(point_rows, family, threshold)
     hits = {pid: words for pid, words in violations.items() if pid in family}
     stats["guard_violations"] = hits
+    stats["guard_readings"] = {
+        reading: {pid: words for pid, words in hit.items() if pid in family}
+        for reading, hit in readings.items()
+    }
     stats["guard_dropped"] = (
         _family_stats(point_rows, [pid for pid in family if pid not in hits], threshold)
         if hits
@@ -1083,11 +1281,19 @@ def format_table(summary: dict) -> str:
             )
     guard = summary["guard"]
     if guard["violations"]:
-        lines += ["", f"GUARD VIOLATIONS ({guard['mode']} mode) — {guard['rule']}:"]
+        lines += [
+            "",
+            f"GUARD VIOLATIONS ({guard['mode']} mode) — spec §3.3 step 3, guard 2, "
+            f"BOTH readings; decision: {guard['decision_rule']}",
+        ]
         for hit in guard["violations"]:
+            per_reading = "; ".join(
+                f"{reading}: {', '.join(hit['readings'][reading]) or '(none)'}"
+                for reading in READINGS
+            )
             lines.append(
                 f"- {hit['task']} r{hit['repeat']}: {hit['point']} shares "
-                f"{', '.join(hit['words'])} with the cell — dropped from the "
+                f"{', '.join(hit['words'])} with the cell [{per_reading}] — dropped from the "
                 "guard-clean family, attribution void unless the separation survives it"
             )
         for cell in summary["cells"]:
@@ -1157,9 +1363,10 @@ def main(argv: list[str] | None = None) -> None:
         choices=GUARD_MODES,
         default="warn",
         help=(
-            "what to do when a point shares a moved word with a cell (spec §3.3 guard 2): "
-            "'warn' measures it and records the violation on every row and in the summary "
-            "(default); 'error' refuses before any request"
+            "what to do when a point shares a moved word with a cell (spec §3.3 guard 2, "
+            "computed under BOTH readings and tainted if either flags): 'warn' measures it "
+            "and records both readings on every row and in the summary (default); 'error' "
+            "refuses before any request"
         ),
     )
     parser.add_argument("--json", type=Path, help="append one JSON line per replay to this file")
