@@ -1544,6 +1544,210 @@ def test_the_baseline_covers_a_populated_guard_table_and_a_zero_spend_refusal():
     }
 
 
+# ---- RB-P23: the guarded family constructor ----
+#
+# `guard_table` being public is not enough: it is a SECOND call a consumer has to know
+# exists, and the route that skips it is the shorter one. `guarded_family` inverts that
+# — one call from (variants, points, cells) to units that each carry a ready-to-replay
+# `Rubric` and guard 2's verdict on that exact (point, cell) pair, so the verdict is in
+# hand before the rubric is. The target property is a LENGTH comparison, not an
+# impossibility claim: Python has no private functions and the unguarded route below
+# still runs. What changes is which route is shorter.
+
+
+def _family(rig, **kw):
+    return criticreplay.guarded_family(rig["variants"], rig["manifest"], rig["cases"], **kw)
+
+
+def test_the_constructor_hands_back_no_replayable_rubric_without_its_guard_verdict(guard_rig):
+    """The return shape: per (variant, point, cell), never templates plus a side table.
+
+    A structure that hands back templates and a separate guard table closes nothing —
+    the consumer can still ignore half of it. Every unit here carries both.
+    """
+    family = _family(guard_rig)
+    assert family.units
+    for unit in family.units:
+        assert isinstance(unit.rubric, Rubric)
+        assert unit.rubric.prompt not in ("", None)
+        assert set(unit.guard_readings) == set(criticreplay.READINGS)
+        assert unit.guard_violations == (["alpha"] if unit.point.id == "P-taskword" else [])
+        assert unit.tainted is (unit.point.id == "P-taskword")
+
+
+def test_a_unit_carries_the_point_id_class_and_cell_it_belongs_to(guard_rig):
+    family = _family(guard_rig)
+    unit = next(u for u in family.units if u.point.id == "P-taskword")
+    assert (unit.point.point_class, unit.point.rule) == ("paraphrase", "reword")
+    assert (unit.case.task, unit.case.repeat, unit.case.seed) == ("alpha", 0, 111)
+    assert unit.variant.label in ("before", "after")
+
+
+def test_a_hand_rolled_consumer_replaying_the_units_cannot_miss_a_tainted_pair(guard_rig):
+    """The whole guarded route, spelled out: load_manifest -> guarded_family -> replay.
+
+    Two module calls after the manifest, and the second one takes its arguments straight
+    off the unit. The consumer never has to know `guard_table` exists.
+    """
+    client = ScriptedCritic(lambda p: 9)
+    family = _family(guard_rig)
+    seen = []
+    for unit in family.units:
+        verdicts = criticreplay.replay_verdicts(client, unit.rubric, unit.case, unit.replays)
+        seen.append((unit.point.id, unit.case.task, tuple(unit.guard_violations), len(verdicts)))
+    assert ("P-taskword", "alpha", ("alpha",), 1) in seen
+    assert len(client.calls) == sum(u.replays for u in family.units)
+
+
+def test_the_unguarded_route_still_reaches_the_wire_and_is_now_the_longer_one(guard_rig):
+    """RB-P23's honest residual, kept measured rather than declared closed.
+
+    A consumer can always hand-roll around any API in a language without private
+    functions, so this is not an impossibility claim. It is a length claim, and the
+    lengths are asserted here so a later edit that re-inverts them fails.
+    """
+    variant = guard_rig["variants"][0]
+    point = next(p for p in guard_rig["manifest"].points if p.id == "P-taskword")
+    case = guard_rig["cases"][0]
+    # The unguarded route: apply_point -> hand-assemble a Rubric -> replay_verdicts.
+    template = criticreplay.apply_point(point, variant.rubric.prompt)
+    rubric = Rubric(
+        name=variant.rubric.name,
+        threshold=variant.rubric.threshold,
+        prompt=template,
+        schema=variant.rubric.schema,
+    )
+    client = ScriptedCritic(lambda p: 9)
+    criticreplay.replay_verdicts(client, rubric, case, 1)
+    assert len(client.calls) == 1  # it reached the wire, tainted, with nothing recording it
+
+    unguarded_steps = ("apply_point", "Rubric(...)", "replay_verdicts")
+    guarded_steps = ("guarded_family", "replay_verdicts")
+    assert len(guarded_steps) < len(unguarded_steps)
+
+
+def test_run_is_the_constructor_plus_replay_not_a_second_derivation(guard_rig, monkeypatch):
+    """ONE DERIVATION, NOT TWO THAT AGREE (RB-P19's transferable finding).
+
+    Dropping a unit from what the constructor returns must delete that point's rows: a
+    `run()` that re-derived the family would emit them anyway and the two would agree.
+    """
+    real = criticreplay.guarded_family
+    calls = []
+
+    def spy(*args, **kwargs):
+        family = real(*args, **kwargs)
+        calls.append((args, kwargs))
+        family.units = [u for u in family.units if u.point.id != "X-anchored"]
+        return family
+
+    monkeypatch.setattr(criticreplay, "guarded_family", spy)
+    _, result = _run(guard_rig, lambda p: 9)
+    assert len(calls) == 1
+    assert {r.point for r in result.rows} == {"identity", "P-taskword"}
+
+
+def test_every_unit_carries_the_replay_count_the_bar_uses(rig):
+    """A consumer who gets this wrong measures a different thing than the bar does."""
+    family = _family(rig, replays=2, identity_replays=7)
+    assert {u.point.id: u.replays for u in family.units} == {
+        "identity": 7,
+        "W1-trailing-newline": 2,
+        "X-anchored": 2,
+    }
+
+
+def test_the_constructor_refuses_in_error_mode_before_it_builds_a_single_rubric(guard_rig):
+    """`error` mode refuses in the constructor, so no unit is ever handed out tainted."""
+    with pytest.raises(criticreplay.PerturbationError, match="shared-token guard"):
+        _family(guard_rig, guard="error")
+
+
+def test_identity_only_replay_needs_no_point_to_guard_against(rig):
+    """RB-P15's standing check: a design that refuses to score without a point breaks it."""
+    family = _family(rig, identity_only=True, identity_replays=3)
+    assert {u.point.id for u in family.units} == {"identity"}
+    assert all(u.guard_violations == [] for u in family.units)
+    unit = family.units[0]
+    client = ScriptedCritic(lambda p: 9)
+    assert criticreplay.replay_scores(client, unit.rubric, unit.case, unit.replays) == [9, 9, 9]
+
+
+def test_the_constructor_materializes_one_rubric_per_variant_point_not_per_cell(rig):
+    """The cost of the per-(variant, point, cell) shape, measured rather than asserted.
+
+    Units are cells x points x variants, but the `Rubric` each one carries is SHARED by
+    reference across cells — the materialization is one small object per unit, not one
+    template copy.
+    """
+    family = _family(rig)
+    assert len(family.units) == 2 * 2 * 3  # variants x cells x points
+    assert len({id(u.rubric) for u in family.units}) == 2 * 3  # variants x points
+
+
+def test_the_constructor_reports_the_points_it_dropped_per_variant(tmp_path, asset_tree):
+    """§4.1 paired dropping: an anchor absent from one variant is dropped, and named."""
+    manifest = criticreplay.load_manifest(_write_manifest(asset_tree))
+    kept = criticreplay.parse_rubric_arg(f"kept={_write_rubric(tmp_path, 'kept', BASE_PROMPT)}")
+    # No trailing newline, so W1 has no anchor here.
+    gone = criticreplay.parse_rubric_arg(
+        f"gone={_write_rubric(tmp_path, 'gone', BASE_PROMPT[:-1])}"
+    )
+    transcripts = tmp_path / "t"
+    _transcript(transcripts, "critique", "alpha", 0, 111, "OUT")
+    family = criticreplay.guarded_family(
+        [kept, gone], manifest, criticreplay.load_cases(transcripts)
+    )
+    assert family.dropped == {"kept": [], "gone": ["W1-trailing-newline"]}
+    assert {(u.variant.label, u.point.id) for u in family.units} == {
+        ("kept", "identity"), ("kept", "W1-trailing-newline"), ("kept", "X-anchored"),
+        ("gone", "identity"), ("gone", "X-anchored"),
+    }
+
+
+def test_the_constructor_refuses_an_inadmissible_point_naming_the_variant(asset_tree, tmp_path):
+    """Guards 1/3/4 and the collision and materialization checks sit here now."""
+    _, args = _admissibility_rig(
+        asset_tree, tmp_path,
+        {
+            "id": "P-two-sentences", "class": "paraphrase", "rule": "reword",
+            "op": "replace",
+            "replace": [
+                {"from": "Judge ONLY the answer. Score", "to": "Judge ONLY the reply. Score"}
+            ],
+            "justification": "spans a sentence boundary",
+        },
+    )
+    _, variants, manifest, cases = args
+    with pytest.raises(criticreplay.PerturbationError, match="inadmissible on variant 'v'"):
+        criticreplay.guarded_family(variants, manifest, cases)
+
+
+def test_the_constructor_is_where_the_run_preconditions_live(rig):
+    for kwargs, expected in (
+        ({"guard": "explode"}, "guard mode"),
+        ({}, "no rubric variants"),
+    ):
+        with pytest.raises(criticreplay.PerturbationError, match=expected):
+            criticreplay.guarded_family(
+                rig["variants"] if "guard" in kwargs else [],
+                rig["manifest"],
+                rig["cases"],
+                **kwargs,
+            )
+    with pytest.raises(criticreplay.PerturbationError, match="no cells"):
+        criticreplay.guarded_family(rig["variants"], rig["manifest"], [])
+
+
+def test_the_primitives_are_documented_as_the_constructors_primitives():
+    """The docs half of the attack: the guarded path has to be the one a reader finds."""
+    assert "guarded_family" in criticreplay.__all__
+    assert "GuardedFamily" in criticreplay.__all__ and "GuardedReplay" in criticreplay.__all__
+    assert "guarded_family" in criticreplay.__doc__
+    for primitive in (criticreplay.apply_point, criticreplay.replay_verdicts):
+        assert "guarded_family" in primitive.__doc__, primitive.__name__
+
+
 # ---- the guard's three siblings in the RUN path (§3.3 step 3, guards 1, 3, 4) ----
 #
 # Guard 2 was defined-but-uncalled; so was guard 3's `FROZEN_KEYWORDS`, which lived in

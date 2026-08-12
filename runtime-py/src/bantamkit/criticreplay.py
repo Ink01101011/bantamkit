@@ -33,9 +33,21 @@ that both are computed, both are named in the artifacts, and neither is declared
 point, so they run inside `apply_point` — the one public route from a `Point` to a
 template — and a consumer who never calls `run()` still gets them. `check=False` is the
 documented deliberate bypass. Guard 2 is a property of a (point, CELL) pair, so it
-cannot ride along there; `guard_table` is its one-call public form, and `run()` uses
-that same call. A consumer who assembles `apply_point` + `replay_verdicts` by hand and
-never calls `guard_table` still gets no guard 2 — filed as RB-P23.
+cannot ride along there.
+
+**Start at `guarded_family`.** It is the one call from (variants, points, cells) to
+`GuardedReplay` units, each carrying the exact `Rubric` to replay, the cell, the replay
+count the bar uses, and guard 2's verdict on that pair under both readings. `run()` is
+that call plus `replay_verdicts` over what it returns — there is no second derivation of
+the family anywhere in this module. `apply_point`, `guard_table` and `replay_verdicts`
+are the primitives it is built from, and they stay public because an offline audit needs
+them; but the guarded route is now the SHORT one, which is the whole of RB-P23's fix.
+
+RB-P23 is a defence-in-depth hole, not a soundness bug, and this does not make it
+impossible: Python has no private functions, so `apply_point` -> hand-assembled `Rubric`
+-> `replay_verdicts` still reaches the wire with a tainted pair and nothing recording it.
+What changed is the length comparison. That residual is measured, not claimed, by
+`test_the_unguarded_route_still_reaches_the_wire_and_is_now_the_longer_one`.
 """
 
 from __future__ import annotations
@@ -66,6 +78,8 @@ __all__ = [
     "READINGS",
     "READING_RULES",
     "Case",
+    "GuardedFamily",
+    "GuardedReplay",
     "Manifest",
     "PerturbationError",
     "Point",
@@ -77,6 +91,7 @@ __all__ = [
     "cell_guard_violations",
     "guard_table",
     "guard_union",
+    "guarded_family",
     "load_cases",
     "load_manifest",
     "main",
@@ -345,11 +360,17 @@ def apply_point(point: Point, template: str, *, check: bool = True) -> str | Non
     exist — the case `3420384` claimed to close for `--manifest` and left open here.
 
     Guard 2 cannot ride along: it is a property of a (point, CELL) pair and this
-    function never sees a cell. `guard_table` is its one-call public form.
+    function never sees a cell.
+
+    **A PRIMITIVE, not the route to a replay.** `guarded_family` is what a consumer
+    scoring a family should call — it is built from this function and returns templates
+    already paired with guard 2's verdict on each cell. Reaching a request from here
+    instead means assembling the `Rubric` by hand and getting no guard 2 at all, which is
+    RB-P23's residual: possible, and now the longer of the two routes.
 
     `check=False` is the deliberate bypass, and it is deliberate on purpose: a guard
-    nobody can turn off is a guard people route around. `run()` uses it so that
-    `_variant_family` can raise a message naming the variant as well as the point.
+    nobody can turn off is a guard people route around. `_variant_family` uses it so it
+    can raise a message naming the variant as well as the point.
     """
     new = _transform(point, template)
     if new is None:
@@ -784,6 +805,12 @@ def replay_verdicts(
     `CritiqueGate` is deliberately not involved. Its memo keys on exact prompt bytes and
     would return one bought verdict N times, which is the one thing this instrument must
     never do. `structured()` is, because request construction is load-bearing.
+
+    **A PRIMITIVE, not the route to a family.** It holds a `Rubric` and a `Case` and
+    cannot re-derive which point produced the template, so guard 2 cannot live here and
+    threading a `Point` in would add a parameter this function does not use. Take the
+    arguments off a `GuardedReplay` from `guarded_family` instead — `rubric`, `case` and
+    `replays` are on the unit, and so is the verdict.
     """
     if replays < 1:
         raise PerturbationError(f"replays must be >= 1, got {replays}")
@@ -887,8 +914,58 @@ class RunResult:
     guard_mode: str = "warn"
 
 
-def run(
-    client: ModelClient,
+@dataclass
+class GuardedReplay:
+    """One (variant, point, cell): the exact request to replay, and guard 2's verdict on it.
+
+    The unit `guarded_family` hands back. It carries the perturbed `Rubric` ready for
+    `replay_verdicts`, the cell, the replay count the bar uses for this point's class,
+    and the shared-token verdict for this pair — the union the decision rule acts on, and
+    each reading under its own name.
+
+    The verdict is on the object that carries the rubric ON PURPOSE. A shape that handed
+    back templates and a separate guard table would close nothing: the consumer can
+    ignore half of it and never know. Here the verdict is in hand before the rubric is.
+    """
+
+    variant: RubricVariant
+    point: Point
+    case: Case
+    rubric: Rubric
+    replays: int
+    guard_violations: list[str] = field(default_factory=list)
+    guard_readings: dict[str, list[str]] = field(default_factory=dict)
+
+    @property
+    def tainted(self) -> bool:
+        """§3.3 guard 2 fired on this (point, cell) under at least one reading."""
+        return bool(self.guard_violations)
+
+
+@dataclass
+class GuardedFamily:
+    """Every replayable (variant, point, cell) of one bar, already guarded.
+
+    `units` is the only route from here to a request. The tables beside it are the same
+    verdicts aggregated for the artifacts — `summarize` reads them — not a second way to
+    get a rubric.
+    """
+
+    units: list[GuardedReplay]
+    dropped: dict[str, list[str]]
+    selected: list[str]
+    labels: list[str]
+    threshold: int
+    cells: list[Case]
+    # (task, repeat) -> {point id: shared words}, the UNION of the two readings.
+    guard: dict[tuple[str, int], dict[str, list[str]]] = field(default_factory=dict)
+    guard_readings: dict[str, dict[tuple[str, int], dict[str, list[str]]]] = field(
+        default_factory=dict
+    )
+    guard_mode: str = "warn"
+
+
+def guarded_family(
     variants: list[RubricVariant],
     manifest: Manifest,
     cases: list[Case],
@@ -896,10 +973,39 @@ def run(
     replays: int = 1,
     identity_replays: int = 5,
     identity_only: bool = False,
-    model: str = "",
     guard: str = "warn",
-    on_row: Callable[[ReplayRow], None] | None = None,
-) -> RunResult:
+) -> GuardedFamily:
+    """(variants, points, cells) -> templates already paired with their guard verdicts.
+
+    **RB-P23's fix, and it is a length claim, not an impossibility claim.** Before this
+    existed, the shortest route a consumer could assemble from the public API was
+    `apply_point` -> hand-built `Rubric` -> `replay_verdicts`, which touches guard 2
+    nowhere; getting the guard meant knowing that a SECOND call, `guard_table`, exists
+    and joining its table to the (point, cell) key by hand. The unguarded route was the
+    short one. Now the guarded route is: this call, then `replay_verdicts` with the
+    arguments taken straight off each unit. The unguarded route still works — a consumer
+    can always hand-roll around any API in a language without private functions — and
+    that residual is measured by a test rather than argued away.
+
+    Everything a run decides before it spends anything happens here, in the order it
+    happened in `run()`: the mode and threshold preconditions, then guard 2 over every
+    (point, cell) — which in `error` mode refuses HERE, so no unit is ever handed out —
+    then per-variant family construction, which is where the `dropped` bookkeeping and
+    guards 1/3/4, the collision check and the materialization check live.
+
+    **The materialization cost of the per-(variant, point, cell) shape.** `units` is
+    cells x points x variants objects, where a templates-plus-table shape would be
+    points x variants. The `Rubric` each unit carries is shared by reference across
+    cells, so what is actually materialized per cell is one small dataclass holding
+    references — pinned by
+    `test_the_constructor_materializes_one_rubric_per_variant_point_not_per_cell`. That
+    is the trade the filing asked to be chosen explicitly, and it is chosen: a consumer
+    who has the rubric necessarily has the verdict.
+
+    `identity_only` (RB-P15's standing check) is a family SELECTION, not a special case:
+    the identity point moves no words, so its units come back with empty verdicts and
+    replay exactly as any other unit does. Nothing here refuses to score without a point.
+    """
     if guard not in GUARD_MODES:
         raise PerturbationError(f"unknown guard mode {guard!r}; expected one of {GUARD_MODES}")
     if not variants:
@@ -914,7 +1020,6 @@ def run(
         )
     threshold = thresholds.pop()
     points = [p for p in manifest.points if p.point_class == "identity" or not identity_only]
-    selected = [p.id for p in points]
     full_guard = guard_table(
         points, cases, {v.label: v.rubric.prompt for v in variants}, mode=guard
     )
@@ -937,71 +1042,48 @@ def run(
         templates[variant.label], dropped[variant.label] = _variant_family(
             variant, points, manifest
         )
+    # One Rubric per (variant, point), shared by reference across every cell.
+    rubrics = {
+        (variant.label, pid): Rubric(
+            name=variant.rubric.name,
+            threshold=threshold,
+            prompt=template,
+            schema=variant.rubric.schema,
+        )
+        for variant in variants
+        for pid, template in templates[variant.label].items()
+    }
 
-    model = model or getattr(client, "model", "")
-    rows: list[ReplayRow] = []
+    units: list[GuardedReplay] = []
     for variant in variants:
         for case in cases:
             for point in points:
-                template = templates[variant.label].get(point.id)
-                if template is None:
+                rubric = rubrics.get((variant.label, point.id))
+                if rubric is None:  # §4.1: the anchor is absent from this variant
                     continue
-                perturbed = Rubric(
-                    name=variant.rubric.name,
-                    threshold=threshold,
-                    prompt=template,
-                    schema=variant.rubric.schema,
-                )
-                for index, verdict in enumerate(
-                    replay_verdicts(
-                        client,
-                        perturbed,
-                        case,
-                        identity_replays if point.point_class == "identity" else replays,
-                    )
-                ):
-                    row = ReplayRow(
-                        bar=BAR,
-                        variant=variant.label,
-                        rubric_ref=variant.ref,
-                        rubric_sha256=variant.sha256,
-                        manifest_sha256=manifest.sha256,
-                        task=case.task,
-                        seed=case.seed,
-                        repeat=case.repeat,
-                        model=model,
-                        point=point.id,
-                        point_class=point.point_class,
-                        rule=point.rule,
-                        replay=index,
-                        prompt_sha256=verdict.prompt_sha256,
-                        payload_sha256=verdict.payload_sha256,
-                        score=verdict.score,
-                        threshold=threshold,
-                        passed=verdict.score >= threshold,
-                        feedback=verdict.feedback,
-                        tokens_in=verdict.tokens_in,
-                        tokens_out=verdict.tokens_out,
-                        calls=verdict.calls,
-                        guard_violations=list(
-                            union_guard.get((case.task, case.repeat), {}).get(point.id, [])
+                cell = (case.task, case.repeat)
+                units.append(
+                    GuardedReplay(
+                        variant=variant,
+                        point=point,
+                        case=case,
+                        rubric=rubric,
+                        replays=(
+                            identity_replays if point.point_class == "identity" else replays
                         ),
+                        guard_violations=list(union_guard.get(cell, {}).get(point.id, [])),
                         guard_readings={
                             reading: list(
-                                full_guard.get((case.task, case.repeat), {})
-                                .get(point.id, {})
-                                .get(reading, [])
+                                full_guard.get(cell, {}).get(point.id, {}).get(reading, [])
                             )
                             for reading in READINGS
                         },
                     )
-                    rows.append(row)
-                    if on_row is not None:
-                        on_row(row)
-    return RunResult(
-        rows=rows,
+                )
+    return GuardedFamily(
+        units=units,
         dropped=dropped,
-        selected=selected,
+        selected=[p.id for p in points],
         labels=[v.label for v in variants],
         threshold=threshold,
         cells=list(cases),
@@ -1011,15 +1093,98 @@ def run(
     )
 
 
+def run(
+    client: ModelClient,
+    variants: list[RubricVariant],
+    manifest: Manifest,
+    cases: list[Case],
+    *,
+    replays: int = 1,
+    identity_replays: int = 5,
+    identity_only: bool = False,
+    model: str = "",
+    guard: str = "warn",
+    on_row: Callable[[ReplayRow], None] | None = None,
+) -> RunResult:
+    """`guarded_family` plus `replay_verdicts` over what it returns. Nothing else.
+
+    ONE DERIVATION, NOT TWO THAT AGREE. The family, the guard tables and the replay
+    counts are whatever the constructor said they are; this function re-derives none of
+    them, so a consumer calling `guarded_family` gets the run's own answer rather than a
+    parallel implementation that happens to agree with it. RB-P19's transferable finding
+    is that a check inheriting the method of the thing it checks is not a check of it,
+    and the same logic makes a parallel path worthless as corroboration.
+    """
+    family = guarded_family(
+        variants,
+        manifest,
+        cases,
+        replays=replays,
+        identity_replays=identity_replays,
+        identity_only=identity_only,
+        guard=guard,
+    )
+    model = model or getattr(client, "model", "")
+    rows: list[ReplayRow] = []
+    for unit in family.units:
+        for index, verdict in enumerate(
+            replay_verdicts(client, unit.rubric, unit.case, unit.replays)
+        ):
+            row = ReplayRow(
+                bar=BAR,
+                variant=unit.variant.label,
+                rubric_ref=unit.variant.ref,
+                rubric_sha256=unit.variant.sha256,
+                manifest_sha256=manifest.sha256,
+                task=unit.case.task,
+                seed=unit.case.seed,
+                repeat=unit.case.repeat,
+                model=model,
+                point=unit.point.id,
+                point_class=unit.point.point_class,
+                rule=unit.point.rule,
+                replay=index,
+                prompt_sha256=verdict.prompt_sha256,
+                payload_sha256=verdict.payload_sha256,
+                score=verdict.score,
+                threshold=family.threshold,
+                passed=verdict.score >= family.threshold,
+                feedback=verdict.feedback,
+                tokens_in=verdict.tokens_in,
+                tokens_out=verdict.tokens_out,
+                calls=verdict.calls,
+                guard_violations=list(unit.guard_violations),
+                guard_readings={
+                    reading: list(words) for reading, words in unit.guard_readings.items()
+                },
+            )
+            rows.append(row)
+            if on_row is not None:
+                on_row(row)
+    return RunResult(
+        rows=rows,
+        dropped=family.dropped,
+        selected=family.selected,
+        labels=family.labels,
+        threshold=family.threshold,
+        cells=family.cells,
+        guard=family.guard,
+        guard_readings=family.guard_readings,
+        guard_mode=family.guard_mode,
+    )
+
+
 def guard_table(
     points: list[Point], cases: list[Case], templates: dict[str, str], mode: str = "warn"
 ) -> dict[tuple[str, int], dict[str, dict[str, list[str]]]]:
     """§3.3 guard 2 for every (point, cell), decided before a single request goes out.
 
-    Public because it is the one call a library consumer assembling their own replay
-    loop needs in order to get guard 2: it is a property of a (point, cell) pair, so
-    unlike guards 1/3/4 it cannot ride along inside `apply_point`, which never sees a
-    cell (see the module docstring on the API surface).
+    **A PRIMITIVE of `guarded_family`, and the offline audit route.** It stays public
+    because a reader auditing which pairs are tainted wants the table alone, without
+    materializing a family; but a consumer who is going to REPLAY should call
+    `guarded_family`, which calls this and hands the verdicts back already attached to
+    the rubrics they belong to. Guard 2 is a property of a (point, cell) pair, so unlike
+    guards 1/3/4 it cannot ride inside `apply_point`, which never sees a cell.
 
     `templates` maps variant label to that variant's BASE template. The whole-text
     reading is a function of the template, so it is computed per variant and unioned:
