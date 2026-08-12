@@ -1,0 +1,206 @@
+{
+  "bar": "perturbation",
+  "threshold": 7,
+  "manifest_sha256": "340ce4dbf1c9c630db04d3de131dbae7db09202ffc5f8f77dcadcf13592ed747",
+  "guard": {
+    "rule": "spec \u00a73.3 step 3, guard 2 \u2014 no word a point adds or removes may appear in the cell's {task} or {output}",
+    "mode": "warn",
+    "violations": [
+      {
+        "task": "nav-prod-port",
+        "repeat": 0,
+        "point": "P3-right-correct",
+        "words": [
+          "right"
+        ]
+      },
+      {
+        "task": "nav-release-bundle",
+        "repeat": 0,
+        "point": "P2-asks-requests",
+        "words": [
+          "for"
+        ]
+      }
+    ]
+  },
+  "requests": 64,
+  "wire_calls": 64,
+  "tokens_total": 22973,
+  "variants": [
+    {
+      "label": "after",
+      "rubric_ref": "assets/rubrics/task-completion.yaml",
+      "rubric_sha256": "55f700e09bab0cfac01cb18d4cfb54666ff942598035697e0383726fe82c2868",
+      "dropped_rules": []
+    }
+  ],
+  "cells": [
+    {
+      "task": "extract-contact",
+      "repeat": 0,
+      "seed": 1861749954,
+      "guard_violations": {},
+      "variants": {
+        "after": {
+          "pass_rate": "12/12",
+          "passed": 12,
+          "family_size": 12,
+          "score_min": 10,
+          "score_max": 10,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            10,
+            10,
+            10,
+            10,
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false,
+          "guard_violations": {},
+          "guard_dropped": null
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "extract-contact",
+      "repeat": 1,
+      "seed": 3552401145,
+      "guard_violations": {},
+      "variants": {
+        "after": {
+          "pass_rate": "12/12",
+          "passed": 12,
+          "family_size": 12,
+          "score_min": 10,
+          "score_max": 10,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            10,
+            10,
+            10,
+            10,
+            10
+          ],
+          "identity_spread": 0,
+          "fragile": false,
+          "guard_violations": {},
+          "guard_dropped": null
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "nav-prod-port",
+      "repeat": 0,
+      "seed": 1908598355,
+      "guard_violations": {
+        "P3-right-correct": [
+          "right"
+        ]
+      },
+      "variants": {
+        "after": {
+          "pass_rate": "0/12",
+          "passed": 0,
+          "family_size": 12,
+          "score_min": 0,
+          "score_max": 0,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "identity_spread": 0,
+          "fragile": false,
+          "guard_violations": {
+            "P3-right-correct": [
+              "right"
+            ]
+          },
+          "guard_dropped": {
+            "pass_rate": "0/11",
+            "passed": 0,
+            "family_size": 11,
+            "score_min": 0,
+            "score_max": 0,
+            "spread": 0,
+            "margin_zero": 0,
+            "identity_scores": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "identity_spread": 0,
+            "fragile": false
+          }
+        }
+      },
+      "comparisons": []
+    },
+    {
+      "task": "nav-release-bundle",
+      "repeat": 0,
+      "seed": 3590861830,
+      "guard_violations": {
+        "P2-asks-requests": [
+          "for"
+        ]
+      },
+      "variants": {
+        "after": {
+          "pass_rate": "0/12",
+          "passed": 0,
+          "family_size": 12,
+          "score_min": 0,
+          "score_max": 0,
+          "spread": 0,
+          "margin_zero": 0,
+          "identity_scores": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "identity_spread": 0,
+          "fragile": false,
+          "guard_violations": {
+            "P2-asks-requests": [
+              "for"
+            ]
+          },
+          "guard_dropped": {
+            "pass_rate": "0/11",
+            "passed": 0,
+            "family_size": 11,
+            "score_min": 0,
+            "score_max": 0,
+            "spread": 0,
+            "margin_zero": 0,
+            "identity_scores": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "identity_spread": 0,
+            "fragile": false
+          }
+        }
+      },
+      "comparisons": []
+    }
+  ]
+}
