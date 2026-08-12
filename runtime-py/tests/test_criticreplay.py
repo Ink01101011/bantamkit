@@ -178,24 +178,50 @@ def test_paraphrase_points_edit_exactly_one_sentence(manifest):
             assert not op["from"].strip().endswith("."), point.id
 
 
-def test_shared_token_guard_is_violated_only_by_p3_on_the_acceptance_cell(manifest):
-    """§3.3 step 3, guard 2 — and a SPEC DEFECT pinned here rather than papered over.
+def test_shared_token_guard_table_over_every_frozen_task_prompt(manifest):
+    """§3.3 step 3, guard 2 — the WHOLE table, over all 22 frozen prompts.
 
-    The guard is "no added or removed word may appear in the cell's {task}". P3 removes
-    `right`, and `nav-prod-port`'s task prompt contains "follow the documentation to the
-    right file". The spec's own justification for P3 checks only the *added* word
-    (`correct`). P3 ships as specified (the brief forbids silently improving the spec);
-    this test pins the violation so it stays visible and cannot silently grow.
+    Three SPEC DEFECTS pinned here rather than papered over. The guard is "no added or
+    removed word may appear in the cell's {task}", and the spec's own per-point
+    justifications check only the *added* word, on the acceptance cell only:
+
+    - `P1` moves `who`/`checks`/`checking`; `who` is in both on-call prompts.
+    - `P2` moves `asks`/`for`/`requests`. `requests` violates NOWHERE —
+      `recall-org-quota` says "requests-per-minute", which tokenizes as one word. The
+      violating word is the preposition `for`, on six tasks.
+    - `P3` removes `right`; `nav-prod-port` says "follow the documentation to the right
+      file".
+
+    The predecessor of this test asserted `{"P3-right-correct": ["right"]}` against
+    `nav-prod-port` alone, so five of the eight violating (point, task) pairs were
+    unpinned and the violation table was under-reported twice downstream (RB-P19). The
+    points ship as the spec specifies them; this table is what keeps the cost visible,
+    and a manifest edit that adds a violation now fails here instead of being discovered
+    three units later.
     """
-    task_prompt = yaml.safe_load((ASSETS / "evals" / "tasks" / "nav-prod-port.yaml").read_text())[
-        "prompt"
-    ]
-    violations = {
-        point.id: criticreplay.shared_token_violations(point, task_prompt)
-        for point in manifest.points
-        if criticreplay.shared_token_violations(point, task_prompt)
+    table: dict[str, dict[str, list[str]]] = {}
+    for path in sorted((ASSETS / "evals" / "tasks").glob("*.yaml")):
+        task_prompt = yaml.safe_load(path.read_text())["prompt"]
+        for point in manifest.points:
+            words = criticreplay.shared_token_violations(point, task_prompt)
+            if words:
+                table.setdefault(point.id, {})[path.stem] = words
+    assert table == {
+        "P1-reviewer-relative": {
+            "recall-oncall": ["who"],
+            "recall-oncall-rotation": ["who"],
+        },
+        "P2-asks-requests": {
+            "nav-release-bundle": ["for"],
+            "recall-cache-ttl": ["for"],
+            "recall-env-endpoint": ["for"],
+            "recall-oncall": ["for"],
+            "recall-oncall-rotation": ["for"],
+            "recall-org-quota": ["for"],
+        },
+        "P3-right-correct": {"nav-prod-port": ["right"]},
     }
-    assert violations == {"P3-right-correct": ["right"]}
+    assert len(list((ASSETS / "evals" / "tasks").glob("*.yaml"))) == 22
 
 
 def test_materialization_matches_a_recomputation_from_the_rubric_texts(manifest):
@@ -684,8 +710,9 @@ def test_rows_carry_the_columns_the_spec_names(rig):
         "bar", "variant", "rubric_ref", "rubric_sha256", "manifest_sha256", "task", "seed",
         "repeat", "model", "point", "class", "rule", "replay", "prompt_sha256",
         "payload_sha256", "score", "threshold", "passed", "feedback", "tokens_in", "tokens_out",
-        "calls",
+        "calls", "guard_violations",
     }
+    assert row["guard_violations"] == []
     assert row["bar"] == "perturbation" and row["threshold"] == 7
     assert row["class"] in ("identity", "whitespace", "order", "paraphrase")
     assert json.dumps(row)  # JSONL-writable
@@ -876,6 +903,234 @@ def test_routine_before_after_profile_costs_at_most_96_requests(asset_tree, tmp_
     assert all(len(c["comparisons"]) == 1 for c in summary["cells"])
 
 
+# ---- the shared-token guard in the RUN path (§3.3 step 3, guard 2; RB-P19) ----
+
+# `alpha`'s task prompt is "ALPHA PROMPT" and its answer is "OUT", so `P-taskword`
+# moves a word into the cell's {task} and `P-outword` moves one into its {output}.
+GUARD_POINTS = [
+    {"id": "identity", "class": "identity", "rule": "identity", "op": "identity"},
+    {
+        "id": "X-anchored",
+        "class": "whitespace",
+        "rule": "double-space",
+        "op": "replace",
+        "replace": [{"from": "ONE. ", "to": "ONE.  "}],
+    },
+    {
+        "id": "P-taskword",
+        "class": "paraphrase",
+        "rule": "reword",
+        "op": "replace",
+        "replace": [{"from": "TWO", "to": "ALPHA"}],
+        "justification": "moves the shared token ALPHA, which is in the cell's task",
+    },
+]
+
+OUTWORD_POINT = {
+    "id": "P-outword",
+    "class": "paraphrase",
+    "rule": "reword",
+    "op": "replace",
+    "replace": [{"from": "TWO", "to": "OUT"}],
+    "justification": "moves the shared token OUT, which is the cell's whole answer",
+}
+
+
+@pytest.fixture
+def guard_rig(asset_tree, tmp_path):
+    """One cell whose {task} shares a word with a paraphrase point's edit."""
+    manifest_path = _write_manifest(asset_tree, points=GUARD_POINTS)
+    before = _write_rubric(tmp_path, "before", BASE_PROMPT)
+    after = _write_rubric(tmp_path, "after", CHANGED_PROMPT)
+    transcripts = tmp_path / "transcripts"
+    _transcript(transcripts, "critique", "alpha", 0, 111, "OUT")
+    return {
+        "manifest": criticreplay.load_manifest(manifest_path),
+        "variants": [
+            criticreplay.parse_rubric_arg(f"before={before}"),
+            criticreplay.parse_rubric_arg(f"after={after}"),
+        ],
+        "cases": criticreplay.load_cases(transcripts),
+        "transcripts": transcripts,
+        "before": before,
+        "after": after,
+    }
+
+
+def test_a_guard_violating_point_still_runs_but_every_row_carries_the_reason(guard_rig):
+    """The target property: a run cannot apply a violating point to a cell SILENTLY.
+
+    Not an abort. Eight of the twenty screened cells violate, `nav-prod-port` among
+    them, so a hard error would make the canonical cell of this line of work unrunnable
+    — a regression, not a stricter guard. The point runs; the row says so.
+    """
+    client, result = _run(guard_rig, lambda p: 9)
+    assert [r.point for r in result.rows if r.guard_violations] != []
+    for row in result.rows:
+        assert row.guard_violations == (["alpha"] if row.point == "P-taskword" else [])
+    assert result.guard == {("alpha", 0): {"P-taskword": ["alpha"]}}
+    assert result.guard_mode == "warn"
+
+
+def test_the_guard_reads_the_cells_output_as_well_as_its_task(asset_tree, tmp_path):
+    """§3.3 guard 2 is "the cell's `{task}` OR `{output}`" — the run path checks both.
+
+    `shared_token_violations` takes one text and stays the offline primitive the frozen
+    22-prompt table is pinned against; the run path has the whole cell and checks it.
+    """
+    manifest = criticreplay.load_manifest(
+        _write_manifest(asset_tree, points=[*GUARD_POINTS[:2], OUTWORD_POINT])
+    )
+    variant = criticreplay.parse_rubric_arg(f"v={_write_rubric(tmp_path, 'v', BASE_PROMPT)}")
+    transcripts = tmp_path / "t"
+    _transcript(transcripts, "critique", "alpha", 0, 111, "OUT")
+    result = criticreplay.run(
+        ScriptedCritic(lambda p: 9), [variant], manifest,
+        criticreplay.load_cases(transcripts), model="m",
+    )
+    assert result.guard == {("alpha", 0): {"P-outword": ["out"]}}
+
+
+def test_guard_error_mode_refuses_before_a_single_request_goes_out(guard_rig):
+    """The strict reading, available and opt-in: fail loud, spend nothing."""
+    client = ScriptedCritic(lambda p: 9)
+    with pytest.raises(criticreplay.PerturbationError, match="shared-token guard"):
+        criticreplay.run(
+            client, guard_rig["variants"], guard_rig["manifest"], guard_rig["cases"],
+            model="m", guard="error",
+        )
+    assert client.calls == []
+
+
+def test_guard_mode_error_names_every_violating_point_and_cell(guard_rig):
+    client = ScriptedCritic(lambda p: 9)
+    with pytest.raises(criticreplay.PerturbationError) as excinfo:
+        criticreplay.run(
+            client, guard_rig["variants"], guard_rig["manifest"], guard_rig["cases"],
+            model="m", guard="error",
+        )
+    message = str(excinfo.value)
+    assert "P-taskword" in message and "alpha" in message and "r0" in message
+
+
+def test_an_unknown_guard_mode_is_refused(guard_rig):
+    with pytest.raises(criticreplay.PerturbationError, match="guard mode"):
+        criticreplay.run(
+            ScriptedCritic(lambda p: 9), guard_rig["variants"], guard_rig["manifest"],
+            guard_rig["cases"], model="m", guard="explode",
+        )
+
+
+def test_summary_reports_the_guard_dropped_family_beside_the_full_one(guard_rig):
+    """Machine-readable in the committed artifact, not prose in docs/eval.md.
+
+    `pass_rate` stays the full family so a run remains comparable with the committed
+    anchor set's `expect_pass_rate`; `guard_dropped` is the same statistic recomputed
+    with the tainted points removed, in the shape the anchor set already records.
+    """
+    _, result = _run(guard_rig, lambda p: 9)
+    summary = criticreplay.summarize(result, guard_rig["manifest"].sha256)
+    cell = summary["cells"][0]
+    assert cell["guard_violations"] == {"P-taskword": ["alpha"]}
+    stats = cell["variants"]["before"]
+    assert stats["pass_rate"] == "3/3"
+    assert stats["guard_violations"] == {"P-taskword": ["alpha"]}
+    assert stats["guard_dropped"]["pass_rate"] == "2/2"
+    assert stats["guard_dropped"]["family_size"] == 2
+    assert summary["guard"]["mode"] == "warn"
+    assert summary["guard"]["violations"] == [
+        {"task": "alpha", "repeat": 0, "point": "P-taskword", "words": ["alpha"]}
+    ]
+    assert json.dumps(summary)
+
+
+def test_a_clean_cell_reports_no_guard_drop_at_all(rig):
+    _, result = _run(rig, lambda p: 9)
+    summary = criticreplay.summarize(result, rig["manifest"].sha256)
+    stats = summary["cells"][0]["variants"]["before"]
+    assert stats["guard_violations"] == {}
+    assert stats["guard_dropped"] is None
+    assert summary["guard"]["violations"] == []
+    assert summary["cells"][0]["comparisons"][0]["guard_family_size"] == 3
+
+
+def test_the_guard_clean_verdict_is_reported_beside_the_full_family_verdict(guard_rig):
+    """The whole sign of a difference came from a point that shares a token with the cell.
+
+    `after` fails on the guard-violating point and nowhere else: the full family reads
+    3/3 vs 2/3, `inconclusive`. Drop the tainted point and both families are unanimous —
+    the guard-clean evidence says `indistinguishable`. That is the RB-P4 mechanism in
+    miniature, and it is now a field in the artifact rather than something a reader has
+    to notice.
+
+    Note what §7 rule 1 makes true here: because `distinguishable` is all-versus-none,
+    dropping a point can never turn a real separation into a false one — it can only
+    shrink F, and in the limit empty it. So `guard_verdict` bites on `inconclusive` and
+    on the fully-tainted cell; on a `distinguishable` cell its work is to publish the
+    smaller F the separation actually rests on.
+    """
+    _, result = _run(guard_rig, lambda p: 2 if "ONE. ALPHA CHANGED" in p else 9)
+    summary = criticreplay.summarize(result, guard_rig["manifest"].sha256)
+    comparison = summary["cells"][0]["comparisons"][0]
+    assert comparison["guard_dropped_rules"] == [
+        {"rule": "P-taskword", "reason": "shared-token", "words": ["alpha"]}
+    ]
+    assert (comparison["a_pass_rate"], comparison["b_pass_rate"]) == ("3/3", "2/3")
+    assert comparison["verdict"] == "inconclusive"
+    assert comparison["family_size"] == 3
+    assert comparison["guard_verdict"] == "indistinguishable"
+    assert comparison["guard_family_size"] == 2
+    assert comparison["attributable"] is False
+
+
+def test_guard_dropping_leaves_the_verdict_alone_when_it_is_not_load_bearing(guard_rig):
+    """The other side of the same rule: a separation the tainted point did not carry."""
+    _, result = _run(guard_rig, lambda p: 2 if "CHANGED" in p else 9)
+    comparison = criticreplay.summarize(result, guard_rig["manifest"].sha256)["cells"][0][
+        "comparisons"
+    ][0]
+    assert comparison["verdict"] == "distinguishable"
+    assert comparison["guard_verdict"] == "distinguishable"
+    assert comparison["attributable"] is True
+
+
+def test_a_cell_whose_whole_family_violates_reports_undefined_and_still_runs(
+    asset_tree, tmp_path
+):
+    """The pathological case named in the brief: dropping everything credits nothing.
+
+    It does not abort, and it does not silently report a pass rate over tainted points
+    — the guard-clean family is empty, so the comparison is `undefined` and
+    `attributable` is False.
+    """
+    manifest = criticreplay.load_manifest(_write_manifest(asset_tree, points=[GUARD_POINTS[2]]))
+    variants = [
+        criticreplay.parse_rubric_arg(f"a={_write_rubric(tmp_path, 'a', BASE_PROMPT)}"),
+        criticreplay.parse_rubric_arg(f"b={_write_rubric(tmp_path, 'b', CHANGED_PROMPT)}"),
+    ]
+    transcripts = tmp_path / "t"
+    _transcript(transcripts, "critique", "alpha", 0, 111, "OUT")
+    result = criticreplay.run(
+        ScriptedCritic(lambda p: 9), variants, manifest,
+        criticreplay.load_cases(transcripts), model="m",
+    )
+    assert len(result.rows) == 2  # it ran
+    summary = criticreplay.summarize(result, manifest.sha256)
+    stats = summary["cells"][0]["variants"]["a"]
+    assert stats["pass_rate"] == "1/1" and stats["guard_dropped"]["pass_rate"] == "0/0"
+    comparison = summary["cells"][0]["comparisons"][0]
+    assert comparison["guard_family_size"] == 0
+    assert comparison["guard_verdict"] == "undefined"
+    assert comparison["attributable"] is False
+
+
+def test_the_table_names_the_guard_drop_so_a_reader_cannot_miss_it(guard_rig):
+    _, result = _run(guard_rig, lambda p: 9)
+    table = criticreplay.format_table(criticreplay.summarize(result, guard_rig["manifest"].sha256))
+    assert "GUARD" in table
+    assert "P-taskword" in table and "alpha" in table
+
+
 # ---- CLI (§6.2, §6.3) ----
 
 
@@ -935,6 +1190,44 @@ def test_cli_exits_non_zero_on_a_perturbation_error(rig, tmp_path, monkeypatch, 
         )
     assert excinfo.value.code == 1
     assert "no transcripts" in capsys.readouterr().err
+
+
+def test_cli_exposes_the_guard_mode_and_defaults_to_warn(guard_rig, tmp_path, monkeypatch, capsys):
+    client = ScriptedCritic(lambda p: 9)
+    monkeypatch.setattr(criticreplay, "OpenAICompatible", lambda **kw: client)
+    rows_path, summary_path = tmp_path / "rows.jsonl", tmp_path / "summary.json"
+    criticreplay.main(
+        [
+            "--base-url", "http://x", "--model", "fake-14b",
+            "--rubric", f"before={guard_rig['before']}",
+            "--transcripts", str(guard_rig["transcripts"]),
+            "--json", str(rows_path), "--summary", str(summary_path),
+        ]
+    )
+    rows = [json.loads(line) for line in rows_path.read_text().splitlines()]
+    assert [r["guard_violations"] for r in rows if r["point"] == "P-taskword"] == [["alpha"]]
+    summary = json.loads(summary_path.read_text())
+    assert summary["guard"]["mode"] == "warn"
+    assert summary["guard"]["violations"][0]["point"] == "P-taskword"
+    assert "GUARD" in capsys.readouterr().out
+
+
+def test_cli_guard_error_exits_non_zero_without_running_the_cell(
+    guard_rig, tmp_path, monkeypatch, capsys
+):
+    client = ScriptedCritic(lambda p: 9)
+    monkeypatch.setattr(criticreplay, "OpenAICompatible", lambda **kw: client)
+    with pytest.raises(SystemExit) as excinfo:
+        criticreplay.main(
+            [
+                "--base-url", "http://x", "--model", "m",
+                "--rubric", f"before={guard_rig['before']}",
+                "--transcripts", str(guard_rig["transcripts"]), "--guard", "error",
+            ]
+        )
+    assert excinfo.value.code == 1
+    assert "shared-token guard" in capsys.readouterr().err
+    assert client.calls == []
 
 
 def test_cli_rejects_a_replay_count_below_one(rig, monkeypatch):

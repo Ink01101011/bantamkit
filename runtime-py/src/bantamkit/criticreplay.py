@@ -45,6 +45,7 @@ from bantamkit.evalrun import TrackingClient
 from bantamkit.structured import structured
 
 __all__ = [
+    "GUARD_MODES",
     "Case",
     "Manifest",
     "PerturbationError",
@@ -54,6 +55,7 @@ __all__ = [
     "RunResult",
     "Verdict",
     "apply_point",
+    "cell_guard_violations",
     "load_cases",
     "load_manifest",
     "main",
@@ -85,6 +87,10 @@ FROZEN_KEYWORDS = (
 
 # The point classes §3 admits. `identity` is a mandatory member, not a perturbation class.
 CLASSES = ("identity", "whitespace", "order", "paraphrase")
+
+# What a run does when a point violates §3.3's shared-token guard on a cell. See
+# `_guard_table` for why `warn` is the default and `error` is not.
+GUARD_MODES = ("warn", "error")
 
 NO_NEWLINE = "\\ No newline at end of file"
 
@@ -287,18 +293,35 @@ def _swap(point_id: str, template: str, swap: dict) -> str | None:
     return template.replace(a, _SENTINEL).replace(b, a).replace(_SENTINEL, b)
 
 
-def shared_token_violations(point: Point, task_prompt: str) -> list[str]:
-    """§3.3 step 3, guard 2: no added or removed word may appear in the cell's `{task}`.
+def shared_token_violations(point: Point, text: str) -> list[str]:
+    """§3.3 step 3, guard 2, against one text: the words this point moves that appear in it.
 
     RB-P4's measured mechanism was literal matching against a token copied from the task
     prompt, so a paraphrase that changes the shared-token surface is changing the
-    mechanism under test. Authoring-time guard: a committed manifest is reviewed against
-    it (see the offline test), and the returned list names the offending words.
+    mechanism under test.
+
+    The primitive. It takes one text so the offline table over all 22 frozen task
+    prompts can be pinned against it directly; `cell_guard_violations` is what the run
+    path calls, because the guard the spec writes is about the whole cell.
     """
     changed: set[str] = set()
     for op in point.replace:
         changed |= _words(op["from"]) ^ _words(op["to"])
-    return sorted(changed & _words(task_prompt))
+    return sorted(changed & _words(text))
+
+
+def cell_guard_violations(point: Point, case: Case) -> list[str]:
+    """The same guard against a whole cell: §3.3's `{task}` **or** `{output}`.
+
+    Checking `{task}` alone is how this guard was under-implemented; the spec names both
+    surfaces, and a run holds both. Measured on the committed M1 transcripts the
+    `{output}` half adds nothing today (zero extra violations over 20 cells), which is
+    the point: a guard is not allowed to be right only by luck.
+    """
+    return sorted(
+        set(shared_token_violations(point, case.prompt))
+        | set(shared_token_violations(point, case.output))
+    )
 
 
 def materialize_manifest(points: list[Point], templates: dict[str, str]) -> dict:
@@ -564,6 +587,7 @@ _ROW_KEYS = (
     "bar", "variant", "rubric_ref", "rubric_sha256", "manifest_sha256", "task", "seed",
     "repeat", "model", "point", "class", "rule", "replay", "prompt_sha256", "payload_sha256",
     "score", "threshold", "passed", "feedback", "tokens_in", "tokens_out", "calls",
+    "guard_violations",
 )
 
 
@@ -591,6 +615,10 @@ class ReplayRow:
     tokens_in: int
     tokens_out: int
     calls: int  # wire calls behind this one row: 1, or more if `structured()` retried
+    # §3.3 guard 2's verdict for THIS (point, cell): the shared words, or empty. The row
+    # is the artifact a later reader has; a violation that lives only in prose is how
+    # this one got under-reported twice.
+    guard_violations: list[str] = field(default_factory=list)
 
     def row(self) -> dict:
         data = dict(vars(self))
@@ -606,6 +634,9 @@ class RunResult:
     labels: list[str]
     threshold: int
     cells: list[Case]
+    # (task, repeat) -> {point id: shared words}. Empty when every point is clean.
+    guard: dict[tuple[str, int], dict[str, list[str]]] = field(default_factory=dict)
+    guard_mode: str = "warn"
 
 
 def run(
@@ -618,8 +649,11 @@ def run(
     identity_replays: int = 5,
     identity_only: bool = False,
     model: str = "",
+    guard: str = "warn",
     on_row: Callable[[ReplayRow], None] | None = None,
 ) -> RunResult:
+    if guard not in GUARD_MODES:
+        raise PerturbationError(f"unknown guard mode {guard!r}; expected one of {GUARD_MODES}")
     if not variants:
         raise PerturbationError("nothing to replay: no rubric variants")
     if not cases:
@@ -633,6 +667,7 @@ def run(
     threshold = thresholds.pop()
     points = [p for p in manifest.points if p.point_class == "identity" or not identity_only]
     selected = [p.id for p in points]
+    guard_table = _guard_table(points, cases, guard)
 
     templates: dict[str, dict[str, str]] = {}
     dropped: dict[str, list[str]] = {}
@@ -686,6 +721,9 @@ def run(
                         tokens_in=verdict.tokens_in,
                         tokens_out=verdict.tokens_out,
                         calls=verdict.calls,
+                        guard_violations=list(
+                            guard_table.get((case.task, case.repeat), {}).get(point.id, [])
+                        ),
                     )
                     rows.append(row)
                     if on_row is not None:
@@ -697,7 +735,47 @@ def run(
         labels=[v.label for v in variants],
         threshold=threshold,
         cells=list(cases),
+        guard=guard_table,
+        guard_mode=guard,
     )
+
+
+def _guard_table(
+    points: list[Point], cases: list[Case], mode: str
+) -> dict[tuple[str, int], dict[str, list[str]]]:
+    """§3.3 guard 2 for every (point, cell), decided before a single request goes out.
+
+    **`warn` is the default, and a hard error is the wrong default.** Eight of the
+    twenty M1-screened cells violate this guard, `nav-prod-port` — the canonical cell of
+    this whole line of work — among them, and two of the twelve committed anchor cells.
+    A run that aborts on a violation makes those cells unrunnable, which is a regression
+    dressed as a stricter guard: the status quo at least produced measurements.
+
+    What the status quo failed to do was make the violation impossible to miss, so that
+    is what is enforced instead. The violating point still runs; every row it produces
+    carries the shared words; the summary reports the family recomputed without it; and
+    attribution is credited only if the separation survives dropping it (`_compare`).
+    `error` is available for callers who want the strict reading, and it refuses here,
+    before any spend.
+    """
+    table: dict[tuple[str, int], dict[str, list[str]]] = {}
+    for case in cases:
+        for point in points:
+            words = cell_guard_violations(point, case)
+            if words:
+                table.setdefault((case.task, case.repeat), {})[point.id] = words
+    if table and mode == "error":
+        named = "; ".join(
+            f"{task} r{repeat}: {pid} shares {words}"
+            for (task, repeat), hits in sorted(table.items())
+            for pid, words in sorted(hits.items())
+        )
+        raise PerturbationError(
+            f"shared-token guard (spec §3.3 step 3, guard 2) violated on {len(table)} cell(s) "
+            f"— {named}. Re-run with the default guard mode to measure them anyway, with "
+            "every violating row and the guard-dropped family recorded."
+        )
+    return table
 
 
 def _variant_family(
@@ -753,20 +831,23 @@ def summarize(result: RunResult, manifest_sha256: str) -> dict:
     for case in result.cells:
         key = (case.task, case.repeat)
         per_variant = by_cell.get(key, {})
+        violations = result.guard.get(key, {})
         block = {
             "task": case.task,
             "repeat": case.repeat,
             "seed": case.seed,
+            "guard_violations": dict(violations),
             "variants": {
-                label: _family_stats(
+                label: _variant_stats(
                     per_variant.get(label, {}),
                     [p for p in result.selected if p not in result.dropped[label]],
                     threshold,
+                    violations,
                 )
                 for label in result.labels
             },
             "comparisons": [
-                _compare(result, per_variant, a, b, threshold, key)
+                _compare(result, per_variant, a, b, threshold, key, violations)
                 for a, b in combinations(result.labels, 2)
             ],
         }
@@ -776,6 +857,16 @@ def summarize(result: RunResult, manifest_sha256: str) -> dict:
         "bar": BAR,
         "threshold": threshold,
         "manifest_sha256": manifest_sha256,
+        "guard": {
+            "rule": "spec §3.3 step 3, guard 2 — no word a point adds or removes may "
+            "appear in the cell's {task} or {output}",
+            "mode": result.guard_mode,
+            "violations": [
+                {"task": task, "repeat": repeat, "point": pid, "words": words}
+                for (task, repeat), hits in sorted(result.guard.items())
+                for pid, words in sorted(hits.items())
+            ],
+        },
         # `requests` is the row count — one row per (variant, cell, point, replay).
         # `wire_calls` is what actually went out: they differ exactly when `structured()`
         # retried, which would otherwise inflate `tokens_total` invisibly.
@@ -794,6 +885,30 @@ def summarize(result: RunResult, manifest_sha256: str) -> dict:
         ],
         "cells": cells,
     }
+
+
+def _variant_stats(
+    point_rows: dict[str, list[ReplayRow]],
+    family: list[str],
+    threshold: int,
+    violations: dict[str, list[str]],
+) -> dict:
+    """One (variant, cell) block, plus the same statistic with tainted points removed.
+
+    `pass_rate` stays the FULL family so a run remains comparable with every committed
+    number, including the anchor set's `expect_pass_rate`. `guard_dropped` is the
+    recomputation a reader would otherwise have to do by hand — and did, in prose, in
+    `docs/eval.md`, because the artifacts could not carry it.
+    """
+    stats = _family_stats(point_rows, family, threshold)
+    hits = {pid: words for pid, words in violations.items() if pid in family}
+    stats["guard_violations"] = hits
+    stats["guard_dropped"] = (
+        _family_stats(point_rows, [pid for pid in family if pid not in hits], threshold)
+        if hits
+        else None
+    )
+    return stats
 
 
 def _family_stats(
@@ -832,8 +947,17 @@ def _compare(
     b: str,
     threshold: int,
     cell: tuple[str, int],
+    violations: dict[str, list[str]],
 ) -> dict:
-    """Paired dropping, then the separation rule. F is post-drop and reported explicitly."""
+    """Paired dropping, then the separation rule. F is post-drop and reported explicitly.
+
+    Guard dropping is a second, cell-scoped drop on top of paired dropping, and it gates
+    attribution: a separation carried by a point that shares a token with the cell is
+    RB-P4's measured mechanism, not evidence about the edit. So `attributable` now
+    requires the separation to survive removing the tainted points. It never removes a
+    cell from the run — when everything is tainted, `guard_verdict` is `undefined` and
+    nothing is credited, which is the honest answer, not an abort.
+    """
     family = [
         pid
         for pid in result.selected
@@ -856,30 +980,50 @@ def _compare(
         )
     stats_a = _family_stats(rows_a, family, threshold)
     stats_b = _family_stats(rows_b, family, threshold)
-    size = len(family)
-    if size == 0:
-        verdict = "undefined"
-    elif (stats_a["passed"] == size and stats_b["passed"] == 0) or (
-        stats_b["passed"] == size and stats_a["passed"] == 0
-    ):
-        verdict = "distinguishable"
-    elif stats_a["passed"] == stats_b["passed"]:
-        verdict = "indistinguishable"
-    else:
-        verdict = "inconclusive"
+    verdict = _separation(stats_a, stats_b, len(family))
+    guard_family = [pid for pid in family if pid not in violations]
+    guard_verdict = _separation(
+        _family_stats(rows_a, guard_family, threshold),
+        _family_stats(rows_b, guard_family, threshold),
+        len(guard_family),
+    )
     fragile = [label for label, s in ((a, stats_a), (b, stats_b)) if s["fragile"]]
     return {
         "a": a,
         "b": b,
         "verdict": verdict,
-        "family_size": size,
+        "family_size": len(family),
         "dropped_rules": dropped_rules,
         "a_pass_rate": stats_a["pass_rate"],
         "b_pass_rate": stats_b["pass_rate"],
         "fragile": fragile,
-        # §7 rule 2: a fragile family voids attribution on this cell even if rule 1 fires.
-        "attributable": verdict == "distinguishable" and not fragile,
+        "guard_verdict": guard_verdict,
+        "guard_family_size": len(guard_family),
+        "guard_dropped_rules": [
+            {"rule": pid, "reason": "shared-token", "words": violations[pid]}
+            for pid in family
+            if pid in violations
+        ],
+        # §7 rule 2: a fragile family voids attribution on this cell even if rule 1
+        # fires. RB-P19 adds the third: so does a separation that only the
+        # shared-token-violating points carried.
+        "attributable": (
+            verdict == "distinguishable" and guard_verdict == "distinguishable" and not fragile
+        ),
     }
+
+
+def _separation(stats_a: dict, stats_b: dict, size: int) -> str:
+    """§7 rule 1, on whichever family it is handed."""
+    if size == 0:
+        return "undefined"
+    if (stats_a["passed"] == size and stats_b["passed"] == 0) or (
+        stats_b["passed"] == size and stats_a["passed"] == 0
+    ):
+        return "distinguishable"
+    if stats_a["passed"] == stats_b["passed"]:
+        return "indistinguishable"
+    return "inconclusive"
 
 
 def format_table(summary: dict) -> str:
@@ -896,6 +1040,23 @@ def format_table(summary: dict) -> str:
                 f"{stats['spread']} | {stats['margin_zero']} | "
                 f"{','.join(str(s) for s in stats['identity_scores'])} | {stats['fragile']} |"
             )
+    guard = summary["guard"]
+    if guard["violations"]:
+        lines += ["", f"GUARD VIOLATIONS ({guard['mode']} mode) — {guard['rule']}:"]
+        for hit in guard["violations"]:
+            lines.append(
+                f"- {hit['task']} r{hit['repeat']}: {hit['point']} shares "
+                f"{', '.join(hit['words'])} with the cell — dropped from the "
+                "guard-clean family, attribution void unless the separation survives it"
+            )
+        for cell in summary["cells"]:
+            for label, stats in cell["variants"].items():
+                if stats["guard_dropped"]:
+                    lines.append(
+                        f"  {label} {cell['task']} r{cell['repeat']}: "
+                        f"{stats['pass_rate']} full -> "
+                        f"{stats['guard_dropped']['pass_rate']} guard-clean"
+                    )
     lines += ["", "Pairwise (post-drop family):"]
     for cell in summary["cells"]:
         for comparison in cell["comparisons"]:
@@ -950,6 +1111,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--replays", type=int, default=1, help="replays per perturbation point")
     parser.add_argument("--identity-replays", type=int, default=5)
     parser.add_argument("--identity-only", action="store_true", help="RB-P15's standing check")
+    parser.add_argument(
+        "--guard",
+        choices=GUARD_MODES,
+        default="warn",
+        help=(
+            "what to do when a point shares a moved word with a cell (spec §3.3 guard 2): "
+            "'warn' measures it and records the violation on every row and in the summary "
+            "(default); 'error' refuses before any request"
+        ),
+    )
     parser.add_argument("--json", type=Path, help="append one JSON line per replay to this file")
     parser.add_argument("--summary", type=Path, help="write the summary JSON here")
     args = parser.parse_args(argv)
@@ -987,6 +1158,7 @@ def main(argv: list[str] | None = None) -> None:
             identity_replays=args.identity_replays,
             identity_only=args.identity_only,
             model=args.model,
+            guard=args.guard,
             on_row=sink,
         )
         summary = summarize(result, manifest.sha256)
