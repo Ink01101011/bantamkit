@@ -82,9 +82,12 @@ from bantamkit.structured import structured
 __all__ = [
     "GUARD_DECISION_RULE",
     "GUARD_MODES",
+    "GUARD_VIOLATION_EXIT",
     "IN_MEMORY_REF",
     "READINGS",
     "READING_RULES",
+    "REFUSAL_EXIT",
+    "USAGE_EXIT",
     "Case",
     "GuardedFamily",
     "GuardedReplay",
@@ -97,6 +100,7 @@ __all__ = [
     "Verdict",
     "apply_point",
     "cell_guard_violations",
+    "exit_status",
     "guard_table",
     "guard_union",
     "guarded_family",
@@ -143,6 +147,33 @@ CLASSES = ("identity", "whitespace", "order", "paraphrase")
 # What a run does when a point violates §3.3's shared-token guard on a cell. See
 # `guard_table` for why `warn` is the default and `error` is not.
 GUARD_MODES = ("warn", "error")
+
+# ---- the exit-status contract (§6.2, RB-P24) ----
+#
+# Four outcomes a CI job has to tell apart. Three of them are meanings this tool
+# chooses, and THREE MEANINGS MAY NOT SHARE ONE NUMBER — which is exactly what was
+# wrong: a run where guard 2 fired on eight cells exited 0, indistinguishable from a
+# clean one, so `--guard error` (which refuses instead of measuring) was the only
+# machine-readable verdict there was.
+#
+#   0  measured, and guard 2 fired on nothing that ran
+#   1  refused, and measured nothing — every `BantamError` path, `--guard error`
+#      included. The perturbation-bar spec §6/§11 rest on this family being non-zero.
+#   2  usage error. Not this module's to choose: it is argparse's, and it is recorded
+#      here as a MEASURED number (`--not-a-flag` exits 2), pinned from a shell by
+#      `test_argparses_usage_status_is_measured_not_assumed`, so that the status this
+#      module does choose cannot silently collide with it.
+#   3  measured, WITH violations. Every artifact is written — the JSONL, the summary,
+#      the printed table — and the status says the guard fired, never that the run
+#      failed. A violating cell (`nav-prod-port` is one) has to stay measurable.
+#
+# 3 is the first free number above the two that are taken. A CI job writes against it
+# directly: 0 clean, 1 fix the input, 2 fix the command line, 3 the run happened and
+# the GUARD section and the `guard_dropped` blocks have to be read before anything is
+# credited. `--violations-exit-zero` is the named opt-out from 3 alone (see `main`).
+REFUSAL_EXIT = 1
+USAGE_EXIT = 2
+GUARD_VIOLATION_EXIT = 3
 
 # §3.3 guard 2 has two defensible readings of "a word the point adds or removes", and
 # the spec supports each in a different sentence. The user's ruling (2026-08-12) is that
@@ -1683,16 +1714,58 @@ def format_table(summary: dict) -> str:
     return "\n".join(lines)
 
 
+def exit_status(result: RunResult) -> int:
+    """The status a run that MEASURED something leaves behind: 0, or `GUARD_VIOLATION_EXIT`.
+
+    **What counts, and it is the rows.** Guard 2's union is non-empty on a (point, cell)
+    pair the run ACTUALLY REPLAYED. Every row carries that pair's verdict already
+    (`GuardedReplay.replay` stamps it), so this reads the run's own answer rather than
+    re-deriving one beside it — RB-P19's finding is that a second derivation which
+    happens to agree corroborates nothing.
+
+    Three consequences, each deliberate:
+
+    - **A point dropped from every variant's family does not count.** `guard_table` runs
+      over every selected point, before `_variant_family` drops the ones whose anchor is
+      absent, and the substitution-pair reading is a function of the point's own
+      `from`/`to` pair — so `result.guard` can flag a point that reached no request and
+      entered no statistic. Statusing on that table would be a verdict about a pair that
+      never ran. It is still in the summary, and the drop is still in `dropped_rules`.
+    - **`--identity-only` is always 0.** The identity point moves no words and cannot
+      violate; RB-P15's standing check keeps the status it has always had.
+    - **A violation on a variant whose rows were all dropped does not count for the
+      status, but a violation on any variant that DID replay the pair does.** The union
+      is across variants exactly as `guard_table` computes it.
+
+    This is a statement about the GUARD FIRING, not about whether the conclusion survived
+    dropping the point. Whether the separation holds on the guard-clean family is
+    `_compare`'s `guard_verdict`/`attributable`, it is already in the summary, and it is
+    not re-decided here: a run whose attribution survives its violations still fired the
+    guard, and a reader who is told otherwise by an exit code learns the wrong thing.
+    """
+    return GUARD_VIOLATION_EXIT if any(row.guard_violations for row in result.rows) else 0
+
+
 # ---- CLI (§6.2) ----
+
+_EXIT_CONTRACT = f"""exit status (RB-P24):
+  0  measured; guard 2 fired on nothing that ran
+  {REFUSAL_EXIT}  refused, measured nothing (bad input, or --guard error on a violating cell)
+  {USAGE_EXIT}  usage error (argparse)
+  {GUARD_VIOLATION_EXIT}  measured, WITH guard-2 violations - every artifact is still written,
+     and the GUARD section names each violating (point, cell)
+"""
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="python -m bantamkit.criticreplay",
         description=(
-            "Perturbation bar: replay one critic over a family of meaning-preserving "
+            "Perturbation bar: replay one critic over a family of meaning-preserving\n"
             "edits to its own prompt and report the pass rate with its spread."
         ),
+        epilog=_EXIT_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--rubric",
@@ -1727,6 +1800,16 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--json", type=Path, help="append one JSON line per replay to this file")
     parser.add_argument("--summary", type=Path, help="write the summary JSON here")
+    parser.add_argument(
+        "--violations-exit-zero",
+        action="store_true",
+        help=(
+            f"exit 0 instead of {GUARD_VIOLATION_EXIT} when guard 2 fired on a replayed "
+            "pair, for a procedure whose violations are EXPECTED and recorded (the anchor "
+            "set's second pass is one). Changes nothing that is written, and prints what "
+            "it suppressed on stderr"
+        ),
+    )
     args = parser.parse_args(argv)
     if args.replays < 1 or args.identity_replays < 1:
         parser.error("--replays and --identity-replays must be >= 1")
@@ -1777,6 +1860,21 @@ def main(argv: list[str] | None = None) -> None:
         args.summary.parent.mkdir(parents=True, exist_ok=True)
         args.summary.write_text(json.dumps(summary, indent=2) + "\n")
     print(format_table(summary))
+
+    # RB-P24. LAST, after every artifact exists: the JSONL (whose sink already flushed
+    # per row), the summary and the table. Non-zero here means "measured, and the guard
+    # fired" — never "nothing happened". Nothing that is written depends on this.
+    status = exit_status(result)
+    if status and args.violations_exit_zero:
+        print(
+            f"note: guard 2 fired on a replayed pair; exiting 0 instead of {status} because "
+            "--violations-exit-zero was passed. The violations are in the GUARD section "
+            "above and in the artifacts.",
+            file=sys.stderr,
+        )
+        status = 0
+    if status:
+        raise SystemExit(status)
 
 
 if __name__ == "__main__":
