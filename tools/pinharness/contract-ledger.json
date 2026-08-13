@@ -1,0 +1,232 @@
+{
+  "_what": "Every falsifiable claim the exit-status contract makes at b0d4cce, each with a mutation that makes it FALSE. A claim is PINNED when that mutation turns at least one node red. This is the denominator behind the '>80% measurable' target.",
+  "_measured": [
+    "b0d4cce (764 nodes): behaviour 16/16, prose 2/5, overall 18/21. P01, P03 and P04 each came back with a FULLY GREEN suite.",
+    "ff58237 (767 nodes): behaviour 16/16, prose 5/5, overall 21/21. The three killers are the three nodes added in that commit.",
+    "Calibration is run on 3981efd, where the two answers are known by hand: CAL-RED red, CAL-GREEN green. It still reads that way after the fix, which is what licenses believing the 21/21.",
+    "Report: docs/eval-data/2026-08-13-contract-claim-pinning.md"
+  ],
+  "claims": [
+    {
+      "cid": "B01",
+      "kind": "behaviour",
+      "claim": "EPIPE (the reader went away) keeps the status the run EARNED, and never invents one",
+      "where": "main, the BrokenPipeError arm (RB-P27, v0.19.0)",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "            sys.stdout = _LostStdout(e)\n        except (OSError, UnicodeEncodeError) as e:",
+      "replacement": "            render_failure = str(e)\n            sys.stdout = _LostStdout(e)\n        except (OSError, UnicodeEncodeError) as e:",
+      "note": "Mutation makes a dead pipe report 5 instead of the earned status."
+    },
+    {
+      "cid": "B02",
+      "kind": "behaviour",
+      "claim": "after a lost stdout the next write RAISES; silence is the one option not available (RB-P33, both arms)",
+      "where": "main, the EPIPE arm's _LostStdout rebinding",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "            sys.stdout = _LostStdout(e)\n        except (OSError, UnicodeEncodeError) as e:",
+      "replacement": "            sys.stdout = type(\"SilentSink\", (), {\"write\": lambda s, t: len(t), \"flush\": lambda s: None})()\n        except (OSError, UnicodeEncodeError) as e:",
+      "note": "K4 I6: this scored 748/748 at 3981efd."
+    },
+    {
+      "cid": "B03",
+      "kind": "behaviour",
+      "claim": "fd 1 closed before the process started (sys.stdout is None, print a silent no-op) reports 5",
+      "where": "main, the sys.stdout-is-None branch",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "        render_failure = \"fd 1 was not open when this process started\"",
+      "replacement": "        pass  # mutation: the state is read and then dropped",
+      "note": "The cell RB-P31's own filed attack direction would not have closed."
+    },
+    {
+      "cid": "B04",
+      "kind": "behaviour",
+      "claim": "a render failure from the DESCRIPTOR (EBADF, ENOSPC) reports 5, never the refusal status",
+      "where": "main, the render arm",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "        except (OSError, UnicodeEncodeError) as e:",
+      "replacement": "        except UnicodeEncodeError as e:",
+      "note": "Drops OSError from the arm: the RB-P31 case regresses to 1/120."
+    },
+    {
+      "cid": "B05",
+      "kind": "behaviour",
+      "claim": "a render failure from the CODEC (UnicodeEncodeError) reports 5 — K4's C1",
+      "where": "main, the render arm",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "        except (OSError, UnicodeEncodeError) as e:",
+      "replacement": "        except OSError as e:",
+      "note": "This is exactly the 3981efd state K4 found: PYTHONIOENCODING=latin-1 -> 1 on a run that measured."
+    },
+    {
+      "cid": "B06",
+      "kind": "behaviour",
+      "claim": "the arm is NOT a bare except: a genuine bug at the write keeps its traceback",
+      "where": "main, the render arm",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "        except (OSError, UnicodeEncodeError) as e:",
+      "replacement": "        except Exception as e:",
+      "note": "Widening laundered a real bug into a contract status."
+    },
+    {
+      "cid": "B07",
+      "kind": "behaviour",
+      "claim": "the line is drawn at UnicodeEncodeError, not at ValueError",
+      "where": "main, the render arm (K4B's new edge)",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "        except (OSError, UnicodeEncodeError) as e:",
+      "replacement": "        except (OSError, ValueError) as e:",
+      "note": "K4B claims a bare ValueError at the write must still propagate."
+    },
+    {
+      "cid": "B08",
+      "kind": "behaviour",
+      "claim": "format_table is evaluated OUTSIDE the try: a failure to BUILD the table is a bug and propagates",
+      "where": "main, above the render arm",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "edits": [
+        {
+          "anchor": "    table = format_table(summary)\n",
+          "replacement": "    table = None\n"
+        },
+        {
+          "anchor": "            print(table)\n",
+          "replacement": "            print(format_table(summary))\n"
+        }
+      ]
+    },
+    {
+      "cid": "B09",
+      "kind": "behaviour",
+      "claim": "5 OUTRANKS 4: a run that could write neither the summary nor the table reports 5",
+      "where": "main, the status ladder",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "        status = RENDER_FAILURE_EXIT\n    if status:",
+      "replacement": "        status = RENDER_FAILURE_EXIT\n    if write_failure is not None:\n        status = ARTIFACT_WRITE_EXIT\n    if status:",
+      "note": "K4 I2: this scored 748/748 at 3981efd."
+    },
+    {
+      "cid": "B10",
+      "kind": "behaviour",
+      "claim": "4 OUTRANKS 3: an unwritable summary beats the guard status",
+      "where": "main, the status ladder",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "    if write_failure is not None:\n        # Outranks the guard status",
+      "replacement": "    if write_failure is not None and False:\n        # Outranks the guard status"
+    },
+    {
+      "cid": "B11",
+      "kind": "behaviour",
+      "claim": "--violations-exit-zero cannot suppress 5 — the hatch is an opt-out from 3 alone",
+      "where": "main, the status ladder",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "        status = RENDER_FAILURE_EXIT\n    if status:",
+      "replacement": "        status = 0 if args.violations_exit_zero else RENDER_FAILURE_EXIT\n    if status:",
+      "note": "K4 I3: this scored 748/748 at 3981efd AND field-measured 0 on a run whose report went nowhere."
+    },
+    {
+      "cid": "B12",
+      "kind": "behaviour",
+      "claim": "--violations-exit-zero cannot suppress 4 either",
+      "where": "main, the status ladder",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "        status = ARTIFACT_WRITE_EXIT",
+      "replacement": "        status = 0 if args.violations_exit_zero else ARTIFACT_WRITE_EXIT"
+    },
+    {
+      "cid": "B13",
+      "kind": "behaviour",
+      "claim": "--replays 0 / --identity-replays 0 are argument-SHAPE rules and report 2",
+      "where": "the parser, above main's try",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "        parser.error(\"--replays and --identity-replays must be >= 1\")",
+      "replacement": "        raise PerturbationError(\"--replays and --identity-replays must be >= 1\")"
+    },
+    {
+      "cid": "B14",
+      "kind": "behaviour",
+      "claim": "a malformed --rubric spec is a shape rule and reports 2 (RB-P32's four moved cases)",
+      "where": "the parser, above main's try",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "            parser.error(problem)",
+      "replacement": "            raise PerturbationError(problem)"
+    },
+    {
+      "cid": "B15",
+      "kind": "behaviour",
+      "claim": "a duplicated --rubric LABEL is a shape rule and reports 2 — K4's C2",
+      "where": "the parser, above main's try (K4B's rubric_label_collision_problem)",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "        parser.error(collision)",
+      "replacement": "        pass  # mutation: the collision falls through to guarded_family inside the try"
+    },
+    {
+      "cid": "B16",
+      "kind": "behaviour",
+      "claim": "a WORLD-dependent failure stays 1: --rubric naming a missing file is not a usage error",
+      "where": "parse_rubric_arg",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "raise PerturbationError(f\"rubric not found: {spec}\")",
+      "replacement": "raise SystemExit(USAGE_EXIT)",
+      "note": "K4 I4: moving a world-dependent rule to 2 scored 748/748 at 3981efd."
+    },
+    {
+      "cid": "P01",
+      "kind": "prose",
+      "claim": "the epilog and the module comment describe the SAME set — K4's I7, the full three-edit restoration",
+      "where": "_EXIT_CONTRACT's 2 line and the #   2 comment block",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "edits": [
+        {
+          "anchor": "every one of them routed through\n#      `parser.error` above `main`'s `try`",
+          "replacement": "every one of them routed through\n#      the parser's own error hook above `main`'s `try`"
+        },
+        {
+          "anchor": "parsing finishes, 1 after\" is false (the `parser.error` call is after",
+          "replacement": "parsing finishes, 1 after\" is false (the parser's own error hook is called after"
+        },
+        {
+          "anchor": "  {USAGE_EXIT}  the command line itself is wrong and no run was attempted. Two sources,",
+          "replacement": "  {USAGE_EXIT}  usage error (argparse's number, including this module's own validations). Two sources,"
+        }
+      ],
+      "note": "MEASURED UNPINNED at 3981efd by this harness. K4B claims a pure RENAME is now a control that stays green by design (the set is AST-derived), and that the full attack - rename plus a restored false epilog claim - is red. This tests the full attack."
+    },
+    {
+      "cid": "P02",
+      "kind": "prose",
+      "claim": "the shape-rule roster in the epilog names exactly the rules the code has",
+      "where": "_EXIT_CONTRACT, 'shape rules (exact set):'",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "\n     shape rules (exact set): --identity-replays --replays --rubric",
+      "replacement": "\n     shape rules (exact set): --identity-replays --replays",
+      "note": "Drop a flag from the roster: the derivation node should notice."
+    },
+    {
+      "cid": "P03",
+      "kind": "prose",
+      "claim": "4's own sentence promises 'the table is still printed' — the reason 5 outranks it",
+      "where": "the #   4 comment block",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "#      `--summary` file. The measurement completed and the table is still printed;",
+      "replacement": "#      `--summary` file. The measurement completed;"
+    },
+    {
+      "cid": "P04",
+      "kind": "prose",
+      "claim": "the epilog discloses the four cases RB-P32 moved from 1 to 2",
+      "where": "_EXIT_CONTRACT, the CHANGED IN RB-P32 paragraph",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "CHANGED IN RB-P32",
+      "replacement": "CHANGED (see the docs)"
+    },
+    {
+      "cid": "P05",
+      "kind": "prose",
+      "claim": "the module comment's copy of the roster names the same set as the epilog's",
+      "where": "the #   2 comment block's 'shape rules (exact set)' line",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "\n#      shape rules (exact set): --identity-replays --replays --rubric",
+      "replacement": "\n#      shape rules (exact set): --identity-replays --replays"
+    }
+  ]
+}
