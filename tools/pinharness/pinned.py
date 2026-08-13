@@ -375,7 +375,9 @@ def report(rows, out: Path | None, commit: str, baseline: str) -> int:
     lines = [
         f"# Contract claim ledger — what is actually pinned at `{commit}`",
         "",
-        "A claim is PINNED when a mutation that makes it false turns at least one node red.",
+        "A claim is PINNED when a mutation that makes it false turns a node THIS CLAIM",
+        "NAMED red. Not 'at least one node' — that is what this harness used to mean by it,",
+        "and it certified a claim about the phase of the moon at 100% (L6, 2026-08-14).",
         "Every run below used a git worktree with `PYTHONPATH` pinned to that worktree's",
         "`runtime-py/src` (the suite does not isolate itself), and every mutation asserted",
         "its anchor was present exactly once before it was believed.",
