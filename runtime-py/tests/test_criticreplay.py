@@ -757,10 +757,11 @@ def test_a_derive_refuses_a_rule_whose_anchor_is_absent_rather_than_returning_th
     a case that cannot arise would be asserting nothing.
     """
     repo = tmp_git_repo_with_a_newlineless_rubric()
-    spec = (
-        f"derive:{ASSETS / 'evals' / 'perturbations' / 'task-completion.yaml'}"
-        ":W1-trailing-newline:git:HEAD:r.yaml"
-    )
+    # REPO-RELATIVE, and it has to be (L6, 2026-08-14): an absolute manifest path is now
+    # refused on its face by `rubric_arg_shape_problem`, so this node would otherwise be
+    # measuring the new shape rule instead of the applicability rule it is about. The
+    # throwaway repo carries a byte copy of the frozen manifest for exactly this reason.
+    spec = "derive:m.yaml:W1-trailing-newline:git:HEAD:r.yaml"
     cwd = os.getcwd()
     os.chdir(repo)
     try:
@@ -782,11 +783,16 @@ def tmp_git_repo_with_a_newlineless_rubric(_cache={}):  # noqa: B006
     raw = yaml.safe_load((ASSETS / "rubrics" / "task-completion.yaml").read_text())
     raw["prompt"] = raw["prompt"][:-1]
     (root / "r.yaml").write_text(yaml.safe_dump(raw, sort_keys=False))
+    # A byte copy of the frozen manifest, so every segment of a `derive:` spec resolved
+    # from inside this repo is repo-relative. `assets/` is read, never touched.
+    (root / "m.yaml").write_text(
+        (ASSETS / "evals" / "perturbations" / "task-completion.yaml").read_text()
+    )
     for argv in (
         ["git", "init", "-q"],
         ["git", "config", "user.email", "t@t"],
         ["git", "config", "user.name", "t"],
-        ["git", "add", "r.yaml"],
+        ["git", "add", "r.yaml", "m.yaml"],
         ["git", "commit", "-qm", "r"],
     ):
         subprocess.run(argv, cwd=root, check=True, capture_output=True)
@@ -850,6 +856,21 @@ def test_rubric_template_sha256_is_the_rubric_and_rubric_sha256_is_the_file(tmp_
     assert specs[0].template_sha256 == specs[1].template_sha256 == _A_ASFILED_TEMPLATE_SHA
 
 
+def _repo_relative(repo: Path, spec: str) -> Path | None:
+    """`repo / spec`, or `None` when `spec` does not name something INSIDE `repo`.
+
+    `Path("/a") / "/b"` is `/b`, so a resolver written as `repo / ref` silently reads an
+    absolute path off the machine that made the run and reports it as resolved. That is
+    the defect RB-P17 is about, and L5 found it in this file and in the committed field
+    checker at the same time. The containment check is on the RESOLVED path, so a `..`
+    segment cannot walk out either.
+    """
+    if spec.startswith(("~", "/")):
+        return None
+    candidate = (repo / spec).resolve()
+    return candidate if candidate.is_relative_to(repo.resolve()) else None
+
+
 def _template_a_recorded_ref_names(repo: Path, ref: str) -> str | None:
     """Recover the rubric TEMPLATE a recorded `rubric_ref` names, from this repo alone.
 
@@ -860,11 +881,18 @@ def _template_a_recorded_ref_names(repo: Path, ref: str) -> str | None:
 
     Returns `None` when the ref names nothing this repository can supply, which is the
     answer for an absolute scratchpad path and for a bare commit with no path.
+
+    CORRECTED 2026-08-14 (L6). The last branch refused an absolute path and the `derive:`
+    branch did not, so `repo / "/private/tmp/x.yaml"` — which pathlib evaluates to
+    `/private/tmp/x.yaml`, dropping `repo` entirely — read a scratchpad file off this
+    machine and called the ref RESOLVED. The checker had the same hole as the code it was
+    checking, in the same shape, which is why `_repo_relative` is one function used by
+    every path segment here rather than a condition written twice.
     """
     if ref.startswith("derive:"):
         _, manifest_spec, rule_id, base = ref.split(":", 3)
-        manifest_file = repo / manifest_spec
-        if not manifest_file.is_file():
+        manifest_file = _repo_relative(repo, manifest_spec)
+        if manifest_file is None or not manifest_file.is_file():
             return None
         points = yaml.safe_load(manifest_file.read_text())["points"]
         point = next((p for p in points if p["id"] == rule_id), None)
@@ -886,9 +914,166 @@ def _template_a_recorded_ref_names(repo: Path, ref: str) -> str | None:
             text=True,
         )
         return yaml.safe_load(shown.stdout)["prompt"] if shown.returncode == 0 else None
-    if not ref.startswith("/") and (repo / ref).is_file():
-        return yaml.safe_load((repo / ref).read_text())["prompt"]
+    inside = _repo_relative(repo, ref)
+    if inside is not None and inside.is_file():
+        return yaml.safe_load(inside.read_text())["prompt"]
     return None
+
+
+def test_a_derive_manifest_segment_may_not_be_an_absolute_path_either(tmp_path):
+    """RB-P17's own defect, found INSIDE the fix that closes RB-P17 (L5; fixed by L6).
+
+    The BASE segment was refused a working-tree path from the day this form shipped, with
+    an explicit argument: a derived variant has no file of its own, so the only thing that
+    makes its recorded ref resolvable is that every segment names something a second
+    reader can obtain. The MANIFEST segment got no such rule, so
+
+        derive:/private/tmp/<session>/scratchpad/m.yaml:W1-trailing-newline:git:…
+
+    was ACCEPTED and recorded verbatim in `ref`, with `rubric_sha256=""` and therefore no
+    file hash to fall back on — the exact `/private/tmp` scratchpad shape the filing is
+    about, one segment over.
+
+    It is refused ON ITS FACE, from the argv alone: no path resolved, no file opened, no
+    `git` run, so it is an argument-SHAPE rule and reports `USAGE_EXIT` (RB-P32). The
+    manifest under `tmp_path` below EXISTS and is a valid manifest — the refusal is about
+    the form of the string and not about the state of the disk, and a rule that consulted
+    the disk could not have said "this can never work on any machine".
+    """
+    manifest = tmp_path / "m.yaml"
+    manifest.write_text((ASSETS / "evals" / "perturbations" / "task-completion.yaml").read_text())
+    assert manifest.is_file()
+    base = "git:d2f78b7:assets/rubrics/task-completion.yaml"
+    for bad, why in (
+        (str(manifest), "absolute path names a machine"),
+        ("../outside/m.yaml", "`..` segment leaves the repository"),
+        ("~/m.yaml", "`~` names a home directory"),
+    ):
+        spec = f"derive:{bad}:W1-trailing-newline:{base}"
+        problem = criticreplay.rubric_arg_shape_problem(f"B={spec}")
+        assert problem is not None and why in problem, (bad, problem)
+        with pytest.raises(criticreplay.PerturbationError, match="repo-relative manifest"):
+            criticreplay.parse_rubric_arg(f"B={spec}")
+    # CONTROL. The repo-relative form of the same manifest is accepted, so the rule is
+    # about the shape of the path and not about `derive:` having stopped working.
+    assert criticreplay.rubric_arg_shape_problem(f"B={_NULL_CONTROL_SPEC}") is None
+
+
+def test_a_derived_variant_records_the_bytes_of_the_manifest_it_resolved_through():
+    """The manifest is the one WORKING-TREE segment a recorded ref can have.
+
+    `git:<ref>:<path>` is immutable and a plain path form records `rubric_sha256`; a
+    derived variant records neither, so until now editing the manifest's op in place made
+    the same recorded ref resolve to a DIFFERENT rubric, silently, with nothing in the
+    record to notice it (measured by L5: `d1f32ad2947b` -> `447e5be27613`).
+
+    `derive_manifest_sha256` does not make the manifest immutable. It makes a substitution
+    DETECTABLE, which is the most a record can do about an input the reader has to fetch:
+    a reader who reads the manifest at that path and gets a different sha knows the ref no
+    longer names what it named.
+
+    The substitution is performed here rather than argued: the same rule id, the same
+    base, a manifest that differs only in that rule's `op`, and the two derived variants
+    are different rubrics carrying different manifest shas.
+    """
+    variant = criticreplay.parse_rubric_arg(f"B-nonewline={_NULL_CONTROL_SPEC}")
+    manifest = criticreplay.load_manifest(
+        ASSETS / "evals" / "perturbations" / "task-completion.yaml"
+    )
+    assert variant.derive_manifest_sha256 == manifest.sha256
+    assert re.fullmatch(r"[0-9a-f]{64}", variant.derive_manifest_sha256)
+    # A non-derived variant states no manifest sha, because it resolved through none.
+    plain = criticreplay.parse_rubric_arg(
+        "A-asfiled=git:d2f78b7:assets/rubrics/task-completion.yaml"
+    )
+    assert plain.derive_manifest_sha256 == ""
+    # THE SUBSTITUTION, executed. ONE recorded ref, TWO manifests at the same path, two
+    # different rubrics — the silent swap L5 measured, in a throwaway repo so this repo's
+    # working tree is untouched.
+    root = _tmp_repo_with_two_manifests_at_one_path()
+    spec = "B=derive:m.yaml:W1-trailing-newline:git:HEAD:r.yaml"
+    cwd = os.getcwd()
+    try:
+        os.chdir(root)
+        (root / "m.yaml").write_text((root / "m-strip.yaml").read_text())
+        before = criticreplay.parse_rubric_arg(spec)
+        (root / "m.yaml").write_text((root / "m-append.yaml").read_text())
+        after = criticreplay.parse_rubric_arg(spec)
+    finally:
+        os.chdir(cwd)
+    assert before.ref == after.ref  # the SAME recorded ref, byte for byte
+    assert before.rubric.prompt != after.rubric.prompt  # naming two different rubrics
+    assert before.derive_manifest_sha256 != after.derive_manifest_sha256, (
+        "one recorded ref resolved through two DIFFERENT manifests and the record states "
+        "the same manifest sha for both, so a reader cannot tell which one it read"
+    )
+    # And the column reaches the ARTIFACT, not only the object: a row a reader has.
+    assert "derive_manifest_sha256" in criticreplay.ReplayRow.__dataclass_fields__
+
+
+def _tmp_repo_with_two_manifests_at_one_path(_cache={}):  # noqa: B006
+    """A one-commit repo with a rubric and TWO manifests differing in one rule's `op`.
+
+    Both are byte copies of the frozen manifest with a single field changed, so the
+    substitution under test is the smallest one that changes what a ref resolves to.
+    `assets/` is read, never touched.
+    """
+    if "path" in _cache:
+        return _cache["path"]
+    import tempfile
+
+    root = Path(tempfile.mkdtemp(prefix="bk-rbp17-manifest-"))
+    frozen = (ASSETS / "evals" / "perturbations" / "task-completion.yaml").read_text()
+    (root / "r.yaml").write_text((ASSETS / "rubrics" / "task-completion.yaml").read_text())
+    (root / "m-strip.yaml").write_text(frozen)
+    swapped = yaml.safe_load(frozen)
+    next(p for p in swapped["points"] if p["id"] == "W1-trailing-newline")["op"] = (
+        "append-trailing-newline"
+    )
+    (root / "m-append.yaml").write_text(yaml.safe_dump(swapped, sort_keys=False))
+    (root / "m.yaml").write_text(frozen)
+    for argv in (
+        ["git", "init", "-q"],
+        ["git", "config", "user.email", "t@t"],
+        ["git", "config", "user.name", "t"],
+        ["git", "add", "r.yaml", "m.yaml", "m-strip.yaml", "m-append.yaml"],
+        ["git", "commit", "-qm", "r"],
+    ):
+        subprocess.run(argv, cwd=root, check=True, capture_output=True)
+    _cache["path"] = root
+    return root
+
+
+def test_a_resolver_that_takes_repo_slash_ref_reads_this_machine(tmp_path):
+    """The pathlib trap, made executable, because it bit two resolvers at once.
+
+    `Path("/a") / "/b"` is `/b`. A checker written as `repo / ref` therefore READS an
+    absolute scratchpad path off the machine that made the run and reports the ref
+    resolved — which is the whole of RB-P17 wearing a checker's clothes. Both the
+    fresh-run node's resolver here and the committed field checker had it.
+    """
+    outside = tmp_path / "outside.yaml"
+    outside.write_text(yaml.safe_dump({"prompt": "SECRET {task} {output}"}, sort_keys=False))
+    repo = Path(__file__).resolve().parents[2]
+    # The naive form, demonstrated rather than described.
+    assert (repo / str(outside)) == outside
+    assert (repo / str(outside)).is_file()
+    # The reader this file uses says no, twice: to the path form and through a derive:.
+    assert _repo_relative(repo, str(outside)) is None
+    assert _template_a_recorded_ref_names(repo, str(outside)) is None
+    assert (
+        _template_a_recorded_ref_names(
+            repo,
+            f"derive:{outside}:W1-trailing-newline"
+            ":git:d2f78b7:assets/rubrics/task-completion.yaml",
+        )
+        is None
+    )
+    # …and a `..` walk out of the tree, which `startswith("/")` alone would have let in.
+    assert _repo_relative(repo, "../../etc/hosts") is None
+    # CONTROL: the real repo-relative manifest still resolves, so the guard is not a
+    # blanket `None`.
+    assert _template_a_recorded_ref_names(repo, _NULL_CONTROL_SPEC) is not None
 
 
 def test_a_fresh_runs_rubric_ref_resolves_from_this_repo_back_to_the_rubric_it_recorded(
@@ -1184,7 +1369,7 @@ def test_rows_carry_the_columns_the_spec_names(rig):
     row = result.rows[0].row()
     assert set(row) == {
         "bar", "variant", "rubric_ref", "rubric_sha256", "rubric_template_sha256",
-        "manifest_sha256", "task", "seed",
+        "derive_manifest_sha256", "manifest_sha256", "task", "seed",
         "repeat", "model", "point", "class", "rule", "replay", "prompt_sha256",
         "payload_sha256", "payload_canonical_sha256",
         "score", "threshold", "passed", "feedback", "tokens_in", "tokens_out",
@@ -1832,6 +2017,12 @@ _RBP16_ADDED_KEYS = (
     # baseline exactly. Named here rather than folded in silently, because an unnamed key
     # slipping past this floor is the regression the floor exists to catch.
     "rubric_template_sha256",
+    # RB-P17 (L6, 2026-08-14): the bytes of the MANIFEST a `derive:` ref points through.
+    # The manifest is the one WORKING-TREE segment a recorded ref can have, and nothing
+    # recorded it, so the same ref could resolve to a different rubric silently. Blank on
+    # every non-derived variant, which is every row the baseline contains, so the strip
+    # restores `f8404ab` exactly.
+    "derive_manifest_sha256",
     # RB-P18 (L4, 2026-08-14): the same wire body key-SORTED, beside the body under this
     # writer's insertion order, and the recipes published in the summary. Additive on the
     # same argument — `payload_sha256` keeps its name, its recipe and its value, which is
@@ -5169,6 +5360,10 @@ def _rows_as_replay_rows(path: Path) -> list[criticreplay.ReplayRow]:
         # state a key-sorted sha", which is exactly true of every row written before
         # 2026-08-14 — and it is not the same as stating one that happens to be empty.
         data.setdefault("payload_canonical_sha256", "")
+        # RB-P17, L6 2026-08-14, same rule again: no committed row states the bytes of a
+        # manifest a `derive:` ref points through, because no committed row carries a
+        # `derive:` ref at all.
+        data.setdefault("derive_manifest_sha256", "")
         rows.append(
             criticreplay.ReplayRow(
                 **{

@@ -69,7 +69,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from itertools import combinations
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml
 
@@ -870,6 +870,16 @@ class RubricVariant:
     ref: str
     rubric: Rubric
     sha256: str
+    # RB-P17, L6 2026-08-14. The bytes of the MANIFEST a `derive:` ref points through,
+    # blank for every other form. The `derive:` ref is the one recorded ref with a
+    # WORKING-TREE segment in it: `git:<ref>:<path>` is immutable and a plain path form
+    # records `rubric_sha256`, but a derived variant has `rubric_sha256=""` and its
+    # manifest is an ordinary file that can be edited under the same path. Measured by
+    # L5: editing the op in place makes one recorded ref resolve to a different rubric
+    # (`d1f32ad2947b` -> `447e5be27613`), silently, with no file hash to fall back on.
+    # This column is the fall-back: it does not make the manifest immutable, it makes a
+    # SUBSTITUTION DETECTABLE, which is the most a record can do about a mutable input.
+    derive_manifest_sha256: str = ""
 
     @property
     def template_sha256(self) -> str:
@@ -890,6 +900,28 @@ class RubricVariant:
         under a fixed name is RB-P18's defect, which is the one being fixed here.
         """
         return sha256_text(self.rubric.prompt)
+
+
+def _not_repo_relative(path: str) -> str | None:
+    """Why `path` cannot name a file in THIS repository, or `None` if nothing does.
+
+    A function of the string and of nothing else — no path resolved, no file opened — so
+    it is an argument-SHAPE rule under RB-P32's definition and reports `USAGE_EXIT`. The
+    three refusals are the three ways a recorded path stops naming something a second
+    reader can obtain: an absolute path names this machine, a `..` segment names outside
+    the tree, and `~` names a home directory that is not theirs.
+
+    `pathlib` will not do this for you and that is the trap L5 caught in two resolvers at
+    once: `Path(repo) / "/private/tmp/x.yaml"` is `/private/tmp/x.yaml`, so a checker
+    written as `repo / ref` silently reads the absolute path and calls it resolved.
+    """
+    if path.startswith("~"):
+        return "a `~` names a home directory, which is not this repository"
+    if PurePosixPath(path).is_absolute():
+        return "an absolute path names a machine, not a repository"
+    if ".." in PurePosixPath(path).parts:
+        return "a `..` segment leaves the repository"
+    return None
 
 
 def rubric_arg_shape_problem(arg: str) -> str | None:
@@ -926,6 +958,25 @@ def rubric_arg_shape_problem(arg: str) -> str | None:
             return (
                 "--rubric derive spec wants "
                 f"derive:<manifest-path>:<rule-id>:git:<ref>:<path>, got {spec!r}"
+            )
+        manifest = parts[1]
+        problem = _not_repo_relative(manifest)
+        if problem is not None:
+            # RB-P17, CORRECTED 2026-08-14 (L6). The base segment was refused a
+            # working-tree path from the day this form shipped, on the argument that a
+            # derived variant has no file of its own and therefore nothing but the
+            # immutability of every segment makes its record resolvable. THE MANIFEST
+            # SEGMENT GOT NO SUCH RULE, so `derive:/private/tmp/<session>/x.yaml:...`
+            # was ACCEPTED and recorded verbatim in `ref` with `sha256=''` — the exact
+            # absolute-scratchpad shape RB-P17 was filed about, inside the fix that
+            # closes RB-P17. It is the same defect and it gets the same answer.
+            return (
+                f"--rubric derive spec wants a repo-relative manifest path, got "
+                f"{manifest!r} — {problem}. A derived variant has no file of its own, so "
+                "the only thing that makes its recorded ref resolvable is that every "
+                "segment of it names something a second reader can obtain from this "
+                "repository. An absolute path names this machine, and RB-P17 is the "
+                "problem of a record that points at one."
             )
         base = parts[3]
         if not base.startswith("git:"):
@@ -1042,8 +1093,10 @@ def parse_rubric_arg(arg: str) -> RubricVariant:
         raise PerturbationError(problem)
     label, _, spec = arg.partition("=")
     if spec.startswith("derive:"):
+        rubric, manifest_sha256 = _derive_rubric(spec)
         return RubricVariant(
-            label=label, spec=spec, ref=spec, rubric=_derive_rubric(spec), sha256=""
+            label=label, spec=spec, ref=spec, rubric=rubric, sha256="",
+            derive_manifest_sha256=manifest_sha256,
         )
     if spec.startswith("git:"):
         _, ref, path = spec.split(":", 2)
@@ -1058,8 +1111,15 @@ def parse_rubric_arg(arg: str) -> RubricVariant:
     )
 
 
-def _derive_rubric(spec: str) -> Rubric:
-    """Resolve `derive:<manifest-path>:<rule-id>:git:<ref>:<path>` to the perturbed rubric.
+def _derive_rubric(spec: str) -> tuple[Rubric, str]:
+    """Resolve `derive:<manifest-path>:<rule-id>:git:<ref>:<path>` to `(rubric, manifest sha)`.
+
+    THE MANIFEST SHA COMES BACK WITH THE RUBRIC because the manifest is the one segment of
+    this form that is MUTABLE (L5, 2026-08-14): `git:<ref>:<path>` is immutable, a plain
+    path form records `rubric_sha256`, and a derived variant records neither. Editing the
+    op in place makes the same recorded ref resolve to a different rubric, silently. The
+    sha does not stop that; it makes it detectable, which is the most a record can do about
+    an input the reader has to fetch. It rides on the row as `derive_manifest_sha256`.
 
     `sha256` is BLANK on the variant this builds, following the `IN_MEMORY_REF` precedent
     exactly: the populated `rubric_sha256` column is the sha of a rubric FILE's bytes, a
@@ -1070,6 +1130,7 @@ def _derive_rubric(spec: str) -> Rubric:
     """
     _, manifest_spec, rule_id, base_spec = spec.split(":", 3)
     manifest = load_manifest(Path(manifest_spec))
+    manifest_sha256 = manifest.sha256
     points = [point for point in manifest.points if point.id == rule_id]
     if not points:
         raise PerturbationError(
@@ -1088,8 +1149,9 @@ def _derive_rubric(spec: str) -> Rubric:
             "happened. (This is what `W1-trailing-newline` does against a base that already "
             "has no trailing newline: it is that rule's fixed point.)"
         )
-    return Rubric(
-        name=base.name, threshold=base.threshold, prompt=perturbed, schema=base.schema
+    return (
+        Rubric(name=base.name, threshold=base.threshold, prompt=perturbed, schema=base.schema),
+        manifest_sha256,
     )
 
 
@@ -1443,7 +1505,7 @@ def replay_scores(client: ModelClient, rubric: Rubric, case: Case, replays: int 
 
 _ROW_KEYS = (
     "bar", "variant", "rubric_ref", "rubric_sha256", "rubric_template_sha256",
-    "manifest_sha256", "task", "seed",
+    "derive_manifest_sha256", "manifest_sha256", "task", "seed",
     "repeat", "model", "point", "class", "rule", "replay", "prompt_sha256", "payload_sha256",
     "payload_canonical_sha256",
     "score", "threshold", "passed", "feedback", "tokens_in", "tokens_out", "calls",
@@ -1458,6 +1520,7 @@ class ReplayRow:
     rubric_ref: str
     rubric_sha256: str  # the FILE's bytes, blank when the variant has no file
     rubric_template_sha256: str  # the RUBRIC the critic read; see RubricVariant
+    derive_manifest_sha256: str  # the MANIFEST a derive: ref points through; see RubricVariant
     manifest_sha256: str
     task: str
     seed: int
@@ -1811,6 +1874,7 @@ def run(
                 rubric_ref=unit.variant.ref,
                 rubric_sha256=unit.variant.sha256,
                 rubric_template_sha256=unit.variant.template_sha256,
+                derive_manifest_sha256=unit.variant.derive_manifest_sha256,
                 manifest_sha256=manifest.sha256,
                 task=unit.case.task,
                 seed=unit.case.seed,
@@ -2070,6 +2134,9 @@ def summarize(result: RunResult, manifest_sha256: str) -> dict:
                 "rubric_sha256": next(r.rubric_sha256 for r in result.rows if r.variant == label),
                 "rubric_template_sha256": next(
                     r.rubric_template_sha256 for r in result.rows if r.variant == label
+                ),
+                "derive_manifest_sha256": next(
+                    r.derive_manifest_sha256 for r in result.rows if r.variant == label
                 ),
                 "dropped_rules": result.dropped[label],
             }

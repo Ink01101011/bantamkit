@@ -10,7 +10,8 @@
     "abc2a34 + L2 (775 nodes: 775 passed, 2 xfailed) with the 27-claim ledger, measured not asserted, at ab3c36c: behaviour 20/22 (91%), prose 5/5 (100%), overall 25/27. The BEFORE was re-measured rather than cited — abc2a34 on its own 24-claim ledger reads behaviour 16/19, prose 5/5, overall 21/24, exactly the committed number. So 21/24 -> 25/27: N01 moved UNPINNED -> PINNED and N04/N05/N06 landed PINNED, and all 21 pre-existing claims are still PINNED — the four new nodes cost nothing. N02/N03 stay UNPINNED and MUST: they are RB-P17/RB-P18, still open, and their nodes read committed artifacts, which no source mutation can turn red (L1's structural finding). Field measurement, which is the acceptance claim and not this number: docs/eval-data/2026-08-14-rbp16-effect-size-report.md.",
     "32773f9 + L3 (788 nodes: 788 passed, 2 xfailed) with the 29-claim ledger, measured not asserted, at 60784a9: behaviour 23/24 (96%), prose 5/5 (100%), overall 28/29. The BEFORE was re-measured rather than cited - 32773f9 on its own 27-claim ledger reads behaviour 20/22, prose 5/5, overall 25/27, exactly the committed number. So 25/27 -> 28/29: N02 moved UNPINNED -> PINNED and N07/N08 landed PINNED, and all 26 other pre-existing claims are still PINNED. N03 stays UNPINNED and MUST: it is RB-P18, still open. ONE PRE-EXISTING CLAIM WENT UNPINNED FIRST AND IT WAS THIS UNIT'S FAULT: at 0337c66 P04 read UNPINNED (27/29), because its mutation strips the RB-P32 id and the node's `assert problems` was satisfied by the RB-P17 id this unit added beside it - a second disclosure silently unpinned the first. Fixed in 60784a9 by tying citation to disclosure in both directions, not by re-scoping P04. The RB-P17 committed-summary node stays xfail PERMANENTLY: committed evidence is never regenerated, so no fix can clear the four frozen unresolvable refs, and that node pins nothing in either direction. Field measurement, which is the acceptance claim and not this number: docs/eval-data/2026-08-14-rbp17-provenance-resolution.md.",
     "9ed1886 + L4 with the 31-claim ledger, measured not asserted: BEFORE re-measured rather than cited -- 9ed1886 on its own 29-claim ledger reads behaviour 23/24, prose 5/5, overall 28/29, exactly the committed number. AFTER: see the field record. N03 moved UNPINNED -> PINNED by being RE-AIMED at a fresh-run node, which is the only thing that could have moved it (L1's structural finding, now confirmed a third time). Field measurement, which is the acceptance claim and not this number: docs/eval-data/2026-08-14-rbp18-payload-recipe.md.",
-    "1ef62dc + L6 (795 nodes: 795 passed, 2 xfailed): RB-P28's residual measured and closed for the three acceptances. Before this commit a SINGLE fix-nothing patch reverting all three fixes unless `pytest` is in sys.modules kept the suite at 792 passed / 2 xfailed with rc 0 while a real shell printed a constant `d= 0/11 ... 0/11 points disagree` on three cells where the same tree unpatched prints 0, -1, -2 and 4, 7, 4 disagreeing points. An affirmatively FALSE field report with a fully green suite, and not one node objected -- so the number this file reports said nothing about N01/N02/N03 at all. Three out-of-process nodes now carry those three pins, and the same patch turns exactly those three red, one per edit, with no cross-catching. Record: docs/eval-data/2026-08-14-rbp28-acceptance-pins-outside-pytest.md."
+    "1ef62dc + L6 (795 nodes: 795 passed, 2 xfailed): RB-P28's residual measured and closed for the three acceptances. Before this commit a SINGLE fix-nothing patch reverting all three fixes unless `pytest` is in sys.modules kept the suite at 792 passed / 2 xfailed with rc 0 while a real shell printed a constant `d= 0/11 ... 0/11 points disagree` on three cells where the same tree unpatched prints 0, -1, -2 and 4, 7, 4 disagreeing points. An affirmatively FALSE field report with a fully green suite, and not one node objected -- so the number this file reports said nothing about N01/N02/N03 at all. Three out-of-process nodes now carry those three pins, and the same patch turns exactly those three red, one per edit, with no cross-catching. Record: docs/eval-data/2026-08-14-rbp28-acceptance-pins-outside-pytest.md.",
+    "3070d9c + L6, the FIRST sweep under the fixed harness, at the 31-claim ledger: PINNED 30, UNPINNED 0, FALSE-PINNED 1, BROKEN 0 -- behaviour 25/26 (96%), prose 5/5 (100%), overall 30/31. THE 31/31 THIS FILE CARRIED BEFORE WAS NOT WHAT IT WAS REPORTED TO BE and is not cited anywhere: it was '31 hand-written mutations each turned >=1 node red', measured by a harness that related no killer to its claim. B16 read FALSE-PINNED; on inspection the cause was an inventory error in its own pin list and not a false pinning (see its note)."
   ],
   "claims": [
     {
@@ -236,11 +237,12 @@
         "test_every_argument_shape_error_reports_the_same_number",
         "test_a_refusal_exits_one_in_a_real_shell",
         "test_the_usage_status_names_exactly_the_shape_rules_the_code_has",
-        "test_no_sentence_about_the_usage_status_claims_all_of_this_modules_validations"
+        "test_no_sentence_about_the_usage_status_claims_all_of_this_modules_validations",
+        "test_every_shape_rule_flag_is_the_usage_status_in_the_field"
       ],
       "anchor": "raise PerturbationError(f\"rubric not found: {spec}\")",
       "replacement": "raise SystemExit(USAGE_EXIT)",
-      "note": "K4 I4: moving a world-dependent rule to 2 scored 748/748 at 3981efd."
+      "note": "K4 I4: moving a world-dependent rule to 2 scored 748/748 at 3981efd. PIN LIST CORRECTED 2026-08-14 (L6), AND THE HARNESS IS WHAT CAUGHT IT. On the first sweep under the new rules this claim read FALSE-PINNED: its only killer was test_every_shape_rule_flag_is_the_usage_status_in_the_field, which the first pin list did not name. Inspected rather than waved through -- that node's _world_rule_field_cases carries `--rubric a=<a path that is not there>` as its load-bearing member and its docstring cites K4's I4, which is this claim's own note. It is entitled to pin this and the omission was an inventory error. This is also the loophole 2026-08-14-pinning-harness-false-positives.md names: nothing stops an author reading the killers and writing them in. The defence here is that the node's own docstring names the case, and the correction is recorded rather than made silently."
     },
     {
       "cid": "P01",
@@ -457,6 +459,32 @@
       "anchor": "    if isinstance(value, list) and all(isinstance(item, str) for item in value):\n        return tuple(value)\n",
       "replacement": "    # mutation (RB-P18): the reader flattens, and a cell that recorded TWO\n    # distinct payload shas silently reports one\n    if isinstance(value, list) and all(isinstance(item, str) for item in value):\n        return (value[0],)\n",
       "note": "MEASURED 2026-08-14 over the whole committed record: 1280 str occurrences across 12 artifacts, 30 list occurrences in 2026-08-11-sa3-14b-nav-prod-port-critic-replay.json. One name, two ARITIES, and a reader diffing them with == gets False from the TYPE before a hash is compared. The list is not a typo: a bar row is one REPLAY and an SA3 entry is one CELL, whose field is the SET of distinct shas across that cell's processes -- cardinality 1 is that file's own stated claim that any score spread is the server's and not the prompt's. All 30 lists have length 1, so all 30 make it. A reader that took [0] would discard a claim a two-element list would have falsified. Killed by test_the_payload_sha_field_is_readable_in_both_shapes_the_record_uses."
+    },
+    {
+      "cid": "N11",
+      "kind": "behaviour",
+      "claim": "a `derive:` ref's MANIFEST segment must name something inside this repository, exactly as its base must (RB-P17, the defect inside the fix)",
+      "where": "rubric_arg_shape_problem, the derive: branch; _not_repo_relative",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "pins": [
+        "test_a_derive_manifest_segment_may_not_be_an_absolute_path_either"
+      ],
+      "anchor": "        manifest = parts[1]\n        problem = _not_repo_relative(manifest)\n        if problem is not None:\n",
+      "replacement": "        manifest = parts[1]\n        problem = None  # mutation (RB-P17): the manifest segment gets no rule again\n        if problem is not None:\n",
+      "note": "MEASURED, NOT ASSERTED. Before this rule `derive:/private/tmp/<session>/scratchpad/m.yaml:W1-trailing-newline:git:d2f78b7:...` was ACCEPTED and recorded verbatim in `ref` with `rubric_sha256` empty -- the exact absolute-scratchpad shape RB-P17 was filed about, one segment over from the base the same form already refused, inside the fix that closes RB-P17. Field: D1 moves from status 3 (a run happened and its record points at this machine) to status 2 with zero spend, and no other case in the matrix moves. The manifest under $WORK EXISTS, so the refusal is about the FORM of the string and not the state of the disk, which is what entitles it to be a shape rule at all (RB-P32). Record: docs/eval-data/2026-08-14-rbp17-manifest-segment.md."
+    },
+    {
+      "cid": "N12",
+      "kind": "behaviour",
+      "claim": "a derived variant records the BYTES of the manifest it resolved through, so a substitution at that path is detectable from the record (RB-P17)",
+      "where": "_derive_rubric's second return value; RubricVariant.derive_manifest_sha256; the row column",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "pins": [
+        "test_a_derived_variant_records_the_bytes_of_the_manifest_it_resolved_through"
+      ],
+      "anchor": "    manifest_sha256 = manifest.sha256\n",
+      "replacement": "    manifest_sha256 = \"\"  # mutation (RB-P17): the manifest's bytes go unrecorded again\n",
+      "note": "The manifest is the one WORKING-TREE segment a recorded ref can have: `git:<ref>:<path>` is immutable and a plain path form records `rubric_sha256`, and a derived variant records neither. Measured by L5 and reproduced here by executing the swap: one recorded ref, two manifests at one path, template d1f32ad2947b -> 447e5be27613, and before this column the two runs are INDISTINGUISHABLE in the record. This does NOT make the segment immutable and the docs/eval.md amendment says so -- it makes a substitution DETECTABLE, which is the most a record can do about an input the reader has to fetch. Additive: blank on every non-derived variant, so the f8404ab byte-identity floor still restores exactly. Record: docs/eval-data/2026-08-14-rbp17-manifest-segment.md."
     }
   ]
 }

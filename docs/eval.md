@@ -2712,6 +2712,43 @@ and each carries an attack direction.
   the file; the new one is the rubric the critic read, and it is the value the
   manifest already records as `base_sha256`.
 
+  > **AMENDMENT 2026-08-14 (L6). The sentence in (1) — "the only thing that
+  > makes its record resolvable is that every segment is immutable" — was FALSE
+  > as shipped, and it is corrected here rather than rewritten above.** The rule
+  > it describes was enforced on the **base** segment only. The **manifest**
+  > segment had no rule at all, so
+  > `derive:/private/tmp/<session>/scratchpad/m.yaml:W1-trailing-newline:git:…`
+  > was **accepted** and recorded verbatim in `ref` with `rubric_sha256` empty —
+  > the exact absolute-scratchpad shape RB-P17 was filed about, one segment over,
+  > inside the fix that closes RB-P17. Worse, the manifest segment is a
+  > **working-tree** path and nothing recorded its bytes: editing the op in place
+  > makes the same recorded ref resolve to a different rubric
+  > (`d1f32ad2947b…` → `447e5be27613…`), silently, with no file hash to fall back
+  > on. The fresh-run pin passed the absolute form (`repo / "/abs"` is `/abs`;
+  > pathlib drops the left side) and so did the committed field checker — the
+  > checkers had the hole they were checking for.
+  >
+  > **What is true now.** The manifest segment must be **repo-relative**: no
+  > absolute path, no `~`, no `..` that walks out. It is refused from the argv
+  > alone, so it is a shape rule and reports `2`. And every derived variant
+  > records `derive_manifest_sha256`, the bytes of the manifest it resolved
+  > through — which does **not** make that segment immutable and does not claim
+  > to. It makes a substitution **detectable**, which is the most a record can do
+  > about an input the reader has to fetch. So the corrected sentence is: *a
+  > derived variant has no file of its own, so its record is resolvable only
+  > because every segment names something a second reader can obtain from this
+  > repository, and the one segment that can change under its own name states its
+  > bytes.*
+  >
+  > **The acyclicity claim in (1) is untouched and still holds**: the base must
+  > still be a `git:` spec, a derive-of-a-derive is still unrepresentable on its
+  > face, and both orderings were tested. Nothing above is edited; this note is
+  > the correction. Measured before and after:
+  > `docs/eval-data/2026-08-14-rbp17-manifest-segment.md`, runner
+  > `docs/eval-data/2026-08-14-rbp17-provenance-resolution-v2.sh` — a successor
+  > beside the v1 runner, which stays as it was because it produced a committed
+  > record. Ledger `N11`, `N12`.
+
   **THE `xfail` DID NOT GO GREEN, AND CANNOT.**
   `test_every_rubric_ref_in_a_committed_summary_resolves_from_this_repo` reads
   committed summaries, which by invariant are never regenerated, so the four
