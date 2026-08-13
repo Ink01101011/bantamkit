@@ -1,9 +1,11 @@
 # Perturbation Bar Design (RB-P14, and RB-P15's standing check)
 
 **Date:** 2026-08-11
-**Amended:** 2026-08-12 — see [§12 Amendments](#12-amendments-2026-08-12).
+**Amended:** 2026-08-12, and again 2026-08-14 (§12.6) —
+see [§12 Amendments](#12-amendments-2026-08-12).
 The instrument was built, run and reviewed; §12 records where this document was
-wrong, including **an acceptance gate that stated a prediction and missed it**.
+wrong, including **an acceptance gate that stated a prediction and missed it**
+and, in §12.6, **a verdict word that claims more than the rule computes**.
 Read §12 before treating any sentence here as current.
 **Status:** Built and accepted. (RB-P14 is the ratified attack in
 eval.md; this spec is unit N1 of job `rbp14-perturbation-bar`)
@@ -787,3 +789,35 @@ reader of the spec is not the last to know.
   (`docs/eval-data/2026-08-12-pb14-14b-nav-prod-port-replay3.jsonl`.) This is
   a property of one cell and one model; it is not a licence to skip replays on
   a family that has never been checked.
+
+### 12.6 The verdict vocabulary — a dated amendment (2026-08-14, RB-P16 closed)
+
+Added rather than edited in place: §7's rule 1 and §10's Gate 2 stay exactly as
+they were written, because what they said and when is the record.
+
+**§7 rule 1's word `indistinguishable` is over-strong for what the rule
+computes.** The rule returns it on **equal pass counts**, and equal counts is
+not agreement. Measured on the only cell in the committed record carrying it —
+`B-nonewline` 7/11 vs `C-attempted` 7/11, `nav-prod-port` r1, the 2026-08-11
+acceptance run — the two variants **disagree on 2 of 11 points**: `B` passes
+`P2-asks-requests`, `C` passes `W2-double-trailing`. A fresh run on 2026-08-14
+(`docs/eval-data/2026-08-14-rbp16-effect-size-report.md`) produced a second
+instance: 2/11 vs 2/11 with **4 of 11** points disagreeing. **Wherever this
+document or a future one states an expectation, the claim is "not
+distinguishable" — the negative of rule 1 — and never "indistinguishable".**
+§12.2 already made that distinction for Gate 2's failed prediction; this
+generalises it from that one prediction to the vocabulary itself.
+
+**The word is not renamed in the implementation, and that is deliberate.** A
+rename would make the committed record incomparable across runs while still
+asserting nothing about agreement. What ships instead is a reporting duty:
+every comparison now carries an `effect` block — the difference, its sign, the
+distance to `F/F`-versus-`0/F`, and the points the two variants disagree on by
+name — and `format_table` prints it under the verdict. So the word can be read
+beside the measurement instead of in place of it.
+
+**§7 gains no rule.** Rules 1, 2 and 3 decide exactly what they decided; no
+cell's `attributable` moved. In particular the cross-cell sign agreement RB-P16
+proposed as a rule ships as a **report** (`directional`), because it has zero
+instances in the committed record and as a gate would have changed nothing on
+any of the 12 comparisons this project has ever recorded.

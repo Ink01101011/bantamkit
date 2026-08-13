@@ -2576,6 +2576,59 @@ and each carries an attack direction.
   `W2-double-trailing`). Executable spec, non-strict `xfail`:
   `test_the_inconclusive_band_reports_something_a_reader_can_tell_from_noise`;
   ledger claim `N01`.
+
+  **CLOSED 2026-08-14 (L2). A verdict now carries its effect size, the tie word
+  carries its disagreement, and no cell's attribution moved.** `_compare` ships
+  an `effect` block beside every verdict (and `guard_effect` beside
+  `guard_verdict`): `delta_passed`/`delta_rate` signed `a − b` in the survey's
+  convention, `sign`, `leads`, `points_from_separation` = `F − |Δn|`, and
+  `disagreeing_points` with the `a_only`/`b_only` point ids. `format_table`
+  gains one indented `effect:` line under each Pairwise row — a **second** line,
+  so the existing row's bytes do not move — carrying a ten-cell ASCII bar of
+  |Δrate|, which is what makes the band's ends tellable at a glance:
+  `[########--]` for 0.833 against `[###-------]` for 0.273. `summarize` gains
+  `directional`, the cross-cell statement that was the third missing piece.
+  **`points_from_separation` and not a `large`/`small` banding**, deliberately:
+  it is derived from §7 rule 1 itself and invents no cut point, and an
+  instrument that grades evidence may not quietly re-grade its own.
+  **The filed sign-agreement rule did NOT ship as a rule.** It has zero
+  instances in the committed record, so as a gate it would have changed nothing
+  on any of the 12 cells while looking tested. It ships as `directional`, a
+  report, and `_directional`'s docstring says so in words.
+  **`indistinguishable` is not renamed.** A rename makes the committed record
+  incomparable and still asserts nothing about agreement; the word now ships the
+  points the two variants disagree on. Second measured instance, from a fresh
+  run 2026-08-14: the shipped rubric vs its trailing-newline variant reads
+  `indistinguishable` at 2/11 vs 2/11 on `nav-prod-port` r0 while disagreeing on
+  **4 of 11 points**. That same run also measured the two orthogonal: its
+  *smaller* |Δ| cell has *more* points disagreeing (7 of 11 at |Δn| = 1 against
+  4 of 11 at |Δn| = 2), so a report carrying only the difference ranks them
+  backwards.
+  **The acceptance claim is a field measurement, not the suite** (RB-P28 is
+  open): `docs/eval-data/2026-08-14-rbp16-effect-size-report.{sh,md}` — a real
+  `$?` from a subprocess with no `PYTEST_*` key, checked by a script that never
+  imports `bantamkit` and recomputes the difference itself. Before → after on a
+  three-cell two-variant run: comparisons whose report states the difference
+  **0 → 3**, printed effect lines **0 → 3**, §7-report collisions **1 → 0**, the
+  tie's disagreement count **unstated → 4**, and **no status moved on any of the
+  six cases**. Removing the added lines from the post-fix stdout recovers the
+  pre-fix stdout byte for byte on all six.
+  **One measured negative, recorded rather than re-scoped.** Over the *whole*
+  comparison dict the pre-fix reports did **not** collapse on that rig — the
+  guard's cell-scoped `guard_dropped_rules` differed — so on that rig a reader
+  with the raw JSON could have told the cells apart by a field about the guard
+  rather than about the verdict. The committed acceptance run's r0/r1 pair does
+  collapse over the whole dict, which is why RB-P16 was filed; the full-dict
+  collapse is rig-dependent. **Unfiled attack:** two verdict reports separated
+  only by the guard's bookkeeping is an accident, not a design.
+  **The byte-identity floor moved and was not regenerated.**
+  `f8404ab-perturbation-baseline.json` is untouched; the floor node is restated
+  as an exact identity modulo the three named keys and two named table-line
+  kinds (129502 → 137132 bytes, 27 → 33 table lines, **zero** `f8404ab`-era
+  fields changed), with a second node asserting the stripped-out content is
+  present and non-trivial so the strip cannot hide a regression.
+  The `xfail` is removed and the node passes. Ledger: `N01` re-aimed from
+  `_separation` to `_compare`'s `effect` key, plus `N04`/`N05`/`N06`.
 - **RB-P17 — a rubric variant's provenance is a path, and a path is not a
   rule.** The bar's `--rubric LABEL=SPEC` admits a filesystem path or
   `git:<ref>:<path>`. `B-nonewline` — the null control, and the variant the
