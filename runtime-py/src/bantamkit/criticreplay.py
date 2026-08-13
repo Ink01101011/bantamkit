@@ -117,6 +117,7 @@ __all__ = [
     "render_prompt",
     "replay_scores",
     "replay_verdicts",
+    "rubric_arg_shape_problem",
     "run",
     "substitution_pair_moved_words",
     "summarize",
@@ -159,19 +160,54 @@ GUARD_MODES = ("warn", "error")
 # machine-readable verdict there was.
 #
 #   0  measured, and guard 2 fired on nothing that ran
-#   1  DID NOT COMPLETE A MEASUREMENT — every `BantamError` path, `--guard error`
-#      included, and every abort in the middle of one. The perturbation-bar spec
-#      §6/§11 rest on this family being non-zero. It does NOT promise that nothing
-#      was written: the JSONL sink flushes per row on purpose, so a run that dies
-#      mid-family (a refused connection on request 40 of 80) exits 1 with rows
-#      already on disk. 1 means the run owes you no conclusion, not that it left
-#      no trace. Read it as "fix the input and run it again", and treat any
-#      artifact from a 1 as partial.
-#   2  usage error. Not this module's to choose: it is argparse's, and it is recorded
-#      here as a MEASURED number (`--not-a-flag` exits 2), pinned from a shell by
+#   1  DID NOT COMPLETE A MEASUREMENT THAT WAS ATTEMPTED — every `BantamError` path
+#      reached from inside `main`'s `try`, `--guard error` included, and every abort
+#      in the middle of one. The perturbation-bar spec §6/§11 rest on this family
+#      being non-zero. It does NOT promise that nothing was written: the JSONL sink
+#      flushes per row on purpose, so a run that dies mid-family (a refused
+#      connection on request 40 of 80) exits 1 with rows already on disk. 1 means the
+#      run owes you no conclusion, not that it left no trace. Read it as "fix the
+#      input or the environment and run it again", and treat any artifact from a 1 as
+#      partial. WHAT IS NO LONGER IN HERE (RB-P32): a command line that is malformed
+#      on its face. Those left for 2, because they can leave no artifact at all and
+#      "treat the artifacts as partial" is not advice a typo can act on.
+#   2  THE COMMAND LINE ITSELF IS WRONG, and no run was attempted. Two sources, one
+#      number. The number is argparse's and is recorded here as a MEASURED one
+#      (`--not-a-flag` exits 2), pinned from a shell by
 #      `test_argparses_usage_status_is_measured_not_assumed`, so that the statuses this
-#      module does choose cannot silently collide with it. argparse also owns this
-#      module's own `parser.error` validations (`--replays 0` exits 2, measured).
+#      module does choose cannot silently collide with it. WHICH of this module's own
+#      rules report it IS this module's choice, and since RB-P32 the answer is: all of
+#      the argument-SHAPE ones and only those, every one of them routed through
+#      `parser.error` above `main`'s `try` (`--replays 0`, `--identity-replays 0`,
+#      `--rubric` with no `LABEL=`, `--rubric a=git:HEAD`).
+#      WHERE THE LINE IS, AND WHY IT IS NOT "WHOSE RULE IS IT" (RB-P32). A 2 is an
+#      argv that is malformed ON ITS FACE: `rubric_arg_shape_problem` resolves no
+#      path, opens no file and runs no `git`, so the verdict is a function of the
+#      typed string alone. That is what licenses the strong claim a 2 makes — this
+#      command can never work on any machine, so nothing ran, nothing was written and
+#      re-running it unchanged is guaranteed to fail again. A 1 is an argv that is
+#      well formed and names something the world did not supply (`--rubric
+#      a=/tmp/gone.yaml`, an empty `--transcripts` directory): the same argv succeeds
+#      on the next run once the world changes, and there may be partial artifacts to
+#      handle. The line is drawn for the CI job that has to ACT on the number: on a 2
+#      a human edits the command line and there is nothing on disk to quarantine; on a
+#      1 the artifacts are partial and the input or the environment is what to fix.
+#      Three candidate lines were tested against the measured matrix and all three
+#      failed as descriptions of the code as it stood: "2 is argparse's, 1 is ours" is
+#      circular (`--replays 0` is this module's rule and was already 2); "2 before
+#      parsing finishes, 1 after" is false (the `parser.error` call is after
+#      `parse_args` returns); "1 needs the world, 2 does not" was false in one
+#      direction (`--rubric /tmp/x.yaml` consults nothing and was 1) — and it is that
+#      third one that RB-P32 made TRUE by moving the behaviour, rather than by
+#      re-describing it.
+#      WHAT MOVED, and it is a behaviour change a CI consumer sees. Four cases went
+#      from 1 to 2: `--rubric SPEC` with no `LABEL=`, `--rubric =SPEC`, `--rubric
+#      LABEL=`, and `--rubric a=git:HEAD` (which did not even reach the handler — it
+#      raised an uncaught `ValueError` and gave a raw traceback with the
+#      interpreter's 1). Every other case in the matrix kept its number. Measured in a
+#      real shell before and after in
+#      docs/eval-data/2026-08-13-rbp32-argument-validation-matrix.md and
+#      -matrix-after.md.
 #   3  measured, WITH violations. Every artifact is written — the JSONL, the summary,
 #      the printed table — and the status says the guard fired, never that the run
 #      failed. A violating cell (`nav-prod-port` is one) has to stay measurable.
@@ -777,16 +813,53 @@ class RubricVariant:
     sha256: str
 
 
+def rubric_arg_shape_problem(arg: str) -> str | None:
+    """What is malformed about one `--rubric` value ON ITS FACE, or `None` if nothing is.
+
+    THE WHOLE POINT IS WHAT THIS FUNCTION MAY NOT DO (RB-P32). It resolves no path,
+    opens no file and runs no `git`: its answer is a function of the string the user
+    typed and of nothing else. That is what makes it safe to run above `main`'s `try`
+    and report through `parser.error`, i.e. as a `USAGE_EXIT` — a verdict of "this argv
+    can never work on any machine", which is a claim only a check that consulted no
+    machine is entitled to make. A rule that needs the filesystem (is the rubric
+    there? is it a rubric?) belongs in `parse_rubric_arg` below and is a
+    `REFUSAL_EXIT`, because the same argv works on the next run once the world changes.
+
+    Split out of `parse_rubric_arg` rather than duplicated, so the CLI and an
+    in-process caller cannot drift on what "malformed" means.
+    """
+    label, sep, spec = arg.partition("=")
+    if not sep or not label or not spec:
+        return f"--rubric wants LABEL=SPEC, got {arg!r}"
+    if spec.startswith("git:"):
+        # `git:HEAD` used to reach `spec.split(":", 2)` below and raise an UNCAUGHT
+        # `ValueError` out of `main` — a raw traceback and the interpreter's 1, which
+        # from CI is indistinguishable by status from a refusal that reported itself
+        # (RB-P32, matrix case C4). Empty segments are the same defect one step in:
+        # `git::x` and `git:HEAD:` are malformed on their face, and letting them
+        # through would have spent a `git show` to say so.
+        parts = spec.split(":", 2)
+        if len(parts) < 3 or not parts[1] or not parts[2]:
+            return f"--rubric git spec wants git:<ref>:<path>, got {spec!r}"
+    return None
+
+
 def parse_rubric_arg(arg: str) -> RubricVariant:
     """`LABEL=SPEC`, where SPEC is a path or `git:<ref>:<path>`.
 
     The git form exists because the acceptance test needs rubrics that live only in
     history. `load_rubric` is name-only and has no path hook, so the parsed `Rubric` is
     passed around as an instance.
+
+    The CLI has already rejected a malformed `arg` through `parser.error` before this
+    runs (RB-P32); the same check is re-raised here as a `PerturbationError` for
+    in-process callers, so that every malformed `--rubric` raises ONE kind of error
+    rather than some of them escaping as `ValueError`.
     """
-    label, sep, spec = arg.partition("=")
-    if not sep or not label or not spec:
-        raise PerturbationError(f"--rubric wants LABEL=SPEC, got {arg!r}")
+    problem = rubric_arg_shape_problem(arg)
+    if problem is not None:
+        raise PerturbationError(problem)
+    label, _, spec = arg.partition("=")
     if spec.startswith("git:"):
         _, ref, path = spec.split(":", 2)
         raw = _git_show(ref, path)
@@ -1867,10 +1940,25 @@ def exit_status(result: RunResult) -> int:
 
 _EXIT_CONTRACT = f"""exit status (RB-P24):
   0  measured; guard 2 fired on nothing that ran
-  {REFUSAL_EXIT}  did not complete a measurement (bad input, --guard error on a violating
-     cell, or an abort mid-run). Artifacts from a {REFUSAL_EXIT} are PARTIAL, not absent:
-     the --json sink flushes per row so a killed run keeps what it got.
-  {USAGE_EXIT}  usage error (argparse's number, including this module's own validations)
+  {REFUSAL_EXIT}  did not complete a measurement that was ATTEMPTED: the command line was
+     well formed and something it named could not be used (a rubric that is not
+     on disk, a directory with no answered transcripts), or --guard error fired
+     on a violating cell, or the run aborted mid-family. Artifacts from a
+     {REFUSAL_EXIT} are PARTIAL, not absent: the --json sink flushes per row so a killed
+     run keeps what it got. The SAME argv can succeed on the next run - what it
+     depends on lives outside the command line.
+  {USAGE_EXIT}  the command line itself is wrong and no run was attempted. Two sources,
+     one number: argparse's own parsing (unknown flag, missing required,
+     type=/choices=), and every argument-SHAPE validation this module makes -
+     --replays 0, --identity-replays 0, --rubric with no LABEL=, --rubric
+     a=git:HEAD - each of them reported through parser.error before any file is
+     opened. Malformed ON ITS FACE means it can never work on any machine:
+     nothing ran, nothing was written, and re-running the same argv is
+     guaranteed to fail again, so a human edits the command.
+     CHANGED IN RB-P32, and a CI job that branches on these sees it: the four
+     malformed --rubric shapes used to report {REFUSAL_EXIT}, the status that also means
+     "a measurement died halfway and its artifacts are partial". Measured before
+     and after in docs/eval-data/2026-08-13-rbp32-argument-validation-*.md.
   {GUARD_VIOLATION_EXIT}  measured, WITH guard-2 violations - every artifact is still written,
      and the GUARD section names each violating (point, cell)
   {ARTIFACT_WRITE_EXIT}  measured, but an artifact could not be written (the --summary file).
@@ -2028,8 +2116,26 @@ def main(argv: list[str] | None = None) -> None:
         ),
     )
     args = parser.parse_args(argv)
+    # EVERY ARGUMENT-SHAPE VALIDATION THIS MODULE MAKES, IN ONE PLACE, ABOVE THE `try`
+    # (RB-P32). What belongs here is a rule that can be decided from the argv alone —
+    # no path resolved, no file opened, no `git` run. Those exit through `parser.error`,
+    # so a command line that is malformed on its face is always `USAGE_EXIT`: it can
+    # never work on any machine, nothing ran, nothing was written, and a CI job's only
+    # move is to edit the command. A rule that needs the world stays inside the `try`
+    # below and is a `REFUSAL_EXIT`, because the same argv works once the world changes
+    # and the artifacts of a half-finished run may be on disk.
+    #
+    # BEFORE RB-P32 the line was not this one: it was whichever function the author had
+    # reached for. `--replays 0` was `parser.error` and therefore 2, while `--rubric`
+    # with no `LABEL=` raised `PerturbationError` one statement lower and was 1 — the
+    # same 1 a run that died on request 40 of 80 with 39 rows on disk reports. Four
+    # cases moved from 1 to 2 and the module comment records them.
     if args.replays < 1 or args.identity_replays < 1:
         parser.error("--replays and --identity-replays must be >= 1")
+    for spec in args.rubric:
+        problem = rubric_arg_shape_problem(spec)
+        if problem is not None:
+            parser.error(problem)
 
     jsonl = None
     try:

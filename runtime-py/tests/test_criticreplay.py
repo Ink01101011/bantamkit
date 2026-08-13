@@ -3629,12 +3629,23 @@ def test_a_closed_stdout_does_not_turn_a_measured_run_into_a_refusal(asset_tree,
 # `parser.error` call site — and twelve exit 1 through `main`'s `except BantamError`,
 # four of which are pure typos with nothing on disk consulted.
 #
-# WHICH NUMBER IS RIGHT IS NOT PINNED HERE. RB-P32 offers two attacks and K3 chooses:
-# route every argument-shape validation through `parser.error` so a typo is always 2, or
-# narrow the epilog to match the comment and keep the malformed case at 1. Both are
-# admissible, and a spec that pinned either would be a decision smuggled in as a test.
-# What is NOT in dispute is the CONSISTENCY, so that is what these two nodes pin: one
-# number for every argument-shape error, and two committed sentences that agree about it.
+# WHICH NUMBER IS RIGHT WAS NOT PINNED WHEN THESE NODES WERE WRITTEN, deliberately: the
+# spec above was authored before the decision, and pinning a number then would have been a
+# decision smuggled in as a test. RB-P32 IS NOW CLOSED and the decision is USAGE_EXIT for
+# every argument-SHAPE error — an argv malformed on its face can never work anywhere, so
+# nothing ran and nothing was written, while a 1 also means "a measurement died halfway
+# and its artifacts are partial", which is the opposite instruction to a CI job. The
+# argument is in the `#   2` block of criticreplay.py; the four cases that moved from 1 to
+# 2 are named there and measured either side of the change in
+# docs/eval-data/2026-08-13-rbp32-argument-validation-matrix{,-after}.md.
+#
+# So these two nodes stop being an executable spec and become regression guards, and the
+# first one now pins the number as well as the consistency. THE CASE LIST MAY GROW AND MAY
+# NOT SHRINK: it is keyed by `_RBP32_PREFIX_STATUSES`, the pre-fix record, and dropping a
+# case from it would turn this node green by deleting the evidence rather than by fixing
+# anything. `git:` shape case 8 below is a case the pre-fix record did not have — the same
+# uncaught-`ValueError` defect as `git:HEAD` one segment further in — and it is added, not
+# swapped in.
 
 _RBP32_PREFIX_STATUSES = {
     "--replays 0": 2,
@@ -3657,18 +3668,6 @@ three names, so `git:HEAD` raises an uncaught `ValueError` and the 1 is the
 interpreter's, printed as a traceback rather than as `error: ...`.
 """
 
-_RBP32_XFAIL = pytest.mark.xfail(
-    reason=(
-        "RB-P32 is open at 5538624: argument-SHAPE errors split across two statuses (2 "
-        "from `parser.error` and argparse, 1 from `PerturbationError` inside main's "
-        "try), and the epilog claims for 2 a coverage the module comment restricts to "
-        "the `parser.error` cases. Deliberately NON-strict, and deliberately silent "
-        "about WHICH number is right — RB-P32 has two admissible attacks and K3 picks "
-        "one; these nodes go green under either."
-    ),
-)
-
-
 def _shape_error_argv(tmp_path: Path, *flags: str) -> list[str]:
     """A command line that is complete except for the shape error in `flags`."""
     return [
@@ -3678,16 +3677,19 @@ def _shape_error_argv(tmp_path: Path, *flags: str) -> list[str]:
     ]
 
 
-@_RBP32_XFAIL
 def test_every_argument_shape_error_reports_the_same_number(tmp_path):
-    """The property that is not in dispute. At 5538624 a shell reads 2 three times and 1 four.
+    """One number for every argument-shape error, and it is the usage number (RB-P32).
 
     "Argument shape" is meant narrowly and every case here satisfies it: the string the
     user typed is malformed on its face, no path is resolved, no asset is read, no
-    request leaves the process and no artifact exists afterwards. A CI job cannot tell
-    these apart from an aborted measurement today, which is the cost RB-P32 names.
+    request leaves the process and no artifact exists afterwards. At 5538624 a shell
+    read 2 three times and 1 four times, and that 1 is the same number a run that died
+    on request 40 of 80 reports with 39 rows on disk — one number for two situations a
+    CI job has to answer in opposite ways.
 
-    This node does NOT say which number they should share. It says there is one.
+    Now it pins the number too, because RB-P32 is closed: `USAGE_EXIT`, argued in the
+    `#   2` block of criticreplay.py. Read from a real shell's `$?`, never from a return
+    value, and the suite is not the evidence for the closure — the field matrix is.
     """
     rubric = str(ASSETS / "rubrics" / "task-completion.yaml")
     cases = {
@@ -3704,32 +3706,47 @@ def test_every_argument_shape_error_reports_the_same_number(tmp_path):
         "--rubric a=git:HEAD (too few segments)": _shape_error_argv(
             tmp_path, "--rubric", "a=git:HEAD"
         ),
+        # Grown, not swapped: the same defect as the case above, one segment further in.
+        "--rubric a=git: (empty ref and path)": _shape_error_argv(
+            tmp_path, "--rubric", "a=git:"
+        ),
     }
     measured = {}
     for index, (label, argv) in enumerate(cases.items()):
         status, out, err = _shell_status(argv, tmp_path, f"shape-{index}")
         measured[label] = status
         assert out == "", f"{label} printed to stdout on a run that never measured: {err}"
-    assert measured == {label: measured[label] for label in _RBP32_PREFIX_STATUSES}, measured
+        assert "Traceback" not in err, f"{label} reported by traceback, not by status: {err}"
+    missing = set(_RBP32_PREFIX_STATUSES) - set(measured)
+    assert not missing, (
+        f"cases dropped from the pre-fix record: {sorted(missing)}. The list may grow; a "
+        "case leaves it only with a measured reason, and 'it made this node pass' is not one"
+    )
     assert len(set(measured.values())) == 1, (
         f"argument-shape errors report {sorted(set(measured.values()))}, not one number: "
         f"{measured} (measured pre-fix: {_RBP32_PREFIX_STATUSES})"
     )
+    assert set(measured.values()) == {criticreplay.USAGE_EXIT}, (
+        f"{measured}: RB-P32 chose the usage status for every argument-shape error, "
+        "because a 1 also means 'a measurement was attempted and its artifacts are "
+        "partial' and a malformed command line can leave no artifact at all"
+    )
 
 
-@_RBP32_XFAIL
 def test_the_epilog_and_the_module_comment_agree_about_what_the_usage_status_covers():
     """The second half of RB-P32, and the half that is about two COMMITTED SENTENCES.
 
-    The epilog claims `2` covers "this module's own validations", unqualified. The module
-    comment claims argparse owns this module's own `parser.error` validations — a strict
-    subset, and the one the behaviour actually matches. A reader who believes the epilog
-    writes a CI branch that cannot tell a typo from an aborted run.
+    The epilog used to claim `2` covers "this module's own validations", unqualified,
+    while the module comment restricted that to the `parser.error` ones — a strict
+    subset, and the one the behaviour then matched. A reader who believed the epilog
+    wrote a CI branch that could not tell a typo from an aborted run.
 
-    Mechanical, and neutral between RB-P32's two attacks. It goes green if the epilog is
-    narrowed to match the comment (the unqualified claim disappears), and it goes green
-    if every validation is routed through `parser.error` (the comment's qualifier stops
-    being a restriction and comes out). It stays red only while both sentences stand.
+    Mechanical, and it was written neutral between RB-P32's two attacks. It is green
+    under the one that was taken: every argument-shape validation now goes through
+    `parser.error`, so the comment's mention of `parser.error` is a description of the
+    mechanism and not a restriction on the set, and the epilog's unqualified claim is
+    gone because the set it now names is exact. It goes red again if either sentence
+    drifts back to claiming a coverage the other one narrows.
     """
     epilog_line = re.search(
         rf"^  {criticreplay.USAGE_EXIT}  (.*?)(?=^  \d  |\Z)",

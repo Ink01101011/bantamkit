@@ -3672,6 +3672,76 @@ shipped, and says so.
   its meaning stated — cheaper, and it leaves a CI job unable to tell a typo from
   an aborted run. Either way the acceptance node reads the status from a real
   shell. (Measurement.)
+
+  **AMENDED AND CLOSED (2026-08-13), and the amendment comes first because two
+  things above are wrong as filed.** The filing text is left standing; this
+  paragraph corrects it rather than replacing it. Ground truth is a 23-case
+  matrix read from a real shell before the change
+  (`docs/eval-data/2026-08-13-rbp32-argument-validation-matrix.md`) and the same
+  23 cases from the same runner after it (`...-matrix-after.md`). RB-P28 is
+  open, so the suite is a regression guard here and not the evidence.
+
+  *Correction 1 — there is no "family" of `parser.error` validations.* The
+  filing, and the module comment it quotes, speak of this module's own
+  `parser.error` validations in the plural. There was **exactly one call site**
+  (`args.replays < 1 or args.identity_replays < 1`), guarding two flags, and the
+  only other match in the file is a comment. Three measured cases, not a family.
+
+  *Correction 2 — the preferred attack's stated reason does not survive.* It
+  read "route ... through `parser.error`, so that fix the command line is always
+  `2` and **both numbers mean what the epilog says they mean**". They cannot:
+  the epilog is the sentence that is wrong. It claimed `2` covers "this module's
+  own validations" unqualified, and that is false after the fix as well as
+  before it — `--rubric a=/tmp/gone.yaml` and an empty `--transcripts` are this
+  module's own validations and are still `1`, correctly. The routing was the
+  right move; the sentence had to be narrowed **and** the behaviour moved, and
+  the filing offered those as alternatives when they were both required.
+
+  *Correction 3 — the filing does not mention the defect that made the class
+  incoherent.* `--rubric a=git:HEAD` reached `_, ref, path = spec.split(":", 2)`
+  and raised an **uncaught `ValueError`**: a raw traceback and the interpreter's
+  `1`, not `REFUSAL_EXIT`, and from CI indistinguishable by status from a
+  refusal that reported itself. Nor does it mention that all twelve argument
+  `1`s wrote **0 bytes** — the measured fact the decision turns on.
+
+  **The decision: every argument-SHAPE error is `USAGE_EXIT`.** A shape rule is
+  one that can be decided from the typed string alone — no path resolved, no
+  file opened, no `git` run — and every one of them now goes through
+  `parser.error` above `main`'s `try`. The reason is what a CI job must DO with
+  the number, not symmetry: `1` says "a measurement was attempted, may have died
+  mid-family, and any artifacts on disk are PARTIAL — quarantine them"; a
+  malformed command line can leave no artifact at all, and the only useful
+  instruction is "a human edits the argv, because this can never work on any
+  machine". Two instructions that opposite, sharing one number, is the RB-P24
+  defect class. `1` keeps every world-dependent refusal and stays non-zero for
+  the spec §6/§11 conditions, none of which are shape rules.
+
+  **Behaviour change a CI consumer sees — four cases, `1` → `2`:** `--rubric
+  SPEC` with no `LABEL=`, `--rubric =SPEC`, `--rubric LABEL=`, and `--rubric
+  a=git:HEAD`. Nineteen cases kept their number and all 23 still write 0 bytes
+  to stdout. A job that branched `status == 1` to collect partial artifacts now
+  sees `2` for a typo and has nothing to collect, which is the point; a job that
+  treated `2` as "argparse only" must stop, because `2` now carries this
+  module's own rules by design and says so in both committed sentences.
+
+  **The strongest case against, stated because it is real.** `2` is argparse's
+  number and this module does not own it, so overloading it means a consumer can
+  no longer read `2` as "argparse rejected the argv" — and a future argparse
+  could in principle change it. The counter is that the ship had sailed:
+  `--replays 0` was already this module's rule reported as `2`, measured, and the
+  alternative — inventing a sixth number for shape errors — spends a number on a
+  distinction ("who wrote the rule") that no CI job acts on, while leaving the
+  distinction jobs DO act on ("is there anything on disk") still smeared across
+  `1`. The number stays measured rather than assumed
+  (`test_argparses_usage_status_is_measured_not_assumed`).
+
+  Closed by: the shape check split out as `rubric_arg_shape_problem` (no I/O, so
+  it may run above the `try`), the four cases routed through `parser.error`, the
+  `git:` unpack fixed to raise `PerturbationError` for in-process callers, and
+  the epilog and the module comment rewritten to describe the same set as the
+  behaviour. The two RB-P32 nodes lose their `xfail` and become guards; the
+  first now pins the number as well as the consistency, and its case list grew
+  by one (`--rubric a=git:`) rather than shrinking. (Measurement.)
 - **RB-P33 — `main()` leaves the process's fd 1 pointing at `/dev/null` after it
   handles a dead stdout, permanently, and nothing says so. NOT inherited: this is
   a side effect of the handler `dc121b5` shipped on this branch** — `c7d0b72` has
