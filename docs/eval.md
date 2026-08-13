@@ -4772,13 +4772,18 @@ pinned" from "the detector is stuck on".
 
 ##### Invariants re-verified at this unit's HEAD rather than cited
 
-`docs/eval-data`: **+3001 / −0** against `b496856` — nothing regenerated, nothing
+`docs/eval-data`: **−0 deleted lines** against `b496856` — nothing regenerated, nothing
 retro-edited. `assets/`: **0 files changed**. The byte-identity floor
 `runtime-py/tests/data/f8404ab-perturbation-baseline.json`: **0 commits** across
 the whole job. And the ruler did not move — `_separation`'s body, with the
 docstring stripped and normalised through `ast.unparse`, hashes
 `1cfc39b88dfc4ef3`, and the `attributable` expression hashes `8487f267bc440b01`,
-both under the recipes stated with them:
+both under the recipes stated with them.
+
+**The insertion count is deliberately not quoted here** — it moved three times
+while this section was being written, once per field record added below it, and
+RB-P35 is what a count inside a document that the same commit changes is worth.
+The invariant is the **zero on the right-hand side**; run the command and read it:
 
 ```sh
 git diff --numstat b496856..HEAD -- docs/eval-data | awk '{a+=$1;d+=$2} END {print a, d}'
