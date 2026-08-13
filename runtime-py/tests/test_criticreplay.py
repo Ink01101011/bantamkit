@@ -2427,6 +2427,12 @@ def test_cli_rejects_a_replay_count_below_one(rig, monkeypatch):
 #      number because it used to be an unhandled OSError, i.e. a 1, on a run that had
 #      already flushed every row (RB-P24 review, C1). Outranks 3; the hatch cannot
 #      suppress it.
+#   5  measured, but the REPORT COULD NOT BE RENDERED — the table's write to stdout
+#      failed for a reason that is not the reader going away (RB-P31). Its own number
+#      for 4's own reason, one step further out: it used to be an unhandled OSError,
+#      i.e. a 1 (or a 120, depending on which side of fd 1's buffer the doomed bytes
+#      were on), on a run whose every artifact was on disk. Outranks 4, because 4's
+#      own sentence promises "the table is still printed". Hatch cannot suppress it.
 #
 # Two meanings may not share one number, so each new one takes the first free value
 # above those already taken. What the guard status is about is the GUARD FIRING on a
@@ -2436,7 +2442,14 @@ def test_cli_rejects_a_replay_count_below_one(rig, monkeypatch):
 
 
 def test_the_guard_status_is_distinct_from_the_refusal_and_the_usage_status():
-    """Four meanings, four numbers. The usage number is measured in the shell below."""
+    """Five meanings, five numbers. The usage number is measured in the shell below.
+
+    RB-P31 added the fifth. It is a NEW number rather than a re-use of 4 because 4's own
+    committed sentence says "the table is still printed", which is exactly what is false
+    here — and re-using 4 would have meant deleting that clause from a number CI jobs
+    already read. The distinctness is asserted pairwise so that a later "just reuse 4"
+    is a red suite and not a review comment.
+    """
     assert criticreplay.REFUSAL_EXIT == 1
     assert criticreplay.USAGE_EXIT == 2
     assert criticreplay.GUARD_VIOLATION_EXIT not in (0, criticreplay.REFUSAL_EXIT,
@@ -2444,8 +2457,16 @@ def test_the_guard_status_is_distinct_from_the_refusal_and_the_usage_status():
     assert criticreplay.ARTIFACT_WRITE_EXIT not in (0, criticreplay.REFUSAL_EXIT,
                                                     criticreplay.USAGE_EXIT,
                                                     criticreplay.GUARD_VIOLATION_EXIT)
+    assert criticreplay.RENDER_FAILURE_EXIT not in (0, criticreplay.REFUSAL_EXIT,
+                                                    criticreplay.USAGE_EXIT,
+                                                    criticreplay.GUARD_VIOLATION_EXIT,
+                                                    criticreplay.ARTIFACT_WRITE_EXIT)
+    # The documented range is contiguous and its top is this number: "branch on 0-N" in
+    # the epilog is only checkable if N is the largest status the module can choose.
+    assert criticreplay.RENDER_FAILURE_EXIT == 5
     assert "exit_status" in criticreplay.__all__
     assert "ARTIFACT_WRITE_EXIT" in criticreplay.__all__
+    assert "RENDER_FAILURE_EXIT" in criticreplay.__all__
 
 
 def test_exit_status_is_zero_when_nothing_that_ran_violated(rig):
@@ -2838,6 +2859,7 @@ def test_help_prints_the_exit_status_contract(tmp_path):
         criticreplay.USAGE_EXIT,
         criticreplay.GUARD_VIOLATION_EXIT,
         criticreplay.ARTIFACT_WRITE_EXIT,
+        criticreplay.RENDER_FAILURE_EXIT,
     ):
         assert f"\n  {value}  " in out, f"status {value} is not in the epilog"
     assert "did not complete a measurement" in out
@@ -2849,17 +2871,32 @@ def test_help_prints_the_exit_status_contract(tmp_path):
     assert "no longer leaves the range" in out and "it EARNED" in out
     assert "--help" in out and "stderr lost while the run was writing to it" in out
     assert "did not run to completion" not in out  # the sentence RB-P27 disproved
-    # RB-P31. The v0.19.0 wording of that same list was ALSO wrong, in the other
-    # direction: it enumerated the out-of-range cases as if the enumeration were
-    # complete, and J5 then measured one it excludes — a stdout failure on the run path
-    # that is not the reader going away (EBADF, stderr live) — which still leaves the
-    # range at 120, and reports 1 at a table bigger than stdout's buffer. Nothing pins
-    # exhaustiveness and nothing can, so the epilog must say the list is OPEN and must
-    # disclose the uncovered case it knows about. A patch that re-closes the list, or
-    # that drops the disclosure without fixing the behaviour, is red here.
-    assert "OPEN rather than exhaustive" in out
+    # RB-P31, and this block CHANGED when the defect was fixed rather than when the prose
+    # was tidied. At v0.19.0 the epilog disclosed an OPEN defect — a stdout failure that
+    # is not a gone reader (EBADF, stderr live) leaving the range at 120, or reporting 1
+    # above stdout's buffer — and this node pinned the disclosure so it could not be
+    # dropped without fixing the behaviour. The behaviour IS fixed, so what the epilog
+    # must now say is the pair of things RB-P24's rule requires of any status change:
+    # what happens now, and what still does not.
+    #
+    # WHAT HAPPENS NOW: the two arms exist and report DIFFERENT numbers, and the epilog
+    # has to say which is which — an epilog that said only "a lost stdout keeps the
+    # earned status" would be describing a fix that swallows a real loss.
     assert "RB-P31" in out and "EBADF" in out
-    assert "not proof the measurement is missing" in out
+    assert "NOT the reader going away" in out
+    assert "reports the status it EARNED" in out
+    assert f"reports {criticreplay.RENDER_FAILURE_EXIT} instead of claiming a clean" in out
+    assert "the table is not in it" in out  # what a reader must DO with a 5
+    # WHAT STILL DOES NOT: the out-of-range list stays open, `--help` and a written-to
+    # stderr are still outside it, and ENOSPC is handled by class rather than by a field
+    # measurement. A patch that re-closes the list, or that quietly upgrades the arm into
+    # a blanket promise of coverage, is red here.
+    assert "OPEN rather than exhaustive" in out
+    assert "ENOSPC" in out and "NOT been measured in the field" in out
+    # RB-P33. The recovery's own side effect is part of the contract because a caller
+    # cannot discover it by reading anything else.
+    assert "sys.stdout is replaced by a sink that RAISES" in out
+    assert "fd 1 itself is left exactly as it was found" in out
 
 
 def test_this_modules_own_validation_errors_are_argparses_number(tmp_path):
@@ -3073,21 +3110,30 @@ def test_closed_pipe_usage_error_is_still_the_usage_status(tmp_path):
 def test_a_non_pipe_failure_around_the_table_print_is_not_downgraded(boom, rig, monkeypatch):
     """Control, and the direct answer to "what if the handler swallows a genuine error?".
 
-    The handler RB-P27 asks for is narrow: the pipe going away is the only thing it may
-    convert into the earned status. A `except Exception:` or a bare `except OSError:`
-    around the print would buy the three closed-pipe tests above and quietly report a
-    clean measurement for a run whose report never rendered. Both raisers here must reach
-    the caller — the failure is not a broken pipe, so it is not this handler's business.
+    STILL BITES AFTER RB-P31, and what it bites on MOVED — read this before assuming it
+    is the same node. Before RB-P31, `format_table(summary)` was evaluated INSIDE the
+    shipped `try` and both raisers reached the caller only because `except
+    BrokenPipeError` refused them; the docstring said hoisting the call out of the `try`
+    "would make this control pass for a reason that has nothing to do with the handler".
+    RB-P31 widened the arm to `OSError`, so that reading is no longer available: an
+    `OSError` raised inside the `try` is now converted to `RENDER_FAILURE_EXIT` on
+    purpose. The hoist is therefore not a way around this control, it IS the decision
+    this control now pins — a failure to BUILD the table is a bug in the module and must
+    keep its traceback, and only the WRITE may be converted into a status.
 
-    Still load-bearing after the fix, and deliberately so: `format_table(summary)` is
-    evaluated INSIDE the shipped `try`, so both raisers are raised inside the handler's
-    reach and are caught only because `except BrokenPipeError` refuses them. Hoisting the
-    call out of the `try` would make this control pass for a reason that has nothing to
-    do with the handler.
+    So: move `format_table(summary)` back inside the `try` and the `OSError-not-EPIPE`
+    case goes red, because a module bug would then be laundered into a documented
+    "measured, but the report could not be rendered". The `not-an-OSError` case is red
+    either way and stays as the cheaper canary.
+
+    The complementary half — a non-OSError raised BY THE WRITE, which is inside the arm's
+    reach — is `test_a_non_oserror_at_the_table_write_is_not_downgraded` below. Between
+    them the arm is pinned on both sides: nothing wider than `OSError`, and nothing
+    earlier than the write.
 
     In-process on purpose: this is about which exception propagates out of `main`, not
-    about a status a shell reads, and constructing an ENOSPC on a real device is not
-    portable. The status contract itself is never pinned this way (RB-P24).
+    about a status a shell reads. The status contract itself is never pinned this way
+    (RB-P24).
     """
     monkeypatch.setattr(criticreplay, "OpenAICompatible", lambda **kw: ScriptedCritic(lambda p: 9))
 
@@ -3098,6 +3144,92 @@ def test_a_non_pipe_failure_around_the_table_print_is_not_downgraded(boom, rig, 
     argv = _cli(rig)[2:]  # the same flags, minus the `python probe.py` entry point
     with pytest.raises(type(boom)):
         criticreplay.main(argv)
+
+
+class _RaisingStdout:
+    """A `sys.stdout` whose `write` raises. The only way to fail the WRITE in-process.
+
+    Deliberately not a mock of the handler: `print` calls `write` on whatever `sys.stdout`
+    is bound to, so this fails the same call the field rigs fail, one layer up. The field
+    measurement of the same class is `_readonly_stdout_status`, and it is what the
+    acceptance rests on — this is a regression guard for the shapes a real fd cannot make
+    portably (`ENOSPC` needs `/dev/full`, which macOS does not have; K1 said so and did
+    not fabricate one).
+    """
+
+    def __init__(self, boom: BaseException) -> None:
+        self.boom = boom
+
+    def write(self, _text: str) -> int:
+        raise self.boom
+
+    def flush(self) -> None:
+        return None
+
+
+def test_a_non_oserror_at_the_table_write_is_not_downgraded(rig, monkeypatch):
+    """The arm is `except OSError`, not `except Exception` — pinned where it can be widened.
+
+    Its sibling above raises from `format_table`, which now sits OUTSIDE the `try`, so it
+    cannot see a widening of the arm itself. This one raises from inside the `try`, at the
+    write, which is the only place the arm reaches. Change `except OSError` to `except
+    Exception` and this goes red: a genuine bug at the write would otherwise be reported
+    as "measured, but the report could not be rendered", i.e. as a clean measurement of a
+    run whose failure was never diagnosed.
+    """
+    monkeypatch.setattr(criticreplay, "OpenAICompatible", lambda **kw: ScriptedCritic(lambda p: 9))
+    boom = RuntimeError("the write itself is broken")
+    monkeypatch.setattr(sys, "stdout", _RaisingStdout(boom))
+    with pytest.raises(RuntimeError):
+        criticreplay.main(_cli(rig)[2:])
+
+
+def test_an_enospc_failure_at_the_table_write_reports_the_render_failure_status(
+    rig, monkeypatch, capsys
+):
+    """ENOSPC, the cell K1 could NOT construct in the field, as a regression guard only.
+
+    Read the label: this is a SIMULATION and it is not evidence about the shipped
+    behaviour (RB-P28). macOS has no `/dev/full`, so K1 filed ENOSPC as a gap rather than
+    fabricating a number for it, and that gap is still open — what this node buys is that
+    the arm is keyed on `OSError` as a class rather than on `EBADF`, so the errno the
+    field CAN produce is not the only one the code handles. The EBADF and closed-fd cells
+    of the same class ARE field-measured, in
+    `docs/eval-data/2026-08-13-rbp31-render-failure-matrix.md`.
+    """
+    monkeypatch.setattr(criticreplay, "OpenAICompatible", lambda **kw: ScriptedCritic(lambda p: 9))
+    boom = OSError(errno.ENOSPC, "No space left on device")
+    monkeypatch.setattr(sys, "stdout", _RaisingStdout(boom))
+    with pytest.raises(SystemExit) as exc:
+        criticreplay.main(_cli(rig)[2:])
+    assert exc.value.code == criticreplay.RENDER_FAILURE_EXIT
+    assert "could not be rendered" in capsys.readouterr().err
+
+
+def test_a_lost_stdout_raises_on_the_next_write_instead_of_swallowing_it(rig, monkeypatch):
+    """RB-P33's requirement, pinned: after `main`, silence is the one option not available.
+
+    v0.19.0 recovered from a lost stdout with `os.dup2(devnull, 1)`, which left this
+    process's fd 1 pointing at the null device for the rest of its life — so every later
+    write, including a child's, silently succeeded into nothing, and an in-process caller
+    (`main` is in `__all__`, and `cli_exit_status_probe.py` calls it) could not discover
+    the loss. The replacement rebinds `sys.stdout` and leaves fd 1 alone; a write after
+    `main` re-raises the original failure.
+
+    Two assertions, and the second is the one RB-P33 actually asked for: the recovery
+    happened at all, and it did not turn into a silent sink.
+    """
+    monkeypatch.setattr(criticreplay, "OpenAICompatible", lambda **kw: ScriptedCritic(lambda p: 9))
+    boom = OSError(errno.EBADF, "Bad file descriptor")
+    monkeypatch.setattr(sys, "stdout", _RaisingStdout(boom))
+    with pytest.raises(SystemExit):
+        criticreplay.main(_cli(rig)[2:])
+
+    assert isinstance(sys.stdout, criticreplay._LostStdout)
+    sys.stdout.flush()  # the finalization flush's own call: it must NOT raise
+    with pytest.raises(OSError) as exc:
+        sys.stdout.write("a caller that keeps writing must be told, not lied to")
+    assert exc.value is boom
 
 
 # ---- What the handler does NOT cover, measured rather than assumed ----
@@ -3173,11 +3305,15 @@ def test_a_refusal_whose_stderr_has_no_reader_leaves_the_range(rig, tmp_path):
 
 # ---- RB-P31: a render failure that is NOT a gone reader, at BOTH sides of the buffer ----
 #
-# Filed at docs/eval.md, RB-P31. The RB-P27 handler converts `BrokenPipeError` and
-# nothing else, deliberately. The price is that any OTHER failure of the run path's own
-# write to stdout escapes `main` untouched on a run that MEASURED — every JSONL row and
-# the summary on disk, byte-identical to the same run with a live reader — and the shell
-# reads a number that says the opposite.
+# Filed at docs/eval.md, RB-P31, and CLOSED by the second arm added here. At 5538624 the
+# RB-P27 handler converted `BrokenPipeError` and nothing else, deliberately, and the price
+# was that any OTHER failure of the run path's own write to stdout escaped `main`
+# untouched on a run that MEASURED — every JSONL row and the summary on disk,
+# byte-identical to the same run with a live reader — and the shell read a number that
+# said the opposite. It now reports `RENDER_FAILURE_EXIT`: measured, and the report is
+# gone. Two arms, two numbers, because the two situations are not the same situation —
+# see the module comment's `#   5` block for the argument, and the block above
+# `_RBP31_XFAIL` for why these three nodes assert a different number than K1 wrote.
 #
 # THE AXIS IS THE BUFFER, AND THE BUFFER IS A PROPERTY OF FD 1, NOT OF THIS TOOL. Which
 # wrong number the shell reads depends on whether the failing write went through
@@ -3213,16 +3349,30 @@ from `/bin/sh` in an environment with no `PYTEST_*` key in it, because RB-P28 is
 a green run of THIS file is not evidence about the shipped behaviour.
 """
 
+# K1 WROTE THESE THREE NODES AS `xfail`s ASSERTING `status == live_status`, i.e. that a
+# render failure would DOWNGRADE to the earned status the way EPIPE does. K2 OVERTURNED
+# THAT, and the nodes below now pin `RENDER_FAILURE_EXIT` instead. The argument, in full,
+# is in the module comment's `#   5` block; the short form is that EPIPE downgrades
+# because NOBODY WAS READING, so the table's absence costs no one anything, while every
+# cell of this matrix has a live stderr and a reader who wanted the report and did not
+# get it. Reporting 0 there would say "measured, clean" about a run whose report nobody
+# received, which is the exact sentence the RB-P27 handler's own comment refuses.
+#
+# K1's spec was a hypothesis written before the design existed and overturning it with an
+# argument is the honest move; what would not have been is relaxing it to pin nothing.
+# So the three nodes still pin a NUMBER, still read it from a real shell's `$?`, still
+# assert the byte identity FIRST and unchanged, and still assert the pre-fix numbers are
+# gone. The one thing that changed is which number is correct, and why.
 _RBP31_XFAIL = pytest.mark.xfail(
     reason=(
-        "RB-P31 is open at 5538624: a stdout write that fails on the run path for a "
+        "RB-P31 was open at 5538624: a stdout write that fails on the run path for a "
         "reason other than a gone reader is not converted by the RB-P27 handler, so a "
         "run that measured — rows and summary on disk, byte-identical to a live-reader "
         "run — reports 120 below fd 1's buffer and REFUSAL_EXIT above it, and "
-        "REFUSAL_EXIT unconditionally when fd 1 is closed outright. Deliberately "
-        "NON-strict: the patch that lands the fix turns these XPASS, which is not a "
-        "suite failure, and the acceptance oracle for that patch reads its statuses "
-        "from a real shell OUTSIDE pytest, because RB-P28 says this file cannot."
+        "REFUSAL_EXIT unconditionally when fd 1 is closed outright. NO LONGER APPLIED "
+        "to the three nodes below (the fix landed and they assert RENDER_FAILURE_EXIT); "
+        "kept because the wording is the record of what they were written against, and "
+        "re-applying it is how a reader re-checks them against a pre-fix tree."
     ),
 )
 
@@ -3345,15 +3495,20 @@ def test_the_two_render_failure_rigs_straddle_the_measured_stdout_buffer(
             )
 
 
-@_RBP31_XFAIL
-def test_a_render_failure_below_the_buffer_keeps_the_status_the_run_earned(
+def test_a_render_failure_below_the_buffer_reports_the_render_failure_status(
     asset_tree, tmp_path
 ):
     """Earned 3, table smaller than fd 1's buffer. A real shell read 120 at 5538624.
 
     The table print buffers, `flush()` raises `EBADF`, the buffer keeps the bytes, and
-    the interpreter's shutdown flush fails on them again — which replaces the earned
-    status with the interpreter's number exactly as RB-P27 found for `EPIPE`.
+    the interpreter's shutdown flush fails on them again — which replaced the earned
+    status with the interpreter's number exactly as RB-P27 found for `EPIPE`. The fix
+    neutralises that second flush by rebinding `sys.stdout`, so the number this run
+    chooses is the number the shell reads.
+
+    K1 wrote this node asserting `status == live_status`; see the block above for why it
+    now asserts `RENDER_FAILURE_EXIT` instead. Everything before the status assertion is
+    K1's, byte for byte: the run has to have MEASURED before its status means anything.
     """
     rig = _wide_guard_rig(asset_tree, tmp_path, _RBP31_SMALL_CELLS)
     live_rows, live_summary = tmp_path / "live-s.jsonl", tmp_path / "live-s.json"
@@ -3374,21 +3529,26 @@ def test_a_render_failure_below_the_buffer_keeps_the_status_the_run_earned(
     assert "Bad file descriptor" in err  # the failure really is EBADF, not EPIPE
     assert dark_rows.read_bytes() == live_rows.read_bytes()  # it MEASURED
     assert dark_summary.read_bytes() == live_summary.read_bytes()
-    assert status == live_status, err
-    assert status != _RBP31_PREFIX_STATUS["below-buffer"]
+    assert live_status == criticreplay.GUARD_VIOLATION_EXIT  # what the run EARNED
+    assert status == criticreplay.RENDER_FAILURE_EXIT, err
+    assert status != _RBP31_PREFIX_STATUS["below-buffer"]  # what 5538624 read here
+    assert "could not be rendered" in err  # and it says so, on the stream that survived
 
 
-@_RBP31_XFAIL
-def test_a_render_failure_above_the_buffer_keeps_the_status_the_run_earned(
+def test_a_render_failure_above_the_buffer_reports_the_render_failure_status(
     asset_tree, tmp_path
 ):
     """Earned 3, table LARGER than fd 1's buffer. A real shell read 1 at 5538624.
 
     The other side of the axis, and the half the RB-P27 nodes never covered. Here the
-    write bypasses the buffer, so the shutdown flush has nothing left to fail on and the
-    uncaught `OSError`'s own status stands — and that status is `REFUSAL_EXIT`, on a run
+    write bypasses the buffer, so the shutdown flush had nothing left to fail on and the
+    uncaught `OSError`'s own status stood — and that status was `REFUSAL_EXIT`, on a run
     whose rows and summary are byte-identical to the live-reader run asserted below.
-    That is a run that measured reporting that it refused: the RB-P24 defect class.
+    That is a run that measured reporting that it refused: the RB-P24 defect class, and
+    the reason this node exists at a second size rather than trusting the first.
+
+    Same amendment as its sibling: K1 pinned `live_status`, K2 pins
+    `RENDER_FAILURE_EXIT`, with the argument in the block above.
     """
     rig = _wide_guard_rig(asset_tree, tmp_path, _RBP31_LARGE_CELLS)
     live_rows, live_summary = tmp_path / "live-l.jsonl", tmp_path / "live-l.json"
@@ -3409,19 +3569,25 @@ def test_a_render_failure_above_the_buffer_keeps_the_status_the_run_earned(
     assert "Bad file descriptor" in err
     assert dark_rows.read_bytes() == live_rows.read_bytes()
     assert dark_summary.read_bytes() == live_summary.read_bytes()
-    assert status == live_status, err
-    assert status != _RBP31_PREFIX_STATUS["above-buffer"]
+    assert live_status == criticreplay.GUARD_VIOLATION_EXIT  # what the run EARNED
+    assert status == criticreplay.RENDER_FAILURE_EXIT, err
+    assert status != _RBP31_PREFIX_STATUS["above-buffer"]  # what 5538624 read here
+    assert "could not be rendered" in err
 
 
-@_RBP31_XFAIL
 def test_a_closed_stdout_does_not_turn_a_measured_run_into_a_refusal(asset_tree, tmp_path):
     """fd 1 CLOSED outright. A real shell read 1 at 5538624, at BOTH table sizes.
 
     Not in RB-P31 as filed, found while running its matrix, and the worst cell in it: no
-    buffer is involved, so there is no size at which this is anything but `REFUSAL_EXIT`
+    buffer is involved, so there was no size at which this was anything but `REFUSAL_EXIT`
     on a run with every artifact on disk. It is also the cell no `except OSError` arm
     around the print can reach — the exception is an `AttributeError` from
-    `sys.stdout.flush()` on a `None` stdout, and `print` itself never raised.
+    `sys.stdout.flush()` on a `None` stdout, and `print` itself never raised. The fix
+    therefore READS the state (`sys.stdout is None`) rather than catching anything, and
+    that branch is what this node pins: delete it and this cell alone goes back to 1.
+
+    The node keeps its name, because the name is still the claim — a measured run may not
+    report a refusal. What it asserts is now the positive number, not the earned one.
     """
     rig = _wide_guard_rig(asset_tree, tmp_path, _RBP31_SMALL_CELLS)
     live_rows, live_summary = tmp_path / "live-c.jsonl", tmp_path / "live-c.json"
@@ -3440,8 +3606,11 @@ def test_a_closed_stdout_does_not_turn_a_measured_run_into_a_refusal(asset_tree,
     )
     assert dark_rows.read_bytes() == live_rows.read_bytes()
     assert dark_summary.read_bytes() == live_summary.read_bytes()
-    assert status == live_status, err
-    assert status != _RBP31_PREFIX_STATUS["closed"]
+    assert live_status == criticreplay.GUARD_VIOLATION_EXIT  # what the run EARNED
+    assert status == criticreplay.RENDER_FAILURE_EXIT, err
+    assert status != _RBP31_PREFIX_STATUS["closed"]  # what 5538624 read here
+    assert status != criticreplay.REFUSAL_EXIT  # the RB-P24 rule, said in its own words
+    assert "could not be rendered" in err
 
 
 # ---- RB-P32: what a command-line syntax error reports, and what the docs say it reports ----
