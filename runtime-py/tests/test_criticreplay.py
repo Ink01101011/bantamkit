@@ -3169,3 +3169,417 @@ def test_a_refusal_whose_stderr_has_no_reader_leaves_the_range(rig, tmp_path):
     status, _ = _closed_stderr_status(argv, tmp_path, "refusal")
     assert status == _CLOSED_PIPE_PREFIX_STATUS
     assert status != criticreplay.REFUSAL_EXIT  # the number the run would otherwise report
+
+
+# ---- RB-P31: a render failure that is NOT a gone reader, at BOTH sides of the buffer ----
+#
+# Filed at docs/eval.md, RB-P31. The RB-P27 handler converts `BrokenPipeError` and
+# nothing else, deliberately. The price is that any OTHER failure of the run path's own
+# write to stdout escapes `main` untouched on a run that MEASURED — every JSONL row and
+# the summary on disk, byte-identical to the same run with a live reader — and the shell
+# reads a number that says the opposite.
+#
+# THE AXIS IS THE BUFFER, AND THE BUFFER IS A PROPERTY OF FD 1, NOT OF THIS TOOL. Which
+# wrong number the shell reads depends on whether the failing write went through
+# `BufferedWriter`'s buffer or straight past it, and that buffer is `os.fstat(1).st_blksize`
+# — 4096 for a regular file here, 16384 for a pipe, 65536 for `/dev/null`. Measured
+# 2026-08-13 in a real shell (docs/eval-data/2026-08-13-rbp31-render-failure-matrix.md):
+#
+#   table+newline <= the buffer  ->  the bytes sit in the buffer, `flush()` raises, the
+#                                    interpreter's shutdown flush raises AGAIN, and the
+#                                    status becomes 120
+#   table+newline  > the buffer  ->  the write goes straight to the fd and raises with an
+#                                    empty buffer behind it, shutdown has nothing left to
+#                                    fail on, and the uncaught OSError's own 1 stands
+#
+# 1 is the worse half: that is REFUSAL_EXIT, "did not complete a measurement", on a run
+# that completed — the RB-P24 defect class, alive one line from where RB-P24 fixed it.
+#
+# THIS IS WHY THE SPEC IS WRITTEN AT TWO SIZES. The three RB-P27 nodes above pinned 120
+# because 120 is what the SMALL table read; the same pre-fix tree read 1 at a table over
+# the pipe's 16384 (measured on c7d0b72, in the artifact). A single-size node pins half a
+# defect, and a fix fitted to one cell of the matrix fixes one cell of it.
+
+_RBP31_PREFIX_STATUS = {
+    "below-buffer": 120,
+    "above-buffer": criticreplay.REFUSAL_EXIT,
+    "closed": criticreplay.REFUSAL_EXIT,
+}
+"""What a real shell read at 5538624 (v0.19.0), measured 2026-08-13, earned status 3.
+
+Field commands and the full 45-cell matrix are in
+`docs/eval-data/2026-08-13-rbp31-render-failure-matrix.md`; the numbers there are read
+from `/bin/sh` in an environment with no `PYTEST_*` key in it, because RB-P28 is open and
+a green run of THIS file is not evidence about the shipped behaviour.
+"""
+
+_RBP31_XFAIL = pytest.mark.xfail(
+    reason=(
+        "RB-P31 is open at 5538624: a stdout write that fails on the run path for a "
+        "reason other than a gone reader is not converted by the RB-P27 handler, so a "
+        "run that measured — rows and summary on disk, byte-identical to a live-reader "
+        "run — reports 120 below fd 1's buffer and REFUSAL_EXIT above it, and "
+        "REFUSAL_EXIT unconditionally when fd 1 is closed outright. Deliberately "
+        "NON-strict: the patch that lands the fix turns these XPASS, which is not a "
+        "suite failure, and the acceptance oracle for that patch reads its statuses "
+        "from a real shell OUTSIDE pytest, because RB-P28 says this file cannot."
+    ),
+)
+
+
+def _wide_guard_rig(asset_tree, tmp_path, cells: int) -> dict:
+    """`guard_rig` with `cells` cells instead of one, so the table can be made to straddle.
+
+    Same manifest, same rubric pair, same violating point — only the number of (task,
+    repeat) cells changes, because the table is one line per (cell, variant) plus the
+    GUARD section's lines per violating pair. Nothing here touches the shipped assets.
+    """
+    _write_manifest(asset_tree, points=GUARD_POINTS)
+    transcripts = tmp_path / f"transcripts-{cells}"
+    for repeat in range(cells):
+        _transcript(transcripts, "critique", "alpha", repeat, 100 + repeat, "OUT")
+    return {
+        "before": _write_rubric(tmp_path, "before", BASE_PROMPT),
+        "transcripts": transcripts,
+    }
+
+
+_RBP31_SMALL_CELLS = 1
+_RBP31_LARGE_CELLS = 40
+
+
+def _readonly_stdout_status(argv, tmp_path, label: str) -> tuple[int, str, int]:
+    """Run `argv` with fd 1 a dup of a READ-ONLY fd. Return `$?`, stderr, and fd 1's buffer.
+
+    A read-only fd is the cheapest render failure that is NOT a gone reader: every write
+    to fd 1 fails with `EBADF`, and stderr stays live throughout, so this is a report that
+    could not be rendered rather than a reader that walked away. The fd is opened here and
+    handed to the child as its stdout, so nothing is patched and no exception is injected.
+
+    The status is `/bin/sh`'s own `$?`, echoed to a file on the side — RB-P24's rule.
+    The third return value is `os.fstat(1).st_blksize`, which IS the `BufferedWriter`
+    size CPython gives that fd and therefore the axis this spec is written across.
+    """
+    where = tmp_path / f"_ro-{label}"
+    where.mkdir(parents=True, exist_ok=True)
+    target = where / "readonly-target"
+    target.write_text("fd 1 is a dup of a READ-ONLY fd on this file\n")
+    err, status_file = where / "stderr.txt", where / "status.txt"
+    ro_fd = os.open(target, os.O_RDONLY)
+    try:
+        blksize = os.fstat(ro_fd).st_blksize
+        proc = subprocess.Popen(
+            ["/bin/sh", "-c", '"$@" 2>"$BK_ERR"; echo "status=$?" >"$BK_STATUS"', "sh", *argv],
+            stdout=ro_fd,
+            env=_child_env(BK_ERR=str(err), BK_STATUS=str(status_file)),
+        )
+    finally:
+        os.close(ro_fd)
+    assert proc.wait() == 0  # the shell itself ran to the end of its command list
+    text = status_file.read_text()
+    assert text.startswith("status="), text
+    return int(text.split("=", 1)[1]), err.read_text(), blksize
+
+
+def _no_stdout_status(argv, tmp_path, label: str) -> tuple[int, str]:
+    """`_readonly_stdout_status`'s twin with fd 1 CLOSED outright (`1>&-`), not redirected.
+
+    A different failure again, and the one with no `OSError` in it at all: CPython leaves
+    `sys.stdout` as `None` when fd 1 is invalid at startup, `print` to a `None` stdout is
+    a silent no-op, and the explicit `sys.stdout.flush()` raises `AttributeError`. So the
+    handler never sees an exception it could convert, whatever it is narrowed to.
+    """
+    where = tmp_path / f"_nofd1-{label}"
+    where.mkdir(parents=True, exist_ok=True)
+    err, status_file = where / "stderr.txt", where / "status.txt"
+    proc = subprocess.run(
+        [
+            "/bin/sh", "-c",
+            '{ "$@" 2>"$BK_ERR"; echo "status=$?" >"$BK_STATUS"; } 1>&-', "sh", *argv,
+        ],
+        env=_child_env(BK_ERR=str(err), BK_STATUS=str(status_file)),
+    )
+    assert proc.returncode == 0
+    text = status_file.read_text()
+    assert text.startswith("status="), text
+    return int(text.split("=", 1)[1]), err.read_text()
+
+
+def test_the_two_render_failure_rigs_straddle_the_measured_stdout_buffer(
+    asset_tree, tmp_path
+):
+    """NOT an xfail. The fixture guard the two nodes below depend on, and it must stay green.
+
+    An `xfail` that fails because its rig drifted pins nothing (the RB-P28 lesson applied
+    to this file's own fixtures). The two status nodes below claim to sit on OPPOSITE
+    sides of fd 1's `BufferedWriter`, and that is a property of the rig, the filesystem
+    and the table's width — none of which this file controls. So the straddle is asserted
+    HERE, where a drift is a red suite rather than a silently mis-aimed `xfail`.
+
+    Both rigs also have to EARN 3, read from an independent live-reader run, or the status
+    nodes would be pinning a downgrade that was never a downgrade.
+    """
+    _, _, blksize = _readonly_stdout_status(
+        [sys.executable, "-c", "pass"], tmp_path, "blksize"
+    )
+    assert blksize > 0
+
+    for label, cells, side in (
+        ("small", _RBP31_SMALL_CELLS, "below"),
+        ("large", _RBP31_LARGE_CELLS, "above"),
+    ):
+        rig = _wide_guard_rig(asset_tree, tmp_path, cells)
+        status, out, err = _shell_status(_cli(rig), tmp_path, f"straddle-{label}")
+        assert status == criticreplay.GUARD_VIOLATION_EXIT, err  # what the run EARNS
+        assert "GUARD VIOLATIONS" in out
+        written = len(out.encode())  # `print` writes the table AND its newline
+        if side == "below":
+            assert written <= blksize, (
+                f"the {label} rig writes {written} bytes, which no longer fits fd 1's "
+                f"{blksize}-byte buffer — the below-buffer node is aimed at the wrong cell"
+            )
+        else:
+            assert written > blksize, (
+                f"the {label} rig writes {written} bytes, which now fits fd 1's "
+                f"{blksize}-byte buffer — the above-buffer node is aimed at the wrong cell"
+            )
+
+
+@_RBP31_XFAIL
+def test_a_render_failure_below_the_buffer_keeps_the_status_the_run_earned(
+    asset_tree, tmp_path
+):
+    """Earned 3, table smaller than fd 1's buffer. A real shell read 120 at 5538624.
+
+    The table print buffers, `flush()` raises `EBADF`, the buffer keeps the bytes, and
+    the interpreter's shutdown flush fails on them again — which replaces the earned
+    status with the interpreter's number exactly as RB-P27 found for `EPIPE`.
+    """
+    rig = _wide_guard_rig(asset_tree, tmp_path, _RBP31_SMALL_CELLS)
+    live_rows, live_summary = tmp_path / "live-s.jsonl", tmp_path / "live-s.json"
+    live_status, out, _ = _shell_status(
+        _cli(rig, "--json", str(live_rows), "--summary", str(live_summary)),
+        tmp_path,
+        "p31-live-small",
+    )
+    assert live_status == criticreplay.GUARD_VIOLATION_EXIT
+    assert "GUARD VIOLATIONS" in out
+
+    dark_rows, dark_summary = tmp_path / "dark-s.jsonl", tmp_path / "dark-s.json"
+    status, err, _ = _readonly_stdout_status(
+        _cli(rig, "--json", str(dark_rows), "--summary", str(dark_summary)),
+        tmp_path,
+        "small",
+    )
+    assert "Bad file descriptor" in err  # the failure really is EBADF, not EPIPE
+    assert dark_rows.read_bytes() == live_rows.read_bytes()  # it MEASURED
+    assert dark_summary.read_bytes() == live_summary.read_bytes()
+    assert status == live_status, err
+    assert status != _RBP31_PREFIX_STATUS["below-buffer"]
+
+
+@_RBP31_XFAIL
+def test_a_render_failure_above_the_buffer_keeps_the_status_the_run_earned(
+    asset_tree, tmp_path
+):
+    """Earned 3, table LARGER than fd 1's buffer. A real shell read 1 at 5538624.
+
+    The other side of the axis, and the half the RB-P27 nodes never covered. Here the
+    write bypasses the buffer, so the shutdown flush has nothing left to fail on and the
+    uncaught `OSError`'s own status stands — and that status is `REFUSAL_EXIT`, on a run
+    whose rows and summary are byte-identical to the live-reader run asserted below.
+    That is a run that measured reporting that it refused: the RB-P24 defect class.
+    """
+    rig = _wide_guard_rig(asset_tree, tmp_path, _RBP31_LARGE_CELLS)
+    live_rows, live_summary = tmp_path / "live-l.jsonl", tmp_path / "live-l.json"
+    live_status, out, _ = _shell_status(
+        _cli(rig, "--json", str(live_rows), "--summary", str(live_summary)),
+        tmp_path,
+        "p31-live-large",
+    )
+    assert live_status == criticreplay.GUARD_VIOLATION_EXIT
+    assert "GUARD VIOLATIONS" in out
+
+    dark_rows, dark_summary = tmp_path / "dark-l.jsonl", tmp_path / "dark-l.json"
+    status, err, _ = _readonly_stdout_status(
+        _cli(rig, "--json", str(dark_rows), "--summary", str(dark_summary)),
+        tmp_path,
+        "large",
+    )
+    assert "Bad file descriptor" in err
+    assert dark_rows.read_bytes() == live_rows.read_bytes()
+    assert dark_summary.read_bytes() == live_summary.read_bytes()
+    assert status == live_status, err
+    assert status != _RBP31_PREFIX_STATUS["above-buffer"]
+
+
+@_RBP31_XFAIL
+def test_a_closed_stdout_does_not_turn_a_measured_run_into_a_refusal(asset_tree, tmp_path):
+    """fd 1 CLOSED outright. A real shell read 1 at 5538624, at BOTH table sizes.
+
+    Not in RB-P31 as filed, found while running its matrix, and the worst cell in it: no
+    buffer is involved, so there is no size at which this is anything but `REFUSAL_EXIT`
+    on a run with every artifact on disk. It is also the cell no `except OSError` arm
+    around the print can reach — the exception is an `AttributeError` from
+    `sys.stdout.flush()` on a `None` stdout, and `print` itself never raised.
+    """
+    rig = _wide_guard_rig(asset_tree, tmp_path, _RBP31_SMALL_CELLS)
+    live_rows, live_summary = tmp_path / "live-c.jsonl", tmp_path / "live-c.json"
+    live_status, _, _ = _shell_status(
+        _cli(rig, "--json", str(live_rows), "--summary", str(live_summary)),
+        tmp_path,
+        "p31-live-closed",
+    )
+    assert live_status == criticreplay.GUARD_VIOLATION_EXIT
+
+    dark_rows, dark_summary = tmp_path / "dark-c.jsonl", tmp_path / "dark-c.json"
+    status, err = _no_stdout_status(
+        _cli(rig, "--json", str(dark_rows), "--summary", str(dark_summary)),
+        tmp_path,
+        "closed",
+    )
+    assert dark_rows.read_bytes() == live_rows.read_bytes()
+    assert dark_summary.read_bytes() == live_summary.read_bytes()
+    assert status == live_status, err
+    assert status != _RBP31_PREFIX_STATUS["closed"]
+
+
+# ---- RB-P32: what a command-line syntax error reports, and what the docs say it reports ----
+#
+# Filed at docs/eval.md, RB-P32. Two committed sentences describe what `2` covers and
+# they do not describe the same set:
+#
+#   the epilog (`_EXIT_CONTRACT`, user-visible under `--help`):
+#     "2  usage error (argparse's number, including this module's own validations)"
+#   the module comment (criticreplay.py, the `#   2` block):
+#     "argparse also owns this module's own `parser.error` validations"
+#
+# The measured behaviour matches the comment, not the epilog. Measured 2026-08-13 from a
+# real shell (docs/eval-data/2026-08-13-rbp32-argument-validation-matrix.md): eleven
+# command lines exit 2 — eight argparse's own, three from this module's SINGLE
+# `parser.error` call site — and twelve exit 1 through `main`'s `except BantamError`,
+# four of which are pure typos with nothing on disk consulted.
+#
+# WHICH NUMBER IS RIGHT IS NOT PINNED HERE. RB-P32 offers two attacks and K3 chooses:
+# route every argument-shape validation through `parser.error` so a typo is always 2, or
+# narrow the epilog to match the comment and keep the malformed case at 1. Both are
+# admissible, and a spec that pinned either would be a decision smuggled in as a test.
+# What is NOT in dispute is the CONSISTENCY, so that is what these two nodes pin: one
+# number for every argument-shape error, and two committed sentences that agree about it.
+
+_RBP32_PREFIX_STATUSES = {
+    "--replays 0": 2,
+    "--identity-replays 0": 2,
+    "--guard nope": 2,
+    "--rubric SPEC (no LABEL=)": 1,
+    "--rubric =SPEC (empty label)": 1,
+    "--rubric LABEL= (empty spec)": 1,
+    "--rubric a=git:HEAD (too few segments)": 1,
+}
+"""What a real shell read at 5538624, measured 2026-08-13. Seven pure command-line typos.
+
+Every one of them is malformed on its face: no file is opened, no manifest is read, no
+request is made, and nothing is written. Three report 2 and four report 1, and the line
+between them is exactly which function the author reached for — `parser.error` above
+`main`'s `try`, `raise PerturbationError` inside it.
+
+The last one does not even reach `main`'s handler: `spec.split(":", 2)` unpacks into
+three names, so `git:HEAD` raises an uncaught `ValueError` and the 1 is the
+interpreter's, printed as a traceback rather than as `error: ...`.
+"""
+
+_RBP32_XFAIL = pytest.mark.xfail(
+    reason=(
+        "RB-P32 is open at 5538624: argument-SHAPE errors split across two statuses (2 "
+        "from `parser.error` and argparse, 1 from `PerturbationError` inside main's "
+        "try), and the epilog claims for 2 a coverage the module comment restricts to "
+        "the `parser.error` cases. Deliberately NON-strict, and deliberately silent "
+        "about WHICH number is right — RB-P32 has two admissible attacks and K3 picks "
+        "one; these nodes go green under either."
+    ),
+)
+
+
+def _shape_error_argv(tmp_path: Path, *flags: str) -> list[str]:
+    """A command line that is complete except for the shape error in `flags`."""
+    return [
+        sys.executable, "-m", "bantamkit.criticreplay",
+        "--base-url", "http://x", "--model", "m", "--transcripts", str(tmp_path),
+        *flags,
+    ]
+
+
+@_RBP32_XFAIL
+def test_every_argument_shape_error_reports_the_same_number(tmp_path):
+    """The property that is not in dispute. At 5538624 a shell reads 2 three times and 1 four.
+
+    "Argument shape" is meant narrowly and every case here satisfies it: the string the
+    user typed is malformed on its face, no path is resolved, no asset is read, no
+    request leaves the process and no artifact exists afterwards. A CI job cannot tell
+    these apart from an aborted measurement today, which is the cost RB-P32 names.
+
+    This node does NOT say which number they should share. It says there is one.
+    """
+    rubric = str(ASSETS / "rubrics" / "task-completion.yaml")
+    cases = {
+        "--replays 0": _shape_error_argv(tmp_path, "--rubric", f"a={rubric}", "--replays", "0"),
+        "--identity-replays 0": _shape_error_argv(
+            tmp_path, "--rubric", f"a={rubric}", "--identity-replays", "0"
+        ),
+        "--guard nope": _shape_error_argv(
+            tmp_path, "--rubric", f"a={rubric}", "--guard", "nope"
+        ),
+        "--rubric SPEC (no LABEL=)": _shape_error_argv(tmp_path, "--rubric", rubric),
+        "--rubric =SPEC (empty label)": _shape_error_argv(tmp_path, "--rubric", f"={rubric}"),
+        "--rubric LABEL= (empty spec)": _shape_error_argv(tmp_path, "--rubric", "a="),
+        "--rubric a=git:HEAD (too few segments)": _shape_error_argv(
+            tmp_path, "--rubric", "a=git:HEAD"
+        ),
+    }
+    measured = {}
+    for index, (label, argv) in enumerate(cases.items()):
+        status, out, err = _shell_status(argv, tmp_path, f"shape-{index}")
+        measured[label] = status
+        assert out == "", f"{label} printed to stdout on a run that never measured: {err}"
+    assert measured == {label: measured[label] for label in _RBP32_PREFIX_STATUSES}, measured
+    assert len(set(measured.values())) == 1, (
+        f"argument-shape errors report {sorted(set(measured.values()))}, not one number: "
+        f"{measured} (measured pre-fix: {_RBP32_PREFIX_STATUSES})"
+    )
+
+
+@_RBP32_XFAIL
+def test_the_epilog_and_the_module_comment_agree_about_what_the_usage_status_covers():
+    """The second half of RB-P32, and the half that is about two COMMITTED SENTENCES.
+
+    The epilog claims `2` covers "this module's own validations", unqualified. The module
+    comment claims argparse owns this module's own `parser.error` validations — a strict
+    subset, and the one the behaviour actually matches. A reader who believes the epilog
+    writes a CI branch that cannot tell a typo from an aborted run.
+
+    Mechanical, and neutral between RB-P32's two attacks. It goes green if the epilog is
+    narrowed to match the comment (the unqualified claim disappears), and it goes green
+    if every validation is routed through `parser.error` (the comment's qualifier stops
+    being a restriction and comes out). It stays red only while both sentences stand.
+    """
+    epilog_line = re.search(
+        rf"^  {criticreplay.USAGE_EXIT}  (.*?)(?=^  \d  |\Z)",
+        criticreplay._EXIT_CONTRACT,
+        re.S | re.M,
+    )
+    assert epilog_line, "the epilog no longer has a line for the usage status"
+    comment_block = re.search(
+        rf"^#   {criticreplay.USAGE_EXIT}  (.*?)(?=^#   \d  )",
+        (SRC / "criticreplay.py").read_text(),
+        re.S | re.M,
+    )
+    assert comment_block, "the module comment no longer has a block for the usage status"
+
+    epilog_claims_all = "including this module's own validations" in epilog_line.group(1)
+    comment_restricts = "parser.error" in comment_block.group(1)
+    assert not (epilog_claims_all and comment_restricts), (
+        "the epilog says the usage status covers this module's own validations without "
+        "qualification, while the module comment restricts that claim to the "
+        "`parser.error` ones — two committed sentences about the same number that do "
+        "not describe the same set. Fix the sentences and the behaviour together."
+    )
