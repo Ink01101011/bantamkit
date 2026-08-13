@@ -7,6 +7,10 @@
       "claim": "CALIBRATION: restoring the old unqualified epilog claim must be CAUGHT (hand-measured: red)",
       "where": "criticreplay.py, _EXIT_CONTRACT, the 2 line",
       "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "pins": [
+        "test_the_epilog_and_the_module_comment_agree_about_what_the_usage_status_covers"
+      ],
+      "expect": "pinned",
       "anchor": "  {USAGE_EXIT}  the command line itself is wrong and no run was attempted. Two sources,",
       "replacement": "  {USAGE_EXIT}  usage error (argparse's number, including this module's own validations). Two sources,",
       "note": "Hand-measured 2026-08-13: 1 failed."
@@ -14,9 +18,13 @@
     {
       "cid": "CAL-GREEN",
       "kind": "prose",
-      "claim": "CALIBRATION: the RB-P32 prose defect is FULLY RESTORABLE with a green suite (K4's A8b) \u2014 false epilog + both parser.error mentions renamed",
+      "claim": "CALIBRATION: the RB-P32 prose defect is FULLY RESTORABLE with a green suite (K4's A8b) — false epilog + both parser.error mentions renamed",
       "where": "criticreplay.py, _EXIT_CONTRACT's 2 line and the #   2 comment block",
       "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "pins": [
+        "test_the_epilog_and_the_module_comment_agree_about_what_the_usage_status_covers"
+      ],
+      "expect": "unpinned",
       "edits": [
         {
           "anchor": "  {USAGE_EXIT}  the command line itself is wrong and no run was attempted. Two sources,",

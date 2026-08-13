@@ -13,6 +13,26 @@ separately and on purpose:
                      while the behaviour it describes is broken, and K4 demonstrated
                      exactly that (renaming `parser.error` silenced the epilog check).
 
+AMENDMENT 2026-08-14 (L6), and it moved the number this file reports. Until now the
+whole verdict was `pinned = rc != 0`, which relates NO claim to its mutation and NO
+killer to its claim, so this harness certified claims it never checked. Two directions,
+both reproduced rather than argued:
+
+  * a mutation that breaks the tree gives `rc != 0` with ZERO `FAILED` lines, so the row
+    read `PINNED` with a killed-by of `nothing`. A one-claim ledger asserting "every
+    summary a run writes states the current phase of the moon, and the phase is read from
+    an ephemeris" — a feature that does not exist — measured PINNED, 1/1, 100%.
+  * a claim cited for one problem whose mutation lands in another's code reads PINNED
+    while the OTHER problem's nodes do the killing (`ZZCROSS`: an RB-P18 claim, three
+    RB-P16 nodes).
+
+So every claim now NAMES the nodes entitled to pin it (`pins`), the names are checked
+against the collected node ids before anything is believed, and there are four verdicts
+rather than two: PINNED (a NAMED node went red), FALSE-PINNED (nodes went red, none of
+them named), UNPINNED (nothing went red), BROKEN (the tree did not collect — a hard
+error and not evidence). The number dropped when this landed. That is the counter getting
+honest, and the honest number is the one that ships.
+
 Two hazards this harness exists to avoid, both hit for real in job 10:
 
   1. A `git worktree` does NOT isolate this suite. `bantamkit` is installed editable
@@ -62,15 +82,21 @@ class Claim:
     claim: str  # the sentence, quoted
     where: str  # human-readable source anchor
     path: str  # file to mutate, repo-relative
+    pins: list | None = None  # node ids (or id substrings) ENTITLED to pin this claim
     anchor: str = ""  # text that must appear exactly once
     replacement: str = ""  # what makes the claim false
     edits: list | None = None  # [{anchor, replacement}, ...] when one edit is not enough
+    expect: str = ""  # "pinned" | "unpinned" for a CALIBRATION claim; "" = a measurement
     note: str = ""
 
     def edit_list(self) -> list[tuple[str, str]]:
         if self.edits:
             return [(e["anchor"], e["replacement"]) for e in self.edits]
         return [(self.anchor, self.replacement)]
+
+    def killed_by_its_own(self, failed: list[str]) -> list[str]:
+        """The failing nodes this claim NAMED. A killer outside this set pins nothing here."""
+        return [f for f in failed if any(p in f for p in (self.pins or []))]
 
 
 def load_ledger(p: Path) -> list[Claim]:
@@ -86,6 +112,19 @@ def load_ledger(p: Path) -> list[Claim]:
         for anchor, replacement in c.edit_list():
             if not anchor or anchor == replacement:
                 raise ValueError(f"{c.cid}: an edit mutates nothing — anchor == replacement")
+        # L6, 2026-08-14. A claim that names no node cannot be checked against its killer,
+        # and a harness that cannot do that certifies claims it never looked at: ZZMOON —
+        # "every summary states the current phase of the moon, read from an ephemeris", a
+        # feature that does not exist — measured PINNED, 1/1, 100% on the old harness.
+        if not c.pins or not all(isinstance(x, str) and x.strip() for x in c.pins):
+            raise ValueError(
+                f"{c.cid}: `pins` must name at least one node entitled to pin this claim. "
+                "Without it 'a mutation turned SOMETHING red' is reported as 'this claim "
+                "is pinned', which is how a claim about a feature that does not exist "
+                "reads PINNED at 100%."
+            )
+        if c.expect not in ("", "pinned", "unpinned"):
+            raise ValueError(f"{c.cid}: expect must be pinned, unpinned or absent, got {c.expect!r}")
     return claims
 
 
@@ -152,6 +191,41 @@ def pytest_run(wt: Path) -> tuple[int, list[str], str]:
     return r.returncode, failed, r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
 
 
+def collect_nodes(wt: Path) -> list[str]:
+    """Every node id the unmutated tree collects, so a stale `pins` is a hard error.
+
+    A `pins` entry that matches nothing is worse than no entry at all: every claim
+    carrying it would report FALSE PINNED and the ledger would look like a catastrophe
+    when the only thing wrong is a renamed test.
+    """
+    src = wt / "runtime-py" / "src"
+    r = run(
+        [str(VENV_PY), "-m", "pytest", "runtime-py/tests", "-q", "--collect-only",
+         "--no-header", "-p", "no:randomly"],
+        wt,
+        env={"PYTHONPATH": str(src)},
+    )
+    nodes = [ln.strip() for ln in r.stdout.splitlines() if "::" in ln and not ln.startswith(" ")]
+    if not nodes:
+        raise RuntimeError(f"collected no nodes at all: {r.stdout[-400:]}{r.stderr[-400:]}")
+    return nodes
+
+
+def assert_pins_exist(claims: list[Claim], nodes: list[str]) -> None:
+    stale = [
+        f"{c.cid}: {pin}"
+        for c in claims
+        for pin in (c.pins or [])
+        if not any(pin in node for node in nodes)
+    ]
+    if stale:
+        raise ValueError(
+            "these `pins` match no collected node — the ledger is stale, and every claim "
+            "carrying one would report FALSE PINNED for the wrong reason:\n  "
+            + "\n  ".join(stale)
+        )
+
+
 def assert_pin_works(wt: Path) -> None:
     """Prove the PYTHONPATH pin actually reaches the child before believing anything.
 
@@ -200,6 +274,7 @@ def main() -> int:
     make_worktree(repo, args.commit, wt)
     try:
         assert_pin_works(wt)
+        assert_pins_exist(claims, collect_nodes(wt))
 
         base_rc, _base_failed, base_tail = pytest_run(wt)
         if base_rc != 0:
@@ -213,14 +288,46 @@ def main() -> int:
             apply_mutation(wt, c)
             rc, failed, tail = pytest_run(wt)
             revert(wt, c.path)
-            pinned = rc != 0
-            rows.append((c, pinned, failed, tail))
-            mark = "PINNED  " if pinned else "UNPINNED"
-            print(f"  {mark} {c.cid:<8} {c.kind:<9} {c.claim[:64]}", flush=True)
+            rows.append((c, verdict_of(c, rc, failed), failed, tail))
+            print(f"  {rows[-1][1]:<12} {c.cid:<8} {c.kind:<9} {c.claim[:60]}", flush=True)
 
         return report(rows, args.out, args.commit, base_tail)
     finally:
         drop_worktree(repo, wt)
+
+
+# The four answers this harness is allowed to give. `PINNED` is one of them and it is the
+# NARROWEST: not "something went red" but "a node this claim named went red".
+PINNED, UNPINNED, FALSE_PINNED, BROKEN = "PINNED", "UNPINNED", "FALSE-PINNED", "BROKEN"
+
+
+def verdict_of(c: Claim, rc: int, failed: list[str]) -> str:
+    """What one mutation actually established. L6, 2026-08-14 — the whole of C2.
+
+    THE OLD RULE WAS `pinned = rc != 0`, AND IT CERTIFIED CLAIMS IT NEVER LOOKED AT.
+
+    `BROKEN`: a non-zero status with an EMPTY `FAILED` list is a tree that did not
+    collect — a broken `import`, a syntax error, a fixture that blew up at setup. The old
+    rule read that as PINNED and printed `nothing` in the killed-by column of the same
+    row. Reproduced by the orchestrator on 2026-08-14 with a one-claim ledger asserting
+    "every summary a run writes states the current phase of the moon, and the phase is
+    read from an ephemeris" — a feature that does not exist — plus a mutation that breaks
+    an import: PINNED, behaviour-pinned 1/1 (100%). A mutation that stops the tree
+    running is not evidence about anything, and it is a hard error here.
+
+    `FALSE-PINNED`: nodes went red and NOT ONE of them is a node this claim named. The
+    claim is not pinned; something else in the tree happened to notice the edit.
+    Demonstrated by L5 with ZZCROSS, a claim cited for RB-P18 whose mutation lands in
+    RB-P16's `format_table`: three RB-P16 nodes did the killing and the old harness
+    printed PINNED for RB-P18. That is `P04`'s hole from the other side — there a second
+    disclosure silently satisfied the first claim's node; here another claim's nodes
+    silently satisfy this claim's number.
+    """
+    if rc != 0 and not failed:
+        return BROKEN
+    if not failed:
+        return UNPINNED
+    return PINNED if c.killed_by_its_own(failed) else FALSE_PINNED
 
 
 def report(rows, out: Path | None, commit: str, baseline: str) -> int:
@@ -230,7 +337,7 @@ def report(rows, out: Path | None, commit: str, baseline: str) -> int:
     def frac(rs):
         if not rs:
             return 0, 0, 0.0
-        hit = sum(1 for r in rs if r[1])
+        hit = sum(1 for r in rs if r[1] == PINNED)
         return hit, len(rs), 100.0 * hit / len(rs)
 
     bh, bt, bp = frac(beh)
@@ -247,34 +354,65 @@ def report(rows, out: Path | None, commit: str, baseline: str) -> int:
         "",
         f"Baseline: `{baseline}`",
         "",
+        "PINNED here means the narrow thing and not the wide one: **a node this claim",
+        "NAMED went red**. A mutation that turns some other claim's node red reads",
+        "FALSE-PINNED, and a mutation that stops the tree collecting at all reads BROKEN",
+        "and is not evidence about anything (L6, 2026-08-14).",
+        "",
         f"- **behaviour-pinned: {bh}/{bt} ({bp:.0f}%)** — the number that matters",
         f"- prose-pinned: {ph}/{pt} ({pp:.0f}%)",
         f"- overall: {ah}/{at} ({apct:.0f}%)",
         "",
-        "| id | kind | pinned | claim | killed by |",
-        "|---|---|---|---|---|",
+        "| id | kind | verdict | claim | killed by | of which NAMED |",
+        "|---|---|---|---|---|---|",
     ]
-    for c, pinned, failed, _tail in rows:
+    for c, status, failed, _tail in rows:
         killers = ", ".join(f"`{f.rsplit('::', 1)[-1]}`" for f in failed[:3]) or "**nothing**"
         if len(failed) > 3:
             killers += f" (+{len(failed) - 3})"
+        own = len(c.killed_by_its_own(failed))
+        mark = "yes" if status == PINNED else f"**{status}**"
         lines.append(
-            f"| {c.cid} | {c.kind} | {'yes' if pinned else '**NO**'} | {c.claim} | {killers} |"
+            f"| {c.cid} | {c.kind} | {mark} | {c.claim} | {killers} | {own}/{len(failed)} |"
         )
 
-    unpinned = [c for c, pinned, _, _ in rows if not pinned]
-    if unpinned:
-        lines += ["", "## Unpinned — each is a sentence the suite would keep green while it became a lie", ""]
-        for c in unpinned:
+    for status, heading in (
+        (BROKEN, "## BROKEN — the mutation stopped the tree collecting. Not evidence, not a PINNED"),
+        (FALSE_PINNED, "## FALSE PINNED — nodes went red and NONE of them is a node this claim named"),
+        (UNPINNED, "## Unpinned — each is a sentence the suite would keep green while it became a lie"),
+    ):
+        group = [(c, failed) for c, s, failed, _ in rows if s == status]
+        if not group:
+            continue
+        lines += ["", heading, ""]
+        for c, failed in group:
             lines += [f"- **{c.cid}** ({c.where}) — {c.claim}"]
+            lines += [f"  - named: {', '.join(c.pins or []) or 'nothing'}"]
+            if status == FALSE_PINNED:
+                lines += [f"  - killed instead by: {', '.join(f.rsplit('::', 1)[-1] for f in failed)}"]
             if c.note:
                 lines += [f"  - {c.note}"]
+
+    miscalibrated = [
+        (c, s) for c, s, _, _ in rows if c.expect and (s == PINNED) != (c.expect == "pinned")
+    ]
+    if miscalibrated:
+        lines += ["", "## CALIBRATION FAILED — an instrument that reads the wrong known answer", ""]
+        for c, s in miscalibrated:
+            lines += [f"- **{c.cid}** expected {c.expect.upper()}, measured {s} — {c.claim}"]
 
     text = "\n".join(lines) + "\n"
     if out:
         out.write_text(text)
         print(f"\nwrote {out}")
+    counts = {s: sum(1 for _, st, _, _ in rows if st == s) for s in (PINNED, UNPINNED, FALSE_PINNED, BROKEN)}
     print(f"\nbehaviour-pinned {bh}/{bt} ({bp:.0f}%) · prose-pinned {ph}/{pt} ({pp:.0f}%)")
+    print(" · ".join(f"{k} {v}" for k, v in counts.items()))
+    # A BROKEN row is a broken mutation and the run is not a measurement of it; a failed
+    # calibration means nothing this file says may be believed. Both exit non-zero, so a
+    # caller that only reads `$?` cannot mistake either for a clean sweep.
+    if counts[BROKEN] or miscalibrated:
+        return 1
     return 0
 
 
