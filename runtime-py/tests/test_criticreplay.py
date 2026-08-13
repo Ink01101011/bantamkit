@@ -5049,6 +5049,29 @@ def test_the_epilog_discloses_the_behaviour_change_with_the_count_the_field_reco
         "owner whose branch changed number has to be able to find the record that "
         "measured it; a lowercased path inside a filename is not that."
     )
+    # AND THE TIE IS CHECKED IN BOTH DIRECTIONS (RB-P17, 2026-08-14). `assert problems`
+    # alone is satisfied by ANY problem id in the block, so once a second disclosure
+    # landed here, the mutation that reduces RB-P32's paragraph to "CHANGED (see the
+    # docs)" left the block still naming RB-P17 and the whole node went green — measured:
+    # P04 read UNPINNED at 0337c66 and had been PINNED at 32773f9. A citation is a promise
+    # that the block names the problem the cited record measures, so every cited record
+    # whose filename carries a problem slug demands its id in the prose. Deleting an id
+    # while keeping its evidence is now red, which is exactly the shape of that mutation.
+    undisclosed = sorted(
+        {
+            f"RB-P{match.group(1)}"
+            for hits in resolved.values()
+            for path in hits
+            if (match := re.search(r"rb-?p(\d+)", path.name))
+            and f"RB-P{match.group(1)}" not in problems
+        }
+    )
+    assert not undisclosed, (
+        f"the epilog's {criticreplay.USAGE_EXIT} block cites the field record for "
+        f"{', '.join(undisclosed)} and never names the problem. A CI owner reading "
+        "--help gets the evidence with the claim removed, which is the disclosure "
+        "failing while looking cited."
+    )
     for problem in problems:
         slug = problem.replace("-", "").lower()
         records = [
