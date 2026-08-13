@@ -53,8 +53,14 @@ and check both answers; if either flips, the harness is broken and nothing it sa
 any other claim may be believed. (At `ff58237` CAL-GREEN comes back PINNED, and that is
 the fix landing, not the calibration passing — calibrate on `3981efd`.)
 
+`calibration.json` HAS STOPPED CALIBRATING AT HEAD, which is why there is a second file.
+CAL-GREEN was consumed by the fix it was a control for and now reads PINNED there, so at
+HEAD that ledger is a positive control and nothing else. `calibration-head.json` is the
+pair that still works at HEAD, and it is the one to run beside the contract ledger.
+
 Usage, from the repo root:
     .venv/bin/python tools/pinharness/pinned.py . 3981efd tools/pinharness/calibration.json
+    .venv/bin/python tools/pinharness/pinned.py . HEAD tools/pinharness/calibration-head.json
     .venv/bin/python tools/pinharness/pinned.py . HEAD tools/pinharness/contract-ledger.json \
         --out /tmp/ledger.md
 """
@@ -191,6 +197,27 @@ def pytest_run(wt: Path) -> tuple[int, list[str], str]:
     return r.returncode, failed, r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
 
 
+def assert_anchors_apply(wt: Path, claims: list[Claim]) -> None:
+    """EVERY anchor is checked before ANY suite runs. L6, 2026-08-14.
+
+    `apply_mutation` already refuses an anchor that is not present exactly once, but it
+    refuses it when the sweep REACHES that claim — so a ledger gone stale in its 27th
+    entry costs a full run of the first 26 to find out, and the run that dies has measured
+    nothing it can report. Reading is cheap; the whole check is one pass over one file.
+    """
+    stale = []
+    for c in claims:
+        text = (wt / c.path).read_text()
+        for index, (anchor, _replacement) in enumerate(c.edit_list()):
+            n = text.count(anchor)
+            if n != 1:
+                stale.append(f"{c.cid} edit {index}: anchor appears {n}x in {c.path}")
+    if stale:
+        raise MutationError(
+            "the ledger is stale before the sweep even starts:\n  " + "\n  ".join(stale)
+        )
+
+
 def collect_nodes(wt: Path) -> list[str]:
     """Every node id the unmutated tree collects, so a stale `pins` is a hard error.
 
@@ -275,6 +302,7 @@ def main() -> int:
     try:
         assert_pin_works(wt)
         assert_pins_exist(claims, collect_nodes(wt))
+        assert_anchors_apply(wt, claims)
 
         base_rc, _base_failed, base_tail = pytest_run(wt)
         if base_rc != 0:
