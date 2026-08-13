@@ -4,7 +4,8 @@
     "b0d4cce (764 nodes): behaviour 16/16, prose 2/5, overall 18/21. P01, P03 and P04 each came back with a FULLY GREEN suite.",
     "ff58237 (767 nodes): behaviour 16/16, prose 5/5, overall 21/21. The three killers are the three nodes added in that commit.",
     "Calibration is run on 3981efd, where the two answers are known by hand: CAL-RED red, CAL-GREEN green. It still reads that way after the fix, which is what licenses believing the 21/21.",
-    "Report: docs/eval-data/2026-08-13-contract-claim-pinning.md"
+    "Report: docs/eval-data/2026-08-13-contract-claim-pinning.md",
+    "b496856 + L1 (767 -> 771 nodes): 21/21 pinned BEFORE the three RB-P16/17/18 claims were added (behaviour 16/16, prose 5/5). N01/N02/N03 are claims about problems that are still OPEN, so they read UNPINNED by construction — that number, and not the denominator, is what L2/L3/L4 have to move. Survey: docs/eval-data/2026-08-13-rbp16-rbp17-rbp18-survey.md"
   ],
   "claims": [
     {
@@ -227,6 +228,36 @@
       "path": "runtime-py/src/bantamkit/criticreplay.py",
       "anchor": "\n#      shape rules (exact set): --identity-replays --replays --rubric",
       "replacement": "\n#      shape rules (exact set): --identity-replays --replays"
+    },
+    {
+      "cid": "N01",
+      "kind": "behaviour",
+      "claim": "a §7 comparison's report distinguishes a near-total separation from a mixed cell without the reader subtracting the two fractions himself (RB-P16, OPEN)",
+      "where": "_separation / _compare, the `inconclusive` band",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "    if stats_a[\"passed\"] == stats_b[\"passed\"]:\n        return \"indistinguishable\"\n    return \"inconclusive\"",
+      "replacement": "    if stats_a[\"passed\"] == stats_b[\"passed\"]:\n        return \"indistinguishable\"\n    stats_a = stats_b  # mutation: the band can no longer see the gap\n    return \"inconclusive\"",
+      "note": "UNPINNED at b496856 and correctly so: the claim is FALSE today. Measured, L1, 2026-08-13 — over the whole committed §7 record (12 comparisons, 2 runs) 11 are `inconclusive`, spanning |Δ| 3/11 to 5/6, and A-asfiled-vs-C-attempted r0 (1/12 vs 11/12) and r1 (4/12 vs 8/12) report identically once the two fractions are removed. The node is test_the_inconclusive_band_reports_something_a_reader_can_tell_from_noise, which re-derives with today's `_compare` over the committed rows and IS mutation-sensitive. The mutation above is inert at b496856 and falsifies any fix that bands inside `_separation`; a fix that reports the gap from `_compare` instead must re-aim this anchor in its own commit."
+    },
+    {
+      "cid": "N02",
+      "kind": "behaviour",
+      "claim": "the `rubric_ref` a run records resolves, from this repository alone, back to the recorded `rubric_sha256` (RB-P17, OPEN)",
+      "where": "parse_rubric_arg, the path branch: `source = spec`, and the git branch's `source = ref` which drops the path",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "        raw = path.read_text()\n        source = spec",
+      "replacement": "        raw = path.read_text()\n        # mutation (RB-P17): the recorded ref is the raw spec again\n        source = spec",
+      "note": "UNPINNED at b496856, and for TWO reasons that L3 must separate. (1) The claim is false today: 4 of the 5 distinct `rubric_ref` values in committed summaries do not resolve — two /private/tmp scratchpad paths and two bare git refs whose PATH was never recorded. (2) STRUCTURAL, and the more important one: test_every_rubric_ref_in_a_committed_summary_resolves_from_this_repo reads COMMITTED artifacts, so no mutation of the source can turn it red and it can never pin anything. Pinning this claim needs a node over a FRESH run's recorded ref. L1 filed the node the brief asked for and is naming the gap rather than hiding it."
+    },
+    {
+      "cid": "N03",
+      "kind": "behaviour",
+      "claim": "`payload_sha256` names one serialization, or every record carrying it names which one (RB-P18, OPEN)",
+      "where": "_payload_sha, the json.dumps call",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "    payload: dict = {\"model\": model, \"messages\": [m.to_wire() for m in messages]}",
+      "replacement": "    # mutation (RB-P18): the recipe goes undisclosed again\n    payload: dict = {\"model\": model, \"messages\": [m.to_wire() for m in messages]}",
+      "note": "UNPINNED at b496856. Measured, L1, 2026-08-13: the bar and SA3 disagree on `payload_sha256` for all six committed (variant, seed) cells at an identical rendered prompt, seed, model and score — and the cause is NOT the filed one. Both recipes serialize the SAME dict; SA3 used json.dumps(..., ensure_ascii=False, sort_keys=True) and the bar uses the same call without it. Recovered by search and reproduced on all six cells. Same structural gap as N02: the node reads committed artifacts, so it cannot go red under mutation; a fresh-run node is what would pin this."
     }
   ]
 }

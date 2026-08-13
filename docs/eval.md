@@ -2549,6 +2549,33 @@ and each carries an attack direction.
   then re-state the spec's expectation as "not distinguishable" rather than
   "indistinguishable", which is the wording that made a correct measurement
   read as a failed gate. (Measurement.)
+
+  **SURVEYED 2026-08-13 (L1, probe only — nothing fixed). The gap is a number
+  now, and it is larger than this entry's example.**
+  `docs/eval-data/2026-08-13-rbp16-rbp17-rbp18-survey.md` (+ `.py`, re-runnable)
+  measures **every** §7 comparison in the repo: **12, over 2 runs** — ten other
+  committed summaries are single-variant, so the decision rule never fired in
+  them at all. Eleven read `inconclusive`, one `indistinguishable`, **none**
+  `distinguishable`, **none** attributable. |Δ| over the band spans **3/11
+  (0.2727) to 5/6 (0.8333)**. **The 7/11-vs-10/11 case this entry quotes is the
+  SMALLEST gap in the band.** The worst is `A-asfiled` **1/12** vs
+  `C-attempted` **11/12** — ten of twelve points flipped, one point short of
+  `0/F`-versus-`F/F` on each side — wearing the same word.
+  **Two clauses above do not reproduce as written.** (1) "no reporting duty
+  beyond the word" is too strong: both pass rates are on every comparison dict
+  and `format_table` prints them; what is absent is the *difference*, the
+  *sign*, and any statement across cells. (2) The proposed "require the sign to
+  agree across cells" rule has **zero instances in the committed record** —
+  every `inconclusive` cell has the same sign, and the only non-negative sign
+  anywhere is the exact tie that already reads `indistinguishable`. It is a
+  guard against a case this project has never measured.
+  **Broader than filed:** `indistinguishable` has the same defect. It is equal
+  pass *counts*, not agreement — the one committed `indistinguishable` cell
+  (`B` 7/11 vs `C` 7/11, r1) is a cell where the two variants **disagree on 2
+  of 11 points** (`B` passes `P2-asks-requests`, `C` passes
+  `W2-double-trailing`). Executable spec, non-strict `xfail`:
+  `test_the_inconclusive_band_reports_something_a_reader_can_tell_from_noise`;
+  ledger claim `N01`.
 - **RB-P17 — a rubric variant's provenance is a path, and a path is not a
   rule.** The bar's `--rubric LABEL=SPEC` admits a filesystem path or
   `git:<ref>:<path>`. `B-nonewline` — the null control, and the variant the
@@ -2563,6 +2590,36 @@ and each carries an attack direction.
   `derive:<label>:<rule-id>` spec form so the control is written as
   `derive:A-asfiled:W1-trailing-newline` — a rule, applied to a committed ref,
   recorded as such in every row. (Measurement.)
+
+  **SURVEYED 2026-08-13 (L1, probe only). The `d1f32ad2…` claim holds; two
+  statements around it do not.** Same artifact. Every `rubric_ref` in every
+  committed summary, classified: five distinct values, of which **one**
+  resolves from this repo (`assets/rubrics/task-completion.yaml`, ten runs).
+  `base_sha256` `d1f32ad2947b…` **re-reproduces exactly** from
+  `git show d2f78b7:assets/rubrics/task-completion.yaml`, parsed, `prompt`
+  taken, one trailing newline removed.
+  **Does not reproduce:** "a session temp path **that no longer exists**" —
+  measured 2026-08-13, **both** scratchpad rubrics still exist on this machine
+  and still hash to their recorded `rubric_sha256`. The defect stands; the
+  stated fact is false today.
+  **Broader than filed, three ways.** (1) There are **two** such paths, not
+  one — `b-nonewline.yaml` (2026-08-11) and `n5-b-nonewline.yaml` (2026-08-12
+  replay3). (2) They record **different `rubric_sha256`** for the *same* rubric
+  under test: different file bytes, one template sha `d1f32ad2947b…`. So
+  `rubric_sha256` is the file, not the rubric the critic read. (3) The `git:`
+  form — the one this entry calls the good one — records `source = ref` and
+  **drops the path**; `RubricVariant.spec` is never written to any row or
+  summary, so `d2f78b7` names a commit and not a file.
+  **The attack is constructible and one clause of it is not.** Applying
+  `W1-trailing-newline` to `A-asfiled` gives exactly `d1f32ad2947b…` per the
+  frozen manifest, and `W1` is *inapplicable* to `B-nonewline`, so the derived
+  variant is a fixed point of its own rule and there is no load-order cycle.
+  But `derive:A-asfiled:W1-trailing-newline` is resolvable **only from the argv
+  that defined `A-asfiled`**, and names the manifest nowhere — the recorded ref
+  must expand the label to `git:<ref>:<path>` and carry the manifest sha, or it
+  is a pointer into a vanished process. Executable spec:
+  `test_every_rubric_ref_in_a_committed_summary_resolves_from_this_repo`;
+  ledger claim `N02`.
 - **RB-P18 — `payload_sha256` is not comparable across records, and its name
   says nothing about that.** SA3's payload shas do not match this bar's for
   identical cells, at identical `prompt_sha256`, identical seeds and identical
@@ -2574,6 +2631,32 @@ and each carries an attack direction.
   **Attack:** publish the recipe wherever the field appears (done for the spec
   §6.3), or version the field name so two recipes cannot share one.
   (Measurement.)
+
+  **RE-MEASURED 2026-08-13 (L1, probe only). THE FILED MECHANISM IS WRONG, and
+  the attack it implies is the expensive one.** Same artifact. Both recipes
+  were re-derived from `git show` and checked against the committed values on
+  **all six** (variant, seed) cells; every one reproduces. The disagreement is
+  real — for `A-asfiled`, `git:d2f78b7`, repeat 0, seed 2331795949, score 5, at
+  an identical rendered prompt (`8fb6c98412f1…`, carried in SA3's
+  whitespace-null-control block as `prompt_sha256_asfiled`): bar
+  `a17fc774681a…` versus SA3 `4eb56220e883…`.
+  **But the two recipes do NOT "serialize different dicts".** They serialize
+  the **identical** dict — same `model`, same `messages`, same `seed`, same
+  `response_format`. Recovered by search over candidate serializations and
+  confirmed on all six cells, the entire difference is one keyword argument:
+  the bar uses `json.dumps(payload, ensure_ascii=False)` (insertion order) and
+  SA3 used the same call with `sort_keys=True`.
+  **This modifies the attack.** "Version the field name so two recipes cannot
+  share one" makes the incomparability permanent and documented, when a
+  canonicalisation removes it. The defect is a field whose name says nothing
+  about its key order — not two contents under one name. Note also that
+  `_payload_sha` is the **only** `payload_sha256` computation anywhere in this
+  repo; the second recipe survives only in the committed SA3 artifact and in
+  its `how_to_reproduce` prose, its scripts being in no tree. **The same defect
+  exists in a second field pair:** `rubric_sha256` (file bytes) versus the
+  manifest's `base_sha256` (template text) — see RB-P17's survey note.
+  Executable spec: `test_payload_sha256_does_not_name_two_recipes_at_once`;
+  ledger claim `N03`.
 - **RB-P19 — `P3-right-correct` ships violating the manifest's own
   shared-token guard on the acceptance cell.** The guard forbids an added or
   removed word from appearing in the cell's `{task}`; `P3` removes *right*,

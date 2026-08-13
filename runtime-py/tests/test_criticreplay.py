@@ -4663,3 +4663,313 @@ def test_the_epilog_discloses_the_behaviour_change_with_the_count_the_field_reco
             f"({', '.join(moved)}), and the epilog does not state that count. The "
             "disclosure and the evidence are one claim, not two."
         )
+
+
+# ===========================================================================
+# RB-P16 / RB-P17 / RB-P18 — three executable specs, written by the PROBE unit
+# (L1) BEFORE any fix exists. Each is a non-strict `xfail` that fails TODAY,
+# and each names the measured pre-fix state in its docstring rather than an
+# adjective. The full survey behind them, with the commands that produced it,
+# is docs/eval-data/2026-08-13-rbp16-rbp17-rbp18-survey.md and its .py.
+#
+# WHY THEY READ THE COMMITTED ARTIFACTS AND NOT A FRESH FIXTURE. RB-P28 is
+# open: a green suite is not evidence about this tool. Every one of these
+# nodes re-derives its numbers from a real run's committed rows with today's
+# code, so the thing under test is the instrument as shipped, not a rig built
+# to agree with it. The fixture guard below keeps a drift in those artifacts
+# red rather than turning an `xfail` into a silently mis-aimed one.
+# ===========================================================================
+
+EVAL_DATA = Path(__file__).resolve().parents[2] / "docs" / "eval-data"
+
+# The §10 acceptance run. Three seeds, three variants, nine comparisons — and,
+# with 2026-08-12's replay3 run, the WHOLE committed record of §7 verdicts:
+# twelve comparisons over two runs, eleven `inconclusive`, one
+# `indistinguishable`, zero `distinguishable`, zero `attributable`.
+_ACCEPTANCE_SUMMARY = EVAL_DATA / "2026-08-11-pb14-14b-nav-prod-port-perturbation-summary.json"
+_ACCEPTANCE_ROWS = EVAL_DATA / "2026-08-11-pb14-14b-nav-prod-port-perturbation.jsonl"
+_SA3_REPLAY = EVAL_DATA / "2026-08-11-sa3-14b-nav-prod-port-critic-replay.json"
+
+
+def _committed_summaries() -> list[tuple[Path, dict]]:
+    """Every committed summary carrying a §7 `comparisons` block."""
+    out = []
+    for path in sorted(EVAL_DATA.glob("*.json")):
+        text = path.read_text()
+        if '"comparisons"' in text:
+            out.append((path, json.loads(text)))
+    return out
+
+
+def _rows_as_replay_rows(path: Path) -> list[criticreplay.ReplayRow]:
+    """Committed JSONL back into the dataclass today's decision rule consumes."""
+    rows = []
+    for line in path.read_text().splitlines():
+        data = json.loads(line)
+        data["point_class"] = data.pop("class")
+        data.setdefault("calls", 1)
+        rows.append(
+            criticreplay.ReplayRow(
+                **{
+                    key: value
+                    for key, value in data.items()
+                    if key in criticreplay.ReplayRow.__dataclass_fields__
+                }
+            )
+        )
+    return rows
+
+
+def _compare_committed_cell(repeat: int, a: str, b: str) -> dict:
+    """Today's `_compare` over the committed rows of one cell of the acceptance run."""
+    rows = [row for row in _rows_as_replay_rows(_ACCEPTANCE_ROWS) if row.repeat == repeat]
+    labels = sorted({row.variant for row in rows})
+    per_variant: dict[str, dict[str, list[criticreplay.ReplayRow]]] = {}
+    for row in rows:
+        per_variant.setdefault(row.variant, {}).setdefault(row.point, []).append(row)
+    selected = sorted({row.point for row in rows}, key=lambda p: (p != "identity", p))
+    dropped = {
+        label: [point for point in selected if point not in per_variant.get(label, {})]
+        for label in labels
+    }
+    result = criticreplay.RunResult(
+        rows=rows,
+        dropped=dropped,
+        selected=selected,
+        labels=labels,
+        threshold=rows[0].threshold,
+        cells=[],
+    )
+    return criticreplay._compare(
+        result, per_variant, a, b, rows[0].threshold, ("nav-prod-port", repeat), {}
+    )
+
+
+def test_the_committed_acceptance_artifacts_are_the_ones_these_three_specs_aim_at():
+    """NOT an xfail. The fixture guard for the three `xfail`s below.
+
+    An `xfail` that fails because its inputs drifted pins nothing (RB-P28's lesson
+    applied to this file's own evidence). These three nodes read committed evidence
+    rather than a rig, so what has to stay true is that the evidence still says what
+    L1 measured on 2026-08-13. If any of this goes red, the `xfail`s below are aimed
+    at the wrong cells and their reasons are stale — fix this first.
+
+    Also asserts the re-derivation route itself: `_compare` over the committed rows
+    reproduces the committed comparison field for field. Without that, an `xfail`
+    below could be failing because the rebuild is wrong rather than because the
+    instrument is.
+    """
+    assert _ACCEPTANCE_SUMMARY.is_file() and _ACCEPTANCE_ROWS.is_file()
+    assert _SA3_REPLAY.is_file()
+
+    verdicts = [
+        comparison["verdict"]
+        for _, summary in _committed_summaries()
+        for cell in summary["cells"]
+        for comparison in cell["comparisons"]
+    ]
+    assert len(verdicts) == 12, verdicts
+    assert verdicts.count("inconclusive") == 11
+    assert verdicts.count("indistinguishable") == 1
+    assert verdicts.count("distinguishable") == 0
+
+    committed = {
+        (cell["repeat"], comparison["a"], comparison["b"]): comparison
+        for cell in json.loads(_ACCEPTANCE_SUMMARY.read_text())["cells"]
+        for comparison in cell["comparisons"]
+    }
+    assert committed[(0, "A-asfiled", "C-attempted")]["a_pass_rate"] == "1/12"
+    assert committed[(0, "A-asfiled", "C-attempted")]["b_pass_rate"] == "11/12"
+    assert committed[(1, "A-asfiled", "C-attempted")]["a_pass_rate"] == "4/12"
+    assert committed[(1, "A-asfiled", "C-attempted")]["b_pass_rate"] == "8/12"
+
+    for repeat in (0, 1):
+        rebuilt = _compare_committed_cell(repeat, "A-asfiled", "C-attempted")
+        recorded = committed[(repeat, "A-asfiled", "C-attempted")]
+        for key, value in recorded.items():
+            assert rebuilt[key] == value, (
+                f"re-deriving cell r{repeat} with today's `_compare` gives {key}="
+                f"{rebuilt[key]!r} where the committed summary records {value!r}; the "
+                "rebuild below is measuring something other than the committed run"
+            )
+
+
+@pytest.mark.xfail(
+    reason=(
+        "RB-P16, open at b496856: the `inconclusive` band has no reporting duty beyond "
+        "the pass rates, so two cells of ONE variant pair whose gaps differ 2.5x are "
+        "reported identically once the two fractions are removed. Measured over the "
+        "whole committed record on 2026-08-13: 11 of 12 comparisons are `inconclusive`, "
+        "spanning |Δ| 3/11 (0.2727) to 5/6 (0.8333) — the worst is A-asfiled 1/12 vs "
+        "C-attempted 11/12, ONE point short of total separation on each side, wearing "
+        "the same word as a 3/11 wobble."
+    ),
+)
+def test_the_inconclusive_band_reports_something_a_reader_can_tell_from_noise():
+    """The reporting duty, pinned without pre-empting the format.
+
+    Two comparisons of the SAME pair (`A-asfiled` vs `C-attempted`) on the SAME
+    family size (12) in the SAME committed run:
+
+        r0   1/12 vs 11/12   |Δ| = 5/6  ≈ 0.8333   — one point short of F/F vs 0/F
+        r1   4/12 vs  8/12   |Δ| = 1/3  ≈ 0.3333   — a genuinely mixed cell
+
+    Measured at b496856, both report, field for field:
+
+        {"a": "A-asfiled", "b": "C-attempted", "verdict": "inconclusive",
+         "family_size": 12, "dropped_rules": [], "attributable": false,
+         "fragile": ["A-asfiled", "C-attempted"]}
+
+    i.e. the report is a function of the pass rates and of NOTHING else. This node
+    asserts only that it stops being so — the difference, its sign, a band word, a
+    tuple, anything a reader can compare across cells satisfies it. It deliberately
+    does not name a field: L2 designs the format, this pins the duty.
+
+    Whether the design keeps `inconclusive` as one word is left open on purpose.
+    RB-P16's own attack direction keeps it and reports the gap beside it, and a node
+    that demanded a new word would rule that out before it was argued.
+    """
+    reports = {
+        repeat: _compare_committed_cell(repeat, "A-asfiled", "C-attempted") for repeat in (0, 1)
+    }
+    assert {r["verdict"] for r in reports.values()} == {"inconclusive"}, reports
+    stripped = {
+        repeat: {
+            key: value
+            for key, value in report.items()
+            if key not in ("a_pass_rate", "b_pass_rate")
+        }
+        for repeat, report in reports.items()
+    }
+    assert stripped[0] != stripped[1], (
+        "a near-total separation (1/12 vs 11/12) and a mixed cell (4/12 vs 8/12) of the "
+        "same pair produce byte-identical reports once the two pass-rate fractions are "
+        "removed, so the band's verdict carries no effect size a reader can tell apart "
+        f"from noise: {json.dumps(stripped[0], sort_keys=True)}"
+    )
+
+
+@pytest.mark.xfail(
+    reason=(
+        "RB-P17, open at b496856: a rubric variant's provenance is a path, and a path "
+        "is not a rule. Measured over every committed summary on 2026-08-13 — 5 "
+        "distinct `rubric_ref` values, of which ONE resolves from this repo "
+        "(`assets/rubrics/task-completion.yaml`, 10 runs). Two are absolute session "
+        "scratchpad paths under /private/tmp (B-nonewline, in BOTH pb14 runs, with "
+        "DIFFERENT rubric_sha256 for the same rubric under test), and two are bare git "
+        "refs (`d2f78b7`, `e57f1a6`) whose commit resolves but whose PATH the row never "
+        "recorded — `parse_rubric_arg` stores `ref`, not `spec`."
+    ),
+)
+def test_every_rubric_ref_in_a_committed_summary_resolves_from_this_repo():
+    """Provenance a second reader can follow, using this repository and nothing else.
+
+    Resolvable means: the recorded `rubric_ref` lets a reader recover bytes whose
+    sha256 is the recorded `rubric_sha256`, from the repo. Two forms qualify — a
+    repo-relative path, and `git:<ref>:<path>`. An absolute path on the machine that
+    made the run does not, even where the file happens to still be there: measured
+    2026-08-13, BOTH scratchpad rubrics still existed on this machine and still
+    hashed to their recorded shas, which is the filing's "one cleanup away" and not
+    a reason to call the record resolvable.
+
+    Measured at b496856, unresolvable refs (4 of 5):
+
+        /private/tmp/.../scratchpad/b-nonewline.yaml      B-nonewline, 2026-08-11 run
+        /private/tmp/.../scratchpad/n5-b-nonewline.yaml   B-nonewline, 2026-08-12 run
+        d2f78b7                                          A-asfiled, both runs
+        e57f1a6                                          C-attempted, 2026-08-11 run
+
+    BROADER THAN FILED. RB-P17 names the scratchpad path. The bare git refs are the
+    same defect on the form the filing calls the good one: `d2f78b7` names a commit
+    and not a file, so `rubric_sha256` cannot be re-derived from it without knowing
+    which path to ask for.
+    """
+    repo = Path(__file__).resolve().parents[2]
+    unresolvable = []
+    for path, summary in _committed_summaries():
+        for variant in summary.get("variants", []):
+            ref, sha = variant["rubric_ref"], variant["rubric_sha256"]
+            recovered = None
+            if ref.startswith("git:") and ref.count(":") >= 2:
+                _, git_ref, git_path = ref.split(":", 2)
+                shown = subprocess.run(
+                    ["git", "-C", str(repo), "show", f"{git_ref}:{git_path}"],
+                    capture_output=True,
+                    text=True,
+                )
+                if shown.returncode == 0:
+                    recovered = criticreplay.sha256_text(shown.stdout)
+            elif not ref.startswith("/") and (repo / ref).is_file():
+                recovered = criticreplay.sha256_text((repo / ref).read_text())
+            if recovered != sha:
+                unresolvable.append(f"{path.name}: {variant['label']} -> {ref}")
+    assert not unresolvable, (
+        "these committed summaries record a `rubric_ref` that this repository cannot "
+        "resolve back to the recorded `rubric_sha256`, so the evidence points at "
+        "something a second reader cannot obtain:\n  " + "\n  ".join(unresolvable)
+    )
+
+
+@pytest.mark.xfail(
+    reason=(
+        "RB-P18, open at b496856: `payload_sha256` names two recipes. Re-measured on "
+        "2026-08-13 across all six committed (variant, seed) cells — the bar's rows and "
+        "SA3's replay block disagree on every one, at an identical rendered prompt, an "
+        "identical seed, an identical model and an identical score. THE FILED MECHANISM "
+        "IS WRONG: the two recipes do NOT serialize different dicts. They serialize the "
+        "SAME dict {model, messages, seed, response_format}; the bar uses "
+        "json.dumps(..., ensure_ascii=False) and SA3 used the same call with "
+        "sort_keys=True. The whole disagreement is JSON key order."
+    ),
+)
+def test_payload_sha256_does_not_name_two_recipes_at_once():
+    """One field name, two serializations, and nothing in either record says which.
+
+    The concrete cell, both values read from committed artifacts and both
+    re-derived from git at test time:
+
+        A-asfiled, git:d2f78b7, repeat 0, seed 2331795949, score 5,
+        prompt_sha256 8fb6c98412f1…
+
+            bar  payload_sha256 = a17fc774681a…   (insertion order)
+            SA3  payload_sha256 = 4eb56220e883…   (sort_keys=True)
+
+    `prompt_sha256` is equal across the two records — SA3 carries it as
+    `prompt_sha256_asfiled` in its whitespace-null-control block — so a reader
+    comparing on `payload_sha256` concludes the requests differed when they did not.
+
+    The node passes either way RB-P18's attack could go: make the two agree, or
+    stop sharing the name. It does not choose between them.
+    """
+    sa3 = json.loads(_SA3_REPLAY.read_text())
+    bar_row = next(
+        row
+        for row in (json.loads(line) for line in _ACCEPTANCE_ROWS.read_text().splitlines())
+        if row["point"] == "identity" and row["variant"] == "A-asfiled" and row["repeat"] == 0
+    )
+    sa3_entries = [
+        entry
+        for entry in sa3["replay_verdicts"]
+        if entry["ref"] == "d2f78b7" and entry["repeat"] == 0
+    ]
+    sa3_shas = sorted({sha for entry in sa3_entries for sha in entry["payload_sha256"]})
+    assert len(sa3_shas) == 1 and sa3_entries, sa3_shas
+    control = sa3["whitespace_null_control_replay"]["verdicts"][0]
+    assert control["prompt_sha256_asfiled"] == bar_row["prompt_sha256"]
+    assert {entry["score"] for entry in sa3_entries} == {bar_row["score"]}
+    assert sa3_entries[0]["seed"] == bar_row["seed"]
+
+    same_name = "payload_sha256" in bar_row and "payload_sha256" in sa3_entries[0]
+    recipe_named = any(
+        "payload" in key and key != "payload_sha256"
+        for record in (bar_row, sa3_entries[0])
+        for key in record
+    )
+    assert sa3_shas[0] == bar_row["payload_sha256"] or not same_name or recipe_named, (
+        "two committed records carry `payload_sha256` for the SAME request — equal "
+        f"prompt_sha256 {bar_row['prompt_sha256'][:12]}…, equal seed "
+        f"{bar_row['seed']}, equal score {bar_row['score']} — and disagree: bar "
+        f"{bar_row['payload_sha256'][:12]}… vs SA3 {sa3_shas[0][:12]}…, with neither "
+        "record naming the serialization that produced it. Measured cause: "
+        "json.dumps sort_keys, nothing else."
+    )
