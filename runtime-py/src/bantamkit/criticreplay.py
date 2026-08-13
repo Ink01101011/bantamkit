@@ -118,6 +118,7 @@ __all__ = [
     "replay_scores",
     "replay_verdicts",
     "rubric_arg_shape_problem",
+    "rubric_label_collision_problem",
     "run",
     "substitution_pair_moved_words",
     "summarize",
@@ -179,7 +180,19 @@ GUARD_MODES = ("warn", "error")
 #      rules report it IS this module's choice, and since RB-P32 the answer is: all of
 #      the argument-SHAPE ones and only those, every one of them routed through
 #      `parser.error` above `main`'s `try` (`--replays 0`, `--identity-replays 0`,
-#      `--rubric` with no `LABEL=`, `--rubric a=git:HEAD`).
+#      `--rubric` with no `LABEL=`, `--rubric a=git:HEAD`, `--rubric a=X --rubric a=Y`).
+#      shape rules (exact set): --identity-replays --replays --rubric
+#      THAT LINE IS CHECKED AGAINST THE CODE, not against this paragraph (K4B/I7). The
+#      old check compared this block and the epilog for two substrings and joined them
+#      with `and`, so renaming `parser.error` here turned it green while the epilog kept
+#      a claim that was false. `test_the_usage_status_names_exactly_the_shape_rules_the_
+#      code_has` now DERIVES the set — every `parser.error` reachable above `main`'s
+#      `try`, and the `--flag` names its messages carry — and requires this roster and
+#      the epilog's to be exactly it, with
+#      `test_every_shape_rule_flag_is_the_usage_status_in_the_field` measuring each named
+#      flag to 2 and each unnamed module rule to 1 from a real shell. A rename changes
+#      nothing; adding a shape rule without a field case, or naming a flag here that has
+#      no shape rule, is red.
 #      WHERE THE LINE IS, AND WHY IT IS NOT "WHOSE RULE IS IT" (RB-P32). A 2 is an
 #      argv that is malformed ON ITS FACE: `rubric_arg_shape_problem` resolves no
 #      path, opens no file and runs no `git`, so the verdict is a function of the
@@ -208,6 +221,17 @@ GUARD_MODES = ("warn", "error")
 #      real shell before and after in
 #      docs/eval-data/2026-08-13-rbp32-argument-validation-matrix.md and
 #      -matrix-after.md.
+#      A FIFTH CASE MOVED IN K4B, and the sentence above was FALSE without it (K4's C2):
+#      `--rubric a=X --rubric a=Y`. Two labels that collide are decidable from the typed
+#      strings alone — no path, no file, no `git` — yet the rule lived in
+#      `guarded_family` inside the `try` and reported 1 on an argv the world had
+#      supplied everything for. It now goes through `rubric_label_collision_problem` and
+#      `parser.error`; `guarded_family` keeps its own copy for in-process callers, whose
+#      labels come from a bare `Rubric`'s `name` and are world-dependent, so the two
+#      checks agree on the verdict and differ on what they are entitled to look at. It
+#      also stopped a measured waste: `--rubric a=git:R:P --rubric a=git:R:P` spent TWO
+#      `git show` subprocesses before noticing, and now spends none. Before and after in
+#      docs/eval-data/2026-08-13-k4b-c2-duplicate-rubric-label.md.
 #   3  measured, WITH violations. Every artifact is written — the JSONL, the summary,
 #      the printed table — and the status says the guard fired, never that the run
 #      failed. A violating cell (`nav-prod-port` is one) has to stay measurable.
@@ -223,7 +247,12 @@ GUARD_MODES = ("warn", "error")
 #      stdout failed for a reason that is NOT the reader going away. fd 1 on a
 #      read-only fd (EBADF), fd 1 closed before the process started (`1>&-`, where
 #      CPython leaves `sys.stdout` as None and `print` is a silent no-op), a full
-#      device (ENOSPC). RB-P31, and it is the SAME shape as 4 one step further out:
+#      device (ENOSPC), or a stdout whose CODEC cannot represent the table
+#      (`PYTHONIOENCODING=latin-1` or `=ascii`: the GUARD section always carries U+2014
+#      and U+00A7, so the write raises `UnicodeEncodeError` — K4B/C1, and until it was
+#      fixed that case escaped this arm and reported 1 on a run that measured, which is
+#      the RB-P24 defect the PR's own headline claimed to have closed).
+#      RB-P31, and it is the SAME shape as 4 one step further out:
 #      the measurement completed and every file that could be written is on disk,
 #      but the table a reader would have read is not anywhere. It OUTRANKS 4 for
 #      4's own reason — each number here outranks the one below it because the
@@ -281,8 +310,25 @@ GUARD_MODES = ("warn", "error")
 #     is a bug in this module and propagates with its traceback; only the WRITE is inside
 #     the arm. Pinned by `test_a_non_pipe_failure_around_the_table_print_is_not_downgraded`,
 #     which raises from `format_table` and requires both raisers to reach the caller.
-#   - the arm catches `OSError`, not `Exception`. A non-OSError raised BY THE WRITE still
-#     propagates; pinned by `test_a_non_oserror_at_the_table_write_is_not_downgraded`.
+#   - the arm catches `OSError` and `UnicodeEncodeError`, not `Exception`, and that pair
+#     is a LINE rather than a list: they are the two things about stdout THE CALLER
+#     OWNS — the descriptor, and the codec it was wrapped in. Neither is editable from
+#     inside this file and on both the measurement is complete. Anything else raised BY
+#     THE WRITE is a bug in this module and still propagates: pinned by
+#     `test_a_non_oserror_at_the_table_write_is_not_downgraded` (a `RuntimeError`) and by
+#     `test_a_non_unicode_valueerror_at_the_table_write_is_not_downgraded` (a bare
+#     `ValueError`, the sibling of the class that WAS added, so the widening is pinned
+#     exactly where it stops).
+#     K4B/C1 IS WHY THE SECOND CLASS IS THERE, and it is worth the sentence: the first
+#     version of this arm justified its narrowness on "a non-`OSError` at the write is a
+#     bug in THIS MODULE". That generalisation was argued against `RuntimeError` and
+#     never tested against the only realistic non-`OSError` a write can raise.
+#     `UnicodeEncodeError` at the write is a property of the caller's stdout in exactly
+#     the way `EBADF` is a property of the caller's fd, so it belongs on the same side of
+#     the line — and with the class missing, `PYTHONIOENCODING=latin-1` was enough to
+#     make a run that measured report REFUSAL_EXIT (field-measured at 3981efd: status 1,
+#     320 rows and a summary byte-identical to the same argv on a live stdout that
+#     earned 3, docs/eval-data/2026-08-13-k4b-c1-stdout-encoding-matrix.md).
 #   - the closed-fd 1 case is READ, not caught: `sys.stdout is None` is a state CPython
 #     puts the interpreter in before `main` runs, and there is no exception to catch —
 #     `print` to a None stdout is a silent no-op and the table is lost with no raise at
@@ -312,8 +358,21 @@ GUARD_MODES = ("warn", "error")
 # stated so the next reader does not have to re-derive it:
 #   - anything written to stdout OUTSIDE the run path's own table print. `--help` is the
 #     measured instance; argparse writes and exits before `main` gets there.
-#   - stderr. Every arm here reports on stderr, so a run whose stderr is also gone loses
-#     the explanation, and the finalization flush of fd 2 takes the status with it.
+#   - stderr, on BOTH of its axes. Every arm here reports on stderr, so a run whose
+#     stderr is gone loses the explanation and the finalization flush of fd 2 takes the
+#     status with it — and a stderr whose CODEC cannot encode what is written to it is
+#     the same hole one class over. This module's own status messages are ASCII for that
+#     reason (K4B/C1), which makes the 4 and 5 reports survive `PYTHONIOENCODING=ascii`;
+#     a `BantamError` whose message is not ASCII, on such a stderr, still leaves by
+#     traceback. It reports the number the refusal would have reported anyway, so it is a
+#     DELIVERY defect and not a status one, and it is filed rather than fixed:
+#     docs/eval-data/2026-08-13-k4b-c1-stdout-encoding-matrix.md.
+#   - fd 1 pointing at a DIRECTORY. CPython dies in `init_sys_streams` with
+#     `IsADirectoryError` before `main` exists, prints `Fatal Python error`, and the
+#     shell reads 1 (measured 2026-08-13, K4B/M3). Nothing in this module runs, so
+#     nothing here can choose that number; it is recorded so the next reader does not
+#     re-file it as a defect of this arm. Pinned by
+#     `test_fd_one_on_a_directory_never_reaches_this_module`.
 #   - ENOSPC on a real full device was NOT constructed in the field (macOS has no
 #     `/dev/full`); it is in the arm by class, and only simulated in-process. On Linux
 #     the cell is `... > /dev/full` and it is worth one line there.
@@ -844,6 +903,48 @@ def rubric_arg_shape_problem(arg: str) -> str | None:
     return None
 
 
+def rubric_label_collision_problem(specs: list[str]) -> str | None:
+    """What is malformed about a SET of `--rubric` values on its face, or `None`.
+
+    THE SAME RULE `guarded_family` ENFORCES, DECIDED ONE LAYER EARLIER AND FROM LESS
+    (K4's C2). Two `--rubric` values that share a LABEL collide on every machine: a
+    label is the text left of the first `=` in the string the user typed, so the
+    collision is a function of the argv and of nothing else — no path resolved, no file
+    opened, no `git` run. That makes it an argument-SHAPE rule under RB-P32's own
+    definition, and until K4B it was the one shape rule that did not behave like one:
+    it was refused by `guarded_family` INSIDE `main`'s `try` and reported
+    `REFUSAL_EXIT`, which falsified, verbatim, the `#   2` block's "all of the
+    argument-SHAPE ones and only those" and its "a `1` is an argv that names something
+    the world did not supply" — here the world supplied everything. Measured at 3981efd
+    from a real shell: status 1, 0 bytes on stdout
+    (docs/eval-data/2026-08-13-k4b-c2-duplicate-rubric-label.md).
+
+    WHY THE `guarded_family` CHECK STAYS WHERE IT IS, rather than moving here. It is not
+    this check on this input. An in-process caller may pass a bare `Rubric`, whose label
+    is its `name` and therefore comes from a file on disk — world-dependent, undecidable
+    from any argv, and a `PerturbationError` inside the run is the right answer for it.
+    This one is decidable from the typed strings, so the CLI answers it before it spends
+    anything, and the two checks agree on the verdict while disagreeing on what they are
+    allowed to look at.
+
+    IT ALSO STOPS THE MODULE PAYING TO LEARN IT. `--rubric a=git:R:P --rubric a=git:R:P`
+    spent TWO `git show` subprocesses in `parse_rubric_arg` before `guarded_family`
+    noticed the duplicate (measured, same artifact; zero after). That is exactly the
+    cost the `git:` shape check above exists to avoid, and it was being paid one flag
+    over.
+    """
+    labels = [spec.partition("=")[0] for spec in specs]
+    duplicates = sorted({label for label in labels if labels.count(label) > 1})
+    if not duplicates:
+        return None
+    return (
+        f"--rubric label {', '.join(repr(d) for d in duplicates)} given more than once; "
+        "every per-label table (templates, dropped, the rubric cache, the summary) is "
+        "keyed on the label, so two --rubric values sharing one would both be replayed "
+        "with whichever rubric was built last. Give each --rubric a distinct LABEL=."
+    )
+
+
 def parse_rubric_arg(arg: str) -> RubricVariant:
     """`LABEL=SPEC`, where SPEC is a path or `git:<ref>:<path>`.
 
@@ -927,7 +1028,25 @@ def load_cases(
     wanted = set(tasks) if tasks else None
     cells: dict[tuple[str, int], tuple[Case, str]] = {}
     for path in sorted(Path(transcripts_dir).glob("*.json")):
-        data = json.loads(path.read_text())
+        # K4B/M2, and it is RB-P32's `git:HEAD` shape one directory over: a `.json` in
+        # here that is not a transcript used to raise an uncaught `KeyError: 'task'` (or
+        # a `JSONDecodeError`) straight out of `main`, so the user got a raw traceback
+        # and the interpreter's 1 where the refusal path would have given them
+        # `error: ...` and the same 1. The NUMBER was never wrong - this directory is
+        # world, so a 1 is right - only the delivery was, and "reported by traceback" is
+        # not a way this module reports anything. Refusing rather than skipping is
+        # deliberate: a silently skipped file is a cell missing from the run.
+        try:
+            data = json.loads(path.read_text())
+        except ValueError as e:
+            raise PerturbationError(f"{path.name} is not readable as JSON: {e}") from e
+        if not isinstance(data, dict) or "task" not in data or "repeat" not in data:
+            raise PerturbationError(
+                f"{path.name} is in {transcripts_dir} but is not a transcript: a "
+                "transcript is a JSON object recording at least `task` and `repeat`. "
+                "Point --transcripts at a directory of P8 transcripts, or move this "
+                "file out of it."
+            )
         name = data["task"]
         if wanted is not None and name not in wanted:
             continue
@@ -1319,6 +1438,13 @@ def guarded_family(
     labels = [v.label for v in variants]
     duplicates = sorted({label for label in labels if labels.count(label) > 1})
     if duplicates:
+        # K4B/C2. This is the WORLD-DEPENDENT half of the rule and it stays here: a bare
+        # `Rubric` takes its label from its `name`, which came off a file on disk, so
+        # whether two of them collide cannot be decided from any command line. The half
+        # that CAN be — two `--rubric LABEL=SPEC` strings sharing the text left of the
+        # first `=` — is `rubric_label_collision_problem`, checked above `main`'s `try`
+        # and reported as `USAGE_EXIT`, so the CLI never reaches this raise and never
+        # spends a `git show` to arrive at it. Same verdict, two entitlements.
         raise PerturbationError(
             f"two variants share the label {', '.join(repr(d) for d in duplicates)} — every "
             "per-label table here (templates, dropped, the rubric cache, the summary) is "
@@ -1951,26 +2077,45 @@ _EXIT_CONTRACT = f"""exit status (RB-P24):
      one number: argparse's own parsing (unknown flag, missing required,
      type=/choices=), and every argument-SHAPE validation this module makes -
      --replays 0, --identity-replays 0, --rubric with no LABEL=, --rubric
-     a=git:HEAD - each of them reported through parser.error before any file is
-     opened. Malformed ON ITS FACE means it can never work on any machine:
-     nothing ran, nothing was written, and re-running the same argv is
-     guaranteed to fail again, so a human edits the command.
+     a=git:HEAD, two --rubric values sharing one LABEL - each of them reported
+     through parser.error before any file is opened. Malformed ON ITS FACE means
+     it can never work on any machine: nothing ran, nothing was written, and
+     re-running the same argv is guaranteed to fail again, so a human edits the
+     command.
+     shape rules (exact set): --identity-replays --replays --rubric
+     That roster is checked against the CODE - every parser.error reachable
+     above main's try and the flags its messages name - and every flag on it is
+     field-measured to {USAGE_EXIT} from a real shell, so it cannot drift from what this
+     tool does. A rule that needs the WORLD is not on it and is a {REFUSAL_EXIT}:
+     --rubric a=<a path that is not there> is the one to keep in mind, because
+     the flag is on the roster and that case still is not.
      CHANGED IN RB-P32, and a CI job that branches on these sees it: the four
      malformed --rubric shapes used to report {REFUSAL_EXIT}, the status that also means
-     "a measurement died halfway and its artifacts are partial". Measured before
-     and after in docs/eval-data/2026-08-13-rbp32-argument-validation-*.md.
+     "a measurement died halfway and its artifacts are partial". A fifth case
+     followed it in K4B - two --rubric values sharing a LABEL, which collide on
+     every machine and were nonetheless refused from inside the run. Measured
+     before and after in docs/eval-data/2026-08-13-rbp32-argument-validation-*.md
+     and docs/eval-data/2026-08-13-k4b-c2-duplicate-rubric-label.md.
   {GUARD_VIOLATION_EXIT}  measured, WITH guard-2 violations - every artifact is still written,
      and the GUARD section names each violating (point, cell)
   {ARTIFACT_WRITE_EXIT}  measured, but an artifact could not be written (the --summary file).
-     The table is still printed. Outranks {GUARD_VIOLATION_EXIT}; --violations-exit-zero
-     does not suppress it.
+     The table is still printed - unless the READER of stdout had already gone,
+     in which case it went nowhere and nobody was owed it (a stdout that FAILED
+     is {RENDER_FAILURE_EXIT}, below, never this). Outranks {GUARD_VIOLATION_EXIT};
+     --violations-exit-zero does not suppress it.
   {RENDER_FAILURE_EXIT}  measured, but THE REPORT COULD NOT BE RENDERED: the write of
      the table to stdout failed for a reason that is NOT the reader going away -
      fd 1 read-only (EBADF), fd 1 closed before the process started, a full
-     device. The measurement is COMPLETE and every file that could be written is
-     on disk; read those, not this run's log, because the table is not in it. The
-     reason is on stderr. Outranks {ARTIFACT_WRITE_EXIT}; --violations-exit-zero
-     does not suppress it.
+     device, or a stdout whose CODEC cannot represent the table
+     (PYTHONIOENCODING=latin-1 or =ascii, where the GUARD section's U+2014 raises
+     UnicodeEncodeError). The measurement is COMPLETE and every file that could
+     be written is on disk, BYTE-IDENTICAL to what the same argv leaves with a
+     live stdout; read those, not this run's log, because the table is not in it.
+     The reason is on stderr and is ASCII, so it arrives as written on a
+     stderr wrapped in the codec that just failed - stderr's own error handler
+     is backslashreplace, so the status would survive a non-ASCII byte there
+     but the sentence would not. Outranks
+     {ARTIFACT_WRITE_EXIT}; --violations-exit-zero does not suppress it.
 Branch on 0-{RENDER_FAILURE_EXIT}. A stdout that fails at the table print
 no longer leaves the range, and the two arms report DIFFERENT numbers on
 purpose: if the reader is gone (EPIPE) nothing was owed to anyone, so the run
@@ -1985,7 +2130,9 @@ the run path (--help, which argparse writes and exits before main is reached).
 Read those as "this process did not choose its own status", NOT as "the
 measurement did not happen": the artifacts may still be on disk. ENOSPC on a
 real full device has NOT been measured in the field on this platform; it is
-handled by class, not by evidence.
+handled by class, not by evidence. fd 1 pointing at a DIRECTORY is outside the
+range in the other direction: CPython dies in init_sys_streams before main
+exists and the shell reads 1, so nothing here chose that number either.
 NOTE for in-process callers (main is exported): once either arm has fired,
 this process's sys.stdout is replaced by a sink that RAISES the original
 failure on any further write, and fd 1 itself is left exactly as it was found.
@@ -2136,6 +2283,9 @@ def main(argv: list[str] | None = None) -> None:
         problem = rubric_arg_shape_problem(spec)
         if problem is not None:
             parser.error(problem)
+    collision = rubric_label_collision_problem(args.rubric)
+    if collision is not None:
+        parser.error(collision)
 
     jsonl = None
     try:
@@ -2194,9 +2344,12 @@ def main(argv: list[str] | None = None) -> None:
             write_failure = e
             print(
                 f"error: measured, but the summary could not be written to "
-                f"{args.summary}: {e}. The measurement itself is the table, printed "
-                "after this line unless a render failure is reported too; the JSONL "
-                "rows, if --json was passed, are on disk.",
+                f"{args.summary}: {e}. The measurement itself went to stdout IF STDOUT "
+                "TOOK IT, which this line cannot promise: a stdout that failed is "
+                f"reported on its own line below and the status becomes "
+                f"{RENDER_FAILURE_EXIT}, and a stdout whose reader was already gone is "
+                "not reported at all - the table went nowhere and nobody was waiting "
+                "for it. The JSONL rows, if --json was passed, are on disk either way.",
                 file=sys.stderr,
             )
 
@@ -2233,24 +2386,65 @@ def main(argv: list[str] | None = None) -> None:
             # without it the EPIPE would surface at interpreter shutdown instead of here,
             # where it can be handled.
             sys.stdout = _LostStdout(e)
-        except OSError as e:
-            # RB-P31. The write failed and the reader was NOT gone: fd 1 is read-only
-            # (EBADF), or the device is full (ENOSPC), or the fd is otherwise unusable.
-            # stderr is live in every measured cell of this class, so this is a report
-            # that could not be RENDERED, not a reader that walked away — the difference
-            # the two arms exist to keep apart. The run measured, so it does not report
-            # REFUSAL_EXIT; the report is gone, so it does not report the earned status
-            # either. It reports RENDER_FAILURE_EXIT, and says why on stderr.
+        except (OSError, UnicodeEncodeError) as e:
+            # RB-P31, and the line K4B had to draw again because the first one was one
+            # class too narrow. The write failed and the reader was NOT gone: fd 1 is
+            # read-only (EBADF), or the device is full (ENOSPC), or the fd is otherwise
+            # unusable — or stdout's CODEC cannot represent the table
+            # (`PYTHONIOENCODING=latin-1` or `=ascii`, where the GUARD section's U+2014
+            # and U+00A7 raise `UnicodeEncodeError`). stderr is live in every measured
+            # cell of this class, so this is a report that could not be RENDERED, not a
+            # reader that walked away — the difference the two arms exist to keep apart.
+            # The run measured, so it does not report REFUSAL_EXIT; the report is gone,
+            # so it does not report the earned status either. It reports
+            # RENDER_FAILURE_EXIT, and says why on stderr.
             #
-            # `except OSError`, not `except Exception`: a non-OSError raised by the write
-            # itself is a bug and still propagates, pinned by
-            # `test_a_non_oserror_at_the_table_write_is_not_downgraded`.
+            # WHERE THE LINE IS NOW, AND WHY IT IS NOT `except Exception`. The two
+            # classes here are the two things about stdout that THE CALLER OWNS and this
+            # module cannot fix: the descriptor (`OSError`) and the codec that
+            # descriptor was wrapped in (`UnicodeEncodeError`). The shell chose fd 1; the
+            # environment and the locale chose the encoding; neither is editable from
+            # inside this file, and on both the measurement is complete and only the
+            # delivery is lost. Everything else a write can raise is still a bug in this
+            # module and still propagates with its traceback — a `RuntimeError`, a
+            # `TypeError`, an `AttributeError`, and any `ValueError` that is not a
+            # `UnicodeEncodeError` (`I/O operation on closed file` is the realistic one,
+            # and it is reachable only from an in-process caller who closed
+            # `sys.stdout`: a shell cannot hand a fresh process a stdout that is closed
+            # at the Python-object level — `1>&-` gives `sys.stdout is None`, which is
+            # the branch above). Pinned on that side by
+            # `test_a_non_oserror_at_the_table_write_is_not_downgraded`, which raises a
+            # `RuntimeError` from the write, and by
+            # `test_a_non_unicode_valueerror_at_the_table_write_is_not_downgraded`,
+            # which raises a bare `ValueError` — the sibling class of the one now
+            # caught, so the widening is pinned exactly where it stops.
+            #
+            # WHAT THIS DOES NOT REACH: an encoding failure on STDERR. Every arm here
+            # reports on stderr, so the messages this module writes there are ASCII on
+            # purpose (below); a `BantamError` whose own message is not, on a stderr
+            # that cannot encode it, still leaves by traceback with the same number the
+            # refusal would have had. Measured in
+            # docs/eval-data/2026-08-13-k4b-c1-stdout-encoding-matrix.md.
             render_failure = str(e)
             sys.stdout = _LostStdout(e)
     if render_failure is not None:
+        # ASCII ONLY, and the reason is NOT the one it looks like (K4B, and this is a
+        # claim K4B made, measured, and had to correct). One of the failures this line
+        # reports is stdout's CODEC refusing the table, and stderr is wrapped in the SAME
+        # codec — so the obvious story is that an em dash here would fail to encode and
+        # turn a reported 5 back into an unreported traceback. IT WOULD NOT: CPython
+        # gives `sys.stderr` the `backslashreplace` error handler and keeps it there even
+        # under `PYTHONIOENCODING=ascii:strict` (measured 2026-08-13, both codecs), so a
+        # non-ASCII character here is ESCAPED, never raised. The status survives.
+        # What does not survive is the SENTENCE: it arrives as `COMPLETE — the`,
+        # i.e. mangled in the one report whose whole job is to tell a reader where the
+        # measurement went. So this is a legibility rule, not a survival one, and it is
+        # pinned that way — the encoding nodes compare the delivered text against this
+        # literal rather than merely checking that the bytes are ASCII, because
+        # `backslashreplace` output IS ASCII and would pass that check.
         print(
             f"error: measured, but the report could not be rendered on stdout: "
-            f"{render_failure}. The measurement is COMPLETE — the JSONL rows, if --json "
+            f"{render_failure}. The measurement is COMPLETE: the JSONL rows, if --json "
             "was passed, and the summary file, if --summary was passed and could be "
             "written, are on disk and are the same bytes a run with a live stdout would "
             f"have left. The table is not in this run's log. Exit status "

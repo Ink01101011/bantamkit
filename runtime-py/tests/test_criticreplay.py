@@ -6,6 +6,7 @@ model is a separate, deliberately fresh-eyed pass (spec §10).
 
 from __future__ import annotations
 
+import ast
 import errno
 import json
 import os
@@ -2897,6 +2898,28 @@ def test_help_prints_the_exit_status_contract(tmp_path):
     # cannot discover it by reading anything else.
     assert "sys.stdout is replaced by a sink that RAISES" in out
     assert "fd 1 itself is left exactly as it was found" in out
+    # K4B/C1. The class the arm was missing is named in the contract, because a caller
+    # who reads "fd 1 read-only (EBADF)" and infers "so the fd is the axis" is exactly
+    # the reader who set PYTHONIOENCODING and got a traceback.
+    assert "PYTHONIOENCODING" in out and "UnicodeEncodeError" in out
+    # Why the report is ASCII, stated as what it actually buys: stderr is
+    # `backslashreplace`, so the STATUS would survive a non-ASCII byte and the SENTENCE
+    # would not. A contract that claimed the stronger thing would be claiming something
+    # K4B measured and disproved.
+    assert "stderr's own error handler" in out and "backslashreplace" in out
+    # K4B/M4. Four prose blocks were deletable with a green suite and this is the one a
+    # reader ACTS on: what the artifacts of a 5 are worth. The property is measured in
+    # `test_a_stdout_that_cannot_encode_the_table_...`; the sentence is pinned here.
+    assert "BYTE-IDENTICAL to what the same argv leaves with a" in out
+    # K4B/M1. 4's promise was "The table is still printed", full stop, which is false in
+    # the cell where the reader of stdout had already gone — and 5's whole case for
+    # outranking 4 is built on that promise, so it has to be stated accurately.
+    assert "unless the READER of stdout had already gone" in out
+    # K4B/I7. The roster is contract text, and a roster the user cannot read is not one.
+    assert _SHAPE_ROSTER in out
+    # K4B/M3. Not this module's to fix, and therefore exactly the kind of thing that gets
+    # re-filed as a defect of the arm above unless the contract says where it happens.
+    assert "init_sys_streams before main" in out
 
 
 def test_this_modules_own_validation_errors_are_argparses_number(tmp_path):
@@ -3184,6 +3207,33 @@ def test_a_non_oserror_at_the_table_write_is_not_downgraded(rig, monkeypatch):
         criticreplay.main(_cli(rig)[2:])
 
 
+def test_a_non_unicode_valueerror_at_the_table_write_is_not_downgraded(rig, monkeypatch):
+    """K4B/C1's control: the widening is pinned exactly where it STOPS.
+
+    The arm caught `OSError` and nothing else, and the node above justified that on "a
+    non-`OSError` at the write is a bug in this module". K4 disproved the generalisation
+    with the one realistic counter-example — `UnicodeEncodeError`, which is a
+    `ValueError` and is a property of the CALLER'S STDOUT exactly as `EBADF` is a
+    property of the caller's fd — so the arm is now `except (OSError,
+    UnicodeEncodeError)`.
+
+    A widening argued from a counter-example needs a node at the new edge, or the next
+    reader has only the sibling above (a `RuntimeError`, which `except ValueError` would
+    still let through). This raises a BARE `ValueError` from the write: the direct
+    superclass of the class that WAS added, and the cheapest mutation that turns the new
+    line into "any ValueError is the caller's fault". Change the arm to `except (OSError,
+    ValueError)` — or to `except Exception` — and this goes red while every field cell
+    stays green, which is the point: no field measurement can reach this, because a
+    shell cannot make a real stdout raise a bare `ValueError`.
+    """
+    monkeypatch.setattr(criticreplay, "OpenAICompatible", lambda **kw: ScriptedCritic(lambda p: 9))
+    boom = ValueError("I/O operation on closed file")
+    monkeypatch.setattr(sys, "stdout", _RaisingStdout(boom))
+    with pytest.raises(ValueError) as exc:
+        criticreplay.main(_cli(rig)[2:])
+    assert exc.value is boom  # it propagated, it was not converted into a status
+
+
 def test_an_enospc_failure_at_the_table_write_reports_the_render_failure_status(
     rig, monkeypatch, capsys
 ):
@@ -3228,6 +3278,33 @@ def test_a_lost_stdout_raises_on_the_next_write_instead_of_swallowing_it(rig, mo
     assert isinstance(sys.stdout, criticreplay._LostStdout)
     sys.stdout.flush()  # the finalization flush's own call: it must NOT raise
     with pytest.raises(OSError) as exc:
+        sys.stdout.write("a caller that keeps writing must be told, not lied to")
+    assert exc.value is boom
+
+
+def test_a_lost_pipe_also_raises_on_the_next_write_instead_of_swallowing_it(rig, monkeypatch):
+    """K4B/I6: RB-P33's no-silent-sink property for the OTHER arm, which had no node.
+
+    `_LostStdout` is ONE recovery for two arms, and only the `OSError` arm's use of it
+    was pinned — so replacing the `BrokenPipeError` arm's `sys.stdout = _LostStdout(e)`
+    with a swallowing sink (a `write` that returns the length and lies) scored 748/748
+    (K4, demonstrated). That is the exact defect RB-P33 was filed for, re-introducible in
+    the arm nobody was watching, and it is worse here than in its sibling: this arm
+    DOWNGRADES to the earned status, so a caller who kept writing would get a clean
+    number AND silence.
+
+    Same two assertions as its sibling, and the second is the one RB-P33 asked for. The
+    earned status is 0 on this rig, so `main` returns rather than raising `SystemExit` —
+    which is itself the EPIPE arm's contract (a lost reader may downgrade, never invent).
+    """
+    monkeypatch.setattr(criticreplay, "OpenAICompatible", lambda **kw: ScriptedCritic(lambda p: 9))
+    boom = BrokenPipeError(errno.EPIPE, "Broken pipe")
+    monkeypatch.setattr(sys, "stdout", _RaisingStdout(boom))
+    criticreplay.main(_cli(rig)[2:])  # earned 0, and a gone reader may not change that
+
+    assert isinstance(sys.stdout, criticreplay._LostStdout)
+    sys.stdout.flush()  # the finalization flush's own call: it must NOT raise
+    with pytest.raises(BrokenPipeError) as exc:
         sys.stdout.write("a caller that keeps writing must be told, not lied to")
     assert exc.value is boom
 
@@ -3613,6 +3690,330 @@ def test_a_closed_stdout_does_not_turn_a_measured_run_into_a_refusal(asset_tree,
     assert "could not be rendered" in err
 
 
+# ---- K4B/C1: the render arm was one class too narrow, and one env var reached past it ----
+#
+# The table's GUARD section always carries U+2014 and U+00A7, so a stdout wrapped in a
+# codec that cannot represent them makes `print(table)` raise `UnicodeEncodeError` — a
+# `ValueError`, NOT an `OSError`. At 3981efd that escaped the arm, printed a traceback and
+# the shell read REFUSAL_EXIT on a run whose rows and summary were byte-identical to the
+# same argv on a live stdout that earned 3. That is the RB-P24 defect class, and it was
+# the PR's own headline ("a run that measured stops reporting a refusal") being false as
+# shipped. Field-measured before and after in
+# docs/eval-data/2026-08-13-k4b-c1-stdout-encoding-matrix.md; these nodes are the
+# regression guard, never the evidence (RB-P28 is open).
+#
+# `PYTHONIOENCODING` is the instrument because it is the caller's, not this module's: it
+# changes nothing inside the process except the codec CPython wraps fd 1 in, which is
+# exactly the claim the fix rests on — the codec is a property of the stdout the caller
+# handed us, in the way EBADF is a property of the fd they handed us.
+
+_C1_PREFIX_STATUS = criticreplay.REFUSAL_EXIT
+"""What a real shell read at 3981efd, measured 2026-08-13, for every cell below.
+
+Both codecs, both table sizes, and every rung of the ladder (`--violations-exit-zero`,
+an unwritable `--summary`): status 1, 0 bytes on stdout, a `UnicodeEncodeError`
+traceback on stderr, and artifacts byte-identical to the live-stdout run that earned 3.
+The number is REFUSAL_EXIT and the run had measured, which is the whole finding.
+"""
+
+
+def _encoding_stdout_status(
+    argv: list[str], tmp_path: Path, label: str, encoding: str
+) -> tuple[int, bytes, bytes]:
+    """Run `argv` with stdout wrapped in `encoding`. Return `$?`, stdout bytes, stderr bytes.
+
+    Nothing is patched and no exception is injected: `PYTHONIOENCODING` is read by
+    CPython while it builds `sys.stdout`, so the failure happens in the real
+    `TextIOWrapper` on a real fd, at the same `write` call the field's EBADF cells fail.
+    fd 1 here is a perfectly good file — that is the point of the cell. The status is
+    `/bin/sh`'s own `$?`, echoed to a file on the side (RB-P24's rule).
+
+    Both streams come back as BYTES, because whether stderr's own bytes survive the same
+    codec is one of the things under test.
+    """
+    where = tmp_path / f"_enc-{label}"
+    where.mkdir(parents=True, exist_ok=True)
+    out, err, status_file = where / "stdout.txt", where / "stderr.txt", where / "status.txt"
+    proc = subprocess.run(
+        [
+            "/bin/sh", "-c",
+            '"$@" >"$BK_OUT" 2>"$BK_ERR"; echo "status=$?" >"$BK_STATUS"', "sh", *argv,
+        ],
+        env=_child_env(
+            BK_OUT=str(out), BK_ERR=str(err), BK_STATUS=str(status_file),
+            PYTHONIOENCODING=encoding,
+        ),
+    )
+    assert proc.returncode == 0  # the shell itself ran to the end of its command list
+    text = status_file.read_text()
+    assert text.startswith("status="), text
+    return int(text.split("=", 1)[1]), out.read_bytes(), err.read_bytes()
+
+
+@pytest.mark.parametrize("encoding", ["latin-1", "ascii"])
+@pytest.mark.parametrize(
+    "cells", [_RBP31_SMALL_CELLS, _RBP31_LARGE_CELLS], ids=["small-table", "large-table"]
+)
+def test_a_stdout_that_cannot_encode_the_table_reports_the_render_failure_status(
+    asset_tree, tmp_path, encoding, cells
+):
+    """K4B/C1, pinned at both codecs and both table sizes. A real shell read 1 at 3981efd.
+
+    Everything before the status assertion is the RB-P31 shape and it is load-bearing:
+    the run has to have MEASURED, and "it measured" is a claim about BYTES against an
+    independent live-stdout run, not about an exit code. The status assertion is then
+    the finding — a report that could not be rendered is 5, and it is not the refusal
+    status.
+
+    THE SIZE AXIS IS CARRIED OVER RATHER THAN ASSUMED AWAY. RB-P31's defect had two
+    numbers on either side of fd 1's `BufferedWriter`, so a fix fitted to one cell fixed
+    one cell. This class has one number at both sizes for a mechanical reason worth
+    writing down — the encode fails BEFORE any byte reaches the buffer, so there is
+    nothing left for the finalization flush to re-fail on and no 120 half — but "we
+    reasoned it away" is what RB-P31 was filed for, so both sizes are measured.
+
+    THE STDERR ASSERTION IS ABOUT LEGIBILITY, AND K4B GOT THAT WRONG FIRST TIME. The
+    report explaining a codec failure is written to a stream wrapped in the codec that
+    just failed, so the obvious claim is that an em dash in it would turn a reported 5
+    into an unreported traceback. Measured: it would not. CPython gives `sys.stderr` the
+    `backslashreplace` handler and keeps it there even under
+    `PYTHONIOENCODING=ascii:strict`, so a non-ASCII character is escaped rather than
+    raised — and `backslashreplace` output is itself ASCII, which is why asserting
+    "the bytes are ASCII" pinned NOTHING (the mutation that put an em dash back survived
+    it). What it costs is the sentence, delivered as `COMPLETE \\u2014 the` in the one
+    report whose job is to say where the measurement went. So the delivered text is
+    compared against the literal, and that is the assertion that bites.
+    """
+    rig = _wide_guard_rig(asset_tree, tmp_path, cells)
+    live_rows, live_summary = tmp_path / "live-e.jsonl", tmp_path / "live-e.json"
+    live_status, out, _ = _shell_status(
+        _cli(rig, "--json", str(live_rows), "--summary", str(live_summary)),
+        tmp_path,
+        f"c1-live-{cells}",
+    )
+    assert live_status == criticreplay.GUARD_VIOLATION_EXIT  # what the run EARNS
+    assert "GUARD VIOLATIONS" in out
+
+    dark_rows, dark_summary = tmp_path / "dark-e.jsonl", tmp_path / "dark-e.json"
+    status, stdout_bytes, stderr_bytes = _encoding_stdout_status(
+        _cli(rig, "--json", str(dark_rows), "--summary", str(dark_summary)),
+        tmp_path,
+        f"{encoding}-{cells}",
+        encoding,
+    )
+    assert dark_rows.read_bytes() == live_rows.read_bytes()  # it MEASURED
+    assert dark_summary.read_bytes() == live_summary.read_bytes()
+    assert stdout_bytes == b""  # and the table is nowhere, which is what 5 says
+    assert status == criticreplay.RENDER_FAILURE_EXIT, stderr_bytes
+    assert status != _C1_PREFIX_STATUS  # what 3981efd read here
+    assert status != criticreplay.REFUSAL_EXIT  # the RB-P24 rule, in its own words
+
+    stderr_bytes.decode("ascii")  # nothing here needed a codec the caller did not have
+    err = stderr_bytes.decode()
+    assert b"Traceback" not in stderr_bytes, err  # reported, not raised
+    assert "could not be rendered" in err
+    assert "codec can't encode" in err  # and it names the real reason
+    # The delivered sentence against the literal, which is what `backslashreplace` would
+    # break and what an ASCII-bytes check would not: `COMPLETE:` becomes `COMPLETE —`
+    # the moment one em dash goes back into this message.
+    assert "The measurement is COMPLETE: the JSONL rows" in err
+    assert "\\u" not in err.split("The measurement is COMPLETE")[1], err
+    # K4B/M4. The `5` line's byte-identity promise is prose that no node held, and it is
+    # the sentence a reader acts on. Asserted HERE, beside the two byte comparisons that
+    # make it true, so the claim and its evidence go red together.
+    assert "same bytes a run with a live stdout would have left" in err
+
+
+@pytest.mark.parametrize("encoding", ["latin-1", "ascii"])
+def test_the_hatch_does_not_suppress_a_render_failure_from_a_codec(
+    asset_tree, tmp_path, encoding
+):
+    """K4B/I3, the codec half: `--violations-exit-zero` is an opt-out from 3 ALONE.
+
+    The epilog has said that about 5 since RB-P31 and nothing measured it: K4 moved the
+    hatch below the render-failure assignment and the suite scored 748/748 while the
+    field measured 0 on a run whose report went nowhere — a clean-looking status for a
+    run nobody could read. The hatch's own defence is that it is narrower than `|| true`;
+    an opt-out that also swallowed a lost report would not be.
+    """
+    rig = _wide_guard_rig(asset_tree, tmp_path, _RBP31_SMALL_CELLS)
+    status, stdout_bytes, stderr_bytes = _encoding_stdout_status(
+        _cli(rig, "--violations-exit-zero"), tmp_path, f"hatch-{encoding}", encoding
+    )
+    err = stderr_bytes.decode()
+    assert status == criticreplay.RENDER_FAILURE_EXIT, err
+    assert status != 0  # the number the hatch WOULD have produced
+    assert "--violations-exit-zero" in err  # it did suppress the guard status
+    assert "could not be rendered" in err  # and it did not suppress this one
+    assert stdout_bytes == b""
+
+
+def test_the_hatch_does_not_suppress_a_render_failure_from_a_dead_fd(asset_tree, tmp_path):
+    """K4B/I3, the EBADF half, so the claim is pinned on the class the field can make.
+
+    Same property as its sibling above through a completely different failure — a
+    read-only fd rather than a codec — because the hatch is checked against `status`
+    before either arm's assignment, and a mutation that reordered them would be caught by
+    whichever of these ran. Neither is redundant: the codec cell is the one a caller can
+    produce with an environment variable, the fd cell is the one RB-P31 was filed on.
+    """
+    rig = _wide_guard_rig(asset_tree, tmp_path, _RBP31_SMALL_CELLS)
+    status, err, _ = _readonly_stdout_status(
+        _cli(rig, "--violations-exit-zero"), tmp_path, "hatch-ebadf"
+    )
+    assert status == criticreplay.RENDER_FAILURE_EXIT, err
+    assert status != 0
+    assert "--violations-exit-zero" in err
+    assert "could not be rendered" in err
+
+
+def test_the_render_failure_status_outranks_the_unwritable_summary_status(
+    asset_tree, tmp_path
+):
+    """K4B/I2: 5 outranks 4, measured. Inverting the ladder scored 748/748 (K4).
+
+    The two rungs had never been made to fire on the SAME run, so the order between them
+    was a sentence in the epilog and nothing else: swap the last two `if` blocks in
+    `main` and the field reports 4 on a run whose report is gone, while the suite stays
+    green. This is the cell that decides it — an unwritable `--summary` AND a stdout that
+    cannot be written — and the answer is 5 for 4's own reason: 4's promise is "the table
+    is still printed", and here it is not.
+
+    Both reasons are still on stderr. Outranking is about the STATUS, never about
+    suppressing the other failure's explanation.
+    """
+    rig = _wide_guard_rig(asset_tree, tmp_path, _RBP31_SMALL_CELLS)
+    rows_path = tmp_path / "both-rungs.jsonl"
+    status, err, _ = _readonly_stdout_status(
+        _cli(rig, "--json", str(rows_path), "--summary", str(_unwritable(tmp_path))),
+        tmp_path,
+        "outranks-four",
+    )
+    assert status == criticreplay.RENDER_FAILURE_EXIT, err
+    assert status != criticreplay.ARTIFACT_WRITE_EXIT  # the rung below, which fired too
+    assert "could not be written" in err  # 4's reason
+    assert "could not be rendered" in err  # 5's reason
+    assert len(rows_path.read_text().splitlines()) > 0  # and it MEASURED
+
+
+@pytest.mark.parametrize("encoding", ["latin-1", "ascii"])
+def test_the_render_failure_status_outranks_the_unwritable_summary_from_a_codec(
+    asset_tree, tmp_path, encoding
+):
+    """K4B/I2 again through the codec, which is also where the ASCII rule earns its keep.
+
+    Two stderr reports on a stream wrapped in the failing codec, one of them naming an
+    unencodable path is not attempted here — what is attempted is that BOTH messages get
+    out and the status is the higher rung. If either message had a non-ASCII character in
+    it, this cell would report by traceback and the 5 would be lost.
+    """
+    rig = _wide_guard_rig(asset_tree, tmp_path, _RBP31_SMALL_CELLS)
+    status, _, stderr_bytes = _encoding_stdout_status(
+        _cli(rig, "--summary", str(_unwritable(tmp_path))),
+        tmp_path,
+        f"outranks-{encoding}",
+        encoding,
+    )
+    stderr_bytes.decode("ascii")
+    err = stderr_bytes.decode()
+    assert status == criticreplay.RENDER_FAILURE_EXIT, err
+    assert status != criticreplay.ARTIFACT_WRITE_EXIT
+    assert "could not be written" in err and "could not be rendered" in err
+
+
+def test_an_unwritable_summary_does_not_promise_a_table_that_went_nowhere(
+    guard_rig, tmp_path
+):
+    """K4B/M1: the summary-failure sentence was FALSE in the EPIPE cell, and is now not.
+
+    It used to read "The measurement itself is the table, printed after this line unless
+    a render failure is reported too". In this cell the reader of stdout is gone, so the
+    table is printed NOWHERE, no render failure is reported (a gone reader downgrades,
+    it does not raise a report), the status is 4 — and the sentence tells a reader to go
+    and read a table that does not exist anywhere.
+
+    The correction is measured here rather than proof-read: this is the exact cell, and
+    what it asserts is that the stderr text does not make the promise. `--json` is on so
+    the sentence's one surviving promise — the rows are on disk — is checked too.
+    """
+    rows_path = tmp_path / "epipe-rows.jsonl"
+    status, err = _closed_pipe_status(
+        _cli(guard_rig, "--json", str(rows_path), "--summary", str(_unwritable(tmp_path))),
+        tmp_path,
+        "m1-epipe-unwritable",
+    )
+    assert status == criticreplay.ARTIFACT_WRITE_EXIT, err
+    assert "could not be written" in err
+    assert "could not be rendered" not in err  # a gone reader raises no render failure
+    assert "printed after this line" not in err  # the false promise, gone
+    assert "IF STDOUT TOOK IT" in err  # and what replaced it says what it cannot promise
+    assert len(rows_path.read_text().splitlines()) > 0
+
+
+def test_a_non_transcript_json_is_refused_rather_than_delivered_as_a_traceback(
+    rig, tmp_path
+):
+    """K4B/M2: right number, wrong delivery — the shape RB-P32 fixed for `git:HEAD`.
+
+    A `.json` in `--transcripts` that is not a transcript used to raise an uncaught
+    `KeyError: 'task'` out of `load_cases`, so the user got a raw traceback and the
+    interpreter's 1 where every other world-dependent refusal gets `error: ...` and the
+    same 1. `--transcripts` is world, so 1 was never the wrong number; "reported by
+    traceback" was the defect, and it is the one RB-P32 named when it moved `git:HEAD`.
+
+    Refusing rather than skipping is the choice being pinned: a silently skipped file is
+    a cell missing from a run whose numbers are then quietly about fewer cells.
+    """
+    transcripts = tmp_path / "mixed"
+    transcripts.mkdir()
+    for path in Path(rig["transcripts"]).glob("*.json"):
+        shutil.copy(path, transcripts / path.name)
+    (transcripts / "notes.json").write_text('{"note": "not a transcript"}\n')
+    argv = _cli(rig, entry=[sys.executable, "-m", "bantamkit.criticreplay"])
+    argv[argv.index(str(rig["transcripts"]))] = str(transcripts)
+    status, out, err = _shell_status(argv, tmp_path, "m2-nontranscript")
+    assert status == criticreplay.REFUSAL_EXIT, err
+    assert "Traceback" not in err, err
+    assert "is not a transcript" in err and "notes.json" in err
+    assert out == ""
+
+
+def test_fd_one_on_a_directory_never_reaches_this_module(tmp_path):
+    """K4B/M3, and it is NOT this module's defect — written down so it is not re-filed.
+
+    With fd 1 pointing at a directory, CPython cannot build `sys.stdout` at all: it dies
+    in `init_sys_streams` with `IsADirectoryError`, prints `Fatal Python error`, and the
+    shell reads 1. `main` does not exist yet, no arm here is on that path, and no change
+    to the render arm can reach it — the same shape as `--help` with no reader, one layer
+    lower.
+
+    It is pinned rather than merely mentioned so the claim cannot go stale: if a future
+    CPython (or a future entry point) lets the interpreter start with fd 1 on a
+    directory, this goes red and the contract sentence that names it has to be corrected
+    with it.
+    """
+    where = tmp_path / "_fd1-dir"
+    where.mkdir()
+    err, status_file = where / "stderr.txt", where / "status.txt"
+    dir_fd = os.open(where, os.O_RDONLY)
+    try:
+        proc = subprocess.run(
+            ["/bin/sh", "-c", '"$@" 2>"$BK_ERR"; echo "status=$?" >"$BK_STATUS"', "sh",
+             sys.executable, "-m", "bantamkit.criticreplay", "--help"],
+            stdout=dir_fd,
+            env=_child_env(BK_ERR=str(err), BK_STATUS=str(status_file)),
+        )
+    finally:
+        os.close(dir_fd)
+    assert proc.returncode == 0
+    text = status_file.read_text()
+    assert text.startswith("status="), text
+    complaint = err.read_text()
+    assert "init_sys_streams" in complaint, complaint  # it died BEFORE main existed
+    assert int(text.split("=", 1)[1]) == 1
+    assert "could not be rendered" not in complaint  # nothing here chose that number
+
+
 # ---- RB-P32: what a command-line syntax error reports, and what the docs say it reports ----
 #
 # Filed at docs/eval.md, RB-P32. Two committed sentences describe what `2` covers and
@@ -3655,6 +4056,12 @@ _RBP32_PREFIX_STATUSES = {
     "--rubric =SPEC (empty label)": 1,
     "--rubric LABEL= (empty spec)": 1,
     "--rubric a=git:HEAD (too few segments)": 1,
+    # AMENDED 2026-08-13 (K4B/C2). Measured at 3981efd, not at 5538624 — the case is
+    # K4's and it reads the same 1 on both trees, because the rule it trips
+    # (`guarded_family`'s duplicate-label check) did not move in RB-P32. It is added
+    # with its own provenance rather than folded into the sentence above, because a
+    # record whose dates drift is a record nobody can re-run.
+    "--rubric a=X --rubric a=Y (labels collide)": 1,
 }
 """What a real shell read at 5538624, measured 2026-08-13. Seven pure command-line typos.
 
@@ -3663,9 +4070,36 @@ request is made, and nothing is written. Three report 2 and four report 1, and t
 between them is exactly which function the author reached for — `parser.error` above
 `main`'s `try`, `raise PerturbationError` inside it.
 
-The last one does not even reach `main`'s handler: `spec.split(":", 2)` unpacks into
-three names, so `git:HEAD` raises an uncaught `ValueError` and the 1 is the
-interpreter's, printed as a traceback rather than as `error: ...`.
+The `git:HEAD` case does not even reach `main`'s handler: `spec.split(":", 2)` unpacks
+into three names, so it raises an uncaught `ValueError` and the 1 is the interpreter's,
+printed as a traceback rather than as `error: ...`.
+
+AMENDED 2026-08-13 by K4B with an eighth entry measured at 3981efd (K4's C2): two
+`--rubric` values sharing a LABEL. It is a shape error by RB-P32's own definition — the
+labels are the text left of the first `=` in the typed strings and collide on every
+machine — and it reported 1, from inside `main`'s `try`, on an argv the world had
+supplied everything for. Its own before/after is
+docs/eval-data/2026-08-13-k4b-c2-duplicate-rubric-label.md.
+"""
+
+_RBP32_FIELD_CASE_FLOOR = 9
+"""How many argument-shape command lines the node below must MEASURE, and why it is here.
+
+K4B/I5. The anti-shrink guard was keyed on `_RBP32_PREFIX_STATUSES`, the very record it
+protects: it asked whether every case in the record was measured, so DELETING a case
+from the record and from the node's `cases` together left it green and deleted the
+evidence instead of fixing anything (K4 demonstrated it at 748/748). A guard needs an
+anchor OUTSIDE the thing it guards, so this is one — a count that neither the record nor
+the case list can move.
+
+It is a floor, not an equality: the case list may grow, and it has, twice (`a=git:` in
+K3, the label collision in K4B). Raising it is an ordinary edit; LOWERING it is a claim
+that a measured field case stopped being worth measuring, and it belongs in a commit
+message where someone has to read it. What it does not stop is a three-place mutation
+that edits this number too — that is stated rather than papered over, and the second,
+independent anchor is
+`test_every_shape_rule_flag_is_the_usage_status_in_the_field`, which derives its cases
+from the CODE and cannot be silenced by editing any list at all.
 """
 
 def _shape_error_argv(tmp_path: Path, *flags: str) -> list[str]:
@@ -3710,6 +4144,11 @@ def test_every_argument_shape_error_reports_the_same_number(tmp_path):
         "--rubric a=git: (empty ref and path)": _shape_error_argv(
             tmp_path, "--rubric", "a=git:"
         ),
+        # K4B/C2. Grown again, and this one was a defect rather than a gap: it is
+        # decidable from the typed strings alone and was refused from INSIDE the run.
+        "--rubric a=X --rubric a=Y (labels collide)": _shape_error_argv(
+            tmp_path, "--rubric", f"a={rubric}", "--rubric", f"a={rubric}"
+        ),
     }
     measured = {}
     for index, (label, argv) in enumerate(cases.items()):
@@ -3722,6 +4161,12 @@ def test_every_argument_shape_error_reports_the_same_number(tmp_path):
         f"cases dropped from the pre-fix record: {sorted(missing)}. The list may grow; a "
         "case leaves it only with a measured reason, and 'it made this node pass' is not one"
     )
+    # K4B/I5: the anchor that is not the record. See `_RBP32_FIELD_CASE_FLOOR`.
+    assert len(measured) >= _RBP32_FIELD_CASE_FLOOR, (
+        f"{len(measured)} shape cases measured, and {_RBP32_FIELD_CASE_FLOOR} have been "
+        "measured in the field. The guard above cannot see a case deleted from BOTH the "
+        "record and this list; this can."
+    )
     assert len(set(measured.values())) == 1, (
         f"argument-shape errors report {sorted(set(measured.values()))}, not one number: "
         f"{measured} (measured pre-fix: {_RBP32_PREFIX_STATUSES})"
@@ -3733,27 +4178,151 @@ def test_every_argument_shape_error_reports_the_same_number(tmp_path):
     )
 
 
-def test_the_epilog_and_the_module_comment_agree_about_what_the_usage_status_covers():
-    """The second half of RB-P32, and the half that is about two COMMITTED SENTENCES.
+# ---- K4B/I7: the prose about `2` is checked against the CODE, not against more prose ----
+#
+# WHAT WAS HERE BEFORE AND WHY IT IS GONE. RB-P32 shipped
+# `test_the_epilog_and_the_module_comment_agree_about_what_the_usage_status_covers`: two
+# literal substring tests joined by `and` — "the epilog claims ALL of this module's
+# validations" and "the comment says `parser.error`" — asserting that both were never
+# true at once. It bit on the real regression K3 was fixing, and K4 then silenced it in
+# one edit: rename BOTH `parser.error` mentions inside the `#   2` block and the
+# conjunction is false whatever the epilog says, after which the old false epilog sentence
+# can be restored VERBATIM and the tree is back to the exact prose RB-P32 was filed
+# against, with a green suite. A check that a rename can silence is checking the spelling
+# of the code, not what the code does.
+#
+# WHAT REPLACED IT, and it is a rebuild rather than a patch. The set of this module's own
+# shape rules is DERIVED FROM THE CODE — every `parser.error` reachable above `main`'s
+# `try`, and the `--flag` names the messages it is handed can carry — and both committed
+# rosters must be exactly that set. Then a rename changes nothing (the derivation walks
+# the AST for a call to `.error`, not for the text "parser.error"), deleting a roster is
+# red (the node requires one in each place), and adding a shape rule without saying so is
+# red. Its companion below closes the loop the other way, in the field: every flag on the
+# roster measures 2 from a real shell, and every module rule that is NOT on it measures 1
+# — which is what pins the RB-P32 line on its `1` side, where nothing had ever asserted
+# anything (K4B/I4).
 
-    The epilog used to claim `2` covers "this module's own validations", unqualified,
-    while the module comment restricted that to the `parser.error` ones — a strict
-    subset, and the one the behaviour then matched. A reader who believed the epilog
-    wrote a CI branch that could not tell a typo from an aborted run.
+_SHAPE_ROSTER = "shape rules (exact set): "
+"""The marker both committed rosters carry, so a machine can find the claim in the prose.
 
-    Mechanical, and it was written neutral between RB-P32's two attacks. It is green
-    under the one that was taken: every argument-shape validation now goes through
-    `parser.error`, so the comment's mention of `parser.error` is a description of the
-    mechanism and not a restriction on the set, and the epilog's unqualified claim is
-    gone because the set it now names is exact. It goes red again if either sentence
-    drifts back to claiming a coverage the other one narrows.
+Deliberately one literal in both places rather than a clever parse of English: the two
+sentences it lives in are user-visible contract text, and the alternative — deriving the
+set from free prose — is what produced a check that could not tell "these flags report 2"
+from "this flag is an example of a 1", both of which the `#   2` block says.
+"""
+
+_FLAG = re.compile(r"--[a-z][a-z0-9-]*")
+
+
+def _returned_strings(function: ast.FunctionDef) -> list[str]:
+    """Every string constant reachable from a `return` in `function`.
+
+    `return`s only, never the whole body: a docstring that MENTIONS a flag is prose, and
+    a derivation that read it would pick up `--transcripts` from a sentence explaining
+    why `--transcripts` is not a shape rule.
     """
-    epilog_line = re.search(
+    out: list[str] = []
+    for node in ast.walk(function):
+        if isinstance(node, ast.Return) and node.value is not None:
+            out += [
+                sub.value
+                for sub in ast.walk(node.value)
+                if isinstance(sub, ast.Constant) and isinstance(sub.value, str)
+            ]
+    return out
+
+
+def _shape_rule_flags_from_the_code() -> tuple[set[str], int]:
+    """The flags this module's own shape rules name, read off the AST. Also the site count.
+
+    "Reachable above `main`'s `try`" is taken literally: the statements of `main` up to
+    the `try`, which is the structural fact RB-P32 rests on — a rule up there has resolved
+    no path and opened no file, so it is entitled to say "this argv can never work". A
+    `parser.error` handed a name is followed one hop to the function that supplied it, so
+    the rubric rules (whose messages are built in `rubric_arg_shape_problem` and
+    `rubric_label_collision_problem`) count as much as the inline one.
+    """
+    tree = ast.parse((SRC / "criticreplay.py").read_text())
+    functions = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    above: list[ast.stmt] = []
+    for statement in functions["main"].body:
+        if isinstance(statement, ast.Try):
+            break
+        above.append(statement)
+    else:  # pragma: no cover - a `main` with no `try` is a different module
+        raise AssertionError("main() no longer has a `try`, so 'above it' means nothing")
+
+    supplier: dict[str, str] = {}
+    for statement in above:
+        for node in ast.walk(statement):
+            if (
+                isinstance(node, ast.Assign)
+                and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Name)
+            ):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        supplier[target.id] = node.value.func.id
+
+    messages: list[str] = []
+    sites = 0
+    for statement in above:
+        for node in ast.walk(statement):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "error"
+                and node.args
+            ):
+                continue
+            sites += 1
+            argument = node.args[0]
+            if isinstance(argument, ast.Name) and argument.id in supplier:
+                messages += _returned_strings(functions[supplier[argument.id]])
+            else:
+                messages += [
+                    sub.value
+                    for sub in ast.walk(argument)
+                    if isinstance(sub, ast.Constant) and isinstance(sub.value, str)
+                ]
+    return {flag for message in messages for flag in _FLAG.findall(message)}, sites
+
+
+def _roster(text: str) -> set[str] | None:
+    for line in text.splitlines():
+        if _SHAPE_ROSTER in line:
+            return set(_FLAG.findall(line.split(_SHAPE_ROSTER, 1)[1]))
+    return None
+
+
+def test_the_usage_status_names_exactly_the_shape_rules_the_code_has():
+    """RB-P32's second half, rebuilt so that renaming things cannot answer it (K4B/I7).
+
+    Three claims, and each is about the CODE rather than about the other sentence:
+
+    1. the derivation finds something — a `main` with no `parser.error` above its `try`
+       would make the whole RB-P32 argument vacuous, so a floor is asserted on both the
+       call sites and the flags;
+    2. the epilog's `2` block carries a roster and it is exactly the derived set;
+    3. the module comment's `#   2` block carries a roster and it is exactly the derived
+       set.
+
+    Every mutation K4 used on the node this replaces is now red: renaming `parser.error`
+    in either block changes nothing here, restoring the old unqualified epilog sentence
+    deletes the roster (2 fails), and adding a shape rule for a new flag without naming
+    it fails 2 and 3 together.
+    """
+    derived, sites = _shape_rule_flags_from_the_code()
+    assert sites >= 2, f"only {sites} parser.error call sites above main's try"
+    assert len(derived) >= 2, f"the derivation found {derived}, which cannot be right"
+    assert "--rubric" in derived  # the flag RB-P32 and K4B both moved cases for
+
+    epilog_block = re.search(
         rf"^  {criticreplay.USAGE_EXIT}  (.*?)(?=^  \d  |\Z)",
         criticreplay._EXIT_CONTRACT,
         re.S | re.M,
     )
-    assert epilog_line, "the epilog no longer has a line for the usage status"
+    assert epilog_block, "the epilog no longer has a line for the usage status"
     comment_block = re.search(
         rf"^#   {criticreplay.USAGE_EXIT}  (.*?)(?=^#   \d  )",
         (SRC / "criticreplay.py").read_text(),
@@ -3761,11 +4330,93 @@ def test_the_epilog_and_the_module_comment_agree_about_what_the_usage_status_cov
     )
     assert comment_block, "the module comment no longer has a block for the usage status"
 
-    epilog_claims_all = "including this module's own validations" in epilog_line.group(1)
-    comment_restricts = "parser.error" in comment_block.group(1)
-    assert not (epilog_claims_all and comment_restricts), (
-        "the epilog says the usage status covers this module's own validations without "
-        "qualification, while the module comment restricts that claim to the "
-        "`parser.error` ones — two committed sentences about the same number that do "
-        "not describe the same set. Fix the sentences and the behaviour together."
+    for where, block in (("epilog", epilog_block), ("module comment", comment_block)):
+        roster = _roster(block.group(1))
+        assert roster is not None, (
+            f"the {where}'s {criticreplay.USAGE_EXIT} block no longer carries a "
+            f"'{_SHAPE_ROSTER}' line. That line IS the claim; prose around it is not a "
+            "substitute, because prose in this block also names flags that report "
+            f"{criticreplay.REFUSAL_EXIT}."
+        )
+        assert roster == derived, (
+            f"the {where} says this module's shape rules are {sorted(roster)}, and the "
+            f"code's own `parser.error` calls above main's try name {sorted(derived)}. "
+            "Fix the sentence and the behaviour together — that is the whole of RB-P32."
+        )
+
+
+def _world_rule_field_cases(tmp_path: Path, rubric: str) -> dict[str, list[str]]:
+    """Module rules that are NOT shape rules: they consult the world, so they are a 1.
+
+    Each one is well formed on its face and names something this machine did not supply,
+    which is the other side of RB-P32's line. `--rubric a=<a path that is not there>` is
+    the load-bearing member: `--rubric` IS on the shape roster, so a reader who took the
+    roster to mean "everything about --rubric is a 2" would be wrong, and until K4B
+    nothing anywhere asserted that this case is a 1 (K4's I4 — moving it to 2 scored
+    748/748).
+    """
+    empty = tmp_path / "empty-transcripts"
+    empty.mkdir(exist_ok=True)
+    base = [
+        sys.executable, "-m", "bantamkit.criticreplay",
+        "--base-url", "http://x", "--model", "m",
+    ]
+    return {
+        "--rubric a=<a path that is not there>": [
+            *base, "--transcripts", str(empty), "--rubric", f"a={tmp_path / 'gone.yaml'}",
+        ],
+        "--transcripts <a directory with no transcripts>": [
+            *base, "--transcripts", str(empty), "--rubric", f"a={rubric}",
+        ],
+        "--manifest <a path that is not there>": [
+            *base, "--transcripts", str(empty), "--rubric", f"a={rubric}",
+            "--manifest", str(tmp_path / "gone-manifest.yaml"),
+        ],
+    }
+
+
+def test_every_shape_rule_flag_is_the_usage_status_in_the_field(tmp_path):
+    """The companion to the roster check, and the half a shell reads (K4B/I7, I4).
+
+    The node above proves the two committed rosters describe the code. This one proves
+    the code describes the machine, from a real `$?` with no pytest marker in the
+    environment: every flag the roster names has a shape error that reports
+    `USAGE_EXIT`, and every module rule the roster does NOT name reports `REFUSAL_EXIT`.
+
+    THE CASE DICT IS KEYED ON THE DERIVED SET, not written beside it. Add a shape rule
+    for a new flag and this node fails until someone measures it — which is K3's own
+    declared gap ("nothing enforces that a NEW flag's shape rule goes above the `try`")
+    closed from the other end: it cannot silently be added and left unmeasured either.
+    """
+    rubric = str(ASSETS / "rubrics" / "task-completion.yaml")
+    derived, _ = _shape_rule_flags_from_the_code()
+    shape_cases = {
+        "--replays": _shape_error_argv(tmp_path, "--rubric", f"a={rubric}", "--replays", "0"),
+        "--identity-replays": _shape_error_argv(
+            tmp_path, "--rubric", f"a={rubric}", "--identity-replays", "0"
+        ),
+        "--rubric": _shape_error_argv(tmp_path, "--rubric", "a="),
+    }
+    assert set(shape_cases) == derived, (
+        f"the code's shape rules name {sorted(derived)} and this node measures "
+        f"{sorted(shape_cases)}. A shape rule with no field case is a contract sentence "
+        "with nothing behind it."
     )
+    for index, (flag, argv) in enumerate(sorted(shape_cases.items())):
+        status, out, err = _shell_status(argv, tmp_path, f"roster-{index}")
+        assert status == criticreplay.USAGE_EXIT, f"{flag}: {status}, {err}"
+        assert out == "", f"{flag} wrote to stdout on a run that never measured"
+        assert "Traceback" not in err, f"{flag} reported by traceback: {err}"
+
+    world = sorted(_world_rule_field_cases(tmp_path, rubric).items())
+    for index, (label, argv) in enumerate(world):
+        status, out, err = _shell_status(argv, tmp_path, f"world-{index}")
+        assert status == criticreplay.REFUSAL_EXIT, (
+            f"{label} reports {status}. It is well formed on its face and names something "
+            "this machine did not supply, so the same argv succeeds once the world "
+            f"changes — that is {criticreplay.REFUSAL_EXIT}, and moving it to "
+            f"{criticreplay.USAGE_EXIT} would tell a CI job to edit a command line that "
+            "is not wrong."
+        )
+        assert out == ""
+        assert "Traceback" not in err, f"{label} reported by traceback: {err}"

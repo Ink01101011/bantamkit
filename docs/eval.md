@@ -3742,6 +3742,45 @@ shipped, and says so.
   behaviour. The two RB-P32 nodes lose their `xfail` and become guards; the
   first now pins the number as well as the consistency, and its case list grew
   by one (`--rubric a=git:`) rather than shrinking. (Measurement.)
+
+  **Amendment (K4B, 2026-08-13) — one sentence above is false as written, and a
+  fifth case has moved.** "Every one of them now goes through `parser.error`"
+  was not true when it was committed. `--rubric a=X --rubric a=Y` is decidable
+  from the typed strings alone — a label is the text left of the first `=`, so
+  two of them collide on every machine — and it was refused by `guarded_family`
+  **inside `main`'s `try`**, reporting `1`. Field-measured at `3981efd`: status
+  `1`, 0 bytes on stdout, and `--rubric a=git:R:P --rubric a=git:R:P` spent
+  **two `git show` subprocesses** before noticing, which is exactly the cost the
+  `git:` shape check exists to avoid. It also falsified the `#   2` block's
+  "all of the argument-SHAPE ones and only those" and its "a `1` is an argv that
+  names something **the world did not supply**" — here the world supplied
+  everything.
+
+  Closed by adding `rubric_label_collision_problem` above the `try` and routing
+  it through `parser.error`; three cases move `1` → `2` and four controls do not
+  move, including a run with distinct labels that still measures and prints its
+  table. `guarded_family`'s copy **stays**, and that is argued rather than
+  hedged: an in-process caller may pass a bare `Rubric` whose label is its
+  `name` and therefore came off a file on disk, which is world-dependent and
+  undecidable from any argv. Same verdict, two entitlements. Before and after in
+  `docs/eval-data/2026-08-13-k4b-c2-duplicate-rubric-label.{sh,md}`, with the
+  `git show` count taken from a PATH shim rather than read off the source.
+
+  **The consistency node was rebuilt, not patched.**
+  `test_the_epilog_and_the_module_comment_agree_about_what_the_usage_status_covers`
+  was two substring tests joined by `and`, and K4 silenced it by renaming both
+  `parser.error` mentions in the module comment — after which the old false
+  epilog sentence could be restored verbatim with a green suite. It is replaced
+  by `test_the_usage_status_names_exactly_the_shape_rules_the_code_has`, which
+  DERIVES the set from the AST (every `parser.error` reachable above `main`'s
+  `try`, followed one hop through the function that supplied its message, and
+  the `--flag` names those messages carry) and requires both committed rosters
+  to be exactly it, plus
+  `test_every_shape_rule_flag_is_the_usage_status_in_the_field`, which measures
+  each named flag to `2` and each unnamed module rule to `1` from a real shell.
+  A rename now changes nothing (verified: it is a control that must stay green);
+  K4's full attack — rename **and** restore the false epilog — is red.
+  (Measurement.)
 - **RB-P33 — `main()` leaves the process's fd 1 pointing at `/dev/null` after it
   handles a dead stdout, permanently, and nothing says so. NOT inherited: this is
   a side effect of the handler `dc121b5` shipped on this branch** — `c7d0b72` has
@@ -3761,6 +3800,73 @@ shipped, and says so.
   the epilog and pin it with a node asserting that a post-`main` write to fd 1
   still raises. Silence is the one option not available, because a caller cannot
   discover this by reading the contract. (Measurement.)
+
+#### K4B (2026-08-13) — what the adversarial review found, and what is left open
+
+K4's review of the RB-P31/RB-P32 fixes found two Criticals. C2 is amended into
+the RB-P32 entry above. C1 belongs to RB-P31's closure, **which is K5's to
+write** — so it is not written here. The exact wording K4B hands K5, measured
+rather than drafted:
+
+> **RB-P31's arm was one class too narrow, and the PR's headline was false as
+> shipped (K4B/C1).** The printed table's GUARD section always carries `U+2014`
+> and `U+00A7`, so a caller who sets `PYTHONIOENCODING=latin-1` (or `=ascii`)
+> makes `print(table)` raise `UnicodeEncodeError` — a `ValueError`, not an
+> `OSError` — which escaped the arm, printed a traceback, and left the shell
+> reading `1` on a run whose JSONL rows and summary are byte-identical to the
+> same argv on a live stdout. Twelve field cells (two codecs × two table sizes ×
+> three rungs of the ladder) moved `1` → `5`; six `utf-8` control cells did not
+> move. The arm is now `except (OSError, UnicodeEncodeError)`, and the line it
+> draws is the two things about stdout **the caller owns**: the descriptor and
+> the codec it was wrapped in. Everything else the write raises is still a bug
+> with a traceback, pinned on the new edge by a node that raises a bare
+> `ValueError`. Before and after in
+> `docs/eval-data/2026-08-13-k4b-c1-stdout-encoding-matrix.{sh,md}`.
+
+RB-P33's closure is also K5's. What K4B adds to it: the no-silent-sink property
+was pinned for the `OSError` arm only, so replacing the **EPIPE** arm's
+`_LostStdout` with a swallowing sink scored a full green suite. It is now pinned
+for both arms.
+
+**Fixed in this unit rather than filed:** the `--summary` failure's stderr
+sentence promised a table that the EPIPE cell prints nowhere; a non-transcript
+`.json` in `--transcripts` raised an uncaught `KeyError: 'task'` (the right
+number delivered by traceback — the same shape RB-P32 fixed for `git:HEAD`);
+and five contract claims that no node held (5 outranks 4; the hatch is an
+opt-out from `3` alone with respect to `5` too; the RB-P32 line on its `1` side;
+the anti-shrink guard's anchor; the `5` line's byte-identity promise) each got a
+node that goes red when the claim is inverted.
+
+**Measured and NOT fixed — open, with an attack direction:**
+
+- **RB-P28's residual, unchanged and reconfirmed against the new nodes.**
+  Reverting the render arm and gating the fix on `"pytest-of-" in " ".join(
+  sys.argv) or "pytest" in sys.modules` scores a full green suite while the
+  field measures the exact pre-fix matrix. Nine of K4's seventeen attacks
+  survived a green suite. Not this job's lever; every acceptance in this cycle
+  is a field measurement for that reason. **Attack:** an oracle phase that runs
+  outside pytest, as RB-P28 already says.
+- **`fd 1` on a DIRECTORY kills CPython before `main` exists** —
+  `init_sys_streams`, `IsADirectoryError`, and the shell reads `1`. Nothing in
+  this module runs, so no arm here can choose that number. Written into the
+  contract and pinned by `test_fd_one_on_a_directory_never_reaches_this_module`
+  so it is not re-filed as a defect of the render arm. **Not a defect.**
+- **A `BantamError` whose own message is not ASCII, on a stderr wrapped in a
+  codec that cannot take it.** `sys.stderr` is `backslashreplace` (measured, and
+  it stays that way even under `PYTHONIOENCODING=ascii:strict`), so the status
+  survives and the SENTENCE is mangled. This module's own status reports are
+  ASCII for that reason; the refusal path's messages are not, and one of them —
+  `guarded_family`'s duplicate-label text — carries an em dash. It reports the
+  number it would have reported anyway, so it is a delivery defect, not a status
+  one. **Attack:** an ASCII rule for every message this module writes to stderr,
+  pinned by a node that reads the module's string literals.
+- **The anti-shrink anchor is a literal in the same file it guards.** A
+  three-place mutation (record, case list, and `_RBP32_FIELD_CASE_FLOOR`) still
+  passes; what is now caught is the two-place one K4 demonstrated. **Attack:** a
+  case list derived from the committed field artifact rather than counted.
+- **One platform, one filesystem, one CPython 3.12.13 on APFS/Darwin**, for
+  every number in this entry. ENOSPC on a real full device is still handled by
+  class and simulated in-process only.
 
 Two of the review's findings were fixed in this cycle rather than filed:
 `requests` counted JSONL rows while `Verdict.calls` was dropped from the row
