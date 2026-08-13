@@ -4010,13 +4010,51 @@ def test_help_with_no_reader_on_stdout_is_still_the_interpreters_number(tmp_path
 
     `--help` renders the epilog and exits before `main` reaches its table print, so the
     RB-P27 handler is not on that path at all and the shutdown flush is what the shell
-    sees. Measured, not assumed. A change that covers this may delete this node — and
-    must then also correct the sentence in `_EXIT_CONTRACT` that this node pins.
+    sees. A change that covers this may delete this node — and must then also correct
+    the sentence in `_EXIT_CONTRACT` that this node pins.
+
+    RE-AIMED 2026-08-14 (RB-P35), AND THE OLD AIM IS THE FINDING. This node asserted the
+    literal `120`, and that assertion was a fact about the WORLD, not about this tool:
+    the status is decided by whether the doomed bytes are still in `sys.stdout`'s
+    `BufferedWriter` when the interpreter exits, so it turns on the SIZE of the help text
+    against a buffer this module does not set. It went false in CI without one line of
+    this module's behaviour changing — a docstring added by an unrelated fix grew the
+    epilog from 7488 to 8227 bytes, and `ubuntu-latest` went 120 -> 0 while macOS stayed
+    120. The module's own comment already named that mechanism for the run path and had
+    not applied it here.
+
+    WHAT IS ASSERTED NOW IS THE CLAIM THE CONTRACT ACTUALLY MAKES: the status of a stdout
+    lost outside the run path is the INTERPRETER'S, and this module contributes nothing
+    to it. The control is a bare interpreter writing the module's own help bytes to the
+    identical broken pipe — argparse formats the whole help and emits it in a single
+    `file.write`, so the control is byte-for-byte and write-for-write the same thing
+    without `bantamkit` on the path. Equality is platform-independent and cannot go stale
+    with the epilog's length; it goes RED the moment this module starts choosing that
+    status, which is the change the contract sentence promises to be corrected for.
     """
-    status, _ = _closed_pipe_status(
-        [sys.executable, "-m", "bantamkit.criticreplay", "--help"], tmp_path, "help"
+    argv = [sys.executable, "-m", "bantamkit.criticreplay", "--help"]
+    status, _ = _closed_pipe_status(argv, tmp_path, "help")
+    rendered = subprocess.run(
+        argv, capture_output=True, text=True, check=True, env=_child_env()
+    ).stdout
+    replica = tmp_path / "help-bytes.txt"
+    replica.write_text(rendered)
+    control, _ = _closed_pipe_status(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.write(open(sys.argv[1]).read())",
+            str(replica),
+        ],
+        tmp_path,
+        "help-control",
     )
-    assert status == _CLOSED_PIPE_PREFIX_STATUS
+    assert status == control, (
+        f"the module read {status} where a bare interpreter writing the same "
+        f"{len(rendered)} bytes to the same broken pipe read {control}. That difference "
+        "would mean this module DOES choose the status on the --help path, which the "
+        "epilog says it does not."
+    )
 
 
 def test_a_refusal_whose_stderr_has_no_reader_leaves_the_range(rig, tmp_path):

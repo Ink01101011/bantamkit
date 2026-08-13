@@ -3868,6 +3868,23 @@ and each carries an attack direction.
   cannot go stale silently, and the epilog test now fails if the prose is
   quietly upgraded to a blanket promise.
 
+  > **AMENDMENT 2026-08-14 (L7) — "still `120`" for the `--help` case is FALSE on
+  > a second platform, and the sentence claiming the list "cannot go stale
+  > silently" is exactly the one that went stale.** Corrected here rather than
+  > rewritten above. The `120` is not a property of this tool: the status turns on
+  > whether the doomed bytes are still in `sys.stdout`'s `BufferedWriter` when the
+  > interpreter exits, so it depends on the SIZE of the help text against a buffer
+  > this module does not set. Measured 2026-08-14 on `ubuntu-latest` via CI, with
+  > no behaviour of this module changed: **7488 bytes of help text → `120`
+  > (`b496856`, CI green); 8227 bytes → `0`** — the growth came from docstrings
+  > added by this job's own RB-P16/17/18 fixes. macOS read `120` at both. The
+  > node's assertion was re-aimed the same day to the claim the contract actually
+  > makes — the status equals what a bare interpreter writing the identical bytes
+  > to the identical broken pipe reads, so this module contributes nothing to it —
+  > which is platform-independent and still goes red if a later change covers the
+  > case. The stderr half of the paragraph above is untouched and was green on both
+  > platforms. Filed as **RB-P35**, below.
+
   **Authorship, stated plainly and kept separate from the cell's result.** The
   patch was written by the J4 implementer unit of the `rbp27-qwen-cell` job,
   after the cell's three model arms produced **0 passes in 20 pre-registered
@@ -4639,6 +4656,42 @@ pinned" from "the detector is stuck on".
   status is a promise to a reader outside this tree, so the check belongs where a
   reader outside this tree can see it. Measured:
   `docs/eval-data/2026-08-14-l7-closure-residuals.md`, case C. (Measurement.)
+- **RB-P35 — a shipped contract sentence asserted a status NUMBER for a case this
+  module does not control, and CI on a second platform is what falsified it.
+  FIXED where it was cheap, and the class is filed.** The epilog and the module
+  comment both said `--help` with no reader on stdout "exits `120`", and a node
+  asserted the literal. Neither is a property of this tool: the status turns on
+  whether the doomed bytes are still in `sys.stdout`'s `BufferedWriter` when the
+  interpreter exits, so it depends on the **size of the help text** against a
+  buffer this module does not set — a mechanism the module's own comment already
+  spells out for the run path and had not applied to itself. Measured on
+  `ubuntu-latest` with **no behaviour of this module changed**: **7488 bytes of
+  help text → `120`** (`b496856`, CI green), **8227 bytes → `0`**. The growth was
+  docstrings, added by this job's own RB-P16/17/18 fixes. macOS read `120` at both
+  sizes, which is why five units and every local suite run missed it.
+  **What was fixed:** the epilog and the comment now say the number is the
+  interpreter's, is not fixed, and give both measurements; the node now asserts
+  that the module's status **equals a bare interpreter writing the identical bytes
+  to the identical broken pipe**, which is the claim the contract actually makes,
+  is platform-independent, and still goes red the moment this module starts
+  choosing that status.
+  **What is NOT fixed, and it is the larger half.** (a) The twin node
+  `test_a_refusal_whose_stderr_has_no_reader_leaves_the_range` still asserts the
+  literal `120`. It is green on both platforms today because a refusal's stderr
+  text is far below any buffer — which is to say it is green **for the same
+  accidental reason**, and it will go false the day that message grows. (b) The
+  corrected sentence is **prose, and prose is not in the ledger**: reversing it
+  back to "exits `120`" turns no node red, so RB-P35 is a worked instance of the
+  unpinned-prose problem filed two entries down, not an exception to it.
+  **Attack:** a contract sentence may not name a status the module does not
+  choose — so every such sentence should state the *relation* it can guarantee
+  (this process's status equals what the interpreter would do unaided) and a node
+  should assert that relation against a control run, which is what landed here for
+  one of the two cases. And the CI matrix is the instrument that caught this:
+  every field runner in this job is `/bin/sh` and has been run on exactly one
+  platform, so the same class of world-fact is sitting unexamined in the field
+  records too. Measured: this PR's first CI run, and the local re-measurement in
+  `docs/eval-data/2026-08-14-l7-closure-residuals.md`. (Measurement.)
 - **RB-P28 stays OPEN.** L6 closed the **three acceptances** by moving their pins
   out of the process; it did not close the **class**. A patch can still key on the
   probe's `sys.argv[0]`, on the scripted critic, or on a tmp-dir-shaped path, and

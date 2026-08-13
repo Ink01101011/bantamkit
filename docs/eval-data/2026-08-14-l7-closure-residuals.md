@@ -131,3 +131,51 @@ measurement — travels with `35/35` unchanged, because nothing here changed how
 `B01`'s `test_closed_pipe_`, which `assert_pins_exist` matches with `pin in node`
 and which covers **5** nodes. Deliberate where the family is one claim; a loophole
 where it is not.
+
+## E — RB-P35, added after the first CI run of this branch
+
+The PR's first CI run failed on **both** 3.11 and 3.12, on a node that had nothing
+to do with this job's levers:
+
+```
+FAILED test_help_with_no_reader_on_stdout_is_still_the_interpreters_number
+E  assert 0 == 120
+```
+
+`--help` with no reader on stdout was asserted to exit `120`, in the node and in
+two shipped sentences (the `--help` epilog and the module comment). **No behaviour
+of this module changed.** What changed is the size of the help text, measured here:
+
+| ref | `--help` bytes | `ubuntu-latest` | macOS |
+|---|---|---|---|
+| `b496856` (v0.20.0, CI green) | **7488** | `120` | — |
+| `6c27ebe` (L6's HEAD) | **8227** | — | `120` |
+| `837527b` (this branch, first CI run) | **8227** | **`0`** | `120` |
+
+```sh
+git worktree add -q --detach /tmp/wt b496856 && \
+  PYTHONPATH=/tmp/wt/runtime-py/src BANTAMKIT_ASSETS=/tmp/wt/assets \
+  .venv/bin/python -m bantamkit.criticreplay --help | wc -c
+```
+
+The growth is **docstrings**, added by this job's own RB-P16/17/18 fixes. The
+status turns on whether the doomed bytes are still in `sys.stdout`'s
+`BufferedWriter` when the interpreter exits — the same buffer-size mechanism the
+module's own comment already spells out for the run path, never applied to itself.
+macOS reads `120` at both sizes, which is why five units and every local suite run
+missed it, and why the CI matrix is the instrument that found it.
+
+**Re-aimed, not re-scoped.** The node now asserts that the module's status equals
+what a **bare interpreter writing the identical help bytes to the identical broken
+pipe** reads — argparse formats the whole help and emits it in a single
+`file.write`, so the control is byte-for-byte and write-for-write the same thing
+with `bantamkit` off the path. Measured on macOS at 8459 bytes (the corrected
+epilog): module `120`, control `120`. The equality is platform-independent, cannot
+go stale with the epilog's length, and still goes red the moment this module starts
+choosing that status — which is the change the contract sentence promises to be
+corrected for.
+
+Filed as **RB-P35** in `docs/eval.md`, including the two halves that are **not**
+fixed: the twin stderr node still asserts a literal `120` and is green for the same
+accidental reason, and the corrected sentence is prose, so reversing it turns no
+node red.

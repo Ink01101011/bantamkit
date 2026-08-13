@@ -346,8 +346,16 @@ GUARD_MODES = ("warn", "error")
 # STILL OUTSIDE THE RANGE, measured 2026-08-13 rather than assumed, because "everything
 # outside 0-4 means the run did not complete" is STILL not a true reading. This list is
 # OPEN — it is what has been measured, not a proof that nothing else escapes:
-#   - `--help` with no reader on stdout exits 120. argparse writes the epilog and exits
-#     before `main` reaches the handler, so the handler is not on that path at all.
+#   - `--help` with no reader on stdout leaves the range with a number THIS MODULE DOES
+#     NOT CHOOSE, and the number is NOT FIXED. argparse writes the epilog and exits
+#     before `main` reaches the handler, so the handler is not on that path at all; what
+#     the shell reads is decided by whether the doomed bytes are still in the
+#     `BufferedWriter` at exit — the same buffer-size accident this comment names four
+#     paragraphs up, applied to this module's own help text. Measured 2026-08-14
+#     (RB-P35): 120 on macOS and 0 on `ubuntu-latest` at 8227 bytes of help text, where
+#     `ubuntu-latest` read 120 at 7488 bytes (`b496856`, CI green). This line used to say
+#     "exits 120", and it went false when a docstring in another unit's fix grew the
+#     epilog past the boundary.
 #   - a run that WRITES to stderr while stderr has no reader exits 120 — a refusal's
 #     `error: …`, the summary-write failure, the `--violations-exit-zero` note. The
 #     refusal's own 1 is erased exactly as the table's 3 used to be. A run that writes
@@ -2682,8 +2690,11 @@ reports {RENDER_FAILURE_EXIT} instead of claiming a clean measurement (RB-P31).
 Neither arm invents a status the run did not have.
 WHAT IS STILL OUTSIDE THE RANGE is the interpreter or a signal, and that list
 is OPEN rather than exhaustive. Measured so far: 130 SIGINT, 143 SIGTERM, a
-stderr lost while the run was writing to it, and 120 for a stdout lost OUTSIDE
-the run path (--help, which argparse writes and exits before main is reached).
+stderr lost while the run was writing to it, and a stdout lost OUTSIDE the run
+path (--help, which argparse writes and exits before main is reached) — whose
+number this module does not choose and which is NOT fixed: measured 120 on
+macOS and 0 on ubuntu at this help length, because whether the doomed bytes are
+still in the stdio buffer at exit decides whether the shutdown flush re-fails.
 Read those as "this process did not choose its own status", NOT as "the
 measurement did not happen": the artifacts may still be on disk. ENOSPC on a
 real full device has NOT been measured in the field on this platform; it is
