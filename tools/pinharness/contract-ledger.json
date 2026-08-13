@@ -5,7 +5,8 @@
     "ff58237 (767 nodes): behaviour 16/16, prose 5/5, overall 21/21. The three killers are the three nodes added in that commit.",
     "Calibration is run on 3981efd, where the two answers are known by hand: CAL-RED red, CAL-GREEN green. It still reads that way after the fix, which is what licenses believing the 21/21.",
     "Report: docs/eval-data/2026-08-13-contract-claim-pinning.md",
-    "b496856 + L1 (767 -> 771 nodes): 21/21 pinned BEFORE the three RB-P16/17/18 claims were added (behaviour 16/16, prose 5/5). N01/N02/N03 are claims about problems that are still OPEN, so they read UNPINNED by construction — that number, and not the denominator, is what L2/L3/L4 have to move. Survey: docs/eval-data/2026-08-13-rbp16-rbp17-rbp18-survey.md"
+    "b496856 + L1 (767 -> 771 nodes): 21/21 pinned BEFORE the three RB-P16/17/18 claims were added (behaviour 16/16, prose 5/5). N01/N02/N03 are claims about problems that are still OPEN, so they read UNPINNED by construction — that number, and not the denominator, is what L2/L3/L4 have to move. Survey: docs/eval-data/2026-08-13-rbp16-rbp17-rbp18-survey.md",
+    "cb55926 (771 nodes: 768 passed, 3 xfailed) with the 24-claim ledger, measured not asserted: behaviour 16/19 (84%), prose 5/5 (100%), overall 21/24. All 21 pre-existing claims still PINNED — the three new nodes cost nothing. N01/N02/N03 UNPINNED."
   ],
   "claims": [
     {
