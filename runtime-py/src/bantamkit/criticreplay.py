@@ -2417,8 +2417,12 @@ _EXIT_CONTRACT = f"""exit status (RB-P24):
      one number: argparse's own parsing (unknown flag, missing required,
      type=/choices=), and every argument-SHAPE validation this module makes -
      --replays 0, --identity-replays 0, --rubric with no LABEL=, --rubric
-     a=git:HEAD, two --rubric values sharing one LABEL - each of them reported
-     through parser.error before any file is opened. Malformed ON ITS FACE means
+     a=git:HEAD, two --rubric values sharing one LABEL, a --rubric derive: spec
+     whose base is not a git: spec (RB-P17 - which is also how a derive OF a
+     derive is refused, so the load order is acyclic rather than checked) -
+     each of them reported through parser.error before any file is opened. A
+     derive: whose rule id the manifest does not have is NOT here: that needs
+     the manifest read, so it is a {REFUSAL_EXIT}. Malformed ON ITS FACE means
      it can never work on any machine: nothing ran, nothing was written, and
      re-running the same argv is guaranteed to fail again, so a human edits the
      command.
@@ -2436,6 +2440,11 @@ _EXIT_CONTRACT = f"""exit status (RB-P24):
      every machine and were nonetheless refused from inside the run. Measured
      before and after in docs/eval-data/2026-08-13-rbp32-argument-validation-*.md
      and docs/eval-data/2026-08-13-k4b-c2-duplicate-rubric-label.md.
+     RB-P17 adds the derive: shapes above. 3 cases change number, measured in
+     docs/eval-data/2026-08-14-rbp17-provenance-resolution.md: a derive of a
+     derive moves 1 -> 2 (it is now wrong on its face, not a path that is not
+     there), and the two runs that use the form at all move 1 -> 3 because
+     before it there was no form and the argv could not run.
   {GUARD_VIOLATION_EXIT}  measured, WITH guard-2 violations - every artifact is still written,
      and the GUARD section names each violating (point, cell)
   {ARTIFACT_WRITE_EXIT}  measured, but an artifact could not be written (the --summary file).
