@@ -48,11 +48,11 @@ Reported first, per the probe unit's standing duty.
 | Claim | Status | Evidence |
 |---|---|---|
 | "22 frozen tasks (extract 5, nav 2, **recall 8**, shop 6)" | **DOES NOT REPRODUCE.** recall is **9**, not 8. 5+2+9+6 = 22. | Table 1. `ls assets/evals/tasks/ \| grep -c '^recall-'` → 9. `docs/eval.md:667-668` also says 9. |
-| Headline "**full = lean's score at +51% tokens**" | **DOES NOT REPRODUCE — no part of it.** `grep -rn '51%'` over the whole repo returns **0 hits**. The nearest committed claim is `+41%`, it pairs `full` against `lean` on the **retired 19-task suite**, and at HEAD on the frozen 22-task suite `full` does **not** equal `lean`'s score. | `docs/eval.md:1113,1152` (+18369 tok, +41%, on the 19-task suite where both score 57/57, `docs/eval.md:1036-1048`). At HEAD: `lean` 57/66 @ 54543 tok, `full` 66/66 @ 109243 tok — **+54,700 tok (+100.3%) for +9 passes** (`docs/eval.md:676-684`). |
+| Headline "**full = lean's score at +51% tokens**" | **DOES NOT REPRODUCE — no part of it.** `grep -rn '51%'` over the whole repo returns **0 hits**. The nearest committed claim is `+41%`, it pairs `full` against `lean` on the **retired 19-task suite**, and at HEAD on the frozen 22-task suite `full` does **not** equal `lean`'s score. | `docs/eval.md:1113,1152` (+18369 tok, +41%, on the 19-task suite where both score 57/57, `docs/eval.md:1047-1052`). At HEAD: `lean` 57/66 @ 54543 tok, `full` 66/66 @ 109243 tok — **+54,700 tok (+100.3%) for +9 passes** (`docs/eval.md:678-685`). |
 | `TokenBudget` is "**blind to critic spend** (recorded debt)" | **DOES NOT REPRODUCE AT HEAD.** The governor sees critic spend. The docstring states the fix in the past tense. | `budget.py:57-64`, quoted in [Survey 1](#survey-1). Confirmed live by `critique.py:172` and `evalrun.py:436-444`. |
 | `TokenBudget` is a "**tail-cutter only**" | **REPRODUCES**, and is stronger than stated — see below. | `budget.py:66-68`; only two `allow()` call sites exist in the whole package. |
 | `filegraph.py` is "a ledger of file reads — which paths, via which tool, whether they changed — with verify-on-repeat collapsing, **not a search or mapping graph**" | **REPRODUCES**, verbatim — it is the module's own first line. Two precisions added below. | `filegraph.py:1`, `filegraph.py:15-21`. |
-| Verify-on-repeat collapsing "**avoids re-reading**" | **DOES NOT REPRODUCE** — and the correction is to the brief, not to the repo, which already documents it. The inner reader is called *every* time; what is collapsed is the observation handed back to the model. | `filegraph.py:62` — `observation = str(inner(**kwargs))` runs before any ledger logic. `docs/filegraph.md:34-39` states it independently: "the real handler runs on *every* call … What is saved is model tokens, not disk I/O". |
+| Verify-on-repeat collapsing "**avoids re-reading**" | **DOES NOT REPRODUCE** — and the correction is to the brief, not to the repo, which already documents it. The inner reader is called *every* time; what is collapsed is the observation handed back to the model. | `filegraph.py:62` — `observation = str(inner(**kwargs))` runs before any ledger logic. `docs/filegraph.md:34-38` states it independently: "the real handler runs on *every* call … What is saved is model tokens, not disk I/O". |
 | "The `nav` family and the `graph` config use per-task `workspace:` file tools — so 'zero touch a file surface' may be too strong" | **CORRECT, and the brief was right to hedge.** 2/22 tasks touch a file surface. But "zero touch a **repo, a diff, a symbol, or code**" is exactly right: **0/22**. | Tables 2, 3, 4. |
 
 ---
@@ -157,10 +157,10 @@ claim needs two arms that produce **the same work product at different token cos
 tasks, same score, and ideally the same tool trace, with the difference confined to how
 many tokens crossed the wire. `lean` vs `full` fails this on every count at HEAD — 57/66 vs
 66/66, and `full` additionally spends the tool-use family differently (`grounded` rescues
-`shop-basket-total`, `docs/eval.md:684`). Even on the retired 19-task suite where scores
+the tool-use family, 15/18 → 18/18, `docs/eval.md:697-698`). Even on the retired 19-task suite where scores
 *were* equal (57/57 both), the equality is an artifact of a saturated suite, not of two
 arms doing equivalent work: `critique_rounds == 0` in all 57 `full` runs
-(`docs/eval.md:1111-1115`) — the critic never fired, so the +41% was pure scoring-call
+(`docs/eval.md:1112-1115`) — the critic never fired, so the +41% was pure scoring-call
 overhead on top of an unchanged answer.
 
 **Plainly: this headline cannot be made to bear on a >60% token-reduction claim, in
@@ -193,7 +193,7 @@ invoked on every call. What the collapse suppresses is the **re-injection of the
 into the model's context** (`filegraph.py:83-88`), replacing it with a ~90-byte marker.
 For the in-memory workspace dict these coincide token-wise, but against a real file tool
 the distinction matters: the ledger never prevents work, only prevents re-narration.
-`docs/filegraph.md:34-39` already says exactly this — "the real handler runs on *every*
+`docs/filegraph.md:34-38` already says exactly this — "the real handler runs on *every*
 call … What is saved is model tokens, not disk I/O" — so this is a correction to the
 brief's phrasing, not a defect in the repo.
 
@@ -241,7 +241,7 @@ enough for the collapse to have anything to collapse.
 
 The shipped `graph` config's net effect is a token **increase** that buys score:
 suite-wide `bare` 18,380 → `graph` 23,200 (**+26%**); on its own family 6,928 → 11,776
-(**+70%**) for 0/6 → 6/6 (`docs/eval.md:676-684`). It is a correctness mechanism with a
+(**+70%**) for 0/6 → 6/6 (`docs/eval.md:678-685`, `691`/`695`). It is a correctness mechanism with a
 token cost, not a token mechanism.
 
 ### What it would have to gain to be a search/mapping graph
