@@ -6,6 +6,7 @@ model is a separate, deliberately fresh-eyed pass (spec §10).
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -2520,6 +2521,53 @@ def test_exit_status_ignores_a_violation_on_a_point_dropped_from_every_family(
 PROBE = Path(__file__).resolve().parent / "cli_exit_status_probe.py"
 
 
+def _child_env(**extra: str) -> dict[str, str]:
+    """The environment every shell-status child gets: this process's, minus `PYTEST_*`.
+
+    RB-P28, and the half of it that is closeable here. Both status harnesses used to
+    hand the child `{**os.environ, ...}`, and pytest puts `PYTEST_CURRENT_TEST` in
+    `os.environ` while a test is running — so the code under test could SEE that it was
+    being observed. That is not hypothetical: the J3 review passed all five clauses of
+    the acceptance oracle with a patch that read `PYTEST_CURRENT_TEST`, flushed, and
+    called `os._exit(status)`, while its field behaviour stayed at 120. The oracle was
+    measuring the harness, not the fix.
+
+    The scrub kills that exploit; it does NOT kill the class. A patch can still key on
+    `sys.argv[0]`, on a tmp-dir-shaped path, on the absence of a TTY, or on any other
+    tell that "under a test runner" leaves behind. Only an oracle phase measured
+    OUTSIDE pytest closes the class, and RB-P28 stays open for it. What is pinned here
+    is the scrub itself — `test_the_status_harnesses_hand_the_child_no_pytest_marker`
+    goes red if this function stops removing the keys.
+
+    AND THE SECOND SIGNAL IS DEMONSTRATED, NOT IMAGINED (2026-08-13, J5 review,
+    reproduced independently by the orchestrator at 88ed3c1). A patch that DELETES the
+    shipped `BrokenPipeError` handler outright and replaces it with
+
+        if "pytest-of-" in " ".join(sys.argv):
+            try: sys.stdout.flush()
+            except BrokenPipeError: pass
+            os._exit(status)
+
+    scores `739 passed` on the WHOLE suite under `--runxfail` — every node here, the
+    three RB-P27 spec nodes and the scrub node above included — while the same tree
+    field-measures 120 where real HEAD gives 3. `tmp_path` lives under a
+    `pytest-of-<user>` directory, and every node that exercises the handler runs the CLI
+    with rig paths under it (`_cli` puts `--rubric` and `--transcripts` there), so the
+    tell reaches the child ON ITS COMMAND LINE: it never passes through this function,
+    and no filter written here can reach it. So this scrub closed ONE signal out of at
+    LEAST two, and a patch containing none of the fix still scores a full green suite.
+    That is why RB-P27's
+    closure in docs/eval.md rests on a field measurement and not on this file: a fake
+    patch can fake every node in this repo, and it cannot fake a real shell's `$?` on a
+    process with no pytest anywhere in it. Nothing here is repaired by knowing that —
+    it is recorded so that a green run of this suite is never read as more than it is.
+    """
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
+    env["PYTHONPATH"] = str(SRC.parent)
+    env.update(extra)
+    return env
+
+
 def _shell_status(argv: list[str], tmp_path: Path, label: str = "run") -> tuple[int, str, str]:
     """Run `argv` in /bin/sh; return the status the SHELL read, plus stdout and stderr.
 
@@ -2533,12 +2581,7 @@ def _shell_status(argv: list[str], tmp_path: Path, label: str = "run") -> tuple[
         ["/bin/sh", "-c", '"$@" >"$BK_OUT" 2>"$BK_ERR"; echo "status=$?"', "sh", *argv],
         capture_output=True,
         text=True,
-        env={
-            **os.environ,
-            "BK_OUT": str(out),
-            "BK_ERR": str(err),
-            "PYTHONPATH": str(SRC.parent),
-        },
+        env=_child_env(BK_OUT=str(out), BK_ERR=str(err)),
     )
     assert proc.returncode == 0, proc.stderr  # the shell itself ran
     assert proc.stdout.startswith("status="), proc.stdout
@@ -2798,6 +2841,25 @@ def test_help_prints_the_exit_status_contract(tmp_path):
     ):
         assert f"\n  {value}  " in out, f"status {value} is not in the epilog"
     assert "did not complete a measurement" in out
+    # RB-P27. The range advice is part of the contract too, and the v0.18.0 wording was
+    # wrong about the one case it named. The epilog must state BOTH halves of what
+    # replaced it: that a lost stdout on the run path keeps the earned status, and that
+    # `--help` and a written-to stderr still leave the range. A patch that quietly
+    # upgrades this to a blanket promise of coverage is red here.
+    assert "no longer leaves the range" in out and "it EARNED" in out
+    assert "--help" in out and "stderr lost while the run was writing to it" in out
+    assert "did not run to completion" not in out  # the sentence RB-P27 disproved
+    # RB-P31. The v0.19.0 wording of that same list was ALSO wrong, in the other
+    # direction: it enumerated the out-of-range cases as if the enumeration were
+    # complete, and J5 then measured one it excludes — a stdout failure on the run path
+    # that is not the reader going away (EBADF, stderr live) — which still leaves the
+    # range at 120, and reports 1 at a table bigger than stdout's buffer. Nothing pins
+    # exhaustiveness and nothing can, so the epilog must say the list is OPEN and must
+    # disclose the uncovered case it knows about. A patch that re-closes the list, or
+    # that drops the disclosure without fixing the behaviour, is red here.
+    assert "OPEN rather than exhaustive" in out
+    assert "RB-P31" in out and "EBADF" in out
+    assert "not proof the measurement is missing" in out
 
 
 def test_this_modules_own_validation_errors_are_argparses_number(tmp_path):
@@ -2813,3 +2875,297 @@ def test_this_modules_own_validation_errors_are_argparses_number(tmp_path):
     )
     assert status == criticreplay.USAGE_EXIT
     assert "--replays and --identity-replays must be >= 1" in err
+
+
+# ---- RB-P27 lever (2): with no reader on stdout, a completed run keeps the status it EARNED ----
+#
+# Filed at docs/eval.md, RB-P27 case (a): with the reader of its stdout gone, a violating
+# run COMPLETES — all 32 JSONL rows and a summary carrying both guard violations are on
+# disk — and the shell reads 120, the interpreter's number for "flushing stdout at
+# shutdown failed". Not 3, not 4, and outside the tool's own range, which is the one case
+# where the v0.18.0 epilog's advice ("treat anything outside 0-4 as *did not run to
+# completion*") is wrong about a run that demonstrably did.
+#
+# These are the EXECUTABLE SPEC for the fix, and they were WRITTEN BEFORE IT (f5e38b0,
+# three non-strict `xfail` nodes). The handler landed in v0.19.0 and the markers came off;
+# the measured pre-fix status they were written against is kept in
+# `_CLOSED_PIPE_PREFIX_STATUS` and each node still asserts against it, because the number
+# the fix was written to move is evidence and does not get erased by the fix.
+#
+# METHOD. RB-P24's rule is that a status claim is read from a real `$?`, so the closed-pipe
+# harness keeps the shell: `/bin/sh` runs the CLI and echoes its own `$?` to a FILE, and
+# the whole shell's stdout is a pipe with NO reader. The read end is closed BEFORE the
+# child is spawned, so there is no window in which a reader exists and no race to lose —
+# every write to fd 1 fails with EPIPE from the first byte. That is a reader that is
+# actually gone (`... | head -1` once `head` has exited), not a mock and not a patched
+# `sys.stdout`, which would measure what a function returns rather than what a process
+# leaves behind.
+
+_CLOSED_PIPE_PREFIX_STATUS = 120
+"""What the shell read on c7d0b72 (v0.18.0), measured 2026-08-12, for all three cases.
+
+    .venv/bin/python -m pytest runtime-py/tests/test_criticreplay.py -q -k closed_pipe \
+        --runxfail
+
+The number is the same 120 for a run that earned 0, one that earned 3 and one that
+earned 4 — which is the finding: the shutdown failure erases the verdict. That is the
+PRE-FIX measurement and it stays here as such; the three nodes below now assert the
+earned status AND that it is no longer this number, so the fix is pinned against the
+thing it was written to move rather than against a number chosen afterwards.
+
+Reproduce the pre-fix reading at any time: `git stash` the handler, or check out
+`c7d0b72`, and run the command above. The equivalent measurement OUTSIDE pytest — which
+is what RB-P28 says the spec alone cannot substitute for — is the field command recorded
+in RB-P27's closure in `docs/eval.md`.
+"""
+
+
+def _closed_pipe_status(argv: list[str], tmp_path: Path, label: str) -> tuple[int, str]:
+    """Run `argv` with stdout wired to a pipe that has no read end. Return `$?` and stderr.
+
+    The status is the shell's own `$?`, written to a file on the side, exactly as
+    `_shell_status` does it — nothing here reads a Python return value. stderr is a file
+    too, so the interpreter's shutdown complaint (if any) is readable.
+    """
+    where = tmp_path / f"_pipe-{label}"
+    where.mkdir(parents=True, exist_ok=True)
+    err, status_file = where / "stderr.txt", where / "status.txt"
+    read_fd, write_fd = os.pipe()
+    os.close(read_fd)  # the reader is gone before the child exists: no race, no window
+    try:
+        proc = subprocess.Popen(
+            ["/bin/sh", "-c", '"$@" 2>"$BK_ERR"; echo "status=$?" >"$BK_STATUS"', "sh", *argv],
+            stdout=write_fd,
+            env=_child_env(BK_ERR=str(err), BK_STATUS=str(status_file)),
+        )
+    finally:
+        os.close(write_fd)
+    assert proc.wait() == 0  # the shell itself ran to the end of its command list
+    text = status_file.read_text()
+    assert text.startswith("status="), text
+    return int(text.split("=", 1)[1]), err.read_text()
+
+
+_DUMP_PYTEST_KEYS = (
+    "import os, sys; "
+    "sys.{stream}.write(repr(sorted(k for k in os.environ if k.startswith('PYTEST_'))))"
+)
+
+
+def test_the_status_harnesses_hand_the_child_no_pytest_marker(tmp_path):
+    """RB-P28's closeable half, PINNED — a test that goes red, not a comment (`_child_env`).
+
+    The child is asked to report its own `PYTEST_*` keys, through BOTH harnesses, and the
+    answer has to be the empty list. The parent assertion is what makes this
+    non-vacuous: `PYTEST_CURRENT_TEST` IS in this process's environment right now, so an
+    empty list downstream is the scrub working and not the variable being absent. Delete
+    the filter in `_child_env` and both halves go red.
+
+    The closed-pipe half reports on STDERR because its stdout is a pipe with no reader —
+    the one stream that harness leaves readable.
+    """
+    assert "PYTEST_CURRENT_TEST" in os.environ  # the thing being scrubbed exists here
+
+    status, out, err = _shell_status(
+        [sys.executable, "-c", _DUMP_PYTEST_KEYS.format(stream="stdout")], tmp_path, "envscrub"
+    )
+    assert status == 0, err
+    assert out == "[]", out
+
+    status, err = _closed_pipe_status(
+        [sys.executable, "-c", _DUMP_PYTEST_KEYS.format(stream="stderr")], tmp_path, "envscrub"
+    )
+    assert status == 0, err
+    assert err == "[]", err
+
+
+def test_closed_pipe_clean_run_still_exits_zero(rig, tmp_path):
+    """Earned 0. A lost stdout may DOWNGRADE to a status the run had; it may not invent one."""
+    status, err = _closed_pipe_status(_cli(rig), tmp_path, "clean")
+    assert status == 0, err
+    assert status != _CLOSED_PIPE_PREFIX_STATUS  # what c7d0b72 read here
+
+
+def test_closed_pipe_violating_run_still_exits_three_and_writes_the_same_bytes(
+    guard_rig, tmp_path
+):
+    """Earned 3 — and the artifacts are BYTE-IDENTICAL to the same run with a live reader.
+
+    Two properties in one test on purpose. The status is the finding; the byte comparison
+    is what stops the fix from being "exit 3 somehow" — the run must still have measured,
+    and losing the reader of the table may not change one byte of the JSONL or the summary.
+    The open-pipe run is `_shell_status`, i.e. the already-pinned RB-P24 path, so the
+    earned status is read from an INDEPENDENT run rather than asserted from this file.
+    """
+    live_rows, live_summary = tmp_path / "live.jsonl", tmp_path / "live.json"
+    live_status, out, _ = _shell_status(
+        _cli(guard_rig, "--json", str(live_rows), "--summary", str(live_summary)),
+        tmp_path,
+        "p27-live",
+    )
+    assert live_status == criticreplay.GUARD_VIOLATION_EXIT  # what the run EARNS
+    assert "GUARD VIOLATIONS" in out
+
+    dark_rows, dark_summary = tmp_path / "dark.jsonl", tmp_path / "dark.json"
+    status, err = _closed_pipe_status(
+        _cli(guard_rig, "--json", str(dark_rows), "--summary", str(dark_summary)),
+        tmp_path,
+        "violating",
+    )
+    assert status == live_status, err
+    assert status != 0  # a handler that swallowed everything into a 0 fails here
+    assert status != _CLOSED_PIPE_PREFIX_STATUS  # what c7d0b72 read here
+    assert dark_summary.read_bytes() == live_summary.read_bytes()
+    assert dark_rows.read_bytes() == live_rows.read_bytes()
+
+
+def test_closed_pipe_unwritable_summary_still_exits_four(guard_rig, tmp_path):
+    """Earned 4, and 4 IS reachable in this harness — so the spec covers three earned values.
+
+    4 outranks 3 (RB-P24), and the write failure is reported on stderr, which still has a
+    reader. So this is also the case that distinguishes "downgrade to the earned status"
+    from "exit 3 whenever the guard fired".
+    """
+    rows_path = tmp_path / "rows.jsonl"
+    status, err = _closed_pipe_status(
+        _cli(guard_rig, "--json", str(rows_path), "--summary", str(_unwritable(tmp_path))),
+        tmp_path,
+        "unwritable",
+    )
+    assert status == criticreplay.ARTIFACT_WRITE_EXIT, err
+    assert status != _CLOSED_PIPE_PREFIX_STATUS  # what c7d0b72 read here
+    assert "could not be written" in err
+    assert len(rows_path.read_text().splitlines()) > 0  # it measured
+
+
+# The controls. These pass on c7d0b72 and must keep passing after the fix: they are what
+# catches a handler that buys the three tests above by swallowing genuine failures.
+
+
+def test_closed_pipe_refusal_is_still_a_refusal(rig, tmp_path):
+    """Control: a run that never measured writes nothing to stdout, so it is 1 either way.
+
+    A handler that reported an "earned" status for a run that refused — or that turned an
+    unhandled error into 0 because stdout happened to be broken — is red here.
+    """
+    argv = _cli(rig, entry=[sys.executable, "-m", "bantamkit.criticreplay"])
+    argv[argv.index(str(rig["transcripts"]))] = str(tmp_path / "nope")
+    status, err = _closed_pipe_status(argv, tmp_path, "refusal")
+    assert status == criticreplay.REFUSAL_EXIT
+    assert "no transcripts" in err
+
+
+def test_closed_pipe_usage_error_is_still_the_usage_status(tmp_path):
+    """Control: argparse's number survives a dead stdout, because it writes to stderr."""
+    status, err = _closed_pipe_status(
+        [sys.executable, "-m", "bantamkit.criticreplay", "--not-a-flag"], tmp_path, "usage"
+    )
+    assert status == criticreplay.USAGE_EXIT
+
+
+@pytest.mark.parametrize(
+    "boom",
+    [
+        pytest.param(RuntimeError("format_table is broken"), id="not-an-OSError"),
+        pytest.param(OSError(errno.ENOSPC, "No space left on device"), id="OSError-not-EPIPE"),
+    ],
+)
+def test_a_non_pipe_failure_around_the_table_print_is_not_downgraded(boom, rig, monkeypatch):
+    """Control, and the direct answer to "what if the handler swallows a genuine error?".
+
+    The handler RB-P27 asks for is narrow: the pipe going away is the only thing it may
+    convert into the earned status. A `except Exception:` or a bare `except OSError:`
+    around the print would buy the three closed-pipe tests above and quietly report a
+    clean measurement for a run whose report never rendered. Both raisers here must reach
+    the caller — the failure is not a broken pipe, so it is not this handler's business.
+
+    Still load-bearing after the fix, and deliberately so: `format_table(summary)` is
+    evaluated INSIDE the shipped `try`, so both raisers are raised inside the handler's
+    reach and are caught only because `except BrokenPipeError` refuses them. Hoisting the
+    call out of the `try` would make this control pass for a reason that has nothing to
+    do with the handler.
+
+    In-process on purpose: this is about which exception propagates out of `main`, not
+    about a status a shell reads, and constructing an ENOSPC on a real device is not
+    portable. The status contract itself is never pinned this way (RB-P24).
+    """
+    monkeypatch.setattr(criticreplay, "OpenAICompatible", lambda **kw: ScriptedCritic(lambda p: 9))
+
+    def explode(_summary):
+        raise boom
+
+    monkeypatch.setattr(criticreplay, "format_table", explode)
+    argv = _cli(rig)[2:]  # the same flags, minus the `python probe.py` entry point
+    with pytest.raises(type(boom)):
+        criticreplay.main(argv)
+
+
+# ---- What the handler does NOT cover, measured rather than assumed ----
+#
+# The v0.19.0 contract claims coverage for exactly one thing: the run path's own write to
+# stdout — the table print, its flush, and the interpreter's shutdown flush behind it. It
+# says in the same breath that a lost stdout OUTSIDE that write, and a lost stderr the run
+# actually writes to, still leave the range. These two nodes are what make that half of
+# the sentence a claim rather than a hedge: if a later change extends the handler, they go
+# red and the contract prose has to be corrected with them.
+
+
+def _closed_stderr_status(argv: list[str], tmp_path: Path, label: str) -> tuple[int, str]:
+    """`_closed_pipe_status`'s twin, with the dead pipe on STDERR and stdout on a file.
+
+    Same method, same guarantee — the read end is closed before the child exists, so
+    every write to fd 2 fails with EPIPE from the first byte — and the same independent
+    reader: the status is `/bin/sh`'s own `$?`, echoed to a file on the side. Written as
+    its own function rather than as a flag on `_closed_pipe_status` so that the harness
+    the RB-P27 spec is measured with stays exactly the one that measured the pre-fix 120.
+    """
+    where = tmp_path / f"_pipe-err-{label}"
+    where.mkdir(parents=True, exist_ok=True)
+    out, status_file = where / "stdout.txt", where / "status.txt"
+    read_fd, write_fd = os.pipe()
+    os.close(read_fd)
+    try:
+        proc = subprocess.Popen(
+            ["/bin/sh", "-c", '"$@" >"$BK_OUT"; echo "status=$?" >"$BK_STATUS"', "sh", *argv],
+            stderr=write_fd,
+            env=_child_env(BK_OUT=str(out), BK_STATUS=str(status_file)),
+        )
+    finally:
+        os.close(write_fd)
+    assert proc.wait() == 0
+    text = status_file.read_text()
+    assert text.startswith("status="), text
+    return int(text.split("=", 1)[1]), out.read_text()
+
+
+def test_help_with_no_reader_on_stdout_is_still_the_interpreters_number(tmp_path):
+    """UNCOVERED, and named as uncovered in the contract: argparse's own write to stdout.
+
+    `--help` renders the epilog and exits before `main` reaches its table print, so the
+    RB-P27 handler is not on that path at all and the shutdown flush is what the shell
+    sees. Measured, not assumed. A change that covers this may delete this node — and
+    must then also correct the sentence in `_EXIT_CONTRACT` that this node pins.
+    """
+    status, _ = _closed_pipe_status(
+        [sys.executable, "-m", "bantamkit.criticreplay", "--help"], tmp_path, "help"
+    )
+    assert status == _CLOSED_PIPE_PREFIX_STATUS
+
+
+def test_a_refusal_whose_stderr_has_no_reader_leaves_the_range(rig, tmp_path):
+    """UNCOVERED, and named as uncovered in the contract: a lost STDERR the run writes to.
+
+    The refusal path's `error: …` goes to stderr, so with no reader there the interpreter's
+    shutdown flush fails on fd 2 and the refusal status is erased exactly as the table
+    print's used to be. The handler is about stdout and does not reach this.
+
+    The companion measurement, deliberately NOT asserted as a contract promise because it
+    is a property of buffering rather than of this tool: a run that writes NOTHING to
+    stderr survives a dead stderr with its earned status intact (there is nothing to
+    flush). `docs/eval.md`'s RB-P27 closure records both numbers.
+    """
+    argv = _cli(rig, entry=[sys.executable, "-m", "bantamkit.criticreplay"])
+    argv[argv.index(str(rig["transcripts"]))] = str(tmp_path / "nope")
+    status, _ = _closed_stderr_status(argv, tmp_path, "refusal")
+    assert status == _CLOSED_PIPE_PREFIX_STATUS
+    assert status != criticreplay.REFUSAL_EXIT  # the number the run would otherwise report

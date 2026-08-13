@@ -1,0 +1,17 @@
+{
+  "model": "bk-rbp27-qwen2.5-7b-instruct",
+  "attempt": 4,
+  "seed": 1200654795,
+  "prompt_sha256": "a65efda6d59dcb824f7ee56bf7c4c53addc7d931efdbd08c533b9f053d38f615",
+  "verdict": "fail",
+  "reason": "apply-failed: block 0 SEARCH text occurs 0 times in runtime-py/src/bantamkit/criticreplay.py (must be exactly 1)",
+  "raw_completion": "<<<<<<< SEARCH\n            except BantamError as e:\n                print(f\"error: {e}\", file=sys.stderr)\n                raise SystemExit(1) from e\n=======\n            except BantamError as e:\n                print(f\"error: {e}\", file=sys.stderr)\n                raise SystemExit(int(status or 1)) from e\n>>>>>>> REPLACE",
+  "patch": "",
+  "touched": [],
+  "prompt_tokens": 3374,
+  "completion_tokens": 74,
+  "wall_clock_s": 2.369,
+  "model_call_s": 1.895,
+  "oracle_s": 0.471,
+  "phases": {}
+}

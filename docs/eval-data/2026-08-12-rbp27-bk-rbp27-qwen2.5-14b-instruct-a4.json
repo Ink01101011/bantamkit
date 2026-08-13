@@ -1,0 +1,17 @@
+{
+  "model": "bk-rbp27-qwen2.5-14b-instruct",
+  "attempt": 4,
+  "seed": 222923721,
+  "prompt_sha256": "a65efda6d59dcb824f7ee56bf7c4c53addc7d931efdbd08c533b9f053d38f615",
+  "verdict": "fail",
+  "reason": "apply-failed: block 0 SEARCH text occurs 0 times in runtime-py/src/bantamkit/criticreplay.py (must be exactly 1)",
+  "raw_completion": "<<<<<<< SEARCH\n```\n        if args.summary:\n            try:\n                args.summary.parent.mkdir(parents=True, exist_ok=True)\n                args.summary.write_text(json.dumps(summary, indent=2) + \"\\n\")\n            except OSError as e:\n                write_failure = e\n                print(\n                    f\"error: measured, but the summary could not be written to \"\n                    f\"{args.summary}: {e}. The table below is the measurement; the JSONL \"\n                    \"rows, if --json was passed, are on disk.\",\n                    file=sys.stderr,\n                )\n```\n=======\n        if args.summary:\n            try:\n                args.summary.parent.mkdir(parents=True, exist_ok=True)\n                content = json.dumps(summary, indent=2) + \"\\n\"\n                with open(args.summary, \"w\") as summary_file:\n                    summary_file.write(content)\n            except OSError as e:\n                write_failure = e\n                print(\n                    f\"error: measured, but the summary could not be written to \"\n                    f\"{args.summary}: {e}. The table below is the measurement; the JSONL \"\n                    \"rows, if --json was passed, are on disk.\",\n                    file=sys.stderr,\n                )\n            except Exception as e:\n                # Catch other exceptions and propagate them\n                raise\n\n        try:\n            jsonl.close()\n        finally:\n            if write_failure is not None:\n                status = ARTIFACT_WRITE_EXIT\n            elif args.violations_exit_zero and exit_status(result) == GUARD_VIOLATION_EXIT:\n                status = 0\n            else:\n                status = exit_status(result)\n            raise SystemExit(status)\n>>>>>>> REPLACE",
+  "patch": "",
+  "touched": [],
+  "prompt_tokens": 3374,
+  "completion_tokens": 338,
+  "wall_clock_s": 16.798,
+  "model_call_s": 16.015,
+  "oracle_s": 0.778,
+  "phases": {}
+}

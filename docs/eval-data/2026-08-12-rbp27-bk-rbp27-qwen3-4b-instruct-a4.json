@@ -1,0 +1,22 @@
+{
+  "model": "bk-rbp27-qwen3-4b-instruct",
+  "attempt": 4,
+  "seed": 3743692177,
+  "prompt_sha256": "a65efda6d59dcb824f7ee56bf7c4c53addc7d931efdbd08c533b9f053d38f615",
+  "verdict": "fail",
+  "reason": "spec-red: 3 failed, 4 passed, 155 deselected in 0.91s",
+  "raw_completion": "<<<<<<< SEARCH\n    if status:\n        raise SystemExit(status)\n\n\nif __name__ == \"__main__\":\n    main()\n=======\n    if status:\n        raise SystemExit(status)\n\nif __name__ == \"__main__\":\n    main()\n>>>>>>> REPLACE",
+  "patch": "<<<<<<< SEARCH\n    if status:\n        raise SystemExit(status)\n\n\nif __name__ == \"__main__\":\n    main()\n=======\n    if status:\n        raise SystemExit(status)\n\nif __name__ == \"__main__\":\n    main()\n>>>>>>> REPLACE",
+  "touched": [
+    "runtime-py/src/bantamkit/criticreplay.py"
+  ],
+  "prompt_tokens": 3377,
+  "completion_tokens": 49,
+  "wall_clock_s": 2.627,
+  "model_call_s": 1.0,
+  "oracle_s": 1.623,
+  "phases": {
+    "ruff": 0.029,
+    "spec": 1.073
+  }
+}

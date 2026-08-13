@@ -1,0 +1,21 @@
+{
+  "model": "bk-rbp27-qwen2.5-7b-instruct",
+  "attempt": 1,
+  "seed": 4142456520,
+  "prompt_sha256": "a65efda6d59dcb824f7ee56bf7c4c53addc7d931efdbd08c533b9f053d38f615",
+  "verdict": "fail",
+  "reason": "ruff-failed: ned name `os`\n    --> runtime-py/src/bantamkit/criticreplay.py:1888:17\n     |\n1886 |         elif args.summary and write_failure is None:\n1887 |             with contextlib.suppress(FileNotFoundError):\n1888 |                 os.remove(args.summary)\n     |                 ^^\n1889 |\n1890 |     # RB-P24 review, C1: this write is the one artifact produced AFTER the measurement,\n     |\n\nFound 3 errors.",
+  "raw_completion": "<<<<<<< SEARCH\n        raise SystemExit(1) from e\n    finally:\n        if jsonl is not None:\n            jsonl.close()\n=======\n        raise SystemExit(1) from e\n    finally:\n        if jsonl is not None:\n            jsonl.close()\n        elif args.summary and write_failure is None:\n            with contextlib.suppress(FileNotFoundError):\n                os.remove(args.summary)\n>>>>>>> REPLACE",
+  "patch": "<<<<<<< SEARCH\n        raise SystemExit(1) from e\n    finally:\n        if jsonl is not None:\n            jsonl.close()\n=======\n        raise SystemExit(1) from e\n    finally:\n        if jsonl is not None:\n            jsonl.close()\n        elif args.summary and write_failure is None:\n            with contextlib.suppress(FileNotFoundError):\n                os.remove(args.summary)\n>>>>>>> REPLACE",
+  "touched": [
+    "runtime-py/src/bantamkit/criticreplay.py"
+  ],
+  "prompt_tokens": 3374,
+  "completion_tokens": 84,
+  "wall_clock_s": 2.695,
+  "model_call_s": 2.142,
+  "oracle_s": 0.549,
+  "phases": {
+    "ruff": 0.031
+  }
+}

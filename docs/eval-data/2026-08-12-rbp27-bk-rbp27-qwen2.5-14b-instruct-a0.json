@@ -1,0 +1,17 @@
+{
+  "model": "bk-rbp27-qwen2.5-14b-instruct",
+  "attempt": 0,
+  "seed": 3546819866,
+  "prompt_sha256": "a65efda6d59dcb824f7ee56bf7c4c53addc7d931efdbd08c533b9f053d38f615",
+  "verdict": "fail",
+  "reason": "apply-failed: block 0 SEARCH text occurs 0 times in runtime-py/src/bantamkit/criticreplay.py (must be exactly 1)",
+  "raw_completion": "<<<<<<< SEARCH\n        if write_failure is not None:\n            # Outranks the guard status and survives the hatch: 3 promises \"every artifact\n            # is written\", and the hatch is an opt-out from 3 alone.\n            status = ARTIFACT_WRITE_EXIT\n        if status:\n            raise SystemExit(status)\n=======\n        if write_failure is not None:\n            # Outranks the guard status and survives the hatch: 3 promises \"every artifact\n            # is written\", and the hatch is an opt-out from 3 alone.\n            sys.exit(ARTIFACT_WRITE_EXIT)\n        elif status:\n            sys.exit(status)\n>>>>>>> REPLACE",
+  "patch": "",
+  "touched": [],
+  "prompt_tokens": 3374,
+  "completion_tokens": 135,
+  "wall_clock_s": 40.206,
+  "model_call_s": 39.347,
+  "oracle_s": 0.83,
+  "phases": {}
+}

@@ -1,0 +1,21 @@
+{
+  "model": "bk-rbp27-qwen2.5-7b-instruct",
+  "attempt": 0,
+  "seed": 2416074008,
+  "prompt_sha256": "a65efda6d59dcb824f7ee56bf7c4c53addc7d931efdbd08c533b9f053d38f615",
+  "verdict": "fail",
+  "reason": "ruff-failed: marize(result, manifest.sha256)\n1891 |     except BantamError as e:\n     |\n\ninvalid-syntax: Expected a statement\n    --> runtime-py/src/bantamkit/criticreplay.py:1889:10\n     |\n1887 |             guard=args.guard,\n1888 |             on_row=sink,\n1889 |         )\n     |          ^\n1890 |         summary = summarize(result, manifest.sha256)\n1891 |     except BantamError as e:\n     |\n\nFound 3 errors.",
+  "raw_completion": "<<<<<<< SEARCH\n            jsonl = args.json.open(\"a\")\n\n            def sink(row: ReplayRow) -> None:\n                jsonl.write(json.dumps(row.row()) + \"\\n\")\n                jsonl.flush()  # a killed run keeps its partials\n\n        result = run(\n=======\n            jsonl = args.json.open(\"a\")\n\n            def sink(row: ReplayRow) -> None:\n                jsonl.write(json.dumps(row.row()) + \"\\n\")\n                jsonl.flush()  # a killed run keeps its partials\n\n        result = run(\n            client,\n            variants,\n            manifest,\n            cases,\n            replays=args.replays,\n            identity_replays=args.identity_replays,\n            identity_only=args.identity_only,\n            model=args.model,\n            guard=args.guard,\n            on_row=sink,\n        )\n>>>>>>> REPLACE",
+  "patch": "<<<<<<< SEARCH\n            jsonl = args.json.open(\"a\")\n\n            def sink(row: ReplayRow) -> None:\n                jsonl.write(json.dumps(row.row()) + \"\\n\")\n                jsonl.flush()  # a killed run keeps its partials\n\n        result = run(\n=======\n            jsonl = args.json.open(\"a\")\n\n            def sink(row: ReplayRow) -> None:\n                jsonl.write(json.dumps(row.row()) + \"\\n\")\n                jsonl.flush()  # a killed run keeps its partials\n\n        result = run(\n            client,\n            variants,\n            manifest,\n            cases,\n            replays=args.replays,\n            identity_replays=args.identity_replays,\n            identity_only=args.identity_only,\n            model=args.model,\n            guard=args.guard,\n            on_row=sink,\n        )\n>>>>>>> REPLACE",
+  "touched": [
+    "runtime-py/src/bantamkit/criticreplay.py"
+  ],
+  "prompt_tokens": 3374,
+  "completion_tokens": 168,
+  "wall_clock_s": 5.094,
+  "model_call_s": 4.195,
+  "oracle_s": 0.871,
+  "phases": {
+    "ruff": 0.067
+  }
+}

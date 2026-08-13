@@ -1,0 +1,21 @@
+{
+  "model": "bk-rbp27-qwen2.5-14b-instruct",
+  "attempt": 2,
+  "seed": 897040086,
+  "prompt_sha256": "a65efda6d59dcb824f7ee56bf7c4c53addc7d931efdbd08c533b9f053d38f615",
+  "verdict": "fail",
+  "reason": "ruff-failed:          if write_failure is not None:\n1908 |             sys.exit(ARTIFACT_WRITE_EXIT)\n1909 |             \n     | ^^^^^^^^^^^^\n1910 |     print(format_table(summary))\n     |\nhelp: Remove whitespace from blank line\n     |\n1908 |             sys.exit(ARTIFACT_WRITE_EXIT)\n     -             \n1909 +\n1910 |     print(format_table(summary))\n     |\n\nFound 2 errors.\n[*] 2 fixable with the `--fix` option.",
+  "raw_completion": "<<<<<<< SEARCH\n```\n\n        except OSError as e:\n            write_failure = e\n            print(\n                f\"error: measured, but the summary could not be written to \"\n                f\"{args.summary}: {e}. The table below is the measurement; the JSONL \"\n                \"rows, if --json was passed, are on disk.\",\n                file=sys.stderr,\n            )\n```\n=======\n            \n        except OSError as e:\n            write_failure = e\n            print(\n                f\"error: measured, but the summary could not be written to {args.summary}: {e}.\",\n                file=sys.stderr,\n            )\n\n        # Exit with status 4 if summary writing failed.\n        if write_failure is not None:\n            sys.exit(ARTIFACT_WRITE_EXIT)\n            \n>>>>>>> REPLACE",
+  "patch": "<<<<<<< SEARCH\n        except OSError as e:\n            write_failure = e\n            print(\n                f\"error: measured, but the summary could not be written to \"\n                f\"{args.summary}: {e}. The table below is the measurement; the JSONL \"\n                \"rows, if --json was passed, are on disk.\",\n                file=sys.stderr,\n            )\n=======\n            \n        except OSError as e:\n            write_failure = e\n            print(\n                f\"error: measured, but the summary could not be written to {args.summary}: {e}.\",\n                file=sys.stderr,\n            )\n\n        # Exit with status 4 if summary writing failed.\n        if write_failure is not None:\n            sys.exit(ARTIFACT_WRITE_EXIT)\n            \n>>>>>>> REPLACE",
+  "touched": [
+    "runtime-py/src/bantamkit/criticreplay.py"
+  ],
+  "prompt_tokens": 3374,
+  "completion_tokens": 160,
+  "wall_clock_s": 8.487,
+  "model_call_s": 7.606,
+  "oracle_s": 0.876,
+  "phases": {
+    "ruff": 0.082
+  }
+}

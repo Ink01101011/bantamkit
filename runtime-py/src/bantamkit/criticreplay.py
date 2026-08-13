@@ -63,6 +63,7 @@ import argparse
 import difflib
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -186,10 +187,52 @@ GUARD_MODES = ("warn", "error")
 # A CI job writes against these directly: 0 clean, 1 fix the input and re-run (any
 # artifacts are partial), 2 fix the command line, 3 the run happened and the GUARD
 # section and the `guard_dropped` blocks have to be read before anything is credited,
-# 4 the run happened but its summary is not on disk. Anything outside 0-4 did not come
-# from this tool: 130 is SIGINT, 143 is SIGTERM, and a stdout that goes away mid-table
-# is the interpreter's number, not one of these — a CI job should branch on this range
-# and treat everything else as "did not run to completion".
+# 4 the run happened but its summary is not on disk. Branch on 0-4; 130 is SIGINT and
+# 143 is SIGTERM.
+#
+# ---- RB-P27, and what replaced a sentence that was wrong (v0.19.0) ----
+#
+# This comment used to end "a stdout that goes away mid-table is the interpreter's
+# number, not one of these — a CI job should branch on this range and treat everything
+# else as *did not run to completion*". The first half was true and the second was
+# false about the very case the first half named: that run HAD run to completion, every
+# JSONL row and the summary were on disk to prove it, and it reported 120 anyway.
+#
+# COVERED NOW, and this is the whole of what is covered: the READER GOING AWAY (EPIPE)
+# at the run path's own write to stdout — the table print, its flush, and the
+# interpreter's shutdown flush behind them. If the reader of stdout is gone there, the
+# run reports the status it EARNED (0, 3 or 4) and never the interpreter's number. A lost
+# stdout may DOWNGRADE to a number the run already had; it may not invent one. Read from
+# a real shell's `$?` for all three earned values by `test_closed_pipe_*` in
+# test_criticreplay.py. The narrowing to EPIPE is deliberate, and is itself pinned by
+# `test_a_non_pipe_failure_around_the_table_print_is_not_downgraded` — it also has a
+# price, filed as RB-P31 and listed below.
+#
+# STILL OUTSIDE THE RANGE, measured 2026-08-13 rather than assumed, because "everything
+# outside 0-4 means the run did not complete" is STILL not a true reading. This list is
+# OPEN — it is what has been measured, not a proof that nothing else escapes:
+#   - `--help` with no reader on stdout exits 120. argparse writes the epilog and exits
+#     before `main` reaches the handler, so the handler is not on that path at all.
+#   - a run that WRITES to stderr while stderr has no reader exits 120 — a refusal's
+#     `error: …`, the summary-write failure, the `--violations-exit-zero` note. The
+#     refusal's own 1 is erased exactly as the table's 3 used to be. A run that writes
+#     nothing to stderr is unaffected (nothing to flush; measured, still 3).
+# Those two are pinned by nodes that go red if a later change covers them, so they cannot
+# go stale silently: `test_help_with_no_reader_on_stdout_is_still_the_interpreters_
+# number` and `test_a_refusal_whose_stderr_has_no_reader_leaves_the_range`. NOTHING pins
+# the list's exhaustiveness, and it is NOT exhaustive:
+#   - RB-P31 (OPEN, not fixed here): a stdout write that fails on the run path for a
+#     reason other than a gone reader — fd 1 on a read-only fd fails with EBADF, not
+#     EPIPE — is not converted by the handler. Measured 120 on a small table, and 1 on a
+#     table larger than stdout's buffer, on a run with 2800 rows and a 907 KB summary on
+#     disk. The 1 is the worse half: that is the refusal status on a run that measured,
+#     which is the defect RB-P24 fixed for the summary write and did not fix here. No
+#     node goes red on either number today. See docs/eval.md, RB-P31, for the attack.
+#
+# So the advice is: branch on 0-4, and read anything else as "this process did not
+# choose its own status" — a signal, or a stream this handler does not cover — rather
+# than as "the measurement did not happen". The artifacts may still be on disk, and
+# under RB-P27's case (a) they demonstrably were.
 REFUSAL_EXIT = 1
 USAGE_EXIT = 2
 GUARD_VIOLATION_EXIT = 3
@@ -1779,9 +1822,20 @@ _EXIT_CONTRACT = f"""exit status (RB-P24):
   {ARTIFACT_WRITE_EXIT}  measured, but an artifact could not be written (the --summary file).
      The table is still printed. Outranks {GUARD_VIOLATION_EXIT}; --violations-exit-zero
      does not suppress it.
-Anything outside 0-{ARTIFACT_WRITE_EXIT} is the interpreter or a signal (130 SIGINT, 143
-SIGTERM), not this tool: branch on this range, treat the rest as "did not run to
-completion".
+Branch on 0-{ARTIFACT_WRITE_EXIT}. A stdout that goes away no longer leaves the range
+(RB-P27): if the reader of stdout is gone at the table print, the run reports the status
+it EARNED, never the interpreter's. That covers the READER GOING AWAY (EPIPE) on the run
+path, and nothing wider. Outside the range is the interpreter or a signal, and that list
+is OPEN rather than exhaustive - measured so far are 130 SIGINT, 143 SIGTERM, 120 for a
+stderr lost while the run was writing to it, and 120 for a stdout lost OUTSIDE the run
+path (--help). Read those as "this process did not choose its own status", NOT as "the
+measurement did not happen": the artifacts may still be on disk.
+UNCOVERED AND KNOWN BAD (RB-P31, open, not fixed): a stdout write that fails on the run
+path for some other reason than a gone reader - fd 1 on a read-only fd fails with EBADF,
+not EPIPE - is not handled here, and was measured at 120 on a small table and at
+{REFUSAL_EXIT} on a table larger than stdout's buffer, on a run with every artifact on
+disk. So a {REFUSAL_EXIT} is not proof the measurement is missing either. Check the
+artifacts before believing any status from a run whose stdout failed.
 """
 
 
@@ -1903,7 +1957,39 @@ def main(argv: list[str] | None = None) -> None:
                 "rows, if --json was passed, are on disk.",
                 file=sys.stderr,
             )
-    print(format_table(summary))
+    try:
+        print(format_table(summary))
+        sys.stdout.flush()
+    except BrokenPipeError:
+        # RB-P27 lever (2). The reader of stdout is gone (`... | head -1` once `head` has
+        # exited), so the table cannot be delivered. The measurement still happened and
+        # every artifact is on disk, so the run reports the status it EARNED below rather
+        # than the interpreter's 120 — a lost stdout may DOWNGRADE to a number the run
+        # already had; it may never invent one. Nothing that was written changes.
+        #
+        # The explicit `flush()` is load-bearing: `print` writes into a buffer, and
+        # without it the EPIPE would surface at interpreter shutdown instead of here,
+        # where it can be handled.
+        #
+        # `dup2` is load-bearing for the same reason, one step later. CPython flushes
+        # `sys.stdout` again during finalization, AFTER `main` has returned and after
+        # `SystemExit` has chosen its number; that flush fails on the same dead pipe,
+        # prints `Exception ignored in: <_io.TextIOWrapper name='<stdout>'>` and sets the
+        # status to 120 — overwriting the earned status we just decided to keep. Pointing
+        # fd 1 at the null device makes the shutdown flush succeed, so the number this
+        # function chooses is the number the shell reads. This is the standard-library
+        # recipe for SIGPIPE (Python docs, "Note on SIGPIPE"), minus its `sys.exit(1)`:
+        # 1 is this tool's REFUSAL status and this run measured.
+        #
+        # NARROW ON PURPOSE, and pinned as narrow by
+        # `test_a_non_pipe_failure_around_the_table_print_is_not_downgraded`: only
+        # `BrokenPipeError` is converted. A `except OSError` or `except Exception` here
+        # would report a clean measurement for a run whose report never rendered.
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(devnull, sys.stdout.fileno())
+        finally:
+            os.close(devnull)
 
     # RB-P24. LAST, after every artifact that could be written exists: the JSONL (whose
     # sink already flushed per row), the summary and the table. Non-zero here means

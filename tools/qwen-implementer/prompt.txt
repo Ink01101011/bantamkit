@@ -1,0 +1,302 @@
+===SYSTEM===
+You are a Python engineer working inside an existing repository. You make the smallest
+correct change that satisfies the requirement, and you change nothing you were not asked
+to change. You reply with search/replace blocks and nothing else — no prose, no
+explanation, no markdown fences.
+===USER===
+# Task
+
+A command-line tool has a defect. Fix it by editing exactly one file:
+
+    runtime-py/src/bantamkit/criticreplay.py
+
+That is the only file you may touch. Editing any test, asset or document is a failure.
+
+# Observed behaviour, measured from a shell reading its own `$?`
+
+The tool is run with its stdout connected to a pipe that has no reader — the shape a
+shell produces with `... | head -1` once `head` has exited, so every write to file
+descriptor 1 fails.
+
+What happens today:
+
+- the run RUNS TO COMPLETION. Every JSONL row is written and the summary file is
+  written; the artifacts on disk are complete and correct;
+- nothing reaches stdout, because there is nobody to read it;
+- on stderr the interpreter prints, as the process shuts down, a line beginning
+  `Exception ignored in: <_io.TextIOWrapper name='<stdout>' mode='w' encoding='utf-8'>`;
+- the shell reads exit status **120**, which is not one of this tool's own statuses and
+  is outside the range its own documentation tells callers to branch on.
+
+So a run that measured, and whose artifacts prove it measured, reports a number that
+tells its caller the run did not run to completion. That is the defect.
+
+# Required behaviour
+
+1. When the reader of stdout is gone, the process must exit with the status the run had
+   already **earned** — `0`, `3` or `4` as the contract below defines them — instead of
+   `120`.
+2. The statuses keep their meanings. A run that did not complete a measurement still
+   exits `1`; a command-line error still exits `2`. Nothing may gain a status it did not
+   earn.
+3. Failures that are NOT "the reader of stdout went away" must still reach the caller
+   unchanged. Do not swallow unrelated errors.
+4. A run whose stdout HAS a reader must be byte-for-byte unchanged: same stdout, same
+   files, same status.
+
+# The file, in the two regions that matter
+
+Both regions below are verbatim excerpts of the file. The rest of the file is unchanged
+and is not shown.
+
+## Region 1 — the status contract and its constants
+
+```
+
+# §3.3 step 3, guard 3. "should not" for "do NOT" changes the force of a directive, so a
+# paraphrase that moves any of these is a requirement edit wearing a paraphrase's clothes.
+FROZEN_KEYWORDS = (
+    "ONLY",
+    "NOT",
+    "never",
+    "every",
+    "any",
+    "must",
+    "should",
+    "even when",
+    "instead",
+)
+
+# The point classes §3 admits. `identity` is a mandatory member, not a perturbation class.
+CLASSES = ("identity", "whitespace", "order", "paraphrase")
+
+# What a run does when a point violates §3.3's shared-token guard on a cell. See
+# `guard_table` for why `warn` is the default and `error` is not.
+GUARD_MODES = ("warn", "error")
+
+# ---- the exit-status contract (§6.2, RB-P24) ----
+#
+# Five outcomes a CI job has to tell apart. Four of them are meanings this tool
+# chooses, and TWO MEANINGS MAY NOT SHARE ONE NUMBER — which is exactly what was
+# wrong: a run where guard 2 fired on eight cells exited 0, indistinguishable from a
+# clean one, so `--guard error` (which refuses instead of measuring) was the only
+# machine-readable verdict there was.
+#
+#   0  measured, and guard 2 fired on nothing that ran
+#   1  DID NOT COMPLETE A MEASUREMENT — every `BantamError` path, `--guard error`
+#      included, and every abort in the middle of one. The perturbation-bar spec
+#      §6/§11 rest on this family being non-zero. It does NOT promise that nothing
+#      was written: the JSONL sink flushes per row on purpose, so a run that dies
+#      mid-family (a refused connection on request 40 of 80) exits 1 with rows
+#      already on disk. 1 means the run owes you no conclusion, not that it left
+#      no trace. Read it as "fix the input and run it again", and treat any
+#      artifact from a 1 as partial.
+#   2  usage error. Not this module's to choose: it is argparse's, and it is recorded
+#      here as a MEASURED number (`--not-a-flag` exits 2), pinned from a shell by
+#      `test_argparses_usage_status_is_measured_not_assumed`, so that the statuses this
+#      module does choose cannot silently collide with it. argparse also owns this
+#      module's own `parser.error` validations (`--replays 0` exits 2, measured).
+#   3  measured, WITH violations. Every artifact is written — the JSONL, the summary,
+#      the printed table — and the status says the guard fired, never that the run
+#      failed. A violating cell (`nav-prod-port` is one) has to stay measurable.
+#   4  measured, but AN ARTIFACT COULD NOT BE WRITTEN — today, exactly: the
+#      `--summary` file. The measurement completed and the table is still printed;
+#      what is missing is the file a later reader would diff. It is a separate
+#      number because it used to be an unhandled `OSError`, i.e. a 1, on a run that
+#      had already flushed every JSONL row — the refusal status on a run that
+#      measured (RB-P24 review, C1). It OUTRANKS 3: "every artifact is written" is
+#      the one thing 3 promises, and here it is false. `--violations-exit-zero`
+#      cannot suppress it — the hatch is an opt-out from 3 alone.
+#
+# A CI job writes against these directly: 0 clean, 1 fix the input and re-run (any
+# artifacts are partial), 2 fix the command line, 3 the run happened and the GUARD
+# section and the `guard_dropped` blocks have to be read before anything is credited,
+# 4 the run happened but its summary is not on disk. Anything outside 0-4 did not come
+# from this tool: 130 is SIGINT, 143 is SIGTERM, and a stdout that goes away mid-table
+# is the interpreter's number, not one of these — a CI job should branch on this range
+# and treat everything else as "did not run to completion".
+REFUSAL_EXIT = 1
+USAGE_EXIT = 2
+GUARD_VIOLATION_EXIT = 3
+ARTIFACT_WRITE_EXIT = 4
+```
+
+## Region 2 — the command-line entry point
+
+```
+# ---- CLI (§6.2) ----
+
+_EXIT_CONTRACT = f"""exit status (RB-P24):
+  0  measured; guard 2 fired on nothing that ran
+  {REFUSAL_EXIT}  did not complete a measurement (bad input, --guard error on a violating
+     cell, or an abort mid-run). Artifacts from a {REFUSAL_EXIT} are PARTIAL, not absent:
+     the --json sink flushes per row so a killed run keeps what it got.
+  {USAGE_EXIT}  usage error (argparse's number, including this module's own validations)
+  {GUARD_VIOLATION_EXIT}  measured, WITH guard-2 violations - every artifact is still written,
+     and the GUARD section names each violating (point, cell)
+  {ARTIFACT_WRITE_EXIT}  measured, but an artifact could not be written (the --summary file).
+     The table is still printed. Outranks {GUARD_VIOLATION_EXIT}; --violations-exit-zero
+     does not suppress it.
+Anything outside 0-{ARTIFACT_WRITE_EXIT} is the interpreter or a signal (130 SIGINT, 143
+SIGTERM), not this tool: branch on this range, treat the rest as "did not run to
+completion".
+"""
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(
+        prog="python -m bantamkit.criticreplay",
+        description=(
+            "Perturbation bar: replay one critic over a family of meaning-preserving\n"
+            "edits to its own prompt and report the pass rate with its spread."
+        ),
+        epilog=_EXIT_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--rubric",
+        action="append",
+        required=True,
+        metavar="LABEL=SPEC",
+        help="repeatable; SPEC is a path or git:<ref>:<path>",
+    )
+    parser.add_argument(
+        "--manifest", type=Path, help="perturbation manifest (default: by rubric name)"
+    )
+    parser.add_argument(
+        "--transcripts", type=Path, required=True, help="directory of P8 transcripts (the cells)"
+    )
+    parser.add_argument("--task", action="append", help="repeatable; restrict to these tasks")
+    parser.add_argument("--base-url", required=True)
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--timeout", type=float, default=60.0)
+    parser.add_argument("--replays", type=int, default=1, help="replays per perturbation point")
+    parser.add_argument("--identity-replays", type=int, default=5)
+    parser.add_argument("--identity-only", action="store_true", help="RB-P15's standing check")
+    parser.add_argument(
+        "--guard",
+        choices=GUARD_MODES,
+        default="warn",
+        help=(
+            "what to do when a point shares a moved word with a cell (spec §3.3 guard 2, "
+            "computed under BOTH readings and tainted if either flags): 'warn' measures it "
+            "and records both readings on every row and in the summary (default); 'error' "
+            "refuses before any request"
+        ),
+    )
+    parser.add_argument("--json", type=Path, help="append one JSON line per replay to this file")
+    parser.add_argument("--summary", type=Path, help="write the summary JSON here")
+    parser.add_argument(
+        "--violations-exit-zero",
+        action="store_true",
+        help=(
+            f"exit 0 instead of {GUARD_VIOLATION_EXIT} when guard 2 fired on a replayed "
+            "pair, for a procedure whose violations are EXPECTED and recorded (the anchor "
+            "set's second pass is one). Changes nothing that is written, and prints what "
+            "it suppressed on stderr"
+        ),
+    )
+    args = parser.parse_args(argv)
+    if args.replays < 1 or args.identity_replays < 1:
+        parser.error("--replays and --identity-replays must be >= 1")
+
+    jsonl = None
+    try:
+        variants = [parse_rubric_arg(spec) for spec in args.rubric]
+        manifest = load_manifest(args.manifest, rubric_name=variants[0].rubric.name)
+        cases = load_cases(args.transcripts, tasks=args.task)
+        if not cases:
+            raise PerturbationError(
+                f"no transcripts with answers in {args.transcripts}"
+                + (f" for task(s) {args.task}" if args.task else "")
+            )
+        client = OpenAICompatible(
+            base_url=args.base_url, model=args.model, timeout=args.timeout
+        )
+        sink = None
+        if args.json:
+            args.json.parent.mkdir(parents=True, exist_ok=True)
+            jsonl = args.json.open("a")
+
+            def sink(row: ReplayRow) -> None:
+                jsonl.write(json.dumps(row.row()) + "\n")
+                jsonl.flush()  # a killed run keeps its partials
+
+        result = run(
+            client,
+            variants,
+            manifest,
+            cases,
+            replays=args.replays,
+            identity_replays=args.identity_replays,
+            identity_only=args.identity_only,
+            model=args.model,
+            guard=args.guard,
+            on_row=sink,
+        )
+        summary = summarize(result, manifest.sha256)
+    except BantamError as e:
+        print(f"error: {e}", file=sys.stderr)
+        raise SystemExit(1) from e
+    finally:
+        if jsonl is not None:
+            jsonl.close()
+
+    # RB-P24 review, C1: this write is the one artifact produced AFTER the measurement,
+    # and it used to sit outside every handler — so an unwritable `--summary` raised an
+    # unhandled OSError and the process exited 1, the REFUSAL status, on a run that had
+    # already flushed every JSONL row. A run that measured may not report that it
+    # refused. The failure gets its own number and the table is still printed, because
+    # the measurement happened and stdout is where it is readable.
+    write_failure: OSError | None = None
+    if args.summary:
+        try:
+            args.summary.parent.mkdir(parents=True, exist_ok=True)
+            args.summary.write_text(json.dumps(summary, indent=2) + "\n")
+        except OSError as e:
+            write_failure = e
+            print(
+                f"error: measured, but the summary could not be written to "
+                f"{args.summary}: {e}. The table below is the measurement; the JSONL "
+                "rows, if --json was passed, are on disk.",
+                file=sys.stderr,
+            )
+    print(format_table(summary))
+
+    # RB-P24. LAST, after every artifact that could be written exists: the JSONL (whose
+    # sink already flushed per row), the summary and the table. Non-zero here means
+    # "measured, and the guard fired" or "measured, and a file could not be written" —
+    # never "nothing happened". Nothing that is written depends on this.
+    status = exit_status(result)
+    if status and args.violations_exit_zero:
+        print(
+            f"note: guard 2 fired on a replayed pair; suppressing status {status} because "
+            "--violations-exit-zero was passed. The violations are in the GUARD section "
+            "above and in the artifacts.",
+            file=sys.stderr,
+        )
+        status = 0
+    if write_failure is not None:
+        # Outranks the guard status and survives the hatch: 3 promises "every artifact
+        # is written", and the hatch is an opt-out from 3 alone.
+        status = ARTIFACT_WRITE_EXIT
+    if status:
+        raise SystemExit(status)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+# Reply format
+
+Reply with one or more blocks in exactly this form, and nothing else:
+
+<<<<<<< SEARCH
+(lines copied byte-for-byte from an excerpt above, including indentation)
+=======
+(the lines that replace them)
+>>>>>>> REPLACE
+
+The SEARCH text must occur exactly once in the file. Copy it exactly: leading whitespace
+is significant. Do not wrap the blocks in markdown fences. Do not explain.
