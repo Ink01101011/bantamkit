@@ -3005,11 +3005,18 @@ def _child_env(**extra: str) -> dict[str, str]:
     return env
 
 
-def _shell_status(argv: list[str], tmp_path: Path, label: str = "run") -> tuple[int, str, str]:
+def _shell_status(
+    argv: list[str], tmp_path: Path, label: str = "run", cwd: Path | None = None
+) -> tuple[int, str, str]:
     """Run `argv` in /bin/sh; return the status the SHELL read, plus stdout and stderr.
 
     The status is echoed by the shell's own `$?` on a stream of its own, with the
     command's streams redirected to files — so nothing here reads a Python return value.
+
+    `cwd` exists for the RB-P28 acceptance probes at the end of this file: `parse_rubric_arg`
+    resolves `git:` and `derive:` specs against the process's working directory, so a probe
+    that reads a committed rubric has to start inside the tree it is reading. Every other
+    caller leaves it `None` and inherits pytest's, which is what they have always done.
     """
     where = tmp_path / f"_shell-{label}"
     where.mkdir(parents=True, exist_ok=True)
@@ -3018,6 +3025,7 @@ def _shell_status(argv: list[str], tmp_path: Path, label: str = "run") -> tuple[
         ["/bin/sh", "-c", '"$@" >"$BK_OUT" 2>"$BK_ERR"; echo "status=$?"', "sh", *argv],
         capture_output=True,
         text=True,
+        cwd=None if cwd is None else str(cwd),
         env=_child_env(BK_OUT=str(out), BK_ERR=str(err)),
     )
     assert proc.returncode == 0, proc.stderr  # the shell itself ran
@@ -5912,3 +5920,234 @@ def test_the_payload_sha_field_is_readable_in_both_shapes_the_record_uses():
     assert read(["a", "b"]) == ("a", "b")
     with pytest.raises(criticreplay.PerturbationError, match="payload_sha256"):
         read({"sha": "a"})
+
+
+# ===========================================================================
+# RB-P28's RESIDUAL, CLOSED FOR THE THREE ACCEPTANCES (L6, 2026-08-14).
+#
+# THE FINDING THIS SECTION EXISTS FOR. Until now all three acceptance pins —
+# RB-P16's, RB-P17's and RB-P18's — ran the shipped code IN-PROCESS under
+# pytest. One tell, `"pytest" in sys.modules`, therefore reached every one of
+# them at once, and `_child_env`'s scrub could not help because no child was
+# ever started. Measured (L5, reproduced independently by the orchestrator with
+# its own rig): a fix-nothing patch that makes `_effect` return a constant
+# unless pytest is imported keeps the WHOLE suite green — 792 passed, 2 xfailed,
+# not one node red — while a real shell prints
+#
+#     HEAD :  effect: d=-1/11 (-0.091) [#---------] leads B; ... 7/11 points disagree
+#     patch:  effect: d= 0/11 ( 0.000) [----------] neither leads; ... 0/11 points disagree
+#
+# on a cell where the two variants genuinely disagree. That is not a no-op: it
+# is an affirmatively FALSE report with a green suite, and it is worse than job
+# 10's residual, where at least one signal had to cross into a child process.
+#
+# SO THE PIN MOVES OUT OF THE PROCESS. Each acceptance gets a node here that
+# starts a REAL interpreter through `/bin/sh` with `_child_env`'s scrubbed
+# environment — no `PYTEST_*` key, no pytest on the import path, nothing in
+# `sys.modules` to key on — and reads the result back off what that process
+# WROTE. The in-process nodes above stay as fast regression guards; they are not
+# the pin, and `tools/pinharness/contract-ledger.json` now says so in `pins`.
+#
+# WHAT THIS STILL DOES NOT CLOSE. A patch can key on the probe's `sys.argv[0]`,
+# on the scripted critic, or on a tmp-dir-shaped path, exactly as `_child_env`'s
+# docstring says. RB-P28 stays open. What is closed is the specific class the
+# whole suite shared: one in-process tell reaching every acceptance at once.
+# The field records in docs/eval-data remain the evidence; these nodes are the
+# part of it a mutation harness can run.
+# ===========================================================================
+
+EFFECT_PROBE = Path(__file__).resolve().parent / "rbp16_effect_probe.py"
+PAYLOAD_PROBE = Path(__file__).resolve().parent / "rbp18_payload_probe.py"
+_REPO = Path(__file__).resolve().parents[2]
+
+# The three cells the committed baseline harness names, with the committed seeds. The
+# same three the RB-P16 field runner uses, so the node and the field record are about
+# one run and not two.
+_FIELD_CELLS = (
+    ("nav-prod-port", 0, 2331795949, "The production port is 8443."),
+    ("recall-oncall-rotation", 1, 4094558621, "Rota: who is on-call for billing-svc."),
+    ("recall-org-quota", 0, 634446002, "The org quota is 6000 requests-per-minute."),
+)
+
+
+def _field_transcripts(tmp_path: Path, cells=_FIELD_CELLS) -> Path:
+    transcripts = tmp_path / "transcripts"
+    for task, repeat, seed, output in cells:
+        _transcript(transcripts, "critique", task, repeat, seed, output)
+    return transcripts
+
+
+def _effect_line_delta(line: str) -> tuple[int, int]:
+    """`    effect: d=-2/11 (…)` -> (-2, 11), read off the PRINTED line by this file.
+
+    Parsed here rather than asked of the module: the claim is that the report carries the
+    difference, and asking `_format_effect` what it printed would be the run agreeing
+    with itself.
+    """
+    match = re.search(r"^    effect: d=\s*([+-]?\d+)/(\d+)", line)
+    assert match, line
+    return int(match.group(1)), int(match.group(2))
+
+
+def test_OUTSIDE_pytest_a_fresh_runs_verdict_carries_its_effect_size(tmp_path):
+    """RB-P16's PIN, in a process with no pytest in it.
+
+    Runs `rbp16_effect_probe.py` — the shipped `main()` with only the client constructor
+    replaced by `score = sha256(prompt|seed) % 11` — through `/bin/sh`, and reads the
+    effect back off the summary JSON it wrote and the table it printed.
+
+    THE ASSERTION IS A COMPARISON BETWEEN TWO DERIVATIONS, not a re-read of one. The
+    difference is recomputed HERE from the two `a_pass_rate` / `b_pass_rate` strings the
+    run recorded, and the report has to agree with it — in the summary dict AND on the
+    printed line. A constant `effect`, which is exactly the pre-fix state and exactly the
+    fix-nothing patch, disagrees with the recomputation on any cell whose pass counts
+    differ, and this goes red.
+
+    It is a claim about the INSTRUMENT and not about the world (RB-P14 Gate 2): not "this
+    rubric pair separates" — the hash critic decides that and nothing here chose it — but
+    "whatever this run measured, the report states the size of it".
+    """
+    raw = yaml.safe_load((ASSETS / "rubrics" / "task-completion.yaml").read_text())
+    a_path, b_path = tmp_path / "A.yaml", tmp_path / "B.yaml"
+    a_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    b_path.write_text(yaml.safe_dump({**raw, "prompt": raw["prompt"][:-1]}, sort_keys=False))
+    summary_path = tmp_path / "summary.json"
+
+    status, out, err = _shell_status(
+        [
+            sys.executable, str(EFFECT_PROBE),
+            "--summary", str(summary_path),
+            "--rubric", f"A={a_path}", "--rubric", f"B={b_path}",
+            "--transcripts", str(_field_transcripts(tmp_path)),
+            "--base-url", "http://x", "--model", "fake-14b",
+        ],
+        tmp_path,
+        "rbp16-outside",
+        cwd=_REPO,
+    )
+    # A run that FAILED looks exactly like a run that measured (the orchestrator hit this
+    # for real: a copied tree with no assets/ died at exit 1 and read as a stronger
+    # result). So the status is checked first, and it is the guard's, not the harness's.
+    assert status in (0, 3), (status, err)
+    assert summary_path.is_file(), err
+    summary = json.loads(summary_path.read_text())
+
+    comparisons = [c for cell in summary["cells"] for c in cell["comparisons"]]
+    assert len(comparisons) == 3, comparisons
+    effect_lines = [ln for ln in out.splitlines() if ln.startswith("    effect: ")]
+    assert len(effect_lines) == len(comparisons), out
+
+    deltas = []
+    for comparison, line in zip(comparisons, effect_lines, strict=True):
+        recomputed = int(comparison["a_pass_rate"].split("/")[0]) - int(
+            comparison["b_pass_rate"].split("/")[0]
+        )
+        assert comparison["effect"]["delta_passed"] == recomputed, (comparison, out)
+        assert _effect_line_delta(line) == (
+            recomputed,
+            comparison["family_size"],
+        ), (line, comparison)
+        assert comparison["effect"]["disagreeing_points"] == len(
+            comparison["effect"]["a_only"]
+        ) + len(comparison["effect"]["b_only"])
+        deltas.append(recomputed)
+
+    # A CONSTANT SATISFIES EVERY EQUALITY ABOVE ON A RUN WHERE NOTHING SEPARATES. These
+    # three cells are not such a run, and the node says so rather than trusting it: the
+    # differences move, and at least one is non-zero.
+    assert len(set(deltas)) > 1, deltas
+    assert any(d != 0 for d in deltas), deltas
+    assert len(set(effect_lines)) == len(effect_lines), effect_lines
+    # …and the tie word still reports what it is a tie ON, which is the second half of
+    # the claim: equal pass COUNTS are not agreement.
+    ties = [c for c in comparisons if c["verdict"] == "indistinguishable"]
+    assert ties, comparisons
+    assert all(c["effect"]["disagreeing_points"] > 0 for c in ties), ties
+
+
+def test_OUTSIDE_pytest_a_fresh_runs_rubric_ref_resolves_from_this_repo(tmp_path):
+    """RB-P17's PIN, in a process with no pytest in it.
+
+    The same two variants the committed acceptance run used — `git:d2f78b7:<path>` and
+    the null control as a `derive:` rule — recorded by a real process, and resolved back
+    to the rubric the critic read by `_template_a_recorded_ref_names`, a reader in this
+    file that never imports the module.
+
+    The mutation that matters here is the pre-fix `source = ref`: the row says `d2f78b7`,
+    a commit and not a file, and the resolver cannot recover the bytes. So does any
+    mutation that writes an unresolvable segment into the recorded ref.
+    """
+    summary_path = tmp_path / "summary.json"
+    status, _out, err = _shell_status(
+        [
+            sys.executable, str(EFFECT_PROBE),
+            "--summary", str(summary_path),
+            "--rubric", "A-asfiled=git:d2f78b7:assets/rubrics/task-completion.yaml",
+            "--rubric", f"B-nonewline={_NULL_CONTROL_SPEC}",
+            "--transcripts", str(_field_transcripts(tmp_path, _FIELD_CELLS[:1])),
+            "--base-url", "http://x", "--model", "fake-14b",
+        ],
+        tmp_path,
+        "rbp17-outside",
+        cwd=_REPO,
+    )
+    assert status in (0, 3), (status, err)
+    assert summary_path.is_file(), err
+    variants = json.loads(summary_path.read_text())["variants"]
+    assert {v["label"] for v in variants} == {"A-asfiled", "B-nonewline"}, variants
+
+    unresolvable = [
+        f"{v['label']} -> {v['rubric_ref']}"
+        for v in variants
+        if _template_a_recorded_ref_names(_REPO, v["rubric_ref"]) is None
+        or criticreplay.sha256_text(
+            _template_a_recorded_ref_names(_REPO, v["rubric_ref"])
+        )
+        != v["rubric_template_sha256"]
+    ]
+    assert not unresolvable, (
+        "a run made TODAY in a process with no pytest in it records a `rubric_ref` this "
+        "repository cannot resolve back to the rubric the critic read:\n  "
+        + "\n  ".join(unresolvable)
+    )
+    # The acceptance pair, at the committed template shas — not a pair invented to pass.
+    assert {(v["label"], v["rubric_template_sha256"]) for v in variants} == {
+        ("A-asfiled", _A_ASFILED_TEMPLATE_SHA),
+        ("B-nonewline", _B_NONEWLINE_TEMPLATE_SHA),
+    }
+
+
+def test_OUTSIDE_pytest_a_fresh_run_reproduces_both_frozen_payload_recipes(tmp_path):
+    """RB-P18's PIN, in a process with no pytest in it.
+
+    `rbp18_payload_probe.py` issues ONE request through the shipped `replay_verdicts` on
+    the shipped `structured()` path and prints the three shas it recorded. The frozen
+    values are read HERE, from committed bytes, and the two are compared:
+
+        payload_sha256            == the perturbation bar's frozen value
+        payload_canonical_sha256  == SA3's frozen value
+
+    Dropping `sort_keys=True` makes the canonical column equal the insertion-order one,
+    which is not SA3's value, and this goes red.
+    """
+    _sa3, bar_row, sa3_sha = _rbp18_frozen_pair()
+    status, out, err = _shell_status(
+        [
+            sys.executable, str(PAYLOAD_PROBE),
+            str(_REPO), str(_SA3_REPLAY), _RBP18_CELL_REF,
+            str(_RBP18_CELL_REPEAT), str(_RBP18_CELL_SEED),
+        ],
+        tmp_path,
+        "rbp18-outside",
+        cwd=_REPO,
+    )
+    assert status == 0, (status, err)
+    recorded = json.loads(out)
+
+    assert recorded["prompt_sha256"] == bar_row["prompt_sha256"]
+    assert recorded["payload_sha256"] == bar_row["payload_sha256"]
+    assert recorded["payload_canonical_sha256"] == sa3_sha
+    # Two genuinely different values, so the two assertions above are not one assertion
+    # written twice — that difference IS what RB-P18 filed.
+    assert bar_row["payload_sha256"] != sa3_sha
+    assert recorded["payload_sha256"] != recorded["payload_canonical_sha256"]
