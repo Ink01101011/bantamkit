@@ -653,11 +653,491 @@ def test_rubric_spec_accepts_a_filesystem_path(tmp_path):
 
 
 def test_rubric_spec_accepts_a_git_ref():
+    """And records the PATH as well as the commit (RB-P17, fixed 2026-08-14).
+
+    `source = ref` used to drop the path, so a row said `d2f78b7` — two rubrics in one
+    commit were indistinguishable in the record, and `rubric_sha256` could not be
+    re-derived from the row without knowing which file to ask `git show` for.
+    """
     variant = criticreplay.parse_rubric_arg(
         "A-asfiled=git:d2f78b7:assets/rubrics/task-completion.yaml"
     )
-    assert variant.ref == "d2f78b7"
+    assert variant.ref == "git:d2f78b7:assets/rubrics/task-completion.yaml"
     assert variant.rubric.prompt == _shipped_template()
+
+
+_NULL_CONTROL_SPEC = (
+    "derive:assets/evals/perturbations/task-completion.yaml"
+    ":W1-trailing-newline:git:d2f78b7:assets/rubrics/task-completion.yaml"
+)
+# The committed `base_sha256` of `B-nonewline` in the frozen manifest, which is also the
+# manifest's recorded sha for (`W1-trailing-newline`, `A-asfiled`). Reproduced, not moved.
+_B_NONEWLINE_TEMPLATE_SHA = (
+    "d1f32ad2947b4d6f6079833847eae96c79fddeb2683ceda322940bdc8cbf13a6"
+)
+_A_ASFILED_TEMPLATE_SHA = (
+    "e018854368c1b675e7cff5109a3dce715d59c86d871cd3d1d83b9083188a065e"
+)
+
+
+def test_the_null_control_is_expressible_as_a_rule_applied_to_a_committed_ref():
+    """RB-P17's whole point, in one spec string: `B-nonewline` without a file.
+
+    `B-nonewline` is the null control the RB-P14 finding turns on, and until now it was
+    expressible as neither a path nor `git:<ref>:<path>` — so it was materialized to a
+    scratch file and two committed summaries record an absolute `/private/tmp` path as
+    its provenance. This node asserts the derived variant is the SAME rubric those runs
+    used, by reproducing the frozen manifest's committed `base_sha256` for it.
+
+    The manifest is read, not re-implemented: `assets/evals/perturbations/` is frozen and
+    the rule id in the spec is the one it declares.
+    """
+    variant = criticreplay.parse_rubric_arg(f"B-nonewline={_NULL_CONTROL_SPEC}")
+    assert variant.template_sha256 == _B_NONEWLINE_TEMPLATE_SHA
+    manifest = criticreplay.load_manifest(
+        ASSETS / "evals" / "perturbations" / "task-completion.yaml"
+    )
+    assert (
+        manifest.materialized_variants["B-nonewline"]["base_sha256"]
+        == _B_NONEWLINE_TEMPLATE_SHA
+    )
+    assert variant.rubric.prompt == _shipped_template()[:-1]
+    # The ref a row will carry is the whole spec, and it names all three things a later
+    # reader needs: the manifest, the rule, and the committed base.
+    assert variant.ref == _NULL_CONTROL_SPEC
+    # No file, so no file sha — the `IN_MEMORY_REF` rule, not a second meaning for the
+    # column. The populated provenance column here is the template one.
+    assert variant.sha256 == ""
+
+
+def test_every_declared_point_derives_to_the_sha_the_frozen_manifest_already_recorded():
+    """The form is not special-cased to the one point RB-P17 needs.
+
+    All 12 points of the frozen family, applied to `A-asfiled` through the spec form, must
+    come out at the sha the manifest's own `variants` block records for that (point,
+    variant) cell. The manifest is evidence and it is frozen: this reproduces its numbers
+    and moves none of them. A derive that agreed with the manifest on `W1` alone would be
+    a fix aimed at one row of one committed summary.
+    """
+    manifest_spec = "assets/evals/perturbations/task-completion.yaml"
+    manifest = criticreplay.load_manifest(
+        ASSETS / "evals" / "perturbations" / "task-completion.yaml"
+    )
+    checked, mismatched = 0, []
+    for point in manifest.points:
+        recorded = point.variants.get("A-asfiled", {})
+        if not recorded.get("applicable"):
+            continue
+        variant = criticreplay.parse_rubric_arg(
+            f"x=derive:{manifest_spec}:{point.id}"
+            ":git:d2f78b7:assets/rubrics/task-completion.yaml"
+        )
+        checked += 1
+        if variant.template_sha256 != recorded["sha256"]:
+            mismatched.append(
+                f"{point.id}: derived {variant.template_sha256[:12]} != "
+                f"manifest {recorded['sha256'][:12]}"
+            )
+    assert checked == 12, checked
+    assert not mismatched, mismatched
+
+
+def test_a_derive_refuses_a_rule_whose_anchor_is_absent_rather_than_returning_the_base():
+    """W1 is inapplicable to a base that is already its fixed point, and that is an ERROR.
+
+    `W1-trailing-newline` applied to `B-nonewline` is the load-order trap RB-P17's
+    filing invites: the rule matches nothing, and a resolver that returned the base
+    unchanged would record a perturbation that never happened — the provenance defect one
+    level in. A derive-of-a-derive cannot even be typed (the base must be `git:`), so this
+    is the shape the trap actually takes: a committed base that already has no trailing
+    newline.
+
+    Measured against a real git object rather than argued: a throwaway repo, because no
+    rubric committed to THIS repo lacks its trailing newline, and asserting the error on
+    a case that cannot arise would be asserting nothing.
+    """
+    repo = tmp_git_repo_with_a_newlineless_rubric()
+    # REPO-RELATIVE, and it has to be (L6, 2026-08-14): an absolute manifest path is now
+    # refused on its face by `rubric_arg_shape_problem`, so this node would otherwise be
+    # measuring the new shape rule instead of the applicability rule it is about. The
+    # throwaway repo carries a byte copy of the frozen manifest for exactly this reason.
+    spec = "derive:m.yaml:W1-trailing-newline:git:HEAD:r.yaml"
+    cwd = os.getcwd()
+    os.chdir(repo)
+    try:
+        with pytest.raises(criticreplay.PerturbationError) as excinfo:
+            criticreplay.parse_rubric_arg(f"B={spec}")
+    finally:
+        os.chdir(cwd)
+    assert "inapplicable" in str(excinfo.value)
+    assert "names no variant" in str(excinfo.value)
+
+
+def tmp_git_repo_with_a_newlineless_rubric(_cache={}):  # noqa: B006
+    """A one-commit repo whose rubric `prompt` has no trailing newline."""
+    if "path" in _cache:
+        return _cache["path"]
+    import tempfile
+
+    root = Path(tempfile.mkdtemp(prefix="bk-rbp17-"))
+    raw = yaml.safe_load((ASSETS / "rubrics" / "task-completion.yaml").read_text())
+    raw["prompt"] = raw["prompt"][:-1]
+    (root / "r.yaml").write_text(yaml.safe_dump(raw, sort_keys=False))
+    # A byte copy of the frozen manifest, so every segment of a `derive:` spec resolved
+    # from inside this repo is repo-relative. `assets/` is read, never touched.
+    (root / "m.yaml").write_text(
+        (ASSETS / "evals" / "perturbations" / "task-completion.yaml").read_text()
+    )
+    for argv in (
+        ["git", "init", "-q"],
+        ["git", "config", "user.email", "t@t"],
+        ["git", "config", "user.name", "t"],
+        ["git", "add", "r.yaml", "m.yaml"],
+        ["git", "commit", "-qm", "r"],
+    ):
+        subprocess.run(argv, cwd=root, check=True, capture_output=True)
+    _cache["path"] = root
+    return root
+
+
+@pytest.mark.parametrize(
+    ("spec", "match"),
+    [
+        # A path base is refused ON ITS FACE: no file opened, no git run.
+        ("derive:m.yaml:W1-trailing-newline:assets/rubrics/task-completion.yaml", "git: base"),
+        # And so is a derive of a derive, which is what makes the load order acyclic.
+        ("derive:m.yaml:W1:derive:m.yaml:W2:git:d2f78b7:x.yaml", "git: base"),
+        ("derive:", "derive:<manifest-path>"),
+        ("derive:m.yaml:W1", "derive:<manifest-path>"),
+        ("derive:m.yaml::git:d2f78b7:x.yaml", "derive:<manifest-path>"),
+        ("derive:m.yaml:W1:git:d2f78b7", "git:<ref>:<path> as its base"),
+        ("derive:m.yaml:W1:git::x.yaml", "git:<ref>:<path> as its base"),
+    ],
+)
+def test_a_malformed_derive_spec_is_refused_from_the_argv_alone(spec, match):
+    """RB-P32's rule, extended to the new form: shape verdicts consult no machine.
+
+    Every case here is undecidable-by-nobody — it is wrong on every machine — so it is
+    `rubric_arg_shape_problem`'s answer, above `main`'s `try`, and it spends no `git show`
+    to say so. None of these paths or refs exist; that is the point.
+    """
+    assert match in (criticreplay.rubric_arg_shape_problem(f"x={spec}") or "")
+
+
+def test_a_derive_names_a_rule_the_manifest_does_not_have_and_says_which_it_has():
+    rule = "assets/evals/perturbations/task-completion.yaml"
+    with pytest.raises(criticreplay.PerturbationError) as excinfo:
+        criticreplay.parse_rubric_arg(
+            f"x=derive:{rule}:W9-does-not-exist:git:d2f78b7:assets/rubrics/task-completion.yaml"
+        )
+    assert "is not a point in" in str(excinfo.value)
+    assert "W1-trailing-newline" in str(excinfo.value)
+
+
+def test_rubric_template_sha256_is_the_rubric_and_rubric_sha256_is_the_file(tmp_path):
+    """The measured RB-P17 defect, reproduced on two files instead of asserted.
+
+    Committed record, 2026-08-14: `b-nonewline.yaml` records `rubric_sha256`
+    `59b0fe81ecf3…` and `n5-b-nonewline.yaml` records `29f299707fd6…` — two values for
+    ONE rubric, whose template hashes `d1f32ad2947b…` in both. So the recorded column
+    could not answer "did these two runs judge with the same rubric?", and reported two
+    runs as different when they were the same.
+
+    Reproduced here on two files that differ only in `name:` — nothing the critic ever
+    reads — so the file column MUST differ and the rubric column MUST NOT.
+    """
+    raw = yaml.safe_load((ASSETS / "rubrics" / "task-completion.yaml").read_text())
+    specs = []
+    for index, name in enumerate(("task-completion", "task-completion-renamed")):
+        path = tmp_path / f"{index}.yaml"
+        path.write_text(yaml.safe_dump({**raw, "name": name}, sort_keys=False))
+        specs.append(criticreplay.parse_rubric_arg(f"v{index}={path}"))
+    assert specs[0].sha256 != specs[1].sha256
+    assert specs[0].template_sha256 == specs[1].template_sha256 == _A_ASFILED_TEMPLATE_SHA
+
+
+def _repo_relative(repo: Path, spec: str) -> Path | None:
+    """`repo / spec`, or `None` when `spec` does not name something INSIDE `repo`.
+
+    `Path("/a") / "/b"` is `/b`, so a resolver written as `repo / ref` silently reads an
+    absolute path off the machine that made the run and reports it as resolved. That is
+    the defect RB-P17 is about, and L5 found it in this file and in the committed field
+    checker at the same time. The containment check is on the RESOLVED path, so a `..`
+    segment cannot walk out either.
+    """
+    if spec.startswith(("~", "/")):
+        return None
+    candidate = (repo / spec).resolve()
+    return candidate if candidate.is_relative_to(repo.resolve()) else None
+
+
+def _template_a_recorded_ref_names(repo: Path, ref: str) -> str | None:
+    """Recover the rubric TEMPLATE a recorded `rubric_ref` names, from this repo alone.
+
+    INDEPENDENT OF THE THING IT CHECKS ON PURPOSE. It never calls `parse_rubric_arg`,
+    `load_manifest` or `apply_point`: it reads the manifest as YAML and re-implements the
+    declared `op` from the manifest's own words. Asking the module to resolve a ref the
+    module wrote would be the run agreeing with itself — an instrument grading itself.
+
+    Returns `None` when the ref names nothing this repository can supply, which is the
+    answer for an absolute scratchpad path and for a bare commit with no path.
+
+    CORRECTED 2026-08-14 (L6). The last branch refused an absolute path and the `derive:`
+    branch did not, so `repo / "/private/tmp/x.yaml"` — which pathlib evaluates to
+    `/private/tmp/x.yaml`, dropping `repo` entirely — read a scratchpad file off this
+    machine and called the ref RESOLVED. The checker had the same hole as the code it was
+    checking, in the same shape, which is why `_repo_relative` is one function used by
+    every path segment here rather than a condition written twice.
+    """
+    if ref.startswith("derive:"):
+        _, manifest_spec, rule_id, base = ref.split(":", 3)
+        manifest_file = _repo_relative(repo, manifest_spec)
+        if manifest_file is None or not manifest_file.is_file():
+            return None
+        points = yaml.safe_load(manifest_file.read_text())["points"]
+        point = next((p for p in points if p["id"] == rule_id), None)
+        template = _template_a_recorded_ref_names(repo, base)
+        if point is None or template is None:
+            return None
+        if point["op"] == "strip-trailing-newline":
+            return template[:-1] if template.endswith("\n") else None
+        if point["op"] == "append-trailing-newline":
+            return template + "\n"
+        if point["op"] == "identity":
+            return template
+        return None  # this reader implements only the ops it has been asked to resolve
+    if ref.startswith("git:") and ref.count(":") >= 2:
+        _, git_ref, path = ref.split(":", 2)
+        shown = subprocess.run(
+            ["git", "-C", str(repo), "show", f"{git_ref}:{path}"],
+            capture_output=True,
+            text=True,
+        )
+        return yaml.safe_load(shown.stdout)["prompt"] if shown.returncode == 0 else None
+    inside = _repo_relative(repo, ref)
+    if inside is not None and inside.is_file():
+        return yaml.safe_load(inside.read_text())["prompt"]
+    return None
+
+
+def test_a_derive_manifest_segment_may_not_be_an_absolute_path_either(tmp_path):
+    """RB-P17's own defect, found INSIDE the fix that closes RB-P17 (L5; fixed by L6).
+
+    The BASE segment was refused a working-tree path from the day this form shipped, with
+    an explicit argument: a derived variant has no file of its own, so the only thing that
+    makes its recorded ref resolvable is that every segment names something a second
+    reader can obtain. The MANIFEST segment got no such rule, so
+
+        derive:/private/tmp/<session>/scratchpad/m.yaml:W1-trailing-newline:git:…
+
+    was ACCEPTED and recorded verbatim in `ref`, with `rubric_sha256=""` and therefore no
+    file hash to fall back on — the exact `/private/tmp` scratchpad shape the filing is
+    about, one segment over.
+
+    It is refused ON ITS FACE, from the argv alone: no path resolved, no file opened, no
+    `git` run, so it is an argument-SHAPE rule and reports `USAGE_EXIT` (RB-P32). The
+    manifest under `tmp_path` below EXISTS and is a valid manifest — the refusal is about
+    the form of the string and not about the state of the disk, and a rule that consulted
+    the disk could not have said "this can never work on any machine".
+    """
+    manifest = tmp_path / "m.yaml"
+    manifest.write_text((ASSETS / "evals" / "perturbations" / "task-completion.yaml").read_text())
+    assert manifest.is_file()
+    base = "git:d2f78b7:assets/rubrics/task-completion.yaml"
+    for bad, why in (
+        (str(manifest), "absolute path names a machine"),
+        ("../outside/m.yaml", "`..` segment leaves the repository"),
+        ("~/m.yaml", "`~` names a home directory"),
+    ):
+        spec = f"derive:{bad}:W1-trailing-newline:{base}"
+        problem = criticreplay.rubric_arg_shape_problem(f"B={spec}")
+        assert problem is not None and why in problem, (bad, problem)
+        with pytest.raises(criticreplay.PerturbationError, match="repo-relative manifest"):
+            criticreplay.parse_rubric_arg(f"B={spec}")
+    # CONTROL. The repo-relative form of the same manifest is accepted, so the rule is
+    # about the shape of the path and not about `derive:` having stopped working.
+    assert criticreplay.rubric_arg_shape_problem(f"B={_NULL_CONTROL_SPEC}") is None
+
+
+def test_a_derived_variant_records_the_bytes_of_the_manifest_it_resolved_through():
+    """The manifest is the one WORKING-TREE segment a recorded ref can have.
+
+    `git:<ref>:<path>` is immutable and a plain path form records `rubric_sha256`; a
+    derived variant records neither, so until now editing the manifest's op in place made
+    the same recorded ref resolve to a DIFFERENT rubric, silently, with nothing in the
+    record to notice it (measured by L5: `d1f32ad2947b` -> `447e5be27613`).
+
+    `derive_manifest_sha256` does not make the manifest immutable. It makes a substitution
+    DETECTABLE, which is the most a record can do about an input the reader has to fetch:
+    a reader who reads the manifest at that path and gets a different sha knows the ref no
+    longer names what it named.
+
+    The substitution is performed here rather than argued: the same rule id, the same
+    base, a manifest that differs only in that rule's `op`, and the two derived variants
+    are different rubrics carrying different manifest shas.
+    """
+    variant = criticreplay.parse_rubric_arg(f"B-nonewline={_NULL_CONTROL_SPEC}")
+    manifest = criticreplay.load_manifest(
+        ASSETS / "evals" / "perturbations" / "task-completion.yaml"
+    )
+    assert variant.derive_manifest_sha256 == manifest.sha256
+    assert re.fullmatch(r"[0-9a-f]{64}", variant.derive_manifest_sha256)
+    # A non-derived variant states no manifest sha, because it resolved through none.
+    plain = criticreplay.parse_rubric_arg(
+        "A-asfiled=git:d2f78b7:assets/rubrics/task-completion.yaml"
+    )
+    assert plain.derive_manifest_sha256 == ""
+    # THE SUBSTITUTION, executed. ONE recorded ref, TWO manifests at the same path, two
+    # different rubrics — the silent swap L5 measured, in a throwaway repo so this repo's
+    # working tree is untouched.
+    root = _tmp_repo_with_two_manifests_at_one_path()
+    spec = "B=derive:m.yaml:W1-trailing-newline:git:HEAD:r.yaml"
+    cwd = os.getcwd()
+    try:
+        os.chdir(root)
+        (root / "m.yaml").write_text((root / "m-strip.yaml").read_text())
+        before = criticreplay.parse_rubric_arg(spec)
+        (root / "m.yaml").write_text((root / "m-append.yaml").read_text())
+        after = criticreplay.parse_rubric_arg(spec)
+    finally:
+        os.chdir(cwd)
+    assert before.ref == after.ref  # the SAME recorded ref, byte for byte
+    assert before.rubric.prompt != after.rubric.prompt  # naming two different rubrics
+    assert before.derive_manifest_sha256 != after.derive_manifest_sha256, (
+        "one recorded ref resolved through two DIFFERENT manifests and the record states "
+        "the same manifest sha for both, so a reader cannot tell which one it read"
+    )
+    # And the column reaches the ARTIFACT, not only the object: a row a reader has.
+    assert "derive_manifest_sha256" in criticreplay.ReplayRow.__dataclass_fields__
+
+
+def _tmp_repo_with_two_manifests_at_one_path(_cache={}):  # noqa: B006
+    """A one-commit repo with a rubric and TWO manifests differing in one rule's `op`.
+
+    Both are byte copies of the frozen manifest with a single field changed, so the
+    substitution under test is the smallest one that changes what a ref resolves to.
+    `assets/` is read, never touched.
+    """
+    if "path" in _cache:
+        return _cache["path"]
+    import tempfile
+
+    root = Path(tempfile.mkdtemp(prefix="bk-rbp17-manifest-"))
+    frozen = (ASSETS / "evals" / "perturbations" / "task-completion.yaml").read_text()
+    (root / "r.yaml").write_text((ASSETS / "rubrics" / "task-completion.yaml").read_text())
+    (root / "m-strip.yaml").write_text(frozen)
+    swapped = yaml.safe_load(frozen)
+    next(p for p in swapped["points"] if p["id"] == "W1-trailing-newline")["op"] = (
+        "append-trailing-newline"
+    )
+    (root / "m-append.yaml").write_text(yaml.safe_dump(swapped, sort_keys=False))
+    (root / "m.yaml").write_text(frozen)
+    for argv in (
+        ["git", "init", "-q"],
+        ["git", "config", "user.email", "t@t"],
+        ["git", "config", "user.name", "t"],
+        ["git", "add", "r.yaml", "m.yaml", "m-strip.yaml", "m-append.yaml"],
+        ["git", "commit", "-qm", "r"],
+    ):
+        subprocess.run(argv, cwd=root, check=True, capture_output=True)
+    _cache["path"] = root
+    return root
+
+
+def test_a_resolver_that_takes_repo_slash_ref_reads_this_machine(tmp_path):
+    """The pathlib trap, made executable, because it bit two resolvers at once.
+
+    `Path("/a") / "/b"` is `/b`. A checker written as `repo / ref` therefore READS an
+    absolute scratchpad path off the machine that made the run and reports the ref
+    resolved — which is the whole of RB-P17 wearing a checker's clothes. Both the
+    fresh-run node's resolver here and the committed field checker had it.
+    """
+    outside = tmp_path / "outside.yaml"
+    outside.write_text(yaml.safe_dump({"prompt": "SECRET {task} {output}"}, sort_keys=False))
+    repo = Path(__file__).resolve().parents[2]
+    # The naive form, demonstrated rather than described.
+    assert (repo / str(outside)) == outside
+    assert (repo / str(outside)).is_file()
+    # The reader this file uses says no, twice: to the path form and through a derive:.
+    assert _repo_relative(repo, str(outside)) is None
+    assert _template_a_recorded_ref_names(repo, str(outside)) is None
+    assert (
+        _template_a_recorded_ref_names(
+            repo,
+            f"derive:{outside}:W1-trailing-newline"
+            ":git:d2f78b7:assets/rubrics/task-completion.yaml",
+        )
+        is None
+    )
+    # …and a `..` walk out of the tree, which `startswith("/")` alone would have let in.
+    assert _repo_relative(repo, "../../etc/hosts") is None
+    # CONTROL: the real repo-relative manifest still resolves, so the guard is not a
+    # blanket `None`.
+    assert _template_a_recorded_ref_names(repo, _NULL_CONTROL_SPEC) is not None
+
+
+def test_a_fresh_runs_rubric_ref_resolves_from_this_repo_back_to_the_rubric_it_recorded(
+    tmp_path,
+):
+    """THE PIN for RB-P17, and it has to be a FRESH run for a structural reason.
+
+    L1's `test_every_rubric_ref_in_a_committed_summary_resolves_from_this_repo` reads
+    COMMITTED artifacts. Committed evidence is never regenerated, so those rows keep
+    their `/private/tmp` provenance forever and no change to this module can turn that
+    node either red or green — it can never pin anything. This node runs the shipped code
+    TODAY and reads the ref off the rows that run produced, so a mutation of
+    `parse_rubric_arg` shows up in it immediately.
+
+    It is a claim about the INSTRUMENT, not about the world (RB-P14 Gate 2): not "this
+    path exists" — which is how RB-P17's filing acquired a fact that was already false
+    when it was filed — but "what this tool records can be resolved from what this
+    repository contains".
+
+    The two forms under test are the two that carried the defect: `git:`, which recorded
+    the commit and dropped the path, and the null control, which had no form at all.
+    """
+    repo = Path(__file__).resolve().parents[2]
+    transcripts = tmp_path / "transcripts"
+    _transcript(transcripts, "critique", "nav-prod-port", 0, 2331795949, "The port is 8443.")
+    variants = [
+        criticreplay.parse_rubric_arg(
+            "A-asfiled=git:d2f78b7:assets/rubrics/task-completion.yaml"
+        ),
+        criticreplay.parse_rubric_arg(f"B-nonewline={_NULL_CONTROL_SPEC}"),
+    ]
+    result = criticreplay.run(
+        ScriptedCritic(lambda p: 9),
+        variants,
+        criticreplay.load_manifest(ASSETS / "evals" / "perturbations" / "task-completion.yaml"),
+        criticreplay.load_cases(transcripts),
+    )
+    recorded = {(r.variant, r.rubric_ref, r.rubric_template_sha256) for r in result.rows}
+    assert {label for label, _, _ in recorded} == {"A-asfiled", "B-nonewline"}, recorded
+    unresolvable = [
+        f"{label} -> {ref}"
+        for label, ref, sha in sorted(recorded)
+        if _template_a_recorded_ref_names(repo, ref) is None
+        or criticreplay.sha256_text(_template_a_recorded_ref_names(repo, ref)) != sha
+    ]
+    assert not unresolvable, (
+        "a run made today records a `rubric_ref` this repository cannot resolve back to "
+        "the rubric the critic read:\n  " + "\n  ".join(unresolvable)
+    )
+    # And the two variants are the ones the committed record is about, at the committed
+    # template shas — so this is the acceptance pair and not a pair invented to pass.
+    assert {(label, sha) for label, _, sha in recorded} == {
+        ("A-asfiled", _A_ASFILED_TEMPLATE_SHA),
+        ("B-nonewline", _B_NONEWLINE_TEMPLATE_SHA),
+    }
+    # NEGATIVE CONTROL. A checker that resolved everything would pass the assertion above
+    # while measuring nothing. The two refs the committed summaries actually carry — the
+    # scratchpad path and the bare commit — must both come back unresolvable.
+    for unnameable in (
+        "/private/tmp/claude-501/-Users-kktest/8f592274-11af-4ea1-9bea-e41c8cbc4c29"
+        "/scratchpad/b-nonewline.yaml",
+        "d2f78b7",
+    ):
+        assert _template_a_recorded_ref_names(repo, unnameable) is None, unnameable
 
 
 def test_rubric_spec_rejects_a_missing_label():
@@ -888,9 +1368,11 @@ def test_rows_carry_the_columns_the_spec_names(rig):
     _, result = _run(rig, lambda p: 9)
     row = result.rows[0].row()
     assert set(row) == {
-        "bar", "variant", "rubric_ref", "rubric_sha256", "manifest_sha256", "task", "seed",
+        "bar", "variant", "rubric_ref", "rubric_sha256", "rubric_template_sha256",
+        "derive_manifest_sha256", "manifest_sha256", "task", "seed",
         "repeat", "model", "point", "class", "rule", "replay", "prompt_sha256",
-        "payload_sha256", "score", "threshold", "passed", "feedback", "tokens_in", "tokens_out",
+        "payload_sha256", "payload_canonical_sha256",
+        "score", "threshold", "passed", "feedback", "tokens_in", "tokens_out",
         "calls", "guard_violations", "guard_readings",
     }
     assert row["guard_violations"] == []
@@ -1271,6 +1753,50 @@ def test_the_guard_clean_verdict_is_reported_beside_the_full_family_verdict(guar
     assert comparison["attributable"] is False
 
 
+def test_the_guard_dropped_effect_is_the_effect_of_the_guard_dropped_FAMILY(guard_rig):
+    """`guard_effect` is computed over the guard family, not over the full one.
+
+    I1, filed by L5 and measured UNPINNED: `guard_effect` is a shipped reporting field
+    with no claim behind it. It is not cosmetic — it is the half of RB-P16's fix that
+    carries the effect for the family §7 rule 3 actually acts on, and `effect` is credited
+    with "the verdict travels with its size" on the strength of both.
+
+    The cell here is built so the two DISAGREE, because a node on a cell where they
+    coincide would pass under a `guard_effect` that is just a second copy of `effect`:
+    `before` passes all three points, `after` fails exactly the one the shared-token guard
+    dropped. So the full family separates by one point and the guard-dropped family does
+    not separate at all — and the disagreement is named point by point, not just counted.
+    """
+    def only_the_dropped_point_fails(prompt: str) -> int:
+        # The `after` variant's P-taskword rendering, and nothing else: that point
+        # replaces "TWO" with "ALPHA", so "TWO" is the tell. "ALPHA" is not — it is in
+        # every rendered prompt, via the cell's {task}, which is why the guard fires.
+        return 2 if ("CHANGED" in prompt and "TWO" not in prompt) else 9
+
+    _, result = _run(guard_rig, only_the_dropped_point_fails)
+    summary = criticreplay.summarize(result, guard_rig["manifest"].sha256)
+    comparison = summary["cells"][0]["comparisons"][0]
+    assert comparison["family_size"] == 3 and comparison["guard_family_size"] == 2
+    assert comparison["guard_dropped_rules"] == [
+        {"rule": "P-taskword", "reason": "shared-token", "words": ["alpha"]}
+    ]
+    # The full family: `before` leads by the one point the guard dropped.
+    assert (comparison["a_pass_rate"], comparison["b_pass_rate"]) == ("3/3", "2/3")
+    assert comparison["effect"]["delta_passed"] == 1
+    assert comparison["effect"]["a_only"] == ["P-taskword"]
+    assert comparison["effect"]["disagreeing_points"] == 1
+    # The guard-dropped family: that point is gone, so there is nothing left to lead on.
+    assert comparison["guard_effect"]["delta_passed"] == 0
+    assert comparison["guard_effect"]["a_only"] == []
+    assert comparison["guard_effect"]["b_only"] == []
+    assert comparison["guard_effect"]["disagreeing_points"] == 0
+    assert comparison["guard_effect"]["points_from_separation"] == 2
+    # THE TWO ARE NOT ONE FIELD WRITTEN TWICE, which is the whole point of the node.
+    assert comparison["effect"] != comparison["guard_effect"]
+    # …and the guard verdict it belongs beside moved with it.
+    assert comparison["verdict"] != comparison["guard_verdict"]
+
+
 def test_guard_dropping_leaves_the_verdict_alone_when_it_is_not_load_bearing(guard_rig):
     """The other side of the same rule: a separation the tainted point did not carry."""
     _, result = _run(guard_rig, lambda p: 2 if "CHANGED" in p else 9)
@@ -1505,20 +2031,144 @@ def test_guard_table_is_public_so_a_hand_rolled_loop_can_call_it(asset_tree, tmp
 # thing it checks pins the author's method, not the behaviour (RB-P19's transferable
 # finding). It covers the JSONL rows, the summary dict, the printed guard sections,
 # the identity-only path and the zero-spend `--guard error` refusal.
+#
+# RB-P16 MOVED THIS FLOOR, ON PURPOSE, AND THE MOVE IS NAMED RATHER THAN ABSORBED
+# (2026-08-14). Adding an effect size to a verdict adds bytes to the rendering of a run
+# that reports verdicts. The baseline file is NOT regenerated — regenerating it would
+# throw away the one thing it is for, an expectation computed by the code it replaces.
+# Instead the floor is now stated as an EXACT identity modulo three NAMED additions:
+#
+#   `effect` and `guard_effect` on every comparison dict, `directional` on every summary
+#   -> `_RBP16_ADDED_KEYS`
+#   the `    effect: ` continuation line under every Pairwise row, and the one
+#   `Directional consistency …` block at the end of `format_table`
+#
+# Remove exactly those and the produced artifact is byte-identical to `f8404ab` again:
+# measured 2026-08-14, all six sections, 129502 -> 137132 bytes and 27 -> 33 table lines,
+# with ZERO f8404ab-era field changed. A strip that hid a regression is the obvious way
+# to cheat this, so `test_the_rbp16_additions_the_floor_strips_are_present_and_loaded`
+# below asserts the stripped-out content is there and is non-trivial. Record:
+# `docs/eval-data/2026-08-14-rbp16-effect-size-report.md`.
 
 BASELINE = Path(__file__).resolve().parent / "data" / "f8404ab-perturbation-baseline.json"
 
+_RBP16_ADDED_KEYS = (
+    # RB-P16 (L2, 2026-08-14): the effect size beside every verdict.
+    "effect", "guard_effect", "directional",
+    # RB-P17 (L3, 2026-08-14): the sha of the RUBRIC the critic read, beside the sha of
+    # the FILE it arrived in. Additive — `rubric_sha256` keeps its meaning and its value,
+    # so every `f8404ab`-era field is byte-unchanged and the strip below restores the
+    # baseline exactly. Named here rather than folded in silently, because an unnamed key
+    # slipping past this floor is the regression the floor exists to catch.
+    "rubric_template_sha256",
+    # RB-P17 (L6, 2026-08-14): the bytes of the MANIFEST a `derive:` ref points through.
+    # The manifest is the one WORKING-TREE segment a recorded ref can have, and nothing
+    # recorded it, so the same ref could resolve to a different rubric silently. Blank on
+    # every non-derived variant, which is every row the baseline contains, so the strip
+    # restores `f8404ab` exactly.
+    "derive_manifest_sha256",
+    # RB-P18 (L4, 2026-08-14): the same wire body key-SORTED, beside the body under this
+    # writer's insertion order, and the recipes published in the summary. Additive on the
+    # same argument — `payload_sha256` keeps its name, its recipe and its value, which is
+    # what 1280 committed occurrences already mean — so the strip restores `f8404ab`
+    # exactly. `payload_sha256_recipes` is a summary-level key and is stripped by the same
+    # rule; the pre-fix summary had no such block.
+    "payload_canonical_sha256", "payload_sha256_recipes",
+)
 
-def test_the_whole_offline_run_is_byte_identical_to_f8404ab(tmp_path):
+
+def _without_rbp16_additions(obj):
+    """The artifact as `f8404ab` would have produced it: the named keys, and nothing else.
+
+    THE NAME STAYS `rbp16` THOUGH IT NOW STRIPS AN RB-P17 KEY TOO, and so does the test
+    below it. `docs/eval-data/2026-08-14-rbp16-effect-size-report.md` is committed
+    evidence that names both by identifier; renaming them would leave a committed record
+    pointing at something that no longer exists, which is precisely the defect RB-P17
+    files. The identifier is the stable handle and this docstring carries the meaning.
+    """
+    if isinstance(obj, dict):
+        return {
+            k: _without_rbp16_additions(v)
+            for k, v in obj.items()
+            if k not in _RBP16_ADDED_KEYS
+        }
+    if isinstance(obj, list):
+        return [_without_rbp16_additions(v) for v in obj]
+    return obj
+
+
+def _table_without_rbp16_lines(table: str) -> str:
+    lines = [ln for ln in table.splitlines() if not ln.startswith("    effect: ")]
+    head = next(
+        (i for i, ln in enumerate(lines) if ln.startswith("Directional consistency ")),
+        None,
+    )
+    if head is not None:  # the blank separator, the header, and one line per pair
+        end = head + 1
+        while end < len(lines) and lines[end].startswith("- "):
+            end += 1
+        lines = lines[: head - 1] + lines[end:]
+    return "\n".join(lines)
+
+
+def test_the_whole_offline_run_is_byte_identical_to_f8404ab_modulo_the_named_rbp16_adds(
+    tmp_path,
+):
     from perturbation_baseline_harness import produce, serialize
 
     expected = json.loads(BASELINE.read_text())
     produced = produce(criticreplay, tmp_path / "rubrics")
-    for section in (
-        "rows", "summary", "table", "identity_only", "guard_error_refusal", "synthetic",
-    ):
-        assert produced[section] == expected[section], section
-    assert serialize(produced) == BASELINE.read_text()
+    for section in ("rows", "summary", "identity_only", "guard_error_refusal", "synthetic"):
+        assert _without_rbp16_additions(produced[section]) == expected[section], section
+    assert _table_without_rbp16_lines(produced["table"]) == expected["table"]
+    stripped = _without_rbp16_additions(produced)
+    stripped["table"] = _table_without_rbp16_lines(stripped["table"])
+    assert serialize(stripped) == BASELINE.read_text()
+
+
+def test_the_rbp16_additions_the_floor_strips_are_present_and_loaded(tmp_path):
+    """The floor above strips three keys. A strip is how you hide a regression in one.
+
+    So the stripped content is asserted here, on the SAME fresh run, and asserted to be
+    non-trivial: the effect must move with the cell, and the table must carry the line.
+    Without this node the floor would pass unchanged if `_effect` returned `{}`.
+    """
+    from perturbation_baseline_harness import produce
+
+    produced = produce(criticreplay, tmp_path / "rubrics")
+    comparisons = [
+        comparison
+        for cell in produced["summary"]["cells"]
+        for comparison in cell["comparisons"]
+    ]
+    assert comparisons
+    for comparison in comparisons:
+        for key in ("effect", "guard_effect"):
+            effect = comparison[key]
+            assert set(effect) == {
+                "delta_passed", "delta_rate", "sign", "leads",
+                "points_from_separation", "disagreeing_points", "a_only", "b_only",
+            }, (key, effect)
+        assert comparison["effect"]["delta_passed"] == (
+            int(comparison["a_pass_rate"].split("/")[0])
+            - int(comparison["b_pass_rate"].split("/")[0])
+        )
+    # It varies across cells — a constant would satisfy every assertion above.
+    assert len({c["effect"]["delta_passed"] for c in comparisons}) > 1, comparisons
+    assert produced["summary"]["directional"]
+    assert "    effect: " in produced["table"]
+    assert "Directional consistency " in produced["table"]
+    # RB-P17's key, same rule: a strip is how you hide a regression in what it strips.
+    templates = {r["variant"]: r["rubric_template_sha256"] for r in produced["rows"]}
+    files = {r["variant"]: r["rubric_sha256"] for r in produced["rows"]}
+    assert set(templates) == {"L1", "L2"}, templates
+    for label, sha in templates.items():
+        assert re.fullmatch(r"[0-9a-f]{64}", sha), (label, sha)
+        # It is the RUBRIC, not the FILE: the two variants differ by one trailing
+        # newline inside `prompt`, so both columns move — but they never agree, because
+        # the file also carries `name:`, `threshold:` and `schema:`.
+        assert sha != files[label], (label, sha)
+    assert templates["L1"] != templates["L2"], templates
 
 
 def test_the_baseline_covers_a_populated_guard_table_and_a_zero_spend_refusal():
@@ -2590,11 +3240,18 @@ def _child_env(**extra: str) -> dict[str, str]:
     return env
 
 
-def _shell_status(argv: list[str], tmp_path: Path, label: str = "run") -> tuple[int, str, str]:
+def _shell_status(
+    argv: list[str], tmp_path: Path, label: str = "run", cwd: Path | None = None
+) -> tuple[int, str, str]:
     """Run `argv` in /bin/sh; return the status the SHELL read, plus stdout and stderr.
 
     The status is echoed by the shell's own `$?` on a stream of its own, with the
     command's streams redirected to files — so nothing here reads a Python return value.
+
+    `cwd` exists for the RB-P28 acceptance probes at the end of this file: `parse_rubric_arg`
+    resolves `git:` and `derive:` specs against the process's working directory, so a probe
+    that reads a committed rubric has to start inside the tree it is reading. Every other
+    caller leaves it `None` and inherits pytest's, which is what they have always done.
     """
     where = tmp_path / f"_shell-{label}"
     where.mkdir(parents=True, exist_ok=True)
@@ -2603,6 +3260,7 @@ def _shell_status(argv: list[str], tmp_path: Path, label: str = "run") -> tuple[
         ["/bin/sh", "-c", '"$@" >"$BK_OUT" 2>"$BK_ERR"; echo "status=$?"', "sh", *argv],
         capture_output=True,
         text=True,
+        cwd=None if cwd is None else str(cwd),
         env=_child_env(BK_OUT=str(out), BK_ERR=str(err)),
     )
     assert proc.returncode == 0, proc.stderr  # the shell itself ran
@@ -3352,13 +4010,69 @@ def test_help_with_no_reader_on_stdout_is_still_the_interpreters_number(tmp_path
 
     `--help` renders the epilog and exits before `main` reaches its table print, so the
     RB-P27 handler is not on that path at all and the shutdown flush is what the shell
-    sees. Measured, not assumed. A change that covers this may delete this node — and
-    must then also correct the sentence in `_EXIT_CONTRACT` that this node pins.
+    sees. A change that covers this may delete this node — and must then also correct
+    the sentence in `_EXIT_CONTRACT` that this node pins.
+
+    RE-AIMED 2026-08-14 (RB-P35), AND THE OLD AIM IS THE FINDING. This node asserted the
+    literal `120`, and that assertion was a fact about the WORLD, not about this tool:
+    the status is decided by whether the doomed bytes are still in `sys.stdout`'s
+    `BufferedWriter` when the interpreter exits, so it turns on the SIZE of the help text
+    against a buffer this module does not set. It went false in CI without one line of
+    this module's behaviour changing — a docstring added by an unrelated fix grew the
+    epilog from 7488 to 8227 bytes, and `ubuntu-latest` went 120 -> 0 while macOS stayed
+    120. The module's own comment already named that mechanism for the run path and had
+    not applied it here.
+
+    WHAT IS ASSERTED NOW IS THE CLAIM THE CONTRACT ACTUALLY MAKES: the status of a stdout
+    lost outside the run path is decided by `argparse` and the interpreter, and this
+    module contributes nothing to it. The control is a bare interpreter reproducing
+    exactly what `argparse` does with the module's own help bytes on the identical broken
+    pipe — one `sys.stdout.write` of the whole text (`_print_message` formats the help
+    and emits it in a single call), the `except (AttributeError, OSError): pass` that
+    `argparse.ArgumentParser._print_message` wraps that call in since 3.10, and exit 0.
+    No `bantamkit` on the path. Equality is platform-independent and cannot go stale with
+    the epilog's length; it goes RED the moment this module starts choosing that status,
+    which is the change the contract sentence promises to be corrected for.
+
+    THE FIRST RE-AIM WAS WRONG AND CI SAID SO, WHICH IS WHY THE SWALLOW IS SPELLED OUT.
+    A control WITHOUT the `except OSError` read `1` on `ubuntu-latest` (the write raises
+    out of `-c` and the traceback is the interpreter's `1`) where the module read `0`.
+    That looked like the module choosing the status and it is not: `argparse` swallowed
+    the `BrokenPipeError`, and what the shell then reads is whatever the shutdown flush
+    does with a buffer the failed write already emptied. Recorded rather than smoothed —
+    a control that differs from the thing it controls for in one hidden respect reports a
+    difference that is the control's, not the subject's.
     """
-    status, _ = _closed_pipe_status(
-        [sys.executable, "-m", "bantamkit.criticreplay", "--help"], tmp_path, "help"
+    argv = [sys.executable, "-m", "bantamkit.criticreplay", "--help"]
+    status, _ = _closed_pipe_status(argv, tmp_path, "help")
+    rendered = subprocess.run(
+        argv, capture_output=True, text=True, check=True, env=_child_env()
+    ).stdout
+    replica = tmp_path / "help-bytes.txt"
+    replica.write_text(rendered)
+    control, _ = _closed_pipe_status(
+        [
+            sys.executable,
+            "-c",
+            # argparse.ArgumentParser._print_message, verbatim in shape:
+            #     try: file.write(message)
+            #     except (AttributeError, OSError): pass
+            "import sys\n"
+            "try:\n"
+            "    sys.stdout.write(open(sys.argv[1]).read())\n"
+            "except (AttributeError, OSError):\n"
+            "    pass\n",
+            str(replica),
+        ],
+        tmp_path,
+        "help-control",
     )
-    assert status == _CLOSED_PIPE_PREFIX_STATUS
+    assert status == control, (
+        f"the module read {status} where a bare interpreter doing what argparse does "
+        f"with the same {len(rendered)} bytes on the same broken pipe read {control}. "
+        "That difference would mean this module DOES choose the status on the --help "
+        "path, which the epilog says it does not."
+    )
 
 
 def test_a_refusal_whose_stderr_has_no_reader_leaves_the_range(rig, tmp_path):
@@ -4642,6 +5356,29 @@ def test_the_epilog_discloses_the_behaviour_change_with_the_count_the_field_reco
         "owner whose branch changed number has to be able to find the record that "
         "measured it; a lowercased path inside a filename is not that."
     )
+    # AND THE TIE IS CHECKED IN BOTH DIRECTIONS (RB-P17, 2026-08-14). `assert problems`
+    # alone is satisfied by ANY problem id in the block, so once a second disclosure
+    # landed here, the mutation that reduces RB-P32's paragraph to "CHANGED (see the
+    # docs)" left the block still naming RB-P17 and the whole node went green — measured:
+    # P04 read UNPINNED at 0337c66 and had been PINNED at 32773f9. A citation is a promise
+    # that the block names the problem the cited record measures, so every cited record
+    # whose filename carries a problem slug demands its id in the prose. Deleting an id
+    # while keeping its evidence is now red, which is exactly the shape of that mutation.
+    undisclosed = sorted(
+        {
+            f"RB-P{match.group(1)}"
+            for hits in resolved.values()
+            for path in hits
+            if (match := re.search(r"rb-?p(\d+)", path.name))
+            and f"RB-P{match.group(1)}" not in problems
+        }
+    )
+    assert not undisclosed, (
+        f"the epilog's {criticreplay.USAGE_EXIT} block cites the field record for "
+        f"{', '.join(undisclosed)} and never names the problem. A CI owner reading "
+        "--help gets the evidence with the claim removed, which is the disclosure "
+        "failing while looking cited."
+    )
     for problem in problems:
         slug = problem.replace("-", "").lower()
         records = [
@@ -4663,3 +5400,1085 @@ def test_the_epilog_discloses_the_behaviour_change_with_the_count_the_field_reco
             f"({', '.join(moved)}), and the epilog does not state that count. The "
             "disclosure and the evidence are one claim, not two."
         )
+
+
+# ===========================================================================
+# RB-P16 / RB-P17 / RB-P18 — three executable specs, written by the PROBE unit
+# (L1) BEFORE any fix exists. Each is a non-strict `xfail` that fails TODAY,
+# and each names the measured pre-fix state in its docstring rather than an
+# adjective. The full survey behind them, with the commands that produced it,
+# is docs/eval-data/2026-08-13-rbp16-rbp17-rbp18-survey.md and its .py.
+#
+# WHY THEY READ THE COMMITTED ARTIFACTS AND NOT A FRESH FIXTURE. RB-P28 is
+# open: a green suite is not evidence about this tool. Every one of these
+# nodes re-derives its numbers from a real run's committed rows with today's
+# code, so the thing under test is the instrument as shipped, not a rig built
+# to agree with it. The fixture guard below keeps a drift in those artifacts
+# red rather than turning an `xfail` into a silently mis-aimed one.
+# ===========================================================================
+
+EVAL_DATA = Path(__file__).resolve().parents[2] / "docs" / "eval-data"
+
+# The §10 acceptance run. Three seeds, three variants, nine comparisons — and,
+# with 2026-08-12's replay3 run, the WHOLE committed record of §7 verdicts:
+# twelve comparisons over two runs, eleven `inconclusive`, one
+# `indistinguishable`, zero `distinguishable`, zero `attributable`.
+_ACCEPTANCE_SUMMARY = EVAL_DATA / "2026-08-11-pb14-14b-nav-prod-port-perturbation-summary.json"
+_ACCEPTANCE_ROWS = EVAL_DATA / "2026-08-11-pb14-14b-nav-prod-port-perturbation.jsonl"
+_SA3_REPLAY = EVAL_DATA / "2026-08-11-sa3-14b-nav-prod-port-critic-replay.json"
+
+
+def _committed_summaries() -> list[tuple[Path, dict]]:
+    """Every committed summary carrying a §7 `comparisons` block."""
+    out = []
+    for path in sorted(EVAL_DATA.glob("*.json")):
+        text = path.read_text()
+        if '"comparisons"' in text:
+            out.append((path, json.loads(text)))
+    return out
+
+
+def _rows_as_replay_rows(path: Path) -> list[criticreplay.ReplayRow]:
+    """Committed JSONL back into the dataclass today's decision rule consumes.
+
+    `rubric_template_sha256` is defaulted to BLANK here rather than on the dataclass, and
+    the difference matters (RB-P17, 2026-08-14). The field did not exist when these rows
+    were written, so a committed row genuinely carries no value for it and blank is the
+    honest reading. Defaulting it on `ReplayRow` itself would have let a live run omit it
+    silently too, which is how a provenance column stops being filled and nobody notices;
+    a run made today must state it. The committed bytes are not touched — this is the
+    reader supplying the absence, not the record being rewritten.
+    """
+    rows = []
+    for line in path.read_text().splitlines():
+        data = json.loads(line)
+        data["point_class"] = data.pop("class")
+        data.setdefault("calls", 1)
+        data.setdefault("rubric_template_sha256", "")
+        # RB-P18, same rule and the same reason: the committed rows predate the canonical
+        # column, so the READER supplies its absence. Blank means "this record does not
+        # state a key-sorted sha", which is exactly true of every row written before
+        # 2026-08-14 — and it is not the same as stating one that happens to be empty.
+        data.setdefault("payload_canonical_sha256", "")
+        # RB-P17, L6 2026-08-14, same rule again: no committed row states the bytes of a
+        # manifest a `derive:` ref points through, because no committed row carries a
+        # `derive:` ref at all.
+        data.setdefault("derive_manifest_sha256", "")
+        rows.append(
+            criticreplay.ReplayRow(
+                **{
+                    key: value
+                    for key, value in data.items()
+                    if key in criticreplay.ReplayRow.__dataclass_fields__
+                }
+            )
+        )
+    return rows
+
+
+def _compare_committed_cell(repeat: int, a: str, b: str) -> dict:
+    """Today's `_compare` over the committed rows of one cell of the acceptance run."""
+    rows = [row for row in _rows_as_replay_rows(_ACCEPTANCE_ROWS) if row.repeat == repeat]
+    labels = sorted({row.variant for row in rows})
+    per_variant: dict[str, dict[str, list[criticreplay.ReplayRow]]] = {}
+    for row in rows:
+        per_variant.setdefault(row.variant, {}).setdefault(row.point, []).append(row)
+    selected = sorted({row.point for row in rows}, key=lambda p: (p != "identity", p))
+    dropped = {
+        label: [point for point in selected if point not in per_variant.get(label, {})]
+        for label in labels
+    }
+    result = criticreplay.RunResult(
+        rows=rows,
+        dropped=dropped,
+        selected=selected,
+        labels=labels,
+        threshold=rows[0].threshold,
+        cells=[],
+    )
+    return criticreplay._compare(
+        result, per_variant, a, b, rows[0].threshold, ("nav-prod-port", repeat), {}
+    )
+
+
+def test_the_committed_acceptance_artifacts_are_the_ones_these_three_specs_aim_at():
+    """NOT an xfail. The fixture guard for the three `xfail`s below.
+
+    An `xfail` that fails because its inputs drifted pins nothing (RB-P28's lesson
+    applied to this file's own evidence). These three nodes read committed evidence
+    rather than a rig, so what has to stay true is that the evidence still says what
+    L1 measured on 2026-08-13. If any of this goes red, the `xfail`s below are aimed
+    at the wrong cells and their reasons are stale — fix this first.
+
+    Also asserts the re-derivation route itself: `_compare` over the committed rows
+    reproduces the committed comparison field for field. Without that, an `xfail`
+    below could be failing because the rebuild is wrong rather than because the
+    instrument is.
+    """
+    assert _ACCEPTANCE_SUMMARY.is_file() and _ACCEPTANCE_ROWS.is_file()
+    assert _SA3_REPLAY.is_file()
+
+    verdicts = [
+        comparison["verdict"]
+        for _, summary in _committed_summaries()
+        for cell in summary["cells"]
+        for comparison in cell["comparisons"]
+    ]
+    assert len(verdicts) == 12, verdicts
+    assert verdicts.count("inconclusive") == 11
+    assert verdicts.count("indistinguishable") == 1
+    assert verdicts.count("distinguishable") == 0
+
+    committed = {
+        (cell["repeat"], comparison["a"], comparison["b"]): comparison
+        for cell in json.loads(_ACCEPTANCE_SUMMARY.read_text())["cells"]
+        for comparison in cell["comparisons"]
+    }
+    assert committed[(0, "A-asfiled", "C-attempted")]["a_pass_rate"] == "1/12"
+    assert committed[(0, "A-asfiled", "C-attempted")]["b_pass_rate"] == "11/12"
+    assert committed[(1, "A-asfiled", "C-attempted")]["a_pass_rate"] == "4/12"
+    assert committed[(1, "A-asfiled", "C-attempted")]["b_pass_rate"] == "8/12"
+
+    for repeat in (0, 1):
+        rebuilt = _compare_committed_cell(repeat, "A-asfiled", "C-attempted")
+        recorded = committed[(repeat, "A-asfiled", "C-attempted")]
+        for key, value in recorded.items():
+            assert rebuilt[key] == value, (
+                f"re-deriving cell r{repeat} with today's `_compare` gives {key}="
+                f"{rebuilt[key]!r} where the committed summary records {value!r}; the "
+                "rebuild below is measuring something other than the committed run"
+            )
+
+
+def test_the_inconclusive_band_reports_something_a_reader_can_tell_from_noise():
+    """The reporting duty, pinned without pre-empting the format.
+
+    Two comparisons of the SAME pair (`A-asfiled` vs `C-attempted`) on the SAME
+    family size (12) in the SAME committed run:
+
+        r0   1/12 vs 11/12   |Δ| = 5/6  ≈ 0.8333   — one point short of F/F vs 0/F
+        r1   4/12 vs  8/12   |Δ| = 1/3  ≈ 0.3333   — a genuinely mixed cell
+
+    Measured at b496856, both report, field for field:
+
+        {"a": "A-asfiled", "b": "C-attempted", "verdict": "inconclusive",
+         "family_size": 12, "dropped_rules": [], "attributable": false,
+         "fragile": ["A-asfiled", "C-attempted"]}
+
+    i.e. the report is a function of the pass rates and of NOTHING else. This node
+    asserts only that it stops being so — the difference, its sign, a band word, a
+    tuple, anything a reader can compare across cells satisfies it. It deliberately
+    does not name a field: L2 designs the format, this pins the duty.
+
+    Whether the design keeps `inconclusive` as one word is left open on purpose.
+    RB-P16's own attack direction keeps it and reports the gap beside it, and a node
+    that demanded a new word would rule that out before it was argued.
+
+    **CLOSED 2026-08-14 (L2). The `xfail` is removed and this now passes.** What closed
+    it is `_effect`, shipped beside every verdict: r0 reads `delta_rate -0.8333`,
+    `points_from_separation 2`, `disagreeing_points 10`; r1 reads `-0.3333`, `8`, `4`.
+    The word is unchanged and so is `attributable` on both cells.
+
+    THIS NODE ALONE IS NOT THE PIN. It re-derives from committed rows, so it can only
+    see the summary dict. The claim is about what a verdict REPORTS, and the report
+    includes the printed table, so the pin is completed by
+    `test_a_fresh_runs_verdict_carries_its_effect_size_in_the_summary_and_in_the_table`
+    below, which measures a run made today.
+    """
+    reports = {
+        repeat: _compare_committed_cell(repeat, "A-asfiled", "C-attempted") for repeat in (0, 1)
+    }
+    assert {r["verdict"] for r in reports.values()} == {"inconclusive"}, reports
+    stripped = {
+        repeat: {
+            key: value
+            for key, value in report.items()
+            if key not in ("a_pass_rate", "b_pass_rate")
+        }
+        for repeat, report in reports.items()
+    }
+    assert stripped[0] != stripped[1], (
+        "a near-total separation (1/12 vs 11/12) and a mixed cell (4/12 vs 8/12) of the "
+        "same pair produce byte-identical reports once the two pass-rate fractions are "
+        "removed, so the band's verdict carries no effect size a reader can tell apart "
+        f"from noise: {json.dumps(stripped[0], sort_keys=True)}"
+    )
+
+
+@pytest.mark.xfail(
+    reason=(
+        "RB-P17, open at b496856: a rubric variant's provenance is a path, and a path "
+        "is not a rule. Measured over every committed summary on 2026-08-13 — 5 "
+        "distinct `rubric_ref` values, of which ONE resolves from this repo "
+        "(`assets/rubrics/task-completion.yaml`, 10 runs). Two are absolute session "
+        "scratchpad paths under /private/tmp (B-nonewline, in BOTH pb14 runs, with "
+        "DIFFERENT rubric_sha256 for the same rubric under test), and two are bare git "
+        "refs (`d2f78b7`, `e57f1a6`) whose commit resolves but whose PATH the row never "
+        "recorded — `parse_rubric_arg` stores `ref`, not `spec`. "
+        "STILL XFAIL AT L3's FIX, AND PERMANENTLY (2026-08-14). The brief expected this "
+        "to go green once RB-P17 was fixed; it cannot, and that is a result and not a "
+        "shortfall. Committed evidence is never regenerated, so the four unresolvable "
+        "refs are frozen into the record and only a retro-edit could clear them. This "
+        "node therefore measures the HISTORY, and no change to this module can move it "
+        "in either direction — the same structural finding L1 made about N02. What the "
+        "fix is pinned by is a run made TODAY: "
+        "test_a_fresh_runs_rubric_ref_resolves_from_this_repo_back_to_the_rubric_it_"
+        "recorded. Field measurement: "
+        "docs/eval-data/2026-08-14-rbp17-provenance-resolution.md."
+ "STRICT SINCE 2026-08-14 (L6, L5's I6). It was non-strict, so it could go red "
+        "neither by failing nor by passing while contributing to a headline that reads "
+        "as coverage. Strict buys exactly one direction and it is worth having: this "
+        "node asserts a fact about COMMITTED bytes, so an xpass means the frozen record "
+        "MOVED, which is the byte-identity floor being breached and belongs in red. The "
+        "failing direction is still inert and no setting changes that. L5's diagnosis "
+        "stands and is FILED, not fixed: permanence follows from asserting a fact about "
+        "the world (RB-P14 Gate 2), and a node scoped to 'every rubric_ref written on "
+        "or after 2026-08-14 resolves' covers the same duty and is achievable."
+    ),
+)
+def test_every_rubric_ref_in_a_committed_summary_resolves_from_this_repo():
+    """Provenance a second reader can follow, using this repository and nothing else.
+
+    Resolvable means: the recorded `rubric_ref` lets a reader recover bytes whose
+    sha256 is the recorded `rubric_sha256`, from the repo. Two forms qualify — a
+    repo-relative path, and `git:<ref>:<path>`. An absolute path on the machine that
+    made the run does not, even where the file happens to still be there: measured
+    2026-08-13, BOTH scratchpad rubrics still existed on this machine and still
+    hashed to their recorded shas, which is the filing's "one cleanup away" and not
+    a reason to call the record resolvable.
+
+    Measured at b496856, unresolvable refs (4 of 5):
+
+        /private/tmp/.../scratchpad/b-nonewline.yaml      B-nonewline, 2026-08-11 run
+        /private/tmp/.../scratchpad/n5-b-nonewline.yaml   B-nonewline, 2026-08-12 run
+        d2f78b7                                          A-asfiled, both runs
+        e57f1a6                                          C-attempted, 2026-08-11 run
+
+    BROADER THAN FILED. RB-P17 names the scratchpad path. The bare git refs are the
+    same defect on the form the filing calls the good one: `d2f78b7` names a commit
+    and not a file, so `rubric_sha256` cannot be re-derived from it without knowing
+    which path to ask for.
+    """
+    repo = Path(__file__).resolve().parents[2]
+    unresolvable = []
+    for path, summary in _committed_summaries():
+        for variant in summary.get("variants", []):
+            ref, sha = variant["rubric_ref"], variant["rubric_sha256"]
+            recovered = None
+            if ref.startswith("git:") and ref.count(":") >= 2:
+                _, git_ref, git_path = ref.split(":", 2)
+                shown = subprocess.run(
+                    ["git", "-C", str(repo), "show", f"{git_ref}:{git_path}"],
+                    capture_output=True,
+                    text=True,
+                )
+                if shown.returncode == 0:
+                    recovered = criticreplay.sha256_text(shown.stdout)
+            elif not ref.startswith("/") and (repo / ref).is_file():
+                recovered = criticreplay.sha256_text((repo / ref).read_text())
+            if recovered != sha:
+                unresolvable.append(f"{path.name}: {variant['label']} -> {ref}")
+    assert not unresolvable, (
+        "these committed summaries record a `rubric_ref` that this repository cannot "
+        "resolve back to the recorded `rubric_sha256`, so the evidence points at "
+        "something a second reader cannot obtain:\n  " + "\n  ".join(unresolvable)
+    )
+
+
+@pytest.mark.xfail(
+    reason=(
+        "RB-P18, open at b496856: `payload_sha256` names two recipes. Re-measured on "
+        "2026-08-13 across all six committed (variant, seed) cells — the bar's rows and "
+        "SA3's replay block disagree on every one, at an identical rendered prompt, an "
+        "identical seed, an identical model and an identical score. THE FILED MECHANISM "
+        "IS WRONG: the two recipes do NOT serialize different dicts. They serialize the "
+        "SAME dict {model, messages, seed, response_format}; the bar uses "
+        "json.dumps(..., ensure_ascii=False) and SA3 used the same call with "
+        "sort_keys=True. The whole disagreement is JSON key order. "
+        "PERMANENT (L4, 2026-08-14): this node CANNOT go green, and it pins nothing in "
+        "either direction. Every one of its three disjuncts is a fact about committed "
+        "bytes, which by invariant are never regenerated — the two shas are frozen and "
+        "unequal, both records are frozen carrying the key `payload_sha256`, and neither "
+        "frozen record has any other key containing `payload` (measured: the bar row's 21 "
+        "keys and the SA3 entry's 8). Only a retro-edit could clear it. Same structural "
+        "finding L1 made about N02/N03 and L3 confirmed for RB-P17's twin. The pin is "
+        "test_a_fresh_run_reproduces_both_frozen_payload_recipes_from_one_request."
+ "STRICT SINCE 2026-08-14 (L6, L5's I6). It was non-strict, so it could go red "
+        "neither by failing nor by passing while contributing to a headline that reads "
+        "as coverage. Strict buys exactly one direction and it is worth having: this "
+        "node asserts a fact about COMMITTED bytes, so an xpass means the frozen record "
+        "MOVED, which is the byte-identity floor being breached and belongs in red. The "
+        "failing direction is still inert and no setting changes that. L5's diagnosis "
+        "stands and is FILED, not fixed: permanence follows from asserting a fact about "
+        "the world (RB-P14 Gate 2), and a node scoped to 'every rubric_ref written on "
+        "or after 2026-08-14 resolves' covers the same duty and is achievable."
+    ),
+)
+def test_payload_sha256_does_not_name_two_recipes_at_once():
+    """One field name, two serializations, and nothing in either record says which.
+
+    The concrete cell, both values read from committed artifacts and both
+    re-derived from git at test time:
+
+        A-asfiled, git:d2f78b7, repeat 0, seed 2331795949, score 5,
+        prompt_sha256 8fb6c98412f1…
+
+            bar  payload_sha256 = a17fc774681a…   (insertion order)
+            SA3  payload_sha256 = 4eb56220e883…   (sort_keys=True)
+
+    `prompt_sha256` is equal across the two records — SA3 carries it as
+    `prompt_sha256_asfiled` in its whitespace-null-control block — so a reader
+    comparing on `payload_sha256` concludes the requests differed when they did not.
+
+    The node passes either way RB-P18's attack could go: make the two agree, or
+    stop sharing the name. It does not choose between them.
+    """
+    sa3 = json.loads(_SA3_REPLAY.read_text())
+    bar_row = next(
+        row
+        for row in (json.loads(line) for line in _ACCEPTANCE_ROWS.read_text().splitlines())
+        if row["point"] == "identity" and row["variant"] == "A-asfiled" and row["repeat"] == 0
+    )
+    sa3_entries = [
+        entry
+        for entry in sa3["replay_verdicts"]
+        if entry["ref"] == "d2f78b7" and entry["repeat"] == 0
+    ]
+    sa3_shas = sorted({sha for entry in sa3_entries for sha in entry["payload_sha256"]})
+    assert len(sa3_shas) == 1 and sa3_entries, sa3_shas
+    control = sa3["whitespace_null_control_replay"]["verdicts"][0]
+    assert control["prompt_sha256_asfiled"] == bar_row["prompt_sha256"]
+    assert {entry["score"] for entry in sa3_entries} == {bar_row["score"]}
+    assert sa3_entries[0]["seed"] == bar_row["seed"]
+
+    same_name = "payload_sha256" in bar_row and "payload_sha256" in sa3_entries[0]
+    recipe_named = any(
+        "payload" in key and key != "payload_sha256"
+        for record in (bar_row, sa3_entries[0])
+        for key in record
+    )
+    assert sa3_shas[0] == bar_row["payload_sha256"] or not same_name or recipe_named, (
+        "two committed records carry `payload_sha256` for the SAME request — equal "
+        f"prompt_sha256 {bar_row['prompt_sha256'][:12]}…, equal seed "
+        f"{bar_row['seed']}, equal score {bar_row['score']} — and disagree: bar "
+        f"{bar_row['payload_sha256'][:12]}… vs SA3 {sa3_shas[0][:12]}…, with neither "
+        "record naming the serialization that produced it. Measured cause: "
+        "json.dumps sort_keys, nothing else."
+    )
+
+
+# ===========================================================================
+# RB-P16 — the FIX, pinned over a FRESH run (L2, 2026-08-14).
+#
+# WHY A FRESH RUN AND NOT MORE COMMITTED-ARTIFACT NODES. L1's structural
+# finding, which this unit is under orders not to repeat: a node that only
+# reads committed artifacts can never go red under a source mutation, because
+# committed evidence is by invariant never regenerated. It looks green and it
+# pins nothing. The claim here is about what a verdict REPORTS — the summary
+# dict AND the printed table — so every node below runs the shipped
+# `run`/`summarize`/`format_table` today, against a scripted critic, and the
+# ledger's mutations aim at the code those nodes execute.
+#
+# The rig mirrors the shape of the committed pair the survey measured: ONE
+# variant pair, TWO cells of it, two DIFFERENT gaps, both `inconclusive`. Pre-
+# fix, those two cells' reports were identical once the pass rates were
+# removed. That is the defect, at F=3 instead of F=12.
+# ===========================================================================
+
+
+@pytest.fixture
+def effect_rig(asset_tree, tmp_path):
+    """`rig`, but the two cells carry DIFFERENT outputs so a prompt-keyed critic can
+    score them apart. `rig`'s two cells render byte-identical prompts, which is right
+    for what it pins and useless for a cross-cell effect size."""
+    manifest_path = _write_manifest(asset_tree)
+    before = _write_rubric(tmp_path, "before", BASE_PROMPT)
+    after = _write_rubric(tmp_path, "after", CHANGED_PROMPT)
+    transcripts = tmp_path / "transcripts"
+    _transcript(transcripts, "critique", "alpha", 0, 111, "OUT")
+    _transcript(transcripts, "critique", "alpha", 1, 222, "OUT2")
+    return {
+        "manifest": criticreplay.load_manifest(manifest_path),
+        "variants": [
+            criticreplay.parse_rubric_arg(f"before={before}"),
+            criticreplay.parse_rubric_arg(f"after={after}"),
+        ],
+        "cases": criticreplay.load_cases(transcripts),
+    }
+
+
+def _two_gaps(prompt: str) -> int:
+    """`before` 3/3 then 2/3; `after` 1/3 on both. Two `inconclusive` cells, |dn| 2 then 1."""
+    if "CHANGED" in prompt:  # the `after` variant
+        return 2 if (prompt.startswith("ONE.  ") or not prompt.endswith("\n")) else 9
+    if "A:OUT2" in prompt and prompt.startswith("ONE.  "):  # cell r1 only
+        return 2
+    return 9
+
+
+def _a_tie_they_disagree_inside(prompt: str) -> int:
+    """1/3 each, and NOT the same 1: `before` passes identity, `after` passes W1."""
+    stripped, doubled = not prompt.endswith("\n"), prompt.startswith("ONE.  ")
+    if "CHANGED" in prompt:
+        return 9 if stripped else 2
+    return 2 if (stripped or doubled) else 9
+
+
+def _summary(effect_rig, scorer):
+    client = ScriptedCritic(scorer)
+    result = criticreplay.run(
+        client,
+        effect_rig["variants"],
+        effect_rig["manifest"],
+        effect_rig["cases"],
+        model=client.model,
+    )
+    return criticreplay.summarize(result, effect_rig["manifest"].sha256)
+
+
+def test_a_fresh_runs_verdict_carries_its_effect_size_in_the_summary_and_in_the_table(
+    effect_rig,
+):
+    """The pin. Two cells of ONE pair, both `inconclusive`, gaps differing 2x.
+
+    Pre-fix the two reports were identical once `a_pass_rate` and `b_pass_rate` were
+    removed — that is the whole of RB-P16 — and `format_table` printed one line each
+    that differed only in the two fractions. Both are asserted here on output produced
+    today, so a mutation that stops the report carrying the gap turns this red.
+    """
+    summary = _summary(effect_rig, _two_gaps)
+    cells = summary["cells"]
+    assert [(c["task"], c["repeat"]) for c in cells] == [("alpha", 0), ("alpha", 1)]
+    wide, narrow = (c["comparisons"][0] for c in cells)
+
+    assert wide["verdict"] == narrow["verdict"] == "inconclusive"
+    assert (wide["a_pass_rate"], wide["b_pass_rate"]) == ("3/3", "1/3")
+    assert (narrow["a_pass_rate"], narrow["b_pass_rate"]) == ("2/3", "1/3")
+
+    # 1. The difference and its sign are ON the report, and they are not the same.
+    assert wide["effect"]["delta_passed"] == 2 and narrow["effect"]["delta_passed"] == 1
+    assert wide["effect"]["delta_rate"] == 0.6667
+    assert narrow["effect"]["delta_rate"] == 0.3333
+    assert wide["effect"]["sign"] == narrow["effect"]["sign"] == 1
+    assert wide["effect"]["leads"] == narrow["effect"]["leads"] == "before"
+    assert wide["effect"]["points_from_separation"] == 1
+    assert narrow["effect"]["points_from_separation"] == 2
+
+    # 2. The defect itself: strip the pass rates and the two reports must still differ.
+    def without_rates(report):
+        return {k: v for k, v in report.items() if k not in ("a_pass_rate", "b_pass_rate")}
+
+    assert without_rates(wide) != without_rates(narrow)
+
+    # 3. The PRINTED report, not only the dict. A summary key nobody renders is not a
+    #    report a reader gets.
+    table = criticreplay.format_table(summary)
+    effect_lines = [ln for ln in table.splitlines() if ln.startswith("    effect: ")]
+    assert len(effect_lines) == 2, table
+    assert "+2/3 (+0.667)" in effect_lines[0] and "[#######---]" in effect_lines[0]
+    assert "+1/3 (+0.333)" in effect_lines[1] and "[###-------]" in effect_lines[1]
+    assert effect_lines[0] != effect_lines[1]
+    # and it sits with the verdict it belongs to, not in a table of its own
+    rows = table.splitlines()
+    for line in effect_lines:
+        assert rows[rows.index(line) - 1].startswith("- alpha r")
+
+
+def test_an_indistinguishable_cell_reports_the_points_the_two_variants_disagree_on(
+    effect_rig,
+):
+    """`indistinguishable` is equal pass COUNTS, not agreement — and now says so.
+
+    The measured instance this is built from: the single committed cell carrying the
+    word (`B-nonewline` 7/11 vs `C-attempted` 7/11, nav-prod-port r1, 2026-08-11 run)
+    is a cell on which the two variants disagree on 2 of 11 points — `B` passes
+    `P2-asks-requests`, `C` passes `W2-double-trailing`. Re-derived 2026-08-14 from the
+    committed rows; it is also the ONLY cell in the whole committed record whose
+    disagreement is two-sided, which is exactly why the difference alone cannot
+    recover it.
+
+    Here the same shape at F=3: 1/3 each, and not the same 1.
+    """
+    summary = _summary(effect_rig, _a_tie_they_disagree_inside)
+    comparison = summary["cells"][0]["comparisons"][0]
+    assert comparison["verdict"] == "indistinguishable"
+    assert (comparison["a_pass_rate"], comparison["b_pass_rate"]) == ("1/3", "1/3")
+    effect = comparison["effect"]
+    assert effect["delta_passed"] == 0 and effect["sign"] == 0 and effect["leads"] is None
+    assert effect["disagreeing_points"] == 2
+    assert effect["a_only"] == ["identity"]
+    assert effect["b_only"] == ["W1-trailing-newline"]
+    line = next(
+        ln for ln in criticreplay.format_table(summary).splitlines()
+        if ln.startswith("    effect: ")
+    )
+    assert "neither leads" in line and "2/3 points disagree" in line
+
+
+def test_the_committed_indistinguishable_cell_is_one_the_variants_disagree_inside():
+    """The measurement the node above is modelled on, on the real artifact.
+
+    Re-derived with today's `_compare` over the committed rows — not read out of the
+    committed summary, which predates `effect` and cannot contain it.
+    """
+    comparison = _compare_committed_cell(1, "B-nonewline", "C-attempted")
+    assert comparison["verdict"] == "indistinguishable"
+    assert (comparison["a_pass_rate"], comparison["b_pass_rate"]) == ("7/11", "7/11")
+    assert comparison["effect"]["delta_passed"] == 0
+    assert comparison["effect"]["disagreeing_points"] == 2
+    assert comparison["effect"]["a_only"] == ["P2-asks-requests"]
+    assert comparison["effect"]["b_only"] == ["W2-double-trailing"]
+
+
+def test_the_cross_cell_direction_is_reported_and_decides_nothing(effect_rig):
+    """RB-P16's third missing piece, shipped as a REPORT and not as a rule.
+
+    The filing proposes requiring the sign to agree across cells before an
+    `inconclusive` may be called directional. Measured over the entire committed
+    record: that rule has ZERO instances — every `inconclusive` cell has the same
+    sign. Shipping it as a gate would change nothing on any committed cell while
+    looking tested, so it ships as a sentence, and this node pins that it is a
+    sentence: `attributable` is identical with and without it.
+    """
+    summary = _summary(effect_rig, _two_gaps)
+    (pair,) = summary["directional"]
+    assert (pair["a"], pair["b"]) == ("before", "after")
+    assert pair["signs"] == [1, 1]
+    assert pair["directional"] is True and pair["conflicting"] is False
+    assert pair["leads"] == "before" and pair["ties"] == 0
+    assert (pair["abs_delta_rate_min"], pair["abs_delta_rate_max"]) == (0.3333, 0.6667)
+    line = next(
+        ln for ln in criticreplay.format_table(summary).splitlines()
+        if ln.startswith("- before vs after: signs ")
+    )
+    assert "signs +,+ -> consistent toward before" in line
+    assert "|d| 0.333..0.667" in line
+    # It DECIDES nothing: a tie abstains rather than breaking agreement, and no cell's
+    # attribution moves when the direction is unanimous.
+    tie = _summary(effect_rig, _a_tie_they_disagree_inside)["directional"][0]
+    assert tie["signs"] == [0, 0] and tie["directional"] is False
+    assert tie["conflicting"] is False, "a tie says nothing about direction; it does not conflict"
+    assert all(
+        comparison["attributable"] is False
+        for cell in summary["cells"]
+        for comparison in cell["comparisons"]
+    )
+
+
+def test_reporting_an_effect_size_moved_no_cells_attribution(effect_rig):
+    """An instrument that grades evidence may not quietly re-grade itself.
+
+    Two halves, and the second is the one that matters:
+
+    1. FRESH — `attributable` is a function of `verdict`, `guard_verdict` and
+       `fragile` only, on runs made today, including a run where rule 1 DOES fire.
+    2. COMMITTED — all twelve §7 comparisons the project has ever recorded,
+       re-derived with today's `_compare`, still carry the `attributable` they were
+       committed with. If adding the report had moved one, a committed finding would
+       have moved with it.
+    """
+    for scorer in (_two_gaps, _a_tie_they_disagree_inside):
+        summary = _summary(effect_rig, scorer)
+        for cell in summary["cells"]:
+            for comparison in cell["comparisons"]:
+                assert comparison["attributable"] == (
+                    comparison["verdict"] == "distinguishable"
+                    and comparison["guard_verdict"] == "distinguishable"
+                    and not comparison["fragile"]
+                )
+                assert comparison["attributable"] is False
+
+    separated = _summary(effect_rig, lambda p: 2 if "CHANGED" in p else 9)
+    fired = separated["cells"][0]["comparisons"][0]
+    assert fired["verdict"] == "distinguishable" and fired["attributable"] is True
+    assert fired["effect"]["delta_passed"] == 3
+    assert fired["effect"]["points_from_separation"] == 0, "rule 1 fires exactly at 0"
+
+    moved = []
+    for path, summary in _committed_summaries():
+        for cell in summary["cells"]:
+            for comparison in cell["comparisons"]:
+                rebuilt = _compare_committed_cell(
+                    cell["repeat"], comparison["a"], comparison["b"]
+                ) if path == _ACCEPTANCE_SUMMARY else None
+                if rebuilt is None:
+                    continue
+                if (rebuilt["attributable"], rebuilt["verdict"]) != (
+                    comparison["attributable"],
+                    comparison["verdict"],
+                ):
+                    moved.append(
+                        f"{path.name} r{cell['repeat']} "
+                        f"{comparison['a']}/{comparison['b']}"
+                    )
+    assert not moved, (
+        "re-deriving a committed comparison with today's `_compare` changes its verdict "
+        f"or its attribution: {moved}. RB-P16 is about what a verdict REPORTS; moving "
+        "attribution moves a committed finding by moving the ruler."
+    )
+
+
+# ===========================================================================
+# RB-P18 — the FIX, pinned over a FRESH run (L4, 2026-08-14).
+#
+# THE FILED MECHANISM IS WRONG AND THE FILED ATTACK IS THE EXPENSIVE ONE.
+# RB-P18 says the two recipes "serialize different dicts" under one field
+# name, and proposes versioning the field name. Re-measured on all six
+# committed (variant, seed) cells: they serialize the IDENTICAL dict, and the
+# entire cross-record incomparability is that one writer passed
+# `sort_keys=True`. Versioning the name would make permanent, in the schema, a
+# difference canonicalisation removes — so what ships is a SECOND COLUMN under
+# the canonical recipe, plus the recipes published in the artifact.
+#
+# WHY THE PIN IS A FRESH RUN. L1's structural finding, restated by L3: a node
+# that reads only committed artifacts can never go red under a source
+# mutation, because committed evidence is never regenerated. The `xfail`
+# below/above this section is exactly such a node — see the dated note on it.
+# Every node here produces its values TODAY and compares them against the
+# frozen record, which is the direction that can move.
+# ===========================================================================
+
+# The one cell RB-P18's spec names, and the two frozen values it disagrees on.
+_RBP18_CELL_REF = "d2f78b7"
+_RBP18_CELL_REPEAT = 0
+_RBP18_CELL_SEED = 2331795949
+
+
+def _rbp18_frozen_pair():
+    """The bar's `payload_sha256` and SA3's, for the ONE cell, read off the record.
+
+    Read rather than hardcoded so the node is a comparison and not a copy, and read
+    through `payload_shas_recorded` so the `str`/`list` shapes are handled by the shipped
+    reader instead of by a `[0]` in a test.
+    """
+    sa3 = json.loads(_SA3_REPLAY.read_text())
+    bar_row = next(
+        row
+        for row in (json.loads(line) for line in _ACCEPTANCE_ROWS.read_text().splitlines())
+        if row["point"] == "identity"
+        and row["variant"] == "A-asfiled"
+        and row["repeat"] == _RBP18_CELL_REPEAT
+    )
+    sa3_shas = sorted(
+        {
+            sha
+            for entry in sa3["replay_verdicts"]
+            if entry["ref"] == _RBP18_CELL_REF and entry["repeat"] == _RBP18_CELL_REPEAT
+            for sha in criticreplay.payload_shas_recorded(entry["payload_sha256"])
+        }
+    )
+    assert len(sa3_shas) == 1, sa3_shas
+    return sa3, bar_row, sa3_shas[0]
+
+
+def _rbp18_fresh_verdict():
+    """ONE request issued TODAY, on the cell the committed pair is about.
+
+    The shipped `replay_verdicts` on the shipped `structured()` path, so `_PayloadSpy`
+    reads the payload off the call that is actually made. The rubric is `git:d2f78b7`,
+    the task prompt and the answer are SA3's own, and the model and seed are the ones
+    both records name — nothing here is chosen to make a hash come out.
+    """
+    sa3, bar_row, sa3_sha = _rbp18_frozen_pair()
+    repo = Path(__file__).resolve().parents[2]
+    raw = subprocess.run(
+        ["git", "-C", str(repo), "show",
+         f"{_RBP18_CELL_REF}:assets/rubrics/task-completion.yaml"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    rubric = criticreplay._parse_rubric(raw, f"git:{_RBP18_CELL_REF}")
+    case = criticreplay.Case(
+        task=sa3["task"],
+        repeat=_RBP18_CELL_REPEAT,
+        seed=_RBP18_CELL_SEED,
+        prompt=sa3["task_prompt"],
+        output=sa3["answer_replayed"],
+    )
+    (verdict,) = criticreplay.replay_verdicts(
+        ScriptedCritic(lambda p: 5, model=sa3["model"]), rubric, case
+    )
+    return verdict, bar_row, sa3_sha
+
+
+def test_a_fresh_run_reproduces_both_frozen_payload_recipes_from_one_request():
+    """THE PIN. One request made today lands on BOTH frozen record families at once.
+
+    This is the whole claim, and it is what tells a reader "these records were hashed
+    differently" from "these requests differed":
+
+        payload_sha256            == the perturbation bar's frozen value  (a17fc774681a…)
+        payload_canonical_sha256  == SA3's frozen value                   (4eb56220e883…)
+
+    from ONE `structured()` call, on one dict, at one seed. The two frozen values were
+    never comparable and are now both derivable from a single run, which is why the fix
+    reaches the OLD rows and not only new ones: an old value is interpreted by asking
+    which column a re-run of its cell puts it in.
+
+    It is a claim about the INSTRUMENT and not about the world (RB-P14 Gate 2): not "the
+    requests were the same" — that is what the record is for — but "what this tool
+    records lets a reader decide that".
+
+    A mutation that drops `sort_keys=True` makes the canonical column equal the
+    insertion-order one, which is not SA3's value, and this goes red.
+    """
+    verdict, bar_row, sa3_sha = _rbp18_fresh_verdict()
+
+    # 1. The cross-record identity first: same rendered prompt, so any payload
+    #    disagreement below is about serialization and cannot be about the text.
+    assert verdict.prompt_sha256 == bar_row["prompt_sha256"]
+
+    # 2. Both frozen families, reproduced from the one request.
+    assert verdict.payload_sha256 == bar_row["payload_sha256"]
+    assert verdict.payload_canonical_sha256 == sa3_sha
+
+    # 3. And they are genuinely two values, so the assertions above are not one
+    #    assertion written twice. This is the disagreement RB-P18 filed, now RESOLVED
+    #    into two named columns rather than left as one ambiguous name.
+    assert bar_row["payload_sha256"] != sa3_sha
+    assert verdict.payload_sha256 != verdict.payload_canonical_sha256
+    assert re.fullmatch(r"[0-9a-f]{64}", verdict.payload_canonical_sha256)
+
+
+def test_the_canonical_payload_column_is_the_one_that_survives_key_order():
+    """WHY the second column is `sort_keys` and not some other canonicalisation.
+
+    The mechanism, made executable rather than argued: build the same payload content
+    twice in two different insertion orders. The recorded `payload_sha256` recipe
+    separates them — that is the defect — and the canonical recipe does not. SA3's
+    writer was a different process that assembled the dict its own way, which is why its
+    frozen value equals this column and not the other one.
+
+    A mutation that drops `sort_keys=True` collapses the second row of this table onto
+    the first and this goes red.
+    """
+    recipes = criticreplay.PAYLOAD_SHA_RECIPES
+    body = {"role": "user", "content": "x"}
+    one = {"model": "m", "messages": [body], "seed": 1, "response_format": {"type": "json"}}
+    other = {"response_format": {"type": "json"}, "seed": 1, "messages": [body], "model": "m"}
+    assert one == other  # identical dicts, and that is the point RB-P18 got wrong
+
+    def under(recipe: str, payload: dict) -> str:
+        sort_keys = "sort_keys=True" in recipe
+        return criticreplay.sha256_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=sort_keys)
+        )
+
+    assert under(recipes["payload_sha256"], one) != under(recipes["payload_sha256"], other)
+    assert under(recipes["payload_canonical_sha256"], one) == under(
+        recipes["payload_canonical_sha256"], other
+    )
+    # The recipe strings are not decorative: the column the run records under the
+    # canonical recipe is the value that recipe produces for the request it sent.
+    verdict, _, _ = _rbp18_fresh_verdict()
+    assert verdict.payload_sha256 != verdict.payload_canonical_sha256
+    assert "sort_keys=True" in recipes["payload_canonical_sha256"]
+    assert "sort_keys" not in recipes["payload_sha256"]
+
+
+def test_a_fresh_runs_rows_and_summary_publish_the_recipe_beside_the_field(rig):
+    """The recipe travels WITH the artifact, or a reader of a row file never sees it.
+
+    A JSONL row and a summary are what a second reader has; this repository is what they
+    do not have. So every row a run writes carries both columns and the summary names the
+    exact call behind each, plus the field a reader should be diffing on.
+    """
+    _, result = _run(rig, lambda p: 9)
+    summary = criticreplay.summarize(result, result.rows[0].manifest_sha256)
+
+    for row in (r.row() for r in result.rows):
+        assert re.fullmatch(r"[0-9a-f]{64}", row["payload_sha256"]), row
+        assert re.fullmatch(r"[0-9a-f]{64}", row["payload_canonical_sha256"]), row
+        assert row["payload_sha256"] != row["payload_canonical_sha256"], row
+        assert json.dumps(row)  # JSONL-writable with the new column
+
+    block = summary["payload_sha256_recipes"]
+    assert block["recipes"] == criticreplay.PAYLOAD_SHA_RECIPES
+    assert set(block["recipes"]) == {"payload_sha256", "payload_canonical_sha256"}
+    # WHERE A READER LOOKS for the cross-record identity — in the artifact, not only in
+    # a commit message.
+    assert block["cross_record_identity"] == "prompt_sha256"
+    assert block["comparable_column"] == "payload_canonical_sha256"
+    assert "prompt_sha256" in block["note"] and "sort_keys" in block["note"]
+    assert json.dumps(summary)
+
+
+def test_the_payload_sha_field_is_readable_in_both_shapes_the_record_uses():
+    """RB-P18 one level below the recipe: one name, two ARITIES, measured not asserted.
+
+    Census over `docs/eval-data`, 2026-08-14: 1280 `str` occurrences across 12 artifacts
+    and 30 `list` occurrences in one. A reader diffing the two families with `==` gets
+    `False` from the TYPE before a hash is compared. `payload_shas_recorded` gives the
+    field a defined reading in either shape WITHOUT flattening it, because SA3's list is
+    a per-cell SET whose cardinality is its own claim.
+    """
+    sa3, bar_row, sa3_sha = _rbp18_frozen_pair()
+    entry = next(
+        e for e in sa3["replay_verdicts"]
+        if e["ref"] == _RBP18_CELL_REF and e["repeat"] == _RBP18_CELL_REPEAT
+    )
+    # The shapes, as they are frozen. Not an argument — the record's own types.
+    assert isinstance(bar_row["payload_sha256"], str)
+    assert isinstance(entry["payload_sha256"], list)
+    assert bar_row["payload_sha256"] != entry["payload_sha256"]  # the naive diff
+
+    read = criticreplay.payload_shas_recorded
+    assert read(bar_row["payload_sha256"]) == (bar_row["payload_sha256"],)
+    assert read(entry["payload_sha256"]) == (sa3_sha,)
+    # CARDINALITY IS PRESERVED, which is what makes this a reading and not a flatten:
+    # SA3's `how_to_reproduce` claims exactly one payload sha per cell across its
+    # processes, and all 30 of its lists have length 1, so all 30 make that claim.
+    assert all(
+        len(read(e["payload_sha256"])) == 1 for e in sa3["replay_verdicts"]
+    ), "an SA3 cell recording two payload shas would falsify that file's own claim"
+    assert read(["a", "b"]) == ("a", "b")
+    with pytest.raises(criticreplay.PerturbationError, match="payload_sha256"):
+        read({"sha": "a"})
+
+
+def test_the_payload_sha_reader_is_in_the_published_surface():
+    """L5's M1, fixed 2026-08-14 (L7): the RB-P18 remedy has to be reachable to be one.
+
+    `docs/eval.md` presents `payload_shas_recorded` as what RB-P18 ships for the reader
+    who has the JSONL and not this tree — an out-of-tree reader by construction — and it
+    shipped absent from `__all__` (43 entries, this name not among them). `guard_table`
+    has carried the same assertion since it shipped, on the same argument; this one had
+    nothing, so dropping it from the export list would have turned no node red.
+
+    THIS NODE CLAIMS ONLY WHAT IT CHECKS. Membership of `__all__` is the published
+    surface as this module states it; it is not a promise about `import *` behaviour
+    elsewhere, and it does not make the function's reading correct — `N10` is the claim
+    about the reading, and its own limits are recorded at RB-P18 in `docs/eval.md`.
+    Ledger `N14`.
+    """
+    assert "payload_shas_recorded" in criticreplay.__all__
+
+
+# ===========================================================================
+# RB-P28's RESIDUAL, CLOSED FOR THE THREE ACCEPTANCES (L6, 2026-08-14).
+#
+# THE FINDING THIS SECTION EXISTS FOR. Until now all three acceptance pins —
+# RB-P16's, RB-P17's and RB-P18's — ran the shipped code IN-PROCESS under
+# pytest. One tell, `"pytest" in sys.modules`, therefore reached every one of
+# them at once, and `_child_env`'s scrub could not help because no child was
+# ever started. Measured (L5, reproduced independently by the orchestrator with
+# its own rig): a fix-nothing patch that makes `_effect` return a constant
+# unless pytest is imported keeps the WHOLE suite green — 792 passed, 2 xfailed,
+# not one node red — while a real shell prints
+#
+#     HEAD :  effect: d=-1/11 (-0.091) [#---------] leads B; ... 7/11 points disagree
+#     patch:  effect: d= 0/11 ( 0.000) [----------] neither leads; ... 0/11 points disagree
+#
+# on a cell where the two variants genuinely disagree. That is not a no-op: it
+# is an affirmatively FALSE report with a green suite, and it is worse than job
+# 10's residual, where at least one signal had to cross into a child process.
+#
+# SO THE PIN MOVES OUT OF THE PROCESS. Each acceptance gets a node here that
+# starts a REAL interpreter through `/bin/sh` with `_child_env`'s scrubbed
+# environment — no `PYTEST_*` key, no pytest on the import path, nothing in
+# `sys.modules` to key on — and reads the result back off what that process
+# WROTE. The in-process nodes above stay as fast regression guards; they are not
+# the pin, and `tools/pinharness/contract-ledger.json` now says so in `pins`.
+#
+# WHAT THIS STILL DOES NOT CLOSE. A patch can key on the probe's `sys.argv[0]`,
+# on the scripted critic, or on a tmp-dir-shaped path, exactly as `_child_env`'s
+# docstring says. RB-P28 stays open. What is closed is the specific class the
+# whole suite shared: one in-process tell reaching every acceptance at once.
+# The field records in docs/eval-data remain the evidence; these nodes are the
+# part of it a mutation harness can run.
+# ===========================================================================
+
+EFFECT_PROBE = Path(__file__).resolve().parent / "rbp16_effect_probe.py"
+PAYLOAD_PROBE = Path(__file__).resolve().parent / "rbp18_payload_probe.py"
+_REPO = Path(__file__).resolve().parents[2]
+
+# The three cells the committed baseline harness names, with the committed seeds. The
+# same three the RB-P16 field runner uses, so the node and the field record are about
+# one run and not two.
+_FIELD_CELLS = (
+    ("nav-prod-port", 0, 2331795949, "The production port is 8443."),
+    ("recall-oncall-rotation", 1, 4094558621, "Rota: who is on-call for billing-svc."),
+    ("recall-org-quota", 0, 634446002, "The org quota is 6000 requests-per-minute."),
+)
+
+
+def _field_transcripts(tmp_path: Path, cells=_FIELD_CELLS) -> Path:
+    transcripts = tmp_path / "transcripts"
+    for task, repeat, seed, output in cells:
+        _transcript(transcripts, "critique", task, repeat, seed, output)
+    return transcripts
+
+
+def _effect_line_delta(line: str) -> tuple[int, int]:
+    """`    effect: d=-2/11 (…)` -> (-2, 11), read off the PRINTED line by this file.
+
+    Parsed here rather than asked of the module: the claim is that the report carries the
+    difference, and asking `_format_effect` what it printed would be the run agreeing
+    with itself.
+    """
+    match = re.search(r"^    effect: d=\s*([+-]?\d+)/(\d+)", line)
+    assert match, line
+    return int(match.group(1)), int(match.group(2))
+
+
+def test_OUTSIDE_pytest_a_fresh_runs_verdict_carries_its_effect_size(tmp_path):
+    """RB-P16's PIN, in a process with no pytest in it.
+
+    Runs `rbp16_effect_probe.py` — the shipped `main()` with only the client constructor
+    replaced by `score = sha256(prompt|seed) % 11` — through `/bin/sh`, and reads the
+    effect back off the summary JSON it wrote and the table it printed.
+
+    THE ASSERTION IS A COMPARISON BETWEEN TWO DERIVATIONS, not a re-read of one. The
+    difference is recomputed HERE from the two `a_pass_rate` / `b_pass_rate` strings the
+    run recorded, and the report has to agree with it — in the summary dict AND on the
+    printed line. A constant `effect`, which is exactly the pre-fix state and exactly the
+    fix-nothing patch, disagrees with the recomputation on any cell whose pass counts
+    differ, and this goes red.
+
+    It is a claim about the INSTRUMENT and not about the world (RB-P14 Gate 2): not "this
+    rubric pair separates" — the hash critic decides that and nothing here chose it — but
+    "whatever this run measured, the report states the size of it".
+    """
+    raw = yaml.safe_load((ASSETS / "rubrics" / "task-completion.yaml").read_text())
+    a_path, b_path = tmp_path / "A.yaml", tmp_path / "B.yaml"
+    a_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    b_path.write_text(yaml.safe_dump({**raw, "prompt": raw["prompt"][:-1]}, sort_keys=False))
+    summary_path = tmp_path / "summary.json"
+
+    status, out, err = _shell_status(
+        [
+            sys.executable, str(EFFECT_PROBE),
+            "--summary", str(summary_path),
+            "--rubric", f"A={a_path}", "--rubric", f"B={b_path}",
+            "--transcripts", str(_field_transcripts(tmp_path)),
+            "--base-url", "http://x", "--model", "fake-14b",
+        ],
+        tmp_path,
+        "rbp16-outside",
+        cwd=_REPO,
+    )
+    # A run that FAILED looks exactly like a run that measured (the orchestrator hit this
+    # for real: a copied tree with no assets/ died at exit 1 and read as a stronger
+    # result). So the status is checked first, and it is the guard's, not the harness's.
+    assert status in (0, 3), (status, err)
+    assert summary_path.is_file(), err
+    summary = json.loads(summary_path.read_text())
+
+    comparisons = [c for cell in summary["cells"] for c in cell["comparisons"]]
+    assert len(comparisons) == 3, comparisons
+    effect_lines = [ln for ln in out.splitlines() if ln.startswith("    effect: ")]
+    assert len(effect_lines) == len(comparisons), out
+
+    deltas = []
+    for comparison, line in zip(comparisons, effect_lines, strict=True):
+        recomputed = int(comparison["a_pass_rate"].split("/")[0]) - int(
+            comparison["b_pass_rate"].split("/")[0]
+        )
+        assert comparison["effect"]["delta_passed"] == recomputed, (comparison, out)
+        assert _effect_line_delta(line) == (
+            recomputed,
+            comparison["family_size"],
+        ), (line, comparison)
+        assert comparison["effect"]["disagreeing_points"] == len(
+            comparison["effect"]["a_only"]
+        ) + len(comparison["effect"]["b_only"])
+        deltas.append(recomputed)
+
+    # A CONSTANT SATISFIES EVERY EQUALITY ABOVE ON A RUN WHERE NOTHING SEPARATES. These
+    # three cells are not such a run, and the node says so rather than trusting it: the
+    # differences move, and at least one is non-zero.
+    assert len(set(deltas)) > 1, deltas
+    assert any(d != 0 for d in deltas), deltas
+    assert len(set(effect_lines)) == len(effect_lines), effect_lines
+    # …and the tie word still reports what it is a tie ON, which is the second half of
+    # the claim: equal pass COUNTS are not agreement.
+    ties = [c for c in comparisons if c["verdict"] == "indistinguishable"]
+    assert ties, comparisons
+    assert all(c["effect"]["disagreeing_points"] > 0 for c in ties), ties
+
+
+def test_OUTSIDE_pytest_a_fresh_runs_rubric_ref_resolves_from_this_repo(tmp_path):
+    """RB-P17's PIN, in a process with no pytest in it.
+
+    The same two variants the committed acceptance run used — `git:d2f78b7:<path>` and
+    the null control as a `derive:` rule — recorded by a real process, and resolved back
+    to the rubric the critic read by `_template_a_recorded_ref_names`, a reader in this
+    file that never imports the module.
+
+    The mutation that matters here is the pre-fix `source = ref`: the row says `d2f78b7`,
+    a commit and not a file, and the resolver cannot recover the bytes. So does any
+    mutation that writes an unresolvable segment into the recorded ref.
+    """
+    summary_path = tmp_path / "summary.json"
+    status, _out, err = _shell_status(
+        [
+            sys.executable, str(EFFECT_PROBE),
+            "--summary", str(summary_path),
+            "--rubric", "A-asfiled=git:d2f78b7:assets/rubrics/task-completion.yaml",
+            "--rubric", f"B-nonewline={_NULL_CONTROL_SPEC}",
+            "--transcripts", str(_field_transcripts(tmp_path, _FIELD_CELLS[:1])),
+            "--base-url", "http://x", "--model", "fake-14b",
+        ],
+        tmp_path,
+        "rbp17-outside",
+        cwd=_REPO,
+    )
+    assert status in (0, 3), (status, err)
+    assert summary_path.is_file(), err
+    variants = json.loads(summary_path.read_text())["variants"]
+    assert {v["label"] for v in variants} == {"A-asfiled", "B-nonewline"}, variants
+
+    unresolvable = [
+        f"{v['label']} -> {v['rubric_ref']}"
+        for v in variants
+        if _template_a_recorded_ref_names(_REPO, v["rubric_ref"]) is None
+        or criticreplay.sha256_text(
+            _template_a_recorded_ref_names(_REPO, v["rubric_ref"])
+        )
+        != v["rubric_template_sha256"]
+    ]
+    assert not unresolvable, (
+        "a run made TODAY in a process with no pytest in it records a `rubric_ref` this "
+        "repository cannot resolve back to the rubric the critic read:\n  "
+        + "\n  ".join(unresolvable)
+    )
+    # The acceptance pair, at the committed template shas — not a pair invented to pass.
+    assert {(v["label"], v["rubric_template_sha256"]) for v in variants} == {
+        ("A-asfiled", _A_ASFILED_TEMPLATE_SHA),
+        ("B-nonewline", _B_NONEWLINE_TEMPLATE_SHA),
+    }
+
+
+def test_OUTSIDE_pytest_a_fresh_run_reproduces_both_frozen_payload_recipes(tmp_path):
+    """RB-P18's PIN, in a process with no pytest in it.
+
+    `rbp18_payload_probe.py` issues ONE request through the shipped `replay_verdicts` on
+    the shipped `structured()` path and prints the three shas it recorded. The frozen
+    values are read HERE, from committed bytes, and the two are compared:
+
+        payload_sha256            == the perturbation bar's frozen value
+        payload_canonical_sha256  == SA3's frozen value
+
+    Dropping `sort_keys=True` makes the canonical column equal the insertion-order one,
+    which is not SA3's value, and this goes red.
+    """
+    _sa3, bar_row, sa3_sha = _rbp18_frozen_pair()
+    status, out, err = _shell_status(
+        [
+            sys.executable, str(PAYLOAD_PROBE),
+            str(_REPO), str(_SA3_REPLAY), _RBP18_CELL_REF,
+            str(_RBP18_CELL_REPEAT), str(_RBP18_CELL_SEED),
+        ],
+        tmp_path,
+        "rbp18-outside",
+        cwd=_REPO,
+    )
+    assert status == 0, (status, err)
+    recorded = json.loads(out)
+
+    assert recorded["prompt_sha256"] == bar_row["prompt_sha256"]
+    assert recorded["payload_sha256"] == bar_row["payload_sha256"]
+    assert recorded["payload_canonical_sha256"] == sa3_sha
+    # Two genuinely different values, so the two assertions above are not one assertion
+    # written twice — that difference IS what RB-P18 filed.
+    assert bar_row["payload_sha256"] != sa3_sha
+    assert recorded["payload_sha256"] != recorded["payload_canonical_sha256"]

@@ -69,7 +69,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from itertools import combinations
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml
 
@@ -113,6 +113,7 @@ __all__ = [
     "moved_words",
     "normalize_whitespace",
     "parse_rubric_arg",
+    "payload_shas_recorded",
     "point_admissibility_violations",
     "render_prompt",
     "replay_scores",
@@ -345,8 +346,22 @@ GUARD_MODES = ("warn", "error")
 # STILL OUTSIDE THE RANGE, measured 2026-08-13 rather than assumed, because "everything
 # outside 0-4 means the run did not complete" is STILL not a true reading. This list is
 # OPEN — it is what has been measured, not a proof that nothing else escapes:
-#   - `--help` with no reader on stdout exits 120. argparse writes the epilog and exits
-#     before `main` reaches the handler, so the handler is not on that path at all.
+#   - `--help` with no reader on stdout leaves the range with a number THIS MODULE DOES
+#     NOT CHOOSE, and THE NUMBER IS NOT FIXED — do not branch on a particular one.
+#     argparse writes the epilog and exits before `main` reaches the handler, so the
+#     handler is not on that path at all; `argparse._print_message` then SWALLOWS the
+#     write error (`except (AttributeError, OSError): pass`, CPython 3.10+), so nothing
+#     propagates and what the shell reads is decided entirely by what the interpreter's
+#     shutdown flush finds in the `BufferedWriter` — the same buffer-size accident this
+#     comment names four paragraphs up, applied to this module's own help text. So the
+#     number turns on the SIZE OF THE HELP TEXT against a buffer this module does not
+#     set. This line used to say "exits 120", and it went false in CI with no behaviour
+#     of this module changed, because docstrings added by an unrelated fix grew the
+#     epilog past the boundary on one platform (RB-P35, 2026-08-14; both readings and
+#     their byte counts are in docs/eval.md, which is where a number that can go stale
+#     belongs). What is pinned here is the relation and not the number:
+#     `test_help_with_no_reader_on_stdout_is_still_the_interpreters_number` asserts this
+#     module reads what a bare interpreter doing exactly what argparse does reads.
 #   - a run that WRITES to stderr while stderr has no reader exits 120 — a refusal's
 #     `error: …`, the summary-write failure, the `--violations-exit-zero` note. The
 #     refusal's own 1 is erased exactly as the table's 3 used to be. A run that writes
@@ -870,6 +885,58 @@ class RubricVariant:
     ref: str
     rubric: Rubric
     sha256: str
+    # RB-P17, L6 2026-08-14. The bytes of the MANIFEST a `derive:` ref points through,
+    # blank for every other form. The `derive:` ref is the one recorded ref with a
+    # WORKING-TREE segment in it: `git:<ref>:<path>` is immutable and a plain path form
+    # records `rubric_sha256`, but a derived variant has `rubric_sha256=""` and its
+    # manifest is an ordinary file that can be edited under the same path. Measured by
+    # L5: editing the op in place makes one recorded ref resolve to a different rubric
+    # (`d1f32ad2947b` -> `447e5be27613`), silently, with no file hash to fall back on.
+    # This column is the fall-back: it does not make the manifest immutable, it makes a
+    # SUBSTITUTION DETECTABLE, which is the most a record can do about a mutable input.
+    derive_manifest_sha256: str = ""
+
+    @property
+    def template_sha256(self) -> str:
+        """The sha of the RUBRIC the critic reads, as distinct from the FILE it came in.
+
+        RB-P17, measured 2026-08-14: the two committed `B-nonewline` runs record
+        `rubric_sha256` `59b0fe81ecf3…` and `29f299707fd6…` — two different values — for
+        ONE rubric, whose template hashes `d1f32ad2947b…` in both. The recorded column is
+        the file's bytes, so two files carrying the same `prompt` under different `name:`
+        or `threshold:` framing report as two different rubrics, and the field cannot
+        answer the one question provenance exists to answer: did these two runs judge
+        with the same rubric? This property answers it, and it is the value the frozen
+        manifest already records as `materialized_variants.<label>.base_sha256`, so a
+        derived variant's row ties back to a committed manifest entry by equality.
+
+        It is a SECOND column, not a redefinition of the first. `rubric_sha256` stays the
+        file's bytes — every committed row means that, and a field that changes meaning
+        under a fixed name is RB-P18's defect, which is the one being fixed here.
+        """
+        return sha256_text(self.rubric.prompt)
+
+
+def _not_repo_relative(path: str) -> str | None:
+    """Why `path` cannot name a file in THIS repository, or `None` if nothing does.
+
+    A function of the string and of nothing else — no path resolved, no file opened — so
+    it is an argument-SHAPE rule under RB-P32's definition and reports `USAGE_EXIT`. The
+    three refusals are the three ways a recorded path stops naming something a second
+    reader can obtain: an absolute path names this machine, a `..` segment names outside
+    the tree, and `~` names a home directory that is not theirs.
+
+    `pathlib` will not do this for you and that is the trap L5 caught in two resolvers at
+    once: `Path(repo) / "/private/tmp/x.yaml"` is `/private/tmp/x.yaml`, so a checker
+    written as `repo / ref` silently reads the absolute path and calls it resolved.
+    """
+    if path.startswith("~"):
+        return "a `~` names a home directory, which is not this repository"
+    if PurePosixPath(path).is_absolute():
+        return "an absolute path names a machine, not a repository"
+    if ".." in PurePosixPath(path).parts:
+        return "a `..` segment leaves the repository"
+    return None
 
 
 def rubric_arg_shape_problem(arg: str) -> str | None:
@@ -900,6 +967,45 @@ def rubric_arg_shape_problem(arg: str) -> str | None:
         parts = spec.split(":", 2)
         if len(parts) < 3 or not parts[1] or not parts[2]:
             return f"--rubric git spec wants git:<ref>:<path>, got {spec!r}"
+    if spec.startswith("derive:"):
+        parts = spec.split(":", 3)
+        if len(parts) < 4 or not all(parts[1:]):
+            return (
+                "--rubric derive spec wants "
+                f"derive:<manifest-path>:<rule-id>:git:<ref>:<path>, got {spec!r}"
+            )
+        manifest = parts[1]
+        problem = _not_repo_relative(manifest)
+        if problem is not None:
+            # RB-P17, CORRECTED 2026-08-14 (L6). The base segment was refused a
+            # working-tree path from the day this form shipped, on the argument that a
+            # derived variant has no file of its own and therefore nothing but the
+            # immutability of every segment makes its record resolvable. THE MANIFEST
+            # SEGMENT GOT NO SUCH RULE, so `derive:/private/tmp/<session>/x.yaml:...`
+            # was ACCEPTED and recorded verbatim in `ref` with `sha256=''` — the exact
+            # absolute-scratchpad shape RB-P17 was filed about, inside the fix that
+            # closes RB-P17. It is the same defect and it gets the same answer.
+            return (
+                f"--rubric derive spec wants a repo-relative manifest path, got "
+                f"{manifest!r} — {problem}. A derived variant has no file of its own, so "
+                "the only thing that makes its recorded ref resolvable is that every "
+                "segment of it names something a second reader can obtain from this "
+                "repository. An absolute path names this machine, and RB-P17 is the "
+                "problem of a record that points at one."
+            )
+        base = parts[3]
+        if not base.startswith("git:"):
+            return (
+                f"--rubric derive spec wants a git: base, got {base!r} — a derived variant "
+                "has no file of its own, so the only thing that makes its recorded ref "
+                "resolvable is that every segment of it is immutable. A working-tree path "
+                "is not, and unlike the path form there is no file left to hash as a "
+                "fallback. This is also what makes a derive-of-a-derive unrepresentable, "
+                "so the load order can never cycle."
+            )
+        base_parts = base.split(":", 2)
+        if len(base_parts) < 3 or not base_parts[1] or not base_parts[2]:
+            return f"--rubric derive spec wants git:<ref>:<path> as its base, got {base!r}"
     return None
 
 
@@ -946,11 +1052,51 @@ def rubric_label_collision_problem(specs: list[str]) -> str | None:
 
 
 def parse_rubric_arg(arg: str) -> RubricVariant:
-    """`LABEL=SPEC`, where SPEC is a path or `git:<ref>:<path>`.
+    """`LABEL=SPEC`, where SPEC is a path, `git:<ref>:<path>`, or a `derive:` rule.
 
     The git form exists because the acceptance test needs rubrics that live only in
     history. `load_rubric` is name-only and has no path hook, so the parsed `Rubric` is
     passed around as an instance.
+
+    THE RECORDED REF IS THE WHOLE SPEC, NOT A PIECE OF IT (RB-P17, 2026-08-14). The git
+    branch used to record `source = ref`, so a row said `d2f78b7` — a commit and not a
+    file. Two rubrics in one commit were indistinguishable in the record, and
+    `rubric_sha256` could not be re-derived from the row without knowing which path to
+    ask `git show` for. `RubricVariant.spec` held the answer and never reached a row.
+    Every branch now records the string a second reader can hand back to this function.
+
+    THE `derive:` FORM: `derive:<manifest-path>:<rule-id>:git:<ref>:<path>`.
+
+    A perturbed variant is a rule applied to a committed ref, and until now it was not
+    expressible as one. `B-nonewline` — the null control the whole RB-P14 finding turns
+    on — is `A-asfiled`'s template minus its single trailing newline, which is exactly
+    the frozen manifest's `W1-trailing-newline` point; with no way to say that, it was
+    materialized to a scratch file and two committed summaries record an absolute
+    `/private/tmp` path as its provenance. Written in this form the null control is::
+
+        --rubric B-nonewline=derive:assets/evals/perturbations/task-completion.yaml\
+:W1-trailing-newline:git:d2f78b7:assets/rubrics/task-completion.yaml
+
+    WHY THE MANIFEST IS IN THE STRING, and not left implicit. The filing proposed
+    `derive:<label>:<rule-id>` — `derive:A-asfiled:W1-trailing-newline`. That resolves
+    only from the argv that also defined `A-asfiled`, and it names the manifest nowhere,
+    so a row carrying it is a pointer into a process that has exited: the same failure as
+    a pointer into a directory that has been cleaned, one indirection along. Every
+    segment here is repo-relative or a git ref, so a reader who has ONLY this repository
+    and one row can recover the exact bytes the critic read — read the manifest at that
+    path, take the point with that id, `git show` that ref and path, apply. No argv, no
+    machine, no `/private/tmp`. `manifest_sha256` is already on every row, so the reader
+    can also tell whether the manifest they just read is the one the run used.
+
+    Ordering is manifest, then rule, then base, because the base is the only segment that
+    contains a `:` — three splits and the remainder is the base spec, with no escaping.
+
+    NO SILENT NO-OP, AND NO CYCLE. A rule whose anchor is absent from the base raises
+    rather than returning the base unchanged: `W1-trailing-newline` on a template that
+    has no trailing newline (`B-nonewline` itself — it is the rule's fixed point) names
+    no variant, and a variant that is silently its own base is RB-P17's defect one level
+    in. The base must be a `git:` spec, which makes a derive-of-a-derive unrepresentable
+    on its face, so no load order can cycle and no resolution can recurse.
 
     The CLI has already rejected a malformed `arg` through `parser.error` before this
     runs (RB-P32); the same check is re-raised here as a `PerturbationError` for
@@ -961,18 +1107,66 @@ def parse_rubric_arg(arg: str) -> RubricVariant:
     if problem is not None:
         raise PerturbationError(problem)
     label, _, spec = arg.partition("=")
+    if spec.startswith("derive:"):
+        rubric, manifest_sha256 = _derive_rubric(spec)
+        return RubricVariant(
+            label=label, spec=spec, ref=spec, rubric=rubric, sha256="",
+            derive_manifest_sha256=manifest_sha256,
+        )
     if spec.startswith("git:"):
         _, ref, path = spec.split(":", 2)
         raw = _git_show(ref, path)
-        source = ref
     else:
-        path = Path(spec)
-        if not path.is_file():
+        file = Path(spec)
+        if not file.is_file():
             raise PerturbationError(f"rubric not found: {spec}")
-        raw = path.read_text()
-        source = spec
+        raw = file.read_text()
     return RubricVariant(
-        label=label, spec=spec, ref=source, rubric=_parse_rubric(raw, spec), sha256=sha256_text(raw)
+        label=label, spec=spec, ref=spec, rubric=_parse_rubric(raw, spec), sha256=sha256_text(raw)
+    )
+
+
+def _derive_rubric(spec: str) -> tuple[Rubric, str]:
+    """Resolve `derive:<manifest-path>:<rule-id>:git:<ref>:<path>` to `(rubric, manifest sha)`.
+
+    THE MANIFEST SHA COMES BACK WITH THE RUBRIC because the manifest is the one segment of
+    this form that is MUTABLE (L5, 2026-08-14): `git:<ref>:<path>` is immutable, a plain
+    path form records `rubric_sha256`, and a derived variant records neither. Editing the
+    op in place makes the same recorded ref resolve to a different rubric, silently. The
+    sha does not stop that; it makes it detectable, which is the most a record can do about
+    an input the reader has to fetch. It rides on the row as `derive_manifest_sha256`.
+
+    `sha256` is BLANK on the variant this builds, following the `IN_MEMORY_REF` precedent
+    exactly: the populated `rubric_sha256` column is the sha of a rubric FILE's bytes, a
+    derived variant has no file, and hashing something else into that column would put two
+    meanings under one name. `rubric_template_sha256` is the populated one here, and it is
+    the value the manifest already records for this (point, variant) cell — so the row and
+    the frozen manifest tie together by equality rather than by prose.
+    """
+    _, manifest_spec, rule_id, base_spec = spec.split(":", 3)
+    manifest = load_manifest(Path(manifest_spec))
+    manifest_sha256 = manifest.sha256
+    points = [point for point in manifest.points if point.id == rule_id]
+    if not points:
+        raise PerturbationError(
+            f"rule {rule_id!r} is not a point in {manifest_spec}: "
+            f"have {', '.join(point.id for point in manifest.points)}"
+        )
+    _, ref, path = base_spec.split(":", 2)
+    base = _parse_rubric(_git_show(ref, path), base_spec)
+    perturbed = apply_point(points[0], base.prompt)
+    if perturbed is None:
+        raise PerturbationError(
+            f"rule {rule_id!r} is inapplicable to {base_spec}: its anchor is absent from that "
+            "template, so this spec names no variant. A rule that cannot fire would return "
+            "the base rubric unchanged, and a variant silently equal to its own base is "
+            "RB-P17's defect one level in — the record would name a perturbation that never "
+            "happened. (This is what `W1-trailing-newline` does against a base that already "
+            "has no trailing newline: it is that rule's fixed point.)"
+        )
+    return (
+        Rubric(name=base.name, threshold=base.threshold, prompt=perturbed, schema=base.schema),
+        manifest_sha256,
     )
 
 
@@ -1104,6 +1298,10 @@ class Verdict:
     calls: int
     prompt_sha256: str
     payload_sha256: str
+    # The same wire body key-sorted (RB-P18). Defaulted here and NOT on `ReplayRow`: a
+    # `Verdict` is also built by callers that never went through `_PayloadSpy`, whereas a
+    # row a run writes must state the column or fail to construct.
+    payload_canonical_sha256: str = ""
     # §3.3 guard 2's verdict for the (point, cell) this replay came from. EMPTY when the
     # replay was issued through `replay_verdicts` directly, which holds a `Rubric` and a
     # `Case` and cannot re-derive which point produced the template — blank, not clean.
@@ -1113,21 +1311,134 @@ class Verdict:
     guard_readings: dict[str, list[str]] = field(default_factory=dict)
 
 
-def _payload_sha(model: str, seed: int | None, messages: list[Message], response_format) -> str:
-    """The wire body's sha, assembled the way `OpenAICompatible.chat` assembles it.
+# ---- what a payload sha NAMES, published beside the field (RB-P18) ----
+
+#: The exact call behind each recorded payload column. Emitted into every summary a run
+#: writes, so the recipe travels with the artifact instead of living in a docstring the
+#: reader of a JSONL row will never open.
+PAYLOAD_SHA_RECIPES = {
+    "payload_sha256": "sha256(json.dumps(payload, ensure_ascii=False))",
+    "payload_canonical_sha256": (
+        "sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True))"
+    ),
+}
+
+#: WHERE A READER LOOKS. Emitted into every summary beside the recipes above.
+PAYLOAD_SHA_NOTE = (
+    "`prompt_sha256` is the CROSS-RECORD IDENTITY: it hashes the rendered critic prompt "
+    "and depends on no serialization choice, so two records that agree on it put the same "
+    "text in front of the critic, whoever wrote them. The payload columns hash the whole "
+    "wire body, which is strictly more than the prompt (model, seed, response_format) and "
+    "therefore also strictly more fragile. `payload_sha256` is that body under THIS "
+    "writer's key insertion order and is the value every committed row before 2026-08-14 "
+    "carries; `payload_canonical_sha256` is the same bytes key-sorted, is independent of "
+    "insertion order, and is the column two records may be compared on. Measured "
+    "2026-08-14 on all six committed (variant, seed) cells: the canonical recipe "
+    "reproduces the payload shas in "
+    "docs/eval-data/2026-08-11-sa3-14b-nav-prod-port-critic-replay.json exactly, and the "
+    "insertion-order recipe reproduces the perturbation-bar JSONL rows exactly, so the "
+    "two frozen record families differ by the one keyword argument `sort_keys=True` and "
+    "by nothing else. To interpret a row written before 2026-08-14, which carries only "
+    "`payload_sha256` and names no recipe: re-run its cell and see which of the two "
+    "columns the frozen value lands in."
+)
+
+
+def payload_shas_recorded(value: str | list[str]) -> tuple[str, ...]:
+    """The payload shas a record's `payload_sha256` field states, whatever SHAPE it is in.
+
+    ONE NAME, TWO ARITIES — MEASURED 2026-08-14 over the whole committed record, not
+    asserted. 1280 occurrences across 12 artifacts carry a `str`; 30 occurrences in
+    `2026-08-11-sa3-14b-nav-prod-port-critic-replay.json` carry a `list`. A reader diffing
+    the two families with `==` gets `False` from the TYPE before the hash is ever compared,
+    which is RB-P18's own defect one level below the recipe.
+
+    THE LIST IS NOT A TYPO, AND FLATTENING IT WOULD DESTROY EVIDENCE. The two writers
+    record different UNITS. A bar row is one replay, so its field is one sha. An SA3 entry
+    is one CELL, and its field is the SET of distinct shas observed across that cell's
+    processes — the cardinality is itself the claim, stated in that file's own
+    `how_to_reproduce`: "every cell here shows exactly one payload sha across its
+    processes, so any score spread is the server's, not the prompt's". Measured: all 30
+    lists have length 1, so all 30 cells make that claim and none of them fails it. A
+    reader who took `[0]` would silently discard a claim that a two-element list would
+    have falsified.
+
+    So this returns a TUPLE and preserves cardinality: comparison between records is
+    between sets of shas, never between a `str` and a `list`. What it does NOT do is
+    rewrite anything — the committed bytes keep their shapes; this is the reader supplying
+    a defined reading, exactly as `_rows_as_replay_rows` supplies an absent column.
+
+    IT IS IN `__all__`, AND THAT WAS A REPAIR (L5's M1, fixed 2026-08-14 by L7). It
+    shipped outside the export list while `docs/eval.md` presented it as RB-P18's remedy
+    for a reader who has the JSONL and not this tree — i.e. the whole audience of this
+    function is out-of-tree, and the published surface did not name it. `guard_table` has
+    carried `assert "guard_table" in criticreplay.__all__` since it shipped for the same
+    reason; this one had nothing, so nothing would have gone red if it were dropped.
+    Ledger `N14`.
+    """
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return tuple(value)
+    raise PerturbationError(
+        f"a `payload_sha256` field is a sha string or a list of sha strings, got {value!r}"
+    )
+
+
+def _payload_shas(
+    model: str, seed: int | None, messages: list[Message], response_format
+) -> tuple[str, str]:
+    """The wire body's shas, assembled the way `OpenAICompatible.chat` assembles it.
+
+    Returns `(payload_sha256, payload_canonical_sha256)` — ONE dict, TWO serializations,
+    and the pair is the whole of RB-P18's fix.
 
     Recorded beside `prompt_sha256` because they answer different questions: the prompt
-    sha proves which text the critic read, the payload sha proves the whole request —
+    sha proves which text the critic read, the payload shas prove the whole request —
     seed and `response_format` included — was the one intended. `e57f1a6` changes the
     rubric *schema*, so two variants can differ in what goes on the wire as
     `response_format` and not only in prose.
+
+    WHY `sort_keys` AND NOT SOME OTHER CANONICALISATION. RB-P18 was filed saying two
+    recipes "serialize different dicts" under one field name. Re-measured on all six
+    committed (variant, seed) cells: they do not. They serialize the IDENTICAL dict, and
+    the entire cross-record incomparability is that the scratchpad writer passed
+    `sort_keys=True` and this one did not. `sort_keys` is therefore not a canonicalisation
+    chosen for taste — it is the one that (1) removes the measured difference, being the
+    only key-order-independent form of the same call, and (2) is ALREADY A COMMITTED VALUE:
+    the second column reproduces SA3's frozen `payload_sha256` bit for bit, so the fix
+    reaches BACKWARD into the frozen record rather than only forward. Any other order-
+    independent recipe (`ensure_ascii=True`, different `separators`) would be equally
+    order-free and would match nothing that is already written down, leaving SA3's 30 rows
+    exactly as uninterpretable as they are today.
+
+    WHY THE FIRST COLUMN IS UNTOUCHED, in name, recipe and value. 1280 committed
+    occurrences mean the insertion-order recipe, and a field that changes meaning under a
+    fixed name is RB-P18's own defect — the same argument that made
+    `rubric_template_sha256` a second column beside `rubric_sha256` rather than a
+    redefinition of it. This is also why the fix is NOT the one RB-P18 filed: "version the
+    field name so two recipes cannot share one" would make permanent, in the schema, a
+    difference that canonicalisation removes.
     """
     payload: dict = {"model": model, "messages": [m.to_wire() for m in messages]}
     if seed is not None:
         payload["seed"] = seed
     if response_format is not None:
         payload["response_format"] = response_format
-    return sha256_text(json.dumps(payload, ensure_ascii=False))
+    return (
+        sha256_text(json.dumps(payload, ensure_ascii=False)),
+        sha256_text(json.dumps(payload, ensure_ascii=False, sort_keys=True)),
+    )
+
+
+def _payload_sha(model: str, seed: int | None, messages: list[Message], response_format) -> str:
+    """The recorded `payload_sha256`, unchanged in name, in recipe and in value.
+
+    Kept as its own entry point because it is the recipe 1280 committed rows were written
+    under and because `docs/eval-data/2026-08-13-rbp16-rbp17-rbp18-survey.py`, which is
+    committed evidence and therefore never edited, imports it by this name.
+    """
+    return _payload_shas(model, seed, messages, response_format)[0]
 
 
 class _PayloadSpy:
@@ -1143,6 +1454,7 @@ class _PayloadSpy:
         self.model = model
         self.seed = seed
         self.payload_sha256: str | None = None
+        self.payload_canonical_sha256: str | None = None
 
     @property
     def _response_format_unsupported(self) -> bool:
@@ -1150,7 +1462,12 @@ class _PayloadSpy:
 
     def chat(self, messages, tools=None, response_format=None):
         if self.payload_sha256 is None:
-            self.payload_sha256 = _payload_sha(self.model, self.seed, messages, response_format)
+            # Both columns come off ONE observation of the request. Computing the
+            # canonical form from a second reconstruction would make "same request"
+            # unfalsifiable in exactly the way this class exists to prevent.
+            self.payload_sha256, self.payload_canonical_sha256 = _payload_shas(
+                self.model, self.seed, messages, response_format
+            )
         return self.inner.chat(messages, tools, response_format=response_format)
 
 
@@ -1192,6 +1509,7 @@ def replay_verdicts(
                 calls=tracking.calls,
                 prompt_sha256=prompt_sha,
                 payload_sha256=spy.payload_sha256 or "",
+                payload_canonical_sha256=spy.payload_canonical_sha256 or "",
             )
         )
     return verdicts
@@ -1209,8 +1527,10 @@ def replay_scores(client: ModelClient, rubric: Rubric, case: Case, replays: int 
 # ---- the run (§6.3) ----
 
 _ROW_KEYS = (
-    "bar", "variant", "rubric_ref", "rubric_sha256", "manifest_sha256", "task", "seed",
+    "bar", "variant", "rubric_ref", "rubric_sha256", "rubric_template_sha256",
+    "derive_manifest_sha256", "manifest_sha256", "task", "seed",
     "repeat", "model", "point", "class", "rule", "replay", "prompt_sha256", "payload_sha256",
+    "payload_canonical_sha256",
     "score", "threshold", "passed", "feedback", "tokens_in", "tokens_out", "calls",
     "guard_violations", "guard_readings",
 )
@@ -1221,7 +1541,9 @@ class ReplayRow:
     bar: str
     variant: str
     rubric_ref: str
-    rubric_sha256: str
+    rubric_sha256: str  # the FILE's bytes, blank when the variant has no file
+    rubric_template_sha256: str  # the RUBRIC the critic read; see RubricVariant
+    derive_manifest_sha256: str  # the MANIFEST a derive: ref points through; see RubricVariant
     manifest_sha256: str
     task: str
     seed: int
@@ -1232,7 +1554,8 @@ class ReplayRow:
     rule: str
     replay: int
     prompt_sha256: str
-    payload_sha256: str
+    payload_sha256: str  # this writer's key INSERTION order; see PAYLOAD_SHA_RECIPES
+    payload_canonical_sha256: str  # the same body key-SORTED; the comparable column
     score: int
     threshold: int
     passed: bool
@@ -1573,6 +1896,8 @@ def run(
                 variant=unit.variant.label,
                 rubric_ref=unit.variant.ref,
                 rubric_sha256=unit.variant.sha256,
+                rubric_template_sha256=unit.variant.template_sha256,
+                derive_manifest_sha256=unit.variant.derive_manifest_sha256,
                 manifest_sha256=manifest.sha256,
                 task=unit.case.task,
                 seed=unit.case.seed,
@@ -1584,6 +1909,7 @@ def run(
                 replay=index,
                 prompt_sha256=verdict.prompt_sha256,
                 payload_sha256=verdict.payload_sha256,
+                payload_canonical_sha256=verdict.payload_canonical_sha256,
                 score=verdict.score,
                 threshold=family.threshold,
                 passed=verdict.score >= family.threshold,
@@ -1766,6 +2092,10 @@ def summarize(result: RunResult, manifest_sha256: str) -> dict:
         "bar": BAR,
         "threshold": threshold,
         "manifest_sha256": manifest_sha256,
+        # RB-P16's third missing piece: a statement ACROSS cells. Report only — see
+        # `_directional`, which records that the rule RB-P16 proposes has no instance in
+        # the committed record and is therefore reported rather than enforced.
+        "directional": _directional(cells),
         "guard": {
             "rule": "spec §3.3 step 3, guard 2 — no word a point adds or removes may "
             "appear in the cell's {task} or {output}. 'A word a point adds or removes' "
@@ -1807,11 +2137,30 @@ def summarize(result: RunResult, manifest_sha256: str) -> dict:
         "requests": len(result.rows),
         "wire_calls": sum(r.calls for r in result.rows),
         "tokens_total": sum(r.tokens_in + r.tokens_out for r in result.rows),
+        # THE RECIPE TRAVELS WITH THE ARTIFACT (RB-P18). A reader holding this file and a
+        # row file can say which serialization produced each payload column without
+        # opening this repository, which is what "the recipe is published" has to mean for
+        # evidence that outlives the tree it was written in. `cross_record_identity` is
+        # here and not only in a commit message because it is the field a reader should be
+        # diffing on in the first place.
+        "payload_sha256_recipes": {
+            "recipes": dict(PAYLOAD_SHA_RECIPES),
+            "payload": "{model, messages, seed?, response_format?}, in that insertion order",
+            "cross_record_identity": "prompt_sha256",
+            "comparable_column": "payload_canonical_sha256",
+            "note": PAYLOAD_SHA_NOTE,
+        },
         "variants": [
             {
                 "label": label,
                 "rubric_ref": next(r.rubric_ref for r in result.rows if r.variant == label),
                 "rubric_sha256": next(r.rubric_sha256 for r in result.rows if r.variant == label),
+                "rubric_template_sha256": next(
+                    r.rubric_template_sha256 for r in result.rows if r.variant == label
+                ),
+                "derive_manifest_sha256": next(
+                    r.derive_manifest_sha256 for r in result.rows if r.variant == label
+                ),
                 "dropped_rules": result.dropped[label],
             }
             for label in result.labels
@@ -1853,14 +2202,27 @@ def _variant_stats(
     return stats
 
 
+def _passing_points(
+    point_rows: dict[str, list[ReplayRow]], family: list[str]
+) -> list[str]:
+    """The family points this variant passed. A point passes only if every replay does.
+
+    THE ONE DEFINITION. `_family_stats` counts this list and `_effect` intersects two of
+    them, so the pass rate a cell reports and the point-level disagreement it reports
+    cannot drift apart. RB-P19's transferable finding is that a second derivation which
+    happens to agree corroborates nothing — so there is not a second one.
+    """
+    return [
+        pid for pid in family if point_rows.get(pid) and all(r.passed for r in point_rows[pid])
+    ]
+
+
 def _family_stats(
     point_rows: dict[str, list[ReplayRow]], family: list[str], threshold: int
 ) -> dict:
     """One (variant, cell) block. A point passes only if every one of its replays does."""
     scores = [row.score for pid in family for row in point_rows.get(pid, [])]
-    passed = sum(
-        1 for pid in family if point_rows.get(pid) and all(r.passed for r in point_rows[pid])
-    )
+    passed = len(_passing_points(point_rows, family))
     identity = [row.score for row in point_rows.get("identity", [])]
     low, high = (min(scores), max(scores)) if scores else (0, 0)
     return {
@@ -1934,12 +2296,18 @@ def _compare(
         "a": a,
         "b": b,
         "verdict": verdict,
+        # RB-P16: the verdict is one of four words for a two-dimensional fact, so it
+        # travels with its size, its direction and its point-level disagreement. Read
+        # `_effect`'s docstring for why these fields and not a banding vocabulary.
+        # It decides nothing — `attributable` below is untouched by it.
+        "effect": _effect(a, b, rows_a, rows_b, family),
         "family_size": len(family),
         "dropped_rules": dropped_rules,
         "a_pass_rate": stats_a["pass_rate"],
         "b_pass_rate": stats_b["pass_rate"],
         "fragile": fragile,
         "guard_verdict": guard_verdict,
+        "guard_effect": _effect(a, b, rows_a, rows_b, guard_family),
         "guard_family_size": len(guard_family),
         "guard_dropped_rules": [
             {"rule": pid, "reason": "shared-token", "words": violations[pid]}
@@ -1956,7 +2324,29 @@ def _compare(
 
 
 def _separation(stats_a: dict, stats_b: dict, size: int) -> str:
-    """§7 rule 1, on whichever family it is handed."""
+    """§7 rule 1, on whichever family it is handed.
+
+    **Read the word beside its `effect` block, never alone.** This function returns four
+    words for a two-dimensional fact and RB-P16 is the measured consequence:
+
+    - `inconclusive` covers everything that is neither `F/F`-versus-`0/F` nor a tie. Over
+      the whole committed §7 record (12 comparisons, 2 runs, measured 2026-08-13) eleven
+      cells wear it, spanning |Δ| 3/11 = 0.2727 to 5/6 = 0.8333 — a factor of 3.06.
+    - `indistinguishable` is **equal pass COUNTS, not agreement.** The one committed cell
+      that carries it (`B-nonewline` 7/11 vs `C-attempted` 7/11, r1) is a cell on which
+      the two variants disagree on **2 of 11 points**: `B` passes `P2-asks-requests`,
+      `C` passes `W2-double-trailing`. The word claims an identity the measurement does
+      not support, and it is the only cell in that record where the disagreement is
+      two-sided — on the other eleven the pass sets are nested, so Δ alone recovers it.
+      A fresh run measured 2026-08-14 puts a second instance on the record: the shipped
+      rubric versus its trailing-newline variant reads `indistinguishable` at 2/11 vs
+      2/11 on `nav-prod-port` r0 while the two disagree on **4 of 11 points**.
+
+    Neither word is renamed here. The defect is not the spelling: a rename would make the
+    committed record incomparable while still asserting nothing about agreement. What
+    fixes it is that `_compare` now ships `_effect` beside every verdict, so a reader gets
+    the size, the direction and the point-level disagreement without re-deriving them.
+    """
     if size == 0:
         return "undefined"
     if (stats_a["passed"] == size and stats_b["passed"] == 0) or (
@@ -1966,6 +2356,154 @@ def _separation(stats_a: dict, stats_b: dict, size: int) -> str:
     if stats_a["passed"] == stats_b["passed"]:
         return "indistinguishable"
     return "inconclusive"
+
+
+def _effect(
+    a: str,
+    b: str,
+    rows_a: dict[str, list[ReplayRow]],
+    rows_b: dict[str, list[ReplayRow]],
+    family: list[str],
+) -> dict:
+    """The effect size that travels with the verdict (RB-P16). It DECIDES NOTHING.
+
+    ## Why this shape, argued against the measured band
+
+    The band this has to render is not hypothetical. Every §7 comparison this project has
+    ever committed — 12, over 2 runs, surveyed 2026-08-13 in
+    `docs/eval-data/2026-08-13-rbp16-rbp17-rbp18-survey.md` and re-derived from the rows
+    again on 2026-08-14 — is:
+
+        |Δrate|  0.2727 0.2727 0.3333 0.3636 0.3636 0.4545 0.4545 0.6364 0.6364 0.6667 0.8333
+        |Δn|          3      3      4      4      4      5      5      7      7      8     10
+
+    plus one exact tie. Eleven of the twelve read `inconclusive`. The worst — `A-asfiled`
+    1/12 vs `C-attempted` 11/12, ten of twelve points flipped, **one point short of
+    `0/F` versus `F/F` on each side** — wears the same word as the mildest, 7/11 vs 10/11.
+    So the requirement is exact: 0.2727 and 0.8333 must be tellable **at a glance**.
+
+    Four fields, each earning its place against that band:
+
+    - **`delta_passed` / `delta_rate`, signed `a - b`.** The sign convention is the
+      committed survey's, so its signed columns and this block are directly comparable.
+      `delta_rate` is the at-a-glance number: no two DISTINCT values in the band above
+      collide at the 3 decimals `format_table` prints (0.273 / 0.333 / 0.364 / 0.455 /
+      0.636 / 0.667 / 0.833). `format_table` additionally renders |`delta_rate`| as a
+      10-cell bar, because the eye compares LENGTHS faster than it compares decimals and
+      the whole complaint is that a reader could not tell these apart while skimming.
+    - **`points_from_separation` = `F - |Δn|`.** Distance to the only thing §7 rule 1
+      credits. This is derived from the rule itself and invents no threshold —
+      deliberately: a banding vocabulary (`large`/`small`) would be a new grade with new
+      cut points, and an instrument that grades evidence may not quietly re-grade its
+      own. The worst committed cell reads 2; the mildest reads 8.
+    - **`disagreeing_points` with `a_only` / `b_only`.** This is what makes the tie word
+      honest and is the field `delta_*` cannot supply. At Δn = 0 the difference is 0 and
+      the two families can still disagree — measured on the one committed
+      `indistinguishable` cell, they disagree on 2 of 11 points. Reported by NAME so the
+      claim is checkable point by point rather than re-derived by the reader.
+
+    ## What this deliberately does not do
+
+    It does not touch `attributable`, and no field of it is read by any decision. §7's
+    rules 1-3 decide exactly what they decided before this function existed; moving
+    attribution would move a committed finding by moving the ruler and needs its own
+    argued case. Rule 1 has decided all 12 committed cells, so rules 2 and 3 have never
+    been reached — a reporting change is the only lever here that touches every cell.
+    """
+    size = len(family)
+    passed_a = set(_passing_points(rows_a, family))
+    passed_b = set(_passing_points(rows_b, family))
+    delta = len(passed_a) - len(passed_b)
+    a_only = [pid for pid in family if pid in passed_a and pid not in passed_b]
+    b_only = [pid for pid in family if pid in passed_b and pid not in passed_a]
+    return {
+        "delta_passed": delta,
+        "delta_rate": round(delta / size, 4) if size else 0.0,
+        "sign": (delta > 0) - (delta < 0),
+        "leads": (a if delta > 0 else b) if delta else None,
+        "points_from_separation": size - abs(delta) if size else 0,
+        "disagreeing_points": len(a_only) + len(b_only),
+        "a_only": a_only,
+        "b_only": b_only,
+    }
+
+
+def _directional(cells: list[dict]) -> list[dict]:
+    """The cross-cell statement §7 never made: does one pair point one way on every cell?
+
+    **REPORT ONLY. Nothing here is read by `attributable` or by any verdict.** That is not
+    caution, it is the measurement: RB-P16's filing proposes requiring the sign to agree
+    across cells before an `inconclusive` may be called directional, and **no committed
+    cell exercises that rule.** Surveyed over the entire committed §7 record on
+    2026-08-13 and re-derived here: every `inconclusive` cell has sign −1, there is no run
+    in which two cells of one pair point in opposite directions, and the only non-negative
+    sign anywhere is the exact tie that already reads `indistinguishable`. Shipping it as
+    a gate would be shipping a rule with zero instances behind it, which would change
+    nothing on any cell while looking like it had been tested. So it is shipped as a
+    sentence a reader can check, and `conflicting` is the field that would go true first.
+
+    A tie ABSTAINS rather than breaking agreement: sign 0 is "this cell says nothing about
+    direction", which is exactly what an equal pass count means. `directional` therefore
+    requires agreement AND at least one cell that actually pointed.
+    """
+    by_pair: dict[tuple[str, str], list[dict]] = {}
+    for cell in cells:
+        for comparison in cell["comparisons"]:
+            by_pair.setdefault((comparison["a"], comparison["b"]), []).append(
+                {
+                    "task": cell["task"],
+                    "repeat": cell["repeat"],
+                    "verdict": comparison["verdict"],
+                    **{
+                        key: comparison["effect"][key]
+                        for key in ("sign", "delta_rate", "leads")
+                    },
+                }
+            )
+    out = []
+    for (a, b), seen in by_pair.items():
+        signs = [c["sign"] for c in seen]
+        nonzero = {s for s in signs if s}
+        rates = [abs(c["delta_rate"]) for c in seen]
+        out.append(
+            {
+                "a": a,
+                "b": b,
+                "cells": seen,
+                "signs": signs,
+                "ties": signs.count(0),
+                "conflicting": len(nonzero) > 1,
+                "directional": len(nonzero) == 1,
+                "leads": (a if nonzero == {1} else b) if len(nonzero) == 1 else None,
+                "abs_delta_rate_min": min(rates) if rates else 0.0,
+                "abs_delta_rate_max": max(rates) if rates else 0.0,
+            }
+        )
+    return out
+
+
+def _format_effect(effect: dict, size: int) -> str:
+    """One line a skimming reader can rank without subtracting two fractions.
+
+    The bar is ten ASCII cells of |Δrate|, `#` filled. Against the committed band that
+    is `[########--]` for the worst cell (0.8333) and `[###-------]` for the mildest
+    (0.2727) — the difference RB-P16 says a reader cannot currently see. ASCII on
+    purpose: RB-P31/K4B measured what this module does when stdout cannot encode a
+    character, and a report line is not the place to find out again.
+    """
+    delta, rate = effect["delta_passed"], effect["delta_rate"]
+    filled = round(abs(rate) * 10)
+    bar = "#" * filled + "-" * (10 - filled)
+    lead = f"leads {effect['leads']}" if effect["leads"] else "neither leads"
+    # A tie renders " 0", never "+0": the column width is kept but no direction is
+    # implied, because an equal pass count is exactly the absence of one.
+    dtxt = f"{delta:+d}" if delta else " 0"
+    rtxt = f"{rate:+.3f}" if delta else " 0.000"
+    return (
+        f"    effect: d={dtxt}/{size} ({rtxt}) [{bar}] {lead}; "
+        f"{effect['points_from_separation']} from separation; "
+        f"{effect['disagreeing_points']}/{size} points disagree"
+    )
 
 
 def format_table(summary: dict) -> str:
@@ -2022,6 +2560,30 @@ def format_table(summary: dict) -> str:
                 + ("" if comparison["attributable"] or comparison["verdict"] != "distinguishable"
                    else f" — attribution VOID: fragile {comparison['fragile']}")
             )
+            # RB-P16. A SECOND line rather than a longer first one: the verdict line's
+            # bytes are what every committed table and every downstream reader already
+            # parses, and the effect is an addition to the report, not a reflow of it.
+            lines.append(_format_effect(comparison["effect"], comparison["family_size"]))
+    if summary.get("directional"):
+        lines += [
+            "",
+            "Directional consistency (one pair across its cells) — REPORT ONLY, it decides "
+            "nothing; §7 has no cross-cell rule and no committed cell exercises one:",
+        ]
+        for pair in summary["directional"]:
+            signs = ",".join("+" if s > 0 else "-" if s < 0 else "0" for s in pair["signs"])
+            if pair["conflicting"]:
+                verdict = "CONFLICTING — cells of this pair point opposite ways"
+            elif pair["directional"]:
+                verdict = f"consistent toward {pair['leads']}"
+            else:
+                verdict = "no direction (every cell ties)"
+            lines.append(
+                f"- {pair['a']} vs {pair['b']}: signs {signs} -> {verdict}"
+                + (f" ({pair['ties']} tie)" if pair["ties"] == 1 else "")
+                + (f" ({pair['ties']} ties)" if pair["ties"] > 1 else "")
+                + f"; |d| {pair['abs_delta_rate_min']:.3f}..{pair['abs_delta_rate_max']:.3f}"
+            )
     lines += [
         "",
         f"requests: {summary['requests']}  wire calls: {summary['wire_calls']}  "
@@ -2077,8 +2639,12 @@ _EXIT_CONTRACT = f"""exit status (RB-P24):
      one number: argparse's own parsing (unknown flag, missing required,
      type=/choices=), and every argument-SHAPE validation this module makes -
      --replays 0, --identity-replays 0, --rubric with no LABEL=, --rubric
-     a=git:HEAD, two --rubric values sharing one LABEL - each of them reported
-     through parser.error before any file is opened. Malformed ON ITS FACE means
+     a=git:HEAD, two --rubric values sharing one LABEL, a --rubric derive: spec
+     whose base is not a git: spec (RB-P17 - which is also how a derive OF a
+     derive is refused, so the load order is acyclic rather than checked) -
+     each of them reported through parser.error before any file is opened. A
+     derive: whose rule id the manifest does not have is NOT here: that needs
+     the manifest read, so it is a {REFUSAL_EXIT}. Malformed ON ITS FACE means
      it can never work on any machine: nothing ran, nothing was written, and
      re-running the same argv is guaranteed to fail again, so a human edits the
      command.
@@ -2096,6 +2662,11 @@ _EXIT_CONTRACT = f"""exit status (RB-P24):
      every machine and were nonetheless refused from inside the run. Measured
      before and after in docs/eval-data/2026-08-13-rbp32-argument-validation-*.md
      and docs/eval-data/2026-08-13-k4b-c2-duplicate-rubric-label.md.
+     RB-P17 adds the derive: shapes above. 3 cases change number, measured in
+     docs/eval-data/2026-08-14-rbp17-provenance-resolution.md: a derive of a
+     derive moves 1 -> 2 (it is now wrong on its face, not a path that is not
+     there), and the two runs that use the form at all move 1 -> 3 because
+     before it there was no form and the argv could not run.
   {GUARD_VIOLATION_EXIT}  measured, WITH guard-2 violations - every artifact is still written,
      and the GUARD section names each violating (point, cell)
   {ARTIFACT_WRITE_EXIT}  measured, but an artifact could not be written (the --summary file).
@@ -2125,8 +2696,13 @@ reports {RENDER_FAILURE_EXIT} instead of claiming a clean measurement (RB-P31).
 Neither arm invents a status the run did not have.
 WHAT IS STILL OUTSIDE THE RANGE is the interpreter or a signal, and that list
 is OPEN rather than exhaustive. Measured so far: 130 SIGINT, 143 SIGTERM, a
-stderr lost while the run was writing to it, and 120 for a stdout lost OUTSIDE
-the run path (--help, which argparse writes and exits before main is reached).
+stderr lost while the run was writing to it, and a stdout lost OUTSIDE the run
+path (--help, which argparse writes and exits before main is reached) — whose
+number this module does not choose and which is NOT FIXED, so do not branch on
+a particular one: argparse swallows the write error, and what the shell reads is
+then decided by what the shutdown flush finds in the stdio buffer. Both 120 and
+0 have been measured, on different platforms at different help lengths
+(RB-P35); the readings and their dates are in docs/eval.md.
 Read those as "this process did not choose its own status", NOT as "the
 measurement did not happen": the artifacts may still be on disk. ENOSPC on a
 real full device has NOT been measured in the field on this platform; it is
@@ -2224,7 +2800,10 @@ def main(argv: list[str] | None = None) -> None:
         action="append",
         required=True,
         metavar="LABEL=SPEC",
-        help="repeatable; SPEC is a path or git:<ref>:<path>",
+        help=(
+            "repeatable; SPEC is a path, git:<ref>:<path>, or "
+            "derive:<manifest-path>:<rule-id>:git:<ref>:<path>"
+        ),
     )
     parser.add_argument(
         "--manifest", type=Path, help="perturbation manifest (default: by rubric name)"

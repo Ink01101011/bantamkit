@@ -1,0 +1,50 @@
+{
+  "_why": "NOT A MEASUREMENT AND NOT PART OF ANY NUMBER. Three claims that reproduce, by hand, the two ways `pinned = rc != 0` certified claims it never checked (L5's C2, reproduced by the orchestrator 2026-08-14). Run it against the harness itself, not against the product: on the pre-L6 harness all three read PINNED, behaviour-pinned 3/3 (100%). ZZMOON is a claim about a feature that does not exist, with a mutation that breaks an import; ZZCROSS is a claim cited for RB-P18 whose mutation lands in RB-P16's format_table; ZZCTRL is the control - a real RB-P18 claim with a real RB-P18 mutation, which must stay PINNED or this file is measuring nothing. Expected at HEAD: BROKEN, FALSE-PINNED, PINNED. Record: docs/eval-data/2026-08-14-pinning-harness-false-positives.md",
+  "claims": [
+    {
+      "cid": "ZZMOON",
+      "kind": "behaviour",
+      "claim": "every summary a run writes states the current phase of the moon, and the phase is read from an ephemeris",
+      "where": "nowhere: this feature does not exist",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "\nimport yaml\n",
+      "replacement": "\nimport yaml_is_not_a_module_and_never_was\n",
+      "note": "The mutation breaks an import. The tree does not collect; rc != 0 and FAILED is empty.",
+      "pins": [
+        "test_a_fresh_runs_rows_and_summary_publish_the_recipe_beside_the_field"
+      ],
+      "expect": "unpinned"
+    },
+    {
+      "cid": "ZZCROSS",
+      "kind": "behaviour",
+      "claim": "RB-P18: payload_sha256 names one serialization and a second column names the canonical one",
+      "where": "cited for RB-P18; the mutation lands in RB-P16's format_table",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "            lines.append(_format_effect(comparison[\"effect\"], comparison[\"family_size\"]))",
+      "replacement": "            _format_effect(comparison[\"effect\"], comparison[\"family_size\"])",
+      "note": "An RB-P18 claim whose mutation can only be caught by RB-P16 nodes.",
+      "pins": [
+        "test_OUTSIDE_pytest_a_fresh_run_reproduces_both_frozen_payload_recipes",
+        "test_a_fresh_run_reproduces_both_frozen_payload_recipes_from_one_request",
+        "test_the_canonical_payload_column_is_the_one_that_survives_key_order"
+      ],
+      "expect": "unpinned"
+    },
+    {
+      "cid": "ZZCTRL",
+      "kind": "behaviour",
+      "claim": "CONTROL: the canonical payload column is canonical (a real RB-P18 claim with a real RB-P18 mutation)",
+      "where": "_payload_shas",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "        sha256_text(json.dumps(payload, ensure_ascii=False, sort_keys=True)),\n",
+      "replacement": "        sha256_text(json.dumps(payload, ensure_ascii=False)),\n",
+      "pins": [
+        "test_OUTSIDE_pytest_a_fresh_run_reproduces_both_frozen_payload_recipes",
+        "test_a_fresh_run_reproduces_both_frozen_payload_recipes_from_one_request",
+        "test_the_canonical_payload_column_is_the_one_that_survives_key_order"
+      ],
+      "expect": "pinned"
+    }
+  ]
+}
