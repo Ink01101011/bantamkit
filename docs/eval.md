@@ -3879,10 +3879,11 @@ and each carries an attack direction.
   > (`b496856`, CI green); 8227 bytes → `0`** — the growth came from docstrings
   > added by this job's own RB-P16/17/18 fixes. macOS read `120` at both. The
   > node's assertion was re-aimed the same day to the claim the contract actually
-  > makes — the status equals what a bare interpreter writing the identical bytes
-  > to the identical broken pipe reads, so this module contributes nothing to it —
-  > which is platform-independent and still goes red if a later change covers the
-  > case. The stderr half of the paragraph above is untouched and was green on both
+  > makes — the status equals what a bare interpreter doing exactly what
+  > `argparse._print_message` does with the identical bytes on the identical broken
+  > pipe reads, so this module contributes nothing to it — which is
+  > platform-independent and still goes red if a later change covers the case. The
+  > stderr half of the paragraph above is untouched and was green on both
   > platforms. Filed as **RB-P35**, below.
 
   **Authorship, stated plainly and kept separate from the cell's result.** The
@@ -4669,12 +4670,30 @@ pinned" from "the detector is stuck on".
   help text → `120`** (`b496856`, CI green), **8227 bytes → `0`**. The growth was
   docstrings, added by this job's own RB-P16/17/18 fixes. macOS read `120` at both
   sizes, which is why five units and every local suite run missed it.
+  **The full mechanism, which took a second CI round to get right.**
+  `argparse.ArgumentParser._print_message` wraps its one `file.write` in
+  `except (AttributeError, OSError): pass` (CPython 3.10+), so the `BrokenPipeError`
+  never propagates and `main`'s handler is genuinely not on that path — that half
+  of the old sentence was true. What the shell reads is decided entirely by what
+  the interpreter's shutdown flush finds in the `BufferedWriter`: bytes still
+  buffered → the flush re-fails → `120`; bytes already pushed at the failed write →
+  nothing left to flush → the `0` that `--help` exits with.
+  **The first re-aim was WRONG and CI said so, and it is recorded rather than
+  smoothed.** The first control was a bare `sys.stdout.write` with no `except`, and
+  it read `1` on `ubuntu-latest` (the write raises out of `-c`; the traceback is the
+  interpreter's `1`) where the module read `0`. That looked like evidence the module
+  chooses the status, and it was not — it was the control differing from its subject
+  in one hidden respect, which is the same failure mode as a rig that agrees with
+  itself, one sign flipped.
   **What was fixed:** the epilog and the comment now say the number is the
-  interpreter's, is not fixed, and give both measurements; the node now asserts
-  that the module's status **equals a bare interpreter writing the identical bytes
-  to the identical broken pipe**, which is the claim the contract actually makes,
-  is platform-independent, and still goes red the moment this module starts
-  choosing that status.
+  interpreter's, is **not fixed**, and that no branch should be written on a
+  particular one — and they carry **no byte count**, because a count in a shipped
+  string is invalidated by the next docstring; the counts live here and in the field
+  record, dated. The node now asserts the module's status **equals what a bare
+  interpreter doing exactly what argparse does with the identical bytes on the
+  identical broken pipe reads**, which is the claim the contract actually makes, is
+  platform-independent, and still goes red the moment this module starts choosing
+  that status.
   **What is NOT fixed, and it is the larger half.** (a) The twin node
   `test_a_refusal_whose_stderr_has_no_reader_leaves_the_range` still asserts the
   literal `120`. It is green on both platforms today because a refusal's stderr

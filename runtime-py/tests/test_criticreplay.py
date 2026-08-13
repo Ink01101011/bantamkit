@@ -4024,13 +4024,24 @@ def test_help_with_no_reader_on_stdout_is_still_the_interpreters_number(tmp_path
     not applied it here.
 
     WHAT IS ASSERTED NOW IS THE CLAIM THE CONTRACT ACTUALLY MAKES: the status of a stdout
-    lost outside the run path is the INTERPRETER'S, and this module contributes nothing
-    to it. The control is a bare interpreter writing the module's own help bytes to the
-    identical broken pipe — argparse formats the whole help and emits it in a single
-    `file.write`, so the control is byte-for-byte and write-for-write the same thing
-    without `bantamkit` on the path. Equality is platform-independent and cannot go stale
-    with the epilog's length; it goes RED the moment this module starts choosing that
-    status, which is the change the contract sentence promises to be corrected for.
+    lost outside the run path is decided by `argparse` and the interpreter, and this
+    module contributes nothing to it. The control is a bare interpreter reproducing
+    exactly what `argparse` does with the module's own help bytes on the identical broken
+    pipe — one `sys.stdout.write` of the whole text (`_print_message` formats the help
+    and emits it in a single call), the `except (AttributeError, OSError): pass` that
+    `argparse.ArgumentParser._print_message` wraps that call in since 3.10, and exit 0.
+    No `bantamkit` on the path. Equality is platform-independent and cannot go stale with
+    the epilog's length; it goes RED the moment this module starts choosing that status,
+    which is the change the contract sentence promises to be corrected for.
+
+    THE FIRST RE-AIM WAS WRONG AND CI SAID SO, WHICH IS WHY THE SWALLOW IS SPELLED OUT.
+    A control WITHOUT the `except OSError` read `1` on `ubuntu-latest` (the write raises
+    out of `-c` and the traceback is the interpreter's `1`) where the module read `0`.
+    That looked like the module choosing the status and it is not: `argparse` swallowed
+    the `BrokenPipeError`, and what the shell then reads is whatever the shutdown flush
+    does with a buffer the failed write already emptied. Recorded rather than smoothed —
+    a control that differs from the thing it controls for in one hidden respect reports a
+    difference that is the control's, not the subject's.
     """
     argv = [sys.executable, "-m", "bantamkit.criticreplay", "--help"]
     status, _ = _closed_pipe_status(argv, tmp_path, "help")
@@ -4043,17 +4054,24 @@ def test_help_with_no_reader_on_stdout_is_still_the_interpreters_number(tmp_path
         [
             sys.executable,
             "-c",
-            "import sys; sys.stdout.write(open(sys.argv[1]).read())",
+            # argparse.ArgumentParser._print_message, verbatim in shape:
+            #     try: file.write(message)
+            #     except (AttributeError, OSError): pass
+            "import sys\n"
+            "try:\n"
+            "    sys.stdout.write(open(sys.argv[1]).read())\n"
+            "except (AttributeError, OSError):\n"
+            "    pass\n",
             str(replica),
         ],
         tmp_path,
         "help-control",
     )
     assert status == control, (
-        f"the module read {status} where a bare interpreter writing the same "
-        f"{len(rendered)} bytes to the same broken pipe read {control}. That difference "
-        "would mean this module DOES choose the status on the --help path, which the "
-        "epilog says it does not."
+        f"the module read {status} where a bare interpreter doing what argparse does "
+        f"with the same {len(rendered)} bytes on the same broken pipe read {control}. "
+        "That difference would mean this module DOES choose the status on the --help "
+        "path, which the epilog says it does not."
     )
 
 

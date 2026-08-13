@@ -347,15 +347,21 @@ GUARD_MODES = ("warn", "error")
 # outside 0-4 means the run did not complete" is STILL not a true reading. This list is
 # OPEN — it is what has been measured, not a proof that nothing else escapes:
 #   - `--help` with no reader on stdout leaves the range with a number THIS MODULE DOES
-#     NOT CHOOSE, and the number is NOT FIXED. argparse writes the epilog and exits
-#     before `main` reaches the handler, so the handler is not on that path at all; what
-#     the shell reads is decided by whether the doomed bytes are still in the
-#     `BufferedWriter` at exit — the same buffer-size accident this comment names four
-#     paragraphs up, applied to this module's own help text. Measured 2026-08-14
-#     (RB-P35): 120 on macOS and 0 on `ubuntu-latest` at 8227 bytes of help text, where
-#     `ubuntu-latest` read 120 at 7488 bytes (`b496856`, CI green). This line used to say
-#     "exits 120", and it went false when a docstring in another unit's fix grew the
-#     epilog past the boundary.
+#     NOT CHOOSE, and THE NUMBER IS NOT FIXED — do not branch on a particular one.
+#     argparse writes the epilog and exits before `main` reaches the handler, so the
+#     handler is not on that path at all; `argparse._print_message` then SWALLOWS the
+#     write error (`except (AttributeError, OSError): pass`, CPython 3.10+), so nothing
+#     propagates and what the shell reads is decided entirely by what the interpreter's
+#     shutdown flush finds in the `BufferedWriter` — the same buffer-size accident this
+#     comment names four paragraphs up, applied to this module's own help text. So the
+#     number turns on the SIZE OF THE HELP TEXT against a buffer this module does not
+#     set. This line used to say "exits 120", and it went false in CI with no behaviour
+#     of this module changed, because docstrings added by an unrelated fix grew the
+#     epilog past the boundary on one platform (RB-P35, 2026-08-14; both readings and
+#     their byte counts are in docs/eval.md, which is where a number that can go stale
+#     belongs). What is pinned here is the relation and not the number:
+#     `test_help_with_no_reader_on_stdout_is_still_the_interpreters_number` asserts this
+#     module reads what a bare interpreter doing exactly what argparse does reads.
 #   - a run that WRITES to stderr while stderr has no reader exits 120 — a refusal's
 #     `error: …`, the summary-write failure, the `--violations-exit-zero` note. The
 #     refusal's own 1 is erased exactly as the table's 3 used to be. A run that writes
@@ -2692,9 +2698,11 @@ WHAT IS STILL OUTSIDE THE RANGE is the interpreter or a signal, and that list
 is OPEN rather than exhaustive. Measured so far: 130 SIGINT, 143 SIGTERM, a
 stderr lost while the run was writing to it, and a stdout lost OUTSIDE the run
 path (--help, which argparse writes and exits before main is reached) — whose
-number this module does not choose and which is NOT fixed: measured 120 on
-macOS and 0 on ubuntu at this help length, because whether the doomed bytes are
-still in the stdio buffer at exit decides whether the shutdown flush re-fails.
+number this module does not choose and which is NOT FIXED, so do not branch on
+a particular one: argparse swallows the write error, and what the shell reads is
+then decided by what the shutdown flush finds in the stdio buffer. Both 120 and
+0 have been measured, on different platforms at different help lengths
+(RB-P35); the readings and their dates are in docs/eval.md.
 Read those as "this process did not choose its own status", NOT as "the
 measurement did not happen": the artifacts may still be on disk. ENOSPC on a
 real full device has NOT been measured in the field on this platform; it is

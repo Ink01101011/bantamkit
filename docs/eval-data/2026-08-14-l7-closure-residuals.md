@@ -165,15 +165,39 @@ module's own comment already spells out for the run path, never applied to itsel
 macOS reads `120` at both sizes, which is why five units and every local suite run
 missed it, and why the CI matrix is the instrument that found it.
 
+**The full mechanism, which took a second CI round to get right.**
+`argparse.ArgumentParser._print_message` wraps its one `file.write` in
+`except (AttributeError, OSError): pass` (CPython 3.10+), so the `BrokenPipeError`
+never propagates and `main`'s handler is genuinely not on that path — that half of
+the old sentence was true. What the shell reads is decided entirely by what the
+shutdown flush finds in the `BufferedWriter`: bytes still buffered → the flush
+re-fails → `120`; bytes already pushed at the failed write → nothing left to flush
+→ the `0` that `--help` exits with.
+
+**The first re-aim was WRONG and CI said so.** Recorded rather than smoothed. The
+first control was a bare `sys.stdout.write` with no `except`, and CI read:
+
+```
+E  AssertionError: the module read 0 where a bare interpreter writing the same
+   8459 bytes to the same broken pipe read 1.
+```
+
+The `1` is the traceback escaping `-c`. That looked like evidence the module chooses
+the status; it was the control differing from its subject in one hidden respect —
+the same failure mode as a rig that agrees with itself, one sign flipped.
+
 **Re-aimed, not re-scoped.** The node now asserts that the module's status equals
-what a **bare interpreter writing the identical help bytes to the identical broken
-pipe** reads — argparse formats the whole help and emits it in a single
-`file.write`, so the control is byte-for-byte and write-for-write the same thing
-with `bantamkit` off the path. Measured on macOS at 8459 bytes (the corrected
-epilog): module `120`, control `120`. The equality is platform-independent, cannot
-go stale with the epilog's length, and still goes red the moment this module starts
-choosing that status — which is the change the contract sentence promises to be
-corrected for.
+what a bare interpreter **doing exactly what argparse does** with the identical help
+bytes on the identical broken pipe reads — one `sys.stdout.write` of the whole text,
+wrapped in argparse's own `except (AttributeError, OSError): pass`, then exit 0, with
+`bantamkit` off the path. Measured on macOS: module `120`, control `120`. The
+equality is platform-independent, cannot go stale with the epilog's length, and still
+goes red the moment this module starts choosing that status — which is the change the
+contract sentence promises to be corrected for.
+
+**The shipped strings now carry no byte count**, because a count inside the help text
+is invalidated by the next docstring; the counts live in this record and in
+`docs/eval.md`, dated.
 
 Filed as **RB-P35** in `docs/eval.md`, including the two halves that are **not**
 fixed: the twin stderr node still asserts a literal `120` and is green for the same
