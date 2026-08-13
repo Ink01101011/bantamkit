@@ -6179,6 +6179,24 @@ def test_the_payload_sha_field_is_readable_in_both_shapes_the_record_uses():
         read({"sha": "a"})
 
 
+def test_the_payload_sha_reader_is_in_the_published_surface():
+    """L5's M1, fixed 2026-08-14 (L7): the RB-P18 remedy has to be reachable to be one.
+
+    `docs/eval.md` presents `payload_shas_recorded` as what RB-P18 ships for the reader
+    who has the JSONL and not this tree — an out-of-tree reader by construction — and it
+    shipped absent from `__all__` (43 entries, this name not among them). `guard_table`
+    has carried the same assertion since it shipped, on the same argument; this one had
+    nothing, so dropping it from the export list would have turned no node red.
+
+    THIS NODE CLAIMS ONLY WHAT IT CHECKS. Membership of `__all__` is the published
+    surface as this module states it; it is not a promise about `import *` behaviour
+    elsewhere, and it does not make the function's reading correct — `N10` is the claim
+    about the reading, and its own limits are recorded at RB-P18 in `docs/eval.md`.
+    Ledger `N14`.
+    """
+    assert "payload_shas_recorded" in criticreplay.__all__
+
+
 # ===========================================================================
 # RB-P28's RESIDUAL, CLOSED FOR THE THREE ACCEPTANCES (L6, 2026-08-14).
 #

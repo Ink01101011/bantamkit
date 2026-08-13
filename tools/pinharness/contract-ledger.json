@@ -499,6 +499,19 @@
       "anchor": "        \"guard_effect\": _effect(a, b, rows_a, rows_b, guard_family),",
       "replacement": "        # mutation (RB-P16): the guard-dropped effect is the full family's again\n        \"guard_effect\": _effect(a, b, rows_a, rows_b, family),",
       "note": "L5's I1: a shipped reporting field with NO ledger claim, measuring UNPINNED, and the job's own done_definition requires an entry in the same commit as the claim. Not cosmetic - it is the half of RB-P16's fix that carries the effect for the family SS7 rule 3 acts on, and `effect` is credited with 'the verdict travels with its size' on the strength of both. The node is built on a cell where the two DISAGREE (before 3/3, after 2/3, and the one point that separates them is the one the shared-token guard dropped), because a node on a cell where they coincide passes under a guard_effect that is a second copy of effect."
+    },
+    {
+      "cid": "N14",
+      "kind": "behaviour",
+      "claim": "`payload_shas_recorded` - the reader RB-P18 ships for an out-of-tree reader - is in the published surface (RB-P18)",
+      "where": "__all__, the export list",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "pins": [
+        "test_the_payload_sha_reader_is_in_the_published_surface"
+      ],
+      "anchor": "    \"payload_shas_recorded\",\n",
+      "replacement": "",
+      "note": "L5's M1, fixed 2026-08-14 (L7). MEASURED at 6c27ebe: __all__ had 43 entries and this name was not among them, while docs/eval.md presented the function as RB-P18's shipped remedy for a reader who has the JSONL and not this tree - an out-of-tree reader by construction, whose only surface is the export list. `guard_table` has carried `assert \"guard_table\" in criticreplay.__all__` since it shipped, on exactly this argument; this one had nothing, so deleting the export would have turned no node red. THE CLAIM IS NARROW ON PURPOSE: membership of __all__, and nothing about whether the reading is correct - N10 is that claim, and N10's own limit (its only killer is a hardcoded two-element literal; the record-based half is a dead assertion) is filed at RB-P18 in docs/eval.md rather than papered over here."
     }
   ]
 }

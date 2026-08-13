@@ -113,6 +113,7 @@ __all__ = [
     "moved_words",
     "normalize_whitespace",
     "parse_rubric_arg",
+    "payload_shas_recorded",
     "point_admissibility_violations",
     "render_prompt",
     "replay_scores",
@@ -1352,6 +1353,14 @@ def payload_shas_recorded(value: str | list[str]) -> tuple[str, ...]:
     between sets of shas, never between a `str` and a `list`. What it does NOT do is
     rewrite anything — the committed bytes keep their shapes; this is the reader supplying
     a defined reading, exactly as `_rows_as_replay_rows` supplies an absent column.
+
+    IT IS IN `__all__`, AND THAT WAS A REPAIR (L5's M1, fixed 2026-08-14 by L7). It
+    shipped outside the export list while `docs/eval.md` presented it as RB-P18's remedy
+    for a reader who has the JSONL and not this tree — i.e. the whole audience of this
+    function is out-of-tree, and the published surface did not name it. `guard_table` has
+    carried `assert "guard_table" in criticreplay.__all__` since it shipped for the same
+    reason; this one had nothing, so nothing would have gone red if it were dropped.
+    Ledger `N14`.
     """
     if isinstance(value, str):
         return (value,)
