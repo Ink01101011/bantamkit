@@ -4420,3 +4420,246 @@ def test_every_shape_rule_flag_is_the_usage_status_in_the_field(tmp_path):
         )
         assert out == ""
         assert "Traceback" not in err, f"{label} reported by traceback: {err}"
+
+
+# ---- K5: the three contract sentences the pinning harness measured UNPINNED ----
+#
+# `tools/pinharness/pinned.py` measures what fraction of this contract's claims are
+# actually held: it mutates each claim so the claim becomes FALSE and asks whether any
+# node goes red. At `b0d4cce` it read behaviour-pinned 16/16 and prose-pinned 2/5, and
+# the three misses were each verified by running the mutation and watching a fully green
+# 764-node suite come back (`docs/eval-data/2026-08-13-contract-claim-pinning.md`):
+#
+#   P01  the old unqualified epilog sentence — "2  usage error (argparse's number,
+#        including this module's own validations)" — can be restored VERBATIM, together
+#        with K4's rename of both `parser.error` mentions. The roster derivation catches
+#        drift in the ROSTER; nothing caught drift in the prose around it, and that
+#        sentence is still false at HEAD: `--rubric a=<a path that is not there>` IS one
+#        of this module's own validations and is a REFUSAL_EXIT, which the same block
+#        says three lines further down.
+#   P03  `the table is still printed` can be deleted from the `#   4` block, which is
+#        the stated reason `5` outranks `4` — the `#   5` block quotes it by name.
+#   P04  the epilog's disclosure of the cases that changed number can be stripped of the
+#        problem it belongs to; it is the only place a CI owner is told their branch
+#        changed.
+#
+# None of them is closed by DELETING the sentence: a sentence that cannot be checked and
+# a sentence that is absent are different failures, and the second is worse. Each node
+# below derives its expectation from something other than the sentence it guards — the
+# field-case table, the block being quoted, the committed matrix — so that rewording in
+# both places stays green by design and dropping one side is red.
+
+
+def _epilog_status_block(status: int) -> str:
+    """The epilog's paragraph for one status, from `  N  ` to the next one."""
+    found = re.search(
+        rf"^  {status}  (.*?)(?=^  \d  |\Z)", criticreplay._EXIT_CONTRACT, re.S | re.M
+    )
+    assert found, f"the epilog no longer has a line for status {status}"
+    return found.group(1)
+
+
+def _comment_status_block(status: int) -> str:
+    """The module comment's `#   N` block, with the comment prefix stripped.
+
+    The terminator is the next `#   N` block OR the first comment line that is not a
+    continuation (`# ` + a non-space), which is what ends the last block in the run.
+    """
+    found = re.search(
+        rf"^#   {status}  (.*?)(?=^#   \d  |^# \S|\Z)",
+        (SRC / "criticreplay.py").read_text(),
+        re.S | re.M,
+    )
+    assert found, f"the module comment no longer has a block for status {status}"
+    return re.sub(r"(?m)^#[ ]?", "", found.group(1))
+
+
+def _sentences(block: str) -> list[str]:
+    return [s for s in re.split(r"(?<=[.!?])\s+", " ".join(block.split())) if s]
+
+
+def test_no_sentence_about_the_usage_status_claims_all_of_this_modules_validations(tmp_path):
+    """P01, and it is the sentence RB-P32 was filed against, restorable verbatim at b0d4cce.
+
+    The claim: **no sentence in either committed `2` block may say that this module's
+    own validations are the usage status without qualifying them to the argument-SHAPE
+    ones.** Unqualified, it is false — and it is not false in some corner: the
+    counterexample is named in the same block and measured from a real shell by
+    `test_every_shape_rule_flag_is_the_usage_status_in_the_field`.
+
+    Why this shape rather than a substring of the true sentence. K4B's roster node
+    derives the exact SET of shape rules from the AST and pins both rosters to it, so a
+    rename cannot silence it — but a roster is a list of flags, and the false claim is
+    about a QUANTIFIER over rules ("all of this module's validations"), which no list of
+    flags contradicts. Both rosters can be exactly right while the sentence above them
+    says the thing RB-P32 disproved. So the quantifier is what is checked, in both places
+    the contract states it, and the counterexample is required to be one this suite
+    actually measures rather than one this node asserts.
+    """
+    counterexample = "--rubric a=<a path that is not there>"
+    assert counterexample in _world_rule_field_cases(tmp_path, "unused"), (
+        f"{counterexample} is no longer a field case. The qualification below is only "
+        "honest while the counterexample is MEASURED; if the case moved, this node and "
+        "the contract sentence move with it."
+    )
+
+    blocks = {
+        "epilog": _epilog_status_block(criticreplay.USAGE_EXIT),
+        "module comment": _comment_status_block(criticreplay.USAGE_EXIT),
+    }
+    for where, block in blocks.items():
+        for sentence in _sentences(block):
+            if not re.search(r"\bmodule\b", sentence) or not re.search(
+                r"\bvalidations?\b", sentence
+            ):
+                continue
+            assert "SHAPE" in sentence, (
+                f"the {where}'s {criticreplay.USAGE_EXIT} block says\n\n    {sentence}\n\n"
+                "which claims this module's own validations without narrowing them to "
+                f"the argument-SHAPE ones. That claim is FALSE: `{counterexample}` is one "
+                f"of them and reports {criticreplay.REFUSAL_EXIT}, as this block itself "
+                "says. It is the exact sentence RB-P32 was filed against, and it was "
+                "restorable verbatim with a green suite until this node existed."
+            )
+        assert counterexample in block or where != "epilog", (
+            f"the epilog's {criticreplay.USAGE_EXIT} block no longer names "
+            f"`{counterexample}`. The roster names `--rubric`, so a reader who is not "
+            "handed the case where `--rubric` is NOT the usage status is being told the "
+            "false thing by omission."
+        )
+
+
+def test_the_render_failure_block_quotes_a_promise_the_write_status_block_still_makes():
+    """P03: `5` outranks `4` FOR A REASON, and the reason is a quotation from `4`.
+
+    The `#   5` block does not assert its own rank — it argues it: each number outranks
+    the one below it because the lower one's promise is false about this run, and it
+    names `4`'s promise by quoting it. Delete that clause from the `#   4` block and the
+    argument for the whole ladder is a quotation of nothing, with a green suite.
+
+    The quoted phrase is READ OUT of the citing block rather than written here, so
+    rewording the promise in both places stays green by design and dropping it from
+    either is red. The rank itself is behaviour and is pinned separately
+    (`test_the_render_failure_status_outranks_the_unwritable_summary_status`); this is
+    the sentence that says WHY, which no field measurement can supply.
+    """
+    citing = " ".join(_comment_status_block(criticreplay.RENDER_FAILURE_EXIT).split())
+    quoted = re.search(r"(\d)'s promise, in its own sentence above, is \"([^\"]+)\"", citing)
+    assert quoted, (
+        f"the `#   {criticreplay.RENDER_FAILURE_EXIT}` block no longer quotes the promise "
+        "it outranks. Two meanings may not share one number, and the argument that these "
+        "are two meanings is exactly that quotation."
+    )
+    outranked, promise = int(quoted.group(1)), quoted.group(2)
+    assert outranked == criticreplay.ARTIFACT_WRITE_EXIT, (
+        f"the render-failure block argues against {outranked}, not against "
+        f"{criticreplay.ARTIFACT_WRITE_EXIT}"
+    )
+    for where, block in (
+        ("module comment", _comment_status_block(outranked)),
+        ("epilog", _epilog_status_block(outranked)),
+    ):
+        assert promise.lower() in " ".join(block.split()).lower(), (
+            f"the `{criticreplay.RENDER_FAILURE_EXIT}` block says {outranked}'s own "
+            f'promise is "{promise}", and the {where}\'s {outranked} block does not make '
+            "it. Either the promise moved and the citation is stale, or the reason "
+            f"{criticreplay.RENDER_FAILURE_EXIT} is a separate number was deleted from "
+            "under it — and the second is how a contract quietly loses the argument for "
+            "one of its own statuses."
+        )
+
+
+_NUMBER_WORDS = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
+
+
+def _status_changes(record: Path) -> list[str]:
+    """Rows of a committed field matrix whose BEFORE status and AFTER status differ.
+
+    Reads any markdown table whose header names a `before` column and an `after` column,
+    which is the shape both committed matrices already use, and takes the first cell of
+    each as the case label. A table without that header pair is not a before/after record
+    and is skipped, so the second table in the RB-P32 after-matrix (one status column,
+    plus a stdout byte count that is also a number) cannot be read as a change.
+    """
+    changed: list[str] = []
+    columns: tuple[int, int] | None = None
+    for line in record.read_text().splitlines():
+        if not line.startswith("|"):
+            columns = None
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        lowered = [c.lower() for c in cells]
+        befores = [i for i, c in enumerate(lowered) if "before" in c]
+        afters = [i for i, c in enumerate(lowered) if "after" in c]
+        if befores and afters:
+            columns = (befores[0], afters[0])
+            continue
+        if columns is None or max(columns) >= len(cells):
+            continue
+        pair = [re.match(r"\**(\d+)\**", cells[i]) for i in columns]
+        if all(pair) and pair[0].group(1) != pair[1].group(1):
+            changed.append(cells[0])
+    return changed
+
+
+def test_the_epilog_discloses_the_behaviour_change_with_the_count_the_field_record_measured():
+    """P04: a CI owner reads `--help`, not this repo's docs, and their branch changed.
+
+    Three claims, and the numbers come from the committed field records rather than from
+    beside the sentence:
+
+    1. the `2` block names the problem the change belongs to (`RB-P\\d+`) — a paragraph
+       that says only "CHANGED (see the docs)" is not a disclosure, it is a rumour, and
+       that mutation scored a green suite at `b0d4cce`;
+    2. every `docs/…` path the block cites resolves to a file in this tree;
+    3. the count of cases the block claims moved is the count the named problem's own
+       before/after matrix MEASURED — so the disclosure cannot drift from the evidence
+       in either direction, and adding a case to the matrix without saying so is red.
+
+    This is the one contract sentence with no behaviour of its own to test: the cases it
+    describes are already pinned to `USAGE_EXIT` in the field. What can rot is whether
+    anyone is TOLD, which is why the check is against the record and not against the
+    behaviour.
+    """
+    repo = Path(__file__).resolve().parents[2]
+    block = " ".join(_epilog_status_block(criticreplay.USAGE_EXIT).split())
+
+    cited = {citation for citation in re.findall(r"docs/[\w./-]*\*?[\w./-]*\.md", block)}
+    assert cited, (
+        f"the epilog's {criticreplay.USAGE_EXIT} block cites no field record. The four "
+        "cases it moved are a behaviour change a CI consumer sees, and a disclosure with "
+        "nothing behind it is the RB-P14 defect: an assertion about the world."
+    )
+    resolved: dict[str, list[Path]] = {}
+    for citation in sorted(cited):
+        hits = sorted(repo.glob(citation))
+        assert hits, f"the epilog cites {citation}, which is not in this tree"
+        resolved[citation] = hits
+
+    problems = sorted(set(re.findall(r"RB-P\d+", block)))
+    assert problems, (
+        f"the epilog's {criticreplay.USAGE_EXIT} block discloses no problem id. A CI "
+        "owner whose branch changed number has to be able to find the record that "
+        "measured it; a lowercased path inside a filename is not that."
+    )
+    for problem in problems:
+        slug = problem.replace("-", "").lower()
+        records = [
+            path
+            for hits in resolved.values()
+            for path in hits
+            if slug in path.name.replace("-", "")
+        ]
+        assert records, f"{problem} is disclosed in the epilog and cites no record of its own"
+        measured = {path: _status_changes(path) for path in records}
+        moved = max(measured.values(), key=len)
+        assert moved, (
+            f"{problem}'s cited records {sorted(p.name for p in records)} show no case "
+            "changing number, so the epilog is disclosing a change nothing measured"
+        )
+        count = len(moved)
+        assert re.search(rf"\b({count}|{_NUMBER_WORDS[count]})\b", block), (
+            f"{problem}'s field record measured {count} cases changing number "
+            f"({', '.join(moved)}), and the epilog does not state that count. The "
+            "disclosure and the evidence are one claim, not two."
+        )
