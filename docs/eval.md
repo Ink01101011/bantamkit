@@ -4594,6 +4594,7 @@ column of the same row (`docs/eval-data/2026-08-14-pinning-harness-false-positiv
 | `3070d9c` — first sweep under the fixed harness | the **same 31** claims | **30/31** — PINNED 30, **FALSE-PINNED 1** (`B16`), UNPINNED 0, BROKEN 0 |
 | `8cd6078` | **34** claims (`N11`, `N12`, `N13` added) | **34/34** — behaviour 29/29, prose 5/5 |
 | `6b22889` (this unit) | **35** claims (`N14` added with L5's M1 fix) | **35/35** — behaviour 30/30, prose 5/5, FALSE-PINNED 0, BROKEN 0 |
+| `4122a60` (re-swept after RB-P35) | the same **35** claims | **35/35**, unchanged — RB-P35's own sentence is prose and is **not** in the ledger |
 
 **The denominator grew by one because a defect was fixed, not because the counter
 got looser**, and `34/34` at `8cd6078` is not restated by that sweep — it stands

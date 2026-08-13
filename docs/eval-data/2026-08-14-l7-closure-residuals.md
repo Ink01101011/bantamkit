@@ -203,3 +203,24 @@ Filed as **RB-P35** in `docs/eval.md`, including the two halves that are **not**
 fixed: the twin stderr node still asserts a literal `120` and is green for the same
 accidental reason, and the corrected sentence is prose, so reversing it turns no
 node red.
+
+## F — the sweep re-run at the final HEAD
+
+RB-P35 changed a shipped sentence and re-aimed a node, so the ledger was swept
+again rather than the `6b22889` number being carried forward:
+
+```sh
+.venv/bin/python tools/pinharness/pinned.py . 4122a60 tools/pinharness/contract-ledger.json
+.venv/bin/python tools/pinharness/pinned.py . 4122a60 tools/pinharness/calibration-head.json
+```
+
+Baseline `800 passed, 2 xfailed`. **PINNED 35 · UNPINNED 0 · FALSE-PINNED 0 ·
+BROKEN 0** — behaviour 30/30, prose 5/5, **unchanged**. Calibration returned both
+known answers again: `CAL-HEAD-RED` PINNED, `CAL-HEAD-GREEN` UNPINNED.
+
+**RB-P35 is not in this ledger and the 35 is not evidence about it.** The corrected
+contract sentence is prose; reversing it back to "exits `120`" turns no node red.
+That is L5's I2 with a worked example, not an exception to it.
+
+**CI at `4122a60`: `test (3.11)` pass, `test (3.12)` pass** — the first green run on
+this branch, and the third attempt.
