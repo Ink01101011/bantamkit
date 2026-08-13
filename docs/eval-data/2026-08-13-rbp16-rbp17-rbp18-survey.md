@@ -39,9 +39,13 @@ of them are **single-variant** runs — `[A-asfiled]` or `[after]` — so their
 | `2026-08-12-pb14-14b-nav-prod-port-replay3-summary.json` | A, B | 3 | 3 |
 | the other ten summaries | one variant each | 182 | **0** |
 
-`grep -c` on the whole of `docs/eval-data/` finds the words `inconclusive` /
-`indistinguishable` in those two files and nowhere else; SA3's `verdict` fields and
-the M1 catalogue's are pass/fail and attack verdicts, not §7 separations. No committed
+`grep -rl` over the whole of `docs/eval-data/` finds the words `inconclusive` /
+`indistinguishable` in those two files and nowhere else. Other artifacts carry a
+`verdict` key under a different vocabulary and it is not §7's: SA3's
+`replay_verdicts` are the critic's `{score, feedback}` per replay, the M1 catalogue's
+are cell classifications (`ANCHOR (accepts correct)`, `ANCHOR (rejects wrong)`,
+`DEFECT-BAR (accepts wrong)`, `FRAGILE`), and the RB-P27 attack files are
+adversarial-attack outcomes. No committed
 comparison carries `guard_verdict` either — both pb14 runs predate RB-P19's block, so
 the guard's copy of the same decision rule has **zero** committed instances.
 
