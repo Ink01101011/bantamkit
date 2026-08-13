@@ -52,7 +52,7 @@ Reported first, per the probe unit's standing duty.
 | `TokenBudget` is "**blind to critic spend** (recorded debt)" | **DOES NOT REPRODUCE AT HEAD.** The governor sees critic spend. The docstring states the fix in the past tense. | `budget.py:57-64`, quoted in [Survey 1](#survey-1). Confirmed live by `critique.py:172` and `evalrun.py:436-444`. |
 | `TokenBudget` is a "**tail-cutter only**" | **REPRODUCES**, and is stronger than stated — see below. | `budget.py:66-68`; only two `allow()` call sites exist in the whole package. |
 | `filegraph.py` is "a ledger of file reads — which paths, via which tool, whether they changed — with verify-on-repeat collapsing, **not a search or mapping graph**" | **REPRODUCES**, verbatim — it is the module's own first line. Two precisions added below. | `filegraph.py:1`, `filegraph.py:15-21`. |
-| Verify-on-repeat collapsing "**avoids re-reading**" | **DOES NOT REPRODUCE.** The inner reader is called *every* time. What is collapsed is the observation handed back to the model, not the read. | `filegraph.py:62` — `observation = str(inner(**kwargs))` runs before any ledger logic. |
+| Verify-on-repeat collapsing "**avoids re-reading**" | **DOES NOT REPRODUCE** — and the correction is to the brief, not to the repo, which already documents it. The inner reader is called *every* time; what is collapsed is the observation handed back to the model. | `filegraph.py:62` — `observation = str(inner(**kwargs))` runs before any ledger logic. `docs/filegraph.md:34-39` states it independently: "the real handler runs on *every* call … What is saved is model tokens, not disk I/O". |
 | "The `nav` family and the `graph` config use per-task `workspace:` file tools — so 'zero touch a file surface' may be too strong" | **CORRECT, and the brief was right to hedge.** 2/22 tasks touch a file surface. But "zero touch a **repo, a diff, a symbol, or code**" is exactly right: **0/22**. | Tables 2, 3, 4. |
 
 ---
@@ -193,6 +193,9 @@ invoked on every call. What the collapse suppresses is the **re-injection of the
 into the model's context** (`filegraph.py:83-88`), replacing it with a ~90-byte marker.
 For the in-memory workspace dict these coincide token-wise, but against a real file tool
 the distinction matters: the ledger never prevents work, only prevents re-narration.
+`docs/filegraph.md:34-39` already says exactly this — "the real handler runs on *every*
+call … What is saved is model tokens, not disk I/O" — so this is a correction to the
+brief's phrasing, not a defect in the repo.
 
 ### Mechanism by mechanism, and the token route of each
 
