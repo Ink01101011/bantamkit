@@ -14,6 +14,10 @@ commit the PR points at. RB-P28 is open: the suite is a regression guard for the
 numbers, never the evidence for them, and every status below is `/bin/sh`'s own `$?` in
 an environment built with `env -u PYTEST_CURRENT_TEST -u PYTEST_VERSION`.
 
+These numbers were read at `d1951bb`, and the commits between it and this PR's head touch
+**docs and the version string only** — `git diff d1951bb..HEAD -- runtime-py/src` is
+empty, which is the check a reader should run before believing the previous sentence.
+
 ## The four runners, and what they read at `d1951bb`
 
 ```sh
