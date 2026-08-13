@@ -119,12 +119,34 @@ manifest has that point.
 `.venv/bin/python tools/pinharness/pinned.py . <ref> <ledger>`, both ends re-measured
 rather than one cited:
 
-| | ref | ledger | behaviour | prose | overall |
-|---|---|---|---|---|---|
-| BEFORE | `32773f9` | that commit's 27-claim ledger | PIN_B_BEHAVIOUR | PIN_B_PROSE | **PIN_B_OVERALL** |
-| AFTER | `fccc637` | this commit's 29-claim ledger | PIN_A_BEHAVIOUR | PIN_A_PROSE | **PIN_A_OVERALL** |
+| | ref | ledger | nodes | behaviour | prose | overall |
+|---|---|---|---|---|---|---|
+| BEFORE | `32773f9` | that commit's 27-claim ledger | 775 passed, 2 xfailed | 20/22 (91%) | 5/5 (100%) | **25/27** |
+| AFTER | `60784a9` | this unit's 29-claim ledger | 788 passed, 2 xfailed | 23/24 (96%) | 5/5 (100%) | **28/29** |
 
-PIN_NARRATIVE
+The BEFORE was re-measured rather than cited, and reads `25/27` — exactly the number
+`32773f9` committed. Per claim: **`N02` moved UNPINNED → PINNED**, `N07` and `N08` landed
+PINNED, and every one of the 26 other pre-existing claims is still PINNED. `N03` stays
+UNPINNED and **must**: it is RB-P18, still open.
+
+`N02`'s killers are `test_rubric_spec_accepts_a_git_ref` and the fresh-run node; `N07`'s
+and `N08`'s both include the fresh-run node, which is the load-bearing one — L1's
+structural finding is that a node reading only committed artifacts can never go red under
+mutation, so the pin has to run the shipped code today.
+
+### A pre-existing claim went UNPINNED first, and the regression was this unit's
+
+At `0337c66` the sweep read **behaviour 23/24, prose 4/5, overall 27/29**: `P04`, PINNED
+at `32773f9`, had gone UNPINNED. Cause, found rather than argued: `P04`'s mutation reduces
+the RB-P32 paragraph to `CHANGED (see the docs)`, and the node's `assert problems` is
+satisfied by *any* `RB-P\d+` in the block. Once this unit added an **RB-P17** disclosure
+beside it, deleting RB-P32's id left the node green — a second disclosure silently
+unpinned the first.
+
+Fixed in `60784a9` rather than re-scoped: every cited field record whose filename carries
+a problem slug now demands that problem's id in the prose, so deleting an id while keeping
+its evidence is red. Verified by applying `P04`'s exact mutation in-process with the
+anchor asserted present exactly once, and by the sweep above.
 
 ## What did not close, in the terms it was filed in
 
