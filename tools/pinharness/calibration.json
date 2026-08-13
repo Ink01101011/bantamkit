@@ -1,0 +1,37 @@
+{
+  "_why": "Calibration, not measurement. Two mutations the orchestrator already ran BY HAND at 3981efd with a known answer. If the harness does not reproduce both, the harness is broken and nothing it says about any other claim may be believed.",
+  "claims": [
+    {
+      "cid": "CAL-RED",
+      "kind": "prose",
+      "claim": "CALIBRATION: restoring the old unqualified epilog claim must be CAUGHT (hand-measured: red)",
+      "where": "criticreplay.py, _EXIT_CONTRACT, the 2 line",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "  {USAGE_EXIT}  the command line itself is wrong and no run was attempted. Two sources,",
+      "replacement": "  {USAGE_EXIT}  usage error (argparse's number, including this module's own validations). Two sources,",
+      "note": "Hand-measured 2026-08-13: 1 failed."
+    },
+    {
+      "cid": "CAL-GREEN",
+      "kind": "prose",
+      "claim": "CALIBRATION: the RB-P32 prose defect is FULLY RESTORABLE with a green suite (K4's A8b) \u2014 false epilog + both parser.error mentions renamed",
+      "where": "criticreplay.py, _EXIT_CONTRACT's 2 line and the #   2 comment block",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "edits": [
+        {
+          "anchor": "  {USAGE_EXIT}  the command line itself is wrong and no run was attempted. Two sources,",
+          "replacement": "  {USAGE_EXIT}  usage error (argparse's number, including this module's own validations). Two sources,"
+        },
+        {
+          "anchor": "every one of them routed through\n#      `parser.error` above `main`'s `try`",
+          "replacement": "every one of them routed through\n#      the parser's own error hook above `main`'s `try`"
+        },
+        {
+          "anchor": "parsing finishes, 1 after\" is false (the `parser.error` call is after",
+          "replacement": "parsing finishes, 1 after\" is false (the parser's own error hook is called after"
+        }
+      ],
+      "note": "K4 classed this Important (I7). Expected: UNPINNED. If this comes back PINNED, K4's I7 does not reproduce and that is a finding."
+    }
+  ]
+}
