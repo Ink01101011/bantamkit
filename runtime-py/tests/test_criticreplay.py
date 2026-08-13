@@ -1505,20 +1505,104 @@ def test_guard_table_is_public_so_a_hand_rolled_loop_can_call_it(asset_tree, tmp
 # thing it checks pins the author's method, not the behaviour (RB-P19's transferable
 # finding). It covers the JSONL rows, the summary dict, the printed guard sections,
 # the identity-only path and the zero-spend `--guard error` refusal.
+#
+# RB-P16 MOVED THIS FLOOR, ON PURPOSE, AND THE MOVE IS NAMED RATHER THAN ABSORBED
+# (2026-08-14). Adding an effect size to a verdict adds bytes to the rendering of a run
+# that reports verdicts. The baseline file is NOT regenerated — regenerating it would
+# throw away the one thing it is for, an expectation computed by the code it replaces.
+# Instead the floor is now stated as an EXACT identity modulo three NAMED additions:
+#
+#   `effect` and `guard_effect` on every comparison dict, `directional` on every summary
+#   -> `_RBP16_ADDED_KEYS`
+#   the `    effect: ` continuation line under every Pairwise row, and the one
+#   `Directional consistency …` block at the end of `format_table`
+#
+# Remove exactly those and the produced artifact is byte-identical to `f8404ab` again:
+# measured 2026-08-14, all six sections, 129502 -> 137132 bytes and 27 -> 33 table lines,
+# with ZERO f8404ab-era field changed. A strip that hid a regression is the obvious way
+# to cheat this, so `test_the_rbp16_additions_the_floor_strips_are_present_and_loaded`
+# below asserts the stripped-out content is there and is non-trivial. Record:
+# `docs/eval-data/2026-08-14-rbp16-effect-size-report.md`.
 
 BASELINE = Path(__file__).resolve().parent / "data" / "f8404ab-perturbation-baseline.json"
 
+_RBP16_ADDED_KEYS = ("effect", "guard_effect", "directional")
 
-def test_the_whole_offline_run_is_byte_identical_to_f8404ab(tmp_path):
+
+def _without_rbp16_additions(obj):
+    """The artifact as `f8404ab` would have produced it: the named keys, and nothing else."""
+    if isinstance(obj, dict):
+        return {
+            k: _without_rbp16_additions(v)
+            for k, v in obj.items()
+            if k not in _RBP16_ADDED_KEYS
+        }
+    if isinstance(obj, list):
+        return [_without_rbp16_additions(v) for v in obj]
+    return obj
+
+
+def _table_without_rbp16_lines(table: str) -> str:
+    lines = [ln for ln in table.splitlines() if not ln.startswith("    effect: ")]
+    head = next(
+        (i for i, ln in enumerate(lines) if ln.startswith("Directional consistency ")),
+        None,
+    )
+    if head is not None:  # the blank separator, the header, and one line per pair
+        end = head + 1
+        while end < len(lines) and lines[end].startswith("- "):
+            end += 1
+        lines = lines[: head - 1] + lines[end:]
+    return "\n".join(lines)
+
+
+def test_the_whole_offline_run_is_byte_identical_to_f8404ab_modulo_the_named_rbp16_adds(
+    tmp_path,
+):
     from perturbation_baseline_harness import produce, serialize
 
     expected = json.loads(BASELINE.read_text())
     produced = produce(criticreplay, tmp_path / "rubrics")
-    for section in (
-        "rows", "summary", "table", "identity_only", "guard_error_refusal", "synthetic",
-    ):
-        assert produced[section] == expected[section], section
-    assert serialize(produced) == BASELINE.read_text()
+    for section in ("rows", "summary", "identity_only", "guard_error_refusal", "synthetic"):
+        assert _without_rbp16_additions(produced[section]) == expected[section], section
+    assert _table_without_rbp16_lines(produced["table"]) == expected["table"]
+    stripped = _without_rbp16_additions(produced)
+    stripped["table"] = _table_without_rbp16_lines(stripped["table"])
+    assert serialize(stripped) == BASELINE.read_text()
+
+
+def test_the_rbp16_additions_the_floor_strips_are_present_and_loaded(tmp_path):
+    """The floor above strips three keys. A strip is how you hide a regression in one.
+
+    So the stripped content is asserted here, on the SAME fresh run, and asserted to be
+    non-trivial: the effect must move with the cell, and the table must carry the line.
+    Without this node the floor would pass unchanged if `_effect` returned `{}`.
+    """
+    from perturbation_baseline_harness import produce
+
+    produced = produce(criticreplay, tmp_path / "rubrics")
+    comparisons = [
+        comparison
+        for cell in produced["summary"]["cells"]
+        for comparison in cell["comparisons"]
+    ]
+    assert comparisons
+    for comparison in comparisons:
+        for key in ("effect", "guard_effect"):
+            effect = comparison[key]
+            assert set(effect) == {
+                "delta_passed", "delta_rate", "sign", "leads",
+                "points_from_separation", "disagreeing_points", "a_only", "b_only",
+            }, (key, effect)
+        assert comparison["effect"]["delta_passed"] == (
+            int(comparison["a_pass_rate"].split("/")[0])
+            - int(comparison["b_pass_rate"].split("/")[0])
+        )
+    # It varies across cells — a constant would satisfy every assertion above.
+    assert len({c["effect"]["delta_passed"] for c in comparisons}) > 1, comparisons
+    assert produced["summary"]["directional"]
+    assert "    effect: " in produced["table"]
+    assert "Directional consistency " in produced["table"]
 
 
 def test_the_baseline_covers_a_populated_guard_table_and_a_zero_spend_refusal():
@@ -4794,17 +4878,6 @@ def test_the_committed_acceptance_artifacts_are_the_ones_these_three_specs_aim_a
             )
 
 
-@pytest.mark.xfail(
-    reason=(
-        "RB-P16, open at b496856: the `inconclusive` band has no reporting duty beyond "
-        "the pass rates, so two cells of ONE variant pair whose gaps differ 2.5x are "
-        "reported identically once the two fractions are removed. Measured over the "
-        "whole committed record on 2026-08-13: 11 of 12 comparisons are `inconclusive`, "
-        "spanning |Δ| 3/11 (0.2727) to 5/6 (0.8333) — the worst is A-asfiled 1/12 vs "
-        "C-attempted 11/12, ONE point short of total separation on each side, wearing "
-        "the same word as a 3/11 wobble."
-    ),
-)
 def test_the_inconclusive_band_reports_something_a_reader_can_tell_from_noise():
     """The reporting duty, pinned without pre-empting the format.
 
@@ -4828,6 +4901,17 @@ def test_the_inconclusive_band_reports_something_a_reader_can_tell_from_noise():
     Whether the design keeps `inconclusive` as one word is left open on purpose.
     RB-P16's own attack direction keeps it and reports the gap beside it, and a node
     that demanded a new word would rule that out before it was argued.
+
+    **CLOSED 2026-08-14 (L2). The `xfail` is removed and this now passes.** What closed
+    it is `_effect`, shipped beside every verdict: r0 reads `delta_rate -0.8333`,
+    `points_from_separation 2`, `disagreeing_points 10`; r1 reads `-0.3333`, `8`, `4`.
+    The word is unchanged and so is `attributable` on both cells.
+
+    THIS NODE ALONE IS NOT THE PIN. It re-derives from committed rows, so it can only
+    see the summary dict. The claim is about what a verdict REPORTS, and the report
+    includes the printed table, so the pin is completed by
+    `test_a_fresh_runs_verdict_carries_its_effect_size_in_the_summary_and_in_the_table`
+    below, which measures a run made today.
     """
     reports = {
         repeat: _compare_committed_cell(repeat, "A-asfiled", "C-attempted") for repeat in (0, 1)
@@ -4972,4 +5056,255 @@ def test_payload_sha256_does_not_name_two_recipes_at_once():
         f"{bar_row['payload_sha256'][:12]}… vs SA3 {sa3_shas[0][:12]}…, with neither "
         "record naming the serialization that produced it. Measured cause: "
         "json.dumps sort_keys, nothing else."
+    )
+
+
+# ===========================================================================
+# RB-P16 — the FIX, pinned over a FRESH run (L2, 2026-08-14).
+#
+# WHY A FRESH RUN AND NOT MORE COMMITTED-ARTIFACT NODES. L1's structural
+# finding, which this unit is under orders not to repeat: a node that only
+# reads committed artifacts can never go red under a source mutation, because
+# committed evidence is by invariant never regenerated. It looks green and it
+# pins nothing. The claim here is about what a verdict REPORTS — the summary
+# dict AND the printed table — so every node below runs the shipped
+# `run`/`summarize`/`format_table` today, against a scripted critic, and the
+# ledger's mutations aim at the code those nodes execute.
+#
+# The rig mirrors the shape of the committed pair the survey measured: ONE
+# variant pair, TWO cells of it, two DIFFERENT gaps, both `inconclusive`. Pre-
+# fix, those two cells' reports were identical once the pass rates were
+# removed. That is the defect, at F=3 instead of F=12.
+# ===========================================================================
+
+
+@pytest.fixture
+def effect_rig(asset_tree, tmp_path):
+    """`rig`, but the two cells carry DIFFERENT outputs so a prompt-keyed critic can
+    score them apart. `rig`'s two cells render byte-identical prompts, which is right
+    for what it pins and useless for a cross-cell effect size."""
+    manifest_path = _write_manifest(asset_tree)
+    before = _write_rubric(tmp_path, "before", BASE_PROMPT)
+    after = _write_rubric(tmp_path, "after", CHANGED_PROMPT)
+    transcripts = tmp_path / "transcripts"
+    _transcript(transcripts, "critique", "alpha", 0, 111, "OUT")
+    _transcript(transcripts, "critique", "alpha", 1, 222, "OUT2")
+    return {
+        "manifest": criticreplay.load_manifest(manifest_path),
+        "variants": [
+            criticreplay.parse_rubric_arg(f"before={before}"),
+            criticreplay.parse_rubric_arg(f"after={after}"),
+        ],
+        "cases": criticreplay.load_cases(transcripts),
+    }
+
+
+def _two_gaps(prompt: str) -> int:
+    """`before` 3/3 then 2/3; `after` 1/3 on both. Two `inconclusive` cells, |dn| 2 then 1."""
+    if "CHANGED" in prompt:  # the `after` variant
+        return 2 if (prompt.startswith("ONE.  ") or not prompt.endswith("\n")) else 9
+    if "A:OUT2" in prompt and prompt.startswith("ONE.  "):  # cell r1 only
+        return 2
+    return 9
+
+
+def _a_tie_they_disagree_inside(prompt: str) -> int:
+    """1/3 each, and NOT the same 1: `before` passes identity, `after` passes W1."""
+    stripped, doubled = not prompt.endswith("\n"), prompt.startswith("ONE.  ")
+    if "CHANGED" in prompt:
+        return 9 if stripped else 2
+    return 2 if (stripped or doubled) else 9
+
+
+def _summary(effect_rig, scorer):
+    client = ScriptedCritic(scorer)
+    result = criticreplay.run(
+        client,
+        effect_rig["variants"],
+        effect_rig["manifest"],
+        effect_rig["cases"],
+        model=client.model,
+    )
+    return criticreplay.summarize(result, effect_rig["manifest"].sha256)
+
+
+def test_a_fresh_runs_verdict_carries_its_effect_size_in_the_summary_and_in_the_table(
+    effect_rig,
+):
+    """The pin. Two cells of ONE pair, both `inconclusive`, gaps differing 2x.
+
+    Pre-fix the two reports were identical once `a_pass_rate` and `b_pass_rate` were
+    removed — that is the whole of RB-P16 — and `format_table` printed one line each
+    that differed only in the two fractions. Both are asserted here on output produced
+    today, so a mutation that stops the report carrying the gap turns this red.
+    """
+    summary = _summary(effect_rig, _two_gaps)
+    cells = summary["cells"]
+    assert [(c["task"], c["repeat"]) for c in cells] == [("alpha", 0), ("alpha", 1)]
+    wide, narrow = (c["comparisons"][0] for c in cells)
+
+    assert wide["verdict"] == narrow["verdict"] == "inconclusive"
+    assert (wide["a_pass_rate"], wide["b_pass_rate"]) == ("3/3", "1/3")
+    assert (narrow["a_pass_rate"], narrow["b_pass_rate"]) == ("2/3", "1/3")
+
+    # 1. The difference and its sign are ON the report, and they are not the same.
+    assert wide["effect"]["delta_passed"] == 2 and narrow["effect"]["delta_passed"] == 1
+    assert wide["effect"]["delta_rate"] == 0.6667
+    assert narrow["effect"]["delta_rate"] == 0.3333
+    assert wide["effect"]["sign"] == narrow["effect"]["sign"] == 1
+    assert wide["effect"]["leads"] == narrow["effect"]["leads"] == "before"
+    assert wide["effect"]["points_from_separation"] == 1
+    assert narrow["effect"]["points_from_separation"] == 2
+
+    # 2. The defect itself: strip the pass rates and the two reports must still differ.
+    def without_rates(report):
+        return {k: v for k, v in report.items() if k not in ("a_pass_rate", "b_pass_rate")}
+
+    assert without_rates(wide) != without_rates(narrow)
+
+    # 3. The PRINTED report, not only the dict. A summary key nobody renders is not a
+    #    report a reader gets.
+    table = criticreplay.format_table(summary)
+    effect_lines = [ln for ln in table.splitlines() if ln.startswith("    effect: ")]
+    assert len(effect_lines) == 2, table
+    assert "+2/3 (+0.667)" in effect_lines[0] and "[#######---]" in effect_lines[0]
+    assert "+1/3 (+0.333)" in effect_lines[1] and "[###-------]" in effect_lines[1]
+    assert effect_lines[0] != effect_lines[1]
+    # and it sits with the verdict it belongs to, not in a table of its own
+    rows = table.splitlines()
+    for line in effect_lines:
+        assert rows[rows.index(line) - 1].startswith("- alpha r")
+
+
+def test_an_indistinguishable_cell_reports_the_points_the_two_variants_disagree_on(
+    effect_rig,
+):
+    """`indistinguishable` is equal pass COUNTS, not agreement — and now says so.
+
+    The measured instance this is built from: the single committed cell carrying the
+    word (`B-nonewline` 7/11 vs `C-attempted` 7/11, nav-prod-port r1, 2026-08-11 run)
+    is a cell on which the two variants disagree on 2 of 11 points — `B` passes
+    `P2-asks-requests`, `C` passes `W2-double-trailing`. Re-derived 2026-08-14 from the
+    committed rows; it is also the ONLY cell in the whole committed record whose
+    disagreement is two-sided, which is exactly why the difference alone cannot
+    recover it.
+
+    Here the same shape at F=3: 1/3 each, and not the same 1.
+    """
+    summary = _summary(effect_rig, _a_tie_they_disagree_inside)
+    comparison = summary["cells"][0]["comparisons"][0]
+    assert comparison["verdict"] == "indistinguishable"
+    assert (comparison["a_pass_rate"], comparison["b_pass_rate"]) == ("1/3", "1/3")
+    effect = comparison["effect"]
+    assert effect["delta_passed"] == 0 and effect["sign"] == 0 and effect["leads"] is None
+    assert effect["disagreeing_points"] == 2
+    assert effect["a_only"] == ["identity"]
+    assert effect["b_only"] == ["W1-trailing-newline"]
+    line = next(
+        ln for ln in criticreplay.format_table(summary).splitlines()
+        if ln.startswith("    effect: ")
+    )
+    assert "neither leads" in line and "2/3 points disagree" in line
+
+
+def test_the_committed_indistinguishable_cell_is_one_the_variants_disagree_inside():
+    """The measurement the node above is modelled on, on the real artifact.
+
+    Re-derived with today's `_compare` over the committed rows — not read out of the
+    committed summary, which predates `effect` and cannot contain it.
+    """
+    comparison = _compare_committed_cell(1, "B-nonewline", "C-attempted")
+    assert comparison["verdict"] == "indistinguishable"
+    assert (comparison["a_pass_rate"], comparison["b_pass_rate"]) == ("7/11", "7/11")
+    assert comparison["effect"]["delta_passed"] == 0
+    assert comparison["effect"]["disagreeing_points"] == 2
+    assert comparison["effect"]["a_only"] == ["P2-asks-requests"]
+    assert comparison["effect"]["b_only"] == ["W2-double-trailing"]
+
+
+def test_the_cross_cell_direction_is_reported_and_decides_nothing(effect_rig):
+    """RB-P16's third missing piece, shipped as a REPORT and not as a rule.
+
+    The filing proposes requiring the sign to agree across cells before an
+    `inconclusive` may be called directional. Measured over the entire committed
+    record: that rule has ZERO instances — every `inconclusive` cell has the same
+    sign. Shipping it as a gate would change nothing on any committed cell while
+    looking tested, so it ships as a sentence, and this node pins that it is a
+    sentence: `attributable` is identical with and without it.
+    """
+    summary = _summary(effect_rig, _two_gaps)
+    (pair,) = summary["directional"]
+    assert (pair["a"], pair["b"]) == ("before", "after")
+    assert pair["signs"] == [1, 1]
+    assert pair["directional"] is True and pair["conflicting"] is False
+    assert pair["leads"] == "before" and pair["ties"] == 0
+    assert (pair["abs_delta_rate_min"], pair["abs_delta_rate_max"]) == (0.3333, 0.6667)
+    line = next(
+        ln for ln in criticreplay.format_table(summary).splitlines()
+        if ln.startswith("- before vs after: signs ")
+    )
+    assert "signs +,+ -> consistent toward before" in line
+    assert "|d| 0.333..0.667" in line
+    # It DECIDES nothing: a tie abstains rather than breaking agreement, and no cell's
+    # attribution moves when the direction is unanimous.
+    tie = _summary(effect_rig, _a_tie_they_disagree_inside)["directional"][0]
+    assert tie["signs"] == [0, 0] and tie["directional"] is False
+    assert tie["conflicting"] is False, "a tie says nothing about direction; it does not conflict"
+    assert all(
+        comparison["attributable"] is False
+        for cell in summary["cells"]
+        for comparison in cell["comparisons"]
+    )
+
+
+def test_reporting_an_effect_size_moved_no_cells_attribution(effect_rig):
+    """An instrument that grades evidence may not quietly re-grade itself.
+
+    Two halves, and the second is the one that matters:
+
+    1. FRESH — `attributable` is a function of `verdict`, `guard_verdict` and
+       `fragile` only, on runs made today, including a run where rule 1 DOES fire.
+    2. COMMITTED — all twelve §7 comparisons the project has ever recorded,
+       re-derived with today's `_compare`, still carry the `attributable` they were
+       committed with. If adding the report had moved one, a committed finding would
+       have moved with it.
+    """
+    for scorer in (_two_gaps, _a_tie_they_disagree_inside):
+        summary = _summary(effect_rig, scorer)
+        for cell in summary["cells"]:
+            for comparison in cell["comparisons"]:
+                assert comparison["attributable"] == (
+                    comparison["verdict"] == "distinguishable"
+                    and comparison["guard_verdict"] == "distinguishable"
+                    and not comparison["fragile"]
+                )
+                assert comparison["attributable"] is False
+
+    separated = _summary(effect_rig, lambda p: 2 if "CHANGED" in p else 9)
+    fired = separated["cells"][0]["comparisons"][0]
+    assert fired["verdict"] == "distinguishable" and fired["attributable"] is True
+    assert fired["effect"]["delta_passed"] == 3
+    assert fired["effect"]["points_from_separation"] == 0, "rule 1 fires exactly at 0"
+
+    moved = []
+    for path, summary in _committed_summaries():
+        for cell in summary["cells"]:
+            for comparison in cell["comparisons"]:
+                rebuilt = _compare_committed_cell(
+                    cell["repeat"], comparison["a"], comparison["b"]
+                ) if path == _ACCEPTANCE_SUMMARY else None
+                if rebuilt is None:
+                    continue
+                if (rebuilt["attributable"], rebuilt["verdict"]) != (
+                    comparison["attributable"],
+                    comparison["verdict"],
+                ):
+                    moved.append(
+                        f"{path.name} r{cell['repeat']} "
+                        f"{comparison['a']}/{comparison['b']}"
+                    )
+    assert not moved, (
+        "re-deriving a committed comparison with today's `_compare` changes its verdict "
+        f"or its attribution: {moved}. RB-P16 is about what a verdict REPORTS; moving "
+        "attribution moves a committed finding by moving the ruler."
     )

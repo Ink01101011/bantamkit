@@ -1766,6 +1766,10 @@ def summarize(result: RunResult, manifest_sha256: str) -> dict:
         "bar": BAR,
         "threshold": threshold,
         "manifest_sha256": manifest_sha256,
+        # RB-P16's third missing piece: a statement ACROSS cells. Report only — see
+        # `_directional`, which records that the rule RB-P16 proposes has no instance in
+        # the committed record and is therefore reported rather than enforced.
+        "directional": _directional(cells),
         "guard": {
             "rule": "spec §3.3 step 3, guard 2 — no word a point adds or removes may "
             "appear in the cell's {task} or {output}. 'A word a point adds or removes' "
@@ -1853,14 +1857,27 @@ def _variant_stats(
     return stats
 
 
+def _passing_points(
+    point_rows: dict[str, list[ReplayRow]], family: list[str]
+) -> list[str]:
+    """The family points this variant passed. A point passes only if every replay does.
+
+    THE ONE DEFINITION. `_family_stats` counts this list and `_effect` intersects two of
+    them, so the pass rate a cell reports and the point-level disagreement it reports
+    cannot drift apart. RB-P19's transferable finding is that a second derivation which
+    happens to agree corroborates nothing — so there is not a second one.
+    """
+    return [
+        pid for pid in family if point_rows.get(pid) and all(r.passed for r in point_rows[pid])
+    ]
+
+
 def _family_stats(
     point_rows: dict[str, list[ReplayRow]], family: list[str], threshold: int
 ) -> dict:
     """One (variant, cell) block. A point passes only if every one of its replays does."""
     scores = [row.score for pid in family for row in point_rows.get(pid, [])]
-    passed = sum(
-        1 for pid in family if point_rows.get(pid) and all(r.passed for r in point_rows[pid])
-    )
+    passed = len(_passing_points(point_rows, family))
     identity = [row.score for row in point_rows.get("identity", [])]
     low, high = (min(scores), max(scores)) if scores else (0, 0)
     return {
@@ -1934,12 +1951,18 @@ def _compare(
         "a": a,
         "b": b,
         "verdict": verdict,
+        # RB-P16: the verdict is one of four words for a two-dimensional fact, so it
+        # travels with its size, its direction and its point-level disagreement. Read
+        # `_effect`'s docstring for why these fields and not a banding vocabulary.
+        # It decides nothing — `attributable` below is untouched by it.
+        "effect": _effect(a, b, rows_a, rows_b, family),
         "family_size": len(family),
         "dropped_rules": dropped_rules,
         "a_pass_rate": stats_a["pass_rate"],
         "b_pass_rate": stats_b["pass_rate"],
         "fragile": fragile,
         "guard_verdict": guard_verdict,
+        "guard_effect": _effect(a, b, rows_a, rows_b, guard_family),
         "guard_family_size": len(guard_family),
         "guard_dropped_rules": [
             {"rule": pid, "reason": "shared-token", "words": violations[pid]}
@@ -1956,7 +1979,29 @@ def _compare(
 
 
 def _separation(stats_a: dict, stats_b: dict, size: int) -> str:
-    """§7 rule 1, on whichever family it is handed."""
+    """§7 rule 1, on whichever family it is handed.
+
+    **Read the word beside its `effect` block, never alone.** This function returns four
+    words for a two-dimensional fact and RB-P16 is the measured consequence:
+
+    - `inconclusive` covers everything that is neither `F/F`-versus-`0/F` nor a tie. Over
+      the whole committed §7 record (12 comparisons, 2 runs, measured 2026-08-13) eleven
+      cells wear it, spanning |Δ| 3/11 = 0.2727 to 5/6 = 0.8333 — a factor of 3.06.
+    - `indistinguishable` is **equal pass COUNTS, not agreement.** The one committed cell
+      that carries it (`B-nonewline` 7/11 vs `C-attempted` 7/11, r1) is a cell on which
+      the two variants disagree on **2 of 11 points**: `B` passes `P2-asks-requests`,
+      `C` passes `W2-double-trailing`. The word claims an identity the measurement does
+      not support, and it is the only cell in that record where the disagreement is
+      two-sided — on the other eleven the pass sets are nested, so Δ alone recovers it.
+      A fresh run measured 2026-08-14 puts a second instance on the record: the shipped
+      rubric versus its trailing-newline variant reads `indistinguishable` at 2/11 vs
+      2/11 on `nav-prod-port` r0 while the two disagree on **4 of 11 points**.
+
+    Neither word is renamed here. The defect is not the spelling: a rename would make the
+    committed record incomparable while still asserting nothing about agreement. What
+    fixes it is that `_compare` now ships `_effect` beside every verdict, so a reader gets
+    the size, the direction and the point-level disagreement without re-deriving them.
+    """
     if size == 0:
         return "undefined"
     if (stats_a["passed"] == size and stats_b["passed"] == 0) or (
@@ -1966,6 +2011,154 @@ def _separation(stats_a: dict, stats_b: dict, size: int) -> str:
     if stats_a["passed"] == stats_b["passed"]:
         return "indistinguishable"
     return "inconclusive"
+
+
+def _effect(
+    a: str,
+    b: str,
+    rows_a: dict[str, list[ReplayRow]],
+    rows_b: dict[str, list[ReplayRow]],
+    family: list[str],
+) -> dict:
+    """The effect size that travels with the verdict (RB-P16). It DECIDES NOTHING.
+
+    ## Why this shape, argued against the measured band
+
+    The band this has to render is not hypothetical. Every §7 comparison this project has
+    ever committed — 12, over 2 runs, surveyed 2026-08-13 in
+    `docs/eval-data/2026-08-13-rbp16-rbp17-rbp18-survey.md` and re-derived from the rows
+    again on 2026-08-14 — is:
+
+        |Δrate|  0.2727 0.2727 0.3333 0.3636 0.3636 0.4545 0.4545 0.6364 0.6364 0.6667 0.8333
+        |Δn|          3      3      4      4      4      5      5      7      7      8     10
+
+    plus one exact tie. Eleven of the twelve read `inconclusive`. The worst — `A-asfiled`
+    1/12 vs `C-attempted` 11/12, ten of twelve points flipped, **one point short of
+    `0/F` versus `F/F` on each side** — wears the same word as the mildest, 7/11 vs 10/11.
+    So the requirement is exact: 0.2727 and 0.8333 must be tellable **at a glance**.
+
+    Four fields, each earning its place against that band:
+
+    - **`delta_passed` / `delta_rate`, signed `a - b`.** The sign convention is the
+      committed survey's, so its signed columns and this block are directly comparable.
+      `delta_rate` is the at-a-glance number: no two DISTINCT values in the band above
+      collide at the 3 decimals `format_table` prints (0.273 / 0.333 / 0.364 / 0.455 /
+      0.636 / 0.667 / 0.833). `format_table` additionally renders |`delta_rate`| as a
+      10-cell bar, because the eye compares LENGTHS faster than it compares decimals and
+      the whole complaint is that a reader could not tell these apart while skimming.
+    - **`points_from_separation` = `F - |Δn|`.** Distance to the only thing §7 rule 1
+      credits. This is derived from the rule itself and invents no threshold —
+      deliberately: a banding vocabulary (`large`/`small`) would be a new grade with new
+      cut points, and an instrument that grades evidence may not quietly re-grade its
+      own. The worst committed cell reads 2; the mildest reads 8.
+    - **`disagreeing_points` with `a_only` / `b_only`.** This is what makes the tie word
+      honest and is the field `delta_*` cannot supply. At Δn = 0 the difference is 0 and
+      the two families can still disagree — measured on the one committed
+      `indistinguishable` cell, they disagree on 2 of 11 points. Reported by NAME so the
+      claim is checkable point by point rather than re-derived by the reader.
+
+    ## What this deliberately does not do
+
+    It does not touch `attributable`, and no field of it is read by any decision. §7's
+    rules 1-3 decide exactly what they decided before this function existed; moving
+    attribution would move a committed finding by moving the ruler and needs its own
+    argued case. Rule 1 has decided all 12 committed cells, so rules 2 and 3 have never
+    been reached — a reporting change is the only lever here that touches every cell.
+    """
+    size = len(family)
+    passed_a = set(_passing_points(rows_a, family))
+    passed_b = set(_passing_points(rows_b, family))
+    delta = len(passed_a) - len(passed_b)
+    a_only = [pid for pid in family if pid in passed_a and pid not in passed_b]
+    b_only = [pid for pid in family if pid in passed_b and pid not in passed_a]
+    return {
+        "delta_passed": delta,
+        "delta_rate": round(delta / size, 4) if size else 0.0,
+        "sign": (delta > 0) - (delta < 0),
+        "leads": (a if delta > 0 else b) if delta else None,
+        "points_from_separation": size - abs(delta) if size else 0,
+        "disagreeing_points": len(a_only) + len(b_only),
+        "a_only": a_only,
+        "b_only": b_only,
+    }
+
+
+def _directional(cells: list[dict]) -> list[dict]:
+    """The cross-cell statement §7 never made: does one pair point one way on every cell?
+
+    **REPORT ONLY. Nothing here is read by `attributable` or by any verdict.** That is not
+    caution, it is the measurement: RB-P16's filing proposes requiring the sign to agree
+    across cells before an `inconclusive` may be called directional, and **no committed
+    cell exercises that rule.** Surveyed over the entire committed §7 record on
+    2026-08-13 and re-derived here: every `inconclusive` cell has sign −1, there is no run
+    in which two cells of one pair point in opposite directions, and the only non-negative
+    sign anywhere is the exact tie that already reads `indistinguishable`. Shipping it as
+    a gate would be shipping a rule with zero instances behind it, which would change
+    nothing on any cell while looking like it had been tested. So it is shipped as a
+    sentence a reader can check, and `conflicting` is the field that would go true first.
+
+    A tie ABSTAINS rather than breaking agreement: sign 0 is "this cell says nothing about
+    direction", which is exactly what an equal pass count means. `directional` therefore
+    requires agreement AND at least one cell that actually pointed.
+    """
+    by_pair: dict[tuple[str, str], list[dict]] = {}
+    for cell in cells:
+        for comparison in cell["comparisons"]:
+            by_pair.setdefault((comparison["a"], comparison["b"]), []).append(
+                {
+                    "task": cell["task"],
+                    "repeat": cell["repeat"],
+                    "verdict": comparison["verdict"],
+                    **{
+                        key: comparison["effect"][key]
+                        for key in ("sign", "delta_rate", "leads")
+                    },
+                }
+            )
+    out = []
+    for (a, b), seen in by_pair.items():
+        signs = [c["sign"] for c in seen]
+        nonzero = {s for s in signs if s}
+        rates = [abs(c["delta_rate"]) for c in seen]
+        out.append(
+            {
+                "a": a,
+                "b": b,
+                "cells": seen,
+                "signs": signs,
+                "ties": signs.count(0),
+                "conflicting": len(nonzero) > 1,
+                "directional": len(nonzero) == 1,
+                "leads": (a if nonzero == {1} else b) if len(nonzero) == 1 else None,
+                "abs_delta_rate_min": min(rates) if rates else 0.0,
+                "abs_delta_rate_max": max(rates) if rates else 0.0,
+            }
+        )
+    return out
+
+
+def _format_effect(effect: dict, size: int) -> str:
+    """One line a skimming reader can rank without subtracting two fractions.
+
+    The bar is ten ASCII cells of |Δrate|, `#` filled. Against the committed band that
+    is `[########--]` for the worst cell (0.8333) and `[###-------]` for the mildest
+    (0.2727) — the difference RB-P16 says a reader cannot currently see. ASCII on
+    purpose: RB-P31/K4B measured what this module does when stdout cannot encode a
+    character, and a report line is not the place to find out again.
+    """
+    delta, rate = effect["delta_passed"], effect["delta_rate"]
+    filled = round(abs(rate) * 10)
+    bar = "#" * filled + "-" * (10 - filled)
+    lead = f"leads {effect['leads']}" if effect["leads"] else "neither leads"
+    # A tie renders " 0", never "+0": the column width is kept but no direction is
+    # implied, because an equal pass count is exactly the absence of one.
+    dtxt = f"{delta:+d}" if delta else " 0"
+    rtxt = f"{rate:+.3f}" if delta else " 0.000"
+    return (
+        f"    effect: d={dtxt}/{size} ({rtxt}) [{bar}] {lead}; "
+        f"{effect['points_from_separation']} from separation; "
+        f"{effect['disagreeing_points']}/{size} points disagree"
+    )
 
 
 def format_table(summary: dict) -> str:
@@ -2021,6 +2214,30 @@ def format_table(summary: dict) -> str:
                 + ")"
                 + ("" if comparison["attributable"] or comparison["verdict"] != "distinguishable"
                    else f" — attribution VOID: fragile {comparison['fragile']}")
+            )
+            # RB-P16. A SECOND line rather than a longer first one: the verdict line's
+            # bytes are what every committed table and every downstream reader already
+            # parses, and the effect is an addition to the report, not a reflow of it.
+            lines.append(_format_effect(comparison["effect"], comparison["family_size"]))
+    if summary.get("directional"):
+        lines += [
+            "",
+            "Directional consistency (one pair across its cells) — REPORT ONLY, it decides "
+            "nothing; §7 has no cross-cell rule and no committed cell exercises one:",
+        ]
+        for pair in summary["directional"]:
+            signs = ",".join("+" if s > 0 else "-" if s < 0 else "0" for s in pair["signs"])
+            if pair["conflicting"]:
+                verdict = "CONFLICTING — cells of this pair point opposite ways"
+            elif pair["directional"]:
+                verdict = f"consistent toward {pair['leads']}"
+            else:
+                verdict = "no direction (every cell ties)"
+            lines.append(
+                f"- {pair['a']} vs {pair['b']}: signs {signs} -> {verdict}"
+                + (f" ({pair['ties']} tie)" if pair["ties"] == 1 else "")
+                + (f" ({pair['ties']} ties)" if pair["ties"] > 1 else "")
+                + f"; |d| {pair['abs_delta_rate_min']:.3f}..{pair['abs_delta_rate_max']:.3f}"
             )
     lines += [
         "",

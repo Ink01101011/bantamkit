@@ -6,7 +6,8 @@
     "Calibration is run on 3981efd, where the two answers are known by hand: CAL-RED red, CAL-GREEN green. It still reads that way after the fix, which is what licenses believing the 21/21.",
     "Report: docs/eval-data/2026-08-13-contract-claim-pinning.md",
     "b496856 + L1 (767 -> 771 nodes): 21/21 pinned BEFORE the three RB-P16/17/18 claims were added (behaviour 16/16, prose 5/5). N01/N02/N03 are claims about problems that are still OPEN, so they read UNPINNED by construction — that number, and not the denominator, is what L2/L3/L4 have to move. Survey: docs/eval-data/2026-08-13-rbp16-rbp17-rbp18-survey.md",
-    "cb55926 (771 nodes: 768 passed, 3 xfailed) with the 24-claim ledger, measured not asserted: behaviour 16/19 (84%), prose 5/5 (100%), overall 21/24. All 21 pre-existing claims still PINNED — the three new nodes cost nothing. N01/N02/N03 UNPINNED."
+    "cb55926 (771 nodes: 768 passed, 3 xfailed) with the 24-claim ledger, measured not asserted: behaviour 16/19 (84%), prose 5/5 (100%), overall 21/24. All 21 pre-existing claims still PINNED — the three new nodes cost nothing. N01/N02/N03 UNPINNED.",
+    "abc2a34 + L2 (775 passed, 2 xfailed) with the 27-claim ledger: the RB-P16 fix. N01 re-aimed from `_separation` to `_compare`'s `effect` key and N04/N05/N06 added for the printed table, the tie's disagreement set and the cross-cell statement. The before-number this has to move is 21/24. Field measurement (RB-P28 is open, the suite is not the evidence): docs/eval-data/2026-08-14-rbp16-effect-size-report.md."
   ],
   "claims": [
     {
@@ -233,12 +234,12 @@
     {
       "cid": "N01",
       "kind": "behaviour",
-      "claim": "a §7 comparison's report distinguishes a near-total separation from a mixed cell without the reader subtracting the two fractions himself (RB-P16, OPEN)",
-      "where": "_separation / _compare, the `inconclusive` band",
+      "claim": "a §7 comparison's report distinguishes a near-total separation from a mixed cell without the reader subtracting the two fractions himself (RB-P16, CLOSED 2026-08-14)",
+      "where": "_compare, the `effect` key it ships beside every verdict",
       "path": "runtime-py/src/bantamkit/criticreplay.py",
-      "anchor": "    if stats_a[\"passed\"] == stats_b[\"passed\"]:\n        return \"indistinguishable\"\n    return \"inconclusive\"",
-      "replacement": "    if stats_a[\"passed\"] == stats_b[\"passed\"]:\n        return \"indistinguishable\"\n    stats_a = stats_b  # mutation: the band can no longer see the gap\n    return \"inconclusive\"",
-      "note": "UNPINNED at b496856 and correctly so: the claim is FALSE today. Measured, L1, 2026-08-13 — over the whole committed §7 record (12 comparisons, 2 runs) 11 are `inconclusive`, spanning |Δ| 3/11 to 5/6, and A-asfiled-vs-C-attempted r0 (1/12 vs 11/12) and r1 (4/12 vs 8/12) report identically once the two fractions are removed. The node is test_the_inconclusive_band_reports_something_a_reader_can_tell_from_noise, which re-derives with today's `_compare` over the committed rows and IS mutation-sensitive. The mutation above is inert at b496856 and falsifies any fix that bands inside `_separation`; a fix that reports the gap from `_compare` instead must re-aim this anchor in its own commit."
+      "anchor": "        \"effect\": _effect(a, b, rows_a, rows_b, family),",
+      "replacement": "        # mutation (RB-P16): the band stops carrying its size again\n        \"effect\": {\"delta_passed\": 0, \"delta_rate\": 0.0, \"sign\": 0, \"leads\": None,\n                   \"points_from_separation\": 0, \"disagreeing_points\": 0,\n                   \"a_only\": [], \"b_only\": []},",
+      "note": "RE-AIMED 2026-08-14 by L2, exactly as this entry's previous note required: the fix reports the gap from `_compare`, not from inside `_separation`, so the old anchor (which sat in `_separation`) would have been inert against it. The mutation above returns a CONSTANT effect — the shape stays valid, so nothing crashes; only the content stops varying, which is precisely the pre-fix state. Killed by the committed-rows node (test_the_inconclusive_band_reports_something_a_reader_can_tell_from_noise, no longer an xfail) AND by the fresh-run node test_a_fresh_runs_verdict_carries_its_effect_size_in_the_summary_and_in_the_table. The second one is the load-bearing pin: L1's structural finding is that a node reading only committed artifacts can never go red under mutation, so the pin has to run the shipped code today. Field measurement, not the suite: docs/eval-data/2026-08-14-rbp16-effect-size-report.md."
     },
     {
       "cid": "N02",
@@ -259,6 +260,36 @@
       "anchor": "    payload: dict = {\"model\": model, \"messages\": [m.to_wire() for m in messages]}",
       "replacement": "    # mutation (RB-P18): the recipe goes undisclosed again\n    payload: dict = {\"model\": model, \"messages\": [m.to_wire() for m in messages]}",
       "note": "UNPINNED at b496856. Measured, L1, 2026-08-13: the bar and SA3 disagree on `payload_sha256` for all six committed (variant, seed) cells at an identical rendered prompt, seed, model and score — and the cause is NOT the filed one. Both recipes serialize the SAME dict; SA3 used json.dumps(..., ensure_ascii=False, sort_keys=True) and the bar uses the same call without it. Recovered by search and reproduced on all six cells. Same structural gap as N02: the node reads committed artifacts, so it cannot go red under mutation; a fresh-run node is what would pin this."
+    },
+    {
+      "cid": "N04",
+      "kind": "behaviour",
+      "claim": "the PRINTED report carries the effect beside the verdict it belongs to, not only the summary dict a reader may never open (RB-P16)",
+      "where": "format_table, the `    effect: ` continuation under every Pairwise row",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "            lines.append(_format_effect(comparison[\"effect\"], comparison[\"family_size\"]))",
+      "replacement": "            # mutation (RB-P16): the summary knows and the reader does not\n            _format_effect(comparison[\"effect\"], comparison[\"family_size\"])",
+      "note": "A summary key nobody renders is not a report anyone gets — the field record reads this off real stdout (effect_lines 0 -> 3 on E1). The mutation still CALLS `_format_effect`, so a node that only checked the function exists would stay green; only a node that reads the table goes red."
+    },
+    {
+      "cid": "N05",
+      "kind": "behaviour",
+      "claim": "`indistinguishable` reports the points the two variants still disagree on, so equal pass COUNTS can no longer be read as agreement (RB-P16, broader than filed)",
+      "where": "_effect, the a_only/b_only difference sets",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "    a_only = [pid for pid in family if pid in passed_a and pid not in passed_b]\n    b_only = [pid for pid in family if pid in passed_b and pid not in passed_a]",
+      "replacement": "    # mutation (RB-P16): the tie word asserts an identity again\n    a_only = []\n    b_only = []",
+      "note": "Measured, not asserted. The one committed `indistinguishable` cell (B-nonewline 7/11 vs C-attempted 7/11, nav-prod-port r1, 2026-08-11) is a cell where the two variants disagree on 2 of 11 points — B passes P2-asks-requests, C passes W2-double-trailing — and it is the ONLY cell in the committed record whose disagreement is two-sided. A fresh run on 2026-08-14 produced a second instance: 2/11 vs 2/11 with 4 of 11 points disagreeing. This is a defect one branch up from the one RB-P16 filed and it is unfiled elsewhere."
+    },
+    {
+      "cid": "N06",
+      "kind": "behaviour",
+      "claim": "a summary states, across the cells of one pair, whether the direction agrees — and that statement decides nothing (RB-P16's third missing piece, shipped as a report because the rule it proposes has ZERO instances in the committed record)",
+      "where": "summarize, the `directional` key; _directional",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "        \"directional\": _directional(cells),",
+      "replacement": "        # mutation (RB-P16): no cross-cell statement again\n        \"directional\": [],",
+      "note": "Deliberately NOT the headline and deliberately not a gate. Surveyed over the whole committed record: every `inconclusive` cell has sign −1, no run has two cells of one pair pointing opposite ways, and the only non-negative sign is the exact tie. Shipping the filed sign-agreement RULE would have changed nothing on any of the 12 cells while looking tested. The node also asserts `attributable` is unmoved by it."
     }
   ]
 }
