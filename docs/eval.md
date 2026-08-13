@@ -2771,6 +2771,71 @@ and each carries an attack direction.
   manifest's `base_sha256` (template text) — see RB-P17's survey note.
   Executable spec: `test_payload_sha256_does_not_name_two_recipes_at_once`;
   ledger claim `N03`.
+
+  **FIXED 2026-08-14 (L4) — AND NOT BY THE ATTACK THIS ENTRY FILED.** The filed
+  attack, "version the field name so two recipes cannot share one", is wrong and
+  is not what shipped: it would make permanent, in the schema, a difference that
+  canonicalisation removes. What shipped is
+  (1) `payload_canonical_sha256`, a **second** column beside `payload_sha256`,
+  holding the same wire body under `json.dumps(payload, ensure_ascii=False,
+  sort_keys=True)`, and (2) `payload_sha256_recipes` in every summary a run
+  writes, naming the exact call behind each column and naming `prompt_sha256` as
+  the cross-record identity — because the reader this problem is about has the
+  JSONL and not this tree, which is precisely why SA3's recipe survived only as
+  prose.
+  `payload_sha256` keeps its name, its recipe and its value. 1280 committed
+  occurrences across 12 artifacts mean the insertion-order recipe, and a field
+  that changes meaning under a fixed name is this problem's own defect — the same
+  argument that made `rubric_template_sha256` additive.
+
+  **WHY `sort_keys` IS NOT AN ARBITRARY CANONICALISATION, and how a reader
+  interprets the FROZEN rows under it.** It is the only key-order-independent
+  form of the same call, so it removes the measured difference; and it is
+  **already a committed value**, so the new column reproduces SA3's frozen shas
+  bit for bit. Measured 2026-08-14: **one** request issued today, on
+  `A-asfiled`/`git:d2f78b7`/r0/seed 2331795949, lands on **both** frozen record
+  families at once — `payload_sha256` = `a17fc774681a…` (the bar's frozen value)
+  and `payload_canonical_sha256` = `4eb56220e883…` (SA3's frozen value). So a
+  frozen row is interpreted by re-running its cell and seeing **which column its
+  value lands in**: that is the difference between "these requests differed" and
+  "these records were hashed differently", and it is available for rows written
+  before the fix, which are never rewritten. Any other order-independent recipe
+  would match nothing already written down and would leave SA3's 30 rows exactly
+  as uninterpretable as before.
+  Pinned over a **fresh run** —
+  `test_a_fresh_run_reproduces_both_frozen_payload_recipes_from_one_request` —
+  because a node reading only committed artifacts can never go red under
+  mutation. Ledger `N03` (re-aimed), `N09`, `N10`. Field measurement, which is
+  the acceptance claim and not the suite:
+  `docs/eval-data/2026-08-14-rbp18-payload-recipe.md`.
+
+  **THE `xfail` DID NOT GO GREEN, AND CANNOT.**
+  `test_payload_sha256_does_not_name_two_recipes_at_once` reads two committed
+  records. All three of its disjuncts are facts about frozen bytes — the two shas
+  are unequal, both records carry the key `payload_sha256`, and neither record has
+  any other key containing `payload` (measured: 21 keys on the bar row, 8 on the
+  SA3 entry). Only a retro-edit could clear it, so it stays `xfail` permanently
+  and pins nothing in either direction — the same structural finding L1 made about
+  `N02`/`N03` and L3 confirmed for RB-P17's twin.
+
+  **STILL OPEN, one level below the recipe, with an attack direction. One name,
+  two ARITIES.** Census over `docs/eval-data`, 2026-08-14: `payload_sha256` is a
+  `str` in 1280 places across 12 artifacts and a `list` in 30 places in
+  `2026-08-11-sa3-14b-nav-prod-port-critic-replay.json`. A reader diffing the two
+  families with `==` gets `False` from the **type**, before a hash is ever
+  compared. **The list is not a typo and flattening it would destroy evidence:**
+  the two writers record different *units* — a bar row is one **replay**, an SA3
+  entry is one **cell** whose field is the SET of distinct shas across that cell's
+  processes, and the cardinality is that file's own stated claim that "any score
+  spread is the server's, not the prompt's" (all 30 lists have length 1, so all 30
+  make it). Shipped: `payload_shas_recorded`, a reader that gives the field a
+  defined reading in either shape and **preserves cardinality**; ledger `N10`.
+  What is *not* fixed is the cause: the unit of record is inferred from a JSON
+  type instead of being stated. **Attack:** name it — a `unit` field on the record
+  (`"replay"` vs `"cell"`) so an aggregating writer declares what it aggregated,
+  rather than a later reader deducing it from `isinstance`. This cannot be
+  retro-fitted to SA3, whose writer is in no tree and whose rows are frozen; it
+  binds the next writer. (Measurement.)
 - **RB-P19 — `P3-right-correct` ships violating the manifest's own
   shared-token guard on the acceptance cell.** The guard forbids an added or
   removed word from appearing in the cell's `{task}`; `P3` removes *right*,

@@ -1221,6 +1221,10 @@ class Verdict:
     calls: int
     prompt_sha256: str
     payload_sha256: str
+    # The same wire body key-sorted (RB-P18). Defaulted here and NOT on `ReplayRow`: a
+    # `Verdict` is also built by callers that never went through `_PayloadSpy`, whereas a
+    # row a run writes must state the column or fail to construct.
+    payload_canonical_sha256: str = ""
     # §3.3 guard 2's verdict for the (point, cell) this replay came from. EMPTY when the
     # replay was issued through `replay_verdicts` directly, which holds a `Rubric` and a
     # `Case` and cannot re-derive which point produced the template — blank, not clean.
@@ -1230,21 +1234,126 @@ class Verdict:
     guard_readings: dict[str, list[str]] = field(default_factory=dict)
 
 
-def _payload_sha(model: str, seed: int | None, messages: list[Message], response_format) -> str:
-    """The wire body's sha, assembled the way `OpenAICompatible.chat` assembles it.
+# ---- what a payload sha NAMES, published beside the field (RB-P18) ----
+
+#: The exact call behind each recorded payload column. Emitted into every summary a run
+#: writes, so the recipe travels with the artifact instead of living in a docstring the
+#: reader of a JSONL row will never open.
+PAYLOAD_SHA_RECIPES = {
+    "payload_sha256": "sha256(json.dumps(payload, ensure_ascii=False))",
+    "payload_canonical_sha256": (
+        "sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True))"
+    ),
+}
+
+#: WHERE A READER LOOKS. Emitted into every summary beside the recipes above.
+PAYLOAD_SHA_NOTE = (
+    "`prompt_sha256` is the CROSS-RECORD IDENTITY: it hashes the rendered critic prompt "
+    "and depends on no serialization choice, so two records that agree on it put the same "
+    "text in front of the critic, whoever wrote them. The payload columns hash the whole "
+    "wire body, which is strictly more than the prompt (model, seed, response_format) and "
+    "therefore also strictly more fragile. `payload_sha256` is that body under THIS "
+    "writer's key insertion order and is the value every committed row before 2026-08-14 "
+    "carries; `payload_canonical_sha256` is the same bytes key-sorted, is independent of "
+    "insertion order, and is the column two records may be compared on. Measured "
+    "2026-08-14 on all six committed (variant, seed) cells: the canonical recipe "
+    "reproduces the payload shas in "
+    "docs/eval-data/2026-08-11-sa3-14b-nav-prod-port-critic-replay.json exactly, and the "
+    "insertion-order recipe reproduces the perturbation-bar JSONL rows exactly, so the "
+    "two frozen record families differ by the one keyword argument `sort_keys=True` and "
+    "by nothing else. To interpret a row written before 2026-08-14, which carries only "
+    "`payload_sha256` and names no recipe: re-run its cell and see which of the two "
+    "columns the frozen value lands in."
+)
+
+
+def payload_shas_recorded(value: str | list[str]) -> tuple[str, ...]:
+    """The payload shas a record's `payload_sha256` field states, whatever SHAPE it is in.
+
+    ONE NAME, TWO ARITIES — MEASURED 2026-08-14 over the whole committed record, not
+    asserted. 1280 occurrences across 12 artifacts carry a `str`; 30 occurrences in
+    `2026-08-11-sa3-14b-nav-prod-port-critic-replay.json` carry a `list`. A reader diffing
+    the two families with `==` gets `False` from the TYPE before the hash is ever compared,
+    which is RB-P18's own defect one level below the recipe.
+
+    THE LIST IS NOT A TYPO, AND FLATTENING IT WOULD DESTROY EVIDENCE. The two writers
+    record different UNITS. A bar row is one replay, so its field is one sha. An SA3 entry
+    is one CELL, and its field is the SET of distinct shas observed across that cell's
+    processes — the cardinality is itself the claim, stated in that file's own
+    `how_to_reproduce`: "every cell here shows exactly one payload sha across its
+    processes, so any score spread is the server's, not the prompt's". Measured: all 30
+    lists have length 1, so all 30 cells make that claim and none of them fails it. A
+    reader who took `[0]` would silently discard a claim that a two-element list would
+    have falsified.
+
+    So this returns a TUPLE and preserves cardinality: comparison between records is
+    between sets of shas, never between a `str` and a `list`. What it does NOT do is
+    rewrite anything — the committed bytes keep their shapes; this is the reader supplying
+    a defined reading, exactly as `_rows_as_replay_rows` supplies an absent column.
+    """
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return tuple(value)
+    raise PerturbationError(
+        f"a `payload_sha256` field is a sha string or a list of sha strings, got {value!r}"
+    )
+
+
+def _payload_shas(
+    model: str, seed: int | None, messages: list[Message], response_format
+) -> tuple[str, str]:
+    """The wire body's shas, assembled the way `OpenAICompatible.chat` assembles it.
+
+    Returns `(payload_sha256, payload_canonical_sha256)` — ONE dict, TWO serializations,
+    and the pair is the whole of RB-P18's fix.
 
     Recorded beside `prompt_sha256` because they answer different questions: the prompt
-    sha proves which text the critic read, the payload sha proves the whole request —
+    sha proves which text the critic read, the payload shas prove the whole request —
     seed and `response_format` included — was the one intended. `e57f1a6` changes the
     rubric *schema*, so two variants can differ in what goes on the wire as
     `response_format` and not only in prose.
+
+    WHY `sort_keys` AND NOT SOME OTHER CANONICALISATION. RB-P18 was filed saying two
+    recipes "serialize different dicts" under one field name. Re-measured on all six
+    committed (variant, seed) cells: they do not. They serialize the IDENTICAL dict, and
+    the entire cross-record incomparability is that the scratchpad writer passed
+    `sort_keys=True` and this one did not. `sort_keys` is therefore not a canonicalisation
+    chosen for taste — it is the one that (1) removes the measured difference, being the
+    only key-order-independent form of the same call, and (2) is ALREADY A COMMITTED VALUE:
+    the second column reproduces SA3's frozen `payload_sha256` bit for bit, so the fix
+    reaches BACKWARD into the frozen record rather than only forward. Any other order-
+    independent recipe (`ensure_ascii=True`, different `separators`) would be equally
+    order-free and would match nothing that is already written down, leaving SA3's 30 rows
+    exactly as uninterpretable as they are today.
+
+    WHY THE FIRST COLUMN IS UNTOUCHED, in name, recipe and value. 1280 committed
+    occurrences mean the insertion-order recipe, and a field that changes meaning under a
+    fixed name is RB-P18's own defect — the same argument that made
+    `rubric_template_sha256` a second column beside `rubric_sha256` rather than a
+    redefinition of it. This is also why the fix is NOT the one RB-P18 filed: "version the
+    field name so two recipes cannot share one" would make permanent, in the schema, a
+    difference that canonicalisation removes.
     """
     payload: dict = {"model": model, "messages": [m.to_wire() for m in messages]}
     if seed is not None:
         payload["seed"] = seed
     if response_format is not None:
         payload["response_format"] = response_format
-    return sha256_text(json.dumps(payload, ensure_ascii=False))
+    return (
+        sha256_text(json.dumps(payload, ensure_ascii=False)),
+        sha256_text(json.dumps(payload, ensure_ascii=False, sort_keys=True)),
+    )
+
+
+def _payload_sha(model: str, seed: int | None, messages: list[Message], response_format) -> str:
+    """The recorded `payload_sha256`, unchanged in name, in recipe and in value.
+
+    Kept as its own entry point because it is the recipe 1280 committed rows were written
+    under and because `docs/eval-data/2026-08-13-rbp16-rbp17-rbp18-survey.py`, which is
+    committed evidence and therefore never edited, imports it by this name.
+    """
+    return _payload_shas(model, seed, messages, response_format)[0]
 
 
 class _PayloadSpy:
@@ -1260,6 +1369,7 @@ class _PayloadSpy:
         self.model = model
         self.seed = seed
         self.payload_sha256: str | None = None
+        self.payload_canonical_sha256: str | None = None
 
     @property
     def _response_format_unsupported(self) -> bool:
@@ -1267,7 +1377,12 @@ class _PayloadSpy:
 
     def chat(self, messages, tools=None, response_format=None):
         if self.payload_sha256 is None:
-            self.payload_sha256 = _payload_sha(self.model, self.seed, messages, response_format)
+            # Both columns come off ONE observation of the request. Computing the
+            # canonical form from a second reconstruction would make "same request"
+            # unfalsifiable in exactly the way this class exists to prevent.
+            self.payload_sha256, self.payload_canonical_sha256 = _payload_shas(
+                self.model, self.seed, messages, response_format
+            )
         return self.inner.chat(messages, tools, response_format=response_format)
 
 
@@ -1309,6 +1424,7 @@ def replay_verdicts(
                 calls=tracking.calls,
                 prompt_sha256=prompt_sha,
                 payload_sha256=spy.payload_sha256 or "",
+                payload_canonical_sha256=spy.payload_canonical_sha256 or "",
             )
         )
     return verdicts
@@ -1329,6 +1445,7 @@ _ROW_KEYS = (
     "bar", "variant", "rubric_ref", "rubric_sha256", "rubric_template_sha256",
     "manifest_sha256", "task", "seed",
     "repeat", "model", "point", "class", "rule", "replay", "prompt_sha256", "payload_sha256",
+    "payload_canonical_sha256",
     "score", "threshold", "passed", "feedback", "tokens_in", "tokens_out", "calls",
     "guard_violations", "guard_readings",
 )
@@ -1351,7 +1468,8 @@ class ReplayRow:
     rule: str
     replay: int
     prompt_sha256: str
-    payload_sha256: str
+    payload_sha256: str  # this writer's key INSERTION order; see PAYLOAD_SHA_RECIPES
+    payload_canonical_sha256: str  # the same body key-SORTED; the comparable column
     score: int
     threshold: int
     passed: bool
@@ -1704,6 +1822,7 @@ def run(
                 replay=index,
                 prompt_sha256=verdict.prompt_sha256,
                 payload_sha256=verdict.payload_sha256,
+                payload_canonical_sha256=verdict.payload_canonical_sha256,
                 score=verdict.score,
                 threshold=family.threshold,
                 passed=verdict.score >= family.threshold,
@@ -1931,6 +2050,19 @@ def summarize(result: RunResult, manifest_sha256: str) -> dict:
         "requests": len(result.rows),
         "wire_calls": sum(r.calls for r in result.rows),
         "tokens_total": sum(r.tokens_in + r.tokens_out for r in result.rows),
+        # THE RECIPE TRAVELS WITH THE ARTIFACT (RB-P18). A reader holding this file and a
+        # row file can say which serialization produced each payload column without
+        # opening this repository, which is what "the recipe is published" has to mean for
+        # evidence that outlives the tree it was written in. `cross_record_identity` is
+        # here and not only in a commit message because it is the field a reader should be
+        # diffing on in the first place.
+        "payload_sha256_recipes": {
+            "recipes": dict(PAYLOAD_SHA_RECIPES),
+            "payload": "{model, messages, seed?, response_format?}, in that insertion order",
+            "cross_record_identity": "prompt_sha256",
+            "comparable_column": "payload_canonical_sha256",
+            "note": PAYLOAD_SHA_NOTE,
+        },
         "variants": [
             {
                 "label": label,

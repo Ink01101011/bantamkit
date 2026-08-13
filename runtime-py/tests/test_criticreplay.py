@@ -1186,7 +1186,8 @@ def test_rows_carry_the_columns_the_spec_names(rig):
         "bar", "variant", "rubric_ref", "rubric_sha256", "rubric_template_sha256",
         "manifest_sha256", "task", "seed",
         "repeat", "model", "point", "class", "rule", "replay", "prompt_sha256",
-        "payload_sha256", "score", "threshold", "passed", "feedback", "tokens_in", "tokens_out",
+        "payload_sha256", "payload_canonical_sha256",
+        "score", "threshold", "passed", "feedback", "tokens_in", "tokens_out",
         "calls", "guard_violations", "guard_readings",
     }
     assert row["guard_violations"] == []
@@ -1831,6 +1832,13 @@ _RBP16_ADDED_KEYS = (
     # baseline exactly. Named here rather than folded in silently, because an unnamed key
     # slipping past this floor is the regression the floor exists to catch.
     "rubric_template_sha256",
+    # RB-P18 (L4, 2026-08-14): the same wire body key-SORTED, beside the body under this
+    # writer's insertion order, and the recipes published in the summary. Additive on the
+    # same argument — `payload_sha256` keeps its name, its recipe and its value, which is
+    # what 1280 committed occurrences already mean — so the strip restores `f8404ab`
+    # exactly. `payload_sha256_recipes` is a summary-level key and is stripped by the same
+    # rule; the pre-fix summary had no such block.
+    "payload_canonical_sha256", "payload_sha256_recipes",
 )
 
 
@@ -5148,6 +5156,11 @@ def _rows_as_replay_rows(path: Path) -> list[criticreplay.ReplayRow]:
         data["point_class"] = data.pop("class")
         data.setdefault("calls", 1)
         data.setdefault("rubric_template_sha256", "")
+        # RB-P18, same rule and the same reason: the committed rows predate the canonical
+        # column, so the READER supplies its absence. Blank means "this record does not
+        # state a key-sorted sha", which is exactly true of every row written before
+        # 2026-08-14 — and it is not the same as stating one that happens to be empty.
+        data.setdefault("payload_canonical_sha256", "")
         rows.append(
             criticreplay.ReplayRow(
                 **{
@@ -5369,7 +5382,15 @@ def test_every_rubric_ref_in_a_committed_summary_resolves_from_this_repo():
         "IS WRONG: the two recipes do NOT serialize different dicts. They serialize the "
         "SAME dict {model, messages, seed, response_format}; the bar uses "
         "json.dumps(..., ensure_ascii=False) and SA3 used the same call with "
-        "sort_keys=True. The whole disagreement is JSON key order."
+        "sort_keys=True. The whole disagreement is JSON key order. "
+        "PERMANENT (L4, 2026-08-14): this node CANNOT go green, and it pins nothing in "
+        "either direction. Every one of its three disjuncts is a fact about committed "
+        "bytes, which by invariant are never regenerated — the two shas are frozen and "
+        "unequal, both records are frozen carrying the key `payload_sha256`, and neither "
+        "frozen record has any other key containing `payload` (measured: the bar row's 21 "
+        "keys and the SA3 entry's 8). Only a retro-edit could clear it. Same structural "
+        "finding L1 made about N02/N03 and L3 confirmed for RB-P17's twin. The pin is "
+        "test_a_fresh_run_reproduces_both_frozen_payload_recipes_from_one_request."
     ),
 )
 def test_payload_sha256_does_not_name_two_recipes_at_once():
@@ -5674,3 +5695,220 @@ def test_reporting_an_effect_size_moved_no_cells_attribution(effect_rig):
         f"or its attribution: {moved}. RB-P16 is about what a verdict REPORTS; moving "
         "attribution moves a committed finding by moving the ruler."
     )
+
+
+# ===========================================================================
+# RB-P18 — the FIX, pinned over a FRESH run (L4, 2026-08-14).
+#
+# THE FILED MECHANISM IS WRONG AND THE FILED ATTACK IS THE EXPENSIVE ONE.
+# RB-P18 says the two recipes "serialize different dicts" under one field
+# name, and proposes versioning the field name. Re-measured on all six
+# committed (variant, seed) cells: they serialize the IDENTICAL dict, and the
+# entire cross-record incomparability is that one writer passed
+# `sort_keys=True`. Versioning the name would make permanent, in the schema, a
+# difference canonicalisation removes — so what ships is a SECOND COLUMN under
+# the canonical recipe, plus the recipes published in the artifact.
+#
+# WHY THE PIN IS A FRESH RUN. L1's structural finding, restated by L3: a node
+# that reads only committed artifacts can never go red under a source
+# mutation, because committed evidence is never regenerated. The `xfail`
+# below/above this section is exactly such a node — see the dated note on it.
+# Every node here produces its values TODAY and compares them against the
+# frozen record, which is the direction that can move.
+# ===========================================================================
+
+# The one cell RB-P18's spec names, and the two frozen values it disagrees on.
+_RBP18_CELL_REF = "d2f78b7"
+_RBP18_CELL_REPEAT = 0
+_RBP18_CELL_SEED = 2331795949
+
+
+def _rbp18_frozen_pair():
+    """The bar's `payload_sha256` and SA3's, for the ONE cell, read off the record.
+
+    Read rather than hardcoded so the node is a comparison and not a copy, and read
+    through `payload_shas_recorded` so the `str`/`list` shapes are handled by the shipped
+    reader instead of by a `[0]` in a test.
+    """
+    sa3 = json.loads(_SA3_REPLAY.read_text())
+    bar_row = next(
+        row
+        for row in (json.loads(line) for line in _ACCEPTANCE_ROWS.read_text().splitlines())
+        if row["point"] == "identity"
+        and row["variant"] == "A-asfiled"
+        and row["repeat"] == _RBP18_CELL_REPEAT
+    )
+    sa3_shas = sorted(
+        {
+            sha
+            for entry in sa3["replay_verdicts"]
+            if entry["ref"] == _RBP18_CELL_REF and entry["repeat"] == _RBP18_CELL_REPEAT
+            for sha in criticreplay.payload_shas_recorded(entry["payload_sha256"])
+        }
+    )
+    assert len(sa3_shas) == 1, sa3_shas
+    return sa3, bar_row, sa3_shas[0]
+
+
+def _rbp18_fresh_verdict():
+    """ONE request issued TODAY, on the cell the committed pair is about.
+
+    The shipped `replay_verdicts` on the shipped `structured()` path, so `_PayloadSpy`
+    reads the payload off the call that is actually made. The rubric is `git:d2f78b7`,
+    the task prompt and the answer are SA3's own, and the model and seed are the ones
+    both records name — nothing here is chosen to make a hash come out.
+    """
+    sa3, bar_row, sa3_sha = _rbp18_frozen_pair()
+    repo = Path(__file__).resolve().parents[2]
+    raw = subprocess.run(
+        ["git", "-C", str(repo), "show",
+         f"{_RBP18_CELL_REF}:assets/rubrics/task-completion.yaml"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    rubric = criticreplay._parse_rubric(raw, f"git:{_RBP18_CELL_REF}")
+    case = criticreplay.Case(
+        task=sa3["task"],
+        repeat=_RBP18_CELL_REPEAT,
+        seed=_RBP18_CELL_SEED,
+        prompt=sa3["task_prompt"],
+        output=sa3["answer_replayed"],
+    )
+    (verdict,) = criticreplay.replay_verdicts(
+        ScriptedCritic(lambda p: 5, model=sa3["model"]), rubric, case
+    )
+    return verdict, bar_row, sa3_sha
+
+
+def test_a_fresh_run_reproduces_both_frozen_payload_recipes_from_one_request():
+    """THE PIN. One request made today lands on BOTH frozen record families at once.
+
+    This is the whole claim, and it is what tells a reader "these records were hashed
+    differently" from "these requests differed":
+
+        payload_sha256            == the perturbation bar's frozen value  (a17fc774681a…)
+        payload_canonical_sha256  == SA3's frozen value                   (4eb56220e883…)
+
+    from ONE `structured()` call, on one dict, at one seed. The two frozen values were
+    never comparable and are now both derivable from a single run, which is why the fix
+    reaches the OLD rows and not only new ones: an old value is interpreted by asking
+    which column a re-run of its cell puts it in.
+
+    It is a claim about the INSTRUMENT and not about the world (RB-P14 Gate 2): not "the
+    requests were the same" — that is what the record is for — but "what this tool
+    records lets a reader decide that".
+
+    A mutation that drops `sort_keys=True` makes the canonical column equal the
+    insertion-order one, which is not SA3's value, and this goes red.
+    """
+    verdict, bar_row, sa3_sha = _rbp18_fresh_verdict()
+
+    # 1. The cross-record identity first: same rendered prompt, so any payload
+    #    disagreement below is about serialization and cannot be about the text.
+    assert verdict.prompt_sha256 == bar_row["prompt_sha256"]
+
+    # 2. Both frozen families, reproduced from the one request.
+    assert verdict.payload_sha256 == bar_row["payload_sha256"]
+    assert verdict.payload_canonical_sha256 == sa3_sha
+
+    # 3. And they are genuinely two values, so the assertions above are not one
+    #    assertion written twice. This is the disagreement RB-P18 filed, now RESOLVED
+    #    into two named columns rather than left as one ambiguous name.
+    assert bar_row["payload_sha256"] != sa3_sha
+    assert verdict.payload_sha256 != verdict.payload_canonical_sha256
+    assert re.fullmatch(r"[0-9a-f]{64}", verdict.payload_canonical_sha256)
+
+
+def test_the_canonical_payload_column_is_the_one_that_survives_key_order():
+    """WHY the second column is `sort_keys` and not some other canonicalisation.
+
+    The mechanism, made executable rather than argued: build the same payload content
+    twice in two different insertion orders. The recorded `payload_sha256` recipe
+    separates them — that is the defect — and the canonical recipe does not. SA3's
+    writer was a different process that assembled the dict its own way, which is why its
+    frozen value equals this column and not the other one.
+
+    A mutation that drops `sort_keys=True` collapses the second row of this table onto
+    the first and this goes red.
+    """
+    recipes = criticreplay.PAYLOAD_SHA_RECIPES
+    body = {"role": "user", "content": "x"}
+    one = {"model": "m", "messages": [body], "seed": 1, "response_format": {"type": "json"}}
+    other = {"response_format": {"type": "json"}, "seed": 1, "messages": [body], "model": "m"}
+    assert one == other  # identical dicts, and that is the point RB-P18 got wrong
+
+    def under(recipe: str, payload: dict) -> str:
+        sort_keys = "sort_keys=True" in recipe
+        return criticreplay.sha256_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=sort_keys)
+        )
+
+    assert under(recipes["payload_sha256"], one) != under(recipes["payload_sha256"], other)
+    assert under(recipes["payload_canonical_sha256"], one) == under(
+        recipes["payload_canonical_sha256"], other
+    )
+    # The recipe strings are not decorative: the column the run records under the
+    # canonical recipe is the value that recipe produces for the request it sent.
+    verdict, _, _ = _rbp18_fresh_verdict()
+    assert verdict.payload_sha256 != verdict.payload_canonical_sha256
+    assert "sort_keys=True" in recipes["payload_canonical_sha256"]
+    assert "sort_keys" not in recipes["payload_sha256"]
+
+
+def test_a_fresh_runs_rows_and_summary_publish_the_recipe_beside_the_field(rig):
+    """The recipe travels WITH the artifact, or a reader of a row file never sees it.
+
+    A JSONL row and a summary are what a second reader has; this repository is what they
+    do not have. So every row a run writes carries both columns and the summary names the
+    exact call behind each, plus the field a reader should be diffing on.
+    """
+    _, result = _run(rig, lambda p: 9)
+    summary = criticreplay.summarize(result, result.rows[0].manifest_sha256)
+
+    for row in (r.row() for r in result.rows):
+        assert re.fullmatch(r"[0-9a-f]{64}", row["payload_sha256"]), row
+        assert re.fullmatch(r"[0-9a-f]{64}", row["payload_canonical_sha256"]), row
+        assert row["payload_sha256"] != row["payload_canonical_sha256"], row
+        assert json.dumps(row)  # JSONL-writable with the new column
+
+    block = summary["payload_sha256_recipes"]
+    assert block["recipes"] == criticreplay.PAYLOAD_SHA_RECIPES
+    assert set(block["recipes"]) == {"payload_sha256", "payload_canonical_sha256"}
+    # WHERE A READER LOOKS for the cross-record identity — in the artifact, not only in
+    # a commit message.
+    assert block["cross_record_identity"] == "prompt_sha256"
+    assert block["comparable_column"] == "payload_canonical_sha256"
+    assert "prompt_sha256" in block["note"] and "sort_keys" in block["note"]
+    assert json.dumps(summary)
+
+
+def test_the_payload_sha_field_is_readable_in_both_shapes_the_record_uses():
+    """RB-P18 one level below the recipe: one name, two ARITIES, measured not asserted.
+
+    Census over `docs/eval-data`, 2026-08-14: 1280 `str` occurrences across 12 artifacts
+    and 30 `list` occurrences in one. A reader diffing the two families with `==` gets
+    `False` from the TYPE before a hash is compared. `payload_shas_recorded` gives the
+    field a defined reading in either shape WITHOUT flattening it, because SA3's list is
+    a per-cell SET whose cardinality is its own claim.
+    """
+    sa3, bar_row, sa3_sha = _rbp18_frozen_pair()
+    entry = next(
+        e for e in sa3["replay_verdicts"]
+        if e["ref"] == _RBP18_CELL_REF and e["repeat"] == _RBP18_CELL_REPEAT
+    )
+    # The shapes, as they are frozen. Not an argument — the record's own types.
+    assert isinstance(bar_row["payload_sha256"], str)
+    assert isinstance(entry["payload_sha256"], list)
+    assert bar_row["payload_sha256"] != entry["payload_sha256"]  # the naive diff
+
+    read = criticreplay.payload_shas_recorded
+    assert read(bar_row["payload_sha256"]) == (bar_row["payload_sha256"],)
+    assert read(entry["payload_sha256"]) == (sa3_sha,)
+    # CARDINALITY IS PRESERVED, which is what makes this a reading and not a flatten:
+    # SA3's `how_to_reproduce` claims exactly one payload sha per cell across its
+    # processes, and all 30 of its lists have length 1, so all 30 make that claim.
+    assert all(
+        len(read(e["payload_sha256"])) == 1 for e in sa3["replay_verdicts"]
+    ), "an SA3 cell recording two payload shas would falsify that file's own claim"
+    assert read(["a", "b"]) == ("a", "b")
+    with pytest.raises(criticreplay.PerturbationError, match="payload_sha256"):
+        read({"sha": "a"})
