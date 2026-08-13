@@ -871,6 +871,26 @@ class RubricVariant:
     rubric: Rubric
     sha256: str
 
+    @property
+    def template_sha256(self) -> str:
+        """The sha of the RUBRIC the critic reads, as distinct from the FILE it came in.
+
+        RB-P17, measured 2026-08-14: the two committed `B-nonewline` runs record
+        `rubric_sha256` `59b0fe81ecf3…` and `29f299707fd6…` — two different values — for
+        ONE rubric, whose template hashes `d1f32ad2947b…` in both. The recorded column is
+        the file's bytes, so two files carrying the same `prompt` under different `name:`
+        or `threshold:` framing report as two different rubrics, and the field cannot
+        answer the one question provenance exists to answer: did these two runs judge
+        with the same rubric? This property answers it, and it is the value the frozen
+        manifest already records as `materialized_variants.<label>.base_sha256`, so a
+        derived variant's row ties back to a committed manifest entry by equality.
+
+        It is a SECOND column, not a redefinition of the first. `rubric_sha256` stays the
+        file's bytes — every committed row means that, and a field that changes meaning
+        under a fixed name is RB-P18's defect, which is the one being fixed here.
+        """
+        return sha256_text(self.rubric.prompt)
+
 
 def rubric_arg_shape_problem(arg: str) -> str | None:
     """What is malformed about one `--rubric` value ON ITS FACE, or `None` if nothing is.
@@ -900,6 +920,26 @@ def rubric_arg_shape_problem(arg: str) -> str | None:
         parts = spec.split(":", 2)
         if len(parts) < 3 or not parts[1] or not parts[2]:
             return f"--rubric git spec wants git:<ref>:<path>, got {spec!r}"
+    if spec.startswith("derive:"):
+        parts = spec.split(":", 3)
+        if len(parts) < 4 or not all(parts[1:]):
+            return (
+                "--rubric derive spec wants "
+                f"derive:<manifest-path>:<rule-id>:git:<ref>:<path>, got {spec!r}"
+            )
+        base = parts[3]
+        if not base.startswith("git:"):
+            return (
+                f"--rubric derive spec wants a git: base, got {base!r} — a derived variant "
+                "has no file of its own, so the only thing that makes its recorded ref "
+                "resolvable is that every segment of it is immutable. A working-tree path "
+                "is not, and unlike the path form there is no file left to hash as a "
+                "fallback. This is also what makes a derive-of-a-derive unrepresentable, "
+                "so the load order can never cycle."
+            )
+        base_parts = base.split(":", 2)
+        if len(base_parts) < 3 or not base_parts[1] or not base_parts[2]:
+            return f"--rubric derive spec wants git:<ref>:<path> as its base, got {base!r}"
     return None
 
 
@@ -946,11 +986,51 @@ def rubric_label_collision_problem(specs: list[str]) -> str | None:
 
 
 def parse_rubric_arg(arg: str) -> RubricVariant:
-    """`LABEL=SPEC`, where SPEC is a path or `git:<ref>:<path>`.
+    """`LABEL=SPEC`, where SPEC is a path, `git:<ref>:<path>`, or a `derive:` rule.
 
     The git form exists because the acceptance test needs rubrics that live only in
     history. `load_rubric` is name-only and has no path hook, so the parsed `Rubric` is
     passed around as an instance.
+
+    THE RECORDED REF IS THE WHOLE SPEC, NOT A PIECE OF IT (RB-P17, 2026-08-14). The git
+    branch used to record `source = ref`, so a row said `d2f78b7` — a commit and not a
+    file. Two rubrics in one commit were indistinguishable in the record, and
+    `rubric_sha256` could not be re-derived from the row without knowing which path to
+    ask `git show` for. `RubricVariant.spec` held the answer and never reached a row.
+    Every branch now records the string a second reader can hand back to this function.
+
+    THE `derive:` FORM: `derive:<manifest-path>:<rule-id>:git:<ref>:<path>`.
+
+    A perturbed variant is a rule applied to a committed ref, and until now it was not
+    expressible as one. `B-nonewline` — the null control the whole RB-P14 finding turns
+    on — is `A-asfiled`'s template minus its single trailing newline, which is exactly
+    the frozen manifest's `W1-trailing-newline` point; with no way to say that, it was
+    materialized to a scratch file and two committed summaries record an absolute
+    `/private/tmp` path as its provenance. Written in this form the null control is::
+
+        --rubric B-nonewline=derive:assets/evals/perturbations/task-completion.yaml\
+:W1-trailing-newline:git:d2f78b7:assets/rubrics/task-completion.yaml
+
+    WHY THE MANIFEST IS IN THE STRING, and not left implicit. The filing proposed
+    `derive:<label>:<rule-id>` — `derive:A-asfiled:W1-trailing-newline`. That resolves
+    only from the argv that also defined `A-asfiled`, and it names the manifest nowhere,
+    so a row carrying it is a pointer into a process that has exited: the same failure as
+    a pointer into a directory that has been cleaned, one indirection along. Every
+    segment here is repo-relative or a git ref, so a reader who has ONLY this repository
+    and one row can recover the exact bytes the critic read — read the manifest at that
+    path, take the point with that id, `git show` that ref and path, apply. No argv, no
+    machine, no `/private/tmp`. `manifest_sha256` is already on every row, so the reader
+    can also tell whether the manifest they just read is the one the run used.
+
+    Ordering is manifest, then rule, then base, because the base is the only segment that
+    contains a `:` — three splits and the remainder is the base spec, with no escaping.
+
+    NO SILENT NO-OP, AND NO CYCLE. A rule whose anchor is absent from the base raises
+    rather than returning the base unchanged: `W1-trailing-newline` on a template that
+    has no trailing newline (`B-nonewline` itself — it is the rule's fixed point) names
+    no variant, and a variant that is silently its own base is RB-P17's defect one level
+    in. The base must be a `git:` spec, which makes a derive-of-a-derive unrepresentable
+    on its face, so no load order can cycle and no resolution can recurse.
 
     The CLI has already rejected a malformed `arg` through `parser.error` before this
     runs (RB-P32); the same check is re-raised here as a `PerturbationError` for
@@ -961,18 +1041,55 @@ def parse_rubric_arg(arg: str) -> RubricVariant:
     if problem is not None:
         raise PerturbationError(problem)
     label, _, spec = arg.partition("=")
+    if spec.startswith("derive:"):
+        return RubricVariant(
+            label=label, spec=spec, ref=spec, rubric=_derive_rubric(spec), sha256=""
+        )
     if spec.startswith("git:"):
         _, ref, path = spec.split(":", 2)
         raw = _git_show(ref, path)
-        source = ref
     else:
-        path = Path(spec)
-        if not path.is_file():
+        file = Path(spec)
+        if not file.is_file():
             raise PerturbationError(f"rubric not found: {spec}")
-        raw = path.read_text()
-        source = spec
+        raw = file.read_text()
     return RubricVariant(
-        label=label, spec=spec, ref=source, rubric=_parse_rubric(raw, spec), sha256=sha256_text(raw)
+        label=label, spec=spec, ref=spec, rubric=_parse_rubric(raw, spec), sha256=sha256_text(raw)
+    )
+
+
+def _derive_rubric(spec: str) -> Rubric:
+    """Resolve `derive:<manifest-path>:<rule-id>:git:<ref>:<path>` to the perturbed rubric.
+
+    `sha256` is BLANK on the variant this builds, following the `IN_MEMORY_REF` precedent
+    exactly: the populated `rubric_sha256` column is the sha of a rubric FILE's bytes, a
+    derived variant has no file, and hashing something else into that column would put two
+    meanings under one name. `rubric_template_sha256` is the populated one here, and it is
+    the value the manifest already records for this (point, variant) cell — so the row and
+    the frozen manifest tie together by equality rather than by prose.
+    """
+    _, manifest_spec, rule_id, base_spec = spec.split(":", 3)
+    manifest = load_manifest(Path(manifest_spec))
+    points = [point for point in manifest.points if point.id == rule_id]
+    if not points:
+        raise PerturbationError(
+            f"rule {rule_id!r} is not a point in {manifest_spec}: "
+            f"have {', '.join(point.id for point in manifest.points)}"
+        )
+    _, ref, path = base_spec.split(":", 2)
+    base = _parse_rubric(_git_show(ref, path), base_spec)
+    perturbed = apply_point(points[0], base.prompt)
+    if perturbed is None:
+        raise PerturbationError(
+            f"rule {rule_id!r} is inapplicable to {base_spec}: its anchor is absent from that "
+            "template, so this spec names no variant. A rule that cannot fire would return "
+            "the base rubric unchanged, and a variant silently equal to its own base is "
+            "RB-P17's defect one level in — the record would name a perturbation that never "
+            "happened. (This is what `W1-trailing-newline` does against a base that already "
+            "has no trailing newline: it is that rule's fixed point.)"
+        )
+    return Rubric(
+        name=base.name, threshold=base.threshold, prompt=perturbed, schema=base.schema
     )
 
 
@@ -1209,7 +1326,8 @@ def replay_scores(client: ModelClient, rubric: Rubric, case: Case, replays: int 
 # ---- the run (§6.3) ----
 
 _ROW_KEYS = (
-    "bar", "variant", "rubric_ref", "rubric_sha256", "manifest_sha256", "task", "seed",
+    "bar", "variant", "rubric_ref", "rubric_sha256", "rubric_template_sha256",
+    "manifest_sha256", "task", "seed",
     "repeat", "model", "point", "class", "rule", "replay", "prompt_sha256", "payload_sha256",
     "score", "threshold", "passed", "feedback", "tokens_in", "tokens_out", "calls",
     "guard_violations", "guard_readings",
@@ -1221,7 +1339,8 @@ class ReplayRow:
     bar: str
     variant: str
     rubric_ref: str
-    rubric_sha256: str
+    rubric_sha256: str  # the FILE's bytes, blank when the variant has no file
+    rubric_template_sha256: str  # the RUBRIC the critic read; see RubricVariant
     manifest_sha256: str
     task: str
     seed: int
@@ -1573,6 +1692,7 @@ def run(
                 variant=unit.variant.label,
                 rubric_ref=unit.variant.ref,
                 rubric_sha256=unit.variant.sha256,
+                rubric_template_sha256=unit.variant.template_sha256,
                 manifest_sha256=manifest.sha256,
                 task=unit.case.task,
                 seed=unit.case.seed,
@@ -1816,6 +1936,9 @@ def summarize(result: RunResult, manifest_sha256: str) -> dict:
                 "label": label,
                 "rubric_ref": next(r.rubric_ref for r in result.rows if r.variant == label),
                 "rubric_sha256": next(r.rubric_sha256 for r in result.rows if r.variant == label),
+                "rubric_template_sha256": next(
+                    r.rubric_template_sha256 for r in result.rows if r.variant == label
+                ),
                 "dropped_rules": result.dropped[label],
             }
             for label in result.labels
@@ -2441,7 +2564,10 @@ def main(argv: list[str] | None = None) -> None:
         action="append",
         required=True,
         metavar="LABEL=SPEC",
-        help="repeatable; SPEC is a path or git:<ref>:<path>",
+        help=(
+            "repeatable; SPEC is a path, git:<ref>:<path>, or "
+            "derive:<manifest-path>:<rule-id>:git:<ref>:<path>"
+        ),
     )
     parser.add_argument(
         "--manifest", type=Path, help="perturbation manifest (default: by rubric name)"

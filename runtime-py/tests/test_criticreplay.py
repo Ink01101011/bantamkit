@@ -653,11 +653,274 @@ def test_rubric_spec_accepts_a_filesystem_path(tmp_path):
 
 
 def test_rubric_spec_accepts_a_git_ref():
+    """And records the PATH as well as the commit (RB-P17, fixed 2026-08-14).
+
+    `source = ref` used to drop the path, so a row said `d2f78b7` — two rubrics in one
+    commit were indistinguishable in the record, and `rubric_sha256` could not be
+    re-derived from the row without knowing which file to ask `git show` for.
+    """
     variant = criticreplay.parse_rubric_arg(
         "A-asfiled=git:d2f78b7:assets/rubrics/task-completion.yaml"
     )
-    assert variant.ref == "d2f78b7"
+    assert variant.ref == "git:d2f78b7:assets/rubrics/task-completion.yaml"
     assert variant.rubric.prompt == _shipped_template()
+
+
+_NULL_CONTROL_SPEC = (
+    "derive:assets/evals/perturbations/task-completion.yaml"
+    ":W1-trailing-newline:git:d2f78b7:assets/rubrics/task-completion.yaml"
+)
+# The committed `base_sha256` of `B-nonewline` in the frozen manifest, which is also the
+# manifest's recorded sha for (`W1-trailing-newline`, `A-asfiled`). Reproduced, not moved.
+_B_NONEWLINE_TEMPLATE_SHA = (
+    "d1f32ad2947b4d6f6079833847eae96c79fddeb2683ceda322940bdc8cbf13a6"
+)
+_A_ASFILED_TEMPLATE_SHA = (
+    "e018854368c1b675e7cff5109a3dce715d59c86d871cd3d1d83b9083188a065e"
+)
+
+
+def test_the_null_control_is_expressible_as_a_rule_applied_to_a_committed_ref():
+    """RB-P17's whole point, in one spec string: `B-nonewline` without a file.
+
+    `B-nonewline` is the null control the RB-P14 finding turns on, and until now it was
+    expressible as neither a path nor `git:<ref>:<path>` — so it was materialized to a
+    scratch file and two committed summaries record an absolute `/private/tmp` path as
+    its provenance. This node asserts the derived variant is the SAME rubric those runs
+    used, by reproducing the frozen manifest's committed `base_sha256` for it.
+
+    The manifest is read, not re-implemented: `assets/evals/perturbations/` is frozen and
+    the rule id in the spec is the one it declares.
+    """
+    variant = criticreplay.parse_rubric_arg(f"B-nonewline={_NULL_CONTROL_SPEC}")
+    assert variant.template_sha256 == _B_NONEWLINE_TEMPLATE_SHA
+    manifest = criticreplay.load_manifest(
+        ASSETS / "evals" / "perturbations" / "task-completion.yaml"
+    )
+    assert (
+        manifest.materialized_variants["B-nonewline"]["base_sha256"]
+        == _B_NONEWLINE_TEMPLATE_SHA
+    )
+    assert variant.rubric.prompt == _shipped_template()[:-1]
+    # The ref a row will carry is the whole spec, and it names all three things a later
+    # reader needs: the manifest, the rule, and the committed base.
+    assert variant.ref == _NULL_CONTROL_SPEC
+    # No file, so no file sha — the `IN_MEMORY_REF` rule, not a second meaning for the
+    # column. The populated provenance column here is the template one.
+    assert variant.sha256 == ""
+
+
+def test_a_derive_refuses_a_rule_whose_anchor_is_absent_rather_than_returning_the_base():
+    """W1 is inapplicable to a base that is already its fixed point, and that is an ERROR.
+
+    `W1-trailing-newline` applied to `B-nonewline` is the load-order trap RB-P17's
+    filing invites: the rule matches nothing, and a resolver that returned the base
+    unchanged would record a perturbation that never happened — the provenance defect one
+    level in. A derive-of-a-derive cannot even be typed (the base must be `git:`), so this
+    is the shape the trap actually takes: a committed base that already has no trailing
+    newline.
+
+    Measured against a real git object rather than argued: a throwaway repo, because no
+    rubric committed to THIS repo lacks its trailing newline, and asserting the error on
+    a case that cannot arise would be asserting nothing.
+    """
+    repo = tmp_git_repo_with_a_newlineless_rubric()
+    spec = (
+        f"derive:{ASSETS / 'evals' / 'perturbations' / 'task-completion.yaml'}"
+        ":W1-trailing-newline:git:HEAD:r.yaml"
+    )
+    cwd = os.getcwd()
+    os.chdir(repo)
+    try:
+        with pytest.raises(criticreplay.PerturbationError) as excinfo:
+            criticreplay.parse_rubric_arg(f"B={spec}")
+    finally:
+        os.chdir(cwd)
+    assert "inapplicable" in str(excinfo.value)
+    assert "names no variant" in str(excinfo.value)
+
+
+def tmp_git_repo_with_a_newlineless_rubric(_cache={}):  # noqa: B006
+    """A one-commit repo whose rubric `prompt` has no trailing newline."""
+    if "path" in _cache:
+        return _cache["path"]
+    import tempfile
+
+    root = Path(tempfile.mkdtemp(prefix="bk-rbp17-"))
+    raw = yaml.safe_load((ASSETS / "rubrics" / "task-completion.yaml").read_text())
+    raw["prompt"] = raw["prompt"][:-1]
+    (root / "r.yaml").write_text(yaml.safe_dump(raw, sort_keys=False))
+    for argv in (
+        ["git", "init", "-q"],
+        ["git", "config", "user.email", "t@t"],
+        ["git", "config", "user.name", "t"],
+        ["git", "add", "r.yaml"],
+        ["git", "commit", "-qm", "r"],
+    ):
+        subprocess.run(argv, cwd=root, check=True, capture_output=True)
+    _cache["path"] = root
+    return root
+
+
+@pytest.mark.parametrize(
+    ("spec", "match"),
+    [
+        # A path base is refused ON ITS FACE: no file opened, no git run.
+        ("derive:m.yaml:W1-trailing-newline:assets/rubrics/task-completion.yaml", "git: base"),
+        # And so is a derive of a derive, which is what makes the load order acyclic.
+        ("derive:m.yaml:W1:derive:m.yaml:W2:git:d2f78b7:x.yaml", "git: base"),
+        ("derive:", "derive:<manifest-path>"),
+        ("derive:m.yaml:W1", "derive:<manifest-path>"),
+        ("derive:m.yaml::git:d2f78b7:x.yaml", "derive:<manifest-path>"),
+        ("derive:m.yaml:W1:git:d2f78b7", "git:<ref>:<path> as its base"),
+        ("derive:m.yaml:W1:git::x.yaml", "git:<ref>:<path> as its base"),
+    ],
+)
+def test_a_malformed_derive_spec_is_refused_from_the_argv_alone(spec, match):
+    """RB-P32's rule, extended to the new form: shape verdicts consult no machine.
+
+    Every case here is undecidable-by-nobody — it is wrong on every machine — so it is
+    `rubric_arg_shape_problem`'s answer, above `main`'s `try`, and it spends no `git show`
+    to say so. None of these paths or refs exist; that is the point.
+    """
+    assert match in (criticreplay.rubric_arg_shape_problem(f"x={spec}") or "")
+
+
+def test_a_derive_names_a_rule_the_manifest_does_not_have_and_says_which_it_has():
+    rule = "assets/evals/perturbations/task-completion.yaml"
+    with pytest.raises(criticreplay.PerturbationError) as excinfo:
+        criticreplay.parse_rubric_arg(
+            f"x=derive:{rule}:W9-does-not-exist:git:d2f78b7:assets/rubrics/task-completion.yaml"
+        )
+    assert "is not a point in" in str(excinfo.value)
+    assert "W1-trailing-newline" in str(excinfo.value)
+
+
+def test_rubric_template_sha256_is_the_rubric_and_rubric_sha256_is_the_file(tmp_path):
+    """The measured RB-P17 defect, reproduced on two files instead of asserted.
+
+    Committed record, 2026-08-14: `b-nonewline.yaml` records `rubric_sha256`
+    `59b0fe81ecf3…` and `n5-b-nonewline.yaml` records `29f299707fd6…` — two values for
+    ONE rubric, whose template hashes `d1f32ad2947b…` in both. So the recorded column
+    could not answer "did these two runs judge with the same rubric?", and reported two
+    runs as different when they were the same.
+
+    Reproduced here on two files that differ only in `name:` — nothing the critic ever
+    reads — so the file column MUST differ and the rubric column MUST NOT.
+    """
+    raw = yaml.safe_load((ASSETS / "rubrics" / "task-completion.yaml").read_text())
+    specs = []
+    for index, name in enumerate(("task-completion", "task-completion-renamed")):
+        path = tmp_path / f"{index}.yaml"
+        path.write_text(yaml.safe_dump({**raw, "name": name}, sort_keys=False))
+        specs.append(criticreplay.parse_rubric_arg(f"v{index}={path}"))
+    assert specs[0].sha256 != specs[1].sha256
+    assert specs[0].template_sha256 == specs[1].template_sha256 == _A_ASFILED_TEMPLATE_SHA
+
+
+def _template_a_recorded_ref_names(repo: Path, ref: str) -> str | None:
+    """Recover the rubric TEMPLATE a recorded `rubric_ref` names, from this repo alone.
+
+    INDEPENDENT OF THE THING IT CHECKS ON PURPOSE. It never calls `parse_rubric_arg`,
+    `load_manifest` or `apply_point`: it reads the manifest as YAML and re-implements the
+    declared `op` from the manifest's own words. Asking the module to resolve a ref the
+    module wrote would be the run agreeing with itself — an instrument grading itself.
+
+    Returns `None` when the ref names nothing this repository can supply, which is the
+    answer for an absolute scratchpad path and for a bare commit with no path.
+    """
+    if ref.startswith("derive:"):
+        _, manifest_spec, rule_id, base = ref.split(":", 3)
+        manifest_file = repo / manifest_spec
+        if not manifest_file.is_file():
+            return None
+        points = yaml.safe_load(manifest_file.read_text())["points"]
+        point = next((p for p in points if p["id"] == rule_id), None)
+        template = _template_a_recorded_ref_names(repo, base)
+        if point is None or template is None:
+            return None
+        if point["op"] == "strip-trailing-newline":
+            return template[:-1] if template.endswith("\n") else None
+        if point["op"] == "append-trailing-newline":
+            return template + "\n"
+        if point["op"] == "identity":
+            return template
+        return None  # this reader implements only the ops it has been asked to resolve
+    if ref.startswith("git:") and ref.count(":") >= 2:
+        _, git_ref, path = ref.split(":", 2)
+        shown = subprocess.run(
+            ["git", "-C", str(repo), "show", f"{git_ref}:{path}"],
+            capture_output=True,
+            text=True,
+        )
+        return yaml.safe_load(shown.stdout)["prompt"] if shown.returncode == 0 else None
+    if not ref.startswith("/") and (repo / ref).is_file():
+        return yaml.safe_load((repo / ref).read_text())["prompt"]
+    return None
+
+
+def test_a_fresh_runs_rubric_ref_resolves_from_this_repo_back_to_the_rubric_it_recorded(
+    tmp_path,
+):
+    """THE PIN for RB-P17, and it has to be a FRESH run for a structural reason.
+
+    L1's `test_every_rubric_ref_in_a_committed_summary_resolves_from_this_repo` reads
+    COMMITTED artifacts. Committed evidence is never regenerated, so those rows keep
+    their `/private/tmp` provenance forever and no change to this module can turn that
+    node either red or green — it can never pin anything. This node runs the shipped code
+    TODAY and reads the ref off the rows that run produced, so a mutation of
+    `parse_rubric_arg` shows up in it immediately.
+
+    It is a claim about the INSTRUMENT, not about the world (RB-P14 Gate 2): not "this
+    path exists" — which is how RB-P17's filing acquired a fact that was already false
+    when it was filed — but "what this tool records can be resolved from what this
+    repository contains".
+
+    The two forms under test are the two that carried the defect: `git:`, which recorded
+    the commit and dropped the path, and the null control, which had no form at all.
+    """
+    repo = Path(__file__).resolve().parents[2]
+    transcripts = tmp_path / "transcripts"
+    _transcript(transcripts, "critique", "nav-prod-port", 0, 2331795949, "The port is 8443.")
+    variants = [
+        criticreplay.parse_rubric_arg(
+            "A-asfiled=git:d2f78b7:assets/rubrics/task-completion.yaml"
+        ),
+        criticreplay.parse_rubric_arg(f"B-nonewline={_NULL_CONTROL_SPEC}"),
+    ]
+    result = criticreplay.run(
+        ScriptedCritic(lambda p: 9),
+        variants,
+        criticreplay.load_manifest(ASSETS / "evals" / "perturbations" / "task-completion.yaml"),
+        criticreplay.load_cases(transcripts),
+    )
+    recorded = {(r.variant, r.rubric_ref, r.rubric_template_sha256) for r in result.rows}
+    assert {label for label, _, _ in recorded} == {"A-asfiled", "B-nonewline"}, recorded
+    unresolvable = [
+        f"{label} -> {ref}"
+        for label, ref, sha in sorted(recorded)
+        if _template_a_recorded_ref_names(repo, ref) is None
+        or criticreplay.sha256_text(_template_a_recorded_ref_names(repo, ref)) != sha
+    ]
+    assert not unresolvable, (
+        "a run made today records a `rubric_ref` this repository cannot resolve back to "
+        "the rubric the critic read:\n  " + "\n  ".join(unresolvable)
+    )
+    # And the two variants are the ones the committed record is about, at the committed
+    # template shas — so this is the acceptance pair and not a pair invented to pass.
+    assert {(label, sha) for label, _, sha in recorded} == {
+        ("A-asfiled", _A_ASFILED_TEMPLATE_SHA),
+        ("B-nonewline", _B_NONEWLINE_TEMPLATE_SHA),
+    }
+    # NEGATIVE CONTROL. A checker that resolved everything would pass the assertion above
+    # while measuring nothing. The two refs the committed summaries actually carry — the
+    # scratchpad path and the bare commit — must both come back unresolvable.
+    for unnameable in (
+        "/private/tmp/claude-501/-Users-kktest/8f592274-11af-4ea1-9bea-e41c8cbc4c29"
+        "/scratchpad/b-nonewline.yaml",
+        "d2f78b7",
+    ):
+        assert _template_a_recorded_ref_names(repo, unnameable) is None, unnameable
 
 
 def test_rubric_spec_rejects_a_missing_label():
@@ -888,7 +1151,8 @@ def test_rows_carry_the_columns_the_spec_names(rig):
     _, result = _run(rig, lambda p: 9)
     row = result.rows[0].row()
     assert set(row) == {
-        "bar", "variant", "rubric_ref", "rubric_sha256", "manifest_sha256", "task", "seed",
+        "bar", "variant", "rubric_ref", "rubric_sha256", "rubric_template_sha256",
+        "manifest_sha256", "task", "seed",
         "repeat", "model", "point", "class", "rule", "replay", "prompt_sha256",
         "payload_sha256", "score", "threshold", "passed", "feedback", "tokens_in", "tokens_out",
         "calls", "guard_violations", "guard_readings",
@@ -1526,11 +1790,27 @@ def test_guard_table_is_public_so_a_hand_rolled_loop_can_call_it(asset_tree, tmp
 
 BASELINE = Path(__file__).resolve().parent / "data" / "f8404ab-perturbation-baseline.json"
 
-_RBP16_ADDED_KEYS = ("effect", "guard_effect", "directional")
+_RBP16_ADDED_KEYS = (
+    # RB-P16 (L2, 2026-08-14): the effect size beside every verdict.
+    "effect", "guard_effect", "directional",
+    # RB-P17 (L3, 2026-08-14): the sha of the RUBRIC the critic read, beside the sha of
+    # the FILE it arrived in. Additive — `rubric_sha256` keeps its meaning and its value,
+    # so every `f8404ab`-era field is byte-unchanged and the strip below restores the
+    # baseline exactly. Named here rather than folded in silently, because an unnamed key
+    # slipping past this floor is the regression the floor exists to catch.
+    "rubric_template_sha256",
+)
 
 
 def _without_rbp16_additions(obj):
-    """The artifact as `f8404ab` would have produced it: the named keys, and nothing else."""
+    """The artifact as `f8404ab` would have produced it: the named keys, and nothing else.
+
+    THE NAME STAYS `rbp16` THOUGH IT NOW STRIPS AN RB-P17 KEY TOO, and so does the test
+    below it. `docs/eval-data/2026-08-14-rbp16-effect-size-report.md` is committed
+    evidence that names both by identifier; renaming them would leave a committed record
+    pointing at something that no longer exists, which is precisely the defect RB-P17
+    files. The identifier is the stable handle and this docstring carries the meaning.
+    """
     if isinstance(obj, dict):
         return {
             k: _without_rbp16_additions(v)
@@ -1603,6 +1883,17 @@ def test_the_rbp16_additions_the_floor_strips_are_present_and_loaded(tmp_path):
     assert produced["summary"]["directional"]
     assert "    effect: " in produced["table"]
     assert "Directional consistency " in produced["table"]
+    # RB-P17's key, same rule: a strip is how you hide a regression in what it strips.
+    templates = {r["variant"]: r["rubric_template_sha256"] for r in produced["rows"]}
+    files = {r["variant"]: r["rubric_sha256"] for r in produced["rows"]}
+    assert set(templates) == {"L1", "L2"}, templates
+    for label, sha in templates.items():
+        assert re.fullmatch(r"[0-9a-f]{64}", sha), (label, sha)
+        # It is the RUBRIC, not the FILE: the two variants differ by one trailing
+        # newline inside `prompt`, so both columns move — but they never agree, because
+        # the file also carries `name:`, `threshold:` and `schema:`.
+        assert sha != files[label], (label, sha)
+    assert templates["L1"] != templates["L2"], templates
 
 
 def test_the_baseline_covers_a_populated_guard_table_and_a_zero_spend_refusal():
@@ -4786,12 +5077,22 @@ def _committed_summaries() -> list[tuple[Path, dict]]:
 
 
 def _rows_as_replay_rows(path: Path) -> list[criticreplay.ReplayRow]:
-    """Committed JSONL back into the dataclass today's decision rule consumes."""
+    """Committed JSONL back into the dataclass today's decision rule consumes.
+
+    `rubric_template_sha256` is defaulted to BLANK here rather than on the dataclass, and
+    the difference matters (RB-P17, 2026-08-14). The field did not exist when these rows
+    were written, so a committed row genuinely carries no value for it and blank is the
+    honest reading. Defaulting it on `ReplayRow` itself would have let a live run omit it
+    silently too, which is how a provenance column stops being filled and nobody notices;
+    a run made today must state it. The committed bytes are not touched — this is the
+    reader supplying the absence, not the record being rewritten.
+    """
     rows = []
     for line in path.read_text().splitlines():
         data = json.loads(line)
         data["point_class"] = data.pop("class")
         data.setdefault("calls", 1)
+        data.setdefault("rubric_template_sha256", "")
         rows.append(
             criticreplay.ReplayRow(
                 **{
@@ -4942,7 +5243,17 @@ def test_the_inconclusive_band_reports_something_a_reader_can_tell_from_noise():
         "scratchpad paths under /private/tmp (B-nonewline, in BOTH pb14 runs, with "
         "DIFFERENT rubric_sha256 for the same rubric under test), and two are bare git "
         "refs (`d2f78b7`, `e57f1a6`) whose commit resolves but whose PATH the row never "
-        "recorded — `parse_rubric_arg` stores `ref`, not `spec`."
+        "recorded — `parse_rubric_arg` stores `ref`, not `spec`. "
+        "STILL XFAIL AT L3's FIX, AND PERMANENTLY (2026-08-14). The brief expected this "
+        "to go green once RB-P17 was fixed; it cannot, and that is a result and not a "
+        "shortfall. Committed evidence is never regenerated, so the four unresolvable "
+        "refs are frozen into the record and only a retro-edit could clear them. This "
+        "node therefore measures the HISTORY, and no change to this module can move it "
+        "in either direction — the same structural finding L1 made about N02. What the "
+        "fix is pinned by is a run made TODAY: "
+        "test_a_fresh_runs_rubric_ref_resolves_from_this_repo_back_to_the_rubric_it_"
+        "recorded. Field measurement: "
+        "docs/eval-data/2026-08-14-rbp17-provenance-resolution.md."
     ),
 )
 def test_every_rubric_ref_in_a_committed_summary_resolves_from_this_repo():

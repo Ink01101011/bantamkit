@@ -2673,6 +2673,67 @@ and each carries an attack direction.
   is a pointer into a vanished process. Executable spec:
   `test_every_rubric_ref_in_a_committed_summary_resolves_from_this_repo`;
   ledger claim `N02`.
+
+  **CLOSED 2026-08-14 (L3), on a claim narrower than the filing's and a defect
+  wider than it.** What shipped is a third `--rubric` spec form,
+  `derive:<manifest-path>:<rule-id>:git:<ref>:<path>`, and the null control is
+  now writable as
+
+  ```
+  --rubric B-nonewline=derive:assets/evals/perturbations/task-completion.yaml\
+:W1-trailing-newline:git:d2f78b7:assets/rubrics/task-completion.yaml
+  ```
+
+  which resolves to template sha `d1f32ad2947b…` — the frozen manifest's own
+  committed `base_sha256` for `B-nonewline`, reproduced and not moved.
+
+  **The filing's own fact is withdrawn, not repeated.** "A session temp path
+  **that no longer exists**" was false when it was filed and is false today:
+  re-measured 2026-08-14, both scratchpad rubrics still exist on this machine
+  and still hash to their recorded `rubric_sha256`. The claim that needs no
+  false fact is the one shipped here — a scratchpad path is not a durable
+  provenance record, because it is unresolvable on any other machine *today*
+  and one `rm -rf` from naming nothing on this one.
+
+  **Three changes, all additive; no committed value moves.**
+  (1) The `derive:` form above. Its base must be a `git:` spec — a derived
+  variant has no file of its own, so the only thing that makes its record
+  resolvable is that every segment is immutable, and requiring it makes a
+  derive-of-a-derive unrepresentable, so the load order cannot cycle. A rule
+  whose anchor is absent **raises**; `W1-trailing-newline` against a base that
+  already has no trailing newline is its own fixed point and names no variant.
+  (2) The `git:` form records the **path**: `parse_rubric_arg` stored `ref` and
+  dropped it, so a row said `d2f78b7`, a commit and not a file. Every branch now
+  records the whole spec — the string a reader can hand straight back.
+  (3) `rubric_template_sha256`, a **second** column beside `rubric_sha256`.
+  Measured 2026-08-14: the two committed `B-nonewline` runs record
+  `59b0fe81ecf3…` and `29f299707fd6…` — two values for **one** rubric, whose
+  template hashes `d1f32ad2947b…` in both. The old column is the file and stays
+  the file; the new one is the rubric the critic read, and it is the value the
+  manifest already records as `base_sha256`.
+
+  **THE `xfail` DID NOT GO GREEN, AND CANNOT.**
+  `test_every_rubric_ref_in_a_committed_summary_resolves_from_this_repo` reads
+  committed summaries, which by invariant are never regenerated, so the four
+  unresolvable refs are frozen into the record and only a retro-edit could clear
+  them. It stays `xfail` permanently and it pins nothing, in either direction —
+  the same structural finding L1 made about `N02`. The pin is
+  `test_a_fresh_runs_rubric_ref_resolves_from_this_repo_back_to_the_rubric_it_recorded`,
+  over a run made today, with an independent resolver that never calls
+  `parse_rubric_arg`. Ledger `N02` (re-aimed), `N07`, `N08`. Field measurement,
+  which is the acceptance claim and not the suite:
+  `docs/eval-data/2026-08-14-rbp17-provenance-resolution.md`.
+
+  **STILL OPEN, with an attack direction.** The old rows keep their scratchpad
+  paths and their bare commits forever — nothing here rewrites them, and a
+  reader of `2026-08-11-pb14-…-summary.json` still cannot resolve
+  `B-nonewline`'s provenance from this repo. What a reader *can* now do is
+  re-derive those bytes: the manifest's `base_sha256` for `B-nonewline` equals
+  the template sha of the `derive:` spec above, so the recipe is executable
+  rather than prose. **Attack:** write a *new* artifact beside the old ones —
+  a re-run of the acceptance cells with `--rubric B-nonewline=derive:…` — so
+  the record contains at least one summary whose every `rubric_ref` resolves.
+  That needs the qwen arms, which this unit was told not to re-run.
 - **RB-P18 — `payload_sha256` is not comparable across records, and its name
   says nothing about that.** SA3's payload shas do not match this bar's for
   identical cells, at identical `prompt_sha256`, identical seeds and identical

@@ -7,7 +7,8 @@
     "Report: docs/eval-data/2026-08-13-contract-claim-pinning.md",
     "b496856 + L1 (767 -> 771 nodes): 21/21 pinned BEFORE the three RB-P16/17/18 claims were added (behaviour 16/16, prose 5/5). N01/N02/N03 are claims about problems that are still OPEN, so they read UNPINNED by construction — that number, and not the denominator, is what L2/L3/L4 have to move. Survey: docs/eval-data/2026-08-13-rbp16-rbp17-rbp18-survey.md",
     "cb55926 (771 nodes: 768 passed, 3 xfailed) with the 24-claim ledger, measured not asserted: behaviour 16/19 (84%), prose 5/5 (100%), overall 21/24. All 21 pre-existing claims still PINNED — the three new nodes cost nothing. N01/N02/N03 UNPINNED.",
-    "abc2a34 + L2 (775 nodes: 775 passed, 2 xfailed) with the 27-claim ledger, measured not asserted, at ab3c36c: behaviour 20/22 (91%), prose 5/5 (100%), overall 25/27. The BEFORE was re-measured rather than cited — abc2a34 on its own 24-claim ledger reads behaviour 16/19, prose 5/5, overall 21/24, exactly the committed number. So 21/24 -> 25/27: N01 moved UNPINNED -> PINNED and N04/N05/N06 landed PINNED, and all 21 pre-existing claims are still PINNED — the four new nodes cost nothing. N02/N03 stay UNPINNED and MUST: they are RB-P17/RB-P18, still open, and their nodes read committed artifacts, which no source mutation can turn red (L1's structural finding). Field measurement, which is the acceptance claim and not this number: docs/eval-data/2026-08-14-rbp16-effect-size-report.md."
+    "abc2a34 + L2 (775 nodes: 775 passed, 2 xfailed) with the 27-claim ledger, measured not asserted, at ab3c36c: behaviour 20/22 (91%), prose 5/5 (100%), overall 25/27. The BEFORE was re-measured rather than cited — abc2a34 on its own 24-claim ledger reads behaviour 16/19, prose 5/5, overall 21/24, exactly the committed number. So 21/24 -> 25/27: N01 moved UNPINNED -> PINNED and N04/N05/N06 landed PINNED, and all 21 pre-existing claims are still PINNED — the four new nodes cost nothing. N02/N03 stay UNPINNED and MUST: they are RB-P17/RB-P18, still open, and their nodes read committed artifacts, which no source mutation can turn red (L1's structural finding). Field measurement, which is the acceptance claim and not this number: docs/eval-data/2026-08-14-rbp16-effect-size-report.md.",
+    "32773f9 + L3 (789 nodes: 787 passed, 2 xfailed) with the 29-claim ledger, measured not asserted, at the RB-P17 commit: see the BEFORE/AFTER lines the harness printed, recorded in docs/eval-data/2026-08-14-rbp17-provenance-resolution.md. N02 must move UNPINNED -> PINNED and N07/N08 must land PINNED, with every pre-existing claim still PINNED. N03 stays UNPINNED and MUST: RB-P18 is still open. The RB-P17 committed-summary node stays xfail PERMANENTLY - committed evidence is never regenerated, so no fix can clear the four frozen unresolvable refs."
   ],
   "claims": [
     {
@@ -244,12 +245,12 @@
     {
       "cid": "N02",
       "kind": "behaviour",
-      "claim": "the `rubric_ref` a run records resolves, from this repository alone, back to the recorded `rubric_sha256` (RB-P17, OPEN)",
-      "where": "parse_rubric_arg, the path branch: `source = spec`, and the git branch's `source = ref` which drops the path",
+      "claim": "the `rubric_ref` a run records resolves, from this repository alone, back to the rubric the critic read (RB-P17, CLOSED 2026-08-14)",
+      "where": "parse_rubric_arg, the ref it records: the git branch used to store `ref` and drop the path",
       "path": "runtime-py/src/bantamkit/criticreplay.py",
-      "anchor": "        raw = path.read_text()\n        source = spec",
-      "replacement": "        raw = path.read_text()\n        # mutation (RB-P17): the recorded ref is the raw spec again\n        source = spec",
-      "note": "UNPINNED at b496856, and for TWO reasons that L3 must separate. (1) The claim is false today: 4 of the 5 distinct `rubric_ref` values in committed summaries do not resolve — two /private/tmp scratchpad paths and two bare git refs whose PATH was never recorded. (2) STRUCTURAL, and the more important one: test_every_rubric_ref_in_a_committed_summary_resolves_from_this_repo reads COMMITTED artifacts, so no mutation of the source can turn it red and it can never pin anything. Pinning this claim needs a node over a FRESH run's recorded ref. L1 filed the node the brief asked for and is naming the gap rather than hiding it."
+      "anchor": "        _, ref, path = spec.split(\":\", 2)\n        raw = _git_show(ref, path)\n    else:",
+      "replacement": "        _, ref, path = spec.split(\":\", 2)\n        raw = _git_show(ref, path)\n        # mutation (RB-P17): the recorded ref names a commit and not a file again\n        return RubricVariant(label=label, spec=spec, ref=ref,\n                             rubric=_parse_rubric(raw, spec), sha256=sha256_text(raw))\n    else:",
+      "note": "RE-AIMED 2026-08-14 by L3, for exactly the reason this entry's previous note gave. UNPINNED at b496856 because the node L1 filed (test_every_rubric_ref_in_a_committed_summary_resolves_from_this_repo) reads COMMITTED artifacts, which by invariant are never regenerated, so no source mutation can turn it red — and it is STILL xfail after the fix, permanently, because the four unresolvable refs are frozen into the historical record. The pin is a FRESH-RUN node: test_a_fresh_runs_rubric_ref_resolves_from_this_repo_back_to_the_rubric_it_recorded, which runs the shipped code today and resolves the ref it recorded by an independent reader that never calls parse_rubric_arg. The mutation above restores the pre-fix `source = ref`: the row says `d2f78b7`, a commit and not a file, and the resolver cannot recover the bytes. Field measurement, not the suite: docs/eval-data/2026-08-14-rbp17-provenance-resolution.md."
     },
     {
       "cid": "N03",
@@ -290,6 +291,26 @@
       "anchor": "        \"directional\": _directional(cells),",
       "replacement": "        # mutation (RB-P16): no cross-cell statement again\n        \"directional\": [],",
       "note": "Deliberately NOT the headline and deliberately not a gate. Surveyed over the whole committed record: every `inconclusive` cell has sign −1, no run has two cells of one pair pointing opposite ways, and the only non-negative sign is the exact tie. Shipping the filed sign-agreement RULE would have changed nothing on any of the 12 cells while looking tested. The node also asserts `attributable` is unmoved by it."
+    },
+    {
+      "cid": "N07",
+      "kind": "behaviour",
+      "claim": "the null control is expressible as a rule applied to a committed ref, and the ref a row carries names the manifest, the rule and the base — so it resolves without the argv that made the run (RB-P17)",
+      "where": "parse_rubric_arg, the derive: branch; _derive_rubric",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "    if spec.startswith(\"derive:\"):\n        return RubricVariant(\n            label=label, spec=spec, ref=spec, rubric=_derive_rubric(spec), sha256=\"\"\n        )",
+      "replacement": "    if spec.startswith(\"derive:\"):\n        # mutation (RB-P17): the recorded ref is the filing's derive:<label>:<rule-id>,\n        # which resolves only from the argv that also defined the base.\n        _, _manifest, _rule, _base = spec.split(\":\", 3)\n        return RubricVariant(\n            label=label, spec=spec, ref=f\"derive:{label}:{_rule}\",\n            rubric=_derive_rubric(spec), sha256=\"\"\n        )",
+      "note": "The filing proposed derive:<label>:<rule-id>. L1 confirmed it resolves only from the argv that defined the base label and names the manifest nowhere — a pointer into a process that has exited, which is the same failure as a pointer into a cleaned directory, one indirection along. The mutation ships exactly that form; the fresh-run resolver, which has only the repo, cannot expand `A-asfiled` and the node goes red. The derived variant reproduces the frozen manifest's committed base_sha256 for B-nonewline (d1f32ad2947b...), so this is the acceptance pair and not an invented one."
+    },
+    {
+      "cid": "N08",
+      "kind": "behaviour",
+      "claim": "a row says which RUBRIC the critic read, not only which FILE it arrived in — so two runs that judged with the same rubric cannot report as different (RB-P17, broader than filed; RB-P18's defect in a second field pair)",
+      "where": "RubricVariant.template_sha256, and the rubric_template_sha256 column beside rubric_sha256",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "anchor": "        return sha256_text(self.rubric.prompt)",
+      "replacement": "        # mutation (RB-P17): the provenance column is the file again\n        return self.sha256",
+      "note": "Measured, not asserted. The two committed B-nonewline runs record rubric_sha256 59b0fe81ecf3... and 29f299707fd6... for ONE rubric, whose template hashes d1f32ad2947b... in both: the field reported two runs as different when they were the same. Killed by test_rubric_template_sha256_is_the_rubric_and_rubric_sha256_is_the_file (two files differing only in `name:` collapse to one template sha; under the mutation they do not) and by the fresh-run resolver node, whose derived variant has NO file and so reads blank under the mutation. Additive: rubric_sha256 keeps its meaning and its value, which is why the f8404ab byte-identity floor still restores exactly."
     }
   ]
 }
