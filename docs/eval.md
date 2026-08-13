@@ -2771,6 +2771,32 @@ and each carries an attack direction.
   a re-run of the acceptance cells with `--rubric B-nonewline=derive:…` — so
   the record contains at least one summary whose every `rubric_ref` resolves.
   That needs the qwen arms, which this unit was told not to re-run.
+
+  **ALSO STILL OPEN — A `derive:` REF RESOLVES AGAINST THE PROCESS CWD, NOT
+  AGAINST THIS REPOSITORY (L5's M3, measured and filed 2026-08-14 by L7, LIVE at
+  HEAD).** `parse_rubric_arg`'s docstring says a reader "who has ONLY this
+  repository and one row can recover the exact bytes the critic read … **No argv,
+  no machine, no `/private/tmp`**". Measured, that sentence is stronger than the
+  code: the reader also has to be **standing in the repo root**, and nothing in the
+  record says so. The identical repo-relative ref that resolves from the repo root
+  to `d1f32ad2947b…` raises `perturbation manifest not found` from any other
+  directory. **Wider than it was filed:** the same holds for the **base** segment —
+  `_git_show` shells out to `git show` in the process CWD, so `git:d2f78b7:…`
+  resolves to `e018854368c1…` from the repo root and raises `exit status 128` from
+  `/`. Both segments are repo-*relative* strings resolved against something that is
+  not the repo.
+  **C3's `_repo_relative` fix did not close this and was never going to.**
+  `_not_repo_relative` is an argument-**shape** rule — a function of the typed
+  string and of nothing else, which is exactly what entitles it to report
+  `USAGE_EXIT` above `main`'s `try` (RB-P32). It cannot bear on where a relative
+  path is resolved **from**. The two rules are complementary and the second is
+  missing. **Attack:** resolve both segments against a discovered repository root
+  rather than the CWD — `assets_root()` already does that discovery for the asset
+  pack, env override first and packaged/parents fallback after — and pin it with a
+  node that calls the resolver from a CWD **outside** the tree. That node is the
+  one thing the present suite cannot contain: every existing pin runs with the repo
+  as CWD, so the dependence is invisible to all of them. Measured:
+  `docs/eval-data/2026-08-14-l7-closure-residuals.md`, case A. (Measurement.)
 - **RB-P18 — `payload_sha256` is not comparable across records, and its name
   says nothing about that.** SA3's payload shas do not match this bar's for
   identical cells, at identical `prompt_sha256`, identical seeds and identical
@@ -2808,6 +2834,20 @@ and each carries an attack direction.
   manifest's `base_sha256` (template text) — see RB-P17's survey note.
   Executable spec: `test_payload_sha256_does_not_name_two_recipes_at_once`;
   ledger claim `N03`.
+
+  > **AMENDMENT 2026-08-14 (L7) — one sentence in the block above is STALE at
+  > HEAD, and it is corrected here rather than rewritten there.** The block says
+  > "`_payload_sha` is the **only** `payload_sha256` computation anywhere in this
+  > repo". That was true on 2026-08-13, which is the date the block carries, so it
+  > is disclosed-by-date rather than false — but the 2026-08-14 closure below it
+  > does not correct it, and a reader arrives at the two in order. What is true at
+  > HEAD: `_payload_shas` is the computation, and it returns **both** columns from
+  > one serialization pass; `_payload_sha` is a one-line delegate that returns
+  > `_payload_shas(...)[0]` and is kept so that in-process callers of the old name
+  > still work. The count of recipes is unchanged — there are still exactly two,
+  > insertion-order and key-sorted, both named in `payload_sha256_recipes` — so
+  > nothing the block concludes moves. This note exists because a stale sentence
+  > inside a dated block is still the sentence a reader quotes. (L5's M4.)
 
   **FIXED 2026-08-14 (L4) — AND NOT BY THE ATTACK THIS ENTRY FILED.** The filed
   attack, "version the field name so two recipes cannot share one", is wrong and
@@ -2873,6 +2913,37 @@ and each carries an attack direction.
   rather than a later reader deducing it from `isinstance`. This cannot be
   retro-fitted to SA3, whose writer is in no tree and whose rows are frozen; it
   binds the next writer. (Measurement.)
+
+  **ALSO STILL OPEN — `N10`'s ARITY PIN IS SYNTHETIC, and the ledger number should
+  be read knowing it (L5's M2, filed 2026-08-14 by L7, not fixed).** `N10`'s
+  mutation makes the reader flatten (`return (value[0],)`). Exactly one assertion
+  in its pin node can go red under it:
+  `assert read(["a", "b"]) == ("a", "b")` — a **hardcoded two-element literal**.
+  The record-based half of the same node — *all 30 SA3 lists have length 1* — reads
+  frozen bytes whose lists are all length 1, so a reader that returns `(value[0],)`
+  still returns length 1 and that assertion **can never go red**: a dead assertion
+  inside a passing node, which is the shape a green suite is worst at showing you.
+  Under it sits the real gap: **no shipped writer can emit a list at all**, so
+  nothing in this repo would catch one that did. `N10` is therefore pinned against
+  a case the code cannot produce, and PINNED means less for it than for its
+  neighbours. **Attack:** land the `unit` field the paragraph above proposes and
+  have the bar's own writer emit the aggregated shape for an aggregate — then the
+  arity claim has a producer, the census half stops being decorative, and the pin
+  is against something a run can actually do. Until then the honest reading of
+  `N10` is "the reader handles a two-element list", not "the record's arities are
+  under control". Measured: `docs/eval-data/2026-08-14-l7-closure-residuals.md`.
+
+  **AND ONE MINOR, FIXED (L5's M1, 2026-08-14 by L7).**
+  `payload_shas_recorded` shipped **absent from `__all__`** (43 entries, this name
+  not among them) while this entry presents it as RB-P18's remedy for a reader who
+  has the JSONL and **not** this tree — an out-of-tree reader by construction,
+  whose only surface is the export list. `guard_table` has carried
+  `assert "guard_table" in criticreplay.__all__` since it shipped, on exactly this
+  argument; this had nothing, so deleting the export would have turned no node red.
+  Now 44 entries, pinned by
+  `test_the_payload_sha_reader_is_in_the_published_surface`, ledger `N14`, added in
+  the same commit as the fix. Before/after:
+  `docs/eval-data/2026-08-14-l7-closure-residuals.md`, case B.
 - **RB-P19 — `P3-right-correct` ships violating the manifest's own
   shared-token guard on the acceptance cell.** The guard forbids an added or
   removed word from appearing in the cell's `{task}`; `P3` removes *right*,
@@ -4432,6 +4503,216 @@ estimates ran 32% low on the acceptance run and 11% low on the routine profile,
 against exact request counts; the spec now carries the measured numbers and the
 reason (`C-attempted` costs ~580 tokens/request against `A-asfiled`'s 384, so
 per-*variant* estimates cannot be scaled from one variant).
+
+#### L (2026-08-14, v0.21.0) — three closures, a counter that got honest, and what is still open
+
+RB-P16, RB-P17 and RB-P18 are closed above, each with its own before/after and its
+own field record. **The suite is not the evidence for any of them** — RB-P28 is
+open, and this job demonstrated why for a third time: a patch that reverts all
+three fixes unless `pytest` is in `sys.modules` kept **792 passed, 2 xfailed**, not
+one node red, while a real shell printed an affirmatively false effect line
+(`docs/eval-data/2026-08-14-rbp28-acceptance-pins-outside-pytest.md`). So each
+acceptance is a `/bin/sh` run with no `PYTEST_*` key in the child's environment,
+and the nodes are regression guards.
+
+**The commands, exactly as they were run.** Each takes the repo and a work
+directory; the `-before` form is the same runner against the pre-fix commit, so
+both ends are measured rather than one end being cited:
+
+```sh
+# RB-P16 — a verdict carries its effect size
+sh docs/eval-data/2026-08-14-rbp16-effect-size-report.sh "$PWD" /tmp/rbp16
+# RB-P17 — a control's provenance is a rule applied to a committed ref
+sh docs/eval-data/2026-08-14-rbp17-provenance-resolution.sh "$PWD" /tmp/rbp17
+sh docs/eval-data/2026-08-14-rbp17-provenance-resolution-v2.sh "$PWD" /tmp/rbp17v2
+# RB-P18 — one request lands on both frozen payload-sha families
+sh docs/eval-data/2026-08-14-rbp18-payload-recipe.sh "$PWD" /tmp/rbp18
+# RB-P28's residual, closed for the three acceptances
+.venv/bin/python docs/eval-data/2026-08-14-rbp28-fix-nothing-patch.py "$PWD"
+# this unit's residuals: the CWD tell, the export list, the status values
+sh docs/eval-data/2026-08-14-l7-closure-residuals.sh "$PWD"
+# the pinning number, and the calibration that licenses reading it
+.venv/bin/python tools/pinharness/pinned.py . HEAD tools/pinharness/contract-ledger.json
+.venv/bin/python tools/pinharness/pinned.py . HEAD tools/pinharness/calibration-head.json
+```
+
+**What each lever changed, in one line and no more than was measured.** RB-P16: a
+§7 verdict now ships an `effect` block beside it — signed difference, sign, which
+variant leads, `points_from_separation`, and the points the two variants disagree
+on — plus a cross-cell `directional` key; the two ends of the committed band
+(|Δ| 0.833 and 0.273) are now tellable apart, and no cell's attribution moved.
+RB-P17: the null control is expressible as
+`derive:<manifest-path>:<rule-id>:git:<ref>:<path>`, every segment repo-relative or
+a git ref, and it reproduces the frozen manifest's own `base_sha256`
+`d1f32ad2947b…` on all 12 declared points. RB-P18: `payload_canonical_sha256`
+lands beside `payload_sha256`, and **one** request issued on 2026-08-14 hits both
+frozen record families at once — `a17fc774681a…` (the bar's) and `4eb56220e883…`
+(SA3's) — so a frozen row is now interpretable by re-running its cell and seeing
+which column its value lands in.
+
+**Three Criticals were found AFTER those three closures were written, and all three
+were closed before this was published.** That ordering is the point of putting a
+review unit between the fixes and the release, and it is the second job in a row
+where the review found Criticals a closure unit placed directly after the fixes
+would have shipped. (1) The fix-nothing patch above. (2) The pinning harness
+certified claims it never checked. (3) The `derive:` form re-created RB-P17's own
+defect one segment over — an absolute out-of-repo manifest path was **accepted**,
+by the shipped code, by the fresh-run pin, and by the committed field checker, all
+three having the hole they were checking for.
+
+##### The number — and it went DOWN because the counter got honest
+
+**`31/31` is WITHDRAWN and is cited nowhere.** Under the harness that produced it
+the whole verdict was `pinned = rc != 0`, which relates no claim to its mutation
+and no killer to its claim. Reproduced rather than argued: a one-claim ledger
+asserting *"every summary a run writes states the current phase of the moon, read
+from an ephemeris"* — a feature that does not exist — paired with a mutation that
+breaks an `import`, measured **PINNED, 1/1, 100%**, with `nothing` in the killed-by
+column of the same row (`docs/eval-data/2026-08-14-pinning-harness-false-positives.md`).
+`31/31` meant **"31 mutations each turned ≥ 0 nodes red"**.
+
+| sweep | ledger | result |
+|---|---|---|
+| `3070d9c` — first sweep under the fixed harness | the **same 31** claims | **30/31** — PINNED 30, **FALSE-PINNED 1** (`B16`), UNPINNED 0, BROKEN 0 |
+| `8cd6078` | **34** claims (`N11`, `N12`, `N13` added) | **34/34** — behaviour 29/29, prose 5/5 |
+| `6b22889` (this unit) | **35** claims (`N14` added with L5's M1 fix) | **35/35** — behaviour 30/30, prose 5/5, FALSE-PINNED 0, BROKEN 0 |
+
+**The denominator grew by one because a defect was fixed, not because the counter
+got looser**, and `34/34` at `8cd6078` is not restated by that sweep — it stands
+exactly as it was measured. The caveat below travels with **both** numbers,
+unchanged, because nothing in the last sweep changed how `pins` is chosen.
+
+**The honest number is `34/34`, and this caveat travels with it wherever it is
+quoted:**
+
+> **34 mutations each turned red a node the claim NAMED.** `pins` is
+> **author-chosen**, and `B16` is a documented instance of the discipline being
+> applied *after* the measurement.
+
+`B16` came back from FALSE-PINNED by **inspection, not by re-scoping**: its only
+killer, `test_every_shape_rule_flag_is_the_usage_status_in_the_field`, carries
+`--rubric a=<a path that is not there>` as its load-bearing case and cites K4's I4
+— which is `B16`'s own committed note — so that node was entitled to pin it and the
+first pin list simply omitted it. Defensible on the node's own docstring, and no
+stronger than that.
+
+**What the old counter was throwing away** — the new `of which NAMED` column, the
+count of a mutation's killers that the claim actually named:
+
+| claim | named / total killers |
+|---|---|
+| `N01` | **1 / 8** |
+| `N02` | 1 / 3 |
+| `N03` | 1 / 4 |
+| `B10` | 1 / 6 |
+
+**Most killers were never related to their claim at all.** The three acceptance
+claims name **only** their out-of-process node, on purpose: under the old rule each
+would have counted a kill by any of its 3–8 in-process guards, which is exactly the
+reading that made the fix-nothing patch invisible.
+
+**A number that went down because the counter got honest is a better number, and
+that is how this one should be read.** `31/31` was arithmetically higher and
+measured nothing; `34/34` is arithmetically the same fraction and measures a
+narrow, stated thing. Calibration at HEAD is what licenses reading it at all —
+`CAL-HEAD-RED` PINNED and `CAL-HEAD-GREEN` UNPINNED, both known answers, both
+returned; an instrument with only a positive control cannot tell "everything is
+pinned" from "the detector is stuck on".
+
+##### Measured and NOT fixed — open, each with an attack direction
+
+- **RB-P34 — the exit-status contract's status VALUES are pinned by nothing, and
+  a probe written for another purpose is what revealed it.** Measured at two
+  commits, by two units, with the same answer: mutating `GUARD_VIOLATION_EXIT` from
+  `3` to `7` leaves **798 of 800 nodes green** at `6b22889` and **797 of 799** at
+  `6c27ebe`, with the same two killers both times. The mechanism is not an oversight in
+  any one node — **every** node that tests exit status *names the constant*, so the
+  mutation moves the code and the expectation together and every assertion is as
+  true afterwards as before; the epilog renders the number through an f-string, so
+  the prose moves too. The only two nodes that notice are L6's `OUTSIDE_pytest`
+  probes, which read `$?` off a real child and happen to assert a literal `3`. The
+  numbers `0/1/2/3/4/5` are a **contract with CI owners and with every committed
+  evidence file**, and they have been protected by nothing since they were
+  introduced. **Attack:** assert the literal values once, in
+  `test_the_guard_status_is_distinct_from_the_refusal_and_the_usage_status`, and
+  field-check each number against what the committed records actually carry — a
+  status is a promise to a reader outside this tree, so the check belongs where a
+  reader outside this tree can see it. Measured:
+  `docs/eval-data/2026-08-14-l7-closure-residuals.md`, case C. (Measurement.)
+- **RB-P28 stays OPEN.** L6 closed the **three acceptances** by moving their pins
+  out of the process; it did not close the **class**. A patch can still key on the
+  probe's `sys.argv[0]`, on the scripted critic, or on a tmp-dir-shaped path, and
+  the three new probes are as susceptible to that as anything else — they are the
+  three claims that were worth the cost, not a general defence. **Attack:**
+  unchanged and stated at RB-P28 above — an oracle phase over the shipped entry
+  point whose inputs are indistinguishable from a user's.
+- **`pins` can be named after the measurement.** Nothing stops an author running
+  the sweep, reading the killers, and writing them into `pins`. `B16` above is a
+  documented instance. **Attack:** derive `pins` mechanically — from the section a
+  node lives in and the problem id its docstring cites — so the author does not get
+  to choose, and report any hand-written pin separately.
+- **A pin may be a family PREFIX, and one is.** `assert_pins_exist` matches with
+  `pin in node`, so `B01`'s `test_closed_pipe_` counts a kill by any of the **5**
+  nodes in that family. Measured at `6b22889`: **67 pins over 35 claims, of which
+  exactly one is a prefix.** Deliberate where the family is one claim, a loophole
+  where it is not. **Attack:** require exact node ids and make a family explicit by
+  listing its members, so the ledger states the count it is relying on.
+- **The `derive:` manifest segment is still MUTABLE — detectable, not prevented.**
+  `derive_manifest_sha256` records the bytes the ref resolved through; it does not
+  stop the file changing under its own name and does not claim to. **Attack:**
+  filed at RB-P17 above.
+- **A derived variant's blank `rubric_sha256` is undocumented in the artifact**
+  (L5's I5). A derived variant has no file of its own, so the column is empty and
+  that is correct — but a later reader can read empty as "unknown" rather than "none
+  exists", and the reasoning lives only in a docstring. This is the same defect
+  `payload_sha256_recipes` was shipped to fix one field over: a recipe that lives in
+  a docstring is not published. **Attack:** state it in the summary the run writes,
+  beside the recipes block, where the out-of-tree reader looks.
+- **Docstring prose asserting a MEASURED fact is entirely unpinned** (L5's I2).
+  Reversing "2 of 11 points" to "0 of 11" inside a docstring reads UNPINNED. This
+  job shipped hundreds of lines of such prose and added **zero** prose claims to the
+  ledger, so the ratio of measured sentences to pinned ones got worse, not better.
+  **Attack:** the numbers a docstring asserts should be read from the committed
+  field record at test time — the pattern
+  `test_the_epilog_discloses_the_behaviour_change_with_the_count_the_field_record_measured`
+  already does exactly this for one sentence, and it generalises to any docstring
+  number that names its record.
+- **The ruler invariant's two hashes do not span the ruler's inputs** (L5's I4).
+  `_separation`'s body hash and the `attributable` expression's hash both hold, and
+  both held while this job moved `_family_stats.passed` to
+  `len(_passing_points(...))` — a mutation of `_passing_points` from `all` to `any`
+  changes every verdict while leaving **both** hashes byte-identical. The refactor is
+  genuinely equivalent and was separately verified, but the stated method could not
+  have told you. **Attack:** hash the transitive closure of what the decision rule
+  reads, or — better, because it is a property and not a fingerprint — keep proving
+  equivalence by **substitution**, which is what actually established that
+  `directional` and `effect` decide nothing (a lying `_directional` and a constant
+  `_effect` leave every decision field identical).
+- **`N10`'s arity pin is synthetic** (L5's M2) and **a `derive:` ref resolves
+  against the process CWD** (L5's M3, live at HEAD, and wider than filed). Both
+  filed in full at RB-P18 and RB-P17 above.
+- **One machine, one filesystem, one CPython 3.12.13 on APFS/Darwin 25.5.0**, for
+  every field number in this job — as in K5. CI runs 3.11 and 3.12 on
+  `ubuntu-latest` and is a second reading of the **suite** only; no field runner has
+  been run there. **Attack:** unchanged — the field runners are `/bin/sh` and would
+  run in CI as a job of their own.
+
+##### Invariants re-verified at this unit's HEAD rather than cited
+
+`docs/eval-data`: **+3001 / −0** against `b496856` — nothing regenerated, nothing
+retro-edited. `assets/`: **0 files changed**. The byte-identity floor
+`runtime-py/tests/data/f8404ab-perturbation-baseline.json`: **0 commits** across
+the whole job. And the ruler did not move — `_separation`'s body, with the
+docstring stripped and normalised through `ast.unparse`, hashes
+`1cfc39b88dfc4ef3`, and the `attributable` expression hashes `8487f267bc440b01`,
+both under the recipes stated with them:
+
+```sh
+git diff --numstat b496856..HEAD -- docs/eval-data | awk '{a+=$1;d+=$2} END {print a, d}'
+git log --oneline b496856..HEAD -- runtime-py/tests/data/f8404ab-perturbation-baseline.json | wc -l
+git show HEAD:runtime-py/src/bantamkit/criticreplay.py \
+  | grep -A2 '"attributable": (' | tr -d ' \n' | shasum -a 256 | cut -c1-16
+```
 
 ### The `qwen-implementer` cell on RB-P27 lever (2) (2026-08-12)
 
