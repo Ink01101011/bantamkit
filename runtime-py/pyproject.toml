@@ -24,6 +24,16 @@ packages = ["src/bantamkit"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# L6, 2026-08-14 (L5's I6). Both permanent `xfail`s were NON-STRICT, so they could go
+# red neither by failing nor by passing — inert in both directions, while contributing
+# "2 xfailed" to a headline that reads as coverage. Strict makes the passing direction
+# a failure, and for these two that direction is worth exactly one thing: both assert
+# facts about COMMITTED bytes, which by invariant are never regenerated, so an xpass
+# means the frozen record moved. That is the byte-identity floor being breached, and a
+# red suite is the right answer to it. The failing direction stays inert and no setting
+# can change that — see the note on each marker, and L5's diagnosis: the real defect is
+# that they assert facts about the world (RB-P14 Gate 2), which is filed, not fixed.
+xfail_strict = true
 
 [tool.ruff]
 line-length = 100

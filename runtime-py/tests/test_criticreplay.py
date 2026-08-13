@@ -1753,6 +1753,50 @@ def test_the_guard_clean_verdict_is_reported_beside_the_full_family_verdict(guar
     assert comparison["attributable"] is False
 
 
+def test_the_guard_dropped_effect_is_the_effect_of_the_guard_dropped_FAMILY(guard_rig):
+    """`guard_effect` is computed over the guard family, not over the full one.
+
+    I1, filed by L5 and measured UNPINNED: `guard_effect` is a shipped reporting field
+    with no claim behind it. It is not cosmetic — it is the half of RB-P16's fix that
+    carries the effect for the family §7 rule 3 actually acts on, and `effect` is credited
+    with "the verdict travels with its size" on the strength of both.
+
+    The cell here is built so the two DISAGREE, because a node on a cell where they
+    coincide would pass under a `guard_effect` that is just a second copy of `effect`:
+    `before` passes all three points, `after` fails exactly the one the shared-token guard
+    dropped. So the full family separates by one point and the guard-dropped family does
+    not separate at all — and the disagreement is named point by point, not just counted.
+    """
+    def only_the_dropped_point_fails(prompt: str) -> int:
+        # The `after` variant's P-taskword rendering, and nothing else: that point
+        # replaces "TWO" with "ALPHA", so "TWO" is the tell. "ALPHA" is not — it is in
+        # every rendered prompt, via the cell's {task}, which is why the guard fires.
+        return 2 if ("CHANGED" in prompt and "TWO" not in prompt) else 9
+
+    _, result = _run(guard_rig, only_the_dropped_point_fails)
+    summary = criticreplay.summarize(result, guard_rig["manifest"].sha256)
+    comparison = summary["cells"][0]["comparisons"][0]
+    assert comparison["family_size"] == 3 and comparison["guard_family_size"] == 2
+    assert comparison["guard_dropped_rules"] == [
+        {"rule": "P-taskword", "reason": "shared-token", "words": ["alpha"]}
+    ]
+    # The full family: `before` leads by the one point the guard dropped.
+    assert (comparison["a_pass_rate"], comparison["b_pass_rate"]) == ("3/3", "2/3")
+    assert comparison["effect"]["delta_passed"] == 1
+    assert comparison["effect"]["a_only"] == ["P-taskword"]
+    assert comparison["effect"]["disagreeing_points"] == 1
+    # The guard-dropped family: that point is gone, so there is nothing left to lead on.
+    assert comparison["guard_effect"]["delta_passed"] == 0
+    assert comparison["guard_effect"]["a_only"] == []
+    assert comparison["guard_effect"]["b_only"] == []
+    assert comparison["guard_effect"]["disagreeing_points"] == 0
+    assert comparison["guard_effect"]["points_from_separation"] == 2
+    # THE TWO ARE NOT ONE FIELD WRITTEN TWICE, which is the whole point of the node.
+    assert comparison["effect"] != comparison["guard_effect"]
+    # …and the guard verdict it belongs beside moved with it.
+    assert comparison["verdict"] != comparison["guard_verdict"]
+
+
 def test_guard_dropping_leaves_the_verdict_alone_when_it_is_not_load_bearing(guard_rig):
     """The other side of the same rule: a separation the tainted point did not carry."""
     _, result = _run(guard_rig, lambda p: 2 if "CHANGED" in p else 9)
@@ -5525,6 +5569,15 @@ def test_the_inconclusive_band_reports_something_a_reader_can_tell_from_noise():
         "test_a_fresh_runs_rubric_ref_resolves_from_this_repo_back_to_the_rubric_it_"
         "recorded. Field measurement: "
         "docs/eval-data/2026-08-14-rbp17-provenance-resolution.md."
+ "STRICT SINCE 2026-08-14 (L6, L5's I6). It was non-strict, so it could go red "
+        "neither by failing nor by passing while contributing to a headline that reads "
+        "as coverage. Strict buys exactly one direction and it is worth having: this "
+        "node asserts a fact about COMMITTED bytes, so an xpass means the frozen record "
+        "MOVED, which is the byte-identity floor being breached and belongs in red. The "
+        "failing direction is still inert and no setting changes that. L5's diagnosis "
+        "stands and is FILED, not fixed: permanence follows from asserting a fact about "
+        "the world (RB-P14 Gate 2), and a node scoped to 'every rubric_ref written on "
+        "or after 2026-08-14 resolves' covers the same duty and is achievable."
     ),
 )
 def test_every_rubric_ref_in_a_committed_summary_resolves_from_this_repo():
@@ -5594,6 +5647,15 @@ def test_every_rubric_ref_in_a_committed_summary_resolves_from_this_repo():
         "keys and the SA3 entry's 8). Only a retro-edit could clear it. Same structural "
         "finding L1 made about N02/N03 and L3 confirmed for RB-P17's twin. The pin is "
         "test_a_fresh_run_reproduces_both_frozen_payload_recipes_from_one_request."
+ "STRICT SINCE 2026-08-14 (L6, L5's I6). It was non-strict, so it could go red "
+        "neither by failing nor by passing while contributing to a headline that reads "
+        "as coverage. Strict buys exactly one direction and it is worth having: this "
+        "node asserts a fact about COMMITTED bytes, so an xpass means the frozen record "
+        "MOVED, which is the byte-identity floor being breached and belongs in red. The "
+        "failing direction is still inert and no setting changes that. L5's diagnosis "
+        "stands and is FILED, not fixed: permanence follows from asserting a fact about "
+        "the world (RB-P14 Gate 2), and a node scoped to 'every rubric_ref written on "
+        "or after 2026-08-14 resolves' covers the same duty and is achievable."
     ),
 )
 def test_payload_sha256_does_not_name_two_recipes_at_once():

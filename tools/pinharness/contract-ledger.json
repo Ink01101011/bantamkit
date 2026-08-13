@@ -485,6 +485,19 @@
       "anchor": "    manifest_sha256 = manifest.sha256\n",
       "replacement": "    manifest_sha256 = \"\"  # mutation (RB-P17): the manifest's bytes go unrecorded again\n",
       "note": "The manifest is the one WORKING-TREE segment a recorded ref can have: `git:<ref>:<path>` is immutable and a plain path form records `rubric_sha256`, and a derived variant records neither. Measured by L5 and reproduced here by executing the swap: one recorded ref, two manifests at one path, template d1f32ad2947b -> 447e5be27613, and before this column the two runs are INDISTINGUISHABLE in the record. This does NOT make the segment immutable and the docs/eval.md amendment says so -- it makes a substitution DETECTABLE, which is the most a record can do about an input the reader has to fetch. Additive: blank on every non-derived variant, so the f8404ab byte-identity floor still restores exactly. Record: docs/eval-data/2026-08-14-rbp17-manifest-segment.md."
+    },
+    {
+      "cid": "N13",
+      "kind": "behaviour",
+      "claim": "`guard_effect` is the effect of the GUARD-DROPPED family, not a second copy of `effect` (RB-P16)",
+      "where": "_compare, the guard_effect key beside guard_verdict",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "pins": [
+        "test_the_guard_dropped_effect_is_the_effect_of_the_guard_dropped_FAMILY"
+      ],
+      "anchor": "        \"guard_effect\": _effect(a, b, rows_a, rows_b, guard_family),",
+      "replacement": "        # mutation (RB-P16): the guard-dropped effect is the full family's again\n        \"guard_effect\": _effect(a, b, rows_a, rows_b, family),",
+      "note": "L5's I1: a shipped reporting field with NO ledger claim, measuring UNPINNED, and the job's own done_definition requires an entry in the same commit as the claim. Not cosmetic - it is the half of RB-P16's fix that carries the effect for the family SS7 rule 3 acts on, and `effect` is credited with 'the verdict travels with its size' on the strength of both. The node is built on a cell where the two DISAGREE (before 3/3, after 2/3, and the one point that separates them is the one the shared-token guard dropped), because a node on a cell where they coincide passes under a guard_effect that is a second copy of effect."
     }
   ]
 }

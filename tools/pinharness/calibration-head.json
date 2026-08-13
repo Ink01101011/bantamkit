@@ -1,0 +1,34 @@
+{
+  "_why": "CALIBRATION AT HEAD, and it is NOT a measurement. `calibration.json` calibrates at 3981efd, where both answers were known by hand — and it has stopped being a calibration at HEAD: CAL-GREEN was CONSUMED by the fix it was a control for and now reads PINNED, so the committed sweep has a positive control and NO negative one (L5's I3). An instrument with only a positive control cannot distinguish 'everything is pinned' from 'the detector is stuck on'. This file is the pair that still works at HEAD, and it must be run at HEAD, every time the contract ledger is: `.venv/bin/python tools/pinharness/pinned.py . HEAD tools/pinharness/calibration-head.json`. If either answer flips, nothing the harness says about any claim in the contract ledger may be believed.",
+  "claims": [
+    {
+      "cid": "CAL-HEAD-RED",
+      "kind": "behaviour",
+      "claim": "CALIBRATION, positive control: a run whose guard fired reports the guard status, and MUST come back caught",
+      "where": "exit_status, the guard arm",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "pins": [
+        "test_a_violating_run_exits_three_and_still_writes_every_artifact",
+        "test_exit_status_is_the_guard_status_when_a_replayed_pair_violated"
+      ],
+      "expect": "pinned",
+      "anchor": "    return GUARD_VIOLATION_EXIT if any(row.guard_violations for row in result.rows) else 0",
+      "replacement": "    return 0  # calibration: the guard status stops being reported",
+      "note": "A detector that cannot see this sees nothing: the status is read from a real shell's $? by one of the two nodes named. It mutates the BEHAVIOUR and not the constant on purpose -- measured 2026-08-14, changing `GUARD_VIOLATION_EXIT = 3` to 7 reads FALSE-PINNED, because every node that names the status names the CONSTANT and moves with it. That is a real finding about this contract's nodes and it is filed, not papered over; it is the wrong mutation for a calibration because a control has to be one whose answer is known."
+    },
+    {
+      "cid": "CAL-HEAD-GREEN",
+      "kind": "prose",
+      "claim": "CALIBRATION, negative control: a MEASURED FACT stated in a docstring is unpinned — reversing it must come back UNPINNED",
+      "where": "criticreplay.py, `_effect`'s docstring, the `disagreeing_points` paragraph",
+      "path": "runtime-py/src/bantamkit/criticreplay.py",
+      "pins": [
+        "test_the_committed_indistinguishable_cell_is_one_the_variants_disagree_inside"
+      ],
+      "expect": "unpinned",
+      "anchor": "`indistinguishable` cell, they disagree on 2 of 11 points. Reported by NAME so the",
+      "replacement": "`indistinguishable` cell, they disagree on 0 of 11 points. Reported by NAME so the",
+      "note": "L5's I2, promoted from a finding to the instrument's negative control. This job shipped hundreds of lines of docstring prose asserting MEASURED facts and added ZERO prose claims for any of it, so reversing one — 2 of 11 points becomes 0 of 11, which is false and is contradicted by the node named above, which measures the real number from the committed rows — changes nothing any node reads. The claim this control makes is about the INSTRUMENT (it can still say no) and not about the world; the underlying defect that unpinned docstring prose exists at all is FILED and open. If this ever reads PINNED, either someone pinned the prose (good — replace this control and say so) or the harness has started reporting kills it did not see (bad — believe nothing)."
+    }
+  ]
+}
