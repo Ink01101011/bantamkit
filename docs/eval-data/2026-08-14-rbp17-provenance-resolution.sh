@@ -10,6 +10,12 @@
 #   sh docs/eval-data/2026-08-14-rbp17-provenance-resolution.sh "$PWD" /tmp/rbp17-before
 #   git checkout fccc637 -- runtime-py/src/bantamkit/criticreplay.py   # by SHA, not HEAD
 #
+# AMENDMENT 2026-08-14, same day, after 0337c66 landed the exit-contract disclosure: the
+# restore sha above is fccc637, which is the source WITHOUT that epilog paragraph. Restore
+# with 0337c66 instead if you are at or past it. The line above is left as written rather
+# than corrected in place, because it is what the before/after runs in the .md beside this
+# file actually used. The matrix was re-measured at 0337c66 and is identical.
+#
 # Layer: Measurement. Statuses are /bin/sh's own $?, with no PYTEST_* key in the child's
 # environment. RB-P28 is open, so the suite is NOT the evidence for this claim: the nodes
 # in test_criticreplay.py are regression guards and this file is the measurement.

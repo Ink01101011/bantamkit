@@ -710,6 +710,38 @@ def test_the_null_control_is_expressible_as_a_rule_applied_to_a_committed_ref():
     assert variant.sha256 == ""
 
 
+def test_every_declared_point_derives_to_the_sha_the_frozen_manifest_already_recorded():
+    """The form is not special-cased to the one point RB-P17 needs.
+
+    All 12 points of the frozen family, applied to `A-asfiled` through the spec form, must
+    come out at the sha the manifest's own `variants` block records for that (point,
+    variant) cell. The manifest is evidence and it is frozen: this reproduces its numbers
+    and moves none of them. A derive that agreed with the manifest on `W1` alone would be
+    a fix aimed at one row of one committed summary.
+    """
+    manifest_spec = "assets/evals/perturbations/task-completion.yaml"
+    manifest = criticreplay.load_manifest(
+        ASSETS / "evals" / "perturbations" / "task-completion.yaml"
+    )
+    checked, mismatched = 0, []
+    for point in manifest.points:
+        recorded = point.variants.get("A-asfiled", {})
+        if not recorded.get("applicable"):
+            continue
+        variant = criticreplay.parse_rubric_arg(
+            f"x=derive:{manifest_spec}:{point.id}"
+            ":git:d2f78b7:assets/rubrics/task-completion.yaml"
+        )
+        checked += 1
+        if variant.template_sha256 != recorded["sha256"]:
+            mismatched.append(
+                f"{point.id}: derived {variant.template_sha256[:12]} != "
+                f"manifest {recorded['sha256'][:12]}"
+            )
+    assert checked == 12, checked
+    assert not mismatched, mismatched
+
+
 def test_a_derive_refuses_a_rule_whose_anchor_is_absent_rather_than_returning_the_base():
     """W1 is inapplicable to a base that is already its fixed point, and that is an ERROR.
 

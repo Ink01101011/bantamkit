@@ -2,7 +2,9 @@
 
 **Job:** `rbp16-rbp17-rbp18-evidence-grading`, unit L3. **Layer:** Measurement.
 **Tree:** `feat/rbp16-inconclusive-effect-size`. **Before** = `32773f9` (L2's last commit,
-RB-P17 untouched). **After** = `fccc637` (this unit's fix). **Measured:** 2026-08-14.
+RB-P17 untouched). **After** = `fccc637` (this unit's fix), **re-measured at `0337c66`**
+(the exit-contract disclosure, which touches prose only) and identical row for row.
+**Measured:** 2026-08-14.
 
 Re-run:
 
