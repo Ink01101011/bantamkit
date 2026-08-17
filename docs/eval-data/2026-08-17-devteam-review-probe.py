@@ -41,6 +41,7 @@ import argparse
 import importlib.util
 import itertools
 import json
+import math
 import statistics
 import sys
 import tempfile
@@ -89,6 +90,7 @@ MUTATIONS = (
     "prune-transcript",
     "split-arms",
     "one-floor",
+    "pure-apparatus",
 )
 MUTATION: str | None = None
 
@@ -221,57 +223,78 @@ def attack_repeat_content(m3, root: Path) -> dict:
     tasks = evalrun.load_tasks(root / "assets" / "evals" / "devteam" / "tasks")
 
     print(RULE)
-    print("TABLE M2 — the ledger a real `graph-cache` run built on the reference walk")
+    print("TABLE M2 — the ledger real A1 and A2 runs build ON THE REFERENCE WALK")
     print(RULE)
     print("`cache` fires only on a byte-IDENTICAL repeat (filegraph.py:157 `unchanged`, branch at")
     print(":160). A byte-identical repeat is content the request already carries, so the")
     print("mechanism's opportunity set is exactly the set of information-free reads. Measured:")
     print("`changed` is the ledger's own verdict on whether read #n differed from read #1.")
     print()
+    print("BOTH graph arms are run because they take different branches on a repeat: A2 returns")
+    print("the marker at :181 before the annotate branch is reached, so `annotate_marker_bytes`")
+    print("is only reachable under A1. This is what the four dark columns of TABLE M7 look like")
+    print("when the trajectory gives them something to act on.")
+    print()
     head = (
-        f"{'task':24s}{'reads':>7s}{'repeats':>9s}{'collapsed':>11s}"
-        f"{'collB':>8s}{'any changed?':>14s}  re-read paths (count)"
+        f"{'arm  task':30s}{'reads':>7s}{'repeats':>9s}{'coll':>6s}"
+        f"{'collB':>8s}{'annB':>7s}{'changed':>9s}  re-read paths (count)"
     )
     print(head)
     print("-" * len(head))
 
-    tot = {"reads": 0, "repeats": 0, "collapsed": 0, "bytes": 0, "changed": 0}
+    tot = {"reads": 0, "repeats": 0, "collapsed": 0, "bytes": 0, "ann": 0, "changed": 0}
+    per_arm: dict[str, dict] = {}
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
-        for task in tasks:
-            spec = specs[task["name"]]
-            seen, original, Capturing = m3._ledger_capture(evalrun)
-            evalrun.FileAccessGraph = Capturing
-            try:
-                client = WalkClient(
-                    m3.tool_sequence(spec), json.dumps(task["scoring"]["expected"])
-                )
-                evalrun.run_task(client, task, "graph-cache", workdir)
-            finally:
-                evalrun.FileAccessGraph = original
-            graph = seen[-1]
-            acc = graph.accounting
-            changed = [r.path for r in graph.reads.values() if r.changed]
-            hubs = [f"{r.path} ({r.count})" for r in graph.reads.values() if r.count > 1]
-            tot["reads"] += acc.recorded_reader_calls
-            tot["repeats"] += acc.repeat_reader_calls
-            tot["collapsed"] += acc.collapsed_calls
-            tot["bytes"] += acc.collapsed_bytes
-            tot["changed"] += len(changed)
-            print(
-                f"{task['name']:24s}{acc.recorded_reader_calls:>7d}{acc.repeat_reader_calls:>9d}"
-                f"{acc.collapsed_calls:>11d}{acc.collapsed_bytes:>8d}"
-                f"{(str(len(changed)) if changed else 'no'):>14s}  {'; '.join(hubs) or '-'}"
-            )
+        for arm in ("graph-annotate", "graph-cache"):
+            acc_arm = {"repeats": 0, "collapsed": 0, "bytes": 0, "ann": 0}
+            for task in tasks:
+                spec = specs[task["name"]]
+                seen, original, Capturing = m3._ledger_capture(evalrun)
+                evalrun.FileAccessGraph = Capturing
+                try:
+                    client = WalkClient(
+                        m3.tool_sequence(spec), json.dumps(task["scoring"]["expected"])
+                    )
+                    evalrun.run_task(client, task, arm, workdir)
+                finally:
+                    evalrun.FileAccessGraph = original
+                graph = seen[-1]
+                acc = graph.accounting
+                changed = [r.path for r in graph.reads.values() if r.changed]
+                hubs = [f"{r.path} ({r.count})" for r in graph.reads.values() if r.count > 1]
+                if arm == "graph-cache":
+                    tot["reads"] += acc.recorded_reader_calls
+                    tot["repeats"] += acc.repeat_reader_calls
+                    tot["collapsed"] += acc.collapsed_calls
+                    tot["bytes"] += acc.collapsed_bytes
+                    tot["changed"] += len(changed)
+                tot["ann"] += acc.annotate_marker_bytes
+                acc_arm["repeats"] += acc.repeat_reader_calls
+                acc_arm["collapsed"] += acc.collapsed_calls
+                acc_arm["bytes"] += acc.collapsed_bytes
+                acc_arm["ann"] += acc.annotate_marker_bytes
+                if acc.repeat_reader_calls:
+                    label = f"{'A1' if arm == 'graph-annotate' else 'A2'}  {task['name']}"
+                    print(
+                        f"{label:30s}{acc.recorded_reader_calls:>7d}"
+                        f"{acc.repeat_reader_calls:>9d}{acc.collapsed_calls:>6d}"
+                        f"{acc.collapsed_bytes:>8d}{acc.annotate_marker_bytes:>7d}"
+                        f"{(str(len(changed)) if changed else 'no'):>9s}  {'; '.join(hubs) or '-'}"
+                    )
+            per_arm[arm] = acc_arm
     print("-" * len(head))
-    print(
-        f"{'WORKLOAD':24s}{tot['reads']:>7d}{tot['repeats']:>9d}"
-        f"{tot['collapsed']:>11d}{tot['bytes']:>8d}{(str(tot['changed']) or 'no'):>14s}"
-    )
+    for arm, a in per_arm.items():
+        print(f"  {arm:16s} repeats={a['repeats']}  collapsed_calls={a['collapsed']}"
+              f"  collapsed_bytes={a['bytes']}  annotate_marker_bytes={a['ann']}")
+    print(f"  (the other {len(tasks) - 2} tasks realise 0 repeats on the reference walk and are "
+          "omitted from the rows above)")
     print()
-    print(f"every repeat the reference walk offers was collapsed: "
+    print(f"every repeat the reference walk offers was collapsed under A2: "
           f"{tot['collapsed']}/{tot['repeats']}  "
           f"-> `unchanged` was True on all of them, so none carried new content")
+    print("All four columns that read 0 in every one of the 96 committed rows are NON-ZERO here.")
+    print("The gap is the realised TRAJECTORY, not the ruler.")
     print()
     if MUTATION == "changed-repeats":
         tot["changed"] = 1
@@ -448,25 +471,35 @@ def attack_floor(root: Path) -> dict:
     print(RULE)
     print("TABLE M5 — bar §3.2's floor, at the grain of the statistic it gates")
     print(RULE)
-    print("§2 defines Δtok(Y−X) as the per-task central values SUMMED OVER TASKS. §3.2 gates it")
-    print("with `max over tasks of (max − min across repeats in X)` — a single task's spread. A")
-    print("sum of eight per-task figures can drift by the sum of eight spreads, not by the")
-    print("largest one. Both floors are printed; neither is invented, both come from these rows.")
+    print("§2 defines Δtok(Y−X) as tokens 'summed over tasks, per repeat set'. §3.2 gates it with")
+    print("`max over tasks of (max − min across repeats in X)` — a SINGLE TASK's spread. Three")
+    print("floors are printed. None is invented: each is §3.2's own rule, `max − min across")
+    print("repeats`, applied at a different grain, and all three come from these same rows.")
+    print("  max     = §3.2 exactly as written, and what the committed instrument computes")
+    print("  sum     = the most a sum of eight medians can drift if every task moves its spread")
+    print("  suite   = §3.2's rule applied to §2's OWN grain: the suite total per repeat set")
     print()
-    head = f"{'arm':12s}{'max spread':>12s}{'sum of spreads':>16s}{'ratio':>8s}  per-task spreads"
+    head = (
+        f"{'arm':8s}{'max':>8s}{'sum':>8s}{'suite':>8s}"
+        f"{'suite/max':>11s}  per-repeat-set suite totals"
+    )
     print(head)
     print("-" * len(head))
     floors: dict[str, dict] = {}
     for name, _ in ARMS:
-        spreads = {t: max(v) - min(v) for t, v in per_task(arms[name], "tokens").items()}
+        byt = per_task(arms[name], "tokens")
+        tasks_sorted = sorted(byt)
+        spreads = {t: max(v) - min(v) for t, v in byt.items()}
         mx = max(spreads.values())
         sm = sum(spreads.values())
+        n_rep = min(len(v) for v in byt.values())
+        sets = [sum(byt[t][i] for t in tasks_sorted) for i in range(n_rep)]
+        su = max(sets) - min(sets)
         if MUTATION == "one-floor":
-            sm = mx
-        floors[name] = {"max": mx, "sum": sm, "spreads": spreads}
+            sm = su = mx
+        floors[name] = {"max": mx, "sum": sm, "suite": su, "spreads": spreads}
         print(
-            f"{name:12s}{mx:>12d}{sm:>16d}{sm / mx if mx else 0:>8.2f}"
-            f"  {[spreads[t] for t in sorted(spreads)]}"
+            f"{name:8s}{mx:>8d}{sm:>8d}{su:>8d}{su / mx if mx else 0:>11.2f}  {sets}"
         )
     print("-" * len(head))
     print()
@@ -476,8 +509,8 @@ def attack_floor(root: Path) -> dict:
         for name, _ in ARMS
     }
     head2 = (
-        f"{'pair':10s}{'suite Dtok':>12s}{'vs max floor':>14s}{'ratio':>8s}"
-        f"{'vs sum floor':>14s}{'ratio':>8s}  verdict changes?"
+        f"{'pair':10s}{'suite Dtok':>12s}"
+        f"{'/max':>9s}{'/sum':>9s}{'/suite':>9s}  clears which floors?"
     )
     print(head2)
     print("-" * len(head2))
@@ -485,20 +518,29 @@ def attack_floor(root: Path) -> dict:
     weakened = 0
     for y, x in PAIRS:
         d = abs(sum(med[y].values()) - sum(med[x].values()))
-        fmax, fsum = floors[x]["max"], floors[x]["sum"]
-        cm = d > fmax
-        cs = d > fsum
-        out[f"{y}-{x}"] = {
-            "delta": d, "max": fmax, "sum": fsum, "clears_max": cm, "clears_sum": cs
-        }
-        if cm and fsum > fmax:
+        f = floors[x]
+        ratios = {k: (d / f[k] if f[k] else 0.0) for k in ("max", "sum", "suite")}
+        cleared = [k for k in ("max", "sum", "suite") if d > f[k]]
+        out[f"{y}-{x}"] = {"delta": d, **{k: f[k] for k in ("max", "sum", "suite")},
+                           "cleared": cleared}
+        if "max" in cleared and max(f["sum"], f["suite"]) > f["max"]:
             weakened += 1
         print(
-            f"{y + '-' + x:10s}{d:>12.0f}{fmax:>14d}{d / fmax if fmax else 0:>8.2f}"
-            f"{fsum:>14d}{d / fsum if fsum else 0:>8.2f}"
-            f"  {'no — clears both' if cm and cs else ('YES' if cm else 'no — clears neither')}"
+            f"{y + '-' + x:10s}{d:>12.0f}"
+            f"{ratios['max']:>9.2f}{ratios['sum']:>9.2f}{ratios['suite']:>9.2f}"
+            f"  {', '.join(cleared) if cleared else 'none'}"
         )
     print("-" * len(head2))
+    print()
+    print("§3.2 gates a pair on floor(X), the LOWER rung, so the arm that matters for the only")
+    print("moving pair is A2 — where the rule as written is 3.51x more lenient than its own rule")
+    print("applied at §2's grain. It is NOT uniformly the most lenient: on A3 the suite-grain")
+    print("floor is smaller (1324 < 1641), because A3's per-task spreads happen to offset. That")
+    print("the ordering is not even stable across arms is the point: the grains are different")
+    print("quantities, not a conservative and a generous version of one quantity. The committed")
+    print("instrument implements the rule as written (ladder-field-measurement.py:698-699")
+    print("compares a `suite_delta` against `noise_floor`, a per-task max), which is where the")
+    print("reported 6.3x margin comes from.")
     print()
     if weakened == 0:
         _fail(
@@ -507,6 +549,58 @@ def attack_floor(root: Path) -> dict:
             "measured consequence to report for the mismatch",
         )
     return out
+
+
+def attack_trajectory_share(root: Path) -> dict:
+    """Table M5b — how much of the only moving delta is the flag, and how much is the turns.
+
+    M4 recorded that `query` changed the trajectory (123 model calls to A2's 90) and that
+    Δ(A3−A2) is therefore "not a clean byte accounting", and split the BYTE delta 44/56.
+    Nobody split the TOKEN delta, which is the headline. Tokens factor exactly into calls
+    × tokens-per-call, so the split needs no assumption: it is an identity over these rows.
+    """
+    arms = {name: load_arm(root, cfg) for name, cfg in ARMS}
+
+    print(RULE)
+    print("TABLE M5b — the only moving delta, split into `more turns` and `bigger turns`")
+    print(RULE)
+    print("tokens = model_calls x (tokens / model_calls), an identity, so the two factors below")
+    print("multiply to the observed ratio exactly. The one-flag ladder isolates the FLAG; this is")
+    print("how much of the flag's headline cost is the trajectory the flag induced.")
+    print()
+    head = f"{'arm':12s}{'tokens':>10s}{'model_calls':>13s}{'tok/call':>11s}"
+    print(head)
+    print("-" * len(head))
+    tot = {}
+    for name, _ in ARMS:
+        t = sum(r["tokens"] for r in arms[name])
+        c = sum(r["model_calls"] for r in arms[name])
+        tot[name] = (t, c)
+        print(f"{name:12s}{t:>10d}{c:>13d}{t / c:>11.1f}")
+    print("-" * len(head))
+    print()
+    (t2, c2), (t3, c3) = tot["A2"], tot["A3"]
+    calls_factor = c3 / c2
+    if MUTATION == "pure-apparatus":
+        calls_factor = 1.0
+    percall_factor = (t3 / c3) / (t2 / c2)
+    print(f"A3 / A2 raw-sum token ratio          : {t3 / t2:.4f}")
+    print(f"  x from MORE turns  (calls)         : {calls_factor:.4f}")
+    print(f"  x from BIGGER turns (tok per call) : {percall_factor:.4f}")
+    print(f"  product (must equal the ratio)     : {calls_factor * percall_factor:.4f}")
+    share = math.log(calls_factor) / math.log(t3 / t2) if calls_factor > 1 else 0.0
+    print()
+    print(f"share of the cost that is the INDUCED TRAJECTORY, not the apparatus: {share:.1%}")
+    print("So roughly half of `query`'s measured token cost is turns the flag caused the model")
+    print("to take, which no adjacent-rung subtraction separates from the apparatus's own bytes.")
+    print()
+    if calls_factor <= 1.0:
+        _fail(
+            "N10 delta-is-part-trajectory",
+            f"A3 made {c3} model calls to A2's {c2}, factor {calls_factor:.4f}; without a "
+            "trajectory change this probe has no measured trajectory share to report",
+        )
+    return {"calls_factor": calls_factor, "percall_factor": percall_factor, "share": share}
 
 
 def attack_score_noise(root: Path) -> dict:
@@ -659,6 +753,7 @@ def main(argv: list[str] | None = None) -> int:
     attack_transcript(m3, root)
     attack_rungs(root)
     attack_floor(root)
+    attack_trajectory_share(root)
     attack_score_noise(root)
     attack_ruler(root)
 
