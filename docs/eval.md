@@ -4792,6 +4792,373 @@ git show HEAD:runtime-py/src/bantamkit/criticreplay.py \
   | grep -A2 '"attributable": (' | tr -d ' \n' | shasum -a 256 | cut -c1-16
 ```
 
+#### M (2026-08-17, v0.22.0) — the dev-team workload surface, and what it could not show
+
+**The headline is a refutation and a refusal, and they are different claims.**
+The `>60%` token-reduction target for the graph family **has no measurable
+surface today**, and the reason is structural rather than circumstantial. Two
+findings carry that, and conflating them would be the whole error:
+
+- **`>60%` is refuted by arithmetic (bar §5 R1).** `cache`'s share of
+  observation bytes at the verified reference walk is **5.819%** suite-wide and
+  **23.063%** on the single most favourable task. Reaching 60% needs every file
+  read **seven times** — `k = 7` → 61.443%, `k = 6` → 58.689% — which is past
+  `LoopGuard`'s hard warning at 5. At the **realised** trajectory the ceiling is
+  not 5.819% but **0%**, so R1's own stated assumption was measured *generous*.
+- **This run itself is UNINFORMATIVE, by the bar's pre-registered R3 clause, and
+  must never be reported as the refutation.** `repeat_reader_calls == 0` on
+  **8 of 8** tasks in **all 24** `graph-off` runs (and in all 96 rows), against
+  the reference walk's 3. The informative subset is **empty**. R1 refutes;
+  this run declines to.
+
+**Why it is structural.** `cache` collapses only a **byte-identical** repeat and
+`annotate` only prefixes one, so the mechanism's entire opportunity set is reads
+whose content the request already carries. `Agent.run`'s message list is
+append-only. A collapsible repeat is therefore by definition a *redundant* read
+— which means a **larger model should realise fewer, not more**, and a bigger
+model is not a route to a non-zero `Δ%(A2−A1)`.
+
+**And the workload could not have shown otherwise.** Strip every repeat hop from
+all eight declared walks and all eight **still pass the workload's own
+verifier**, at re-read pressure **`0/30` = 0.000**. No task on this surface
+*requires* a second read, so the declared `3/33` = 0.091 pressure is entirely a
+property of the declared non-memoising strategy, not of the tasks. Zero tasks
+carry it.
+
+**The one rung that moves is a trade, not a reduction.** Only `query` moves
+anything, and it moves tokens **up**:
+
+| pair | mechanism | `Δtok` | `Δ%` | vs per-task floor 1845 | vs suite floor 6469 |
+|---|---|---|---|---|---|
+| `A1−A0` | `annotate` | `0` | **+0.000%** | does not clear | does not clear |
+| `A2−A1` | `cache` | `0` | **+0.000%** | does not clear | does not clear |
+| `A3−A2` | `query` | `11680` | **+73.367%** | clears (6.33×) | clears (1.81×) |
+
+A `0.000%` delta is **not** "no effect" — `|Δtok| = 0` clears neither floor, so
+the correct reading is *unresolvable at this run's precision*, and A7 fixed the
+grain the floor is compared at so both grains now agree on all three pairs
+(`same = yes`). R2 **does not fire**: its fourth condition **abstains** at 8 ties
+and 0 pointing. And roughly **half** of the one moving delta is not the
+apparatus: `tokens ≡ model_calls × tokens-per-call` is an identity, and the split
+is ×1.3667 from **more turns** and ×1.3830 from **bigger turns**, product 1.8901
+— **49.1%** of the cost is the trajectory `query` induced.
+
+**Four configurations, two distinguishable rungs.** `A0`, `A1` and `A2` agree on
+**every one of 16 measured columns across all 24 rows** — 384 cells per pair,
+1,152 across the three identity pairs, matched on `(task, seed)` rather than row
+order — against 134 differing cells in every comparison with `A3`. So
+`{A0, A1, A2}` and `{A3}` are the equivalence classes, and §1.1's
+"each adjacent difference isolates one mechanism" is true of the *configuration*
+and vacuous about *this run*: an adjacent difference of zero isolates nothing.
+
+**The ship guidance this narrows, and what it does not retract.** `README.md`'s
+`FileAccessGraph` recommendation claimed a **score rescue at a token cost**
+(0/3 → 3/3 at +26% tokens), never a token saving, so this job **narrows its scope
+and retracts nothing**. What is added: on a dev-repo-shaped surface the repeat
+machinery has no opportunity at all, and whatever value `graph` carries there
+comes from `query` alone. **The two percentages are not comparable and must never
+be subtracted** — `+26%` is `graph` vs `bare` on the frozen suite; `+73.367%` is
+`graph` vs `graph-cache` on the dev-team surface. Different baseline, different
+surface, different client. `README.md` and `docs/filegraph.md` are live inputs and
+were corrected **in place**; every record under `docs/eval-data/` was **amended,
+never edited**.
+
+**The surface is synthesised and its own bias detector FIRES.** Median file
+**392 B** against the real package's **5829 B** — **14.9× smaller** — which is
+recorded rather than corrected, and is why no figure here is offered as a
+transfer claim.
+
+##### The commands, exactly as they were run
+
+Every acceptance rests on a **field** measurement outside pytest (RB-P28 stays
+open); the nodes are regression guards. All seven programs re-run at this
+section's HEAD, **exit 0** each:
+
+```sh
+# the bar's R1 ceiling — the 5.819% / k=7 arithmetic that refutes >60%
+.venv/bin/python docs/eval-data/2026-08-17-devteam-workload-measurements.py .
+# the null control — 44 calls, 8/8 byte-identical requests
+.venv/bin/python docs/eval-data/2026-08-17-devteam-null-control-field-measurement.py .
+# the accounting ruler — run_task against the ledger, then a real CLI subprocess
+.venv/bin/python docs/eval-data/2026-08-17-devteam-accounting-grain-field-measurement.py .
+# the ladder — the ONLY derivation of every ladder statistic quoted above
+.venv/bin/python docs/eval-data/2026-08-17-devteam-ladder-field-measurement.py .
+# the adversarial probe — three commissioned attacks, two land, one splits
+.venv/bin/python docs/eval-data/2026-08-17-devteam-review-probe.py .
+# the two Criticals, before and after, same program and same command at both ends
+.venv/bin/python docs/eval-data/2026-08-17-devteam-critical-closure-field-measurement.py .
+# the instrument-validation artifact regenerates BYTE-IDENTICALLY
+.venv/bin/python docs/eval-data/2026-08-17-devteam-instrument-validation-run.py . --check
+
+# each program's pins are its --mutate modes; every one must exit 1
+.venv/bin/python docs/eval-data/2026-08-17-devteam-ladder-field-measurement.py . \
+    --mutate suite-floor-as-max
+.venv/bin/python docs/eval-data/2026-08-17-devteam-review-probe.py . \
+    --mutate {keep-repeats,changed-repeats,prune-transcript,split-arms,one-floor,pure-apparatus}
+.venv/bin/python docs/eval-data/2026-08-17-devteam-critical-closure-field-measurement.py . \
+    --mutate {per-task-floor,zero-dark-columns}
+
+.venv/bin/python -m pytest runtime-py/tests -q          # 842 passed, 2 xfailed
+.venv/bin/ruff check runtime-py tools/pinharness tools/devteam docs/eval-data
+.venv/bin/python tools/devteam/build_tasks.py check     # OK — 8 tasks match the manifest
+```
+
+**The instrument-validation artifact is NOT a fifth arm and no `Δ%` may be
+computed from it.** Its `tokens` is the `ceil(bytes/4)` surrogate, not an endpoint
+`Usage`; it carries one row per `(task, arm)` so every repeat spread is 0 and the
+floor is **degenerate** on it by the instrument's own function; and the ladder
+program loads four explicit f-string filenames with **no glob**, so the file
+cannot be read as an arm. The fence is structural, not a label.
+
+**Two caveats that travel with every number above.** (1) The committed rows carry
+**no `model` field**, so attribution to `qwen3:4b-instruct` rests on prose and the
+pre-declaration at `290c834`, never on the row — filed as RB-P38. (2) The real
+endpoint's `Usage` is pinned **for this run only**; it retro-validates no
+`ceil(bytes/4)` surrogate, and column 7 counts payload wire bytes **minus**
+`model` and `seed`, a stated subset.
+
+##### Measured and NOT fixed — open, each with an attack direction
+
+Nine findings from the adversarial review and the closure that followed it. Two
+Criticals were closed (bar §3.2's floor grain, by A7; and four accounting columns
+that had never fired outside a fixture, by a committed validation artifact). None
+of the nine below is fixed, and **two got worse** rather than staying put.
+
+- **RB-P36 — the score half of the bar has no noise floor, and two of the four
+  flips that produced the run's only TRADE are single-repeat.** §3.1 ports
+  `_passing_points`' unanimity rule, so a task at 1/3 or 2/3 is **one sampled run
+  away** from changing the pass set, and `disagreeing_points` counts those flips
+  at face value. §3.2 gave the token half a floor derived from repeat spread and
+  gave the score half nothing. Measured: `dt-handler-map` 2/3→3/3 and
+  `dt-unread-key` 3/3→2/3 are single-repeat flips; `dt-patch-before-after`
+  0/3→3/3 and `dt-symbol-home` 3/3→1/3 are not. **The verdict survives and one
+  sentence does not** — `Δ%(A3−A2)` is a TRADE at 2 disagreeing points as much as
+  at 4, but `dt-handler-map` is 2/3 in A0, A1 and A2 *identically*, so it is not
+  something the flag bought. **Attack:** give §3.1 a floor of the same shape §3.2
+  has — bound a pass-set disagreement by the arms' own repeat instability, and
+  report any point whose membership turns on one repeat separately from the
+  count. **Command.** The probe, Table M6; and
+  `grep -n "floor" docs/eval-data/2026-08-17-devteam-bar-preregistration.md`
+  returns §3.2's token clause and nothing under §3.1. (The bar. Recorded in A6.)
+- **RB-P37 — the ladder shipped four configurations and two measured rungs, and
+  a proof of meaning-preservation transferred unearned.** 0 differing cells in
+  384 comparisons per identity pair. A0's proof (44/44 byte-identical requests)
+  therefore holds for A1 and A2 **because they are the same conversation**, not
+  because anyone measured them — under a trajectory that realises repeats they
+  separate immediately, on exactly the columns that are dark in the field.
+  **Attack:** an arm may not be reported as a rung until one cell has been shown
+  to differ from its neighbour; a null control's meaning-preservation proof must
+  be re-earned per arm, or the arms must be declared an equivalence class up
+  front. **Command.** The probe, Table M4. **What would show it false:** one
+  differing cell between A0, A1 or A2 on any of the 24 `(task, seed)` pairs over
+  the 16 measured columns. (No code defect — a reading of §1.1.)
+- **RB-P38 — no committed row can be attributed to a model.** `TaskResult`
+  (`evalrun.py:167-204`) has no `model` field and the union of every key over all
+  96 rows confirms it. Two arms of *different* models would produce two files
+  indistinguishable at the row level — which stops being cosmetic exactly when a
+  second model is added. **Attack:** one additive trailing field, under the
+  convention already documented in place at `evalrun.py:180-182` and already
+  exercised twice (`seed` at `:182`, the eight accounting columns at `:197-204`).
+  The value is on the client the harness already holds, so no call site needs a
+  new argument; old rows simply lack the key. **Command.**
+  `.venv/bin/python -c "import json; print('model' in json.loads(open('docs/eval-data/2026-08-17-devteam-ladder-graph-off.jsonl').readline()))"`
+  → `False`. (Measurement.)
+- **RB-P39 — the bar's §2 statistic cannot separate the apparatus from the
+  trajectory the apparatus induced, and on the only moving delta that is 49.1% of
+  it.** `tokens ≡ model_calls × tokens-per-call` is an identity, so the split
+  rests on no assumption: ×1.3667 from more turns, ×1.3830 from bigger turns,
+  product 1.8901 = the observed ratio exactly. `model_calls` is 90, 90, 90, 123.
+  **Attack:** define a turns-normalised companion figure in the bar — tokens per
+  model call beside the raw delta — so a flag that wins by talking less is
+  distinguishable from one that wins by talking cheaper. Do **not** subtract the
+  trajectory out silently; report both. **Command.** The probe, Table M5b.
+  (The bar's §2 statistic. Recorded in A6.)
+- **RB-P40 — REGRESSION. Line-pin drift, now six times in one job, the sixth
+  committed by the unit whose brief opened with the other five; the checker is
+  filed and still not built.** Five instances were caused by a source commit
+  landing after the prose (`8ccd084` +14, `a478053`, `ec25fbd` +3) or by copying a
+  superseded correction table; the sixth (`940ed89`) was two pins written from an
+  artifact register **instead of read at HEAD**, in a job whose own DO-NOT list
+  names the shift. The register was itself an unread pin store and has since been
+  repaired. **What is now measured is that human re-reading has caught it six
+  times out of six, at the cost of six units' attention.** No number and no
+  verdict rests on a pin, which is why this is Important and not Critical.
+  **Attack:** a checker, run as a node, that extracts every `path:line` and
+  `path:a-b` pin from `docs/` and `runtime-py/`, reads the line at HEAD, and
+  fails when a pin lands on a blank line, a comment, or a construct whose name
+  the surrounding prose does not contain. That is mechanical, and the six
+  instances are its test corpus. **Command.**
+  `git show 940ed89` — two distinct pins, three occurrences; and to re-read any
+  pin rather than trust it:
+  `for n in 182 194 135 181; do printf "%-4s %s\n" $n "$(sed -n "${n}p" runtime-py/src/bantamkit/filegraph.py)"; done`.
+  (Process. No artifact to amend; recorded in A6 and A8.)
+- **RB-P41 — REGRESSION, worse in magnitude. CI never reads `docs/eval-data`, and
+  six of the seven committed field programs are exercised by nothing.**
+  `.github/workflows/ci.yml` lints `.` under `working-directory: runtime-py`,
+  lints `examples` separately, and tests `python -m pytest runtime-py -q`.
+  **Nothing in CI reads `docs/eval-data`**, and the local command every report
+  quotes — `ruff check runtime-py tools/pinharness tools/devteam docs/eval-data`
+  — is correct and is **not what CI runs**. Measured at this section's HEAD: of
+  the **seven** `2026-08-17-devteam-*.py` programs, exactly **one**
+  (`…ladder-field-measurement.py`) is reached by a node, via
+  `spec_from_file_location` in `test_ladder_statistics.py:30, :41`. The other six
+  are reached by nothing — one is named in a `test_evalrun.py` docstring only,
+  which is a string match and not a guard. **Among the six is
+  `…workload-measurements.py`, the sole derivation of the 5.819% ceiling that is
+  the live refutation of `>60%`.** A rename in `filegraph.py` or `client.py`
+  would leave the suite green, CI green, and the number carrying this section's
+  headline unreproducible until somebody ran it by hand. This is the RB-P28
+  problem one level out: **a suite that cannot see the evidence.** All seven run
+  at HEAD, exit 0 — a fact about today. **Attack:** guard each program by
+  **import** rather than execution — the shape `test_ladder_statistics.py`
+  already uses — so a node goes red when a program stops being loadable, without
+  moving the measurement inside pytest and defeating its purpose. Widening CI's
+  lint to the repo root is a separate change and interacts with the note below.
+  **Command.**
+  `git ls-files 'docs/eval-data/2026-08-17-devteam*.py' | wc -l` → `7`;
+  `grep -rn "spec_from_file_location\|_FIELD_PROGRAM" runtime-py/tests/*.py` →
+  one pair, both in `test_ladder_statistics.py`;
+  `grep -n "working-directory" .github/workflows/ci.yml` → `runtime-py`.
+  (CI.)
+- **RB-P42 — an integrity audit asserted zero deletions and the bar has two.**
+  The claim was that every bar amendment is a pure append and *"the bar file has
+  ZERO deletions in its entire history"*. Measured over the file's whole history:
+  **1106 insertions, 2 deletions** — `bd7f8f8` is 20/1 (it deleted the word
+  `None.` from `## 9. Amendments`, a stale-state marker) and `3f47f9f` is 2/1.
+  **The discipline holds exactly as claimed; the audit statement about it does
+  not**, and both deletions are declared and neither touches a number or a
+  verdict. Recorded because those two lines are also the committed precedent for
+  the pointer-versus-record distinction. **Attack:** an audit sentence asserting a
+  count must be generated from the command, not written beside it — and the
+  zero worth asserting here is the **right-hand side of the numstat**, not a
+  prose adjective. **Command.**
+  `git log --follow --numstat --format="" -- docs/eval-data/2026-08-17-devteam-bar-preregistration.md | awk 'NF==3 {a+=$1; d+=$2} END {print a, d}'`
+  → `1106 2`. (Process.)
+- **RB-P43 — a correction count counted a creation.** The claim was that one unit
+  *"corrected its own committed report in place four times"*. **Three did**:
+  `e6037a1` is **704/0** on that report — the commit that **created** §1-§12 —
+  and its in-place 3/3 edit is to the field **program**, committed one commit
+  earlier at `655bb76`. The substantive verification (no claim, number or verdict
+  moved in any of the four) reproduces. **Attack:** an audit of in-place edits must
+  read each diff's numstat and reject any commit whose deletion count is 0 from
+  the "corrected in place" set — a pure append is not a correction, and counting
+  it as one flatters the discipline it is measuring. **Command.**
+  `git show --numstat e6037a1 af918b6 6303c90 12db6b6`. (Process.)
+- **RB-P44 — insertion counts written before they were measured, twice, the
+  second by the unit that flagged the first.** A field report stated its own
+  append as *"703 insertions"*; measured, `git diff --numstat 290c834 e6037a1` is
+  **704/0** (and 706/0 at HEAD). The review that filed that as a Minor then wrote
+  *"`@@ -930,3 +930,53 @@`, 50 insertions"* in `914a87b`'s body one commit later;
+  measured, it is **`@@ -931,3 +931,51 @@`, 48/0**. **Both load-bearing halves —
+  0 deletions, a pure append — are exactly right**, so nothing rests on either
+  count, which is why this is Minor and why it is worth correcting anyway: a
+  pushed commit message cannot be corrected without rewriting history, so it is
+  recorded and left alone. **Attack:** measure the hunk header and the insertion
+  count **before** writing the body, from `git diff --numstat` against the staged
+  tree — or omit the count and cite the command, which is what a count inside a
+  document that the same commit changes is worth. **Command.**
+  `git diff --numstat 290c834 e6037a1 -- docs/eval-data/2026-08-17-devteam-ladder-measurement.md`
+  → `704 0`;
+  `git show --numstat --format="" 914a87b -- docs/eval-data/2026-08-17-devteam-review.md`
+  → `48 0`. (Process.)
+
+##### One gate was two gates, measured
+
+**`ruff check docs/eval-data` enforces a strictly broader rule set than
+`ruff check` inside `runtime-py`**, so "ruff clean" means a stricter thing in that
+tree than in the package. No config covers `docs/`, so ruff resolves
+`file_resolver.project_root` to the **repo root** there and falls back to its
+built-in defaults, while a file under `runtime-py/` resolves to
+`runtime-py/pyproject.toml` and its explicit `select = ["E", "F", "W", "I", "UP", "B"]`.
+Measured with ruff 0.16.1: **413 enabled rules over 37 prefixes** for
+`docs/eval-data` against **153 over 6** for the package — the extra prefixes
+include `S`, `D`, `N`, `PL*`, `RUF`, `TRY` and `SIM`. Demonstrated on identical
+bytes:
+
+```sh
+printf 'import subprocess\n\ndef f(x):\n    subprocess.run("ls", shell=True)\n    if x == 3:\n        return 1\n    return 0\n' \
+  | .venv/bin/ruff check --stdin-filename runtime-py/src/bantamkit/_probe.py -   # 1 error
+printf 'import subprocess\n\ndef f(x):\n    subprocess.run("ls", shell=True)\n    if x == 3:\n        return 1\n    return 0\n' \
+  | .venv/bin/ruff check --stdin-filename docs/eval-data/_probe.py -             # 2 errors
+```
+
+This is recorded and not fixed. It cuts both ways — the field programs are held
+to a **higher** standard than the package, which is fine, but the two trees are
+gated by different rules under one sentence, and a reader running the package's
+gate would reasonably believe otherwise. It also constrains RB-P41's fix:
+widening CI's lint to the repo root would import 413 rules over `docs/`, which is
+a decision to take deliberately rather than as a side effect.
+
+##### CI on this branch, re-measured rather than cited
+
+**The repo-wide runs endpoint refuses; the per-workflow endpoint does not**, and
+that distinction is the whole reason this could be confirmed.
+`gh api repos/<owner>/bantamkit/actions/runs?...` and `gh run list` both return
+**HTTP 404** on a private repo with a token holding `repo` + `workflow`, while
+`actions/workflows/<id>/runs` and `actions/runs/<run_id>` both resolve. Measured
+with the working route:
+
+```sh
+gh api --paginate \
+  "repos/Ink01101011/bantamkit/actions/workflows/329302971/runs?per_page=100&branch=feat/devteam-workload-baseline" \
+  --jq '.workflow_runs[] | [.id, .head_sha, .conclusion] | @tsv'
+```
+
+- The two runs previously **reported but not confirmed** both reproduce:
+  **`32036916943`** at `f5cab04` **success**, **`32037541803`** at `aa97725`
+  **success**.
+- **The previously reported "seven commits with no run of their own" reproduces
+  for that unit's own commits and understates the branch by a wide margin.**
+  Branch-wide: **25 runs against 40 commits**; **13 commits have no run at all**,
+  and a further **4 have only a `cancelled` run** (the workflow sets
+  `cancel-in-progress`), so **17 of 40 commits have no successful run of their
+  own**. The cause is benign and structural — `ci.yml` triggers on
+  `pull_request`, so a batch push produces one run at the batch tip — but
+  "green at HEAD" is what was measured, never "green at each commit".
+- **One run on this branch was RED and it is not hidden:** `32017743711` at
+  `8ccd084`, on Linux and both Python versions, when a test landed one commit
+  before the asset it reads. Green from `8a6048e` onward. That is exactly what
+  the invariant "run CI at the first unit that touches source, not at the PR"
+  exists to catch, and it caught it.
+
+##### Invariants re-verified at this section's HEAD rather than cited
+
+`docs/eval-data` against `main`: **0 deleted lines** — nothing regenerated,
+nothing retro-edited, across 9,661 insertions. `assets/evals/devteam/`,
+`assets/evals/tasks/` and `assets/evals/perturbations/`: **0 files changed** since
+`26e81a0`. The bar carries **eight** dated amendments A1-A8, `§1-§8` untouched.
+`build_tasks.py check`: **OK — 8 tasks match the manifest**. Suite: **842 passed,
+2 xfailed**.
+
+```sh
+git diff --numstat main..HEAD -- docs/eval-data | awk '{a+=$1;d+=$2} END {print a, d}'
+git diff --stat 26e81a0..HEAD -- assets/ | wc -l
+```
+
+**No all-on-versus-all-off number is reported here and none is computable from
+the committed programs**: `PAIRS` holds only adjacent rungs, by construction.
+`budgeted` is not a candidate rung — its only lever is refusing *future* work at
+two `allow()` call sites, so it cannot reduce the tokens of work already done.
+And the five-arm design remains a **specification**: only the filegraph exists;
+the code graph, memory graph and doc/spec graph do not.
+
+##### Why the next job is not another arm on this surface
+
+The follow-on is **not** a second model on this ladder and not a fifth
+configuration. `qwen2.5:14b-instruct` is installed and deliberately **unrun** —
+choosing a model after seeing that the first realised 0 repeats is choosing a
+model for its result, and RB-P37 sharpens that fence rather than weakening it.
+More importantly, the ceiling here is a property of the **surface**: with
+`0/30` pressure once the memoisation is allowed, no arm on this workload can move
+`Δ%(A2−A1)` off zero without manufacturing the redundancy the mechanism is
+supposed to remove, which is the defect and not the fix.
+
+So the next measurement moves to a surface where redundancy is a **property of
+the input rather than of the solver's discipline**: `compaction-mcp`, against a
+pre-registered bar, on a real transcript corpus. Named here only as a pointer —
+no design, no bar and no numbers, because writing any of those before the corpus
+exists is the failure this job spent eight units avoiding.
+
 ### The `qwen-implementer` cell on RB-P27 lever (2) (2026-08-12)
 
 The first measured cell of the `qwen-implementer` backlog item, run on the
