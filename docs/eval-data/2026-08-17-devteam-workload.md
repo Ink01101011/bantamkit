@@ -483,3 +483,32 @@ the test landed one commit before the asset it reads. A self-inflicted
 commit-ordering fault, and the rule that says run CI at the first source commit
 rather than at the PR is exactly what caught it. Green again from `8a6048e`
 onward; `bd7f8f8` **success** (run `32018061556`).
+
+**Amendment 2, 2026-08-17 (appended, nothing above edited): this document's
+`evalrun.py` pins are stale by 14.**
+
+`8ccd084` — this unit's own source commit — inserted **14 lines** into
+`evalrun.py` in a single hunk, `@@ -126,6 +126,20 @@`, adding the `graph-off`
+entry and its comment after the `graph-cache` line. The file went from 778 to 792
+lines and that hunk is the only change. The tables above were written against the
+pre-`8ccd084` file, so **every pin at old line ≥ 129 is short by exactly 14**.
+Each was checked individually against HEAD rather than blanket-shifted:
+
+| where | pin as committed | **HEAD-exact** | the HEAD line |
+|---|---|---|---|
+| "does not reproduce" table, row 1 | `evalrun.py:150-166` (`TaskResult`) | **`164-179`** | `@dataclass` … `seed: int \| None = None` |
+| "does not reproduce" table, row 2 | `evalrun.py:418` (`effective` resolution) | **`432`** | `effective = GUARD_CONFIGS.get(config, BUDGET_CONFIGS.get(config, config))` |
+| "does not reproduce" table, row 2 | `446`, `453`, `466`, `486`, `514`, `521` (the membership tests `graph-annotate` fails) | **`460`, `467`, `480`, `500`, `528`, `535`** | `if effective in ("memory", "lean", "full") …` / `… ("lean", "full") and "schema" in task` / `… json_equal` / `== "critique"` / `… ("grounded", "full") and not source_withheld` / `… in GRAPH_CONFIGS and any(…)` |
+| §2, exclusion summary | `evalrun.py:219-233` (`score_output`) | **`233-247`** | `def score_output(…)` … `raise ValueError(f"unknown scoring kind '{kind}'")` |
+
+`evalrun.py:150-166` was additionally one line *long* before the offset existed —
+old `TaskResult` was `150-165` and old `166` was blank — so `164-179` corrects two
+things at once, and is stated that way rather than folded into the shift.
+
+No other pin in this document is affected: every remaining reference is into
+`filegraph.py`, `agent.py`, `client.py`, `criticreplay.py` or
+`assets/profiles/default.yaml`, and this unit changed no source file but
+`evalrun.py` and `test_evalrun.py`. The full per-pin record, including the pins in
+the pre-registration and the two that were already HEAD-exact, is
+[`2026-08-17-devteam-bar-preregistration.md`](2026-08-17-devteam-bar-preregistration.md)
+§9/A2.

@@ -2,7 +2,7 @@
 """Render `assets/evals/devteam/tasks/*.yaml` from `manifest.yaml` + `repo/`.
 
 The harness only understands an inline `workspace:` mapping (`evalrun.py:93-122`,
-attached at `evalrun.py:421`), and no two tasks can share one — M1 gap 1. So the
+attached at `evalrun.py:435`), and no two tasks can share one — M1 gap 1. So the
 repo surface is authored ONCE as real files under `repo/` and inlined into every
 task by this script. The generated YAMLs are the runnable asset; `manifest.yaml`
 plus `repo/` is the source of truth.
@@ -24,7 +24,7 @@ import yaml
 
 ASSET = Path(__file__).resolve().parents[2] / "assets" / "evals" / "devteam"
 # Every task declares both workspace tools, so FileAccessGraph attaches on all of
-# them (`evalrun.py:521` gates on a workspace tool being present).
+# them (`evalrun.py:535` gates on a workspace tool being present).
 TOOLS = ["read_file", "list_files"]
 
 

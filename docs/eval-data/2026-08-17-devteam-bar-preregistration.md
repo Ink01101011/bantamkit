@@ -382,3 +382,52 @@ counters (`model_calls`, `tool_calls`), not a pin, and it is recorded as such.
 §1.1 above and the commit body of `8ccd084` both name two nodes. **That is an
 overstatement of one node**, corrected here rather than by editing either. The
 substantive claim is unaffected: the mutation does turn a named node red.
+
+### A2 — 2026-08-17: every `evalrun.py` pin above line 128 in §1-§8 is stale by 14
+
+**Cause, measured.** `8ccd084` — this unit's own source commit — inserted **14
+lines** into `evalrun.py` in a single hunk, `@@ -126,6 +126,20 @@`, adding the
+`graph-off` entry and its comment after the `graph-cache` line. `git show 8ccd084 --
+runtime-py/src/bantamkit/evalrun.py` shows that hunk and nothing else, and the file
+went from 778 to 792 lines. §1-§8 were written against the pre-`8ccd084` file, so
+**every pin at old line ≥ 129 is short by exactly 14**. Pins at old line ≤ 128 are
+below the hunk and are still exact.
+
+Each pin below was checked individually against HEAD rather than blanket-shifted,
+and the HEAD line is quoted so a reader can confirm it without re-deriving the
+offset. **§1-§8 are not edited.**
+
+| § / line | pin as committed | **HEAD-exact** | the HEAD line |
+|---|---|---|---|
+| §1.1, L55 | `evalrun.py:125-142` | **`125-143`** | `GRAPH_CONFIGS = {` … `}` |
+| §1.1, L70 | `evalrun.py:418` | **`432`** | `effective = GUARD_CONFIGS.get(config, BUDGET_CONFIGS.get(config, config))` |
+| §1.1, L70 | `evalrun.py:446-521` | **`460-535`** | `if effective in ("memory", "lean", "full") …` … `if effective in GRAPH_CONFIGS and any(…)` |
+| §2, L106 | `evalrun.py:150-166` | **`164-179`** | `@dataclass` … `seed: int \| None = None` |
+| §2, L107 | `evalrun.py:572` | **`586`** | `tokens=tracking.usage.total,` |
+| §2, L111 | `evalrun.py:726-749` | **`740-763`** | `"--json", type=Path, …` … `jsonl.flush()` |
+| §2, L114 | `evalrun.py:722-724` | **`736-738`** | `parser.add_argument(` … `"--tasks", type=Path, …` … `)` |
+| §2, L132 | `evalrun.py:638` | **`652`** | `per_1k = passed / (tokens / 1000) if tokens else 0.0` |
+| §7.1, L279 | `evalrun.py:150` | **`164`** | `@dataclass`, of `TaskResult` |
+| §7.2, L291 | `evalrun.py:159` | **`173`** | `tool_calls: int` |
+| §8, L315 | `evalrun.py:187-196` | **`201-210`** | `def chat(self, messages, tools=None, response_format=None):` … `return resp` |
+| §8, L325 | `evalrun.py:163-165` | **`177-179`** | `# Trailing field: new JSONL columns are additive …` … `seed: int \| None = None` |
+
+**Two of those are not a plain +14, and are reported as such rather than folded in.**
+
+- **`125-142` → `125-143`.** Its *start* is below the hunk and never moved. Only the
+  end did — and the committed end was already one line short of the dict's closing
+  brace even against the pre-`8ccd084` file, where `GRAPH_CONFIGS` ended at `129`.
+  That pin was imprecise before the offset existed.
+- **`150-166` → `164-179`.** Old `TaskResult` was `150-165` and old `166` was a blank
+  line, so the committed range was one line *long*. `164-179` is exact at HEAD.
+
+**Not affected, verified rather than assumed:** `evalrun.py:84` (`WORKSPACE_TOOLS`)
+and `evalrun.py:93-122` (`_workspace_tools`, ending at the `}` on `122`) sit below
+the hunk and are **HEAD-exact as committed**. No pin into `filegraph.py`,
+`agent.py`, `client.py`, `criticreplay.py` or `assets/profiles/default.yaml` is
+affected: this unit changed no source file but `evalrun.py` and `test_evalrun.py`.
+
+**The commit body of `8ccd084` carries the same drift.** It pins `evalrun.py:418,
+446-521` for a claim about the very file that commit was shifting. A pushed commit
+message cannot be corrected without rewriting history, so it is recorded here and
+left alone: read it as `432, 460-535`.

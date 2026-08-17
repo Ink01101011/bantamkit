@@ -4,9 +4,9 @@
 # BEFORE any arm was run, and before any token number for this workload existed.
 #
 # `assets/evals/tasks/` is FROZEN. This is a new asset beside it, run through the
-# existing `--tasks` flag (`evalrun.py:722-724`); nothing in the frozen suite is
+# existing `--tasks` flag (`evalrun.py:736-738`); nothing in the frozen suite is
 # edited, and the `workspace:` mechanism (`evalrun.py:93-122`, attached at
-# `evalrun.py:421`) is extended in content only, never in code.
+# `evalrun.py:435`) is extended in content only, never in code.
 #
 # `tasks/*.yaml` is GENERATED from this file by `tools/devteam/build_tasks.py`.
 # Edit this file, re-run the builder, never hand-edit a generated task.
@@ -176,7 +176,7 @@ tasks:
   rationale: >
     A DIFF as first-class input — the readable half of M1 gap 3. Scoring an
     edit is impossible today (no write tool, and score_output has no diff kind,
-    evalrun.py:219-233), so this task asks the run to READ a patch, which is
+    evalrun.py:233-247), so this task asks the run to READ a patch, which is
     what the harness can score. It is also the one task where two files disagree
     on purpose: the patch's removed line says 3, config.py says 5, and only a
     run that reads both gets both fields right.
@@ -310,7 +310,7 @@ excluded:
   reason: >
     Not scoreable. There is no write tool anywhere (`WORKSPACE_TOOLS`,
     evalrun.py:84) and `score_output` supports exactly three kinds, none of them
-    a diff (evalrun.py:219-233). M1 gap 3. Scoring an edit needs a fourth kind
+    a diff (evalrun.py:233-247). M1 gap 3. Scoring an edit needs a fourth kind
     and a mutable workspace; both are out of this unit's scope.
 
 - candidate: dt-changed-file — a task where a workspace file changes mid-run so

@@ -1031,7 +1031,7 @@ def test_devteam_workload_asset_loads_and_declares_a_repo_surface():
 
     The workload lives beside the frozen suite and is loaded through the same
     `--tasks` path. What this pins is that it stays loadable, that every task keeps
-    the workspace tools the graph attaches on (`evalrun.py:521`), and that all eight
+    the workspace tools the graph attaches on (`evalrun.py:535`), and that all eight
     share one identical surface — a task whose workspace drifted would be a
     different workload wearing the same name.
     """
