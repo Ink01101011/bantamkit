@@ -1,5 +1,6 @@
 import json
 import math
+from contextlib import contextmanager
 
 import pytest
 import yaml
@@ -18,6 +19,7 @@ from bantamkit.evalrun import (
     TrackingClient,
     format_report,
     load_tasks,
+    request_wire_bytes,
     run_seed,
     run_task,
     score_output,
@@ -1156,6 +1158,176 @@ def test_graph_off_token_count_is_pinned_by_a_payload_sensitive_client(tmp_path)
     assert off.prompt_tokens_per_call == bare.prompt_tokens_per_call
 
 
+# ---- M3.5: bar §8's accounting columns, pinned as an INSTRUMENT ----
+#
+# RB-P14 Gate 2: an acceptance criterion may not assert a fact about the world. So no
+# node below asserts that some workload has some number of repeat reads — pinning the
+# asset would turn red the first time the workload changed honestly. What is pinned is
+# the instrument: that the recorded column equals what the ledger holds, and that it
+# MOVES when the ledger moves. The workload's actual counts live in the field report,
+# docs/eval-data/2026-08-17-devteam-accounting-grain.md, and RB-P28 stays open.
+
+
+@contextmanager
+def _captured_graphs():
+    """Reach the `FileAccessGraph` instances a run builds, as the reference to check against.
+
+    The accounting columns are the delivery route under test; this is the ledger they
+    are compared with. Observation-only subclass — the same device M3's field program
+    used when it was the ONLY route (bar §7.2) — so the run it watches is the run that
+    would have happened anyway.
+    """
+    seen: list = []
+    original = evalrun.FileAccessGraph
+
+    class Capturing(original):  # type: ignore[misc,valid-type]
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            seen.append(self)
+
+    evalrun.FileAccessGraph = Capturing
+    try:
+        yield seen
+    finally:
+        evalrun.FileAccessGraph = original
+
+
+def _read_same_file_n_times(n):
+    return [
+        assistant(tool_calls=[call("read_file", {"path": "notes/a.md"}, id=f"c{i}")])
+        for i in range(n)
+    ] + [assistant(content='{"x": 1}')]
+
+
+def test_accounting_columns_equal_the_ledger_the_run_built(tmp_path):
+    """The count survives the run: what the row carries is what the ledger held.
+
+    Falsifying mutation: drop `repeat_reader_calls=accounting.repeat_reader_calls` from
+    the `TaskResult(...)` construction in `run_task` — i.e. discard the ledger again,
+    which is the defect this unit exists to fix — and this node goes red on
+    `assert result.repeat_reader_calls == ledger_repeats`.
+    """
+    with _captured_graphs() as seen:
+        result = run_task(FakeClient(_read_same_file_n_times(3)), workspace_task(), "graph-off",
+                          tmp_path)
+    (graph,) = seen
+    ledger_reads = sum(r.count for r in graph.reads.values())
+    ledger_repeats = sum(r.count - 1 for r in graph.reads.values())
+    # Not vacuous: the fixture makes the ledger say something non-zero. This is a fact
+    # about the fixture built three lines up, not a fact about a committed asset.
+    assert ledger_repeats > 0
+    assert result.reader_calls - result.unrecorded_reader_calls == ledger_reads
+    assert result.repeat_reader_calls == ledger_repeats
+    assert result.reader_calls == graph.accounting.reader_calls
+    assert result.collapsed_calls == graph.accounting.collapsed_calls == 0  # graph-off
+    assert result.collapsed_bytes == result.annotate_marker_bytes == result.query_bytes == 0
+
+
+def test_accounting_columns_move_when_the_ledger_moves(tmp_path):
+    """The instrument responds. A column that could not move would pin nothing."""
+    seen_counts = {}
+    for n in (2, 5):
+        with _captured_graphs() as seen:
+            result = run_task(FakeClient(_read_same_file_n_times(n)), workspace_task(),
+                              "graph-off", tmp_path / f"reads-{n}")
+        (graph,) = seen
+        seen_counts[n] = (
+            result.repeat_reader_calls,
+            sum(r.count - 1 for r in graph.reads.values()),
+        )
+    assert seen_counts[2][0] == seen_counts[2][1]
+    assert seen_counts[5][0] == seen_counts[5][1]
+    assert seen_counts[5][0] > seen_counts[2][0]
+
+
+def test_collapsed_columns_track_the_arm_that_can_collapse(tmp_path):
+    """Column 3 answers "did the mechanism FIRE", which column 2 alone cannot.
+
+    Bar §5 R3 needs both: a task can realise repeats (column 2 > 0) under an arm that
+    cannot act on them (column 3 == 0), and telling those apart is the whole difference
+    between a refutation and an UNINFORMATIVE run. No arm delta is computed here — the
+    two rows are not compared on tokens.
+    """
+    with _captured_graphs() as seen:
+        cached = run_task(FakeClient(_read_same_file_n_times(3)), workspace_task(), "graph-cache",
+                          tmp_path / "cache")
+    (graph,) = seen
+    assert cached.repeat_reader_calls == graph.accounting.repeat_reader_calls > 0
+    assert cached.collapsed_calls == graph.accounting.collapsed_calls == cached.repeat_reader_calls
+    assert cached.collapsed_bytes == graph.accounting.collapsed_bytes
+
+    off = run_task(FakeClient(_read_same_file_n_times(3)), workspace_task(), "graph-off",
+                   tmp_path / "off")
+    assert off.repeat_reader_calls == cached.repeat_reader_calls  # same opportunity
+    assert off.collapsed_calls == 0  # no firing
+
+
+def test_unrecorded_reader_calls_carry_the_failed_reads(tmp_path):
+    """The `error:` gap, now visible in the row instead of missing from the denominator."""
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("read_file", {"path": "nope.txt"}, id="c1")]),
+            assistant(tool_calls=[call("read_file", {"path": "notes/a.md"}, id="c2")]),
+            assistant(content='{"x": 1}'),
+        ]
+    )
+    with _captured_graphs() as seen:
+        result = run_task(client, workspace_task(), "graph-off", tmp_path)
+    (graph,) = seen
+    assert result.reader_calls == 2
+    assert result.unrecorded_reader_calls == 1
+    assert result.reader_calls - result.unrecorded_reader_calls == sum(
+        r.count for r in graph.reads.values()
+    )
+
+
+def test_context_bytes_sent_equals_the_serialized_requests(tmp_path):
+    """Column 7, pinned against the serializer it mirrors, call for call."""
+    client = FakeClient(_read_same_file_n_times(2))
+    result = run_task(client, workspace_task(), "graph-off", tmp_path)
+    per_call = [request_wire_bytes(c["messages"], c["tools"]) for c in client.calls]
+    assert result.model_calls == len(client.calls)
+    assert result.context_bytes_sent == sum(per_call)
+    # The re-send weighting is the point: the transcript grows, so every call costs more
+    # than the one before it. A counter that read a single request would not show this.
+    assert per_call == sorted(per_call) and len(set(per_call)) == len(per_call)
+
+
+def test_accounting_columns_are_zero_when_no_graph_is_attached(tmp_path):
+    """A `bare` row's zeros mean "no ledger existed", not "the ledger measured zero"."""
+    result = run_task(
+        FakeClient([assistant(content=CONTACT)]), get_task("extract-contact"), "bare", tmp_path
+    )
+    assert (result.reader_calls, result.repeat_reader_calls, result.collapsed_calls) == (0, 0, 0)
+    assert result.context_bytes_sent > 0  # column 7 needs no graph
+
+
+def test_accounting_columns_reach_the_jsonl_row(monkeypatch, tmp_path):
+    """The route bar §7.2 said did not exist: `--json` now carries the realised count."""
+    out = tmp_path / "results.jsonl"
+
+    def fake_run_suite(client, configs=None, tasks_dir=None, repeats=1, on_result=None):
+        on_result(make_result(config="graph-off", reader_calls=5, repeat_reader_calls=2))
+        return []
+
+    monkeypatch.setattr(evalrun, "OpenAICompatible", lambda **kw: object())
+    monkeypatch.setattr(evalrun, "run_suite", fake_run_suite)
+    monkeypatch.setattr(evalrun, "format_report", lambda results: "")
+    evalrun.main(["--base-url", "http://x", "--model", "m", "--json", str(out)])
+    row = json.loads(out.read_text().splitlines()[0])
+    assert (row["reader_calls"], row["repeat_reader_calls"]) == (5, 2)
+    assert set(row) >= {
+        "reader_calls",
+        "unrecorded_reader_calls",
+        "repeat_reader_calls",
+        "collapsed_calls",
+        "collapsed_bytes",
+        "annotate_marker_bytes",
+        "query_bytes",
+        "context_bytes_sent",
+    }
+
+
 # ---- P7: turns-exhausted ----
 
 
@@ -1401,7 +1573,25 @@ def test_seed_lands_in_the_jsonl_line_as_the_last_field(monkeypatch, tmp_path):
     evalrun.main(["--base-url", "http://x", "--model", "m", "--json", str(out)])
     data = json.loads(out.read_text().splitlines()[0])
     assert data["seed"] == 1861749954
-    assert list(data)[-1] == "seed"  # additive: appended, never inserted mid-row
+    # Additive: appended, never inserted mid-row. `seed` was terminal when this node was
+    # written; M3.5's accounting columns were appended AFTER it, so the invariant this
+    # pins is that nothing moved at or above `seed`'s position — which is what the
+    # convention actually protects for a reader of an older row.
+    keys = list(data)
+    assert keys[: keys.index("seed") + 1] == [
+        "task",
+        "config",
+        "family",
+        "passed",
+        "tokens",
+        "outcome",
+        "model_calls",
+        "tool_calls",
+        "schema_retries",
+        "critique_rounds",
+        "error",
+        "seed",
+    ]
 
 
 def test_seed_lands_in_the_transcript(tmp_path):

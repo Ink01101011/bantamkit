@@ -21,7 +21,7 @@ from bantamkit.budget import TokenBudget
 from bantamkit.client import BantamError, Message, ModelClient, OpenAICompatible, Tool, Usage
 from bantamkit.contract import schema_error, schema_instruction, schema_retry_feedback
 from bantamkit.critique import CritiqueExhausted, CritiqueGate, GroundedCritiqueGate
-from bantamkit.filegraph import FileAccessGraph
+from bantamkit.filegraph import FileAccessGraph, ReadAccounting
 from bantamkit.loopguard import LoopGuard
 from bantamkit.memory import Memory, MemoryStore
 from bantamkit.profile import default as profile_default
@@ -177,6 +177,42 @@ class TaskResult:
     # Trailing field: new JSONL columns are additive, old rows simply lack them.
     # None means no seed was applied (a client that has no `seed` attribute to pin).
     seed: int | None = None
+    # Bar §8's accounting grain, added by M3.5 under the same trailing-field
+    # convention: additive, defaulted, and nothing above is renumbered, reordered or
+    # repurposed. `tokens` still means exactly what it meant.
+    #
+    # Columns 1-6 are read off `FileAccessGraph.accounting` — the ledger the harness
+    # used to discard (bar §7.2) — and read 0 on every config that attaches no graph,
+    # which is what "no graph was attached" looks like rather than a measurement.
+    # Column 7 is counted in `TrackingClient.chat` below.
+    #
+    # `unrecorded_reader_calls` is NOT one of bar §8's seven. It is the carve-out that
+    # makes column 1 honest: reads that returned the harness's `error:` convention are
+    # counted as attempts and named here rather than silently missing from the
+    # denominator (null-control §7.3). Ledger-sourced rates use
+    # `reader_calls - unrecorded_reader_calls`. Recorded per bar §9/A4.
+    reader_calls: int = 0
+    unrecorded_reader_calls: int = 0
+    repeat_reader_calls: int = 0
+    collapsed_calls: int = 0
+    collapsed_bytes: int = 0
+    annotate_marker_bytes: int = 0
+    query_bytes: int = 0
+    context_bytes_sent: int = 0
+
+
+def request_wire_bytes(messages: list[Message], tools: list[Tool] | None) -> int:
+    """Bytes of the transcript-and-roster half of one request, as the adapter serializes it.
+
+    Mirrors `OpenAICompatible.chat`'s payload construction (`client.py:155-157`) key for
+    key, minus the two fields a wrapper cannot see: `model` and `seed` live on the inner
+    client and are per-run constants, so excluding them keeps this a function of the
+    transcript — which is the quantity bar §8 column 7 exists to be a denominator for.
+    """
+    payload: dict = {"messages": [m.to_wire() for m in messages]}
+    if tools:
+        payload["tools"] = [t.to_wire() for t in tools]
+    return len(json.dumps(payload).encode())
 
 
 class TrackingClient:
@@ -186,6 +222,11 @@ class TrackingClient:
         self.inner = inner
         self.usage = Usage()
         self.calls = 0
+        # Bar §8 column 7. Accumulated here rather than at the adapter because the
+        # transcript is re-sent whole on every call, so a byte that entered the context
+        # once is paid for on every later request — and that re-send weighting is the
+        # only thing that converts a byte share into a token share.
+        self.context_bytes_sent = 0
 
     @property
     def _response_format_unsupported(self) -> bool:
@@ -199,6 +240,8 @@ class TrackingClient:
         return self.inner._response_format_unsupported
 
     def chat(self, messages, tools=None, response_format=None):
+        # Before the call, so a request that raises still counts the bytes it sent.
+        self.context_bytes_sent += request_wire_bytes(messages, tools)
         # Forwarded only when asked for AND understood: fake clients whose chat()
         # takes two arguments must keep working, and they never carry the memo.
         if response_format is not None and hasattr(self.inner, "_response_format_unsupported"):
@@ -532,9 +575,15 @@ def run_task(
             deterministic_sampling=True,
         )
         agent.use(critique_gate)
+    graph: FileAccessGraph | None = None
     if effective in GRAPH_CONFIGS and any(n in WORKSPACE_TOOLS for n in task.get("tools", [])):
         # `effective`, not `config`: `graph-guarded` gets exactly the headline graph.
-        agent.use(FileAccessGraph(readers={"read_file": "path"}, **GRAPH_CONFIGS[effective]))
+        # Held in a local now: `run_task` used to construct the graph inside the `use(...)`
+        # call and drop the only reference to it, which is why the realised repeat-read
+        # count could not reach a JSONL row (bar §7.2) and a field program had to
+        # monkey-patch the constructor to see it at all.
+        graph = FileAccessGraph(readers={"read_file": "path"}, **GRAPH_CONFIGS[effective])
+        agent.use(graph)
     if config in GUARD_CONFIGS:
         # Attached LAST on purpose: LoopGuard wraps only the tools registered by the
         # time its setup runs, and last means all of them — the memory tools, the
@@ -578,6 +627,10 @@ def run_task(
         schema_retries = max(0, tracking.calls - 1)
     else:
         schema_retries = schema_gate.retries_used if schema_gate else 0
+    # An all-zero accounting stands in for "no graph was attached", which is what a
+    # `bare`/`lean`/`full` row means. It is not a measured zero and the bar's §5 R3 test
+    # is only readable on a row whose config is in GRAPH_CONFIGS.
+    accounting = graph.accounting if graph is not None else ReadAccounting()
     result = TaskResult(
         task=task["name"],
         config=config,
@@ -592,6 +645,14 @@ def run_task(
         critique_rounds=critique_gate.rounds_used if critique_gate else 0,
         error=f"{type(caught).__name__}: {caught}" if caught else None,
         seed=applied_seed,
+        reader_calls=accounting.reader_calls,
+        unrecorded_reader_calls=accounting.unrecorded_reader_calls,
+        repeat_reader_calls=accounting.repeat_reader_calls,
+        collapsed_calls=accounting.collapsed_calls,
+        collapsed_bytes=accounting.collapsed_bytes,
+        annotate_marker_bytes=accounting.annotate_marker_bytes,
+        query_bytes=accounting.query_bytes,
+        context_bytes_sent=tracking.context_bytes_sent,
     )
     if transcripts_dir is not None:
         # The run most worth reading used to record nothing: `agent.run` raising left
