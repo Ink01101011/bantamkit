@@ -431,3 +431,65 @@ affected: this unit changed no source file but `evalrun.py` and `test_evalrun.py
 446-521` for a claim about the very file that commit was shifting. A pushed commit
 message cannot be corrected without rewriting history, so it is recorded here and
 left alone: read it as `432, 460-535`.
+
+### A3 — 2026-08-17: §1.1's null control is now a FIELD measurement, and its token half is pinned
+
+M3. Three appends, in the order they were measured. **§1-§8 are not edited**, and
+this amendment reports **no arm delta of any kind** — §5's R1/R2 and §6 are
+untouched, and M4 still owns every ladder figure.
+
+**(1) §1.1's claim is now measured outside pytest, not argued.** §1.1 asserted that
+`graph-off` "removes **no** information the task needs" and cited two source
+ranges. That argument was prose plus two in-process nodes, and the standing
+constraint of this job is that the suite is not evidence. It has now been measured
+on all 8 tasks of `assets/evals/devteam/`, out of process, through
+`bantamkit.evalrun.run_task`, by
+`docs/eval-data/2026-08-17-devteam-null-control-field-measurement.py`. `bare` and
+`graph-off` send **byte-identical requests** — the tool observations, the tool
+roster, the system prompt and the whole serialized payload — on **44/44 model
+calls**, 106 observation slots, 59,671 re-send-weighted observation bytes, at
+identical score (8/8 both arms), with the read ledger populated (33 reads, 30
+distinct, 3 realised repeats). Report:
+[`2026-08-17-devteam-null-control.md`](2026-08-17-devteam-null-control.md).
+
+**(2) The token half of §1.1's pinning claim is now PINNED, closing A1.** A1
+recorded that only one of the two named nodes was a pin, because
+`conftest.FakeClient`'s fixed `Usage` cannot move when an observation moves. The
+node added at `bf0ed03` —
+`test_evalrun.py::test_graph_off_token_count_is_pinned_by_a_payload_sensitive_client`
+— derives `prompt_tokens` from the serialized payload (`client.py:155-161`), so
+`TaskResult.tokens` (`evalrun.py:586`) becomes a function of the observations.
+Measured mutation matrix, each flag of `GRAPH_CONFIGS["graph-off"]`
+(`evalrun.py:142`) flipped `True` in the source file, one at a time:
+
+| mutation | `…observations_are_identical_to_bare` | `…token_count_matches_bare` | `…is_pinned_by_a_payload_sensitive_client` |
+|---|---|---|---|
+| `cache: True` | **RED** | green | **RED** |
+| `annotate: True` | **RED** | green | **RED** |
+| `query: True` | **RED** | green | **RED** |
+
+The failing line under all three is `assert off_result.tokens ==
+bare_result.tokens`, read off the pytest output rather than inferred. **A1's finding
+reproduces unchanged and extends**: A1 ran two mutations, this ran three, and
+`annotate: True` splits exactly the same way. `::test_graph_off_token_count_matches_bare`
+stays where it is, as A1 records it — a regression guard on the arm's counters, not
+a pin.
+
+**The caveat that travels with it.** Both the node and the field program use a
+**byte-derived token surrogate**, `ceil(bytes/4)`; no endpoint `Usage` was measured
+and the repo has no local tokenizer. The token equality is pinned *under the
+assumption tokens are monotone in bytes* — the same assumption §5 R1 already rests
+on via Table 5b. Pinning it against a real endpoint remains **UNMEASURED** and
+needs a live endpoint in the measurement path. `pins` is author-chosen.
+
+**(3) §1.1's `filegraph.py:83-92` pin is imprecise; the claim it supports holds.**
+§1.1 (L60) and `8ccd084`'s commit body both say `_record` "returns the observation
+unmodified on **every path** when `cache` and `annotate` are both False
+(`filegraph.py:83-92`)". Read at HEAD, there are **three** such return paths and the
+cited range holds one: the `error:` early return at **`filegraph.py:66-67`** (before
+`_record` is called at all), the first-read return at **`filegraph.py:75-77`**, and
+the both-flags-off return at **`filegraph.py:92`**. The honest range for "every
+path" is **`filegraph.py:61-92`** — the whole of `handler` plus `_record`. The
+substantive claim is unaffected and is now measured directly (append 1 above); this
+is recorded so a reader who follows the pin to check "every path" is not sent to
+two thirds of it. **Corrected by amendment, not by editing §1.1.**
