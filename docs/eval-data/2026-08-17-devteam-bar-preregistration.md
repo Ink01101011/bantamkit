@@ -753,3 +753,202 @@ deletions**.
 
 **Tokens and wall-clock for M4: UNMEASURED.** The sweep's 3 m 59 s is the sweep's wall
 clock, measured by the shell wrapper.
+
+### A6 — 2026-08-17: §3.2 gains a fourth outcome, its floor is recorded as being at the wrong grain, and §3.1 is recorded as having no floor at all
+
+M5, the adversarial review. Five appends. **§1-§8 are not edited**, A1-A5 are untouched,
+and **no verdict and no number of M4's run changes**: Δ%(A2−A1) is still `+0.000%`, the
+run is still UNINFORMATIVE under §5 R3, Δ%(A3−A2) is still `+73.367%` and still a TRADE,
+and >60% is still REFUTED for the `cache` mechanism on this workload by R1's arithmetic.
+This amendment records defects in the pre-registered *rules* so the next run meets a
+corrected rule rather than a precedent. Review:
+[`2026-08-17-devteam-review.md`](2026-08-17-devteam-review.md), probe
+[`2026-08-17-devteam-review-probe.py`](2026-08-17-devteam-review-probe.py) (6 mutations,
+all six verified to exit 1). Commit `19133b6` (Documentation), CI run `32032557362`
+**success**.
+
+**(1) §3.2's sign clause GAINS A FOURTH OUTCOME: `ABSTAINING`.** §3.2 says a
+*conflicting* pair is not a measured effect and is silent on a pair every one of whose
+tasks ties. M4 read the silence as *unevaluable, not satisfied* and recorded the ambiguity
+(A5 point 3) rather than resolving it in the bar's favour. That reading is adopted here as
+a clause:
+
+> **A pair is `ABSTAINING` when no task points — when `_directional`'s pointing count is
+> 0 (`criticreplay.py:2431-2482`, ties are sign 0). An ABSTAINING pair satisfies neither
+> §5 R2's nor §6's sign condition. It is reported as ABSTAINING and the sign condition is
+> reported as UNEVALUABLE, never as held.**
+>
+> So §3.2 has four outcomes, not three: `directional` (every pointing task agrees and at
+> least one points), `conflicting` (two pointing tasks disagree), `ABSTAINING` (nothing
+> points), and — orthogonally — below the floor.
+
+The reason is the one M4 gave and it is worth keeping in the bar rather than in a field
+report: **a rule that treated 8 abstentions as unanimous agreement would certify every
+zero-delta run**, which is the same defect as a noise floor of 0 accepting any non-zero
+delta. Nothing about M4's verdict changes — R2 still does not fire, for the reason it
+already gave — but the next unit gets a clause instead of a precedent.
+
+**(2) §3.2's NOISE FLOOR IS AT THE WRONG GRAIN. Stated as a defect in this bar, not
+resolved in it.** §2 defines Δtok(Y−X) as tokens *"summed over tasks, per repeat set"*.
+§3.2 gates that sum with `max over tasks of (max(tokens across repeats in X) − min(...))`
+— **one task's spread**. A sum of eight per-task figures does not have the drift of its
+largest single component. Measured from M4's own committed rows, with §3.2's own rule
+(`max − min across repeats`) applied at three grains:
+
+| arm | §3.2 as written (per-task max) | sum of per-task spreads | §2's own grain (suite total per repeat set) |
+|---|---|---|---|
+| A0 / A1 / A2 | **1845** | 7024 | **6469** — suite totals `[18222, 15365, 11753]` |
+| A3 | **1641** | 5390 | **1324** — suite totals `[29323, 27999, 28374]` |
+
+**The suite statistic's own repeat spread is 6,469 tokens on a statistic whose value is
+15,920** — the instrument's resolution at the grain it reports is ~41% of the quantity it
+reports, and the floor it applies is 1,845. §3.2 gates on `floor(X)`, the lower rung, so
+the arm that matters for the only moving pair is A2, where the rule as written is
+**3.51× more lenient** than its own rule at §2's grain. Consequence for the one delta that
+clears: `|Δtok(A3−A2)| = 11,680` clears **all three** floors, at **6.33×** (as written),
+**1.66×** and **1.81×**. **No verdict of M4's run changes** — the two zero pairs clear
+none of the three and the moving pair clears all three — and the reported 6.33× margin
+should be read as the most lenient of three defensible figures.
+
+The ordering is **not stable across arms**: on A3 the suite-grain floor is *smaller* than
+the per-task max (1,324 < 1,641), because A3's per-task spreads offset. That is the point
+rather than a caveat on it — these are three different quantities, not a conservative and
+a generous version of one, so the grain has to be *chosen* rather than left implicit.
+
+> **The rule for the next run, recorded here and NOT applied retroactively: a delta must
+> clear a floor measured at the SAME GRAIN as the delta.** A suite-wide delta is gated by
+> the suite statistic's own spread across repeat sets; a per-task delta is gated by that
+> task's own spread. Which grain is chosen is stated before the run, with the other
+> reported beside it.
+
+Not fixed here. The bar is Documentation and the instrument
+(`2026-08-17-devteam-ladder-field-measurement.py:698-699`, `noise_floor` at `:117-130`)
+is Measurement, so the correction is at minimum two commits in two layers and is not the
+reviewing unit's — M6 closes it with a field measurement before and after.
+
+**(3) §3.1's SCORE HALF HAS NO NOISE FLOOR, and this run's only reported TRADE turns
+partly on that.** §3.2 gave the token half a floor derived from the arm's own repeat
+spread. §3.1 gives the score half nothing, and its ported rule
+(`criticreplay._passing_points`, `criticreplay.py:2205-2217`) is unanimity — a task passes
+only if **every** repeat passed. So a task sitting at 1/3 or 2/3 is **one sampled run
+away from changing the pass set**, and `disagreeing_points` counts such flips at face
+value. Measured from M4's rows:
+
+| arm | tasks passed | non-unanimous tasks (the score half's own repeat spread) |
+|---|---|---|
+| A0 / A1 / A2 | 3 | **1** — `dt-handler-map` at 2/3 |
+| A3 | 3 | **2** — `dt-symbol-home` 1/3, `dt-unread-key` 2/3 |
+
+Of A5 point 5's four disagreeing points, **two are single-repeat flips**:
+`dt-handler-map` 2/3→3/3 and `dt-unread-key` 3/3→2/3. The other two are not —
+`dt-patch-before-after` moves 0/3→3/3 and `dt-symbol-home` 3/3→1/3.
+
+**A5's TRADE verdict stands unchanged**: `disagreeing_points` is a trade at 2 points as
+much as at 4, so §4's clause fires either way, and A5 is not edited. What is recorded is
+that the sentence naming four tasks as a set `query` "bought" is not supported at that
+grain — `dt-handler-map` is 2/3 in A0, A1 **and** A2 identically, so its pass-set
+membership turns on which way one sampled run went. **The bar owes §3.1 the same treatment
+§3.2 got: a disagreement count reported beside the arms' own non-unanimity, so a reader
+can see whether the disagreement exceeds the instrument's own score resolution.** Not
+defined here, for the same reason as (2).
+
+**(4) §2's PRIMARY STATISTIC CANNOT SEPARATE A FLAG FROM THE TRAJECTORY IT INDUCES, and
+on the one moving pair that is about half the number.** A5 point 5 recorded that `query`
+changed the trajectory (123 model calls to A2's 90) and that Δ(A3−A2) is therefore "not a
+clean byte accounting", and split the **byte** delta 44/56. The **token** delta is the
+headline and had not been split. Tokens factor exactly — `tokens ≡ model_calls ×
+tokens-per-call`, an identity, no assumption — and on M4's own rows:
+
+| | A2 | A3 | factor |
+|---|---|---|---|
+| tokens (raw sum) | 45,340 | 85,696 | ×1.8901 |
+| model_calls | 90 | 123 | **×1.3667** |
+| tokens per call | 503.8 | 696.7 | **×1.3830** |
+
+The two factors multiply to 1.8901 exactly. **So ~49% of `query`'s measured token cost is
+turns the flag caused the model to take, not bytes the apparatus added**, and no
+adjacent-rung subtraction separates them. §1.1's warrant — "each adjacent difference
+isolates one mechanism" — isolates the **flag**; it does not isolate the trajectory, and
+this pair is the first in the job where the difference is half the figure. Recorded as a
+limit on §2's statistic. A turns-normalised companion figure is not defined here.
+
+**(5) A0, A1 AND A2 ARE FOUR CONFIGURATIONS AND TWO MEASURED RUNGS, and §1.1's one-flag
+claim is intact as structure and vacuous as measurement on this run.** Matched on
+(task, seed) across all 16 measured columns of all 24 rows per arm, the four arms fall
+into **2 equivalence classes: `{A0,A1,A2}` and `{A3}`** — 0 differing cells in 384
+comparisons per pair, 1,152 across the three identity pairs, against 134 in each
+comparison with A3. §1.1 declares four rungs one flag apart;
+the record distinguishes two. The consequence for §1.1's null-control claim, stated
+plainly: **A1's and A2's meaning-preservation on this run is INHERITED from that identity,
+not measured.** A3 recorded `graph-off` as measured meaning-preserving against `bare`
+(44/44 byte-identical requests); nobody measured `graph-annotate` or `graph-cache` against
+it on a real trajectory, and on this one they did not differ from it at all. Under a
+trajectory that realises repeats they separate immediately, and A1 in particular is **not**
+meaning-preserving by design — annotation is content the model sees.
+
+**And §5 R3's UNINFORMATIVE verdict is STRUCTURAL, which strengthens R3 and narrows what
+any future run can do about it.** Two measured facts compose. First, `cache` collapses
+**only** on a byte-identical repeat — `unchanged = prior.digest == digest`
+(`filegraph.py:157`), gate at `:160`; measured on the reference walk, 3 repeats, **3
+collapsed, 0 `changed`**. Second, `Agent.run`'s message list is **append-only** — measured
+over 44 model calls on 8 tasks, **36 consecutive request pairs, 0 prefix violations**, not
+read off the source. So at the moment a collapsible repeat is issued, its content is
+already in the request: **the mechanism's entire opportunity set is reads that add nothing
+to the context.** Independently, deleting every repeat hop from all eight declared walks
+leaves eight walks that still pass M2's own `verify_walk`, 8/8, at re-read pressure
+**0/30 = 0.000** against the declared `3/33 = 0.091` — so **no task on this surface
+requires a second read of any file**, and the workload doc's "two tasks carry it" is
+overtaken (zero do; the declared strategy's refusal to memoise carries all of it).
+
+The consequence for A5 point 6 and for M4 §12: R1's ceiling being **generous** is now
+explained rather than just observed. And the highest-value next measurement named there —
+a second model — is **not a route to a non-zero Δ%(A2−A1)**, because a model realises a
+collapsible repeat only by being redundant and a larger model would be expected to be
+less redundant, not more. It remains worth running, for a different question (how much
+redundancy a bigger model has), and its reason must still be committed before its numbers
+exist, in a unit of its own. **This does not re-scope any claim** (invariant 11): it names
+the attack direction one level up — `cache`'s benefit is definitionally bounded by an
+agent's own redundancy, and nothing in this harness creates redundancy.
+
+**One further limit on §8, recorded rather than fixed. Half the ruler was never exercised
+in the field.** Four of the eight columns — `repeat_reader_calls`, `collapsed_calls`,
+`collapsed_bytes`, `annotate_marker_bytes` — read **0 in every one of the 96 committed
+rows**, and `annotate_marker_bytes` is 0 even in A1, the arm whose purpose is to annotate
+(with zero repeats the annotate branch, `filegraph.py:182-194`, is unreachable). RB-P28
+says the suite is not evidence, so those four rest on fixtures. **They are not broken and
+the gap is the trajectory, not the ruler:** on the reference walk, measured out of pytest
+through `run_task`, `graph-annotate` records `annotate_marker_bytes = 282` and
+`graph-cache` records `collapsed_calls = 3`, `collapsed_bytes = 1836` — the first
+demonstration anywhere in this job that any of those three is non-zero outside pytest.
+`unrecorded_reader_calls` has field evidence on **3 rows of 96** (`dt-retry-attempts`,
+seed `312363838`, A0/A1/A2 and not A3). Closing this needs a committed row from a
+reference-walk arm; it needs no change to the workload and no second model.
+
+**A5's re-pinning table is CORRECT AT HEAD and was re-read rather than trusted.** Every
+`evalrun.py`, `filegraph.py`, `criticreplay.py`, `client.py`, `agent.py`, `critique.py`
+and test pin in A1-A5 that this review depended on was read at HEAD and holds. **The
+drift moved somewhere new instead: M5's own brief carried A4's pre-`ec25fbd` numbers**,
+stale by the same +3 A5 had already corrected — the **fifth** pin drift in this job and
+the first to re-introduce a drift whose correction was already committed. Nothing in a
+committed artifact is affected, so there is nothing here to amend beyond recording that
+the pin-drift checker is still **FILED, NOT BUILT** and has now cost five units of human
+re-reading.
+
+**One correction to this amendment's own predecessor, stated rather than folded in.** A5
+and M4's §9 both say the report's §1-§12 are "703 insertions and 0 deletions" against
+`290c834`; measured, `git diff --numstat 290c834 e6037a1` reads **704/0** and at HEAD
+**706/0**. **The load-bearing half — 0 deletions — reproduces at both points**, and the
+stronger claim was checked directly rather than inferred: §0 is **byte-identical** to
+`290c834` at HEAD. Separately, the claim that this bar file "has ZERO deletions in its
+entire history" is **false by one line**: `bd7f8f8` (A1) is `20 insertions, 1 deletion`,
+and the deleted line is the word "None." from `## 9. Amendments`. §1-§8 were untouched, so
+the *discipline* holds exactly as claimed and only the *audit statement about it* was
+imprecise. Recorded because that deletion is also this repo's committed precedent for the
+line M5 was asked to draw: **a record may only be amended; a pointer — a link, a citation,
+a line pin, a stale-state marker — may be corrected in place, in its own commit, with the
+correction stated in the body. A block labelled verbatim is a record, not a pointer, even
+when the edit makes it more faithful.** The full ruling, and where it should live
+(`docs/architecture.md`, not this bar), is §5 of the review.
+
+**Tokens and wall-clock for M5: UNMEASURED.** No counter is exposed for either and a
+self-estimate is not a measurement.
