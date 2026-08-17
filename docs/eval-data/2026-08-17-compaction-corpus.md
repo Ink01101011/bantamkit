@@ -448,4 +448,65 @@ stays available to U4 as a **declared** choice rather than an oversight.
 
 Amendments are appended here, dated, with the text above left untouched.
 
-None.
+### Amendment 1 — 2026-08-18. Two of the 44 columns are not cutoff-restricted, declared
+
+**What happened.** About forty minutes after this artifact was committed, `--check` went
+**RED on the pristine committed `.jsonl`, with nothing modified.** §1.2 above claims every
+number is a function of the lines under the cutoff. That claim was true of **42** of the 44
+columns and false of two:
+
+| column | committed | regenerated ~40 min later |
+|---|---|---|
+| `lines_total` (row 50) | 2,432 | 2,508 |
+| `untimestamped_lines_by_type` (row 50) | mode 133, permission-mode 133, last-prompt 133, ai-title 132, file-history-snapshot 13 | 137 / 137 / 137 / 136 / 13 |
+
+Row 50 is the corpus's single live session — the one §6(2) already flags as this job's own.
+Both columns count lines **without** applying the cutoff, so they move every time anything
+is appended to an open transcript. This is precisely the failure mode §1.2 and §5 name, and
+it was missed on two columns while being got right on forty-two.
+
+**What was done, and what deliberately was not.**
+
+- The committed `.jsonl` is **not regenerated and not retro-edited.** Its values were true
+  at the cutoff and they stay. That is the invariant, and the alternative — regenerating
+  evidence to green a check — is the thing the check exists to prevent.
+- `--check` now skips the **value** comparison for exactly the two columns enumerated in a
+  dated declaration, `LIVE_COLUMNS_EXEMPT_FROM_THE_REPRODUCTION_CHECK` in the survey
+  program. **Nothing is generically lenient.** The exemption is by NAME; the key-set check
+  runs first, so an exempt column must still be present on both sides; and the drift is
+  **printed** on every run, whether the verdict passes or not — an exemption from failing,
+  never an exemption from being reported. A rule of "skip a column that differs" would be
+  tolerance stated over a set and would pass every mutation the comparator exists to catch.
+- Nine nodes were added to guard the repair against becoming the disease. The load-bearing
+  ones: the cutoff-restricted **neighbour** `lines_under_cutoff` still fails; a plausible
+  undeclared sibling name still fails; a declared-live column **deleted** from the row still
+  fails; and emptying the declaration brings the original red straight back.
+
+**Which is inherently live and which was computed at the wrong scope** — the distinction
+that says whether the declaration is permanent or a wart:
+
+- **`lines_total` is a WART.** It was computed at the wrong scope, not inherently live: its
+  cutoff-restricted counterpart `lines_under_cutoff` was already committed in the very next
+  column. It should have been cutoff-restricted from the start, and on this evidence it
+  should not have been a committed column at all — "lines on disk" is a property of a file
+  at an instant, not of a corpus. **A later artifact should carry `lines_under_cutoff` and
+  drop it.**
+- **`untimestamped_lines_by_type` is INHERENTLY LIVE under the cutoff rule as declared**,
+  which is that a line enters a statistic iff *its timestamp* is under the cutoff — and
+  these lines have none. A repair exists and is named rather than applied: a line's
+  **position** orders it, so an untimestamped line could be counted iff it precedes the
+  first line whose timestamp is at or after the cutoff, which is append-stable. Applying it
+  now would change the regenerated value and force a retro-edit of committed evidence. So
+  the repair belongs to the **next** artifact's cutoff, and the column stays exempt in this
+  one.
+
+**One latent drift was found by reading rather than by waiting, and FIXED rather than
+declared.** The `UNPARSEABLE` and `NOT_AN_OBJECT` counters were incremented before the
+cutoff guard, so a future malformed line would have drifted `line_types` — a **checked**
+column, a second time bomb of the same kind. They now land in the declared-live dict. No
+committed row carries either key, so no committed value changed.
+
+**`truncated_at_cutoff` is deliberately NOT exempt.** It is cutoff-derived and stable under
+append. The one event that would move it — a corpus member being **resumed** — is a change
+of character in the evidence that *should* turn the check red and be answered with a dated
+amendment, which is this mechanism working rather than failing.

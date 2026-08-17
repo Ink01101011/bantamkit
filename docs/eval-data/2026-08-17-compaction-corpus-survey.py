@@ -29,7 +29,12 @@ Two consequences, both wanted:
 
   * the numbers are append-only-stable. A new session, a resumed session and this
     program's own transcript all land after the cutoff and cannot move a committed row,
-    so `--check` stays green without anything being regenerated;
+    so `--check` stays green without anything being regenerated. **CORRECTED 2026-08-18:
+    that was true of 42 of the 44 columns and FALSE of two. `--check` went red on the
+    pristine committed artifact forty minutes after it was committed. See the dated
+    declaration `LIVE_COLUMNS_EXEMPT_FROM_THE_REPRODUCTION_CHECK` below, and Amendment 1
+    of `2026-08-17-compaction-corpus.md`. The sentence is kept as written rather than
+    replaced, because it is the claim that was wrong;**
   * the corpus is exactly what was already on disk when the bar was frozen. The bar's §0
     claim 1 — that no transcript was opened to write it — cannot be falsified
     retroactively by U3's reads, because nothing U3 caused to be recorded is in the
@@ -145,6 +150,63 @@ DEFAULT_TRANSCRIPT_ROOT = Path.home() / ".claude" / "projects"
 # a hole (RB-P46, and the shape U1 shipped as ADDITIVE_KEYS_THE_ARTIFACT_PREDATES in
 # 2026-08-17-devteam-instrument-validation-run.py).
 ADDITIVE_KEYS_THE_ARTIFACT_PREDATES: tuple[str, ...] = ()
+
+# ---------------------------------------------------------------------------------------
+# DATED DECLARATION, 2026-08-18. Columns whose VALUE is not cutoff-restricted, so they
+# drift while the user works and cannot be compared against a committed value.
+#
+# Filed because `--check` went RED on the pristine committed artifact about forty minutes
+# after it was committed, with nothing modified — the exact failure mode this program's own
+# module docstring names, missed on exactly two of the forty-four columns. Row 50 is this
+# job's own live session: `lines_total` had moved 2432 -> 2508 and
+# `untimestamped_lines_by_type` had moved by 4 on three of its five kinds. Every other
+# column was byte-stable across that interval, which is why the check passed when it was
+# written and failed later.
+#
+# The exemption is ENUMERATED, never inferred. It is not "skip columns that differ" — that
+# rule is tolerance stated over a set, which passes any drift at all and is the same
+# intersection defect RB-P46 records one artifact over. Only the two names below are
+# skipped, they must still be PRESENT on both sides (the key-set check is unchanged and
+# runs first), and their observed drift is PRINTED by `--check` rather than swallowed, so
+# an exempt column stops being invisible the moment it moves.
+#
+# WHICH IS INHERENTLY LIVE AND WHICH WAS COMPUTED AT THE WRONG SCOPE — the distinction U4
+# needs, because it says whether the declaration is permanent or a wart:
+#
+#   * `lines_total` — A WART. It was COMPUTED AT THE WRONG SCOPE, not inherently live. It
+#     counts every line in the file, including lines after the cutoff, and its
+#     cutoff-restricted counterpart `lines_under_cutoff` was already committed in the very
+#     next column. It should have been cutoff-restricted from the start, and on this
+#     evidence it should not have been committed at all: "lines on disk" is a property of
+#     the file at an instant, not of the corpus. A later artifact should carry
+#     `lines_under_cutoff` and drop this column. It is kept here only because committed
+#     evidence is not regenerated.
+#
+#   * `untimestamped_lines_by_type` — INHERENTLY LIVE UNDER THE DECLARED CUTOFF RULE. The
+#     rule is that a line enters a statistic iff ITS TIMESTAMP is under the cutoff, and
+#     these lines have no timestamp, so no restriction of them is possible under that rule.
+#     There IS a repair — a line's POSITION orders it, so an untimestamped line could be
+#     counted iff it precedes the first line whose timestamp is at or after the cutoff, and
+#     that is append-stable. It is deliberately NOT applied here: adopting it would change
+#     the regenerated value and force a retro-edit of committed evidence. So the repair is
+#     named for the next artifact's cutoff and the column stays exempt in this one.
+#
+# THE AUDIT BEHIND THE LIST, so it is a measurement and not a hope. All 44 columns were
+# read for scope. The other 42 are computed only after the `_under_cutoff` guard, and the
+# forty-minute interval above is the empirical half: exactly two columns moved. One latent
+# drift was found by reading rather than by waiting and is FIXED rather than declared — the
+# `UNPARSEABLE` and `NOT_AN_OBJECT` counters were incremented before the cutoff guard, so a
+# future malformed line would have drifted `line_types`, a CHECKED column. They now land in
+# the exempt dict, which changes no committed value because no committed row carries either
+# key. `truncated_at_cutoff` is deliberately NOT exempt: it is cutoff-derived and stable
+# under append, and the one event that would move it — a corpus member being RESUMED — is a
+# change of character in the evidence that SHOULD turn the check red and be answered with a
+# dated amendment.
+# ---------------------------------------------------------------------------------------
+LIVE_COLUMNS_EXEMPT_FROM_THE_REPRODUCTION_CHECK: tuple[str, ...] = (
+    "lines_total",
+    "untimestamped_lines_by_type",
+)
 
 # A `cwd` value and a timestamp, lifted without parsing the whole line. Cheap because the
 # classification pass reads every byte of a 549 MB tree and only the purity verdict comes
@@ -349,10 +411,15 @@ def survey_transcript(path: Path, transcript_id: str) -> dict:
             try:
                 event = json.loads(raw)
             except json.JSONDecodeError:
-                line_types["UNPARSEABLE"] = line_types.get("UNPARSEABLE", 0) + 1
+                # Into the DECLARED-LIVE dict, not into `line_types`. A malformed line
+                # carries no timestamp, so it cannot be cutoff-restricted, and counting it
+                # in `line_types` put a latent drift into a CHECKED column — found by
+                # reading the scope of all 44 columns rather than by waiting for it. No
+                # committed row carries either key, so this changes no committed value.
+                untimestamped["UNPARSEABLE"] = untimestamped.get("UNPARSEABLE", 0) + 1
                 continue
             if not isinstance(event, dict):
-                line_types["NOT_AN_OBJECT"] = line_types.get("NOT_AN_OBJECT", 0) + 1
+                untimestamped["NOT_AN_OBJECT"] = untimestamped.get("NOT_AN_OBJECT", 0) + 1
                 continue
             kind = str(event.get("type", "MISSING_TYPE"))
             stamp = event.get("timestamp")
@@ -635,8 +702,11 @@ def fence_violations(text: str) -> list[str]:
 
 def compare_on_committed_keys(
     committed_text: str, regenerated: list[dict]
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], list[str]]:
     """NAMED COLUMNS, row for row, matched by `transcript_id`. Never bytes of the file.
+
+    Returns `(problems, added_keys, drift)`. `problems` empty is the pass condition;
+    `drift` is what the DECLARED-LIVE columns did, reported and never fatal.
 
     The bar's §9 in the form RB-P46 forced: the row count is exact; a committed
     transcript that is no longer on disk fails; every key the committed row carries is
@@ -646,6 +716,14 @@ def compare_on_committed_keys(
     because it becomes an undeclared key on the regenerated side; and the committed keys
     reordered among themselves fail.
 
+    ONE VALUE COMPARISON IS SKIPPED, for the two columns enumerated in
+    `LIVE_COLUMNS_EXEMPT_FROM_THE_REPRODUCTION_CHECK` and for no others. Read that
+    declaration for why. What is deliberately NOT done: no column is skipped because it
+    happens to differ, and no column is skipped because it looks live. The exemption is by
+    NAME, the key-set check runs first so an exempt column must still be present on both
+    sides, and the drift is printed. A rule of "ignore what moved" is tolerance stated over
+    a set — it would pass every mutation this function exists to catch.
+
     Matched by `transcript_id` rather than by position because the corpus is a directory
     and its iteration order is not a property this artifact should be asserting. The
     cutoff is what makes the matching total: nothing recorded after the bar was frozen
@@ -653,12 +731,13 @@ def compare_on_committed_keys(
     failure and not the corpus growing.
     """
     problems: list[str] = []
+    drift: list[str] = []
     committed_lines = [line for line in committed_text.splitlines() if line.strip()]
     if len(committed_lines) != len(regenerated):
         problems.append(
             f"row count: committed {len(committed_lines)}, regenerated {len(regenerated)}"
         )
-        return problems, []
+        return problems, [], drift
 
     by_id = {row["transcript_id"]: row for row in regenerated}
     added: list[str] = []
@@ -690,11 +769,20 @@ def compare_on_committed_keys(
         for key in committed_keys:
             got = json.dumps(regen[key])
             want = json.dumps(committed[key])
-            if got != want:
-                problems.append(f"row {index}: column {key!r} differs")
-                problems.append(f"    committed:   {want}")
-                problems.append(f"    regenerated: {got}")
-    return problems, added
+            if got == want:
+                continue
+            if key in LIVE_COLUMNS_EXEMPT_FROM_THE_REPRODUCTION_CHECK:
+                # Declared live (2026-08-18). Skipped on VALUE only — the key-set check
+                # above already required it present on both sides — and the drift is
+                # surfaced rather than swallowed, so an exempt column cannot go quiet.
+                drift.append(f"row {index}: declared-live column {key!r} moved")
+                drift.append(f"    committed:   {want}")
+                drift.append(f"    regenerated: {got}")
+                continue
+            problems.append(f"row {index}: column {key!r} differs")
+            problems.append(f"    committed:   {want}")
+            problems.append(f"    regenerated: {got}")
+    return problems, added, drift
 
 
 def _quantiles(values: list[float]) -> dict[str, float]:
@@ -1014,8 +1102,21 @@ def main(argv: list[str] | None = None) -> int:
         if not out.exists():
             print(f"FAILED — {ARTIFACT} is not there, so there is nothing to check against.")
             return 1
-        problems, added = compare_on_committed_keys(out.read_text(), rows)
+        problems, added, drift = compare_on_committed_keys(out.read_text(), rows)
         print(RULE)
+        if drift:
+            # Printed BEFORE the verdict and whether or not the verdict is a pass, so a
+            # declared-live column that moved is never invisible. The declaration is an
+            # exemption from failing, not an exemption from being reported.
+            print(
+                f"DECLARED-LIVE COLUMNS THAT MOVED — exempt by the dated declaration of "
+                f"2026-08-18, {len(LIVE_COLUMNS_EXEMPT_FROM_THE_REPRODUCTION_CHECK)} names:"
+            )
+            for line in drift[:24]:
+                print(f"  {line}")
+            if len(drift) > 24:
+                print(f"  ... and {len(drift) - 24} more")
+            print(RULE)
         if problems:
             print(f"FAILED — {ARTIFACT} does not reproduce on its named columns.")
             for problem in problems[:40]:
@@ -1023,7 +1124,10 @@ def main(argv: list[str] | None = None) -> int:
             if len(problems) > 40:
                 print(f"  ... and {len(problems) - 40} more")
             return 1
-        print(f"OK — {ARTIFACT} reproduces on every named column, {len(rows)} rows.")
+        print(
+            f"OK — {ARTIFACT} reproduces on every named column that is not declared live, "
+            f"{len(rows)} rows."
+        )
         if added:
             print(f"     declared additive columns seen: {', '.join(added)}")
         print(RULE)

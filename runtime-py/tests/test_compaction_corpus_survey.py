@@ -376,7 +376,7 @@ class TestTheReproductionCheckComparesNamedColumns:
     ]
 
     def test_the_unmutated_pair_passes(self, survey):
-        problems, added = survey.compare_on_committed_keys(
+        problems, added, _ = survey.compare_on_committed_keys(
             self._committed(self.ROWS), [dict(r) for r in self.ROWS]
         )
         assert problems == []
@@ -385,26 +385,26 @@ class TestTheReproductionCheckComparesNamedColumns:
     def test_a_changed_value_fails(self, survey):
         regen = [dict(r) for r in self.ROWS]
         regen[1]["model_calls"] = 6
-        problems, _ = survey.compare_on_committed_keys(self._committed(self.ROWS), regen)
+        problems, _, _drift = survey.compare_on_committed_keys(self._committed(self.ROWS), regen)
         assert any("model_calls" in p for p in problems)
 
     def test_an_int_against_a_float_fails(self, survey):
         regen = [dict(r) for r in self.ROWS]
         regen[0]["model_calls"] = 3.0
-        problems, _ = survey.compare_on_committed_keys(self._committed(self.ROWS), regen)
+        problems, _, _drift = survey.compare_on_committed_keys(self._committed(self.ROWS), regen)
         assert problems, "3 against 3.0 must fail: absent and zero are not the same either"
 
     def test_a_null_turning_into_a_zero_fails(self, survey):
         """A column that reads 0 must stay distinguishable from one that is absent."""
         regen = [dict(r) for r in self.ROWS]
         regen[1]["bytes_per_output_token"] = 0
-        problems, _ = survey.compare_on_committed_keys(self._committed(self.ROWS), regen)
+        problems, _, _drift = survey.compare_on_committed_keys(self._committed(self.ROWS), regen)
         assert problems
 
     def test_an_undeclared_new_key_fails(self, survey):
         regen = [dict(r) for r in self.ROWS]
         regen[0]["a_new_column"] = 1
-        problems, _ = survey.compare_on_committed_keys(self._committed(self.ROWS), regen)
+        problems, _, _drift = survey.compare_on_committed_keys(self._committed(self.ROWS), regen)
         assert problems
 
     def test_a_declared_additive_key_passes_and_is_named(self, survey, monkeypatch):
@@ -414,7 +414,7 @@ class TestTheReproductionCheckComparesNamedColumns:
         regen = [dict(r) for r in self.ROWS]
         for row in regen:
             row["a_declared_column"] = 1
-        problems, added = survey.compare_on_committed_keys(self._committed(self.ROWS), regen)
+        problems, added, _ = survey.compare_on_committed_keys(self._committed(self.ROWS), regen)
         assert problems == []
         assert added == ["a_declared_column"]
 
@@ -423,7 +423,7 @@ class TestTheReproductionCheckComparesNamedColumns:
         regen = [dict(r) for r in self.ROWS]
         for row in regen:
             row.pop("bytes_per_output_token")
-        problems, _ = survey.compare_on_committed_keys(self._committed(self.ROWS), regen)
+        problems, _, _drift = survey.compare_on_committed_keys(self._committed(self.ROWS), regen)
         assert problems
 
     def test_the_committed_keys_reordered_among_themselves_fail(self, survey):
@@ -432,11 +432,11 @@ class TestTheReproductionCheckComparesNamedColumns:
              "bytes_per_output_token": r["bytes_per_output_token"]}
             for r in self.ROWS
         ]
-        problems, _ = survey.compare_on_committed_keys(self._committed(self.ROWS), regen)
+        problems, _, _drift = survey.compare_on_committed_keys(self._committed(self.ROWS), regen)
         assert problems
 
     def test_a_missing_row_fails_on_the_count(self, survey):
-        problems, _ = survey.compare_on_committed_keys(
+        problems, _, _drift = survey.compare_on_committed_keys(
             self._committed(self.ROWS), [dict(self.ROWS[0])]
         )
         assert any("row count" in p for p in problems)
@@ -445,12 +445,136 @@ class TestTheReproductionCheckComparesNamedColumns:
         """Matched by `transcript_id`, so a substitution at the same count is caught."""
         regen = [dict(self.ROWS[0]), dict(self.ROWS[1])]
         regen[1]["transcript_id"] = "ccc"
-        problems, _ = survey.compare_on_committed_keys(self._committed(self.ROWS), regen)
+        problems, _, _drift = survey.compare_on_committed_keys(self._committed(self.ROWS), regen)
         assert any("not in the regenerated corpus" in p for p in problems)
 
     def test_a_reordered_artifact_still_passes(self, survey):
         """Row ORDER is not a property this artifact asserts; row CONTENT is."""
-        problems, _ = survey.compare_on_committed_keys(
+        problems, _, _drift = survey.compare_on_committed_keys(
             self._committed(self.ROWS), [dict(self.ROWS[1]), dict(self.ROWS[0])]
         )
         assert problems == []
+
+
+class TestTheDeclaredLiveExemptionIsEnumeratedAndNotGenericLeniency:
+    """The 2026-08-18 declaration. Filed because `--check` went RED on the pristine
+    committed artifact forty minutes after it was committed: two of the forty-four columns
+    are not cutoff-restricted and drift while the user works.
+
+    These nodes exist to stop the repair from becoming the disease. The dangerous fix is
+    "skip a column that differs", which is tolerance stated over a set and passes every
+    mutation the comparator exists to catch. So the property under test is not "an exempt
+    column is skipped" — it is that **only the enumerated names are skipped, they are still
+    required present, and the skip is reported.**
+
+    No node asserts what the committed artifact contains or which columns the real corpus
+    drifts on. They assert what the COMPARATOR does with a mutation, on rows this file wrote.
+    """
+
+    LIVE = "lines_total"
+    CHECKED = "lines_under_cutoff"
+
+    ROWS = [
+        {"transcript_id": "aaa", "lines_total": 100, "lines_under_cutoff": 90,
+         "untimestamped_lines_by_type": {"mode": 3}},
+        {"transcript_id": "bbb", "lines_total": 200, "lines_under_cutoff": 200,
+         "untimestamped_lines_by_type": {"mode": 5}},
+    ]
+
+    @staticmethod
+    def _committed(rows: list[dict]) -> str:
+        return "".join(json.dumps(row) + "\n" for row in rows)
+
+    def test_both_declared_names_are_in_the_declaration(self, survey):
+        """A property of the program, not of the world: the tuple is what the nodes test."""
+        assert survey.LIVE_COLUMNS_EXEMPT_FROM_THE_REPRODUCTION_CHECK == (
+            "lines_total",
+            "untimestamped_lines_by_type",
+        )
+
+    def test_an_unmutated_pair_reports_no_drift_at_all(self, survey):
+        problems, _, drift = survey.compare_on_committed_keys(
+            self._committed(self.ROWS), [dict(r) for r in self.ROWS]
+        )
+        assert problems == []
+        assert drift == [], "nothing moved, so nothing may be reported as having moved"
+
+    def test_a_declared_live_column_that_moved_passes_and_is_REPORTED(self, survey):
+        regen = [dict(r) for r in self.ROWS]
+        regen[0][self.LIVE] = 100_000
+        problems, _, drift = survey.compare_on_committed_keys(self._committed(self.ROWS), regen)
+        assert problems == []
+        assert any(self.LIVE in line for line in drift), "an exempt column must not go quiet"
+        assert any("100000" in line for line in drift)
+
+    def test_the_other_declared_live_column_behaves_the_same_way(self, survey):
+        regen = [dict(r) for r in self.ROWS]
+        regen[1]["untimestamped_lines_by_type"] = {"mode": 9, "ai-title": 1}
+        problems, _, drift = survey.compare_on_committed_keys(self._committed(self.ROWS), regen)
+        assert problems == []
+        assert any("untimestamped_lines_by_type" in line for line in drift)
+
+    def test_the_CUTOFF_RESTRICTED_neighbour_of_a_live_column_still_FAILS(self, survey):
+        """`lines_under_cutoff` sits next to `lines_total` and is not exempt. This is the
+        node that would go red if the exemption were widened by resemblance."""
+        regen = [dict(r) for r in self.ROWS]
+        regen[0][self.CHECKED] = 91
+        problems, _, drift = survey.compare_on_committed_keys(self._committed(self.ROWS), regen)
+        assert any(self.CHECKED in p for p in problems)
+        assert drift == []
+
+    def test_an_undeclared_column_that_moves_fails_however_live_it_looks(self, survey):
+        """The exemption is by NAME. A plausible-sounding sibling gets no tolerance."""
+        committed = [dict(r) | {"lines_total_on_disk": 1} for r in self.ROWS]
+        regen = [dict(r) | {"lines_total_on_disk": 2} for r in self.ROWS]
+        problems, _, _drift = survey.compare_on_committed_keys(self._committed(committed), regen)
+        assert any("lines_total_on_disk" in p for p in problems)
+
+    def test_a_declared_live_column_MISSING_from_the_regenerated_row_still_fails(self, survey):
+        """Exempt from the VALUE comparison, never from the key-set check, which runs first.
+
+        Otherwise the declaration would license deleting the column outright — the
+        both-directions trap RB-P46 records.
+        """
+        regen = [dict(r) for r in self.ROWS]
+        for row in regen:
+            row.pop(self.LIVE)
+        problems, _, _drift = survey.compare_on_committed_keys(self._committed(self.ROWS), regen)
+        assert problems
+
+    def test_the_exemption_does_not_rescue_a_dropped_row(self, survey):
+        problems, _, _drift = survey.compare_on_committed_keys(
+            self._committed(self.ROWS), [dict(self.ROWS[0])]
+        )
+        assert any("row count" in p for p in problems)
+
+    def test_an_empty_declaration_makes_the_live_columns_fail_again(self, survey, monkeypatch):
+        """The declaration is load-bearing rather than decorative: remove it and the red
+        that prompted it comes straight back."""
+        monkeypatch.setattr(survey, "LIVE_COLUMNS_EXEMPT_FROM_THE_REPRODUCTION_CHECK", ())
+        regen = [dict(r) for r in self.ROWS]
+        regen[0][self.LIVE] = 100_000
+        problems, _, drift = survey.compare_on_committed_keys(self._committed(self.ROWS), regen)
+        assert any(self.LIVE in p for p in problems)
+        assert drift == []
+
+
+def test_a_malformed_line_cannot_drift_the_checked_line_types_column(survey, tmp_path):
+    """The latent drift found by reading the scope of all 44 columns rather than by waiting.
+
+    A malformed line carries no timestamp, so it cannot be cutoff-restricted; counting it in
+    `line_types` — a CHECKED column — would have put a second time bomb in the artifact.
+    """
+    path = tmp_path / "p" / "one.jsonl"
+    path.parent.mkdir(parents=True)
+    body = "".join(
+        json.dumps(event) + "\n" for event in [_user("go")] + _one_reply_three_blocks(1000)
+    )
+    path.write_text(body + "{not json at all\n" + json.dumps([1, 2, 3]) + "\n")
+    row = _rows(survey, tmp_path)[0][0]
+    assert "UNPARSEABLE" not in row["line_types"]
+    assert "NOT_AN_OBJECT" not in row["line_types"]
+    assert row["untimestamped_lines_by_type"]["UNPARSEABLE"] == 1
+    assert row["untimestamped_lines_by_type"]["NOT_AN_OBJECT"] == 1
+    # And the dict they land in is the declared-live one, so they cannot drift a check.
+    assert "untimestamped_lines_by_type" in survey.LIVE_COLUMNS_EXEMPT_FROM_THE_REPRODUCTION_CHECK
