@@ -1,4 +1,5 @@
 import json
+import math
 
 import pytest
 import yaml
@@ -8,7 +9,7 @@ from bantamkit import evalrun
 from bantamkit.agent import response_format_for
 from bantamkit.assets import assets_root
 from bantamkit.budget import _BudgetedClient
-from bantamkit.client import BantamError, Message, ToolCall
+from bantamkit.client import BantamError, Message, Response, ToolCall, Usage
 from bantamkit.contract import loop_note
 from bantamkit.evalrun import (
     CONFIG_CHOICES,
@@ -1089,6 +1090,70 @@ def test_graph_off_token_count_matches_bare(tmp_path):
     off = run_task(FakeClient(_repeat_read_trajectory()), workspace_task(), "graph-off", tmp_path)
     assert off.tokens == bare.tokens
     assert (off.model_calls, off.tool_calls) == (bare.model_calls, bare.tool_calls)
+
+
+class _PayloadSensitiveClient:
+    """Scripted client whose `Usage` is a FUNCTION OF THE REQUEST, not a constant.
+
+    `conftest.FakeClient` returns a fixed `Usage` regardless of what the observation
+    contains, so no in-process token figure can move when the observation moves. That
+    is why the token half of the `graph-off` null-control claim was recorded UNPINNED
+    (`docs/eval-data/2026-08-17-devteam-bar-preregistration.md` §9/A1): the assertion
+    `off.tokens == bare.tokens` was true by construction of the double.
+
+    Here `prompt_tokens` is `ceil(bytes/4)` over the payload `OpenAICompatible.chat`
+    serializes (`client.py:155-161`), so it moves whenever the observations, the tool
+    roster or the system prompt move. A surrogate for an endpoint's tokenizer, not a
+    tokenizer — the assumption is the workload doc's Table 5b assumption, tokens
+    monotone in bytes. The field measurement is
+    `docs/eval-data/2026-08-17-devteam-null-control-field-measurement.py`; this node is
+    the regression guard, and RB-P28 stays open.
+    """
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+        self.prompt_tokens_per_call = []
+
+    def chat(self, messages, tools=None):
+        payload = {
+            "messages": [m.to_wire() for m in messages],
+            "tools": [t.to_wire() for t in (tools or [])],
+        }
+        self.calls.append(payload)
+        prompt_tokens = math.ceil(len(json.dumps(payload).encode()) / 4)
+        self.prompt_tokens_per_call.append(prompt_tokens)
+        reply = self.responses.pop(0)
+        completion = reply.message.content or json.dumps(
+            [tc.arguments for tc in reply.message.tool_calls]
+        )
+        return Response(
+            message=reply.message,
+            usage=Usage(prompt_tokens, math.ceil(len(completion.encode()) / 4)),
+        )
+
+
+def test_graph_off_token_count_is_pinned_by_a_payload_sensitive_client(tmp_path):
+    """The token half of the null control, pinned on a quantity that can actually move.
+
+    Falsifying mutation: flip `cache`, `annotate` or `query` True in
+    GRAPH_CONFIGS["graph-off"] and THIS node goes red on the token assertion —
+    `cache` collapses the repeat read (fewer bytes), `annotate` prepends a marker
+    (more bytes), `query` adds the `file_graph` tool and the skill (more bytes).
+    `::test_graph_off_token_count_matches_bare` cannot: its client's `Usage` is fixed.
+    """
+    bare = _PayloadSensitiveClient(_repeat_read_trajectory())
+    off = _PayloadSensitiveClient(_repeat_read_trajectory())
+    bare_result = run_task(bare, workspace_task(), "bare", tmp_path)
+    off_result = run_task(off, workspace_task(), "graph-off", tmp_path)
+    # First: the instrument. A client whose usage does not respond to the payload
+    # would make the assertion below vacuous, which is the defect being closed —
+    # so the sensitivity is asserted, not assumed (RB-P14 Gate 2: test the instrument).
+    assert len(set(bare.prompt_tokens_per_call)) == len(bare.prompt_tokens_per_call)
+    assert bare.prompt_tokens_per_call == sorted(bare.prompt_tokens_per_call)
+    # Then the claim: the null control costs nothing a payload-derived counter can see.
+    assert off_result.tokens == bare_result.tokens
+    assert off.prompt_tokens_per_call == bare.prompt_tokens_per_call
 
 
 # ---- P7: turns-exhausted ----
