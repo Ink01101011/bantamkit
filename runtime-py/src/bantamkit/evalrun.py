@@ -132,10 +132,13 @@ GRAPH_CONFIGS = {
     # graph` isolates one flag per step. What `bare` cannot do is COUNT: it attaches
     # no FileAccessGraph, so nothing records how many reads a run made or how many
     # of them were repeats. All three flags off records the ledger and changes
-    # nothing the model sees — `_record` returns the observation unchanged on every
-    # path when `cache` and `annotate` are both False (`filegraph.py:83-92`), and
-    # `setup` registers no tool and adds no skill when `query` is False
-    # (`filegraph.py:51-53`). That is what makes it the meaning-preserving null
+    # nothing the model sees — the wrapped reader returns the observation unchanged on
+    # every path when `cache` and `annotate` are both False (`filegraph.py:133-195`,
+    # the three returns at `143`, `153` and `195`), and `setup` registers no tool and
+    # adds no skill when `query` is False (`filegraph.py:118-122`). Both pins were
+    # re-read at HEAD, not shifted by arithmetic: the previous `83-92` / `51-53` were
+    # written against a pre-`d522e93` file and named 1 of the 3 return paths (bar
+    # §9/A3, re-pinned in §9/A4). That is what makes it the meaning-preserving null
     # control: a mechanism-off arm that removes no information, and the only arm
     # that can tell "the collapse did not help" from "the collapse never fired".
     # Pinned by test_evalrun.py::test_graph_off_observations_are_identical_to_bare.
