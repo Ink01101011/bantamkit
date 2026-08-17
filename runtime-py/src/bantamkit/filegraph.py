@@ -168,8 +168,9 @@ class FileAccessGraph:
             # marker included and truncation applied, so it never overstates the saving
             # on an observation the loop would have cut down anyway.
             #
-            # SIGNED, and not clamped at zero: this marker is ~99 bytes, so collapsing a
-            # file smaller than that ADDS bytes to the transcript. A column that floored
+            # SIGNED, and not clamped at zero: this marker runs about 100 bytes (98 for a
+            # path like `a.txt`, 103 for `notes/a.md`), so collapsing a file smaller than
+            # that ADDS bytes to the transcript. A column that floored
             # the difference at 0 would report a saving of zero where the truth is a
             # cost, and the sum over a run would be biased upward by exactly the cases
             # the mechanism handles worst.
