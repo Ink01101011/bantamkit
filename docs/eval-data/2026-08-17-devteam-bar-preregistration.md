@@ -493,3 +493,115 @@ path" is **`filegraph.py:61-92`** — the whole of `handler` plus `_record`. The
 substantive claim is unaffected and is now measured directly (append 1 above); this
 is recorded so a reader who follows the pin to check "every path" is not sent to
 two thirds of it. **Corrected by amendment, not by editing §1.1.**
+
+### A4 — 2026-08-17: §8's accounting grain is BUILT; three columns needed amending, and an eighth was added
+
+M3.5. Four appends, in the order they were decided. **§1-§8 are not edited**, A1-A3
+are untouched, and this amendment reports **no arm delta of any kind** — §5's R1/R2
+and §6 are unchanged and M4 still owns every ladder figure. Field report:
+[`2026-08-17-devteam-accounting-grain.md`](2026-08-17-devteam-accounting-grain.md).
+Commits `d522e93` (Layer 1 — Core) and `a478053` (Measurement).
+
+**(1) §7.2's unreadable clause is now readable, through the CLI.** §7.2 recorded
+that `FileAccessGraph.reads` "holds exactly the needed number (`FileRead.count`)
+and is **discarded when the run ends**", and null-control §7.2 measured that the
+`--tasks`/`--json` path could not reach it at all. `run_task` now holds the graph in
+a local (`evalrun.py:578-586`) and reads its counters into the row
+(`evalrun.py:633`, `648-655`). Measured end to end, outside pytest, in a
+**subprocess** running `python -m bantamkit.evalrun --config graph-off --tasks
+assets/evals/devteam/tasks --json <file>` against a local OpenAI-compatible
+endpoint: the JSONL row carries `"repeat_reader_calls": 1` for `dt-error-contract`
+and `2` for `dt-settlement-config`, agreeing with the in-process pass on 8/8 tasks.
+At the reference walk the workload realises **33 reads / 30 distinct / 3 repeats**,
+now attributable per task, with **six tasks at zero** — §5 R3's UNINFORMATIVE set,
+readable off a committed artifact for the first time.
+
+**(2) Three of §8's seven columns needed their definition amended. Stated here
+rather than shipped under a definition they do not meet.**
+
+| # | column | amendment |
+|---|---|---|
+| 4 | `collapsed_bytes` | Net of the marker, net of truncation (`filegraph.py:93-104`, budget learned at `filegraph.py:109`), and **SIGNED**. §8 forbade reusing `filegraph.py:161`'s `size` because it *overstates* above `observation_budget`; measured, the error also runs the other way. The marker is ~100 B (98 B for `a.txt`, 103 B for `notes/a.md`), so collapsing a file smaller than that **adds** bytes. §8's "every file in this workload is under the budget, so the two coincide *here*" is therefore **wrong at the small end too**, on a surface whose median file is 392 B. A column floored at zero would report a cost as break-even and bias the run total in the mechanism's favour. `filegraph.py:178-180`. |
+| 5 | `annotate_marker_bytes` | Same treatment for the same reason — net of truncation and signed. Above the budget the loop's `truncate` eats part of the observation instead of growing the slot, which a bytes-added count would otherwise report as free. `filegraph.py:191-193`. |
+| 6 | `query_bytes` | §8 said "same + the skill's bytes" without saying how the two combine. As built it is the sum of two measured parts kept separate on the Layer-1 object: `query_setup_bytes` — the `file_graph` tool schema plus the skill, counted **once**, a per-request CONSTANT that must be multiplied by the run's model-call count for a re-send-weighted figure (`filegraph.py:123-125`) — and `query_render_bytes`, the observations the tool actually returned (`filegraph.py:206`). The row carries their sum (`filegraph.py:67-68`). |
+
+Columns 1, 2, 3 and 7 are **as §8 specified**, at the sites §8 named; column 7 is
+counted in `TrackingClient.chat` (`evalrun.py:242-253`, counter at `244`) via
+`request_wire_bytes` (`evalrun.py:204-215`), which mirrors
+`OpenAICompatible.chat`'s payload (`client.py:155-157`) **minus `model` and
+`seed`** — those live on the inner client, a wrapper cannot see them, and they are
+per-run constants, so leaving them out keeps the column a function of the
+transcript.
+
+**(3) An EIGHTH column, not in §8: `unrecorded_reader_calls`.** §8's columns 1-2
+would have counted successful reads only, because `_wrap` returns without recording
+on the harness-wide `error:` convention (`filegraph.py:141-143`; A3 already
+corrected the pin for that path). M3 marked it UNCHECKED. It is **fixed** rather
+than named: `reader_calls` (`filegraph.py:134`) counts every wrapped-reader
+invocation and `unrecorded_reader_calls` (`filegraph.py:142`) is the carve-out, so
+`recorded_reader_calls` (`filegraph.py:63-64`) reconciles with
+`sum(FileRead.count)` and **any rate whose numerator comes from the ledger must use
+`reader_calls − unrecorded_reader_calls` as its denominator.** Naming the gap in a
+document would have left the number in the JSONL wrong for a consumer who never
+read the document. Now measured on a fixture, not read off the source; the workload
+still reads no missing path and was not touched to create one.
+
+**The pin, and the assert line.** Falsifying mutation, run: `evalrun.py:650`
+changed in the source file to discard the count. **RED:**
+`test_evalrun.py::test_accounting_columns_equal_the_ledger_the_run_built` on
+`assert result.repeat_reader_calls == ledger_repeats` (`assert 0 == 2`),
+`::test_accounting_columns_move_when_the_ledger_moves` on
+`assert seen_counts[2][0] == seen_counts[2][1]` (`assert 0 == 1`), and
+`::test_collapsed_columns_track_the_arm_that_can_collapse` on
+`assert cached.repeat_reader_calls == graph.accounting.repeat_reader_calls > 0`.
+`::test_accounting_columns_reach_the_jsonl_row` stays **green** and is recorded as
+a guard on the serialization route, not a pin — the A1 distinction, applied to this
+unit's own claim. In the field the same mutation fails **exactly the 2 tasks that
+realise repeats**, out of 8. Per RB-P14 Gate 2 **no node asserts the workload's
+counts**: every node is a relation between the column and the ledger, or a
+requirement that the column MOVE when the ledger does.
+
+**(4) A2's table is STALE AGAIN, caused the same way, and re-pinned by re-reading.**
+`a478053` grew `TaskResult` and added `request_wire_bytes`, so every `evalrun.py`
+pin below line 179 moved. Each line below was read at HEAD individually; **A2 is
+left standing exactly as committed**, and this is the second time in this job that
+a source commit invalidated the pins in the documents beside it.
+
+| pin | A2's HEAD-exact (`26e81a0`) | **HEAD-exact now** | the HEAD line |
+|---|---|---|---|
+| `GRAPH_CONFIGS` | `125-143` | **`125-143`** — unaffected | `GRAPH_CONFIGS = {` … `}` |
+| `@dataclass` of `TaskResult` | `164` | **`164`** — unaffected | `@dataclass` |
+| `tool_calls` | `173` | **`173`** — unaffected | `tool_calls: int` |
+| trailing-field comment | `177-179` | **`177-179`** — unaffected | `# Trailing field: …` … `seed: int \| None = None` |
+| `TaskResult` body | `164-179` | **`164-201`** | grew by the eight accounting columns (`194-201`) |
+| `TrackingClient.chat` | `201-210` | **`242-253`** | `def chat(self, messages, tools=None, response_format=None):` … `return resp` |
+| `effective` | `432` | **`475`** | `effective = GUARD_CONFIGS.get(config, BUDGET_CONFIGS.get(config, config))` |
+| component-attachment range | `460-535` | **`503-579`** | `if effective in ("memory", "lean", "full") …` … `if effective in GRAPH_CONFIGS and any(…)` |
+| `tokens=` | `586` | **`639`** | `tokens=tracking.usage.total,` |
+| `score/1k tok` | `652` | **`713`** | `per_1k = passed / (tokens / 1000) if tokens else 0.0` |
+| `--tasks` | `736-738` | **`797-799`** | `parser.add_argument(` … `"--tasks", type=Path, …` … `)` |
+| `--json` … `flush` | `740-763` | **`801-824`** | `"--json", type=Path, …` … `jsonl.flush()` |
+
+Two more, from the null-control report rather than A2: the `FileAccessGraph`
+attachment moved `537` → **`585`**, and `score_output` moved `233-247` →
+**`276-290`**. `evalrun.py:98-99` (the `error:` observation) and `evalrun.py:142`
+(the `graph-off` entry) are above the insertions and **unaffected**, verified rather
+than assumed. `client.py` was not touched, so `client.py:155-161` stands.
+
+**`filegraph.py` moved too, and §1.1/A3's pins into it are re-read here.**
+`FileRead.count` `20` → **`21`**; the `reads` dict `40` → **`87`**; the `query`
+guard `51-53` → **`118-122`** (`register_tool` at `121`, `add_system` at `122`);
+A3's "every path" range `61-92` → **`133-195`**, with its three returns at
+**`143`** (`error:`), **`153`** (first read) and **`195`** (both flags off); `size`
+`84` → **`161`**; `save` `102` → **`209`**. A3's substantive finding is unchanged.
+
+**One precision on the brief rather than on the bar, recorded because it narrows a
+guard the brief leaned on.** `test_layers.py`'s core-purity scan lists
+`CORE_MODULES` at `test_layers.py:71-79` and **`filegraph.py` is not in it**, though
+`docs/architecture.md` names `filegraph.py` Layer 1. So the scan would not have
+caught a contract literal leaking into this file. Nothing leaked — the marker, the
+annotation and `render`'s lines are byte-identical after this unit, and
+`architecture.md`'s "Known debt" already records that this wording is inline in
+`filegraph.py` deliberately — but the mechanical guard is narrower than "the
+core-purity scan covers Layer 1" implies. Not acted on: widening `CORE_MODULES` is
+a change of its own and not this unit's.
