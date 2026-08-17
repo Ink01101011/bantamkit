@@ -211,7 +211,7 @@ def c1_repeat_slots_are_the_repeat_index(ladder, root: Path) -> None:
     §2's statistic is 'summed over tasks, per repeat set', so the suite-grain floor
     needs the i-th row of every task to be the i-th REPEAT. M5's probe grouped by file
     order. This measures the pairing instead, against the harness's own
-    `run_seed(model, task, repeat)` (`evalrun.py:391-404`) — the only derivation of it.
+    `run_seed(model, task, repeat)` (`evalrun.py:391-403`) — the only derivation of it.
     """
     fn = getattr(ladder, "slots_are_repeat_indexed", None)
     if fn is None:

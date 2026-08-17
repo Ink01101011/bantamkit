@@ -156,7 +156,7 @@ def suite_totals(rows: list[dict], field: str = "tokens") -> list[int]:
 
     §2's statistic is "summed over tasks, per repeat set", so slot i is the sum over
     the eight tasks of their i-th repeat. Rows arrive in the order the harness wrote
-    them (`run_suite` loops config -> task -> repeat, `evalrun.py:671-703`), so a
+    them (`run_suite` loops config -> task -> repeat, `evalrun.py:671-701`), so a
     task's i-th row is its i-th repeat — and that is MEASURED by
     `slots_are_repeat_indexed` below rather than assumed, because the whole point of
     the grain correction is that a grain has to be identifiable to be gated on.
@@ -190,7 +190,7 @@ def suite_noise_floor(rows: list[dict], field: str = "tokens") -> int:
 def slots_are_repeat_indexed(rows: list[dict], model: str = MODEL) -> bool:
     """Is a task's i-th row its i-th REPEAT? Measured, through the harness's own seed.
 
-    `run_seed(model, task, repeat)` (`evalrun.py:391-404`) is a pure function of those
+    `run_seed(model, task, repeat)` (`evalrun.py:391-403`) is a pure function of those
     three, config deliberately excluded, so the seed a row carries is a witness to its
     repeat index. Imported rather than re-derived (RB-P19): a second SHA-256 truncation
     that happened to agree would corroborate nothing.
