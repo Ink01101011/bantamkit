@@ -57,3 +57,50 @@ is `bare` + `FileAccessGraph` on tasks with workspace file tools (the
 file-nav candidate family), with ablation
 configs (`graph-annotate`, `graph-cache`) used during calibration to
 attribute which mechanism moves the number.
+
+### What the repeat machinery needs, and when it gets nothing
+
+`annotate` and `cache` both act **only** on a repeat read, and `cache`
+collapses only a **byte-identical** one. So their entire opportunity set
+is reads whose content the request already carries — and on a surface
+where the agent never re-reads a file, both are inert by construction,
+not by degree.
+
+**Measured, on a dev-repo-shaped surface (2026-08-17).** Across an 8-task
+repo workload at the ~4B class, the model realised **0** byte-identical
+repeat reads on **8 of 8** tasks in all 24 `graph-off` runs, against a
+verified reference walk's 3. The consequence is exact: `graph-off`,
+`graph-annotate` and `graph-cache` are **identical on every one of 16
+columns across all 24 rows** — four configurations, two distinguishable
+rungs. Two things follow, and neither is a limitation of this
+implementation:
+
+- **A bigger model is not a route to a non-zero repeat delta.** A
+  collapsible repeat is a redundant read, so a stronger model should
+  realise fewer of them.
+- **The workload could not have shown otherwise.** Strip every repeat hop
+  from all eight declared walks and all eight still solve the tasks, at
+  re-read pressure `0/30`. No task on that surface *requires* a second
+  read, so there was no repeat for the mechanism to find.
+
+On such a surface the only mechanism with anything to do is `query`, and
+it **cost `+73.367%` tokens** against `graph-cache` — roughly half of
+that from the longer conversation the tool induced rather than from the
+tool's own bytes — while moving pass-set points in both directions. Read
+it as a trade, and note that `query_bytes` is a per-request constant plus
+render, so it is re-sent every model call.
+
+**No token saving is claimed here or anywhere else for this component.**
+`cache` saves *observation* bytes, never disk I/O — the inner reader runs
+first, unconditionally, on every call. And the saving can be negative:
+the collapse marker measures **98-103 B**, so collapsing an observation
+smaller than that **adds** bytes (measured: a 5 B observation under
+`notes/a.md` collapses to a 103 B marker, for `-98`). That is not a
+corner case on a surface whose median file is **392 B**, under 4x the
+marker. `collapsed_bytes` and `annotate_marker_bytes` are therefore
+**signed and never clamped at zero** — a floor there would report a cost
+as break-even and bias the run total in the mechanism's favour.
+
+The full record, the pre-registered bar it was measured against, and the
+nine findings it left open:
+[Eval → M](eval.md#m-2026-08-17-v0220--the-dev-team-workload-surface-and-what-it-could-not-show).
