@@ -953,3 +953,112 @@ when the edit makes it more faithful.** The full ruling, and where it should liv
 
 **Tokens and wall-clock for M5: UNMEASURED.** No counter is exposed for either and a
 self-estimate is not a measurement.
+
+### A7 — 2026-08-17: §3.2's noise floor is CORRECTED to the grain of the statistic it gates, for future runs, and M4's run is RE-REPORTED at both grains rather than re-judged
+
+M6, closing C1 of the review ([F1](2026-08-17-devteam-review.md), and A6 point 2, which
+recorded the defect without resolving it). **A pure append. §1-§8 are not edited, §3.2's
+original text is neither deleted nor reworded, and A1-A6 are untouched.** Before/after
+field measurement and its transcripts:
+[`2026-08-17-devteam-critical-closure.md`](2026-08-17-devteam-critical-closure.md),
+program
+[`2026-08-17-devteam-critical-closure-field-measurement.py`](2026-08-17-devteam-critical-closure-field-measurement.py).
+
+**(1) THE RULE, and it applies to RUNS AFTER THIS AMENDMENT.** §3.2's floor stands as
+written for M4's committed run — that is what makes this an amendment and not a
+rewrite — and the following governs every later run:
+
+> **A delta must clear a floor measured at the SAME GRAIN as the delta.** §3.2's
+> subtraction is unchanged (`max − min across the repeats of X`); only the quantity it
+> is applied to is fixed to the quantity being gated. So:
+>
+> * a **suite-wide** delta — §2's primary statistic, the sum over tasks of the per-task
+>   medians — is gated by the spread of the **suite total across repeat sets**;
+> * a **per-task** delta is gated by **that task's own** spread;
+> * the floor at the other grain is **reported beside it**, never dropped, and a pair
+>   whose CLEARS / DOES-NOT-CLEAR verdict **differs between the two grains** is not
+>   decided by choosing a grain: the run stops and the question is escalated.
+>
+> The grain is stated **before** the run, as §3.2's own numbers were.
+
+**Why the two must match, in one line that is arithmetic and not judgement.** §3.2's
+floor answers "how much does this quantity move when nothing changes?" and §2's
+statistic is a **sum of eight** per-task figures. The largest single component's drift
+is not the sum's drift — the sum can move when every component moves a little, and it
+can sit still when components offset. Gating a sum with one component's spread is not a
+conservative version of the same test; it is a test of a different quantity. Measured on
+this run's own rows, the two grains do not even order consistently across arms.
+
+**(2) M4's RUN, RE-REPORTED AT BOTH GRAINS. Nothing is re-judged and no number
+changes.** Every figure below is derived by the one committed instrument
+(`2026-08-17-devteam-ladder-field-measurement.py`, TABLE 4 and the new TABLE 4b), from
+the same 96 rows, and re-derived independently by the orchestrator and by M6 before it
+was written here:
+
+| arm | §3.2 as written (per-task max) | sum of per-task spreads | §2's own grain (suite total per repeat set) | suite totals per repeat set |
+|---|---|---|---|---|
+| A0 / A1 / A2 | **1845** | 7024 | **6469** | `[18222, 15365, 11753]` |
+| A3 | **1641** | 5390 | **1324** | `[29323, 27999, 28374]` |
+
+| pair | \|Δtok\| | per-task floor 1845/1641 | suite floor 6469/1324 | same verdict? |
+|---|---|---|---|---|
+| A1−A0 | 0 | DOES NOT CLEAR | DOES NOT CLEAR | **yes** |
+| A2−A1 | 0 | DOES NOT CLEAR | DOES NOT CLEAR | **yes** |
+| A3−A2 | 11,680 | CLEARS (6.33×) | CLEARS (1.81×) | **yes** |
+
+`6469 / 1845 = 3.506×`, and 6469 is **40.6%** of the 15,920-token statistic it gates. On
+A3 the suite-grain floor is *smaller* than the per-task max (1324 < 1641) because A3's
+per-task spreads offset, which is why (1) requires the grain to be named rather than
+assumed to be the conservative one.
+
+**(3) THE FENCE, stated plainly because it is the only thing that makes this amendment
+legitimate. Correcting a pre-registered threshold after its numbers exist was possible
+here ONLY because no verdict flips at either grain.** `|Δtok(A1−A0)| = 0` and
+`|Δtok(A2−A1)| = 0` clear **neither** 1845 nor 6469; `|Δtok(A3−A2)| = 11,680` clears
+**both**. So:
+
+* Δ%(A2−A1) is still `+0.000%`, still below the instrument's resolution at both grains,
+  and the run is still **UNINFORMATIVE** under §5 R3 — which A6 point 5 showed is
+  STRUCTURAL, not a fact about a 4B model;
+* Δ%(A3−A2) is still `+73.367%` and still a **TRADE** under §4, at `disagreeing_points`
+  of 4;
+* >60% is still **REFUTED** for the `cache` mechanism on this workload by R1's
+  arithmetic, and A5's R1/R2/R3 verdicts are all unchanged.
+
+Had any verdict flipped, this amendment would not have been written: a floor that
+changes a verdict after the fact is a rewritten bar no matter which commit it lands in
+(RB-P4 lost two rounds to exactly that). The condition is not a claim in prose — it is
+check `C1-3 no-verdict-flips-between-the-two-grains` in the before/after program, and it
+is GREEN in the before run, taken at `71c9d84` before any fix existed. The reported
+**6.33×** margin on the one moving pair should be read as the most lenient of the
+defensible figures; **1.81×** is the same margin at §2's grain.
+
+**(4) A REPEAT SET IS NOW IDENTIFIED BY MEASUREMENT, NOT BY FILE ORDER — and this is a
+correction to how A6's own table was derived, not to its numbers.** §2's statistic is
+"summed over tasks, per repeat set", so the suite grain needs a task's *i*-th row to be
+its *i*-th **repeat**. A6's table (and M5's Table M5) grouped rows by their order in the
+JSONL. That order is in fact the repeat order — `run_suite` loops config → task →
+repeat (`evalrun.py:671-703`) — but it was **assumed**, and a suite-grain floor computed
+over slots that are not repeat sets is a number with no definition. It is now measured:
+`run_seed(model, task, repeat)` (`evalrun.py:391-404`, imported rather than re-derived,
+RB-P19) reproduces the seed of the *i*-th row of every task on **all four arms**, 96
+rows, and `reconcile` fails the run if it ever stops holding. **The 6469 figure survives
+the check**; what changes is that it now rests on a measurement.
+
+**(5) WHAT THIS AMENDMENT DOES NOT DO.** It does not touch §3.1 — the score half still
+has **no** noise floor (A6 point 3, review F3), and that stays open and is not this
+unit's. It defines no turns-normalised companion statistic (A6 point 4). It does not
+re-scope any claim (invariant 11): the correction makes the next run's rule stricter at
+the grain that matters, which can only make an effect harder to certify, never easier.
+And it changes nothing about the instrument's refusal to compute an all-on-vs-all-off
+number (§1.4).
+
+Commits: `2e4ecd8`→`f5cab04` (Measurement — the instrument and its three new regression
+nodes; six `--mutate` modes, all verified to exit 1) and this one (Documentation). CI on
+the branch: run `32036916943` on `f5cab04`. The two commits before it, `71c9d84` (the
+before/after program) and `c24f739` (the before transcript), got **no run of their own** —
+they were pushed together with `f5cab04`, the same thing that happened to M5's
+`b02c659`, and reporting it is part of the measurement.
+
+**Tokens and wall-clock for M6: UNMEASURED.** No counter is exposed for either and a
+self-estimate is not a measurement.
