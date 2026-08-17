@@ -361,5 +361,24 @@ design is `graph-off`, and it ships in this unit with its pinning test.
 
 ## 9. Amendments
 
-None. Amendments are appended here, dated, with the original text of §1-§8 left
+Amendments are appended here, dated, with the original text of §1-§8 left
 untouched.
+
+### A1 — 2026-08-17: §1.1's pinning claim names one node too many
+
+**Measured, not asserted.** The two falsifying mutations were run:
+`GRAPH_CONFIGS["graph-off"]` with `cache: True`, and with `query: True`. Each turns
+`test_evalrun.py::test_graph_off_observations_are_identical_to_bare` **red**. Each
+leaves `::test_graph_off_token_count_matches_bare` **green**, because the suite's
+`FakeClient` returns a fixed `Usage` regardless of what the observation contains, so
+no test-time token figure can move when the observation does.
+
+So under the pinning bar as rebuilt in v0.21.0 — a claim counts only when a mutation
+that falsifies it turns red a node **the claim named** — the null-control claim of
+§1.1 is **PINNED by exactly one node**, `test_graph_off_observations_are_identical_to_bare`.
+`::test_graph_off_token_count_matches_bare` is a regression guard on the arm's
+counters (`model_calls`, `tool_calls`), not a pin, and it is recorded as such.
+
+§1.1 above and the commit body of `8ccd084` both name two nodes. **That is an
+overstatement of one node**, corrected here rather than by editing either. The
+substantive claim is unaffected: the mutation does turn a named node red.
