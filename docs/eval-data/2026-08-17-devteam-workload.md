@@ -469,3 +469,17 @@ pinning test and its falsifying mutation.
 Frozen assets read, none edited. No committed evidence file regenerated or
 retro-edited; M1's survey is untouched and its corrections are cited rather than
 restated. **Tokens and wall-clock for this unit: UNMEASURED.**
+
+**Amendment, 2026-08-17 (appended, nothing above edited).** The suite count in the
+block above is the count at `3a26cc5`, where this doc was committed. `9609a97` then
+added the four-arm plumbing guard, so the same command reads **807 passed,
+2 xfailed** at `9609a97`. The command itself is unchanged.
+
+**CI on this branch, reported as measured.** The run at `8ccd084` — the first
+commit that touched source — was **RED**, on Linux and on both Python versions:
+`test_devteam_workload_asset_loads_and_declares_a_repo_surface` raised
+`EvalConfigError: no task files found in .../assets/evals/devteam/tasks`, because
+the test landed one commit before the asset it reads. A self-inflicted
+commit-ordering fault, and the rule that says run CI at the first source commit
+rather than at the PR is exactly what caught it. Green again from `8a6048e`
+onward; `bd7f8f8` **success** (run `32018061556`).
