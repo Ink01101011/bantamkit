@@ -931,3 +931,51 @@ Commits: `19133b6` (Documentation — the review probe), `b02c659` (Documentatio
 probe's third floor grain, both graph arms, and Table M5b), and this document with bar
 §9/A6. The probe state the stdout blocks above are verbatim against is `b02c659`.
 **Tokens and wall-clock for this unit: UNMEASURED.**
+
+---
+
+## Amendment 1 — 2026-08-17: F8 understated itself. THREE of the four field programs are exercised by nothing, not two
+
+Appended, nothing above edited. This unit's own §5 says a **record** may only be
+amended and a **pointer** may be corrected in place; [F8](#f8--important-ci-never-sees-docseval-data-and-two-of-the-four-field-programs-are-exercised-by-nothing)'s
+table is a claim about what is measured, so it is a record, and it is amended here rather
+than fixed — including because the finding it carries is a claim about guards being
+weaker than they look, which is exactly the kind of claim that must not be quietly
+improved.
+
+**What was wrong.** F8's table records `…null-control-field-measurement.py` as exercised
+in CI — *"**yes**, by reference"* — on the strength of `grep -l` finding it in
+`test_evalrun.py`. Re-read at HEAD, **the only occurrence is inside a docstring**
+(`test_evalrun.py:1111`, in prose describing where the field measurement lives). Nothing
+imports it and nothing runs it. `grep -l` answered "is this string present", which is not
+the question F8 asked.
+
+**Corrected, with the discriminating check rather than a name search.** The only node in
+the repo that imports a `2026-08-17-devteam-*` program by path is
+`test_ladder_statistics.py` — `_FIELD_PROGRAM` at `:30`, `spec_from_file_location` at
+`:41`, both read at HEAD:
+
+| program | imported or executed by a node? | in CI? |
+|---|---|---|
+| `…ladder-field-measurement.py` | **yes** — `test_ladder_statistics.py:30, :41` | yes |
+| `…null-control-field-measurement.py` | **no — named in a docstring only** (`test_evalrun.py:1111`) | **no** |
+| `…workload-measurements.py` | no — no reference of any kind | **no** |
+| `…accounting-grain-field-measurement.py` | no — no reference of any kind | **no** |
+
+**So F8's class does not change but its magnitude does: three of the four committed field
+programs are exercised by nothing**, and the one that derives R1's 5.819% ceiling — the
+figure currently refuting >60% — is among them, as F8 already said. All four still run at
+HEAD, exit 0 each; that remains a fact about today.
+
+- **Command.**
+  `grep -rn "spec_from_file_location\|_FIELD_PROGRAM" runtime-py/tests/*.py` — one hit
+  pair, both in `test_ladder_statistics.py`. And
+  `grep -n "null-control-field-measurement" runtime-py/tests/test_evalrun.py` → `:1111`,
+  inside the docstring that begins at `:1103`.
+- **What would show it false.** An `import`, `runpy`, `subprocess` or
+  `spec_from_file_location` reaching any of the three, anywhere under `runtime-py/tests`
+  or `.github/`.
+
+**Found by re-reading the review's own evidence after committing it**, which is the
+reason a review is allowed an amendment and not an edit. Commit `3f47f9f` is the last
+that touched the tables above; this section is a pure append after it.
