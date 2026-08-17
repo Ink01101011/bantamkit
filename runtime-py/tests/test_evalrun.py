@@ -1,6 +1,7 @@
 import json
 
 import pytest
+import yaml
 from conftest import FakeClient, assistant, call
 
 from bantamkit import evalrun
@@ -1047,6 +1048,39 @@ def test_devteam_workload_asset_loads_and_declares_a_repo_surface():
     assert sum(p.endswith(".py") for p in paths) >= 8  # code, which the frozen suite has none of
     assert any(p.endswith(".patch") for p in paths)  # a diff
     assert "HISTORY.md" in paths  # history
+
+
+DEVTEAM = assets_root() / "evals" / "devteam"
+
+
+def _devteam_manifest():
+    return yaml.safe_load((DEVTEAM / "manifest.yaml").read_text())
+
+
+@pytest.mark.parametrize("arm", ["graph-off", "graph-annotate", "graph-cache", "graph"])
+def test_devteam_reference_walk_scores_under_every_ladder_arm(arm, tmp_path):
+    """All four pre-registered arms plumb onto the workload, and its walks answer it.
+
+    Not evidence about the mechanism — no model is called; a FakeClient replays each
+    task's committed reference walk. What it guards is that the arms M4 is briefed to
+    run actually attach to these tasks, and that every task is answerable from the
+    surface by the walk the manifest declares. A task that stopped scoring here would
+    mean the surface and the walk had drifted apart.
+    """
+    tasks = {t["name"]: t for t in load_tasks(DEVTEAM / "tasks")}
+    for spec in _devteam_manifest()["tasks"]:
+        task = tasks[spec["name"]]
+        needs_list = "list_files" in task["prompt"] or any(
+            hop.get("pointer_in") == "listing" for hop in spec["walk"]
+        )
+        replies = [assistant(tool_calls=[call("list_files", {})])] if needs_list else []
+        replies += [
+            assistant(tool_calls=[call("read_file", {"path": hop["path"]}, id=f"c{i}")])
+            for i, hop in enumerate(spec["walk"])
+        ]
+        replies.append(assistant(content=json.dumps(task["scoring"]["expected"])))
+        result = run_task(FakeClient(replies), task, arm, tmp_path / spec["name"])
+        assert result.passed, (spec["name"], arm, result.outcome, result.error)
 
 
 def test_graph_off_token_count_matches_bare(tmp_path):
