@@ -78,7 +78,7 @@ REFERENCE_WALK_PER_TASK = {
     "dt-unread-key": 0,
 }
 
-MUTATIONS = ("clamp", "mean", "tie-counts", "floor-mean", "drop-r3")
+MUTATIONS = ("clamp", "mean", "tie-counts", "floor-mean", "drop-r3", "suite-floor-as-max")
 MUTATION: str | None = None
 
 FAILURES: list[str] = []
@@ -143,6 +143,115 @@ def by_task(rows: list[dict], field: str = "tokens") -> dict[str, list[int]]:
     for row in rows:
         out.setdefault(row["task"], []).append(row[field])
     return out
+
+
+# ---------------------------------------------------------------------------
+# The floor at §2's OWN grain. Added by M6 under bar §9/A7; see the amendment for
+# why the two must match and why it applies to future runs rather than to this one.
+# ---------------------------------------------------------------------------
+
+
+def suite_totals(rows: list[dict], field: str = "tokens") -> list[int]:
+    """The suite total per REPEAT SET — bar §2's grain, one number per repeat slot.
+
+    §2's statistic is "summed over tasks, per repeat set", so slot i is the sum over
+    the eight tasks of their i-th repeat. Rows arrive in the order the harness wrote
+    them (`run_suite` loops config -> task -> repeat, `evalrun.py:671-703`), so a
+    task's i-th row is its i-th repeat — and that is MEASURED by
+    `slots_are_repeat_indexed` below rather than assumed, because the whole point of
+    the grain correction is that a grain has to be identifiable to be gated on.
+    """
+    columns = by_task(rows, field)
+    if not columns:
+        return []
+    tasks = sorted(columns)
+    slots = min(len(columns[t]) for t in tasks)
+    return [sum(columns[t][i] for t in tasks) for i in range(slots)]
+
+
+def suite_noise_floor(rows: list[dict], field: str = "tokens") -> int:
+    """Bar §3.2's own rule — `max − min across repeats` — applied at bar §2's grain.
+
+    Nothing is invented here and no threshold is chosen: this is the same subtraction
+    `noise_floor` does, on the quantity the delta is actually made of. The two are
+    different quantities and neither dominates: measured on M4's committed rows, the
+    suite grain is LARGER on A0/A1/A2 (6469 vs 1845) and SMALLER on A3 (1324 vs 1641),
+    because A3's per-task spreads happen to offset. That is why the grain has to be
+    stated before a run instead of left implicit (bar §9/A6 point 2, §9/A7).
+    """
+    if MUTATION == "suite-floor-as-max":
+        # The pre-A7 rule, restored in-process: gate a suite sum with one task's
+        # spread. It must turn this program red, or the correction is not pinned.
+        return noise_floor(rows, field)
+    totals = suite_totals(rows, field)
+    return max(totals) - min(totals) if totals else 0
+
+
+def slots_are_repeat_indexed(rows: list[dict], model: str = MODEL) -> bool:
+    """Is a task's i-th row its i-th REPEAT? Measured, through the harness's own seed.
+
+    `run_seed(model, task, repeat)` (`evalrun.py:391-404`) is a pure function of those
+    three, config deliberately excluded, so the seed a row carries is a witness to its
+    repeat index. Imported rather than re-derived (RB-P19): a second SHA-256 truncation
+    that happened to agree would corroborate nothing.
+
+    Returns False — never raises — when the pairing does not hold or when the harness
+    cannot be imported at all, and `reconcile` turns that into a named failure. A
+    suite-grain floor computed over slots that are not repeat sets would be a number
+    with no definition.
+    """
+    try:
+        from bantamkit.evalrun import run_seed
+    except ImportError:
+        return False
+    columns = by_task(rows, "seed")
+    if not columns:
+        return False
+    return all(
+        seed == run_seed(model, task, i)
+        for task, seeds in columns.items()
+        for i, seed in enumerate(seeds)
+    )
+
+
+def grain_verdicts(delta_abs: float, rows_x: list[dict], field: str = "tokens") -> dict:
+    """One pair's §3.2 outcome at BOTH grains, and whether the two agree.
+
+    `agree` is the load-bearing field. A7 corrects a pre-registered rule after its
+    numbers exist, which is only honest while the correction changes no verdict; the
+    instrument therefore has to be able to SAY when a verdict depends on the grain,
+    and `check_grain_agreement` turns that into a red run rather than a footnote.
+    """
+    per_task = noise_floor(rows_x, field)
+    suite = suite_noise_floor(rows_x, field)
+    return {
+        "delta": delta_abs,
+        "per_task_floor": per_task,
+        "suite_floor": suite,
+        "per_task_clears": delta_abs > per_task,
+        "suite_clears": delta_abs > suite,
+        "agree": (delta_abs > per_task) == (delta_abs > suite),
+    }
+
+
+def check_grain_agreement(reports: list[tuple[str, str, dict]]) -> None:
+    """Fail the run when any pair's verdict depends on which grain gates it.
+
+    Not a judgement on the mechanism and not an assertion about the world (RB-P14
+    Gate 2): it is the condition under which this program's own floor table can be
+    read at all. A run that trips it is a run whose §3.2 outcome is a choice, and the
+    bar says the grain is chosen BEFORE the numbers exist — so the run stops.
+    """
+    for y, x, report in reports:
+        if not report["agree"]:
+            _fail(
+                f"{y}-{x}: the §3.2 verdict DEPENDS ON THE GRAIN — |Dtok| = "
+                f"{report['delta']:.0f} vs per-task floor {report['per_task_floor']} "
+                f"({'clears' if report['per_task_clears'] else 'does not clear'}) and suite "
+                f"floor {report['suite_floor']} "
+                f"({'clears' if report['suite_clears'] else 'does not clear'}). Bar §9/A7: "
+                "the grain is pre-registered, not picked after the fact. ESCALATE."
+            )
 
 
 def delta(rows_y: list[dict], rows_x: list[dict], field: str = "tokens") -> dict:
@@ -416,6 +525,17 @@ def reconcile(arms: dict[str, list[dict]], family: list[str]) -> None:
             if row["reader_calls"] - row["unrecorded_reader_calls"] < row["repeat_reader_calls"]:
                 _fail(f"{label}/{row['task']}: repeats exceed recorded reads")
 
+    # The suite-grain floor (bar §9/A7) is defined over REPEAT SETS, so the row order
+    # has to BE the repeat order. Measured against the harness's own `run_seed`, not
+    # assumed from the file: a floor computed over slots that are not repeat sets is a
+    # number with no definition, and M5's Table M5 grouped by file order.
+    for label, _ in ARMS:
+        if not slots_are_repeat_indexed(arms[label]):
+            _fail(
+                f"{label}: a task's i-th row is not its i-th repeat under "
+                f"run_seed({MODEL!r}, task, i), so the suite-grain floor has no grain to stand on"
+            )
+
     # A vacuity guard on the DEMONSTRATION, not a pinned quantity: if no arm read any
     # file at all, every delta below is a comparison of two empty trajectories and a
     # green run would demonstrate nothing.
@@ -463,6 +583,8 @@ def selfcheck() -> None:
     The cases are chosen for the traps this unit's brief names, one each:
       * the central value is the MEDIAN, so one long-tail run cannot become the figure;
       * the noise floor is the MAX spread over tasks, not an average of spreads;
+      * that floor's GRAIN is the grain of the statistic it gates (bar §9/A7), and a
+        verdict that depends on which grain gates it turns the run red;
       * a TIE ABSTAINS — it neither creates agreement nor breaks it;
       * the byte columns are SIGNED, so a collapse that costs bytes reads as a cost;
       * `disagreeing_points` is non-zero when equal pass COUNTS hide different pass SETS;
@@ -490,6 +612,50 @@ def selfcheck() -> None:
         _fail("floor_is_degenerate(no spread) is False, expected True")
     if floor_is_degenerate(rows):
         _fail("floor_is_degenerate(spread 10) is True, expected False")
+
+    # 3b. Bar §9/A7's grain. Two tasks each spreading by 10, their spreads ALIGNED, so
+    #     the suite total spreads by 20: the per-task max is 10 and §2's own grain is
+    #     20. A floor that cannot tell those two apart is review F1 exactly.
+    grain = [
+        _row("a", 1, 100), _row("a", 2, 105), _row("a", 3, 110),
+        _row("b", 4, 200), _row("b", 5, 205), _row("b", 6, 210),
+    ]
+    if suite_totals(grain) != [300, 310, 320]:
+        _fail(f"suite_totals = {suite_totals(grain)}, expected [300, 310, 320] per repeat slot")
+    if noise_floor(grain) != 10 or suite_noise_floor(grain) != 20:
+        _fail(
+            f"floors = per-task {noise_floor(grain)} / suite {suite_noise_floor(grain)}, "
+            "expected 10 and 20 — the two grains are different quantities"
+        )
+
+    # 3c. And the guard on them: a delta that clears one floor and not the other must
+    #     turn the run RED, because then the §3.2 outcome is a choice of grain. Floors
+    #     here are 4624 (per-task max) and 6469 (suite), the shape of M4's own arms.
+    diverging = [
+        _row("a", 1, 0), _row("a", 2, 1845), _row("a", 3, 1845),
+        _row("b", 4, 0), _row("b", 5, 4624), _row("b", 6, 4624),
+    ]
+    agreeing = grain_verdicts(3000, diverging)
+    divergent = grain_verdicts(5000, diverging)
+    if agreeing["agree"] is not True or divergent["agree"] is not False:
+        _fail(
+            f"grain_verdicts: delta 3000 agree={agreeing['agree']} (expected True), "
+            f"delta 5000 agree={divergent['agree']} (expected False) against floors "
+            f"{divergent['per_task_floor']}/{divergent['suite_floor']}"
+        )
+    # The guard writes into FAILURES, so it is exercised against a snapshot and the
+    # snapshot is restored: a selfcheck may not leave a failure of its own behind.
+    _before = len(FAILURES)
+    check_grain_agreement([("Ay", "Ax", agreeing)])
+    _quiet = len(FAILURES) == _before
+    check_grain_agreement([("Ay", "Ax", divergent)])
+    _loud = len(FAILURES) > _before
+    del FAILURES[_before:]
+    if not (_quiet and _loud):
+        _fail(
+            f"check_grain_agreement: fired on the agreeing pair={not _quiet}, fired on the "
+            f"divergent pair={_loud}; it must fire on exactly the second"
+        )
 
     # 4. `delta` is the difference of the per-task central values, and suite-wide is
     #    the sum of the same central values the per-task table prints.
@@ -699,6 +865,55 @@ def main(argv: list[str] | None = None) -> int:
         clears = "CLEARS" if d > floor else "DOES NOT CLEAR"
         print(f"|Dtok({y}-{x})| = {d:.0f} vs floor(X={x}) = {floor}  ->  {clears} the floor")
 
+    # -- the floor at §2's own grain, bar §9/A7 -------------------------------
+    print()
+    print(rule)
+    print("TABLE 4b — the SAME floor rule at the grain of the statistic it gates (bar §9/A7)")
+    print(rule)
+    print("§2's statistic is a suite SUM of per-task medians; §3.2 as written gates it with ONE")
+    print("task's spread. Both are printed for every pair and NEITHER is dropped: the per-task")
+    print("column is what M4's run was judged against and stays visible, the suite column is the")
+    print("grain A7 pre-registers for the NEXT run, and `same?` is the fence — a run whose verdict")
+    print("depends on the grain is stopped, not reported. The suite total per repeat set is")
+    print("readable only because a task's i-th row IS its i-th repeat, measured in `reconcile`")
+    print("against the harness's own run_seed rather than assumed from file order.")
+    print()
+    print("arm  config          per-task floor  suite floor  suite/per-task  suite totals per repeat set")
+    print("-" * 94)
+    for label, config in ARMS:
+        rows = arms[label]
+        pt, su = noise_floor(rows), suite_noise_floor(rows)
+        ratio = f"{su / pt:.2f}x" if pt else "n/a"
+        print(f"{label}   {config:<14}{pt:>15}{su:>13}{ratio:>16}  {suite_totals(rows)}")
+    print()
+    print("pair     |Dtok|  per-task floor   verdict         suite floor  verdict          same?")
+    print("-" * 94)
+    grain_reports = []
+    for y, x in PAIRS:
+        report = grain_verdicts(abs(deltas[(y, x)]["suite_delta"]), arms[x])
+        grain_reports.append((y, x, report))
+        print(
+            f"{y}-{x:<4}{report['delta']:>9.0f}{report['per_task_floor']:>16}"
+            f"{('CLEARS' if report['per_task_clears'] else 'DOES NOT CLEAR'):>18}"
+            f"{report['suite_floor']:>12}"
+            f"{('CLEARS' if report['suite_clears'] else 'DOES NOT CLEAR'):>18}"
+            f"  {'yes' if report['agree'] else 'NO'}"
+        )
+    print("-" * 94)
+    print()
+    print("One machine-readable line per pair, so a downstream program never has to parse the")
+    print("table above (a table and its reader drifting apart is how F7 happened five times):")
+    for y, x, report in grain_reports:
+        print(
+            f"GRAIN|pair={y}-{x}|dtok={report['delta']:.0f}"
+            f"|per_task_floor={report['per_task_floor']}"
+            f"|per_task={'CLEARS' if report['per_task_clears'] else 'DOES-NOT-CLEAR'}"
+            f"|suite_floor={report['suite_floor']}"
+            f"|suite={'CLEARS' if report['suite_clears'] else 'DOES-NOT-CLEAR'}"
+            f"|same={'yes' if report['agree'] else 'NO'}"
+        )
+    check_grain_agreement(grain_reports)
+
     # -- the score half -------------------------------------------------------
     print()
     print(rule)
@@ -806,8 +1021,13 @@ def main(argv: list[str] | None = None) -> int:
     print(f"     points_from_separation         = {e21['points_from_separation']}")
     print(f"     sign consistent across 8 tasks = ties {dir21['ties']}/8, pointing {dir21['pointing']}/8,"
           f" conflicting {dir21['conflicting']}, directional {dir21['directional']}")
+    g21 = grain_verdicts(abs(d21["suite_delta"]), arms["A1"])
     print(f"     |Dtok| vs measured floor       = {abs(d21['suite_delta']):.0f} vs {floor21}"
-          f" ({'clears' if abs(d21['suite_delta']) > floor21 else 'DOES NOT CLEAR'})")
+          f" ({'clears' if abs(d21['suite_delta']) > floor21 else 'DOES NOT CLEAR'})"
+          " — §3.2 as written, per-task grain")
+    print(f"     |Dtok| vs the SAME-GRAIN floor = {g21['delta']:.0f} vs {g21['suite_floor']}"
+          f" ({'clears' if g21['suite_clears'] else 'DOES NOT CLEAR'})"
+          f" — bar §9/A7, verdicts agree: {'yes' if g21['agree'] else 'NO'}")
     print()
     print("R3 — a task whose realised repeat-read count under A0 is 0 is UNINFORMATIVE. Its")
     print("     D% neither refutes nor confirms, because the mechanism had no opportunity to")

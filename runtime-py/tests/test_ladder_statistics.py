@@ -133,6 +133,68 @@ def test_a_floor_of_zero_is_reported_as_degenerate(ladder):
 
 
 # ---------------------------------------------------------------------------
+# Bar §9/A7 — the floor's GRAIN, and the guard on it
+# ---------------------------------------------------------------------------
+
+
+def test_the_suite_grain_floor_is_the_spread_of_the_suite_total_not_one_tasks_spread(ladder):
+    """Bar §9/A7's correction: a delta is gated by a floor at the delta's OWN grain.
+
+    Two tasks, each spreading by 10 across three repeats, with their spreads ALIGNED so
+    the suite total spreads by 20. The per-task max is 10 and the suite grain is 20, and
+    an instrument that cannot tell them apart gates a suite sum with one task's drift —
+    review F1. Nothing here asserts what either floor is on this workload.
+    """
+    rows = _rows(ladder, "a", [100, 105, 110]) + _rows(ladder, "b", [200, 205, 210])
+    assert ladder.suite_totals(rows) == [300, 310, 320]
+    assert ladder.noise_floor(rows) == 10
+    assert ladder.suite_noise_floor(rows) == 20
+
+
+def test_a_verdict_that_depends_on_the_grain_turns_the_run_red(ladder):
+    """The fence A7 rests on, made mechanical.
+
+    A7 corrects a pre-registered rule after its numbers exist, which is only honest
+    while the correction moves no verdict. So the instrument must be able to say when a
+    delta clears one grain's floor and not the other's — 5000 against floors of 4624 and
+    6469 — and must fail the run rather than pick.
+    """
+    rows = _rows(ladder, "a", [0, 1845, 1845]) + _rows(ladder, "b", [0, 4624, 4624])
+    agreeing = ladder.grain_verdicts(3000, rows)
+    divergent = ladder.grain_verdicts(5000, rows)
+    assert (agreeing["per_task_floor"], agreeing["suite_floor"]) == (4624, 6469)
+    assert agreeing["agree"] is True
+    assert divergent["agree"] is False
+
+    ladder.check_grain_agreement([("Ay", "Ax", agreeing)])
+    assert ladder.FAILURES == [], "the guard fired on a pair whose verdicts agree"
+    ladder.check_grain_agreement([("Ay", "Ax", divergent)])
+    assert len(ladder.FAILURES) == 1
+    assert "DEPENDS ON THE GRAIN" in ladder.FAILURES[0]
+
+
+def test_a_repeat_slot_is_verified_against_the_harnesss_own_seed_not_file_order(ladder):
+    """The suite grain needs a repeat SET, so the pairing is measured, not assumed.
+
+    `run_seed(model, task, repeat)` is the harness's own derivation and is imported
+    rather than re-implemented (RB-P19). Rows built with the right seeds pair up; rows
+    built with arbitrary seeds do not, which is what makes the check discriminating
+    rather than decorative. No assertion here is about the committed arms.
+    """
+    from bantamkit.evalrun import run_seed
+
+    model = ladder.MODEL
+    aligned = [
+        ladder._row("a", run_seed(model, "a", i), 100 + i) for i in range(3)
+    ] + [ladder._row("b", run_seed(model, "b", i), 200 + i) for i in range(3)]
+    assert ladder.slots_are_repeat_indexed(aligned) is True
+    shuffled = [
+        ladder._row("a", run_seed(model, "a", 2 - i), 100 + i) for i in range(3)
+    ] + [ladder._row("b", run_seed(model, "b", i), 200 + i) for i in range(3)]
+    assert ladder.slots_are_repeat_indexed(shuffled) is False
+
+
+# ---------------------------------------------------------------------------
 # Bar §3.2 — sign consistency, in `criticreplay._directional`'s shape
 # ---------------------------------------------------------------------------
 
