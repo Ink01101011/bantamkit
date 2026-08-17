@@ -4919,10 +4919,13 @@ endpoint's `Usage` is pinned **for this run only**; it retro-validates no
 
 ##### Measured and NOT fixed — open, each with an attack direction
 
-Nine findings from the adversarial review and the closure that followed it. Two
-Criticals were closed (bar §3.2's floor grain, by A7; and four accounting columns
-that had never fired outside a fixture, by a committed validation artifact). None
-of the nine below is fixed, and **two got worse** rather than staying put.
+Nine findings from the adversarial review and the closure that followed it, plus
+**one tenth (RB-P45) measured by the closure unit while bumping the version** —
+recorded rather than dropped, because a measured negative becomes a problem with
+an attack direction and never a footnote. Two Criticals were closed (bar §3.2's
+floor grain, by A7; and four accounting columns that had never fired outside a
+fixture, by a committed validation artifact). None of the ten below is fixed, and
+**two got worse** rather than staying put.
 
 - **RB-P36 — the score half of the bar has no noise floor, and two of the four
   flips that produced the run's only TRADE are single-repeat.** §3.1 ports
@@ -5061,6 +5064,34 @@ of the nine below is fixed, and **two got worse** rather than staying put.
   → `704 0`;
   `git show --numstat --format="" 914a87b -- docs/eval-data/2026-08-17-devteam-review.md`
   → `48 0`. (Process.)
+- **RB-P45 — the version the MCP server advertises is pinned to nothing, and it
+  has been wrong on this machine for nineteen minor releases.** Found by bumping
+  `0.21.0 → 0.22.0` and then asking what reads the number.
+  `mcpserver._version()` returns `metadata.version("bantamkit")` — the version of
+  the **installed distribution**, not the one in `pyproject.toml` — and its only
+  fallback is `PackageNotFoundError → "0.0.0"`. A *stale* editable install is not
+  an error, so it does not fall back: it returns a confidently wrong number.
+  Measured in this repo's venv: the resolved dist-info is
+  **`bantamkit-0.3.0.dist-info`**, so `build_server` has been advertising
+  **`0.3.0`** to every MCP host on this machine while the package declared
+  0.4.0 through 0.22.0. **No node pins the two together** — the bump turns
+  nothing red, which is the defect, and CI happens to be immune only because it
+  installs fresh every run, so CI can never observe the failure mode. The
+  blast radius is a version string a host displays and a client could branch on,
+  not a measurement, which is why this is Minor. **Attack:** assert the relation
+  rather than the number — a node that reads the version out of
+  `runtime-py/pyproject.toml` and requires `_version()` to equal it, skipped only
+  when the package is genuinely not installed. That goes red on a stale install,
+  which is the case a fresh-install CI cannot see, so it belongs in the suite and
+  not in the workflow. Alternatively have `_version()` distinguish "not
+  installed" from "installed, and here is what the install says", and never
+  present the latter as the package's version. **Command.**
+  `ls -d .venv/lib/python*/site-packages/bantamkit*.dist-info` →
+  `bantamkit-0.3.0.dist-info`;
+  `.venv/bin/python -c "import importlib.metadata as m; print(m.version('bantamkit'))"`
+  → `0.3.0`, against `version = "0.22.0"` in `runtime-py/pyproject.toml`;
+  `grep -rn "_version\b" runtime-py/tests/*.py` → no node. (Layer 5 —
+  Composition; `mcpserver.py` is where the number is presented.)
 
 ##### One gate was two gates, measured
 

@@ -102,5 +102,5 @@ marker. `collapsed_bytes` and `annotate_marker_bytes` are therefore
 as break-even and bias the run total in the mechanism's favour.
 
 The full record, the pre-registered bar it was measured against, and the
-nine findings it left open:
+findings it left open:
 [Eval → M](eval.md#m-2026-08-17-v0220--the-dev-team-workload-surface-and-what-it-could-not-show).
