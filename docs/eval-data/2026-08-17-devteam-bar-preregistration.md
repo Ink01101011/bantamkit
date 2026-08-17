@@ -764,7 +764,8 @@ This amendment records defects in the pre-registered *rules* so the next run mee
 corrected rule rather than a precedent. Review:
 [`2026-08-17-devteam-review.md`](2026-08-17-devteam-review.md), probe
 [`2026-08-17-devteam-review-probe.py`](2026-08-17-devteam-review-probe.py) (6 mutations,
-all six verified to exit 1). Commit `19133b6` (Documentation), CI run `32032557362`
+all six verified to exit 1). Commits `19133b6` and `b02c659` (Documentation), CI run
+`32032557362`
 **success**.
 
 **(1) §3.2's sign clause GAINS A FOURTH OUTCOME: `ABSTAINING`.** §3.2 says a

@@ -927,5 +927,7 @@ lint step runs under `working-directory: runtime-py` and so did not lint this un
 program; that gap is [F8](#f8--important-ci-never-sees-docseval-data-and-two-of-the-four-field-programs-are-exercised-by-nothing)
 and the local ruff command in the block above is what covered it.
 
-Commits: `19133b6` (Documentation — the review probe), and this document with bar §9/A6.
+Commits: `19133b6` (Documentation — the review probe), `b02c659` (Documentation — the
+probe's third floor grain, both graph arms, and Table M5b), and this document with bar
+§9/A6. The probe state the stdout blocks above are verbatim against is `b02c659`.
 **Tokens and wall-clock for this unit: UNMEASURED.**
