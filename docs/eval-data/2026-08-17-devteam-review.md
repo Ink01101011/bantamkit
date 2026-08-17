@@ -979,3 +979,24 @@ HEAD, exit 0 each; that remains a fact about today.
 **Found by re-reading the review's own evidence after committing it**, which is the
 reason a review is allowed an amendment and not an edit. Commit `3f47f9f` is the last
 that touched the tables above; this section is a pure append after it.
+
+---
+
+## Amendment 2 — 2026-08-17: the commit body of `914a87b` states its own hunk wrongly
+
+Appended, nothing above edited. Two lines, recorded because bar §9/A2 set the precedent
+for exactly this: *"a pushed commit message cannot be corrected without rewriting history,
+so it is recorded here and left alone."*
+
+`914a87b`'s body says Amendment 1 above is *"`@@ -930,3 +930,53 @@`, 50 insertions and 0
+deletions"*. Measured — `git show --numstat 914a87b` and
+`git show 914a87b -- <this file> | grep '^@@'` — it is **`@@ -931,3 +931,51 @@`, 48
+insertions and 0 deletions.** The load-bearing half, **0 deletions and a pure append**,
+is exactly right; the two counts were written before they were measured, which is the
+same defect as M4's "703 insertions" that this review flagged as
+[F11](#f9-f10-f11--minor-three-integrity-claims-that-were-stated-as-verified-and-are-not-exact),
+committed by the unit that flagged it, one commit later. **Read `914a87b`'s body as
+`@@ -931,3 +931,51 @@`, 48/0.**
+
+Recorded rather than left, and left rather than rewritten. No number, finding, class or
+verdict is affected: the amendment's content is unchanged and it is still a pure append.
