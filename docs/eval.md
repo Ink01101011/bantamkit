@@ -5216,6 +5216,74 @@ pre-registered bar, on a real transcript corpus. Named here only as a pointer �
 no design, no bar and no numbers, because writing any of those before the corpus
 exists is the failure this job spent eight units avoiding.
 
+#### N (2026-08-17) — J2's precondition unit: two J1 findings closed, and one defect the closures created
+
+Job `compaction-measured`, unit U1. **No number about compaction appears here** — the
+corpus is unread by construction and the bar is U2's. This section exists for one reason:
+closing RB-P38 broke something, and the break belongs in the register beside the finding
+that caused it rather than in a commit body nobody greps.
+
+Closed here: **RB-P38** (`model: str | None = None`, an additive trailing field on
+`TaskResult`, read at HEAD at `evalrun.py:214`, sourced by duck typing off the client so
+no call site gained an argument) and the **suite half of RB-P41** (a node file that guards
+every committed field program on four surfaces, discovered from the union of `git ls-files`
+and a glob). **The CI half of RB-P41 is NOT closed**: nothing in CI reads `docs/eval-data`
+at this HEAD, and widening `ruff` to the repo root would import 413 rules over `docs/`
+against the package's 153 — a separate change with a separate blast radius. **RB-P36 is
+not touched** and is J2's bar's problem, not this unit's.
+
+##### Measured and NOT fixed at the time it was found — then fixed, because it was ours
+
+- **RB-P46 — a byte-identity reproduction check is structurally incompatible with the
+  additive-field convention the same harness documents, and RB-P38's own fix proved it by
+  breaking one. Introduced by this unit and found by this unit.**
+  `…instrument-validation-run.py --check` regenerates its artifact and required the bytes
+  to be **identical** to the committed `.jsonl`. `TaskResult` is under a documented
+  additive trailing-field convention — old rows simply lack a new key — and RB-P38 added
+  `model` under exactly that convention. Measured: committed **8558 B**, regenerated
+  **9166 B**, **+608 B over 16 rows = 38 B/row**, which is
+  `, "model": "walk-client/deterministic"` character for character. **When J1 closed, all
+  ten committed field programs exited 0; at `cf8b07e` it was nine of ten.** The two
+  promises are contradictory in principle: the convention says the committed rows may lack
+  a key, byte-identity says the new bytes equal the old bytes, and **the next additive
+  column breaks the next such check the same way**. What makes it more than untidy is
+  *where* the red light sits — on the one program whose entire job is to demonstrate that
+  committed evidence still reproduces. A red light there makes the **wrong** repair the
+  obvious one for the next unit: regenerate the committed rows, which is the single act
+  that artifact cannot survive. Measured blast radius today: of the **ten** committed field
+  programs, exactly **one** carries a `--check` byte-identity gate — the one that broke.
+  Its sibling `…critical-closure-field-measurement.py` compares **named columns**
+  (`LEDGER_COLUMNS`, the `C2-3` cell check) and was immune, which is the shape that
+  survives. So this is a latent break in every *future* artifact verified by whole-line
+  identity, not a second broken program today. **Attack, and it was taken:** compare on the
+  **committed file's own key list**, allowing only columns **declared** in a dated tuple to
+  be present on the regenerated side and absent from the committed one — the additive
+  convention applied to the CHECKER instead of only to the writer — while keeping the row
+  count exact, the shared keys compared on serialised bytes, and byte-identity as the first
+  thing tried and the strongest result printed. Two formalisations that fail, both measured
+  rather than reasoned about: *committed keys as a strict PREFIX of regenerated keys* — the
+  natural reading of "additive **trailing** field" — goes **RED on the unperturbed
+  control**, because `model` is trailing on the dataclass but the program appends `kind`,
+  `ladder_arm` and `client` after `asdict()`, so in the **row's** key order the new column
+  lands mid-list and position cannot carry the rule; and *compare the intersection of the
+  key sets* **PASSES** a mutation that deletes a committed key from the artifact, which is
+  a checker green-lighting a mutation of committed evidence. A checker that passes because
+  it stopped checking is worse than a red one, so the repair is only worth what its
+  mutations show. **Command.**
+  `.venv/bin/python docs/eval-data/2026-08-17-devteam-instrument-validation-run.py . --check`
+  → exit **1** at `cf8b07e` (`committed: 8558 B` / `regenerated: 9166 B`), exit **0** at
+  this HEAD, printing that it reproduces on every committed key while **not** being
+  byte-identical and naming the one declared addition. And on a **scratch copy** of the
+  tree, never the repo — seven perturbations, each exit **1**: one `collapsed_bytes`
+  `200`→`201`; the same cell `200`→`200.0`; one committed key (`query_bytes`) deleted from
+  one row; one row deleted; two committed keys reordered with values unchanged; `passed`
+  `true`→`false`; and the declaration itself emptied so that `model` becomes undeclared.
+  `grep -c '"--check"' docs/eval-data/*.py` locates the one gate;
+  `git ls-files 'docs/eval-data/*.py' | wc -l` → `10`. (Instrument — the
+  evidence-verification path. Amended in
+  `docs/eval-data/2026-08-17-devteam-instrument-validation.md`, Amendment 3; the `.jsonl`
+  is NOT regenerated and Amendments 1 and 2 are not edited.)
+
 ### The `qwen-implementer` cell on RB-P27 lever (2) (2026-08-12)
 
 The first measured cell of the `qwen-implementer` backlog item, run on the

@@ -163,3 +163,103 @@ the same way. Any future artifact wanting a reproduction guarantee should compar
 columns it names, not the whole line.
 
 Tokens and wall-clock: UNMEASURED.
+
+## Amendment 3 — 2026-08-17: `--check` is repaired, and Amendment 2's last two paragraphs are superseded
+
+Appended, not edited. Amendment 1 and Amendment 2 are committed records and neither is
+touched; this note attaches to Amendment 2 the way Amendment 2 attaches to line 8.
+**Nothing in this amendment changes a number, a table, a verdict or a fence, and the
+`.jsonl` is still not regenerated.**
+
+**What Amendment 2 got right and is left standing.** Its measurement (`8558 B` committed
+against `9166 B` regenerated, +608 B over 16 rows = 38 B/row =
+`, "model": "walk-client/deterministic"` character for character), its cause (`model` on
+`TaskResult`, read at HEAD as `model: str | None = None`,
+[`evalrun.py:214`](../../runtime-py/src/bantamkit/evalrun.py)), its finding that `C2-3`
+still reports 112/112, and its closing paragraph — *"any future artifact wanting a
+reproduction guarantee should compare the columns it names, not the whole line"* (line
+158, read at HEAD) — all reproduce and all stand. **The last sentence is in fact what was
+then built**, one commit later, in this same program.
+
+**What is superseded.** Amendment 2's *"Not resolved, deliberately"* paragraph (line 151,
+read at HEAD) recorded the byte-identity route as **closed for this artifact** and the
+reproduction guarantee as *"the `C2-3` cell comparison and nothing else"*. That is no
+longer true. `--check` was repaired in the program rather than in the artifact, and it
+exits 0 at this record's HEAD.
+
+**Why repairing the checker is not the third forbidden thing.** Amendment 2 listed two
+forbidden repairs and rejected both, correctly: regenerating the `.jsonl` is a retro-edit
+of committed evidence, and it did not happen. It then named a third — *"editing the
+committed program to ignore unknown columns would be restructuring committed evidence"* —
+and that framing was too broad in one direction and too narrow in another.
+
+- **Too broad:** the fence that binds is that committed evidence is not regenerated or
+  retro-edited. The `.jsonl` is the evidence. The program's `--check` is the **verifier of**
+  that evidence, and a verifier that reports a false red on the artifact it guards is a
+  defect in the instrument, which the register exists to fix. The program's measurement
+  path — what it runs, what it prints, what it writes — is unchanged; `build_rows`
+  ([`:137`](2026-08-17-devteam-instrument-validation-run.py) `row = asdict(result)`) and
+  the write path are untouched, and no committed figure moved.
+- **Too narrow:** the repair is not *"ignore unknown columns"*. Unknown columns still turn
+  `--check` **red**. Only the columns **declared** in
+  `ADDITIVE_KEYS_THE_ARTIFACT_PREDATES` ([`:100`](2026-08-17-devteam-instrument-validation-run.py),
+  today exactly `("model",)`) may be present on the regenerated side and absent from the
+  committed one.
+
+**Why it could not simply be left red.** This program's whole purpose is to demonstrate
+that committed evidence still reproduces. A red light beside it makes the **wrong** repair
+the obvious one for whoever arrives next — regenerate the rows and the light turns green —
+and that is the single act this artifact cannot survive. The red light was a hazard, not
+an inconvenience.
+
+**What `--check` now does.** Byte-identity is still attempted first
+([`:296`](2026-08-17-devteam-instrument-validation-run.py)) and still printed as the
+strongest available result. On failure it falls through to
+`compare_on_committed_keys` ([`:153`](2026-08-17-devteam-instrument-validation-run.py),
+called at [`:308`](2026-08-17-devteam-instrument-validation-run.py)), which requires: the
+row count exact; every regenerated key absent from the committed row to be a declared
+addition; the regenerated key list with those declared additions removed to equal the
+committed row's key list **in order**; and the regenerated row restricted to the committed
+keys to serialise to the committed line **character for character**.
+
+**Measured, at this record's HEAD.**
+
+```sh
+.venv/bin/python docs/eval-data/2026-08-17-devteam-instrument-validation-run.py . --check
+```
+
+exits **0** and prints that the artifact reproduces on every key it carries while **not**
+being byte-identical, naming the one declared key the regenerated rows add.
+
+**And measured RED, so it is not passing by having stopped checking.** Every perturbation
+below was applied to a **scratch copy** of the tree — never to the repo, whose `.jsonl`
+was not written at any point — and each one exits **1**:
+
+| perturbation (scratch copy only) | exit |
+| --- | --- |
+| one `collapsed_bytes`, `200` → `201` | 1 |
+| one `collapsed_bytes`, `200` → `200.0`, same magnitude | 1 |
+| one committed key (`query_bytes`) deleted from one row | 1 |
+| one row deleted | 1 |
+| two committed keys reordered, values unchanged | 1 |
+| `passed`, `true` → `false` | 1 |
+| the declaration itself emptied, making `model` undeclared | 1 |
+
+**Two formalisations that failed, recorded because the obvious one is the wrong one.**
+(1) *Committed keys as a strict PREFIX of the regenerated keys* — the natural reading of
+"additive trailing field" — went **red on the unperturbed control**. `model` is trailing
+on `TaskResult`, but this program appends `kind`, `ladder_arm` and `client` after
+`asdict()` ([`:144`](2026-08-17-devteam-instrument-validation-run.py) is the last of the
+three), so in the **row's** key order the new column lands mid-list. Position cannot carry
+this rule. (2) *Compare the intersection of the two key sets* — a plain set difference —
+**passed** the mutation that deletes a committed key from the artifact, because a deletion
+merely shrinks the reference set. That is a checker green-lighting a mutation of committed
+evidence. The declared-additions rule turns both red.
+
+**The general form is filed as RB-P46** in [`../eval.md`](../eval.md), because it is not
+about this file: a byte-identity reproduction check is structurally incompatible with an
+additive-field convention, and **any other committed artifact verified by byte-identity
+carries the same latent break**, waiting for the next additive column. The defect fixed
+here was introduced by RB-P38's own fix and found by the unit that made it.
+
+Tokens and wall-clock: UNMEASURED.
