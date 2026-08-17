@@ -5,6 +5,7 @@ from conftest import FakeClient, assistant, call
 
 from bantamkit import evalrun
 from bantamkit.agent import response_format_for
+from bantamkit.assets import assets_root
 from bantamkit.budget import _BudgetedClient
 from bantamkit.client import BantamError, Message, ToolCall
 from bantamkit.contract import loop_note
@@ -986,6 +987,74 @@ def test_recall_store_dump_containing_the_fact_scores_false():
 def test_ablation_configs_are_choices_but_not_in_configs():
     assert "graph-annotate" in CONFIG_CHOICES and "graph-cache" in CONFIG_CHOICES
     assert "graph-annotate" not in CONFIGS and "graph-cache" not in CONFIGS
+    assert "graph-off" in CONFIG_CHOICES and "graph-off" not in CONFIGS
+
+
+def _repeat_read_trajectory():
+    return [
+        assistant(tool_calls=[call("list_files", {})]),
+        assistant(tool_calls=[call("read_file", {"path": "notes/a.md"}, id="c2")]),
+        assistant(tool_calls=[call("read_file", {"path": "notes/a.md"}, id="c3")]),
+        assistant(content='{"x": 1}'),
+    ]
+
+
+def test_graph_off_observations_are_identical_to_bare(tmp_path):
+    """The null control: `graph-off` records the ledger and changes nothing sent.
+
+    This is the arm the token-reduction bar is written against
+    (docs/eval-data/2026-08-17-devteam-bar-preregistration.md), so it has to be
+    meaning-preserving in the literal sense — byte-identical observations and no
+    extra tool. Falsifying mutation: flip `cache` or `query` True in
+    GRAPH_CONFIGS["graph-off"] and this node goes red.
+    """
+    bare = FakeClient(_repeat_read_trajectory())
+    off = FakeClient(_repeat_read_trajectory())
+    bare_result = run_task(bare, workspace_task(), "bare", tmp_path)
+    off_result = run_task(off, workspace_task(), "graph-off", tmp_path)
+    assert bare_result.passed is off_result.passed is True
+    def observations(client):
+        return [[m.content for m in c["messages"] if m.role == "tool"] for c in client.calls]
+
+    bare_obs, off_obs = observations(bare), observations(off)
+    assert off_obs == bare_obs
+    # The repeat read is NOT collapsed: full content both times, no marker anywhere.
+    assert off_obs[-1] == ["b.txt\nnotes/a.md", "alpha", "alpha"]
+    assert not any("[file-graph]" in obs for turn in off_obs for obs in turn)
+    for client in (bare, off):
+        assert "file_graph" not in [t.name for t in client.calls[0]["tools"]]
+
+
+def test_devteam_workload_asset_loads_and_declares_a_repo_surface():
+    """Regression guard on the new asset, not evidence about it (RB-P28 stays open).
+
+    The workload lives beside the frozen suite and is loaded through the same
+    `--tasks` path. What this pins is that it stays loadable, that every task keeps
+    the workspace tools the graph attaches on (`evalrun.py:521`), and that all eight
+    share one identical surface — a task whose workspace drifted would be a
+    different workload wearing the same name.
+    """
+    tasks = load_tasks(assets_root() / "evals" / "devteam" / "tasks")
+    assert len(tasks) == 8
+    assert {t["family"] for t in tasks} == {"dev-repo-code", "dev-repo-history"}
+    surfaces = set()
+    for task in tasks:
+        assert task["tools"] == ["read_file", "list_files"]
+        assert task["scoring"]["kind"] == "json_equal"
+        surfaces.add(tuple(sorted(task["workspace"])))
+    assert len(surfaces) == 1
+    paths = surfaces.pop()
+    assert sum(p.endswith(".py") for p in paths) >= 8  # code, which the frozen suite has none of
+    assert any(p.endswith(".patch") for p in paths)  # a diff
+    assert "HISTORY.md" in paths  # history
+
+
+def test_graph_off_token_count_matches_bare(tmp_path):
+    """Same trajectory, same tokens: the null control costs nothing to attach."""
+    bare = run_task(FakeClient(_repeat_read_trajectory()), workspace_task(), "bare", tmp_path)
+    off = run_task(FakeClient(_repeat_read_trajectory()), workspace_task(), "graph-off", tmp_path)
+    assert off.tokens == bare.tokens
+    assert (off.model_calls, off.tool_calls) == (bare.model_calls, bare.tool_calls)
 
 
 # ---- P7: turns-exhausted ----

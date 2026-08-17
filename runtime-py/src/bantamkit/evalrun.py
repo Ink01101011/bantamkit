@@ -126,6 +126,20 @@ GRAPH_CONFIGS = {
     "graph": {"annotate": True, "cache": True, "query": True},
     "graph-annotate": {"annotate": True, "cache": False, "query": False},
     "graph-cache": {"annotate": True, "cache": True, "query": False},
+    # Rung zero WITH the ledger. `bare` is already a clean rung zero for the
+    # ladder's token deltas — `graph-annotate`'s `effective` resolves to itself and
+    # picks up no other component, so `bare -> graph-annotate -> graph-cache ->
+    # graph` isolates one flag per step. What `bare` cannot do is COUNT: it attaches
+    # no FileAccessGraph, so nothing records how many reads a run made or how many
+    # of them were repeats. All three flags off records the ledger and changes
+    # nothing the model sees — `_record` returns the observation unchanged on every
+    # path when `cache` and `annotate` are both False (`filegraph.py:83-92`), and
+    # `setup` registers no tool and adds no skill when `query` is False
+    # (`filegraph.py:51-53`). That is what makes it the meaning-preserving null
+    # control: a mechanism-off arm that removes no information, and the only arm
+    # that can tell "the collapse did not help" from "the collapse never fired".
+    # Pinned by test_evalrun.py::test_graph_off_observations_are_identical_to_bare.
+    "graph-off": {"annotate": False, "cache": False, "query": False},
 }
 
 # Calibration-only too (same precedent as GRAPH_CONFIGS): each name maps to the headline
