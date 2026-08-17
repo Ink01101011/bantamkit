@@ -1062,3 +1062,43 @@ they were pushed together with `f5cab04`, the same thing that happened to M5's
 
 **Tokens and wall-clock for M6: UNMEASURED.** No counter is exposed for either and a
 self-estimate is not a measurement.
+
+### A8 — 2026-08-17: two `evalrun.py` pins in A7 are wrong, and the sixth pin drift in this job was committed by the unit whose brief opens with the other five
+
+M6. **A pure append; A7 is not edited, §1-§8 and A1-A6 are untouched, and no number,
+verdict, table, rule or fence in A7 changes.** A7's correction of §3.2's grain stands
+exactly as committed.
+
+A7 point 4 carries two pins that I wrote from the shape of the files register instead of
+reading the lines. Both read at HEAD, individually:
+
+| pin in A7 | at HEAD | what is actually there |
+|---|---|---|
+| `evalrun.py:671-703` (`run_suite`'s loop) | **`671-701`** | `return results` is at `701`; `702-703` are blank and `_score_cell` begins at `704` |
+| `evalrun.py:391-404` (`run_seed`) | **`391-403`** | `return int.from_bytes(digest[:4], "big")` is at `403`; `404` is blank |
+
+The second one is worse than a slip: `391-403` is the pin M4's report, this bar at §9/A5
+and M5's review all carry, verified at HEAD each time, so A7 **contradicted a correct pin
+that was already committed three times over**. The load-bearing content is untouched —
+`run_suite` does loop config → task → repeat, `run_seed` is a pure function of (model,
+task, repeat), and the measurement A7 point 4 reports (the *i*-th row's seed reproduced on
+all four arms, 96 rows) was computed by importing `run_seed`, never by reading a line
+number.
+
+**This is the SIXTH pin drift in this job, and the first one committed by the unit whose
+brief opens with the other five.** DO-NOT 14 says: do not re-pin by blanket arithmetic —
+read the line at HEAD. I read every pin I *inherited* and wrote three of my own without
+reading them. The same two pins were corrected in the field programs in `940ed89`
+(Measurement, in place, because a program comment is not a record) and the
+instrument-validation document has its own Amendment 1 for a third pin
+(`filegraph.py:184-194` → `182-194`).
+
+The root cause is unchanged from A6's diagnosis and now has one more data point: **the
+pin-drift checker is still FILED, NOT BUILT**, and it has now cost six units of human
+re-reading, one of them the unit that was warned about the other five in its first
+paragraph.
+
+Everything else this unit pinned was re-read at HEAD and holds: `evalrun.py:247`
+(`context_bytes_sent`, counted in `TrackingClient.chat`), `filegraph.py:153` (`_record`
+returns on a first read), `:160` (the collapse gate `unchanged and self.cache`), `:181`
+(`return marker`), `:182-194` (the annotate branch).

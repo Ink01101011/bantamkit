@@ -92,3 +92,20 @@ closure document.
   by accident. Checked mechanically against the instrument's own `ARMS`, not by eye.
 
 Tokens and wall-clock: UNMEASURED.
+
+## Amendment 1 — 2026-08-17: the annotate-branch pin above is `182-194`, not `184-194`
+
+Amended rather than edited, per the conservative reading of the record-vs-pointer line
+(bar §9/A6, review §5): the ruling that would let a line pin be corrected in place is
+the user's to ratify, and until it is, a committed document is amended.
+
+The paragraph in *What it is* pins the annotate branch as `filegraph.py:184-194`. Read at
+HEAD: `if self.annotate:` is at **`:182`** and `return annotated` at `:194`, so the branch
+is **`182-194`** — which is also the pin M5's review used. `184` is where the `annotated`
+f-string begins, two lines inside the branch. The claim the pin supports is unaffected:
+the branch is unreachable on a first read because `_record` returns at `:153`, both of
+which were re-read at HEAD.
+
+Same re-read, same commit as the correction of two `evalrun.py` pins I had written from
+the files register instead of reading them (`940ed89`, Measurement) and bar §9/A8. No
+number, table, verdict or fence in this document changes.
