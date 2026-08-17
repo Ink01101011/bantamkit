@@ -1,0 +1,38 @@
+From 9f2c1ab5e2d84c1f0a7b6935cc41d0e2a8f37b41 Mon Sep 17 00:00:00 2001
+Date: Wed, 29 Jul 2026 09:14:02 +0000
+Subject: [PATCH] fix(retry): read retry_max_attempts from settings, not the
+ constant
+
+The wrapper had its own hard-coded attempt count, so raising the deployed
+budget changed nothing. It now asks load_settings() like every other module.
+---
+ src/ledger/retry.py | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/src/ledger/retry.py b/src/ledger/retry.py
+--- a/src/ledger/retry.py
++++ b/src/ledger/retry.py
+@@ -1,14 +1,15 @@
+-"""Retry wrapper. Attempts are fixed at the module constant below."""
++"""Retry wrapper. Reads its attempt count from settings, never from a constant."""
+
+ import time
+
+-_MAX_ATTEMPTS = 3
++from ledger.config import load_settings
+
+
+ def with_retry(fn, *args):
++    settings = load_settings()
+     last = None
+-    for _attempt in range(_MAX_ATTEMPTS):
++    for _attempt in range(settings.retry_max_attempts):
+         try:
+             return fn(*args)
+         except Exception as exc:
+             last = exc
+-            time.sleep(0.25)
++            time.sleep(settings.retry_backoff_ms / 1000)
+     raise last
+--
+2.45.2

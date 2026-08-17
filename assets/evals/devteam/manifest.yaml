@@ -1,0 +1,351 @@
+# The dev-team workload: source of truth.
+#
+# Dated 2026-08-17. Written by M2 of job `devteam-workload-and-null-control`
+# BEFORE any arm was run, and before any token number for this workload existed.
+#
+# `assets/evals/tasks/` is FROZEN. This is a new asset beside it, run through the
+# existing `--tasks` flag (`evalrun.py:736-738`); nothing in the frozen suite is
+# edited, and the `workspace:` mechanism (`evalrun.py:93-122`, attached at
+# `evalrun.py:435`) is extended in content only, never in code.
+#
+# `tasks/*.yaml` is GENERATED from this file by `tools/devteam/build_tasks.py`.
+# Edit this file, re-run the builder, never hand-edit a generated task.
+
+version: 1
+date: 2026-08-17
+
+surface:
+  name: svc-ledger
+  root: repo
+  origin: synthesised
+  # Recorded per the brief: pick one, record the threat accepted, say what detects it.
+  threat_accepted: unrealism
+  threat_statement: >
+    The surface is authored, not observed. Nothing guarantees its file sizes,
+    import fan-in, reference-chain depth or prose/code ratio resemble a repo a
+    dev team actually works on, and every one of those shapes the number of
+    reads a run makes — which is the quantity under measurement.
+  detector: >
+    A structural comparison against this repository's own runtime package
+    (runtime-py/src/bantamkit), printed by
+    docs/eval-data/2026-08-17-devteam-workload-measurements.py. Unrealism is
+    DETECTED if the synthesised surface falls outside the real package on
+    bytes-per-file range, internal imports per module, or maximum
+    internal-import fan-in. The detector is structural only: it cannot detect
+    unrealistic *task* choice, which is what the exclusion list below is for.
+  rejected_origins:
+  - origin: vendored open-source snapshot
+    threat: memorisation
+    why_rejected: >
+      A memorised repo can be answered without reading it. That suppresses
+      reads, and read count is the quantity under measurement — so the
+      contamination moves the measurand itself, in a direction nothing here can
+      bound. Detecting it needs a tools-removed arm, and M2 runs no arm.
+  - origin: point at bantamkit itself
+    threat: self-reference, and the asset stops being frozen
+    why_rejected: >
+      The content would change with every commit, so two arms run at different
+      shas would not be comparable — an evidence asset has to be immutable. And
+      this repo's own docs/eval*.md answer questions about the very mechanisms
+      being measured, so a run could read the answer rather than derive it.
+
+# Every task gets the WHOLE repo as its workspace, never a curated subset: a
+# workspace containing only the answer path is a pointer chase with no selection
+# to do, and selection is the dev-team surface. The reference walk below is the
+# path a depth-first pointer-follower takes; it is not a restriction on the run.
+workspace_scope: whole-repo
+
+# The reference strategy the walks are stated against. Named explicitly because
+# re-read pressure is only defined relative to a strategy.
+reference_strategy: >
+  Depth-first pointer-following without memoisation: read the file the prompt or
+  the previous observation points at, and resolve each pointer at the moment it
+  is encountered. A memoising solver re-reads nothing, so the walk-derived
+  pressure below is an UPPER bound on what a run will realise, not a prediction.
+
+tasks:
+
+- name: dt-retry-attempts
+  family: dev-repo-code
+  prompt: >-
+    How many attempts does the retry wrapper of svc-ledger make? Start with
+    list_files, then follow the documentation pointers from README.md. Do not
+    answer from memory, and do not answer with a number taken from a page that
+    tells you the value lives elsewhere. Answer with ONLY this JSON, nothing
+    else: {"attempts": <number>}
+  scoring:
+    kind: json_equal
+    expected: {attempts: 5}
+  rationale: >
+    The low-pressure control, and the discriminator against answering from
+    prose. Two wrong answers are reachable without reading config.py: the
+    runbook offers none (it refuses on purpose) and patches/0009 shows the
+    pre-patch constant 3. Only src/ledger/config.py carries 5. Included because
+    a workload needs tasks the mechanism cannot possibly help on; excluding them
+    is how a bar gets rigged.
+  walk:
+  - {path: README.md, pointer: 'README.md', pointer_in: prompt}
+  - {path: docs/runbook.md, pointer: 'docs/runbook.md'}
+  - {path: src/ledger/config.py, pointer: 'src/ledger/config.py'}
+  answer_evidence: ['"retry_max_attempts": 5']
+
+- name: dt-symbol-home
+  family: dev-repo-code
+  prompt: >-
+    Which file of svc-ledger DEFINES the exception class that settle_batch
+    raises when a batch is too large? Use list_files first, then read the module
+    that raises and follow its import to the module that defines the class. Do
+    not answer from memory. Answer with ONLY this JSON, nothing else: {"path":
+    "<repo-relative path>"}
+  scoring:
+    kind: json_equal
+    expected: {path: src/ledger/errors.py}
+  rationale: >
+    Symbol resolution across files — M1 gap 4 — reduced to the one form this
+    harness can score today: "which file defines X", answered by following a
+    real import statement. Distinguishes the file that RAISES (settle.py) from
+    the file that DEFINES (errors.py), which is the distinction a symbol index
+    would exist to make and which no mechanism in the repo provides.
+  walk:
+  - {path: docs/architecture.md, pointer: 'docs/architecture.md', pointer_in: listing}
+  - {path: src/ledger/settle.py, pointer: 'settle.py'}
+  - {path: src/ledger/errors.py, pointer: 'from ledger.errors import SettlementError'}
+  answer_evidence: ['class SettlementError(LedgerError):']
+
+- name: dt-handler-map
+  family: dev-repo-code
+  prompt: >-
+    For each of the three handlers registered in src/ledger/registry.py, report
+    whether the file that defines its entry function imports ledger.config. Read
+    the registry, then read each of the three files it points at. Do not answer
+    from memory. Answer with ONLY this JSON, nothing else: {"settle":
+    <true|false>, "post": <true|false>, "report": <true|false>}
+  scoring:
+    kind: json_equal
+    expected: {settle: true, post: true, report: false}
+  rationale: >
+    Cross-file references as a fan-out rather than a chain — M1 gap 5 — and the
+    only task here whose answer is not uniform, so a run cannot pass it by
+    guessing a constant. report.py deliberately does not import config, which is
+    also what makes dt-unread-key have a unique answer. Breadth, zero re-read
+    pressure by construction.
+  walk:
+  - {path: src/ledger/registry.py, pointer: 'src/ledger/registry.py', pointer_in: prompt}
+  - {path: src/ledger/settle.py, pointer: 'ledger.settle:settle_batch', pointer_in: src/ledger/registry.py}
+  - {path: src/ledger/posting.py, pointer: 'ledger.posting:post_entry', pointer_in: src/ledger/registry.py}
+  - {path: src/ledger/report.py, pointer: 'ledger.report:build_report', pointer_in: src/ledger/registry.py}
+  answer_evidence: ['from ledger.registry import HANDLERS']
+
+- name: dt-trace-blame
+  family: dev-repo-history
+  prompt: >-
+    issues/142-settlement-timeout.md contains a captured traceback. Work out
+    which commit listed in HISTORY.md introduced the check that raised, and
+    which file that check lives in. Read the issue, then the file the deepest
+    frame names, then the history. Do not answer from memory. Answer with ONLY
+    this JSON, nothing else: {"commit": "<short sha>", "path": "<repo-relative
+    path>"}
+  scoring:
+    kind: json_equal
+    expected: {commit: 5c0de41, path: src/ledger/validate.py}
+  rationale: >
+    This is the task that puts HISTORY on the surface — M1 gap 6, and the
+    brief's "at least one of diff or history". It joins three different kinds of
+    artifact (a stack trace, source, a commit log) which is the join a dev
+    actually performs and which 0 of the 22 frozen tasks contain. The deepest
+    frame names validate.py:13; only one commit subject in HISTORY.md is about
+    rejecting zero-amount entries.
+  walk:
+  - {path: issues/142-settlement-timeout.md, pointer: 'issues/142-settlement-timeout.md', pointer_in: prompt}
+  - {path: src/ledger/validate.py, pointer: '"src/ledger/validate.py", line 13'}
+  - {path: HISTORY.md, pointer: 'HISTORY.md', pointer_in: prompt}
+  answer_evidence: ['5c0de41 2026-07-08 fix(validate): reject zero-amount entries']
+
+- name: dt-patch-before-after
+  family: dev-repo-history
+  prompt: >-
+    patches/0009-retry-budget.patch changed how src/ledger/retry.py obtains its
+    attempt count. Report the attempt count the code used BEFORE that patch, and
+    the attempt count it uses at HEAD. Read the patch, then the file at HEAD,
+    then whatever that file reads its value from. Do not answer from memory.
+    Answer with ONLY this JSON, nothing else: {"before": <number>, "head":
+    <number>}
+  scoring:
+    kind: json_equal
+    expected: {before: 3, head: 5}
+  rationale: >
+    A DIFF as first-class input — the readable half of M1 gap 3. Scoring an
+    edit is impossible today (no write tool, and score_output has no diff kind,
+    evalrun.py:233-247), so this task asks the run to READ a patch, which is
+    what the harness can score. It is also the one task where two files disagree
+    on purpose: the patch's removed line says 3, config.py says 5, and only a
+    run that reads both gets both fields right.
+  walk:
+  - {path: patches/0009-retry-budget.patch, pointer: 'patches/0009-retry-budget.patch', pointer_in: prompt}
+  - {path: src/ledger/retry.py, pointer: 'src/ledger/retry.py'}
+  - {path: src/ledger/config.py, pointer: 'from ledger.config import load_settings'}
+  answer_evidence: ['-    for _attempt in range(_MAX_ATTEMPTS):', '"retry_max_attempts": 5']
+
+- name: dt-error-contract
+  family: dev-repo-code
+  prompt: >-
+    Two questions about svc-ledger's exceptions. (a) An entry with amount 0
+    reaches posting.post_entry — name the exception class that leaves
+    post_entry, and the file that DEFINES it. (b) Name the exception class
+    settle.settle_batch raises when a batch is too large, and the file that
+    DEFINES it. For each, read the module that raises and then the module that
+    defines the class; do not answer from memory. Answer with ONLY this JSON,
+    nothing else: {"a_class": "<name>", "a_path": "<path>", "b_class": "<name>",
+    "b_path": "<path>"}
+  scoring:
+    kind: json_equal
+    expected:
+      a_class: ValidationError
+      a_path: src/ledger/errors.py
+      b_class: SettlementError
+      b_path: src/ledger/errors.py
+  rationale: >
+    The first of the two shared-hub tasks: two independent chains
+    (posting -> validate -> errors, and settle -> errors) both terminate at
+    errors.py, so a depth-first solver reads errors.py twice. The re-read is a
+    property of the repo's import graph, not of the wording — which is the only
+    honest way this workload generates re-read pressure at all. Also covers the
+    raises-vs-defines distinction on a second, deeper chain than dt-symbol-home.
+  walk:
+  - {path: src/ledger/posting.py, pointer: 'posting.post_entry', pointer_in: prompt}
+  - {path: src/ledger/validate.py, pointer: 'from ledger.validate import validate_entry'}
+  - {path: src/ledger/errors.py, pointer: 'from ledger.errors import ValidationError'}
+  - {path: src/ledger/settle.py, pointer: 'settle.settle_batch', pointer_in: prompt}
+  - {path: src/ledger/errors.py, pointer: 'from ledger.errors import SettlementError'}
+  answer_evidence: ['class ValidationError(LedgerError):', 'class SettlementError(LedgerError):']
+
+- name: dt-settlement-config
+  family: dev-repo-code
+  prompt: >-
+    The settlement path of svc-ledger is settle.settle_batch ->
+    retry.with_retry -> posting.post_entry. For each of those three modules,
+    find every config key it reads and report that key's default. Resolve each
+    key's default in src/ledger/config.py at the moment you encounter the key;
+    do not answer from memory. Answer with ONLY this JSON, nothing else:
+    {"settle_batch_size": <number>, "retry_max_attempts": <number>,
+    "retry_backoff_ms": <number>, "posting_currency": "<string>"}
+  scoring:
+    kind: json_equal
+    expected:
+      settle_batch_size: 200
+      retry_max_attempts: 5
+      retry_backoff_ms: 250
+      posting_currency: EUR
+  rationale: >
+    The highest-pressure task in the workload, and the second shared-hub one:
+    three modules on one call path each read config.py, so a depth-first solver
+    reads config.py three times. This is the structure a real settings module
+    has — one hub, many consumers — so the pressure comes from the repo, not
+    from an instruction to re-read. It is the task the collapse mechanism has
+    the most to act on, which is exactly why the bar is committed before it runs.
+  walk:
+  - {path: src/ledger/settle.py, pointer: 'settle.settle_batch', pointer_in: prompt}
+  - {path: src/ledger/config.py, pointer: 'from ledger.config import load_settings'}
+  - {path: src/ledger/retry.py, pointer: 'retry.with_retry', pointer_in: prompt}
+  - {path: src/ledger/config.py, pointer: 'from ledger.config import load_settings'}
+  - {path: src/ledger/posting.py, pointer: 'posting.post_entry', pointer_in: prompt}
+  - {path: src/ledger/config.py, pointer: 'from ledger.config import load_settings'}
+  answer_evidence: ['"settle_batch_size": 200', '"retry_backoff_ms": 250', '"posting_currency": "EUR"']
+
+- name: dt-unread-key
+  family: dev-repo-code
+  prompt: >-
+    src/ledger/config.py declares five keys in CONFIG_KEYS. Exactly one of them
+    is read by no module under src/ledger/. Which key? Read config.py for the
+    key list, then read each module that could consume a key. Do not answer from
+    memory. Answer with ONLY this JSON, nothing else: {"key": "<key name>"}
+  scoring:
+    kind: json_equal
+    expected: {key: report_top_n}
+  rationale: >
+    A negative question — "which of these is used nowhere" — which cannot be
+    answered from any single file and has no pointer chain to follow. It is the
+    breadth end of the workload: correctness requires covering the surface, not
+    following it. Included as a counterweight to the two chain-shaped
+    high-pressure tasks, so the bar cannot be read as depending on chains.
+  walk:
+  - {path: src/ledger/config.py, pointer: 'src/ledger/config.py', pointer_in: prompt}
+  - {path: src/ledger/settle.py, pointer: 'src/ledger/settle.py', pointer_in: listing}
+  - {path: src/ledger/posting.py, pointer: 'src/ledger/posting.py', pointer_in: listing}
+  - {path: src/ledger/retry.py, pointer: 'src/ledger/retry.py', pointer_in: listing}
+  - {path: src/ledger/validate.py, pointer: 'src/ledger/validate.py', pointer_in: listing}
+  - {path: src/ledger/report.py, pointer: 'src/ledger/report.py', pointer_in: listing}
+  answer_evidence: ['"report_top_n": 10', 'ranked[:10]']
+
+# What was considered and rejected. Per the brief, this is as much the record as
+# what was kept: a workload chosen after seeing which tasks a mechanism helps is
+# a rigged bar, so the rejections are written down with their reasons.
+excluded:
+
+- candidate: dt-verify-runbook — read the runbook, check the code, then re-read
+    the runbook to confirm the exact wording.
+  reason: >
+    The second read is only NECESSARY if the agent has forgotten the first, and
+    nothing in the task derives that. The pressure would be asserted rather than
+    derived, which is precisely the rig M5 is briefed to find.
+
+- candidate: any task instructing the run to read a file twice, or to re-read
+    everything before answering.
+  reason: >
+    Manufactures re-read pressure by fiat. The mechanism under test pays only on
+    repeat reads, so an instruction to repeat reads is an instruction to produce
+    the result.
+
+- candidate: authoring repo files larger than the observation budget so that
+    each read is truncated and must be taken in slices.
+  reason: >
+    Raises pressure by breaking the reader rather than by describing real work.
+    It would also corrupt the accounting: `truncate` runs AFTER FileAccessGraph
+    returns (agent.py:198, budget 4096 B in assets/profiles/default.yaml), so
+    filegraph.py:84's `size` — the full observation's bytes — would overstate
+    the bytes actually removed from context. Every file in this surface is kept
+    under 4096 B and the measurement script verifies it.
+
+- candidate: dt-apply-patch — have the run produce the edit rather than read it.
+  reason: >
+    Not scoreable. There is no write tool anywhere (`WORKSPACE_TOOLS`,
+    evalrun.py:84) and `score_output` supports exactly three kinds, none of them
+    a diff (evalrun.py:233-247). M1 gap 3. Scoring an edit needs a fourth kind
+    and a mutable workspace; both are out of this unit's scope.
+
+- candidate: dt-changed-file — a task where a workspace file changes mid-run so
+    that FileRead.changed fires.
+  reason: >
+    Unreachable for the same missing write tool. `FileRead.changed`
+    (filegraph.py:21) can only ever be False and the "CHANGED since your last
+    read" branch (filegraph.py:90) is dead in any suite this harness can run.
+    M1 gap 2. Recorded here so no one reads its absence as an oversight.
+
+- candidate: dt-symbol-search — "where is X defined", answered with a search or
+    grep tool.
+  reason: >
+    Would measure a tool that does not exist. The only file tools are read_file
+    and list_files (evalrun.py:84). dt-symbol-home asks the same question in the
+    form the harness can actually serve: follow a real import.
+
+- candidate: dt-config-fanin — read all nine modules under src/ledger/ and
+    report the most-imported one.
+  reason: >
+    Infeasible, not uninteresting. Nine reads plus an answer turn is exactly
+    `max_turns` 10 (assets/profiles/default.yaml), leaving no slack for a schema
+    retry or a critique round — so a turns-exhausted run would be scored as a
+    wrong answer and the task would measure the turn budget. dt-unread-key keeps
+    the breadth shape at six reads.
+
+- candidate: any task whose answer is an arithmetic aggregate over many files
+    (counts, sums, totals).
+  reason: >
+    A failure would be an arithmetic failure, not a navigation failure. It adds
+    variance without adding surface, and the frozen `shop-` family already
+    measures arithmetic-under-tool-use.
+
+- candidate: selecting tasks by which ones filegraph helps.
+  reason: >
+    Refused by construction, and the construction is the evidence: no arm has
+    run, the bar is committed before any run, and the pressure figures are
+    derived from the repo's import graph rather than from any trace.

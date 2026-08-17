@@ -79,6 +79,25 @@ per-claim transfer table in
   can't exploit the ledger (3b: 1/6 → 2/6), above it the tasks saturate
   under `bare` (7b/14b: 5/6). Off-family it is a code-level no-op; exact
   score equality additionally requires seed pinning (problem P9).
+  **The scope is narrower than "reads files", measured: on a
+  dev-repo-shaped surface, expect the `query` tool and nothing else.** On
+  an 8-task repo workload at the same model class (2026-08-17) the model
+  realised **zero** byte-identical repeat reads on 8 of 8 tasks, so
+  `graph-off`, `graph-annotate` and `graph-cache` came out **identical on
+  every one of 16 columns across all 24 rows**. `cache` can only collapse
+  a repeat and `annotate` can only prefix one, so with no repeats neither
+  has anything to act on. That is structural rather than a small model's
+  mistake — a collapsible repeat is by definition a redundant read, so a
+  larger model should realise *fewer*, not more. What is left on such a
+  surface is the `query` tool, and there it **cost `+73.367%` tokens**
+  against `graph-cache` while trading pass-set points in both directions:
+  a trade to make deliberately, not a saving. **The two percentages in
+  this bullet are not comparable and must never be subtracted.** The
+  first is `graph` against `bare` on the frozen suite; the second is
+  `graph` against `graph-cache` on the dev-team surface — different
+  baseline, different surface, different client. Neither figure is a
+  token saving, and none is claimed anywhere:
+  [Eval → M](docs/eval.md#m-2026-08-17-v0220--the-dev-team-workload-surface-and-what-it-could-not-show).
 - **`full` (memory + schema + grounded critique) is a 4b-reference
   result** — 66/66 there, the only perfect config. It does not transfer
   yet: 15/66 at 8.9× bare's tokens on 3b, 36/66 on 7b, and on 14b it ties

@@ -1,12 +1,16 @@
 import json
+import math
+from contextlib import contextmanager
 
 import pytest
+import yaml
 from conftest import FakeClient, assistant, call
 
 from bantamkit import evalrun
 from bantamkit.agent import response_format_for
+from bantamkit.assets import assets_root
 from bantamkit.budget import _BudgetedClient
-from bantamkit.client import BantamError, Message, ToolCall
+from bantamkit.client import BantamError, Message, Response, ToolCall, Usage
 from bantamkit.contract import loop_note
 from bantamkit.evalrun import (
     CONFIG_CHOICES,
@@ -15,6 +19,7 @@ from bantamkit.evalrun import (
     TrackingClient,
     format_report,
     load_tasks,
+    request_wire_bytes,
     run_seed,
     run_task,
     score_output,
@@ -986,6 +991,341 @@ def test_recall_store_dump_containing_the_fact_scores_false():
 def test_ablation_configs_are_choices_but_not_in_configs():
     assert "graph-annotate" in CONFIG_CHOICES and "graph-cache" in CONFIG_CHOICES
     assert "graph-annotate" not in CONFIGS and "graph-cache" not in CONFIGS
+    assert "graph-off" in CONFIG_CHOICES and "graph-off" not in CONFIGS
+
+
+def _repeat_read_trajectory():
+    return [
+        assistant(tool_calls=[call("list_files", {})]),
+        assistant(tool_calls=[call("read_file", {"path": "notes/a.md"}, id="c2")]),
+        assistant(tool_calls=[call("read_file", {"path": "notes/a.md"}, id="c3")]),
+        assistant(content='{"x": 1}'),
+    ]
+
+
+def test_graph_off_observations_are_identical_to_bare(tmp_path):
+    """The null control: `graph-off` records the ledger and changes nothing sent.
+
+    This is the arm the token-reduction bar is written against
+    (docs/eval-data/2026-08-17-devteam-bar-preregistration.md), so it has to be
+    meaning-preserving in the literal sense — byte-identical observations and no
+    extra tool. Falsifying mutation: flip `cache` or `query` True in
+    GRAPH_CONFIGS["graph-off"] and this node goes red.
+    """
+    bare = FakeClient(_repeat_read_trajectory())
+    off = FakeClient(_repeat_read_trajectory())
+    bare_result = run_task(bare, workspace_task(), "bare", tmp_path)
+    off_result = run_task(off, workspace_task(), "graph-off", tmp_path)
+    assert bare_result.passed is off_result.passed is True
+    def observations(client):
+        return [[m.content for m in c["messages"] if m.role == "tool"] for c in client.calls]
+
+    bare_obs, off_obs = observations(bare), observations(off)
+    assert off_obs == bare_obs
+    # The repeat read is NOT collapsed: full content both times, no marker anywhere.
+    assert off_obs[-1] == ["b.txt\nnotes/a.md", "alpha", "alpha"]
+    assert not any("[file-graph]" in obs for turn in off_obs for obs in turn)
+    for client in (bare, off):
+        assert "file_graph" not in [t.name for t in client.calls[0]["tools"]]
+
+
+def test_devteam_workload_asset_loads_and_declares_a_repo_surface():
+    """Regression guard on the new asset, not evidence about it (RB-P28 stays open).
+
+    The workload lives beside the frozen suite and is loaded through the same
+    `--tasks` path. What this pins is that it stays loadable, that every task keeps
+    the workspace tools the graph attaches on (`evalrun.py:535`), and that all eight
+    share one identical surface — a task whose workspace drifted would be a
+    different workload wearing the same name.
+    """
+    tasks = load_tasks(assets_root() / "evals" / "devteam" / "tasks")
+    assert len(tasks) == 8
+    assert {t["family"] for t in tasks} == {"dev-repo-code", "dev-repo-history"}
+    surfaces = set()
+    for task in tasks:
+        assert task["tools"] == ["read_file", "list_files"]
+        assert task["scoring"]["kind"] == "json_equal"
+        surfaces.add(tuple(sorted(task["workspace"])))
+    assert len(surfaces) == 1
+    paths = surfaces.pop()
+    assert sum(p.endswith(".py") for p in paths) >= 8  # code, which the frozen suite has none of
+    assert any(p.endswith(".patch") for p in paths)  # a diff
+    assert "HISTORY.md" in paths  # history
+
+
+DEVTEAM = assets_root() / "evals" / "devteam"
+
+
+def _devteam_manifest():
+    return yaml.safe_load((DEVTEAM / "manifest.yaml").read_text())
+
+
+@pytest.mark.parametrize("arm", ["graph-off", "graph-annotate", "graph-cache", "graph"])
+def test_devteam_reference_walk_scores_under_every_ladder_arm(arm, tmp_path):
+    """All four pre-registered arms plumb onto the workload, and its walks answer it.
+
+    Not evidence about the mechanism — no model is called; a FakeClient replays each
+    task's committed reference walk. What it guards is that the arms M4 is briefed to
+    run actually attach to these tasks, and that every task is answerable from the
+    surface by the walk the manifest declares. A task that stopped scoring here would
+    mean the surface and the walk had drifted apart.
+    """
+    tasks = {t["name"]: t for t in load_tasks(DEVTEAM / "tasks")}
+    for spec in _devteam_manifest()["tasks"]:
+        task = tasks[spec["name"]]
+        needs_list = "list_files" in task["prompt"] or any(
+            hop.get("pointer_in") == "listing" for hop in spec["walk"]
+        )
+        replies = [assistant(tool_calls=[call("list_files", {})])] if needs_list else []
+        replies += [
+            assistant(tool_calls=[call("read_file", {"path": hop["path"]}, id=f"c{i}")])
+            for i, hop in enumerate(spec["walk"])
+        ]
+        replies.append(assistant(content=json.dumps(task["scoring"]["expected"])))
+        result = run_task(FakeClient(replies), task, arm, tmp_path / spec["name"])
+        assert result.passed, (spec["name"], arm, result.outcome, result.error)
+
+
+def test_graph_off_token_count_matches_bare(tmp_path):
+    """Same trajectory, same tokens: the null control costs nothing to attach."""
+    bare = run_task(FakeClient(_repeat_read_trajectory()), workspace_task(), "bare", tmp_path)
+    off = run_task(FakeClient(_repeat_read_trajectory()), workspace_task(), "graph-off", tmp_path)
+    assert off.tokens == bare.tokens
+    assert (off.model_calls, off.tool_calls) == (bare.model_calls, bare.tool_calls)
+
+
+class _PayloadSensitiveClient:
+    """Scripted client whose `Usage` is a FUNCTION OF THE REQUEST, not a constant.
+
+    `conftest.FakeClient` returns a fixed `Usage` regardless of what the observation
+    contains, so no in-process token figure can move when the observation moves. That
+    is why the token half of the `graph-off` null-control claim was recorded UNPINNED
+    (`docs/eval-data/2026-08-17-devteam-bar-preregistration.md` §9/A1): the assertion
+    `off.tokens == bare.tokens` was true by construction of the double.
+
+    Here `prompt_tokens` is `ceil(bytes/4)` over the payload `OpenAICompatible.chat`
+    serializes (`client.py:155-161`), so it moves whenever the observations, the tool
+    roster or the system prompt move. A surrogate for an endpoint's tokenizer, not a
+    tokenizer — the assumption is the workload doc's Table 5b assumption, tokens
+    monotone in bytes. The field measurement is
+    `docs/eval-data/2026-08-17-devteam-null-control-field-measurement.py`; this node is
+    the regression guard, and RB-P28 stays open.
+    """
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+        self.prompt_tokens_per_call = []
+
+    def chat(self, messages, tools=None):
+        payload = {
+            "messages": [m.to_wire() for m in messages],
+            "tools": [t.to_wire() for t in (tools or [])],
+        }
+        self.calls.append(payload)
+        prompt_tokens = math.ceil(len(json.dumps(payload).encode()) / 4)
+        self.prompt_tokens_per_call.append(prompt_tokens)
+        reply = self.responses.pop(0)
+        completion = reply.message.content or json.dumps(
+            [tc.arguments for tc in reply.message.tool_calls]
+        )
+        return Response(
+            message=reply.message,
+            usage=Usage(prompt_tokens, math.ceil(len(completion.encode()) / 4)),
+        )
+
+
+def test_graph_off_token_count_is_pinned_by_a_payload_sensitive_client(tmp_path):
+    """The token half of the null control, pinned on a quantity that can actually move.
+
+    Falsifying mutation: flip `cache`, `annotate` or `query` True in
+    GRAPH_CONFIGS["graph-off"] and THIS node goes red on the token assertion —
+    `cache` collapses the repeat read (fewer bytes), `annotate` prepends a marker
+    (more bytes), `query` adds the `file_graph` tool and the skill (more bytes).
+    `::test_graph_off_token_count_matches_bare` cannot: its client's `Usage` is fixed.
+    """
+    bare = _PayloadSensitiveClient(_repeat_read_trajectory())
+    off = _PayloadSensitiveClient(_repeat_read_trajectory())
+    bare_result = run_task(bare, workspace_task(), "bare", tmp_path)
+    off_result = run_task(off, workspace_task(), "graph-off", tmp_path)
+    # First: the instrument. A client whose usage does not respond to the payload
+    # would make the assertion below vacuous, which is the defect being closed —
+    # so the sensitivity is asserted, not assumed (RB-P14 Gate 2: test the instrument).
+    assert len(set(bare.prompt_tokens_per_call)) == len(bare.prompt_tokens_per_call)
+    assert bare.prompt_tokens_per_call == sorted(bare.prompt_tokens_per_call)
+    # Then the claim: the null control costs nothing a payload-derived counter can see.
+    assert off_result.tokens == bare_result.tokens
+    assert off.prompt_tokens_per_call == bare.prompt_tokens_per_call
+
+
+# ---- M3.5: bar §8's accounting columns, pinned as an INSTRUMENT ----
+#
+# RB-P14 Gate 2: an acceptance criterion may not assert a fact about the world. So no
+# node below asserts that some workload has some number of repeat reads — pinning the
+# asset would turn red the first time the workload changed honestly. What is pinned is
+# the instrument: that the recorded column equals what the ledger holds, and that it
+# MOVES when the ledger moves. The workload's actual counts live in the field report,
+# docs/eval-data/2026-08-17-devteam-accounting-grain.md, and RB-P28 stays open.
+
+
+@contextmanager
+def _captured_graphs():
+    """Reach the `FileAccessGraph` instances a run builds, as the reference to check against.
+
+    The accounting columns are the delivery route under test; this is the ledger they
+    are compared with. Observation-only subclass — the same device M3's field program
+    used when it was the ONLY route (bar §7.2) — so the run it watches is the run that
+    would have happened anyway.
+    """
+    seen: list = []
+    original = evalrun.FileAccessGraph
+
+    class Capturing(original):  # type: ignore[misc,valid-type]
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            seen.append(self)
+
+    evalrun.FileAccessGraph = Capturing
+    try:
+        yield seen
+    finally:
+        evalrun.FileAccessGraph = original
+
+
+def _read_same_file_n_times(n):
+    return [
+        assistant(tool_calls=[call("read_file", {"path": "notes/a.md"}, id=f"c{i}")])
+        for i in range(n)
+    ] + [assistant(content='{"x": 1}')]
+
+
+def test_accounting_columns_equal_the_ledger_the_run_built(tmp_path):
+    """The count survives the run: what the row carries is what the ledger held.
+
+    Falsifying mutation: drop `repeat_reader_calls=accounting.repeat_reader_calls` from
+    the `TaskResult(...)` construction in `run_task` — i.e. discard the ledger again,
+    which is the defect this unit exists to fix — and this node goes red on
+    `assert result.repeat_reader_calls == ledger_repeats`.
+    """
+    with _captured_graphs() as seen:
+        result = run_task(FakeClient(_read_same_file_n_times(3)), workspace_task(), "graph-off",
+                          tmp_path)
+    (graph,) = seen
+    ledger_reads = sum(r.count for r in graph.reads.values())
+    ledger_repeats = sum(r.count - 1 for r in graph.reads.values())
+    # Not vacuous: the fixture makes the ledger say something non-zero. This is a fact
+    # about the fixture built three lines up, not a fact about a committed asset.
+    assert ledger_repeats > 0
+    assert result.reader_calls - result.unrecorded_reader_calls == ledger_reads
+    assert result.repeat_reader_calls == ledger_repeats
+    assert result.reader_calls == graph.accounting.reader_calls
+    assert result.collapsed_calls == graph.accounting.collapsed_calls == 0  # graph-off
+    assert result.collapsed_bytes == result.annotate_marker_bytes == result.query_bytes == 0
+
+
+def test_accounting_columns_move_when_the_ledger_moves(tmp_path):
+    """The instrument responds. A column that could not move would pin nothing."""
+    seen_counts = {}
+    for n in (2, 5):
+        with _captured_graphs() as seen:
+            result = run_task(FakeClient(_read_same_file_n_times(n)), workspace_task(),
+                              "graph-off", tmp_path / f"reads-{n}")
+        (graph,) = seen
+        seen_counts[n] = (
+            result.repeat_reader_calls,
+            sum(r.count - 1 for r in graph.reads.values()),
+        )
+    assert seen_counts[2][0] == seen_counts[2][1]
+    assert seen_counts[5][0] == seen_counts[5][1]
+    assert seen_counts[5][0] > seen_counts[2][0]
+
+
+def test_collapsed_columns_track_the_arm_that_can_collapse(tmp_path):
+    """Column 3 answers "did the mechanism FIRE", which column 2 alone cannot.
+
+    Bar §5 R3 needs both: a task can realise repeats (column 2 > 0) under an arm that
+    cannot act on them (column 3 == 0), and telling those apart is the whole difference
+    between a refutation and an UNINFORMATIVE run. No arm delta is computed here — the
+    two rows are not compared on tokens.
+    """
+    with _captured_graphs() as seen:
+        cached = run_task(FakeClient(_read_same_file_n_times(3)), workspace_task(), "graph-cache",
+                          tmp_path / "cache")
+    (graph,) = seen
+    assert cached.repeat_reader_calls == graph.accounting.repeat_reader_calls > 0
+    assert cached.collapsed_calls == graph.accounting.collapsed_calls == cached.repeat_reader_calls
+    assert cached.collapsed_bytes == graph.accounting.collapsed_bytes
+
+    off = run_task(FakeClient(_read_same_file_n_times(3)), workspace_task(), "graph-off",
+                   tmp_path / "off")
+    assert off.repeat_reader_calls == cached.repeat_reader_calls  # same opportunity
+    assert off.collapsed_calls == 0  # no firing
+
+
+def test_unrecorded_reader_calls_carry_the_failed_reads(tmp_path):
+    """The `error:` gap, now visible in the row instead of missing from the denominator."""
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("read_file", {"path": "nope.txt"}, id="c1")]),
+            assistant(tool_calls=[call("read_file", {"path": "notes/a.md"}, id="c2")]),
+            assistant(content='{"x": 1}'),
+        ]
+    )
+    with _captured_graphs() as seen:
+        result = run_task(client, workspace_task(), "graph-off", tmp_path)
+    (graph,) = seen
+    assert result.reader_calls == 2
+    assert result.unrecorded_reader_calls == 1
+    assert result.reader_calls - result.unrecorded_reader_calls == sum(
+        r.count for r in graph.reads.values()
+    )
+
+
+def test_context_bytes_sent_equals_the_serialized_requests(tmp_path):
+    """Column 7, pinned against the serializer it mirrors, call for call."""
+    client = FakeClient(_read_same_file_n_times(2))
+    result = run_task(client, workspace_task(), "graph-off", tmp_path)
+    per_call = [request_wire_bytes(c["messages"], c["tools"]) for c in client.calls]
+    assert result.model_calls == len(client.calls)
+    assert result.context_bytes_sent == sum(per_call)
+    # The re-send weighting is the point: the transcript grows, so every call costs more
+    # than the one before it. A counter that read a single request would not show this.
+    assert per_call == sorted(per_call) and len(set(per_call)) == len(per_call)
+
+
+def test_accounting_columns_are_zero_when_no_graph_is_attached(tmp_path):
+    """A `bare` row's zeros mean "no ledger existed", not "the ledger measured zero"."""
+    result = run_task(
+        FakeClient([assistant(content=CONTACT)]), get_task("extract-contact"), "bare", tmp_path
+    )
+    assert (result.reader_calls, result.repeat_reader_calls, result.collapsed_calls) == (0, 0, 0)
+    assert result.context_bytes_sent > 0  # column 7 needs no graph
+
+
+def test_accounting_columns_reach_the_jsonl_row(monkeypatch, tmp_path):
+    """The route bar §7.2 said did not exist: `--json` now carries the realised count."""
+    out = tmp_path / "results.jsonl"
+
+    def fake_run_suite(client, configs=None, tasks_dir=None, repeats=1, on_result=None):
+        on_result(make_result(config="graph-off", reader_calls=5, repeat_reader_calls=2))
+        return []
+
+    monkeypatch.setattr(evalrun, "OpenAICompatible", lambda **kw: object())
+    monkeypatch.setattr(evalrun, "run_suite", fake_run_suite)
+    monkeypatch.setattr(evalrun, "format_report", lambda results: "")
+    evalrun.main(["--base-url", "http://x", "--model", "m", "--json", str(out)])
+    row = json.loads(out.read_text().splitlines()[0])
+    assert (row["reader_calls"], row["repeat_reader_calls"]) == (5, 2)
+    assert set(row) >= {
+        "reader_calls",
+        "unrecorded_reader_calls",
+        "repeat_reader_calls",
+        "collapsed_calls",
+        "collapsed_bytes",
+        "annotate_marker_bytes",
+        "query_bytes",
+        "context_bytes_sent",
+    }
 
 
 # ---- P7: turns-exhausted ----
@@ -1233,7 +1573,25 @@ def test_seed_lands_in_the_jsonl_line_as_the_last_field(monkeypatch, tmp_path):
     evalrun.main(["--base-url", "http://x", "--model", "m", "--json", str(out)])
     data = json.loads(out.read_text().splitlines()[0])
     assert data["seed"] == 1861749954
-    assert list(data)[-1] == "seed"  # additive: appended, never inserted mid-row
+    # Additive: appended, never inserted mid-row. `seed` was terminal when this node was
+    # written; M3.5's accounting columns were appended AFTER it, so the invariant this
+    # pins is that nothing moved at or above `seed`'s position — which is what the
+    # convention actually protects for a reader of an older row.
+    keys = list(data)
+    assert keys[: keys.index("seed") + 1] == [
+        "task",
+        "config",
+        "family",
+        "passed",
+        "tokens",
+        "outcome",
+        "model_calls",
+        "tool_calls",
+        "schema_retries",
+        "critique_rounds",
+        "error",
+        "seed",
+    ]
 
 
 def test_seed_lands_in_the_transcript(tmp_path):
