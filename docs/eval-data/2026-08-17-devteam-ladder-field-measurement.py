@@ -18,7 +18,7 @@ regression guard, and imports THIS file so there is only one derivation of it.
 WHAT IT DOES NOT DO, by scope (bar §1.4 and this unit's brief):
   * no all-on-versus-all-off single number, ever;
   * no `bare` vs `graph`, no `lean` vs `full`;
-  * nothing derived from `score/1k tok` (`evalrun.py:713`) — its numerator is the score;
+  * nothing derived from `score/1k tok` (`evalrun.py:716`) — its numerator is the score;
   * no byte column clamped at zero (bar §9/A4: the collapse can COST bytes).
 
 Usage:
@@ -204,7 +204,7 @@ def score_effect(a: str, b: str, rows_a: list[dict], rows_b: list[dict], family:
     (`criticreplay.py:2361-2367`) takes `rows_a`/`rows_b: dict[str, list[ReplayRow]]`
     plus `family: list[str]`; `ReplayRow` (`criticreplay.py:1540-1565`) is a
     critic-replay row keyed by rubric variant and point id, not a `TaskResult`
-    (`evalrun.py:164`). All four of its fields are over pass-sets and the module's only
+    (`evalrun.py:167`). All four of its fields are over pass-sets and the module's only
     token arithmetic is `tokens_total` at `criticreplay.py:2139`, OUTSIDE the function.
     So it grades the score half by having its shape ported and it cannot be called on
     eval rows at all. Verified by reading the signature at HEAD.
@@ -274,7 +274,7 @@ def realised_repeats(rows_a0: list[dict]) -> dict[str, list[int]]:
     """`repeat_reader_calls` off the A0 rows, per task, per repeat.
 
     A0 and only A0: an all-zero `ReadAccounting` stands in for "no graph was attached"
-    (`evalrun.py:633`), so a `bare`/`lean`/`full` row's zeros are not a measured zero
+    (`evalrun.py:636`), so a `bare`/`lean`/`full` row's zeros are not a measured zero
     and §5 R3 is only readable on a row whose config is in `GRAPH_CONFIGS`.
     """
     if MUTATION == "drop-r3":

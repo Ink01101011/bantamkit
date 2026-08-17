@@ -605,3 +605,151 @@ annotation and `render`'s lines are byte-identical after this unit, and
 `filegraph.py` deliberately — but the mechanical guard is narrower than "the
 core-purity scan covers Layer 1" implies. Not acted on: widening `CORE_MODULES` is
 a change of its own and not this unit's.
+
+### A5 — 2026-08-17: the ladder RAN at a real endpoint; R2 does not fire, R3 does, and §5's third outcome is the whole run's verdict
+
+M4. Six appends, in the order they were measured. **§1-§8 are not edited**, A1-A4 are
+untouched, and every figure below comes from a field run outside pytest. Field report:
+[`2026-08-17-devteam-ladder-measurement.md`](2026-08-17-devteam-ladder-measurement.md).
+Commits `290c834` (the pre-declaration, before any arm ran), `ec25fbd` (Measurement),
+`655bb76` (the four arms and the field program), `c520c38` (Measurement — 16 pinning
+nodes).
+
+**(0) The model was pre-declared before the run, in its own commit.** §5 R2 is written
+"at the measured model" and named no model. It is **`qwen3:4b-instruct` at
+`--repeats 3`** against Ollama's OpenAI-compatible route at `http://localhost:11434/v1`,
+fixed at `290c834` — a commit containing no number — because it is the repo's committed
+reference (`docs/eval.md`, the 2026-08-09 sweep) and the model the `−0.05%` / `+4.92%`
+isolated-cache ladder ran on, which is what makes Δ%(A2−A1) comparable to the most
+relevant prior result. One model; no second model was added.
+
+**(1) §7.2's surrogate is gone: `tokens` is now the endpoint's own `Usage`, and A3's U1
+is CLOSED for this run.** A3 recorded U1 — "a difference in an endpoint's **real**
+`Usage`" — as UNCHECKED, "not checkable with the client that exists". All 96 rows of this
+run carry `prompt_tokens` + `completion_tokens` read off the response body by
+`OpenAICompatible._parse` (`client.py:213-216`), accumulated at `evalrun.py:254` and
+written at `evalrun.py:642`. **This does not retro-validate any surrogate figure**, and
+none is edited: the surrogate runs measured a byte-derived quantity and this one measures
+a tokenizer's. What changes is that A3's tokens-monotone-in-bytes caveat is **no longer
+load-bearing for the null-control identity** at this model — A0, A1 and A2 are identical
+on real `Usage` too. §5 R1's Table 5b remains a byte argument and is untouched.
+
+**(2) §5 R3 FIRES ON ALL EIGHT TASKS, and its final sentence is the run's verdict.**
+Measured under A0, from this run's own JSONL rows rather than from the reference walk:
+**0 realised repeat reads on every task, in all 24 A0 runs.** Per single pass over the 8
+tasks the model makes **13.0 reader calls against the walk's 33** and realises **0
+repeats against 3**; the workload doc's re-read pressure of `3/33 = 0.091` is
+**`0/39 = 0.000`** realised. So §5 R3's contingency clause applies as written: *"If every
+task reads 0 realised repeats, the whole run is reported UNINFORMATIVE, explicitly not as
+a refutation."*
+
+> **Whole-run verdict: UNINFORMATIVE.**
+
+§8.1 predicted exactly the sentence M4 must not write — "report a ~0% Δ%(A2−A1) as a
+refutation of the >60% target while the realised repeat count is unknown" — and the count
+is no longer unknown. It is **measured at 0**, which makes the UNINFORMATIVE verdict
+stronger than §8.1 could put it, not weaker.
+
+**(3) §5 R2 DOES NOT FIRE, and the reason is a gap in how §3.2's sign clause reads when
+tasks abstain.** Three of R2's four conditions hold: `Δ%(A2−A1) = +0.000% < 60%`,
+`delta_passed == 0`, `disagreeing_points == 0`, `points_from_separation == 8`. The fourth
+— "the sign consistent across all 8 tasks" — resolves to **8 ties, 0 tasks pointing**. Under
+`_directional`'s rule (`criticreplay.py:2431-2482`), which §3.2 names, a tie is sign 0 and
+**abstains**: the pair is not `conflicting` (nothing disagreed) and not `directional`
+(nothing pointed).
+
+**§3.2 does not say what to do with an abstaining pair, and this is recorded as an
+imprecision in the bar rather than resolved in the bar's favour.** §3.2 says a
+*conflicting* pair is not a measured effect; it is silent on a pair every one of whose
+tasks ties. M4 reads it as **unevaluable, not satisfied**, on the argument that a rule
+treating 8 abstentions as unanimous agreement would certify every zero-delta run — the same
+defect as a noise floor of 0 accepting any non-zero delta. Recorded here so a later reader
+sees the clause was ambiguous and which way it was read, rather than finding a verdict
+resting on an unstated reading.
+
+**(4) Δ%(A1−A0) and Δ%(A2−A1) are not small deltas — they are IDENTITIES, and §5's
+vocabulary has no word for that.** All 24 rows of A0, A1 and A2 are identical on **every**
+column: 45,340 tokens each, 39 reader calls, 90 model calls, 172,362 `context_bytes_sent`,
+same pass/fail per (task, repeat). With zero realised repeats neither `annotate`'s branch
+(`filegraph.py:182-194`) nor `cache`'s (`filegraph.py:160-181`) is ever entered, so the
+wrapped reader returns the observation unmodified on all 39 calls. §3.2's floor comparison
+still renders as "|Δtok| = 0 does not clear the floor 1845", which is true and misleading:
+the zero is two arms having the same conversation, not an effect buried in noise. The floor
+itself is **NOT degenerate** — 1,845 tok on A0/A1/A2, 1,641 on A3 — because `run_seed`
+gives each repeat its own seed (`evalrun.py:391-403`) and the endpoint samples.
+
+**(5) The only rung that moves is `query`, it moves the wrong way, and §4's trade clause
+catches it on a real run.** `Δ%(A3−A2) = +73.367%` suite-wide on the median (+89.007% on
+the raw sum), positive on all 8 tasks, from +12.474% to +203.915%, clearing the measured
+floor by 6.3×. At `delta_passed == 0`, `delta_rate == 0.0` and **`disagreeing_points ==
+4`**: `graph` passes `dt-handler-map` and `dt-patch-before-after` that `graph-cache` fails
+and fails `dt-symbol-home` and `dt-unread-key` that it passes. **This is the cell §3.1 was
+written to catch** — equal pass counts, four points of disagreement — occurring on eval
+rows rather than in a critic replay, and the raw row count even moves the flattering way
+(12/24 vs 11/24). Reported as a **TRADE** per §4 and never netted against the tokens.
+
+Two decompositions §8 asked for and A4 sharpened: the row's `query_bytes` **understates
+the cost by 5.0×** (16,108 B as written, **80,359 B** re-send weighted), and of that
+80,359 B the render bytes are **532 B across all 24 runs** — the model was given the
+query tool and effectively did not use it, while paying the 649 B constant on 123
+requests. **And the flag changed the trajectory** (123 model calls to A2's 90, 52 reader
+calls to 39), so Δ(A3−A2) is not a clean byte accounting: **the one-flag ladder isolates
+the FLAG, not the trajectory.** No token attribution is drawn from the byte split, because
+doing so would need the `ceil(bytes/4)` surrogate this run exists to have escaped.
+
+**(6) §5 R1 is untouched, is still the live refutation, and this run measures its stated
+assumption to be GENEROUS to the mechanism.** R1's ceiling — 5.819% suite-wide / 23.063%
+worst task, needing k=7 to reach 60% — rests on "trajectory held at the verified reference
+walk". At the **realised** trajectory the ceiling is **0%**, because `cache` can only
+remove the bytes of byte-identical repeat reads and this model produced none. So >60%
+remains **REFUTED for the `cache` mechanism on this workload by R1's arithmetic**, and
+this run's contribution is to show the direction in which R1's assumption errs — which had
+not been measured.
+
+**The pin, and the assert line.** RB-P14 Gate 2: **no node asserts Δ%(A2−A1), the
+workload's repeat count, or any arm's token total.** The 16 nodes in
+`runtime-py/tests/test_ladder_statistics.py` pin the instrument. Falsifying mutations, run
+against the source file and restored with `git checkout --`: `noise_floor` → `0` turns
+**RED** `::test_the_noise_floor_is_the_max_repeat_spread_not_an_average_of_spreads` on
+`assert ladder.noise_floor(rows) == 10` (`:118`) and
+`::test_a_floor_of_zero_is_reported_as_degenerate` on
+`assert ladder.floor_is_degenerate(varied) is False` (`:132`); a tie counting as pointing
+turns **RED** `::test_a_tie_abstains_and_a_run_of_all_ties_is_neither_directional_nor_conflicting`
+on `assert 2 == 0` (`:151`); clamping the byte columns turns **RED**
+`::test_the_byte_columns_are_signed_and_are_never_clamped_at_zero` on `assert 0 == -196`
+(`:224`); zeroing `disagreeing_points` turns **RED**
+`::test_equal_pass_counts_still_report_the_points_the_arms_disagree_on` on `assert 0 == 2`
+(`:192`). `::test_the_four_committed_arms_are_present_and_readable` stays green and is
+recorded as a **guard on the record's shape, not a pin** — A1's distinction applied to this
+unit's own claim.
+
+**One correction to a LIVE INPUT, in its own commit.** `GRAPH_CONFIGS`'s `graph-off`
+comment (`evalrun.py:125-146`) still pinned `filegraph.py:83-92` and `:51-53` — stale, and
+the first also naming 1 of 3 return paths (A3's finding). Corrected in place at `ec25fbd`
+to `filegraph.py:133-195` (returns at `143`, `153`, `195`) and `filegraph.py:118-122`,
+**both re-read at HEAD rather than shifted from A4's table**. It is a live input, not
+committed evidence: it is the justification a reader of the source gets for calling the arm
+meaning-preserving. Three of M4's findings that do not reproduce are in the field report's
+§9 — chief among them that **A4's informative subset of 2/8 becomes 0/8 under a real
+trajectory**, and that M3.5's eighth column `unrecorded_reader_calls`, demonstrable only on
+a fixture when it shipped, **fires in the field on the first real-model run**
+(`dt-retry-attempts`, seed `312363838`).
+
+**A4's re-pinning table is STALE FOR THE THIRD TIME, caused the same way for the third
+time.** A2 exists because `8ccd084` shifted `evalrun.py`; A4 exists because `a478053`
+shifted it again; **`ec25fbd` — this unit's own source commit — shifted it a third time**,
+by +3 lines. Every pin in M4's artifacts was re-read at HEAD before it was committed,
+which is the only reason the drift was caught: `tokens=` `639` → **`642`**, usage
+accumulation `251` → **`254`**, `score/1k tok` `713` → **`716`**, `score_output`
+`276-290` → **`279-293`**, the `FileAccessGraph` attachment `585` → **`588`**,
+`accounting =` `633` → **`636`**, `@dataclass` of `TaskResult` `164` → **`167`**, and
+`GRAPH_CONFIGS` `125-143` → **`125-146`** — its start never moved and only its end did,
+the same shape A2 recorded. Unaffected and verified rather than assumed: `evalrun.py:98-99`
+and `evalrun.py:125` sit above the hunk. **A4 is left standing exactly as committed**, and
+no `filegraph.py`, `client.py` or `criticreplay.py` pin is affected. The field report's §0
+carries the same drift and is **not edited**, because it is the pre-declaration committed
+before the run; §1-§12 of that document are a pure append to it, 703 insertions and **0
+deletions**.
+
+**Tokens and wall-clock for M4: UNMEASURED.** The sweep's 3 m 59 s is the sweep's wall
+clock, measured by the shell wrapper.
