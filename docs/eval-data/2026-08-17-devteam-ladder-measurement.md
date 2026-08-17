@@ -238,8 +238,8 @@ dt-symbol-home                 1172 3/3        1172 3/3        1172 3/3        1
 dt-trace-blame                 2799 0/3        2799 0/3        2799 0/3        3846 0/3
 dt-unread-key                   843 3/3         843 3/3         843 3/3        2562 2/3
 ----------------------------------------------------------------------------------------------
-SUITE (sum of medians)        15920 11/24      15920 11/24      15920 11/24      27600 12/24
-SUITE (raw sum, 24 rows)      45340 11/24      45340 11/24      45340 11/24      85696 12/24
+SUITE (sum of medians)        15920 11/24       15920 11/24       15920 11/24       27600 12/24
+SUITE (raw sum, 24 rows)      45340 11/24       45340 11/24       45340 11/24       85696 12/24
 ```
 
 **Score is beside every token figure and is never replaced by a ratio.** Nothing derived
@@ -413,7 +413,7 @@ WORKLOAD (24 A0 runs)                                           39            0 
 
 reference walk, one pass over 8 tasks: 33 reads / 30 distinct / 3 repeats
 informative subset (bar §5 R3): (empty)
-UNINFORMATIVE subset:           [all 8 tasks]
+UNINFORMATIVE subset:           ['dt-error-contract', 'dt-handler-map', 'dt-patch-before-after', 'dt-retry-attempts', 'dt-settlement-config', 'dt-symbol-home', 'dt-trace-blame', 'dt-unread-key']
 ```
 
 **Zero realised repeat reads. On every task. In all 24 A0 runs. In all 96 runs.**
