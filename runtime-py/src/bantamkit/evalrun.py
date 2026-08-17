@@ -202,6 +202,16 @@ class TaskResult:
     annotate_marker_bytes: int = 0
     query_bytes: int = 0
     context_bytes_sent: int = 0
+    # RB-P38's fix, under the same trailing-field convention as `seed` above and the
+    # eight accounting columns: additive, defaulted, nothing above renumbered. The
+    # committed rows that predate it simply lack the key — backfilling them would be a
+    # retro-edit of evidence.
+    #
+    # The value is read off the client the harness already holds, by duck typing and not
+    # by signature, exactly as `seed` is. `None` means the client carries no model name,
+    # which is what a fake or an in-process stub looks like; recording the CLI's
+    # `--model` string instead would attribute a row to a model that never answered it.
+    model: str | None = None
 
 
 def request_wire_bytes(messages: list[Message], tools: list[Tool] | None) -> int:
@@ -437,6 +447,11 @@ def _write_transcript(
         "passed": result.passed,
         "outcome": result.outcome,
         "seed": result.seed,
+        # RB-P38 again: the transcript is the other thing a run writes, and its filename
+        # is `<config>--<task>--r<repeat>.json` with no model in it, so two models writing
+        # into one --transcripts directory collide. Carrying the key makes the file it
+        # wrote self-describing; the collision itself is reported, not papered over.
+        "model": result.model,
         "output": output,
         "messages": [_message_dict(m) for m in messages],
     }
@@ -463,6 +478,10 @@ def run_task(
     if hasattr(client, "seed"):
         applied_seed = run_seed(getattr(client, "model", ""), task["name"], repeat)
         client.seed = applied_seed
+    # RB-P38. Read, never written: the harness already holds the client that will answer,
+    # so no call site gains an argument. Read here rather than at the row so it is the
+    # model in force when the run started, and a client mutated mid-run cannot relabel it.
+    answering_model: str | None = getattr(client, "model", None)
 
     def policy(section: str, key: str):
         """Explicit-wins profile threading (P6).
@@ -656,6 +675,7 @@ def run_task(
         annotate_marker_bytes=accounting.annotate_marker_bytes,
         query_bytes=accounting.query_bytes,
         context_bytes_sent=tracking.context_bytes_sent,
+        model=answering_model,
     )
     if transcripts_dir is not None:
         # The run most worth reading used to record nothing: `agent.run` raising left

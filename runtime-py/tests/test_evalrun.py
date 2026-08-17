@@ -1,6 +1,7 @@
 import json
 import math
 from contextlib import contextmanager
+from dataclasses import asdict
 
 import pytest
 import yaml
@@ -1592,6 +1593,97 @@ def test_seed_lands_in_the_jsonl_line_as_the_last_field(monkeypatch, tmp_path):
         "error",
         "seed",
     ]
+
+
+# ---- RB-P38: the row names the model that answered it ----
+#
+# RB-P14 Gate 2 applies: none of these asserts that any committed file carries any
+# particular model, which would be a fact about the world and would go red the first
+# time an arm was rerun. They assert that a row a *run* produces carries the key with
+# the value the client held, which is the instrument.
+
+
+def test_run_task_records_the_model_off_the_client_that_answered(tmp_path):
+    """RB-P38. The value is read off the client, by duck typing, with no new argument."""
+    client = SeedableClient([assistant(content=CONTACT)], model="qwen2.5:14b-instruct")
+    result = run_task(client, get_task("extract-contact"), "bare", tmp_path)
+    assert result.model == "qwen2.5:14b-instruct"
+
+
+def test_run_task_records_no_model_when_the_client_names_none(tmp_path):
+    """A model the client never carried would be provenance fiction, as with `seed`."""
+    client = FakeClient([assistant(content=CONTACT)])
+    result = run_task(client, get_task("extract-contact"), "bare", tmp_path)
+    assert result.model is None
+    assert not hasattr(client, "model")
+
+
+def test_two_models_produce_rows_distinguishable_at_the_row_level(tmp_path):
+    """The defect RB-P38 named: two arms of different models were identical as rows.
+
+    Same task, same config, same repeat — so `seed` differs only because it is derived
+    from the model name, and every other column is equal. Before the field existed these
+    two rows were byte-identical.
+    """
+    rows = []
+    for name in ("llama3.2:3b", "qwen3:4b-instruct"):
+        client = SeedableClient([assistant(content=CONTACT)], model=name)
+        rows.append(asdict(run_task(client, get_task("extract-contact"), "bare", tmp_path)))
+    assert rows[0]["model"] == "llama3.2:3b"
+    assert rows[1]["model"] == "qwen3:4b-instruct"
+    assert rows[0] != rows[1]
+
+
+def test_a_fresh_row_from_a_real_run_suite_carries_the_model(monkeypatch, tmp_path):
+    """End to end, with the real `run_suite` and the real `--json` sink.
+
+    The other nodes in this section call `run_task` directly and the accounting-column
+    node fakes `run_suite`; this one fakes only the transport, so the `--model` string
+    reaches the row the way it will in J2 — through the client, not around it.
+    """
+    taskdir = tmp_path / "tasks"
+    taskdir.mkdir()
+    (taskdir / "tiny.yaml").write_text(TINY_TASK)
+    out = tmp_path / "results.jsonl"
+    monkeypatch.setattr(
+        evalrun,
+        "OpenAICompatible",
+        lambda **kw: SeedableClient([assistant(content="hi")], model=kw["model"]),
+    )
+    evalrun.main(
+        [
+            "--base-url",
+            "http://x",
+            "--model",
+            "qwen2.5:14b-instruct",
+            "--config",
+            "bare",
+            "--tasks",
+            str(taskdir),
+            "--json",
+            str(out),
+        ]
+    )
+    row = json.loads(out.read_text().splitlines()[0])
+    assert "model" in row  # red if the field is dropped from TaskResult
+    assert row["model"] == "qwen2.5:14b-instruct"  # red if it stops coming off the client
+
+
+def test_the_transcript_a_run_dumps_also_names_the_model(tmp_path):
+    """The other artifact a run writes. Its filename carries no model, so the payload must."""
+    transcripts = tmp_path / "t"
+    transcripts.mkdir()
+    client = SeedableClient([assistant(content=CONTACT)], model="qwen3:4b-instruct")
+    run_task(
+        client,
+        get_task("extract-contact"),
+        "bare",
+        tmp_path,
+        transcripts_dir=transcripts,
+        repeat=0,
+    )
+    dumped = json.loads((transcripts / "bare--extract-contact--r0.json").read_text())
+    assert dumped["model"] == "qwen3:4b-instruct"
 
 
 def test_seed_lands_in_the_transcript(tmp_path):
