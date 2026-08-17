@@ -5147,10 +5147,36 @@ gh api --paginate \
   `pull_request`, so a batch push produces one run at the batch tip — but
   "green at HEAD" is what was measured, never "green at each commit".
 - **One run on this branch was RED and it is not hidden:** `32017743711` at
-  `8ccd084`, on Linux and both Python versions, when a test landed one commit
-  before the asset it reads. Green from `8a6048e` onward. That is exactly what
+  `8ccd084`, when a test landed one commit before the asset it reads
+  (`EvalConfigError: no task files found`). Its `failure` conclusion is confirmed
+  here at the run level; the "Linux, both Python versions" detail is **cited from
+  the record written at the time**, not re-measured, because per-job data is now
+  unreadable. Green from `8a6048e` onward. That is exactly what
   the invariant "run CI at the first unit that touches source, not at the PR"
   exists to catch, and it caught it.
+
+**The `25 / 40` above was measured at `aa97725`, and the closure unit then did
+the same thing it had just corrected.** Appended rather than rewritten, because
+a count inside a document that the same push changes is worth what RB-P44 says
+it is worth. This section's four commits were pushed as **one batch**, so they
+produced **one run** — `32040160901` at `d31a46f`, **success**, `pull_request`
+(run-level conclusion; see the note below on per-job data) — and **three of the
+four got no run of their own**. Read
+the branch figure as: at `d31a46f`, **26 runs against 44 commits**, **18 with no
+run at all**, **23 with no successful run of their own**. The pattern is
+structural, not anybody's carelessness, and that is exactly why it should be
+fixed mechanically rather than by asking units to push one commit at a time —
+`ci.yml`'s `pull_request` trigger plus `cancel-in-progress` means per-commit
+coverage on a feature branch is **unobtainable by discipline alone**. Not filed
+as a numbered problem because nothing rests on per-commit coverage that
+green-at-HEAD does not already carry; recorded because two units in a row have
+now reported it as if it were a one-off.
+
+**Per-job conclusions could not be read.** `actions/runs/<id>/jobs` and
+`commits/<sha>/check-runs` both return **HTTP 404** on this repo, the same class
+of refusal as the repo-wide runs endpoint, so every conclusion above is confirmed
+at the **run** level. The matrix (`3.11`, `3.12` on `ubuntu-latest`) is what the
+workflow declares, not something this section verified per job.
 
 ##### Invariants re-verified at this section's HEAD rather than cited
 
