@@ -619,3 +619,267 @@ and no committed section was retro-edited: the two corrections this unit owes ar
 implementer. Token and wall-clock accounting for the unit itself is the orchestrator's, from
 its own counters; this document reports none, because this unit has no counter to read
 (invariant 14).
+
+---
+
+## 12. U6 — appended 2026-08-19. The arithmetic per arm, the pinning census, the two shared registers, and the version
+
+**Nothing above this line is edited.** §§0–11 are U5's and are committed at `8b6f365`;
+this section appends (invariant 12). Everything below is measured by U6 at `8b6f365`
+plus one added field program, and every count carries `(value, commit, command)`. **No
+token count and no wall-clock figure is reported for this unit either: nothing here
+called ollama** (invariant 14).
+
+### 12.1 The result, per arm, with `n` on every figure. Never pooled.
+
+| | **B0** | **B0″** | **B1** |
+|---|---|---|---|
+| label | `compact-off` | `compact-off-tamper-terminal` | `compact-on` |
+| **n** | **6** | **6** | **0 — the arm does not exist** |
+| `outcome` | **VOID × 6** | **FAIL-TAMPERED × 6** | — |
+| `boundaries` | **6, 7, 7, 7, 6, 6** as committed; N-17 makes it **+1 uniform on all six**, so 5, 6, 6, 6, 5, 5 corrected — **not restated as a committed figure** | **0 × 6** | — |
+| `max_prompt_eval_count` | **32,768 × 6** = **1.667 × T** and exactly `WORKER_NUM_CTX` | **4,173 × 6** = **0.212 × T** | — |
+| `worker_window_reached` | **true 6 of 6** | **false 6 of 6** | — |
+| D-2, `canon_stream_sha256` | **6 distinct of 6 → FAILS → VOID** | **1 distinct of 6 → HOLDS** | — |
+| `guard_tamper_files` non-empty | **6 of 6** | **6 of 6** | — |
+| `guard_type_exit` | **[2, 2, 2, 2, 2, 2]** | **[2, 1, 1, 1, 1, 1]** (N-16) | — |
+
+`T = 19,660`, quoted by matched text rather than by line number (invariant 13): the
+harness defines it as `T_BOUNDARY = TOKEN_BUDGET * PROACTIVE_PCT // 100` and stamps it
+into every row as `TRIGGER_ID = "T=19660/prompt_eval_count/preceding-call"`.
+Every cell above re-derived by U6 from the two committed `.jsonl` files —
+`(the whole table, 8b6f365, a python read of docs/eval-data/2026-08-18-loop-b0-compact-off.jsonl and docs/eval-data/2026-08-19-loop-b0pp-compact-off-tamper-terminal.jsonl)`
+— and every one reproduces the figure U5 and the orchestrator carried.
+
+**Because B1 has `n = 0`, no `B1 − B0` exists, and `B1 − B0` is the only unconditional
+difference this bar licenses (§5, invariant 5). No all-on-vs-all-off number is reported
+here or anywhere in J7.** The two arms are reported side by side and are **never pooled**:
+they differ in the terminal-guard rule and in the regime they reach, and a pooled `n = 12`
+would be twelve readings of two configurations.
+
+**The two boundary-cost arithmetics, both carried, neither reconciled away.** Bar §1.5
+prices *read every implementation file once + one oracle* at **14,496 tokens = 0.74 × T**;
+A2.6 prices *one LIST, five READs, five WRITEs, an ORACLE after each fix* at **0.69 × T**.
+Different trajectories, both **below 1 × T**, both reaching **zero** boundaries. That is
+the floor effect, and it is why **U-3 FIRED**.
+
+**The job verdict, restated without softening:** J7 is **UNINFORMATIVE** under §6 U-3, with
+**§6 U-1 PREDICTED and UNMEASURED**. Fidelity is **UNMEASURED** and UNMEASURED is the
+verdict (RB-P51) — with 0 boundaries in 6 of 6 on B0″ the mechanism never acted. **Not
+"compaction does no harm". Not "compaction is free".**
+
+### 12.2 The pinning census — a number, not "no red". **N-26.**
+
+Bar §9 requires that *"the field program reports its own pinned-vs-unpinned count as a
+number, not as 'no red'"*. §5 and §11 above report the mutations (0 / 4 / 5 / 5 RED) and
+the selfcheck as **"48 cases, 0 RED"** — and *"0 RED"* is exactly the form the bar forbids.
+The census is added rather than the sentence: `docs/eval-data/2026-08-19-loop-u6-pinning-census.py`,
+which imports U5's `MUTATIONS` from the committed program rather than re-transcribing them
+(RB-P47) and counts every case **from the selfcheck's OUTPUT**, never from a source grep
+(RB-P48).
+
+| census | axis | count |
+|---|---|---|
+| **A** — the selfcheck's *internal* pinning | cases printed | **48** |
+| | labelled `RED:` — a falsifying input, asserted | **20 of 48** |
+| | labelled `green:` — the same check, unmutated | **12 of 48** |
+| | unlabelled notes — a quantity recorded, not paired | **16 of 48** |
+| **B** — the instrument's *external* pinning | **PINNED** by ≥ 1 committed source mutation | **9 of 48** |
+| | **UNPINNED** by every committed source mutation | **39 of 48** |
+
+`(48 / 20 / 12 / 16 and 9 / 39, this commit, python docs/eval-data/2026-08-19-loop-u6-pinning-census.py)`.
+The 9 are the four `M8` cases (mutation `c2`) and the five `M9` cases (`n17`, `n17b`); the
+39 are named individually in the program's output rather than summarised.
+
+> **N-26 · 39 of the instrument's 48 selfcheck cases are unpinned by any committed source
+> mutation.** Read narrowly: *unpinned* means no mutation this job committed reverts a
+> harness line that the case would catch. It does **not** mean vacuous — most of the 39 are
+> census-A `RED:` cases, falsified from the **data** side, which is the harness's own
+> declared design (`cmd_selfcheck`'s docstring: the mutation is applied to the data the
+> check reads, never to a flag the harness sets for itself). What the number says is that
+> **J7 mutated the two lines it fixed and left the rest of the instrument unmutated.** That
+> is a disclosed gap, and disclosing it as `9 / 39` is the whole point of the bar's
+> sentence.
+
+### 12.3 The register — and the closure's own ceiling was an instrument artefact. **N-25.**
+
+§8.1 above measured the taken RB-P range on `feat/instrument-hygiene` with
+`grep -o 'RB-P5[4-9]'` and reported **RB-P54 through RB-P59**. **That regex cannot match a
+two-digit tail past 59 however many exist.** Re-read with a digit-unbounded pattern:
+
+```
+ref                        feat/instrument-hygiene @ cad32aa
+closure section 8.1 regex  RB-P5[4-9]   -> 6 distinct:  RB-P54 … RB-P59
+digit-unbounded regex      RB-P[0-9]+   -> 17 distinct >= 54:  RB-P54 … RB-P70
+MISSED BY THE CLOSURE'S REGEX: RB-P60 RB-P61 RB-P62 RB-P63 RB-P64 RB-P65
+                               RB-P66 RB-P67 RB-P68 RB-P69 RB-P70
+```
+
+`(6 vs 17 distinct >= 54, feat/instrument-hygiene @ cad32aa, the REGISTER section of the U6 census)`.
+
+> **N-25 · §8.1's "RB-P54 through RB-P59" is a property of the command, not a reading of
+> the register.** An orchestrator that had taken *"the next one after the closure's
+> ceiling"* would have minted **RB-P60 — already taken — and collided a third time
+> tonight**, which is the precise failure §8.1 was written to prevent. The shape is the
+> orchestrator's own three errors inverted: not a number asserted from recall, but a number
+> read with an instrument that could not see the answer.
+
+**And the ceiling is a snapshot, not a pin.** That branch is **live** and it **moved under
+this unit inside one session**: at `8544768` the register topped out at **RB-P60**; at
+`cad32aa`, minutes later, at **RB-P70**. Any "next free number" is valid only at the SHA it
+was read at.
+
+**The deferral, stated once and as a disclosed gap.** **J7's findings stay in their own
+`N-1 … N-27` sequence, which is internal to these write-ups and collides with nothing. The
+`docs/eval.md` register filing of the RB-P entries J7 earns — N-21 above all — is DEFERRED
+until `feat/instrument-hygiene` lands, at which point the orchestrator mints the numbers by
+reading the register at HEAD.** Until then those entries exist only here, and a reader of
+`docs/eval.md` alone will not find them. That is the cost of the deferral and it is named
+rather than left to be discovered. **No unit of J7 minted an RB-P number at or above 54.**
+(`docs/eval.md` on this branch does add **RB-P53**, at `3ddf5db`, below the contested range
+and before the collision was known.)
+
+### 12.4 The version — a second shared register nobody had declared shared. **N-27.**
+
+`runtime-py/pyproject.toml` goes **0.23.0 → 0.25.0**, and **0.24.0 is skipped
+deliberately**.
+
+| read | value | where |
+|---|---|---|
+| this branch, before | `version = "0.23.0"` | `runtime-py/pyproject.toml` @ `8b6f365` |
+| `feat/instrument-hygiene` | **already claims `0.24.0`** | `cad32aa`, subject *"chore(runtime-py): 0.23.0 -> 0.24.0, a MINOR justified by measurement"* |
+| tags in the repo | **22**, newest **`v0.21.0`** | `git for-each-ref refs/tags` |
+
+`(0.24.0 taken at cad32aa; 22 tags, newest v0.21.0, 8b6f365, git log -1 feat/instrument-hygiene and git for-each-ref refs/tags)`.
+
+> **N-27 · the package version is a shared register with two live writers and no
+> allocation rule.** It is the same two-writer hazard as the RB-P register (§8.1, N-25),
+> one line lower down. Two unmerged branches both writing `0.24.0` do not conflict
+> textually — an identical change on both sides merges clean — so the collision would land
+> **silently** as one released version covering two jobs. Skipping to `0.25.0` leaves at
+> worst a **visible gap** if `feat/instrument-hygiene` is abandoned. Visible beats silent.
+
+**And the MINOR is not a claim about the package surface, because there is no change to
+claim.** J2's and J6's bumps were justified by *"zero deleted lines under `runtime-py/src`,
+the surface is additive"*. That probe does not apply here: `git diff --numstat main..HEAD --
+runtime-py` is **empty** — **0 lines inserted and 0 deleted** across the whole of
+`runtime-py` on this branch. J7 is documentation, evidence and one instrument under
+`docs/eval-data/`. **The bump is a job/release marker, and the measurement that justifies
+it is that the shipped package is byte-identical.** Said here rather than inferred from the
+version alone.
+
+**Nothing is tagged.** `v0.22.0` and `v0.23.0` were never tagged either, so a version in a
+document is not a tag and does not become one (invariant 18).
+
+### 12.5 The orchestrator's own four errors, in the record
+
+A job whose subject is measurement discipline that omits its own orchestrator's failures is
+doing the thing it exists to prevent. Full log:
+`.shiftwork/probes/ORCHESTRATOR-VERIFIED.md`. Four numbers were asserted from recall
+tonight and **each was caught by the unit it was handed to**:
+
+| # | the assertion | what it measured | where it was caught |
+|---|---|---|---|
+| 1 | `wall_s` = 29.99 / 33.81 / 37.61 / 243.09 / 277.98 / 268.79, and an argument built on it | **no column of the artifact holds those six numbers**; committed `wall_s` is **1200.004–1200.005 on all six** | U2 — filed as **N-11** rather than worked around |
+| 2 | *"expect 940, not 936, that figure is stale"* | correct for the orchestrator's tree, **wrong for U1's**, and handed over as a fact | U1 — measured instead of accepting |
+| 3 | two finding numbers for A2.4 | **both already defined** in the register; **A2.9 moved the collision instead of closing it**, repaired by **A2.10** as N-14 / N-15 | U3 — refused both numbers and put the dispute in a docstring |
+| 4 | *"Bar §3 R2 — the tamper refutation"* | **R2 is bar §5**, the section headed *"What would REFUTE, and what would CONFIRM"*; §3 is *"The arms, the statistics, and the repeats"* | caught in review; §1.1 above cites §5 correctly |
+
+**All four are one shape: a number or a locator asserted from recall instead of read at
+HEAD** — which is invariant 13 and invariant 12 inverted. **N-25 above is a fifth of the
+same family, committed by the closure itself**, and it is the reason this table is here
+rather than in a handoff note. Eight agents pushed back on orchestrator figures tonight;
+seven were right.
+
+### 12.6 Every finding, and its status. The complete list.
+
+Three registers hold J7's findings and no single one holds them all — this table is the
+index, not a new register. **Nothing here is minted; N-25, N-26 and N-27 are defined in
+§§12.2–12.4 above and are the only new numbers.**
+
+| | finding | status | defined in |
+|---|---|---|---|
+| **N-1** | the bar's honest counter is honest only below the window | **OPEN**, escalation-class | `…loop-harness-b0.md` §4 |
+| **N-2** | `ollama create` FROM the raw blob path gives a completion-only model | **OPEN**, recorded | same |
+| **N-3** | `git clean -fd` deletes the worktree's `node_modules` symlinks | **CLOSED** — excluded by name | same |
+| **N-4** | `git worktree list` can never be shown empty; the baseline is 25 | **OPEN**, recorded | same |
+| **N-5** | the gate is 940, not 936 | **SUPERSEDED** — 944 @ `8b6f365`, **948** at this commit | same |
+| **N-6** | CANON-1 cannot be applied "to every tool output" as §10.4 words it | **OPEN**, escalation-class | same |
+| **N-7** | §1.5's 0.74 × T trajectory is not the one this worker produces | **OPEN**, recorded | same |
+| **N-7a** | …and §1.5 is wrong in the opposite direction on its largest term | **OPEN**, recorded | same |
+| **N-8** | §1.5's figures carry no window, so they cannot be checked from the document | **OPEN**, verification item | same |
+| **N-9** | CANON-1 does not collapse the failing oracle output | **OPEN and worse** — now five sample sizes: **1-of-3, 2-of-4, 3-of-14, 4-of-14, 2-of-3**. Rule (d) improves it to 1-of-3 and does **not** close it | same; worsened in A2.7, §10.2 above |
+| **N-10** | §10.2's arithmetic for `num_ctx = 32768` is refuted by the run | **OPEN** — became §3.6 ground 3 | same |
+| **N-11** | `stopped_by = "run-cap"` for every endpoint exception | **CLOSED** at `99f5e63` | same |
+| **N-12** | S5's Critical had already fired when it was found | **CLOSED** for future arms | same |
+| **N-13** | the `d2` sub-command has no `--mutate` flag | **CLOSED**, recorded | same |
+| **N-14** | a check that stayed green when the line it claimed to cover was reverted | **CLOSED** at `eca5117` | bar A2.10 |
+| **N-15** | the committed `.jsonl` was produced by an earlier revision of the committed `.py` | **OPEN — not repairable.** The six B0 rows lack `length_stops`, `truncated_writes`, `endpoint_error` as row-level keys; repairing means regenerating committed evidence | bar A2.10; §10(6) above |
+| **N-16** | `restore()` carried the workload's gitignored state between repeats | **CLOSED** at `8b6f365` — **except** the one step at §2.4 that no committed row can supply, which stays **UNMEASURED** | §2, §8 above |
+| **N-17** | `boundaries` over-counted by exactly one | **CLOSED for future arms**; committed figures untouched | §4, §8 above |
+| **N-18** | `--arm` was free text and `compaction_mode` came from the label | **CLOSED** at `8b6f365` | §3, §8 above |
+| **N-19** | A2.2's defence 1 is refuted on both halves | **OPEN** | §8 above |
+| **N-20** | §1.4's GUARD-TAMPER is a lower bound, not a count | **OPEN** | §8, §10(5) above |
+| **N-21** | **the ORACLE reports exit 0 with every defect in place, through a file no guard watches** | **OPEN, ESCALATION-CLASS, DELIBERATELY NOT FIXED** — a guard added after the rows exist is a post-hoc gate | §8, §10(4) above |
+| **N-22** | A2.5's confirmation has effective **n = 1** | **OPEN** | §8 above |
+| **N-23** | CANON-1 rule (d) is a no-op on the passing ORACLE output (0 of 3 passing, 3 of 3 failing) | **OPEN** | §8 above |
+| **N-24** | A2.10's "N-1 … N-13 with no gaps" omits N-7a — **fourteen** definition sites, not thirteen | **OPEN**, count wrong / conclusion sound | §8 above |
+| **N-25** | §8.1's RB-P ceiling is an artefact of a digit-bounded regex; the range reaches **RB-P70** | **OPEN — carried to the orchestrator with the deferral** | **§12.3** |
+| **N-26** | **39 of 48** instrument cases are unpinned by any committed source mutation | **OPEN**, disclosed gap | **§12.2** |
+| **N-27** | the package version is a shared register with two live writers | **OPEN — mitigated here** by skipping `0.24.0` | **§12.4** |
+
+**Also open and not an N-number:**
+
+- **§3.6 ground 3 — the arm is not the arm the bar defined.** **DISPOSITIONED for the first
+  time by U5 (§6.1), NOT DISCHARGED.** Out of reach on B0″ at 0.212 × T with
+  `worker_window_reached` false 6 of 6, and it is **the reason the next job needs a new
+  workload**.
+- **§2.4's last step.** B0's repeat 1 → 2 has an identical path set and still exits 2,
+  which needs a content difference the row cannot supply. **UNMEASURED. U5 refused to
+  invent it and U6 does not invent it either.**
+- **The `store` branch of `compaction_mode_for` is unreachable** because no compaction-ON
+  arm is implemented (§3.3) — a finding, not an oversight, and pinned by selfcheck case
+  `M8: no compaction-ON arm is implemented`.
+
+**What would answer J7's question is §9's five conditions, and it is a NEW JOB WITH A NEW
+BAR — not an amendment to this one.** §10.2 refuses in advance to enlarge DEFECT-SET-5 or
+to lower `T`, and re-tuning a pre-registered trigger after seeing that nothing fired
+manufactures an opportunity.
+
+### 12.7 Gates and fences at this commit
+
+| gate | value | commit | command |
+|---|---|---|---|
+| suite, before | **944 passed, 2 xfailed** | `8b6f365` | `.venv/bin/python -m pytest runtime-py/tests -q` |
+| suite, after | **948 passed, 2 xfailed** | this commit | same |
+| ruff, `runtime-py` (the declared gate) | **All checks passed!** | this commit | `.venv/bin/ruff check runtime-py` |
+| ruff, `docs/eval-data` | **All checks passed!** | this commit | `.venv/bin/ruff check docs/eval-data` |
+| ruff, `tools` | **All checks passed!** | this commit | `.venv/bin/ruff check tools` |
+| harness selfcheck | **48 cases, 0 RED, exit 0** | this commit | `python docs/eval-data/2026-08-18-loop-harness.py selfcheck` |
+| U5 field program | **every section closed as declared, exit 0** | this commit | `python docs/eval-data/2026-08-19-loop-u5-closure-field-measurement.py` (C-1 and N-21 report UNMEASURED without `--worktree`) |
+| U6 pinning census | **every section closed as declared, exit 0** | this commit | `python docs/eval-data/2026-08-19-loop-u6-pinning-census.py` |
+
+**944 → 948 is the same co-moving count §11 declared, moving for the same reason.**
+`runtime-py/tests/test_field_programs.py` parametrises **four** nodes over every `.py`
+under `docs/eval-data/`, and this unit adds one program: `4 × 1 = 4`. **No test node was
+added, edited or removed, and no node asserts a fact about this run** (RB-P14 Gate 2).
+
+**One ruff result that is NOT green, disclosed rather than omitted.** `.venv/bin/ruff check .`
+over the whole repository reports **3 errors**, all under
+`assets/evals/devteam/repo/` — `BLE001` in `src/ledger/retry.py` and two `I001` in the test
+tree. They are **pre-existing on `main`** (same 3, measured there) and that tree is a
+**frozen synthetic workload fixture** which invariant 17 forbids touching. The declared gate
+is `ruff check runtime-py` and it is clean.
+
+**Fences.** **No arm was run and no worktree was cut** — this unit needed neither. Nothing
+under `assets/evals/tasks/` or `assets/evals/perturbations/` was touched; no committed row
+was regenerated; no committed section was retro-edited — §§0–11 stand exactly as `8b6f365`
+wrote them and this section appends. The bantamkit worktree at `scratchpad/wt-j3` belongs to
+another live job and **was not touched**; `feat/instrument-hygiene` was read **read-only**
+through `git show` / `git log` / `git rev-parse` in the main checkout, twice, and the second
+read is what found N-25 and N-27. **Nothing tagged, nothing merged, nothing pushed.**
+
+**The model that did this unit:** Claude Opus 5, 1M context (`claude-opus-5[1m]`) as J7 U6,
+implementer. Token and wall-clock accounting for the unit is the orchestrator's, from its
+own counters; this document reports none, because this unit has no counter to read
+(invariant 14).
