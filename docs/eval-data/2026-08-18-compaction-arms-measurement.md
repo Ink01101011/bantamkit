@@ -522,21 +522,39 @@ arms `.jsonl` is the record.
 ### 7.1 What did NOT change: the anchor class list and the stop-list
 
 Frozen at `581f6b6` as data, per bar §3.2 and the unit's fence. Verified two independent
-ways, both reproducible:
+ways, both reproducible, and **neither of them a line-number pin** — see the correction
+below for why that matters.
 
 ```
-# 1. the span containing both lists and everything between them
-git show 581f6b6:docs/eval-data/2026-08-18-compaction-arms-field-measurement.py \
-  | sed -n '135,727p' | shasum -a 256
-sed -n '135,727p' docs/eval-data/2026-08-18-compaction-arms-field-measurement.py \
-  | shasum -a 256
-# 2. the structures themselves, compared after import rather than by line span
+# 1. the span from the declared minimum length through the compiled class regex,
+#    which contains both lists and everything between them. Pattern-delimited, so it
+#    survives any edit elsewhere in the file.
+P=docs/eval-data/2026-08-18-compaction-arms-field-measurement.py
+for REV in 581f6b6 HEAD; do
+  git show $REV:$P | sed -n '/^ANCHOR_MIN_LENGTH/,/^_ANCHOR_RE/p' | shasum -a 256
+done
 ```
 
-Both give `83d925d8ff380fce208da2625a225d3d9259ea90d91886b12139d3c9c32d1c27` over 26,405
-bytes, and the imported `ANCHOR_CLASSES` (6 classes), `ANCHOR_STOP_LIST` (35 entries) and
-`ANCHOR_MIN_LENGTH` (6) compare equal between the two revisions. **Nothing was added
-because a number looked wrong.** No stop-word was wanted and none was added.
+Both revisions give
+`810d9ade35046be0745975bff0957b23debc642308cff3fba6f5f2ceb727056a` over **26,428 bytes**.
+The tighter span `'/^ANCHOR_MIN_LENGTH/,/^)$/p'` — the two literals and nothing else —
+gives `0d3f314a76a2b3fbb44eec891a6a514cd0a38a4ed60ea9093b6be4c795b60a60` on both.
+
+Second route: import both revisions as modules and compare the objects rather than the
+text. `ANCHOR_CLASSES` (6 classes), `ANCHOR_STOP_LIST` (35 entries) and
+`ANCHOR_MIN_LENGTH` (6) compare **equal** between `581f6b6` and HEAD.
+
+**Nothing was added because a number looked wrong.** No stop-word was wanted and none was
+added.
+
+> **Correction, 2026-08-18, same day, recorded rather than rewritten.** The first
+> committed version of this subsection pinned the span as `sed -n '135,727p'` and quoted
+> `83d925d8…` over 26,405 bytes. That hash was true of `581f6b6` and **false of HEAD** —
+> not because either list moved, but because this unit added one `import` line near the
+> top of the file and every line number below it shifted by one. The lists are
+> byte-identical; **the pin drifted.** That is the seventh measured pin drift in this
+> program, and it was committed by the unit whose own document quotes the rule. The
+> commands above are pattern-delimited so the next edit cannot repeat it.
 
 ### 7.2 R1's population was the wrong set (fixed, verdict unchanged)
 
