@@ -1,0 +1,12 @@
+{
+  "what_this_is": [
+    "The amend-only set of THIS repository: the evidence documents and the register.",
+    "A path listed here is judged by the record-vs-pointer rule; a path not listed here",
+    "is not judged at all, and amendguard says `unmeasured=1` and exits 3 rather than 0",
+    "when the patterns match nothing in the range it was given (RB-P51)."
+  ],
+  "amend_only": [
+    "docs/eval-data/*.md",
+    "docs/eval.md"
+  ]
+}

@@ -8,9 +8,13 @@ from bantamkit.agent import (
     ToolDef,
     coerce_arguments,
     response_format_for,
-    truncate,
 )
-from bantamkit.client import BantamError, Message, Tool
+from bantamkit.client import BantamError, Message, Tool, Usage
+
+# `truncate` was never agent.py's symbol -- it was reachable through agent.py only
+# because agent.py imported it. C-6 changed that import to `truncate_counted`, so this
+# names the module the function actually lives in.
+from bantamkit.textutil import truncate, truncate_counted
 
 
 def lookup_tool(handler):
@@ -526,3 +530,63 @@ def test_an_agent_with_no_batch_scope_is_unchanged():
     agent = Agent(client=client, tools=[lookup_tool(lambda key: "5432")])
     assert agent.run("t").output == "5432"
     assert client.calls[1]["messages"][-1].content == "5432"
+
+
+# ---- C-6: a run whose observations were cut is distinguishable from one whose were not
+#
+# RB-P28: the suite is not evidence. The evidence is
+# `docs/eval-data/2026-08-19-truncation-visibility-field-measurement.py`, run outside
+# pytest. These nodes guard the counting, not the repository.
+
+
+def test_truncate_counted_reports_the_bytes_it_dropped():
+    text, dropped = truncate_counted("a" * 150, 100)
+    assert dropped == 50 and text.endswith("[truncated 50 bytes]")
+
+
+def test_truncate_counted_reports_zero_when_nothing_was_cut():
+    text, dropped = truncate_counted("short", 100)
+    assert dropped == 0 and text == "short"
+
+
+def test_truncate_is_byte_identical_to_what_it_always_returned():
+    for budget in (1, 4, 100, 10_000):
+        assert truncate("a" * 150, budget) == truncate_counted("a" * 150, budget)[0]
+
+
+def _run_with_budget(budget, sizes):
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("lookup", {"item": str(i)}) for i in range(len(sizes))]),
+            assistant(content="ok"),
+        ]
+    )
+    agent = Agent(
+        client=client,
+        tools=[lookup_tool(lambda item: "x" * sizes[int(item)])],
+        observation_budget=budget,
+    )
+    return agent.run("t")
+
+
+def test_a_cut_run_reports_how_many_observations_and_how_many_bytes():
+    result = _run_with_budget(1000, [5000, 9000])
+    assert result.observations_truncated == 2
+    assert result.observation_bytes_dropped == 4000 + 8000
+
+
+def test_an_uncut_run_reports_zero_so_the_column_is_not_always_on():
+    result = _run_with_budget(1_000_000, [5000, 9000])
+    assert result.observations_truncated == 0
+    assert result.observation_bytes_dropped == 0
+
+
+def test_only_the_observations_actually_over_budget_are_counted():
+    result = _run_with_budget(6000, [5000, 9000])
+    assert result.observations_truncated == 1
+    assert result.observation_bytes_dropped == 3000
+
+
+def test_the_columns_default_to_zero_on_a_hand_built_result():
+    result = AgentResult(output="o", messages=[], usage=Usage())
+    assert (result.observations_truncated, result.observation_bytes_dropped) == (0, 0)

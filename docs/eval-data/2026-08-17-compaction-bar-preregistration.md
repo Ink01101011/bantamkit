@@ -1144,3 +1144,127 @@ that is now what the check claims.
 It does not change `T`, the composition of `T`, the token counter, the threshold, the
 boundary rule, any committed row, or any verdict. It states four freedoms and one
 weakness, with their magnitudes and their directions, and exercises none of them.
+
+---
+
+### Amendment D — 2026-08-19. §3.2's formula and §3.2's prose disagree two lines apart. The prose is right, the formula is what ran, and no verdict moves
+
+**Appended, never edited.** §3.1, §3.2 and Amendments A–C stand exactly as committed. This
+amendment reconciles a contradiction **inside this document**; it changes no committed row,
+no committed verdict, and **it does not authorise editing the program** — the program is
+faithful to the half of §3.2 that is executable, and fixing the artifact that was right
+would be the wrong repair.
+
+M-U5-4, closed here. Everything below was re-measured in a worktree at `b533089` from
+`docs/eval-data/2026-08-18-compaction-arms.jsonl` by a script written for this amendment,
+and independently by the committed field-measurement program.
+
+#### 1. The contradiction, read off this document
+
+§3.1's fenced block, the token floor, opens with an **explicit wrapper over both arms**:
+
+> `floor(grain) = max over the two arms X,Y of ( … )`
+
+§3.2's fenced block, the fidelity floor, has **no arms wrapper at all**:
+
+> `fidelity_floor(grain) = max over repeat sets of RET(grain) − min over repeat sets of RET(grain)`
+
+`RET` is one series. Read literally, it is the spread of **one** arm's retention, and the
+document never says which — in practice the arm under test, `Y`. Only the **prose** claims
+the two floors have the same form, and it claims it in the sentence immediately before the
+block (*"The floor, same shape as §3.1…"*), in the sentence that opens §3.2 (*"a floor of
+the same shape as the token axis"*), and a third time in Amendment A (*"§3.1's floor is a
+spread over repeat sets and §3.2's is the same shape"*). **Three prose claims, one
+executable block, and they disagree.**
+
+*A correction to the J3 plan's §2 table, which recorded this as "only prose (`same shape`,
+twice)":* measured at `b533089`, `grep -c 'same shape'` over this document returns **4** —
+one of the four (§1.2's *"was the same shape one level over"*) is unrelated, leaving
+**three**, not two. The third is inside Amendment A, which matters because an amendment is
+amend-only: it cannot be edited into agreement either.
+
+#### 2. Which one the program implemented: §3.2's block, literally
+
+`2026-08-18-compaction-arms-field-measurement.py` computes `fidelity_floor` from the rows
+of the arm under test only — the pattern-delimited span running from
+`headline_retention_per_repeat = []` to the assignment of `fidelity_floor`, in which the
+row filter is `r["arm"] == y` and there is no loop over `x`. The per-transcript fidelity
+floor is built the same way. **The program implements the fenced block, not the prose.**
+It is not in error: given a contradiction between an executable block and a sentence about
+it, implementing the block is the defensible choice, and it is the one that was made.
+
+#### 3. What the difference is worth, in numbers, on the committed evidence
+
+Per-arm headline retention spread over the three repeat sets, n = 24 informative
+stratum-A transcripts:
+
+| arm | spread | note |
+|---|---|---|
+| B0 | **0.000000** | retention is 1.0 by construction (§3.2), so the spread is exactly zero |
+| B1 | 0.001472 | |
+| B2 | 0.011034 | |
+| B3 | 0.009446 | |
+
+| pair | floor **as §3.2's block is written** (Y only) | floor **under the prose** (max over X, Y) | ratio | shift |
+|---|---|---|---|---|
+| B1 − B0 | 0.001472 | 0.001472 | **1.000×** | 0.000000 |
+| B2 − B1 | 0.011034 | 0.011034 | **1.000×** | 0.000000 |
+| B3 − B2 | 0.009446 | 0.011034 | **1.168×** | **0.001588** |
+
+**Two of the three pairs are identical, permanently, and not by luck.** For any pair
+`Y − B0` the two readings coincide **by construction**: `floor(B0) = 0` exactly, so
+`max(0, spread(Y)) = spread(Y)`. For `B2 − B1` they coincide on this evidence because the
+upper rung happens to be the noisier one. Only `B3 − B2` moves, and it moves because B2 is
+noisier than B3.
+
+**On the one pair that moves, the fix closes 0.17% of the distance.** B3's median
+retention is `0.0612905`. The non-inferiority bar is `1 − floor`: `0.990554` as written,
+`0.988966` under the prose. The gap to be closed is **0.9276755**, the shift is
+**0.001588**, and the gap is **584×** the shift.
+
+> **The verdict is BELOW ITS FLOOR under both definitions, on all three pairs, at both
+> grains.** Nothing this amendment decides changes a single committed verdict, which is why
+> it is written as an amendment and not escalated. **Had either reading flipped a verdict,
+> this would have stopped and asked** — a bar does not get to pick the definition after
+> seeing which one it likes.
+
+#### 4. The ruling
+
+**The prose is authoritative and §3.2's fenced block is a drafting error.** The reason is
+§3.1's own reason, which transfers exactly:
+
+- §3.1 takes the max over both arms because *"B0 is deterministic, so `floor(B0) = 0`
+  exactly, and a floor of 0 accepts any non-zero delta."*
+- On the fidelity axis the same degeneracy is **stronger**, not weaker: B0's retention is
+  `1.0` **by construction**, so its spread is not merely small on this corpus, it is zero
+  on every corpus. A one-armed floor on a `Y − B0` pair is a floor that can never be
+  anything but `spread(Y)`.
+
+So the two axes really do have the same shape, the prose always said so, and the block
+omitted the wrapper. **The corrected form, for every run after this amendment:**
+
+> ```
+> fidelity_floor(grain) = max over the two arms X,Y of
+>                         ( max over repeat sets of RET(grain) − min over repeat sets of RET(grain) )
+> ```
+
+#### 5. What this amendment does NOT do
+
+- **It does not edit the program**, and the committed run is not recomputed. The frozen
+  arms are never regenerated and never retro-edited.
+- **It does not restate any committed figure.** The measurement document's fidelity table
+  keeps the floors it was computed with; this amendment states what a future run must use
+  and what the difference would have been.
+- **It does not touch the anchor class list or the stop list**, which §3.2 freezes as data
+  in the artifact precisely so that they cannot be tuned.
+- **It closes nothing on the fidelity axis itself.** Anchor retention as measured is an
+  **upper bound** (its scorer tests substring containment, not token boundaries) and it is
+  carried by only 288 of 600 committed rows. Those are separate open findings, carried
+  forward as preconditions on the next native run, and this amendment neither repairs nor
+  hides them.
+
+#### 6. Accounting
+
+**Model: `claude-opus-5[1m]`. Tokens UNMEASURED, wall-clock UNMEASURED** — no counter is
+exposed to this unit, and no self-estimate is offered. Every figure above was recomputed
+from the committed artifact at `b533089`; none is carried from a brief or a probe.

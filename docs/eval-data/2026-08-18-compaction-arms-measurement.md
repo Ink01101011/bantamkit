@@ -625,3 +625,94 @@ so the acceptance is unaffected — but the property is now pinned instead of in
 8. **Measured cost of the run, from the committed `wall_clock_s` column**: 20,913.7 s
    (5.81 h) across 600 rows — B0 10.7 s, B1 7,332.1 s, B2 7,004.9 s, B3 6,566.0 s — over
    315 summarizer calls, against a declared budget of 420.
+
+---
+
+## Amendment 1 — 2026-08-19, J3, M-U5-1's artifact half
+
+**Appended, never edited.** Everything above stands exactly as committed at `581f6b6`'s
+successor. This amendment **adds three figures this document could have printed and did
+not**. It withdraws nothing: no number above is wrong, no verdict above moves.
+
+### 1. What was missing, and how it was found
+
+The declared fixed per-call cost is `25350.2` tokens (§1.2). The program's own header says
+the with-constant and without-constant figures are *"reported side by side, always,
+because the constant is exactly the kind of choice a reader may want to undo"*. That was
+true of the **R1 ceiling** — §0 and §3 both print `−42.6107% / −61.3963%` — and it was
+**false of the arms**. §5.1's table quotes one column per pair.
+
+Measured, in a worktree at `b533089`:
+
+```
+grep -c 'no_fixed' docs/eval-data/2026-08-18-compaction-arms-measurement.md    # 0
+```
+
+The columns `context_tokens_sent_with_fixed` and `context_tokens_sent_no_fixed` are
+committed on all **600** arms rows. The second one had never been turned into a
+percentage anywhere — not in this document, and not in the program's printed report.
+
+### 2. The three figures, printed here
+
+Median across the **n = 24** informative stratum-A transcripts, per adjacent rung, the
+same population and the same arithmetic as §5.1, with the constant undone:
+
+| pair | Δ% of the lower rung, **with** the constant (§5.1, unchanged) | Δ% of the lower rung, **without** it |
+|---|---|---|
+| **B1 − B0** — UNCONDITIONAL | **−40.1421%** | **−58.9356%** |
+| **B2 − B1** — CONDITIONAL, trim *given* compaction | −22.7575% | −42.1513% |
+| **B3 − B2** — CONDITIONAL, offload *given* compaction+trim | −7.9204% | −19.5665% |
+
+Recomputed twice before being written: once directly from
+`docs/eval-data/2026-08-18-compaction-arms.jsonl` by an independent script, and once by
+the widened program, and the two agree to 4 dp on all six cells.
+
+```
+.venv/bin/python docs/eval-data/2026-08-18-compaction-arms-field-measurement.py
+#   the same Δ under both token columns (the constant is 25350.2 tokens/call, DECLARED):
+#     with_fixed = -40.1421% <- the headline above, no_fixed = -58.9356%
+#     with_fixed = -22.7575% <- the headline above, no_fixed = -42.1513%
+#     with_fixed =  -7.9204% <- the headline above, no_fixed = -19.5665%
+```
+
+### 3. What the three figures do and do not change
+
+- **The direction of the omission is that it flatters the mechanism.** Every
+  without-constant figure is a *larger* saving than its with-constant sibling — 1.47×,
+  1.85× and 2.47× — because an irreducible constant sits in the denominator and in both
+  terms of the numerator. Declaring it is the conservative choice; a document that printed
+  only the flattering column would be doing the thing this bar exists to prevent, and §5.1
+  printed only the **conservative** one. **The omission was in the safe direction and it
+  was still an omission.**
+- **No verdict moves.** −58.9356% is still short of the handed −80% target, the sign is
+  unchanged on all three pairs, and the TRADE-not-a-reduction ruling of §0 and §5.3 rests
+  on the **fidelity** axis (median anchor retention `0.0548` against a floor of
+  `0.001472`, 2,621 stable anchors lost), which no token column touches.
+- **The floors in §5.1 are not restated under the second column and this is deliberate.**
+  A floor is a spread in tokens at the grain of the statistic it gates; recomputing the
+  clearance verdicts under a second column would be reporting a second set of verdicts,
+  and the bar permits one. The percentages are disclosure; the verdicts stay where they
+  were declared.
+
+### 4. The instrument half, which landed first
+
+`CHK-FIXED-COST-DECLARED` used to test **key presence** for the two R1 ceiling columns on
+the **207** null-control rows, while its detail line claimed *"both the with-constant and
+without-constant figures are committed"*. It is now widened to the **600** arms rows and
+to the **printed report**: every reported pair must print a figure under both token
+columns and must hold the with-constant one in the headline position. The named mutation
+still falsifies it, and the widened conjunct falsifies it on its own — with
+`policy["fixed_cost_declared"]` deleted from the condition, `--mutate omit-fixed-cost`
+still exits 1 with the check RED, naming all three pairs. Counted from the printed verdict
+line, not from a grep over the source (RB-P48).
+
+### 5. Accounting
+
+**Model: `claude-opus-5[1m]`. Tokens UNMEASURED, wall-clock UNMEASURED** — no counter is
+exposed to this unit, and no self-estimate is offered.
+
+<!-- provenance: value=956 passed, 2 xfailed; commit=5f78fe8; command=.venv/bin/python -m pytest runtime-py/tests -q -->
+Gates at the instrument commit `5f78fe8`: **956 passed, 2 xfailed**, and ruff clean over
+`runtime-py` — stamped above with the commit beside the number, as
+`docs/record-vs-pointer.md` §2 requires of a cross-artifact co-moving count. Neither gate
+is evidence for anything in this amendment (RB-P28): nothing here is under `runtime-py/`.
