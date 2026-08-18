@@ -1373,3 +1373,61 @@ because the commands were chained without a failure check, and `4a74df8` carries
 collision. The error is the orchestrator's and is recorded rather than silently repaired:
 **a script whose precondition fails must not be followed by a step that assumes it
 succeeded.** Per this document's own rule, A2.4 is not edited.
+
+---
+
+### A2.10 A2.9 was wrong, and so was the number it was correcting
+
+**Appended, because A2.4 and A2.9 are both committed.**
+
+**The register is in `docs/eval-data/2026-08-18-loop-harness-b0.md`, committed at `1d6415d`,
+and it defines N-1 … N-13 with no gaps.** Read at HEAD rather than recalled:
+
+| | as the register defines it |
+|---|---|
+| **N-11** | `stopped_by = "run-cap"` was set for every endpoint exception, at any elapsed time |
+| **N-12** | **S5's Critical had already fired when it was found** — 4 of 131 worker calls |
+| **N-13** | **the `d2` sub-command has no `--mutate` flag** |
+
+**Both of the orchestrator's numbers were already taken.** A2.4's filing as N-12 collided
+with an existing entry; A2.9 "corrected" it to N-13, which collided with a *different*
+existing entry. **A2.9 moved the collision, it did not close it.** The `classify_stop`
+coverage gap that A2.9 asserts was N-12 **matches no definition site anywhere in this
+repository** — the orchestrator wrote a register entry without reading the register, which
+is invariant 12's failure inverted.
+
+**THE CORRECT NUMBERS, assigned here and defined here so they have a definition site:**
+
+> **N-14 · The selfcheck covered the formatter and not the classifier.** Reverting
+> `loop-harness.py`'s `stopped_by` ternary — the line that decides the label in a live run —
+> left the selfcheck **green at 0 RED**, while reverting `void_reason`'s string branch
+> reddened it. `CAP_TOL_S` occurred at exactly two places in the file, its definition and
+> that line, and no check reached the second. **Closed at `eca5117`** by lifting the ternary
+> into a pure `classify_stop(elapsed, exc)`; the same reversion now reddens **2** named
+> cases, and the selfcheck goes from 15 to 33 cases.
+
+> **N-15 · The committed `.jsonl` was produced by an earlier revision of the committed
+> `.py`.** `length_stops`, `truncated_writes` and `endpoint_error` are absent as **row-level
+> keys** in all six B0 rows though `3f52a86`'s `run_one` writes them, while the raw
+> `done_reason` field inside `calls` is present and sound at **127 `stop` / 4 `length` =
+> 131**. The artifact and its producer are different programs. **Open** — repairing it would
+> mean regenerating committed evidence, which this document forbids.
+
+**A2.4 and A2.9 are not edited.** Every occurrence of N-12 and N-13 in A2.4, A2.8 item 4
+and A2.9 is to be read as **N-15**. The unit that hit this refused to write either number
+into its source and recorded the dispute instead, which was the right call.
+
+**And the figure A2.9 was defending is itself superseded.** A2.1 records CANON-1 (a)(b)(c)
+at **3 distinct of 14**. An independent 14-run sample at `eca5117` measures **4 of 14**.
+**Neither is wrong.** Two independent 14-run samples of a quantity that has now been
+measured at 1-of-3, 2-of-4, 3-of-14 and 4-of-14 are not in contradiction — **the spread
+between them is N-9's claim, restated once more.** Rule (d)'s **1 of 14** reproduces
+exactly in both samples, as does the 2-removed / 1-added all-blank diff. **N-9 gets worse,
+not better, and stays open.** No figure in §2, Amendment 1 or A2.1 is restated.
+
+**Two smaller non-reproductions, recorded rather than left to be found.** A2.8 item 6's
+canonical oracle figure of **2,220** tokens measures **2,243** at `eca5117`, while bar
+§1.5's raw **2,253** reproduces exactly; rule (d) costs **−1 token**. And the orchestrator's
+"2 RED" for a `void_reason` reversion measures **3** — the mutation was specified in prose
+rather than as a diff, so the two are probably not the same mutation. **Neither figure is
+load-bearing: the number the closure rests on is the 0 RED, and it reproduces exactly.**
