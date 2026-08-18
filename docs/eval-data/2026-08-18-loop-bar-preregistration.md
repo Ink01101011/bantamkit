@@ -1350,3 +1350,26 @@ sharpens it further.
 7. **`R2` is dead and cannot be revived by any arm on this workload** (A2.3). A future bar
    that wants a tamper refutation needs a worker whose tamper rate under the null control
    is measurably below 6/6, and must measure that **before** declaring R2.
+
+---
+
+### A2.9 A numbering correction to A2.4, appended because A2.4 is committed
+
+**`4a74df8` filed the provenance gap as N-12. That number was already taken.** **N-12** was
+filed hours earlier, the same day, against `docs/eval-data/2026-08-18-loop-harness.py`: the
+selfcheck reddens when `void_reason`'s string branch is reverted (2 RED) but stays green at
+**0 RED** when `:593`, the ternary that actually assigns `stopped_by` in the live loop, is
+reverted — `CAP_TOL_S` occurs at exactly two places in the file and no check reaches the
+second.
+
+**The provenance gap of A2.4 is renumbered N-13.** Both references in A2.4 and in A2.8
+item 4 are to be read as **N-13**. Two distinct findings; a shared number would have merged
+them in the register.
+
+**Why this is appended and not edited.** The orchestrator intended to renumber before
+committing and the renumber did not run — its guard asserted two bold occurrences of the
+string and there is one bold and one plain, so the guard fired, the append ran anyway
+because the commands were chained without a failure check, and `4a74df8` carries the
+collision. The error is the orchestrator's and is recorded rather than silently repaired:
+**a script whose precondition fails must not be followed by a step that assumes it
+succeeded.** Per this document's own rule, A2.4 is not edited.
