@@ -5284,6 +5284,315 @@ not touched** and is J2's bar's problem, not this unit's.
   `docs/eval-data/2026-08-17-devteam-instrument-validation.md`, Amendment 3; the `.jsonl`
   is NOT regenerated and Amendments 1 and 2 are not edited.)
 
+#### O (2026-08-18, v0.23.0) — J2's closure: the target refuted by arithmetic, three TRADES and no reduction, and an instrument that reports 16 of 22
+
+Job `compaction-measured`, unit U7. The full record is
+`docs/eval-data/2026-08-18-compaction-closure.md`; the bar is
+`docs/eval-data/2026-08-17-compaction-bar-preregistration.md` (committed before the
+corpus was read, amended A/B before the first arm, amended C after the review);
+the corpus is `docs/eval-data/2026-08-17-compaction-corpus.md`; the arms are
+`docs/eval-data/2026-08-18-compaction-arms-measurement.md`; the adversarial review
+is `docs/eval-data/2026-08-18-compaction-review.md`. **This unit recorded and fixed
+nothing.** U5's four Majors and four Lows are open below, each with a command.
+
+##### The number, per stratum, with n on every figure — never pooled
+
+The user's ruling before any number existed: *"ห้าม pool เป็นเลขเดียว"*.
+
+**Stratum A — subagent sidechains.** Corpus n=206; declared hash-order prefix
+sample n=50; **effective n=24**, because 26 of the 50 have zero boundaries in B1
+and their B1 rows are bit-identical to B0 on all 22 outcome columns.
+
+| pair | conditionality | median, **n=24** | median, **n=50** |
+|---|---|---|---|
+| **B1−B0**, `context_compact` | **UNCONDITIONAL** | **−40.1421%** of B0 | **+0.0000%** of B0 |
+| B2−B1, trim *given* compaction | CONDITIONAL | −22.7575% of **B1** | — |
+| B3−B2, offload *given* compaction+trim | CONDITIONAL | −7.9204% of **B2** | — |
+
+**Both B1−B0 figures or neither.** The n=50 median is exactly zero because 26
+structural zeros own the middle of the distribution; the n=24 median is not the
+corpus. Without the declared fixed per-call constant, over the same n=24:
+**−58.9356%**, **−42.1513%** of B1, **−19.5665%** of B2 — committed on all 600 rows
+and never printed by the run, which is **M-U5-1**, open.
+
+**All three pairs are TRADES and none is a reduction.** Bar §4 reserves "reduction"
+for a delta at a retention within its floor with `anchors_lost_stable == 0`. Median
+anchor retention on B1−B0 is **0.0547955** at n=24 against a headline-grain floor of
+**0.001472**, with **2,621** anchors lost in all three repeats.
+
+**The handed 80% target is REFUTED on stratum A by arithmetic, before any arm ran.**
+R1's zero-summary ceiling over the n=104 informative stratum-A transcripts is a
+median **−42.6107%** with the declared constant and **−61.3963%** without it; **1 of
+104** transcripts has a *ceiling* reaching −80% with the constant, 3 of 104 without
+it. It survives all five compositions of reading A the bar's own sources permit, each
+on its own subset and each with the constant: **−42.6107%** at n=104, **−44.2110%**
+at n=94, **−48.6465%** at n=69, **−49.1159%** at n=65, **−64.1139%** at n=15.
+
+**Stratum B — top-level sessions. n=1, UNINFORMATIVE-BY-N, no verdict, no floor
+borrowed, and its ARMS ARE UNMEASURED** — a different state from UNINFORMATIVE-BY-N.
+The declared prefix stops at rank 50 and stratum B sits at rank 51; the rule was not
+amended after the fact to reach it. Its published boundary count of **12** is a
+**lower bound** (Amendment C(4)).
+
+**The recall axis is UNMEASURED, not "no benefit"** — `rehydrated_bytes` is 0 on all
+600 rows and the path never fired. The recall mode was pre-declared `lexical`.
+
+**The dependence structure appears in no committed artifact.** Stratum A is 4 parent
+clusters sized **138/31/27/10**, largest 67.0%; Kish `n_eff` at ρ=1 is **2.04** on the
+corpus and **3.56** on the 24-transcript headline set. **ρ=1 is a pessimistic bound,
+not an estimate.** No `.jsonl` carries a parent, session or cluster column and no
+document but the review mentions it — recording the join key would put a
+cross-project identifier into an artifact permitted numbers only, so the gap is
+declared rather than closed.
+
+##### The instrument, counted honestly — and the count is the deliverable
+
+**PINNED 16 of 22 named checks** (7 MEASURED, 9 PINNED), **1 UNMEASURED, 4 UNPINNED,
+1 INTERNAL**. Fifteen `--mutate` modes, **all exit 1**, and **twelve move a printed
+figure**; the three that move nothing but their own check line and the two-line banner
+are exactly the three UNPINNED checks that have a mutation at all. The fourth UNPINNED
+check has no mutation — its condition tests that a skipped count is an integer, which
+no artifact the program writes can falsify.
+
+**A closure reporting only "22 named checks, 0 red" would be the overclaim this whole
+program exists to prevent**, and the number that makes it one is the 4.
+
+##### Measured and NOT fixed — open, each with an attack direction
+
+The four Majors and four Lows below are **U5's, still open**. Every command was run at
+this HEAD. U5 filed three of the four Majors and all four Lows **with no command**;
+those commands are supplied in the closure document, and one could not be constructed
+at all — see RB-P52.
+
+- **M-U5-1 — the without-constant arm figures were promised beside every
+  with-constant one and never printed.** U4 §1.2 declares it of the fixed per-call
+  cost; it is true of R1 and false of the arms, though
+  `context_tokens_sent_no_fixed` is committed on all 600 rows. The named check
+  `CHK-FIXED-COST-DECLARED` tests only that the two **R1 ceiling** columns exist on
+  the B0 rows and cannot see the arms at all. Direction is honest — the printed
+  figure is the smaller saving — and the omission is still against the unit's own
+  declaration. **Attack:** for every "printed beside" promise, name the check that
+  enforces it. (Layer: `docs/eval-data/`. Command in the closure document §6.)
+- **M-U5-2 — anchor retention may be the compression ratio wearing a fidelity name,
+  and the quantitative claim is NOT REPRODUCIBLE.** The qualitative Major stands:
+  retention is a proxy, bar §3.2 says so, and nothing here separates "the block is
+  small" from "the block lost the right strings". The *numbers* do not: only the
+  retention median (0.0547955, n=24) comes from a committed column. The filed ratio
+  rests on "bytes it replaced", which is not a committed column and not derivable
+  from one; five candidate denominators built from the committed columns span
+  0.000518 to 0.410644 at n=24 and none matches the filed value. **The filed ratio is
+  downgraded to UNREPRODUCIBLE and is not repeated as a number.** **Attack:** before
+  believing a ratio, name the committed column its denominator comes from.
+  (Layer: `docs/eval-data/`.)
+- **M-U5-3 — events are dropped by the cutoff guard before the skip is counted, and
+  the count GREW within one day.** In `reconstruct()` the guard
+  `if not survey._under_cutoff(...): continue` precedes
+  `skipped[kind] = skipped.get(kind, 0) + 1`, so a cutoff-dropped event never enters
+  `skipped_event_kinds` and `CHK-EVERY-SKIPPED-KIND-ENUMERATED` cannot see it, while
+  bar §1.2 makes an unenumerated skip VOID. U5 measured 1,314 unenumerated drops
+  (344 of carried kinds, 553,877 content bytes) earlier on 2026-08-18; re-measured
+  hours later it is **1,471** (413 of carried kinds, **713,315** bytes) against a
+  committed enumerated 1,123 that does not move. **Reading-dependent — ESCALATED, not
+  picked**: either the transcript *is* the pre-cutoff window and nothing was skipped,
+  or it is the file and §1.2 fires. Both arms see the same truncated input, so no
+  delta is biased. **Attack:** look for a `continue` that precedes the counter meant
+  to observe it, and re-run a live count on a second date.
+  (Layer: `docs/eval-data/`. Command in the closure document §6.)
+- **M-U5-4 — the fidelity floor is taken over one arm where the token floor is taken
+  over two.** Bar §3.1 departure 1 makes the token floor the max over both arms and
+  §3.2 says the fidelity floor has "the same shape"; the program computes it from arm
+  Y only. Reproduced at n=24: B1−B0 `0.001472` either way, B2−B1 `0.011034` either
+  way, **B3−B2 `0.009446` against `0.011034`, a factor of 1.168**. No verdict moves and
+  the direction is harsher on the mechanism; filed because the two definitions are not
+  the same shape and one will matter on a corpus where retention is not two orders of
+  magnitude below its floor. **Attack:** wherever a bar clause says "the same shape as"
+  another, diff the two implementations. (Layer: `docs/eval-data/`.)
+- **L-U5-1 — the frozen anchor data carries dead weight, and structurally more than
+  empirically.** The `screaming` class contributes 0.00% of the anchor set because it
+  requires an underscore and `snake` — which matches uppercase — precedes it in the
+  alternation, so it can never win. **27 of 35** stop-list entries can never match
+  **any** class at `ANCHOR_MIN_LENGTH = 6`, structurally; U5's empirical 29 of 35 that
+  never fired is the same fact plus two entries that could match and did not occur.
+  The stop-list removed 48 of 2,942 anchors, 1.63%. **Direction: evidence AGAINST
+  tuning — a tuned list fires.** Not fixed, because editing the frozen lists is what
+  bar §3.2 forbids. **Attack:** run each frozen list against its own consumer and ask
+  what could ever match. (Layer: `docs/eval-data/`.)
+- **L-U5-2 — retention is scored by substring containment.** `_retained_anchors` ends
+  `return {anchor for anchor in anchors if anchor in installed}`, so an anchor counts
+  as retained when it occurs inside a longer string. Generous to the mechanism;
+  immaterial at a retention of 0.0548 against a bar of 0.9985. **Attack:** read the
+  scorer, not its name. (Layer: `docs/eval-data/`.)
+- **L-U5-3 — line-number pins in amend-only artifacts, and the census is larger than
+  filed.** See RB-P50 below for the measured form. Binding and still binding: any
+  amendment to `2026-08-17-compaction-corpus.md` must **append at the end** or
+  Amendment B's six pins into it break irreparably. This closure appends nothing to
+  that document. (Layer: `docs/eval-data/`.)
+- **L-U5-4 — the fidelity axis's own free parameter cannot be audited from the
+  committed evidence.** Recomputing retention under a different anchor class list
+  needs the installed block *text*, which is not committed and could not be without
+  breaching the user's "numbers and statistics only" fence. A reviewer can verify the
+  lists never moved and can measure their effect on `anchors_total`; a reviewer cannot
+  re-derive retention. **Recorded rather than fixed — the fence is right and the
+  limitation is real at the same time.** (Layer: the fence, not the code.)
+
+##### New findings
+
+- **RB-P47 — a cross-check between two transcriptions of one rule is a tautology, and
+  it can carry a load-bearing check for a whole job.** Bar §1.2's VOID check compares
+  `recorded_content_bytes` against `reconstructed_content_bytes` and the program's own
+  docstring said the two were *"computed by different code paths over the same input"*
+  so that an unhandled block type would turn the check RED. They dispatch on the
+  identical four types — `text`, `thinking`, `tool_use`, `tool_result` — and both fall
+  through to empty/zero, so **an unhandled block contributes 0 to BOTH sides** and the
+  delta stays 0. Two code paths, one rule, transcribed twice. Measured cost on this
+  corpus: **54 blocks** (`tool_reference` ×52, `image` ×2), all nested inside
+  `tool_result` content, **821,174 B**, **2.7578%** of the 29,776,563 B the
+  reconciliation certifies as perfectly carried, across 22 of 207 transcripts. It is
+  invisible three ways at once — not in the byte delta, not in `skipped_event_kinds`
+  (they are blocks, not events), and not in the survey's `content_block_kinds`, which
+  enumerates top-level blocks only. **Blast radius measured before it was published,
+  because a Critical that overstates itself is the failure mode on this side: 150 B
+  across 3 of the 24 informative sampled transcripts, so no arm figure and no verdict
+  moves.** The rule: **before trusting any A-versus-B agreement, name an input that
+  would make them disagree.** If you cannot, the agreement is a theorem.
+  **Attack that closed it:** leave the rendering rule byte-identical — changing it
+  would have silently invalidated `reconstructed_content_bytes` on 22 committed rows —
+  and add a separate census whose non-emptiness reddens a new check. **Command.**
+  `.venv/bin/python docs/eval-data/2026-08-18-compaction-arms-field-measurement.py --mutate unmodelled-content-block`
+  → exit 1. (Instrument — the null control. Recorded in the bar's Amendment C(4); the
+  `.jsonl` is NOT regenerated.)
+- **RB-P48 — count vacuity from the OUTPUT, not from the source.** An earlier audit
+  grepped each mutation policy key for its consumers and found **5** vacuous. Asking
+  instead *what changes in the printed report* found **11 of 14** mutations moving
+  nothing but their own check line, and **9 of 20** named checks whose condition reads
+  no measured data at all. Two keys the source-side audit cleared were dead on the
+  evidence: `borrow_floor`'s site is real but guarded by `stratum == "B"` and **every
+  committed arm row is stratum A**, so the branch is unreachable; `threshold_t`'s
+  schedule is built from the module constant, not from the policy dict. **And the
+  exit-2 detector cannot catch this class by construction** — a tautological mutation
+  *does* redden its named check, so it exits 1, the correct-looking code. The
+  instrument built to detect a mutation that proves nothing is blind to exactly this
+  shape. **No mutation was deleted**; seven flags gained a consumer that moves a
+  printed number and the remainder are declared in a printed self-audit. **Command.**
+  `.venv/bin/python <arms program> > /tmp/base.txt` then per mode
+  `diff <(grep -v '^  \[' /tmp/base.txt) <(grep -v '^  \[' /tmp/m.txt) | grep -c '^[<>]'`
+  → `2` (the banner alone) on `borrow-floor`, `pick-a-grain` and
+  `zero-floor-always-valid`, `≥3` on the other twelve. (Instrument — the pinning
+  harness for this job's own claims.)
+- **RB-P49 — a naive whole-directory liveness sweep is itself an evidence-mutating
+  operation, and TWO of the twelve committed field programs rewrite a committed
+  artifact and exit 0 while doing it.** A closure criterion of the form "all field
+  programs exit 0" invites running every program with no arguments. Measured over the
+  twelve: **twelve of twelve exit 0 under an invocation appropriate to each**, but
+  **five make a bare invocation the wrong invocation** — one raises `IndexError` and
+  exits 1, two exit 2 from argparse on a required positional, and **two overwrite
+  their own committed `.jsonl` and exit 0**. Both destructive programs default
+  `repo_root` to `.` and take the write branch whenever `--check` is absent; both
+  announce it, printing `mode: write` where `--check` prints
+  `mode: --check (writes nothing)`. The handoff into this closure named **one** such
+  program; the measurement found **two**. Exit code 0 is not a liveness signal when
+  the program's default mode is to write. **Attack:** either verify a program by the
+  invocation its own artifact documents, or make the destructive mode the flagged one
+  and the read-only mode the default. **Command.**
+  `grep -n "writes nothing.*else 'write'" docs/eval-data/*.py` → two hits;
+  `git ls-files 'docs/eval-data/*.py' | wc -l` → `12`. The write direction was not run.
+  (Process, and Layer: `docs/eval-data/` for the fix.)
+- **RB-P50 — pinning to an immutable commit trades drift risk for unverifiability, and
+  18 of this job's 30 file:line pins took that trade without declaring it.** Line pins
+  drifted six times in J1 (RB-P40) and once more inside this job, corrected at
+  `3ac1273` to a pattern-delimited span after one added `import` line shifted
+  everything below it. The measured census across the four compaction documents at this
+  HEAD is **30 distinct `file:line` pins**: **12** point into files in this repository,
+  where the target is a living document at a mutable ref and *can* drift; **18** point
+  into `compaction-mcp` at the pinned commit `0a15cff`, where they *cannot* drift and
+  where **no reader of this repository can resolve them** — the mechanism repo is not
+  vendored and CI never checks it out. All 30 resolve today, the 18 external ones on
+  this machine only. **The rule is not "count the drifts", which is a number this job
+  cannot reproduce from the repository** (three of the four drifts the handoff cites
+  are recorded only in gitignored `.shiftwork/` material, and one probe that went
+  looking found none). **The rule is: pattern-delimited spans for anything mutable, an
+  immutable commit for anything external, and the unverifiability declared when you
+  choose the second.** **Command.** the census script in
+  `docs/eval-data/2026-08-18-compaction-closure.md` §6, L-U5-3; and
+  `git log --oneline -1 3ac1273`. (Process.)
+- **RB-P51 — UNMEASURED is a verdict, and a check that quietly passes on data it cannot
+  see is not the same as one that reports it read nothing.** Two instances measured in
+  this job. `CHK-NO-UNMODELLED-CONTENT-BLOCK` reports **UNMEASURED, not PASS**, because
+  its census columns postdate the committed rows and bar §9(5) forbids regenerating
+  them — a census that never ran is not a census that found nothing. `rehydrated_bytes`
+  is **0 on all 600 rows**, which is the recall path never firing and **not** the recall
+  path delivering no benefit; the axis is reported UNMEASURED and no figure is derived
+  from it. Stratum B's arms are likewise **UNMEASURED** rather than
+  UNINFORMATIVE-BY-N — collapsing the two would let "we did not run it" read as "we ran
+  it and learned nothing". **Attack:** for every green check, ask what data its
+  condition actually read; for every zero column, ask whether the path executed.
+  **Command.** the acceptance run prints
+  `22 named checks, 0 red, 1 UNMEASURED, 0 escalations` and names the UNMEASURED one.
+  (Instrument.)
+- **RB-P52 — a review that opens by declaring every finding carries a demonstrating
+  command, and seven of its twelve do not — one of them irreproducible from the
+  committed evidence at all.** `2026-08-18-compaction-review.md` opens: *"every finding
+  below is filed with a demonstrating command, an attack direction and a layer"*.
+  Measured: all **3 Criticals** carry one, and **1 of 4 Majors** does; **3 Majors and
+  4 Lows carry none** — 7 of 12. The cost is not stylistic. **M-U5-2's central ratio
+  cannot be reconstructed**: its denominator, "the bytes it replaced", is not a
+  committed column, five candidate reconstructions from the committed columns span
+  0.000518 to 0.410644 at n=24, and with no command there is no way to learn which was
+  meant. So the closure unit had to record that Major as UNREPRODUCIBLE, which is a
+  strictly worse outcome than either confirming or refuting it. The other six were
+  reproducible and were reproduced, and two came out **stronger than filed**
+  (M-U5-3's count grew from 1,314 to 1,471 within the same day; L-U5-1's stop-list dead
+  weight is structural for 27 of 35 entries, not merely empirical for 29). **Attack:**
+  make "carries a runnable command" a property the review's own summary table asserts
+  per finding, so that a finding without one is visible at a glance rather than
+  discovered by the unit that has to record it. (Process.)
+
+##### Invariants re-verified at this section's HEAD rather than cited
+
+`docs/eval-data` against `origin/main`: **0 deleted lines** across the whole job —
+nothing regenerated, nothing retro-edited — with 4,096 insertions in `.md` and
+`.jsonl`. The only deletions anywhere under `docs/eval-data` are **5 lines in an
+instrument** (RB-P46's byte-identity checker), not in evidence.
+`assets/evals/devteam/`, `assets/evals/tasks/` and `assets/evals/perturbations/`:
+**0 files changed** by this job. The bar carries **three** dated amendments A, B and C
+with `§0–§11` untouched, and this closure appends nothing to it. `runtime-py/src/`:
+**0 deleted lines**, which is what makes `0.22.0 → 0.23.0` a MINOR rather than a
+major. Suite: **932 passed, 2 xfailed**. `build_tasks.py check`: **OK — 8 tasks**.
+Acceptance: **exit 0**, 22 named checks, 0 red, 1 UNMEASURED, 0 escalations. All 15
+mutations: **exit 1**. Corpus survey `--check`: **exit 0**, 207 rows.
+
+```sh
+git diff --numstat origin/main..HEAD -- 'docs/eval-data/*.jsonl' 'docs/eval-data/*.md' \
+  | awk '{a+=$1;d+=$2} END {print a, d}'
+git diff --numstat origin/main..HEAD -- runtime-py/src | awk '{d+=$2} END {print d+0}'
+git diff --stat origin/main..HEAD -- assets/ | wc -l
+```
+
+**CI is confirmed at content level and NOT at run level.** `gh run list --branch
+feat/compaction-measured` is **empty** — the branch is unpushed and pushing it is not a
+unit's to do. The most recent run in this repository is `32042046595`, `ci`, success, on
+`main` at `f0cf440`. CI's three steps pass locally at this HEAD in the exact form the
+workflow runs them, on Python **3.12.13 only**; the workflow's 3.11 leg is unconfirmed.
+**RB-P41's CI half is still open and this job did not touch it**: nothing in
+`.github/workflows/ci.yml` reads `docs/eval-data`, so no field program, no acceptance
+run and no mutation is exercised by CI on any branch.
+
+**The scope is stated in both directions, and the excluded side is live where the
+included side is not.** In: 207 transcripts selected by recorded `cwd` inside the
+bantamkit repo, not by the project directory's name — Claude Code keys that directory
+by **launch** cwd, so selecting by name takes 12 files and discards 199 of the 211 that
+carry a bantamkit cwd. Out: 426 files with no bantamkit `cwd` today (U3 committed 502),
+plus **3** whose `cwd` spans bantamkit and four other project roots — 93.0% bantamkit by
+line, the only long human-driven multi-day sessions in the universe, excluded because a
+replay would rebuild a prefix carrying other projects' file contents, with the user shown
+the cost and declining to lift it. Re-running the survey today gives a universe of
+**636** against U3's committed **712**: the 76-file difference is entirely on the excluded
+side and the 207 committed rows still reproduce on every named non-live column. That is
+what the cutoff buys — it freezes the rows, not the directory.
+
+**Nothing was merged and nothing was tagged.** Tagging has never been authorized in this
+program; the merge belongs to the orchestrator.
+
 ### The `qwen-implementer` cell on RB-P27 lever (2) (2026-08-12)
 
 The first measured cell of the `qwen-implementer` backlog item, run on the
