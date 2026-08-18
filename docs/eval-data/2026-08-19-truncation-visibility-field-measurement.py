@@ -94,7 +94,14 @@ def _import_bantamkit(root: Path):
     sys.path.insert(0, str(root / "runtime-py" / "src"))
     import httpx
     from bantamkit.agent import Agent, ToolDef
-    from bantamkit.client import Message, OpenAICompatible, Response, Tool, ToolCall, Usage
+    from bantamkit.client import (
+        Message,
+        OpenAICompatible,
+        Response,
+        Tool,
+        ToolCall,
+        Usage,
+    )
 
     return httpx, Agent, ToolDef, Message, OpenAICompatible, Response, Tool, ToolCall, Usage
 
