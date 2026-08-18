@@ -15,6 +15,22 @@ evidence, so those four columns were pinned by nodes and by nothing else.
 BYTE-IDENTICAL to the committed one, so the committed rows are reproducible rather than
 merely present. It writes nothing.
 
+AMENDED 2026-08-17, J2/U1, filed as RB-P46 — the sentence above is kept as written and
+this note is attached to it rather than replacing it. Byte-identity is still the first
+thing `--check` tries and still the strongest result it can print. When it fails, the
+check no longer stops there: it falls back to comparing **the committed file's own key
+list**, row by row, allowing exactly the columns DECLARED in
+`ADDITIVE_KEYS_THE_ARTIFACT_PREDATES` to be present on the regenerated side and absent
+from the committed one. That is the same additive-field convention `evalrun.py` documents
+in place and has now exercised three times, applied to the CHECKER instead of only to the
+writer. What is deliberately NOT relaxed: the row count is still exact; every key the
+committed file carries is compared by its serialised bytes, so `200` versus `200.0` still
+fails; an UNDECLARED new key fails; a committed key deleted from the artifact fails; and
+the committed keys reordered among themselves fail. Declaring a column is a dated edit to
+a named tuple, so drift stays deliberate and recorded. Why this repair rather than
+regenerating the `.jsonl`: see Amendment 3 of
+`2026-08-17-devteam-instrument-validation.md`.
+
 WHAT THIS RUN IS. Two `GRAPH_CONFIGS` arms — `graph-annotate` and `graph-cache` — over
 the eight dev-team tasks, one pass each, driven through `bantamkit.evalrun.run_task`
 (the same function `evalrun.main` calls per task, config and repeat) by M3's scripted
@@ -73,6 +89,16 @@ DARK_COLUMNS = (
     "annotate_marker_bytes",
 )
 
+# RB-P46, 2026-08-17. Columns added to the row AFTER this artifact was committed, so
+# the committed rows cannot carry them and `--check` must not read their absence as a
+# failure to reproduce. Every entry is a dated, deliberate declaration — an undeclared
+# new key still turns `--check` red, which is what keeps this from being a hole. Adding
+# a column means adding a line here and amending the artifact's record; it is not a
+# licence to stop checking.
+#   * `model` — added by RB-P38's fix (J2/U1), the column that names which model
+#     answered. This artifact's rows were written at `9561e8c`, before it existed.
+ADDITIVE_KEYS_THE_ARTIFACT_PREDATES = ("model",)
+
 
 def _load_by_path(path: Path, name: str):
     spec = importlib.util.spec_from_file_location(name, path)
@@ -122,6 +148,81 @@ def build_rows(root: Path) -> list[dict]:
 
 def render(rows: list[dict]) -> str:
     return "".join(json.dumps(row) + "\n" for row in rows)
+
+
+def compare_on_committed_keys(
+    committed_text: str, regenerated: list[dict]
+) -> tuple[list[str], list[str]]:
+    """Compare regenerated rows against the committed file ON THE COMMITTED KEY SET.
+
+    RB-P46. Returns `(problems, added_keys)`. `problems` is empty exactly when the
+    committed file reproduces under the convention: the same row count; every
+    regenerated key absent from the committed row is one of the DECLARED additions in
+    `ADDITIVE_KEYS_THE_ARTIFACT_PREDATES`; the regenerated key list with those declared
+    additions removed equals the committed row's key list exactly, in order; and the
+    regenerated row restricted to the committed keys serialises to the committed line
+    character for character. `added_keys` names the declared additions actually seen.
+
+    This is not a loosening invented for convenience. It is the additive-field
+    convention `evalrun.py` documents for the row, applied to the checker: a column
+    added after the artifact was committed must not turn a reproduction check red, and
+    NOTHING else may pass. The declaration is what makes that precise instead of
+    permissive, and three of the four properties below were established by mutating a
+    scratch copy rather than by assertion:
+
+      * an UNDECLARED new key fails, wherever it sits. Tolerating unknown keys by
+        position was tried first (the committed list as a strict prefix of the
+        regenerated one) and is WRONG for this artifact: `model` is trailing on
+        `TaskResult`, but `build_rows` appends `kind`, `ladder_arm` and `client` after
+        `asdict()`, so in the ROW's key order the new column lands mid-list. The
+        control went red. Position cannot carry this rule; a declaration can;
+      * a key the committed file carries that the regenerated row does not fails, and
+        so does a committed key DELETED from the artifact — it becomes an undeclared
+        key on the regenerated side. A set-difference version of this function PASSED
+        that mutation, which is the wrong repair wearing the right result;
+      * the committed keys reordered among themselves fails;
+      * a value that differs fails on serialised bytes, so `200` versus `200.0` fails.
+
+    Adding the next column therefore means declaring it here, in a dated line, which is
+    the point: the drift becomes a deliberate act with a record instead of a checker
+    that quietly stops checking.
+    """
+    problems: list[str] = []
+    committed_lines = [line for line in committed_text.splitlines() if line.strip()]
+    if len(committed_lines) != len(regenerated):
+        problems.append(
+            f"row count: committed {len(committed_lines)}, "
+            f"regenerated {len(regenerated)}"
+        )
+        return problems, []
+
+    added: list[str] = []
+    for index, (line, regen) in enumerate(
+        zip(committed_lines, regenerated, strict=True)
+    ):
+        committed_keys = list(json.loads(line))
+        residual = [
+            key
+            for key in regen
+            if key in committed_keys or key not in ADDITIVE_KEYS_THE_ARTIFACT_PREDATES
+        ]
+        for key in regen:
+            if key not in committed_keys and key not in added:
+                added.append(key)
+        if residual != committed_keys:
+            problems.append(
+                f"row {index}: the regenerated keys are not the committed keys plus "
+                f"declared additions, so this is not an additive change"
+            )
+            problems.append(f"    committed keys:            {committed_keys}")
+            problems.append(f"    regenerated, undeclared:   {residual}")
+            continue
+        projected = json.dumps({key: regen[key] for key in committed_keys})
+        if projected != line:
+            problems.append(f"row {index}: differs on a key the committed file carries")
+            problems.append(f"    committed:   {line}")
+            problems.append(f"    regenerated: {projected}")
+    return problems, added
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -192,13 +293,35 @@ def main(argv: list[str] | None = None) -> int:
             print(f"FAILED — {ARTIFACT} does not exist, so there is nothing to check against.")
             return 1
         committed = out.read_text()
-        if committed != text:
-            print(f"FAILED — regenerating {ARTIFACT} does not reproduce the committed bytes.")
-            print(f"  committed: {len(committed)} B, {committed.count(chr(10))} rows")
-            print(f"  regenerated: {len(text)} B, {text.count(chr(10))} rows")
+        if committed == text:
+            print(RULE)
+            print(
+                f"OK — {ARTIFACT} regenerates byte-identically "
+                f"({len(text)} B, {len(rows)} rows)."
+            )
+            print(RULE)
+            return 0
+        # Not byte-identical. RB-P46: that alone is not a failure, because the row is
+        # under an additive trailing-field convention and a new column changes the
+        # bytes without changing anything the committed file asserts. Fall back to the
+        # committed file's OWN key set. Row count and every shared key stay exact.
+        problems, added = compare_on_committed_keys(committed, rows)
+        print(f"  committed: {len(committed)} B, {committed.count(chr(10))} rows")
+        print(f"  regenerated: {len(text)} B, {text.count(chr(10))} rows")
+        print(f"  keys the regenerated rows add: {', '.join(added) or '(none)'}")
+        if problems:
+            print(f"FAILED — regenerating {ARTIFACT} does not reproduce the committed rows.")
+            for problem in problems:
+                print(f"  {problem}")
             return 1
         print(RULE)
-        print(f"OK — {ARTIFACT} regenerates byte-identically ({len(text)} B, {len(rows)} rows).")
+        print(
+            f"OK — {ARTIFACT} reproduces on every key the committed file carries "
+            f"({committed.count(chr(10))} rows), and is NOT byte-identical: the "
+            f"regenerated rows add {len(added)} DECLARED key(s) the committed file "
+            f"predates ({', '.join(added)}). Additive only — no committed key changed, "
+            f"none went missing, none moved, and the row count is unchanged."
+        )
         print(RULE)
         return 0
 

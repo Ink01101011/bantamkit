@@ -360,11 +360,13 @@ def main() -> int:
             and r["repeat_reader_calls"] == r["ledger_repeats"]
             and r["context_bytes_sent"] == r["recomputed_context_bytes"]
         )
+        # Same PEP 701 hazard as the WORKLOAD row below: built first, not nested.
+        row_triple = f"{r['ledger_reads']}/{r['ledger_distinct']}/{r['ledger_repeats']}"
         print(
             f"{r['task']:<24}{r['reader_calls']:>5}{r['unrecorded_reader_calls']:>6}"
             f"{r['repeat_reader_calls']:>5}{r['collapsed_calls']:>5}{r['collapsed_bytes']:>6}"
             f"{r['annotate_marker_bytes']:>5}{r['query_bytes']:>5}{r['context_bytes_sent']:>8}"
-            f"{f'{r["ledger_reads"]}/{r["ledger_distinct"]}/{r["ledger_repeats"]}':>17}"
+            f"{row_triple:>17}"
             f"{('yes' if reconciles else 'NO'):>5}"
         )
         if r["reader_calls"] - r["unrecorded_reader_calls"] != r["ledger_reads"]:
@@ -379,6 +381,14 @@ def main() -> int:
         if not r["passed"]:
             failures.append(f"{r['task']}: A4 the reference walk did not score")
     print("-" * len(hdr))
+    # Built before the f-string, not nested inside it. The nested form this
+    # replaces reused `"` three levels deep, which is PEP 701 syntax and parses
+    # only on Python 3.12+ — CI's 3.11 leg rejected the whole module at import.
+    ledger_triple = (
+        f"{sum(r['ledger_reads'] for r in rows)}/"
+        f"{sum(r['ledger_distinct'] for r in rows)}/"
+        f"{sum(r['ledger_repeats'] for r in rows)}"
+    )
     print(
         f"{'WORKLOAD':<24}{sum(r['reader_calls'] for r in rows):>5}"
         f"{sum(r['unrecorded_reader_calls'] for r in rows):>6}"
@@ -388,9 +398,7 @@ def main() -> int:
         f"{sum(r['annotate_marker_bytes'] for r in rows):>5}"
         f"{sum(r['query_bytes'] for r in rows):>5}"
         f"{sum(r['context_bytes_sent'] for r in rows):>8}"
-        f"{f'{sum(r["ledger_reads"] for r in rows)}/'
-           f'{sum(r["ledger_distinct"] for r in rows)}/'
-           f'{sum(r["ledger_repeats"] for r in rows)}':>17}"
+        f"{ledger_triple:>17}"
     )
     print()
     print("read=reader_calls  unrec=unrecorded_reader_calls  rept=repeat_reader_calls")
