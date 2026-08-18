@@ -5593,6 +5593,381 @@ what the cutoff buys — it freezes the rows, not the directory.
 **Nothing was merged and nothing was tagged.** Tagging has never been authorized in this
 program; the merge belongs to the orchestrator.
 
+#### P (2026-08-19) — J3's instrument hygiene: two of eight closed, three carried, three recorded-and-dropped, and a rule that got a checker
+
+The plan was committed before any fix existed
+(`docs/eval-data/2026-08-19-instrument-hygiene-plan.md`, `5458059` + its Amendment 1 at
+`da5f073`) and it ruled **2 CLOSE, 3 CARRY, 3 RECORD-AND-DROP** on the eight open findings
+of `2026-08-18-compaction-review.md`. **A plan that closed all eight would have been the
+wrong plan**, and the three dispositions the prep probe recommended and this job overturned
+each carry the measurement that overturned them.
+
+**Nearly every figure in this section was recomputed on this branch, and the three that
+were not are labelled as carried where they appear and listed together at the end.** The
+prep probe that opened this job was itself measured wrong in four places (plan §1.1–§1.9),
+so a figure repeated rather than re-derived is a liability and is marked as one.
+
+##### Closed, each with a before and an after from the same command
+
+- **M-U5-1 — the fixed per-call cost was declared and only half-disclosed.** The check
+  `CHK-FIXED-COST-DECLARED` tested key presence for the two R1 ceiling columns on the 207
+  null-control rows while claiming *"both the with-constant and without-constant figures
+  are committed"*. It never looked at the 600 arms rows and it could not see the printed
+  report. `grep -c no_fixed` over the committed arms measurement returned **0**: three
+  percentages computable from committed columns, written down nowhere.
+  **Both halves closed.** The check is widened to the arms rows and to the printed report —
+  every reported pair must print a figure under both token columns and must hold the
+  with-constant one in the headline position — and a dated Amendment 1 appended to
+  `2026-08-18-compaction-arms-measurement.md` prints the three figures:
+
+  | pair | with the constant | without it | ratio |
+  |---|---|---|---|
+  | B1 − B0 | −40.1421% | −58.9356% | 1.47× |
+  | B2 − B1 | −22.7575% | −42.1513% | 1.85× |
+  | B3 − B2 | −7.9204% | −19.5665% | 2.47× |
+
+  **The omission was in the safe direction and it was still an omission**: every
+  without-constant figure is a *larger* saving, so the document printed the conservative
+  column. No verdict moves; −58.9356% is still short of the handed −80%.
+  **Command.** `.venv/bin/python docs/eval-data/2026-08-18-compaction-arms-field-measurement.py`
+  — before: `[PASS] … both the with-constant and without-constant figures are committed`,
+  `grep -c no_fixed` on the report **0**. After: `[PASS] … 3 reported pair(s), of which 0
+  PRINTED fewer than both figures and 0 put the without-constant figure in the headline
+  position`, `grep -c no_fixed` on the report **3**. `--mutate omit-fixed-cost` exits 1 with
+  the check RED naming all three pairs, **and still does with the declaration boolean
+  deleted from the condition** — the widened conjunct is load-bearing on its own, counted
+  from the printed verdict line and not from a grep over the source (RB-P48). (Instrument.)
+
+- **M-U5-4 — the bar's fidelity formula and the prose two lines above it disagree.**
+  §3.1's fenced block reads `max over the two arms X,Y of ( … )`; §3.2's block has **no
+  arms wrapper at all**. Only prose claims they have the same shape, and it claims it
+  **three** times, not twice as the plan recorded — `grep -c 'same shape'` over the bar
+  returns **4**, one of which (§1.2) is unrelated, and the third of the remaining three is
+  inside Amendment A, which is itself amend-only. **The program implemented the executable
+  block**, filtering on `r["arm"] == y` with no loop over `x`, and it is not in error:
+  given a contradiction between a fenced block and a sentence about it, implementing the
+  block is the defensible choice. Closed by **Amendment D appended to the bar**, ruling the
+  prose authoritative for future runs, with the program untouched — closing this by
+  changing the program would have been fixing the artifact that was right.
+  **What it is worth, re-derived here:** per-arm headline retention spread B0 **0.000000**
+  (retention is 1.0 by construction), B1 0.001472, B2 0.011034, B3 0.009446. Two of three
+  pairs are identical **permanently** — for any `Y − B0`, `max(0, spread(Y)) = spread(Y)`.
+  Only B3 − B2 moves, 0.009446 → 0.011034, **1.168×**, a shift of **0.001588** against a
+  gap of **0.9276755**: the fix closes **0.17%** of the distance and the gap is **584×** the
+  shift. **The verdict is BELOW ITS FLOOR under both definitions, on all three pairs, at
+  both grains** — had either reading flipped a verdict this would have escalated instead of
+  shipping the new number. (Layer 2 — the wording, not the mechanics.)
+
+##### Closed in code: RB-P53's class, the two sites that are in this repository
+
+Both are **LATENT CODE-PATH DEFECTS AND NOT ACTIVE CONTAMINATIONS**, and the negative is
+measured rather than assumed. SHAPE probe item N-7, left UNMEASURED by the probe and run
+here: `tokens / model_calls` over **7,804 rows across 78 committed files**, **1,770**
+distinct values, **zero** exact hits on any power-of-two cap {512 … 32768}, per-call
+maximum **2,625** — three orders of magnitude below the windows in question. **No committed
+row is sitting on a cap.** Nothing below restates any number.
+
+- **S4, `client.py` (Layer 3).** `usage` was copied without validation and `finish_reason`
+  did not appear in the file at all, so a length-stopped completion and a finished one were
+  the same object. Now: `Usage.finish_reason` read off the choice, a `truncated` property,
+  and `Usage.prompt_tokens_verdict` in {`MEASURED`, `VOID`, `UNCHECKED`} against a
+  `context_window` the caller **declares and the client never sends**. `VOID` is
+  RB-P53's shape — a silently clamped prompt reports the window in the field a reader takes
+  for a prompt size. `UNCHECKED` is RB-P51 — no declaration, so nothing could be compared,
+  and that is not `MEASURED`. Both fold worst-first through `__add__`, so a void call
+  poisons its sum and a cut call survives it. **It is a detector and not a preventer**, said
+  in the source: it cannot stop a clamp, cannot see one below the window, and cannot tell a
+  clamped prompt from a genuine prompt exactly `context_window` tokens long.
+- **C-6, `agent.py` / `textutil.py` (Layer 1).** Observation truncation was announced **in
+  band** — `[truncated N bytes]` inside the string handed to the model — and the number was
+  thrown away, so a run whose evidence was cut and one whose was not were the same object to
+  every caller, scorer and artifact. Now `AgentResult.observations_truncated` and
+  `.observation_bytes_dropped`, zero on an uncut run. `truncate` returns byte-identical
+  output and `contract.py` and `filegraph.py` are unchanged.
+
+**Command, and the same one for both.**
+`.venv/bin/python docs/eval-data/2026-08-19-truncation-visibility-field-measurement.py .`
+— a field program committed **before** either fix so that the before and the after come
+from one program and one command.
+
+```
+BEFORE   FIELD case=S4-CUT endpoint_said=length client_reports=ABSENT context_window_accepted=False
+         FIELD case=S4-CLAMPED endpoint_prompt_tokens=4096 declared_window=4096 client_reports=ABSENT
+         FIELD case=C6-CUT expected_bytes_dropped=12000 column_bytes_dropped=ABSENT
+         SUMMARY checks=8 red=8      exit 1
+
+AFTER    FIELD case=S4-CUT endpoint_said=length client_reports=length context_window_accepted=True
+         FIELD case=S4-CLAMPED client_reports=VOID
+         FIELD case=S4-UNDECLARED client_reports=UNCHECKED
+         FIELD case=S4-FINISHED client_reports=stop prompt_tokens_verdict=MEASURED
+         FIELD case=S4-AGGREGATE left=MEASURED right=VOID summed=VOID
+         FIELD case=C6-CUT expected_bytes_dropped=12000 column_bytes_dropped=12000
+         FIELD case=C6-UNCUT column_bytes_dropped=0
+         SUMMARY checks=8 red=0      exit 0
+```
+
+`ABSENT` is a state, not a failure to look: the attribute did not exist. All **eight**
+checks are pinned by a mutation that changes the **input** — what the stub endpoint says,
+or what the loop is handed — never a policy flag whose only consumer is the condition of
+the check that names it (C-U5-2's defect). All eight exit 1 naming their own check; none
+exits 2. A bare invocation exits **2** from argparse and the program writes nothing
+anywhere (RB-P49).
+
+##### The record-vs-pointer rule, and its checker, in one commit
+
+`docs/record-vs-pointer.md` and `tools/amendguard/amendguard.py`, shipped together at
+`b533089` because a rule without a mechanism is another intention for the next pin drift to
+step on. **RECORD** — a number, a verdict, a table, a verbatim block, a claim — is amend
+only. **POINTER** — a closed list of four classes, P1 hyperlink, P2 section citation, P3
+`file:line` pin in all three of its forms, P4 stale-state marker — is correctable in place,
+in its own commit, with the correction stated in the body. **CO-MOVING COUNT** carries a
+machine-readable derivation the checker recomputes over the committed body. Anything
+unlisted falls through to `record`, which is the safe direction and is what makes
+`classify` total.
+
+**The checker's field run over its own branch is RED and that is the intended result.**
+`python tools/amendguard/amendguard.py check . 5845698..HEAD tools/amendguard/ledger.json`
+reported `rows=2 ok=0 red=2` with **nine unstamped gate expectations** across the plan's two
+commits. Amendment 1 §5 asked for a checker that catches the defect found in its own design
+document, and the defect was a bare pass count with no commit beside it. **Nothing was
+retro-edited to make it green.** Two of the nine are prose *about* a gate rather than an
+assertion of one; the rule is mechanical, over-reporting is the safe direction, and the
+imprecision is recorded in `docs/record-vs-pointer.md` §8 rather than carved into the
+checker as an exception — **an exception for "prose about a gate" is the seam the next bare
+number walks through.**
+
+**What is NOT guarded, stated because a guard described as wider than it is is this job's
+whole subject:** nothing runs the checker automatically (RB-P41's CI half still holds); a
+pointer corrected from one wrong line to another reads `OK`; merge commits emit no row; and
+**a stamped, plausible, wrong cross-artifact count is detected by nothing.** That last gap
+**stays open** and is not closed by broadening the definition.
+
+##### Recorded and dropped — three, each a legitimate close and none a silent omission
+
+- **M-U5-2 — the four filed ratios are withdrawn as unreconstructible.** Re-running the
+  sweep: **167** committed quantities, **21,912** ratios actually evaluated, **zero**
+  matches for the filed `0.034865`. *(The filing's "27,722 ratios" is a count of ordered
+  pairs — 167 × 166 — and the script skips any denominator that is zero on some transcript,
+  so the derived "5,544× larger" is **4,382×**.)* **CARRIED from the plan at `5458059`, not
+  re-derived here**: the construction that yields exactly 167 quantities is the plan's and
+  is not restated in a command anyone else could re-run, which is itself the shape of
+  RB-P52. What was re-verified here is the artifact side — 33 / 29 / 44 keys, 600 / 207 /
+  207 rows, and no text column in any of the three. The one figure that does reproduce is median retention
+  `0.054795` at n = 24. The quantity the filing needs — the bytes the installed block
+  replaced — is not a committed column and is not a ratio of committed columns. Not closed
+  because there is nothing left to learn from the committed evidence and the qualitative
+  half is subsumed on much stronger grounds by the entry pending on
+  `feat/compaction-in-the-loop`.
+- **L-U5-1 — the `screaming` anchor class can never win the alternation, and 27 of 35
+  stop-list entries can never fire.** `L(screaming) ⊆ L(snake)` verified two ways here:
+  structurally, and exhaustively over **6,725,593** strings from `{A,B,Z,0,1,9,_}^2..8` with
+  **0** matching `screaming` and not `snake`. **0.00% is a theorem, not a sample**, which is
+  why the empirical share is not worth measuring. **8 of 35** stop entries can ever be
+  emitted as a token by the extractor at all — `README.md`, `json.dumps`, `json.loads`,
+  `os.path`, `package.json`, `pyproject.toml`, `self.assert`, `sys.argv` — and greedy
+  `qualified` swallows `os.path` inside `os.path.join` and `self.assert` inside
+  `self.assertEqual`, so **8 is an upper bound** and 27 of 35 are structurally dead. **Not fixed because
+  there is no action available that is not a violation**: bar §3.2 freezes both lists as
+  data in the artifact so they cannot be tuned, and the defect points *against* tuning — a
+  list selected to move a number would fire; this one is inert by construction.
+- **L-U5-4 — the fence's cost.** Every string-valued key in all three compaction artifacts
+  is an identifier, a stratum, a mode or a model name. **No text column, in any of the
+  three.** An auditor can recompute `anchors_total` from transcripts on disk and **cannot**
+  recompute `anchors_retained`, because the right-hand side of the containment test — the
+  installed block — is not committed. Committing it would put other projects' file contents
+  into an artifact whose fence permits numbers only. **This is a correct consequence of a
+  correct fence and the fence stays**; the cost is stated once, here.
+
+##### Carried to J7 as preconditions, handed as properties and not as patches
+
+Four of the eight open findings interrogate the **fidelity axis**, which is already
+contaminated and is being re-measured natively. A patch written against frozen code is not
+evidence, so J7 chooses the mechanism.
+
+| id | precondition | from |
+|---|---|---|
+| **F-1** | Every event the reconstruction loop declines is counted, including the two silent `continue`s, and the artifact commits an `events_read` column, so `events_read == carried + Σ skipped_event_kinds` is an identity a mutation can redden. The escalated "is a post-cutoff drop a VOID trigger?" reading travels with it, unresolved. | M-U5-3 |
+| **F-2** | An anchor counts as retained only when it is present in the installed block as a **complete token** under the same tokenisation that extracted it. | L-U5-2 |
+| **F-3** | The fidelity denominator is disclosed before any retention figure is reported. On the committed evidence it is **288 of 600 rows, 48%**, stated nowhere. | L-U5-2 |
+| **F-4** | The committed retention is an **upper bound**; any figure that supersedes it says so. | L-U5-2 |
+| **F-5** | The frozen class list and stop list are not touched. | L-U5-1 |
+| **F-6** | A length-stopped generation is **VOID**, an instrument verdict, never `FAIL`, an outcome. The window has already shut: **4 of 131** committed calls carry `done_reason: "length"`, absorbed into a `run-cap` VOID rather than classified, so no scored row is yet wrong. | SHAPE S5 |
+| **F-7** | A determinism probe cannot report determinism from two responses both stopped by the same cap. | SHAPE S6 |
+| **F-8** | `compaction-mcp`'s summarizer and embedding paths — truncated on the way out at a default nobody overrides, stored as the boundary's ground truth, input deleted in the same function, damage cached to disk. Another repository, outside this one's layer model and both ruff gates. | SHAPE S1–S3 |
+
+**L-U5-2 is not closed as a number and no arm is re-run.** Substring containment can only
+**add** members to the retained set, so committed retention is an **upper bound** and every
+correction moves the verdict **further** into FAIL. Median B1 retention `0.0547955` against
+a bar of `0.998528` is **0.9437** away; sending retention to 0.0 still FAILs. Re-running the
+frozen arms costs **5.81 h** of measured `wall_clock_s` to move a figure in the direction
+that makes the verdict worse. **The attack that did not break it:** a no-op arm scoring 1.0
+is impossible — zero-boundary rows carry `anchors_total: 0` and `anchor_retention: null`,
+**312 of 600**, and every aggregation filters `is not None`. The residue is F-3, a
+disclosure fact, not a defect.
+
+##### New findings
+
+- **RB-P54 — a check whose expectation is a function of the thing being mutated is a
+  tautology, and only the exit code shows it.** Found by running this job's own new field
+  program, not by reading it. `--mutate observations-under-budget` raises the observation
+  budget so nothing is cut; the check derived its expected byte count **from that same
+  budget**, so expectation and reality moved together, `0 == 0` passed, and the program
+  reported `SUMMARY checks=8 red=0` and exited **2** — *"the claim survived its own
+  falsification, which means the claim is not measured"*. This is C-U5-2's shape one level
+  in: not a flag whose only consumer is its own condition, but an **expectation** whose only
+  input is the mutation. Fixed by pinning the expectation to the declared scenario as named
+  constants. **Attack:** for every mutation, ask whether the check's expected value is
+  computed from anything the mutation touches; if it is, the mutation cannot falsify.
+  **Command.** the two mutation modes now exit 1 naming their own check; before the fix one
+  of them exited 2. **The exit-2 branch existing is what caught it** — returning 1 on both
+  branches would have made "it exited 1" carry no information and this would have shipped
+  reading green. (Instrument.)
+- **RB-P55 — in a worktree, the suite tests this tree's TESTS against another tree's
+  PACKAGE.** The venv's editable install resolves `bantamkit` to the main checkout, so
+  `.venv/bin/python -m pytest runtime-py/tests -q` run from a linked worktree imports
+  `/Users/…/bantamkit/runtime-py/src`, not the worktree's. Measured, same command, same
+  tree, one environment variable apart: **11 failed, 960 passed** without, **971 passed**
+  with `PYTHONPATH=$PWD/runtime-py/src`. Every earlier figure in this program is unaffected
+  and it is measured so rather than assumed — `git diff --stat b533089..<main HEAD> --
+  runtime-py/` is one deleted test file and **nothing under `src/`** — but a Layer 1 or
+  Layer 3 change made in a worktree is **invisible to the gate** until the variable is set,
+  and a green suite would have been reporting on code that was never edited. **Attack:**
+  a gate that resolves its subject through an install rather than through the tree under
+  test is not measuring the tree under test; print `bantamkit.__file__` beside the pass
+  count. (Instrument / process.)
+- **RB-P56 — a length-stopped HTTP 200 is retried by nothing, anywhere, in either
+  repository.** The retry ladder in `client.py` covers transport errors, 429 and 5xx. A 200
+  whose body was cut at the generation cap is a success by every code path that looks at it.
+  **Filed and deliberately not fixed here:** a retry policy for truncation is a Layer 3
+  design change with a real failure mode of its own — retrying a length stop with the same
+  prompt returns the same length stop — and implementing it inside a hygiene job would be
+  the thing this job exists to stop. What J3 ships instead is the **visibility**: after S4 a
+  caller can *see* the stop reason, which is the precondition for any policy at all.
+  **Attack:** decide the policy where the budget lives, not where the socket does.
+  (Layer 3, open.)
+- **RB-P57 — no committed column in any of the three compaction artifacts carries the size
+  of the input population, so no completeness check over them is constructible.**
+  `recorded_events` looks like an input count and is not: `recorded_events += 1` sits after
+  every filter — after the blank-line `continue`, after `UNPARSEABLE`, after
+  `NOT_AN_OBJECT`, after the cutoff guard, after the `kind not in CARRIED_EVENT_KINDS` skip
+  and after `NO_MESSAGE`. It is a **post-filter carried count**. Subtracting the skip totals
+  from it mixes populations, and one row proves it: 719 turns plus 701 enumerated skips
+  exceed its 1,120 "recorded events" by **−300**, which is only possible because the skips
+  were never inside the 1,120. The only other source for the population is the live
+  transcript directory, which moved between two units within one day (1,314 drops → 1,471)
+  and would move again — a check reading it asserts a fact about the world and is
+  non-reproducible by construction (RB-P14 Gate 2). **So `CHK-EVERY-SKIPPED-KIND-ENUMERATED`
+  cannot be upgraded on frozen evidence**, and it is already truthfully disclosed as
+  `UNPINNED` with the correct reason in the committed source. Closing it would upgrade a
+  truthful UNPINNED to PINNED; it would not repair a lie. The denominator travels with F-1.
+  **Attack:** before writing a completeness check, name the column that holds the
+  denominator; if there is none, the check is about integers, not completeness.
+  (Instrument, carried.)
+- **RB-P58 — the tag deny rule is a classifier that leaks under composition, and J3 ships
+  no guard.** The same evasion **passed once inside a compound command** and was **DENIED
+  standalone**, with a reason naming the evasion explicitly. The honest characterisation is
+  neither "a tripwire" nor "a wall": **its decision depends on how the command is
+  composed**, and this program measured it going both ways within one session. The unit did
+  not retry after the denial, which is correct behaviour and which is why the
+  newest-tag figure is **UNVERIFIED**. **There is also no pre-push hook**, anywhere: the
+  hooks directory holds fourteen `.sample` files, `core.hooksPath` is unset, and nothing
+  hook-shaped is committed — the brief's claim that one exists **does not reproduce**.
+  **No guard is shipped, for four reasons in descending strength:** `pre-push` fires on
+  push and tagging is local, so a hook would guard publication and not creation;
+  `core.hooksPath` is local configuration, so a committed hooks directory does nothing until
+  somebody opts in by hand and the un-enforceable step is the whole guard; it is bypassed by
+  one extra flag by anyone able to run the evasion it defends against; and a repository git
+  hook is not one of the five layers. **The residual, unsoftened:** the only thing between
+  this program and an unauthorised tag is a permission classifier measured allowing one
+  instance of the documented evasion and refusing another. A detector — a field program
+  comparing the tag inventory against a committed expectation — is buildable, would work
+  only on the machine that runs it, and is **not proposed**, because a guard described as
+  protection when it is after-the-fact notification is the failure mode this whole register
+  is about. **The standing rule is unchanged and is not a guard: DO NOT TAG.** (Process.)
+
+**Numbering.** `RB-P53` is **reserved**: it exists on `feat/compaction-in-the-loop` and is
+**not merged at this base**, so J3 numbers from `RB-P54` and every sentence here that would
+cite it cites the measurement instead. If that branch has also allocated `RB-P54` or above
+by the time it merges, J3's are the later entries and J3's renumber.
+
+##### The pin convention, and the census that is deliberately not closed
+
+**Ratified, not invented:** pattern-delimited locators only; never a bare line number; and
+**never a pin written from a register rather than read at HEAD.** The rule and its
+enforcement are in `docs/record-vs-pointer.md` §1 (class P3) and in `POINTER_CLASSES`.
+
+**The census is NOT closed, and refusing to close it is the finding.** Re-run here over the
+same four documents: **28** distinct pin strings under the plan's own command, **27**
+deduplicating by target — `compaction-corpus.md:403` and
+`2026-08-17-compaction-corpus.md:403` are one target written two ways, and that pair is the
+whole difference — and **30 as filed**, which a widened pattern of this unit's own turns into
+**35**. **Four answers now, not three**, which strengthens rather than weakens the finding:
+**none of the four documents defines the term**, so every count is a count of whatever its
+author's regex happened to match. Closing a census with no command behind it would commit
+the disease the finding names. Separately, and it must not travel
+under the same sentence: **16 of the 27 point into an external repository at an immutable
+commit** — immutable, and therefore unverifiable by any reader of *this* repository
+(RB-P50).
+
+##### Corrections to figures this job was handed
+
+Filed first in the plan rather than buried, because a job that hides its disagreements with
+its own brief has committed the defect the brief warned about.
+
+| handed | measured on this branch |
+|---|---|
+| the register carries RB-P47..RB-P53 at this base | **RB-P53 does not exist at `5845698`** — it is 33 unmerged lines on J7's branch, and the closure's Amendment 1 is another 46 |
+| the uncovered CI surface grew to 14 | **12** at this base; 14 is J7's branch, and the two extra programs are J7's |
+| 27,722 ratios searched | **21,912** evaluated; 27,722 is the ordered-pair count before zero denominators are skipped, so "5,544× larger" is **4,382×** |
+| 34 / 30 / 42 keys in the three artifacts | **33 / 29 / 44**, and the three blobs are byte-identical across both branches, so it is not a revision difference |
+| 30 pins | **28 / 27 / 30** under three definitions, none of them defined anywhere |
+| a `pre-push` hook protects one working copy | **no pre-push hook exists**, installed or committed |
+| `git -C <path> tag` bypasses the deny rule | **not reproducible as an unconditional statement** — see RB-P58. **CARRIED from the plan, not re-measured here**: invariant 15 forbids retrying the evasion, and refusing to retry is the correct behaviour |
+| expect 940 passed, 2 xfailed | correct **at `3f52a86`**, on J7's branch. The plan's §1.6 called it stale and its own Amendment 1 withdrew that: 932 and 940 are both correct, each at its own commit, and the eight-node difference is `test_field_programs.py` parametrising over 12 versus 14 programs. **§1.2 and §1.6 were one finding counted twice.** |
+
+##### What this section measured and what it carried
+
+**Re-measured on this branch, by a command in this section:** the six arm percentages under
+both token columns; the four per-arm fidelity spreads and the three pair ratios; the 0.17%
+and the 584×; the three prose sites claiming "same shape"; SHAPE N-7 (7,804 rows, 78 files,
+1,770 distinct values, 0 exact cap hits, per-call max 2,625, {512: 59, 1024: 4} within 1%);
+L-U5-1's subsumption over 6,725,593 strings and its 8-of-35 emittable stop entries; the
+33 / 29 / 44 artifact key counts; 312 of 600 null-retention rows and 288 of 600 = 48%
+carrying a figure; 20,913.7 s = 5.81 h of committed `wall_clock_s`; the pin census at
+28 / 27 / 30 / 35; 12 committed field programs at `5845698` against 14 on
+`feat/compaction-in-the-loop`; the 33 and 46 unmerged lines that carry the reserved
+register entry; no pre-push hook and `core.hooksPath` unset; `grep -rl eval-data .github/`
+empty at exit 1; and both before/after pairs above, from their own programs.
+
+**Carried and labelled as carried:** M-U5-2's 167 quantities and 21,912 ratios, from the
+plan at `5458059`; the tag-deny-rule behaviour of RB-P58, which invariant 15 forbids
+retrying; and RB-P53's content, which is not at this base.
+
+**One figure did not reproduce and it is load-bearing on nothing.** The plan reports N-7's
+per-call median as `439.25`; the same sweep here gives `321.88`, while min `40.0`, max
+`2,625.0`, the distinct count `1,770`, the zero exact hits and the near-cap histogram all
+reproduce exactly. The median is quoted nowhere in any conclusion, the negative rests on the
+maximum, and the discrepancy is filed rather than reconciled.
+
+##### Invariants held by this section
+
+**Nothing merged, nothing tagged, nothing pushed.** No frozen arm re-run, no committed
+artifact retro-edited, no hand-edit of `assets/evals/devteam/tasks/*.yaml`, and nothing
+touched under `assets/evals/tasks/` or `assets/evals/perturbations/`. The bar gains
+**Amendment D** with §0–§11 and Amendments A–C untouched; the arms measurement gains
+**Amendment 1** with everything above it byte-for-byte as committed. Every code change lives
+in exactly one layer: `client.py` is Layer 3, `agent.py`/`textutil.py` is Layer 1,
+`tools/amendguard/` is outside the five product layers and outside both ruff gates.
+
+**CI is confirmed at content level and not at run level.** `grep -rl eval-data .github/`
+returns nothing, exit 1, so no field program, no acceptance run and no mutation is exercised
+by CI on any branch — RB-P41's CI half is untouched by this job and is stated rather than
+implied. *(A small correction to the plan and to J2's closure, both of which say the
+workflow has "three run steps": `grep -c 'run:' .github/workflows/ci.yml` returns **4**.
+Three of the four are gates — `ruff check .`, `ruff check --config … examples`,
+`python -m pytest runtime-py -q` — and the fourth is `pip install -e "runtime-py[dev,mcp]"`.
+The claim about `docs/eval-data` is unaffected in either counting.)*
+
 ### The `qwen-implementer` cell on RB-P27 lever (2) (2026-08-12)
 
 The first measured cell of the `qwen-implementer` backlog item, run on the
