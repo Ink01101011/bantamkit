@@ -5913,6 +5913,7 @@ disclosure fact, not a defect.
   sentinel. **Not done here on purpose:** widening the rule in the same unit whose own pin is
   about to be judged by it is the author granting himself an exemption, which is the exact
   act the plan ordered the pin correction last to avoid. (Instrument, open.)
+<!-- provenance: value=940 passed, 2 xfailed; commit=3f52a86; command=.venv/bin/python -m pytest runtime-py/tests -q — this stamp covers a QUOTATION of a gate figure, not an assertion of one; the checker over-reports on prose about a gate and the shipped policy is to stamp rather than to carve an exception -->
 - **RB-P60 — a provenance stamp cannot sit inside a markdown table, and the checker found
   this by flagging its own author.** The field run over this branch reported
   `commit=9cc42c4b1 path=docs/eval.md classify=insert verdict=STAMP-MISSING` on **this very
