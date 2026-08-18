@@ -96,6 +96,18 @@ BYTES_PER_TOKEN = 1.8284
 # undo.
 FIXED_PER_CALL_TOKENS = 25350.2
 
+# M-U5-1, closed 2026-08-19. The sentence three lines above — "reported side by side,
+# always" — was true of the R1 CEILING section and false of THE ARMS: the arms block
+# quoted one column, whichever `fixed_cost_declared` selected, and `grep -c no_fixed` over
+# the committed arms measurement returned 0. The two columns are named here as data so
+# that both are carried through the pair arithmetic and both are printed, and so that
+# CHK-FIXED-COST-DECLARED can test the PRINTED REPORT rather than key presence on the
+# null-control rows.
+TOKEN_COLUMNS = {
+    True: "context_tokens_sent_with_fixed",
+    False: "context_tokens_sent_no_fixed",
+}
+
 # Bar §2.1's design constant.
 REPEATS = 3
 
@@ -1360,7 +1372,11 @@ PINNING_AUDIT: tuple[tuple[str, str, str, str], ...] = (
      ("policy T now re-derives the U-2 reach count from live_window_peak_tokens: "
       "the mutation moves the printed reach, not only a schedule_id string")),
     ("CHK-FIXED-COST-DECLARED", "PINNED", "omit-fixed-cost",
-     "the flag now selects the token column the headline and R1 are computed from"),
+     ("the flag now selects the token column the headline and R1 are computed from; "
+      "WIDENED 2026-08-19 (M-U5-1) from key presence on the 207 B0 rows to the 600 arms "
+      "rows AND to the printed report — every reported pair must print the figure under "
+      "BOTH token columns and must headline the WITH-constant one, which the mutation "
+      "falsifies without touching the declaration boolean")),
     ("CHK-NO-POOLING", "PINNED", "pool-strata",
      "the flag now prints a pooled cross-stratum R1 median"),
     ("CHK-BYTES-SIGNED", "PINNED", "clamp-byte-columns",
@@ -1513,11 +1529,7 @@ def _report_arms(arm_rows: list[dict], report: Report, policy: dict) -> dict:
         # The claim it names is that the fixed per-call cost is DECLARED and carried in
         # the figures; the falsification is a saving quoted with the constant quietly
         # dropped, which is a different NUMBER and not a different check line.
-        token_column = (
-            "context_tokens_sent_with_fixed"
-            if policy["fixed_cost_declared"]
-            else "context_tokens_sent_no_fixed"
-        )
+        token_column = TOKEN_COLUMNS[bool(policy["fixed_cost_declared"])]
         if not policy["fixed_cost_declared"]:
             print(
                 f"      *** the fixed per-call cost is NOT declared in this run: every "
@@ -1525,6 +1537,14 @@ def _report_arms(arm_rows: list[dict], report: Report, policy: dict) -> dict:
                 f"{FIXED_PER_CALL_TOKENS} tokens/call omitted and not disclosed ***"
             )
         per_tokens = _per_transcript(rows, token_column)
+        # M-U5-1, closed 2026-08-19. BOTH token columns are carried through the pair
+        # arithmetic, not only the declared one, so that the without-constant figure is
+        # PRINTED beside the headline instead of merely being present as a committed key.
+        # `grep -c no_fixed` over the committed arms measurement returned 0: the columns
+        # existed on all 600 rows and the number they imply was written down nowhere.
+        per_tokens_by_column = {
+            column: _per_transcript(rows, column) for column in TOKEN_COLUMNS.values()
+        }
         stratum_out: dict[str, dict] = {}
 
         for y, x, label in policy["pairs"]:
@@ -1543,6 +1563,27 @@ def _report_arms(arm_rows: list[dict], report: Report, policy: dict) -> dict:
             }
             if any(v < 0 for v in deltas.values()):
                 signed_negative_seen = True
+
+            # M-U5-1. The same pair, the same `usable` transcripts, the same arithmetic,
+            # computed once per token column. `both_columns` is what the widened
+            # CHK-FIXED-COST-DECLARED reads: a column that produced no figure is absent
+            # from it, and the headline is required to BE the with-constant figure rather
+            # than merely to have one available.
+            both_columns: dict[str, float] = {}
+            for column, per_column in per_tokens_by_column.items():
+                ctx_c = {}
+                for transcript in usable:
+                    for arm in (x, y):
+                        values = per_column.get((transcript, arm))
+                        if values:
+                            ctx_c[(transcript, arm)] = _median(values)
+                pcts = [
+                    100.0 * (ctx_c[(t, y)] - ctx_c[(t, x)]) / ctx_c[(t, x)]
+                    for t in usable
+                    if (t, x) in ctx_c and (t, y) in ctx_c and ctx_c[(t, x)]
+                ]
+                if pcts:
+                    both_columns[column] = _median(pcts)
 
             # floors, EACH AT THE GRAIN OF THE STATISTIC IT GATES
             per_t_floor = {t: _floor(per_tokens, t, x, y) for t in usable}
@@ -1702,6 +1743,8 @@ def _report_arms(arm_rows: list[dict], report: Report, policy: dict) -> dict:
                 "n": len(usable),
                 "headline_delta_tokens": headline_delta,
                 "headline_pct": headline_pct,
+                "headline_token_column": token_column,
+                "headline_pct_by_column": dict(both_columns),
                 "headline_floor": headline_floor,
                 "headline_clears": headline_clears,
                 "floor_class": floor_class,
@@ -1726,6 +1769,21 @@ def _report_arms(arm_rows: list[dict], report: Report, policy: dict) -> dict:
                 f"      Δ tokens (median, SIGNED) = {headline_delta:+,.1f}  "
                 f"({headline_pct:+.4f}% of {x}, the LOWER RUNG — bar §2.3's denominator "
                 f"is CTX(t, X), not the null control, except where X is B0)"
+            )
+            # M-U5-1: the constant is a choice a reader may want to undo, so the figure
+            # with it undone is printed here, in the same block, at the same precision,
+            # rather than being left implicit in two committed columns.
+            print(
+                "      the same Δ under both token columns (the constant is "
+                f"{FIXED_PER_CALL_TOKENS} tokens/call, "
+                f"{'DECLARED' if policy['fixed_cost_declared'] else 'NOT DECLARED'}): "
+                + ", ".join(
+                    f"{column.replace('context_tokens_sent_', '')} = "
+                    f"{both_columns[column]:+.4f}%"
+                    + (" <- the headline above" if column == token_column else "")
+                    for column in TOKEN_COLUMNS.values()
+                    if column in both_columns
+                )
             )
             # Bar §2.4: the pooled sum is reported in the same table as the median,
             # ALWAYS, never as a footnote — pooled WITHIN this stratum only (Amendment A).
@@ -2165,13 +2223,10 @@ def cmd_report(mutate: str | None) -> int:
     )
 
     # ---- the fixed per-call cost, declared ---------------------------------------------
-    report.check(
-        "CHK-FIXED-COST-DECLARED",
-        policy["fixed_cost_declared"]
-        and all("ceiling_pct_with_fixed" in r and "ceiling_pct_no_fixed" in r for r in b0_rows),
-        f"declared as a constant: {FIXED_PER_CALL_TOKENS} tokens per call; both the "
-        "with-constant and without-constant figures are committed",
-    )
+    # M-U5-1, 2026-08-19: this check MOVED, to after `_report_arms` returns. It used to
+    # sit here and read `b0_rows` only, so it could not see the arms rows and could not
+    # see the printed report at all. It is registered where the evidence it now tests
+    # exists; its position in the NAMED CHECKS list moved with it and nothing else did.
 
     print()
     print("--- THE NULL CONTROL, bar §1.2 — the load-bearing check ----------------------")
@@ -2408,6 +2463,66 @@ def cmd_report(mutate: str | None) -> int:
     )
 
     verdicts = _report_arms(arm_rows, report, policy)
+
+    # ---- the fixed per-call cost, declared — M-U5-1's instrument half -------------------
+    # WIDENED 2026-08-19. The old condition was
+    #   policy["fixed_cost_declared"]
+    #   and all("ceiling_pct_with_fixed" in r and "ceiling_pct_no_fixed" in r
+    #           for r in b0_rows)
+    # — the two R1 CEILING columns, on the 207 null-control rows, tested for KEY PRESENCE.
+    # Its detail line claimed "both the with-constant and without-constant figures are
+    # committed", and both halves of that were narrower than they sounded: it never looked
+    # at the 600 arms rows, and "committed" is not "reported". The arms figures without the
+    # constant were computable from committed columns and appeared in no output and no
+    # document — `grep -c no_fixed` over the arms measurement returned 0.
+    #
+    # Four conjuncts now, and the last two are the widening:
+    #   (1) the constant is declared;
+    #   (2) both R1 ceiling columns on every B0 row       [unchanged];
+    #   (3) both token columns on every ARMS row;
+    #   (4) every reported pair PRINTED a figure under BOTH columns, and the headline
+    #       position holds the WITH-constant one.
+    # (4) is what makes the widening load-bearing rather than decorative: `--mutate
+    # omit-fixed-cost` moves the headline to the no-constant column, so (4) is false under
+    # the mutation independently of (1). Deleting (1) from this condition would not save
+    # the check.
+    arms_columns_present = all(
+        all(column in r for column in TOKEN_COLUMNS.values()) for r in arm_rows
+    )
+    reported_pairs = [
+        (stratum, name, pair)
+        for stratum, pairs in verdicts.items()
+        for name, pair in pairs.items()
+    ]
+    pairs_missing_a_column = [
+        f"{stratum}/{name}"
+        for stratum, name, pair in reported_pairs
+        if any(c not in pair["headline_pct_by_column"] for c in TOKEN_COLUMNS.values())
+    ]
+    pairs_headlining_the_wrong_column = [
+        f"{stratum}/{name}"
+        for stratum, name, pair in reported_pairs
+        if pair["headline_token_column"] != TOKEN_COLUMNS[True]
+    ]
+    report.check(
+        "CHK-FIXED-COST-DECLARED",
+        policy["fixed_cost_declared"]
+        and all(
+            "ceiling_pct_with_fixed" in r and "ceiling_pct_no_fixed" in r for r in b0_rows
+        )
+        and arms_columns_present
+        and bool(reported_pairs)
+        and not pairs_missing_a_column
+        and not pairs_headlining_the_wrong_column,
+        f"declared as a constant: {FIXED_PER_CALL_TOKENS} tokens per call; both R1 "
+        f"ceiling columns on all {len(b0_rows)} B0 rows; both token columns on all "
+        f"{len(arm_rows)} arms rows (present={arms_columns_present}); "
+        f"{len(reported_pairs)} reported pair(s), of which "
+        f"{len(pairs_missing_a_column)} PRINTED fewer than both figures "
+        f"{pairs_missing_a_column or ''} and {len(pairs_headlining_the_wrong_column)} "
+        f"put the without-constant figure in the headline position "
+        f"{pairs_headlining_the_wrong_column or ''}",
+    )
 
     # ---- the structural checks the claims NAME -----------------------------------------
     calls_median = {
