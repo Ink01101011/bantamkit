@@ -7129,4 +7129,65 @@ adding a task:
 .venv/bin/python -m pytest runtime-py/tests/test_conformance.py
 ```
 
+#### R — a result that has been sitting in committed rows since 2026-08-10
+
+**RB-P76 · Above the 3B floor the four tiers are not distinguishable, the 4B does it on the
+smallest token bill, and the only family that cuts is `file-nav`. None of this has ever been
+reported.**
+
+Found by a prep probe for a job that was then dropped, and **re-derived independently by the
+orchestrator from the committed rows** before being written here. Four artifacts,
+`docs/eval-data/2026-08-10-rebaseline-{3b,4b,7b,14b}.jsonl`, **528 rows each**, already in the
+repository. Nothing was re-run to produce this entry.
+
+<!-- provenance: value="see table" commit="3541e3d" command="python over the four rebaseline jsonl" -->
+
+| tier | pass | tokens, sum | tokens, median | `model_calls`, sum |
+|---|---|---|---|---|
+| 3b | **0.2557** (135/528) | 573,062 | 575 | 1,475 |
+| **4b** | **0.6648** (351/528) | **434,851** | **533** | 1,222 |
+| 7b | **0.6307** (333/528) | 766,209 | 622 | 1,481 |
+| 14b | **0.6458** (341/528) | 590,505 | 674 | 1,279 |
+
+**Fisher exact, two-sided, computed by the orchestrator over the committed rows:** 4b vs 7b
+**p = 0.2734**; 4b vs 14b **p = 0.5601**; 7b vs 14b **p = 0.6540**; 3b vs 7b **p < 0.0001**.
+So **the 3B is a floor and the other three are one population at this n** — and the 4B
+carries that population's pass rate at **43% fewer tokens than the 7B** (434,851 vs 766,209).
+
+**THE CLAIM IS NOT "THE 4B BEATS THE 7B", AND THE STRONGEST REASON IS ONE THE DATA ITSELF
+SUPPLIES.** `run_seed(model, task_name, repeat)` at `evalrun.py:401` **hashes the model name
+into the seed**, so no two tiers ever share one. Measured: **66 distinct seeds per tier and
+ZERO overlap between any pair.** These four arms are **unpaired** — a between-subjects
+comparison of four different sampling draws, not a paired one — and a paired design is a
+prerequisite for any tier claim, not an improvement on one. It is falsifiable on its own
+terms: make the seed model-independent and the overlap goes **0/66 → 66/66**.
+
+**The one family that cuts, 7b → 4b:**
+
+| family | 7b | 4b | Δ | n |
+|---|---|---|---|---|
+| **`file-nav`** | 0.917 | 0.500 | **−0.417** | 48 |
+| `memory-recall` | 0.264 | 0.375 | +0.111 | 216 |
+| `structured-extraction` | 0.925 | 1.000 | +0.075 | 120 |
+| `tool-use` | 0.840 | 0.875 | +0.035 | 144 |
+
+**`file-nav` is the whole of the downtiering risk on this task set**, and its ladder
+(0.021 → 0.500 → 0.917 → 0.938 across 3b/4b/7b/14b) is the sharpest difficulty signal
+anywhere in these artifacts. **It belongs to the finder-primitive axis**, which is about
+finding things across files and currently has no pre-registered difficulty signal at all.
+
+**Why this is filed as a finding and not as a result.** The rows have been committed since
+2026-08-10. Every number above is a `python` one-liner over them. **No document in this
+repository states any of it**, and a job was queued for eight days on a premise
+(*"route mechanical work to a small local model"*) that these same rows **invert**: above the
+3B floor there is no tier gap to exploit, and the one real gap runs the other way. This is
+RB-P34's shape — *printing is not reporting* — one level up: **the rows did not even need
+printing, only reading.**
+
+**What is NOT claimed.** Not that the 4B is the right default — the comparison is unpaired.
+Not that the tiers are equivalent — *indistinguishable at this n* is a statement about the
+n. Not that `file-nav` is unfixable — only that it is the sole measured cut. And no
+wall-clock figure appears here: these artifacts carry none, and every timing number in the
+probe that produced this came from a live run that is **not** in the committed rows.
+
 Back to the [README](../README.md).
