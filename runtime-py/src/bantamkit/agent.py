@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 from bantamkit.client import BantamError, Message, ModelClient, Tool, Usage
 from bantamkit.profile import default as profile_default
-from bantamkit.textutil import truncate
+from bantamkit.textutil import truncate_counted
 
 
 def response_format_for(schema: dict) -> dict:
@@ -112,6 +112,18 @@ class AgentResult:
     output: str
     messages: list[Message]
     usage: Usage
+    #: C-6, 2026-08-19. How many tool observations this run had cut to fit
+    #: `observation_budget`, and how many bytes went with them. The cut was always
+    #: announced IN BAND — `[truncated N bytes]` inside the string the model reads — and
+    #: nowhere else, so a run whose evidence was cut and one whose was not were the same
+    #: object to every caller, every scorer and every artifact. RB-P51: a run that
+    #: silently proceeded is not the same run as one that reported what it dropped.
+    #:
+    #: Zero on an uncut run, which is what keeps the column from being always-on. It is a
+    #: DISCLOSURE and not a verdict: the loop still proceeds, exactly as it did before,
+    #: and nothing here decides whether a cut run is scorable.
+    observations_truncated: int = 0
+    observation_bytes_dropped: int = 0
 
 
 @dataclass
@@ -177,13 +189,21 @@ class Agent:
         messages.append(Message(role="user", content=prompt))
         usage = Usage()
         last_content = ""
+        observations_truncated = 0
+        observation_bytes_dropped = 0
 
         for _ in range(self.max_turns):
             if self.budget is not None and not self.budget.allow("required"):
                 # Past the hard ceiling. Stop iterating and hand back what the run
                 # already produced: a truncated answer is still scorable, and an
                 # exception here would convert a scorable answer into a loss.
-                return AgentResult(output=last_content, messages=messages, usage=usage)
+                return AgentResult(
+                    output=last_content,
+                    messages=messages,
+                    usage=usage,
+                    observations_truncated=observations_truncated,
+                    observation_bytes_dropped=observation_bytes_dropped,
+                )
             resp = self._chat(messages)
             usage = usage + resp.usage
             messages.append(resp.message)
@@ -195,7 +215,12 @@ class Agent:
                     for scope in self._batch_scopes:
                         stack.enter_context(scope())
                     for tc in resp.message.tool_calls:
-                        observation = truncate(self._dispatch(tc), self.observation_budget)
+                        observation, dropped = truncate_counted(
+                            self._dispatch(tc), self.observation_budget
+                        )
+                        if dropped:
+                            observations_truncated += 1
+                            observation_bytes_dropped += dropped
                         messages.append(
                             Message(role="tool", content=observation, tool_call_id=tc.id)
                         )
@@ -210,7 +235,13 @@ class Agent:
                 _attach_transcript(e, messages)
                 raise
             if feedback is None:
-                return AgentResult(output=output, messages=messages, usage=usage)
+                return AgentResult(
+                    output=output,
+                    messages=messages,
+                    usage=usage,
+                    observations_truncated=observations_truncated,
+                    observation_bytes_dropped=observation_bytes_dropped,
+                )
             messages.append(Message(role="user", content=feedback))
 
         raise MaxTurnsExceeded(f"no final answer within {self.max_turns} turns", messages)

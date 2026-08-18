@@ -512,7 +512,7 @@ retention is not two orders of magnitude below its floor.
    `CHK-THRESHOLD-NOT-RETUNED`; the schedule is built from the module constant. The check is
    still real — its second conjunct compares `schedule_id` on all 207 committed rows — but
    the stated reason is not the one that makes it real.
-3. **"`borrow_floor` is NOT vacuous — `:1288` really lets stratum B borrow."** True as a
+3. **"`borrow_floor` is NOT vacuous — 2026-08-18-compaction-arms-field-measurement.py:1608 really lets stratum B borrow."** True as a
    static reading and **inert on the committed evidence**: the site is inside
    `if stratum == "B"`, and stratum B has **no arm rows at all**, so the branch is
    unreachable. `--mutate borrow-floor` changes nothing in the printed report but its own
