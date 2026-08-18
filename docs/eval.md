@@ -6020,6 +6020,261 @@ Three of the four are gates — `ruff check .`, `ruff check --config … example
 `python -m pytest runtime-py -q` — and the fourth is `pip install -e "runtime-py[dev,mcp]"`.
 The claim about `docs/eval-data` is unaffected in either counting.)*
 
+##### Amendment 1 to section P (2026-08-19) — the review of this section's own work, and what it found in the checker
+
+Everything above this line is as committed. Section P shipped a rule, a checker and a
+closure; the checker was then reviewed, and **the review found that four of the checker's
+own guards did not hold — including the one this section cited as making a widening
+mandatory.** Nothing above is edited: the findings are numbered from `RB-P61` and the
+dispositions are stated here.
+
+**A note on placement, because this section is the one that made the rule.** The rule's
+prose says corrections are *dated amendments appended at the end*. This amendment is
+appended at the end of **section P**, not at the end of the document, so a reader who finds
+the section finds its correction. Under the checker that reads `classify=insert`, and
+**`insert` can never redden** — which is `RB-P67` below, filed rather than used. The
+placement is a judgement about readers, audited by hand, and it is not a verdict this
+program earned from its own instrument.
+
+###### Closed here, each with a before and an after from the same command
+
+<!-- provenance: value=982 passed, 2 xfailed; commit=7621b7b; command=PYTHONPATH=$PWD/runtime-py/src /Users/kktest/Documents/Claude/Projects/bantamkit/.venv/bin/python -m pytest runtime-py/tests -q -->
+- **`RB-P61` — the coverage guard counted CLASSES and the closed list has ENTRIES, so the
+  safety net this section promised did not exist.** `POINTER_CLASSES` holds **six entries
+  and four distinct ids**: P3 carries the section form, the bare-backtick form and the path
+  form. The guard built `declared = {cid for cid, _pat, _desc in POINTER_CLASSES}`, so one
+  path-form fixture case satisfied it for all three, and its docstring's *"the list cannot
+  widen silently"* was false. **Measured in both directions against the old guard, then
+  again against the new one, same command each time:**
+
+<!-- provenance: value=24 passed and flips=0 on both mutations before / 3 failed, 25 passed and 1 failed, 27 passed after; commit=7621b7b; command=PYTHONPATH=$PWD/runtime-py/src /Users/kktest/Documents/Claude/Projects/bantamkit/.venv/bin/python -m pytest runtime-py/tests/test_amendguard.py -q -->
+
+      delete the bare-backtick entry     before 24 passed, flips=0   after 3 failed, 25 passed
+      add a 7th P3 sub-form, no case     before 24 passed, flips=0   after 1 failed, 27 passed
+
+  and the second failure names the entry rather than merely counting it — *"closed-list
+  entries with no fixture case: 4 P3 (file:line pin, GitHub L-form)"*. The `flips=0` in the
+  before column is the sweep's own verdict on the same two mutations, so neither the suite
+  nor the calibration could see either of them.
+  Coverage cannot be read off a verdict line, because
+  `classify` says `pointer:P3` for all three sub-forms, so it is measured where the
+  information still exists: each calibration case's real committed before/after lines are
+  re-masked through the checker's own `pointer_entries_changed`. One masker, two views — a
+  second one written in the test would be a transcription and their agreement a tautology
+  (RB-P47). The two uncovered sub-forms now have a case and a mutation each.
+  **This is the precondition `RB-P59` names, and it now exists.** (Instrument, closed.)
+- **`RB-P62` — a gate this repository defines for itself went red and stayed red,
+  undeclared, for eight commits.** `ruff check docs/eval-data` — the gate measured at
+  **413 rules over 37 prefixes** against **153 over 6** for the package — reported
+  `Found 2 errors` from **`2030245`** onward: `EXE001` (shebang present, file not
+  executable) and `I001` (unsorted imports), both introduced by this branch's own field
+  program. Bisected per commit rather than assumed, ruff 0.16.1: clean at `5845698`,
+  `5458059`, `da5f073`, `b533089`, `5f78fe8`, `0da7658` and `68d5692`; two errors at
+  `2030245`, `f134cca`, `dc67dc2`, `b82abf5`, `9cc42c4`, `6c317ba`, `bb9e0bb` and
+  `a525516`. **Both errors are cosmetic and it is Critical for being UNDECLARED**: a job
+  auditing other people's instruments broke one of its own and said nothing. Fixed — the
+  mode, because all eight shebang'd programs in that directory are committed `100755` and
+  fixing it by mode shifts no line numbers one commit after a pin correction. **Not fixed
+  by widening CI**, deliberately: `ruff check .` runs with `working-directory: runtime-py`,
+  so the gate is guarded by nothing, which is RB-P41's shape and is stated rather than
+  quietly repaired. **Attack:** a gate a repository defines for itself and runs by hand is
+  a gate that regresses silently; the disclosure is the deliverable, not the two fixes.
+  (Instrument / process, closed.)
+- **`RB-P63` — the sweep's SUMMARY line reported an inventory of its own catalogue in the
+  grammar of an inventory of the program.** `branches=12 pinned=11` reads as *"this program
+  has twelve decision branches and eleven are pinned"*. It is the count of entries in
+  `MUTATIONS`. Every decision branch with no entry was **absent from the denominator rather
+  than reported UNPINNED**, so the ratio flattered itself by omission — the inverse of
+  invariant 6. Renamed to `catalogued-branches=`, with the scope printed above the line and
+  `uncatalogued-branches=UNMEASURED` on it. **Deliberately not given a number:** no
+  definition of "decision branch" is committed anywhere in this repository, so any total
+  would count whatever the author's definition happened to be — the pin census's defect,
+  one artifact over. UNMEASURED is a verdict (RB-P51). (Instrument, closed.)
+- **`RB-P64` — the `(value, commit, command)` triple was the least-pinned assertion in the
+  program that requires it.** `STAMP_REQUIRED_KEYS = ()` and `STAMP_WINDOW = 100000` each
+  passed the entire sweep with **flips=0**. Invariant 5 makes that triple the **whole**
+  fallback for a cross-artifact co-moving count, so the one thing standing between a bare
+  number and a falsifiable one was untested. The code was correct; under this job's own
+  standard, correct-and-untested is a separate verdict. `PARTIAL-STAMP` adds a stamp
+  carrying `value` and `commit` and no `command`, in its own file so no earlier stamp can
+  satisfy it from inside the window, and `MUT-STAMP-KEYS` pins it. **The window branch is
+  NOT closed and is not hidden:** no fixture case places a stamp out of range, so
+  `MUT-STAMP-WINDOW` is **declared `unpinned`** and kept with its reason and `(none)` for
+  its node. Closing it by deleting the mutation is the move RB-P48 forbids. (Instrument,
+  closed; one named branch left open and declared.)
+- **`RB-P65` — the vacuity detector was itself vacuous: `calibrate` could never report
+  `UNPINNED`.** The baseline was built in-process from an unresolved fixture path while
+  every mutant ran through `main()`'s `args.repo.resolve()`, and `mkdtemp()` returns
+  `/var/folders/…` resolving to `/private/var/folders/…`. The rendered `repo:` line
+  therefore differed on **every** comparison, `r.stdout != baseline_text` was
+  unconditionally true, and the `UNPINNED` arm was **unreachable** — so a mutation that
+  changed the program's behaviour **nowhere** was labelled `FORMATTER-ONLY`, the innocent
+  label, destroying the exact distinction RB-P48 leans on. The path is resolved. **Verified
+  in both directions rather than by re-running the same arm:** `MUT-STAMP-WINDOW` now
+  reports `UNPINNED — nothing changed at all`, and `MUT-NOTE-PROSE` still reports
+  `FORMATTER-ONLY — output changed, not one verdict field moved`. The arm is reachable and
+  still discriminates. **Attack:** when a harness compares a mutant's output against a
+  baseline it computed by a different code path, the two paths must be shown to agree on an
+  unmutated input first, or the comparison measures the harness. (Instrument, closed.)
+- **`RB-P66` — `prompt_tokens_verdict` returned `MEASURED` for a response with no `usage`
+  object at all.** RB-P51 inside the code written to honour RB-P51. `usage.get("prompt_tokens", 0)`
+  over `data.get("usage") or {}` produced 0, which compares unequal to any declared window
+  and fell to the `else` arm as `MEASURED` — while the module says in its own comment that
+  *"MEASURED is the only one that licenses arithmetic"*. Five shapes reach it and all five
+  read `MEASURED` before the fix: no `usage` key, `usage: null`, `usage: {}`, a usage object
+  omitting `prompt_tokens`, and `prompt_tokens: null`. A fourth state, `UNREPORTED`, is
+  tested first, because it is a fact about what arrived and the window question does not
+  arise for a number nobody sent. **The null control is on the same field:** a *reported*
+  zero still reads `MEASURED`, so the new state separates "said zero" from "said nothing"
+  rather than re-flagging a falsy value. In the fold `UNREPORTED` outranks `VOID` — a VOID
+  call returned a number the endpoint chose, an UNREPORTED one contributed a zero this
+  module invented, so the total is short by an unknown amount rather than merely
+  untrustworthy. Measured, not assumed:
+
+<!-- provenance: value=6 failed, 36 passed with the UNREPORTED branch deleted / 42 passed with it; commit=f0fe198; command=PYTHONPATH=$PWD/runtime-py/src /Users/kktest/Documents/Claude/Projects/bantamkit/.venv/bin/python -m pytest runtime-py/tests/test_client.py -q -->
+
+      UNREPORTED branch deleted    6 failed, 36 passed
+      UNREPORTED branch present    42 passed
+
+  **Section P's S4 bullet above says the verdict is in {`MEASURED`, `VOID`, `UNCHECKED`};
+  it is now a set of four**, and that sentence is corrected here rather than rewritten
+  there. (Layer 3, closed.)
+
+###### Recorded and not fixed — five, each with the reason it is a record and not a repair
+
+- **`RB-P67` — `insert` can never redden, so the enforced rule is narrower than the stated
+  one.** The prose says corrections are *appended at the end*; the checker reaches
+  `RECORD-EDITED` through `replace` and `delete` but never through `insert`, and **4 of 8
+  field rows are `insert`**. A contradiction placed mid-record therefore reads `OK`. **This
+  is a stated-rule / enforced-rule gap and NOT a hole in the central protection** — the
+  thing the rule exists to stop, a committed number rewritten in place, still reddens. Not
+  fixed because the fix is a policy decision about where amendments may live, and this
+  amendment is itself an `insert` (see the placement note above): the author would be
+  choosing the rule that judges him in the same commit. (Instrument, open.)
+- **`RB-P68` — no gate figure is recorded at this branch's HEAD.** The last stamped one is
+  at `f134cca`, and it reproduces to the character. Recorded rather than fixed by
+  back-filling: a stamp asserts a value at a commit, and manufacturing stamps for commits
+  nobody ran the gate at would be the falsifiability theatre the stamp exists to prevent.
+  The figures for **this** amendment's HEAD are stamped below. (Instrument.)
+- **`RB-P69` — a `calibrate` FLIP line can print `expected X measured X`.** The decision
+  compares four fields — `classify`, `isolation`, `derivation`, `verdict` — and the printed
+  line shows one. A row can therefore flip on `isolation` and print two identical verdicts
+  beside the word FLIP. The `flips` list carries the full `want`/`got` JSON, so no
+  information is lost and no decision is wrong; the human-readable line is misleading on its
+  own. Not fixed here because it is a formatter, and under N-12 this program does not change
+  a formatter in the same breath as a classifier. (Instrument, cosmetic.)
+- **`RB-P70` — the gate cannot be run in a worktree by the command every document in this
+  repository states.** There is **no `.venv` in a linked worktree**, so
+  `.venv/bin/python -m pytest runtime-py/tests -q` does not resolve at all, and with the
+  main checkout's interpreter but without the `PYTHONPATH` prefix, collection dies before
+  any test runs — measured at this HEAD: `ERROR runtime-py/tests/test_agent.py`,
+  `Interrupted: 1 error during collection`, **1 error in 0.38s**. This is RB-P55 one step
+  further on: RB-P55 found the suite testing this tree's tests against another tree's
+  package, and the remaining divergence is now **three `src/` files** — `agent.py`,
+  `client.py`, `textutil.py`. **The rule that follows, and it is the operational one:** the
+  command includes both the `PYTHONPATH` prefix **and** the interpreter's absolute path, or
+  the figure is void. (Process.)
+- **One review finding is unnumbered and that is disclosed rather than papered over.** The
+  review filed a second Low finding whose content **did not travel into the unit brief that
+  closed these**. Assigning it a number from a label alone would put an empty entry in this
+  register, so none is assigned. **It must be recovered from the review before this branch
+  merges**, and this sentence is the reason anyone will remember to.
+
+###### The three RECORD-AND-DROPs, re-verified — two premises were wrong and no disposition moves
+
+All three were re-examined as **measurements rather than conveniences**, and two of them
+turned out to rest on a sentence that is false. **The dispositions do not change; the
+premises are corrected.**
+
+- **`L-U5-1`.** The reason given above is *"not fixed because there is no action available
+  that is not a violation"*. **That is false.** A guard asserting the two lists' inertness —
+  that `L(screaming) ⊆ L(snake)`, and that 27 of 35 stop entries can never be emitted —
+  edits no data and violates nothing, and **`F-5` already carries exactly that property**.
+  The accurate reason is the second half of the original sentence, which stands on its own:
+  the defect points *against* tuning, a list selected to move a number would fire, and this
+  one is inert by construction. **Dropped, on the correct premise.**
+- **`L-U5-4`.** The reason given above is that the fence *"permits numbers only"*. **That is
+  false, and re-counted here rather than carried:** string-valued columns are committed in
+  all three artifacts — **9** in the arms artifact (`arm`, `compaction_mode`, `mcp_commit`,
+  `model`, `recall_mode`, `schedule_id`, `stratum`, `summarizer_model`, `transcript_id`),
+  **4** in the null control and **2** in the corpus, **11 distinct** across the three. The
+  accurate premise is that the fence **permits no free text**, and that is measurable rather
+  than rhetorical: every one of those columns is bounded and identifier-shaped — the longest
+  string value anywhere in the three is **24 characters** (`replay-of-recorded-calls`), and
+  every column but `transcript_id` has at most **4** distinct values. Which is exactly what
+  makes the installed block inadmissible. The conclusion is unchanged and stronger for being
+  stated correctly. **Dropped, on the corrected premise.**
+- **`L-U5-2`.** No correction. And one thing should be said plainly, because the figure
+  invites the opposite reading: **the 5.81 h is the opposite of self-serving.** A job hiding
+  work declines re-runs that could make its numbers look *worse*. This one declines a re-run
+  that could only move the figure **in the direction that makes its own verdict better** —
+  every correction to substring containment moves retention *down*, and the arm is already
+  0.9437 away from its bar. Refusing it costs this job the one result it might have wanted.
+  **Dropped, and the reason is arithmetic, not economy.**
+
+###### The pin correction this job shipped does not comply with the convention this job ratified
+
+Disclosed at the time and repeated here so it cannot be lost. `L-U5-3` ratified *pattern-delimited
+locators only; **never a bare line number***. The correction shipped at `a525516` is
+`…-field-measurement.py:1608` — **a bare line number**. The reason is `RB-P59`: of the four
+candidate forms measured, the two that read as a pointer correction are both bare pins, and
+**the form the convention mandates is the one form the checker forbids**. So the job's first
+pass through its own new rule does not comply with it, **because its own checker forbids the
+compliant form**. Not hidden, not excused, and not fixed here — `RB-P59` stays **OPEN**, and
+`RB-P61` above is the safety net it named as the precondition for anyone acting on it.
+
+###### The instrument, counted as a number
+
+<!-- provenance: value=989 passed, 2 xfailed; commit=8544768; command=PYTHONPATH=$PWD/runtime-py/src /Users/kktest/Documents/Claude/Projects/bantamkit/.venv/bin/python -m pytest runtime-py/tests -q -->
+<!-- provenance: value=expectations=22 flips=0 catalogued-branches=16 pinned=14 unpinned=2; commit=8544768; command=/Users/kktest/Documents/Claude/Projects/bantamkit/.venv/bin/python tools/amendguard/amendguard.py calibrate -->
+**Said as a count and not as an absence of red, because "no red" is what a vacuous check
+also reports.** At `8544768` the checker's own sweep reports **22 expectations, 0 flips, 16
+catalogued branches, 14 pinned and 2 not pinned** — one `FORMATTER-ONLY` (`note-prose`, kept
+as N-12's demonstration) and one `UNPINNED` (`stamp-window`, declared, with its reason and no
+node). **14 of 16, and the denominator is the catalogue, not the program**; the branches
+outside it are `UNMEASURED` by `RB-P63` and no share is claimed over them. The suite is
+**989 passed, 2 xfailed**, up from 978 at `a525516` — four nodes for `RB-P61`/`RB-P64`, six
+for `RB-P66`, one for the declared-unpinned arm. Both ruff gates are clean, including the
+one that had been red for eight commits.
+
+###### What this amendment measured and what it carried
+
+**Re-measured here, by a command in this amendment:** both `RB-P61` mutations in both
+directions, before and after; the eight-commit red span of `ruff check docs/eval-data`, per
+commit, including the two commits the review's "nine" had swept in; the `UNPINNED` and
+`FORMATTER-ONLY` arms after the path fix; all five `UNREPORTED` shapes and the reported-zero
+null control; the suite and both ruff gates at `8544768`; the worktree gate failing without
+its prefix; the three diverging `src/` files; that line 1608 of the arms program still reads
+the `borrow_floor` guard; that no `file:line` pin anywhere in `docs/` points into the file
+whose imports were rewrapped; that `tools/amendguard/` still parses under `python3` 3.9.6
+with no f-strings (invariant 14); and `L-U5-4`'s string columns — 9 / 4 / 2, 11 distinct,
+longest value 24 characters — which also re-confirms the **33 / 29 / 44** key counts.
+
+**Carried and labelled as carried:** `L-U5-1`'s subsumption result and its 8-of-35
+emittable stop entries, which are not re-derived here — only the *reason for dropping it*
+is corrected; `RB-P68`'s reproduction of the `f134cca` figure; and the content of the
+unnumbered second Low finding, which is carried as **absent**.
+
+**Two review figures did not reproduce, and both are corrections in this job's own
+favour-free direction.** The red span of the `docs/eval-data` gate is **eight** commits, not
+nine — `0da7658` and `68d5692` fall between the last clean bisect point and `2030245` and
+are themselves clean. And `L-U5-4`'s nine string columns are **nine in the arms artifact**,
+not nine across the three; across the three there are eleven distinct. Neither is
+load-bearing on anything but the sentence that states it, and both are stated.
+
+###### Invariants held by this amendment
+
+**Nothing merged, nothing tagged, nothing pushed.** No frozen arm re-run, no committed
+artifact retro-edited, nothing touched under `assets/evals/tasks/` or
+`assets/evals/perturbations/`, and `9cc42c4` and `6c317ba` are not rewritten — **four RED of
+eight field rows is intended and stays**. `POINTER_CLASSES` is **not widened**: `RB-P61`
+lands the guard first and demonstrates it reddening a widening, which is the precondition
+`RB-P59` set for a later unit and not permission for this one. The tag deny rule was not
+retried, no tag guard is shipped, and the residual of `RB-P58` stands unsoftened. Every code
+change lives in exactly one layer: `client.py` is Layer 3, `tools/amendguard/` is outside
+the five product layers and both ruff gates, and the `docs/eval-data` fix is a mode and an
+import wrap in a document tree.
+
 ### The `qwen-implementer` cell on RB-P27 lever (2) (2026-08-12)
 
 The first measured cell of the `qwen-implementer` backlog item, run on the
