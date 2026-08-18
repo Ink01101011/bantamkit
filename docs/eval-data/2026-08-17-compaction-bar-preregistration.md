@@ -920,3 +920,227 @@ interpretation instead of by edit, which is the failure mode U3 declined to comm
 = **76,800** tokens, at the mechanism's shipped defaults), does not change the boundary
 rule's shape, and does not license a later re-tune. A different `T`, or reading B, is a
 **new arm with its own dated declaration**, reported separately (§10.2).
+
+### Amendment C — 2026-08-18. What Amendment B's cost sentence did not state, and at what strength §1.2's reconciliation actually holds
+
+**Written by U6 of job `compaction-measured`, closing the disclosure Criticals U5 and the
+orchestrator's probes filed against the two amendments above. It APPENDS. Nothing earlier
+in this document is edited, no committed row is regenerated, no arm is re-run, and — this
+is the point of the amendment — no number in it is re-tuned.** Amendment B's pins into
+`2026-08-17-compaction-corpus.md` are by line number and are left intact; every pin below
+is a **pattern-delimited span**, quoted, so that it survives an insertion.
+
+#### C(1) — the applied U-1 / U-2 accounting, per stratum, with the counter that produced each figure
+
+Amendment B states, in the span beginning *"Reading A is the **expensive** reading. Under
+it, only"*: **"102 of 207"** reach `T`, so **"105 of 207 are UNINFORMATIVE under U-2
+before any arm runs"**, sourced to the span of `2026-08-17-compaction-corpus.md` beginning
+*"Under **A**, 102 of 207 transcripts ever reach"*.
+
+Three things are wrong with that sentence as a statement of the **applied** cost, and the
+first is the one Amendment A itself forbids:
+
+1. **It is POOLED across strata**, in the very commit (`e94d960`) that introduced the
+   pooling prohibition. The numerator 102 exists in neither stratum on its own.
+2. **It is a figure from a DIFFERENT COUNTER than the one the arms were run on.** 102/105
+   comes from `recorded_prompt_tokens_peak` — the host's own recorded per-call prompt
+   usage, U3's counter, committed in `2026-08-17-compaction-corpus.jsonl`. The arms ran on
+   `live_window_peak_tokens` — the reconstructed prefix converted at
+   `bytes / BYTES_PER_TOKEN + FIXED_PER_CALL_TOKENS`, committed in
+   `2026-08-18-compaction-b0-null-control.jsonl`. §10.3(3) makes the recorded counter the
+   *calibration witness*; it is not the axis, and a cost quoted from it is a **forecast**,
+   not the applied cost.
+3. **It omits U-1 entirely**, though §5.4 makes U-1 a second uninformative class.
+
+**The applied accounting, recounted from the committed null-control rows, per stratum, and
+never pooled:**
+
+| | n | reach `T` | UNINFORMATIVE U-2 | UNINFORMATIVE U-1 | informative |
+|---|---|---|---|---|---|
+| **stratum A** (sidechain) | 206 | 106 | 100 | 2 | **104** |
+| **stratum B** (session) | 1 | 1 | 0 | 0 | **1** |
+
+Counter: `live_window_peak_tokens`, `2026-08-18-compaction-b0-null-control.jsonl`,
+`schedule_id = readingA-T76800-v1`, uniform on all 207 rows.
+
+**The same recount under U3's recorded-peak counter, so that the two are separable:**
+stratum A **101 reach / 105 U-2**, stratum B **1 / 0**. So the number **105** is exactly
+right — as **stratum A's U-2 count under the calibration witness**. It is wrong only as a
+figure over a 207 denominator, which is the form in which it was published.
+
+**A specific trap for a later reader, stated because a spot-check would confirm it.** The
+published UNINFORMATIVE count **105** is numerically identical to the **applied pooled
+INFORMATIVE count (104 + 1 = 105)**. A reader who checks "105" against the applied
+artifact will find 105 and conclude the sentence reproduces. It does not: the two 105s
+count opposite sets.
+
+**Nothing above changes a verdict.** R1 fires on stratum A at every one of these counts;
+stratum B is n=1 and UNINFORMATIVE-BY-N under Amendment A either way.
+
+#### C(2) — the composition of "reading A" is a free parameter, its magnitude is 33.01% of `T`, and every degree of freedom in it was resolved the permissive way
+
+Amendment B rules `T` by *"the mechanism's own meaning"* and grounds that in
+`src/config.ts:98-99` at `0a15cff`. Read at the same commit, the mechanism's own occupancy
+(`src/session.ts`, `recomputeUsage`) is **turns + summaries + persistent rules, and
+nothing else** — no host system prompt, no tool definitions, no attachments.
+
+The applied composition is `bytes / 1.8284 + FIXED_PER_CALL_TOKENS`, and
+`FIXED_PER_CALL_TOKENS = 25,350.2` is **33.01% of `T` = 76,800** — a per-call constant of
+exactly the host overhead `recomputeUsage` never counts. **Under the amendment's own
+stated criterion that constant is out.** The amendment names neither the choice nor its
+direction.
+
+**Five defensible instantiations of reading A, measured on the committed rows.** They
+differ only in what is inside the window, which counter measures it, or which shipped
+window fraction triggers (`nowPct = 85` is in this bar's own §10.1 table; §10.2 took
+`proactivePct = 60`):
+
+| composition of "reading A" | stratum A reaches `T` | pooled | stratum A U-2 |
+|---|---|---|---|
+| **applied** — `bytes ÷ 1.8284 + 25,350.2` | **106 / 206** | 107 / 207 | **100** |
+| U3's recorded-peak counter (§10.3(3)'s witness) | 101 / 206 | 102 / 207 | 105 |
+| constant-out — the mechanism's own `recomputeUsage` composition | 69 / 206 | 70 / 207 | 137 |
+| `nowPct = 85` (`T` = 108,800), applied counter | 65 / 206 | 66 / 207 | 141 |
+| the mechanism's own `chars/4` counter | 15 / 206 | 16 / 207 | 191 |
+
+**The applied composition maximises the informative set against every alternative — by up
+to 7.1× on stratum A.** Amendment B's claim that reading A is "the **expensive** reading"
+is true against reading B and false *inside* reading A: there, every undisclosed degree of
+freedom was resolved in the direction that leaves the most transcripts informative.
+
+**THIS AMENDMENT DECLARES THAT FREEDOM. IT DOES NOT EXERCISE IT.** `T` stays 76,800, the
+composition stays as applied, and §10.2's standing refusal is not suspended. Re-choosing
+now, after the result, is exactly the move §10.3 forecloses when it declares the axis
+"with no room to choose after the fact" — and there is nothing to gain by it, because:
+
+| informative set (stratum A) | n | median R1 ceiling, with the constant | without it | reaching −80% |
+|---|---|---|---|---|
+| applied | 104 | **−42.6107%** | −61.3963% | 1 |
+| U3's recorded-peak reachers | 94 | **−44.2110%** | −63.0337% | 1 |
+| constant-out reachers | 69 | **−48.6465%** | −65.9571% | 1 |
+| `nowPct = 85` reachers | 65 | **−49.1159%** | −66.9295% | 1 |
+| `chars/4` reachers | 15 | **−64.1139%** | −75.4786% | 1 |
+
+**R1 fires under all five, on both ceilings. The −80% target is REFUTED under every
+composition this bar's own sources permit.** These figures are **indicative**: they are
+computed under the *applied* schedule, restricted to each composition's reacher subset,
+because recomputing the schedule needs the per-call prefix trace, which is not a committed
+column, and re-running the reconstruction to obtain one is forbidden by §9(5). The
+direction is not in doubt — the alternative subsets are strictly *harsher* on the
+mechanism than the applied one.
+
+#### C(3) — the direction-of-cost sentence, qualified
+
+Amendment B's bolded span *"THE DIRECTION OF THE COST IS STATED, because that is what
+makes §10.2's standing refusal mean anything when it bites."* states the direction on
+**`n` only**, and is unsound as a claim that the direction *has been* stated. Qualified
+here, on the two axes it left out:
+
+- **On the verdict axis the direction runs the other way.** Reading A refutes the −80%
+  target on **both** ceilings — median −42.6107% with the constant and −61.3963% without.
+  Reading B, on the probe's validated estimate (A5, not re-derived here), would leave the
+  no-constant ceiling **not refuting**. The reading is expensive in `n` and **cheap in
+  argument**, and only the first half was disclosed.
+- **On the composition axis every open choice went the permissive way**, as C(2) measures.
+
+The correct form of the claim is: *the direction of the cost IN `n` is stated; the
+direction of the cost in what the reading buys the argument is stated here, in Amendment
+C, and it is favourable to the reading.*
+
+#### C(4) — §1.2's reconciliation, at its true strength, and the one published figure that depends on the difference
+
+§1.2 makes the recorded-versus-reconstructed byte reconciliation load-bearing and treats a
+non-zero delta as VOID. **That check cannot detect the loss class its program's docstring
+named**, and the docstring — corrected in the program on this date — asserted the
+opposite.
+
+`_render_content` (the arms field program) and `_content_bytes` (the corpus survey)
+dispatch on the identical set — `text`, `thinking`, `tool_use`, `tool_result` — and both
+fall through to empty/zero. **A content block of any other type contributes 0 to BOTH
+sides**, so the delta stays 0. Their agreement on that class is a theorem about two
+transcriptions of one rule, not a reconciliation. The survey's stated escape hatch,
+`content_block_kinds`, enumerates **top-level blocks only** and never descends into the
+`tool_result` content both counters recurse into.
+
+**Measured on the 207 in-scope transcripts, under the same cutoff rule the reconstruction
+uses:**
+
+| | |
+|---|---|
+| blocks neither counter models | **54** — `tool_reference` ×52, `image` ×2 |
+| where they sit | **all 54 nested inside `tool_result` content** |
+| their serialised bytes | **821,174 B** |
+| share of the 29,776,563 B the reconciliation reports as perfectly carried | **2.7578%** |
+| transcripts affected | **22 of 207** |
+| **inside the 24 informative sampled transcripts that carry every arm figure** | **150 B across 3 transcripts** (0.0123%, 0.0139%, 0.0342% of their own recorded content) |
+
+**No arm figure and no verdict in this job moves.** The stratum-A headline, the TRADE
+verdict, the R1 refutation and every floor are untouched at 150 B.
+
+**One published figure does depend on it, and it is declared rather than corrected.**
+**819,869 B of the 821,174 sits in the single stratum-B transcript**, whose committed
+prefix is short by that amount. Its published boundary count of **12** is therefore a
+**lower bound**; an upper-bound correction that placed all of the missing content before
+the peak would raise it, which would in turn make §5.4's "a stratum-B arm run costs
+12 × 9 = 108 calls" an under-estimate. **The figure is NOT restated here**: recomputing it
+requires regenerating the committed rows, which §9(5) forbids, and stratum B is n=1 and
+UNINFORMATIVE-BY-N under Amendment A, so no verdict rests on it.
+
+**What was changed instead, in the instrument and not in the evidence.** The rendering
+rule is deliberately left byte-identical — changing it would have silently invalidated
+`reconstructed_content_bytes` on 22 committed rows. The discriminating power is supplied
+by a separate census (`unmodelled_content_block_kinds` / `unmodelled_content_block_bytes`)
+whose non-emptiness fails the reconstruction and reddens
+`CHK-NO-UNMODELLED-CONTENT-BLOCK`. **On the committed rows that check reports UNMEASURED,
+not PASS** — the columns postdate the artifact, and a census that never ran is not a
+census that found nothing.
+
+#### C(5) — how strongly this job's own claims are pinned, counted honestly
+
+The acceptance program enforces the v0.21.0 pinning bar — *a claim counts only when a
+falsifying mutation turns red a node the claim NAMED* — and was itself failing it. **11 of
+its 14 mutations changed nothing in the printed report except their own check line**,
+because the policy flag each falsified had no consumer but the condition of the check that
+named it. The exit-2 detector could not see this by construction: a tautological mutation
+*does* redden its named check, so it exits 1, the correct-looking code.
+
+**No mutation was deleted** — removing one hides the defect instead of closing it. Seven
+flags gained a consumer that moves a printed **number**; the rest are declared. The run
+now prints its own **PINNING SELF-AUDIT** with the count:
+
+| state | n | meaning |
+|---|---|---|
+| **MEASURED** | 7 | the condition reads committed measured data |
+| **PINNED** | 9 | the condition reads a policy flag whose consumer moves a printed number |
+| **UNMEASURED** | 1 | the instrument exists; this evidence cannot feed it (C(4)'s census) |
+| **UNPINNED** | 4 | nothing this program can produce turns the check red |
+| **INTERNAL** | 1 | a consistency check on the audit table itself |
+
+**PINNED 16 of 22 named checks.** The four UNPINNED, each with the reason it could not
+gain a real consumer:
+
+- **`CHK-NO-FLOOR-BORROW`** — the borrow site is guarded by `stratum == "B"` and **all 600
+  committed arm rows are stratum A**, so the branch is unreachable on this evidence.
+- **`CHK-GRAIN-NOT-PICKED`** — the flag only suppresses an escalation, and there are
+  **zero grain disagreements** here, so there is no escalation to suppress.
+- **`CHK-ZERO-FLOOR-CLASSIFIED`** — the flag only reclassifies a **zero** headline floor,
+  and every headline floor here is non-zero (6,462.2 / 6,844.5 / 8,249.8 tokens).
+- **`CHK-EVERY-SKIPPED-KIND-ENUMERATED`** — its condition tests that each skipped count is
+  an *integer*, which no artifact this program writes can falsify. The claim its name
+  invites — that nothing was skipped unrecorded — is not the claim its condition makes.
+
+**`CHK-NO-POOLING` was false in its own run** and is now stated at the scope Amendment A
+rules on. Its old sentence, *"no cross-stratum figure exists"*, was printed in a run whose
+**first section prints six sums over both strata** (`recorded_content_bytes`,
+`recorded_events`, `reconstructed_turns`, `anchors_total`, total skipped, carried +
+skipped), which the committed measurement document's §2 table republishes. Those totals
+are **instrument-integrity** figures: they gate no headline, no floor and no verdict.
+They are kept, they are now labelled as cross-stratum, and each is printed with its
+per-stratum split. Amendment A's prohibition is on **headlines, floors and verdicts**, and
+that is now what the check claims.
+
+#### What Amendment C does not do
+
+It does not change `T`, the composition of `T`, the token counter, the threshold, the
+boundary rule, any committed row, or any verdict. It states four freedoms and one
+weakness, with their magnitudes and their directions, and exercises none of them.
