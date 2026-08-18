@@ -279,9 +279,22 @@ def _content_bytes(content) -> int:
 
     Content only: no role, no envelope, no JSON punctuation. Text and thinking by their
     text; a `tool_use` by its serialised input; a `tool_result` by its own content,
-    recursively. Anything else contributes 0 and is visible as a kind in
-    `content_block_kinds`, so an unaccounted block type is a number a reader can see
-    rather than a silent zero.
+    recursively. Anything else contributes 0.
+
+    THE VISIBILITY CLAIM THIS DOCSTRING USED TO MAKE WAS FALSE — corrected 2026-08-18 by
+    U6, closing U5's C-U5-1. It said an unaccounted block type "is visible as a kind in
+    `content_block_kinds`, so … a number a reader can see rather than a silent zero".
+    `content_block_kinds` enumerates TOP-LEVEL blocks only (the loop over
+    `message.content` in `build_rows`); it never descends into the `tool_result` content
+    this function itself recurses into. On this corpus every unaccounted block was nested
+    exactly there, so the escape hatch caught none of them and the zero was silent after
+    all. The size of that class on this corpus is recorded in the bar's Amendment C.
+
+    The counterpart counter in the arms field program renders the same set and also falls
+    through to nothing, so the two are one rule transcribed twice: their agreement on an
+    unaccounted block type is a theorem, not a reconciliation. That program now carries an
+    explicit unmodelled-block census for the class; this function's rule is unchanged, and
+    deliberately so, because the committed corpus rows are computed from it (bar §9(5)).
     """
     if content is None:
         return 0

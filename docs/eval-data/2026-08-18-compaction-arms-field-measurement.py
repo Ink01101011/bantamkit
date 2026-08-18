@@ -206,7 +206,17 @@ DECLARED_ENV = {
 
 # Additive columns declared after first commit. Empty at first commit, so the next added
 # column forces a dated declaration instead of silent tolerance (bar §9(3), RB-P46).
-ADDITIVE_KEYS_THE_ARTIFACT_PREDATES: tuple[str, ...] = ()
+#
+# 2026-08-18, U6, closing C-U5-1: `unmodelled_content_block_kinds` and
+# `unmodelled_content_block_bytes` are added by the reconstruction so that a content block
+# neither byte counter models is a NUMBER rather than a silent zero. The committed B0
+# artifact predates them and is NOT regenerated (bar §9(5)), so on the committed rows the
+# census reads UNMEASURED rather than zero — a census that has never run is not a census
+# that found nothing.
+ADDITIVE_KEYS_THE_ARTIFACT_PREDATES: tuple[str, ...] = (
+    "unmodelled_content_block_kinds",
+    "unmodelled_content_block_bytes",
+)
 
 _FENCE_PATTERNS = ("/", "\\", ".jsonl", "/Users/", "~/")
 
@@ -232,6 +242,11 @@ def _load_survey():
 # check, not a rounding error.
 CARRIED_EVENT_KINDS = ("user", "assistant")
 
+# The content block types BOTH byte counters model. This program's `_render_content` and
+# the survey's `_content_bytes` dispatch on exactly this set and both fall through to
+# empty/zero for everything else, which is the whole of C-U5-1: see `_render_content`.
+MODELLED_CONTENT_BLOCK_TYPES = frozenset({"text", "thinking", "tool_use", "tool_result"})
+
 
 def _render_content(content, survey) -> str:
     """The turn text, block for block, byte-for-byte identical to the survey's counter.
@@ -242,10 +257,33 @@ def _render_content(content, survey) -> str:
     exists to detect dropped content. Turn READABILITY is worth nothing here; the summary
     prompt the mechanism builds adds its own `### role` framing anyway.
 
-    A block type this function does not handle renders as the empty string while the
-    survey's counter still counts its bytes, so an unhandled block type turns the VOID
-    check RED rather than silently shrinking the null control's prefix. That is the whole
-    reason the two are computed by different code paths over the same input.
+    WHAT THE RECONCILIATION DOES AND DOES NOT PROVE — corrected 2026-08-18 by U6, closing
+    U5's C-U5-1. An earlier revision of this docstring claimed that an unhandled block
+    type "turns the VOID check RED … that is the whole reason the two are computed by
+    different code paths over the same input". THAT WAS FALSE, and it asserted the exact
+    property the code lacks:
+
+    * This function and `survey._content_bytes` dispatch on the SAME set
+      (`MODELLED_CONTENT_BLOCK_TYPES`) and BOTH fall through to empty/zero. A block type
+      neither models contributes 0 to BOTH sides, so `reconstruction_byte_delta` stays 0.
+      Equality on that class is a THEOREM about two transcriptions of one rule, not a
+      measurement. Two different code paths, one behaviour, and two transcriptions of one
+      rule are not independent evidence.
+    * The survey's own escape hatch does not cover it either: `content_block_kinds`
+      enumerates TOP-LEVEL blocks only and never descends into the `tool_result` content
+      that `_content_bytes` itself recurses into.
+
+    So the reconciliation is stated here at its true strength: it detects a failure to
+    CARRY content whose type both counters model — which is real, and which
+    `--mutate void-reconstruction` falsifies — and it is blind, by construction, to
+    content whose type NEITHER models.
+
+    The discriminating power the old docstring claimed is supplied separately and
+    honestly, by `unmodelled_content_blocks()` below: a census, in its own columns, whose
+    non-emptiness turns `CHK-NO-UNMODELLED-CONTENT-BLOCK` red. The rendered bytes are
+    deliberately left unchanged — making this function render an unmodelled block would
+    have silently invalidated the committed `reconstructed_content_bytes` on every row
+    that carries one, and bar §9(5) forbids regenerating them.
     """
     if content is None:
         return ""
@@ -265,6 +303,42 @@ def _render_content(content, survey) -> str:
     if kind == "tool_result":
         return _render_content(content.get("content"), survey)
     return ""
+
+
+def unmodelled_content_blocks(content) -> dict[str, list[int]]:
+    """Census of content blocks NEITHER byte counter models. `{kind: [count, bytes]}`.
+
+    This is the half of the reconciliation the byte comparison cannot supply. It descends
+    into `tool_result` content exactly as both counters do — which is where every one of
+    the blocks on this corpus turned out to live — and it is deliberately NOT a second
+    rendering rule: it reports the class as a count and a serialised size, so a block type
+    that appears after this program was written is a number rather than a silent zero.
+
+    `json.dumps(..., sort_keys=True)` is the same over-estimate the survey already applies
+    to attachments: it is an upper bound on the wire cost of the block and an under-
+    estimate of nothing, which is the safe direction for a check whose job is to fire.
+    """
+    out: dict[str, list[int]] = {}
+
+    def walk(node) -> None:
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+            return
+        if not isinstance(node, dict):
+            return
+        kind = node.get("type")
+        if kind == "tool_result":
+            walk(node.get("content"))
+            return
+        if kind in MODELLED_CONTENT_BLOCK_TYPES:
+            return
+        seen = out.setdefault(str(kind), [0, 0])
+        seen[0] += 1
+        seen[1] += len(json.dumps(node, sort_keys=True).encode("utf-8"))
+
+    walk(content)
+    return out
 
 
 def _turn_role(event: dict) -> str:
@@ -296,6 +370,7 @@ def reconstruct(path: Path, survey) -> dict:
     recorded_content_bytes = 0
     reconstructed_content_bytes = 0
     skipped: dict[str, int] = {}
+    unmodelled: dict[str, list[int]] = {}
 
     turns: list[dict] = []
     call_indices: list[int] = []  # index into `turns` at which each model call happened
@@ -331,6 +406,12 @@ def reconstruct(path: Path, survey) -> dict:
             recorded_content_bytes += survey._content_bytes(content)
             text = _render_content(content, survey)
             reconstructed_content_bytes += len(text.encode("utf-8"))
+            # C-U5-1: the class the byte comparison above is blind to, counted here so it
+            # cannot be invisible three ways at once.
+            for kind_name, (count, size) in unmodelled_content_blocks(content).items():
+                seen = unmodelled.setdefault(kind_name, [0, 0])
+                seen[0] += count
+                seen[1] += size
 
             role = _turn_role(event)
             # A SYNTHETIC assistant line is a host-generated error notice, not a model
@@ -378,6 +459,8 @@ def reconstruct(path: Path, survey) -> dict:
         "reconstructed_turns": len(turns),
         "reconstructed_content_bytes": reconstructed_content_bytes,
         "skipped_event_kinds": skipped,
+        "unmodelled_content_block_kinds": {k: v[0] for k, v in sorted(unmodelled.items())},
+        "unmodelled_content_block_bytes": sum(v[1] for v in unmodelled.values()),
         "turns": turns,
         "call_indices": call_indices,
         "prefix_bytes": prefix_bytes,
@@ -863,6 +946,10 @@ def cmd_reconstruct() -> int:
                 recon["reconstructed_content_bytes"] - recon["recorded_content_bytes"]
             ),
             "skipped_event_kinds": recon["skipped_event_kinds"],
+            # C-U5-1's census. Declared in ADDITIVE_KEYS_THE_ARTIFACT_PREDATES: the
+            # committed B0 artifact predates both columns and is not regenerated.
+            "unmodelled_content_block_kinds": recon["unmodelled_content_block_kinds"],
+            "unmodelled_content_block_bytes": recon["unmodelled_content_block_bytes"],
             # the model-call count, derived independently of U3 and compared to it
             "model_calls": len(recon["call_indices"]),
             "model_calls_committed_by_u3": corpus[transcript_id]["model_calls"],
@@ -893,11 +980,34 @@ def cmd_reconstruct() -> int:
     write_rows(B0_ARTIFACT, rows)
     ok = [r for r in rows if r.get("reconstruction") == "OK"]
     bad = [r for r in ok if r["reconstruction_byte_delta"] != 0]
+    unmodelled = [r for r in ok if r["unmodelled_content_block_bytes"]]
     print(f"{len(rows)} rows, {len(ok)} reconstructed, {len(bad)} byte mismatches")
-    print(f"boundaries total: {sum(r['boundaries'] for r in ok)}")
+    # C-U5-2: an INSTRUMENT-INTEGRITY total, per stratum beside its sum. The earlier form
+    # printed the cross-stratum sum alone, 490 lines from a check asserting that no
+    # cross-stratum figure exists — which made that check false in its own program.
+    def _per_stratum(column: str) -> str:
+        return ", ".join(
+            f"{s}={sum(r[column] for r in ok if r['stratum'] == s)}" for s in ("A", "B")
+        )
+
+    print(
+        f"boundaries: INSTRUMENT-INTEGRITY total (cross-stratum, gates no verdict) "
+        f"{sum(r['boundaries'] for r in ok)}; per stratum {_per_stratum('boundaries')}"
+    )
     print(f"UNINFORMATIVE under U-2: {sum(1 for r in ok if r['uninformative_u2'])}")
     print(f"model-call disagreements with U3: {sum(1 for r in ok if not r['model_calls_agree'])}")
-    return 0 if not bad else 1
+    # C-U5-1: a block type neither counter models can no longer be invisible. The byte
+    # delta cannot see it — both sides render it as zero — so it is a failure HERE.
+    kinds: dict[str, int] = {}
+    for row in unmodelled:
+        for kind, count in row["unmodelled_content_block_kinds"].items():
+            kinds[kind] = kinds.get(kind, 0) + count
+    print(
+        f"UNMODELLED content blocks: {sum(kinds.values())} block(s), "
+        f"{sum(r['unmodelled_content_block_bytes'] for r in ok):,} B, "
+        f"{len(unmodelled)} of {len(ok)} transcripts, kinds {kinds or 'none'}"
+    )
+    return 0 if not bad and not unmodelled else 1
 
 
 # =======================================================================================
@@ -1046,10 +1156,24 @@ class Report:
         self.policy = policy
         self.by_stratum: dict[str, dict] = {}
         self.checks: list[tuple[str, bool, str]] = []
+        self.unmeasured: list[tuple[str, str]] = []
         self.escalations: list[str] = []
 
     def check(self, name: str, passed: bool, detail: str) -> None:
         self.checks.append((name, passed, detail))
+
+    def unmeasurable(self, name: str, detail: str) -> None:
+        """A named check the committed evidence cannot evaluate. NOT a pass.
+
+        Added 2026-08-18 by U6 closing C-U5-1/C-U5-2. A check that read nothing and
+        printed PASS is the exact shape of the vacuity this program was found to have:
+        green is a claim, and a claim with no measurement behind it must not be able to
+        borrow the colour. UNMEASURED prints in its own state, is counted in its own
+        column of the banner, and does not make the run fail — an instrument that reports
+        its own blind spot is worth more than one that hides it behind a pass or dies of
+        it. It is never silently omitted.
+        """
+        self.unmeasured.append((name, detail))
 
 
 def _per_transcript(arms: list[dict], column: str) -> dict[tuple[str, str], list[float]]:
@@ -1088,6 +1212,7 @@ STOCHASTIC_ARMS = frozenset({"B1", "B2", "B3"})
 DEFAULT_POLICY = {
     "byte_delta_ok": 0,
     "drop_content_from_one_row": False,
+    "inject_unmodelled_block": False,
     "delete_a_committed_key": False,
     "threshold_t": THRESHOLD_T,
     "fixed_cost_declared": True,
@@ -1106,6 +1231,21 @@ DEFAULT_POLICY = {
 # Each mutation FALSIFIES one claim and must turn RED the check that claim NAMES. A
 # mutation that turns nothing red is a failure of the measurement, not of the mutation:
 # it means the claim was never load-bearing.
+#
+# 2026-08-18, U6, closing C-U5-2 (with the inherited C2). U5 measured this table from the
+# OUTPUT side and found it hollow: 11 of 14 modes changed nothing in the printed report
+# except their own check line and the run's banner, because their policy flag's only
+# consumer was the condition of the check that names it. Turning a boolean that only the
+# check reads is not a falsification — the exit-2 detector below cannot even see it,
+# because a tautological mutation DOES turn its named check red and so exits 1, the
+# correct-looking code.
+#
+# The rule now applied, and printed by the run itself in PINNING SELF-AUDIT:
+#   * a flag that CAN be given a consumer that moves a NUMBER has been given one, so the
+#     mutation is falsifiable against a figure and not against its own condition;
+#   * a flag that cannot — because the branch it feeds is unreachable on this data — is
+#     declared UNPINNED-ON-THIS-DATA with the reason, and the mutation is KEPT. Deleting
+#     the mutation would hide the defect; keeping it and saying so does not.
 MUTATIONS: dict[str, dict] = {
     # THE CRITICAL-ANALOGUE, and the one mutation that corrupts DATA rather than policy.
     # It simulates exactly bar §1.2's trap: the reconstruction silently drops the single
@@ -1116,6 +1256,15 @@ MUTATIONS: dict[str, dict] = {
     "void-reconstruction": {
         "policy": {"drop_content_from_one_row": True},
         "turns_red": "CHK-VOID-RECONSTRUCTION",
+    },
+    # C-U5-1's own falsification. The byte reconciliation CANNOT fire on a block type
+    # neither counter models — that is a theorem about two transcriptions of one rule —
+    # so the class needs its own census and its own mutation. This one puts a single
+    # unmodelled block on one in-memory row (the artifact on disk is never touched) and
+    # the census check must go red on it.
+    "unmodelled-content-block": {
+        "policy": {"inject_unmodelled_block": True},
+        "turns_red": "CHK-NO-UNMODELLED-CONTENT-BLOCK",
     },
     # RB-P46's deletion attack, which the forbidden formalisation "ignore keys the
     # committed file lacks" would pass: tolerance stated over a set is tolerance in BOTH
@@ -1167,6 +1316,121 @@ MUTATIONS: dict[str, dict] = {
         "turns_red": "CHK-FIDELITY-FLOOR-AT-ITS-OWN-GRAIN",
     },
 }
+
+# =======================================================================================
+# PINNING SELF-AUDIT — the instrument's own report on where its pins do not reach
+# =======================================================================================
+# Added 2026-08-18 by U6, closing C-U5-2. Every named check is classified here, the run
+# prints the classification and the count, and the run CHECKS THE TABLE against itself
+# (CHK-PINNING-AUDIT-COMPLETE): a check that exists and is not classified, or a
+# classification naming a check that does not exist, is a red check. Five states:
+#
+#   MEASURED    the check's condition reads committed measured data. Falsifying it means
+#               corrupting data, not turning a flag.
+#   PINNED      the check's condition reads a policy flag, AND that flag has a consumer
+#               that moves a printed NUMBER, so `--mutate <mode>` changes a figure and
+#               not only the check's own line.
+#   UNMEASURED  the instrument exists and would fire, but this evidence cannot feed it.
+#   UNPINNED    nothing this program can produce could turn the check red — either the
+#               flag's non-check consumer is unreachable on THIS evidence, or the
+#               condition is unfalsifiable by construction. Reported, never deleted.
+#   INTERNAL    a consistency check on this table itself, not on any measurement.
+#
+# The count this table prints is deliberately the LESS flattering of the two available:
+# a check is counted as falsifiable only if some input this program can construct turns
+# it red WITH a figure moving. That is the number an honest instrument owes a reader.
+PINNING_AUDIT: tuple[tuple[str, str, str, str], ...] = (
+    ("CHK-COMMITTED-KEY-SET", "MEASURED", "delete-a-committed-key",
+     "the ordered key tuple of every committed row"),
+    ("CHK-VOID-RECONSTRUCTION", "MEASURED", "void-reconstruction",
+     "reconstruction_byte_delta on 207 committed rows"),
+    ("CHK-NO-UNMODELLED-CONTENT-BLOCK", "UNMEASURED", "unmodelled-content-block",
+     ("the census columns postdate the committed B0 artifact and bar §9(5) forbids "
+      "regenerating it, so on THIS evidence the check reads nothing; the mutation "
+      "injects the column and does turn it red, which is what shows the instrument "
+      "works")),
+    ("CHK-MODEL-CALLS-AGREE-WITH-U3", "MEASURED", None,
+     "model_calls against U3's committed corpus; no mutation, the data is the pin"),
+    ("CHK-EVERY-SKIPPED-KIND-ENUMERATED", "UNPINNED", None,
+     ("the condition tests that each skipped count is an INT, and every count this "
+      "program writes is an int, so no artifact it can produce falsifies it. The claim "
+      "a reader will take from its name — that nothing was skipped unrecorded — is not "
+      "the claim the condition makes")),
+    ("CHK-THRESHOLD-NOT-RETUNED", "PINNED", "retune-threshold",
+     ("policy T now re-derives the U-2 reach count from live_window_peak_tokens: "
+      "the mutation moves the printed reach, not only a schedule_id string")),
+    ("CHK-FIXED-COST-DECLARED", "PINNED", "omit-fixed-cost",
+     "the flag now selects the token column the headline and R1 are computed from"),
+    ("CHK-NO-POOLING", "PINNED", "pool-strata",
+     "the flag now prints a pooled cross-stratum R1 median"),
+    ("CHK-BYTES-SIGNED", "PINNED", "clamp-byte-columns",
+     "the flag now clamps the signed §8 byte columns at zero"),
+    ("CHK-LOSSES-NEVER-SUMMED", "PINNED", "sum-anchor-losses",
+     "the flag now prints one summed anchors_lost figure in place of the two"),
+    ("CHK-SUMMARIZER-NEVER-NETTED", "PINNED", "net-summarizer-tokens",
+     "the flag now nets summarizer tokens into the printed pooled saving"),
+    ("CHK-UPPER-BOUND-IS-NOT-A-SAVING", "PINNED", "upper-bound-as-saving",
+     "the flag now prints the (N-1)/(N+1) bound in the saving position"),
+    ("CHK-NO-ALL-ON-VS-ALL-OFF", "PINNED", "all-on-vs-all-off",
+     "the pair list is consumed by the arms report; the mutation adds a whole B3-B0 block"),
+    ("CHK-FIDELITY-FLOOR-AT-ITS-OWN-GRAIN", "PINNED", "fidelity-floor-wrong-grain",
+     "the flag replaces the fidelity floor with the max per-transcript spread"),
+    ("CHK-ARMS-PRESENT", "MEASURED", None, "the committed arm row count"),
+    ("CHK-B0-DETERMINISTIC", "MEASURED", None, "B0's repeat spread on 50 transcripts"),
+    ("CHK-TURNS-WITNESS", "MEASURED", None, "agent call counts across arms"),
+    ("CHK-B0-ROUTE-AGREES", "MEASURED", None,
+     "arithmetic vs mechanism-driven B0 on the sampled transcripts"),
+    ("CHK-NO-FLOOR-BORROW", "UNPINNED", "borrow-floor",
+     ("the borrow site is guarded by stratum == 'B' and every committed arm row is "
+      "stratum A, so the branch is unreachable on this evidence and no figure can "
+      "move")),
+    ("CHK-GRAIN-NOT-PICKED", "UNPINNED", "pick-a-grain",
+     ("the flag only suppresses an escalation, and there are zero grain "
+      "disagreements on this evidence, so there is no escalation to suppress")),
+    ("CHK-ZERO-FLOOR-CLASSIFIED", "UNPINNED", "zero-floor-always-valid",
+     ("the flag only reclassifies a ZERO headline floor, and every headline floor on "
+      "this evidence is non-zero, so no classification can move")),
+    ("CHK-PINNING-AUDIT-COMPLETE", "INTERNAL", None,
+     ("this table against the checks the run actually emitted — a consistency check "
+      "on the audit, and not itself evidence about the mechanism")),
+)
+
+
+def _print_pinning_audit(report: Report) -> None:
+    """Print the audit and check it against the checks this run actually emitted."""
+    print()
+    print("--- PINNING SELF-AUDIT (C-U5-2) ----------------------------------------------")
+    emitted = (
+        {name for name, _p, _d in report.checks}
+        | {n for n, _d in report.unmeasured}
+        # this function's own check, appended below and therefore not yet in the list
+        | {"CHK-PINNING-AUDIT-COMPLETE"}
+    )
+    classified = {row[0] for row in PINNING_AUDIT}
+    counts = dict.fromkeys(("MEASURED", "PINNED", "UNMEASURED", "UNPINNED", "INTERNAL"), 0)
+    for name, state, mode, why in PINNING_AUDIT:
+        counts[state] += 1
+        tag = f" [--mutate {mode}]" if mode else " [no mutation]"
+        print(f"  {state:<10} {name}{tag}")
+        print(f"             {why}")
+    pinned = counts["MEASURED"] + counts["PINNED"]
+    total = sum(counts.values())
+    print(
+        f"  PINNED {pinned} of {total} named checks "
+        f"({counts['MEASURED']} to committed measured data, {counts['PINNED']} to a "
+        f"policy flag whose consumer moves a printed number). "
+        f"UNMEASURED {counts['UNMEASURED']}, UNPINNED {counts['UNPINNED']}, "
+        f"INTERNAL {counts['INTERNAL']} — every mutation is kept and reported, "
+        "never deleted, because deleting it would hide the defect rather than close it."
+    )
+    missing = sorted(emitted - classified)
+    stale = sorted(classified - emitted)
+    report.check(
+        "CHK-PINNING-AUDIT-COMPLETE",
+        not missing and not stale,
+        f"every named check is classified exactly once; {len(missing)} unclassified "
+        f"{missing or ''}, {len(stale)} classified but never emitted {stale or ''}",
+    )
 
 
 def _report_arms(arm_rows: list[dict], report: Report, policy: dict) -> dict:
@@ -1245,7 +1509,22 @@ def _report_arms(arm_rows: list[dict], report: Report, policy: dict) -> dict:
             print("      every sampled transcript in this stratum is UNINFORMATIVE.")
             verdicts[stratum] = {}
             continue
-        per_tokens = _per_transcript(rows, "context_tokens_sent_with_fixed")
+        # C-U5-2: `fixed_cost_declared` is no longer a boolean only its own check reads.
+        # The claim it names is that the fixed per-call cost is DECLARED and carried in
+        # the figures; the falsification is a saving quoted with the constant quietly
+        # dropped, which is a different NUMBER and not a different check line.
+        token_column = (
+            "context_tokens_sent_with_fixed"
+            if policy["fixed_cost_declared"]
+            else "context_tokens_sent_no_fixed"
+        )
+        if not policy["fixed_cost_declared"]:
+            print(
+                f"      *** the fixed per-call cost is NOT declared in this run: every "
+                f"token figure below is computed from {token_column}, i.e. with the "
+                f"{FIXED_PER_CALL_TOKENS} tokens/call omitted and not disclosed ***"
+            )
+        per_tokens = _per_transcript(rows, token_column)
         stratum_out: dict[str, dict] = {}
 
         for y, x, label in policy["pairs"]:
@@ -1275,7 +1554,7 @@ def _report_arms(arm_rows: list[dict], report: Report, policy: dict) -> dict:
                 per_repeat = []
                 for repeat in range(1, REPEATS + 1):
                     values = [
-                        r["context_tokens_sent_with_fixed"]
+                        r[token_column]
                         for r in rows
                         if r["arm"] == arm and r["repeat"] == repeat and r["transcript_id"] in usable
                     ]
@@ -1481,13 +1760,35 @@ def _report_arms(arm_rows: list[dict], report: Report, policy: dict) -> dict:
                 f"{'NON-INFERIOR' if fidelity_majority else 'BELOW ITS FLOOR'}"
                 f"{'' if fidelity_grain_agrees else '   *** GRAIN DISAGREEMENT -> ESCALATE ***'}"
             )
-            print(
-                f"      anchors_lost_stable={lost_stable}, "
-                f"anchors_lost_unstable={lost_unstable} (bar §3.2 — NEVER summed)"
-            )
+            # C-U5-2: `sum_anchor_losses` now MAKES the forbidden figure instead of only
+            # flipping a boolean the check reads. The claim is that a stable loss and an
+            # unstable loss are different events and are never added; the falsification
+            # is the single number that says they are the same event.
+            if policy["sum_anchor_losses"]:
+                print(
+                    f"      anchors_lost={lost_stable + lost_unstable} (stable and "
+                    "unstable SUMMED into one figure — bar §3.2 forbids this)"
+                )
+            else:
+                print(
+                    f"      anchors_lost_stable={lost_stable}, "
+                    f"anchors_lost_unstable={lost_unstable} (bar §3.2 — NEVER summed)"
+                )
             print(
                 f"      rho* = {rho:.4f}" if rho is not None else "      rho* = n/a (no boundary)"
             )
+            # C-U5-2: `net_summarizer_into_saving` now BUILDS the blended figure bar §4
+            # forbids — the summarizer's own tokens subtracted out of the saving — rather
+            # than turning a boolean nothing else reads. This is the number the claim
+            # exists to prevent, so this is what its falsification must print.
+            if policy["net_summarizer_into_saving"]:
+                netted = pooled_delta + summarizer
+                print(
+                    f"      NET saving after the summarizer's own tokens = "
+                    f"{netted:+,.1f} tokens "
+                    f"({_pct(netted, pooled_den):+.4f}% of Σ {x}) — a blended net figure; "
+                    "bar §4 forbids one"
+                )
             if median_retention is not None and (lost_stable > 0 or not headline_noninferior):
                 print(
                     "      => this is a TRADE, not a reduction (bar §4): a token delta at a "
@@ -1535,14 +1836,20 @@ def _report_arms(arm_rows: list[dict], report: Report, policy: dict) -> dict:
             if not arm_only:
                 continue
 
-            def col(name, _arm=arm, _rows=rows, _members=members):
-                return sum(
+            def col(name, _arm=arm, _rows=rows, _members=members, _policy=policy):
+                total = sum(
                     _median([
                         r[name] for r in _rows
                         if r["arm"] == _arm and r["transcript_id"] == t
                     ]) or 0
                     for t in _members
                 )
+                # C-U5-2: `clamp_bytes` now CLAMPS. The claim is that these columns are
+                # reported signed and unclamped because a mechanism that spends bytes to
+                # save bytes must be able to show a cost; the falsification is the same
+                # column with its negative half floored away, which on this evidence
+                # moves `trim` from -2,194,945 B to 0 on B2 and -1,067,817 B to 0 on B3.
+                return max(total, 0.0) if _policy["clamp_bytes"] else total
 
             print(
                 f"      {arm}: summary {col('summary_bytes'):+,.0f} B  "
@@ -1564,12 +1871,21 @@ def _report_arms(arm_rows: list[dict], report: Report, policy: dict) -> dict:
                 )
         verdicts[stratum] = stratum_out
 
+    signed_byte_columns = (
+        "summary_bytes", "rehydrated_bytes", "block_bytes", "trim_removed_bytes",
+        "offload_digest_bytes", "offload_body_bytes",
+    )
+    negative_byte_cells = sum(
+        1 for r in arm_rows for c in signed_byte_columns if r[c] < 0
+    )
     report.check(
         "CHK-BYTES-SIGNED",
         not policy["clamp_bytes"],
         "byte and token deltas are reported SIGNED and unclamped"
-        + ("; a negative delta is present in the data" if signed_negative_seen else
-           "; NOT EXERCISED — no negative delta in this sample"),
+        + ("; a negative TOKEN delta is present in the data" if signed_negative_seen else
+           "; the token deltas are NOT EXERCISED — none is negative in this sample")
+        + f"; the §8 BYTE columns are exercised — {negative_byte_cells} negative cell(s) "
+        f"across {len(arm_rows)} rows, which `--mutate clamp-byte-columns` floors away",
     )
     return verdicts
 
@@ -1582,11 +1898,20 @@ def _structural_checks(
     Each is named by a claim, so a mutation that falsifies the claim turns exactly this
     check red rather than merely producing a different number.
     """
+    # C-U5-2, first half. The old detail read "no cross-stratum figure exists", and that
+    # sentence was FALSE in its own run: the null-control section above it prints six
+    # sums over all 207 transcripts, both strata, and the committed §2 table republishes
+    # them. The claim is now stated at the scope Amendment A actually rules on — every
+    # HEADLINE, FLOOR and VERDICT — and the instrument-integrity totals are labelled as
+    # such and printed per stratum beside their sum, so no cross-stratum figure appears
+    # without its split.
     report.check(
         "CHK-NO-POOLING",
         not policy["pool_strata"],
-        "every headline, floor and verdict is per stratum; no cross-stratum figure exists "
-        "(Amendment A — the user's ruling, 'ห้าม pool เป็นเลขเดียว')",
+        "every headline, floor and verdict is per stratum (Amendment A — the user's "
+        "ruling, 'ห้าม pool เป็นเลขเดียว'). The only cross-stratum figures printed are "
+        "the INSTRUMENT-INTEGRITY totals of the null-control section, which gate no "
+        "verdict and carry their per-stratum split on the same line",
     )
     report.check(
         "CHK-NO-FLOOR-BORROW",
@@ -1617,6 +1942,18 @@ def _structural_checks(
         stratum: (None if not n else round(100.0 * (n - 1) / (n + 1), 3))
         for stratum, n in calls_median.items()
     }
+    # C-U5-2: `upper_bound_as_saving` now PRINTS the bound in the saving position, which
+    # is the figure the claim exists to prevent, instead of only flipping the boolean the
+    # check reads.
+    if policy["upper_bound_as_saving"]:
+        for stratum, value in sorted(bound.items()):
+            if value is None:
+                continue
+            print(
+                f"    stratum {stratum}: MEASURED SAVING = -{value}% "
+                f"(the (N-1)/(N+1) bound at the median model-call count, reported as a "
+                "measured saving — it is an UPPER BOUND and no arm produced it)"
+            )
     report.check(
         "CHK-UPPER-BOUND-IS-NOT-A-SAVING",
         not policy["upper_bound_as_saving"],
@@ -1724,6 +2061,13 @@ def cmd_report(mutate: str | None) -> int:
     print(RULE)
     print("J2 / U4 — THE ARMS, per stratum. Bar f48335c, amended e94d960 before any arm.")
     print(RULE)
+    # Printed as a FIGURE and not only inside a check's detail, so that
+    # `--mutate delete-a-committed-key` moves a number in the report body (C-U5-2).
+    print(
+        f"  committed key set: B0 {len(raw_b0)} rows, arms {len(raw_arms)} rows, "
+        f"{len(key_problems)} row(s) whose ordered key tuple differs from their "
+        "artifact's first row"
+    )
 
     # ---- bar §1.2, the null control's own trap -----------------------------------------
     mismatched = [r for r in b0_rows if r["reconstruction_byte_delta"] != policy["byte_delta_ok"]]
@@ -1733,6 +2077,42 @@ def cmd_report(mutate: str | None) -> int:
         f"{len(b0_rows)} transcripts reconstructed; "
         f"{len(mismatched)} with recorded != reconstructed content bytes",
     )
+    # ---- C-U5-1: the class the byte reconciliation above CANNOT see ---------------------
+    # `_render_content` and the survey's `_content_bytes` dispatch on the same set and
+    # both fall through to zero, so an unmodelled block contributes 0 to BOTH sides and
+    # CHK-VOID-RECONSTRUCTION is a theorem with respect to it. The census columns are the
+    # separate, honest instrument for that class. The committed rows predate them, and
+    # bar §9(5) forbids regenerating the rows to acquire them, so on this evidence the
+    # check is UNMEASURED — which is reported as its own state and never as a pass.
+    censused = [r for r in b0_rows if "unmodelled_content_block_bytes" in r]
+    if policy["inject_unmodelled_block"] and b0_rows:
+        # In memory only; the artifact on disk is never mutated (bar §9(5)).
+        victim = b0_rows[0]
+        victim["unmodelled_content_block_kinds"] = {"MUTATION_PROBE": 1}
+        victim["unmodelled_content_block_bytes"] = 5_000
+        censused = [r for r in b0_rows if "unmodelled_content_block_bytes" in r]
+    census_bytes = sum(r["unmodelled_content_block_bytes"] for r in censused)
+    census_kinds: dict[str, int] = {}
+    for row in censused:
+        for kind, count in row["unmodelled_content_block_kinds"].items():
+            census_kinds[kind] = census_kinds.get(kind, 0) + count
+    if not censused:
+        census_detail = (
+            f"UNMODELLED content-block census: UNMEASURED on the committed evidence — "
+            f"0 of {len(b0_rows)} rows carry the column, which postdates them. A census "
+            "that never ran is not a census that found nothing; the out-of-band size of "
+            "this class on this corpus is stated in the bar's Amendment C"
+        )
+        report.unmeasurable("CHK-NO-UNMODELLED-CONTENT-BLOCK", census_detail)
+    else:
+        census_detail = (
+            f"UNMODELLED content-block census: {len(censused)} of {len(b0_rows)} rows "
+            f"censused; {sum(census_kinds.values())} block(s), {census_bytes:,} B, "
+            f"kinds {census_kinds or 'none'}"
+        )
+        report.check(
+            "CHK-NO-UNMODELLED-CONTENT-BLOCK", census_bytes == 0, census_detail
+        )
     disagree = [r for r in b0_rows if not r["model_calls_agree"]]
     report.check(
         "CHK-MODEL-CALLS-AGREE-WITH-U3",
@@ -1749,12 +2129,39 @@ def cmd_report(mutate: str | None) -> int:
     )
 
     # ---- the threshold, and the standing refusal ---------------------------------------
+    # C-U5-2: `threshold_t` used to be read only by this check's own condition — the
+    # schedule is built from the module constant THRESHOLD_T — so `--mutate
+    # retune-threshold` moved no figure at all, only a `schedule_id` string comparison.
+    # It now has a real consumer: the U-2 reach count is RE-DERIVED from the committed
+    # `live_window_peak_tokens` against the POLICY threshold, per stratum. At the declared
+    # T that re-derivation must reproduce the committed `uninformative_u2` flag on every
+    # row (it does, 0 disagreements), which makes it a genuine consistency check as well;
+    # at any other T it prints a different reach and a row of disagreements. What it does
+    # NOT do is recompute boundaries: that needs the per-call prefix trace, which is not a
+    # committed column, and re-running the reconstruction to get one is forbidden.
+    reach_recomputed = {
+        stratum: sum(
+            1
+            for r in b0_rows
+            if r["stratum"] == stratum and r["live_window_peak_tokens"] >= policy["threshold_t"]
+        )
+        for stratum in ("A", "B")
+    }
+    reach_disagreements = sum(
+        1
+        for r in b0_rows
+        if r["uninformative_u2"] != (r["live_window_peak_tokens"] < policy["threshold_t"])
+    )
     report.check(
         "CHK-THRESHOLD-NOT-RETUNED",
         policy["threshold_t"] == 76_800
-        and all(r["schedule_id"] == f"readingA-T{policy['threshold_t']}-v1" for r in b0_rows),
+        and all(r["schedule_id"] == f"readingA-T{policy['threshold_t']}-v1" for r in b0_rows)
+        and reach_disagreements == 0,
         f"T = {policy['threshold_t']} tokens (60% of 128,000, the shipped defaults); "
-        "every row carries the same schedule_id",
+        "every row carries the same schedule_id; the U-2 reach RE-DERIVED from "
+        f"live_window_peak_tokens at this T is {reach_recomputed} per stratum "
+        f"({sum(reach_recomputed.values())} of {len(b0_rows)}), disagreeing with the "
+        f"committed uninformative_u2 flag on {reach_disagreements} row(s)",
     )
 
     # ---- the fixed per-call cost, declared ---------------------------------------------
@@ -1768,6 +2175,24 @@ def cmd_report(mutate: str | None) -> int:
 
     print()
     print("--- THE NULL CONTROL, bar §1.2 — the load-bearing check ----------------------")
+    # C-U5-2, first half. Every total in this section IS a sum across both strata. That
+    # was true before and it was printed 490 lines above a check whose sentence said no
+    # cross-stratum figure existed. They are kept — they are integrity totals and a
+    # per-stratum reconciliation would not reconcile the instrument — but they are now
+    # LABELLED as cross-stratum and every one carries its own split, so a reader can see
+    # what Amendment A's prohibition does and does not reach.
+    print(
+        "  the totals in this section are INSTRUMENT-INTEGRITY figures, summed ACROSS "
+        "both strata. They gate no headline, no floor and no verdict (Amendment A "
+        "reaches those), and each carries its per-stratum split."
+    )
+
+    def _split(column: str) -> str:
+        return " / ".join(
+            f"{s} {sum(r[column] for r in b0_rows if r['stratum'] == s):,}"
+            for s in ("A", "B")
+        )
+
     skipped_kinds: dict[str, int] = {}
     for row in b0_rows:
         for kind, count in row["skipped_event_kinds"].items():
@@ -1781,9 +2206,18 @@ def cmd_report(mutate: str | None) -> int:
         f"{len(mismatched)} transcript(s) with a non-zero byte delta"
     )
     print(
+        f"      per stratum: recorded {_split('recorded_content_bytes')}; "
+        f"reconstructed {_split('reconstructed_content_bytes')}"
+    )
+    print(
         f"  recorded_events {events:,}; reconstructed_turns "
         f"{sum(r['reconstructed_turns'] for r in b0_rows):,}; "
         f"anchors_total {sum(r['anchors_total'] for r in b0_rows):,}"
+    )
+    print(
+        f"      per stratum: recorded_events {_split('recorded_events')}; "
+        f"reconstructed_turns {_split('reconstructed_turns')}; "
+        f"anchors_total {_split('anchors_total')}"
     )
     print(
         "  every skipped event kind, enumerated with its count (an unenumerated skip is a "
@@ -1792,6 +2226,7 @@ def cmd_report(mutate: str | None) -> int:
         + f"; total skipped {sum(skipped_kinds.values()):,}; carried + skipped = "
         f"{events + sum(skipped_kinds.values()):,} lines under the cutoff"
     )
+    print(f"  {census_detail}")
 
     print()
     print("--- U-1 / U-2 / U-4 / VOID accounting, PER STRATUM (never pooled) ------------")
@@ -1812,6 +2247,19 @@ def cmd_report(mutate: str | None) -> int:
             f"informative={len(informative)}  "
             f"host-precompacted (U-4)={len(u4)}  "
             f"boundaries={sum(r['boundaries'] for r in members)}"
+        )
+        # C-U5-2's real consumer for `threshold_t`, printed as a FIGURE and not only
+        # inside a check's detail: the reach re-derived from the committed peak against
+        # the policy threshold. At the declared T it must equal the committed U-2
+        # classification exactly; at any other T it does not, and the difference is the
+        # cost of the retune, stated rather than hidden behind a schedule_id string.
+        redrawn = sum(
+            1 for r in members if r["live_window_peak_tokens"] >= policy["threshold_t"]
+        )
+        print(
+            f"           reach RE-DERIVED at the policy T = {policy['threshold_t']:,}: "
+            f"{redrawn} of {len(members)} reach it, {len(members) - redrawn} would be "
+            f"U-2 (committed U-2 at the declared T: {len(u2)})"
         )
         shape = [r for r in informative if r["boundaries"] > 0]
         for col, name in (
@@ -1866,14 +2314,24 @@ def cmd_report(mutate: str | None) -> int:
             "median_no_fixed": _median(no_fixed),
             "pooled_within_stratum": _pct(pooled_num, pooled_den),
         }
-        print(
-            f"  stratum {stratum} (n={len(informative)} informative, bar §5.4; "
-            f"{len(reached_t)} reached T before U-1 is removed): "
-            f"median ceiling {ceilings[stratum]['median_with_fixed']:+.4f}% "
-            f"WITH the declared fixed per-call cost, "
-            f"{ceilings[stratum]['median_no_fixed']:+.4f}% without it; "
-            f"pooled-WITHIN-stratum {ceilings[stratum]['pooled_within_stratum']:+.4f}%"
-        )
+        if policy["fixed_cost_declared"]:
+            print(
+                f"  stratum {stratum} (n={len(informative)} informative, bar §5.4; "
+                f"{len(reached_t)} reached T before U-1 is removed): "
+                f"median ceiling {ceilings[stratum]['median_with_fixed']:+.4f}% "
+                f"WITH the declared fixed per-call cost, "
+                f"{ceilings[stratum]['median_no_fixed']:+.4f}% without it; "
+                f"pooled-WITHIN-stratum {ceilings[stratum]['pooled_within_stratum']:+.4f}%"
+            )
+        else:
+            # C-U5-2's falsification of CHK-FIXED-COST-DECLARED: the same population, the
+            # same rows, the constant dropped and NOT disclosed. This is a different
+            # number in the headline position, not a different check line.
+            print(
+                f"  stratum {stratum} (n={len(informative)} informative, bar §5.4; "
+                f"{len(reached_t)} reached T before U-1 is removed): "
+                f"median ceiling {ceilings[stratum]['median_no_fixed']:+.4f}%"
+            )
         for tag, series in (("with the constant", with_fixed), ("without it", no_fixed)):
             if len(series) < 2:
                 continue
@@ -1890,6 +2348,25 @@ def cmd_report(mutate: str | None) -> int:
             f"{sum(1 for v in no_fixed if v <= TARGET_HEADLINE)} of {len(no_fixed)} "
             "without it. No summarizer can beat a ceiling."
         )
+    # C-U5-2: `pool_strata` now BUILDS the forbidden figure. Its only consumer used to be
+    # the condition of CHK-NO-POOLING, so `--mutate pool-strata` turned that check red
+    # without changing a single number — the exact vacuity the check was written to
+    # forbid elsewhere. The falsification is now the one number Amendment A rules out: a
+    # median ceiling over stratum A and stratum B together, in which one n=1 transcript
+    # stands beside 206 others.
+    if policy["pool_strata"]:
+        pooled_members = [
+            r for r in b0_rows if r["boundaries"] > 0 and not r["uninformative_u1"]
+        ]
+        if pooled_members:
+            print(
+                f"  POOLED ACROSS STRATA (n={len(pooled_members)} informative over A+B): "
+                f"median ceiling "
+                f"{_median([r['ceiling_pct_with_fixed'] for r in pooled_members]):+.4f}% "
+                "WITH the declared fixed per-call cost, "
+                f"{_median([r['ceiling_pct_no_fixed'] for r in pooled_members]):+.4f}% "
+                "without it — ONE NUMBER ACROSS BOTH STRATA; Amendment A forbids this"
+            )
     r1_fires = {
         s: (c.get("median_with_fixed") is not None and c["median_with_fixed"] > TARGET_HEADLINE)
         for s, c in ceilings.items()
@@ -1939,6 +2416,7 @@ def cmd_report(mutate: str | None) -> int:
         if members
     }
     _structural_checks(report, policy, calls_median, verdicts)
+    _print_pinning_audit(report)
 
     print()
     print("--- NAMED CHECKS -------------------------------------------------------------")
@@ -1947,6 +2425,9 @@ def cmd_report(mutate: str | None) -> int:
         print(f"  [{'PASS' if passed else 'RED '}] {name}: {detail}")
         if not passed:
             failed += 1
+    for name, detail in report.unmeasured:
+        # Its own state, never PASS. See Report.unmeasurable.
+        print(f"  [UNMEAS] {name}: {detail}")
     for line in report.escalations:
         print(f"  [ESCALATE] {line}")
     print(RULE)
@@ -1966,7 +2447,10 @@ def cmd_report(mutate: str | None) -> int:
         # falsified or whether the falsification failed to bite. 1 now means exactly "the
         # named check went red"; 2 means "the mutation falsified nothing".
         return 2
-    print(f"{len(report.checks)} named checks, {failed} red, {len(report.escalations)} escalations")
+    print(
+        f"{len(report.checks) + len(report.unmeasured)} named checks, {failed} red, "
+        f"{len(report.unmeasured)} UNMEASURED, {len(report.escalations)} escalations"
+    )
     if failed:
         return 1
     # Bar §3.1: an escalation STOPS the run. An escalation printed by a program that then
