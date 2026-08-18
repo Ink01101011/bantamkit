@@ -17,6 +17,8 @@
     "must_be_green": "STAMPED-GATE — the same number carrying a full stamp. Green here means FALSIFIABLE, not CORRECT: the checker never learns whether 932 is right."
   },
   "found_by_running_it": "MARKER-QUOTED — a co-moving-count marker shown inside a fenced example is quoted, not declared. The first field run of this checker, over its own design document, reported COUNT-STALE against a count that document never claimed. The fix is the same rule the fence already carries for pins, and this row is what keeps it fixed.",
+  "one_case_per_closed_list_ENTRY": "POINTER-P3-SECTION and POINTER-P3-BACKTICK — the two P3 sub-forms that had no case. `classify` reports the CLASS, so all three P3 sub-forms read `pointer:P3`, and a coverage guard counting class ids was satisfied for all three by the path form alone: six closed-list entries, four ids. Measured both ways before the guard was fixed — deleting the bare-backtick entry, and adding a seventh sub-form with no case, each left the suite at 24 passed and the sweep at flips=0.",
+  "the_triple_that_had_no_case": "PARTIAL-STAMP — a provenance stamp carrying value and commit but not command. Invariant 5 makes the (value, commit, command) triple the entire fallback for a cross-artifact co-moving count, and `STAMP_REQUIRED_KEYS = ()` passed with flips=0 before this row existed.",
   "the_rbp47_input": "VERBATIM-PIN — a file:line pin inside a fenced verbatim block. A pointer by syntax, a record by context. classify and the closed list disagree on it, which is why their agreement elsewhere is a cross-check and not a transcription.",
   "expect": [
     {"label": "BASE", "path": "doc-a.md", "classify": "new-file", "isolation": "mixed", "derivation": "absent", "verdict": "OK"},
@@ -29,6 +31,8 @@
     {"label": "POINTER-P1", "path": "doc-a.md", "classify": "pointer:P1", "isolation": "sole", "derivation": "absent", "verdict": "OK"},
     {"label": "POINTER-P2", "path": "doc-a.md", "classify": "pointer:P2", "isolation": "sole", "derivation": "absent", "verdict": "OK"},
     {"label": "POINTER-P4", "path": "doc-a.md", "classify": "pointer:P4", "isolation": "sole", "derivation": "absent", "verdict": "OK"},
+    {"label": "POINTER-P3-SECTION", "path": "doc-a.md", "classify": "pointer:P3", "isolation": "sole", "derivation": "absent", "verdict": "OK"},
+    {"label": "POINTER-P3-BACKTICK", "path": "doc-a.md", "classify": "pointer:P3", "isolation": "sole", "derivation": "absent", "verdict": "OK"},
     {"label": "ADD-FENCE", "path": "doc-a.md", "classify": "append", "isolation": "mixed", "derivation": "absent", "verdict": "OK"},
     {"label": "VERBATIM-PIN", "path": "doc-a.md", "classify": "record", "isolation": "mixed", "derivation": "absent", "verdict": "RECORD-EDITED"},
     {"label": "COUNT-INTRODUCED", "path": "doc-b.md", "classify": "append", "isolation": "mixed", "derivation": "ok", "verdict": "OK"},
@@ -37,6 +41,7 @@
     {"label": "COUNT-REPAIRED", "path": "doc-b.md", "classify": "co-moving-count", "isolation": "mixed", "derivation": "ok", "verdict": "OK"},
     {"label": "BARE-GATE", "path": "doc-a.md", "classify": "append", "isolation": "mixed", "derivation": "absent", "verdict": "STAMP-MISSING"},
     {"label": "STAMPED-GATE", "path": "doc-b.md", "classify": "append", "isolation": "mixed", "derivation": "ok", "verdict": "OK"},
+    {"label": "PARTIAL-STAMP", "path": "doc-d.md", "classify": "new-file", "isolation": "mixed", "derivation": "absent", "verdict": "STAMP-MISSING"},
     {"label": "MARKER-QUOTED", "path": "doc-c.md", "classify": "append", "isolation": "mixed", "derivation": "absent", "verdict": "OK"}
   ]
 }

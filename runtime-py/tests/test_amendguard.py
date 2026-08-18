@@ -185,6 +185,24 @@ def test_a_lone_file_line_pin_correction_is_ok(fixture):
     assert row["verdict"] == "OK"
 
 
+def test_a_section_form_file_line_pin_correction_is_ok(fixture):
+    """The second P3 sub-form. Its verdict is identical to the path form's, which is the
+    reason a class-counting coverage guard could not tell that it had no case."""
+    row = _row(fixture, "POINTER-P3-SECTION", "doc-a.md")
+    assert row["classify"] == "pointer:P3"
+    assert row["isolation"] == "sole"
+    assert row["verdict"] == "OK"
+
+
+def test_a_bare_backtick_file_line_pin_correction_is_ok(fixture):
+    """The third P3 sub-form, and the one RB-P59 measured reading OK where the backticked
+    path form reads RECORD-EDITED on one character of difference either side."""
+    row = _row(fixture, "POINTER-P3-BACKTICK", "doc-a.md")
+    assert row["classify"] == "pointer:P3"
+    assert row["isolation"] == "sole"
+    assert row["verdict"] == "OK"
+
+
 def test_a_hyperlink_corrected_alone_is_a_pointer(fixture):
     row = _row(fixture, "POINTER-P1", "doc-a.md")
     assert row["classify"] == "pointer:P1"
@@ -269,6 +287,16 @@ def test_the_same_gate_expectation_with_a_stamp_is_green(fixture):
     assert row["verdict"] == "OK"
 
 
+def test_a_gate_expectation_whose_stamp_is_missing_a_key_is_red(fixture):
+    """A stamp that is PRESENT and INCOMPLETE. Invariant 5 makes `(value, commit, command)`
+    the entire fallback for a cross-artifact co-moving count, and until this case existed
+    `STAMP_REQUIRED_KEYS = ()` passed the whole sweep with flips=0 — the triple was the
+    least-pinned assertion in the program. The stamp here carries value and commit and no
+    command, so a reader is handed a number they cannot re-derive."""
+    row = _row(fixture, "PARTIAL-STAMP", "doc-d.md")
+    assert row["verdict"] == "STAMP-MISSING"
+
+
 # ---------------------------------------------------------------------------------------
 # The instrument's own hygiene.
 # ---------------------------------------------------------------------------------------
@@ -289,16 +317,53 @@ def test_the_calibration_carries_both_a_must_be_red_and_a_must_be_green(fixture)
     assert verdicts - {"OK"}, "a calibration with no red case is a positive control only"
 
 
-def test_every_pointer_class_on_the_closed_list_has_a_fixture_case():
-    """Adding a fifth class without a case reddens here, so the list cannot widen silently."""
-    declared = {cid for cid, _pat, _desc in AG.POINTER_CLASSES}
-    exercised = {
-        e["classify"].split(":", 1)[1]
-        for e in json.loads(CALIBRATION.read_text())["expect"]
-        if e["classify"].startswith("pointer:")
-    }
-    missing = sorted(declared - exercised)
-    assert not missing, "pointer classes with no fixture case: " + str(missing)
+def test_every_closed_list_entry_has_a_fixture_case(fixture):
+    """One case per CLOSED-LIST ENTRY, which is not the same requirement as one per class.
+
+    This node used to be `test_every_pointer_class_on_the_closed_list_has_a_fixture_case`
+    and it counted class IDS: `{cid for cid, _pat, _desc in AG.POINTER_CLASSES}`.
+    `POINTER_CLASSES` holds SIX entries and FOUR distinct ids — P3 carries the section
+    form, the bare-backtick form and the path form — so one path-form case satisfied the
+    guard for all three, and its docstring's promise that "the list cannot widen silently"
+    was false. Measured in both directions against the old guard: deleting the
+    bare-backtick entry left 24 passed and flips=0, and adding a seventh P3 sub-form with
+    no fixture case left 24 passed and flips=0.
+
+    Coverage cannot be read off a verdict line, because `classify` says `pointer:P3` for
+    all three sub-forms. So it is measured where the information still exists: the real
+    committed before/after lines of each calibration case are re-masked through the
+    checker's own `pointer_entries_changed`, which reports the ENTRY the change actually
+    landed inside. One masker, used two ways — a second one written here would be a
+    transcription and their agreement a tautology (RB-P47).
+    """
+    repo = fixture["repo"]
+
+    def blob(rev: str) -> list[str]:
+        r = subprocess.run(
+            ["git", "-C", str(repo), "show", rev], capture_output=True, text=True, check=True
+        )
+        return r.stdout.splitlines()
+
+    exercised: set[int] = set()
+    for e in json.loads(CALIBRATION.read_text())["expect"]:
+        if not e["classify"].startswith("pointer:"):
+            continue
+        sha = fixture["labels"][e["label"]]
+        landed = AG.pointer_entries_changed(
+            blob(sha + "^:" + e["path"]), blob(sha + ":" + e["path"])
+        )
+        assert landed is not None, (
+            e["label"] + "/" + e["path"] + " is declared a pointer case and no longer "
+            "changes anything inside the closed list"
+        )
+        exercised |= landed
+
+    missing = [
+        str(i) + " " + AG.POINTER_CLASSES[i][0] + " (" + AG.POINTER_CLASSES[i][2] + ")"
+        for i in range(len(AG.POINTER_CLASSES))
+        if i not in exercised
+    ]
+    assert not missing, "closed-list entries with no fixture case: " + "; ".join(missing)
 
 
 def test_every_calibration_path_belongs_to_the_synthetic_fixture():
@@ -309,15 +374,31 @@ def test_every_calibration_path_belongs_to_the_synthetic_fixture():
 
 
 def test_every_mutation_names_a_branch_and_the_status_it_must_measure():
+    """`unpinned` is a declarable status, not only a measured one. RB-P48 and invariant 6:
+    an uncovered branch is reported UNPINNED with its reason and kept, never closed by
+    deleting its mutation — so the catalogue has to be able to say so in advance."""
     for mut in AG.MUTATIONS:
         assert mut["branch"], mut["id"]
-        assert mut["expect"] in ("pinned", "formatter-only"), mut["id"]
+        assert mut["expect"] in ("pinned", "formatter-only", "unpinned"), mut["id"]
         assert mut["pins"], mut["id"]
 
 
 def test_at_least_one_mutation_is_declared_formatter_only():
     """N-12's demonstration is not deleted to make the coverage number look better."""
     assert any(m["expect"] == "formatter-only" for m in AG.MUTATIONS)
+
+
+def test_at_least_one_mutation_is_declared_unpinned(fixture):
+    """The sweep's own vacuity arm, kept reachable.
+
+    `UNPINNED` means a mutation changed the program's behaviour NOWHERE in its output, and
+    it was unreachable until the calibration's baseline path was resolved: the baseline was
+    built in-process from an unresolved path while every mutant ran through `main()`'s
+    `args.repo.resolve()`, so the rendered `repo:` line differed on every comparison and
+    `r.stdout != baseline_text` was unconditionally true. A branch with ZERO coverage
+    therefore reported `FORMATTER-ONLY` — the innocent label — and the distinction RB-P48
+    rests on did not exist. A declared-unpinned mutation is what keeps that arm honest."""
+    assert any(m["expect"] == "unpinned" for m in AG.MUTATIONS)
 
 
 # ---------------------------------------------------------------------------------------

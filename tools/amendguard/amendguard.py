@@ -286,41 +286,70 @@ def derivation_of(text: str) -> tuple[str, list[str]]:
     return ("ok" if not notes else "stale"), notes
 
 
-def mask_pointers(line: str) -> tuple[str, list[tuple[str, str]]]:
-    """Replace every closed-list construct with a per-class sentinel.
+def mask_pointers_indexed(line: str) -> tuple[str, list[tuple[int, str]]]:
+    """Replace every closed-list construct with a per-class sentinel; report ENTRY INDICES.
 
     Two lines whose masks are equal differ ONLY inside pointer constructs. Two lines whose
     masks differ changed something else as well, and something else is a record.
+
+    The index — the position in `POINTER_CLASSES` — is what is reported, not the class id,
+    because THE TWO ARE NOT THE SAME COUNT. Six entries carry four distinct ids: P3 alone
+    has three sub-forms. A guard that counts ids cannot tell a covered sub-form from an
+    uncovered one, and this is the only function that knows which entry actually matched.
     """
-    found: list[tuple[str, str]] = []
+    found: list[tuple[int, str]] = []
 
     def sub(m: re.Match) -> str:
         idx = int(m.lastgroup[1:])
-        cid = POINTER_CLASSES[idx][0]
-        found.append((cid, m.group(0)))
-        return "\x00" + cid + "\x00"
+        found.append((idx, m.group(0)))
+        return "\x00" + POINTER_CLASSES[idx][0] + "\x00"
 
     return _MASK_RE.sub(sub, line), found
 
 
-def pointer_only_change(old: list[str], new: list[str]) -> str | None:
-    """`pointer:Pn` when every difference lies inside closed-list constructs, else None."""
+def mask_pointers(line: str) -> tuple[str, list[tuple[str, str]]]:
+    """`mask_pointers_indexed` with the entry index resolved to its class id.
+
+    One implementation, two views. A second masker written beside this one would be a
+    transcription of the same rule, and a cross-check between two transcriptions is a
+    tautology (RB-P47).
+    """
+    masked, found = mask_pointers_indexed(line)
+    return masked, [(POINTER_CLASSES[i][0], text) for i, text in found]
+
+
+def pointer_entries_changed(old: list[str], new: list[str]) -> set[int] | None:
+    """The CLOSED-LIST ENTRY INDICES a change lands inside, or None when it reaches outside.
+
+    This is `pointer_only_change`'s decision, one resolution finer. It is exported because
+    coverage of the closed list has to be counted per ENTRY: the calibration's `classify`
+    field says `pointer:P3` for three different sub-forms, so nothing downstream of a
+    verdict line can tell which of the three a fixture case exercised.
+    """
     if len(old) != len(new) or not old:
         return None
-    changed: set[str] = set()
+    changed: set[int] = set()
     for o, n in zip(old, new):
         if o == n:
             continue
-        mo, co = mask_pointers(o)
-        mn, cn = mask_pointers(n)
+        mo, co = mask_pointers_indexed(o)
+        mn, cn = mask_pointers_indexed(n)
         if mo != mn:
             return None
-        for (c1, t1), (_c2, t2) in zip(co, cn):
+        for (i1, t1), (_i2, t2) in zip(co, cn):
             if t1 != t2:
-                changed.add(c1)
+                changed.add(i1)
     if not changed:
         return None
-    return "pointer:" + "+".join(sorted(changed))
+    return changed
+
+
+def pointer_only_change(old: list[str], new: list[str]) -> str | None:
+    """`pointer:Pn` when every difference lies inside closed-list constructs, else None."""
+    changed = pointer_entries_changed(old, new)
+    if changed is None:
+        return None
+    return "pointer:" + "+".join(sorted({POINTER_CLASSES[i][0] for i in changed}))
 
 
 @dataclass
@@ -567,6 +596,10 @@ See [Eval](eval.md#cross-model-results) and bar §3.2.
 
 The consumer sits at field-measurement.py:1288.
 
+The same consumer, cited by section: §10.2:718.
+
+The same consumer, cited bare: `:1288`.
+
 Status: TODO
 """
 
@@ -590,6 +623,14 @@ FIXTURE_COMMITS: tuple[dict, ...] = (
         "sub": ["(eval.md#cross-model-results)", "(eval.md#cross-model-results-2026)"]}]},
     {"label": "POINTER-P2", "ops": [{"path": "doc-a.md", "sub": ["bar §3.2", "bar §3.3"]}]},
     {"label": "POINTER-P4", "ops": [{"path": "doc-a.md", "sub": ["Status: TODO", "Status: pending"]}]},
+    # THE OTHER TWO P3 SUB-FORMS. `classify` reports the CLASS, so these two read
+    # `pointer:P3` exactly as the path form does — which is precisely why a coverage guard
+    # counting classes could not see that neither had a case. One case per closed-list
+    # ENTRY; `test_every_closed_list_entry_has_a_fixture_case` is what makes that hold.
+    {"label": "POINTER-P3-SECTION", "ops": [{"path": "doc-a.md",
+        "sub": ["§10.2:718", "§10.2:742"]}]},
+    {"label": "POINTER-P3-BACKTICK", "ops": [{"path": "doc-a.md",
+        "sub": ["`:1288`", "`:1600`"]}]},
     {"label": "ADD-FENCE", "ops": [{"path": "doc-a.md", "append":
         "\n## Transcript\n\n```\ngrep -n floor docs/x.md:403\n```\n"}]},
     {"label": "VERBATIM-PIN", "ops": [{"path": "doc-a.md", "sub": ["docs/x.md:403", "docs/x.md:404"]}]},
@@ -605,6 +646,16 @@ FIXTURE_COMMITS: tuple[dict, ...] = (
     {"label": "STAMPED-GATE", "ops": [{"path": "doc-b.md", "append":
         "\n## Gates\n\n<!-- provenance: value=932 passed, 2 xfailed; commit=5458059;"
         " command=.venv/bin/python -m pytest runtime-py/tests -q -->\n932 passed, 2 xfailed\n"}]},
+    # A STAMP THAT IS PRESENT AND INCOMPLETE, in its own file so that no earlier stamp is
+    # inside `STAMP_WINDOW` and able to satisfy this line by accident. Invariant 5 makes
+    # the `(value, commit, command)` TRIPLE the whole fallback for a cross-artifact
+    # co-moving count; before this case `STAMP_REQUIRED_KEYS = ()` passed with flips=0, so
+    # the triple was the least-pinned assertion in the program. The code was correct and
+    # untested, and under this job's own standard that is a separate verdict.
+    {"label": "PARTIAL-STAMP", "ops": [{"path": "doc-d.md", "write":
+        "# Doc D\n\n## Gates\n\n"
+        "<!-- provenance: value=932 passed, 2 xfailed; commit=5458059 -->\n"
+        "932 passed, 2 xfailed\n"}]},
     # A marker SHOWN in a fenced example, in a file that has no live marker at all. If the
     # fence is ignored the derivation recomputes to 0 against a governed line that says
     # eleven, and the whole file reads COUNT-STALE for a count nobody declared.
@@ -712,6 +763,19 @@ MUTATIONS: tuple[dict, ...] = (
      "replacement": '("P4", r"(?!x)x"',
      "pins": "test_a_stale_state_marker_corrected_alone_is_a_pointer",
      "why": "P4 leaves the closed list"},
+    # ONE MUTATION PER SUB-FORM, because the mask is per sub-form and the class id is not
+    # the branch. MUT-P3 above deletes the PATH form only; before these two existed either
+    # of the other sub-forms could be deleted from the closed list with nothing red.
+    {"id": "MUT-P3-SECTION", "expect": "pinned", "branch": "P3-section-form",
+     "anchor": r'("P3", r"§\d+(?:\.\d+)*:\d+(?:-\d+)?"',
+     "replacement": '("P3", r"(?!x)x"',
+     "pins": "test_a_section_form_file_line_pin_correction_is_ok",
+     "why": "the section form of the file:line pin leaves the closed list"},
+    {"id": "MUT-P3-BACKTICK", "expect": "pinned", "branch": "P3-backtick-form",
+     "anchor": r'("P3", r"`:\d+(?:-\d+)?`"',
+     "replacement": '("P3", r"(?!x)x"',
+     "pins": "test_a_bare_backtick_file_line_pin_correction_is_ok",
+     "why": "the bare-backtick form of the file:line pin leaves the closed list"},
     {"id": "MUT-VERBATIM", "expect": "pinned", "branch": "verbatim",
      "anchor": "if any(i in old_fence for i in range(i1, i2)) or any(j in new_fence for j in range(j1, j2)):",
      "replacement": "if False:",
@@ -737,6 +801,21 @@ MUTATIONS: tuple[dict, ...] = (
      "replacement": "        if True:\n            continue",
      "pins": "test_a_gate_expectation_without_a_provenance_stamp_is_red",
      "why": "a bare cross-artifact count stops needing its (value, commit, command)"},
+    {"id": "MUT-STAMP-KEYS", "expect": "pinned", "branch": "stamp-required-keys",
+     "anchor": 'STAMP_REQUIRED_KEYS = ("value", "commit", "command")',
+     "replacement": "STAMP_REQUIRED_KEYS = ()",
+     "pins": "test_a_gate_expectation_whose_stamp_is_missing_a_key_is_red",
+     "why": "any comment saying `provenance:` starts counting as a full stamp"},
+    # DECLARED UNPINNED AND KEPT (RB-P48; invariant 6). No fixture case places a stamp
+    # further than `STAMP_WINDOW` above the number it governs, so widening the window
+    # changes nothing and this branch is NOT covered. Deleting the mutation would close it
+    # by hiding it; the honest close is a fixture case whose stamp sits out of range, and
+    # that case is not written here. This is also the sweep's control for the `UNPINNED`
+    # arm itself, which was unreachable until the baseline path was resolved.
+    {"id": "MUT-STAMP-WINDOW", "expect": "unpinned", "branch": "stamp-window",
+     "anchor": "STAMP_WINDOW = 8", "replacement": "STAMP_WINDOW = 100000",
+     "pins": "(none — no fixture case places a stamp outside the window)",
+     "why": "the distance a stamp may sit from its number stops being bounded"},
     {"id": "MUT-APPEND", "expect": "pinned", "branch": "append",
      "anchor": 'Hunk("append" if i1 >= len(old) else "insert"',
      "replacement": 'Hunk("record" if i1 >= len(old) else "insert"',
@@ -760,7 +839,15 @@ def _fields(text: str) -> list[str]:
 def calibrate(keep: Path | None = None) -> int:
     here = Path(__file__).resolve()
     expectations = json.loads((here.parent / "calibration.json").read_text())["expect"]
-    tmp = Path(keep) if keep else Path(tempfile.mkdtemp(prefix="amendguard-cal-"))
+    # RESOLVED, AND THE SWEEP'S OWN VACUITY DETECTOR DEPENDS ON IT. Every mutant runs
+    # through `main()`, which does `args.repo.resolve()`; the baseline below is built
+    # in-process from this path as given. On macOS `tempfile.mkdtemp()` returns
+    # `/var/folders/…` and resolves to `/private/var/folders/…`, so the rendered `repo:`
+    # line differed between baseline and EVERY mutant — which made `r.stdout !=
+    # baseline_text` unconditionally true and the `UNPINNED` arm UNREACHABLE. A branch
+    # with zero coverage was therefore labelled `FORMATTER-ONLY`, the innocent label,
+    # destroying the exact distinction RB-P48 leans on. The detector was itself vacuous.
+    tmp = (Path(keep) if keep else Path(tempfile.mkdtemp(prefix="amendguard-cal-"))).resolve()
     fixture = tmp / "repo"
     labels = build_fixture(fixture)
     ledger = fixture_ledger_path(fixture)
@@ -850,9 +937,22 @@ def calibrate(keep: Path | None = None) -> int:
               + ". Named node: " + mut["pins"] + ".")
     pinned = sum(1 for _m, s, _d in coverage if s == "PINNED")
     print()
+    # THE SCOPE OF THE NEXT LINE, SAID ON THE LINE ITSELF. `branches=` read as an
+    # inventory OF THIS PROGRAM and was an inventory OF THIS CATALOGUE: every decision
+    # branch with no entry above was absent from the denominator rather than reported
+    # UNPINNED, so the ratio flattered itself by omission. The field is renamed to say
+    # what it counts, and the branches outside the catalogue are declared UNMEASURED
+    # rather than given a number — no definition of "decision branch" is committed
+    # anywhere in this repository, so any total here would be a count of whatever the
+    # author's definition happened to be (the pin census's defect, one artifact over).
+    print("# SCOPE. `catalogued-branches` counts the entries in MUTATIONS and nothing")
+    print("# else. It is NOT the number of decision branches in this program, and the")
+    print("# pinned share below is a share of the catalogue, not of the classifier.")
+    print()
     print("SUMMARY expectations=" + str(len(expectations)) + " flips=" + str(len(flips))
-          + " branches=" + str(len(coverage)) + " pinned=" + str(pinned)
-          + " unpinned=" + str(len(coverage) - pinned))
+          + " catalogued-branches=" + str(len(coverage)) + " pinned=" + str(pinned)
+          + " unpinned=" + str(len(coverage) - pinned)
+          + " uncatalogued-branches=UNMEASURED")
     if flips:
         print()
         print("# CALIBRATION FAILED. Nothing this program says about any real commit may be")
