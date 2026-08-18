@@ -7190,4 +7190,50 @@ n. Not that `file-nav` is unfixable — only that it is the sole measured cut. A
 wall-clock figure appears here: these artifacts carry none, and every timing number in the
 probe that produced this came from a live run that is **not** in the committed rows.
 
+##### Amendment 1 to RB-P76 — 2026-08-19, appended within the hour, by the next probe
+
+**RB-P76 above stands as committed and is not edited.** Every figure in it reproduces. What
+follows narrows one sentence of it, and the narrowing was found by the J4 prep probe roughly
+an hour after RB-P76 merged at `71a72bc`.
+
+<!-- provenance: value="see table" commit="71a72bc" command="python over the four rebaseline jsonl, grouped by config" -->
+
+**RB-P76 calls `file-nav`'s ladder "the sharpest difficulty signal anywhere in these
+artifacts". That is true of the family AVERAGE and it conceals its own base.** The 48 rows
+per tier are **2 tasks × 3 repeats × 8 configs — six independent draws per config**, and the
+4B's `0.500` is an average over eight configs that span **0/6 to 6/6**:
+
+| config | 3b | 4b | 7b | 14b |
+|---|---|---|---|---|
+| `bare` | 0/6 | **0/6** | 5/6 | 6/6 |
+| `structured` | 0/6 | **0/6** | 5/6 | 6/6 |
+| `lean` | 0/6 | 2/6 | 5/6 | 6/6 |
+| `memory` | 0/6 | 2/6 | 5/6 | 6/6 |
+| `full` | 0/6 | 4/6 | 6/6 | 6/6 |
+| `critique` | 0/6 | 5/6 | 6/6 | **3/6** |
+| `grounded` | 0/6 | 5/6 | 6/6 | 6/6 |
+| **`graph`** | **1/6** | **6/6** | **6/6** | **6/6** |
+
+**THE LEDGER IS ALREADY THE BEST CONFIG ON THE FAMILY, AT EVERY TIER.** `graph` — the
+`filegraph` component the backlog dismisses as *"a ledger, not a finder"* — is **6/6 at 4b,
+7b and 14b**, and the **only** config that passes at all at 3B. So the `−0.417` family delta
+is a property of **which configs are averaged**, not of the family, and it **inverts** for
+the config a finder would have to beat: at `graph` there is no 7b→4b cut to close.
+
+**Two more things visible only at this grain.** `critique` at 14b is **3/6**, worse than the
+4B's 5/6 on the same config — the one place in the artifact where a larger model does
+measurably worse. And **10 of the 4B's 24 `file-nav` failures are `malformed-output`**, all
+in `bare` and `structured`, against 11 `wrong-answer` and 3 `critique-exhausted`: **a large
+share of the measured "navigation" gap at 4B is a failure to emit well-formed output, not a
+failure to navigate.**
+
+**What this does and does not move.** RB-P76's overall ladder, its Fisher p-values, its
+token bill and its unpaired-arms finding are **untouched** — nothing above depends on the
+family grain. What is withdrawn is the implication a reader would draw from *"the sharpest
+difficulty signal"*: **there is no headroom at `graph` to attack, the base is six draws per
+cell, and 6/6 against 5/6 is indistinguishable at any α.** RB-P76 was written from a family
+average; **a family average over eight configs is a pooled number, and this program's own
+rule is that strata are reported separately and never pooled.** That rule was applied to
+arms and not to configs, and this is what it cost.
+
 Back to the [README](../README.md).
