@@ -1431,3 +1431,112 @@ canonical oracle figure of **2,220** tokens measures **2,243** at `eca5117`, whi
 "2 RED" for a `void_reason` reversion measures **3** — the mutation was specified in prose
 rather than as a diff, so the two are probably not the same mutation. **Neither figure is
 load-bearing: the number the closure rests on is the 0 RED, and it reproduces exactly.**
+
+---
+
+## Amendment 3 — 2026-08-19, ruled by the orchestrator on U4's review, landed by U5
+
+**Appended. Amendment 2 and every section of it are committed and are NOT edited.** Two of
+the three items below are the orchestrator correcting its own ruling after a unit pushed
+back, and they are written that way.
+
+### A3.1 A2.2's defence 2 described the wrong starting state, and it was the defence that carried the adoption
+
+A2.2 offered three defences against the uncharitable reading of Amendment 2, and named the
+second as decisive: *"This is the defence that carries the adoption."* It reads, verbatim:
+
+> 2. **The amendment moves the arm to the WORSE reported result.** B0″ goes from VOID (no
+>    verdict, nothing reported) to **`FAIL-TAMPERED` 0/6 with zero boundaries** …
+
+**"VOID (no verdict, nothing reported)" is not what the starting state was.** The starting
+state is `2026-08-18-loop-harness-b0.md` §3.6, and §3.6's own heading is
+**"ESCALATION-CLASS. B0 is not usable as an arm."** — VOID ×6 on the run cap, D-2 failing for
+an instrument reason, and the arm not being the arm the bar defined, *"three independent
+grounds"*, explicitly *"escalation and not a re-run"*. **An escalation is a stop-and-ask. It
+is not nothing reported.**
+
+**THE CORRECTED DEFENCE 2, stated so it can be attacked in the form it should have had:**
+
+> Amendment 2 moved the arm from **ESCALATION-CLASS on three independent grounds** — a
+> stop-and-ask, with the disposition owed to the orchestrator — to a **clean pre-registered
+> UNINFORMATIVE**: the job concludes, and it concludes on a clause §1.5 predicted in writing
+> at `c323664`.
+
+**Whether that is worse is exactly the contested question, and the original wording assumed
+it away.** A closed UNINFORMATIVE is more legible and more final than an open escalation; it
+is also quieter, and quieter is what an amendment written to rescue a result would buy. The
+orchestrator does not now claim defence 2 carries the adoption. **What carries it is defence
+3** — §1.2's task text says *"Do not edit any `*.test.ts` file."* at `c323664`, before any
+harness existed, so the harness was brought into line with the pre-registered task rather
+than the task with a desired number — **together with A2.2's own disclosure paragraph, which
+told the reader to apply the uncharitable reading first and is the reason this was findable.**
+
+**Defence 1 does not survive at all.** See `2026-08-19-loop-closure.md` §8, N-19: the
+terminal guard and §1.4's guard are different predicates that part on three inputs, and rule
+(d) changes the text the worker is shown — `run_one` builds context with `canon1(out)`, and
+rule (d) changed the failing oracle output in **3 of 3** real runs at `81ac1a1` — so it is a
+change to the **task environment**, which A2.2's constants-not-moved list does not cover.
+
+**Nothing in this item moves an outcome, a threshold or a constant.** B0″'s six rows stand as
+committed. What changes is which sentence the orchestrator is willing to stand behind.
+
+### A3.2 §3.6's ground 3 — its disposition, recorded for the first time
+
+A2.8 item 1 answers ground 3 in substance without naming it, and no document anywhere records
+a disposition. **The disposition, named:**
+
+> **GROUND 3 IS NOT DISCHARGED. IT IS OUT OF REACH ON B0″, AND IT IS THE REASON THE NEXT JOB
+> NEEDS A NEW WORKLOAD RATHER THAN A NEW AMENDMENT.**
+
+Ground 3 says the arm is not the arm this bar defined, because §10.2's own rejection of a
+smaller window is a conditional — *"the runtime would truncate the prompt and the 'null
+control' would be the runtime's own FIFO truncation policy, not 'compaction off'"* — whose
+antecedent B0 satisfies: `worker_window_reached` true 6 of 6 and `max_prompt_eval_count`
+exactly `num_ctx` 6 of 6.
+
+**B0″ never enters that regime.** `max_prompt_eval_count` is 4,173 — **0.212 × T** — and
+`worker_window_reached` is **false 6 of 6**. So ground 3 does not bite on the arm the job
+reports, and **Amendment 2 did not fix it**; the arm stopped early enough not to meet it.
+Grounds 1 and 2 were dissolved by Amendment 2 (the run no longer reaches the cap; rule (d)
+closes D-2 over the failing output). Ground 3 was not, and cannot be, without moving a frozen
+constant.
+
+**A2.8 item 2 is the same fact stated forward and is hereby the standing instruction to any
+successor bar:** a `worker_window_reached → VOID` rule must be declared **in advance**. **It
+is not added here.** A VOID condition added after the rows exist is a post-hoc VOID condition,
+which is the failure mode §6 and §10.2 exist to refuse.
+
+### A3.3 §6 U-1 is PREDICTED and UNMEASURED, not fired. A2.6 is corrected.
+
+A2.6 states: *"U-1 fires alongside it once B0″ shows `boundaries` = 0."* **That is an
+inference from a different arm, not a measurement of the arm the clause names.** §6 U-1 reads,
+verbatim: *"`boundaries == 0` in every **B1** repeat."*
+
+- **No B1 repeat exists.**
+- **B1 is not implemented** — `run_one`'s own docstring says `context_compact` is never called
+  in any arm, and as of `2026-08-19-loop-closure.md` §3 an unimplemented arm label is refused
+  rather than stamped (N-18).
+- **Running B1 is forbidden** to the unit that found this.
+
+**THE CORRECTED READING OF §6, AND IT IS THE JOB'S VERDICT:**
+
+| clause | status | on what |
+|---|---|---|
+| **U-3 · UNINFORMATIVE-UNREACHABLE** | **FIRED** — the primary and only fired clause | B0″ passes **0 / 6**, for a reason with nothing to do with compaction |
+| **U-1 · UNINFORMATIVE-NO-BOUNDARY** | **PREDICTED, UNMEASURED** | the clause quantifies over B1 repeats and there are none |
+| U-2 · thin-boundary floor | not reached | no B1 arm exists to apply it to |
+
+**UNMEASURED is a verdict (RB-P51), and reporting U-1 as fired would be a check passing on
+data it cannot see — the exact shape RB-P51 names.** J7's verdict is therefore
+**UNINFORMATIVE under §6 U-3, with U-1 predicted and UNMEASURED**, and A2.6's arithmetic —
+§1.5's 0.74 × T on paper, 0.69 × T measured, zero boundaries either way — is unaffected and
+stands.
+
+### A3.4 What this amendment does not do
+
+It does not change CANON-1, the outcome ladder, `T`, `COMPACTION_TOKEN_BUDGET`,
+`WORKER_NUM_CTX`, `RUN_CAP_S`, `TURN_CAP`, DEFECT-SET-5, `R`, the §10.6 tool roster or the
+§1.3 ORACLE command. It adds no VOID condition and removes none. It regenerates no row and
+retro-edits no section. **The only committed thing it changes is which sentences the
+orchestrator will defend**, and it names the unit that made it necessary: U4's adversarial
+review, whose M-4 and M-2 are both accepted in full.

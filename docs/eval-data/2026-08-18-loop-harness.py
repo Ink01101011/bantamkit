@@ -115,6 +115,54 @@ NUM_PREDICT = 2048
 # this list is stamped `store` and has to say so deliberately.
 COMPACT_OFF_ARMS = frozenset({"compact-off", "compact-off-tamper-terminal"})
 
+# N-18 (Critical C-2): which arms this program has actually IMPLEMENTED.
+# `--arm` used to be free text with no `choices=`, and `compaction_mode` was
+# derived from SET MEMBERSHIP OF THE LABEL -- so `run --arm compact-on` emitted
+# six rows reading `compaction_mode: store`, with null summarizer columns and an
+# `mcp_commit` pinning a mechanism `run_one` never calls, at exit 0. A label is
+# not a behaviour. This tuple is the list of arms whose behaviour exists in this
+# file, it is `choices=` for `--arm`, and `compaction_mode_for` raises on
+# anything else rather than stamping a column.
+#
+# THE `store` BRANCH IS UNREACHABLE TODAY AND THAT IS THE FINDING, not an
+# oversight: no compaction-ON arm is implemented, so no arm outside
+# COMPACT_OFF_ARMS is on this list. Implementing B1 means calling
+# `context_compact` AND adding the label here, in the same change.
+IMPLEMENTED_ARMS = ("compact-off", "compact-off-tamper-terminal")
+
+
+def compaction_mode_for(arm: str) -> str:
+    """The `compaction_mode` column, and the refusal that stops a label becoming
+    a measurement.
+
+    Falsified in `selfcheck` (M8) against the arm label itself -- the datum the
+    column is derived from -- not against a flag this harness sets."""
+    if arm not in IMPLEMENTED_ARMS:
+        raise ValueError(
+            f"arm {arm!r} is not implemented in this harness. Implemented: "
+            f"{', '.join(IMPLEMENTED_ARMS)}. A row for an unimplemented arm "
+            f"would carry a `compaction_mode` derived from its LABEL and an "
+            f"`mcp_commit` pinning a mechanism no code path calls.")
+    return "off" if arm in COMPACT_OFF_ARMS else "store"
+
+
+def boundaries_from_calls(calls: list[dict]) -> int:
+    """The `boundaries` column, derived from the calls that HAPPENED.
+
+    N-17: the count used to be an accumulator incremented at the TOP of the turn
+    loop, BEFORE the worker call. A call that raised broke out of the loop and
+    was never appended to `calls`, so the increment stood with no call behind it
+    and every run that ended on the run cap or an endpoint error over-counted by
+    exactly one. The six committed B0 rows carry the evidence against themselves:
+    the scalar `boundaries` column and the sum of the row's own per-call
+    `boundary_before_this_call` flags disagree by +1 on all six.
+
+    A boundary is a property of a call that was made, so the scalar is now read
+    off the same per-call flags the row already ships -- one transcription, not
+    two that have to agree (RB-P47). Anyone can re-derive the column from the
+    committed `calls` sub-array."""
+    return sum(1 for c in calls if c["boundary_before_this_call"])
+
 # Bar section 1.2, table. Each verified to occur exactly once at the pinned commit.
 DEFECT_SET_5 = [
     ("D1", "src/expense/split/split.ts", "/ 10000n;", "/ 1000n;"),
@@ -351,17 +399,34 @@ NODE_LINKS = ("node_modules", SHARED + "/node_modules")
 
 
 def restore(wt: str, real_repo: str | None = None) -> None:
-    """Back to the pinned tree. `checkout -f -- .` and `clean -fd` write no object
-    and move no ref.
+    """Back to the pinned tree. `checkout -f -- .` and `clean -fdx` write no
+    object and move no ref.
 
     MEASURED, and NOT what the bar assumed: `git clean -fd` DELETES the two
     `node_modules` SYMLINKS the worktree is given, even though `-x` is absent and
     even though `node_modules` is in the workload's `.gitignore`. A `.gitignore`
     directory pattern does not match a symlink, so the links are plain untracked
     files to `clean`. They are therefore excluded by name and re-created if
-    absent -- otherwise the second repeat of every arm has no oracle at all."""
+    absent -- otherwise the second repeat of every arm has no oracle at all.
+
+    N-16, and the reason `-x` is now here: WITHOUT `-x`, `clean` uses the
+    WORKLOAD's `.gitignore` as its exclusion list, so a reset between repeats
+    preserves exactly what the workload chose to ignore. At `81ac1a1` that list
+    contains `dist/` and `*.tsbuildinfo`, and `tsconfig.base.json` sets
+    `composite: true` -- so build state written by repeat N survived into repeat
+    N+1 and the repeats were not independent. Two consequences, both measured
+    rather than argued: `guard_type_exit` reads `[2, 1, 1, 1, 1, 1]` on the six
+    committed B0" rows while every content column of those rows is 1 distinct of
+    6; and `tool_list` walks the worktree excluding only `node_modules`, so a
+    `dist/` left by an earlier repeat is inside the AGENT's observation space.
+
+    `-x` makes the exclusion list this function's own -- the two symlinks, by
+    name -- instead of the workload's. It is a change to the RESET, not to the
+    task, the roster, or any threshold, and it regenerates nothing: the committed
+    rows of B0 and B0" stand as written. See
+    `2026-08-19-loop-u5-closure-field-measurement.py`, section C-1."""
     git(wt, "checkout", "-f", "--", ".")
-    git(wt, "clean", "-fd", "-q", "-e", "node_modules",
+    git(wt, "clean", "-fdx", "-q", "-e", "node_modules",
         "-e", SHARED + "/node_modules")
     if real_repo:
         for rel in NODE_LINKS:
@@ -671,6 +736,11 @@ def run_one(wt: str, arm: str, repeat: int, *, verbose: bool = False) -> dict:
     """One (arm, repeat). B0 = `compact-off`: the full orchestration with
     `context_compact` never called (bar section 3.1). Boundaries are COUNTED in
     every arm and ACTED ON in none of them here -- U3 runs the ladder."""
+    # C-2: refuse an unimplemented arm HERE, before the worktree is touched and
+    # before 20 minutes of wall-clock, rather than at row-assembly time. The
+    # `choices=` list on `--arm` is the same check at the CLI; this one holds for
+    # any caller that reaches `run_one` directly.
+    compaction_mode_for(arm)
     restore(wt, REAL_REPO)
     problems = apply_defects(wt)
     if problems:
@@ -679,7 +749,6 @@ def run_one(wt: str, arm: str, repeat: int, *, verbose: bool = False) -> dict:
 
     blocks: list[dict] = []
     calls: list[dict] = []
-    boundaries = 0
     prev_prompt_eval = 0
     t0 = time.monotonic()
     stopped_by = None
@@ -695,9 +764,11 @@ def run_one(wt: str, arm: str, repeat: int, *, verbose: bool = False) -> dict:
         # Bar section 10.2: the boundary fires on the first worker call at which
         # the run's live context, measured by `prompt_eval_count` on the
         # IMMEDIATELY PRECEDING call, reaches T.
-        if prev_prompt_eval >= T_BOUNDARY:
-            boundaries += 1
-            # arm B0 never calls context_compact; the count is still recorded.
+        # N-17: the DECISION is taken here, because a future arm calls
+        # `context_compact` here. The COUNT is not taken here -- see
+        # `boundaries_from_calls`. Arm B0 never calls `context_compact`; the
+        # crossing is still recorded, on the call it belongs to.
+        crossed_before_this_call = prev_prompt_eval >= T_BOUNDARY
         prompt = render(blocks)
         # Bar section 10.6 declares "run cap 20 minutes wall-clock per run ->
         # exceeding it is VOID". Checked only BETWEEN calls it cannot fire, because
@@ -724,7 +795,7 @@ def run_one(wt: str, arm: str, repeat: int, *, verbose: bool = False) -> dict:
         r["turn"] = turn
         r["prompt_sha256"] = hashlib.sha256(prompt.encode()).hexdigest()
         r["prompt_bytes"] = len(prompt.encode())
-        r["boundary_before_this_call"] = prev_prompt_eval >= T_BOUNDARY
+        r["boundary_before_this_call"] = crossed_before_this_call
         calls.append(r)
         prev_prompt_eval = r["prompt_eval_count"] or 0
 
@@ -806,7 +877,7 @@ def run_one(wt: str, arm: str, repeat: int, *, verbose: bool = False) -> dict:
         "worker_model": WORKER_MODEL, "summarizer_model": SUMMARIZER_MODEL,
         "summarizer_num_ctx": SUMMARIZER_NUM_CTX, "worker_num_ctx": WORKER_NUM_CTX,
         "temperature": WORKER_TEMPERATURE, "seed": WORKER_SEED,
-        "compaction_mode": "off" if arm in COMPACT_OFF_ARMS else "store",
+        "compaction_mode": compaction_mode_for(arm),
         "recall_mode": "lexical", "mcp_commit": MCP_COMMIT,
         "workload_commit": WORKLOAD_COMMIT, "defect_set_id": DEFECT_SET_ID,
         "trigger_id": TRIGGER_ID, "canon_id": CANON_ID,
@@ -824,7 +895,7 @@ def run_one(wt: str, arm: str, repeat: int, *, verbose: bool = False) -> dict:
         "worker_calls": len(calls),
         "max_prompt_eval_count": max((c["prompt_eval_count"] or 0 for c in calls),
                                      default=0),
-        "boundaries": boundaries,
+        "boundaries": boundaries_from_calls(calls),
         "first_boundary_turn": next(
             (c["turn"] for c in calls if c["boundary_before_this_call"]), None),
         # Bar section 10.2 justified num_ctx = 32768 by arithmetic: "the ceiling
@@ -1240,6 +1311,67 @@ def cmd_selfcheck(args) -> int:
          [ln for ln in canon1(u0, rule_d=False).split("\n") if ln.strip()]
          == [ln for ln in canon1(u0).split("\n") if ln.strip()], True)
 
+    # --- M8. C-2, the arm gate. Falsified against the ARM LABEL -- the datum
+    # `compaction_mode` is derived from -- and against the two labels that have
+    # a behaviour in this file. The mutation that reddens this block is the
+    # pre-fix expression itself: `"off" if arm in COMPACT_OFF_ARMS else "store"`
+    # with no membership test, which answers `store` for every string ever typed.
+    case("M8 green: an implemented compaction-OFF arm is `off`", "off",
+         compaction_mode_for("compact-off"), "off")
+    case("M8 green: and so is B0\u2033", "off",
+         compaction_mode_for("compact-off-tamper-terminal"), "off")
+    for bad in ("compact-on", "compact-store", "b1", ""):
+        got = "no-raise"
+        try:
+            got = compaction_mode_for(bad)
+        except ValueError:
+            got = "refused"
+        case(f"M8 RED: unimplemented arm {bad!r} is refused, not stamped",
+             "refused", got, "refused")
+    case("M8: every `choices=` entry has a behaviour, so the gate is not "
+         "vacuous", "all resolve",
+         all(compaction_mode_for(a) in ("off", "store")
+             for a in IMPLEMENTED_ARMS), True)
+    case("M8: no compaction-ON arm is implemented -- the `store` branch is "
+         "dead", "0 store arms",
+         [a for a in IMPLEMENTED_ARMS if compaction_mode_for(a) == "store"], [])
+
+    # --- M9. N-17, the boundary count. Falsified against a recorded `calls`
+    # sub-array of the shape a raising run leaves behind: the crossing was
+    # decided at the loop top, the call then raised, and NOTHING was appended.
+    # The mutation that reddens this block is the pre-fix accumulator, which
+    # counts the crossing rather than the call.
+    below = {"turn": 1, "boundary_before_this_call": False,
+             "prompt_eval_count": 100}
+    across = {"turn": 2, "boundary_before_this_call": True,
+              "prompt_eval_count": T_BOUNDARY + 1}
+    case("M9 green: no call crossed, so no boundary", "0",
+         boundaries_from_calls([below, below]), 0)
+    case("M9 green: two calls crossed, so two boundaries", "2",
+         boundaries_from_calls([below, across, across]), 2)
+    case("M9 RED: a crossing whose call RAISED leaves no call, so no boundary",
+         "0", boundaries_from_calls([below]), 0)
+    case("M9 RED: and the run that raised after ONE crossing counts 1, not 2",
+         "1", boundaries_from_calls([below, across]), 1)
+    case("M9: the count equals the row's own per-call flags, by construction",
+         "equal",
+         boundaries_from_calls([below, across, below, across])
+         == sum(1 for c in [below, across, below, across]
+                if c["boundary_before_this_call"]), True)
+
+    # --- M10. N-16's blast radius on the OUTCOME ladder, so the closure does not
+    # have to assert it. `guard_type_exit` moved 2 -> 1 across repeats; the
+    # ladder only ever asks whether it is zero, so the leak could not have moved
+    # a verdict through `classify_outcome`. Checked, not assumed.
+    green = {"stopped_by": "done", "tampered": [], "truncated_writes": []}
+    case("M10: guard_t 1 and guard_t 2 give the SAME outcome on a passing "
+         "oracle", "both FAIL-TYPE",
+         classify_outcome(**green, oracle_exit=0, guard_t=1)
+         == classify_outcome(**green, oracle_exit=0, guard_t=2) == "FAIL-TYPE",
+         True)
+    case("M10 RED: and guard_t 0 is the one that differs", "PASS",
+         classify_outcome(**green, oracle_exit=0, guard_t=0), "PASS")
+
     print()
     if fails:
         print(f"  SELFCHECK: {fails} case(s) RED -> the fix is not in place")
@@ -1300,7 +1432,10 @@ def main() -> int:
 
     p = sub.add_parser("run")
     p.add_argument("--worktree", default=wt_default, required=not wt_default)
-    p.add_argument("--arm", default="compact-off")
+    p.add_argument("--arm", default="compact-off", choices=IMPLEMENTED_ARMS,
+                   help="an IMPLEMENTED arm. C-2: without this list, `--arm "
+                        "compact-on` emitted six rows of a compaction-ON arm "
+                        "whose mechanism no code path calls, at exit 0.")
     p.add_argument("--repeats", type=int, default=6)
     p.add_argument("--write", default=None,
                    help="write rows as .jsonl. Absent = writes nothing.")
