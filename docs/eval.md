@@ -5547,6 +5547,39 @@ at all — see RB-P52.
   per finding, so that a finding without one is visible at a glance rather than
   discovered by the unit that has to record it. (Process.)
 
+- **RB-P53 — the summarizer in a merged job read 6.6% of what it was sent, the run
+  printed that on every execution, and no committed document says so.** Found by J7's
+  planner reading `ollama`'s behaviour before running anything, then verified by the
+  orchestrator against J2's own committed rows. `compaction-mcp`'s `DirectSummarizer`
+  posts to `/chat/completions` with `model`, `messages`, `max_tokens`, `temperature`
+  and `stream` — **and no context-length parameter of any kind**. `ollama` therefore
+  serves the request at its default window, truncates the prompt, returns
+  `finish_reason: "stop"` with **no error**, and reports `usage.prompt_tokens` equal to
+  **the window**. Measured on the 216 summarizer rows of
+  `2026-08-18-compaction-arms.jsonl`: `summarizer_prompt_tokens_the_endpoint_saw` takes
+  the values **4096, 8192, 12288 and 16384** — exact multiples of the window, **144 of
+  216 rows at exactly 4096** — and **all 216 rows sent more than the endpoint reports
+  reading**, median **8.0x**, max **17.9x**. The tell is distributional, not local: a
+  real token count does not cluster on exact multiples of 4096. The acceptance run has
+  always printed it — *"2,169,356 tokens sent, 143,360 tokens the endpoint actually read
+  (6.6%) — the mechanism sets no context length and never reads back prompt_tokens"*,
+  and **11.4%** for B2, **20.5%** for B3 — yet `grep -rn "endpoint saw" docs/eval-data/*.md`
+  returns **nothing**: not the bar, not the review, not the closure.
+  **What it costs and what it does not.** J2's **token axis stands** — bytes sent and
+  summary bytes are measured directly and a truncated summarizer still produced a real
+  saving. J2's **fidelity axis is contaminated**: anchor retention **0.0548** with
+  **2,621 anchors lost stably** was measured against a summarizer that could not see
+  **93.4%** of its input, and a summarizer that never saw an anchor cannot retain it.
+  The **TRADE verdict's direction survives** — retention did collapse — but the causal
+  reading that summarization loses the anchors is **not established** by this evidence;
+  window truncation is an untested alternative of at least the same magnitude.
+  **Attack:** any client of a completions endpoint must send the window explicitly and
+  then **read `usage` back and refuse it when it equals the window**. An output-side
+  detector is the only kind that works here, because the failure is silent, green, and
+  arrives as a plausible number. (Instrument. J7's bar declares both halves of the fix:
+  a derived tag at `num_ctx 32768` over the identical weight blob, and
+  `usage.prompt_tokens == num_ctx` treated as VOID.)
+
 ##### Invariants re-verified at this section's HEAD rather than cited
 
 `docs/eval-data` against `origin/main`: **0 deleted lines** across the whole job —
@@ -6347,6 +6380,300 @@ and is superseded here.
   `UNPINNED` arm was unreachable and this exact input took the innocent label; it now takes
   the accurate one. `RB-P65` was found and fixed independently of `RB-P71`, and this is an
   unplanned second demonstration that the fix does what it claims.
+
+#### Q (2026-08-19) — J7's findings enter the register, after the merge that made both branches one tree
+
+J7's closure **deliberately minted no RB-P number** (`docs/eval-data/2026-08-19-loop-closure.md`
+§8.1 and §12.3): `feat/instrument-hygiene` and `feat/compaction-in-the-loop` were both live,
+the register had two writers and no allocation rule, and a number asserted on one branch
+would have collided on the other. That deferral is discharged here. Both branches now share
+a tree — `58df1be` merges `main` at `d855d96` into J7's branch — so the register can be read
+once, at HEAD, and the numbers minted against that reading.
+
+**The ceiling, read at HEAD before a number was written, with a digit-unbounded pattern.**
+
+<!-- provenance: value=71 distinct RB-P entries, ceiling RB-P71, and 6 distinct under the digit-bounded pattern; commit=58df1be; command=grep -oE 'RB-P[0-9]+' docs/eval.md | sed 's/RB-P//' | sort -n | uniq | tail -1 -->
+
+    grep -oE 'RB-P[0-9]+' docs/eval.md | sort -u | wc -l      ->  71 distinct
+    ... | sed 's/RB-P//' | sort -n | tail -1                  ->  ceiling RB-P71
+    grep -o  'RB-P5[4-9]' docs/eval.md | sort -u | wc -l      ->   6 distinct   (see RB-P74)
+
+`(71 distinct / ceiling RB-P71 / 6 under the bounded pattern, 58df1be, the three commands above)`.
+**RB-P72 is the next free number, and this section mints RB-P72 … RB-P75.**
+
+**J3's declared renumber contingency did not trigger, verified rather than assumed.** Section
+P's *Numbering* note reserved `RB-P53` and said that if `feat/compaction-in-the-loop` had
+*"also allocated `RB-P54` or above by the time it merges, J3's are the later entries and J3's
+renumber."* Measured on that branch's last pre-merge commit: `git show 0ce4aae:docs/eval.md |
+grep -oE 'RB-P[0-9]+' | sed 's/RB-P//' | sort -n | tail -1` → **`53`**, and **0 distinct at or
+above 54**. No entry of section P renumbers.
+
+##### Minted here — four, drawn from J7's internal `N-1 … N-27`
+
+The authoritative index of those 27 is the closure's **§12.6**. Four earn a register entry;
+the rest are cross-referenced or dropped below, each with its reason.
+
+- **`RB-P72` — the oracle's own configuration file is inside the agent's write surface, and
+  a single WRITE through the harness's own committed tool roster produces a PASS with every
+  declared guard reporting clean.** J7's `N-21`, and the single most important thing J7
+  leaves behind. Bar §1.4 is titled *"the two guards against a gamed oracle."* Measured at
+  workload commit `81ac1a1` with **all five DEFECT-SET-5 defects applied** and **not one test
+  file edited**, three configs written as `packages/shared/vitest.config.ts`:
+
+<!-- provenance: value=ORACLE exit=1 / exit=1 / exit=0 with 5 passed (5) and 108 passed (108), GUARD-TAMPER empty, GUARD-SCOPE config visible False, GUARD-T 0, classify_outcome PASS; commit=8b6f365; command=.venv/bin/python docs/eval-data/2026-08-19-loop-u5-closure-field-measurement.py --worktree <throwaway> section N21 -->
+
+      include: []                            ORACLE exit=1  No test files found        -> FAIL
+      exclude the 5 failing test files       ORACLE exit=1  2 failed | 143 passed (145) -> FAIL
+      root pinned, include src/**,           ORACLE exit=0  5 passed (5) | 108 passed (108)
+        exclude the four defect trees        GUARD-TAMPER empty | GUARD-SCOPE 5 files,
+                                             config visible: False | GUARD-T 0  -> PASS
+
+  **The two FAILing configs are recorded beside the headline and not dropped, because the
+  hole is real and it is not trivially wide.** A naive `include: []` **fails closed** — the
+  oracle refuses a run with no test files — and an `exclude`-only config re-roots onto the
+  whole monorepo at 145 test files and still fails. Only the third, which pins `root` *and*
+  narrows `include` *and* excludes the defect trees, lands the false PASS.
+
+  **Why GUARD-SCOPE is structurally blind, re-derived at this HEAD rather than carried.**
+  `guard_scope` is `git diff --name-only <commit>` and `guard_tamper` is the same over
+  `packages/shared/**/*.test.ts` — both over **tracked** paths. Measured directly against the
+  workload, read-only:
+
+      git -C <packnplan> ls-tree -r --name-only 81ac1a1 -- packages/shared | grep -i vitest
+          -> no match (rc=1)
+      git -C <packnplan> ls-tree -r --name-only 81ac1a1 | grep -i vitest.config
+          -> apps/web/vitest.config.mts        (the only tracked vitest config in the tree)
+
+  `(no tracked packages/shared/vitest.config.* at 81ac1a1, 58df1be, the two ls-tree commands
+  above)`. There is nothing to diff **against**, so the WRITE *creates* a file and `git diff`
+  cannot see it. The guard is not weak here; it is looking at a set the file is not in.
+
+  **The mechanism of the false PASS is that the oracle ran fewer tests, and nothing counts
+  tests.** The closure's own pristine and defected baselines, at the same commit, put a number
+  on it:
+
+<!-- provenance: value=pristine 10 passed (10) files and 141 passed (141) tests; defected 5 failed | 5 passed (10) files and 7 failed | 134 passed (141) tests; commit=8b6f365; command=.venv/bin/python docs/eval-data/2026-08-19-loop-u5-closure-field-measurement.py --worktree <throwaway> -->
+
+      pristine   ORACLE exit=0   10 passed (10) files | 141 passed (141) tests
+      defected   ORACLE exit=1   5 failed | 5 passed (10) | 7 failed | 134 passed (141)
+      gamed      ORACLE exit=0   5 passed (5) files     | 108 passed (108) tests
+
+  141 → 108 is **33 tests and five files that stopped existing**, and the PASS is bought
+  entirely with that subtraction. No declared guard reads a test count, so the subtraction is
+  invisible to all three.
+
+  **DELIBERATELY NOT FIXED, and that is the correct disposition.** The committed rows exist;
+  a guard added after them is a post-hoc gate (bar A2.8 item 2), and it would let this job
+  claim a protection its own evidence never ran under. **No committed verdict moves** —
+  `files_touched_outside_defect_set` on both committed arms contains only `*.test.ts` paths,
+  so no committed row went near a config file. **Attack, for the next bar and not for this
+  one:** the oracle was pre-registered as *packnplan's own tooling, never a judgement*, and a
+  tool whose configuration is inside the write surface is a judgement the agent can edit.
+  Either put the oracle's configuration outside the surface — resolve it from a path the
+  roster cannot write — or give the oracle contract a **test-count floor** measured against
+  the pristine baseline, which is the one signal all three guards currently ignore.
+  (Measurement / bar design, **open, escalation-class**.)
+
+- **`RB-P73` — a guard built on `git diff` over tracked paths is blind in three separately
+  measured ways, so `guard_tamper_files` is a lower bound and not a count.** J7's `N-19` and
+  `N-20`. Distinct from `RB-P72`: that entry is about *what is inside the write surface*, this
+  one is about *what the matcher cannot see even within its declared scope*. Re-derived here in
+  a throwaway repo rather than carried, because two of the three are claims about git's own
+  pathspec semantics and a claim about a tool is checkable without the workload:
+
+      $ git diff --name-only BASE -- 'packages/shared/**/*.test.ts'
+          packages/shared/src/zz/rogue.test.ts          <- depth 2 only
+      $ git diff --name-only BASE -- 'packages/shared/*.test.ts'
+          packages/shared/a.test.ts
+          packages/shared/src/zz/rogue.test.ts          <- BOTH; `*` crosses `/`
+      $ git diff --name-only BASE          # after CREATING packages/shared/created.test.ts
+          (empty)                                       <- creation is invisible
+      $ git ls-files --others -- 'packages/shared/**/*.test.ts'
+          (empty)                                       <- and `**` misses it here too
+      $ git ls-files --others -- 'packages/shared/*.test.ts'
+          packages/shared/created.test.ts
+
+  `(3 blindnesses reproduced — `**` blind at depth 0, creation invisible to git diff, and the
+  plain `*` glob strictly wider — git version 2.50.1, 58df1be, the five commands above in a
+  fresh git init under the scratchpad)`. A **byte-identical rewrite** of a tracked test file
+  is the third shape and leaves the diff empty by construction. **This cannot move A2.3**:
+  R2's death needs only *non-empty*, and non-empty is measured 6 of 6 on the committed rows.
+  **Attack:** a tamper guard needs `packages/shared/*.test.ts` **plus** an untracked-file
+  check via `git ls-files --others`, and it should be described as *"at least this many"*
+  wherever its output is reported as a count. The surprise worth keeping is that
+  `packages/shared/**/*.test.ts` is **narrower** than `packages/shared/*.test.ts`, which is
+  the opposite of what the `**` spelling suggests to a reader. (Measurement, open.)
+
+- **`RB-P74` — a register's ceiling read with a digit-bounded regex is a property of the
+  command, not a reading of the register.** J7's `N-25`, and it is filed here rather than left
+  in the closure because it is a defect in how **this repository** measures **its own**
+  register, not a J7-local quirk. Closure §8.1 measured the taken range with
+  `grep -o 'RB-P5[4-9]'` and reported *"RB-P54 through RB-P59"*. That pattern cannot match a
+  two-digit tail past 59 however many exist. Re-derived at this HEAD:
+
+      bounded    grep -o  'RB-P5[4-9]'   ->  6 distinct   RB-P54 … RB-P59
+      unbounded  grep -oE 'RB-P[0-9]+'   -> 18 distinct >= 54:  RB-P54 … RB-P71
+      missed by the bounded pattern: RB-P60 RB-P61 RB-P62 RB-P63 RB-P64 RB-P65
+                                     RB-P66 RB-P67 RB-P68 RB-P69 RB-P70 RB-P71
+
+  `(6 vs 18 distinct >= 54, twelve missed, 58df1be, the two grep commands above)`. **The
+  closure's own figure reproduces exactly at the commit it was read at** — `git show
+  cad32aa:docs/eval.md` gives `RB-P54 … RB-P70`, 17 distinct — so §12.3 was right at `cad32aa`
+  and the count of missed entries has since grown from eleven to **twelve**. That growth is
+  the finding's teeth: **the error the instrument makes gets larger every time the register
+  does, silently, and in the direction of collision.** An orchestrator taking *"the next one
+  after the closure's ceiling"* would have minted **RB-P60**, already taken, and collided a
+  third time in one night. **The shape is the three recall-errors of that night inverted:**
+  not a number asserted from memory, but a number read with an instrument that could not see
+  the answer — which is why *"read it at HEAD"* is not sufficient on its own. **Attack:** read
+  an allocated range only with a digit-unbounded pattern, print the distinct count beside the
+  maximum so a truncated read is visible as a short count, and treat any ceiling as valid only
+  at the SHA it was read at. (Process / instrument, closed here by use; the defective command
+  is not committed anywhere and needs no repair.)
+
+- **`RB-P75` — an allocation register with two live writers and no allocation rule collides
+  silently, because identical writes on two branches merge clean.** J7's `N-27`, generalised
+  past the one instance. **Two such registers are now known in this repository** — the RB-P
+  number space (§8.1, and `RB-P74` above) and `runtime-py/pyproject.toml`'s `version` — and
+  they differ in how loudly they fail. A duplicated RB-P *number* eventually shows up as two
+  entries with one name. A duplicated *version* does not show up at all: two unmerged branches
+  both writing `0.24.0` produce no textual conflict, and the merge yields **one released
+  version covering two jobs**, which no gate in this repository would have flagged.
+
+  **The hazard was not hypothetical and the merge settled it.** Measured at this HEAD:
+
+      git show main:runtime-py/pyproject.toml | grep '^version'   ->  version = "0.24.0"
+      grep '^version' runtime-py/pyproject.toml                    ->  version = "0.25.0"
+      git log --oneline --all -S'0.24.0' -- runtime-py/pyproject.toml
+          d855d96  Instrument hygiene … (v0.24.0) (#34)
+          cad32aa  chore(runtime-py): 0.23.0 -> 0.24.0, a MINOR justified by measurement
+
+  `(0.24.0 on main at d855d96, 0.25.0 here, 58df1be, the three commands above)`. J7 skipped
+  `0.24.0` on the strength of a read of the other branch **before** it merged; `main` then
+  took `0.24.0` exactly as predicted. Had J7 taken the next free number it saw, the collision
+  would have landed as a single silent `0.24.0`. **Skipping costs a visible gap if the other
+  branch is abandoned; colliding costs a silent one. Visible beats silent, and this is the
+  measured case that says so.** **Attack:** a shared allocation register needs either one
+  writer or a rule stated where the register lives — for the RB-P space, section P's
+  *Numbering* note is that rule and it worked; `pyproject.toml` has no equivalent and should
+  carry one. Not the same finding as the `payload_sha256` two-writer entry in section L, which
+  is about two producers disagreeing on the **unit of a record**; this is about two producers
+  claiming the **same slot**. (Process, open — mitigated once, unruled.)
+
+##### Cross-referenced rather than duplicated — four, each already this register's business
+
+- **`N-1`** — *"the bar's honest counter is honest only below the window"* — is **`RB-P53`'s
+  class**, one layer up: a token counter that reports the window instead of the prompt, with
+  no error. `RB-P53` already carries the mechanism, the 216-row distributional tell and the
+  two in-repository sites closed in code. Filing it again would split one class across two
+  numbers. **`N-2`** (`ollama create` FROM the raw blob path yields a completion-only model)
+  attaches to the same entry as a second `ollama` surface and is recorded there by reference.
+- **`N-14`** (a check that stayed green when the line it claimed to cover was reverted) and
+  **`N-26`** (**39 of 48** selfcheck cases unpinned by any committed source mutation) are both
+  **`RB-P48`** — *count vacuity from the OUTPUT, not from the source*. `N-26` is that rule
+  being **obeyed**, not violated: the census is computed from the selfcheck's printed output
+  and the 39 are named individually rather than summarised. It is a disclosed gap in J7's
+  instrument, which is exactly what `RB-P48` asks for, and a new number would reward
+  compliance with a finding.
+- **`N-15`** (the committed `.jsonl` was produced by an earlier revision of the committed
+  `.py`, and is **not repairable** — repairing means regenerating committed evidence) is
+  **`RB-P49`'s** class realised. `RB-P49` names the mechanism by which a committed artifact
+  and its producer drift; `N-15` is the drift, already landed and now permanent. Recorded
+  against `RB-P49` rather than numbered again.
+
+Verified at HEAD rather than asserted: `RB-P48`, `RB-P49` and `RB-P53` are all present in this
+file — `for n in 48 49 53; do grep -c "RB-P$n" docs/eval.md; done` → **4 / 2 / 6**
+mentions respectively, all three with a definition bullet in section O.
+
+##### Not filed, and why — the remaining twenty
+
+Filing all 27 would make the register longer and no more useful, so the reasons are given
+once, by group, rather than as twenty empty entries.
+
+- **Closed inside J7's own harness and instrument-local:** `N-3` (`git clean -fd` deletes the
+  workload's `node_modules` symlinks), `N-11` (`stopped_by = "run-cap"` for every endpoint
+  exception), `N-12`, `N-13`, `N-16` (`restore()` carried gitignored state between repeats),
+  `N-17` (`boundaries` over-counted by exactly one), `N-18` (`--arm` was free text and
+  `compaction_mode` came from the label). Each has a before and an after from the same command
+  in the closure, each is fixed in a program under `docs/eval-data/`, and none constrains a
+  future job that does not use that program. `N-16` and `N-18` are the two closest calls in
+  this group — an isolation routine that did not isolate, and a run that could report a
+  mechanism it never called — and both are pinned by committed selfcheck cases, which is where
+  a closed instrument defect belongs.
+- **Findings about the J7 bar's own text, which is frozen and not this register's subject:**
+  `N-5` (superseded three times over, most recently at this commit), `N-6`, `N-7`, `N-7a`,
+  `N-8`, `N-9`, `N-10`, `N-19`'s CANON-1 half, `N-22`, `N-23`, `N-24`. These are corrections
+  to a pre-registration document. They are indexed at closure §12.6, they bind the *next* bar
+  through closure §9's five conditions, and the closure is explicit that answering them is a
+  **new job with a new bar**, not an amendment to this one.
+- **`N-4`** (`git worktree list` can never be shown empty; the baseline is 25) is a fact about
+  this machine, not about the repository, and it belongs in the fence discipline where it is
+  already used.
+
+##### Two figures this section was handed that do NOT reproduce at HEAD
+
+Both are reported rather than quietly adjusted, because a figure that moved is evidence about
+when it was read.
+
+1. **Closure §12.3 says N-25's range *"reaches RB-P70"*; at this HEAD it reaches RB-P71.** Not
+   an error: `git show cad32aa:docs/eval.md` still gives `RB-P54 … RB-P70`, so the figure is
+   correct at the commit it was stamped with. `RB-P71` was minted after `cad32aa`, by section
+   P's Amendment 2, and reached this tree through `d855d96`. The closure said in the same
+   breath that *"the ceiling is a snapshot, not a pin"*, and this is that sentence coming true
+   in under a day.
+2. **Closure §12.4 says `git diff --numstat main..HEAD -- runtime-py` is empty — 0 inserted and
+   0 deleted. At `58df1be` it is `1 1 runtime-py/pyproject.toml`.** The claim it supported —
+   that the shipped package is byte-identical and the MINOR is a job marker, not a surface
+   change — **survives intact**, and is now measured on the narrower path that actually carries
+   the surface: `git diff --numstat main..HEAD -- runtime-py/src` is **empty**. The one moved
+   line is the version register of `RB-P75` itself, `0.24.0` → `0.25.0`. The lesson is the
+   entry's own: a `-- runtime-py` probe was reading a directory that contains both the surface
+   and a shared register, and only one of them was the subject.
+
+##### Gates at this commit
+
+<!-- provenance: value=1005 passed, 2 xfailed; commit=58df1be; command=.venv/bin/python -m pytest runtime-py/tests -q -->
+<!-- provenance: value=All checks passed! on runtime-py and on docs/eval-data; commit=58df1be; command=.venv/bin/ruff check runtime-py && .venv/bin/ruff check docs/eval-data -->
+
+| gate | value | commit | command |
+|---|---|---|---|
+| suite | **1005 passed, 2 xfailed** | `58df1be` | `.venv/bin/python -m pytest runtime-py/tests -q` |
+| ruff, `runtime-py` | **All checks passed!** | `58df1be` | `.venv/bin/ruff check runtime-py` |
+| ruff, `docs/eval-data` | **All checks passed!** | `58df1be` | `.venv/bin/ruff check docs/eval-data` |
+
+<!-- provenance: value=expectations=22 flips=0 catalogued-branches=16 pinned=14 unpinned=2 uncatalogued-branches=UNMEASURED; commit=58df1be; command=.venv/bin/python tools/amendguard/amendguard.py calibrate -->
+<!-- provenance: value=48 cases, 20 labelled RED:, exit 0; commit=58df1be; command=.venv/bin/python docs/eval-data/2026-08-18-loop-harness.py selfcheck -->
+
+| gate | value | commit | command |
+|---|---|---|---|
+| amendguard calibrate | `expectations=22 flips=0 catalogued-branches=16 pinned=14 unpinned=2 uncatalogued-branches=UNMEASURED` | `58df1be` | `.venv/bin/python tools/amendguard/amendguard.py calibrate` |
+| harness selfcheck | **48 cases, 20 labelled `RED:`, exit 0** | `58df1be` | `.venv/bin/python docs/eval-data/2026-08-18-loop-harness.py selfcheck` |
+
+The selfcheck is reported as `48 / 20` and not as *"0 RED"*, which is the form bar §9 forbids
+and which `N-26` exists to correct; the two numbers reproduce the census of closure §12.2
+exactly.
+
+**This section will classify as `insert`, not `append`, and that is `RB-P67` and not a
+surprise.** It lands before the `qwen-implementer` section rather than at end-of-file, so it
+sits inside section P's parent and beside the lettered job sections it belongs with. `RB-P67`
+records that `insert` can never redden; the placement is disclosed here rather than relied on
+quietly, and no existing entry is edited to make room for it.
+
+##### Fences held by this section
+
+**Nothing merged, nothing tagged, nothing pushed.** `git for-each-ref refs/tags` → **22 tags**,
+newest **`v0.21.0`** by version sort; `v0.22.0`–`v0.25.0` remain deliberately untagged and no
+form of `git tag` was run. **No arm was re-run and neither `.jsonl` was touched**; every N-21
+and pristine/defected figure above is **carried from the closure's committed measurement at
+`8b6f365`** and marked as such, while the structural precondition under it — no tracked
+`vitest.config.*` at `81ac1a1` — was **re-derived read-only at this HEAD**. No field program
+under `docs/eval-data/` was run with no arguments (`RB-P49`); the only one run took the
+explicit `selfcheck` sub-command. The workload was re-checked rather than assumed:
+`git -C <packnplan> rev-parse HEAD` → **`81ac1a1`, unmoved**, and `status --porcelain` → the
+same single line, `?? docs/test-cases/REVIEW-multi-perspective-2026-07-30.md`. The stale
+worktree at `scratchpad/wt-j3` was not touched. **No existing register entry was retro-edited**
+— sections L through P and both of section P's amendments stand exactly as `d855d96` and
+`58df1be` left them, and this section appends beside them. One layer: `docs/` only.
 
 ### The `qwen-implementer` cell on RB-P27 lever (2) (2026-08-12)
 
