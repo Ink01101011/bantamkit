@@ -6275,6 +6275,79 @@ change lives in exactly one layer: `client.py` is Layer 3, `tools/amendguard/` i
 the five product layers and both ruff gates, and the `docs/eval-data` fix is a mode and an
 import wrap in a document tree.
 
+##### Amendment 2 to section P (2026-08-19) — the finding Amendment 1 could not number
+
+Amendment 1 records that one review finding was left **unnumbered** because its content
+never reached the unit that closed the others, and that an empty register entry is worse
+than a disclosed gap. The content has since been supplied. **This amendment closes the gap
+by appending, and does not rewrite the sentence that disclosed it** — the rule this section
+exists to enforce, applied to the section's own erratum. The bullet above stands as written
+and is superseded here.
+
+- **`RB-P71` — a caveat inferred from one's own tooling failure, asserted about the
+  measurement the tooling was pointed at.** A parenthetical shipped into two briefs as a
+  fact: *"a naive string replace of the second **fails**, because the string is also the
+  mutation catalogue's own anchor."* Its origin, disclosed by its author: a `.replace()`
+  guarded by `assert s.count(old) == 1`, which raised `AssertionError`. **What failed was
+  the guard, not the mutation.** "My assertion fired" was generalised into "a naive replace
+  fails" — a claim about a different artifact — and then attached to a suite figure the
+  script had never been part of producing. **The two halves are both true and neither
+  collapses into the other:**
+
+  **(1) The partitioning is correct and load-bearing, and U2's finding 2 stands entirely.**
+  The anchor genuinely appears **twice** — the definition at module level, above the
+  catalogue marker, and the catalogue's own `"anchor":` entry below it. Re-measured here at
+  `cad32aa`, hand-mutating the source and then running the sweep on the mutated program:
+
+  ```
+  naive replace (both sites)          FLIP UNPINNED  MUT-RECORD-DEFAULT  nothing changed at all
+  partitioned replace (definition)    FLIP STALE     MUT-RECORD-DEFAULT  anchor appears 0x above the catalogue
+  ```
+
+  Without the partition the sweep cannot mutate that branch at all, so the harness needs it.
+  **Both arms report `flips=11` and fail loudly; neither yields a misleading pass**, which
+  is the property that matters and which the caveat never claimed.
+
+<!-- provenance: value=8 failed, 20 passed under BOTH the naive and the partitioned replace, identical failing node lists; commit=cad32aa; command=PYTHONPATH=$PWD/runtime-py/src /Users/kktest/Documents/Claude/Projects/bantamkit/.venv/bin/python -m pytest runtime-py/tests/test_amendguard.py -q -->
+
+  **(2) The caveat was false as a caveat on the pytest figure, which is robust to the naive
+  replace.** Measured at `cad32aa`, both ways, and compared node by node rather than by
+  count:
+
+  ```
+  naive replace (both sites)          8 failed, 20 passed
+  partitioned replace (definition)    8 failed, 20 passed
+  failing node lists                  IDENTICAL — diff empty
+  ```
+
+<!-- provenance: value=6 failed, 18 passed over 24 nodes at a525516, carried from the review and not re-run; commit=a525516; command=PYTHONPATH=$PWD/runtime-py/src /Users/kktest/Documents/Claude/Projects/bantamkit/.venv/bin/python -m pytest runtime-py/tests/test_amendguard.py -q -->
+
+  and the named node `test_an_unlisted_construct_falls_through_to_record` is in both lists.
+  The review measured the same equality at `a525516` as **6 failed, 18 passed** over 24
+  nodes; the figures differ here only because this branch added four nodes, and the
+  **equality** — which is the whole claim — reproduces at both commits. The pytest half of
+  the caveat was never true.
+
+  **THE CLASS, WHICH IS WHY THIS IS A NUMBERED FINDING AND NOT AN ERRATUM.** A failure was
+  observed in one artifact — the author's own throwaway script — and reported as a property
+  of a different one, the suite that script was pointed at. The guard firing was a fact
+  about the script's `count() == 1` precondition; the 6-RED figure was a fact about the
+  suite; the first was shipped as evidence about the second. **This is the same shape as the
+  three other corrections this job made against the figures it was handed**: a claim
+  asserted from something adjacent to the thing it is about, rather than read at the place
+  it is about. It is invariant 11's rule — *do not write a pin from a register, read it at
+  HEAD* — generalised past pins to any claim at all. **Attack:** before shipping a caveat
+  about a measurement, name the artifact the failure was a property of. If the evidence is
+  *"my tool errored"*, the claim is about the tool, and the measurement has not been touched
+  yet. (Process.)
+
+  **One incidental confirmation, on a case neither finding was designed for.** The review
+  measured the naive arm at `a525516` as `FORMATTER-ONLY`; it reports `UNPINNED` here. The
+  behaviour did not change — `RB-P65` did. Before the baseline path was resolved the
+  `UNPINNED` arm was unreachable and this exact input took the innocent label; it now takes
+  the accurate one. `RB-P65` was found and fixed independently of `RB-P71`, and this is an
+  unplanned second demonstration that the fix does what it claims.
+
 ### The `qwen-implementer` cell on RB-P27 lever (2) (2026-08-12)
 
 The first measured cell of the `qwen-implementer` backlog item, run on the
