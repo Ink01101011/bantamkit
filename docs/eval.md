@@ -5547,6 +5547,39 @@ at all — see RB-P52.
   per finding, so that a finding without one is visible at a glance rather than
   discovered by the unit that has to record it. (Process.)
 
+- **RB-P53 — the summarizer in a merged job read 6.6% of what it was sent, the run
+  printed that on every execution, and no committed document says so.** Found by J7's
+  planner reading `ollama`'s behaviour before running anything, then verified by the
+  orchestrator against J2's own committed rows. `compaction-mcp`'s `DirectSummarizer`
+  posts to `/chat/completions` with `model`, `messages`, `max_tokens`, `temperature`
+  and `stream` — **and no context-length parameter of any kind**. `ollama` therefore
+  serves the request at its default window, truncates the prompt, returns
+  `finish_reason: "stop"` with **no error**, and reports `usage.prompt_tokens` equal to
+  **the window**. Measured on the 216 summarizer rows of
+  `2026-08-18-compaction-arms.jsonl`: `summarizer_prompt_tokens_the_endpoint_saw` takes
+  the values **4096, 8192, 12288 and 16384** — exact multiples of the window, **144 of
+  216 rows at exactly 4096** — and **all 216 rows sent more than the endpoint reports
+  reading**, median **8.0x**, max **17.9x**. The tell is distributional, not local: a
+  real token count does not cluster on exact multiples of 4096. The acceptance run has
+  always printed it — *"2,169,356 tokens sent, 143,360 tokens the endpoint actually read
+  (6.6%) — the mechanism sets no context length and never reads back prompt_tokens"*,
+  and **11.4%** for B2, **20.5%** for B3 — yet `grep -rn "endpoint saw" docs/eval-data/*.md`
+  returns **nothing**: not the bar, not the review, not the closure.
+  **What it costs and what it does not.** J2's **token axis stands** — bytes sent and
+  summary bytes are measured directly and a truncated summarizer still produced a real
+  saving. J2's **fidelity axis is contaminated**: anchor retention **0.0548** with
+  **2,621 anchors lost stably** was measured against a summarizer that could not see
+  **93.4%** of its input, and a summarizer that never saw an anchor cannot retain it.
+  The **TRADE verdict's direction survives** — retention did collapse — but the causal
+  reading that summarization loses the anchors is **not established** by this evidence;
+  window truncation is an untested alternative of at least the same magnitude.
+  **Attack:** any client of a completions endpoint must send the window explicitly and
+  then **read `usage` back and refuse it when it equals the window**. An output-side
+  detector is the only kind that works here, because the failure is silent, green, and
+  arrives as a plausible number. (Instrument. J7's bar declares both halves of the fix:
+  a derived tag at `num_ctx 32768` over the identical weight blob, and
+  `usage.prompt_tokens == num_ctx` treated as VOID.)
+
 ##### Invariants re-verified at this section's HEAD rather than cited
 
 `docs/eval-data` against `origin/main`: **0 deleted lines** across the whole job —

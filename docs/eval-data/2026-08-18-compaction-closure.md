@@ -668,3 +668,49 @@ units had real counters would be worse than reporting nothing.
 
 **Model: `claude-opus-5[1m]`.** One model. No arm re-run, no second model, no summarizer
 call.
+
+---
+
+## Amendment 1 — 2026-08-18, after this document was committed and after PR #33 merged
+
+**Appended, never edited.** Every sentence above stands as written and as merged at
+`5845698`. This amendment records a contamination of one axis that was discovered after
+the fact, by J7's planner, and verified by the orchestrator against the rows this job
+itself committed.
+
+**The finding.** `compaction-mcp`'s summarizer posts to `/chat/completions` with **no
+context-length parameter**. `ollama` serves such a request at its default window,
+truncates silently, returns `finish_reason: "stop"` with no error, and reports
+`usage.prompt_tokens` equal to **the window rather than the prompt**. Measured on this
+job's own 216 summarizer rows: the values are **4096 / 8192 / 12288 / 16384**, with
+**144 of 216 at exactly 4096**, and **216 of 216 rows sent more than the endpoint
+reports reading** — median **8.0x**, max **17.9x**. The acceptance run prints the
+per-arm figure on every execution: **6.6%** for B1, **11.4%** for B2, **20.5%** for B3.
+**No committed document in this job states it**, including this closure.
+
+**What this changes, stated in both directions.**
+
+- **§ The token axis is unaffected.** Bytes sent, summary bytes and the signed byte
+  columns are measured directly from the reconstructed prefixes. A summarizer working
+  from a truncated view still produced a real, measured saving. `B1−B0` at **−40.1421%**
+  over the effective n=24 and **+0.0000%** over the nominal n=50 both stand.
+- **§ The fidelity axis is contaminated and its causal reading is withdrawn.** Anchor
+  retention **0.0547955** and **2,621 anchors lost stably** were measured against a
+  summarizer that could not see **93.4%** of its input. The **TRADE verdict stands** —
+  retention did collapse below every floor, which is what makes all three pairs trades
+  rather than reductions. What is **not established** is *why*: this evidence cannot
+  separate "summarization discards the anchors" from "the summarizer never received
+  them". Any sentence above that reads as the former should be read as the latter being
+  equally consistent with the data.
+- **§ R1 and the 80% refutation are unaffected.** R1 is arithmetic on a zero-summary
+  world and never invokes the summarizer at all.
+
+**Not corrected by re-running.** The arms are frozen and re-running them would cost
+5.81 h of local inference on a closed job. J7 (`compaction-in-the-loop`) declares the fix
+in its own pre-registered bar — a derived `ollama` tag at `num_ctx 32768` over the
+identical weight blob `sha256-2049f567`, plus an **output-side** detector treating
+`usage.prompt_tokens == num_ctx` as **VOID** — and will produce fidelity evidence at a
+correct window natively, as a measurement rather than a repair.
+
+Filed as **RB-P53** in `docs/eval.md`.
+
