@@ -76,20 +76,84 @@ class Tool:
         }
 
 
+# RB-P53's class, site S4. The three states `prompt_tokens` can be in, as data, because
+# a check has to be able to name one. MEASURED is the only one that licenses arithmetic.
+MEASURED = "MEASURED"
+#: `prompt_tokens` equals the window the caller declared. RB-P53 measured ollama's `/v1`
+#: endpoint reporting the CONTEXT WINDOW in that field when it silently clamps a prompt,
+#: so at the window the number is the window and not a measurement of anything.
+VOID = "VOID"
+#: No window was declared, so nothing could be compared. RB-P51: unmeasured is a verdict,
+#: and it is a different verdict from MEASURED.
+UNCHECKED = "UNCHECKED"
+
+# Worst first. A sum containing a non-measurement is a non-measurement, and a sum
+# containing an unchecked component is not a measured total either.
+_VERDICT_SEVERITY = (VOID, UNCHECKED, MEASURED)
+
+#: Stop reasons that mean the generation was CUT rather than finished. A completion that
+#: hit the cap is not a shorter answer, it is an unfinished one, and the difference is
+#: invisible unless something carries it.
+TRUNCATING_FINISH_REASONS = frozenset({"length"})
+
+
+def _worse_verdict(a: str | None, b: str | None) -> str | None:
+    """The worse of two `prompt_tokens` verdicts; `None` contributes nothing.
+
+    `None` is the zero value's state and it is NOT the same as `UNCHECKED`: `Usage()` is
+    the accumulator seed in the agent loop and in `evalrun`, it carries no tokens and no
+    claim, and it must not poison a fold. `UNCHECKED` means a real response arrived and
+    nobody could check it, which is a claim and does survive the fold.
+    """
+    for verdict in _VERDICT_SEVERITY:
+        if a == verdict or b == verdict:
+            return verdict
+    return a if a is not None else b
+
+
+def _worse_finish_reason(a: str | None, b: str | None) -> str | None:
+    """An aggregate has no single finish reason — but a truncation must not be summed away.
+
+    S5's shape, one repository over: a length stop absorbed into an outcome instead of
+    being reported as an instrument verdict. So a cut anywhere in the fold survives it,
+    and two different non-cut reasons collapse to `None` rather than to whichever came
+    first.
+    """
+    for reason in (a, b):
+        if reason in TRUNCATING_FINISH_REASONS:
+            return reason
+    if a == b:
+        return a
+    return a if b is None else (b if a is None else None)
+
+
 @dataclass
 class Usage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    #: What the endpoint said stopped the generation, verbatim, or `None` when it said
+    #: nothing. Read back rather than assumed: before this field existed a length-stopped
+    #: completion and a finished one were the same object.
+    finish_reason: str | None = None
+    #: `MEASURED` / `VOID` / `UNCHECKED`, or `None` for a `Usage` no response produced.
+    prompt_tokens_verdict: str | None = None
 
     def __add__(self, other: Usage) -> Usage:
         return Usage(
             self.prompt_tokens + other.prompt_tokens,
             self.completion_tokens + other.completion_tokens,
+            _worse_finish_reason(self.finish_reason, other.finish_reason),
+            _worse_verdict(self.prompt_tokens_verdict, other.prompt_tokens_verdict),
         )
 
     @property
     def total(self) -> int:
         return self.prompt_tokens + self.completion_tokens
+
+    @property
+    def truncated(self) -> bool:
+        """The generation was cut by a cap rather than finished."""
+        return self.finish_reason in TRUNCATING_FINISH_REASONS
 
 
 @dataclass
@@ -114,11 +178,24 @@ class OpenAICompatible:
         max_retries: int = 3,
         transport: httpx.BaseTransport | None = None,
         seed: int | None = None,
+        context_window: int | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key
         self.max_retries = max_retries
+        # The context window this endpoint is configured with, DECLARED by the caller.
+        # It is never sent: this adapter sets no context length and this field changes no
+        # request. It exists so that `usage.prompt_tokens == context_window` can be given
+        # a verdict, which is RB-P53's shape — a silent clamp reports the window in the
+        # field a reader takes for a prompt size. Left unset, the comparison cannot be
+        # made and every response says `UNCHECKED` rather than `MEASURED`.
+        #
+        # THIS IS A DETECTOR AND NOT A PREVENTER, and calling it protection would be the
+        # failure this job is about. It cannot stop a clamp, it cannot detect one below
+        # the window, and it cannot tell a clamped prompt from a genuine prompt that
+        # happens to be exactly `context_window` tokens long.
+        self.context_window = context_window
         # Sampling seed, sent only when set. OpenAI chat-completions and Ollama's
         # OpenAI-compat endpoint both accept it; servers that ignore it degrade to
         # unseeded sampling. Writable per run — the eval harness pins it per task.
@@ -185,10 +262,12 @@ class OpenAICompatible:
                     time.sleep(0.5 * (2**attempt))
         raise TransportError(f"chat failed after {self.max_retries} attempts: {last_err}")
 
-    @staticmethod
-    def _parse(data: dict) -> Response:
+    def _parse(self, data: dict) -> Response:
         try:
-            choice = data["choices"][0]["message"]
+            # `finish_reason` lives on the CHOICE, not on the message inside it, which is
+            # why reading it back needs the enclosing object and not just `["message"]`.
+            raw_choice = data["choices"][0]
+            choice = raw_choice["message"]
         except (KeyError, IndexError) as e:
             raise BantamError(f"malformed chat response: {data!r:.200}") from e
 
@@ -211,7 +290,21 @@ class OpenAICompatible:
                 ) from e
 
         usage = data.get("usage") or {}
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        # The classifier. Three states, one branch each, and no branch is a message: a
+        # mutation that rewrites the docstrings above cannot move any of them (N-12).
+        if self.context_window is None:
+            verdict = UNCHECKED
+        elif prompt_tokens == self.context_window:
+            verdict = VOID
+        else:
+            verdict = MEASURED
         return Response(
             message=Message(role="assistant", content=choice.get("content"), tool_calls=tool_calls),
-            usage=Usage(usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)),
+            usage=Usage(
+                prompt_tokens,
+                usage.get("completion_tokens", 0),
+                raw_choice.get("finish_reason"),
+                verdict,
+            ),
         )

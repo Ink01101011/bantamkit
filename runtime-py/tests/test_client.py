@@ -274,3 +274,96 @@ def test_single_attempt_client_never_sleeps(monkeypatch):
     with pytest.raises(TransportError):
         client.chat([Message(role="user", content="x")])
     assert sleeps == []
+
+
+# ---- RB-P53 site S4: a cut generation and a clamped prompt are visible ----
+#
+# These guard the CLASSIFIER's logic and nothing else. RB-P28: the suite is not evidence,
+# and the evidence that this repository is fixed is
+# `docs/eval-data/2026-08-19-truncation-visibility-field-measurement.py`, run outside
+# pytest. No node here asserts a fact about this repository or about any endpoint.
+
+
+def _completion(finish_reason, prompt_tokens):
+    return {
+        "choices": [
+            {"finish_reason": finish_reason, "message": {"content": "hi"}},
+        ],
+        "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": 3},
+    }
+
+
+def _usage_for(finish_reason="stop", prompt_tokens=10, **kwargs):
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, json=_completion(finish_reason, prompt_tokens))
+    )
+    with make_client(transport, **kwargs) as client:
+        return client.chat([Message(role="user", content="x")]).usage
+
+
+def test_the_endpoints_finish_reason_is_carried_back():
+    assert _usage_for(finish_reason="length").finish_reason == "length"
+    assert _usage_for(finish_reason="length").truncated is True
+
+
+def test_a_finished_generation_is_not_reported_as_cut():
+    assert _usage_for(finish_reason="stop").finish_reason == "stop"
+    assert _usage_for(finish_reason="stop").truncated is False
+
+
+def test_a_reply_that_states_no_finish_reason_carries_none():
+    """An endpoint that omits the field says nothing, and `None` is not `"stop"`."""
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=OK_BODY))
+    with make_client(transport) as client:
+        usage = client.chat([Message(role="user", content="x")]).usage
+    assert usage.finish_reason is None and usage.truncated is False
+
+
+def test_prompt_tokens_at_the_declared_window_are_void():
+    assert _usage_for(prompt_tokens=4096, context_window=4096).prompt_tokens_verdict == "VOID"
+
+
+def test_prompt_tokens_below_the_declared_window_are_measured():
+    assert _usage_for(prompt_tokens=4095, context_window=4096).prompt_tokens_verdict == "MEASURED"
+
+
+def test_an_undeclared_window_leaves_prompt_tokens_unchecked_not_measured():
+    """RB-P51: unmeasured is a verdict, and it is a different one from MEASURED."""
+    assert _usage_for(prompt_tokens=4096).prompt_tokens_verdict == "UNCHECKED"
+
+
+def test_a_void_call_poisons_the_sum_it_is_added_to():
+    measured = _usage_for(prompt_tokens=10, context_window=4096)
+    void = _usage_for(prompt_tokens=4096, context_window=4096)
+    assert (measured + void).prompt_tokens_verdict == "VOID"
+    assert (void + measured).prompt_tokens_verdict == "VOID"
+
+
+def test_an_unchecked_call_poisons_a_measured_sum_but_a_void_one_outranks_it():
+    measured = _usage_for(prompt_tokens=10, context_window=4096)
+    unchecked = _usage_for(prompt_tokens=10)
+    void = _usage_for(prompt_tokens=4096, context_window=4096)
+    assert (measured + unchecked).prompt_tokens_verdict == "UNCHECKED"
+    assert (unchecked + void).prompt_tokens_verdict == "VOID"
+
+
+def test_the_zero_usage_accumulator_seed_makes_no_claim_and_poisons_nothing():
+    """`Usage()` is the fold seed in the agent loop; it must be the identity here."""
+    measured = _usage_for(prompt_tokens=10, context_window=4096)
+    assert Usage().prompt_tokens_verdict is None
+    assert (Usage() + measured).prompt_tokens_verdict == "MEASURED"
+    assert (measured + Usage()).prompt_tokens_verdict == "MEASURED"
+
+
+def test_a_cut_call_anywhere_in_a_sum_survives_it():
+    cut = _usage_for(finish_reason="length")
+    fine = _usage_for(finish_reason="stop")
+    assert (fine + cut).finish_reason == "length"
+    assert (cut + fine).finish_reason == "length"
+    assert (fine + fine).finish_reason == "stop"
+
+
+def test_two_different_uncut_reasons_collapse_to_no_single_reason():
+    stopped = _usage_for(finish_reason="stop")
+    tooled = _usage_for(finish_reason="tool_calls")
+    assert (stopped + tooled).finish_reason is None
