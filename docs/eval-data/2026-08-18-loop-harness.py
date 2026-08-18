@@ -28,6 +28,13 @@ THE ROUTE, NAMED BESIDE EVERY TOKEN FIGURE (invariant 14, as U1 corrected it)
     WORKER  -> `POST /api/generate`, field `prompt_eval_count`. U1 measured this
                is a TRUE TOTAL and is unaffected by KV caching (4,124 -> 4,124 on
                an identical re-send, +4 per appended line).
+    THE OUTPUT SIDE OF THE SAME WINDOW -> `/api/generate`'s `done_reason`. A
+               value of `length` means the runtime cut the COMPLETION at
+               `num_predict`, and since the task says a WRITE replaces the whole
+               file, a cut completion is a truncated file. Read in
+               `length_stop_turns`, surfaced as the `length_stops` and
+               `truncated_writes` columns, and ranked above FAIL in
+               `classify_outcome` -- an instrument event is not an outcome.
     SUMMARIZER (B1+, not this unit's arm) -> the mechanism's own
                `POST /v1/chat/completions`, field `usage.prompt_tokens`, which is
                CLAMPED TO THE WINDOW and is never a prompt size (RB-P53). The
@@ -92,6 +99,9 @@ PROACTIVE_PCT = 60
 T_BOUNDARY = TOKEN_BUDGET * PROACTIVE_PCT // 100  # 19660, bar section 10.2
 TURN_CAP = 40
 RUN_CAP_S = 20 * 60
+# Scheduling slop when deciding whether the HTTP timeout that fired WAS the
+# declared cap arriving, or an endpoint failure that happened to look like one.
+CAP_TOL_S = 1.0
 DEFECT_SET_ID = "DEFECT-SET-5"
 TRIGGER_ID = "T=19660/prompt_eval_count/preceding-call"
 CANON_ID = "CANON-1/oracle-full+read-rule-a"
@@ -401,8 +411,26 @@ def tool_write(wt: str, arg: str, content: str) -> str:
 ACTION_RE = re.compile(r"^(LIST|READ|WRITE|ORACLE|DONE)(?:[ \t]+(.*))?$")
 
 
-def parse_action(text: str) -> tuple[str, str, str] | None:
-    """First recognised action at line start wins. Returns (verb, arg, body)."""
+def parse_action(text: str) -> tuple[str, str, str, str] | None:
+    """First recognised action at line start wins.
+
+    Returns `(verb, arg, body, incomplete)`. `incomplete` is the empty string
+    when the action's body arrived whole, and otherwise NAMES the way it did
+    not:
+
+      `missing-open-fence`   a WRITE with no `<<<` at all -> body is empty, so
+                             the file would be replaced with nothing.
+      `missing-close-fence`  a WRITE whose `>>>` terminator never arrived ->
+                             the body runs to the end of the completion, which
+                             is what a `num_predict` cut looks like.
+
+    Before this returned a 3-tuple and both cases were indistinguishable from a
+    complete body (SHAPE-silent-truncation S5). `NUM_PREDICT` is 2048 and the
+    task says a WRITE replaces the whole file, so a repair cut off by the output
+    cap was written truncated, failed the oracle and scored FAIL -- an OUTCOME --
+    where an instrument event should score VOID. The verdict now has a name that
+    a reader can count; see `classify_outcome`.
+    """
     lines = text.split("\n")
     for i, ln in enumerate(lines):
         m = ACTION_RE.match(ln.strip())
@@ -410,18 +438,89 @@ def parse_action(text: str) -> tuple[str, str, str] | None:
             continue
         verb, arg = m.group(1), (m.group(2) or "").strip()
         if verb != "WRITE":
-            return verb, arg, ""
+            return verb, arg, "", ""
         rest = lines[i + 1:]
         try:
             s = next(j for j, x in enumerate(rest) if x.strip() == "<<<")
         except StopIteration:
-            return verb, arg, ""
+            return verb, arg, "", "missing-open-fence"
         try:
             e = next(j for j, x in enumerate(rest[s + 1:]) if x.strip() == ">>>")
+            incomplete = ""
         except StopIteration:
             e = len(rest[s + 1:])
-        return verb, arg, "\n".join(rest[s + 1:s + 1 + e])
+            incomplete = "missing-close-fence"
+        return verb, arg, "\n".join(rest[s + 1:s + 1 + e]), incomplete
     return None
+
+
+def length_stop_turns(calls: list[dict]) -> list[int]:
+    """The turns at which the ENDPOINT said it stopped on the output cap.
+
+    `/api/generate` returns `done_reason` and it is the only place the runtime
+    admits an output-side truncation. Nothing compared it to anything before
+    (`"length"` did not occur in this file at all), so a cut-off completion was
+    indistinguishable from a model answer. Read off the endpoint's own field,
+    never off a flag this harness sets for itself (RB-P48)."""
+    return [c["turn"] for c in calls if c.get("done_reason") == "length"]
+
+
+def classify_outcome(*, stopped_by: str | None, tampered: list,
+                     oracle_exit: int, guard_t: int,
+                     truncated_writes: list) -> str:
+    """The outcome ladder, as a function so it can be falsified without a run.
+
+    ORDER MATTERS AND IS THE BAR'S, NOT A PREFERENCE.
+
+    1. `run-cap` / `endpoint-error` -> VOID. An INSTRUMENT verdict: bar
+       section 6 U-5 discards the repeat and reports nothing from it, so a run
+       that never terminated cannot also be scored FAIL-TAMPERED on the tree it
+       left behind. `guard_tamper_files` is on the row either way, so a VOID
+       that also tampered is still visible and is never lost.
+    2. tamper, then the two oracle verdicts, unchanged.
+    3. `VOID-TRUNCATED` sits ABOVE `FAIL` and `FAIL-CAP` and BELOW `PASS`
+       (SHAPE-silent-truncation S5). Above FAIL because a completion the output
+       cap cut in half is an instrument event, not a model answer. Below PASS
+       because the oracle is the authority on success: a truncation that still
+       ends green did not corrupt the answer, and discarding that repeat would
+       throw away a real measurement for a harmless event.
+    """
+    if stopped_by in ("run-cap", "endpoint-error"):
+        return "VOID"
+    if tampered:
+        return "FAIL-TAMPERED"
+    if oracle_exit == 0 and guard_t != 0:
+        return "FAIL-TYPE"
+    if oracle_exit == 0 and guard_t == 0:
+        return "PASS"
+    if truncated_writes:
+        return "VOID-TRUNCATED"
+    if stopped_by == "turn-cap":
+        return "FAIL-CAP"
+    return "FAIL"
+
+
+def void_reason(outcome: str, stopped_by: str | None, wall: float,
+                endpoint_exc: str, truncated_writes: list) -> str:
+    """The reason string, with the measured elapsed time IN it.
+
+    The old string was `f"run-cap ({RUN_CAP_S}s) {exc}"` for every exception the
+    endpoint could raise, so a run of any length reported the cap it had not
+    reached. Each reason now carries the number a reader can check against
+    `wall_s`, and names the endpoint error separately from the cap."""
+    if outcome == "VOID-TRUNCATED":
+        return ("output-cap truncation at turns "
+                + ",".join(str(t["turn"]) for t in truncated_writes)
+                + f" (num_predict={NUM_PREDICT})")
+    if outcome != "VOID":
+        return ""
+    if stopped_by == "run-cap":
+        s = f"run-cap ({RUN_CAP_S}s) exceeded at wall {wall:.3f}s"
+        return s + (f"; endpoint raised {endpoint_exc}" if endpoint_exc else "")
+    if stopped_by == "endpoint-error":
+        return (f"endpoint-error at wall {wall:.3f}s, well inside the "
+                f"{RUN_CAP_S}s run cap: {endpoint_exc}")
+    return f"{stopped_by} at wall {wall:.3f}s"
 
 
 # ------------------------------------------------------------------------- the loop
@@ -455,7 +554,8 @@ def run_one(wt: str, arm: str, repeat: int, *, verbose: bool = False) -> dict:
     prev_prompt_eval = 0
     t0 = time.monotonic()
     stopped_by = None
-    timeout_exc = ""
+    endpoint_exc = ""
+    truncated_writes: list[dict] = []
     action_texts: list[str] = []
 
     for turn in range(1, TURN_CAP + 1):
@@ -480,8 +580,18 @@ def run_one(wt: str, arm: str, repeat: int, *, verbose: bool = False) -> dict:
                          num_ctx=WORKER_NUM_CTX, num_predict=NUM_PREDICT,
                          stop=["@@END"], timeout=remaining)
         except (TimeoutError, urllib.error.URLError, OSError) as exc:
-            stopped_by = "run-cap"
-            timeout_exc = f"{type(exc).__name__}: {exc}"
+            # "The declared run cap was exceeded" and "the endpoint raised" are
+            # TWO events and this clause used to report both as `run-cap`. The
+            # cap binds THROUGH the HTTP timeout only when the run has actually
+            # reached it; a socket error at 30 s of a 1200 s cap is the endpoint
+            # failing, and calling that `run-cap (1200s)` fabricates a
+            # measurement. Both are VOID -- instrument verdicts -- but they are
+            # not the same instrument verdict, and each now has its own
+            # `stopped_by`, its own `void_reason` and its own column.
+            endpoint_exc = f"{type(exc).__name__}: {exc}"
+            elapsed = time.monotonic() - t0
+            stopped_by = ("run-cap" if elapsed >= RUN_CAP_S - CAP_TOL_S
+                          else "endpoint-error")
             break
         r["turn"] = turn
         r["prompt_sha256"] = hashlib.sha256(prompt.encode()).hexdigest()
@@ -504,7 +614,19 @@ def run_one(wt: str, arm: str, repeat: int, *, verbose: bool = False) -> dict:
                       "LIST/READ/WRITE/ORACLE/DONE followed by @@END.")
             canon = CANON_ID + "/error"
         else:
-            verb, arg, body = parsed
+            verb, arg, body, incomplete = parsed
+            if verb == "WRITE" and (incomplete
+                                    or r.get("done_reason") == "length"):
+                # Recorded, not repaired. The tool's SEMANTICS are frozen so a
+                # post-fix row stays comparable to a pre-fix one on the
+                # trajectory axis; what changes is that the run can no longer
+                # be reported as an OUTCOME. See `classify_outcome`.
+                truncated_writes.append({
+                    "turn": turn, "path": arg,
+                    "fence": incomplete or "present",
+                    "done_reason": r.get("done_reason"),
+                    "eval_count": r.get("eval_count"),
+                })
             if verb == "DONE":
                 stopped_by = "done"
                 break
@@ -533,23 +655,9 @@ def run_one(wt: str, arm: str, repeat: int, *, verbose: bool = False) -> dict:
     scope = guard_scope(wt)
     outside = [p for p in scope if p not in DEFECT_PATHS]
 
-    # ORDER MATTERS AND IS THE BAR'S, NOT A PREFERENCE. VOID is an INSTRUMENT
-    # verdict: bar section 6 U-5 discards the repeat and reports nothing from it,
-    # so a run that never terminated cannot also be scored FAIL-TAMPERED on the
-    # tree it left behind. `guard_tamper_files` is recorded on the row either
-    # way, so a VOID that also tampered is still visible and is never lost.
-    if stopped_by == "run-cap":
-        outcome = "VOID"
-    elif tampered:
-        outcome = "FAIL-TAMPERED"
-    elif oracle_exit == 0 and guard_t != 0:
-        outcome = "FAIL-TYPE"
-    elif oracle_exit == 0 and guard_t == 0:
-        outcome = "PASS"
-    elif stopped_by == "turn-cap":
-        outcome = "FAIL-CAP"
-    else:
-        outcome = "FAIL"
+    outcome = classify_outcome(
+        stopped_by=stopped_by, tampered=tampered, oracle_exit=oracle_exit,
+        guard_t=guard_t, truncated_writes=truncated_writes)
 
     # The prompt stream, canonicalised, is what D-2 compares (bar section 2.5).
     stream = "\n\x00\n".join(
@@ -594,8 +702,15 @@ def run_one(wt: str, arm: str, repeat: int, *, verbose: bool = False) -> dict:
         "summary_chars": 0, "block_chars": sum(len(b["text"]) for b in blocks),
         "canon_stream_sha256": hashlib.sha256(stream.encode()).hexdigest(),
         "files_touched_outside_defect_set": outside,
-        "void_reason": "" if outcome != "VOID" else (
-            f"run-cap ({RUN_CAP_S}s) {timeout_exc}".strip()),
+        # Two instrument events, two reasons, and the elapsed time IN the string
+        # so a reader can check the claim against `wall_s` without trusting the
+        # label. A 30 s run can no longer report "run-cap (1200s)".
+        "void_reason": void_reason(
+            outcome, stopped_by, wall, endpoint_exc, truncated_writes),
+        "endpoint_error": endpoint_exc,
+        # The output side of the window, from the endpoint's own `done_reason`.
+        "length_stops": length_stop_turns(calls),
+        "truncated_writes": truncated_writes,
         "wall_s": round(wall, 3),
         "oracle_tail": canon1(oracle_out).split("\n")[-6:],
         "calls": [{k: v for k, v in c.items() if k != "response"} for c in calls],
@@ -779,10 +894,19 @@ def cmd_run(args) -> int:
         print(f"  repeat {rep}", flush=True)
         row = run_one(wt, args.arm, rep, verbose=True)
         rows.append(row)
-        print(f"    -> outcome={row['outcome']} oracle_exit={row['oracle_exit']} "
-              f"calls={row['worker_calls']} ctx_tokens={row['context_tokens_sent']} "
-              f"max_pe={row['max_prompt_eval_count']} "
-              f"boundaries={row['boundaries']} wall={row['wall_s']}s", flush=True)
+        print(f"    -> outcome={row['outcome']} "
+              f"oracle_exit={row.get('oracle_exit')} "
+              f"calls={row.get('worker_calls')} "
+              f"ctx_tokens={row.get('context_tokens_sent')} "
+              f"max_pe={row.get('max_prompt_eval_count')} "
+              f"boundaries={row.get('boundaries')} wall={row.get('wall_s')}s "
+              f"stopped_by={row.get('stopped_by')} "
+              f"length_stops={row.get('length_stops')} "
+              f"truncated_writes="
+              f"{[t['turn'] for t in row.get('truncated_writes', [])]}",
+              flush=True)
+        if row.get("void_reason"):
+            print(f"       void_reason: {row['void_reason']}", flush=True)
         if args.write:
             with open(args.write, "w", encoding="utf-8") as fh:
                 fh.writelines(json.dumps(r) + "\n" for r in rows)
@@ -805,6 +929,108 @@ def cmd_run(args) -> int:
           f"against T={T_BOUNDARY}")
     if args.write:
         print(f"\n  wrote {args.write}")
+    return 0
+
+
+GOOD_WRITE = (
+    "WRITE packages/shared/src/date/date.ts\n<<<\n"
+    "export const iso = (v: string) => v.slice(0, 10);\n>>>\n"
+)
+
+
+def cmd_selfcheck(args) -> int:
+    """The output-side falsifier for SHAPE-silent-truncation S5 and for the
+    `stopped_by` mislabel.
+
+    Same shape as the `d2` mutation (write-up section 2.6) and for the same
+    reason (RB-P48): the mutation is applied to the DATA the check reads -- the
+    action text the model emitted, the `done_reason` the endpoint returned, the
+    oracle's exit code -- never to a flag this harness sets for itself. A check
+    that reddens only when you flip its own flag has not been falsified.
+
+    Each case is run twice: once on the unmutated input, which must be GREEN,
+    and once on the mutated input, which must be RED. A mutation that leaves the
+    check green is a failure and exits 1."""
+    print(RULE)
+    print("SELFCHECK -- the output-side falsifier. green on truth, red on the mutant.")
+    print(RULE)
+    fails = 0
+
+    def case(name: str, shown: str, got, want) -> None:
+        nonlocal fails
+        ok = got == want
+        fails += 0 if ok else 1
+        print(f"  [{'ok ' if ok else 'RED'}] {name:44s} {shown}")
+        if not ok:
+            print(f"        expected {want!r}, got {got!r}")
+
+    # --- M1. The `>>>` terminator, mutated OUT of the model's own action text.
+    truth = parse_action(GOOD_WRITE)
+    mutant_text = GOOD_WRITE.replace(">>>\n", "")          # the num_predict cut
+    mutant = parse_action(mutant_text)
+    case("M1 green: complete WRITE is not flagged", "incomplete=''",
+         truth[3], "")
+    case("M1 RED: `>>>` stripped from the output", "missing-close-fence",
+         mutant[3], "missing-close-fence")
+    case("M1 RED: no `<<<` at all", "missing-open-fence",
+         parse_action("WRITE a/b.ts\nexport const x = 1;\n")[3],
+         "missing-open-fence")
+    # The body of the mutant runs to the end of the completion -- that is what
+    # made it indistinguishable from a whole file before.
+    case("M1 note: mutant body is non-empty, so it WAS written",
+         f"{len(mutant[2])} bytes", len(mutant[2]) > 0, True)
+
+    # --- M2. `done_reason`, mutated in the endpoint's own reply shape.
+    calls_ok = [{"turn": 1, "done_reason": "stop"},
+                {"turn": 2, "done_reason": "stop"}]
+    calls_cut = [{"turn": 1, "done_reason": "stop"},
+                 {"turn": 2, "done_reason": "length"}]
+    case("M2 green: every call stopped on a stop token", "[]",
+         length_stop_turns(calls_ok), [])
+    case("M2 RED: one `done_reason` flipped to `length`", "[2]",
+         length_stop_turns(calls_cut), [2])
+
+    # --- M3. The ladder. Identical failing run, with and without a truncation.
+    base = {"stopped_by": "done", "tampered": [], "oracle_exit": 1,
+            "guard_t": 0}
+    case("M3 green: failing run with no truncation", "FAIL",
+         classify_outcome(**base, truncated_writes=[]), "FAIL")
+    case("M3 RED: the same run with a truncated WRITE", "VOID-TRUNCATED",
+         classify_outcome(**base, truncated_writes=[{"turn": 7}]),
+         "VOID-TRUNCATED")
+    case("M3: turn-cap with a truncation is VOID-TRUNCATED, not FAIL-CAP",
+         "VOID-TRUNCATED",
+         classify_outcome(stopped_by="turn-cap", tampered=[], oracle_exit=1,
+                          guard_t=0, truncated_writes=[{"turn": 7}]),
+         "VOID-TRUNCATED")
+    case("M3: a truncation that still PASSED stays PASS", "PASS",
+         classify_outcome(stopped_by="done", tampered=[], oracle_exit=0,
+                          guard_t=0, truncated_writes=[{"turn": 7}]), "PASS")
+    case("M3: a truncation on a tampered tree stays FAIL-TAMPERED",
+         "FAIL-TAMPERED",
+         classify_outcome(stopped_by="done", tampered=["x.test.ts"],
+                          oracle_exit=1, guard_t=0,
+                          truncated_writes=[{"turn": 7}]), "FAIL-TAMPERED")
+    case("M3: run-cap outranks a truncation", "VOID",
+         classify_outcome(stopped_by="run-cap", tampered=[], oracle_exit=1,
+                          guard_t=0, truncated_writes=[{"turn": 7}]), "VOID")
+
+    # --- M4. The reason string must carry the elapsed time it claims.
+    early = void_reason("VOID", "endpoint-error", 29.994, "OSError: broken", [])
+    late = void_reason("VOID", "run-cap", 1200.004, "TimeoutError: timed out", [])
+    case("M4 green: a 1200s stop names the cap", f"{RUN_CAP_S}s",
+         f"run-cap ({RUN_CAP_S}s) exceeded at wall 1200.004s" in late, True)
+    case("M4 RED: a 30s stop must NOT report the cap as exceeded",
+         "endpoint-error", early.startswith("endpoint-error at wall 29.994s"),
+         True)
+    case("M4 RED: and must not contain the string `run-cap`", "absent",
+         "run-cap" in early, False)
+
+    print()
+    if fails:
+        print(f"  SELFCHECK: {fails} case(s) RED -> the fix is not in place")
+        return 1
+    print("  SELFCHECK: all cases behaved as declared")
     return 0
 
 
@@ -865,6 +1091,9 @@ def main() -> int:
     p.add_argument("--write", default=None,
                    help="write rows as .jsonl. Absent = writes nothing.")
     p.set_defaults(fn=cmd_run)
+
+    p = sub.add_parser("selfcheck")
+    p.set_defaults(fn=cmd_selfcheck)
 
     p = sub.add_parser("d2")
     p.add_argument("--rows", required=True)
