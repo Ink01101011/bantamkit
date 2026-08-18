@@ -794,3 +794,144 @@ Both run in this worktree, at this base, before this commit:
 This commit adds one Markdown file under `docs/` and changes no Python, so neither gate's result
 is attributable to it. That is stated rather than presented as evidence the plan is correct
 (RB-P28: the suite is not evidence).
+
+---
+
+## Amendment 1 — 2026-08-19, after `5458059` was committed
+
+**Appended, never edited.** §1.6 and §9 stand above exactly as committed at `5458059`. This
+amendment withdraws a conclusion drawn in §1.6 and repeated in §9's fence. It is written this
+way because a pass count is a **number**, a number is a **record**, and the rule for a record
+— written two sections below the mistake, in §4.1 — is amend-only. Correcting §1.6 in place
+would have been the plan's author granting himself the exemption §3 refuses to grant the
+`` `:1288` `` pin.
+
+**Raised by the orchestrator, re-verified here before being accepted.** The two figures below
+were measured by the orchestrator; the mechanism and the arithmetic were re-derived
+independently in this worktree, by the commands shown, without running anything in the other
+checkout.
+
+### 1. The measured pair — both correct, each at its own commit
+
+| commit | branch | `pytest runtime-py/tests -q` |
+|---|---|---|
+| `3f52a86` | `feat/compaction-in-the-loop` (J7) | **940 passed, 2 xfailed** |
+| `5458059` | `feat/instrument-hygiene` (this branch) | **932 passed, 2 xfailed** |
+
+Neither number is wrong. §1.6's error was not the measurement — it was asserting a measurement
+of one tree as a property of both.
+
+### 2. The mechanism, re-derived here
+
+§1.6's premise **stands and is re-verified**: J7 adds no test.
+
+```
+git diff --name-only 5845698..3f52a86        # 7 files, ALL under docs/, 0 under runtime-py/
+```
+
+The eight nodes come from **parametrisation over the field-program roster**, not from new test
+functions. `test_field_programs.py` discovers programs as the union of `git ls-files` and a
+glob, and four of its five test functions are parametrised over that roster. Measured in this
+worktree:
+
+```
+.venv/bin/python -m pytest runtime-py/tests -q --collect-only 2>/dev/null \
+  | grep 'test_field_programs.py::' | sed 's/\[.*//' | sort | uniq -c
+#   12 ::test_every_bantamkit_symbol_a_field_program_names_still_resolves
+#   12 ::test_every_committed_field_program_still_exposes_main
+#   12 ::test_every_committed_field_program_still_imports
+#   12 ::test_every_sibling_program_a_field_program_names_by_path_exists
+#    1 ::test_the_discovery_is_not_silently_empty      <- not parametrised
+```
+
+**4 × 12 + 1 = 49 here. 4 × 14 + 1 = 57 there. The difference is exactly 8, and 932 + 8 = 940.**
+The two added programs are `2026-08-18-loop-harness.py` and
+`2026-08-18-loop-worker-determinism-probe.py`, both J7's, both under `docs/eval-data/`.
+
+**§1.2 and §1.6 are one finding counted twice, and the plan filed them as two.** The CI surface
+(12 against 14) and the suite count (932 against 940) are the same quantity —
+`|docs/eval-data/*.py|` — read through two different instruments. That was not seen when they
+were written as separate items, and it is the tell that should have been caught: two figures
+that disagree between the same pair of commits, by amounts in a fixed ratio, are one figure.
+
+### 3. What is withdrawn and what stands
+
+- **WITHDRAWN:** §1.6's sentence *"it is not a branch difference — J7's branch adds no test and
+  the count is 932 on both branches"*, and §9's repetition *"932 is the figure on both
+  branches"*. The conclusion is false.
+- **WITHDRAWN:** §1.6's framing of 940 as a figure that "does not reproduce". It reproduces
+  exactly, at the commit it was measured at. The brief was right; this document was wrong to
+  call it wrong.
+- **STANDS, re-verified:** the premise. J7 touches nothing under `runtime-py/`.
+- **STANDS:** 932 passed, 2 xfailed **at `5458059`**, and 934 collected.
+- **Pointer note:** the fence in question is in **§9**, not §11. This document has nine
+  sections; §11 is the prep probe's numbering. Recorded rather than acted on — the citation is
+  in a message, not in a committed artifact, so there is nothing in this repository to correct.
+
+### 4. The ruling asked for: does §4.2's marker cover this? **NO. It does not, and it is not
+being widened to.**
+
+The pass count **is** a co-moving count by §4.2's own definition — its correct value is a
+function of a body that a commit can change. But its derivation lives outside the document
+that carries the number, and that is a different animal. Name it: **CROSS-ARTIFACT CO-MOVING
+COUNT**.
+
+**Three reasons the marker as specified cannot reach it.** Stated as reasons the mechanism
+fails, not as reasons the case is unimportant.
+
+1. **The marker's derivation is a pure function of committed bytes; this one is not.**
+   `count(^### [ML]-U5-\d+$)` is a regex the checker runs over a blob it already has. A pass
+   count requires **executing the repository**. A checker that verified it would be asserting a
+   fact about the world (RB-P14 Gate 2) and its verdict would depend on an interpreter and an
+   installed environment — and a local interpreter is measurably not enough to stand in for the
+   real target (`feature_version` reported the repo clean while CI's 3.11 leg rejected a module
+   outright, because PEP 701 changed the tokeniser and not the AST).
+2. **The scope is unbounded.** The same-body derivation reads one file. This one reads the whole
+   tree plus its dependencies. There is no body for the checker to bound, so there is no
+   recomputation for it to perform.
+3. **It is cross-TREE, not merely cross-file.** 940 is true at `3f52a86` and 932 at `5458059`.
+   There is no commit at which the number and its derivation are simultaneously true, so
+   *"equal to its derivation recomputed over the committed body at this commit"* has no
+   referent. The property the marker enforces is not merely hard to check here — it is not
+   well-formed here.
+
+**The ruling, therefore:** a cross-artifact co-moving count is **NOT** a fourth kind and does
+**NOT** get the marker. It falls back to **RECORD — amend only**, with one added obligation:
+
+> **A cross-artifact co-moving count must carry a PROVENANCE STAMP: the value, the commit it
+> was measured at, and the command that measured it.** Not the command alone. The commit beside
+> the number.
+
+**This is strictly weaker than what the marker does for a same-body count, and saying so is the
+point of the ruling.** The marker *verifies* a same-body count — recompute, compare, go red.
+The stamp does not verify anything: the checker never learns whether 932 is correct. It
+enforces **falsifiability**, not correctness — that a reader is handed the commit and the
+command needed to find out. **The gap is real and stays open:** nothing in this design detects
+a cross-artifact count that is stamped, plausible, and wrong. Closing it would need the checker
+to execute the tree, which reasons 1 and 3 forbid. It is recorded as open rather than papered
+over by broadening the definition in the same breath that discovered the case.
+
+**Why the stamp would nonetheless have caught this one.** §1.6 named its command and reported
+`932 passed, 2 xfailed in 17.12s` — with **no commit beside the number** — and then generalised
+it to "both branches". A stamp binds a number to exactly one commit, and the generalisation is
+not writable in that form.
+
+### 5. Added to the checker's must-be-red calibration set
+
+**`CAL-RED-BARE-GATE-EXPECTATION`** — a fixture document carrying a gate expectation as a bare
+number with **neither** a `co-moving-count` derivation marker **nor** a `(value, commit,
+command)` provenance stamp. The checker must come back **red**. §8's item 1 gains it, and it is
+mandatory, not optional: **a checker that cannot catch the defect found in its own design
+document is not worth shipping.**
+
+Its paired must-be-green case, so the pair calibrates rather than merely blocks: the same
+number carrying a full provenance stamp, which must come back **green** even though the checker
+has not verified the value — because green here means *falsifiable*, not *correct*, and an
+instrument that cannot show the difference between those two is not evidence about either.
+
+### 6. Accounting for this amendment
+
+**Model: `claude-opus-5[1m]`. Tokens UNMEASURED, wall-clock UNMEASURED.** No counter exposed.
+
+**Gate at this amendment's commit, with the commit beside it as §4 now requires** — see the
+unit's hand-back for the SHA, and the figure is stated there in stamped form rather than bare.
