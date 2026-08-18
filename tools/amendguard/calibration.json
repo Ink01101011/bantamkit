@@ -1,0 +1,42 @@
+{
+  "what_this_is": [
+    "NOT a measurement. The expected verdict for every commit of a SYNTHETIC repository",
+    "that `amendguard.py calibrate` builds itself, written from the rule in",
+    "docs/record-vs-pointer.md and then compared against the run — never the other way",
+    "round. No entry here names a commit, a path or a count in this repository.",
+    "An instrument that has not been shown to distinguish an edited record from a",
+    "corrected pointer is not evidence about either, so if any row flips, nothing",
+    "amendguard says about any real commit may be believed."
+  ],
+  "the_pair_that_must_not_flip": {
+    "must_be_red": "RECORD-EDITED — a number rewritten in place, alone, in a document that is amend-only",
+    "must_be_green": "POINTER-P3-SOLE — a file:line pin corrected in place, in its own commit, touching nothing else"
+  },
+  "the_pair_amendment_1_demanded": {
+    "must_be_red": "BARE-GATE — a gate expectation carrying neither a co-moving-count marker nor a (value, commit, command) provenance stamp",
+    "must_be_green": "STAMPED-GATE — the same number carrying a full stamp. Green here means FALSIFIABLE, not CORRECT: the checker never learns whether 932 is right."
+  },
+  "found_by_running_it": "MARKER-QUOTED — a co-moving-count marker shown inside a fenced example is quoted, not declared. The first field run of this checker, over its own design document, reported COUNT-STALE against a count that document never claimed. The fix is the same rule the fence already carries for pins, and this row is what keeps it fixed.",
+  "the_rbp47_input": "VERBATIM-PIN — a file:line pin inside a fenced verbatim block. A pointer by syntax, a record by context. classify and the closed list disagree on it, which is why their agreement elsewhere is a cross-check and not a transcription.",
+  "expect": [
+    {"label": "BASE", "path": "doc-a.md", "classify": "new-file", "isolation": "mixed", "derivation": "absent", "verdict": "OK"},
+    {"label": "BASE", "path": "doc-b.md", "classify": "new-file", "isolation": "mixed", "derivation": "absent", "verdict": "OK"},
+    {"label": "APPEND-OK", "path": "doc-a.md", "classify": "append", "isolation": "mixed", "derivation": "absent", "verdict": "OK"},
+    {"label": "RECORD-EDITED", "path": "doc-a.md", "classify": "record", "isolation": "mixed", "derivation": "absent", "verdict": "RECORD-EDITED"},
+    {"label": "POINTER-P3-SOLE", "path": "doc-a.md", "classify": "pointer:P3", "isolation": "sole", "derivation": "absent", "verdict": "OK"},
+    {"label": "POINTER-P3-MIXED", "path": "doc-a.md", "classify": "pointer:P3", "isolation": "mixed", "derivation": "absent", "verdict": "POINTER-NOT-ISOLATED"},
+    {"label": "POINTER-P3-MIXED", "path": "doc-c.md", "classify": "new-file", "isolation": "mixed", "derivation": "absent", "verdict": "OK"},
+    {"label": "POINTER-P1", "path": "doc-a.md", "classify": "pointer:P1", "isolation": "sole", "derivation": "absent", "verdict": "OK"},
+    {"label": "POINTER-P2", "path": "doc-a.md", "classify": "pointer:P2", "isolation": "sole", "derivation": "absent", "verdict": "OK"},
+    {"label": "POINTER-P4", "path": "doc-a.md", "classify": "pointer:P4", "isolation": "sole", "derivation": "absent", "verdict": "OK"},
+    {"label": "ADD-FENCE", "path": "doc-a.md", "classify": "append", "isolation": "mixed", "derivation": "absent", "verdict": "OK"},
+    {"label": "VERBATIM-PIN", "path": "doc-a.md", "classify": "record", "isolation": "mixed", "derivation": "absent", "verdict": "RECORD-EDITED"},
+    {"label": "COUNT-INTRODUCED", "path": "doc-b.md", "classify": "append", "isolation": "mixed", "derivation": "ok", "verdict": "OK"},
+    {"label": "COUNT-BUMPED", "path": "doc-b.md", "classify": "co-moving-count", "isolation": "mixed", "derivation": "ok", "verdict": "OK"},
+    {"label": "COUNT-STALE", "path": "doc-b.md", "classify": "append", "isolation": "mixed", "derivation": "stale", "verdict": "COUNT-STALE"},
+    {"label": "COUNT-REPAIRED", "path": "doc-b.md", "classify": "co-moving-count", "isolation": "mixed", "derivation": "ok", "verdict": "OK"},
+    {"label": "BARE-GATE", "path": "doc-a.md", "classify": "append", "isolation": "mixed", "derivation": "absent", "verdict": "STAMP-MISSING"},
+    {"label": "STAMPED-GATE", "path": "doc-b.md", "classify": "append", "isolation": "mixed", "derivation": "ok", "verdict": "OK"},
+    {"label": "MARKER-QUOTED", "path": "doc-c.md", "classify": "append", "isolation": "mixed", "derivation": "absent", "verdict": "OK"}
+  ]
+}
