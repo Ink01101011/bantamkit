@@ -841,4 +841,82 @@ not evidence, because it cannot be attributed to an arm.
 
 Amendments are appended here, dated, with the original text of §0–§11 left untouched.
 
-None.
+Both amendments below were committed **before U4 ran a single arm**, and `git log` is the
+evidence of that ordering. Both are rulings about **method**. Neither is derived from an
+arm result, because no arm result existed when they were written.
+
+### Amendment A — 2026-08-18. The corpus is STRATIFIED, and pooling is forbidden
+
+**Ruled by the user**, in their words: *"แยกรายงานสองชั้น sidechain vs session"* —
+report the two layers separately — and *"ห้าม pool เป็นเลขเดียว"* — pooling into one
+number is forbidden.
+
+**What the ruling says.**
+
+- The corpus is all **207** transcripts committed by U3, and it is **stratified by kind**:
+  - **stratum A — subagent sidechains, n=206**, median **26** model calls
+    (`docs/eval-data/2026-08-17-compaction-corpus.md:139`, read at HEAD).
+  - **stratum B — top-level sessions, n=1**.
+- **Every headline, every noise floor and every verdict is reported per stratum.**
+- **Pooling the two strata into a single figure is FORBIDDEN, including as an aside.**
+  This overrides §2.4's instruction to print the pooled sum beside the median **across
+  strata**: the pooled sum is still reported, but **within** a stratum and never across
+  the two. A pooled-across-strata sum on this corpus would be one number in which a single
+  n=1 transcript — the corpus's largest by every byte and token column
+  (`2026-08-17-compaction-corpus.md:337-340`) — outweighs 206 others, which is precisely the
+  reading the user forbade.
+- **Stratum B is n=1. It supports no noise floor of its own** — §3.1's floor is a spread
+  over repeat sets and §3.2's is the same shape, and both are computed *within* a stratum.
+  With one member, stratum B's across-transcript sign condition (§3.1) is also
+  unevaluable. So **stratum B is reported UNINFORMATIVE-BY-N** unless a clause of this bar
+  says something stronger about it, and it **never borrows stratum A's floor.** Its
+  per-transcript columns are still printed in full, because a single measured transcript
+  is data even when it supports no verdict.
+
+**Why the pre-declared `n=8` was wrong, recorded as a correction to a PREMISE and not to a
+measured value.** §0 claim 5 and §2.2 build on `n=8`. Claude Code keys its project
+directory by the cwd a session was **LAUNCHED** from, not the cwd it worked in, so **199 of
+the 211** transcripts on this machine with a bantamkit-recorded `cwd` sat outside the
+bantamkit-named project directory (`2026-08-17-compaction-corpus.md:371-376`, read at
+HEAD). Selecting by directory name — which is what produced 8 — discards 94.7% of the
+bantamkit transcripts the user's own fence selects. §2.2's *argument* stands untouched:
+turns within a session are not independent observations of a path integral over that
+session. The number **8** does not. §11(2)'s "all eight per-transcript figures printed
+beside every median" is superseded by the per-stratum reporting above; U3's escalation
+§7.1 is answered by this amendment.
+
+### Amendment B — 2026-08-18. §10.2's threshold `T` is READING A, live-window occupancy
+
+**Ruled by the orchestrator of job `compaction-measured`, answering U3's escalation E-2**
+(`2026-08-17-compaction-corpus.md:388-411`, read at HEAD), which measured that §10.2's
+wording permits two readings differing by orders of magnitude and deliberately applied
+neither.
+
+**The ruling.** `T` is **reading A: live-window occupancy** — the peak prompt the live
+window would hold — which is the mechanism's own meaning. It is **not** the
+cumulative-prefix reading that §10.2:718's phrase "B0's cumulative prefix" also permits.
+
+**The reason, written down so it is auditable rather than asserted.** `T` is 60% of
+`COMPACTION_TOKEN_BUDGET`, and that budget is a **window** budget: `proactivePct` is the
+fraction of the *live window* at which the mechanism recommends acting
+(`src/config.ts:98-99` at `0a15cff`, §10.1). Applying a window fraction to a cumulative sum
+that grows without bound is a **category error** — the cumulative sum passes any fixed
+threshold eventually and then again and again, so reading B fires a boundary roughly every
+**1.4** calls at the corpus median (18 boundaries across 26 model calls,
+`2026-08-17-compaction-corpus.md:404`), on sessions whose live window never reached the
+threshold that was supposed to trigger them.
+
+**THE DIRECTION OF THE COST IS STATED, because that is what makes §10.2's standing refusal
+mean anything when it bites.** Reading A is the **expensive** reading. Under it, only
+**102 of 207** transcripts ever reach `T`, so **105 of 207 are UNINFORMATIVE under U-2
+before any arm runs** (`2026-08-17-compaction-corpus.md:403`). Reading B would have fired
+constantly and left almost nothing UNINFORMATIVE. The reading was chosen on **semantics**,
+knowing it costs half the corpus, and **`T` is not lowered to recover them** — §10.2's
+standing refusal is not suspended, weakened, or reinterpreted by this amendment. Choosing
+the reading under which more fires would have been that refusal defeated by
+interpretation instead of by edit, which is the failure mode U3 declined to commit.
+
+**What this amendment does not do.** It does not change `T`'s value (still 60% of 128,000
+= **76,800** tokens, at the mechanism's shipped defaults), does not change the boundary
+rule's shape, and does not license a later re-tune. A different `T`, or reading B, is a
+**new arm with its own dated declaration**, reported separately (§10.2).
