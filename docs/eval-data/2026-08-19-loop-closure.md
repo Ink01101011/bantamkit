@@ -871,7 +871,8 @@ tree. They are **pre-existing on `main`** (same 3, measured there) and that tree
 **frozen synthetic workload fixture** which invariant 17 forbids touching. The declared gate
 is `ruff check runtime-py` and it is clean.
 
-**Fences.** **No arm was run and no worktree was cut** — this unit needed neither. Nothing
+**Fences.** **No arm was run and no worktree was cut** — this unit needed neither, and
+the workload was nonetheless re-checked at the end rather than assumed: `git -C <packnplan> log --oneline -1` → **`81ac1a1`, unmoved**; `status --porcelain` → **the same one line**, `?? docs/test-cases/REVIEW-multi-perspective-2026-07-30.md`; `git worktree list | wc -l` → **25**, the recorded baseline (N-4). Nothing
 under `assets/evals/tasks/` or `assets/evals/perturbations/` was touched; no committed row
 was regenerated; no committed section was retro-edited — §§0–11 stand exactly as `8b6f365`
 wrote them and this section appends. The bantamkit worktree at `scratchpad/wt-j3` belongs to
