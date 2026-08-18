@@ -69,6 +69,13 @@ ABSENT = "ABSENT"
 # `summarizer_prompt_tokens_the_endpoint_saw` values are exact multiples of 4096.
 WINDOW = 4096
 
+# C-6's declared scenario. Two observations of 5,000 and 9,000 bytes, offered first
+# against a budget that cuts both and then against one that cuts neither, so that the
+# column has a positive case and a null control. Both are constants of the scenario and
+# neither is recomputed from a mutation — see `measure_loop`.
+CUT_BUDGET = 1000
+UNCUT_BUDGET = 1_000_000
+
 # Each mutation FALSIFIES one claim by changing the WORLD the claim is about, and
 # must turn RED the check that claim NAMES.
 MUTATIONS: dict[str, str] = {
@@ -330,15 +337,21 @@ def measure_loop(
         )
         return agent.run("go")
 
-    cut_budget = 1_000_000 if mutate == "observations-under-budget" else 1000
-    cut = run(cut_budget, ["big", "bigger"])
-    uncut_budget = 1000 if mutate == "one-observation-over-budget" else 1_000_000
-    uncut = run(uncut_budget, ["big", "bigger"])
-
+    # THE EXPECTATION IS PINNED TO THE DECLARED SCENARIO, NOT RECOMPUTED FROM THE
+    # MUTATED BUDGET. An earlier draft derived it from `cut_budget`, so raising the
+    # budget moved the expectation and the reality together and the mutation falsified
+    # nothing — the program's own exit-2 detector caught it (C-U5-2's shape: a check
+    # whose expectation is a function of the thing being mutated is a tautology). The
+    # numbers below are properties of the scenario this program declares.
     expected_bytes = sum(
-        max(0, len(blobs[k].encode()) - cut_budget) for k in ("big", "bigger")
+        max(0, len(blobs[k].encode()) - CUT_BUDGET) for k in ("big", "bigger")
     )
-    expected_count = sum(1 for k in ("big", "bigger") if len(blobs[k].encode()) > cut_budget)
+    expected_count = sum(1 for k in ("big", "bigger") if len(blobs[k].encode()) > CUT_BUDGET)
+
+    cut_budget = UNCUT_BUDGET if mutate == "observations-under-budget" else CUT_BUDGET
+    cut = run(cut_budget, ["big", "bigger"])
+    uncut_budget = CUT_BUDGET if mutate == "one-observation-over-budget" else UNCUT_BUDGET
+    uncut = run(uncut_budget, ["big", "bigger"])
 
     cut_bytes = getattr(cut, "observation_bytes_dropped", ABSENT)
     cut_count = getattr(cut, "observations_truncated", ABSENT)
