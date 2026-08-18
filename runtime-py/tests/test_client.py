@@ -332,6 +332,57 @@ def test_an_undeclared_window_leaves_prompt_tokens_unchecked_not_measured():
     assert _usage_for(prompt_tokens=4096).prompt_tokens_verdict == "UNCHECKED"
 
 
+def _usage_for_body(body, **kwargs):
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=body))
+    with make_client(transport, **kwargs) as client:
+        return client.chat([Message(role="user", content="x")]).usage
+
+
+@pytest.mark.parametrize(
+    "usage_field",
+    [
+        pytest.param({}, id="no-usage-key-at-all"),
+        pytest.param({"usage": None}, id="usage-is-null"),
+        pytest.param({"usage": {}}, id="usage-is-empty"),
+        pytest.param({"usage": {"completion_tokens": 3}}, id="usage-omits-prompt-tokens"),
+        pytest.param({"usage": {"prompt_tokens": None}}, id="prompt-tokens-is-null"),
+    ],
+)
+def test_a_reply_that_reports_no_prompt_tokens_is_unreported_and_never_measured(usage_field):
+    """RB-P51 inside the code written to honour RB-P51.
+
+    Before this state existed the classifier read `usage.get("prompt_tokens", 0)`, so the
+    emptiest possible response produced 0, compared unequal to any declared window, and
+    fell to the `else` arm as `MEASURED` -- while the module says MEASURED is the only
+    verdict that licenses arithmetic. The zero is this module's default, not a number any
+    endpoint sent, and a total built from it is short by an unknown amount.
+    """
+    body = {"choices": [{"message": {"content": "hi"}}]}
+    body.update(usage_field)
+    usage = _usage_for_body(body, context_window=4096)
+    assert usage.prompt_tokens_verdict == "UNREPORTED"
+    assert usage.prompt_tokens == 0
+
+
+def test_a_reported_zero_is_not_the_same_as_an_unreported_one():
+    """The null control on the same field: 0 is a measurement when the endpoint sent it."""
+    body = {"choices": [{"message": {"content": "hi"}}], "usage": {"prompt_tokens": 0}}
+    assert _usage_for_body(body, context_window=4096).prompt_tokens_verdict == "MEASURED"
+
+
+def test_an_unreported_call_outranks_every_other_verdict_in_a_sum():
+    measured = _usage_for(prompt_tokens=10, context_window=4096)
+    void = _usage_for(prompt_tokens=4096, context_window=4096)
+    unchecked = _usage_for(prompt_tokens=10)
+    unreported = _usage_for_body(
+        {"choices": [{"message": {"content": "hi"}}]}, context_window=4096
+    )
+    assert (measured + unreported).prompt_tokens_verdict == "UNREPORTED"
+    assert (unreported + measured).prompt_tokens_verdict == "UNREPORTED"
+    assert (void + unreported).prompt_tokens_verdict == "UNREPORTED"
+    assert (unchecked + unreported).prompt_tokens_verdict == "UNREPORTED"
+
+
 def test_a_void_call_poisons_the_sum_it_is_added_to():
     measured = _usage_for(prompt_tokens=10, context_window=4096)
     void = _usage_for(prompt_tokens=4096, context_window=4096)

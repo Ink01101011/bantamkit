@@ -76,9 +76,16 @@ class Tool:
         }
 
 
-# RB-P53's class, site S4. The three states `prompt_tokens` can be in, as data, because
+# RB-P53's class, site S4. The four states `prompt_tokens` can be in, as data, because
 # a check has to be able to name one. MEASURED is the only one that licenses arithmetic.
 MEASURED = "MEASURED"
+#: The response carried no usable `usage.prompt_tokens` at all — no `usage` object, an
+#: empty or null one, or one that omits the field. The 0 in `Usage.prompt_tokens` is then
+#: THIS PROGRAM'S DEFAULT and not anything the endpoint said. It needs its own state
+#: because a fabricated zero compares unequal to any declared window, so without this
+#: branch the emptiest possible response read `MEASURED` — RB-P51's defect inside the
+#: code written to honour RB-P51.
+UNREPORTED = "UNREPORTED"
 #: `prompt_tokens` equals the window the caller declared. RB-P53 measured ollama's `/v1`
 #: endpoint reporting the CONTEXT WINDOW in that field when it silently clamps a prompt,
 #: so at the window the number is the window and not a measurement of anything.
@@ -88,8 +95,11 @@ VOID = "VOID"
 UNCHECKED = "UNCHECKED"
 
 # Worst first. A sum containing a non-measurement is a non-measurement, and a sum
-# containing an unchecked component is not a measured total either.
-_VERDICT_SEVERITY = (VOID, UNCHECKED, MEASURED)
+# containing an unchecked component is not a measured total either. UNREPORTED outranks
+# VOID: a VOID call at least returned a number the endpoint chose, while an UNREPORTED one
+# contributed a zero this module invented, so a total containing one is short by an
+# unknown amount rather than merely untrustworthy.
+_VERDICT_SEVERITY = (UNREPORTED, VOID, UNCHECKED, MEASURED)
 
 #: Stop reasons that mean the generation was CUT rather than finished. A completion that
 #: hit the cap is not a shorter answer, it is an unfinished one, and the difference is
@@ -135,7 +145,8 @@ class Usage:
     #: nothing. Read back rather than assumed: before this field existed a length-stopped
     #: completion and a finished one were the same object.
     finish_reason: str | None = None
-    #: `MEASURED` / `VOID` / `UNCHECKED`, or `None` for a `Usage` no response produced.
+    #: `MEASURED` / `VOID` / `UNCHECKED` / `UNREPORTED`, or `None` for a `Usage` no
+    #: response produced.
     prompt_tokens_verdict: str | None = None
 
     def __add__(self, other: Usage) -> Usage:
@@ -289,11 +300,19 @@ class OpenAICompatible:
                     f"tool call '{name}' has malformed JSON arguments: {raw!r:.200}"
                 ) from e
 
-        usage = data.get("usage") or {}
-        prompt_tokens = usage.get("prompt_tokens", 0)
-        # The classifier. Three states, one branch each, and no branch is a message: a
+        raw_usage = data.get("usage")
+        usage = raw_usage if isinstance(raw_usage, dict) else {}
+        reported = usage.get("prompt_tokens")
+        # `bool` is an `int` and `True` is not a token count.
+        usable = isinstance(reported, int) and not isinstance(reported, bool)
+        prompt_tokens = reported if usable else 0
+        # The classifier. Four states, one branch each, and no branch is a message: a
         # mutation that rewrites the docstrings above cannot move any of them (N-12).
-        if self.context_window is None:
+        # UNREPORTED is tested FIRST because it is a fact about what arrived, and the
+        # window question does not arise for a number that was never sent.
+        if not usable:
+            verdict = UNREPORTED
+        elif self.context_window is None:
             verdict = UNCHECKED
         elif prompt_tokens == self.context_window:
             verdict = VOID
