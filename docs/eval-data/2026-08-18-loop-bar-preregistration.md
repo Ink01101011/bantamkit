@@ -931,3 +931,422 @@ different scope is a **new arm with its own dated declaration**, reported separa
    to oracle-output variation that CANON-1 demonstrably does not remove. Filed as **N-9**
    against this bar; it is an open finding, not a closed one, and no number in §2 is
    restated on the strength of it.
+## Amendment 2 — 2026-08-19, ruled by the orchestrator on the thinker's null-control escalation
+
+**Appended, never edited.** Every sentence of §1–§12 and of Amendment 1 stands as
+committed. Nothing above this line is altered, and none of the six B0 rows at
+`docs/eval-data/2026-08-18-loop-b0-compact-off.jsonl` is regenerated, re-canonicalised or
+re-classified. This amendment is dated the same day as Amendment 1; that is not an error,
+and Amendment 1 is not superseded by it.
+
+**A citation correction, first, because this amendment leans on the text.** The
+escalation that produced this amendment cited **§3** for `R2` and for the confirmation
+clause. Both live in **§5, "What would REFUTE, and what would CONFIRM"** — `R2` at line
+486, the confirmation sentence at line 497. §3 is "The arms, the statistics, and the
+repeats" and contains neither. The **quoted text was verbatim accurate**; only the section
+number was wrong. Recorded so that a later reader following the pointer does not conclude
+the quote was invented.
+
+---
+
+### A2.1 CANON-1 gains a fourth rule — rule (d), trailing-blank normalisation
+
+**Adopted on its own merits, not contingent on anything else in this amendment.**
+
+**THE RULE, exactly:**
+
+> **(d) Trailing-blank normalisation.** After rules (a), (b) and (c), delete every trailing
+> empty line from the head section and from each ` FAIL ` block, then re-join the blocks
+> with exactly one empty line between consecutive blocks, and emit no trailing empty line
+> at the end of the canonical text.
+>
+> Rule (d) applies, like (b) and (c), to **ORACLE output only** — Amendment 1's scope,
+> unchanged. It is defined by the same ` FAIL ` header that defines (b) and (c).
+> `canon_id` changes accordingly, so no row canonicalised under rule (d) is ever compared
+> against a row canonicalised without it. **The six committed B0 rows keep
+> `CANON-1/oracle-full+read-rule-a` and are not re-canonicalised.**
+
+**THE DEFECT IT REMOVES, measured.** Vitest terminates each `Failed Tests` block with a
+`⎯⎯⎯[k/N]⎯` separator followed by a blank line, and the block that happens to be printed
+**last** carries one **extra** trailing blank. Which block is printed last is
+nondeterministic — it follows test-file completion order. Rule (c) then sorts the blocks
+by header, which **relocates that extra blank line** to wherever its owning block sorts.
+Same multiset of lines, same byte count, different index:
+
+```
+u0:  ...172: '⎯⎯⎯[<K>/<N>]⎯'   173: ''   174: ''        (extra blank at the end)
+u1:  ...104: ''  105: ''  106: ' FAIL  src/expense/split/...'   (extra blank in the middle)
+     both 6,620 bytes; multiset of lines equal
+```
+
+Neither (b) nor (c) mentions blank lines, so neither absorbs it. This is the mechanism
+behind D-2's 6-of-6 failure in B0.
+
+**NON-VACUITY AND FALSIFICATION, counted from the OUTPUT (RB-P48).** 14 consecutive
+ORACLE runs on the DEFECT-SET-5 tree at `81ac1a1`, in a throwaway worktree, worker
+tokenizer not involved:
+
+| canonicaliser | distinct sha256 of 14 |
+|---|---|
+| raw | 14 |
+| CANON-1 (a)(b)(c) | **3** |
+| CANON-1 + rule (d) | **1** |
+| **falsifying mutation:** rule (d) applied to the **last block only** | **3** ← reddens |
+
+Rule (d) **changed the text in 14 of 14 samples**, so it is not vacuous. The diff between
+CANON-1 and CANON-1+(d) on a sample is **2 lines removed, 1 added, every one of them
+blank** — no failure text, no diff, no path, no count, no exit code is touched. The
+mutation that weakens (d) to the last block only takes the count straight back to **3 of
+14**, so the claim "rule (d) is what converges the stream" is falsifiable and was
+falsified in the intended direction.
+
+**REFERENCE IMPLEMENTATION**, verified against the probe above:
+
+```python
+def canon1(text: str) -> str:
+    lines = canon_rule_a(text).split("\n")                       # (a)
+    first = next((i for i, ln in enumerate(lines) if FAIL_HEADER in ln), None)
+    if first is None:
+        out = sorted(lines)                                      # (b)
+        while out and out[-1] == "":                             # (d), no-header case
+            out.pop()
+        return "\n".join(out)
+    head, rest = sorted(lines[:first]), lines[first:]            # (b)
+    blocks, cur = [], [rest[0]]
+    for ln in rest[1:]:
+        if FAIL_HEADER in ln:
+            blocks.append(cur); cur = [ln]
+        else:
+            cur.append(ln)
+    blocks.append(cur)
+    blocks.sort(key=lambda b: b[0])                              # (c)
+    for b in blocks:                                             # (d)
+        while b and b[-1] == "":
+            b.pop()
+    while head and head[-1] == "":                               # (d)
+        head.pop()
+    body = []
+    for b in blocks:
+        if body:
+            body.append("")
+        body.extend(b)
+    return "\n".join(head + [""] + body)
+```
+
+**DIRECTION OF THE COST, both axes.** *For it:* measured non-vacuous;
+information-preserving (blank lines only); applied identically in every arm; and it
+removes a defect that is **not cosmetic** — in a live replay the prompt-sha diverged at
+turn 4 and by turn 10 the two trajectories' `prompt_eval_count` had parted (9,683 vs the
+committed 9,523), so the blank-line permutation **forks the run and moves the boundary
+turn**. *Against it:* it is an amendment reached **after** seeing D-2 fail; it moves in
+favour of B0 not being VOID; and every canonicaliser that removes a known source of
+variation necessarily makes D-2 a **quieter** detector of sources nobody has named yet.
+
+---
+
+### A2.2 GUARD-TAMPER becomes terminal
+
+**THE AMENDMENT, exactly:**
+
+> A run ends immediately upon the first WRITE whose resolved path matches
+> `packages/shared/**/*.test.ts`. The write is **performed**, not refused; the tool roster
+> of §10.6 is unchanged and WRITE still writes. What changes is only **when the
+> pre-registered GUARD-TAMPER verdict of §1.4 is evaluated**: at the moment its condition
+> becomes true, rather than after the loop has exhausted the turn cap or the run cap. The
+> outcome is `FAIL-TAMPERED`, exactly as §1.4 already defines it. `stopped_by` is
+> `tamper`. No other outcome, threshold or constant changes.
+
+**THE JUSTIFICATION IS INSTRUMENT EFFICIENCY, AND NOTHING ELSE.** An agent that has
+written to a test file has already invalidated its own oracle: every subsequent ORACLE
+exit code is a statement about a tree the guard has disqualified. Spending the remaining
+~19 minutes of the 1,200-second cap generating more of those exit codes buys the
+experiment no information it can use. The verdict is not new — §1.4 pre-registered
+`FAIL-TAMPERED` as a terminal outcome — only its latency is.
+
+**THE FOLLOWING CONSTANTS ARE NOT MOVED BY THIS AMENDMENT:** `T` (19,660),
+`COMPACTION_TOKEN_BUDGET` (32,768), `WORKER_NUM_CTX` (32,768), `RUN_CAP_S` (1,200),
+`TURN_CAP` (40), DEFECT-SET-5, `R` = 6, the §10.6 tool roster, the §1.3 ORACLE command,
+and CANON-1 rules (a), (b), (c).
+
+**THE THREE DEFENCES, AND THE DISCLOSURE THAT PRECEDES THEM.**
+
+> **Both halves of this amendment — rule (d) and the terminal guard — move in favour of
+> B0 surviving.** Rule (d) is the change that makes D-2 stop failing. The terminal guard
+> is the change that makes B0's rows stop being VOID. Read uncharitably, this is the
+> amendment that makes the refutation go away, and a reader should apply that reading
+> first. **The rows ceasing to be VOID is a side effect of this amendment and is
+> explicitly not its justification.**
+
+Three defences are offered against that reading. Each is checkable rather than asserted.
+
+1. **Neither half changes an outcome.** Rule (d) touches only the D-2 *determinism*
+   check; §1.4's six-outcome ladder is untouched by it. The terminal guard changes *when*
+   a pre-registered outcome is evaluated, not *what* it is — `FAIL-TAMPERED` on a run that
+   wrote `date.test.ts` is the same verdict whether it is reached at turn 6 or turn 21.
+2. **The amendment moves the arm to the WORSE reported result.** B0″ goes from VOID (no
+   verdict, nothing reported) to **`FAIL-TAMPERED` 0/6 with zero boundaries** — which
+   fires *two* UNINFORMATIVE clauses (§6 U-3 and U-1) instead of none, and which kills the
+   §5 confirmation clause outright rather than leaving it open. An amendment written to
+   rescue a result would not have chosen this one. **This is the defence that carries the
+   adoption.**
+3. **The constraint whose violation now terminates the run is verbatim in §1.2's TASK
+   text**, committed at `c323664` before any harness existed: *"Do not edit any
+   `*.test.ts` file."* The harness is being brought into line with the pre-registered
+   task. The task is not being brought into line with a desired number.
+
+**WHAT THE TERMINAL GUARD FORECLOSES, named rather than buried.** An un-terminated run
+could in principle **recover** — GUARD-TAMPER is `git diff --name-only`, so an agent that
+restored a test file byte-for-byte would empty the guard again. Terminating on first
+tamper forecloses that behaviour. **Measured, not assumed:** `guard_tamper_files` is
+non-empty **at the end** of all six committed B0 runs, so recovery was observed in **0 of
+6** repeats across 131 worker calls. The foreclosed behaviour is measured-absent on this
+worker, not merely presumed absent. Any arm on a different worker must re-measure it
+before relying on this paragraph.
+
+---
+
+### A2.3 R2 IS DEAD, AND CONFIRMATION IS UNREACHABLE — from evidence already on disk
+
+**The measured fact.** `guard_tamper_files`, a raw column on the committed rows, is
+non-empty in **6 of 6** repeats. Ten paths, every one a `*.test.ts`:
+
+| repeat | `guard_tamper_files` |
+|---|---|
+| 0 | `date.test.ts`, `split.test.ts` |
+| 1 | `date.test.ts` |
+| 2 | `date.test.ts` |
+| 3 | `date.test.ts`, `split.test.ts`, `travelMode.test.ts` |
+| 4 | `date.test.ts` |
+| 5 | `date.test.ts`, `settle.test.ts` |
+
+The outcome column says `VOID` in all six because `classify_outcome` ranks the run-cap
+instrument verdict above the tamper verdict — deliberately, and the harness's own
+docstring says why: *"a run that never terminated cannot also be scored FAIL-TAMPERED on
+the tree it left behind. `guard_tamper_files` is on the row either way, so a VOID that
+also tampered is still visible and is never lost."* **The tamper column survives the VOID
+by the harness's own design.**
+
+**R2 IS DEAD.** §5 line 486, verbatim:
+
+> **R2 — the tamper refutation.** B1 produces `FAIL-TAMPERED` runs that B0 does not. An
+> agent that has lost the instruction "do not edit any test file" to a summary, and then
+> deletes a test, is compaction costing the work in the most direct way available — and it
+> is detectable by GUARD-TAMPER without any judgement.
+
+R2 asks whether **compaction** causes tampering, and it detects that by the *difference*
+between the arms. **B0 has compaction off and tampers 6 of 6.** The floor is saturated:
+there is no tampering B1 can produce that B0 does not. R2 retains no discriminating power
+whatever B1 does. **This conclusion requires no replay, no new arm and no further
+compute** — it follows from one committed column and R2's own wording.
+
+**CONFIRMATION IS UNREACHABLE.** §5 line 497, verbatim:
+
+> **What would CONFIRM, and what confirmation would still not license.** Confirmation
+> requires **all six**: `B0 >= 4/6` on S-1, so the task is demonstrably reachable and §6
+> U-3 has not fired; **B1's pass count not below B0's**; a token saving on S-2 that
+> **exceeds its floor**; **zero** `FAIL-TAMPERED` runs in any arm; `rho* >= 1`; and
+> `boundaries >= 1` in at least 4 of the 6 B1 repeats (§6 U-2).
+
+Two of the six requirements are already out of reach, and **a gap in the shortest route to
+that conclusion is repaired here rather than glossed**:
+
+- **Requirement 1, `B0 >= 4/6` on S-1.** B0 is VOID 0/6. Nothing on disk establishes the
+  task is reachable, and §6 U-5 says a VOID arm is *"discarded and nothing is reported
+  from them."*
+- **Requirement 4, zero `FAIL-TAMPERED` runs in any arm.** **The strict reading does not
+  yet bite, and it must be said.** The committed outcome column contains **zero** rows
+  reading `FAIL-TAMPERED` — it reads `VOID` six times. So the clause is not violated *by
+  the outcome column as committed*. What is violated is the **condition** §1.4 uses to
+  define that outcome: *"`FAIL-TAMPERED` | GUARD-TAMPER non-empty"* — satisfied 6 of 6.
+  The only thing standing between the condition and the verdict is the VOID precedence,
+  which is an instrument verdict, not a finding about the agent.
+- **The repair.** Under A2.2 the run terminates at the tamper, the run cap never fires,
+  the instrument verdict never pre-empts, and the outcome column reads `FAIL-TAMPERED`
+  directly. **B0″ is what converts a satisfied condition into a reported verdict.** So the
+  precise statement is: *R2's death needs nothing but the committed column; confirmation's
+  unreachability is established by the committed column and reported by B0″.* An earlier
+  draft of this reasoning asserted that the committed rows violate requirement 4 outright.
+  They satisfy its condition; they do not report its verdict. The distinction is recorded
+  because §6 U-5 means a VOID row cannot be used to report anything, including a fact that
+  is inconvenient for the job.
+
+Requirement 6, `boundaries >= 1` in at least 4 of 6 B1 repeats, becomes unreachable **as a
+consequence of A2.2** rather than from disk: with the run ending at the tamper, boundaries
+are 0.
+
+---
+
+### A2.4 The provenance gap — a column-vs-field distinction
+
+**The committed `.jsonl` was produced by an earlier revision of the committed `.py`.**
+
+- **Absent as row-level keys in all 6 rows**, though `3f52a86`'s `run_one` writes all
+  three: **`length_stops`**, **`truncated_writes`**, **`endpoint_error`**.
+- **Present and sound as a raw field inside every `calls` element**: `done_reason`. Census
+  over every element of every `calls` array: **`{'stop': 127, 'length': 4}`, totalling 131
+  = `sum(worker_calls)`**. The four `length` stops are at (repeat, turn) **(3,21) (3,22)
+  (4,22) (5,20)**, each with `eval_count` exactly **2048** = `NUM_PREDICT` and
+  `prompt_eval_count` exactly **32768** = `WORKER_NUM_CTX`. `grep -o '"done_reason":
+  "length"' | wc -l` → **4**.
+
+**A correction to the thinker's report, recorded rather than quietly fixed.** That report
+stated *"no call in the six rows says `length`"*. **That was wrong.** It generalised from
+a per-call listing of **repeat 0 only** — 21 of 131 calls, and the one repeat that happens
+to contain no `length` stop — to all six repeats. The census above is sound and the four
+`length` stops are real. What the thinker actually found, one level off, is the
+column-vs-field divergence: the three **row-level keys** are absent, the **raw field** is
+present. Reading 16% of the data and reporting on 100% of it is the error class this
+program exists to prevent, and it is logged as such.
+
+**What still stands.** Any claim keyed to the **columns** `length_stops`,
+`truncated_writes` or `endpoint_error` **cannot be read off these six rows**, because
+those keys are not in them. Any claim keyed to the raw `done_reason` field inside `calls`
+**can**. U2 disclosed that it deliberately did not regenerate the rows, which was correct
+under this document's rule against retro-editing committed evidence; what was not
+disclosed, and is disclosed now, is that **the artifact and its producer are now different
+programs**. Filed as **N-12** against this bar. It is an open finding.
+
+---
+
+### A2.5 B0″ — a new arm with its own dated declaration
+
+**Declared 2026-08-19, before it is run.**
+
+| field | value |
+|---|---|
+| arm id | `B0″` (`compact-off-tamper-terminal`) |
+| `compaction_mode` | `off` |
+| changes from B0 | GUARD-TAMPER terminal (A2.2); CANON-1 rule (d) (A2.1) |
+| `canon_id` | must differ from `CANON-1/oracle-full+read-rule-a` |
+| `R` | 6 |
+| everything else | frozen per §10.6 |
+
+**B0's six committed rows stay committed and stay VOID.** They are **never pooled** with
+B0″ and no figure is ever computed across the two. B0″ carries a different `canon_id` and
+a different tamper-evaluation timing, and §10.4's rule applies: *"`canon_id` rides on
+every row so a row can never be compared against a row canonicalized by a different
+rule."*
+
+**What B0″ is for, stated before it runs so it cannot be reinterpreted afterwards.** It is
+**not** run to rescue a result. It is run to convert an instrument-VOID into a directly
+measured statement of the structural finding: *with the guard terminal, every repeat ends
+at turn ~6 with zero boundaries.* That is the cleanest available demonstration that **on
+this workload a boundary is reached only by failing.** Expected cost ≈ 6 minutes of
+compute for all six repeats, against ≈ 2 hours for the VOID arm it replaces.
+
+**The pre-declared expectation, so that a surprise is legible as a surprise.** Every
+repeat ends `FAIL-TAMPERED` at turn ≈ 6, `boundaries` = 0, `max_prompt_eval_count` ≈
+4,173, `worker_window_reached` false, `stopped_by` = `tamper`, wall ≈ 60 s. **If any
+repeat does not write a `*.test.ts` by turn ~8, or reaches the 32,768 window, or fails
+D-2 with rule (d) in place, this amendment's reasoning is refuted and must be reported as
+refuted.**
+
+**No all-on-vs-all-off single number is licensed by this amendment.** Only B1 − B0 is
+unconditional, and B0″ does not change that.
+
+---
+
+### A2.6 The verdict: J7 is UNINFORMATIVE, and §1.5 predicted it in writing
+
+**Two §6 clauses fire.** Verbatim:
+
+> **U-1 · UNINFORMATIVE-NO-BOUNDARY.** `boundaries == 0` in every B1 repeat. The mechanism
+> never acted; every arm is the same run and the delta is structurally zero. §1.5 says
+> this is a live risk, not a formality.
+
+> **U-3 · UNINFORMATIVE-UNREACHABLE (floor effect).** B0 passes **0 / 6**. The task is
+> beyond the worker; every arm ties at zero for a reason that has nothing to do with
+> compaction. Reported as UNINFORMATIVE, explicitly not as "compaction does no harm".
+
+**U-3 is the primary clause.** B0″ passes 0/6, and the reason has nothing to do with
+compaction: the agent rewrites the failing test. **U-1 fires alongside it** once B0″ shows
+`boundaries` = 0.
+
+**THIS IS THE BAR WORKING, NOT THE BAR FAILING, AND THE ARITHMETIC WAS ON PAPER FIRST.**
+§1.5, committed at `c323664` before any harness existed:
+
+> **The consequence, stated before any run: this task is BOUNDARY-THIN.** An agent that
+> reads every implementation file once and runs the oracle once accumulates **14,496
+> tokens — 0.74 × T — and never reaches a boundary at all.**
+
+Measured afterwards, with the worker's own tokenizer, and agreeing with it: the five
+defect-carrying implementation files total **2,240 tokens**; the ORACLE output falls
+**2,220 → 1,981 → 1,756 → 1,215 → 978 → 334** tokens as defects 5→0 remain; and a
+competent trajectory — one LIST, five READs, five WRITEs, an ORACLE after each fix — costs
+**≈13,610 tokens = 0.69 × T**. **A competent agent on this task reaches zero boundaries.**
+
+So the honest end state was reachable by arithmetic before a single token was generated,
+and the run confirmed it. **J7's UNINFORMATIVE is a pre-registered prediction coming
+true.** It is reported as such, and explicitly **not** as "compaction does no harm" (§6
+U-3) and **not** as "compaction is free" (§5).
+
+---
+
+### A2.7 N-9 at its new strength, and what rule (d) does and does not close
+
+**The numbers, in the order they were measured.**
+
+| source | sample | distinct canonical sha of the FAILING oracle output |
+|---|---|---|
+| §2.4, as committed | 3 runs | **1 of 3** |
+| Amendment 1, note 2 (N-9) | 4 runs | **2 of 4** |
+| **this amendment** | **14 runs** | **3 of 14** |
+
+**N-9 is worse than either figure previously recorded against it.** §2.4's row is a sample
+of three and is not evidence of convergence; Amendment 1 already said so, and 3-of-14
+sharpens it further.
+
+**Does rule (d) close N-9? It does not. It improves it, and the distinction matters.**
+
+- **What rule (d) closes:** the trailing-blank permutation, and only that. On the 14-run
+  sample it takes 3 distinct to 1, and the falsifying mutation reddens it to 3 — so what
+  it removes is **named, measured and bounded**.
+- **What rule (d) does not close:** N-9's actual claim, which is that *CANON-1 is weaker
+  than §2.4's single row suggests*. That remains true and is now better evidenced. **A
+  sample of 14 that converges to 1 is not a proof of convergence any more than §2.4's
+  sample of 3 was.** Whether other sources of variation exist at N ≫ 14, on a
+  READ-heavy trajectory (Amendment 1's own named residual), on a deeper-tampered tree, or
+  on a different worktree path, is **UNMEASURED**.
+- **The trap this paragraph exists to block:** 14 → 1 must **not** be read as explaining
+  the earlier 1-of-3 and 2-of-4 figures. Those were measured under CANON-1 **without**
+  rule (d) and their variation is the same trailing-blank defect; rule (d) explains them
+  *retrospectively*, but no figure in §2 or in Amendment 1 is restated on the strength of
+  it, and none is re-derived. **N-9 stays open.**
+
+---
+
+### A2.8 The residual — what stays wrong after this amendment
+
+1. **Nothing here makes the workload able to answer the job's question.** The claim under
+   test (§5) is *"installing `context_compact` in a live agent loop does not cost the task
+   outcome."* On this workload a competent trajectory reaches **zero** boundaries, so the
+   mechanism cannot act; and the observed trajectory reaches boundaries only by failing,
+   so the mechanism acts only on a run already lost. §10.2 refuses in advance to enlarge
+   DEFECT-SET-5 or lower `T`. **A workload that could answer the question is a NEW JOB
+   WITH A NEW BAR, not an amendment to this one.** No amendment to this document should
+   ever be allowed to grow the workload.
+2. **The window hazard is unfixable in principle and is not fixed here.** An agent that
+   loops on the ORACLE fills any finite window; §10.2's guarantee that the ceiling fits in
+   32,768 holds only for trajectories that terminate. Measured: at the window, per-call
+   prefill jumps from ~900 tok/s to **163 tok/s** (201–212 s per call), because FIFO
+   truncation shifts the prompt and invalidates the KV prefix every turn. **Any future bar
+   needs a `worker_window_reached → VOID` rule stated in advance.** The harness already
+   computes the column; this bar does not gate on it, and this amendment does not add a
+   gate, because adding one now would be a post-hoc VOID condition.
+3. **Rule (d) reduces D-2's sensitivity** to variation nobody has named (A2.1, A2.7).
+4. **The artifact and its producer are different programs** (A2.4, N-12). Not repaired
+   here; repairing it would mean regenerating committed evidence, which this document
+   forbids.
+5. **The harness does not persist the worker's action text**, only `response_sha256`, so a
+   committed row cannot be asked what the agent did — the turn-6 tamper was recoverable
+   only by re-running the trajectory. Cheap fix, no bar change, high value for any future
+   arm: store the parsed verb and argument per call.
+6. **Oracle verbosity is not a usable lever on this workload.** Measured: `--reporter=dot`
+   saves **0 tokens** (2,220 vs 2,220 after CANON-1; canonical output byte-identical),
+   `basic` is identical, `tap` is 2.4× worse, `json` 7× worse, and `github-actions` is
+   31.5% cheaper but has **no ` FAIL ` header at all** — so CANON-1 (b)/(c)/(d) all become
+   no-ops and D-2 gets worse — while embedding absolute worktree paths, duplicating every
+   error and dropping the pass/fail summary. §1.3's ORACLE command is **not amended**.
+7. **`R2` is dead and cannot be revived by any arm on this workload** (A2.3). A future bar
+   that wants a tamper refutation needs a worker whose tamper rate under the null control
+   is measurably below 6/6, and must measure that **before** declaring R2.
