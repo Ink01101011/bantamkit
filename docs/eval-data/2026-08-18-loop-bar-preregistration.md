@@ -853,3 +853,81 @@ tool roster the agent gets exactly: read a file, write a file, list files, run t
 Amendments are appended here, dated, with §0–§11 left untouched.
 
 *(none yet)*
+
+---
+
+## Amendment 1 — 2026-08-19, ruled by the orchestrator on U2's escalation
+
+**Appended, never edited.** Every sentence of §1–§12 above stands as committed at
+`c323664`, before the harness existed.
+
+**The escalation, as U2 raised it.** §10.4 declares CANON-1 *"applied identically to every
+arm, to every tool output before it enters the agent's context"*, with three rules in
+order, of which rule (b) is *"sort the lines before the first ` FAIL ` header"* and rule
+(c) is *"sort the ` FAIL ` blocks by their header"*. A file READ produces output with **no
+` FAIL ` header at all**. Two readings follow and they cannot both hold:
+
+- **the literal reading** — no header means the whole output precedes the first header, so
+  rule (b) sorts the entire file. An agent that can only ever see source in sorted line
+  order cannot repair it, so the task becomes unreachable **for an instrument reason** and
+  every arm ties at 0/6 — the §6 U-3 outcome, arrived at by construction rather than by
+  measurement;
+- **the vacuous reading** — no header means nothing to sort. This contradicts §2.4's own
+  measured row, where the **passing** oracle output, which also carries no ` FAIL `
+  header, goes from 3 distinct sha in 3 runs to 1 under CANON-1.
+
+**THE RULING: the scope U2 applied stands.** All three rules apply to **ORACLE** output —
+the case §2.4 measured. **Rule (a) alone** applies to READ, LIST and WRITE output. The
+scope rides on every row in `canon_id`.
+
+**The reason, written down so it is auditable rather than asserted.** §10.4's own evidence
+sentence is *"Measured to take both the passing and the failing **oracle output** from 3
+distinct sha in 3 runs to 1."* The bar's justification for CANON-1 is measured on oracle
+output and on nothing else, and rules (b) and (c) are **defined** by a ` FAIL ` header,
+which is an artifact of oracle output. Extending them to source output extends a rule past
+the evidence that was offered for it.
+
+**The clause that actually carries the weight is satisfied.** *"Applied identically to
+every arm"* exists so that a figure from one arm is comparable to a figure from another.
+U2's scope is identical in every arm, so comparability holds. *"To every tool output"* is a
+statement about **coverage**, and this scope covers every tool output — with the subset of
+rules that are defined for it. §10.4 already provides the mechanism for exactly this
+situation: *"`canon_id` rides on every row so a row can never be compared against a row
+canonicalized by a different rule."*
+
+**THE DIRECTION OF THE COST IS STATED, on both axes, because a ruling that only reports
+the axis that flatters it is the defect this program exists to prevent.**
+
+- **On reachability**, this ruling is the **cheap** reading: the literal reading would have
+  made the task impossible and produced a guaranteed 0/6 tie. So the ruling is *not*
+  expensive in the way Amendment B of J2's bar was, and it must not be presented as if it
+  were.
+- **On canonicalisation strength**, this ruling is the **weaker** one: READ and LIST output
+  receive one rule instead of three, so any run-to-run variation in source or listing
+  output that rules (b)/(c) would have absorbed is left in the prompt stream that D-2
+  compares. **Measured, not assumed:** rule (a) is a **no-op on source** — zero matches of
+  all three of its patterns across all 22 implementation files at the pinned commit — so on
+  this workload the ruling removes nothing that rule (a) would have removed anyway, and
+  D-2's exposure is to variation that no rule in CANON-1 was measured to catch.
+- **The residual, named.** If D-2 fails on a READ-heavy trajectory, this ruling is a
+  candidate cause and must be listed as one rather than defended.
+
+**What this amendment does not do.** It does not change CANON-1's three rules, does not
+change `T`, does not change DEFECT-SET-5, and does not license a later re-scoping. A
+different scope is a **new arm with its own dated declaration**, reported separately.
+
+**Two notes recorded at the moment of appending, so they are not discovered later.**
+
+1. **§12's `*(none yet)*` line stands as committed** and is not edited. It was true at
+   `c323664` and is superseded by everything below it. This document's rule against
+   retro-editing outranks its own tidiness.
+2. **The evidence sentence this ruling leans on did not fully reproduce.** §2.4 records the
+   oracle output going from *3 distinct sha in 3 runs to 1* under CANON-1. A later probe at
+   `--repeats 4` measured the **failing** oracle output at **2 distinct of 4** — so CANON-1
+   is weaker than §2.4's single row suggests, and §2.4's row is a sample of three, not a
+   proof of convergence. **This does not move the ruling**, whose argument is about *scope*
+   — rules (b)/(c) are defined by a ` FAIL ` header and a source file has none — and not
+   about strength. It does sharpen the residual named above: the D-2 comparison is exposed
+   to oracle-output variation that CANON-1 demonstrably does not remove. Filed as **N-9**
+   against this bar; it is an open finding, not a closed one, and no number in §2 is
+   restated on the strength of it.
