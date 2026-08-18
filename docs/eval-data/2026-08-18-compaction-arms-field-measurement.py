@@ -41,6 +41,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import re
 import statistics
@@ -802,6 +803,20 @@ def _pct(numerator, denominator):
     return None if not denominator else round(100.0 * numerator / denominator, 4)
 
 
+def _pctile(values, q):
+    """Nearest-rank percentile, DECLARED so a printed spread is reproducible.
+
+    Stated rather than left to a library default: the two conventions
+    `statistics.quantiles` ships disagree in the third significant figure on this corpus,
+    and a spread printed without its convention is not a reproducible number.
+    """
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = max(0, min(len(ordered) - 1, math.ceil(q * len(ordered)) - 1))
+    return ordered[index]
+
+
 # =======================================================================================
 # MODE 1 — reconstruct. The null control, the schedule, and R1. No summarizer, no arm.
 # =======================================================================================
@@ -924,14 +939,34 @@ def cmd_arms(limit: int | None) -> int:
     state_root = Path(os.environ.get("TMPDIR", "/tmp")) / "j2u4-compaction-state"
     state_root.mkdir(parents=True, exist_ok=True)
 
-    rows: list[dict] = []
+    # RESUMABLE. The artifact is written only after ALL 4 arms x R repeats of a
+    # transcript have completed, so it never contains a partial transcript, and a
+    # transcript already in it is skipped rather than re-run. This is bookkeeping, not a
+    # measurement decision: the sample is still the declared prefix in the declared order,
+    # and nothing about which transcripts run or in what order changes. It exists because
+    # a ~6 h run gets killed, and re-running from zero would either lose the measurement
+    # or tempt a smaller sample chosen after seeing how long the real one took.
+    rows: list[dict] = read_rows(ARMS_ARTIFACT)
+    already = {r["transcript_id"] for r in rows}
+    if already:
+        print(f"resuming: {len(already)} transcript(s) already committed, skipping them")
     started_all = time.time()
     for position, b0 in enumerate(sample):
+        if b0["transcript_id"] in already:
+            continue
         path = paths[b0["transcript_id"]]
         recon = reconstruct(path, survey)
         boundaries = b0["boundary_call_indices"]
         anchors = anchors_for(recon["turns"], recon["call_indices"], boundaries)
         for arm in ("B0", "B1", "B2", "B3"):
+            # All R repeats of one arm are run together so that §3.2's stable/unstable
+            # split can be computed from the ANCHOR SETS. It cannot be recovered from the
+            # per-repeat COUNTS afterwards — counts give a lower bound on the stable
+            # losses and an upper bound on the unstable ones, and RB-P36 is precisely the
+            # defect of letting a single sampled repeat's flip count at face value. The
+            # sets themselves are never committed: they are literal transcript strings and
+            # the fence forbids them. Only the two counts are.
+            per_repeat: list[tuple[dict, set[str], float]] = []
             for repeat in range(1, REPEATS + 1):
                 state_dir = state_root / f"{b0['transcript_id']}-{arm}-{repeat}"
                 session = MechanismSession(state_dir)
@@ -942,7 +977,15 @@ def cmd_arms(limit: int | None) -> int:
                     session.close()
                 blocks = measured.pop("_blocks")
                 measured.pop("_prefix_bytes")
-                retained = _retained_anchors(anchors, blocks, arm)
+                per_repeat.append(
+                    (measured, _retained_anchors(anchors, blocks, arm), time.time() - started)
+                )
+            retained_sets = [s for _, s, _ in per_repeat]
+            kept_in_every = set.intersection(*retained_sets) if retained_sets else set()
+            kept_in_any = set.union(*retained_sets) if retained_sets else set()
+            lost_stable = len(anchors - kept_in_any)       # lost in ALL R repeats
+            lost_unstable = len(kept_in_any - kept_in_every)  # lost in SOME but not all
+            for (measured, retained_set, elapsed) in per_repeat:
                 row = {
                     "transcript_id": b0["transcript_id"],
                     "stratum": b0["stratum"],
@@ -952,12 +995,15 @@ def cmd_arms(limit: int | None) -> int:
                     "recall_mode": DECLARED_ENV["COMPACTION_RECALL_MODE"],
                     "summarizer_model": DECLARED_ENV["COMPACTION_LLM_MODEL"],
                     "model": "replay-of-recorded-calls",
-                    "wall_clock_s": round(time.time() - started, 3),
+                    "wall_clock_s": round(elapsed, 3),
                     "anchors_total": len(anchors),
-                    "anchors_retained": retained,
+                    "anchors_retained": len(retained_set),
                     "anchor_retention": (
-                        round(retained / len(anchors), 6) if anchors else None
+                        round(len(retained_set) / len(anchors), 6) if anchors else None
                     ),
+                    # bar §8 column 15, per (transcript, arm) over R. NEVER SUMMED.
+                    "anchors_lost_stable": lost_stable,
+                    "anchors_lost_unstable": lost_unstable,
                 }
                 row.update(measured)
                 rows.append(row)
@@ -971,18 +1017,18 @@ def cmd_arms(limit: int | None) -> int:
     return 0
 
 
-def _retained_anchors(anchors: set[str], blocks: list[str], arm: str) -> int:
-    """§3.2: anchors still LITERALLY present in what the host would install.
+def _retained_anchors(anchors: set[str], blocks: list[str], arm: str) -> set[str]:
+    """§3.2: the anchors still LITERALLY present in what the host would install.
 
     B0 installs nothing and discards nothing, so its retention is 1.0 BY CONSTRUCTION —
-    that is what makes it a valid control on this axis and the axis one-sided.
+    that is what makes it a valid control on this axis and what makes the axis one-sided:
+    the mechanism can only lose. Returns the SET, because the stable/unstable split of
+    §3.2 is a per-anchor property across repeats and a count cannot carry it.
     """
-    if arm == "B0":
-        return len(anchors)
-    if not blocks:
-        return len(anchors)
+    if arm == "B0" or not blocks:
+        return set(anchors)
     installed = "\n".join(blocks)
-    return sum(1 for anchor in anchors if anchor in installed)
+    return {anchor for anchor in anchors if anchor in installed}
 
 
 # =======================================================================================
@@ -1004,11 +1050,6 @@ class Report:
 
     def check(self, name: str, passed: bool, detail: str) -> None:
         self.checks.append((name, passed, detail))
-
-
-def _arm_stat(rows: list[dict], key: str) -> float | None:
-    values = [r[key] for r in rows if r.get(key) is not None]
-    return _median(values)
 
 
 def _per_transcript(arms: list[dict], column: str) -> dict[tuple[str, str], list[float]]:
@@ -1046,6 +1087,8 @@ STOCHASTIC_ARMS = frozenset({"B1", "B2", "B3"})
 
 DEFAULT_POLICY = {
     "byte_delta_ok": 0,
+    "drop_content_from_one_row": False,
+    "delete_a_committed_key": False,
     "threshold_t": THRESHOLD_T,
     "fixed_cost_declared": True,
     "pool_strata": False,
@@ -1057,15 +1100,29 @@ DEFAULT_POLICY = {
     "upper_bound_as_saving": False,
     "pick_grain": False,
     "zero_floor_is_always_valid": False,
+    "fidelity_floor_wrong_grain": False,
 }
 
 # Each mutation FALSIFIES one claim and must turn RED the check that claim NAMES. A
 # mutation that turns nothing red is a failure of the measurement, not of the mutation:
 # it means the claim was never load-bearing.
 MUTATIONS: dict[str, dict] = {
+    # THE CRITICAL-ANALOGUE, and the one mutation that corrupts DATA rather than policy.
+    # It simulates exactly bar §1.2's trap: the reconstruction silently drops the single
+    # largest chunk of content from one transcript, so the null control's prefix is
+    # smaller than the record and every saving measured against it is an artifact. If
+    # this does not turn the reconciliation red, the reconciliation is decorative and so
+    # is every number in this artifact.
     "void-reconstruction": {
-        "policy": {"byte_delta_ok": 1},
+        "policy": {"drop_content_from_one_row": True},
         "turns_red": "CHK-VOID-RECONSTRUCTION",
+    },
+    # RB-P46's deletion attack, which the forbidden formalisation "ignore keys the
+    # committed file lacks" would pass: tolerance stated over a set is tolerance in BOTH
+    # directions.
+    "delete-a-committed-key": {
+        "policy": {"delete_a_committed_key": True},
+        "turns_red": "CHK-COMMITTED-KEY-SET",
     },
     "retune-threshold": {
         "policy": {"threshold_t": 20_000},
@@ -1100,6 +1157,14 @@ MUTATIONS: dict[str, dict] = {
     "zero-floor-always-valid": {
         "policy": {"zero_floor_is_always_valid": True},
         "turns_red": "CHK-ZERO-FLOOR-CLASSIFIED",
+    },
+    # J1's C1, one axis over: gate the median ACROSS transcripts with the MAX
+    # PER-TRANSCRIPT repeat spread. J1 measured that shape 3.506x too permissive on the
+    # token axis; here it inflates the fidelity floor from ~0.0015 to 0.7778, which is
+    # large enough to certify a retention of 0.23 as non-inferior to 1.0.
+    "fidelity-floor-wrong-grain": {
+        "policy": {"fidelity_floor_wrong_grain": True},
+        "turns_red": "CHK-FIDELITY-FLOOR-AT-ITS-OWN-GRAIN",
     },
 }
 
@@ -1257,14 +1322,33 @@ def _report_arms(arm_rows: list[dict], report: Report, policy: dict) -> dict:
                 )
 
             # rho*, bar §4 — a price-free QUOTIENT of two measured columns, never a sum
+            # Pooled WITHIN the stratum on both sides — Amendment A forbids pooling ACROSS
+            # strata, not within one. A quotient of two measured columns, no price
+            # assumed, and the two columns are never added to each other.
+            pooled_delta = sum(deltas[t] for t in usable)
             summarizer = sum(
-                r["summarizer_input_tokens"] + r["summarizer_output_tokens"]
-                for r in rows
-                if r["arm"] == y and r["transcript_id"] in usable
-            ) / max(REPEATS, 1)
-            rho = abs(headline_delta) * len(usable) / summarizer if summarizer else None
+                _median(
+                    [
+                        r["summarizer_input_tokens"] + r["summarizer_output_tokens"]
+                        for r in rows
+                        if r["arm"] == y and r["transcript_id"] == t
+                    ]
+                )
+                or 0
+                for t in usable
+            )
+            rho = abs(pooled_delta) / summarizer if summarizer else None
 
-            # fidelity, §3.2
+            # fidelity, §3.2 — AND ITS FLOOR AT THE GRAIN OF THE FIGURE IT GATES.
+            #
+            # This is the same rule as §3.1's and it is easy to get wrong in exactly one
+            # way: gating the MEDIAN ACROSS TRANSCRIPTS with the MAX PER-TRANSCRIPT spread.
+            # That is J1's C1 defect verbatim (a suite-level statistic gated by a per-task
+            # maximum, measured 3.506x too permissive), and an earlier draft of this
+            # program did it here. The headline floor is the spread of the HEADLINE — the
+            # median across transcripts, recomputed once per repeat set — and the
+            # per-transcript floor is that transcript's own spread. Both are printed; if
+            # the non-inferiority verdict differs between them the run ESCALATES.
             retention = {
                 t: _median([r["anchor_retention"] for r in rows
                             if r["arm"] == y and r["transcript_id"] == t
@@ -1272,31 +1356,67 @@ def _report_arms(arm_rows: list[dict], report: Report, policy: dict) -> dict:
                 for t in usable
             }
             retention = {t: v for t, v in retention.items() if v is not None}
-            fidelity_floor = 0.0
+            per_transcript_fidelity_floor = {}
             for transcript in usable:
                 values = [
                     r["anchor_retention"] for r in rows
                     if r["arm"] == y and r["transcript_id"] == transcript
                     and r["anchor_retention"] is not None
                 ]
-                if len(values) > 1:
-                    fidelity_floor = max(fidelity_floor, max(values) - min(values))
+                per_transcript_fidelity_floor[transcript] = (
+                    max(values) - min(values) if len(values) > 1 else 0.0
+                )
+            headline_retention_per_repeat = []
+            for repeat in range(1, REPEATS + 1):
+                values = [
+                    r["anchor_retention"] for r in rows
+                    if r["arm"] == y and r["repeat"] == repeat
+                    and r["transcript_id"] in usable and r["anchor_retention"] is not None
+                ]
+                if values:
+                    headline_retention_per_repeat.append(_median(values))
+            fidelity_floor = (
+                max(headline_retention_per_repeat) - min(headline_retention_per_repeat)
+                if len(headline_retention_per_repeat) > 1
+                else 0.0
+            )
+            if policy["fidelity_floor_wrong_grain"]:
+                # The falsification: gate the headline with the max per-transcript spread.
+                fidelity_floor = max(
+                    per_transcript_fidelity_floor.values(), default=0.0
+                )
+            median_retention = _median(list(retention.values()))
+            headline_noninferior = (
+                median_retention is not None and median_retention >= 1.0 - fidelity_floor
+            )
+            per_t_noninferior = {
+                t: retention[t] >= 1.0 - per_transcript_fidelity_floor[t]
+                for t in retention
+            }
+            fidelity_majority = sum(1 for v in per_t_noninferior.values() if v) * 2 > len(
+                per_t_noninferior
+            )
+            fidelity_grain_agrees = fidelity_majority == headline_noninferior
+            if not fidelity_grain_agrees and not policy["pick_grain"]:
+                report.escalations.append(
+                    f"stratum {stratum}, pair {y}-{x}: the FIDELITY non-inferiority "
+                    f"verdict DIFFERS between grains (headline={headline_noninferior}, "
+                    f"per-transcript majority={fidelity_majority}). Bar §3.1/§3.2: the "
+                    "run does not choose a grain. ESCALATED to the user."
+                )
+            # Read straight off the committed per-(transcript, arm) columns, which were
+            # computed from the anchor SETS at measurement time. NEVER SUMMED TOGETHER.
             lost_stable = 0
             lost_unstable = 0
             for transcript in usable:
-                values = [
-                    r["anchors_retained"] for r in rows
-                    if r["arm"] == y and r["transcript_id"] == transcript
-                ]
-                total = next(
-                    (r["anchors_total"] for r in rows if r["transcript_id"] == transcript), 0
+                one = next(
+                    (r for r in rows if r["arm"] == y and r["transcript_id"] == transcript),
+                    None,
                 )
-                if not values or not total:
+                if one is None:
                     continue
-                if all(v < total for v in values):
-                    lost_stable += total - max(values)
-                elif any(v < total for v in values):
-                    lost_unstable += total - min(values)
+                lost_stable += one["anchors_lost_stable"]
+                lost_unstable += one["anchors_lost_unstable"]
 
             stratum_out[f"{y}-{x}"] = {
                 "label": label,
@@ -1310,18 +1430,30 @@ def _report_arms(arm_rows: list[dict], report: Report, policy: dict) -> dict:
                 "grain_agrees": grain_agrees,
                 "sign": sign_verdict,
                 "rho_star": rho,
-                "median_retention": _median(list(retention.values())),
+                "median_retention": median_retention,
                 "fidelity_floor": fidelity_floor,
+                "fidelity_headline_noninferior": headline_noninferior,
+                "fidelity_per_transcript_majority": fidelity_majority,
+                "fidelity_grain_agrees": fidelity_grain_agrees,
                 "anchors_lost_stable": lost_stable,
                 "anchors_lost_unstable": lost_unstable,
             }
-            out = stratum_out[f"{y}-{x}"]
             print(f"    {y} - {x}  [{label}]  n={len(usable)}")
             if stratum == "B":
                 print("      UNINFORMATIVE-BY-N — figures printed, no verdict claimed.")
+            pooled_den = sum(ctx[(t, x)] for t in usable)
+            pooled_pct = _pct(pooled_delta, pooled_den)
             print(
                 f"      Δ tokens (median, SIGNED) = {headline_delta:+,.1f}  "
-                f"({headline_pct:+.4f}% of the null control)"
+                f"({headline_pct:+.4f}% of {x}, the LOWER RUNG — bar §2.3's denominator "
+                f"is CTX(t, X), not the null control, except where X is B0)"
+            )
+            # Bar §2.4: the pooled sum is reported in the same table as the median,
+            # ALWAYS, never as a footnote — pooled WITHIN this stratum only (Amendment A).
+            print(
+                f"      the central value NOT chosen, printed beside it (bar §2.4): "
+                f"pooled sum WITHIN stratum {stratum} = {pooled_delta:+,.1f} tokens "
+                f"({pooled_pct:+.4f}% of Σ {x})"
             )
             print(
                 f"      token floor at the HEADLINE grain = {headline_floor:,.1f} "
@@ -1336,18 +1468,99 @@ def _report_arms(arm_rows: list[dict], report: Report, policy: dict) -> dict:
             print(f"      sign condition: {sign_verdict}")
             print(
                 f"      fidelity: median anchor retention "
-                f"{out['median_retention'] if out['median_retention'] is not None else 'n/a'}, "
-                f"floor {fidelity_floor:.6f}; "
-                f"anchors_lost_stable={lost_stable}, anchors_lost_unstable={lost_unstable} "
-                "(never summed)"
+                f"{median_retention if median_retention is not None else 'n/a'}; "
+                f"floor at the HEADLINE grain = {fidelity_floor:.6f}, so non-inferiority "
+                f"needs retention >= {1.0 - fidelity_floor:.6f} -> "
+                f"{'NON-INFERIOR' if headline_noninferior else 'BELOW ITS FLOOR'}"
+            )
+            print(
+                f"      fidelity floor at the PER-TRANSCRIPT grain: "
+                f"{sum(1 for v in per_t_noninferior.values() if v)}/"
+                f"{len(per_t_noninferior)} transcripts non-inferior against their own "
+                f"spread -> majority "
+                f"{'NON-INFERIOR' if fidelity_majority else 'BELOW ITS FLOOR'}"
+                f"{'' if fidelity_grain_agrees else '   *** GRAIN DISAGREEMENT -> ESCALATE ***'}"
+            )
+            print(
+                f"      anchors_lost_stable={lost_stable}, "
+                f"anchors_lost_unstable={lost_unstable} (bar §3.2 — NEVER summed)"
             )
             print(
                 f"      rho* = {rho:.4f}" if rho is not None else "      rho* = n/a (no boundary)"
             )
-            if out["median_retention"] is not None and lost_stable > 0:
+            if median_retention is not None and (lost_stable > 0 or not headline_noninferior):
                 print(
                     "      => this is a TRADE, not a reduction (bar §4): a token delta at a "
-                    "retention below 1 - floor with stable losses."
+                    "retention below 1 - floor with stable losses. Only a delta at "
+                    "retention within its floor with anchors_lost_stable == 0 may be "
+                    "called a reduction."
+                )
+        # Bar §8's signed cost columns, pooled WITHIN the stratum and never clamped. A
+        # summary ADDS bytes to save bytes and a digest can be bigger than the blob it
+        # replaces, so these are the columns where the mechanism's own cost lives. They
+        # are never netted into the saving (§4).
+        # Bar §3.3(2): the mechanism's own added turns, SIGNED, reported as a cost and
+        # NEVER netted into the token saving. A boundary is an extra inference call, so
+        # Δcalls(Bn − B0) = +boundaries and it is positive by construction.
+        print("    §3.3(2) the mechanism's OWN added turns, signed, never netted:")
+        for arm in ("B1", "B2", "B3"):
+            added = sum(
+                _median([
+                    r["boundaries"] for r in rows
+                    if r["arm"] == arm and r["transcript_id"] == t
+                ]) or 0
+                for t in members
+            )
+            # Reported as the arm's OWN added turns, not as a cross-rung Δcalls, because
+            # Δcalls(B3 − B0) would be an all-on-versus-all-off shape and §1.5 forbids one
+            # in any column. For B1 the two coincide: B0 adds none, so this IS Δcalls(B1 −
+            # B0), which is the form §3.3(2) states.
+            print(
+                f"      {arm} adds {added:+,.0f} summarizer boundary call(s) of its own "
+                f"across {len(members)} informative transcript(s) — a COST, never netted "
+                "into the token saving; the agent's own call count is identical across "
+                "arms (CHK-TURNS-WITNESS)"
+            )
+        # Bar §8's signed cost columns, pooled WITHIN the stratum and never clamped. A
+        # summary ADDS bytes to save bytes and a digest can be bigger than the blob it
+        # replaces, so these are the columns where the mechanism's own cost lives. The
+        # per-transcript central value is the MEDIAN across repeats (bar §2.3) and the
+        # medians are then summed — not the mean, which a single degenerate summarizer
+        # response would move.
+        print("    signed §8 cost columns, median-over-repeats then summed, per arm:")
+        for arm in ("B1", "B2", "B3"):
+            arm_only = [
+                r for r in rows if r["arm"] == arm and r["transcript_id"] in members
+            ]
+            if not arm_only:
+                continue
+
+            def col(name, _arm=arm, _rows=rows, _members=members):
+                return sum(
+                    _median([
+                        r[name] for r in _rows
+                        if r["arm"] == _arm and r["transcript_id"] == t
+                    ]) or 0
+                    for t in _members
+                )
+
+            print(
+                f"      {arm}: summary {col('summary_bytes'):+,.0f} B  "
+                f"rehydrated {col('rehydrated_bytes'):+,.0f} B  "
+                f"block {col('block_bytes'):+,.0f} B  "
+                f"trim {col('trim_removed_bytes'):+,.0f} B  "
+                f"offload digest {col('offload_digest_bytes'):+,.0f} B "
+                f"vs body {col('offload_body_bytes'):+,.0f} B"
+            )
+            sent = col("summarizer_prompt_bytes_sent")
+            saw = col("summarizer_prompt_tokens_the_endpoint_saw")
+            asked = col("summarizer_input_tokens")
+            if asked:
+                print(
+                    f"           summarizer prompt: {sent:,.0f} B = {asked:,.0f} tokens sent, "
+                    f"{saw:,.0f} tokens the endpoint actually read "
+                    f"({100.0 * saw / asked:.1f}%) — the mechanism sets no context length "
+                    "and never reads back prompt_tokens"
                 )
         verdicts[stratum] = stratum_out
 
@@ -1361,7 +1574,9 @@ def _report_arms(arm_rows: list[dict], report: Report, policy: dict) -> dict:
     return verdicts
 
 
-def _structural_checks(report: Report, policy: dict, ceilings: dict, verdicts: dict) -> None:
+def _structural_checks(
+    report: Report, policy: dict, calls_median: dict, verdicts: dict
+) -> None:
     """The checks that police the SHAPE of the report, not its numbers.
 
     Each is named by a claim, so a mutation that falsifies the claim turns exactly this
@@ -1395,19 +1610,19 @@ def _structural_checks(report: Report, policy: dict, ceilings: dict, verdicts: d
         "summarizer tokens appear only in their own columns and inside rho*, a quotient "
         "(bar §4); no blended net-saving figure exists",
     )
+    # N in (N-1)/(N+1) is the number of MODEL CALLS in a session, not the number of
+    # transcripts. The first draft of this check computed it over transcripts, which is a
+    # different quantity that happens to look like the same formula.
     bound = {
-        stratum: (
-            None
-            if not c.get("n")
-            else round(100.0 * (c["n"] - 1) / (c["n"] + 1), 3)
-        )
-        for stratum, c in ceilings.items()
+        stratum: (None if not n else round(100.0 * (n - 1) / (n + 1), 3))
+        for stratum, n in calls_median.items()
     }
     report.check(
         "CHK-UPPER-BOUND-IS-NOT-A-SAVING",
         not policy["upper_bound_as_saving"],
-        f"(N-1)/(N+1) is an UPPER BOUND, never a measured saving; at stratum A's median of "
-        f"26 model calls the ceiling is 92.6%, not 99.4% (per-stratum n gives {bound})",
+        "(N-1)/(N+1) is an UPPER BOUND on the addressable share and NEVER a measured "
+        "saving; at stratum A's median of 26 model calls it is 92.6%, not the 99.4% that "
+        f"N=166 would give (per-stratum median calls {calls_median} -> bound {bound})",
     )
     disagreements = [
         f"{stratum}:{pair}"
@@ -1420,6 +1635,20 @@ def _structural_checks(report: Report, policy: dict, ceilings: dict, verdicts: d
         not policy["pick_grain"],
         f"a verdict that differs between grains is ESCALATED, never chosen; "
         f"{len(disagreements)} disagreement(s): {disagreements or 'none'}",
+    )
+    fidelity_disagreements = [
+        f"{stratum}:{pair}"
+        for stratum, pairs in verdicts.items()
+        for pair, out in pairs.items()
+        if not out["fidelity_grain_agrees"]
+    ]
+    report.check(
+        "CHK-FIDELITY-FLOOR-AT-ITS-OWN-GRAIN",
+        not policy["fidelity_floor_wrong_grain"],
+        "the fidelity floor gating the median across transcripts is the spread of THAT "
+        "median across repeat sets, not the max per-transcript spread (bar §3.2; J1's C1 "
+        f"measured the wrong shape 3.506x too permissive); {len(fidelity_disagreements)} "
+        f"grain disagreement(s): {fidelity_disagreements or 'none'}",
     )
     degenerate = [
         f"{stratum}:{pair}"
@@ -1444,13 +1673,54 @@ def cmd_report(mutate: str | None) -> int:
             return 1
         policy.update(MUTATIONS[mutate]["policy"])
 
+    # Bar §9(1) and §9(3): the reproduction route over NAMED COLUMNS, never over bytes.
+    # §7(2) makes this not a preference — the arms are not byte-reproducible (hard-coded
+    # `temperature: 0.2`, no seed), so a re-run comparison could only ever fail. What CAN
+    # be checked without re-running is that every committed row carries the same key set
+    # IN THE SAME ORDER, with any later addition forced through a dated declaration. Both
+    # formalisations §9(4) forbids by name are avoided: this is not "ignore keys the
+    # committed file lacks" (which passes an attacker who DELETES a key), and it is not
+    # "a new trailing key is fine" (position cannot carry the rule) — the comparison is
+    # over the ordered tuple, and only names in the declaration are excused.
+    raw_b0 = read_rows(B0_ARTIFACT)
+    raw_arms = read_rows(ARMS_ARTIFACT)
+    if policy["delete_a_committed_key"] and len(raw_b0) > 1:
+        # In memory only; the artifact on disk is never mutated (bar §9(5)).
+        raw_b0[1].pop("boundaries", None)
+    key_problems: list[str] = []
+    for label, raw in (("B0", raw_b0), ("arms", raw_arms)):
+        usable = [r for r in raw if r.get("reconstruction") != "NOT_SELECTABLE"]
+        if not usable:
+            continue
+        expected = tuple(
+            k for k in usable[0] if k not in ADDITIVE_KEYS_THE_ARTIFACT_PREDATES
+        )
+        for index, row in enumerate(usable):
+            actual = tuple(k for k in row if k not in ADDITIVE_KEYS_THE_ARTIFACT_PREDATES)
+            if actual != expected:
+                key_problems.append(f"{label} row {index}")
+    report_key_detail = (
+        f"B0: {len(raw_b0)} rows, arms: {len(raw_arms)} rows; "
+        f"{len(key_problems)} row(s) whose ordered key tuple differs from their "
+        f"artifact's first row; additive declaration = "
+        f"{ADDITIVE_KEYS_THE_ARTIFACT_PREDATES or '() — empty at first commit'}"
+    )
+
     b0_rows = [r for r in read_rows(B0_ARTIFACT) if r.get("reconstruction") == "OK"]
     arm_rows = read_rows(ARMS_ARTIFACT)
     if not b0_rows:
         print("no committed B0 artifact", file=sys.stderr)
         return 1
+    if policy["drop_content_from_one_row"]:
+        # In memory only. Committed evidence is never mutated on disk (bar §9(5)).
+        victim = max(b0_rows, key=lambda r: r["recorded_content_bytes"])
+        victim["reconstructed_content_bytes"] -= victim["recorded_content_bytes"] // 2
+        victim["reconstruction_byte_delta"] = (
+            victim["reconstructed_content_bytes"] - victim["recorded_content_bytes"]
+        )
 
     report = Report(policy)
+    report.check("CHK-COMMITTED-KEY-SET", not key_problems, report_key_detail)
     print(RULE)
     print("J2 / U4 — THE ARMS, per stratum. Bar f48335c, amended e94d960 before any arm.")
     print(RULE)
@@ -1497,6 +1767,33 @@ def cmd_report(mutate: str | None) -> int:
     )
 
     print()
+    print("--- THE NULL CONTROL, bar §1.2 — the load-bearing check ----------------------")
+    skipped_kinds: dict[str, int] = {}
+    for row in b0_rows:
+        for kind, count in row["skipped_event_kinds"].items():
+            skipped_kinds[kind] = skipped_kinds.get(kind, 0) + count
+    recorded = sum(r["recorded_content_bytes"] for r in b0_rows)
+    rebuilt = sum(r["reconstructed_content_bytes"] for r in b0_rows)
+    events = sum(r["recorded_events"] for r in b0_rows)
+    print(
+        f"  reconstructed {len(b0_rows)} transcripts; recorded_content_bytes {recorded:,} "
+        f"vs reconstructed_content_bytes {rebuilt:,} (delta {rebuilt - recorded:+,}); "
+        f"{len(mismatched)} transcript(s) with a non-zero byte delta"
+    )
+    print(
+        f"  recorded_events {events:,}; reconstructed_turns "
+        f"{sum(r['reconstructed_turns'] for r in b0_rows):,}; "
+        f"anchors_total {sum(r['anchors_total'] for r in b0_rows):,}"
+    )
+    print(
+        "  every skipped event kind, enumerated with its count (an unenumerated skip is a "
+        "FAILED check, not a rounding error): "
+        + ", ".join(f"{k}={v}" for k, v in sorted(skipped_kinds.items(), key=lambda kv: -kv[1]))
+        + f"; total skipped {sum(skipped_kinds.values()):,}; carried + skipped = "
+        f"{events + sum(skipped_kinds.values()):,} lines under the cutoff"
+    )
+
+    print()
     print("--- U-1 / U-2 / U-4 / VOID accounting, PER STRATUM (never pooled) ------------")
     strata = {}
     for stratum in ("A", "B"):
@@ -1516,6 +1813,19 @@ def cmd_report(mutate: str | None) -> int:
             f"host-precompacted (U-4)={len(u4)}  "
             f"boundaries={sum(r['boundaries'] for r in members)}"
         )
+        shape = [r for r in informative if r["boundaries"] > 0]
+        for col, name in (
+            ("boundaries", "boundaries per informative transcript"),
+            ("peak_over_threshold", "peak/T"),
+            ("post_boundary_calls", "post-boundary calls"),
+        ):
+            values = [r[col] for r in shape]
+            if len(values) < 2:
+                continue
+            print(
+                f"           {name}: min {min(values)}, p25 {_pctile(values, 0.25)}, "
+                f"median {_median(values)}, p75 {_pctile(values, 0.75)}, max {max(values)}"
+            )
         if stratum == "B":
             print(
                 "           stratum B is n=1: UNINFORMATIVE-BY-N under Amendment A. "
@@ -1527,7 +1837,18 @@ def cmd_report(mutate: str | None) -> int:
     print("--- R1: the ZERO-SUMMARY CEILING (arithmetic; no summarizer, no arm) ---------")
     ceilings: dict[str, dict] = {}
     for stratum, members in strata.items():
-        informative = [r for r in members if r["boundaries"] > 0]
+        # Bar §5.4, applied rather than approximated. R1 is a REFUTATION statistic, so its
+        # population is the set the bar calls informative: a transcript that never reached
+        # T (U-2) has no boundary at all, and a transcript whose boundary fell on the last
+        # call (U-1) had no opportunity for the mechanism to act. An earlier draft of this
+        # program used `boundaries > 0` alone, which silently carried the 2 U-1 transcripts
+        # into a refutation the bar declares them UNINFORMATIVE for. Both populations are
+        # printed, because the difference is small here and saying so is cheaper than
+        # leaving a reader to wonder which set produced the median.
+        informative = [
+            r for r in members if r["boundaries"] > 0 and not r["uninformative_u1"]
+        ]
+        reached_t = [r for r in members if r["boundaries"] > 0]
         if not informative:
             ceilings[stratum] = {"n": 0}
             print(f"  stratum {stratum}: no transcript reached T — R1 UNEVALUABLE here")
@@ -1546,11 +1867,28 @@ def cmd_report(mutate: str | None) -> int:
             "pooled_within_stratum": _pct(pooled_num, pooled_den),
         }
         print(
-            f"  stratum {stratum} (n={len(informative)} informative): "
-            f"median ceiling {ceilings[stratum]['median_with_fixed']:+.3f}% "
+            f"  stratum {stratum} (n={len(informative)} informative, bar §5.4; "
+            f"{len(reached_t)} reached T before U-1 is removed): "
+            f"median ceiling {ceilings[stratum]['median_with_fixed']:+.4f}% "
             f"WITH the declared fixed per-call cost, "
-            f"{ceilings[stratum]['median_no_fixed']:+.3f}% without it; "
-            f"pooled-WITHIN-stratum {ceilings[stratum]['pooled_within_stratum']:+.3f}%"
+            f"{ceilings[stratum]['median_no_fixed']:+.4f}% without it; "
+            f"pooled-WITHIN-stratum {ceilings[stratum]['pooled_within_stratum']:+.4f}%"
+        )
+        for tag, series in (("with the constant", with_fixed), ("without it", no_fixed)):
+            if len(series) < 2:
+                continue
+            print(
+                f"      spread {tag} (nearest-rank): min {min(series):+.4f}%, "
+                f"p25 {_pctile(series, 0.25):+.4f}%, "
+                f"median {_median(series):+.4f}%, "
+                f"p75 {_pctile(series, 0.75):+.4f}%, max {max(series):+.4f}%"
+            )
+        print(
+            f"      transcripts whose CEILING reaches the handed {TARGET_HEADLINE:+.0f}% "
+            f"target: {sum(1 for v in with_fixed if v <= TARGET_HEADLINE)} of "
+            f"{len(with_fixed)} with the constant, "
+            f"{sum(1 for v in no_fixed if v <= TARGET_HEADLINE)} of {len(no_fixed)} "
+            "without it. No summarizer can beat a ceiling."
         )
     r1_fires = {
         s: (c.get("median_with_fixed") is not None and c["median_with_fixed"] > TARGET_HEADLINE)
@@ -1558,6 +1896,17 @@ def cmd_report(mutate: str | None) -> int:
         if c.get("n")
     }
     for stratum, fired in r1_fires.items():
+        if stratum == "B":
+            # Amendment A. n=1 supports no verdict, and "R1 did not fire" is not evidence
+            # FOR the target — it only says the arithmetic did not rule it out on one
+            # transcript. Saying so is the difference between reporting and implying.
+            print(
+                f"  R1 on stratum B: the ceiling is "
+                f"{'ABOVE' if fired else 'at or below'} the handed {TARGET_HEADLINE:+.0f}% "
+                "target on the single transcript. NO VERDICT IS CLAIMED: stratum B is n=1 "
+                "and UNINFORMATIVE-BY-N. This is not evidence for the target."
+            )
+            continue
         print(
             f"  R1 on stratum {stratum}: the ceiling is "
             f"{'ABOVE' if fired else 'at or below'} the handed {TARGET_HEADLINE:+.0f}% target "
@@ -1584,7 +1933,12 @@ def cmd_report(mutate: str | None) -> int:
     verdicts = _report_arms(arm_rows, report, policy)
 
     # ---- the structural checks the claims NAME -----------------------------------------
-    _structural_checks(report, policy, ceilings, verdicts)
+    calls_median = {
+        stratum: _median([r["model_calls"] for r in members])
+        for stratum, members in strata.items()
+        if members
+    }
+    _structural_checks(report, policy, calls_median, verdicts)
 
     print()
     print("--- NAMED CHECKS -------------------------------------------------------------")
@@ -1607,9 +1961,18 @@ def cmd_report(mutate: str | None) -> int:
             "falsification, which means the claim is not measured. This is a FAILURE.",
             file=sys.stderr,
         )
-        return 1
+        # Exit 2, NOT 1. Returning 1 on both branches makes the exit code of a mutation
+        # run pinned to nothing — "it exited 1" would be true whether the claim was
+        # falsified or whether the falsification failed to bite. 1 now means exactly "the
+        # named check went red"; 2 means "the mutation falsified nothing".
+        return 2
     print(f"{len(report.checks)} named checks, {failed} red, {len(report.escalations)} escalations")
-    return 0 if failed == 0 else 1
+    if failed:
+        return 1
+    # Bar §3.1: an escalation STOPS the run. An escalation printed by a program that then
+    # exits 0 is decorative, so it carries its own non-zero code, distinct from a red
+    # check, and the acceptance is exit 0 only when there is neither.
+    return 3 if report.escalations else 0
 
 
 def main(argv: list[str] | None = None) -> int:
