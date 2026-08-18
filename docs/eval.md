@@ -5822,6 +5822,7 @@ disclosure fact, not a defect.
   of them exited 2. **The exit-2 branch existing is what caught it** — returning 1 on both
   branches would have made "it exited 1" carry no information and this would have shipped
   reading green. (Instrument.)
+<!-- provenance: value=11 failed, 960 passed, 2 xfailed without / 971 passed, 2 xfailed with; commit=f134cca; command=[PYTHONPATH=$PWD/runtime-py/src] .venv/bin/python -m pytest runtime-py/tests -q -->
 - **RB-P55 — in a worktree, the suite tests this tree's TESTS against another tree's
   PACKAGE.** The venv's editable install resolves `bantamkit` to the main checkout, so
   `.venv/bin/python -m pytest runtime-py/tests -q` run from a linked worktree imports
@@ -5885,6 +5886,48 @@ disclosure fact, not a defect.
   protection when it is after-the-fact notification is the failure mode this whole register
   is about. **The standing rule is unchanged and is not a guard: DO NOT TAG.** (Process.)
 
+- **RB-P59 — the closed pointer list permits only the pin form the pin convention
+  discourages, and a form migration inside one class reads `RECORD-EDITED`.** L-U5-3 closed
+  a convention — *pattern-delimited locators only; never a bare line number* — and
+  `amendguard` classifies a pointer correction by masking closed-list constructs and
+  requiring the two lines to be **identical outside the mask**. Four candidate corrections
+  of the same drifted pin were committed to a scratch commit and measured, and the verdict
+  is read off `VERDICT`, not off the source:
+
+  | the correction | `classify` | `verdict` |
+  |---|---|---|
+  | bare `` `:1288` `` → bare `` `:1608` `` | `pointer:P3` | **OK** |
+  | bare `` `:1288` `` → unbackticked `…-field-measurement.py:1608` | `pointer:P3` | **OK** |
+  | bare `` `:1288` `` → **backticked** `` `…-field-measurement.py:1608` `` | `record` | **RECORD-EDITED** |
+  | bare `` `:1288` `` → a pattern-delimited locator naming the guard | `record` | **RECORD-EDITED** |
+
+  Two consequences, and the second is worse than the first. **The form the convention
+  mandates is the one form the checker forbids** — replacing a pin with a pattern-delimited
+  locator removes a masked construct, so the masks differ and the line is a record.
+  **And the mask is by SUB-FORM, not by class**: the bare-backtick pattern consumes the
+  backticks and the path pattern does not, so the *same* P3 class read `OK` unbackticked and
+  `RECORD-EDITED` backticked, on one character of difference either side. **Attack:** widen
+  `POINTER_CLASSES` with a pattern-delimited-locator class, in a commit that edits the tuple
+  and adds its calibration case — `test_every_pointer_class_on_the_closed_list_has_a_fixture_case`
+  makes that mandatory — and normalise the mask so a construct's delimiters are part of the
+  sentinel. **Not done here on purpose:** widening the rule in the same unit whose own pin is
+  about to be judged by it is the author granting himself an exemption, which is the exact
+  act the plan ordered the pin correction last to avoid. (Instrument, open.)
+- **RB-P60 — a provenance stamp cannot sit inside a markdown table, and the checker found
+  this by flagging its own author.** The field run over this branch reported
+  `commit=9cc42c4b1 path=docs/eval.md classify=insert verdict=STAMP-MISSING` on **this very
+  section**, naming two unstamped gate expectations: RB-P55's pass counts, and the `940
+  passed, 2 xfailed` cell of the corrections table above. **The first was fixable and is
+  fixed**, by inserting a stamp four lines above it. **The second is not**, because a stamp
+  is a whole-line HTML comment and `STAMP_WINDOW` is eight lines: the cell is the last row of
+  a ten-line table, and any comment line placed inside that window splits the table in two.
+  The figures are therefore restated, stamped, in a paragraph below the table, and the cell
+  itself stays unstamped. **`9cc42c4` is NOT rewritten and stays RED in the log** — a commit
+  amended to make the checker green would be the retro-edit this whole rule exists to
+  prevent, and the miss is worth more as a record than as a clean history. **Attack:** allow
+  a stamp to be attached by a trailing inline comment on the number's own line, which the
+  matcher already supports and the *syntax* does not, or let one stamp govern a whole fenced
+  or tabular block by name. (Instrument, open.)
 **Numbering.** `RB-P53` is **reserved**: it exists on `feat/compaction-in-the-loop` and is
 **not merged at this base**, so J3 numbers from `RB-P54` and every sentence here that would
 cite it cites the measurement instead. If that branch has also allocated `RB-P54` or above
@@ -5924,6 +5967,14 @@ its own brief has committed the defect the brief warned about.
 | a `pre-push` hook protects one working copy | **no pre-push hook exists**, installed or committed |
 | `git -C <path> tag` bypasses the deny rule | **not reproducible as an unconditional statement** — see RB-P58. **CARRIED from the plan, not re-measured here**: invariant 15 forbids retrying the evasion, and refusing to retry is the correct behaviour |
 | expect 940 passed, 2 xfailed | correct **at `3f52a86`**, on J7's branch. The plan's §1.6 called it stale and its own Amendment 1 withdrew that: 932 and 940 are both correct, each at its own commit, and the eight-node difference is `test_field_programs.py` parametrising over 12 versus 14 programs. **§1.2 and §1.6 were one finding counted twice.** |
+
+<!-- provenance: value=940 passed, 2 xfailed; commit=3f52a86; command=.venv/bin/python -m pytest runtime-py/tests -q -->
+<!-- provenance: value=932 passed, 2 xfailed; commit=5458059; command=.venv/bin/python -m pytest runtime-py/tests -q -->
+The last row's two figures, restated with the commit beside each because the row itself
+cannot carry a stamp (RB-P60): **940 passed, 2 xfailed** at `3f52a86` and **932 passed, 2
+xfailed** at `5458059`, both by `.venv/bin/python -m pytest runtime-py/tests -q`, and both
+correct. Neither was re-run by this unit; they are carried from the plan's Amendment 1,
+which re-derived the eight-node difference from the parametrisation and not from the suite.
 
 ##### What this section measured and what it carried
 
