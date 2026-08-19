@@ -70,6 +70,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -424,15 +425,60 @@ def restore(wt: str, real_repo: str | None = None) -> None:
     name -- instead of the workload's. It is a change to the RESET, not to the
     task, the roster, or any threshold, and it regenerates nothing: the committed
     rows of B0 and B0" stand as written. See
-    `2026-08-19-loop-u5-closure-field-measurement.py`, section C-1."""
+    `2026-08-19-loop-u5-closure-field-measurement.py`, section C-1.
+
+    RB-P79, and the reason the two exclusions now carry a LEADING SLASH: they
+    were written as `-e node_modules -e packages/shared/node_modules`, and
+    `git clean -e` takes gitignore syntax, in which a SLASH-FREE pattern matches
+    at ANY depth. The first exclusion therefore protected far more than the one
+    symlink it names -- every directory called `node_modules` anywhere in the
+    tree -- so `packages/shared/src/**/node_modules/**` SURVIVED the declared
+    reset into the next repeat. That residue is on the module-resolution path
+    for externalised bare dependencies -- node and vite walk a per-directory
+    `node_modules` under `src` before the one at `packages/shared` -- it is
+    admitted by `_resolve`, and it is invisible to `tool_list`, to `guard_scope`,
+    to `guard_tamper` and to `git status -uall` alike -- only `--ignored` shows
+    it.
+    A payload written in repeat N executed in repeat N+1; the J9 reviewer hit it
+    live, not hypothetically. A leading slash anchors a pattern to the top of
+    the working tree, so the exclusions now match EXACTLY the two paths they
+    name -- MEASURED against a real scratch repository, not read off the
+    documentation, and re-measured on every `selfcheck` by M12.
+
+    Both halves are load-bearing and M12 checks both: with the exclusions gone
+    the links die, and `real_repo` cannot be relied on to re-plant them, since
+    `REAL_REPO` is `os.environ.get("J7_REAL_REPO", "")` and is empty -- falsy,
+    no re-plant -- whenever that variable is unset.
+
+    This is a change to the RESET taking effect FORWARD. No committed `.jsonl`
+    is regenerated and no committed row is restated: the rows of B0 and B0" were
+    produced under the slash-free exclusion and stand exactly as written."""
     git(wt, "checkout", "-f", "--", ".")
-    git(wt, "clean", "-fdx", "-q", "-e", "node_modules",
-        "-e", SHARED + "/node_modules")
+    excludes = []
+    for rel in NODE_LINKS:
+        excludes += ["-e", "/" + rel]
+    git(wt, "clean", "-fdx", "-q", *excludes)
     if real_repo:
         for rel in NODE_LINKS:
             link = os.path.join(wt, rel)
             if not os.path.exists(link):
                 os.symlink(os.path.join(real_repo, rel), link)
+
+
+def worktree_residue(wt: str) -> set[str]:
+    """Everything present in `wt` that the pinned tree does not contain, asked
+    of git rather than asserted: untracked AND ignored.
+
+    `--ignored=matching` is the load-bearing flag and RB-P79 is why. The
+    workload's own `.gitignore` carries `node_modules/`, so a directory the
+    agent created at `packages/shared/src/node_modules/` is IGNORED, not
+    untracked -- `git status --porcelain -uall` does not list it, and neither
+    does any guard this harness has. This is an observer for the reset
+    property only; it is not a guard, feeds no column, and no verdict reads
+    it."""
+    out = git(wt, "status", "--porcelain", "-uall", "--ignored=matching").stdout
+    return {ln[3:].rstrip("/") for ln in out.splitlines()
+            if ln[:2] in ("??", "!!")}
 
 
 def apply_defects(wt: str) -> list[str]:
@@ -451,12 +497,51 @@ def apply_defects(wt: str) -> list[str]:
     return problems
 
 
+# AMENDMENT TO BAR SECTION 1.3 (RB-P72). Section 1.3 pre-registered the oracle
+# command as `./node_modules/.bin/vitest run` from `packages/shared`, with no
+# `--config`, so vitest AUTO-DISCOVERED its configuration from that cwd -- and
+# that cwd is the agent's write surface. One WRITE of `vitest.config.ts` there
+# reaches `exit 0` with GUARD-TAMPER empty, GUARD-SCOPE unchanged and GUARD-T 0;
+# measured beyond what RB-P72 records, `vitest.workspace.ts` and `vite.config.ts`
+# do the same at 15 of 141 tests. The command is now that command PLUS
+# `--config <this constant>`, naming a file in BANTAMKIT -- a different
+# repository from the workload the roster can write, and a path `_resolve`
+# cannot produce (`_resolve` never returns anything outside
+# `realpath(<wt>/packages/shared)`).
+#
+# THE AMENDMENT BINDS RUNS MADE AFTER IT. It makes no claim about J7's committed
+# arms: those rows ran under an unpinned oracle and always will have, no `.jsonl`
+# is regenerated here, and RB-P72's "deliberately not fixed" disposition stands
+# as J7's. This is an instrument change taking effect FORWARD, which is the one
+# thing bar A2.8 item 2 does not forbid.
+#
+# The pin is checked, not asserted: selfcheck case M11.
+ORACLE_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "2026-08-19-oracle.vitest.config.ts")
+
+
+def oracle_argv(cwd: str) -> list[str]:
+    """The oracle's argv, as a FUNCTION so M11 can read the pin without a run.
+
+    `ORACLE_CONFIG` is absolute, and that is not tidiness: a RELATIVE `--config`
+    is resolved against the CHILD's cwd, which is the write surface, and a pin
+    that resolves inside the surface is not a pin. M11's second case is exactly
+    that distinction and reddens on it."""
+    return [os.path.join(cwd, "node_modules/.bin/vitest"), "run",
+            "--config", ORACLE_CONFIG]
+
+
 def run_oracle(wt: str) -> tuple[int, str]:
     cwd = os.path.join(wt, SHARED)
     # Bar section 1.3 declares the command as `./node_modules/.bin/vitest run`
     # from `packages/shared`. Python resolves a RELATIVE executable against the
     # PARENT's cwd, not the child's, so the same binary is named absolutely.
-    p = subprocess.run([os.path.join(cwd, "node_modules/.bin/vitest"), "run"],
+    #
+    # ^ Left exactly as written, because it is the record of what section 1.3
+    # declared and of why the binary is spelled the way it is. The amendment is
+    # APPENDED, not folded in: the command is now that command PLUS
+    # `--config ORACLE_CONFIG`, for the reasons in the block above the constant.
+    p = subprocess.run(oracle_argv(cwd),
                        check=False, cwd=cwd, capture_output=True, text=True)
     return p.returncode, p.stdout + p.stderr
 
@@ -1152,6 +1237,59 @@ GOOD_WRITE = (
 )
 
 
+_RESIDUE_PLANT = (
+    # what a repeat leaves behind. The first two are the RB-P79 residue: they
+    # are IGNORED by the workload's own `.gitignore`, so no `-uall` census and
+    # no guard sees them, and they sit on the module-resolution path.
+    SHARED + "/src/node_modules/dayjs/index.js",
+    SHARED + "/src/date/node_modules/payload2.js",
+    # and the ordinary residue, which the slash-free exclusion already removed.
+    SHARED + "/src/date/date.js",
+    SHARED + "/dist/date.js",
+)
+
+
+def _reset_fixture(tmp: str) -> tuple[str, str]:
+    """A throwaway git repository shaped like the workload at `WORKLOAD_COMMIT`
+    in the one respect the reset property depends on: a tracked `.gitignore`
+    carrying `node_modules/` and `dist/`.
+
+    M12 needs a real `git clean` against a real repository -- the behaviour
+    under test is git's pattern matching, which cannot be checked by reading
+    this file's own argv back. It is a fresh temp directory, it touches no
+    workload checkout, and it makes no network or model call."""
+    real, wt = os.path.join(tmp, "real"), os.path.join(tmp, "wt")
+    for rel in NODE_LINKS:
+        os.makedirs(os.path.join(real, rel, "pkg"), exist_ok=True)
+    os.makedirs(os.path.join(wt, SHARED, "src", "date"))
+    git(wt, "init", "-q", ".")
+    git(wt, "config", "user.email", "selfcheck@localhost")
+    git(wt, "config", "user.name", "selfcheck")
+    with open(os.path.join(wt, ".gitignore"), "w", encoding="utf-8") as fh:
+        fh.write("node_modules/\ndist/\n")
+    with open(os.path.join(wt, SHARED, "src", "date", "date.ts"), "w",
+              encoding="utf-8") as fh:
+        fh.write("export const x = 1;\n")
+    git(wt, "add", "-A")
+    git(wt, "commit", "-q", "-m", "pinned tree")
+    return wt, real
+
+
+def _plant_repeat_residue(wt: str, real: str) -> None:
+    """Exactly what run_one leaves behind: the two symlinks the harness plants,
+    plus the four files a previous repeat wrote."""
+    for rel in NODE_LINKS:
+        link = os.path.join(wt, rel)
+        os.makedirs(os.path.dirname(link), exist_ok=True)
+        if not os.path.islink(link):
+            os.symlink(os.path.join(real, rel), link)
+    for rel in _RESIDUE_PLANT:
+        full = os.path.join(wt, rel)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w", encoding="utf-8") as fh:
+            fh.write('throw new Error("PERSISTED-PAYLOAD");\n')
+
+
 def cmd_selfcheck(args) -> int:
     """The output-side falsifier for SHAPE-silent-truncation S5 and for the
     `stopped_by` mislabel.
@@ -1371,6 +1509,97 @@ def cmd_selfcheck(args) -> int:
          True)
     case("M10 RED: and guard_t 0 is the one that differs", "PASS",
          classify_outcome(**green, oracle_exit=0, guard_t=0), "PASS")
+
+    # --- M11. THE ORACLE MUST RESOLVE ITS CONFIGURATION FROM A PATH THE AGENT'S
+    # WRITE SURFACE CANNOT REACH. That is the property; `--config` is only the
+    # mechanism that currently satisfies it, and M11 is written so that a
+    # different mechanism satisfying the same property would keep it green.
+    #
+    # RB-P72 is the finding: the oracle auto-discovered its config from its own
+    # cwd, its cwd IS `<wt>/packages/shared`, and that directory is exactly what
+    # the roster's WRITE tool can name -- so one WRITE bought `exit 0` with
+    # GUARD-TAMPER empty, GUARD-SCOPE unchanged and GUARD-T 0.
+    #
+    # `_resolve` is the roster's own path check and is therefore the authority
+    # on "can the agent name this", so M11 asks IT rather than asserting a
+    # string. It asks on the most hostile worktree the pinned path admits: the
+    # one whose write surface is the pin's own `packages/shared` ancestor, if it
+    # has one. A pin with no such ancestor is unreachable from EVERY worktree,
+    # which is the quantifier the property needs and a single sample would not
+    # give. And a pin that is absent at all is not a weaker pin but the
+    # pre-RB-P72 oracle: the config is then whatever vitest finds in cwd, and cwd
+    # is the write surface itself -- reachable by construction, not by accident.
+    argv = oracle_argv(os.path.join("/no-such-worktree", SHARED))
+    pinned = argv[argv.index("--config") + 1] if "--config" in argv else None
+    if pinned is None:
+        reachable = True
+    else:
+        cfg = os.path.realpath(pinned)
+        marker = os.sep + SHARED.replace("/", os.sep) + os.sep
+        hostile = cfg.rsplit(marker, 1)[0] if marker in cfg else None
+        reachable = hostile is not None and _resolve(
+            hostile, os.path.relpath(cfg, os.path.join(hostile, SHARED))) == cfg
+    case("M11 RED: the oracle NAMES its config, it does not discover it",
+         "--config", "--config" in argv, True)
+    case("M11 RED: and no WRITE `_resolve` admits can name that path",
+         "unreachable", reachable, False)
+    # NOT asserted here, and the omission is deliberate and was measured: an
+    # `os.path.isfile(pinned)` case looks like a free extra check and is a trap.
+    # `ORACLE_CONFIG` is relative to `__file__`, and the MUT harness of
+    # `2026-08-19-loop-u5-closure-field-measurement.py` loads this file from a
+    # TEMP COPY, so the pin resolves to a directory the config was never in and
+    # the case reddens under all THREE of that program's mutations -- none of
+    # which touches the oracle. Measured: its MUT columns went 4/5/5 RED at
+    # `ba7a38b` to 5/6/6 with the case present, and back to 4/5/5 without it. A
+    # case that reddens for a reason its name does not state is worse than no
+    # case: it launders unrelated mutations into M11's column. Existence is
+    # caught anyway and by the right instrument -- vitest exits non-zero on a
+    # `--config` it cannot open, which is a FAIL, never a PASS.
+
+    # --- M12. AFTER `restore()`, NOTHING THE PREVIOUS REPEAT WROTE SURVIVES
+    # INSIDE THE WORKTREE EXCEPT THE TWO `node_modules` SYMLINKS THE HARNESS
+    # ITSELF PLANTS. That is the property, and BOTH halves are load-bearing: a
+    # reset that also deletes the links is not a fix, it is a harness whose
+    # second repeat has no oracle at all.
+    #
+    # RB-P79 is the finding: `-e node_modules` is a slash-free gitignore
+    # pattern, so it matched a directory of that name at ANY depth and
+    # `src/**/node_modules/**` outlived the declared reset -- on the module
+    # resolution path, and invisible to `tool_list`, to both guards and to
+    # `git status -uall`. Repeat N could poison repeat N+1.
+    #
+    # The thing under test is GIT's pattern matching, so this case runs a real
+    # `git clean` -- through `restore()` itself, the authority on what the reset
+    # does -- against a real throwaway repository, and asks `git status` what is
+    # left rather than asserting a string about this file's own argv. A case
+    # that read the exclusion list back would be green on the day the slash
+    # stopped anchoring. No workload checkout is touched; no model is called.
+    with tempfile.TemporaryDirectory(prefix="bk-j7-reset-") as tmp:
+        wt, real = _reset_fixture(tmp)
+        _plant_repeat_residue(wt, real)
+        planted = worktree_residue(wt)
+        restore(wt, real)
+        left = worktree_residue(wt)
+        # The second half on its own, with NO re-plant available: `run_one`
+        # calls `restore(wt, REAL_REPO)` and `REAL_REPO` is
+        # `os.environ.get("J7_REAL_REPO", "")`, so whenever that variable is
+        # unset the re-plant branch is dead and the EXCLUSION is the only thing
+        # standing between the two symlinks and `git clean -fdx`.
+        _plant_repeat_residue(wt, real)
+        restore(wt)
+        links = sorted(rel for rel in NODE_LINKS
+                       if os.path.islink(os.path.join(wt, rel)))
+    case("M12 setup: the fixture really planted residue to be removed",
+         f"{len(_RESIDUE_PLANT)} paths",
+         [p for p in _RESIDUE_PLANT
+          if not any(p == r or p.startswith(r + "/") for r in planted)], [])
+    case("M12 setup: and the census can see the ignored half at all",
+         "ignored seen",
+         SHARED + "/src/node_modules" in planted, True)
+    case("M12 RED: `restore()` leaves the two symlinks and NOTHING else",
+         "residue == NODE_LINKS", left, set(NODE_LINKS))
+    case("M12 RED: and the exclusion ALONE keeps them, with no re-plant",
+         "both links", links, sorted(NODE_LINKS))
 
     print()
     if fails:
