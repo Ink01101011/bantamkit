@@ -451,12 +451,51 @@ def apply_defects(wt: str) -> list[str]:
     return problems
 
 
+# AMENDMENT TO BAR SECTION 1.3 (RB-P72). Section 1.3 pre-registered the oracle
+# command as `./node_modules/.bin/vitest run` from `packages/shared`, with no
+# `--config`, so vitest AUTO-DISCOVERED its configuration from that cwd -- and
+# that cwd is the agent's write surface. One WRITE of `vitest.config.ts` there
+# reaches `exit 0` with GUARD-TAMPER empty, GUARD-SCOPE unchanged and GUARD-T 0;
+# measured beyond what RB-P72 records, `vitest.workspace.ts` and `vite.config.ts`
+# do the same at 15 of 141 tests. The command is now that command PLUS
+# `--config <this constant>`, naming a file in BANTAMKIT -- a different
+# repository from the workload the roster can write, and a path `_resolve`
+# cannot produce (`_resolve` never returns anything outside
+# `realpath(<wt>/packages/shared)`).
+#
+# THE AMENDMENT BINDS RUNS MADE AFTER IT. It makes no claim about J7's committed
+# arms: those rows ran under an unpinned oracle and always will have, no `.jsonl`
+# is regenerated here, and RB-P72's "deliberately not fixed" disposition stands
+# as J7's. This is an instrument change taking effect FORWARD, which is the one
+# thing bar A2.8 item 2 does not forbid.
+#
+# The pin is checked, not asserted: selfcheck case M11.
+ORACLE_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "2026-08-19-oracle.vitest.config.ts")
+
+
+def oracle_argv(cwd: str) -> list[str]:
+    """The oracle's argv, as a FUNCTION so M11 can read the pin without a run.
+
+    `ORACLE_CONFIG` is absolute, and that is not tidiness: a RELATIVE `--config`
+    is resolved against the CHILD's cwd, which is the write surface, and a pin
+    that resolves inside the surface is not a pin. M11's second case is exactly
+    that distinction and reddens on it."""
+    return [os.path.join(cwd, "node_modules/.bin/vitest"), "run",
+            "--config", ORACLE_CONFIG]
+
+
 def run_oracle(wt: str) -> tuple[int, str]:
     cwd = os.path.join(wt, SHARED)
     # Bar section 1.3 declares the command as `./node_modules/.bin/vitest run`
     # from `packages/shared`. Python resolves a RELATIVE executable against the
     # PARENT's cwd, not the child's, so the same binary is named absolutely.
-    p = subprocess.run([os.path.join(cwd, "node_modules/.bin/vitest"), "run"],
+    #
+    # ^ Left exactly as written, because it is the record of what section 1.3
+    # declared and of why the binary is spelled the way it is. The amendment is
+    # APPENDED, not folded in: the command is now that command PLUS
+    # `--config ORACLE_CONFIG`, for the reasons in the block above the constant.
+    p = subprocess.run(oracle_argv(cwd),
                        check=False, cwd=cwd, capture_output=True, text=True)
     return p.returncode, p.stdout + p.stderr
 
@@ -1371,6 +1410,52 @@ def cmd_selfcheck(args) -> int:
          True)
     case("M10 RED: and guard_t 0 is the one that differs", "PASS",
          classify_outcome(**green, oracle_exit=0, guard_t=0), "PASS")
+
+    # --- M11. THE ORACLE MUST RESOLVE ITS CONFIGURATION FROM A PATH THE AGENT'S
+    # WRITE SURFACE CANNOT REACH. That is the property; `--config` is only the
+    # mechanism that currently satisfies it, and M11 is written so that a
+    # different mechanism satisfying the same property would keep it green.
+    #
+    # RB-P72 is the finding: the oracle auto-discovered its config from its own
+    # cwd, its cwd IS `<wt>/packages/shared`, and that directory is exactly what
+    # the roster's WRITE tool can name -- so one WRITE bought `exit 0` with
+    # GUARD-TAMPER empty, GUARD-SCOPE unchanged and GUARD-T 0.
+    #
+    # `_resolve` is the roster's own path check and is therefore the authority
+    # on "can the agent name this", so M11 asks IT rather than asserting a
+    # string. It asks on the most hostile worktree the pinned path admits: the
+    # one whose write surface is the pin's own `packages/shared` ancestor, if it
+    # has one. A pin with no such ancestor is unreachable from EVERY worktree,
+    # which is the quantifier the property needs and a single sample would not
+    # give. And a pin that is absent at all is not a weaker pin but the
+    # pre-RB-P72 oracle: the config is then whatever vitest finds in cwd, and cwd
+    # is the write surface itself -- reachable by construction, not by accident.
+    argv = oracle_argv(os.path.join("/no-such-worktree", SHARED))
+    pinned = argv[argv.index("--config") + 1] if "--config" in argv else None
+    if pinned is None:
+        reachable = True
+    else:
+        cfg = os.path.realpath(pinned)
+        marker = os.sep + SHARED.replace("/", os.sep) + os.sep
+        hostile = cfg.rsplit(marker, 1)[0] if marker in cfg else None
+        reachable = hostile is not None and _resolve(
+            hostile, os.path.relpath(cfg, os.path.join(hostile, SHARED))) == cfg
+    case("M11 RED: the oracle NAMES its config, it does not discover it",
+         "--config", "--config" in argv, True)
+    case("M11 RED: and no WRITE `_resolve` admits can name that path",
+         "unreachable", reachable, False)
+    # NOT asserted here, and the omission is deliberate and was measured: an
+    # `os.path.isfile(pinned)` case looks like a free extra check and is a trap.
+    # `ORACLE_CONFIG` is relative to `__file__`, and the MUT harness of
+    # `2026-08-19-loop-u5-closure-field-measurement.py` loads this file from a
+    # TEMP COPY, so the pin resolves to a directory the config was never in and
+    # the case reddens under all THREE of that program's mutations -- none of
+    # which touches the oracle. Measured: its MUT columns went 4/5/5 RED at
+    # `ba7a38b` to 5/6/6 with the case present, and back to 4/5/5 without it. A
+    # case that reddens for a reason its name does not state is worse than no
+    # case: it launders unrelated mutations into M11's column. Existence is
+    # caught anyway and by the right instrument -- vitest exits non-zero on a
+    # `--config` it cannot open, which is a FAIL, never a PASS.
 
     print()
     if fails:

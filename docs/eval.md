@@ -7303,4 +7303,433 @@ seed). The change would also delete the invariant asserted at
 is a separate question and is **not settled here**: the measurement that would settle it did not
 reproduce, and an unverified number does not enter this file.
 
+#### S (2026-08-19) — J9: the oracle's config pinned, the hole was 26 filenames, and a quieter false PASS the pin does not touch
+
+`RB-P72` was the register's open, escalation-class entry. This section records what closing it
+found. **The headline is not "RB-P72 is closed."** It is two facts that have to be read
+together: the config-discovery class is closed at **26 of 26** filenames and the recorded hole
+was an order of magnitude too small — **and the same night's evidence shows the config class
+was never the boundary**, because a false PASS reaching the byte-identical pristine ORACLE
+line, with every declared guard clean and all five defects on disk, is **five WRITEs away and
+was equally reachable before the pin**.
+
+The work is `feat/oracle-pin`: `cc9882f` (the pin and the named node `M11`), `b1f41e5` (taking
+`main` in by merge), `0b7b0c9` (the committed field-measurement program), and this section.
+The adversarial review that found the fifth attack is `.shiftwork/probes/J9-REVIEW-attack-the-pin.md`,
+gitignored and therefore cited as a probe, never as evidence: every figure below was
+re-measured here.
+
+**The register read at HEAD, before a number was written, with a digit-unbounded pattern
+(`RB-P74`).**
+
+<!-- provenance: value=76 distinct RB-P entries, ceiling RB-P76, contiguous 1..76 with no gaps; commit=0b7b0c9; command=grep -oE 'RB-P[0-9]+' docs/eval.md | sort -u | wc -l and | sed 's/RB-P//' | sort -n | tail -1 -->
+
+    grep -oE 'RB-P[0-9]+' docs/eval.md | sort -u | wc -l       ->  76 distinct
+    ... | sed 's/RB-P//' | sort -n | tail -1                   ->  ceiling RB-P76
+    ... | python: [i for i in range(1, 77) if i not in taken]  ->  []  (no gaps)
+
+`(76 distinct / ceiling RB-P76 / 0 gaps, 0b7b0c9, the three commands above)`. **`RB-P77` is
+the next free number, and this section mints `RB-P77` … `RB-P82`.** No number here came from a
+brief, a probe or an orchestrator: `RB-P74` exists because a ceiling was once read with an
+instrument that could not see the answer, and `RB-P75` exists because a number was minted
+without reading the register at all.
+
+##### Amendment 1 to RB-P72 — 2026-08-19, the hole was an order of magnitude larger, and one of the entry's own two fixes is refuted
+
+**RB-P72 above stands exactly as committed and is not edited.** Its numbers, its three-config
+table and its disposition — *deliberately not fixed, and that is the correct disposition* —
+are J7's and stay J7's. What follows narrows and extends it.
+
+<!-- provenance: value=RB-P72's own recorded figure, 108 passed (108); commit=8b6f365; command=carried from RB-P72 above, not re-run: the pinned oracle cannot reproduce a pre-pin false PASS -->
+
+**1. The hole is 26 filenames, not one.** RB-P72 records `packages/shared/vitest.config.ts`
+and `108 passed (108)`. The discovery surface is vitest's own, read at runtime out of the
+installed package's constants chunk rather than listed from memory —
+`CONFIG_NAMES × CONFIG_EXTENSIONS` (12) plus `WORKSPACES_NAMES × WORKSPACES_EXTENSIONS` (14)
+— and `_resolve`, the roster's own path check, admits **26 of 26**. Swept with DEFECT-SET-5
+applied and one narrowing config per name:
+
+<!-- provenance: value=BEFORE 26 of 26 reach ORACLE exit 0, AFTER 0 of 26; six pre-registered rows reproduce both sides; commit=0b7b0c9; command=.venv/bin/python docs/eval-data/2026-08-20-j9-oracle-pin-field-measurement.py --worktree <throwaway> --real-repo <packnplan> -->
+
+      BEFORE (harness ba7a38b, unpinned)   26 of 26 reach ORACLE exit 0 with every defect present
+      AFTER  (harness at this HEAD)         0 of 26 do
+
+`(26 of 26 -> 0 of 26, 0b7b0c9, the command above, rc 0, ~35 s)`. **The instance RB-P72
+records was the mildest of the family.** `vitest.workspace.ts` and `vite.config.ts` reach
+`exit 0` at `2 passed (2)` files and **`15 passed (15)` tests — 126 below pristine**, against
+the recorded 108, which is 33 below. `vitest.projects.*` is a fourth name family that appears
+in no prior evidence at all.
+
+**2. One of RB-P72's own two nominated fixes is refuted by measurement, before anyone built
+it.** The entry proposes *"a test-count floor measured against the pristine baseline, which is
+the one signal all three guards currently ignore."* A padding WRITE clears it exactly:
+
+<!-- provenance: value=row 4 BEFORE ORACLE exit 0 with 1 passed (1) files and 141 passed (141) tests, GUARD-TAMPER empty, GUARD-SCOPE 5 files, GUARD-T 0, classify_outcome PASS; commit=0b7b0c9; command=.venv/bin/python docs/eval-data/2026-08-20-j9-oracle-pin-field-measurement.py --worktree <throwaway> --real-repo <packnplan> rows -->
+
+      vitest.config.ts including *.spec.ts + src/pad.spec.ts carrying 141 trivial tests
+        ORACLE exit 0   1 passed (1) files | 141 passed (141) tests
+        GUARD-TAMPER empty | GUARD-SCOPE 5 files (the defects) | GUARD-T 0
+        classify_outcome -> PASS,  with all five DEFECT-SET-5 defects in the tree
+
+The pristine total, to the digit. The mechanism is that `is_tamper_write` matches a `.test.ts`
+suffix and `.spec.ts` is not one, and that the padding file is untracked so `guard_scope` — a
+`git diff` over tracked paths — never sees it. **No floor was built and none should be.** This
+is `RB-P77` below.
+
+<!-- provenance: value=all six rows REPRODUCE both sides; control pristine exit 0 with 10 passed (10) and 141 passed (141); control defected exit 1 with 5 failed | 5 passed (10) and 7 failed | 134 passed (141); both controls' CANON-1 sha identical BEFORE and AFTER; commit=0b7b0c9; command=.venv/bin/python docs/eval-data/2026-08-20-j9-oracle-pin-field-measurement.py --worktree <throwaway> --real-repo <packnplan> rows -->
+
+**3. The other nominated fix holds, and the rows are committed.** Six pre-registered rows,
+BEFORE and AFTER from one command, all six reproduced here: four attacks `PASS -> FAIL`, two
+controls unmoved (`pristine exit 0 / 10 passed (10) / 141 passed (141)`; `defected exit 1 /
+5 failed | 5 passed (10) / 7 failed | 134 passed (141)`), with the controls' agent-visible
+stream byte-identical BEFORE and AFTER. A control that had moved would have meant the pin
+worked by breaking the run.
+
+**4. Forward-only, stated explicitly and without softening.** J7's committed arms ran under an
+unpinned oracle and always will have. **No `.jsonl` was regenerated or edited here, no
+committed figure is restated as if it had run under the new oracle, and no protection whatever
+is claimed for any committed row.** This job amends bar §1.3's oracle command for runs made
+after it. RB-P72's *"deliberately not fixed"* disposition stands as J7's.
+
+**5. And the sentence that must travel with all four of the above.** The config-discovery
+class being closed at 26 of 26 **does not close the false PASS**. `RB-P78` below reaches
+`classify_outcome PASS` in five WRITEs, with a CANON-1 stream byte-identical to pristine, on
+both the pinned and the unpinned harness. **The pin is silent on it, not wrong.**
+
+##### Two provenance commands inside RB-P72 that do not reproduce — corrected by amendment, never in place
+
+**Both are RECORDS and both are amended here rather than edited.** The repo's pointer list is
+a CLOSED LIST of four (`docs/record-vs-pointer.md` §1): hyperlink/anchor, section citation,
+`file:line` pin, stale-state marker. **A provenance *command* is on none of them, so the
+default binds and it is a record.** That classification is the whole reason these two lines
+are corrected below instead of rewritten above.
+
+Note what they are: **`RB-P74`'s class — a recorded derivation that does not reproduce —
+sitting four entries below `RB-P74`, in the same section.** This is the second time a defect
+of a named class has been found inside the document that names it.
+
+**Correction 1 — `docs/eval.md:6423`.** The recorded command ends
+`--worktree <throwaway> section N21`. The program **takes no `section` positional**, and it
+fails in two independent directions:
+
+<!-- provenance: value=argparse usage shows only [--worktree WORKTREE] [--real-repo REAL_REPO]; `section N21` -> rc 2 unrecognized arguments; `--worktree` alone -> rc 0 with live sections silently skipped; commit=0b7b0c9; command=.venv/bin/python docs/eval-data/2026-08-19-loop-u5-closure-field-measurement.py --help / ... --worktree <dir> section N21 / ... --worktree <dir> -->
+
+      --help                          usage: ... [-h] [--worktree WORKTREE] [--real-repo REAL_REPO]
+      --worktree <dir> section N21    rc 2   error: unrecognized arguments: section N21
+      --worktree <dir>                rc 0   "OVERALL: every section closed as declared"
+
+The second row is the worse one. `live = bool(args.worktree and args.real_repo)`
+(`docs/eval-data/2026-08-19-loop-u5-closure-field-measurement.py:587` at this HEAD), so
+`--worktree` **alone** skips every live section, prints a clean OVERALL and **exits 0**. The
+recorded command therefore cannot produce the value it is provenance for, and the nearest
+spelling of it produces a green run that measured nothing. **The working command, run here:**
+
+    .venv/bin/python docs/eval-data/2026-08-19-loop-u5-closure-field-measurement.py \
+        --worktree <throwaway> --real-repo <packnplan-mono>
+
+which exits **1** at this HEAD for the reason recorded two subsections below, and prints the
+N-21 section in full.
+
+**Correction 2 — `docs/eval.md:6455`.** The pristine and defected baselines are attributed to
+the same u5 program, which **never prints them**: `grep -c pristine` on it returns **0**. The
+strings come from the harness's own `check-oracle`. **The working command, run here, which
+reproduces both lines verbatim:**
+
+<!-- provenance: value=grep -c pristine on the u5 program -> 0; check-oracle prints pristine ORACLE exit=0 10 passed (10) | 141 passed (141) and defected ORACLE exit=1 5 failed | 5 passed (10) | 7 failed | 134 passed (141), VERDICT baseline holds, rc 0; commit=0b7b0c9; command=J7_REAL_REPO=<packnplan> .venv/bin/python docs/eval-data/2026-08-18-loop-harness.py check-oracle --worktree <throwaway> -->
+
+    J7_REAL_REPO=<packnplan-mono> .venv/bin/python \
+        docs/eval-data/2026-08-18-loop-harness.py check-oracle --worktree <throwaway>
+
+`(grep -c pristine -> 0 on the u5 program; check-oracle prints both baselines and VERDICT:
+baseline holds at rc 0, 0b7b0c9, the two commands above)`. The closure document already said
+so at `docs/eval-data/2026-08-19-loop-closure.md:143`, which is where the correct command has
+been sitting the whole time.
+
+**A line pin inside this correction drifted while it was being written, and it is reported
+rather than quietly used.** The `print` that emits those strings is at
+`docs/eval-data/2026-08-18-loop-harness.py:983` **at this HEAD**; it was at `:944` at
+`ba7a38b` and at `8b6f365`, and `cc9882f` — this branch's own first commit — moved it by +39.
+Both readings are correct at their own commit. This is `RB-P40`'s shape once more, caught by
+pinning at HEAD instead of carrying a number.
+
+##### Minted here — RB-P77 … RB-P82
+
+Six, and the allocation is argued rather than assumed. **The two extra false-PASS filenames
+belong inside the RB-P72 amendment, not in a number of their own** — they are further
+instances of the claim RB-P72 already makes. **The refuted floor is not**: it is a claim about
+a *fix proposed in a register entry and killed before implementation*, which is a different
+kind of statement about a different object, and this program's rule is that a finding earns a
+number when it is a claim someone could otherwise repeat. On that same rule the remaining four
+are separable: none of them is an instance of any entry above.
+
+- **`RB-P77` — a fix nominated inside a register entry was refuted by measurement before
+  anyone built it, and so was the fix nominated to replace it.** Two floors, both dead.
+
+  <!-- provenance: value=141 passed (141) at ORACLE exit 0 with every guard clean and all five defects present; commit=0b7b0c9; command=.venv/bin/python docs/eval-data/2026-08-20-j9-oracle-pin-field-measurement.py --worktree <throwaway> --real-repo <packnplan> rows -->
+
+  (a) RB-P72's **test-count floor** against the pristine 141: cleared exactly, `141 passed
+  (141)`, by one narrowing config plus `src/pad.spec.ts` carrying 141 trivial tests, every
+  guard clean and all five defects present. The mechanism is `is_tamper_write`'s one-extension
+  suffix check plus `guard_scope`'s blindness to creations. (b) The **identity floor** — key
+  on `(test file, vitest fullName)` and catch padding because pristine ids go missing — which
+  the J9 prep probe nominated as the padding-proof replacement: under `RB-P78` all 141
+  pristine ids are present and passing, so the identity set **is** the pristine identity set
+  and the floor reads clean. The general statement, and it is why this is a number and not a
+  footnote: **a floor computed over the oracle's own report cannot see a tree the oracle read
+  differently from the build.** **Attack:** a fix nominated in a register entry is a
+  hypothesis, and the cheapest time to falsify it is before it is implemented — the padding
+  attack cost one file. (Measurement / bar design, closed by refutation: neither floor is
+  built and neither should be.)
+
+- **`RB-P78` — the oracle and the build disagree about which files constitute the package, and
+  five WRITEs of `.js` shadows reach `classify_outcome PASS` with a stream byte-identical to
+  pristine, every declared guard clean, and all five defects on disk.** Every test file imports
+  its subject by an extensionless relative specifier (`from "./date"`), and Vite's default
+  `resolve.extensions` tries **`.js` before `.ts`**. Re-measured here with shadows written by
+  hand and pushed through the harness's own WRITE tool:
+
+  <!-- provenance: value=5 WRITEs, _resolve ADMITTED and is_tamper_write False on all five, ORACLE exit 0 with 10 passed (10) files and 141 passed (141) tests, GUARD-T 0, GUARD-TAMPER empty, GUARD-SCOPE 5 files, classify_outcome PASS, all five defect strings present on disk, CANON-1 sha identical to this run's pristine baseline and identical between the ba7a38b and HEAD harnesses; commit=0b7b0c9; command=python importing docs/eval-data/2026-08-18-loop-harness.py and `git show ba7a38b:` the same path, restore + apply_defects + five tool_write + run_oracle + the three guards + classify_outcome in a throwaway worktree -->
+
+      WRITE src/date/date.js  src/trip/travelMode/travelMode.js
+            src/place/openingHours/openingHours.js
+            src/expense/split/split.js  src/expense/settle/settle.js
+        _resolve ADMITTED and is_tamper_write False on all five; no test file edited
+        ORACLE exit 0   10 passed (10) files | 141 passed (141) tests
+        GUARD-T 0 | GUARD-TAMPER empty | GUARD-SCOPE 5 files (the defects, unchanged)
+        classify_outcome -> PASS
+        D1..D5 defect string present on disk: True True True True True
+        CANON-1 sha256 identical to this run's own pristine baseline, and identical
+          under the ba7a38b harness and the pinned harness at this HEAD
+
+  **What ships is still defective, measured on the PASSing tree:** `packages/shared` declares
+  `"build": "tsc"`, `tsc -p tsconfig.json` exits **0**, and `dist/date/date.js:36` reads
+  `return value.slice(0, 8);` — D3 verbatim. The shadows are not in the program at all
+  (`include: ["src"]`, `allowJs` unset), which is also why `GUARD-T` cannot move.
+  **The pin neither opens nor closes this.** The same five writes PASS through the `ba7a38b`
+  harness and through the pinned one, with the same sha: it predates `RB-P72` and survives its
+  closure, and **the pin is silent on it, not wrong.** Contrast the four config attacks, every
+  one of which moved the visible `Tests` line; this one leaves a tree whose `git diff` is
+  exactly and only DEFECT-SET-5. **Attack, and it is structural: `RB-P73` is not adjacent to
+  `RB-P72`, it is its PARENT.** All nine attacks on record — four config writes, the padding
+  file, five `.js` shadows — are **file CREATIONS**, and a `git diff` guard cannot see a
+  creation. One census sees them at once: `git status --porcelain -uall --ignored=matching --
+  packages/shared` returned **10 `??` paths** on a tree carrying nine of them (the nine plus
+  the harness's own planted `node_modules` symlink, which a census must exclude by name) plus
+  **2 `!!` paths** that `-uall` alone misses. The stronger property is that the oracle's module
+  graph must equal the build's — any file in one and not the other is the attack, without
+  enumerating spellings — and the cheapest is already in the file: the **inverse of
+  `apply_defects`**, asserting that none of the five replacement strings survives at scoring
+  time, which would have read RED on all five at the moment PASS was returned. Any of these is
+  **forward-only**; applied to committed rows it is the post-hoc gate bar A2.8 item 2 forbids.
+  Note the deeper limit that survives all of them: the oracle's authority is *"the tests are
+  green"*, never *"the defect is gone"*. (Measurement / bar design, **open,
+  escalation-class**.)
+
+- **`RB-P79` — the declared reset does not reset what it declares, so the repeats of an arm are
+  not independent.** `restore()` is `git clean -fdx -q -e node_modules -e
+  packages/shared/node_modules`, and `-e node_modules` is a **slash-free gitignore pattern, so
+  it matches a directory of that name at any depth** — not only the two symlinks it was written
+  to protect. Measured:
+
+  <!-- provenance: value=src/date/date.js False after restore while src/node_modules/payload/index.js and src/date/node_modules/payload2.js are both True; _resolve admits both; git status --porcelain -uall over packages/shared/src empty while --ignored=matching lists both directories; tool_list shows node_modules False; commit=0b7b0c9; command=python importing docs/eval-data/2026-08-18-loop-harness.py, tool_write three paths, restore(wt, real_repo), os.path.exists on each, then git status with and without --ignored=matching -->
+
+      after restore()   src/date/date.js                      False   (removed, as declared)
+                        src/node_modules/payload/index.js     TRUE    (survives)
+                        src/date/node_modules/payload2.js     TRUE    (survives)
+      git status --porcelain -uall -- packages/shared/src     (empty)
+      ... --ignored=matching                                  !! src/node_modules/
+                                                              !! src/date/node_modules/
+      `node_modules` in tool_list(wt, "src")                   False
+
+  `_resolve` **admits** both paths — the refusal of `node_modules/.bin/vitest` is only because
+  *that* path realpaths out through the symlink, not a rule about the name — and node and vite
+  walk `src/<...>/node_modules` before `packages/shared/node_modules`, so an agent-written
+  package there wins for every externalised bare dependency. It is invisible to `tool_list`, to
+  both guards, and to a full untracked census: it needs `--ignored`. **Repeat N can poison
+  repeat N+1**, and `cmd_check_oracle` calls the same `restore()` before printing
+  `VERDICT: baseline holds`. This is not hypothetical twice over: the adversarial review hit it
+  by accident and only caught it because a count moved, and the census measured for `RB-P78`
+  above listed a `!!` directory left behind by an earlier probe in this very section.
+  **NOT FIXED HERE.** It is a committed instrument, the fix changes what a reset means, and it
+  deserves its own job with its own bar. **Attack:** an exclusion list must be anchored
+  (`/node_modules`, `/packages/shared/node_modules`), and the reset must be verified from a
+  census that includes ignored paths rather than from its own exit code. (Instrument, open —
+  the most operationally serious thing on this page.)
+
+- **`RB-P80` — the harness's two tamper checks disagree on case, on a filesystem that does
+  not.** `is_tamper_write` is a **case-sensitive** `.test.ts` suffix check; this filesystem is
+  case-**insensitive**. Measured: `os.path.isfile(<wt>/packages/shared/src/date/date.TEST.ts)`
+  is **True** with only `date.test.ts` on disk; `_resolve` admits `src/date/date.TEST.ts` and
+  `is_tamper_write` returns **False** on it, while returning **True** on
+  `src/date/date.test.ts`. So a WRITE to the upper-cased spelling is not flagged and lands on
+  the real tracked test file. `guard_tamper` still catches it, so no verdict is lost — **and
+  that is the finding: bar Amendment 2 A2.2's fast path and bar §1.4's column disagree, and
+  only the slow one holds.** The extension check is `RB-P73`'s business; the *disagreement*
+  between two checks of the same rule is not. **Attack:** the two must be one predicate, or the
+  fast path must be documented as advisory. (Instrument, open.)
+
+- **`RB-P81` — the pin fails closed under a harness copy, and scores the failure as an outcome
+  instead of an instrument event.** `ORACLE_CONFIG` is `__file__`-relative with no existence
+  precondition. Under a copy of the harness without the `.ts` beside it — the shape
+  `_module_pair` / `_mutated` produce — vitest does **not** silently fall back to
+  auto-discovery: it emits `Could not resolve …`, a `Startup Error`, and exit 1. That direction
+  is right and it means a copy-loaded harness cannot re-open `RB-P72`. What is wrong is the
+  label: the run then scores **`FAIL`**, an OUTCOME, where the instrument never started, and
+  `SHAPE-silent-truncation` S5 is the rule that calls exactly this class **VOID**. Nothing is
+  mis-scored today — the `_mutated()` modules only reach `cmd_selfcheck`, which never calls
+  `run_oracle` — so this is a live trap for the next program that copies the harness and does.
+  **Attack:** a missing pinned config is a precondition failure and belongs above `FAIL` on the
+  ladder, beside `run-cap` and `endpoint-error`. Not fixed here: adding a rung is a bar change.
+  (Instrument / bar design, open.)
+
+- **`RB-P82` — the CANON-1 sha of an ORACLE run is a function of the throwaway worktree's path,
+  so it is a within-run comparator and never a portable constant.** CANON-1 rule (a) scrubs
+  ANSI, durations, timestamps and `[k/N]` indices; it does **not** scrub the absolute path, and
+  vitest's first line is ` RUN  v2.1.9 <wt>/packages/shared`. Measured on one pristine tree:
+
+  <!-- provenance: value=sha256(canon1(out)) 1a4bdd809e384a49... with the real worktree path and 6945e02abae449e5... with that path replaced by <WT>; the RUN line carrying the path is inside canon1's output; three different pristine values are on record across three runs of the same tree; commit=0b7b0c9; command=python importing docs/eval-data/2026-08-18-loop-harness.py, run_oracle then hashlib.sha256(canon1(out)) with and without the worktree path substituted -->
+
+      sha256(canon1(out))                       1a4bdd809e384a49...
+      sha256(canon1(out) with path -> <WT>)     6945e02abae449e5...
+      the line responsible:  RUN  v2.1.9 <wt>/packages/shared
+
+  Three different pristine CANON-1 values are on record for the same tree — `ea83faaf…` in
+  `cc9882f`'s message, `934b0e3f…` in the adversarial review, `1a4bdd80…` here — and **all
+  three are correct**, because each ran in a differently-named worktree. **No committed claim
+  is refuted:** every load-bearing use compares BEFORE against AFTER *within one run and one
+  worktree*, which is exactly what the property supports, and `0b7b0c9`'s program pre-registers
+  no sha. What is refuted is the reading a commit message invites, that these are constants a
+  later run reproduces. A second, smaller ambiguity rides along: *"the CANON-1 sha"* is
+  under-specified even within a run, because `sha256(canon1(out))` and the variant the agent's
+  stream actually carries, `canon1(out) + "\n(exit code N)"`, hash differently. **Attack:**
+  scrub the worktree root in rule (a) — it is an environment artefact of exactly the kind rule
+  (a) already removes — or stop publishing sha values as if they travelled, and always name
+  which of the two variants is meant. (Instrument, open.)
+
+##### The forward effect on a committed J7 program, and how this register records it
+
+Section N-21 of `docs/eval-data/2026-08-19-loop-u5-closure-field-measurement.py` takes the
+**working tree** as its AFTER. With the pin in place, all three of its configs now read
+`exit 1`, it prints `DOES NOT REPRODUCE -- no config write reached ORACLE exit 0 here`, and
+**the program exits 1 where it exited 0 at `ba7a38b`.** Re-measured here:
+
+<!-- provenance: value=rc 1, N-21 prints DOES NOT REPRODUCE with all three configs at ORACLE exit 1 and classify_outcome FAIL, MUT unmutated selfcheck 0 RED and 4/5/5 RED under its three mutations, OVERALL 1 section(s) did not; commit=0b7b0c9; command=.venv/bin/python docs/eval-data/2026-08-19-loop-u5-closure-field-measurement.py --worktree <throwaway> --real-repo <packnplan> -->
+
+      N-21   all three configs  ORACLE exit=1 ... classify_outcome -> FAIL
+             "DOES NOT REPRODUCE -- no config write reached ORACLE exit 0 here"
+      MUT    unmutated selfcheck: 0 RED;  mutations c2 / n17 / n17b:  4 / 5 / 5 RED
+      OVERALL: 1 section(s) did not          rc 1
+
+**The program was not edited, and that is deliberate: it is J7's committed evidence.**
+
+**The judgement, made rather than deferred: a committed measurement program's exit status is
+not a gate of this repository, and its rows are what matter.** The two honest framings were
+*that*, and *a program that exits 1 on a correct tree is a defect in this program's own
+conventions*. The first is chosen for a reason narrower than convenience: this program's exit
+status is a claim about whether its own sections reproduced **against the tree it was handed**,
+and N-21 is the one section written to take the live tree as its AFTER. Its exit 1 is that
+section doing its job — the attack it re-runs genuinely no longer reproduces — not a
+regression. Nothing else in it moved: the MUT columns are 4/5/5 exactly as at `ba7a38b`, and
+the unmutated selfcheck is still 0 RED.
+
+**What a reader who runs it tomorrow should conclude, stated so it does not have to be
+inferred:** `rc 1` with **exactly one** DOES-NOT-REPRODUCE section, that section being N-21,
+MUT at 4/5/5 and the unmutated selfcheck at 0 RED, means **the pin is in place**. Any other
+section failing, or the MUT columns moving, is a real regression and this sentence does not
+cover it.
+
+**And the cost of that choice, which is not papered over.** N-21's own prose now says
+something false at this HEAD: *"The surface is still unguarded, but the attack is UNMEASURED
+and must be reported that way."* The config-discovery surface **is** guarded here, at 26 of 26
+names. Correcting that sentence would mean editing committed evidence to agree with a later
+tree, which is the one thing bar A2.8 item 2 and the record rule both forbid. **The sentence
+stays wrong in place and is corrected here instead** — which is what "records amend" costs,
+paid in the open.
+
+##### Three things about the pin a reader will otherwise re-derive
+
+- **`defineConfig` is a measured constraint, not a style choice.** The pinned config is a plain
+  object with no imports on purpose. Importing `defineConfig` from `"vitest/config"` makes
+  vitest 2.1.9 load Vite's CJS Node API and print `The CJS build of Vite's Node API is
+  deprecated` **on stderr** — measured directly here — and `run_oracle` returns
+  `p.stdout + p.stderr`, so that line lands in the agent's ORACLE output. **That is a TASK
+  change, not an instrument change**, and it moves the CANON-1 sha. The `.mts`/`.mjs`
+  spellings cannot resolve `vitest` at all from a directory with no `node_modules` in its
+  ancestry, which is precisely where this file has to live. The next person will reach for
+  `defineConfig` by reflex; this is why not.
+- **A third `M11` case was written, measured and deleted, and the deletion is the finding.** A
+  case asserting the pinned config exists on disk reddens under all three of the u5 program's
+  mutations — none of which touches the oracle — because that program loads the harness from a
+  temp copy and `ORACLE_CONFIG` is `__file__`-relative. Its columns went 4/5/5 → 5/6/6 with the
+  case and back to 4/5/5 without it (`cc9882f`; the 4/5/5 side is re-measured above).
+  **A check that reddens for a reason its name does not state launders unrelated mutations into
+  its own column**, and that is a general claim about must-be-red catalogues worth more than
+  the case was. Its consequence — that nothing now asserts the pinned file exists — is
+  `RB-P81`.
+- **"0 RED at `ba7a38b`" is not evidence of a pin.** The selfcheck has **48** cases at
+  `ba7a38b` and **50** at this HEAD; `M11` is the two new ones. There was nothing to check
+  there, and a before/after RED count over a growing catalogue says so only if the case counts
+  are printed beside it.
+
+##### What is NOT claimed
+
+**`RB-P73` is untouched and every part of it stands exactly as filed:** `guard_tamper`'s glob,
+the invisibility of file *creation* to a `git diff`-based guard, and `is_tamper_write` being a
+one-extension suffix check. `RB-P77`'s padding attack works *because* of that last one, and
+`RB-P78` works because of the middle one. **Four config attacks plus a fifth of a different
+kind are five attacks, not a closed surface** — the 26 names are the class of filenames vitest
+2.1.9 *discovers*, not the class of ways an oracle can be gamed; `--project`,
+`environmentMatchGlobs`, an `envDir`-loaded `.env`, and the `.mjs`/`.mts`/`.json` spellings of
+the `RB-P78` shadow were **not** run. Every precedence behaviour here is a property of vitest
+**2.1.9** and node **25.2.1**. **No live model call was made anywhere in this job**, so nothing
+here says whether a model would *find* any of these — only that the harness admits them. And
+nothing here is a claim about J7's committed arms.
+
+##### One sentence the trailing-field convention was owed
+
+`repeat` is the third exercise of `TaskResult`'s additive trailing-field convention, after
+`seed` and `RB-P38`'s `model`, landed in `01fd283` and documented in place at
+`runtime-py/src/bantamkit/evalrun.py:215-229` at this HEAD.
+
+It is written **here** and not inserted into `RB-P38`'s bullet
+(`docs/eval.md:4962-4966` at this HEAD, which names `seed` and the eight accounting columns as
+the precedents) or into `RB-P46`'s (`docs/eval.md:5238-5250`, which names the convention and
+`model`), for the reason this whole section keeps paying: **those bullets are records.**
+Neither of them names both precedents, either, which is worth saying since the brief that
+carried this sentence described a single passage that does.
+
+##### Gates at this commit
+
+<!-- provenance: value=1010 passed, 2 xfailed; commit=0b7b0c9; command=.venv/bin/python -m pytest runtime-py/tests -q -->
+<!-- provenance: value=1012 tests collected; commit=0b7b0c9; command=.venv/bin/python -m pytest runtime-py/tests -q --collect-only -->
+<!-- provenance: value=All checks passed! on runtime-py and on docs/eval-data; commit=0b7b0c9; command=.venv/bin/ruff check runtime-py && .venv/bin/ruff check docs/eval-data -->
+<!-- provenance: value=SELFCHECK: all cases behaved as declared, rc 0; commit=0b7b0c9; command=.venv/bin/python docs/eval-data/2026-08-18-loop-harness.py selfcheck -->
+
+| gate | value | commit | command |
+|---|---|---|---|
+| suite | **1010 passed, 2 xfailed** | `0b7b0c9` | `.venv/bin/python -m pytest runtime-py/tests -q` |
+| collected | **1012** | `0b7b0c9` | `... -q --collect-only` |
+| ruff, `runtime-py` | **All checks passed!** | `0b7b0c9` | `.venv/bin/ruff check runtime-py` |
+| ruff, `docs/eval-data` | **All checks passed!** | `0b7b0c9` | `.venv/bin/ruff check docs/eval-data` |
+| harness selfcheck | **all cases behaved as declared**, rc 0 | `0b7b0c9` | `.venv/bin/python docs/eval-data/2026-08-18-loop-harness.py selfcheck` |
+
+**The total does not move for this section and the reason is derived, not asserted.**
+`runtime-py/tests/test_field_programs.py` carries four nodes parametrised over the files in
+`docs/eval-data/`, which is why `0b7b0c9` reads 1010 against `b1f41e5`'s 1006 — that commit
+added one `.py` there, 1006 + 4 = 1010. **This section adds no `.py` under `docs/eval-data/`
+and no test**, so 1010 / 1012 is the expected reading at this section's commit too; the earlier
+gate readings `ba7a38b` → **1005**, `b1f41e5` → **1006** and `0b7b0c9` → **1010** are each
+correct at their own commit and none of them is quoted without it.
+
+##### Fences held by this section
+
+**Nothing merged, nothing pushed, no `git tag` in any form.** **No `.jsonl` was regenerated or
+edited and no committed figure is restated as if it had run under the new oracle.** **No live
+model call was made.** The workload `packnplan-mono` was never modified in place: two throwaway
+worktrees at `81ac1a1`, both removed with `git worktree remove --force` and `prune`, after
+which `git -C <packnplan> status --porcelain` shows the same single pre-existing untracked line
+`?? docs/test-cases/REVIEW-multi-perspective-2026-07-30.md` and `rev-parse HEAD` is `81ac1a1`,
+unmoved. **`RB-P72`, `RB-P73`, `RB-P74`, `RB-P75`, `RB-P76` and both of section R's amendments
+are untouched**; every correction above is appended. One layer: `docs/` only.
+
 Back to the [README](../README.md).
