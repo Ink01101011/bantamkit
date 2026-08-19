@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -10,8 +11,14 @@ pytest.importorskip("mcp")
 
 from mcp import Client, MCPError  # noqa: E402
 
+import bantamkit  # noqa: E402
 from bantamkit.assets import load_skill, load_tool  # noqa: E402
-from bantamkit.mcpserver import _build_memory, _parse_args, build_server  # noqa: E402
+from bantamkit.mcpserver import (  # noqa: E402
+    _build_memory,
+    _parse_args,
+    _version,
+    build_server,
+)
 from bantamkit.memory import Memory  # noqa: E402
 
 
@@ -350,6 +357,7 @@ def test_stdio_subprocess_initializes(tmp_path):
             async with ClientSession(read, write) as session:
                 init = await session.initialize()
                 assert init.server_info.name == "bantamkit"
+                assert init.server_info.version == bantamkit.__version__
                 assert (init.instructions or "").startswith("# Memory")
                 tools = await session.list_tools()
                 assert len(tools.tools) == 6
@@ -360,3 +368,38 @@ def test_stdio_subprocess_initializes(tmp_path):
 def test_nonpositive_k_flag_is_rejected():
     with pytest.raises(SystemExit, match=">= 1"):
         _build_memory(_parse_args(["--k", "0"]))
+
+
+PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
+
+
+def test_server_advertises_the_version_this_checkout_declares(tmp_path):
+    """RB-P45. The advertised version is a property of the tree, not of the last `pip`.
+
+    Both sides of this equality are read out of the checkout, so the node is a repo-content
+    check: it cannot be reddened or greened by reinstalling anything.
+    """
+    assert make_server(tmp_path).version == bantamkit.__version__
+
+
+def test_advertised_version_does_not_come_from_installed_metadata(monkeypatch):
+    """The regression RB-P45 names, pinned so a fresh-install CI can still see it.
+
+    A stale editable install is not a `PackageNotFoundError`, so reading `dist-info` returns
+    a confidently wrong number rather than falling back. Standing in a wrong answer where
+    `importlib.metadata` would be consulted proves the answer is not sourced from there --
+    and unlike comparing against the real install, this stays red on any machine.
+    """
+    import importlib.metadata
+
+    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "9.9.9-from-dist-info")
+    assert _version() == bantamkit.__version__
+
+
+def test_packaging_reads_the_same_declaration_the_server_reads():
+    """One source of truth: the wheel's version and the served version are the same bytes."""
+    config = tomllib.loads(PYPROJECT.read_text())
+    assert "version" in config["project"]["dynamic"]
+    assert "version" not in config["project"], "a static version would shadow the module's"
+    declared = PYPROJECT.parent / config["tool"]["hatch"]["version"]["path"]
+    assert declared.resolve() == Path(bantamkit.__file__).resolve()
