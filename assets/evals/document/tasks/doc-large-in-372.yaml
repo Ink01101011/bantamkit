@@ -1,0 +1,36 @@
+# PRE-REGISTERED by docs/eval-data/2026-08-20-document-read-bar.md, before any arm ran.
+# `expected` was READ OUT OF the generated document (the same slice `answers:` names),
+# never hand-written: the bar's gate G-1 rebuilds the fixture and fails the run if the
+# two ever disagree.
+# Cell LARGE-IN. Corpus `inventory.xlsx`, 12,000 data rows, 258,129 extracted bytes
+# (~64,532 est. tokens, 1.97x WORKER_NUM_CTX). The answer's data row is <= 570, so it
+# sits INSIDE the bar's declared head truncation (12,288 B = rendered rows 0..570).
+# The `paste` arm CAN answer here. This is the cell that can refute the reader.
+name: doc-large-in-372
+family: document-read
+tools: []
+document_setup:
+  - path: inventory.xlsx
+    seed: 4021
+    sheets:
+      - name: stock
+        rows: 12000
+        columns:
+          - {name: sku, kind: key, prefix: 'SKU-', width: 6}
+          - {name: region, kind: choice, values: [north, south, east, west]}
+          - {name: units, kind: int, low: 1000, high: 9999}
+    answers:
+      question_sku: stock!A373
+      expected_region: stock!B373
+      expected_units: stock!C373
+prompt: >-
+  A workbook is attached to this task. Its sheet `stock` has the columns sku, region
+  and units, one row per sku. Find the single row whose sku is exactly SKU-000372 and
+  report that row's region and units. Do not compute anything and do not summarise the
+  sheet; read the one row. Answer with ONLY this JSON, nothing else:
+  {"region": "<region>", "units": <integer>}
+scoring:
+  kind: json_equal
+  expected:
+    region: south
+    units: 7796
