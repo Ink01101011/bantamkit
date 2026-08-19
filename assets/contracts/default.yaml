@@ -26,3 +26,16 @@ document_page_truncated: "row {index} was too long for one page and was cut: {dr
 document_unknown: "error: no document named {name}; this task has: {available}"
 document_offset_past_end: "error: offset {offset} is past the end of \"{part}\", which has {rows} rows numbered 0 to {last}"
 document_error: "error: {detail}"
+# The `paste` arm's system message (`docs/eval-data/2026-08-20-document-read-bar.md` §10.2,
+# PASTE_MAX_BYTES = 12288). The arm registers NO tools, so these four lines are the whole of
+# what the model is told ABOUT the corpus; the rows themselves are docread's own rendering,
+# unprefixed and unreformatted, so `paste` and `document_read` differ in DELIVERY and not in
+# content. Clause 4 makes stating the paste's own completeness part of the contract, and
+# `paste_truncated` says the missing rows are unreachable rather than leaving the model to
+# hunt for a tool that is not there: a paste that lets a truncated head read as the whole
+# sheet is a different, worse arm than the one the bar pre-registered.
+document_paste_preamble: "The following document content is attached to this task. Fields in a row are separated by tabs, rows are given in order, and row 0 of each part is its header."
+document_paste_part: "{document} ({kind}) part {index} \"{part}\": {rows} rows, numbered 0 to {last}; {shown} of them are shown below."
+document_paste_complete: "  rows 0 to {last_shown} are shown, which is every row of \"{part}\": this copy is COMPLETE."
+document_paste_truncated: "  rows 0 to {last_shown} are shown; rows {first_missing} to {last} of \"{part}\" are NOT shown and no tool is attached that can fetch them. This copy is PARTIAL."
+document_paste_none: "  no rows of \"{part}\" are shown and no tool is attached that can fetch them."

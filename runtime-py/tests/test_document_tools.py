@@ -28,14 +28,19 @@ import pytest
 
 from bantamkit.assets import load_tool
 from bantamkit.client import Tool
+from bantamkit.docread import extract
 from bantamkit.evalrun import (
     CONFIG_CHOICES,
     CONFIGS,
     DOCUMENT_PAGE_MAX_BYTES,
     DOCUMENT_PAGE_MAX_ROWS,
     DOCUMENT_PAGE_ROW_LIMIT,
+    MIRROR_CONFIGS,
+    PASTE_CONFIGS,
+    PASTE_MAX_BYTES,
     READER_CONFIGS,
     _document_tools,
+    effective_config,
     materialise_documents,
     request_wire_bytes,
     run_task,
@@ -593,3 +598,225 @@ def test_the_fixture_is_still_generated_and_no_binary_entered_the_repo():
     assert not list((REPO / "assets").rglob("*.xlsx"))
     assert not list((REPO / "assets").rglob("*.docx"))
     assert zipfile.is_zipfile.__module__ == "zipfile"
+
+
+# ------------------------------------------------- the `paste` arm (bar §10.2, clause by clause)
+#
+# `paste` is the arm the reader has to BEAT, and every number below is transcribed from
+# `docs/eval-data/2026-08-20-document-read-bar.md`, which was committed before any arm ran.
+# The tests are written per clause so that a failure names which clause of the pre-registered
+# contract stopped holding, rather than reporting "the paste changed".
+
+SMALL_CORPUS = {
+    "path": "inventory-small.xlsx",
+    "seed": 4021,
+    "sheets": [{"name": "stock", "rows": 400, "columns": COLUMNS}],
+    "answers": {"question_sku": "stock!A138", "expected_units": "stock!C138"},
+}
+
+
+def paste_task(entry=None, name="doc-lookup"):
+    return {
+        "name": name,
+        "family": "document-read",
+        "prompt": "What is the units value for SKU-004137?",
+        "tools": [],
+        "document_setup": [entry or OVER_WINDOW],
+        "scoring": {"kind": "contains", "expected": ["7508"]},
+    }
+
+
+def system_of(client):
+    """The system message the arm put on the wire, or None."""
+    return next(
+        (m.content for m in client.calls[0]["messages"] if m.role == "system"), None
+    )
+
+
+def pasted_rows(client):
+    """Just the corpus rows: everything after the three lines `document_paste` prepends."""
+    return system_of(client).split("\n")[3:]
+
+
+def run_paste(tmp_path, entry=None, config="paste", name="doc-lookup"):
+    from conftest import FakeClient, assistant  # noqa: PLC0415
+
+    client = FakeClient([assistant(content="7508")])
+    result = run_task(client, paste_task(entry, name), config, tmp_path)
+    return client, result
+
+
+def test_paste_is_a_calibration_config_and_not_in_the_default_matrix():
+    """Bar §10.2: calibration-only in CONFIG_CHOICES, never in CONFIGS, exactly as `reader`
+    is. A component enters the permanent matrix when a bar says it did, and this bar has an
+    unrun criterion (§7.6), so `paste` earns no promotion by existing."""
+    assert "paste" in CONFIG_CHOICES and "paste" not in CONFIGS
+    assert PASTE_CONFIGS == {"paste": "bare"}
+
+
+def test_paste_max_bytes_is_the_one_constant_the_bar_declared():
+    """§1.4: ONE constant, not a per-corpus tuning. Falsifying mutation: any other value here
+    moves the truncation boundary and the two boundary tests below go red together."""
+    assert PASTE_MAX_BYTES == 12288
+
+
+def test_clause_5_the_paste_arm_registers_no_tools_at_all(tmp_path):
+    """§10.2 clause 5, stated as a property of the wire and of the row: no tool is offered,
+    so `tool_calls` on a `paste` row is 0 and cannot be anything else."""
+    client, result = run_paste(tmp_path)
+    assert client.calls[0]["tools"] == []
+    assert result.tool_calls == 0
+    assert result.config == "paste"
+
+
+def test_clause_1_the_paste_arm_materialises_the_same_corpus_every_other_arm_reads(tmp_path):
+    """§10.2 clause 1. The corpus is the task's, not the arm's: `run_task` builds it
+    unconditionally, so the file exists on disk for `paste` exactly as it does for `reader`
+    and the two arms differ in DELIVERY, not in content."""
+    run_paste(tmp_path)
+    assert (tmp_path / "doc-lookup-paste-docs" / "inventory.xlsx").is_file()
+
+
+def test_clause_3_the_large_corpus_is_cut_where_the_bar_says_it_is(tmp_path):
+    """§1.4, measured and not assumed: at a 12,288 B head cut on a row boundary the large
+    corpus keeps 571 rendered rows of 12,001 = 4.7579%, weighing 12,277 B, and rendered index
+    571 is the FIRST one outside. These are the numbers §3 placed every large task against."""
+    client, _ = run_paste(tmp_path)
+    rows = pasted_rows(client)
+    assert len(rows) == 571
+    assert sum(len(r.encode()) + 1 for r in rows) == 12277
+    assert round(len(rows) / 12001, 6) == 0.047579
+    fixtures = materialise_documents(paste_task(), tmp_path / "check", "paste")
+    part = extract(fixtures[0].path).parts[0]
+    assert list(part.rows[:571]) == rows
+    assert part.rows[571] not in rows  # the first row outside is outside
+
+
+def test_clause_3_no_row_is_ever_cut_in_half(tmp_path):
+    """§10.2 clause 3: "a half row is a value the model can misread as a whole one". Every
+    line the paste emits is a WHOLE rendered row of the part, not a prefix of one.
+
+    Falsifying mutation: slice the rendering by bytes instead of by rows and the last line
+    becomes a partial row that is in no `part.rows`, and this goes red."""
+    client, _ = run_paste(tmp_path)
+    fixtures = materialise_documents(paste_task(), tmp_path / "check", "paste")
+    whole = set(extract(fixtures[0].path).parts[0].rows)
+    assert all(row in whole for row in pasted_rows(client))
+
+
+def test_clause_3_one_constant_keeps_the_small_corpus_whole(tmp_path):
+    """§1.4: the SAME 12,288 B leaves the small corpus (8,621 B with newlines) COMPLETE. That
+    is the whole design — the small cell is level ground the reader has to win on, not a
+    handicap match, and no arm-specific special case produced it."""
+    client, _ = run_paste(tmp_path, SMALL_CORPUS, name="doc-small")
+    rows = pasted_rows(client)
+    assert len(rows) == 401
+    assert sum(len(r.encode()) + 1 for r in rows) == 8621
+    assert "this copy is COMPLETE" in system_of(client)
+    assert "PARTIAL" not in system_of(client)
+
+
+def test_clause_4_the_paste_states_its_own_completeness_on_both_corpora(tmp_path):
+    """§10.2 clause 4: the model is TOLD the paste is partial rather than left to infer it
+    from a sheet that stops. A paste that lies about its own completeness is a different,
+    worse arm — so the part name, the total and the shown count are all on the wire."""
+    client, _ = run_paste(tmp_path)
+    system = system_of(client)
+    assert '"stock": 12001 rows, numbered 0 to 12000; 571 of them are shown below.' in system
+    assert 'rows 571 to 12000 of "stock" are NOT shown' in system
+    assert "This copy is PARTIAL." in system
+
+
+def test_clause_2_the_pasted_bytes_are_the_bytes_document_read_would_return(tmp_path):
+    """§10.2 clause 2, as an equality rather than a description: the rows the paste shows are
+    docread's own rendering, so the same offsets fetched through `document_read` carry the
+    same bytes. The arms differ in delivery; the content is one corpus.
+
+    The pager's own framing (the header line and the row-number prefix) is not compared,
+    because that framing is what "delivery" means — and the bar's byte accounting (each row
+    plus its newline) is only 12,277 B because the paste carries no prefixes."""
+    client, _ = run_paste(tmp_path)
+    rows = pasted_rows(client)
+    read = tools_for(OVER_WINDOW, tmp_path / "pager")["document_read"]
+    observation = read(part="stock", offset=520, limit=50)
+    for i, row in enumerate(rows[520:570]):
+        assert f"{520 + i}\t{row}" in observation
+
+
+def test_the_out_stratums_answer_row_is_absent_and_the_in_stratums_is_present(tmp_path):
+    """The reason §3 stratifies at all, made checkable on the corpus rather than argued: the
+    LARGE-OUT answer (data row 4137) is not in the paste at any price, and the LARGE-IN answer
+    (data row 137) is. The paste arm's ceiling in the OUT stratum is 0 BY CONSTRUCTION, and
+    that is a property of these bytes, not a prediction about a model."""
+    client, _ = run_paste(tmp_path)
+    system = system_of(client)
+    assert "SKU-004137" not in system
+    assert "SKU-000137\t" in system
+    assert "SKU-000529\t" in system  # §3's near-the-cut IN task, 41 rows inside
+
+
+def test_the_paste_arm_attaches_nothing_else(tmp_path):
+    """`paste` resolves to `bare`, so `bare -> paste` moves exactly one component — the same
+    isolation `bare -> reader` has. No schema gate, no json gate, no critic round."""
+    from conftest import FakeClient, assistant  # noqa: PLC0415
+
+    client = FakeClient([assistant(content="not the answer")])
+    result = run_task(client, paste_task(), "paste", tmp_path)
+    assert result.model_calls == 1
+    assert result.schema_retries == 0 and result.critique_rounds == 0
+
+
+def test_bare_is_paste_without_the_corpus(tmp_path):
+    """§1.1: the floor receives no corpus at all. This is what makes `bare` a contamination
+    detector (§1.2) rather than a weaker paste — the two rows differ by the corpus and by
+    nothing else, so a `bare` pass cannot be explained by anything the harness showed it."""
+    client, _ = run_paste(tmp_path, config="bare")
+    assert system_of(client) is None
+
+
+def test_a_task_without_document_setup_gets_no_paste(tmp_path):
+    """`document_setup:` gates the paste exactly as it gates the reader pair: a paste of no
+    corpus is a system message that says nothing."""
+    from conftest import FakeClient, assistant  # noqa: PLC0415
+
+    task = paste_task()
+    task.pop("document_setup")
+    client = FakeClient([assistant(content="7508")])
+    run_task(client, task, "paste", tmp_path)
+    assert system_of(client) is None and client.calls[0]["tools"] == []
+
+
+def test_the_budget_is_one_running_total_across_parts_not_a_fresh_ceiling_per_part(tmp_path):
+    """A two-fixture task pays PASTE_MAX_BYTES ONCE. Per-part ceilings would let a task quietly
+    carry 2x the declared paste, and PASTE_MAX_BYTES would stop being a ceiling on the system
+    prompt. The second part is still ANNOUNCED with its true row count and 0 rows shown — the
+    model is told it exists and is unreadable, which is clause 4's honesty applied to the case
+    clause 3 creates."""
+    from conftest import FakeClient, assistant  # noqa: PLC0415
+
+    task = paste_task()
+    task["document_setup"] = [OVER_WINDOW, dict(SMALL_CORPUS)]
+    client = FakeClient([assistant(content="7508")])
+    run_task(client, task, "paste", tmp_path)
+    system = system_of(client)
+    rows = [ln for ln in system.split("\n") if ln.startswith("SKU-") or ln.startswith("sku\t")]
+    assert sum(len(r.encode()) + 1 for r in rows) <= PASTE_MAX_BYTES
+    assert '"stock": 401 rows, numbered 0 to 400; 0 of them are shown below.' in system
+    assert 'no rows of "stock" are shown' in system
+
+
+def test_every_mirrored_arm_resolves_onto_a_real_headline_config():
+    """The property that makes `bare -> paste` and `bare -> reader` ONE-component steps.
+
+    A mirrored arm that resolved to itself would behave identically today — nothing keys off
+    the name `paste` — and would silently stop being a mirror the first time a component tested
+    for a config it now fails to match. Asserting the mapping as data cannot catch that: it
+    survives if `run_task` stops consulting the mapping at all, which is why this asserts the
+    RESOLUTION and pins `paste` and `reader` onto `bare` by name."""
+    for family in MIRROR_CONFIGS:
+        for name, headline in family.items():
+            assert headline in CONFIGS, f"{name} mirrors {headline}, which is not a config"
+            assert effective_config(name) == headline
+    assert effective_config("paste") == "bare"
+    assert effective_config("reader") == "bare"
+    assert effective_config("bare") == "bare"  # an unmirrored name is itself

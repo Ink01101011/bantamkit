@@ -36,6 +36,11 @@ REQUIRED_KEYS = (
     "document_unknown",
     "document_offset_past_end",
     "document_error",
+    "document_paste_preamble",
+    "document_paste_part",
+    "document_paste_complete",
+    "document_paste_truncated",
+    "document_paste_none",
 )
 
 
@@ -253,3 +258,62 @@ def document_error(detail: object) -> str:
     tool observation in the harness uses.
     """
     return load_contract()["document_error"].format(detail=detail)
+
+
+# ---- the `paste` arm's system message (no reader attached) -------------------------------
+
+
+def document_paste(parts: list[dict]) -> str:
+    """The whole of what the `paste` arm tells the model, rendered from primitives.
+
+    The bar's §10.2 clause 4: the message states the part name, the total row count and how
+    many rows are shown, so the model is TOLD the paste is partial rather than left to infer
+    it from a sheet that simply stops. That is why the completeness sentence is a separate
+    contract string per case and not an `if` inside a format argument — the three cases
+    (complete, partial, nothing fitted) say different things to the model and each is
+    byte-pinned.
+
+    The rows are passed in already sliced and already rendered, and are emitted VERBATIM with
+    no row-number prefix. `document_page` prefixes its rows because a pager's caller has to
+    compute the next offset; a paste has no next call to make, and a prefix would put bytes in
+    front of the model that the bar's PASTE_MAX_BYTES accounting (each row plus its newline)
+    does not count. Clause 2's "the same bytes `document_read` would return" is about
+    docread's rendering of the row, which is what arrives here.
+    """
+    contract = load_contract()
+    lines = [contract["document_paste_preamble"]]
+    for entry in parts:
+        rows: list[str] = entry["rows"]
+        total = entry["row_count"]
+        last = total - 1
+        lines.append(
+            contract["document_paste_part"].format(
+                document=entry["document"],
+                kind=entry["kind"],
+                index=entry["index"],
+                part=entry["part"],
+                rows=total,
+                last=last,
+                shown=len(rows),
+            )
+        )
+        if not rows:
+            lines.append(contract["document_paste_none"].format(part=entry["part"]))
+            continue
+        if len(rows) == total:
+            lines.append(
+                contract["document_paste_complete"].format(
+                    part=entry["part"], last_shown=len(rows) - 1
+                )
+            )
+        else:
+            lines.append(
+                contract["document_paste_truncated"].format(
+                    part=entry["part"],
+                    last_shown=len(rows) - 1,
+                    first_missing=len(rows),
+                    last=last,
+                )
+            )
+        lines.extend(rows)
+    return "\n".join(lines)

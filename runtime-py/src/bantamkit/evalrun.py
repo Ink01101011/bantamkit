@@ -26,6 +26,7 @@ from bantamkit.contract import (
     document_manifest,
     document_offset_past_end,
     document_page,
+    document_paste,
     document_unknown,
     schema_error,
     schema_instruction,
@@ -179,9 +180,55 @@ GUARD_CONFIGS = {"graph-guarded": "graph", "memory-guarded": "memory"}
 # the one before this commit for every task that declares no `document_setup:`.
 READER_CONFIGS = {"reader": "bare"}
 
+# Same precedent a fifth time, and this one is the reader's REAL comparison rather than its
+# floor. `paste` mirrors `bare` exactly — no schema gate, no critic, no graph, no memory and
+# NO reader tools — plus one system message carrying as much of the corpus as fits. It is what
+# a practitioner with no reader does, and J4 died for assuming that paste was always available:
+# `inventory.xlsx` extracts to 258,129 B, which is 7.88x the 8,192-token window the declared
+# tiers are actually served at, so the paste J4 imagined is unconstructible and the arm that
+# replaces it is incomplete BY CONSTRUCTION on the large corpus and complete on the small one.
+# Pre-registered at `docs/eval-data/2026-08-20-document-read-bar.md` §10.2 before any arm ran;
+# this is a transcription of that contract, and the constant below is one of its five clauses.
+PASTE_CONFIGS = {"paste": "bare"}
+
+# ONE constant over BOTH corpora, and it is not tuned per corpus. Measured at this commit: the
+# large corpus keeps rendered rows 0-570 (571 of 12,001 = 4.7579%, 12,277 B) and row 571 is the
+# first one outside; the small corpus needs 8,621 B and so is kept WHOLE, which is what makes
+# the small cell a level-ground comparison the reader has to win rather than a handicap match.
+# Sized in the bar's §10.2 to fit the served window with margin; §7.10 states in advance that a
+# larger window would give a larger paste and a smaller effect. Shrinking it is an AMENDMENT to
+# the bar with its own date (§6 V-1), never a silent adjustment.
+PASTE_MAX_BYTES = 12288
+
+# The four MIRROR families above each map a calibration name to the headline config it copies,
+# and every one of them exists to make a ladder step isolate ONE component. Resolving that here
+# rather than inline in `run_task` is what makes the mapping checkable: the property that every
+# mirrored name lands on a real config in CONFIGS is the whole reason `bare -> reader` and
+# `bare -> paste` are one-component steps, and an arm that quietly resolved to itself would
+# still behave identically today and stop being a mirror the moment a component keyed off a new
+# name. GRAPH_CONFIGS is deliberately absent: its names resolve to THEMSELVES because the flag
+# dict is looked up by the resolved name (`effective in GRAPH_CONFIGS`), which is a different
+# mechanism wearing the same variable.
+MIRROR_CONFIGS = (GUARD_CONFIGS, BUDGET_CONFIGS, READER_CONFIGS, PASTE_CONFIGS)
+
+
+def effective_config(config: str) -> str:
+    """The headline config a calibration-only name mirrors, or the name itself."""
+    for family in MIRROR_CONFIGS:
+        if config in family:
+            return family[config]
+    return config
+
+
 # Every config name run_task accepts: the permanent matrix plus calibration-only ablations.
 CONFIG_CHOICES = CONFIGS + sorted(
-    (set(GRAPH_CONFIGS) | set(BUDGET_CONFIGS) | set(GUARD_CONFIGS) | set(READER_CONFIGS))
+    (
+        set(GRAPH_CONFIGS)
+        | set(BUDGET_CONFIGS)
+        | set(GUARD_CONFIGS)
+        | set(READER_CONFIGS)
+        | set(PASTE_CONFIGS)
+    )
     - set(CONFIGS)
 )
 
@@ -872,6 +919,51 @@ def _document_tools(fixtures: list[DocumentFixture]) -> list[ToolDef]:
     ]
 
 
+def _paste_head(fixtures: list[DocumentFixture]) -> str:
+    """The `paste` arm's system message: the head of the corpus, cut on a row boundary.
+
+    The bar's §10.2, clause by clause. (1) The fixtures are the ones `run_task` materialised
+    unconditionally, so this arm reads the same bytes every other arm does. (2) Each part is
+    re-extracted and rendered as `docread` renders it — `Part.rows` is already header-then-rows
+    and nothing here reformats a row. (3) Whole rows are added in declaration order while the
+    running total, counting each row PLUS its newline, stays <= PASTE_MAX_BYTES; a row that
+    would cross the ceiling stops the fill rather than being cut, because half a row is a value
+    the model can misread as a whole one. (4) `document_paste` states the part name, the total
+    and the shown count. (5) The caller registers no tools on this arm.
+
+    The budget is one running total across every part in order, not a fresh ceiling per part,
+    because PASTE_MAX_BYTES is a ceiling on what the SYSTEM PROMPT carries and a per-part
+    ceiling would make a two-part task quietly pay twice. Every task in this bar's set declares
+    one part, so the two readings agree on the committed corpus; the global one is the reading
+    that stays honest if a later task does not. A part reached with the budget already spent is
+    still announced with its true row count and zero rows shown — the model is told the part
+    exists and is unreadable, which is the same honesty clause 4 asks for.
+    """
+    remaining = PASTE_MAX_BYTES
+    entries = []
+    for fixture in fixtures:
+        doc = extract(fixture.path)
+        for part in doc.parts:
+            kept: list[str] = []
+            for row in part.rows:
+                cost = len(row.encode()) + 1
+                if cost > remaining:
+                    break
+                remaining -= cost
+                kept.append(row)
+            entries.append(
+                {
+                    "document": fixture.name,
+                    "kind": doc.kind,
+                    "index": part.index,
+                    "part": part.name,
+                    "row_count": part.row_count,
+                    "rows": kept,
+                }
+            )
+    return document_paste(entries)
+
+
 class SchemaGate:
     """Enforce a task schema on the agent's final answer, on structured()'s retry budget.
 
@@ -1059,9 +1151,7 @@ def run_task(
     # Calibration-only configs mirror a headline config exactly, plus one component.
     # Resolving the name here keeps every membership test below reading as it did;
     # `config` itself stays the label the TaskResult records.
-    effective = GUARD_CONFIGS.get(
-        config, BUDGET_CONFIGS.get(config, READER_CONFIGS.get(config, config))
-    )
+    effective = effective_config(config)
 
     # Before the agent exists, and unconditional on `config`: a document is the task's
     # corpus, not a component under test, so every arm reads the same bytes — which the
@@ -1110,6 +1200,13 @@ def run_task(
     if document_fixtures and (config in READER_CONFIGS or effective in ("lean", "full")):
         for tooldef in _document_tools(document_fixtures):
             agent.register_tool(tooldef)
+    # The `paste` arm, gated on `document_setup:` for the same reason: a paste of no corpus is
+    # a system message that says nothing. It registers NO tool — the branch above cannot fire
+    # for it, because `paste` is not in READER_CONFIGS and its `effective` is `bare` — so the
+    # only difference between a `bare` row and a `paste` row is these bytes in the system
+    # prompt, which is exactly the comparison the bar's §5 asks for.
+    if document_fixtures and config in PASTE_CONFIGS:
+        agent.add_system(_paste_head(document_fixtures))
     if effective in ("lean", "full") and "schema" in task:
         # The agent owns the loop here, so it needs the same instruction structured() gives.
         # Gate registered before the critique gate: a malformed answer is fixed for free

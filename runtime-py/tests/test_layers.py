@@ -14,6 +14,7 @@ from bantamkit.contract import (
     document_manifest,
     document_offset_past_end,
     document_page,
+    document_paste,
     document_unknown,
     json_answer_retry,
     load_contract,
@@ -99,6 +100,37 @@ GOLDEN_DOCUMENT_OFFSET_PAST_END = (
     'error: offset 99999 is past the end of "stock", which has 12001 rows numbered 0 to 12000'
 )
 GOLDEN_DOCUMENT_ERROR = "error: no part 'sales'; this document has 1: 'stock'"
+# New in the document-reader cycle (J10 X5): the `paste` arm's system message. Pinned for a
+# reason the reader pair's goldens do not have — `paste` registers NO tool, so these lines are
+# the only thing standing between the model and reading a 4.76% head as the whole sheet. The
+# completeness sentence is the arm's honesty, and the bar's §10.2 clause 4 makes changing it a
+# change of ARM, not a change of wording.
+GOLDEN_DOCUMENT_PASTE_COMPLETE = (
+    "The following document content is attached to this task. Fields in a row are separated "
+    "by tabs, rows are given in order, and row 0 of each part is its header.\n"
+    'inventory-small.xlsx (xlsx) part 0 "stock": 3 rows, numbered 0 to 2; 3 of them are '
+    "shown below.\n"
+    '  rows 0 to 2 are shown, which is every row of "stock": this copy is COMPLETE.\n'
+    "sku\tunits\n"
+    "SKU-000001\t7\n"
+    "SKU-000002\t9"
+)
+GOLDEN_DOCUMENT_PASTE_TRUNCATED = (
+    "The following document content is attached to this task. Fields in a row are separated "
+    "by tabs, rows are given in order, and row 0 of each part is its header.\n"
+    'inventory.xlsx (xlsx) part 0 "stock": 12001 rows, numbered 0 to 12000; 2 of them are '
+    "shown below.\n"
+    '  rows 0 to 1 are shown; rows 2 to 12000 of "stock" are NOT shown and no tool is '
+    "attached that can fetch them. This copy is PARTIAL.\n"
+    "sku\tunits\n"
+    "SKU-000001\t7"
+)
+GOLDEN_DOCUMENT_PASTE_NONE = (
+    "The following document content is attached to this task. Fields in a row are separated "
+    "by tabs, rows are given in order, and row 0 of each part is its header.\n"
+    'second.xlsx (xlsx) part 0 "notes": 9 rows, numbered 0 to 8; 0 of them are shown below.\n'
+    '  no rows of "notes" are shown and no tool is attached that can fetch them.'
+)
 
 # Fragments that must never reappear in core sources.
 MOVED_FRAGMENTS = (
@@ -115,6 +147,11 @@ MOVED_FRAGMENTS = (
     "more rows follow",
     "no document named",
     "is past the end of",
+    "The following document content",
+    "of them are shown below",
+    "this copy is COMPLETE",
+    "This copy is PARTIAL",
+    "no tool is attached that can fetch them",
 )
 CORE_MODULES = (
     "agent.py",
@@ -251,6 +288,43 @@ def test_document_error_bytes():
     assert (
         document_error("no part 'sales'; this document has 1: 'stock'") == GOLDEN_DOCUMENT_ERROR
     )
+
+
+def test_document_paste_bytes():
+    """All three completeness cases, because they are three different claims to the model."""
+    complete = [
+        {
+            "document": "inventory-small.xlsx",
+            "kind": "xlsx",
+            "index": 0,
+            "part": "stock",
+            "row_count": 3,
+            "rows": ["sku\tunits", "SKU-000001\t7", "SKU-000002\t9"],
+        }
+    ]
+    assert document_paste(complete) == GOLDEN_DOCUMENT_PASTE_COMPLETE
+    truncated = [
+        {
+            "document": "inventory.xlsx",
+            "kind": "xlsx",
+            "index": 0,
+            "part": "stock",
+            "row_count": 12001,
+            "rows": ["sku\tunits", "SKU-000001\t7"],
+        }
+    ]
+    assert document_paste(truncated) == GOLDEN_DOCUMENT_PASTE_TRUNCATED
+    nothing = [
+        {
+            "document": "second.xlsx",
+            "kind": "xlsx",
+            "index": 0,
+            "part": "notes",
+            "row_count": 9,
+            "rows": [],
+        }
+    ]
+    assert document_paste(nothing) == GOLDEN_DOCUMENT_PASTE_NONE
 
 
 def test_schema_error_bytes():
