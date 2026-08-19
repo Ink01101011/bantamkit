@@ -3,8 +3,10 @@
 # never hand-written: the bar's gate G-1 rebuilds the fixture and fails the run if the
 # two ever disagree.
 # Cell LARGE-IN. Corpus `inventory.xlsx`, 12,000 data rows, 258,129 extracted bytes
-# (~64,532 est. tokens, 1.97x WORKER_NUM_CTX). The answer's data row is <= 570, so it
-# sits INSIDE the bar's declared head truncation (12,288 B = rendered rows 0..570).
+# (~64,532 est. tokens, 1.97x WORKER_NUM_CTX). The answer's data row is <= 400, so it
+# sits INSIDE the declared head truncation (8,621 B = rendered rows 0..400; the cut moved
+# there under Amendment 1, 2026-08-20, bar section 12 — pre-registration read 12,288 B =
+# rows 0..570 and was sized on an estimator measured to be 2.9x wrong).
 # The `paste` arm CAN answer here. This is the cell that can refute the reader.
 name: doc-large-in-372
 family: document-read

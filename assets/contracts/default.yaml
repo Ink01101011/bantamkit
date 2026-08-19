@@ -27,7 +27,7 @@ document_unknown: "error: no document named {name}; this task has: {available}"
 document_offset_past_end: "error: offset {offset} is past the end of \"{part}\", which has {rows} rows numbered 0 to {last}"
 document_error: "error: {detail}"
 # The `paste` arm's system message (`docs/eval-data/2026-08-20-document-read-bar.md` §10.2,
-# PASTE_MAX_BYTES = 12288). The arm registers NO tools, so these four lines are the whole of
+# PASTE_MAX_BYTES = 8621 under Amendment 1, 2026-08-20). The arm registers NO tools, so these four lines are the whole of
 # what the model is told ABOUT the corpus; the rows themselves are docread's own rendering,
 # unprefixed and unreformatted, so `paste` and `document_read` differ in DELIVERY and not in
 # content. Clause 4 makes stating the paste's own completeness part of the contract, and
@@ -39,3 +39,15 @@ document_paste_part: "{document} ({kind}) part {index} \"{part}\": {rows} rows, 
 document_paste_complete: "  rows 0 to {last_shown} are shown, which is every row of \"{part}\": this copy is COMPLETE."
 document_paste_truncated: "  rows 0 to {last_shown} are shown; rows {first_missing} to {last} of \"{part}\" are NOT shown and no tool is attached that can fetch them. This copy is PARTIAL."
 document_paste_none: "  no rows of \"{part}\" are shown and no tool is attached that can fetch them."
+# What the model is told when a tool CALL cannot be made or fails, rather than when a tool
+# answers with its own error (`document_unknown` and friends above are that). It lives here
+# for the reason the layer rule gives and for one measured reason: before 2026-08-20 the
+# dispatcher formatted this sentence itself and interpolated the raw exception, so a model
+# that sent one extra argument was handed
+# `_document_tools.<locals>.list_documents() got an unexpected keyword argument 'document'`
+# — a Python qualname, model-facing, owned by no asset and pinned by no golden. The
+# argument-shaped failures are intercepted before the handler is called now, so `{detail}`
+# carries a handler's OWN sentence and no longer a signature fragment.
+tool_failed: "error: {tool} failed: {detail}. fix the arguments and retry."
+tool_arguments: "error: {tool} does not take the arguments it was given. it takes: {accepts}. fix the arguments and retry."
+tool_arguments_none: "error: {tool} takes no arguments at all. call it with none and retry."

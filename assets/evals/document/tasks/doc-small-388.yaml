@@ -3,7 +3,8 @@
 # never hand-written: the bar's gate G-1 rebuilds the fixture and fails the run if the
 # two ever disagree.
 # Cell SMALL-IN. Corpus `inventory-small.xlsx`, 400 data rows, 8,620 extracted bytes
-# (~2,155 est. tokens, 0.07x WORKER_NUM_CTX). At the bar's PASTE_MAX_BYTES = 12,288 the
+# (~2,155 est. tokens, 0.07x WORKER_NUM_CTX). At PASTE_MAX_BYTES = 8,621 (Amendment 1,
+# 2026-08-20; pre-registration read 12,288) the
 # WHOLE corpus fits, so the `paste` arm here is a COMPLETE paste. This is the cell that
 # separates "the reader works" from "paging works".
 name: doc-small-388

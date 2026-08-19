@@ -112,6 +112,14 @@ Two deliberate behaviours to know:
   gets a chance to self-correct instead of crashing your run. Prefer returning a
   descriptive error string yourself, as above.
 - **Unknown tool names** get an observation listing the available tools.
+- **Arguments your schema does not declare are dropped, not raised** (2026-08-20).
+  Small models add them: 5 of 5 seeds on a 4b called a no-argument tool with a
+  spurious `document` key, the handler raised `TypeError`, and the model was
+  handed a Python qualname. Undeclared keys are now filtered before the call
+  (unless the schema says `additionalProperties: true`), and a call that still
+  cannot be made is reported as `error: <tool> does not take the arguments it
+  was given. it takes: ...` — the tool's own argument list, never a signature
+  fragment.
 - Return values are stringified and truncated to `observation_budget` bytes with
   a `[truncated N bytes]` marker.
 

@@ -657,7 +657,7 @@ def test_paste_is_a_calibration_config_and_not_in_the_default_matrix():
 def test_paste_max_bytes_is_the_one_constant_the_bar_declared():
     """§1.4: ONE constant, not a per-corpus tuning. Falsifying mutation: any other value here
     moves the truncation boundary and the two boundary tests below go red together."""
-    assert PASTE_MAX_BYTES == 12288
+    assert PASTE_MAX_BYTES == 8621
 
 
 def test_clause_5_the_paste_arm_registers_no_tools_at_all(tmp_path):
@@ -678,18 +678,20 @@ def test_clause_1_the_paste_arm_materialises_the_same_corpus_every_other_arm_rea
 
 
 def test_clause_3_the_large_corpus_is_cut_where_the_bar_says_it_is(tmp_path):
-    """§1.4, measured and not assumed: at a 12,288 B head cut on a row boundary the large
-    corpus keeps 571 rendered rows of 12,001 = 4.7579%, weighing 12,277 B, and rendered index
-    571 is the FIRST one outside. These are the numbers §3 placed every large task against."""
+    """§1.4 as Amendment 1 re-sized it (2026-08-20), measured and not assumed: at an 8,621 B
+    head cut on a row boundary the large corpus keeps 401 rendered rows of 12,001 = 3.3414%,
+    weighing 8,621 B, and rendered index 401 is the FIRST one outside. These are the numbers §3
+    places every large task against; the pre-registered 12,288 B cut kept 571 rows = 4.7579%
+    and measured >= 8,192 prompt tokens, which is why the amendment exists."""
     client, _ = run_paste(tmp_path)
     rows = pasted_rows(client)
-    assert len(rows) == 571
-    assert sum(len(r.encode()) + 1 for r in rows) == 12277
-    assert round(len(rows) / 12001, 6) == 0.047579
+    assert len(rows) == 401
+    assert sum(len(r.encode()) + 1 for r in rows) == 8621
+    assert round(len(rows) / 12001, 6) == 0.033414
     fixtures = materialise_documents(paste_task(), tmp_path / "check", "paste")
     part = extract(fixtures[0].path).parts[0]
-    assert list(part.rows[:571]) == rows
-    assert part.rows[571] not in rows  # the first row outside is outside
+    assert list(part.rows[:401]) == rows
+    assert part.rows[401] not in rows  # the first row outside is outside
 
 
 def test_clause_3_no_row_is_ever_cut_in_half(tmp_path):
@@ -705,7 +707,7 @@ def test_clause_3_no_row_is_ever_cut_in_half(tmp_path):
 
 
 def test_clause_3_one_constant_keeps_the_small_corpus_whole(tmp_path):
-    """§1.4: the SAME 12,288 B leaves the small corpus (8,621 B with newlines) COMPLETE. That
+    """§1.4: the SAME 8,621 B leaves the small corpus (8,621 B with newlines) COMPLETE. That
     is the whole design — the small cell is level ground the reader has to win on, not a
     handicap match, and no arm-specific special case produced it."""
     client, _ = run_paste(tmp_path, SMALL_CORPUS, name="doc-small")
@@ -722,8 +724,8 @@ def test_clause_4_the_paste_states_its_own_completeness_on_both_corpora(tmp_path
     worse arm — so the part name, the total and the shown count are all on the wire."""
     client, _ = run_paste(tmp_path)
     system = system_of(client)
-    assert '"stock": 12001 rows, numbered 0 to 12000; 571 of them are shown below.' in system
-    assert 'rows 571 to 12000 of "stock" are NOT shown' in system
+    assert '"stock": 12001 rows, numbered 0 to 12000; 401 of them are shown below.' in system
+    assert 'rows 401 to 12000 of "stock" are NOT shown' in system
     assert "This copy is PARTIAL." in system
 
 
@@ -734,13 +736,15 @@ def test_clause_2_the_pasted_bytes_are_the_bytes_document_read_would_return(tmp_
 
     The pager's own framing (the header line and the row-number prefix) is not compared,
     because that framing is what "delivery" means — and the bar's byte accounting (each row
-    plus its newline) is only 12,277 B because the paste carries no prefixes."""
+    plus its newline) is only 8,621 B because the paste carries no prefixes."""
     client, _ = run_paste(tmp_path)
     rows = pasted_rows(client)
     read = tools_for(OVER_WINDOW, tmp_path / "pager")["document_read"]
-    observation = read(part="stock", offset=520, limit=50)
-    for i, row in enumerate(rows[520:570]):
-        assert f"{520 + i}\t{row}" in observation
+    observation = read(part="stock", offset=350, limit=50)
+    compared = rows[350:400]
+    assert len(compared) == 50  # the slice must not be empty, or this asserts nothing
+    for i, row in enumerate(compared):
+        assert f"{350 + i}\t{row}" in observation
 
 
 def test_the_out_stratums_answer_row_is_absent_and_the_in_stratums_is_present(tmp_path):
@@ -752,7 +756,7 @@ def test_the_out_stratums_answer_row_is_absent_and_the_in_stratums_is_present(tm
     system = system_of(client)
     assert "SKU-004137" not in system
     assert "SKU-000137\t" in system
-    assert "SKU-000529\t" in system  # §3's near-the-cut IN task, 41 rows inside
+    assert "SKU-000359\t" in system  # §3's near-the-cut IN task, 41 rows inside (Amendment 1)
 
 
 def test_the_paste_arm_attaches_nothing_else(tmp_path):
@@ -820,3 +824,35 @@ def test_every_mirrored_arm_resolves_onto_a_real_headline_config():
     assert effective_config("paste") == "bare"
     assert effective_config("reader") == "bare"
     assert effective_config("bare") == "bare"  # an unmirrored name is itself
+
+
+# ---- the argument the 4b actually sends (bar Amendment 1, §A.6) --------------------------
+
+
+def test_document_list_answers_the_call_the_4b_actually_makes(tmp_path):
+    """5 of 5 seeds on the 4b called `document_list` with a spurious `document` argument.
+
+    Measured, not imagined, and it is the pair's own regression rather than the dispatcher's:
+    this asserts the MANIFEST comes back through a real `Agent` dispatch on the tool as the
+    harness registers it, schema and all. Before 2026-08-20 the observation here was
+    `error: document_list failed: _document_tools.<locals>.list_documents() got an unexpected
+    keyword argument 'document'` and 3 of 4 smoke repeats then answered that they could not
+    access the workbook. §6 U-2 does not catch that — the call IS in the transcript.
+    """
+    from conftest import FakeClient, assistant, call  # noqa: PLC0415
+
+    from bantamkit.agent import Agent  # noqa: PLC0415
+
+    fixtures = materialise_documents(paste_task(), tmp_path, "reader")
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("document_list", {"document": "inventory.xlsx"})]),
+            assistant(content="7508"),
+        ]
+    )
+    agent = Agent(client=client, tools=_document_tools(fixtures))
+    agent.run("t")
+    observation = client.calls[1]["messages"][-1].content
+    assert observation.startswith('inventory.xlsx (xlsx) part 0 "stock": 12001 rows')
+    assert "error:" not in observation
+    assert "<locals>" not in observation

@@ -35,12 +35,15 @@ TASKS_DIR = REPO / "assets" / "evals" / "document" / "tasks"
 BAR = REPO / "docs" / "eval-data" / "2026-08-20-document-read-bar.md"
 
 # Bar §1.4 / §10.2. One constant, both corpora, cut on a row boundary.
-PASTE_MAX_BYTES = 12288
+PASTE_MAX_BYTES = 8621
 
-# Bar §1.4, measured: at that cap the large corpus keeps rendered rows 0..570, so data row 570
-# is the last one INSIDE and 571 is the first one OUTSIDE. The stratum of every task depends
-# on this number, so it is asserted rather than trusted.
-LAST_ROW_INSIDE = 570
+# Bar §1.4 as Amendment 1 re-sized it (2026-08-20, §12), measured: at that cap the large corpus
+# keeps rendered rows 0..400, so data row 400 is the last one INSIDE and 401 is the first one
+# OUTSIDE. The stratum of every task depends on this number, so it is asserted rather than
+# trusted. Pre-registration read 12,288 B -> row 570; that constant was sized on `bytes // 4`,
+# which G-3 measured to be 2.83-2.91x wrong, and its large paste measured >= 8,192 prompt tokens
+# on all three compared tiers (clamped: V-1 fired and the arm was uncomparable).
+LAST_ROW_INSIDE = 400
 
 FAMILY = "document-read"
 

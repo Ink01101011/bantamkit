@@ -41,6 +41,9 @@ REQUIRED_KEYS = (
     "document_paste_complete",
     "document_paste_truncated",
     "document_paste_none",
+    "tool_failed",
+    "tool_arguments",
+    "tool_arguments_none",
 )
 
 
@@ -317,3 +320,44 @@ def document_paste(parts: list[dict]) -> str:
             )
         lines.extend(rows)
     return "\n".join(lines)
+
+
+# ---- what the model is told when a tool CALL cannot be made, or fails --------------------
+#
+# Distinct from the observations above: those are a tool ANSWERING with its own error, in its
+# own words, about input it understood. These two are the dispatcher's, and they exist because
+# the dispatcher had none. Before 2026-08-20 `Agent._dispatch` formatted its own sentence and
+# interpolated the exception object, so the one failure a small model actually produces —
+# one extra argument on a tool that declares no properties — reached the model as
+# `_document_tools.<locals>.list_documents() got an unexpected keyword argument 'document'`.
+# That is model-facing text, it is Python's wording and not this repository's, no contract
+# asset owned it and no golden pinned it. X5 measured it on 5 of 5 seeds on the 4b.
+
+
+def tool_failed(tool: str, detail: object) -> str:
+    """A handler raised. `detail` is the handler's own words, never a signature fragment.
+
+    The argument-shaped failures — an undeclared key, a missing one — are settled before the
+    handler is called (`agent.select_declared_arguments` and the bind check in `_dispatch`),
+    so what reaches here is an exception from INSIDE a handler. Every tool in this repository
+    authors its model-facing errors deliberately (`docread` was built to name what it saw
+    rather than re-raise the format's error), and an exception that escapes one anyway is a
+    defect whose message is the most useful thing the transcript can carry for the operator.
+    """
+    return load_contract()["tool_failed"].format(tool=tool, detail=detail)
+
+
+def tool_arguments(tool: str, accepts: list[str]) -> str:
+    """The call could not be made with the arguments given: name what the tool does take.
+
+    The repository's convention for telling a model what it got wrong is to name what the
+    tool saw and what it has (`document_unknown`: "this task has: ..."). This follows it. The
+    empty case is a SEPARATE contract string rather than an `if` inside a format argument,
+    the same choice `document_paste` made for its three completeness cases: "it takes: " with
+    nothing after it is not a sentence, and a tool that takes nothing at all is a different
+    thing to say than a tool whose argument list the model got wrong.
+    """
+    contract = load_contract()
+    if not accepts:
+        return contract["tool_arguments_none"].format(tool=tool)
+    return contract["tool_arguments"].format(tool=tool, accepts=", ".join(accepts))

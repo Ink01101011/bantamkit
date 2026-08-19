@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable
 from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass, field
 
 from bantamkit.client import BantamError, Message, ModelClient, Tool, Usage
+from bantamkit.contract import tool_arguments, tool_failed
 from bantamkit.profile import default as profile_default
 from bantamkit.textutil import truncate_counted
 
@@ -105,6 +107,65 @@ def coerce_arguments(arguments: dict, parameters: dict) -> dict:
         except (ValueError, KeyError):
             pass  # unconvertible: hand the handler what the model actually sent
     return coerced
+
+
+def declared_arguments(parameters: dict) -> list[str]:
+    """The argument names a tool's schema declares, or [] if it declares no mapping."""
+    properties = parameters.get("properties") if isinstance(parameters, dict) else None
+    return sorted(properties) if isinstance(properties, dict) else []
+
+
+def select_declared_arguments(arguments: dict, parameters: dict) -> dict:
+    """Drop the arguments a tool's schema does not declare, so an extra key cannot raise.
+
+    Measured need, 2026-08-20: on `document_list` — whose schema declares NO properties —
+    **5 of 5 seeds on the 4b** sent a spurious `document` argument. `handler(**arguments)`
+    raised `TypeError`, the model was told the tool had failed, and 3 of 4 smoke repeats then
+    answered that they were unable to access the workbook. A tool that crashes on a key it
+    never declared is measuring its own handler signature, not the model.
+
+    Ignoring the key rather than lecturing about it is the deliberate choice: an argument the
+    schema does not name is an argument the tool has no way to act on, so there is nothing to
+    negotiate, and the alternative spends one of ten turns telling the model something it
+    could have been shown by simply answering the call. Where the arguments genuinely cannot
+    be honoured — a declared one omitted — `_dispatch` still says so, in `contract`'s words.
+
+    Only a schema that declares a `properties` mapping and does not open itself with
+    `additionalProperties: true` is filtered. Anything else is passed through untouched,
+    because there the handler is the only thing that knows what it takes. Same shape and same
+    top-level-only scope as `coerce_arguments`, and a well-formed call is a no-op.
+    """
+    if not isinstance(arguments, dict) or not isinstance(parameters, dict):
+        return arguments
+    if parameters.get("additionalProperties") is True:
+        return arguments
+    properties = parameters.get("properties")
+    if not isinstance(properties, dict):
+        return arguments
+    return {k: v for k, v in arguments.items() if k in properties}
+
+
+def handler_accepts(handler: Callable[..., str], arguments: dict) -> bool:
+    """Can `handler` be CALLED with these arguments? Answered without calling it.
+
+    The point is the failure mode this replaces: a `TypeError` raised by the call itself
+    carries Python's own sentence, `qualname() missing 1 required positional argument`, and
+    that sentence used to be handed to the model verbatim. Binding the signature first turns
+    every argument-shaped failure into a contract string that names what the tool takes,
+    and leaves the `except` branch for exceptions raised INSIDE a handler.
+
+    A handler that cannot be introspected (a builtin, a C callable) is reported as accepting:
+    there the call is the only check that exists, and refusing it would be a guess.
+    """
+    try:
+        signature = inspect.signature(handler)
+    except (TypeError, ValueError):
+        return True
+    try:
+        signature.bind(**arguments)
+    except TypeError:
+        return False
+    return True
 
 
 @dataclass
@@ -263,10 +324,15 @@ class Agent:
             names = [t.tool.name for t in self.tools]
             return f"error: unknown tool '{tc.name}'. available tools: {names}"
         try:
-            arguments = coerce_arguments(tc.arguments, tooldef.tool.parameters)
+            parameters = tooldef.tool.parameters
+            arguments = select_declared_arguments(
+                coerce_arguments(tc.arguments, parameters), parameters
+            )
+            if not handler_accepts(tooldef.handler, arguments):
+                return tool_arguments(tc.name, declared_arguments(parameters))
             return str(tooldef.handler(**arguments))
         except Exception as e:
-            return f"error: {tc.name} failed: {e}. fix the arguments and retry."
+            return tool_failed(tc.name, e)
 
     def _first_feedback(
         self, task: str, output: str, messages: list[Message]

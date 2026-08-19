@@ -474,14 +474,14 @@ def test_batch_scope_wraps_the_whole_tool_call_batch():
         [
             assistant(
                 tool_calls=[
-                    call("lookup", {"key": "a"}, id="c1"),
-                    call("lookup", {"key": "b"}, id="c2"),
+                    call("lookup", {"item": "a"}, id="c1"),
+                    call("lookup", {"item": "b"}, id="c2"),
                 ]
             ),
             assistant(content="done"),
         ]
     )
-    agent = Agent(client=client, tools=[lookup_tool(lambda key: events.append(key) or key)])
+    agent = Agent(client=client, tools=[lookup_tool(lambda item: events.append(item) or item)])
     agent.add_batch_scope(_scope_recorder(events, "s"))
     agent.run("t")
     assert events == ["enter-s", "a", "b", "exit-s"]
@@ -491,12 +491,12 @@ def test_batch_scope_is_re_entered_per_turn_and_skipped_on_a_toolless_turn():
     events = []
     client = FakeClient(
         [
-            assistant(tool_calls=[call("lookup", {"key": "a"})]),
-            assistant(tool_calls=[call("lookup", {"key": "b"})]),
+            assistant(tool_calls=[call("lookup", {"item": "a"})]),
+            assistant(tool_calls=[call("lookup", {"item": "b"})]),
             assistant(content="done"),
         ]
     )
-    agent = Agent(client=client, tools=[lookup_tool(lambda key: key)])
+    agent = Agent(client=client, tools=[lookup_tool(lambda item: item)])
     agent.add_batch_scope(_scope_recorder(events, "s"))
     agent.run("t")
     assert events == ["enter-s", "exit-s", "enter-s", "exit-s"]
@@ -506,12 +506,12 @@ def test_batch_scope_exits_even_when_a_handler_explodes():
     events = []
     client = FakeClient(
         [
-            assistant(tool_calls=[call("lookup", {"key": "a"})]),
+            assistant(tool_calls=[call("lookup", {"item": "a"})]),
             assistant(content="done"),
         ]
     )
 
-    def boom(key):
+    def boom(item):
         raise ValueError("nope")
 
     agent = Agent(client=client, tools=[lookup_tool(boom)])
@@ -523,11 +523,11 @@ def test_batch_scope_exits_even_when_a_handler_explodes():
 def test_an_agent_with_no_batch_scope_is_unchanged():
     client = FakeClient(
         [
-            assistant(tool_calls=[call("lookup", {"key": "port"})]),
+            assistant(tool_calls=[call("lookup", {"item": "port"})]),
             assistant(content="5432"),
         ]
     )
-    agent = Agent(client=client, tools=[lookup_tool(lambda key: "5432")])
+    agent = Agent(client=client, tools=[lookup_tool(lambda item: "5432")])
     assert agent.run("t").output == "5432"
     assert client.calls[1]["messages"][-1].content == "5432"
 
@@ -590,3 +590,128 @@ def test_only_the_observations_actually_over_budget_are_counted():
 def test_the_columns_default_to_zero_on_a_hand_built_result():
     result = AgentResult(output="o", messages=[], usage=Usage())
     assert (result.observations_truncated, result.observation_bytes_dropped) == (0, 0)
+
+
+# ---- 2026-08-20: an undeclared argument must not raise, and no qualname may reach the model
+#
+# Measured need, not imagined: X5's smoke pass for job19 found 5 of 5 seeds on the 4b calling
+# `document_list` -- a tool whose schema declares NO properties -- with a spurious `document`
+# argument. `handler(**arguments)` raised TypeError and the dispatcher handed the model
+# `error: document_list failed: _document_tools.<locals>.list_documents() got an unexpected
+# keyword argument 'document'`. Three of four repeats then said they could not access the
+# workbook and scored 0, which would have been recorded as a reader result.
+
+
+def no_argument_tool(handler, name="describe"):
+    return ToolDef(
+        tool=Tool(name=name, description="d", parameters={"type": "object", "properties": {}}),
+        handler=handler,
+    )
+
+
+def test_an_undeclared_argument_is_dropped_and_the_tool_still_answers():
+    """The 4b's exact failure, as a unit: the call succeeds and the model gets the answer."""
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("describe", {"document": "inventory.xlsx"})]),
+            assistant(content="done"),
+        ]
+    )
+    agent = Agent(client=client, tools=[no_argument_tool(lambda: "the manifest")])
+    agent.run("t")
+    assert client.calls[1]["messages"][-1].content == "the manifest"
+
+
+def test_an_undeclared_argument_beside_a_declared_one_keeps_the_declared_one():
+    seen = {}
+
+    def handler(item):
+        seen["item"] = item
+        return "ok"
+
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("lookup", {"item": "port", "sheet": "stock"})]),
+            assistant(content="done"),
+        ]
+    )
+    Agent(client=client, tools=[lookup_tool(handler)]).run("t")
+    assert seen == {"item": "port"}
+    assert client.calls[1]["messages"][-1].content == "ok"
+
+
+def test_a_tool_that_opens_itself_with_additional_properties_still_gets_everything():
+    """`additionalProperties: true` is a tool saying the schema is not the whole story."""
+    seen = {}
+    tool = ToolDef(
+        tool=Tool(
+            name="anything",
+            description="d",
+            parameters={"type": "object", "properties": {}, "additionalProperties": True},
+        ),
+        handler=lambda **kw: seen.update(kw) or "ok",
+    )
+    client = FakeClient(
+        [assistant(tool_calls=[call("anything", {"x": 1})]), assistant(content="done")]
+    )
+    Agent(client=client, tools=[tool]).run("t")
+    assert seen == {"x": 1}
+
+
+def test_a_missing_declared_argument_names_what_the_tool_takes_and_no_python():
+    """The other half of the argument-shaped TypeErrors: `qualname() missing 1 required
+    positional argument` used to reach the model verbatim. Now the tool's own argument list
+    does, in the contract's words."""
+    client = FakeClient(
+        [assistant(tool_calls=[call("lookup", {})]), assistant(content="done")]
+    )
+    Agent(client=client, tools=[lookup_tool(lambda item: item)]).run("t")
+    observation = client.calls[1]["messages"][-1].content
+    assert observation == (
+        "error: lookup does not take the arguments it was given. it takes: item. "
+        "fix the arguments and retry."
+    )
+
+
+def test_a_tool_that_takes_nothing_says_so_when_it_cannot_be_called():
+    client = FakeClient(
+        [assistant(tool_calls=[call("describe", {"document": "x"})]), assistant(content="done")]
+    )
+    agent = Agent(client=client, tools=[no_argument_tool(lambda required: required)])
+    agent.run("t")
+    assert client.calls[1]["messages"][-1].content == (
+        "error: describe takes no arguments at all. call it with none and retry."
+    )
+
+
+def test_no_dispatch_observation_can_carry_a_python_qualname():
+    """The property, stated over every path a model can drive: undeclared key, missing key,
+    and a handler that raises. `<locals>` and `()` are what a signature TypeError looks like.
+
+    Vacuity-guarded: the same three calls against a dispatcher that formats the exception
+    inline reproduce the leak, which is what `test_layers.py::test_core_purity` now forbids.
+    """
+    calls = [
+        call("describe", {"document": "x"}),
+        call("lookup", {}),
+        call("lookup", {"item": "a"}),
+    ]
+
+    def explode(item):
+        raise RuntimeError("the sheet is unreadable")
+
+    for tc in calls:
+        client = FakeClient([assistant(tool_calls=[tc]), assistant(content="done")])
+        agent = Agent(
+            client=client,
+            tools=[no_argument_tool(lambda: "manifest"), lookup_tool(explode)],
+        )
+        agent.run("t")
+        observation = client.calls[1]["messages"][-1].content
+        assert "<locals>" not in observation
+        assert "unexpected keyword argument" not in observation
+        assert "missing 1 required positional argument" not in observation
+    # and the handler's OWN sentence still reaches the model when a handler really fails
+    assert observation == (
+        "error: lookup failed: the sheet is unreadable. fix the arguments and retry."
+    )

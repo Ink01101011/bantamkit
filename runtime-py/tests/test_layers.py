@@ -24,6 +24,8 @@ from bantamkit.contract import (
     schema_error,
     schema_instruction,
     schema_retry_feedback,
+    tool_arguments,
+    tool_failed,
 )
 from bantamkit.profile import default as profile_default
 from bantamkit.profile import default_float as profile_default_float
@@ -152,6 +154,11 @@ MOVED_FRAGMENTS = (
     "this copy is COMPLETE",
     "This copy is PARTIAL",
     "no tool is attached that can fetch them",
+    # 2026-08-20. `Agent._dispatch` formatted these itself and interpolated the exception,
+    # so a model that sent one undeclared argument was handed a Python qualname.
+    "fix the arguments and retry",
+    "does not take the arguments",
+    "takes no arguments at all",
 )
 CORE_MODULES = (
     "agent.py",
@@ -336,6 +343,28 @@ def test_schema_error_bytes():
     )
     assert err == "JSON does not match schema at 'a': 'x' is not of type 'integer'"
     assert schema_error('{"a": 1}', {"type": "object"}) is None
+
+
+# The dispatcher's own sentences, 2026-08-20. `tool_failed` is BYTE-IDENTICAL to the literal
+# `Agent._dispatch` used to format inline: this move is a refactor of ownership, not a contract
+# change, and a golden is what makes that claim falsifiable rather than asserted.
+GOLDEN_TOOL_FAILED = "error: lookup failed: boom. fix the arguments and retry."
+GOLDEN_TOOL_ARGUMENTS = (
+    "error: lookup does not take the arguments it was given. it takes: item, limit. "
+    "fix the arguments and retry."
+)
+GOLDEN_TOOL_ARGUMENTS_NONE = (
+    "error: document_list takes no arguments at all. call it with none and retry."
+)
+
+
+def test_tool_failed_bytes():
+    assert tool_failed("lookup", ValueError("boom")) == GOLDEN_TOOL_FAILED
+
+
+def test_tool_arguments_bytes():
+    assert tool_arguments("lookup", ["item", "limit"]) == GOLDEN_TOOL_ARGUMENTS
+    assert tool_arguments("document_list", []) == GOLDEN_TOOL_ARGUMENTS_NONE
 
 
 @pytest.mark.parametrize("module", CORE_MODULES)

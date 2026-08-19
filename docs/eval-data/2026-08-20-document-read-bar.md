@@ -588,3 +588,231 @@ a recorded column: confirmed at `8689ac6`.
 ## 12. Amendments
 
 None. This section exists so that the first one has somewhere to go that is not this text.
+
+## Amendment 1 — 2026-08-20
+
+**Status: still PRE-REGISTERED. No graded arm has run.** X5 (`19ceffa`) landed `paste` and ran
+the mandatory smoke pass; this amendment is written on what that pass MEASURED, before a single
+row of the sweep exists. What is forbidden is amending after seeing a *result*; what is
+required is not running a sweep that this document's own rules VOID. Everything above this
+heading is the text as pre-registered and is not edited — where a number below supersedes one
+above, both are readable and the older one is the one that was wrong.
+
+Written by X5B. Every figure here was re-measured in the worktree at
+`feat/document-readers`; §A.4 lists what of X5's report did not reproduce.
+
+### A.1 The estimator is no longer UNMEASURED, and it was 2.83–2.91× wrong
+
+§6.4 named `bytes // 4` as UNMEASURED. It is measured now. Command (G-3's own instrument —
+`/api/generate`, `num_predict=1`, reading `prompt_eval_count`, never `/v1`'s clamped
+`usage.prompt_tokens`), one call per (tier, corpus, reading):
+
+```
+POST http://localhost:11434/api/generate
+{"model": <tier>, "prompt": <the paste system message>, "stream": false,
+ "options": {"num_predict": 1}}   -> response["prompt_eval_count"]
+```
+
+At the **pre-registered** `PASTE_MAX_BYTES = 12,288`, on the paste system message alone:
+
+| tier | corpus | prompt B | `bytes // 4` | measured `prompt_eval_count` | V-1 (≥ 6,963) |
+|---|---|---:|---:|---:|---|
+| 4b | large | 12,672 | 3,168 | **8,192** | **VOID** |
+| 7b | large | 12,672 | 3,168 | **8,192** | **VOID** |
+| 14b | large | 12,672 | 3,168 | **8,192** | **VOID** |
+| 4b | small | 8,962 | 2,240 | 6,511 | ok |
+| 7b / 14b | small | 8,962 | 2,240 | 6,532 | ok |
+
+Every large reading is **exactly 8,192 on both counters — clamped**. The true prompt therefore
+EXCEEDS the served window: the `paste` arm was already being truncated server-side, silently
+and green, which is RB-P53's failure mode. **V-1 fires at all three compared tiers, `paste` is
+uncomparable, and C1, C2, R1 and R3 are uncomputable. A sweep run in that state measures
+nothing.** That is the whole warrant for this amendment.
+
+**The measured ratio, off the unclamped readings only:** **1.372–1.379 B/token** for the paste
+system message and **1.408–1.415 B/token** for the message plus the task prompt. So `bytes // 4`
+under-counts this content by **2.83–2.91×** (4 ÷ 1.415 … 4 ÷ 1.372). No token figure in this bar
+may be computed from `bytes // 4` again; §2's `est. tokens` column stays as the *file property*
+it always was and is not a claim about any tokenizer.
+
+### A.2 V-1's scope, resolved: per **(tier, corpus)**, and G-3 is six calls, not three
+
+X5 recorded the ambiguity and correctly refused to resolve it. Resolved here, before it can be
+chosen to save a cell: **a paste is a per-corpus object** — two corpora produce two different
+system messages, of different sizes, saying different things about their own completeness — so
+the predicate is evaluated per (tier, corpus) and **VOIDs the `paste` arm only for the strata
+drawn from that corpus at that tier** (`small` for `inventory-small.xlsx`; `large-IN` and
+`large-OUT` for `inventory.xlsx`).
+
+**G-3 is amended to six calls**: each compared tier × each corpus. And the calibrated prompt is
+the **system message plus the task prompt** (361 B for all nine tasks; they are byte-identical
+but for the SKU), because that is what the request actually carries — measuring the system
+message alone understates the prompt by 91 tokens. Both readings are recorded below; the
+**request** reading is the one V-1 is evaluated on, which is the stricter of the two.
+
+This resolution is deliberately not load-bearing for the run it precedes: at the amended
+constant **both corpora pass at all three tiers** (§A.3), so no cell survives *because of* the
+reading chosen here.
+
+### A.3 `PASTE_MAX_BYTES = 8,621`, and why that number and not another
+
+The constant is re-sized on the measured ratio. The three constraints of §1.4 and §10.2 are
+unchanged and all three are binding:
+
+1. **one constant over both corpora**, cut on a row boundary — unchanged;
+2. **the small corpus stays whole** — it needs 8,621 B (401 rendered rows), so the constant
+   **cannot go below 8,621**;
+3. the large paste's **measured** `prompt_eval_count` must sit under the served window with a
+   stated margin — which is what caps it from above.
+
+Measured, at the amended constant, in the worktree:
+
+| tier | corpus | rows kept | row B | system B | system `prompt_eval` | +task B | **request `prompt_eval`** |
+|---|---|---:|---:|---:|---:|---:|---:|
+| 4b | large | 401 | 8,621 | 9,016 | 6,536 | 9,379 | **6,627** |
+| 7b | large | 401 | 8,621 | 9,016 | 6,557 | 9,379 | **6,648** |
+| 14b | large | 401 | 8,621 | 9,016 | 6,557 | 9,379 | **6,648** |
+| 4b | small | 401 | 8,621 | 8,962 | 6,511 | 9,325 | **6,602** |
+| 7b | small | 401 | 8,621 | 8,962 | 6,532 | 9,325 | **6,623** |
+| 14b | small | 401 | 8,621 | 8,962 | 6,532 | 9,325 | **6,623** |
+
+**The margin, stated as a number.** Worst reading over all six cells: **6,648 tokens**
+(large, 7b and 14b, request reading).
+
+- against the served window 8,192: **1,544 tokens of headroom, 18.85%**;
+- against V-1's threshold 6,963: **315 tokens, 4.52%**.
+
+**Why not larger.** Measured, not argued: at a cap of **9,088 B** (422 rows) the large paste
+reads **6,963** on the 4b and **6,984** on the 7b — exactly at and over the V-1 threshold. The
+feasible band is roughly 8,621–9,050 B, and every byte of it buys the large paste ~1 row at the
+cost of the margin V-1 exists to protect. **Why not smaller.** Constraint 2: below 8,621 the
+small paste stops being COMPLETE and §1.4's level-ground cell — the one that separates *"the
+reader is useless"* from *"the model is"* — stops existing.
+
+**A consequence worth stating rather than discovering later:** the small corpus is a literal
+prefix of the large one (§2), so at 8,621 B **both pastes carry the identical 401 rendered
+rows**. `doc-small-137` and `doc-large-in-137` now differ in *nothing* but the corpus behind
+them and what the paste says about its own completeness — §1.4's sharpest cell is sharper than
+it was pre-registration, not weaker.
+
+### A.4 The boundary moves, and §1.4's and §3.1's numbers move with it
+
+Re-derived at the amended constant on the built corpus:
+
+| | pre-registered | **Amendment 1** |
+|---|---:|---:|
+| `PASTE_MAX_BYTES` | 12,288 | **8,621** |
+| rendered rows kept, large | 571 | **401** |
+| bytes kept, large | 12,277 | **8,621** |
+| **last data row INSIDE** | 570 | **400** |
+| first rendered index OUTSIDE | 571 | **401** |
+| coverage of the large corpus | 4.7579% | **3.3414%** |
+| §3.1 `w_in` / `w_out` | 0.047579 / 0.952421 | **0.033414 / 0.966586** |
+
+The §3.1 weights are the true coverage fraction by construction, so they move with it; they are
+re-declared here, still before any result, and the rule that the per-stratum figures are the
+headline and the weighted number is never reported alone is unchanged.
+
+§4's pre-registered arithmetic moves too, and is re-derived here rather than rescaled: one
+`document_list` observation is **217 B** (reproduces) and one `document_read` page at the
+default limit is **1,486 B** (the pre-registered figure says 1,487 — see §A.7). So an ideal
+two-call solve exposes **1,703 B** against **8,621 B** for one paste — **19.75%**, where §4 said
+13.9% against the larger paste. The paste's corpus share in §4 becomes **8,621 B × `model_calls`**.
+The roster share is untouched and reproduces exactly: **1,414 B/request = 353 tok = 3.406%**.
+
+### A.5 The task set: one file changed, and the 3/3/3 design is re-established, not patched
+
+At the new boundary `doc-large-in-529` (data row 529 > 400) falls **OUTSIDE**, which would have
+left the design 2 IN / 4 OUT. `doc-large-in-137` (137) and `doc-large-in-372` (372) are both
+still inside and are **unchanged**.
+
+**`doc-large-in-529` is replaced by `doc-large-in-359`.** §3 chose 529 as the near-the-cut IN
+row *because* it sat 41 rows inside the cut, so that a boundary effect would have somewhere to
+show; 359 is the same design element re-derived at the new cut (400 − 359 = 41, the identical
+offset). Corpus, seed, columns, prompt shape and scoring kind are byte-identical to the row it
+replaces; the answer (`south` / `1187`) was read out of the built document by the generator and
+G-1's checker rebuilds it. The other eight task files change only in their header comment, which
+named the old boundary.
+
+The design after the amendment, unchanged in shape: **3 IN / 3 OUT / 3 small**, `doc-small-137`
+and `doc-large-in-137` still the identical question over the two corpora, still nine tasks,
+still `assets/evals/document/tasks/`, still `n = 432`.
+
+| task | data row | stratum, pre-registered | **stratum now** |
+|---|---:|---|---|
+| `doc-small-137` / `-261` / `-388` | 137 / 261 / 388 | small, COMPLETE paste | **small, COMPLETE paste** |
+| `doc-large-in-137` | 137 | IN | **IN** |
+| `doc-large-in-372` | 372 | IN | **IN** |
+| `doc-large-in-529` | 529 | IN, 41 rows from the cut | **withdrawn — now outside** |
+| **`doc-large-in-359`** | 359 | — | **IN, 41 rows from the cut** |
+| `doc-large-out-4137` / `-8022` / `-11764` | 4137 / 8022 / 11764 | OUT | **OUT** |
+
+### A.6 The reader pair could not be called, and that was a defect in the mechanism
+
+X5 measured that **5 of 5 seeds on the 4b** (and 0 of 5 on the 7b) called `document_list` — a
+tool whose schema declares **no properties** — with a spurious `document` argument. The handler
+raised `TypeError`; the dispatcher formatted its own sentence and interpolated the exception, so
+the model was handed
+`error: document_list failed: _document_tools.<locals>.list_documents() got an unexpected
+keyword argument 'document'`. Three of four smoke repeats then answered *"I'm unable to access
+the workbook"* and scored 0.
+
+**This bar grades whether a paged reader helps. A reader whose describe call cannot be invoked
+is not the thing being graded**, and the reading it would have produced — that the 4b cannot use
+the pair — would have been a reading of a handler signature. Two defects, fixed in the layer
+each belongs to:
+
+1. **Robustness — Layer 1 (`agent.py`).** `select_declared_arguments` drops arguments a tool's
+   schema does not declare, before the handler is called; `handler_accepts` binds the handler's
+   signature without calling it, so an argument-shaped mismatch never becomes a raised
+   `TypeError`. Ignoring an undeclared key rather than lecturing about it is deliberate: the
+   tool has no way to act on it, and the alternative spends one of ten turns saying so.
+2. **The leak — Layer 2 (`contract.py` + `assets/contracts/default.yaml`).** The dispatcher's
+   two model-facing sentences were owned by no contract asset and pinned by no golden.
+   `tool_failed` (byte-identical to the wording it replaces) and `tool_arguments` /
+   `tool_arguments_none` now live in the asset with goldens in `test_layers.py`, and the
+   argument-shaped failures are settled before the handler runs — so a `{detail}` reaching the
+   model is a handler's own sentence and not a signature fragment.
+
+**§6's U-2 does not catch this**, because `document_list` *is* in the transcript; it just fails.
+Amended, so that the next run cannot mistake a crashing tool for a model that chose not to call
+it:
+
+- **U-2 (amended).** *The model never SUCCESSFULLY called `document_list`.* A `document_list`
+  entry whose observation begins with `error:` does not count as a call. Threshold unchanged:
+  < 50% of `reader`-arm runs in the cell.
+- **U-5 (new) — the tool crashed rather than answered.** A tool observation ending in
+  `fix the arguments and retry.` (the dispatcher's own sentence, and the only observation in
+  the harness that ends that way — a reader's own errors are `document_unknown` and friends and
+  do not) in **> 10%** of `reader`-arm runs in a cell makes that cell **UNINFORMATIVE**, and the
+  defect is reported as a defect. A tool that crashed is not a model that declined.
+
+### A.7 What of X5's report did NOT reproduce
+
+1. **The G-3 prompt bytes.** X5 reports 13,035 B (large) and 9,325 B (small); the paste system
+   message alone measures **12,672 B** and **8,962 B**. The difference is 363 B, and it is the
+   task prompt: X5 calibrated the system message **plus the task prompt**, which §10.3's wording
+   ("the paste system message") does not say. Not an error in either direction — the readings
+   are of two different things — and §A.2 resolves which one G-3 means from here.
+2. **The bytes-per-token range.** X5's `1.41–1.59 B/token`: the 1.41 end reproduces exactly
+   (9,325 / 6,602). **The 1.59 end is not a measurement** — it is 12,672 (or 13,035) ÷ 8,192,
+   and 8,192 is the *clamped* counter, so it is a lower bound on the token count and therefore
+   an upper bound on the ratio that no observation supports. The measured range is
+   **1.372–1.415**, and the estimator error is **2.83–2.91×**, not 2.3–2.8×.
+3. **`document_read`'s page size.** §4 pre-registers 1,487 B for one page at the default limit;
+   re-derived at this commit against `doc-large-out-4137` it is **1,486 B**, so the two-call
+   solve is 1,703 B and not 1,704 B. One byte; recorded because §11 recorded the same class of
+   discrepancy for the roster price and the next re-deriver should not think the figure moved.
+4. Everything else reproduced: the two corpus hashes and sizes, 12,001 / 401 rendered rows, the
+   571-row / 12,277 B / 4.7579% cut at the pre-registered constant, the clamp at all three
+   tiers, `document_list` = 217 B, the roster at 1,414 B = 353 tok = 3.406%, and the 4b's
+   spurious `document` argument.
+
+### A.8 What this amendment does NOT change
+
+The arms and their contracts (§1, §10.2 clauses 1–5); the LOOKUP-only rule and the nine tasks'
+prompts; the scorer; **the criterion and the falsifier as inequalities** (§5's C1/C2/C3 and
+R1–R4, thresholds included); the tiers, the repeats and `n = 432` (§8); the test (§9); every
+line of §7's *not claimed* list; and V-2, V-3, V-4. §7.10 is reaffirmed and now has a measured
+number behind it: this is *a* declared paste, and a larger served window would give a larger
+paste and a smaller Δ.

@@ -191,14 +191,26 @@ READER_CONFIGS = {"reader": "bare"}
 # this is a transcription of that contract, and the constant below is one of its five clauses.
 PASTE_CONFIGS = {"paste": "bare"}
 
-# ONE constant over BOTH corpora, and it is not tuned per corpus. Measured at this commit: the
-# large corpus keeps rendered rows 0-570 (571 of 12,001 = 4.7579%, 12,277 B) and row 571 is the
-# first one outside; the small corpus needs 8,621 B and so is kept WHOLE, which is what makes
-# the small cell a level-ground comparison the reader has to win rather than a handicap match.
-# Sized in the bar's §10.2 to fit the served window with margin; §7.10 states in advance that a
-# larger window would give a larger paste and a smaller effect. Shrinking it is an AMENDMENT to
-# the bar with its own date (§6 V-1), never a silent adjustment.
-PASTE_MAX_BYTES = 12288
+# ONE constant over BOTH corpora, and it is not tuned per corpus. AMENDMENT 1 to the bar
+# (2026-08-20, §12), dated and reasoned there, BEFORE any graded run: 12,288 was sized on
+# `bytes // 4`, and G-3 measured that estimator to be 2.83-2.91x wrong on this content
+# (1.372-1.415 B/token). At 12,288 the large paste's prompt measured >= 8,192 `prompt_eval_count`
+# on BOTH counters at all three compared tiers — clamped, i.e. the true prompt EXCEEDED the
+# served window and the arm was already being truncated server-side (RB-P53). V-1 fired and the
+# whole comparison was uncomputable.
+#
+# 8,621 is the size of the COMPLETE small corpus, which is the design's binding constraint: the
+# small cell is only a level-ground comparison if the paste is whole there, so the constant
+# cannot go below it, and every byte above it buys the large paste rows at the cost of the
+# margin V-1 exists to protect (measured: 9,088 reads 6,963/6,984 tokens, exactly at and over
+# the threshold). Measured at this commit, cap 8,621:
+#   large  keeps rendered rows 0-400 (401 of 12,001 = 3.3414%, 8,621 B), row 401 first outside
+#   small  needs 8,621 B and is kept WHOLE -> COMPLETE
+# Both corpora carry the identical 401 rows, so §1.4's `doc-small-137` / `doc-large-in-137` pair
+# now differs in nothing but the corpus behind it. §7.10 still holds: a larger window would give
+# a larger paste and a smaller effect. Shrinking this again is another amendment, never a
+# silent adjustment.
+PASTE_MAX_BYTES = 8621
 
 # The four MIRROR families above each map a calibration name to the headline config it copies,
 # and every one of them exists to make a ladder step isolate ONE component. Resolving that here
