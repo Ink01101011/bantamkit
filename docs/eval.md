@@ -7731,5 +7731,286 @@ which `git -C <packnplan> status --porcelain` shows the same single pre-existing
 `?? docs/test-cases/REVIEW-multi-perspective-2026-07-30.md` and `rev-parse HEAD` is `81ac1a1`,
 unmoved. **`RB-P72`, `RB-P73`, `RB-P74`, `RB-P75`, `RB-P76` and both of section R's amendments
 are untouched**; every correction above is appended. One layer: `docs/` only.
+#### T (2026-08-19) — `RB-P79` goes from filed to fixed in seventeen minutes, and the triage rule that had already declined the same defect twice
+
+`RB-P79` was minted in section S above, at `03b6a2e` (22:43:28), and filed **NOT FIXED HERE** —
+*"it is a committed instrument, the fix changes what a reset means, and it deserves its own job
+with its own bar."* `9b9ad0c` (23:00:43) is that job. **This is the first entry in this program
+to go from filed to fixed inside one shift**, which is why the amendment below is written to be
+read straight after `RB-P79` itself (`docs/eval.md:7528-7557` at this HEAD) and repeats none of
+it. **`RB-P79` is a record and is not edited.** Nothing here is regenerated: no `.jsonl` was
+touched, and every figure below was re-derived by this unit rather than carried from the fix.
+
+##### Amendment 1 to `RB-P79` — 2026-08-19, the fix, the arm the entry did not carry, and the bar that holds both halves
+
+**What landed.** `restore()`'s `git clean` exclusions are now built from `NODE_LINKS` itself and
+carry a **leading slash**, so the tuple that protects the two symlinks and the tuple that
+re-plants them are one object and cannot drift. Selfcheck node **M12** is the bar.
+
+**1. Three arms, and arm C is the one `RB-P79` does not carry.** `RB-P79` measured two arms —
+slash-free and anchored. Two arms cannot tell a reader why the exclusions exist at all, and the
+next person to read `restore()` will see two `-e` flags protecting two symlinks that `.gitignore`
+already names and reach for the delete key. The third arm is what stops that, so it is recorded
+here. A throwaway repository shaped like the workload — tracked `.gitignore` carrying
+`node_modules/` and `dist/`, two `node_modules` symlinks into a sibling directory, four files a
+previous repeat could have written — reset once per arm, at git **2.50.1**:
+
+<!-- provenance: value=arm A leaves src/node_modules/payload/index.js and src/date/node_modules/payload2.js present with both symlinks alive; arm B removes all four payloads with both symlinks alive; arm C removes all four payloads AND both symlinks (links []); all three arms remove src/date/date.js and dist/build.js; commit=9b9ad0c; command=.venv/bin/python over a fresh tempfile.TemporaryDirectory: git init, tracked .gitignore + one tracked .ts, plant two symlinks and four payloads, then git checkout -f -- . and git clean -fdx -q with each arm's -e flags, then os.path.exists per payload and os.path.islink per link -->
+
+    payload written by "repeat N"        arm A            arm B            arm C
+                                    (slash-free)      (anchored)     (no exclusions)
+    src/date/date.js                     GONE             GONE             GONE
+    src/node_modules/payload/index.js    PRESENT          GONE             GONE
+    src/date/node_modules/payload2.js    PRESENT          GONE             GONE
+    dist/build.js                        GONE             GONE             GONE
+    node_modules            (symlink)    survives         survives         DELETED
+    packages/shared/node_modules         survives         survives         DELETED
+
+Read the last two rows before deleting anything. **Arm C is not a simplification of arm B, it is
+`N-3` — `git clean -fd` deletes the workload's `node_modules` symlinks — and a harness that
+takes it has no oracle at all from the second repeat onward.** A `.gitignore` *directory* pattern
+does not match a symlink, so `node_modules` being ignored protects nothing here; the exclusion
+list is the only thing that does whenever `J7_REAL_REPO` is unset. Read the `dist/build.js` row
+too: it is `GONE` in **all three** arms, which is `N-16`'s `-x` fix still holding under the new
+exclusion list, measured rather than assumed.
+
+**2. The census is the generalisable half, and it is why nobody saw this.** The residue arm A
+leaves is **not visible to a full untracked census**. Measured on the same fixture, after an
+arm-A reset:
+
+<!-- provenance: value=git status --porcelain -uall over packages/shared/src is EMPTY while --ignored=matching lists !! packages/shared/src/date/node_modules/ and !! packages/shared/src/node_modules/, with src/node_modules/payload/index.js still on disk (os.path.exists True); commit=9b9ad0c; command=.venv/bin/python over the same fixture, git status --porcelain -uall -- packages/shared/src with and without --ignored=matching -->
+
+    git status --porcelain -uall -- packages/shared/src      (empty)
+    ... --ignored=matching                    !! packages/shared/src/date/node_modules/
+                                              !! packages/shared/src/node_modules/
+    os.path.exists(src/node_modules/payload/index.js)        True
+
+The workload's own `.gitignore` carries `node_modules/`, so a directory the agent creates at
+`packages/shared/src/node_modules/` is **ignored, not untracked**, and every census this harness
+had — `tool_list`, `guard_scope`, `guard_tamper`, `git status -uall` — is blind to it by
+construction. **`--ignored=matching` is the load-bearing flag**, and `worktree_residue()` exists
+to carry it. The transferable claim is not about `node_modules`: **a reset verified from its own
+exit code, or from an untracked-only census, cannot see the class of residue that ignore rules
+were written to hide, which is exactly the class a build or an installer leaves behind.**
+
+**3. M12 has four cases, two of them setup, and the two property cases are disjoint halves —
+neither is a spare.** The property is *after `restore()`, nothing the previous repeat wrote
+survives except the two symlinks the harness itself plants*, and it is two-sided. Measured by
+mutating a scratch copy of the harness and running `selfcheck` on the copy — the unmutated copy
+reads **0 RED / 54 cases**, identical to the file in place, so the copy is a faithful vehicle:
+
+<!-- provenance: value=unmutated 0 RED over 54 cases; mutation "revert to the slash-free -e rel" reddens exactly 1 case, "M12 RED: `restore()` leaves the two symlinks and NOTHING else", and leaves "and the exclusion ALONE keeps them, with no re-plant" GREEN; mutation "delete the excludes loop entirely" reddens exactly 1 case, the second one, and leaves the first GREEN; commit=9b9ad0c; command=cp docs/eval-data/2026-08-18-loop-harness.py to a scratch copy, apply each mutation to the copy, .venv/bin/python <copy> selfcheck -->
+
+    mutation applied to a scratch copy of the harness      case 3    case 4
+    (none)                                                 green     green      0 RED / 54
+    excludes += ["-e", rel]        (slash-free again)      **RED**    green      1 RED
+    excludes = []                 (exclusions deleted)      green   **RED**      1 RED
+
+**Case 3 staying green under the second mutation looks like a hole and is not.** That case's
+`restore(wt, real)` passes a real repository, so the links are deleted by `clean` and then
+**re-planted** by the `if real_repo:` branch — the residue really is exactly the two links, and
+green is the correct reading. The second half is only reachable through a call with **no
+re-plant**, which is why case 4 calls `restore(wt)` bare. **That is the default configuration,
+not a contrived one:** `run_one` calls `restore(wt, REAL_REPO)` and `REAL_REPO` is
+`os.environ.get("J7_REAL_REPO", "")` (`docs/eval-data/2026-08-18-loop-harness.py:83`), which is
+`''` — falsy, no re-plant — whenever that variable is unset. Verified at HEAD:
+
+<!-- provenance: value=J7_REAL_REPO not in os.environ, REAL_REPO repr '' and bool False, NODE_LINKS ('node_modules', 'packages/shared/node_modules'); commit=9b9ad0c; command=env -u J7_REAL_REPO .venv/bin/python -c importlib.util loading docs/eval-data/2026-08-18-loop-harness.py and printing repr(REAL_REPO), bool(REAL_REPO) and NODE_LINKS -->
+
+    'J7_REAL_REPO' in os.environ   False
+    repr(REAL_REPO)                ''          bool(REAL_REPO)  False
+
+So on the default path **the exclusion list is the sole protection for the two symlinks**, and
+case 4 is the only case that measures it.
+
+**4. The laundering check is promoted from a lesson to a procedure.** Section S records that a
+third `M11` case was written, measured and deleted because it reddened under all three of the
+U5 closure program's mutations — none of which touches the oracle — and concluded that *a check
+that reddens for a reason its name does not state launders unrelated mutations into its own
+column.* **That lesson is now a gate a new must-be-red case has to pass before it lands**, and
+M12 passed it before `9b9ad0c` was written. Re-measured here:
+
+<!-- provenance: value=MUT unmutated selfcheck 0 RED; mutation c2 4 RED all four M8 cases; n17 5 RED all five M9 cases; n17b 5 RED the same five M9 cases; no M12 case appears in any mutation's column; C-1/N-16 and N-21 UNMEASURED in this invocation (no --worktree), rc 0; commit=9b9ad0c; command=.venv/bin/python docs/eval-data/2026-08-19-loop-u5-closure-field-measurement.py -->
+
+    unmutated selfcheck            0 RED
+    mutation c2                    4 RED   -- all four M8 cases
+    mutation n17                   5 RED   -- all five M9 cases
+    mutation n17b                  5 RED   -- the same five M9 cases
+    M12 cases appearing above      NONE
+
+**0 / 4 / 5 / 5, unchanged from `ba7a38b` and from section S**, and the column contents are the
+reason rather than the totals: M12 depends only on `restore()` and on git, never on `__file__`,
+so a program that loads the harness from a temp copy cannot redden it. **The procedure, stated
+so it does not have to be re-derived: a new must-be-red case lands only after the existing
+mutation catalogue has been re-run with it present and every mutation's column is unchanged in
+its members, not merely in its count.** Two units' work produced that sentence and it is the
+durable half.
+
+**Not claimed, and the invocation is narrower than section S's.** This run passed no
+`--worktree`, so `C-1 / N-16` and `N-21` printed **UNMEASURED** and were skipped, and this
+program exited **0**. That is not a contradiction of section S's `rc 1` reading, which was
+measured **with** a worktree and is a statement about N-21; nothing here re-measures N-21 or
+supersedes it.
+
+##### What the fix binds, and the claim this amendment does not make
+
+**No committed row becomes independent, and that is stated rather than implied.** The rows of
+**B0** and **B0"** were produced under the slash-free exclusion, they stand exactly as written,
+and **their repeat independence is not established by this fix and is not re-litigated here.**
+The fix binds **runs made after `9b9ad0c`** and nothing else.
+
+Sharper, since it can be said: the committed rows are not thereby worthless, and the boundary is
+locatable rather than vague. **What they can still support** is anything decided *within a single
+repeat* — a row's own tool sequence, its own guard columns, its own oracle exit — because the
+residue is written by repeat N and read by repeat N+1, so repeat r0 of every arm is downstream of
+nothing. **What they cannot support** is any comparison whose unit of independence is *the
+repeat*: a distinct-value count across an arm's repeats, a variance, a determinism claim, or a
+per-arm mean read as an average of independent draws. Section S already recorded the observable
+shape of this on the six committed **B0"** rows — `guard_type_exit` reads `[2, 1, 1, 1, 1, 1]`
+while every content column is 1 distinct of 6 — and that shape is exactly what carried state
+between repeats produces. **The honest reading of the committed repeats is `r0` plus five
+observations of unknown dependence, and this amendment does not convert them into six.**
+
+##### Minted here — `RB-P83`, and why the class it came from does not get a number
+
+**The register was read at HEAD before any number was chosen, and not taken from a brief, a
+backlog or an orchestrator.** That precaution is `RB-P75`'s, and the ceiling moved twice on
+2026-08-19, so the read is recorded:
+
+<!-- provenance: value=82 distinct RB-P entries, ceiling RB-P82, contiguous 1..82 with no gaps; commit=9b9ad0c; command=grep -oE 'RB-P[0-9]+' docs/eval.md | sort -u | wc -l, then | sed 's/RB-P//' | sort -n | tail -1, then a python set-vs-range comparison over the same regex -->
+
+    grep -oE 'RB-P[0-9]+' docs/eval.md | sort -u | wc -l     ->  82 distinct
+    ... | sed 's/RB-P//' | sort -n | tail -1                 ->  ceiling RB-P82
+    sorted(set) == list(range(1, 83))                        ->  True, no gaps
+
+`(82 distinct / ceiling RB-P82 / 0 gaps, 9b9ad0c, the three commands above)`. **`RB-P83` is the
+next free number and this section mints exactly one entry, `RB-P83`.**
+
+**The class does not get a number, and the one sentence is this:** `RB-P79`'s own **Attack**
+clause already states the general rule — *an exclusion list must be anchored … and the reset must
+be verified from a census that includes ignored paths rather than from its own exit code* — so
+`N-3`, `N-16` and `compaction-mcp`'s `embcache.json` are **further instances of a claim the
+register already makes**, which is the disposition section S's own precedent gives that shape
+(`docs/eval.md:7457-7459`, where two further false-PASS filenames were sent into the `RB-P72`
+amendment rather than into numbers of their own); what is **not** claimed anywhere is the triage
+rule that let two of those instances go unfiled, and that is `RB-P83`.
+
+- **`RB-P83` — "closed inside the harness and instrument-local" was used to decline a register
+  number for a defect in one function's reset scope, twice, and seventeen hours later the third
+  defect in that same function's same reset scope was filed as the most serious entry on the
+  page.** Section Q's *Not filed, and why — the remaining twenty* (`docs/eval.md:6593-6600`,
+  landed in `3541e3d` at 05:26:26) declines numbers for **`N-3`** (*"`git clean -fd` deletes the
+  workload's `node_modules` symlinks"*) and **`N-16`** (*"`restore()` carried gitignored state
+  between repeats"*) on the stated ground that each is *"closed inside J7's own harness and
+  instrument-local"* and that *"none constrains a future job that does not use that program."*
+  At `03b6a2e` (22:43:28 the same day) `RB-P79` files a **third** defect in the scope of **the
+  same single `git clean` invocation inside the same function** and calls it *"the most
+  operationally serious thing on this page."* All three are one property — what `restore()`'s
+  reset removes and what it keeps — and the three-arm table above contains all three at once:
+  **arm C is `N-3`** (both symlinks deleted), **arm A is `RB-P79`** (nested `node_modules`
+  survives), and the `dist/build.js` row being `GONE` in every arm is **`N-16`'s fix still
+  holding**. The register did **not** overlook this: the same paragraph names `N-16` as one of
+  *"the two closest calls in this group — an isolation routine that did not isolate"* and files
+  it under *not filed* anyway. **That is what makes it a rule defect rather than an oversight**,
+  and it is the same family as `RB-P74` and `RB-P75` — entries that exist because the register's
+  own procedure, not its subject matter, failed. **What it costs:** two of the three instances
+  are discoverable only by reading a declined-findings paragraph and a docstring, so `RB-P79`
+  was filed and fixed as a first occurrence when it was a third, and the amendment above had to
+  reconstruct the other two from `git log -S`. **Attack:** the triage question that failed is
+  *"is it closed, and is it instrument-local?"*; the question that would have caught it is
+  *"is the **property** load-bearing for something this register publishes?"* — repeat
+  independence is, since it is the precondition under which an arm's repeats are draws at all.
+  Concretely: **when a finding is declined as instrument-local, file the *property* once under a
+  number and let further instances amend it**, rather than declining each instance separately on
+  the ground that each already has a patch. **Not fixed here, and deliberately:** re-filing
+  `N-3` and `N-16` retroactively would edit section Q's records, which the record rule forbids;
+  the binding is on the *next* section's triage. Nothing in `RB-P79`, `N-3` or `N-16` is refuted
+  or weakened by this entry — each is correct as filed. (Process / register triage, **open**.)
+
+##### One thing this unit was handed that does not reproduce
+
+The brief this unit was handed asserts that **`RB-P53` found the same class in `embcache.json`,
+"written and reloaded so arms were not independent without eviction."** Checked at HEAD, it does
+not reproduce, and the correction is recorded rather than quietly dropped:
+
+<!-- provenance: value=grep -c embcache docs/eval.md is 0; the only file in the repository containing the string is docs/eval-data/2026-08-19-instrument-hygiene-plan.md; commit=9b9ad0c; command=grep -c embcache docs/eval.md and grep -rl embcache . -->
+
+    grep -c embcache docs/eval.md      ->  0
+    grep -rl embcache .               ->  docs/eval-data/2026-08-19-instrument-hygiene-plan.md
+
+- **`RB-P53` is not that finding.** It is *the summarizer in a merged job read 6.6% of what it
+  was sent* (`docs/eval.md:5550`) — `compaction-mcp`'s `DirectSummarizer` sends no
+  context-length parameter, `ollama` truncates the prompt, returns `finish_reason: "stop"` with
+  no error, and reports `usage.prompt_tokens` equal to **the window**. It is a silent-clamp
+  finding on the **fidelity** axis. It says nothing about a cache and nothing about repeat
+  independence.
+- **The `embcache.json` site is real, and its identifier is `S3`, not `RB-P53`** — a near-miss
+  in the name, which is presumably where the substitution came from. It is recorded at
+  `docs/eval-data/2026-08-19-instrument-hygiene-plan.md:720` (*"embeddings, same exposure, caches
+  its damage to `embcache.json`"*), scoped **out** of J3 as another repository, and carried into
+  this file only inside **`F-8`** (`docs/eval.md:5829`) as *"damage cached to disk."* The plan
+  records it as **latent** — one env var makes it live and the cache survives a restart — so it
+  is a legitimate third instance of the class discussed above, under the right name.
+- **The same substitution is in `9b9ad0c`'s commit message** (*"Same class as RB-P53 — a
+  repeat-independence defect in a committed instrument"*). A commit message is not a committed
+  row and is not rewritten; it is corrected here. **The genuine second instance is `N-16`, in
+  the same function**, which is the evidence `RB-P83` above rests on — so the brief's conclusion
+  that a second instance exists survives, and only its citation fails.
+
+Two smaller imprecisions in the same brief, recorded for completeness and neither load-bearing:
+it says *"M12's **first** case stays green"* under the exclusion-removal mutation, where the two
+cases that stay green are M12's setup cases and the property case that stays green is the
+**third** of four; and it describes the four cases as though all four assert the property, where
+two are setup assertions that the fixture planted residue and that the census can see the
+ignored half at all. Both are measured in the table under point 3 above.
+
+##### Gates at this commit
+
+**Read the commit column literally.** Every gate below was measured at `9b9ad0c` **with this
+section's `docs/eval.md` edit present in the working tree**. That is the commit the numbers
+belong to and it is the one quoted; no gate in the table reads `docs/eval.md`, and
+`test_field_programs.py` parametrises over `docs/eval-data/` only, so the commit that carries
+this section cannot move any of them.
+
+<!-- provenance: value=1010 passed, 2 xfailed; commit=9b9ad0c; command=.venv/bin/python -m pytest runtime-py/tests -q -->
+<!-- provenance: value=1012 tests collected; commit=9b9ad0c; command=.venv/bin/python -m pytest runtime-py/tests -q --collect-only -->
+<!-- provenance: value=All checks passed! on runtime-py and on docs/eval-data; commit=9b9ad0c; command=.venv/bin/ruff check runtime-py && .venv/bin/ruff check docs/eval-data -->
+<!-- provenance: value=SELFCHECK: all cases behaved as declared, rc 0, 54 cases; commit=9b9ad0c; command=.venv/bin/python docs/eval-data/2026-08-18-loop-harness.py selfcheck -->
+
+| gate | value | commit | command |
+|---|---|---|---|
+| suite | **1010 passed, 2 xfailed** | `9b9ad0c` | `.venv/bin/python -m pytest runtime-py/tests -q` |
+| collected | **1012** | `9b9ad0c` | `... -q --collect-only` |
+| ruff, `runtime-py` | **All checks passed!** | `9b9ad0c` | `.venv/bin/ruff check runtime-py` |
+| ruff, `docs/eval-data` | **All checks passed!** | `9b9ad0c` | `.venv/bin/ruff check docs/eval-data` |
+| harness selfcheck | **all cases behaved as declared**, rc 0, **54** cases | `9b9ad0c` | `.venv/bin/python docs/eval-data/2026-08-18-loop-harness.py selfcheck` |
+
+**The total does not move, and the reason is derived rather than asserted.**
+`runtime-py/tests/test_field_programs.py` carries four nodes parametrised over the files in
+`docs/eval-data/`, so the count moves by four for each `.py` added there. `9b9ad0c` **edited** an
+existing file and added none, and this section adds none and touches only `docs/eval.md`, so
+1010 / 1012 is the expected reading here, and it is measured here rather than carried. Section S
+records the same 1010 / 1012 at `0b7b0c9`, and records `ba7a38b` → **1005** and `b1f41e5` →
+**1006**; those three are section S's readings at section S's commits, are not re-measured here,
+and none of them is quoted without the commit it belongs to.
+
+**The selfcheck count moved and the arithmetic is stated, because a RED count over a growing
+catalogue means nothing without it.** `03b6a2e` reads **50** cases, this HEAD reads **54**;
+`M12`'s four are the difference, 50 + 4 = 54.
+
+<!-- provenance: value=50 selfcheck cases at 03b6a2e against 54 at 9b9ad0c, difference exactly M12's four; commit=9b9ad0c; command=git show 03b6a2e:docs/eval-data/2026-08-18-loop-harness.py > <scratch>/pre.py then .venv/bin/python <scratch>/pre.py selfcheck | grep -cE '^\s+\[(ok|RED)' against the same count on the file in place -->
+
+##### Fences held by this section
+
+**One layer: `docs/eval.md` only** — no `.py`, no `.jsonl`, nothing under `runtime-py/`.
+**`RB-P79` is untouched, and so are `N-3`, `N-16`, `F-8`, `RB-P53` and every entry of sections P
+through S**; every correction above is appended, and the two corrections to a commit message and
+to a brief are made here rather than by rewriting either. **No `.jsonl` was regenerated or
+edited and no committed row is restated.** **No committed row is claimed to be independent.**
+**No live model call was made.** The workload `packnplan-mono` was not touched at all: every
+measurement above ran against fresh `tempfile.TemporaryDirectory` repositories or against this
+repository, and the one invocation of the U5 closure program was made **without** `--worktree`,
+which is why its `C-1 / N-16` and `N-21` sections report UNMEASURED. **The two `node_modules`
+symlinks are untouched.** **Nothing merged, nothing pushed, no `git tag` in any form.**
 
 Back to the [README](../README.md).
