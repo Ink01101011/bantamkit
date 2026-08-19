@@ -7236,4 +7236,71 @@ average; **a family average over eight configs is a pooled number, and this prog
 rule is that strata are reported separately and never pooled.** That rule was applied to
 arms and not to configs, and this is what it cost.
 
+##### Amendment 2 to RB-P76 — 2026-08-19, the comparison was matched all along
+
+**RB-P76 above and Amendment 1 both stand as committed and neither is edited.** Their figures
+reproduce at `ba7a38b`, the seed facts included. What follows retracts one *inference* drawn
+from those facts. It needs no source change and no new run.
+
+<!-- provenance: value="see table" commit="ba7a38b" command="python over the four rebaseline jsonl, keyed by inverting run_seed; McNemar exact hand-rolled from math.comb" -->
+
+**The retracted clause.** RB-P76 says of the four arms: *"a paired design is a prerequisite
+for any tier claim, not an improvement on one"*, having established that `run_seed` hashes the
+model and that no two tiers share a seed. **Those seed facts are true and re-measured here — 66
+distinct seeds per tier, 0 overlap in all six tier pairs. The inference from them is false.**
+Pairing is a property of the experimental design, not of the RNG. The design is fully crossed —
+every `(task, config, repeat)` cell exists at all four tiers — so the matched-pairs test was
+available on the day these rows were committed, and is available now. Hashing the model does not
+destroy the pairing key; it relabels it with a bijection invertible in 66 hashes. Given the
+model string, `{run_seed(model, task, repeat) -> repeat}` over 22 tasks × 3 repeats **keys 528
+of 528 rows at every tier — 0 unrecovered, 0 task mismatches** — and the four model strings
+themselves recover from the committed seeds alone (`llama3.2:3b`, `qwen3:4b-instruct`,
+`qwen2.5:7b-instruct`, `qwen2.5:14b-instruct`, each the unique hit when a candidate list of
+local model names is tested against its file's seed set). **What the model term in the seed
+costs is that, in these rows, the repeat index is recoverable rather than recorded: an
+ergonomics cost, not a validity one.**
+
+**The paired test, computed.** McNemar exact, two-sided, on `(task, config, repeat)` matched
+cells, n = 528 per pair. `scipy` is not in `.venv`, so the exact test is hand-rolled from
+`math.comb` and is exact, not asymptotic.
+
+| pair | b | c | **McNemar exact p** | committed Fisher p |
+|---|---|---|---|---|
+| **4b–7b** | 49 | 31 | **0.0567** | 0.2734 |
+| 4b–14b | 41 | 31 | 0.2888 | 0.5601 |
+| 7b–14b | 42 | 50 | 0.4657 | 0.6540 |
+| 3b–4b | 0 | 216 | <0.0001 | — |
+| 3b–7b | 7 | 205 | <0.0001 | <0.0001 |
+| 3b–14b | 6 | 212 | <0.0001 | — |
+
+**Both halves, because a correction that reports only the flattering one is the failure this
+register keeps catching.** *Unchanged:* the verdict at α = 0.05 — the 3B is a floor and the
+other three are one population, exactly what RB-P76 committed. *Moved:* the tightness. 4b–7b
+goes **0.2734 → 0.0567, roughly 4.8×, to the edge of significance**, and the direction favours
+the 4B — which already carried that population's pass rate on 43% fewer tokens. *"Indistinguishable
+at this n"* survives, with less margin than the unpaired figure showed.
+
+**The technique was committed and tested two days before RB-P76 declared it missing.**
+`slots_are_repeat_indexed`, at
+`docs/eval-data/2026-08-17-devteam-ladder-field-measurement.py:190`, inverts `run_seed` for
+exactly this purpose — *"the seed a row carries is a witness to its repeat index"* — and is
+guarded by `test_a_repeat_slot_is_verified_against_the_harnesss_own_seed_not_file_order`
+(`runtime-py/tests/test_ladder_statistics.py`, assertions at lines 190 and 194 at `ba7a38b`). It
+landed in `f0cf440` on 2026-08-17; RB-P76 merged in `71a72bc` on 2026-08-19. **The entry named a
+prerequisite missing while the repository was already shipping and testing the thing that
+supplies it.** This is RB-P76's own shape once more — *the rows did not even need printing, only
+reading* — except that here the instrument did not even need writing.
+
+**J8 is dropped, and the metric it proposed to move runs the wrong way.** The queued change was
+to make the seed model-independent, on the falsifiable promise that cross-tier overlap goes
+0/66 → 66/66. That overlap is a tautology of the change. The quantity that actually governs
+pairing — whether an already-committed row can be resolved to its repeat index — goes **66/66 →
+0/66 at every tier**, because `run_seed` is the only witness those rows carry: **65 of the 96
+committed `.jsonl` artifacts hold a `seed` and no `model` field** (13 hold both, 18 hold no
+seed). The change would also delete the invariant asserted at
+`runtime-py/tests/test_evalrun.py:1521`, inside `test_run_seed_varies_with_repeat_and_model`
+(line 1519 at `ba7a38b`). Whether tiers should share a seed *anyway*, as common random numbers,
+is a separate question and is **not settled here**: the measurement that would settle it did not
+reproduce, and an unverified number does not enter this file.
+
 Back to the [README](../README.md).

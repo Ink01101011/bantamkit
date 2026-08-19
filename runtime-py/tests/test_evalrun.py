@@ -1696,6 +1696,56 @@ def test_seed_lands_in_the_transcript(tmp_path):
     assert read_transcript(transcripts, "bare", "extract-contact")["seed"] == 1861749954
 
 
+# ---- the row records the repeat it was run at ----
+#
+# The property: a row's recorded `repeat` must be the same repeat that produced its
+# `seed`. Someone holding only the row can check that against `run_seed` — without
+# knowing how the row was produced, without a brute-force inversion over the
+# (task, repeat) domain, and without a model string carried in from outside the row.
+# Before the column existed the repeat index was recoverable but not recorded.
+
+
+def test_a_rows_recorded_repeat_regenerates_its_own_seed(monkeypatch, tmp_path):
+    """End to end: the real `run_suite` and the real `--json` sink, only transport faked.
+
+    Every column the check consumes comes off the row itself. Red if the harness records
+    anything other than the repeat it actually ran at — a constant, or a stale index —
+    because then the row's own three columns stop reproducing its own seed.
+    """
+    taskdir = tmp_path / "tasks"
+    taskdir.mkdir()
+    (taskdir / "tiny.yaml").write_text(TINY_TASK)
+    out = tmp_path / "results.jsonl"
+    monkeypatch.setattr(
+        evalrun,
+        "OpenAICompatible",
+        lambda **kw: SeedableClient([assistant(content="hi")] * 3, model=kw["model"]),
+    )
+    evalrun.main(
+        [
+            "--base-url",
+            "http://x",
+            "--model",
+            "qwen2.5:14b-instruct",
+            "--config",
+            "bare",
+            "--tasks",
+            str(taskdir),
+            "--repeats",
+            "3",
+            "--json",
+            str(out),
+        ]
+    )
+    rows = [json.loads(line) for line in out.read_text().splitlines()]
+    assert len(rows) == 3
+    for row in rows:
+        assert run_seed(row["model"], row["task"], row["repeat"]) == row["seed"]
+    # Non-vacuous: the three rows really are three different repeats, so the check above
+    # is not three copies of the same easy case.
+    assert sorted(row["repeat"] for row in rows) == [0, 1, 2]
+
+
 def test_format_report_keeps_ablation_config_rows():
     results = [
         TaskResult(

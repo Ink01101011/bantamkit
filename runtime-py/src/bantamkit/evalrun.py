@@ -212,6 +212,21 @@ class TaskResult:
     # which is what a fake or an in-process stub looks like; recording the CLI's
     # `--model` string instead would attribute a row to a model that never answered it.
     model: str | None = None
+    # The repeat index, under the same trailing-field convention as `seed` above, the
+    # eight accounting columns and RB-P38's `model`: additive, defaulted, nothing above
+    # renumbered, reordered or repurposed. Rows that predate it simply lack the key —
+    # backfilling them would be a retro-edit of evidence.
+    #
+    # `repeat` is the finest grain a row can be matched on across arms, and until now it
+    # was only *recoverable*: `run_seed` is injective over the (task, repeat) domain, so
+    # an analyst could invert the seed by brute force, which is exactly what
+    # `docs/eval-data/2026-08-17-devteam-ladder-field-measurement.py`'s
+    # `slots_are_repeat_indexed` does. That recovery costs the reader the model string and
+    # a 66-hash loop, and it stops working the moment anything about the seed changes.
+    # `run_task` is handed the number already; this records it instead of re-deriving it.
+    # `run_seed` is untouched — the seed a row carries still means exactly what it meant,
+    # and the recorded `repeat` is a witness that can be checked against it.
+    repeat: int = 0
 
 
 def request_wire_bytes(messages: list[Message], tools: list[Tool] | None) -> int:
@@ -676,6 +691,7 @@ def run_task(
         query_bytes=accounting.query_bytes,
         context_bytes_sent=tracking.context_bytes_sent,
         model=answering_model,
+        repeat=repeat,
     )
     if transcripts_dir is not None:
         # The run most worth reading used to record nothing: `agent.run` raising left
