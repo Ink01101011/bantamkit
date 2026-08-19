@@ -1,0 +1,13 @@
+{
+  "name": "document_read",
+  "description": "Read one page of rows from one part of one document. Rows keep their file order and are numbered from 0; row 0 is the header. The document does not fit in one page, so pick the page with offset. Do not page through it to find a row: use the row count and the first and last row that document_list reported to estimate the row's number, jump straight to that offset, and correct from what comes back.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "document": {"type": "string", "description": "File name as document_list reported it; omit if the task has one"},
+      "part": {"type": "string", "description": "Part name as document_list reported it; omit for the first"},
+      "offset": {"type": "integer", "minimum": 0, "description": "Row number of the first row to return"},
+      "limit": {"type": "integer", "minimum": 1, "description": "How many rows; default 50, a byte ceiling may return fewer"}
+    }
+  }
+}

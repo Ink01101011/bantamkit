@@ -18,12 +18,21 @@ from pathlib import Path, PurePosixPath
 import yaml
 
 from bantamkit.agent import Agent, MaxTurnsExceeded, ToolDef, response_format_for
-from bantamkit.assets import assets_root
+from bantamkit.assets import assets_root, load_tool
 from bantamkit.budget import TokenBudget
 from bantamkit.client import BantamError, Message, ModelClient, OpenAICompatible, Tool, Usage
-from bantamkit.contract import schema_error, schema_instruction, schema_retry_feedback
+from bantamkit.contract import (
+    document_error,
+    document_manifest,
+    document_offset_past_end,
+    document_page,
+    document_unknown,
+    schema_error,
+    schema_instruction,
+    schema_retry_feedback,
+)
 from bantamkit.critique import CritiqueExhausted, CritiqueGate, GroundedCritiqueGate
-from bantamkit.docread import Document, DocumentReadError, extract
+from bantamkit.docread import Document, DocumentReadError, extract, page
 from bantamkit.filegraph import FileAccessGraph, ReadAccounting
 from bantamkit.loopguard import LoopGuard
 from bantamkit.memory import Memory, MemoryStore
@@ -158,9 +167,22 @@ BUDGET_CONFIGS = {"budgeted": "full"}
 # registered at setup). Calibration-only until the conversion bars say otherwise.
 GUARD_CONFIGS = {"graph-guarded": "graph", "memory-guarded": "memory"}
 
+# Same precedent a fourth time. `reader` mirrors `bare` exactly, plus the document tool pair
+# — and `bare` is the right thing to mirror, because it is the only arm that says what an
+# over-window corpus costs with NO reader at all. Resolving `effective` to `bare` means the
+# arm picks up no schema gate, no critic, no graph and no memory, so `bare -> reader`
+# isolates one component per step exactly as `bare -> graph-annotate` does.
+#
+# Calibration-only, in CONFIG_CHOICES and NOT in CONFIGS, for the reason the other three are:
+# a component earns a place in the permanent matrix when a bar says it did, and this job's
+# bar has not been run yet. Keeping it out also means the default suite is byte-identical to
+# the one before this commit for every task that declares no `document_setup:`.
+READER_CONFIGS = {"reader": "bare"}
+
 # Every config name run_task accepts: the permanent matrix plus calibration-only ablations.
 CONFIG_CHOICES = CONFIGS + sorted(
-    (set(GRAPH_CONFIGS) | set(BUDGET_CONFIGS) | set(GUARD_CONFIGS)) - set(CONFIGS)
+    (set(GRAPH_CONFIGS) | set(BUDGET_CONFIGS) | set(GUARD_CONFIGS) | set(READER_CONFIGS))
+    - set(CONFIGS)
 )
 
 
@@ -735,6 +757,121 @@ def materialise_documents(task: dict, workdir: Path, config: str) -> list[Docume
     return fixtures
 
 
+# ---- the reader pair the model actually sees (`document_list`, `document_read`) ---------
+#
+# TWO polymorphic tools, not five typed ones. Both `.xlsx` and `.docx` reduce to the same
+# shape upstream — a `Document` of named `Part`s of rendered rows — so a `sheet_*` roster and
+# a `docx_*` roster would be two spellings of one mechanism, and every request would carry
+# both whichever kind the task actually holds. The roster is re-sent on every request, so
+# that duplication is not paid once; `test_document_tools.py` prices the pair against a
+# five-tool typed roster written out in full and asserts the gap in bytes.
+#
+# The pair is a DESCRIBER and a PAGER, and the split is what makes an over-window corpus
+# readable at all. `document_list` answers "what exists" once — part names, row counts, row
+# numbering, and the header / first / last row of each part. `document_read` answers "what is
+# at offset N". Neither searches: no argument names a value to look for. That is deliberate
+# and it is the boundary of what this job measures — a `find`-shaped argument is a FINDER
+# primitive, a different axis, and adding one would make the result unable to say whether the
+# reader bought anything. See `contract.document_manifest` for why the three sample rows are
+# the load-bearing part.
+
+DOCUMENT_PAGE_ROW_LIMIT = 50
+DOCUMENT_PAGE_MAX_ROWS = 200
+# Under `Agent.observation_budget` (4096 by default) with room for the header line, the
+# continuation line and the per-row number prefixes this module adds after `page()` has
+# sliced. The ceiling has to be the READER's, not the loop's: the loop cuts an over-budget
+# observation IN BAND and the model then reads a page that lies about where it stopped,
+# whereas `page()` stops on a row boundary and reports the shortfall out of band.
+DOCUMENT_PAGE_MAX_BYTES = 3072
+
+
+def _document_int(value: object, fallback: int) -> int:
+    """A model's spelling of a number, bent to the argument the reader takes.
+
+    `Agent.coerce_arguments` already turns `"50"` into `50` for a declared integer; what it
+    cannot do is decide what an omitted or null argument means. Anything unconvertible is
+    passed through as-is so the reader's own validation is what speaks.
+    """
+    if value is None:
+        return fallback
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return value  # type: ignore[return-value]
+
+
+def _document_tools(fixtures: list[DocumentFixture]) -> list[ToolDef]:
+    """The pair, bound to the documents this run materialised.
+
+    Extraction happens once here rather than per call: `page()` slices an already-rendered
+    `Document`, so a per-call `extract()` would re-parse 12,000 rows of XML on every read and
+    price the tool by the corpus size. It re-extracts rather than reusing what
+    `materialise_documents` parsed because `DocumentFixture` is a MEASUREMENT record — sizes
+    and hashes of what was written — and hanging a live handle off it would make a row's
+    provenance depend on whether a reader was attached.
+    """
+    docs: dict[str, Document] = {f.name: extract(f.path) for f in fixtures}
+    default_document = next(iter(docs), "")
+
+    def list_documents() -> str:
+        return document_manifest(
+            [
+                {
+                    "document": name,
+                    "kind": doc.kind,
+                    "index": part.index,
+                    "part": part.name,
+                    "row_count": part.row_count,
+                    "rows": part.rows,
+                }
+                for name, doc in docs.items()
+                for part in doc.parts
+            ]
+        )
+
+    def read_document(
+        document: str | None = None,
+        part: str | None = None,
+        offset: object = 0,
+        limit: object = DOCUMENT_PAGE_ROW_LIMIT,
+    ) -> str:
+        name = document or default_document
+        doc = docs.get(name)
+        if doc is None:
+            return document_unknown(name, sorted(docs))
+        key: str | int = part if part else 0
+        try:
+            target = doc.part(key)
+        except DocumentReadError as e:
+            return document_error(e)  # names every part it does have
+        start = _document_int(offset, 0)
+        rows = _document_int(limit, DOCUMENT_PAGE_ROW_LIMIT)
+        if isinstance(start, int) and start >= target.row_count:
+            # `page()` would return an empty page with `next_offset=None`, which reads as
+            # "the part ended here" — a dead end the model cannot tell from a real one.
+            return document_offset_past_end(target.name, start, target.row_count)
+        if isinstance(rows, int):
+            rows = min(rows, DOCUMENT_PAGE_MAX_ROWS)
+        try:
+            got = page(doc, key, start, rows, DOCUMENT_PAGE_MAX_BYTES)
+        except (DocumentReadError, TypeError) as e:
+            return document_error(e)
+        return document_page(
+            document=name,
+            part=got.part,
+            offset=got.offset,
+            rows=list(got.rows),
+            row_count=got.total_rows,
+            next_offset=got.next_offset,
+            truncated_bytes=got.truncated_bytes,
+        )
+
+    return [
+        ToolDef(tool=load_tool("document_list"), handler=list_documents),
+        ToolDef(tool=load_tool("document_read"), handler=read_document),
+    ]
+
+
 class SchemaGate:
     """Enforce a task schema on the agent's final answer, on structured()'s retry budget.
 
@@ -922,14 +1059,16 @@ def run_task(
     # Calibration-only configs mirror a headline config exactly, plus one component.
     # Resolving the name here keeps every membership test below reading as it did;
     # `config` itself stays the label the TaskResult records.
-    effective = GUARD_CONFIGS.get(config, BUDGET_CONFIGS.get(config, config))
+    effective = GUARD_CONFIGS.get(
+        config, BUDGET_CONFIGS.get(config, READER_CONFIGS.get(config, config))
+    )
 
     # Before the agent exists, and unconditional on `config`: a document is the task's
     # corpus, not a component under test, so every arm reads the same bytes — which the
     # generator makes literally true. A malformed declaration raises here rather than
     # letting the run start with no document and record a `wrong-answer` row, which would
     # report a defect in the task file as a defect in the model.
-    materialise_documents(task, workdir, config)
+    document_fixtures = materialise_documents(task, workdir, config)
     tracking = TrackingClient(client)
     workspace_tools = _workspace_tools(task.get("workspace") or {})
     tools = [
@@ -963,6 +1102,14 @@ def run_task(
             store.save(fact["type"], fact["name"], fact["description"], fact["body"])
         agent.use(Memory(store=store_dir))
         memory_attached = True
+    # `memory_setup:` gates the memory tools; `document_setup:` gates these, for the same
+    # reason — a task with no corpus handed a reader would put two tools on the wire that
+    # can only answer "no documents are attached to this task". The config side follows the
+    # memory recipe too: the component's own arm, plus the two composed configs. `bare` gets
+    # nothing and stays the floor.
+    if document_fixtures and (config in READER_CONFIGS or effective in ("lean", "full")):
+        for tooldef in _document_tools(document_fixtures):
+            agent.register_tool(tooldef)
     if effective in ("lean", "full") and "schema" in task:
         # The agent owns the loop here, so it needs the same instruction structured() gives.
         # Gate registered before the critique gate: a malformed answer is fixed for free

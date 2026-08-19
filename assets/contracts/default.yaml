@@ -10,3 +10,19 @@ loop_warn: "(STOP calling tools. Give your final answer now, in exactly the form
 evidence_line: "{name}({arguments}) -> {observation}"
 evidence_no_observation: "(no observation)"
 evidence_empty: "(no tool calls were made)"
+# The document reader pair's observations (`document_list`, `document_read`). Every string a
+# reader hands back to the model lives here and not in the harness, for the reason the layer
+# rule gives: the mechanics measured in `docread.py` transfer across models, this wording is
+# exactly what does not.
+document_manifest_empty: "no documents are attached to this task"
+document_manifest_part: "{document} ({kind}) part {index} \"{part}\": {rows} rows, numbered 0 to {last}"
+document_manifest_header_row: "  row 0 is the header: {row}"
+document_manifest_first_row: "  row 1 is the first data row: {row}"
+document_manifest_last_row: "  row {index} is the last data row: {row}"
+document_page_header: "{document} \"{part}\" rows {start}-{end} of {rows}; each line below begins with its own row number"
+document_page_next: "more rows follow: call document_read again with offset={next_offset}"
+document_page_end: "that was the last row of \"{part}\""
+document_page_truncated: "row {index} was too long for one page and was cut: {dropped} bytes dropped"
+document_unknown: "error: no document named {name}; this task has: {available}"
+document_offset_past_end: "error: offset {offset} is past the end of \"{part}\", which has {rows} rows numbered 0 to {last}"
+document_error: "error: {detail}"
