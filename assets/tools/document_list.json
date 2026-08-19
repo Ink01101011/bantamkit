@@ -1,0 +1,5 @@
+{
+  "name": "document_list",
+  "description": "Describe every document attached to this task: file name, its parts (a worksheet, or the body of a Word file), how many rows each part has, and that part's header row, first row and last row. Call this FIRST — it is the only place the part names and row numbers document_read accepts are stated.",
+  "parameters": {"type": "object", "properties": {}}
+}

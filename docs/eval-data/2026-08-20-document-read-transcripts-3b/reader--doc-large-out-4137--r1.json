@@ -1,0 +1,46 @@
+{
+  "task": "doc-large-out-4137",
+  "config": "reader",
+  "repeat": 1,
+  "passed": false,
+  "outcome": "malformed-output",
+  "seed": 3305636595,
+  "model": "llama3.2:3b",
+  "output": "{\"region\": \"<region>\", \"units\": <integer>}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-004137 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_fnx4h1rj",
+          "name": "document_read",
+          "arguments": {
+            "offset": "1",
+            "limit": "1",
+            "part": "sheet"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "error: no part 'sheet'; this document has 1: 'stock'",
+      "tool_calls": [],
+      "tool_call_id": "call_fnx4h1rj"
+    },
+    {
+      "role": "assistant",
+      "content": "{\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

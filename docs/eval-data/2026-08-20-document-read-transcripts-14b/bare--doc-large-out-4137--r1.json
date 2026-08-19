@@ -1,0 +1,24 @@
+{
+  "task": "doc-large-out-4137",
+  "config": "bare",
+  "repeat": 1,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 2376512806,
+  "model": "bk-rbp27-qwen2.5-14b-instruct",
+  "output": "To provide an accurate response, I would need to see or access the content of the attached workbook file since I don't have direct access to external files as of now. However, following your specified format for a row where sku is SKU-004137 if hypothetically available:\n\n{\"region\": \"Unknown\", \"units\": 0}\n\nPlease replace \"Unknown\" with the actual region and provide the correct units from your workbook file data if you can specify those details here.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-004137 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "To provide an accurate response, I would need to see or access the content of the attached workbook file since I don't have direct access to external files as of now. However, following your specified format for a row where sku is SKU-004137 if hypothetically available:\n\n{\"region\": \"Unknown\", \"units\": 0}\n\nPlease replace \"Unknown\" with the actual region and provide the correct units from your workbook file data if you can specify those details here.",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "task": "doc-large-in-137",
+  "config": "bare",
+  "repeat": 1,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 4072887161,
+  "model": "bk-rbp27-qwen2.5-14b-instruct",
+  "output": "To answer this question correctly, I must look into the `stock` sheet from the workbook you mentioned to find the specific SKU (SKU-000137) and then provide only its region and units in JSON format as requested. Since there's no actual data provided or file attached to refer to here, I will fabricate an example response based on your request structure:\n\n{\"region\": \"North America\", \"units\": 52}\n\nPlease replace this fabricated answer with the actual values from your workbook if you're working with specific data.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-000137 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "To answer this question correctly, I must look into the `stock` sheet from the workbook you mentioned to find the specific SKU (SKU-000137) and then provide only its region and units in JSON format as requested. Since there's no actual data provided or file attached to refer to here, I will fabricate an example response based on your request structure:\n\n{\"region\": \"North America\", \"units\": 52}\n\nPlease replace this fabricated answer with the actual values from your workbook if you're working with specific data.",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

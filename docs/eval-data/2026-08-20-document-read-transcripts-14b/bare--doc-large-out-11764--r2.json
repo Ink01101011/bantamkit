@@ -1,0 +1,24 @@
+{
+  "task": "doc-large-out-11764",
+  "config": "bare",
+  "repeat": 2,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 253125485,
+  "model": "bk-rbp27-qwen2.5-14b-instruct",
+  "output": "To properly answer your request, I need to specify placeholders since I can't access an actual workbook or dataset. Assuming you have opened the specified workbook and located SKU-011764:\n\n{\n\"region\": \"placeholder-region\",\n\"units\": 0\n}\n\nReplace `\"placeholder-region\"` with the actual region value from the `stock` sheet, and replace `0` with the actual units value corresponding to SKU-011764.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-011764 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "To properly answer your request, I need to specify placeholders since I can't access an actual workbook or dataset. Assuming you have opened the specified workbook and located SKU-011764:\n\n{\n\"region\": \"placeholder-region\",\n\"units\": 0\n}\n\nReplace `\"placeholder-region\"` with the actual region value from the `stock` sheet, and replace `0` with the actual units value corresponding to SKU-011764.",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

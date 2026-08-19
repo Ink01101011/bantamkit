@@ -1,0 +1,24 @@
+{
+  "task": "doc-large-out-8022",
+  "config": "reader",
+  "repeat": 1,
+  "passed": false,
+  "outcome": "malformed-output",
+  "seed": 3581752426,
+  "model": "llama3.2:3b",
+  "output": "{\"name\":\"document_list\", \"parameters\":{\"document\": {\"type\":\"string\",\"description\":\"workbook.xlsx\"},{\"limit\":{\"type\":\"integer\",\"description\":\"How many rows; default 50, a byte ceiling may return fewer\"},\"offset\":{\"type\":\"integer\",\"description\":\"Row number of the first row to return'),'part\":{\"type\":\"string\",\"description\":\"Part name as document_list reported it; omit for the first\"}}}}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-008022 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "{\"name\":\"document_list\", \"parameters\":{\"document\": {\"type\":\"string\",\"description\":\"workbook.xlsx\"},{\"limit\":{\"type\":\"integer\",\"description\":\"How many rows; default 50, a byte ceiling may return fewer\"},\"offset\":{\"type\":\"integer\",\"description\":\"Row number of the first row to return'),'part\":{\"type\":\"string\",\"description\":\"Part name as document_list reported it; omit for the first\"}}}}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

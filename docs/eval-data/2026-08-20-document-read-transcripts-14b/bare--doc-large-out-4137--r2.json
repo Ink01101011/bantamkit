@@ -1,0 +1,24 @@
+{
+  "task": "doc-large-out-4137",
+  "config": "bare",
+  "repeat": 2,
+  "passed": false,
+  "outcome": "malformed-output",
+  "seed": 3698624396,
+  "model": "bk-rbp27-qwen2.5-14b-instruct",
+  "output": "To provide an accurate response, I would need to access the workbook you mentioned and directly look up the information for SKU-004137 in the `stock` sheet. Since I don't have direct access to external documents or workbooks, I can't retrieve that specific data. However, if you could provide me with the values from the row containing SKU-004137, I would be able to format it into the requested JSON output for you here:\n\n{\n  \"region\": \"<region>\",\n  \"units\": <integer>\n}\n\nPlease replace `<region>` and `<integer>` with the corresponding values when providing them.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-004137 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "To provide an accurate response, I would need to access the workbook you mentioned and directly look up the information for SKU-004137 in the `stock` sheet. Since I don't have direct access to external documents or workbooks, I can't retrieve that specific data. However, if you could provide me with the values from the row containing SKU-004137, I would be able to format it into the requested JSON output for you here:\n\n{\n  \"region\": \"<region>\",\n  \"units\": <integer>\n}\n\nPlease replace `<region>` and `<integer>` with the corresponding values when providing them.",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

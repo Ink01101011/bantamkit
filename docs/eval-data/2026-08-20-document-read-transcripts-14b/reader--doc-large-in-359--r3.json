@@ -1,0 +1,65 @@
+{
+  "task": "doc-large-in-359",
+  "config": "reader",
+  "repeat": 3,
+  "passed": true,
+  "outcome": "pass",
+  "seed": 3180378049,
+  "model": "bk-rbp27-qwen2.5-14b-instruct",
+  "output": "{\"region\": \"south\", \"units\": 1187}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-000359 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_0rpvqr7j",
+          "name": "document_list",
+          "arguments": {}
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx (xlsx) part 0 \"stock\": 12001 rows, numbered 0 to 12000\n  row 0 is the header: sku\tregion\tunits\n  row 1 is the first data row: SKU-000001\tsouth\t2049\n  row 12000 is the last data row: SKU-012000\twest\t9928",
+      "tool_calls": [],
+      "tool_call_id": "call_0rpvqr7j"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_suvpal96",
+          "name": "document_read",
+          "arguments": {
+            "document": "inventory.xlsx",
+            "part": "stock",
+            "offset": 359,
+            "limit": 1
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx \"stock\" rows 359-359 of 12001; each line below begins with its own row number\n359\tSKU-000359\tsouth\t1187\nmore rows follow: call document_read again with offset=360",
+      "tool_calls": [],
+      "tool_call_id": "call_suvpal96"
+    },
+    {
+      "role": "assistant",
+      "content": "{\"region\": \"south\", \"units\": 1187}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

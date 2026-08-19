@@ -1,0 +1,24 @@
+{
+  "task": "doc-small-137",
+  "config": "bare",
+  "repeat": 2,
+  "passed": false,
+  "outcome": "malformed-output",
+  "seed": 2125926788,
+  "model": "llama3.2:3b",
+  "output": "I don't see a workbook or its content in this conversation. Please attach the workbook's content to the task so I can read it and provide the required information.\n\nPlease add the workbook sheet `stock` to the conversation, including all rows but only that single row with SKU-000137.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-000137 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "I don't see a workbook or its content in this conversation. Please attach the workbook's content to the task so I can read it and provide the required information.\n\nPlease add the workbook sheet `stock` to the conversation, including all rows but only that single row with SKU-000137.",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

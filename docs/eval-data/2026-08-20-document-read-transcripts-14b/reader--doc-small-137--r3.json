@@ -1,0 +1,80 @@
+{
+  "task": "doc-small-137",
+  "config": "reader",
+  "repeat": 3,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 3180548191,
+  "model": "bk-rbp27-qwen2.5-14b-instruct",
+  "output": "{\"region\": \"west\", \"units\": 1013}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-000137 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_55p3r15v",
+          "name": "document_list",
+          "arguments": {
+            "document": ""
+          }
+        },
+        {
+          "id": "call_0gpzsisj",
+          "name": "document_list",
+          "arguments": {
+            "document": ""
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory-small.xlsx (xlsx) part 0 \"stock\": 401 rows, numbered 0 to 400\n  row 0 is the header: sku\tregion\tunits\n  row 1 is the first data row: SKU-000001\tsouth\t2049\n  row 400 is the last data row: SKU-000400\teast\t2621",
+      "tool_calls": [],
+      "tool_call_id": "call_55p3r15v"
+    },
+    {
+      "role": "tool",
+      "content": "inventory-small.xlsx (xlsx) part 0 \"stock\": 401 rows, numbered 0 to 400\n  row 0 is the header: sku\tregion\tunits\n  row 1 is the first data row: SKU-000001\tsouth\t2049\n  row 400 is the last data row: SKU-000400\teast\t2621",
+      "tool_calls": [],
+      "tool_call_id": "call_0gpzsisj"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_t3cyse96",
+          "name": "document_read",
+          "arguments": {
+            "document": "inventory-small.xlsx",
+            "part": "stock",
+            "offset": 13,
+            "limit": 1
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory-small.xlsx \"stock\" rows 13-13 of 401; each line below begins with its own row number\n13\tSKU-000013\twest\t1013\nmore rows follow: call document_read again with offset=14",
+      "tool_calls": [],
+      "tool_call_id": "call_t3cyse96"
+    },
+    {
+      "role": "assistant",
+      "content": "{\"region\": \"west\", \"units\": 1013}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

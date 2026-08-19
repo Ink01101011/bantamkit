@@ -1,0 +1,130 @@
+{
+  "task": "doc-large-out-4137",
+  "config": "reader",
+  "repeat": 2,
+  "passed": false,
+  "outcome": "malformed-output",
+  "seed": 1275692726,
+  "model": "bk-rbp27-qwen2.5-7b-instruct",
+  "output": "",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-004137 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_6614a9kb",
+          "name": "document_list",
+          "arguments": {}
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx (xlsx) part 0 \"stock\": 12001 rows, numbered 0 to 12000\n  row 0 is the header: sku\tregion\tunits\n  row 1 is the first data row: SKU-000001\tsouth\t2049\n  row 12000 is the last data row: SKU-012000\twest\t9928",
+      "tool_calls": [],
+      "tool_call_id": "call_6614a9kb"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_uby87e8c",
+          "name": "document_read",
+          "arguments": {
+            "part": "stock",
+            "offset": 7,
+            "limit": 1
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx \"stock\" rows 7-7 of 12001; each line below begins with its own row number\n7\tSKU-000007\tsouth\t4268\nmore rows follow: call document_read again with offset=8",
+      "tool_calls": [],
+      "tool_call_id": "call_uby87e8c"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_o5sxi94s",
+          "name": "document_read",
+          "arguments": {
+            "limit": 1,
+            "offset": 1445,
+            "part": "stock"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx \"stock\" rows 1445-1445 of 12001; each line below begins with its own row number\n1445\tSKU-001445\tsouth\t3279\nmore rows follow: call document_read again with offset=1446",
+      "tool_calls": [],
+      "tool_call_id": "call_o5sxi94s"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_x20otnux",
+          "name": "document_read",
+          "arguments": {
+            "limit": 1,
+            "offset": 4555,
+            "part": "stock"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx \"stock\" rows 4555-4555 of 12001; each line below begins with its own row number\n4555\tSKU-004555\tnorth\t1940\nmore rows follow: call document_read again with offset=4556",
+      "tool_calls": [],
+      "tool_call_id": "call_x20otnux"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_oyhezr8q",
+          "name": "document_read",
+          "arguments": {
+            "limit": 1,
+            "offset": 7431,
+            "part": "stock"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx \"stock\" rows 7431-7431 of 12001; each line below begins with its own row number\n7431\tSKU-007431\twest\t7013\nmore rows follow: call document_read again with offset=7432",
+      "tool_calls": [],
+      "tool_call_id": "call_oyhezr8q"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}
