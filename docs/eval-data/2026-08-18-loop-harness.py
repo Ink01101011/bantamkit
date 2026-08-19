@@ -70,6 +70,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -424,15 +425,60 @@ def restore(wt: str, real_repo: str | None = None) -> None:
     name -- instead of the workload's. It is a change to the RESET, not to the
     task, the roster, or any threshold, and it regenerates nothing: the committed
     rows of B0 and B0" stand as written. See
-    `2026-08-19-loop-u5-closure-field-measurement.py`, section C-1."""
+    `2026-08-19-loop-u5-closure-field-measurement.py`, section C-1.
+
+    RB-P79, and the reason the two exclusions now carry a LEADING SLASH: they
+    were written as `-e node_modules -e packages/shared/node_modules`, and
+    `git clean -e` takes gitignore syntax, in which a SLASH-FREE pattern matches
+    at ANY depth. The first exclusion therefore protected far more than the one
+    symlink it names -- every directory called `node_modules` anywhere in the
+    tree -- so `packages/shared/src/**/node_modules/**` SURVIVED the declared
+    reset into the next repeat. That residue is on the module-resolution path
+    for externalised bare dependencies -- node and vite walk a per-directory
+    `node_modules` under `src` before the one at `packages/shared` -- it is
+    admitted by `_resolve`, and it is invisible to `tool_list`, to `guard_scope`,
+    to `guard_tamper` and to `git status -uall` alike -- only `--ignored` shows
+    it.
+    A payload written in repeat N executed in repeat N+1; the J9 reviewer hit it
+    live, not hypothetically. A leading slash anchors a pattern to the top of
+    the working tree, so the exclusions now match EXACTLY the two paths they
+    name -- MEASURED against a real scratch repository, not read off the
+    documentation, and re-measured on every `selfcheck` by M12.
+
+    Both halves are load-bearing and M12 checks both: with the exclusions gone
+    the links die, and `real_repo` cannot be relied on to re-plant them, since
+    `REAL_REPO` is `os.environ.get("J7_REAL_REPO", "")` and is empty -- falsy,
+    no re-plant -- whenever that variable is unset.
+
+    This is a change to the RESET taking effect FORWARD. No committed `.jsonl`
+    is regenerated and no committed row is restated: the rows of B0 and B0" were
+    produced under the slash-free exclusion and stand exactly as written."""
     git(wt, "checkout", "-f", "--", ".")
-    git(wt, "clean", "-fdx", "-q", "-e", "node_modules",
-        "-e", SHARED + "/node_modules")
+    excludes = []
+    for rel in NODE_LINKS:
+        excludes += ["-e", "/" + rel]
+    git(wt, "clean", "-fdx", "-q", *excludes)
     if real_repo:
         for rel in NODE_LINKS:
             link = os.path.join(wt, rel)
             if not os.path.exists(link):
                 os.symlink(os.path.join(real_repo, rel), link)
+
+
+def worktree_residue(wt: str) -> set[str]:
+    """Everything present in `wt` that the pinned tree does not contain, asked
+    of git rather than asserted: untracked AND ignored.
+
+    `--ignored=matching` is the load-bearing flag and RB-P79 is why. The
+    workload's own `.gitignore` carries `node_modules/`, so a directory the
+    agent created at `packages/shared/src/node_modules/` is IGNORED, not
+    untracked -- `git status --porcelain -uall` does not list it, and neither
+    does any guard this harness has. This is an observer for the reset
+    property only; it is not a guard, feeds no column, and no verdict reads
+    it."""
+    out = git(wt, "status", "--porcelain", "-uall", "--ignored=matching").stdout
+    return {ln[3:].rstrip("/") for ln in out.splitlines()
+            if ln[:2] in ("??", "!!")}
 
 
 def apply_defects(wt: str) -> list[str]:
@@ -1191,6 +1237,59 @@ GOOD_WRITE = (
 )
 
 
+_RESIDUE_PLANT = (
+    # what a repeat leaves behind. The first two are the RB-P79 residue: they
+    # are IGNORED by the workload's own `.gitignore`, so no `-uall` census and
+    # no guard sees them, and they sit on the module-resolution path.
+    SHARED + "/src/node_modules/dayjs/index.js",
+    SHARED + "/src/date/node_modules/payload2.js",
+    # and the ordinary residue, which the slash-free exclusion already removed.
+    SHARED + "/src/date/date.js",
+    SHARED + "/dist/date.js",
+)
+
+
+def _reset_fixture(tmp: str) -> tuple[str, str]:
+    """A throwaway git repository shaped like the workload at `WORKLOAD_COMMIT`
+    in the one respect the reset property depends on: a tracked `.gitignore`
+    carrying `node_modules/` and `dist/`.
+
+    M12 needs a real `git clean` against a real repository -- the behaviour
+    under test is git's pattern matching, which cannot be checked by reading
+    this file's own argv back. It is a fresh temp directory, it touches no
+    workload checkout, and it makes no network or model call."""
+    real, wt = os.path.join(tmp, "real"), os.path.join(tmp, "wt")
+    for rel in NODE_LINKS:
+        os.makedirs(os.path.join(real, rel, "pkg"), exist_ok=True)
+    os.makedirs(os.path.join(wt, SHARED, "src", "date"))
+    git(wt, "init", "-q", ".")
+    git(wt, "config", "user.email", "selfcheck@localhost")
+    git(wt, "config", "user.name", "selfcheck")
+    with open(os.path.join(wt, ".gitignore"), "w", encoding="utf-8") as fh:
+        fh.write("node_modules/\ndist/\n")
+    with open(os.path.join(wt, SHARED, "src", "date", "date.ts"), "w",
+              encoding="utf-8") as fh:
+        fh.write("export const x = 1;\n")
+    git(wt, "add", "-A")
+    git(wt, "commit", "-q", "-m", "pinned tree")
+    return wt, real
+
+
+def _plant_repeat_residue(wt: str, real: str) -> None:
+    """Exactly what run_one leaves behind: the two symlinks the harness plants,
+    plus the four files a previous repeat wrote."""
+    for rel in NODE_LINKS:
+        link = os.path.join(wt, rel)
+        os.makedirs(os.path.dirname(link), exist_ok=True)
+        if not os.path.islink(link):
+            os.symlink(os.path.join(real, rel), link)
+    for rel in _RESIDUE_PLANT:
+        full = os.path.join(wt, rel)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w", encoding="utf-8") as fh:
+            fh.write('throw new Error("PERSISTED-PAYLOAD");\n')
+
+
 def cmd_selfcheck(args) -> int:
     """The output-side falsifier for SHAPE-silent-truncation S5 and for the
     `stopped_by` mislabel.
@@ -1456,6 +1555,51 @@ def cmd_selfcheck(args) -> int:
     # case: it launders unrelated mutations into M11's column. Existence is
     # caught anyway and by the right instrument -- vitest exits non-zero on a
     # `--config` it cannot open, which is a FAIL, never a PASS.
+
+    # --- M12. AFTER `restore()`, NOTHING THE PREVIOUS REPEAT WROTE SURVIVES
+    # INSIDE THE WORKTREE EXCEPT THE TWO `node_modules` SYMLINKS THE HARNESS
+    # ITSELF PLANTS. That is the property, and BOTH halves are load-bearing: a
+    # reset that also deletes the links is not a fix, it is a harness whose
+    # second repeat has no oracle at all.
+    #
+    # RB-P79 is the finding: `-e node_modules` is a slash-free gitignore
+    # pattern, so it matched a directory of that name at ANY depth and
+    # `src/**/node_modules/**` outlived the declared reset -- on the module
+    # resolution path, and invisible to `tool_list`, to both guards and to
+    # `git status -uall`. Repeat N could poison repeat N+1.
+    #
+    # The thing under test is GIT's pattern matching, so this case runs a real
+    # `git clean` -- through `restore()` itself, the authority on what the reset
+    # does -- against a real throwaway repository, and asks `git status` what is
+    # left rather than asserting a string about this file's own argv. A case
+    # that read the exclusion list back would be green on the day the slash
+    # stopped anchoring. No workload checkout is touched; no model is called.
+    with tempfile.TemporaryDirectory(prefix="bk-j7-reset-") as tmp:
+        wt, real = _reset_fixture(tmp)
+        _plant_repeat_residue(wt, real)
+        planted = worktree_residue(wt)
+        restore(wt, real)
+        left = worktree_residue(wt)
+        # The second half on its own, with NO re-plant available: `run_one`
+        # calls `restore(wt, REAL_REPO)` and `REAL_REPO` is
+        # `os.environ.get("J7_REAL_REPO", "")`, so whenever that variable is
+        # unset the re-plant branch is dead and the EXCLUSION is the only thing
+        # standing between the two symlinks and `git clean -fdx`.
+        _plant_repeat_residue(wt, real)
+        restore(wt)
+        links = sorted(rel for rel in NODE_LINKS
+                       if os.path.islink(os.path.join(wt, rel)))
+    case("M12 setup: the fixture really planted residue to be removed",
+         f"{len(_RESIDUE_PLANT)} paths",
+         [p for p in _RESIDUE_PLANT
+          if not any(p == r or p.startswith(r + "/") for r in planted)], [])
+    case("M12 setup: and the census can see the ignored half at all",
+         "ignored seen",
+         SHARED + "/src/node_modules" in planted, True)
+    case("M12 RED: `restore()` leaves the two symlinks and NOTHING else",
+         "residue == NODE_LINKS", left, set(NODE_LINKS))
+    case("M12 RED: and the exclusion ALONE keeps them, with no re-plant",
+         "both links", links, sorted(NODE_LINKS))
 
     print()
     if fails:
