@@ -8,7 +8,7 @@ from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass, field
 
 from bantamkit.client import BantamError, Message, ModelClient, Tool, Usage
-from bantamkit.contract import tool_arguments, tool_failed
+from bantamkit.contract import tool_argument_types, tool_arguments, tool_failed
 from bantamkit.profile import default as profile_default
 from bantamkit.textutil import truncate_counted
 
@@ -143,6 +143,114 @@ def select_declared_arguments(arguments: dict, parameters: dict) -> dict:
     if not isinstance(properties, dict):
         return arguments
     return {k: v for k, v in arguments.items() if k in properties}
+
+
+#: The JSON-Schema type names a tool may declare, mapped to what that type looks like once
+#: the wire JSON has been parsed. `number` admits `int` because JSON Schema says an integer is
+#: a number; `integer` does not admit `float`, because a model that sent `4137.0` for a row
+#: offset is telling us something about its own arithmetic and a silent floor would hide it.
+_JSON_TYPES: dict[str, tuple[type, ...]] = {
+    "string": (str,),
+    "integer": (int,),
+    "number": (int, float),
+    "boolean": (bool,),
+    "object": (dict,),
+    "array": (list, tuple),
+}
+
+
+def json_type_of(value: object) -> str:
+    """Name a sent value in the vocabulary the tool's own schema is written in.
+
+    The schema says `"type": "string"`; the model wrote JSON. Reporting `dict` would answer in
+    a third language — Python's — which is the language this whole defect was about. The
+    fallback is deliberately not `type(value).__name__`: an argument comes off a JSON wire and
+    is one of these seven, and a name Python invented is exactly what must not reach a model.
+    """
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, (list, tuple)):
+        return "array"
+    return "unknown"
+
+
+def mistyped_arguments(arguments: dict, parameters: dict) -> list[tuple[str, str, str]]:
+    """Which DECLARED arguments hold a value of a type the schema does not declare.
+
+    `RB-P86`, measured over J10's 432 graded runs. `select_declared_arguments` drops the keys
+    a schema does not name and type-checks nothing, so `llama3.2:3b` — which emits a
+    JSON-Schema FRAGMENT as the value of a declared parameter,
+    `{"document": {"description": "stock", "type": "string"}}` — had its dict passed straight
+    through to `docs.get(name)`, where a dict is not hashable. 13 observations of
+    `unhashable type: 'dict'`, all on `document_read`, all three `3b` reader cells
+    UNINFORMATIVE. That is the same class Amendment 1 fixed, one layer in.
+
+    REPORTED, not coerced and not dropped, and the three are genuinely different behaviours:
+
+    - **Coerced** is what `coerce_arguments` already does and this runs AFTER it, so the one
+      unambiguous conversion a small model actually needs — `"4137"` for a declared `integer`
+      — is already an `int` by the time anything here looks at it and is never reported. There
+      is no second conversion with that property. `{"type": "string"}` for a string has no
+      value to convert to, and `0` for a declared `string` is worse than unconvertible: to
+      `docread` an int part key is an INDEX and a str part key is a NAME, so `"0"` would ask a
+      different question than `0` did and the model would never be told the question changed.
+    - **Dropped** is right for an UNDECLARED key — the tool has no way to act on it, so there
+      is nothing to negotiate — and wrong here for the opposite reason: the schema names this
+      argument, so dropping it silently substitutes the handler's default. A model that asked
+      for `offset` as an object would be handed page 0 as though it had asked for page 0.
+      This repository already refuses that shape of answer (`document_offset_past_end` exists
+      because an empty page is "a dead end the model cannot tell from a real one").
+    - **Reported** costs one of ten turns and buys a sentence naming the argument, the type
+      the tool declares and the type that arrived. 11 of the 13 measured runs issued no
+      further tool call at all after reading CPython's sentence; a model cannot correct a
+      hash-table error, and can correct a sentence that names `offset` and the type its own
+      schema declares for it. The wording is the asset's; see `contract.tool_argument_types`.
+
+    Two exemptions, both deliberate. `null` is the wire spelling of "omitted" — every handler
+    in this repository already defaults its arguments to `None` and `_document_int` documents
+    None-as-fallback — so a null is passed through rather than reported. And an argument whose
+    schema declares no `type`, or a type name not in `_JSON_TYPES`, is not checked at all,
+    because there the schema has not said anything to hold the value against.
+
+    `True` is reported for a declared `integer` or `number` even though `isinstance(True, int)`
+    is Python-true: JSON Schema does not make a boolean a number, and `limit=true` is a model
+    losing track of its own call rather than asking for one row.
+
+    Same top-level-only scope as `coerce_arguments` and `select_declared_arguments`, and a
+    well-typed call is a no-op returning `[]`.
+    """
+    if not isinstance(arguments, dict) or not isinstance(parameters, dict):
+        return []
+    properties = parameters.get("properties")
+    if not isinstance(properties, dict):
+        return []
+    wrong: list[tuple[str, str, str]] = []
+    for key in sorted(arguments):
+        value = arguments[key]
+        schema = properties.get(key)
+        if not isinstance(schema, dict) or value is None:
+            continue
+        declared = schema.get("type")
+        if not isinstance(declared, str):
+            continue
+        accepted = _JSON_TYPES.get(declared)
+        if accepted is None:
+            continue
+        numeric = declared in ("integer", "number")
+        if isinstance(value, accepted) and not (numeric and isinstance(value, bool)):
+            continue
+        wrong.append((key, declared, json_type_of(value)))
+    return wrong
 
 
 def handler_accepts(handler: Callable[..., str], arguments: dict) -> bool:
@@ -328,6 +436,9 @@ class Agent:
             arguments = select_declared_arguments(
                 coerce_arguments(tc.arguments, parameters), parameters
             )
+            mistyped = mistyped_arguments(arguments, parameters)
+            if mistyped:
+                return tool_argument_types(tc.name, mistyped)
             if not handler_accepts(tooldef.handler, arguments):
                 return tool_arguments(tc.name, declared_arguments(parameters))
             return str(tooldef.handler(**arguments))

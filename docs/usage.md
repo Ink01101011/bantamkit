@@ -120,6 +120,18 @@ Two deliberate behaviours to know:
   cannot be made is reported as `error: <tool> does not take the arguments it
   was given. it takes: ...` — the tool's own argument list, never a signature
   fragment.
+- **An argument your schema DOES declare, holding a value of the wrong type, is
+  reported rather than coerced or dropped** (2026-08-20, `RB-P86`). A 3b emits a
+  JSON-Schema fragment as the value of a declared parameter — `{"document":
+  {"description": "stock", "type": "string"}}` — and before this the dict reached
+  the handler and the model read `unhashable type: 'dict'`, 13 times over 432
+  graded runs. It now reads `error: <tool> was called with the wrong type of
+  argument. <name> must be type <declared>, not type <sent>. ...`. String-spelled
+  scalars are still coerced first, so `"4137"` for a declared `integer` is an int
+  and is never reported; a JSON `null` is the wire spelling of "omitted" and
+  passes through to your handler's default. Dropping was rejected deliberately:
+  the schema names the argument, so dropping it would hand the model your
+  default as though it had asked for it.
 - Return values are stringified and truncated to `observation_budget` bytes with
   a `[truncated N bytes]` marker.
 

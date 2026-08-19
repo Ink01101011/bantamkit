@@ -24,6 +24,7 @@ from bantamkit.contract import (
     schema_error,
     schema_instruction,
     schema_retry_feedback,
+    tool_argument_types,
     tool_arguments,
     tool_failed,
 )
@@ -159,6 +160,10 @@ MOVED_FRAGMENTS = (
     "fix the arguments and retry",
     "does not take the arguments",
     "takes no arguments at all",
+    # 2026-08-20, RB-P86. The same leak one layer in: a DECLARED argument of the wrong type
+    # reached a handler and the model read `unhashable type: 'dict'`.
+    "was called with the wrong type of argument",
+    "must be type",
 )
 CORE_MODULES = (
     "agent.py",
@@ -365,6 +370,30 @@ def test_tool_failed_bytes():
 def test_tool_arguments_bytes():
     assert tool_arguments("lookup", ["item", "limit"]) == GOLDEN_TOOL_ARGUMENTS
     assert tool_arguments("document_list", []) == GOLDEN_TOOL_ARGUMENTS_NONE
+
+
+GOLDEN_TOOL_ARGUMENT_TYPE = (
+    "error: document_read was called with the wrong type of argument. "
+    "document must be type string, not type object. fix the arguments and retry."
+)
+GOLDEN_TOOL_ARGUMENT_TYPES = (
+    "error: document_read was called with the wrong type of argument. "
+    "document must be type string, not type object; "
+    "offset must be type integer, not type object. fix the arguments and retry."
+)
+
+
+def test_tool_argument_types_bytes():
+    """RB-P86. One frame for one problem and for many: the count is not what the model has to
+    act on, so this is one contract string and one item string rather than a singular and a
+    plural. The one-problem golden is byte-for-byte what the 13 measured `document_read` calls
+    now produce."""
+    assert tool_argument_types(
+        "document_read", [("document", "string", "object")]
+    ) == GOLDEN_TOOL_ARGUMENT_TYPE
+    assert tool_argument_types(
+        "document_read", [("document", "string", "object"), ("offset", "integer", "object")]
+    ) == GOLDEN_TOOL_ARGUMENT_TYPES
 
 
 @pytest.mark.parametrize("module", CORE_MODULES)

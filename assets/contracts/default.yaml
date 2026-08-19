@@ -51,3 +51,15 @@ document_paste_none: "  no rows of \"{part}\" are shown and no tool is attached 
 tool_failed: "error: {tool} failed: {detail}. fix the arguments and retry."
 tool_arguments: "error: {tool} does not take the arguments it was given. it takes: {accepts}. fix the arguments and retry."
 tool_arguments_none: "error: {tool} takes no arguments at all. call it with none and retry."
+# 2026-08-20, `RB-P86`. The sibling of the two above, one layer in. `select_declared_arguments`
+# drops keys the schema does not declare and type-checks nothing, so `llama3.2:3b` — which
+# emits a JSON-Schema FRAGMENT as the value of a declared parameter,
+# `{"document": {"description": "stock", "type": "string"}}` — got its dict straight through to
+# `docs.get(name)` and the model read `unhashable type: 'dict'`, thirteen times over 432 graded
+# runs. That is CPython's sentence about a hash table, not a tool's sentence about its own
+# arguments, and a 3b that receives it stops calling tools and answers that it cannot access
+# the workbook. What it is told now names the argument, the type the tool declares and the type
+# it was sent, so the next turn has something to correct. One frame for one or many, because
+# the count is not the thing the model has to act on.
+tool_argument_types: "error: {tool} was called with the wrong type of argument. {problems}. fix the arguments and retry."
+tool_argument_type: "{argument} must be type {expected}, not type {actual}"
