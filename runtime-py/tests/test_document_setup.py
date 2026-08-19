@@ -1,0 +1,403 @@
+"""`document_setup:` — generated fixtures, byte-determinism, and loud setup failure.
+
+The two shapes pinned here are the job's corpora. `OVER_WINDOW` exists to make one measured
+statement true: **a corpus that does not fit the worker context window**. If every corpus fits,
+the reader is never asked the question it was built for and the result is a rerun of J4. The
+`IN_WINDOW` shape is the control, identical in seed and columns and different only in row
+count, so it is a literal prefix of the big one — which is what lets "the reader works" be
+separated from "paging works" when a result comes back null.
+
+Sizes are asserted as exact literals rather than as inequalities. They are readings of this
+generator at this commit, not properties of the world; an unexplained move in one is a change
+to the corpus every downstream number was measured over, and it should be loud.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import re
+import zipfile
+from pathlib import Path
+
+import pytest
+
+from bantamkit.docread import extract
+from bantamkit.evalrun import (
+    DocumentSetupError,
+    build_document,
+    document_dir,
+    load_tasks,
+    materialise_documents,
+    run_task,
+    validate_document_entry,
+)
+
+REPO = Path(__file__).resolve().parents[2]
+HARNESS = REPO / "docs" / "eval-data" / "2026-08-18-loop-harness.py"
+
+# The window the corpus has to beat. It is copied from `docs/eval-data/2026-08-18-loop-harness.py`
+# (`WORKER_NUM_CTX`), and the first test below re-reads that file and fails if the copy has gone
+# stale — a bar copied into a test otherwise stops tracking its source on the source's next edit.
+WORKER_NUM_CTX = 32768
+
+COLUMNS = [
+    {"name": "sku", "kind": "key", "prefix": "SKU-", "width": 6},
+    {"name": "region", "kind": "choice", "values": ["north", "south", "east", "west"]},
+    {"name": "units", "kind": "int", "low": 1000, "high": 9999},
+]
+
+OVER_WINDOW = {
+    "path": "inventory.xlsx",
+    "seed": 4021,
+    "sheets": [{"name": "stock", "rows": 12000, "columns": COLUMNS}],
+    "answers": {"question_sku": "stock!A4138", "expected_units": "stock!C4138"},
+}
+
+IN_WINDOW = {
+    "path": "inventory-small.xlsx",
+    "seed": 4021,
+    "sheets": [{"name": "stock", "rows": 400, "columns": COLUMNS}],
+    "answers": {"question_sku": "stock!A138", "expected_units": "stock!C138"},
+}
+
+NOTES_DOCX = {
+    "path": "notes.docx",
+    "seed": 4021,
+    "rows": 200,
+    "columns": COLUMNS,
+    "answers": {"target_line": "document!A138"},
+}
+
+
+def build(entry, tmp_path, name="probe", config="bare"):
+    task = {"name": name, "document_setup": [entry]}
+    return materialise_documents(task, tmp_path, config)[0]
+
+
+# --------------------------------------------------------------- the window invariant
+
+
+def test_harness_worker_window_is_still_the_number_this_file_asserts_against():
+    """The corpus bar is relative to a constant that lives in another file; pin the link."""
+    match = re.search(r"^WORKER_NUM_CTX = (\d+)$", HARNESS.read_text(), re.MULTILINE)
+    assert match is not None, f"WORKER_NUM_CTX no longer assigned at top level in {HARNESS}"
+    assert int(match.group(1)) == WORKER_NUM_CTX
+
+
+def test_over_window_corpus_exceeds_the_worker_window(tmp_path):
+    fixture = build(OVER_WINDOW, tmp_path)
+    assert fixture.row_counts == (12001,)  # 12,000 data rows plus the header
+    assert fixture.text_bytes == 258129
+    assert fixture.est_tokens == 64532
+    assert fixture.est_tokens > WORKER_NUM_CTX
+
+
+def test_in_window_control_fits_the_worker_window(tmp_path):
+    fixture = build(IN_WINDOW, tmp_path)
+    assert fixture.row_counts == (401,)
+    assert fixture.text_bytes == 8620
+    assert fixture.est_tokens == 2155
+    assert fixture.est_tokens < WORKER_NUM_CTX
+
+
+def test_control_is_a_prefix_of_the_experiment(tmp_path):
+    """Same seed, same columns, fewer rows — so the two corpora differ in size and nothing else.
+
+    Without this the control would be a second corpus rather than a shorter one, and a
+    difference between the arms could be attributed to the content instead of to the length.
+    """
+    big = extract(build(OVER_WINDOW, tmp_path).path)
+    small = extract(build(IN_WINDOW, tmp_path).path)
+    assert small.parts[0].rows == big.parts[0].rows[: small.parts[0].row_count]
+
+
+def test_est_tokens_is_measured_off_extracted_text_not_file_size(tmp_path):
+    fixture = build(OVER_WINDOW, tmp_path)
+    assert fixture.file_bytes == 1883561
+    assert fixture.est_tokens == fixture.text_bytes // 4
+    assert fixture.file_bytes // 4 != fixture.est_tokens  # 470,890 vs 64,532: the wrong reading
+
+
+# --------------------------------------------------------------- byte-determinism
+
+
+@pytest.mark.parametrize("entry", [OVER_WINDOW, IN_WINDOW, NOTES_DOCX], ids=lambda e: e["path"])
+def test_same_declaration_gives_the_same_file_bytes(entry, tmp_path):
+    """Build twice, compare the sha256 of the FILE — not of the extracted text.
+
+    Extracted text is insensitive to exactly the thing that moves: a zip member's mtime. A
+    determinism test that hashes the rendering would pass while every fixture's own hash
+    drifted between runs, and every downstream measurement keyed to it became noise.
+
+    MEASURED VACUITY: this test alone does not catch the mtime. Reverting the `ZipInfo` pin in
+    `build_document` to a plain `writestr(name, payload)` leaves it GREEN, because both builds
+    land inside the same second and stamp the same clock. It is kept because it still covers
+    every other source of drift, but the mtime is caught by the two tests below it —
+    `test_pinned_fixture_hashes` and the archive-member field assertion — and by the
+    moving-clock variant, all three of which do go red against that mutant.
+    """
+    first = build(entry, tmp_path / "a", config="bare")
+    second = build(entry, tmp_path / "b", config="full")
+    assert first.path != second.path
+    assert first.sha256 == second.sha256
+    assert first.sha256 == hashlib.sha256(first.path.read_bytes()).hexdigest()
+
+
+def test_the_clock_moving_between_builds_does_not_move_the_bytes(monkeypatch, tmp_path):
+    """The build-twice test with the confound removed: five years pass between the two builds.
+
+    `zipfile.writestr` reads `time.localtime()` when it is handed a bare name, so this is what
+    the same-second version above was supposed to be testing and could not.
+    """
+    import time as _time
+
+    first = build(IN_WINDOW, tmp_path / "a")
+    later = _time.struct_time((2031, 6, 7, 8, 9, 10, 0, 1, 0))
+    monkeypatch.setattr(zipfile.time, "localtime", lambda *a: later)
+    second = build(IN_WINDOW, tmp_path / "b")
+    assert first.sha256 == second.sha256
+
+
+def test_pinned_fixture_hashes(tmp_path):
+    """The hashes themselves, so "deterministic" also means "these exact bytes"."""
+    assert build(OVER_WINDOW, tmp_path).sha256 == (
+        "1d97571e0009a9e248d30f156e8d621c1aa94b0ab9a878d8917873a7bed804ca"
+    )
+    assert build(IN_WINDOW, tmp_path).sha256 == (
+        "3fcca5c07fba7e45ed5984951ab45f318e01ce1d8ccb3131f4fdbb9f6860fa4d"
+    )
+
+
+def test_every_archive_member_carries_the_pinned_timestamp_and_platform(tmp_path):
+    """The two fields that would otherwise carry the clock and the OS into the hash."""
+    path = build(IN_WINDOW, tmp_path).path
+    with zipfile.ZipFile(path) as archive:
+        infos = archive.infolist()
+    assert infos, "empty archive"
+    for info in infos:
+        assert info.date_time == (1980, 1, 1, 0, 0, 0), info.filename
+        assert info.create_system == 0, info.filename
+        assert info.compress_type == zipfile.ZIP_STORED, info.filename
+
+
+def test_a_different_seed_gives_different_bytes(tmp_path):
+    """Determinism must not be constancy: the seed has to actually reach the cells."""
+    other = {**IN_WINDOW, "seed": IN_WINDOW["seed"] + 1}
+    assert build(IN_WINDOW, tmp_path / "a").sha256 != build(other, tmp_path / "b").sha256
+
+
+def test_build_document_is_pure(tmp_path):
+    assert build_document(IN_WINDOW) == build_document(IN_WINDOW)
+
+
+# --------------------------------------------------------------- the answer comes from the file
+
+
+def test_answers_are_read_out_of_the_built_document(tmp_path):
+    """Pinned, and simultaneously checked against the row the reader actually returns."""
+    fixture = build(OVER_WINDOW, tmp_path)
+    assert fixture.answers == {"question_sku": "SKU-004137", "expected_units": "7508"}
+    rendered = extract(fixture.path).part("stock").rows[4137]  # A4138 -> rendered index 4137
+    assert rendered.split("\t")[0] == fixture.answers["question_sku"]
+    assert rendered.split("\t")[2] == fixture.answers["expected_units"]
+
+
+def test_in_window_answers(tmp_path):
+    assert build(IN_WINDOW, tmp_path).answers == {
+        "question_sku": "SKU-000137",
+        "expected_units": "7726",
+    }
+
+
+def test_docx_renders_one_paragraph_per_row_and_answers_the_whole_line(tmp_path):
+    """A `.docx` has no columns, so its answer address is column A and yields the line."""
+    fixture = build(NOTES_DOCX, tmp_path)
+    assert fixture.row_counts == (201,)
+    assert fixture.text_bytes == 4719
+    assert fixture.answers == {"target_line": "SKU-000137, north, 1930"}
+
+
+def test_answer_past_the_end_of_the_sheet_is_a_setup_failure(tmp_path):
+    entry = {**IN_WINDOW, "answers": {"nope": "stock!C99999"}}
+    with pytest.raises(DocumentSetupError, match="names row 99999"):
+        build(entry, tmp_path)
+
+
+def test_answer_naming_an_unknown_sheet_is_a_setup_failure(tmp_path):
+    entry = {**IN_WINDOW, "answers": {"nope": "ledger!C10"}}
+    with pytest.raises(DocumentSetupError, match="no part 'ledger'"):
+        build(entry, tmp_path)
+
+
+def test_answer_past_the_last_column_is_a_setup_failure(tmp_path):
+    entry = {**IN_WINDOW, "answers": {"nope": "stock!Z10"}}
+    with pytest.raises(DocumentSetupError, match="names column Z"):
+        build(entry, tmp_path)
+
+
+# --------------------------------------------------------------- malformed declarations
+
+
+BAD = [
+    ("not a mapping", ["nope"], "must be a mapping"),
+    ("no path", {k: v for k, v in IN_WINDOW.items() if k != "path"}, "'path'"),
+    ("absolute path", {**IN_WINDOW, "path": "/etc/inventory.xlsx"}, "must be relative"),
+    ("escaping path", {**IN_WINDOW, "path": "../inventory.xlsx"}, "must be relative"),
+    ("pdf is not in scope", {**IN_WINDOW, "path": "report.pdf"}, "not readable"),
+    ("mp4 is not in scope", {**IN_WINDOW, "path": "clip.mp4"}, "not readable"),
+    ("no seed", {k: v for k, v in IN_WINDOW.items() if k != "seed"}, "integer 'seed'"),
+    ("string seed", {**IN_WINDOW, "seed": "4021"}, "integer 'seed'"),
+    ("typo'd key", {**IN_WINDOW, "sheet": []}, "unknown keys"),
+    ("xlsx with top-level rows", {**IN_WINDOW, "rows": 10}, "declares 'sheets:'"),
+    ("docx with sheets", {**NOTES_DOCX, "sheets": []}, "not 'sheets:'"),
+    ("no sheets", {**IN_WINDOW, "sheets": []}, "non-empty 'sheets'"),
+    (
+        "duplicate sheet name",
+        {**IN_WINDOW, "sheets": [IN_WINDOW["sheets"][0], IN_WINDOW["sheets"][0]]},
+        "duplicate sheet name",
+    ),
+    (
+        "zero rows",
+        {**IN_WINDOW, "sheets": [{"name": "stock", "rows": 0, "columns": COLUMNS}]},
+        "'rows' >= 1",
+    ),
+    (
+        "rows as a string",
+        {**IN_WINDOW, "sheets": [{"name": "stock", "rows": "400", "columns": COLUMNS}]},
+        "'rows' >= 1",
+    ),
+    (
+        "no columns",
+        {**IN_WINDOW, "sheets": [{"name": "stock", "rows": 4, "columns": []}]},
+        "non-empty 'columns'",
+    ),
+    (
+        "unknown column kind",
+        {
+            **IN_WINDOW,
+            "sheets": [{"name": "stock", "rows": 4, "columns": [{"name": "x", "kind": "uuid"}]}],
+        },
+        "supported are key, choice, int",
+    ),
+    (
+        "choice with no values",
+        {
+            **IN_WINDOW,
+            "sheets": [
+                {"name": "stock", "rows": 4, "columns": [{"name": "x", "kind": "choice"}]}
+            ],
+        },
+        "non-empty 'values'",
+    ),
+    (
+        "int with inverted bounds",
+        {
+            **IN_WINDOW,
+            "sheets": [
+                {
+                    "name": "stock",
+                    "rows": 4,
+                    "columns": [{"name": "x", "kind": "int", "low": 9, "high": 1}],
+                }
+            ],
+        },
+        "low 9 > high 1",
+    ),
+    (
+        "typo'd column key",
+        {
+            **IN_WINDOW,
+            "sheets": [
+                {
+                    "name": "stock",
+                    "rows": 4,
+                    "columns": [{"name": "x", "kind": "key", "prefixx": "S"}],
+                }
+            ],
+        },
+        "unknown keys",
+    ),
+    ("answer without a part", {**IN_WINDOW, "answers": {"a": "C4138"}}, "must be 'part!CELL'"),
+    ("answer that is not a cell", {**IN_WINDOW, "answers": {"a": "stock!top"}}, "cell reference"),
+]
+
+
+@pytest.mark.parametrize("label,entry,message", BAD, ids=[b[0] for b in BAD])
+def test_malformed_declaration_fails_loudly(label, entry, message, tmp_path):
+    """Every one of these is a typo that would otherwise produce a scored run over no corpus."""
+    with pytest.raises(DocumentSetupError, match=re.escape(message)):
+        build(entry, tmp_path)
+
+
+def test_validate_accepts_every_shape_this_job_ships_and_any_the_suite_declares():
+    """Non-vacuous today via the pinned shapes; it also covers task files as they land."""
+    checked = [OVER_WINDOW, IN_WINDOW, NOTES_DOCX]
+    for task in load_tasks():
+        checked.extend(task.get("document_setup") or [])
+    assert len(checked) >= 3
+    for entry in checked:
+        validate_document_entry(entry)
+
+
+def test_document_setup_that_is_not_a_list_fails(tmp_path):
+    task = {"name": "probe", "document_setup": {"path": "inventory.xlsx"}}
+    with pytest.raises(DocumentSetupError, match="must be a list"):
+        materialise_documents(task, tmp_path, "bare")
+
+
+# --------------------------------------------------------------- placement and wiring
+
+
+def test_materialises_per_task_per_config_under_the_workdir(tmp_path):
+    """The `memory_setup:` convention: a real path under the run's own `workdir`."""
+    fixture = build(IN_WINDOW, tmp_path, name="doc-lookup", config="lean")
+    assert fixture.path.parent == document_dir(tmp_path, {"name": "doc-lookup"}, "lean")
+    assert fixture.path == tmp_path / "doc-lookup-lean-docs" / "inventory-small.xlsx"
+    assert fixture.path.is_file()
+
+
+def test_nothing_is_deleted_after_materialising(tmp_path):
+    """The caller owns `workdir`; a run whose corpus vanished at teardown cannot be diagnosed."""
+    fixture = build(IN_WINDOW, tmp_path)
+    assert fixture.path.exists()
+    assert fixture.path.stat().st_size == fixture.file_bytes
+
+
+def test_run_task_raises_before_the_model_is_called(tmp_path):
+    """A bad declaration must never reach the agent, and must not become a scored row.
+
+    It escapes `run_task` rather than being caught into the `config-error` outcome the way a
+    missing `family` is, and that asymmetry is deliberate: `main()` prints the report and
+    returns, so no outcome class changes the process exit status. A `config-error` row for a
+    corpus that was never built is a suite that measured nothing and exited 0 — the failure
+    this program has already been bitten by. The assertion that matters is `client.calls == []`.
+    """
+    from conftest import FakeClient
+
+    client = FakeClient([])
+    task = {
+        "name": "doc-lookup",
+        "family": "document-lookup",
+        "prompt": "unused",
+        "scoring": {"kind": "contains", "expected": ["7508"]},
+        "document_setup": [{**IN_WINDOW, "seed": "not an int"}],
+    }
+    with pytest.raises(DocumentSetupError, match="integer 'seed'"):
+        run_task(client, task, "bare", tmp_path)
+    assert client.calls == []
+
+
+def test_run_task_materialises_a_valid_declaration_before_the_agent_runs(tmp_path):
+    from conftest import FakeClient, assistant
+
+    client = FakeClient([assistant("units are 7726")])
+    task = {
+        "name": "doc-lookup",
+        "family": "document-lookup",
+        "prompt": "unused",
+        "scoring": {"kind": "contains", "expected": ["7726"]},
+        "document_setup": [IN_WINDOW],
+    }
+    result = run_task(client, task, "bare", tmp_path)
+    assert result.passed is True
+    assert (tmp_path / "doc-lookup-bare-docs" / "inventory-small.xlsx").is_file()

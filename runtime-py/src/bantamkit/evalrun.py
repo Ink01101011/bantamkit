@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import re
 import sys
 import tempfile
+import zipfile
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml
 
@@ -21,6 +23,7 @@ from bantamkit.budget import TokenBudget
 from bantamkit.client import BantamError, Message, ModelClient, OpenAICompatible, Tool, Usage
 from bantamkit.contract import schema_error, schema_instruction, schema_retry_feedback
 from bantamkit.critique import CritiqueExhausted, CritiqueGate, GroundedCritiqueGate
+from bantamkit.docread import Document, DocumentReadError, extract
 from bantamkit.filegraph import FileAccessGraph, ReadAccounting
 from bantamkit.loopguard import LoopGuard
 from bantamkit.memory import Memory, MemoryStore
@@ -322,6 +325,416 @@ class EvalConfigError(BantamError):
     """A task and a config combine into something the harness cannot score."""
 
 
+# ---- generated document fixtures (`document_setup:`) ----------------------------------
+#
+# `memory_setup:` is the precedent: a task declares facts, and `run_task` materialises them
+# into a real per-run `workdir` before the agent starts. A document works the same way and
+# for the same reason. It cannot use `workspace:` — that mapping holds `path -> str` and its
+# `read_file` returns the string; an `.xlsx` is a zip archive, so it has no representation in
+# that mapping and no reader can open it from there. Widening `workspace:` to carry bytes
+# would give every file-nav task a second, silently different storage mode; putting the
+# document on the filesystem where a reader expects it does not.
+#
+# The task declares a GENERATOR, not a file. The repository therefore gains no binary blob,
+# and a corpus larger than the worker context window costs nothing to ship. The price is that
+# a reader of the task YAML sees the SHAPE (how many rows, which columns, what value range,
+# which cell holds the answer) but not the VALUES: those come out of the seed. That trade is
+# taken deliberately — the alternative is a committed blob whose contents no diff can review
+# either, plus a hand-written expected answer that drifts from it the first time the blob is
+# regenerated. Here the expected answer is resolved by extracting the file that was just
+# built, so the answer cannot disagree with the document by construction.
+
+
+class DocumentSetupError(EvalConfigError):
+    """A `document_setup:` declaration the harness cannot build.
+
+    Raised at setup, BEFORE the agent runs, and left to ESCAPE `run_task` rather than caught
+    into the `config-error` outcome that a missing `family` produces. A run that starts with no
+    document and scores `wrong-answer` measures nothing at all and reports a defect in the
+    declaration as a defect in the model; a `config-error` row is only marginally better,
+    because `main()` prints its report and returns whatever the outcomes were — no outcome
+    class moves the process exit status, so a suite whose corpus never got built still exits 0.
+    A typo here is a hard failure, never a recorded non-measurement.
+    """
+
+
+DOCUMENT_SUFFIXES = ("xlsx", "docx")
+DOCUMENT_COLUMN_KINDS = ("key", "choice", "int")
+
+_ENTRY_KEYS = frozenset({"path", "seed", "sheets", "rows", "columns", "answers"})
+_SHEET_KEYS = frozenset({"name", "rows", "columns"})
+_COLUMN_KEYS = frozenset({"name", "kind", "prefix", "width", "values", "low", "high"})
+
+# Every archive member is written with this timestamp and no compression. Both are
+# byte-determinism requirements, not cosmetics. A zip member records an mtime, so the default
+# `writestr(str, ...)` stamps *now* and the same declaration hashes differently on every run;
+# `ZipInfo.create_system` additionally defaults to 3 on POSIX and 0 on Windows, which moves a
+# byte across machines. Compression is left off because DEFLATE output is a function of the
+# linked zlib, so a compressed fixture's hash would be pinned to a build of a C library rather
+# than to the declaration. STORED costs disk in a temp dir and buys a hash that is a function
+# of the declaration alone.
+_ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
+
+_CONTENT_TYPES = (
+    '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/'
+    'content-types"><Default Extension="xml" ContentType="application/xml"/>'
+    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.'
+    'relationships+xml"/></Types>'
+)
+_ROOT_RELS_XLSX = (
+    '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/'
+    '2006/relationships"><Relationship Id="rIdWb" Type="http://schemas.openxmlformats.org/'
+    'officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+    "</Relationships>"
+)
+_ROOT_RELS_DOCX = (
+    '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/'
+    '2006/relationships"><Relationship Id="rIdDoc" Type="http://schemas.openxmlformats.org/'
+    'officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+    "</Relationships>"
+)
+_SHEET_NS = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+_REL_NS = 'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+_WORD_NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+
+
+@dataclass(frozen=True)
+class DocumentFixture:
+    """One materialised document. Sizes are MEASURED off the file that was just written."""
+
+    name: str
+    path: Path
+    file_bytes: int
+    sha256: str
+    text_bytes: int
+    row_counts: tuple[int, ...]
+    answers: dict[str, str]
+
+    @property
+    def est_tokens(self) -> int:
+        """Extracted bytes / 4, the estimator every other measurement in this repo uses.
+
+        Off the EXTRACTED text, never `file_bytes`: `docread` measured the ratio between the
+        two spanning 1660x across real files, so a budget taken from the file size is wrong
+        by up to three orders of magnitude.
+        """
+        return self.text_bytes // 4
+
+
+def _doc_field(seed: int, part: str, column: dict, index: int) -> str:
+    """One cell, as a pure function of (seed, part, column, 1-based data row).
+
+    SHA-256 rather than `random.Random`: the Mersenne stream is a CPython implementation
+    detail, while the digest of a byte string is specified. A fixture whose values could move
+    under an interpreter upgrade is not a fixture.
+    """
+    kind = column["kind"]
+    if kind == "key":
+        return f"{column.get('prefix', '')}{index:0{int(column.get('width', 6))}d}"
+    digest = hashlib.sha256(f"{seed}|{part}|{column['name']}|{index}".encode()).digest()
+    draw = int.from_bytes(digest[:8], "big")
+    if kind == "choice":
+        return str(column["values"][draw % len(column["values"])])
+    return str(int(column["low"]) + draw % (int(column["high"]) - int(column["low"]) + 1))
+
+
+def _xml_text(value: str) -> str:
+    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _column_letter(index: int) -> str:
+    letters = ""
+    index += 1
+    while index:
+        index, rem = divmod(index - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
+
+
+def _sheet_xml(seed: int, name: str, columns: list[dict], rows: int) -> str:
+    """Row 1 is the header, so declared data row `i` is spreadsheet row `i + 1`.
+
+    Every row from 1 to `rows + 1` is declared, with no gaps. That matters because `docread`
+    does not materialise undeclared rows: only because this generator leaves none does a
+    spreadsheet row number equal its rendered index + 1, which is what makes the `sheet!C4138`
+    answer addresses below mean what a reader of the YAML assumes they mean.
+    """
+    out = []
+    header = "".join(
+        f'<c r="{_column_letter(c)}1" t="inlineStr"><is><t>{_xml_text(str(col["name"]))}'
+        "</t></is></c>"
+        for c, col in enumerate(columns)
+    )
+    out.append(f'<row r="1">{header}</row>')
+    for i in range(1, rows + 1):
+        r = i + 1
+        cells = []
+        for c, col in enumerate(columns):
+            ref = f"{_column_letter(c)}{r}"
+            value = _doc_field(seed, name, col, i)
+            if col["kind"] == "int":
+                cells.append(f'<c r="{ref}"><v>{value}</v></c>')
+            else:
+                # inlineStr, not a shared-string table: a shared table would make every cell's
+                # bytes depend on a global dedup ORDER, so byte-determinism would rest on the
+                # stability of that ordering as well as on the seed. Inline keeps a row's bytes
+                # a function of that row. `docread` reads both spellings (its trap 1 and 2).
+                cells.append(
+                    f'<c r="{ref}" t="inlineStr"><is><t>{_xml_text(value)}</t></is></c>'
+                )
+        out.append(f'<row r="{r}">{"".join(cells)}</row>')
+    return "".join(out)
+
+
+def _xlsx_members(entry: dict) -> list[tuple[str, str]]:
+    seed = int(entry["seed"])
+    members = [("[Content_Types].xml", _CONTENT_TYPES), ("_rels/.rels", _ROOT_RELS_XLSX)]
+    decls, rels = [], []
+    for i, sheet in enumerate(entry["sheets"]):
+        rid = f"rId{i + 1}"
+        decls.append(f'<sheet name="{_xml_text(sheet["name"])}" sheetId="{i + 1}" r:id="{rid}"/>')
+        rels.append(
+            f'<Relationship Id="{rid}" Type="http://schemas.openxmlformats.org/'
+            f'officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i + 1}.xml"/>'
+        )
+        body = _sheet_xml(seed, sheet["name"], sheet["columns"], int(sheet["rows"]))
+        members.append(
+            (
+                f"xl/worksheets/sheet{i + 1}.xml",
+                f"<worksheet {_SHEET_NS}><sheetData>{body}</sheetData></worksheet>",
+            )
+        )
+    members.append(
+        (
+            "xl/workbook.xml",
+            f"<workbook {_SHEET_NS} {_REL_NS}><sheets>{''.join(decls)}</sheets></workbook>",
+        )
+    )
+    members.append(
+        (
+            "xl/_rels/workbook.xml.rels",
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/'
+            f"relationships\">{''.join(rels)}</Relationships>",
+        )
+    )
+    return members
+
+
+def _docx_members(entry: dict) -> list[tuple[str, str]]:
+    """One paragraph per row, fields joined by ", ".
+
+    `docread` renders a `.docx` paragraph as a single field, so a `.docx` answer address can
+    only be column A and resolves to the whole line. That is stated rather than worked around:
+    a Word document has no columns and pretending otherwise would invent structure the reader
+    cannot see.
+    """
+    seed = int(entry["seed"])
+    columns = entry["columns"]
+    lines = [", ".join(str(col["name"]) for col in columns)]
+    for i in range(1, int(entry["rows"]) + 1):
+        lines.append(", ".join(_doc_field(seed, "document", col, i) for col in columns))
+    body = "".join(f"<w:p><w:r><w:t>{_xml_text(line)}</w:t></w:r></w:p>" for line in lines)
+    return [
+        ("[Content_Types].xml", _CONTENT_TYPES),
+        ("_rels/.rels", _ROOT_RELS_DOCX),
+        ("word/document.xml", f"<w:document {_WORD_NS}><w:body>{body}</w:body></w:document>"),
+    ]
+
+
+def build_document(entry: dict) -> bytes:
+    """The file's bytes, as a pure function of the (already validated) declaration."""
+    members = (
+        _xlsx_members(entry) if str(entry["path"]).endswith(".xlsx") else _docx_members(entry)
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as archive:
+        for name, payload in members:
+            info = zipfile.ZipInfo(name, date_time=_ZIP_EPOCH)
+            info.compress_type = zipfile.ZIP_STORED
+            info.create_system = 0
+            info.external_attr = 0
+            archive.writestr(info, payload)
+    return buf.getvalue()
+
+
+def _fail(entry: object, message: str) -> None:
+    where = entry.get("path", "<no path>") if isinstance(entry, dict) else entry
+    raise DocumentSetupError(f"document_setup entry {where!r}: {message}")
+
+
+def _check_column(entry: dict, where: str, column: object) -> None:
+    if not isinstance(column, dict):
+        _fail(entry, f"{where} column must be a mapping, got {type(column).__name__}")
+    unknown = sorted(set(column) - _COLUMN_KEYS)
+    if unknown:
+        _fail(entry, f"{where} column has unknown keys {unknown}; known: {sorted(_COLUMN_KEYS)}")
+    if not isinstance(column.get("name"), str) or not column["name"]:
+        _fail(entry, f"{where} column needs a non-empty string 'name'")
+    kind = column.get("kind")
+    if kind not in DOCUMENT_COLUMN_KINDS:
+        _fail(entry, f"{where} column {column['name']!r} has kind {kind!r}, "
+              f"supported are {', '.join(DOCUMENT_COLUMN_KINDS)}")
+    if kind == "choice":
+        values = column.get("values")
+        if not isinstance(values, list) or not values:
+            _fail(
+                entry,
+                f"{where} column {column['name']!r} kind 'choice' needs a non-empty 'values'",
+            )
+    if kind == "int":
+        try:
+            low, high = int(column["low"]), int(column["high"])
+        except (KeyError, TypeError, ValueError):
+            _fail(entry, f"{where} column {column['name']!r} kind 'int' needs integer low/high")
+        if low > high:
+            _fail(entry, f"{where} column {column['name']!r} has low {low} > high {high}")
+
+
+def _check_rows_and_columns(entry: dict, where: str, holder: dict) -> None:
+    rows = holder.get("rows")
+    if not isinstance(rows, int) or isinstance(rows, bool) or rows < 1:
+        _fail(entry, f"{where} needs an integer 'rows' >= 1, got {rows!r}")
+    columns = holder.get("columns")
+    if not isinstance(columns, list) or not columns:
+        _fail(entry, f"{where} needs a non-empty 'columns' list")
+    for column in columns:
+        _check_column(entry, where, column)
+
+
+def validate_document_entry(entry: object) -> None:
+    """Reject a declaration the generator cannot build, naming the key that is wrong.
+
+    Unknown keys are an error rather than an ignored extra. A silently ignored `row:` for
+    `rows:` builds a document of the wrong size and the run still scores, which is the exact
+    failure mode this program has already been bitten by: a measurement that skipped what it
+    was measuring and exited 0.
+    """
+    if not isinstance(entry, dict):
+        _fail(entry, f"must be a mapping, got {type(entry).__name__}")
+    unknown = sorted(set(entry) - _ENTRY_KEYS)
+    if unknown:
+        _fail(entry, f"unknown keys {unknown}; known: {sorted(_ENTRY_KEYS)}")
+    path = entry.get("path")
+    if not isinstance(path, str) or not path:
+        _fail(entry, "needs a non-empty string 'path'")
+    pure = PurePosixPath(path)
+    if pure.is_absolute() or ".." in pure.parts:
+        _fail(entry, "'path' must be relative and must not escape the workdir")
+    suffix = pure.suffix.lower().lstrip(".")
+    if suffix not in DOCUMENT_SUFFIXES:
+        _fail(entry, f"suffix {suffix or 'none'!r} is not readable; "
+              f"supported are {', '.join(DOCUMENT_SUFFIXES)}")
+    seed = entry.get("seed")
+    if not isinstance(seed, int) or isinstance(seed, bool):
+        _fail(entry, f"needs an integer 'seed', got {seed!r}")
+    if suffix == "xlsx":
+        if "rows" in entry or "columns" in entry:
+            _fail(entry, "an .xlsx declares 'sheets:', not top-level 'rows'/'columns'")
+        sheets = entry.get("sheets")
+        if not isinstance(sheets, list) or not sheets:
+            _fail(entry, "needs a non-empty 'sheets' list")
+        seen = set()
+        for sheet in sheets:
+            if not isinstance(sheet, dict):
+                _fail(entry, f"sheet must be a mapping, got {type(sheet).__name__}")
+            extra = sorted(set(sheet) - _SHEET_KEYS)
+            if extra:
+                _fail(entry, f"sheet has unknown keys {extra}; known: {sorted(_SHEET_KEYS)}")
+            name = sheet.get("name")
+            if not isinstance(name, str) or not name:
+                _fail(entry, "every sheet needs a non-empty string 'name'")
+            if name in seen:
+                _fail(entry, f"duplicate sheet name {name!r}; `Document.part` resolves by name")
+            seen.add(name)
+            _check_rows_and_columns(entry, f"sheet {name!r}", sheet)
+    else:
+        if "sheets" in entry:
+            _fail(entry, "a .docx declares top-level 'rows'/'columns', not 'sheets:'")
+        _check_rows_and_columns(entry, "document", entry)
+    answers = entry.get("answers") or {}
+    if not isinstance(answers, dict):
+        _fail(entry, f"'answers' must be a mapping of label -> 'part!CELL', got {answers!r}")
+    for label, address in answers.items():
+        if not isinstance(address, str) or "!" not in address:
+            _fail(entry, f"answer {label!r} must be 'part!CELL', got {address!r}")
+
+
+def _resolve_answer(doc: Document, entry: dict, label: str, address: str) -> str:
+    """Read the answer OUT OF the document that was just built, never off the declaration.
+
+    This is what stops the expected value and the corpus drifting apart: they cannot disagree,
+    because one is a slice of the other. It also means an answer address that points past the
+    end of the sheet is a setup failure rather than a silent empty string.
+    """
+    part_key, _, cell = address.partition("!")
+    letters = "".join(c for c in cell if c.isalpha())
+    digits = "".join(c for c in cell if c.isdigit())
+    if not letters or not digits:
+        _fail(entry, f"answer {label!r} address {address!r} is not a cell reference")
+    try:
+        part = doc.part(part_key)
+    except DocumentReadError as exc:
+        _fail(entry, f"answer {label!r}: {exc}")
+    index = int(digits) - 1
+    if not 0 <= index < part.row_count:
+        _fail(entry, f"answer {label!r} names row {digits} but part {part.name!r} "
+              f"renders {part.row_count} rows")
+    column = 0
+    for char in letters:
+        column = column * 26 + (ord(char.upper()) - 64)
+    fields = part.rows[index].split("\t")
+    if not 0 < column <= len(fields):
+        _fail(entry, f"answer {label!r} names column {letters} but row {digits} of "
+              f"{part.name!r} has {len(fields)} fields")
+    return fields[column - 1]
+
+
+def document_dir(workdir: Path, task: dict, config: str) -> Path:
+    """Per-task, per-config, under the run's `workdir` — the `memory_setup:` convention.
+
+    Per config and not shared, for the same reason the memory store is per config: an arm that
+    let the agent write to the document would otherwise hand the next arm a different corpus,
+    and the comparison would stop being between configs. Nothing is deleted afterwards; the
+    caller owns `workdir` (`run_suite` mkdtemps one), and a failed run whose document was
+    cleaned up cannot be diagnosed.
+    """
+    return workdir / f"{task['name']}-{config}-docs"
+
+
+def materialise_documents(task: dict, workdir: Path, config: str) -> list[DocumentFixture]:
+    """Validate, build and write every `document_setup:` entry. Raises before the agent runs."""
+    entries = task.get("document_setup") or []
+    if not isinstance(entries, list):
+        raise DocumentSetupError(
+            f"task {task.get('name')!r}: document_setup must be a list, "
+            f"got {type(entries).__name__}"
+        )
+    target = document_dir(workdir, task, config)
+    fixtures = []
+    for entry in entries:
+        validate_document_entry(entry)
+        path = target / entry["path"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = build_document(entry)
+        path.write_bytes(payload)
+        doc = extract(path)
+        fixtures.append(
+            DocumentFixture(
+                name=entry["path"],
+                path=path,
+                file_bytes=len(payload),
+                sha256=hashlib.sha256(payload).hexdigest(),
+                text_bytes=doc.text_bytes,
+                row_counts=tuple(p.row_count for p in doc.parts),
+                answers={
+                    label: _resolve_answer(doc, entry, label, address)
+                    for label, address in (entry.get("answers") or {}).items()
+                },
+            )
+        )
+    return fixtures
+
+
 class SchemaGate:
     """Enforce a task schema on the agent's final answer, on structured()'s retry budget.
 
@@ -511,6 +924,12 @@ def run_task(
     # `config` itself stays the label the TaskResult records.
     effective = GUARD_CONFIGS.get(config, BUDGET_CONFIGS.get(config, config))
 
+    # Before the agent exists, and unconditional on `config`: a document is the task's
+    # corpus, not a component under test, so every arm reads the same bytes — which the
+    # generator makes literally true. A malformed declaration raises here rather than
+    # letting the run start with no document and record a `wrong-answer` row, which would
+    # report a defect in the task file as a defect in the model.
+    materialise_documents(task, workdir, config)
     tracking = TrackingClient(client)
     workspace_tools = _workspace_tools(task.get("workspace") or {})
     tools = [
