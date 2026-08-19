@@ -71,6 +71,7 @@ MOVED_FRAGMENTS = (
 CORE_MODULES = (
     "agent.py",
     "budget.py",
+    "docread.py",
     "loopguard.py",
     "structured.py",
     "critique.py",
@@ -80,6 +81,7 @@ CORE_MODULES = (
 LAYER_MODULES = ("contract.py", "profile.py")
 FORBIDDEN_IMPORTS = (
     "agent",
+    "docread",
     "structured",
     "critique",
     "evalrun",
