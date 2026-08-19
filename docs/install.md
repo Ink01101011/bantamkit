@@ -59,8 +59,9 @@ Optional extras: add `[mcp]` (e.g. `bantamkit[mcp] @ git+https...`) for the
 
 ### Releasing (maintainers)
 
-After merging to `main`: bump `version` in `runtime-py/pyproject.toml` in the
-release PR if it was not already bumped, then
+After merging to `main`: bump `__version__` in
+`runtime-py/src/bantamkit/__init__.py` in the release PR if it was not already
+bumped, then
 
 ```bash
 git tag -a v0.4.0 -m "bantamkit 0.4.0"
