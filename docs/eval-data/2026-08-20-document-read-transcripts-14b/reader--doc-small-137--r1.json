@@ -1,0 +1,67 @@
+{
+  "task": "doc-small-137",
+  "config": "reader",
+  "repeat": 1,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 3552060139,
+  "model": "bk-rbp27-qwen2.5-14b-instruct",
+  "output": "{\"region\": \"west\", \"units\": 1013}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-000137 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_nuw2y7fc",
+          "name": "document_list",
+          "arguments": {
+            "type": "workbook"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory-small.xlsx (xlsx) part 0 \"stock\": 401 rows, numbered 0 to 400\n  row 0 is the header: sku\tregion\tunits\n  row 1 is the first data row: SKU-000001\tsouth\t2049\n  row 400 is the last data row: SKU-000400\teast\t2621",
+      "tool_calls": [],
+      "tool_call_id": "call_nuw2y7fc"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_e5457lom",
+          "name": "document_read",
+          "arguments": {
+            "offset": 13,
+            "document": "inventory-small.xlsx",
+            "part": "stock",
+            "limit": 5
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory-small.xlsx \"stock\" rows 13-17 of 401; each line below begins with its own row number\n13\tSKU-000013\twest\t1013\n14\tSKU-000014\teast\t5047\n15\tSKU-000015\twest\t9346\n16\tSKU-000016\twest\t2408\n17\tSKU-000017\teast\t5602\nmore rows follow: call document_read again with offset=18",
+      "tool_calls": [],
+      "tool_call_id": "call_e5457lom"
+    },
+    {
+      "role": "assistant",
+      "content": "{\"region\": \"west\", \"units\": 1013}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

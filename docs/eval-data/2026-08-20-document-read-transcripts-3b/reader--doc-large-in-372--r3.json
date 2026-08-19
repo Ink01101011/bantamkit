@@ -1,0 +1,84 @@
+{
+  "task": "doc-large-in-372",
+  "config": "reader",
+  "repeat": 3,
+  "passed": false,
+  "outcome": "malformed-output",
+  "seed": 733715320,
+  "model": "llama3.2:3b",
+  "output": "{\"name\": \"document_update_fields\", \"parameters\": {\"fields\": \"{\\\"region\\\", \\\"units\\\"}\", \"document\\\":{\\\"description\\\":\\\"Workbook\\\"}}}\n{\"responseMetadata\":\"{ \\\"HTTPversion\\\":\\\"AmazonAPI\" }}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-000372 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_6t8ih1pp",
+          "name": "document_list",
+          "arguments": {
+            "last_row": 3,
+            "document": {
+              "description": "Workbook",
+              "type": "string"
+            },
+            "limit": {
+              "type": ""
+            },
+            "part": [
+              {
+                "value": "sheet"
+              },
+              {
+                "label": "Sheet 2"
+              }
+            ],
+            "header_row": 1,
+            "first_row": 1
+          }
+        },
+        {
+          "id": "call_g6u6a0xy",
+          "name": "document_read",
+          "arguments": {
+            "document": {
+              "description": "Workbook",
+              "type": "string"
+            },
+            "limit": {
+              "type": ""
+            },
+            "offset": 2,
+            "part": {
+              "value": "sheet"
+            }
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx (xlsx) part 0 \"stock\": 12001 rows, numbered 0 to 12000\n  row 0 is the header: sku\tregion\tunits\n  row 1 is the first data row: SKU-000001\tsouth\t2049\n  row 12000 is the last data row: SKU-012000\twest\t9928",
+      "tool_calls": [],
+      "tool_call_id": "call_6t8ih1pp"
+    },
+    {
+      "role": "tool",
+      "content": "error: document_read failed: unhashable type: 'dict'. fix the arguments and retry.",
+      "tool_calls": [],
+      "tool_call_id": "call_g6u6a0xy"
+    },
+    {
+      "role": "assistant",
+      "content": "{\"name\": \"document_update_fields\", \"parameters\": {\"fields\": \"{\\\"region\\\", \\\"units\\\"}\", \"document\\\":{\\\"description\\\":\\\"Workbook\\\"}}}\n{\"responseMetadata\":\"{ \\\"HTTPversion\\\":\\\"AmazonAPI\" }}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

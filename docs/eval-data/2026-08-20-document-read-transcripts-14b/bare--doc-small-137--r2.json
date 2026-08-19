@@ -1,0 +1,24 @@
+{
+  "task": "doc-small-137",
+  "config": "bare",
+  "repeat": 2,
+  "passed": false,
+  "outcome": "malformed-output",
+  "seed": 2336121489,
+  "model": "bk-rbp27-qwen2.5-14b-instruct",
+  "output": "To provide an accurate response as requested, I would need to access the workbook in question as specified by your instruction. Since I cannot access external files or workbooks and must reply based on available data alone, here is a template following your exact requirements:\n\n{\"region\": \"<Provide region from the workbook>\", \"units\": <Provide units integer from the workbook>} \n\nPlease replace `<Provide region from the workbook>` with the actual region value for `SKU-000137` and `<Provide units integer from the workbook>` with its corresponding `units`.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-000137 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "To provide an accurate response as requested, I would need to access the workbook in question as specified by your instruction. Since I cannot access external files or workbooks and must reply based on available data alone, here is a template following your exact requirements:\n\n{\"region\": \"<Provide region from the workbook>\", \"units\": <Provide units integer from the workbook>} \n\nPlease replace `<Provide region from the workbook>` with the actual region value for `SKU-000137` and `<Provide units integer from the workbook>` with its corresponding `units`.",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

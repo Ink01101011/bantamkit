@@ -1,0 +1,86 @@
+{
+  "task": "doc-large-in-359",
+  "config": "reader",
+  "repeat": 0,
+  "passed": false,
+  "outcome": "malformed-output",
+  "seed": 2643541980,
+  "model": "bk-rbp27-qwen2.5-7b-instruct",
+  "output": "",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-000359 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_rdhhlsa2",
+          "name": "document_list",
+          "arguments": {}
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx (xlsx) part 0 \"stock\": 12001 rows, numbered 0 to 12000\n  row 0 is the header: sku\tregion\tunits\n  row 1 is the first data row: SKU-000001\tsouth\t2049\n  row 12000 is the last data row: SKU-012000\twest\t9928",
+      "tool_calls": [],
+      "tool_call_id": "call_rdhhlsa2"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_2xagaw8e",
+          "name": "document_read",
+          "arguments": {
+            "part": "stock",
+            "offset": 2,
+            "limit": 1
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx \"stock\" rows 2-2 of 12001; each line below begins with its own row number\n2\tSKU-000002\tsouth\t9085\nmore rows follow: call document_read again with offset=3",
+      "tool_calls": [],
+      "tool_call_id": "call_2xagaw8e"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_75o2juh8",
+          "name": "document_read",
+          "arguments": {
+            "offset": 3,
+            "part": "stock",
+            "limit": 1
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx \"stock\" rows 3-3 of 12001; each line below begins with its own row number\n3\tSKU-000003\teast\t4020\nmore rows follow: call document_read again with offset=4",
+      "tool_calls": [],
+      "tool_call_id": "call_75o2juh8"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

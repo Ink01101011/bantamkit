@@ -1,0 +1,53 @@
+{
+  "task": "doc-small-137",
+  "config": "reader",
+  "repeat": 3,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 615655145,
+  "model": "llama3.2:3b",
+  "output": "```\n{\n  \"query\": {\"sheet\": {\"name\": \"stock\", \"load\": \"json\"}},\n  \"filter\": [\n    {\"column\": \"sku\", \"operator\": \"==\", \"value\": \"SKU-000137\"}\n  ],\n  \"fields\": [\"region\", \"units\"]\n}\n```",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-000137 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_yzt3tfih",
+          "name": "document_read",
+          "arguments": {
+            "document": {
+              "description": "workbook document name as document_list reported it; omit if the task has one,",
+              "type": "stock"
+            },
+            "part": {
+              "description": "Part name as document_list reported it; omit for the first",
+              "name": "stock"
+            },
+            "limit": null,
+            "offset": null
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "error: document_read failed: unhashable type: 'dict'. fix the arguments and retry.",
+      "tool_calls": [],
+      "tool_call_id": "call_yzt3tfih"
+    },
+    {
+      "role": "assistant",
+      "content": "```\n{\n  \"query\": {\"sheet\": {\"name\": \"stock\", \"load\": \"json\"}},\n  \"filter\": [\n    {\"column\": \"sku\", \"operator\": \"==\", \"value\": \"SKU-000137\"}\n  ],\n  \"fields\": [\"region\", \"units\"]\n}\n```",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

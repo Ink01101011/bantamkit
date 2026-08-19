@@ -1,0 +1,24 @@
+{
+  "task": "doc-large-out-11764",
+  "config": "reader",
+  "repeat": 1,
+  "passed": false,
+  "outcome": "malformed-output",
+  "seed": 2399997567,
+  "model": "llama3.2:3b",
+  "output": "{\"name\": \"document_read\", \"parameters\": {\"document_list\": \"[{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Workbook\\\", \\\"parts\\\": [{\\\"part\\\":{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Sheet1\\\", \\\"filename\":\"Stock.xlsx\"},\\\"headerRow\\\": \\\"1\\\",\\\"rowCount\\\": \\\"1\\\",\\\"lastRow\\\": \\\"1\\\"},{\\\"part\\\":{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Part2\\\", \\\"filename\":\"\",\"headerRow\\\": \"\",\\\"rowCount\\\": \"<<0>>\",\"lastRow\\\": \"\"}]}}]\", \"document_read\": {\"document\":{\"type\":\"string\",\"description\":\"Stock.xlsx\"),\"limit\":{\"type\":\"integer\",\"description\":\"\"},\"offset\":{\"type\":\"integer\",\"description\":\"\"}\"}}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-011764 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "{\"name\": \"document_read\", \"parameters\": {\"document_list\": \"[{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Workbook\\\", \\\"parts\\\": [{\\\"part\\\":{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Sheet1\\\", \\\"filename\":\"Stock.xlsx\"},\\\"headerRow\\\": \\\"1\\\",\\\"rowCount\\\": \\\"1\\\",\\\"lastRow\\\": \\\"1\\\"},{\\\"part\\\":{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Part2\\\", \\\"filename\":\"\",\"headerRow\\\": \"\",\\\"rowCount\\\": \"<<0>>\",\"lastRow\\\": \"\"}]}}]\", \"document_read\": {\"document\":{\"type\":\"string\",\"description\":\"Stock.xlsx\"),\"limit\":{\"type\":\"integer\",\"description\":\"\"},\"offset\":{\"type\":\"integer\",\"description\":\"\"}\"}}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

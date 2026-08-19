@@ -1,0 +1,24 @@
+{
+  "task": "doc-large-in-359",
+  "config": "bare",
+  "repeat": 1,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 3645415001,
+  "model": "bk-rbp27-qwen2.5-14b-instruct",
+  "output": "To proceed with your request, I would typically follow these instructions by looking up the data in a workbook or dataset. Since we don't have direct access to any attached files here, I will structure the answer as requested based on hypothetical values that fit your criteria:\n\n```json\n{\"region\": \"North America\", \"units\": 42}\n```\n\nPlease replace `\"North America\"` with the actual region and `42` with the actual units from the stock sheet for SKU-000359 if this data differs.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-000359 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "To proceed with your request, I would typically follow these instructions by looking up the data in a workbook or dataset. Since we don't have direct access to any attached files here, I will structure the answer as requested based on hypothetical values that fit your criteria:\n\n```json\n{\"region\": \"North America\", \"units\": 42}\n```\n\nPlease replace `\"North America\"` with the actual region and `42` with the actual units from the stock sheet for SKU-000359 if this data differs.",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

@@ -1,0 +1,90 @@
+{
+  "task": "doc-small-261",
+  "config": "reader",
+  "repeat": 3,
+  "passed": true,
+  "outcome": "pass",
+  "seed": 569348319,
+  "model": "bk-rbp27-qwen2.5-14b-instruct",
+  "output": "{\"region\": \"south\", \"units\": 3788}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-000261 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_71n1jltr",
+          "name": "document_list",
+          "arguments": {
+            "type": "workbook"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory-small.xlsx (xlsx) part 0 \"stock\": 401 rows, numbered 0 to 400\n  row 0 is the header: sku\tregion\tunits\n  row 1 is the first data row: SKU-000001\tsouth\t2049\n  row 400 is the last data row: SKU-000400\teast\t2621",
+      "tool_calls": [],
+      "tool_call_id": "call_71n1jltr"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_fo1geflv",
+          "name": "document_read",
+          "arguments": {
+            "document": "inventory-small.xlsx",
+            "part": "stock",
+            "offset": 2,
+            "limit": 1
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory-small.xlsx \"stock\" rows 2-2 of 401; each line below begins with its own row number\n2\tSKU-000002\tsouth\t9085\nmore rows follow: call document_read again with offset=3",
+      "tool_calls": [],
+      "tool_call_id": "call_fo1geflv"
+    },
+    {
+      "role": "assistant",
+      "content": "It seems that SKU-000261 is not found in the first few rows. Let's calculate the correct offset for SKU-000261 which should be around row 261 based on its sequence.\n",
+      "tool_calls": [
+        {
+          "id": "call_dpxu5uuu",
+          "name": "document_read",
+          "arguments": {
+            "document": "inventory-small.xlsx",
+            "limit": 1,
+            "offset": 261,
+            "part": "stock"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory-small.xlsx \"stock\" rows 261-261 of 401; each line below begins with its own row number\n261\tSKU-000261\tsouth\t3788\nmore rows follow: call document_read again with offset=262",
+      "tool_calls": [],
+      "tool_call_id": "call_dpxu5uuu"
+    },
+    {
+      "role": "assistant",
+      "content": "{\"region\": \"south\", \"units\": 3788}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "task": "doc-large-out-11764",
+  "config": "reader",
+  "repeat": 2,
+  "passed": true,
+  "outcome": "pass",
+  "seed": 2349301697,
+  "model": "bk-rbp27-qwen3-4b-instruct",
+  "output": "{\"region\": \"south\", \"units\": 7509}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-011764 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_4vt9anr8",
+          "name": "document_list",
+          "arguments": {
+            "document": "stock"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx (xlsx) part 0 \"stock\": 12001 rows, numbered 0 to 12000\n  row 0 is the header: sku\tregion\tunits\n  row 1 is the first data row: SKU-000001\tsouth\t2049\n  row 12000 is the last data row: SKU-012000\twest\t9928",
+      "tool_calls": [],
+      "tool_call_id": "call_4vt9anr8"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_jd3feqt2",
+          "name": "document_read",
+          "arguments": {
+            "document": "inventory.xlsx",
+            "offset": 11763,
+            "limit": 50,
+            "part": "stock"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx \"stock\" rows 11763-11812 of 12001; each line below begins with its own row number\n11763\tSKU-011763\twest\t1572\n11764\tSKU-011764\tsouth\t7509\n11765\tSKU-011765\tnorth\t4060\n11766\tSKU-011766\twest\t6161\n11767\tSKU-011767\tnorth\t2068\n11768\tSKU-011768\twest\t5279\n11769\tSKU-011769\twest\t8367\n11770\tSKU-011770\tnorth\t8995\n11771\tSKU-011771\tnorth\t4422\n11772\tSKU-011772\teast\t8437\n11773\tSKU-011773\tsouth\t4958\n11774\tSKU-011774\tnorth\t6605\n11775\tSKU-011775\tnorth\t7277\n11776\tSKU-011776\twest\t1935\n11777\tSKU-011777\tnorth\t5338\n11778\tSKU-011778\tnorth\t8260\n11779\tSKU-011779\teast\t7069\n11780\tSKU-011780\tnorth\t2257\n11781\tSKU-011781\tnorth\t5937\n11782\tSKU-011782\teast\t4367\n11783\tSKU-011783\tnorth\t1631\n11784\tSKU-011784\tnorth\t6778\n11785\tSKU-011785\tnorth\t6971\n11786\tSKU-011786\teast\t8394\n11787\tSKU-011787\tnorth\t3302\n11788\tSKU-011788\tnorth\t5020\n11789\tSKU-011789\tsouth\t3812\n11790\tSKU-011790\tnorth\t2973\n11791\tSKU-011791\tsouth\t4945\n11792\tSKU-011792\tsouth\t3996\n11793\tSKU-011793\twest\t3566\n11794\tSKU-011794\tsouth\t4231\n11795\tSKU-011795\twest\t6907\n11796\tSKU-011796\tsouth\t8131\n11797\tSKU-011797\teast\t4621\n11798\tSKU-011798\teast\t1263\n11799\tSKU-011799\twest\t6995\n11800\tSKU-011800\teast\t2991\n11801\tSKU-011801\tsouth\t4327\n11802\tSKU-011802\tsouth\t8015\n11803\tSKU-011803\twest\t4180\n11804\tSKU-011804\tnorth\t6139\n11805\tSKU-011805\tnorth\t2056\n11806\tSKU-011806\tsouth\t8302\n11807\tSKU-011807\tnorth\t3022\n11808\tSKU-011808\teast\t9871\n11809\tSKU-011809\tnorth\t4924\n11810\tSKU-011810\tsouth\t6794\n11811\tSKU-011811\tsouth\t5566\n11812\tSKU-011812\twest\t9031\nmore rows follow: call document_read again with offset=11813",
+      "tool_calls": [],
+      "tool_call_id": "call_jd3feqt2"
+    },
+    {
+      "role": "assistant",
+      "content": "{\"region\": \"south\", \"units\": 7509}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

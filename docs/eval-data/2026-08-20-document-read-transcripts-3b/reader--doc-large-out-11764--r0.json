@@ -1,0 +1,45 @@
+{
+  "task": "doc-large-out-11764",
+  "config": "reader",
+  "repeat": 0,
+  "passed": false,
+  "outcome": "malformed-output",
+  "seed": 3818669465,
+  "model": "llama3.2:3b",
+  "output": "import pandas as pd\nfrom openpyxl import load_workbook\n\nwb = load_workbook('inventory.xlsx')\nws = wb['stock']\n\ndesired_sku = 'SKU-011764'\n\nfor row in ws.iter_rows(values_only=True):\n    if row[0] == desired_sku:\n        region = row[2]\n        units = row[-1]\n        print(f'{{\"region\": \"{region}\", \"units\": {units}}}')",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-011764 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_1lsplou3",
+          "name": "document_read",
+          "arguments": {
+            "document": "{\"type\":\"string\",\"description\":\"Workbook\"",
+            "limit": {}
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "error: no document named {\"type\":\"string\",\"description\":\"Workbook\"; this task has: inventory.xlsx",
+      "tool_calls": [],
+      "tool_call_id": "call_1lsplou3"
+    },
+    {
+      "role": "assistant",
+      "content": "import pandas as pd\nfrom openpyxl import load_workbook\n\nwb = load_workbook('inventory.xlsx')\nws = wb['stock']\n\ndesired_sku = 'SKU-011764'\n\nfor row in ws.iter_rows(values_only=True):\n    if row[0] == desired_sku:\n        region = row[2]\n        units = row[-1]\n        print(f'{{\"region\": \"{region}\", \"units\": {units}}}')",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "task": "doc-large-out-4137",
+  "config": "reader",
+  "repeat": 0,
+  "passed": false,
+  "outcome": "malformed-output",
+  "seed": 742347125,
+  "model": "bk-rbp27-qwen2.5-14b-instruct",
+  "output": "To find the exact row in the `stock` worksheet where the SKU is 'SKU-004137', I will first need to retrieve information about the document and how many rows it contains using the `document_list` function. After that, I'll use `document_read` to fetch relevant data.\n\nLet's start by calling `document_list`:\n",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-004137 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "To find the exact row in the `stock` worksheet where the SKU is 'SKU-004137', I will first need to retrieve information about the document and how many rows it contains using the `document_list` function. After that, I'll use `document_read` to fetch relevant data.\n\nLet's start by calling `document_list`:\n",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

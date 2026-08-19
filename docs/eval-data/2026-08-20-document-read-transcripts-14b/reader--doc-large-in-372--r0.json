@@ -1,0 +1,96 @@
+{
+  "task": "doc-large-in-372",
+  "config": "reader",
+  "repeat": 0,
+  "passed": true,
+  "outcome": "pass",
+  "seed": 2487631646,
+  "model": "bk-rbp27-qwen2.5-14b-instruct",
+  "output": "{\"region\": \"south\", \"units\": 7796}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-000372 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_5085by1t",
+          "name": "document_list",
+          "arguments": {
+            "document": ""
+          }
+        },
+        {
+          "id": "call_c9qltrkj",
+          "name": "document_read",
+          "arguments": {
+            "document": "workbook.xlsx",
+            "part": "stock",
+            "limit": 100,
+            "offset": 3
+          }
+        },
+        {
+          "id": "call_77d4meij",
+          "name": "document_list",
+          "arguments": {
+            "document": ""
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx (xlsx) part 0 \"stock\": 12001 rows, numbered 0 to 12000\n  row 0 is the header: sku\tregion\tunits\n  row 1 is the first data row: SKU-000001\tsouth\t2049\n  row 12000 is the last data row: SKU-012000\twest\t9928",
+      "tool_calls": [],
+      "tool_call_id": "call_5085by1t"
+    },
+    {
+      "role": "tool",
+      "content": "error: no document named workbook.xlsx; this task has: inventory.xlsx",
+      "tool_calls": [],
+      "tool_call_id": "call_c9qltrkj"
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx (xlsx) part 0 \"stock\": 12001 rows, numbered 0 to 12000\n  row 0 is the header: sku\tregion\tunits\n  row 1 is the first data row: SKU-000001\tsouth\t2049\n  row 12000 is the last data row: SKU-012000\twest\t9928",
+      "tool_calls": [],
+      "tool_call_id": "call_77d4meij"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_rmtfo5b9",
+          "name": "document_read",
+          "arguments": {
+            "limit": 1,
+            "offset": 372,
+            "part": "stock",
+            "document": "inventory.xlsx"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx \"stock\" rows 372-372 of 12001; each line below begins with its own row number\n372\tSKU-000372\tsouth\t7796\nmore rows follow: call document_read again with offset=373",
+      "tool_calls": [],
+      "tool_call_id": "call_rmtfo5b9"
+    },
+    {
+      "role": "assistant",
+      "content": "{\"region\": \"south\", \"units\": 7796}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

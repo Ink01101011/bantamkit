@@ -1,0 +1,24 @@
+{
+  "task": "doc-large-out-8022",
+  "config": "bare",
+  "repeat": 2,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 2402614251,
+  "model": "bk-rbp27-qwen2.5-14b-instruct",
+  "output": "To provide an accurate response as requested, I will need to simulate finding the exact data point based on your instructions since I don't have direct access to files or workbooks. Assuming that SKU-008022 exists in your sheet and has a corresponding region and units value:\n\n{\"region\": \"North America\", \"units\": 150}\n\nPlease replace \"North America\" with the actual region from your workbook where SKU-008022 is located, along with the correct integer for units.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-008022 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "To provide an accurate response as requested, I will need to simulate finding the exact data point based on your instructions since I don't have direct access to files or workbooks. Assuming that SKU-008022 exists in your sheet and has a corresponding region and units value:\n\n{\"region\": \"North America\", \"units\": 150}\n\nPlease replace \"North America\" with the actual region from your workbook where SKU-008022 is located, along with the correct integer for units.",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

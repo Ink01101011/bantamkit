@@ -1,0 +1,51 @@
+{
+  "task": "doc-large-out-8022",
+  "config": "reader",
+  "repeat": 0,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 842098437,
+  "model": "llama3.2:3b",
+  "output": "{\"name\": \"readSheetValues\", \"parameters\": {\"sheet\": \"stock\", \"startRow\": 0, \"values\": \"['SKU-008022']\"}}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-008022 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_u95d4hyl",
+          "name": "document_read",
+          "arguments": {
+            "document": {
+              "description": "workbook",
+              "limit": null,
+              "offset": 0,
+              "part": "sheet",
+              "type": "string"
+            },
+            "limit": 50
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "error: document_read failed: unhashable type: 'dict'. fix the arguments and retry.",
+      "tool_calls": [],
+      "tool_call_id": "call_u95d4hyl"
+    },
+    {
+      "role": "assistant",
+      "content": "{\"name\": \"readSheetValues\", \"parameters\": {\"sheet\": \"stock\", \"startRow\": 0, \"values\": \"['SKU-008022']\"}}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}
