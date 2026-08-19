@@ -615,14 +615,24 @@ SMALL_CORPUS = {
 }
 
 
+# The units cell each corpus's `expected_units` address resolves to, so a task built here
+# scores the answer ITS OWN corpus holds. Before `check_expected_against_corpus` existed this
+# helper hard-coded `["7508"]` — the LARGE corpus's answer — for every entry, so
+# `test_clause_3_one_constant_keeps_the_small_corpus_whole` shipped `inventory-small.xlsx` and
+# scored a literal that document does not contain anywhere. Nothing went red, because that
+# test reads the paste and discards the result; the check found it on its first run.
+CORPUS_UNITS = {"inventory.xlsx": "7508", "inventory-small.xlsx": "7726"}
+
+
 def paste_task(entry=None, name="doc-lookup"):
+    entry = entry or OVER_WINDOW
     return {
         "name": name,
         "family": "document-read",
         "prompt": "What is the units value for SKU-004137?",
         "tools": [],
-        "document_setup": [entry or OVER_WINDOW],
-        "scoring": {"kind": "contains", "expected": ["7508"]},
+        "document_setup": [entry],
+        "scoring": {"kind": "contains", "expected": [CORPUS_UNITS[entry["path"]]]},
     }
 
 
