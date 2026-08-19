@@ -44,6 +44,8 @@ REQUIRED_KEYS = (
     "tool_failed",
     "tool_arguments",
     "tool_arguments_none",
+    "tool_argument_types",
+    "tool_argument_type",
 )
 
 
@@ -361,3 +363,29 @@ def tool_arguments(tool: str, accepts: list[str]) -> str:
     if not accepts:
         return contract["tool_arguments_none"].format(tool=tool)
     return contract["tool_arguments"].format(tool=tool, accepts=", ".join(accepts))
+
+
+def tool_argument_types(tool: str, problems: list[tuple[str, str, str]]) -> str:
+    """A DECLARED argument arrived with a type its schema does not declare.
+
+    `tool_arguments` above is about a name the tool does not have; this is about a name it
+    does have holding a value it cannot use. The distinction is the whole of `RB-P86`:
+    Amendment 1 stopped an UNDECLARED key from crashing a handler, and nothing stopped a
+    declared key of the wrong type, so `llama3.2:3b` reached `docs.get(name)` with a dict and
+    the model was handed `unhashable type: 'dict'` — CPython's words about a hash table, on
+    13 of 432 graded runs. Re-derived from the committed transcripts: 0 of the 13 passed and
+    11 of the 13 issued no further tool call of any kind, answering instead with invented
+    tool-call JSON. A sentence naming the argument is something the next turn can correct.
+
+    `problems` is `(argument, declared type, sent type)`, and every one of the three is data
+    off the schema and the call rather than a sentence: the wording is the asset's, and the
+    item is a SEPARATE contract string so that a call with three wrong arguments is one
+    sentence naming three, not three sentences or a count the model cannot act on.
+    """
+    contract = load_contract()
+    item = contract["tool_argument_type"]
+    rendered = "; ".join(
+        item.format(argument=argument, expected=expected, actual=actual)
+        for argument, expected, actual in problems
+    )
+    return contract["tool_argument_types"].format(tool=tool, problems=rendered)

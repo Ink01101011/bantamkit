@@ -856,3 +856,77 @@ def test_document_list_answers_the_call_the_4b_actually_makes(tmp_path):
     assert observation.startswith('inventory.xlsx (xlsx) part 0 "stock": 12001 rows')
     assert "error:" not in observation
     assert "<locals>" not in observation
+
+
+# ---- the argument the 3b actually sends (RB-P86, eval.md §V.8) ---------------------------
+
+TRANSCRIPTS_3B = REPO / "docs/eval-data/2026-08-20-document-read-transcripts-3b"
+
+
+def rbp86_payloads():
+    """The `document_read` calls that produced RB-P86's 13 observations, out of the committed
+    transcripts at `2749b70`. Read rather than transcribed: a paraphrase of the pre-fix input
+    is not a BEFORE, and a hand-copied dict would stop being the 3b's the moment it was typed.
+    """
+    found = []
+    for path in sorted(TRANSCRIPTS_3B.glob("reader--*.json")):
+        messages = json.loads(path.read_text())["messages"]
+        for index, message in enumerate(messages):
+            content = message.get("content")
+            if not (isinstance(content, str) and "unhashable type" in content):
+                continue
+            for earlier in messages[:index]:
+                for tc in earlier.get("tool_calls") or []:
+                    if tc["id"] == message.get("tool_call_id"):
+                        found.append((path.name, tc["name"], tc["arguments"]))
+    return found
+
+
+def test_the_thirteen_dict_argument_observations_are_present_in_the_committed_transcripts():
+    """The denominator this fix is measured against, re-derived rather than quoted."""
+    payloads = rbp86_payloads()
+    assert len(payloads) == 13
+    assert {tool for _, tool, _ in payloads} == {"document_read"}
+    assert all(
+        any(isinstance(v, dict) for v in arguments.values()) for _, _, arguments in payloads
+    )
+
+
+def test_document_read_answers_the_thirteen_calls_the_3b_actually_made_in_its_own_words(tmp_path):
+    """RB-P86, closed forward. All 13 payloads, dispatched through a real `Agent` on the pair
+    as `evalrun` registers it -- the committed `assets/tools/document_read.json` schema and the
+    real `_document_tools` handler over a materialised 12,001-row corpus.
+
+    Before this commit every one of the 13 read
+    `error: document_read failed: unhashable type: 'dict'. fix the arguments and retry.`
+    -- CPython's sentence about a hash table, reached at `docs.get(name)`. 0 of the 13 passed
+    and 11 of the 13 issued no further tool call of any kind afterwards. What each reads now
+    names the argument, the type `document_read` declares for it, and the type that arrived.
+    """
+    from conftest import FakeClient, assistant, call  # noqa: PLC0415
+
+    from bantamkit.agent import Agent  # noqa: PLC0415
+
+    fixtures = materialise_documents(paste_task(), tmp_path, "reader")
+    tools = _document_tools(fixtures)
+    payloads = rbp86_payloads()
+    assert len(payloads) == 13
+    for name, tool, arguments in payloads:
+        client = FakeClient(
+            [assistant(tool_calls=[call(tool, arguments)]), assistant(content="x")]
+        )
+        Agent(client=client, tools=tools).run("t")
+        observation = client.calls[1]["messages"][-1].content
+        assert "unhashable type" not in observation, name
+        assert "<locals>" not in observation, name
+        assert observation.startswith("error: "), name
+        # Data off the call and off the committed schema, not the asset's phrasing: every
+        # declared argument the 3b sent as an object is named, and so is the type
+        # `assets/tools/document_read.json` declares for it. A rewording of the sentence is
+        # `test_layers.py::test_tool_argument_types_bytes`'s to catch, not this node's.
+        declared = load_tool("document_read").parameters["properties"]
+        wrong = [k for k, v in arguments.items() if k in declared and isinstance(v, dict)]
+        assert wrong, name
+        for key in wrong:
+            assert key in observation, (name, key)
+            assert declared[key]["type"] in observation, (name, key)
