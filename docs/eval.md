@@ -8013,4 +8013,242 @@ repository, and the one invocation of the U5 closure program was made **without*
 which is why its `C-1 / N-16` and `N-21` sections report UNMEASURED. **The two `node_modules`
 symlinks are untouched.** **Nothing merged, nothing pushed, no `git tag` in any form.**
 
+#### U (2026-08-19) — two builds of one instrument under one name, and the half of the finding that `RB-P45`'s fix closed before this section was written
+
+`eed8462` landed `RB-P45`'s attack, in a shape `RB-P45` did not ask for. This section files
+what the prep probe found underneath it, amends `RB-P45` — once for a reframing that was
+wrong and once for a prescription that was superseded — and amends `RB-P75` for a `Command.`
+block that stopped reproducing at that same commit. **Every figure below was re-derived by
+this unit at `eed8462`, and the ones handed to it that failed to reproduce are recorded as
+findings rather than smoothed.** Nothing was installed and no `pip` was run; `~/.claude.json`,
+`.mcp.json` and `~/.local/share/bantamkit/` were not modified; no live model call, no
+`git tag`.
+
+**Numbering, read at `eed8462` and carried from nowhere.** `RB-P74` is the reason the pattern
+is digit-unbounded and the distinct count is printed beside the maximum, and `RB-P75` is the
+reason it is read at a SHA rather than taken from a brief:
+
+    grep -oE 'RB-P[0-9]+' docs/eval.md | sort -u | wc -l           ->  83 distinct
+    ... | sed 's/RB-P//' | sort -nu | tail -1                      ->  ceiling 83
+    ... the same sorted list diffed against `seq 1 83`             ->  no gaps
+    grep -rhoE 'RB-P[0-9]+' over the whole tree | sort -nu | tail  ->  same ceiling, 83
+
+83 distinct, ceiling `RB-P83`, no gaps — so the next free number is **`RB-P84`**, and this
+section mints `RB-P84` and `RB-P85`. The brief this unit was handed named neither; it said to
+read the register, which is the only instruction about a number this program has learned to
+trust.
+
+- **`RB-P84` — the same instrument name resolves to two different builds, both are spawned,
+  and the advertised surface cannot tell them apart.** `bantamkit` is registered twice under
+  one name: user scope (`~/.claude.json` → `/Users/kktest/.local/share/bantamkit/venv/bin/`
+  `bantamkit-mcp`, a wheel install frozen at `0.13.0`, dist-info written 2026-08-10 15:50) and
+  project scope (`<repo>/.mcp.json`, **tracked in git**, 112 bytes, 2026-08-10 15:47, relative
+  command `.venv/bin/bantamkit-mcp`, an editable install whose `.pth` points at
+  `runtime-py/src` and therefore serves live HEAD source). **Both are spawned.** This session's
+  client (PID 90613, cwd = this repo) has had PIDs 90986 and 90987 alive since 2026-08-17
+  16:29:59, and this unit's own process ancestry walks to that same 90613. The two builds
+  expose a **byte-identical** protocol surface: a `tools/list` of six tools with descriptions
+  and complete `inputSchema`s, plus the `instructions` block, serialize to **6864 identical
+  bytes** on both, `diff` empty, measured over two real stdio `initialize` handshakes at this
+  HEAD against throwaway stores. The one asset that differs, `contracts/default.yaml`, is not
+  exposed by either resource template. **The only discriminating field is `serverInfo.version`,
+  and it is invisible where it is needed** — the host reads it once at `initialize` and the
+  tool-calling agent never sees it, so at the moment of a `memory_recall` there is nothing to
+  read. **The only reliable discriminator is a defect:** at `k=1` the installed build returns
+  at most one fact (`budget = k if k is not None else self.k`, in the installed tree's own
+  `memory/component.py` and not in this repository's) while HEAD floors at the store default
+  (`budget = self.k if k is None else max(k, self.k)`,
+  `runtime-py/src/bantamkit/memory/component.py:128`, the `RB-P1` k-floor fix), with the cap
+  re-checked per fact in both so layering cannot raise the total — and a live call in this project returning two facts at `k=1` is how the answering
+  build was identified, not the version field. **Which scope wins is UNESTABLISHED in general
+  and is deliberately left so:** `claude mcp list` prints the user-scope path on the resolved
+  `bantamkit:` row while itself emitting `[Conflicting scopes]` and naming both endpoints; in
+  *this* directory `.claude/settings.local.json` carries `"enabledMcpjsonServers":
+  ["bantamkit"]` and `"enableAllProjectMcpServers": true`, which explains this directory and
+  not the rule. **The loser is spawned regardless**, holds the same cwd, discovers the same
+  project store, and is one config edit from becoming the winner; three other live client
+  sessions on this machine, with cwds outside this repo
+  (`.../oba-be-juristic-ma-ms`, `.../startbiz-ui`, `.../startbiz-api`), spawned **only** the
+  user-scope `0.13.0` build, so the k-floor defect is live elsewhere right now. **Ordering
+  constraint, stated as a finding and not taken as an action:** `claude mcp remove bantamkit -s
+  project` edits a **tracked** file and, done before the user-scope venv is refreshed, hands
+  this repo's orchestration to the stale build — so both builds are refreshed first and the
+  collision resolved second, and both halves are the user's, not this unit's. **Why its own
+  number rather than an amendment to `RB-P45`: neither fix closes the other** — `eed8462` made
+  `_version()` a property of the checkout and the two builds remain equally indistinguishable
+  and equally silently selected, while removing one registration would leave `_version()`
+  exactly as truthful as it already is. **Attack:** make build identity readable over the wire
+  and independent of both packaging metadata and the release cadence — a field carrying the
+  resolved `assets_root()` and the package `__file__`, or the commit — so a caller can assert
+  *which* build answered instead of inferring it from a bug; and treat a duplicate
+  `mcpServers` name as a hard error at startup rather than a listing footnote. **Command.**
+  `git ls-files .mcp.json` → tracked; `ps -eo pid,ppid,lstart,time,command | grep
+  bantamkit-mcp` → five servers, two of them children of 90613; `lsof -a -p <ppid> -d cwd` per
+  client; `claude mcp list` → `[Conflicting scopes]`; two stdio handshakes with
+  `--store <throwaway>`, `tools` + `instructions` dumped key-sorted and `diff`ed → empty,
+  `wc -c` → 6864 each. (Layer: configuration and process topology — **not** `mcpserver.py`,
+  which is `RB-P45`'s layer and is why these are two entries.)
+
+- **`RB-P85` — the wheel target force-includes a path outside the project root, so the sdist
+  builds, is silently short of the asset pack, and the wheel built from it cannot be built at
+  all.** `runtime-py/pyproject.toml:28-29` carries `[tool.hatch.build.targets.wheel.force-`
+  `include]` → `"../assets" = "bantamkit/assets"`. `../assets` is outside the sdist root, so
+  the two halves of `python -m build` disagree: `build_sdist` **succeeds** and produces
+  `bantamkit-0.25.0.tar.gz` whose only `assets` entry is `src/bantamkit/assets.py` — the
+  module, not the pack — and `build_wheel` **from the unpacked sdist** then dies with
+  `FileNotFoundError: Forced include not found: <extract-parent>/assets`, the forced path
+  having resolved out of the extracted tree entirely. A wheel built directly from the checkout
+  is unaffected (`bantamkit-0.25.0-py3-none-any.whl`, built here), which is why nothing has
+  ever seen this: CI runs `pip install -e "runtime-py[dev,mcp]"`
+  (`.github/workflows/ci.yml:34`) and `docs/install.md`'s documented path is a `git+ssh` /
+  `git+https` install that clones the whole repository, so `../assets` exists and the wheel is
+  built in place. **Pre-existing and untouched by `eed8462`:** `git blame` puts both lines at
+  `487221b8`, 2026-08-06, and `git show a4993d0:runtime-py/pyproject.toml` carries them
+  verbatim. **It earns a number rather than a footnote because the failure is silent in the
+  one direction that matters — the sdist is *produced*, not refused, and an artifact that
+  builds clean while missing the pack the library documents as bundled is the same shape as
+  every other entry in this register that exists because a gate could not see its own
+  defect.** **NOT FIXED HERE, deliberately:** it is a packaging change with no bar behind it,
+  and the bar is the interesting part — a node that asserts the pack is present in the built
+  artifact, not one that asserts a TOML key. **Attack:** either give the sdist a root that
+  contains `assets/` or stop force-including across it, and pin whichever with a check that
+  reads the built artifact. **Command.** `hatchling.build.build_sdist` from `runtime-py/`
+  → `bantamkit-0.25.0.tar.gz`, `tar tzf … | grep assets` → `src/bantamkit/assets.py` only;
+  `hatchling.build.build_wheel` from the extracted sdist root → `FileNotFoundError: Forced
+  include not found: …/assets`; the same call from `runtime-py/` →
+  `bantamkit-0.25.0-py3-none-any.whl`; `git blame -L27,30 -- runtime-py/pyproject.toml` →
+  `487221b8` 2026-08-06. (Layer: packaging.)
+
+##### Amendment 1 to `RB-P45` — 2026-08-19: the misattribution was the brief's, the entry was right, and the prescribed attack was superseded by a stronger one
+
+**`RB-P45` is a record and is not edited.** Three corrections, appended.
+
+**1. The reframing that blamed the user-scope install was wrong, and the entry as filed was
+right.** A brief escalated `RB-P45` to *"the server this program orchestrates through is a
+frozen 9-day-old install, twelve minor versions behind main"* and read the `0.3.0` string as
+what that install advertises. It does not. `RB-P45` says *"Measured in this repo's venv"* and
+reports `bantamkit-0.3.0.dist-info`, and **both reproduce exactly**: the repo `.venv`'s
+dist-info was written 2026-08-08 19:44 and never rewritten, while its `.pth` makes the code
+track HEAD forever, so it ran today's source and reported a version from eleven days earlier.
+The user-scope install truthfully reported its own `0.13.0` throughout. **The correction is
+credited to the measurement and not to an argument** — it was produced by running both
+interpreters and both handshakes, and the same brief that carried the escalation also carried
+`grep -rn "0\.3\.0" runtime-py/ tools/` → no hits, which had already refuted the hardcoded-
+string story it was resting on.
+
+**2. Two figures in the entry have moved and are left standing.** It reads *"nineteen minor
+releases"* and *"against `version = "0.22.0"`"*, both correct at the commit it was written at;
+the tree declared `0.25.0` by `eed8462` and now declares it in a different file. Neither is
+edited, and neither is load-bearing for the finding.
+
+**3. The attack `RB-P45` prescribed was deliberately not built, and what replaced it is
+strictly stronger.** The entry asks for *"a node that reads the version out of
+`runtime-py/pyproject.toml` and requires `_version()` to equal it, skipped only when the
+package is genuinely not installed,"* on the ground that *"that goes red on a stale install."*
+**That is exactly why it was not built:** such a node's value is a function of when someone
+last ran `pip`, not of the commit — the class this repository named for itself after two
+parties quoted different correct pytest totals, and a gate whose colour a `pip install`
+can flip is not a repo-content check. `eed8462` built three nodes whose every equality has
+both sides read out of the tree, and the load-bearing one monkeypatches
+`importlib.metadata.version` to answer `9.9.9-from-dist-info` and requires `_version()` to be
+unmoved. **That node stays red under the regression on a fresh install too** — the case a
+fresh-install CI structurally could not observe, and the case the prescribed node cannot
+reach, because on a fresh install the prescribed node is green by construction. **An entry's
+own proposed attack being superseded is recorded as such rather than quietly replaced**; the
+supersession is on the mechanism, not on the finding, and `RB-P45`'s finding is closed by
+`eed8462` in full.
+
+**4. What `eed8462` closed, measured here rather than carried.** With the stale dist-info left
+in place and no `pip` run: `.venv` dist-info is still `bantamkit-0.3.0.dist-info` and
+`importlib.metadata.version("bantamkit")` still answers `0.3.0`, while
+`bantamkit.__version__` and `mcpserver._version()` both answer `0.25.0`, and a real stdio
+handshake against `.venv/bin/bantamkit-mcp` now returns
+`{"name": "bantamkit", "version": "0.25.0"}`.
+
+**5. One figure this section was handed that no longer reproduces, and it is `RB-P84`'s, not
+`RB-P45`'s.** The finding filed as `RB-P84` was measured at `ba7a38b` with a fourth clause:
+that the one discriminating field was **inverted**, the `0.13.0`-era build truthfully saying
+`0.13.0` while the `0.25.0` build said `0.3.0`, ranking the newer build twelve minor versions
+older. **That clause is dead at `eed8462`, killed by the fix in the entry above it**, and the
+handshake measured for `RB-P84` is the evidence: `0.13.0` against `0.25.0`, correctly ordered.
+It is not written into `RB-P84` as live, and two things are worth saying about its death
+rather than dropping it. **First, a source fix does not restart a running server** — PID 90987
+loaded `mcpserver` at 2026-08-17 16:29:59, and `eed8462` was committed 2026-08-19 23:27:51, so
+that process serves the old `_version()` until the host restarts; this is derived from the two
+timestamps and Python's import-time module loading, and is an inference, not a measurement.
+**Second, the field is now truthful and still not a build identifier**, which is the durable
+half: refresh the user-scope venv from HEAD and both builds read `0.25.0` while one is a
+frozen wheel and the other an editable install that will drift forward with every commit until
+the next bump, still reading `0.25.0`. **A declaration that moves only on release bumps cannot
+identify a build**, which is why `RB-P84`'s attack asks for provenance and not for a version.
+
+##### Amendment 1 to `RB-P75` — 2026-08-19: the `Command.` block no longer reproduces, and the finding it supports is untouched
+
+**`docs/eval.md:6546`.** `RB-P75`'s `Command.` block records
+
+      grep '^version' runtime-py/pyproject.toml                    ->  version = "0.25.0"
+
+and at this HEAD that command **returns nothing and exits 1**: `eed8462` replaced the static
+key with `dynamic = ["version"]` plus a `[tool.hatch.version]` source. **A verbatim command
+block is a RECORD** — `docs/record-vs-pointer.md` §1 makes a `Command.` line a record by
+default, since a provenance command is on none of P1-P4 — so this is an amendment and the
+block above is not rewritten. **This is the third time a defect of `RB-P74`'s class — a
+recorded derivation that does not reproduce — has been found inside the document that names
+the class**, after the two provenance commands inside `RB-P72` corrected by amendment in
+section S. The first line of the same block, `git show main:runtime-py/pyproject.toml | grep
+'^version'` → `version = "0.24.0"`, still reproduces and is untouched; `main` has not moved.
+
+**What does *not* break, and it is the whole point of the amendment.** `RB-P75`'s finding is
+*an allocation register with two live writers and no allocation rule collides silently*, and
+it names `pyproject.toml`'s `version` as one such register. **A dynamic version does not
+refute that.** The register still exists, still has exactly two live writers, and still has no
+allocation rule — it has **moved** to `runtime-py/src/bantamkit/__init__.py`, where two
+branches both writing `__version__ = "0.26.0"` would merge as cleanly and as silently as two
+branches both writing `version = "0.26.0"` did. `RB-P75`'s attack — *"`pyproject.toml` has no
+equivalent and should carry one"* — is therefore not satisfied by `eed8462`, only relocated,
+and the sentence that carries it should now be read against the new file. `RB-P84` is the
+same shape one layer out: a declaration that only moves on a release bump, doing duty as an
+identifier.
+
+##### Gates at this commit
+
+Read the commit column literally. The suite, both ruff surfaces and `amendguard` were measured
+at `1dafef6` with this section's `docs/eval.md` edit present in the working tree; no gate below
+reads `docs/eval.md`, and `test_field_programs.py` parametrises over `docs/eval-data/` only,
+which adds no file here, so the totals cannot move on this commit. The suite total is also
+read at `eed8462`, where it reproduces the figure W1 recorded.
+
+<!-- provenance: value=1013 passed, 2 xfailed; commit=eed8462 and again at 1dafef6 plus this commit's working tree; command=.venv/bin/python -m pytest runtime-py/tests -q -->
+<!-- provenance: value=All checks passed! on runtime-py and on docs/eval-data; commit=eed8462 and again at 1dafef6 plus this commit's working tree; command=.venv/bin/ruff check runtime-py && .venv/bin/ruff check docs/eval-data -->
+<!-- provenance: value=SUMMARY rows=0 ok=0 red=0 broken=0 merges=0 unmeasured=1, rc 3, over a4993d0..HEAD before this section existed; commit=1dafef6; command=.venv/bin/python tools/amendguard/amendguard.py check . a4993d0..HEAD tools/amendguard/ledger.json -->
+
+| gate | value | commit | command |
+|---|---|---|---|
+| suite | **1013 passed, 2 xfailed** | `eed8462`, re-read at `1dafef6` + this tree | `.venv/bin/python -m pytest runtime-py/tests -q` |
+| ruff, `runtime-py` | **All checks passed!** | `eed8462`, re-read at `1dafef6` + this tree | `.venv/bin/ruff check runtime-py` |
+| ruff, `docs/eval-data` | **All checks passed!** | `eed8462`, re-read at `1dafef6` + this tree | `.venv/bin/ruff check docs/eval-data` |
+| amendguard | **`unmeasured=1`, rc 3** | `a4993d0..1dafef6` | `.venv/bin/python tools/amendguard/amendguard.py check . a4993d0..HEAD tools/amendguard/ledger.json` |
+
+**The `unmeasured=1` reading is evidence, not an absence of one.** Over `a4993d0..1dafef6` the
+ledger's amend-only patterns match no changed path, because the only documentation commit in
+that range is the `docs/install.md` correction — and `docs/install.md` is not in the ledger.
+That is the machine-readable half of this section's classification of that file: the
+record-vs-pointer rule does not judge it, and `amendguard` says so rather than passing quietly
+(`RB-P51`). The same command over the range that includes **this** commit reads one row against
+`docs/eval.md`, classified `insert` — this section is spliced above the file's closing
+line rather than after it — with 237 lines added and none deleted.
+
+##### Fences held by this section
+
+**One layer, one file: `docs/eval.md`** — no `.py`, no `.jsonl`, nothing under `runtime-py/`,
+and the `docs/install.md` correction is a separate commit touching that one path and nothing
+else. **`RB-P45`, `RB-P74`, `RB-P75` and every entry of sections P through T are untouched**;
+all four corrections above are appended. **Nothing under `~/.local/share/bantamkit/` was
+written**, both handshakes ran against throwaway stores in a scratch directory, and no
+`mcp__bantamkit__*` tool was called by this unit. **`~/.claude.json` and `.mcp.json` are
+unmodified**, and the scope collision is **not** resolved here — that is the user's action and
+it has an ordering constraint attached (`RB-P84`). **No `pip install` of any kind**, so the
+stale dist-info that makes `RB-P45` visible is still in place and every gate above was measured
+against it. **Nothing merged, nothing pushed, no `git tag` in any form.**
+
 Back to the [README](../README.md).
