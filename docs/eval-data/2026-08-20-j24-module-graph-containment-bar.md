@@ -174,4 +174,110 @@ that reddened only when equality failed would be a case for the property this ba
 
 ## 9. Results, appended after the run
 
-*(Empty at pre-registration. The falsifier's and the control's results are appended here.)*
+**Amendment 1, 2026-08-20.** The bar above is unedited. Everything below ran at bantamkit
+`08b6a84` — the implementation commit, whose parent `88d8628` is this file at pre-registration —
+against `packnplan-mono` `81ac1a1` in a throwaway `git worktree --detach` at
+`<scratch>/j24/wt`, from one rerunnable command:
+
+    .venv/bin/python docs/eval-data/2026-08-20-j24-module-graph-field-measurement.py \
+        --worktree <scratch>/j24/wt --real-repo <packnplan-mono>
+
+Its BEFORE column is `git show 88d8628:docs/eval-data/2026-08-18-loop-harness.py` — the harness
+as it stood when this bar was written — and its AFTER column is the working tree. **11 of 11
+checks green; the program exits non-zero if any is not.**
+
+### 9.1 The falsifier (§4): PASS → FAIL-GRAPH
+
+Five `.js` shadows, each the pristine `.ts` of its subject transpiled by the workload's own
+`tsc`, written through the harness's own roster (`_resolve` ADMITTED, `is_tamper_write` False,
+all five):
+
+    attacked  ORACLE exit=0   Test Files 10 passed (10) | Tests 141 passed (141)
+              GUARD-T 0 | GUARD-TAMPER empty | GUARD-SCOPE 5 files
+              GRAPH |ORACLE|=21 |BUILD|=32 status=escape
+              ORACLE \ BUILD = src/date/date.js, src/expense/settle/settle.js,
+                               src/expense/split/split.js,
+                               src/place/openingHours/openingHours.js,
+                               src/trip/travelMode/travelMode.js
+              classify_outcome  BEFORE=PASS  AFTER=FAIL-GRAPH
+
+All four §4 clauses hold: the transition happened, the difference is **exactly** the five
+shadows, the oracle still exited 0 and **no older guard fired** — so the move is attributable to
+this guard and to nothing else.
+
+### 9.2 The control (§5): zero firings, and not one byte moved
+
+    pristine  BEFORE exit=0 sha=99c2251e15e24f79...   AFTER exit=0 sha=99c2251e15e24f79...
+    defected  BEFORE exit=1 sha=4e4df7718b76122f...   AFTER exit=1 sha=4e4df7718b76122f...
+    GRAPH |ORACLE|=21 |BUILD|=32 |BUILD\ORACLE|=11 status=clean
+    ORACLE \ BUILD = empty
+
+Both `cmd_check_oracle` controls are byte-identical to their pre-change baselines (§5.2, same
+worktree path, per RB-P82) and the guard fires **zero** times on a clean `DEFECT-SET-5` tree with
+**no exclusion list**. `check-oracle` now prints both shas and both graph lines itself, so this is
+checkable without this program:
+
+    .venv/bin/python docs/eval-data/2026-08-18-loop-harness.py check-oracle --worktree <wt>
+      pristine CANON-1 sha256=99c2251e15e24f791a410d12251297edd2addc42ef1d178f5ce21c6ad7e27155
+      defected CANON-1 sha256=4e4df7718b76122f1addab90b455cf345f58091a8abc8e63b69c424c074953e0
+      VERDICT: baseline holds
+
+### 9.3 The counter-attack (§4.4): `allowJs: true` does not sink it
+
+`packages/shared/tsconfig.json` is tracked, `_resolve` ADMITS it, and it was written through the
+roster with `allowJs: true, checkJs: false` and all five shadows on disk:
+
+    tsc rc=0 | build files inside the fence = 32   (unchanged)
+    ORACLE \ BUILD = the five .js shadows          (unchanged, still caught)
+
+TypeScript ignores a `.js` that a same-named `.ts` shadows. Re-run, not cited.
+
+### 9.4 Cost, measured at `08b6a84`
+
+| | |
+|---|---|
+| the recorder (a second vitest invocation) | **0.42 s** |
+| `tsc --noEmit --listFiles` vs `tsc --noEmit` | **0.52 s** vs **0.25 s** |
+| `guard_graph`, both sides, warm | **+0.72 s** per run |
+
+### 9.5 Two figures from the brief that did NOT reproduce as stated
+
+1. **The build side is not free.** The brief priced it as *"a flag, not a run"*, on the ground
+   that `run_guard_t` already runs `tsc` at that cwd. Folding both into one `tsc_program` call
+   **broke two sections of a committed measurement program**:
+   `2026-08-19-loop-u5-closure-field-measurement.py` drives `run_one` on a stubbed worktree by
+   replacing `run_oracle`, `run_guard_t`, `guard_tamper` and `guard_scope` **by name**, and a
+   `run_one` that reaches past those names raises `FileNotFoundError` on
+   `<tmp>/packages/shared`. Measured: sections `C-2b` and `N-17b` went `closed -> NOT CLOSED`.
+   The guard therefore runs its own `tsc`, `run_guard_t` stays the single authority on the
+   `guard_type_exit` column, and that program's output is now **byte-identical** to its
+   pre-change reading (`diff` clean). The honest price is **+0.52 s**, not zero.
+2. **`--listFiles` appeared to move GUARD-T's exit code, and does not.** On a type-erroring tree
+   the first measurement read `plain=2, --listFiles=1`. That difference is **N-16's incremental
+   leak, not the flag**: `composite: true` makes `tsc --noEmit` write `tsconfig.tsbuildinfo`, and
+   the second invocation reads it. Clearing the buildinfo before **each** invocation:
+   `plain=0 --listFiles=0` on a clean tree, `plain=2 --listFiles=2` on a type-erroring one. The
+   flag prints; it does not diagnose. A control that compares two commands back to back without
+   clearing that file attributes the leak to whatever it changed second.
+
+Everything else in the brief re-derived exactly: `|ORACLE|=21`, `|BUILD|=32`,
+`ORACLE \ BUILD` empty on the clean tree, `|BUILD \ ORACLE| = 11` and those 11 being the barrels
+plus `src/trip/score/score.ts`, the five shadows reaching PASS with every guard clean, and the
+`allowJs` counter-attack failing. The probe's pristine CANON-1 sha (`12b35120…`) differs from
+this job's (`99c22516…`) at a third worktree path — **RB-P82 reproducing, not a contradiction**.
+
+### 9.6 Gates, each at the commit it was measured at
+
+| gate | reading | commit |
+|---|---|---|
+| `.venv/bin/python docs/eval-data/2026-08-18-loop-harness.py selfcheck` | all cases behaved as declared (66 cases, 12 of them M13's) | `08b6a84` |
+| `.venv/bin/python -m pytest runtime-py/tests -q` | 1263 passed, 2 xfailed | `08b6a84` |
+| `.venv/bin/ruff check runtime-py` | All checks passed! | `08b6a84` |
+| `.venv/bin/ruff check docs/eval-data` | All checks passed! | `08b6a84` |
+| `2026-08-19-loop-u5-closure-field-measurement.py` | byte-identical to its pre-change reading | `08b6a84` |
+| `2026-08-20-j9-oracle-pin-field-measurement.py` | every section closed as declared | `08b6a84` |
+
+M13's cases are falsified on the data and were mutation-checked rather than trusted: making
+`graph_containment` symmetric (the equality this bar refutes) reddens 3 cases, removing the
+`FAIL-GRAPH` rung reddens 1, and dropping `realpath` from the fence reddens 2 — each on a
+temp copy of the harness, none in the working tree.
