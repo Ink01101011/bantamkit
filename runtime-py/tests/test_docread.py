@@ -804,3 +804,283 @@ def test_page_rejects_impossible_windows(paged, offset, limit):
 def test_offset_past_the_end_is_empty_and_final(paged):
     result = page(paged, "data", offset=500)
     assert result.rows == () and result.next_offset is None
+
+
+# ------------------------------------------------------- what the reader admits it cannot see
+#
+# J25-D2. `step test.xlsx` on the user's real corpus is 18.62 MB and the reader reported
+# `4 parts, 28 rows, 27 bytes` with no mention of the 56 embedded images that ARE the file,
+# nor that all 28 of those rows render as empty lines (the 27 bytes are 27 newlines). Every
+# test below builds a file with a known, wrong-if-dropped count and asserts the count is
+# stated. A silent reader passes none of them.
+
+DRAWING_RELS = (
+    '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/'
+    "2006/relationships\">{}</Relationships>"
+)
+
+
+def escape_attr(text):
+    for char, entity in (("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"), ('"', "&quot;")):
+        text = text.replace(char, entity)
+    return text
+
+
+def media_pack(sheet_media):
+    """`{part path: [image name, ...]}` -> the extra members that anchor them to their sheets.
+
+    Built through the real two-hop graph a worksheet uses — sheet rels -> drawing, drawing
+    rels -> `xl/media/*` — because that is the graph the reader walks. A fixture that put the
+    images under `xl/media/` and skipped the rels would pass a reader that only counts members
+    and would not detect one that mis-attributes a part.
+    """
+    extra = {}
+    for i, (target, images) in enumerate(sorted(sheet_media.items()), start=1):
+        drawing = f"drawing{i}.xml"
+        extra[f"xl/worksheets/_rels/{target.rsplit('/', 1)[-1]}.rels"] = DRAWING_RELS.format(
+            f'<Relationship Id="rIdD" Type="http://schemas.openxmlformats.org/officeDocument/'
+            f'2006/relationships/drawing" Target="../drawings/{drawing}"/>'
+        )
+        extra[f"xl/drawings/{drawing}"] = "<xdr/>"
+        extra[f"xl/drawings/_rels/{drawing}.rels"] = DRAWING_RELS.format(
+            "".join(
+                f'<Relationship Id="rIdI{j}" Type="http://schemas.openxmlformats.org/'
+                f'officeDocument/2006/relationships/image" Target="../media/{name}"/>'
+                for j, name in enumerate(images)
+            )
+        )
+        for name in images:
+            extra.setdefault(f"xl/media/{name}", "x" * 100)
+    return extra
+
+
+def styles(codes, xfs):
+    """`xl/styles.xml` with custom `numFmt` codes from id 164 up and the given `cellXfs`.
+
+    The escaping is load-bearing, not tidiness: a real accounting format code contains `"`,
+    and an unescaped one closes the attribute early, so `xl/styles.xml` stops being XML and
+    the reader reports no number format at all. That fixture passed the false-positive test
+    for the wrong reason until a mutation run caught it (J25-D2).
+    """
+    fmts = "".join(
+        f'<numFmt numFmtId="{164 + i}" formatCode="{escape_attr(c)}"/>'
+        for i, c in enumerate(codes)
+    )
+    cell_xfs = "".join(f'<xf numFmtId="{i}"/>' for i in xfs)
+    return (
+        f"<styleSheet {SHEET_NS}><numFmts>{fmts}</numFmts>"
+        f'<cellXfs count="{len(xfs)}">{cell_xfs}</cellXfs></styleSheet>'
+    )
+
+
+def only(part_or_doc, subject):
+    return [o for o in part_or_doc.omissions if o.subject == subject]
+
+
+def test_a_document_that_omits_nothing_says_nothing(tmp_path):
+    """The J10 fixtures are exactly this shape, which is why their manifests cannot move."""
+    path = write_xlsx(
+        tmp_path / "clean.xlsx", [("data", "worksheets/sheet1.xml", row(inline_cell("A1", "x")))]
+    )
+    doc = extract_xlsx(path)
+    assert doc.omissions == ()
+    assert doc.parts[0].omissions == ()
+
+
+def test_embedded_images_are_counted_at_the_package_and_at_the_part(tmp_path):
+    """The real defect: 18.6 MB of screenshots reported as `4 parts, 28 rows`."""
+    path = write_xlsx(
+        tmp_path / "shots.xlsx",
+        [
+            ("empty", "worksheets/sheet1.xml", ""),
+            ("data", "worksheets/sheet2.xml", row(inline_cell("A1", "x"))),
+        ],
+        extra=media_pack(
+            {
+                "xl/worksheets/sheet1.xml": ["a.png", "b.png", "c.png"],
+                "xl/worksheets/sheet2.xml": ["d.png"],
+            }
+        ),
+    )
+    doc = extract_xlsx(path)
+    assert [(o.count, o.size, o.what) for o in only(doc, docread.OMIT_MEDIA)] == [(4, 400, "png")]
+    assert [o.count for o in only(doc.parts[0], docread.OMIT_MEDIA)] == [3]
+    assert [o.count for o in only(doc.parts[1], docread.OMIT_MEDIA)] == [1]
+    # The sheet with no rows at all is the one carrying three of the four images: "0 rows"
+    # and "nothing here" are exactly the two things this disclosure separates.
+    assert doc.parts[0].row_count == 0
+
+
+def test_an_image_on_two_sheets_counts_once_in_the_package_and_once_in_each_part(tmp_path):
+    """Stated in the module docstring, so it is pinned: part counts need not sum to the total."""
+    path = write_xlsx(
+        tmp_path / "shared.xlsx",
+        [("one", "worksheets/sheet1.xml", ""), ("two", "worksheets/sheet2.xml", "")],
+        extra=media_pack(
+            {"xl/worksheets/sheet1.xml": ["same.png"], "xl/worksheets/sheet2.xml": ["same.png"]}
+        ),
+    )
+    doc = extract_xlsx(path)
+    assert only(doc, docread.OMIT_MEDIA)[0].count == 1
+    assert only(doc.parts[0], docread.OMIT_MEDIA)[0].count == 1
+    assert only(doc.parts[1], docread.OMIT_MEDIA)[0].count == 1
+
+
+def test_a_package_media_count_survives_an_unreadable_relationship_graph(tmp_path):
+    """Attribution may fail; the package total may not. It comes from the member list."""
+    extra = media_pack({"xl/worksheets/sheet1.xml": ["a.png"]})
+    extra["xl/worksheets/_rels/sheet1.xml.rels"] = "<not xml"
+    path = write_xlsx(
+        tmp_path / "broken.xlsx", [("data", "worksheets/sheet1.xml", "")], extra=extra
+    )
+    doc = extract_xlsx(path)
+    assert only(doc, docread.OMIT_MEDIA)[0].count == 1
+    assert only(doc.parts[0], docread.OMIT_MEDIA) == []
+
+
+def test_rows_that_render_as_empty_lines_are_counted(tmp_path):
+    """28 rows of which 28 are blank is what `step test.xlsx` actually holds."""
+    body = row(index=1) + row(inline_cell("A2", "x"), index=2) + row(index=3)
+    doc = extract_xlsx(write_xlsx(tmp_path / "blank.xlsx", [("s", "worksheets/sheet1.xml", body)]))
+    part = doc.parts[0]
+    assert part.row_count == 3 and part.rows == ("", "x", "")
+    assert [o.count for o in only(part, docread.OMIT_BLANK_ROWS)] == [2]
+
+
+def test_a_date_formatted_number_is_disclosed_with_its_format_code_not_converted(tmp_path):
+    """`46235.0` stays `46235.0`. What changes is that the manifest now says WHY."""
+    path = write_xlsx(
+        tmp_path / "dates.xlsx",
+        [
+            (
+                "s",
+                "worksheets/sheet1.xml",
+                row(
+                    inline_cell("A1", "Month / Year:"),
+                    '<c r="C1" s="1"><v>46235.0</v></c>',
+                    index=1,
+                ),
+            )
+        ],
+        extra={"xl/styles.xml": styles([r"[$-409]mmmm\-yy"], [0, 164])},
+    )
+    doc = extract_xlsx(path)
+    assert doc.parts[0].rows == ("Month / Year:\t\t46235.0",)  # verbatim, unconverted
+    found = only(doc.parts[0], docread.OMIT_NUMBER_FORMAT)
+    assert [(o.count, o.where, o.what) for o in found] == [(1, ("C",), r"[$-409]mmmm\-yy")]
+
+
+def test_a_builtin_date_format_is_named_by_the_code_the_standard_fixes(tmp_path):
+    """numFmtId 20 carries no `formatCode` in the file. ECMA-376 fixes it as `h:mm`."""
+    path = write_xlsx(
+        tmp_path / "time.xlsx",
+        [("s", "worksheets/sheet1.xml", row('<c r="A1" s="1"><v>0.375</v></c>'))],
+        extra={"xl/styles.xml": styles([], [0, 20])},
+    )
+    found = only(extract_xlsx(path).parts[0], docread.OMIT_NUMBER_FORMAT)
+    assert [(o.count, o.where, o.what) for o in found] == [(1, ("A",), "h:mm")]
+
+
+def test_currency_and_percent_formats_are_not_reported_as_dates(tmp_path):
+    """The false positive that would make the disclosure noise. Measured code, real file."""
+    accounting = r'_("$"* #,##0.00_);_("$"* \(#,##0.00\);_("$"* "-"??_);_(@_)'
+    path = write_xlsx(
+        tmp_path / "money.xlsx",
+        [
+            (
+                "s",
+                "worksheets/sheet1.xml",
+                row(
+                    '<c r="A1" s="1"><v>1234.5</v></c>',
+                    '<c r="B1" s="2"><v>0.25</v></c>',
+                    '<c r="C1" s="3"><v>9</v></c>',
+                ),
+            )
+        ],
+        extra={
+            "xl/styles.xml": styles([accounting, "0.00%", r'#,##0.0,,\ "M"'], [0, 164, 165, 166])
+        },
+    )
+    assert only(extract_xlsx(path).parts[0], docread.OMIT_NUMBER_FORMAT) == []
+
+
+def test_a_date_format_on_a_text_cell_is_not_a_serial_number(tmp_path):
+    """Only a stored NUMBER can be a serial. A shared-string cell under a date format is not."""
+    path = write_xlsx(
+        tmp_path / "textdate.xlsx",
+        [("s", "worksheets/sheet1.xml", row('<c r="A1" s="1" t="s"><v>0</v></c>'))],
+        shared=["not a date"],
+        extra={"xl/styles.xml": styles([r"dd\-mmm\-yy"], [0, 164])},
+    )
+    doc = extract_xlsx(path)
+    assert doc.parts[0].rows == ("not a date",)
+    assert only(doc.parts[0], docread.OMIT_NUMBER_FORMAT) == []
+
+
+def test_one_format_code_reports_every_column_it_appears_in(tmp_path):
+    path = write_xlsx(
+        tmp_path / "cols.xlsx",
+        [
+            (
+                "s",
+                "worksheets/sheet1.xml",
+                row('<c r="C1" s="1"><v>0.375</v></c>', '<c r="D1" s="1"><v>0.75</v></c>')
+                + row('<c r="C2" s="1"><v>0.4</v></c>', index=2),
+            )
+        ],
+        extra={"xl/styles.xml": styles([], [0, 20])},
+    )
+    found = only(extract_xlsx(path).parts[0], docread.OMIT_NUMBER_FORMAT)
+    assert [(o.count, o.where) for o in found] == [(3, ("C", "D"))]
+
+
+def test_a_docx_states_the_images_its_paragraphs_do_not_carry(tmp_path):
+    path = tmp_path / "shots.docx"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("[Content_Types].xml", CONTENT_TYPES)
+        z.writestr("_rels/.rels", ROOT_RELS)
+        z.writestr(
+            "word/document.xml",
+            f"<w:document {WORD_NS}><w:body><w:p><w:r><w:t>hi</w:t></w:r></w:p></w:body>"
+            "</w:document>",
+        )
+        z.writestr(
+            "word/_rels/document.xml.rels",
+            DRAWING_RELS.format(
+                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/'
+                'officeDocument/2006/relationships/image" Target="media/image1.png"/>'
+            ),
+        )
+        z.writestr("word/media/image1.png", "x" * 50)
+    doc = docread.extract_docx(path)
+    assert doc.parts[0].rows == ("hi",)
+    assert [(o.count, o.size) for o in only(doc, docread.OMIT_MEDIA)] == [(1, 50)]
+    assert [o.count for o in only(doc.parts[0], docread.OMIT_MEDIA)] == [1]
+
+
+def test_an_mhtml_states_the_parts_it_did_not_render(tmp_path):
+    """MEASURED: the real `.doc` on the corpus drops 174,918 bytes of octet-stream, silently."""
+    path = tmp_path / "export.doc"
+    path.write_text(
+        "MIME-Version: 1.0\r\n"
+        'Content-Type: multipart/related; boundary="B"\r\n\r\n'
+        "--B\r\nContent-Type: text/html\r\n\r\n<html><body><p>hello</p></body></html>\r\n"
+        "--B\r\nContent-Type: application/octet-stream\r\n\r\nZZZZZ\r\n"
+        "--B\r\nContent-Type: image/png\r\n\r\nQQ\r\n"
+        "--B--\r\n"
+    )
+    doc = extract(path)
+    assert doc.kind == "mhtml" and doc.parts[0].rows == ("hello",)
+    found = only(doc, docread.OMIT_MEDIA)
+    assert [(o.count, o.what) for o in found] == [(2, "application/octet-stream, image/png")]
+
+
+def test_omission_renders_to_primitives_for_the_contract_layer():
+    omission = docread.Omission(docread.OMIT_NUMBER_FORMAT, 3, where=("C", "D"), what="h:mm")
+    assert omission.as_dict() == {
+        "subject": "number-format",
+        "count": 3,
+        "size": 0,
+        "where": ["C", "D"],
+        "what": "h:mm",
+    }

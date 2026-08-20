@@ -46,14 +46,47 @@ nothing here is reformatted: a numeric cell emits the stored lexical form of `<v
 with no `float()` round-trip and therefore no repr drift across platforms; sheets come in
 `xl/workbook.xml` declaration order resolved through `r:id`; rows come in sheet-XML order.
 
-Deliberate lossiness, stated so downstream does not have to guess:
+**Lossiness that is counted, not just documented.** J25-PREP measured this reader over the
+user's own `~/Downloads`: `step test.xlsx` is 18.62 MB and the reader reported `4 parts, 28
+rows, 27 bytes` and said nothing at all about the **56 embedded images, 18,590,162 bytes**
+that are the file's actual content, nor that 3 of its 4 sheets hold no cell whatsoever, nor
+that 26 of those 28 rows render as empty lines. Every one of those numbers was available and
+none of them was said. That is `RB-P51`'s rule with a new subject: *a check that quietly
+passes on data it cannot see is not the same as one that reports it read nothing.*
+
+So an extraction now carries `Omission` records — `Document.omissions` for the package,
+`Part.omissions` for one sheet — and each is a **count** with the fact behind it, never an
+adjective. They are deliberately not sentences: `contract.document_manifest` renders them,
+this layer only counts. `Omission.subject` is one of the `OMIT_*` tokens below, and a renderer
+that meets a token it does not know must still print the count rather than drop it.
+
+Deliberate lossiness, stated so downstream does not have to guess, and — where a count exists
+— reported as an `Omission` rather than left to the docstring:
 
 - **Number formats are not applied.** A date cell stores a serial number and renders as that
-  serial number. Rendering it as a date would require a format engine and a locale, i.e. a
-  non-deterministic dependency on how the file was authored.
+  serial number: the timesheet's `Month / Year:` really is `46235.0` in the file. Rendering it
+  as a date would require a format engine and a locale, i.e. a non-deterministic dependency on
+  how the file was authored, and it would break the byte-determinism the rest of this module
+  rests on. **The fix is disclosure, not conversion**: `OMIT_NUMBER_FORMAT` names the columns,
+  the cell count, and the file's own `numFmt` **format code**, so a caller that wants the date
+  has everything needed to compute it and this reader has guessed nothing. Detection is by
+  format code alone (`_is_date_format`) — the only thing in the file that distinguishes a
+  serial date from a plain number — and it is confined to **date and time** formats, where the
+  rendered digits share nothing with the value a person sees. Currency, percent and accounting
+  formats are not reported: they change how digits are punctuated, not what they are.
+- **Images and embedded objects are not rendered at all**, and `OMIT_MEDIA` says how many and
+  how many bytes. The package-level count comes from the archive's own member list so it
+  cannot silently be zero; the per-part count follows the relationship graph from the sheet to
+  its drawings, and a picture shown on two sheets is counted once in the package total and
+  once in each part, so the part counts need not sum to it.
 - **Undeclared rows are not materialised.** A sheet with data in row 1 and row 10000 renders
   two rows, not ten thousand. Consequently a row offset is an offset into the *rendering*, not
   a spreadsheet row number, and `page()` reports it as such.
+- **A declared row with no cell value renders as an empty line and still counts.** That is why
+  `OMIT_BLANK_ROWS` exists and dropped `.docx` paragraphs get no such record: a blank row
+  inflates `row_count`, the manifest's own headline number, so a model reading "28 rows" is
+  being told something false about what it can page through. A dropped blank paragraph removes
+  nothing a lookup could have used and is not counted, only documented.
 - **Empty paragraphs are dropped** from `.docx`; real Word documents are full of them and they
   carry nothing a lookup can use.
 - **Tabs and newlines inside a cell or paragraph become spaces**, so one rendered row is
@@ -101,6 +134,11 @@ TEXTUTIL = "/usr/bin/textutil"
 TEXTUTIL_TIMEOUT = 60
 DEFAULT_ROW_LIMIT = 50
 
+# The subjects an `Omission` can carry. Stable tokens, because a renderer switches on them.
+OMIT_MEDIA = "media"
+OMIT_BLANK_ROWS = "blank-rows"
+OMIT_NUMBER_FORMAT = "number-format"
+
 
 class DocumentReadError(BantamError):
     """Extraction failed. The message names what was seen, never just the format's own error.
@@ -110,12 +148,47 @@ class DocumentReadError(BantamError):
 
 
 @dataclass(frozen=True)
+class Omission:
+    """Something the file holds that the rows do not carry, as a COUNT and the fact behind it.
+
+    Deliberately not a sentence — this is Layer 1, and `contract.document_manifest` is what
+    turns it into one. Every field is a measurement:
+
+    - `subject` — one of the `OMIT_*` tokens. A renderer switches on it and MUST still print
+      an unknown token's count; silently dropping an omission is the defect this class exists
+      to close.
+    - `count` — how many. Never an estimate, never a flag.
+    - `size` — bytes those things occupy in the container, `0` when that is not knowable.
+    - `where` — the column letters it applies to, in column order; `()` for the whole part.
+    - `what` — the exact machine fact: the `numFmt` format code, the MIME types. What a caller
+      needs to act on the omission itself rather than merely be told about it.
+    """
+
+    subject: str
+    count: int
+    size: int = 0
+    where: tuple[str, ...] = ()
+    what: str = ""
+
+    def as_dict(self) -> dict:
+        """The primitive form the contract layer takes. `contract.py` may not import this."""
+        return {
+            "subject": self.subject,
+            "count": self.count,
+            "size": self.size,
+            "where": list(self.where),
+            "what": self.what,
+        }
+
+
+@dataclass(frozen=True)
 class Part:
     """One addressable unit: a worksheet, or a `.docx` body. `rows` are rendered lines."""
 
     name: str
     index: int
     rows: tuple[str, ...]
+    omissions: tuple[Omission, ...] = ()
 
     @property
     def row_count(self) -> int:
@@ -131,6 +204,7 @@ class Part:
 class Document:
     kind: str
     parts: tuple[Part, ...]
+    omissions: tuple[Omission, ...] = ()
 
     @property
     def text_bytes(self) -> int:
@@ -367,6 +441,159 @@ def _read(zf: zipfile.ZipFile, name: str, path: Path) -> bytes:
         ) from None
 
 
+# ------------------------------------------- what an OOXML package holds that no row carries
+
+# Any member under a directory named `media` or `embeddings`: pictures, OLE objects, fonts
+# for an embedded chart. Taken from the archive's own member list, so the package-level count
+# cannot silently be zero even if the relationship graph below is unreadable.
+_MEDIA_MEMBER = re.compile(r"(?:^|/)(?:media|embeddings)/[^/]+$")
+
+
+def _media_index(zf: zipfile.ZipFile) -> dict[str, int]:
+    """Every embedded file in the package, mapped to its UNCOMPRESSED size."""
+    return {
+        info.filename: info.file_size
+        for info in zf.infolist()
+        if not info.is_dir() and _MEDIA_MEMBER.search(info.filename)
+    }
+
+
+def _rel_targets(zf: zipfile.ZipFile, member: str, members: set[str]) -> list[str]:
+    """The in-package parts `member`'s `.rels` points at, resolved to archive paths.
+
+    External and hyperlink targets are dropped: they are not in the package, so they are not
+    something this reader failed to render. A `.rels` that will not parse yields nothing
+    rather than raising — a readable sheet must not become unreadable because its
+    relationship graph is malformed, and the package-level count is computed from the member
+    list instead, so nothing goes unreported.
+    """
+    rels = posixpath.join(posixpath.dirname(member), "_rels", posixpath.basename(member) + ".rels")
+    if rels not in members:
+        return []
+    try:
+        tree = ET.fromstring(zf.read(rels))
+    except (ET.ParseError, KeyError, OSError):
+        return []
+    out = []
+    for rel in tree:
+        target = rel.get("Target") or ""
+        if not target or rel.get("TargetMode") == "External" or "://" in target:
+            continue
+        if target.startswith("/"):
+            out.append(target.lstrip("/"))
+        else:
+            out.append(posixpath.normpath(posixpath.join(posixpath.dirname(member), target)))
+    return out
+
+
+def _anchored_media(zf: zipfile.ZipFile, member: str, media: dict[str, int]) -> dict[str, int]:
+    """The embedded files reachable from one part, one hop and two.
+
+    Two hops is what a worksheet needs: the sheet points at `xl/drawings/drawingN.xml` and the
+    DRAWING points at `xl/media/imageN.png`. One hop alone catches a sheet's own OLE objects.
+    """
+    members = set(zf.namelist())
+    reached: dict[str, int] = {}
+    for first in _rel_targets(zf, member, members):
+        if first in media:
+            reached[first] = media[first]
+            continue
+        for second in _rel_targets(zf, first, members):
+            if second in media:
+                reached[second] = media[second]
+    return reached
+
+
+# ECMA-376 18.8.30: the built-in number formats that are dates or times. Their codes are fixed
+# by the standard, so naming them here is quoting a spec, not guessing at a file.
+_BUILTIN_DATE_FORMATS = {
+    14: "mm-dd-yy",
+    15: "d-mmm-yy",
+    16: "d-mmm",
+    17: "mmm-yy",
+    18: "h:mm AM/PM",
+    19: "h:mm:ss AM/PM",
+    20: "h:mm",
+    21: "h:mm:ss",
+    22: "m/d/yy h:mm",
+    45: "mm:ss",
+    46: "[h]:mm:ss",
+    47: "mmss.0",
+}
+# 27-36 and 50-58 are the East Asian date built-ins. The standard makes them dates but leaves
+# the code locale-dependent, so this reader names the id and refuses to invent a code for it.
+_LOCALE_DATE_IDS = frozenset(range(27, 37)) | frozenset(range(50, 59))
+# Everything in a format code that is a literal rather than a field: a bracketed section
+# (`[$-409]`, `[Red]`, `[h]`), a quoted run (`"$"`, `" kg"`), a backslash escape (`\-`).
+_FORMAT_LITERAL = re.compile(r'\[[^\]]*\]|"[^"]*"|\\.')
+
+
+def _is_date_format(code: str) -> bool:
+    """Is this `numFmt` code a date or time format?
+
+    The cell's number format is the ONLY thing in an `.xlsx` that separates a serial date from
+    a plain number — `46235` is both, and nothing else in the file disambiguates them. So this
+    is the whole of the detection, and it is why the reader discloses rather than converts:
+    the answer here decides whether to say something, never what value to render.
+
+    Literals are removed first, because a currency format carries `"$"` and an accounting one
+    carries `\\(`, and a naive scan for `d` or `m` in the raw code would call both dates. Only
+    the first `;`-section is examined: the later sections are the negative/zero/text branches
+    and a date format does not use them for a different type.
+    """
+    bare = _FORMAT_LITERAL.sub("", code).split(";")[0].lower()
+    return any(ch in bare for ch in "ymdhs")
+
+
+def _date_formats(zf: zipfile.ZipFile) -> tuple[str, ...]:
+    """`cellXfs` index -> the date/time format code at that style, `""` when it is not one.
+
+    A cell's `s` attribute indexes `cellXfs`; that entry's `numFmtId` is either a built-in or
+    points into the file's own `<numFmts>`. Both are resolved here so the caller only has to
+    ask "does this style render a date".
+    """
+    if "xl/styles.xml" not in zf.namelist():
+        return ()
+    try:
+        root = ET.fromstring(zf.read("xl/styles.xml"))
+    except (ET.ParseError, KeyError, OSError):
+        return ()
+    custom = {}
+    for node in root.iter(NS_S + "numFmt"):
+        try:
+            custom[int(node.get("numFmtId") or -1)] = node.get("formatCode") or ""
+        except ValueError:
+            continue
+    cell_xfs = root.find(NS_S + "cellXfs")
+    out: list[str] = []
+    for xf in cell_xfs if cell_xfs is not None else ():
+        try:
+            fmt_id = int(xf.get("numFmtId") or 0)
+        except ValueError:
+            out.append("")
+            continue
+        if fmt_id in custom:
+            code = custom[fmt_id]
+            out.append(code if _is_date_format(code) else "")
+        elif fmt_id in _BUILTIN_DATE_FORMATS:
+            out.append(_BUILTIN_DATE_FORMATS[fmt_id])
+        elif fmt_id in _LOCALE_DATE_IDS:
+            out.append(f"built-in numFmtId {fmt_id} (locale-dependent date)")
+        else:
+            out.append("")
+    return tuple(out)
+
+
+def _letter(index: int) -> str:
+    """0 -> `A`. The inverse of `_column`, so an omission can name the column a lookup uses."""
+    letters = ""
+    index += 1
+    while index:
+        index, rem = divmod(index - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
+
+
 def _column(ref: str | None, fallback: int) -> int:
     """`B7` -> 1. The cell's own reference decides its column; XML order is only a fallback."""
     if not ref:
@@ -415,17 +642,53 @@ def _cell_text(cell: ET.Element, shared: list[str]) -> str:
     return raw  # numbers, cached formula strings (`str`), errors (`e`): stored form, verbatim
 
 
-def _sheet_rows(data: bytes, shared: list[str]) -> tuple[str, ...]:
+def _sheet_rows(
+    data: bytes, shared: list[str], date_styles: tuple[str, ...] = ()
+) -> tuple[tuple[str, ...], tuple[Omission, ...]]:
+    """The rendered rows of one sheet, and a count of what the rendering did not carry.
+
+    The omissions are gathered in the same pass that renders, never by a second scan: a count
+    derived from a different walk of the XML can disagree with the rows it claims to describe,
+    and a disclosure that disagrees with the thing it discloses is worse than none.
+    """
     rows = []
+    blank = 0
+    dated: dict[str, dict[int, int]] = {}
     for row in ET.fromstring(data).iter(NS_S + "row"):
         cells: dict[int, str] = {}
         for position, cell in enumerate(row.iter(NS_S + "c")):
             text = _clean(_cell_text(cell, shared))
-            if text:
-                cells[_column(cell.get("r"), position)] = text
+            if not text:
+                continue
+            column = _column(cell.get("r"), position)
+            cells[column] = text
+            if cell.get("t") in (None, "n"):  # a stored number; anything else is not a serial
+                try:
+                    code = date_styles[int(cell.get("s") or 0)]
+                except (ValueError, IndexError):
+                    code = ""
+                if code:
+                    dated.setdefault(code, {})
+                    dated[code][column] = dated[code].get(column, 0) + 1
         width = max(cells) + 1 if cells else 0
-        rows.append("\t".join(cells.get(i, "") for i in range(width)))
-    return tuple(rows)
+        line = "\t".join(cells.get(i, "") for i in range(width))
+        if not line:
+            blank += 1
+        rows.append(line)
+    omissions = []
+    if blank:
+        omissions.append(Omission(OMIT_BLANK_ROWS, blank))
+    for code in sorted(dated):
+        columns = dated[code]
+        omissions.append(
+            Omission(
+                OMIT_NUMBER_FORMAT,
+                sum(columns.values()),
+                where=tuple(_letter(c) for c in sorted(columns)),
+                what=code,
+            )
+        )
+    return tuple(rows), tuple(omissions)
 
 
 def _worksheet_targets(zf: zipfile.ZipFile, path: Path) -> list[tuple[str, str | None]]:
@@ -450,23 +713,40 @@ def _worksheet_targets(zf: zipfile.ZipFile, path: Path) -> list[tuple[str, str |
     return out
 
 
+def _media_omission(media: dict[str, int]) -> tuple[Omission, ...]:
+    """`OMIT_MEDIA` for a set of embedded members, or nothing at all when there are none.
+
+    `what` carries the distinct extensions so a caller can tell 56 screenshots from one
+    embedded font without this layer deciding which of those matters.
+    """
+    if not media:
+        return ()
+    kinds = sorted({posixpath.splitext(name)[1].lstrip(".").lower() or "?" for name in media})
+    return (Omission(OMIT_MEDIA, len(media), size=sum(media.values()), what=", ".join(kinds)),)
+
+
 def extract_xlsx(path: str | Path) -> Document:
     path = Path(path)
     with _open(path) as zf:
         shared = _shared_strings(zf)
+        date_styles = _date_formats(zf)
+        media = _media_index(zf)
         parts = []
         for index, (name, target) in enumerate(_worksheet_targets(zf, path)):
             if target is None:
                 raise DocumentReadError(f"sheet {name!r} has no resolvable worksheet part")
-            rows = _sheet_rows(_read(zf, target, path), shared)
-            parts.append(Part(name=name, index=index, rows=rows))
-    return Document(kind="xlsx", parts=tuple(parts))
+            rows, omissions = _sheet_rows(_read(zf, target, path), shared, date_styles)
+            omissions = _media_omission(_anchored_media(zf, target, media)) + omissions
+            parts.append(Part(name=name, index=index, rows=rows, omissions=omissions))
+    return Document(kind="xlsx", parts=tuple(parts), omissions=_media_omission(media))
 
 
 def extract_docx(path: str | Path) -> Document:
     path = Path(path)
     with _open(path) as zf:
         root = ET.fromstring(_read(zf, "word/document.xml", path))
+        media = _media_index(zf)
+        anchored = _media_omission(_anchored_media(zf, "word/document.xml", media))
     rows = []
     for para in root.iter(NS_W + "p"):
         runs = []
@@ -478,7 +758,8 @@ def extract_docx(path: str | Path) -> Document:
         text = _clean("".join(runs)).strip()
         if text:  # blank paragraphs are dropped: real Word files are full of them
             rows.append(text)
-    return Document(kind="docx", parts=(Part(name="document", index=0, rows=tuple(rows)),))
+    body = Part(name="document", index=0, rows=tuple(rows), omissions=anchored)
+    return Document(kind="docx", parts=(body,), omissions=_media_omission(media))
 
 
 # ------------------------------------------------------------------- HTML and MIME (stdlib)
@@ -576,11 +857,19 @@ def extract_mhtml(path: str | Path) -> Document:
     with path.open("rb") as handle:
         message = email.message_from_binary_file(handle, policy=email.policy.default)
     bodies: list[tuple[str, str]] = []
+    skipped: dict[str, int] = {}
+    skipped_bytes = 0
     for part in message.walk():
-        if part.get_content_maintype() != "text":
-            continue
+        if part.get_content_maintype() == "multipart":
+            continue  # a container, not content: its children are walked in their own right
         subtype = part.get_content_subtype()
-        if subtype not in ("html", "plain"):
+        if part.get_content_maintype() != "text" or subtype not in ("html", "plain"):
+            # MEASURED, 2026-08-20: the one real `.doc` on the user's corpus is an MHTML whose
+            # four `application/octet-stream` parts are 174,918 bytes this reader renders as
+            # nothing. Dropping them is right; dropping them SILENTLY is the defect.
+            payload = part.get_payload(decode=True)
+            skipped[part.get_content_type()] = skipped.get(part.get_content_type(), 0) + 1
+            skipped_bytes += len(payload) if payload else 0
             continue
         body = _decoded_body(part)
         if body.strip():
@@ -590,8 +879,18 @@ def extract_mhtml(path: str | Path) -> Document:
         rows = html_rows(body) if subtype == "html" else _plain_rows(body)
         name = "document" if len(bodies) == 1 else f"part{index}"
         parts.append(Part(name=name, index=index, rows=rows))
+    omissions = ()
+    if skipped:
+        omissions = (
+            Omission(
+                OMIT_MEDIA,
+                sum(skipped.values()),
+                size=skipped_bytes,
+                what=", ".join(sorted(skipped)),
+            ),
+        )
     return _nonempty(
-        Document(kind="mhtml", parts=tuple(parts)),
+        Document(kind="mhtml", parts=tuple(parts), omissions=omissions),
         path,
         "no text/html or text/plain part carried any text",
     )
