@@ -28,7 +28,11 @@ import pytest
 import yaml
 
 from bantamkit.docread import extract
-from bantamkit.evalrun import check_expected_against_corpus, materialise_documents
+from bantamkit.evalrun import (
+    check_expected_against_corpus,
+    check_question_against_prompt,
+    materialise_documents,
+)
 
 REPO = Path(__file__).resolve().parents[2]
 TASKS_DIR = REPO / "assets" / "evals" / "document" / "tasks"
@@ -139,6 +143,22 @@ def test_g1_the_question_names_the_row_the_answer_was_read_from(path, built):
     addresses = task["document_setup"][0]["answers"]
     rows = {"".join(c for c in a if c.isdigit()) for a in addresses.values()}
     assert len(rows) == 1, f"{path.stem}: answer addresses span rows {sorted(rows)}"
+
+
+@pytest.mark.parametrize("path", task_paths(), ids=lambda p: p.stem)
+def test_the_question_gate_is_now_the_harness_check_and_not_only_this_file(path, built):
+    """The node above is this file's own re-derivation of the question half, and it stays. This
+    one says the HARNESS agrees, exactly as `test_g1_is_now_the_harness_check_and_not_only_this
+    _file` does for the scored half.
+
+    It is also where RB-P91's floor gets its nine live subjects. The node above fires by
+    `KeyError` when `question_sku:` is absent, which is a checker noticing a missing dict key,
+    not a suite refusing a task that never said what it asks about; `check_question_against_
+    prompt` is what refuses it in the field, and a task that satisfied one and not the other
+    would mean one of the two is decoration.
+    """
+    task, fixture = built[load(path)["name"]]
+    assert check_question_against_prompt(task, [fixture]) is None
 
 
 @pytest.mark.parametrize("path", task_paths(), ids=lambda p: p.stem)

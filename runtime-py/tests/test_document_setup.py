@@ -750,3 +750,200 @@ def test_run_task_refuses_an_unasked_question_before_it_calls_the_model(tmp_path
     with pytest.raises(UnaskedAnswerError, match="prompt does not name"):
         run_task(client, task, "bare", tmp_path)
     assert client.calls == []
+
+
+# ------------------------------- the floor under both of those directions (RB-P91)
+#
+# Every clause above is a check on a DECLARED question address, so none of them has a subject
+# when no question address exists. A task could therefore say NOTHING about what its prompt asks
+# and be accepted whatever it asked — RB-P90's own defect surviving its closure one step out.
+# Both evasions were measured ACCEPTED before this section existed: take a committed task, point
+# its prompt at SKU-999999, and either omit `question_sku:` or rename it to `unasked_`.
+#
+# The property, and the whole of it: A TASK THAT MATERIALISES A CORPUS MUST SAY WHAT ITS PROMPT
+# ASKS ABOUT, AND "NOTHING" MUST BE A THING IT CAN SAY AND BE HELD TO.
+#
+# Two clauses, and the nodes are kept apart because they fail differently — a node that could go
+# red on either would name neither:
+#
+#   THE FLOOR      refuses a task carrying no question address and no `unasked_` label. Every
+#                  floor node below runs on a prompt that names NO row identity, so the falsifier
+#                  has nothing to fire on and the floor is the only live clause.
+#   THE FALSIFIER  refuses a row identity in the prompt that no question address resolves to.
+#                  Every falsifier node below carries an `unasked_` label, so the floor is
+#                  satisfied and cannot be the refusal being read; the assertions say so.
+#
+# `check_expected_against_corpus` is asserted to ACCEPT each fixture first, wherever it has an
+# opinion, so no refusal below can be the scored half's refusal wearing this section's name.
+
+# A prompt that names no row identity at all. This is what makes the floor nodes attributable:
+# the corpus's key column is `SKU-` + 6 digits and nothing here matches that shape.
+AGGREGATE = "What is the largest units value anywhere on the sheet?"
+
+# `IN_WINDOW`'s row 138, which `doc-small-137` also scores. Repeated as a literal so a floor node
+# that stopped materialising anything would go red rather than compare nothing to nothing.
+SMALL_UNITS = "7726"
+
+
+def corpus_task(answers, prompt=AGGREGATE, entry=None, name="probe", scoring=None):
+    """A task with a real corpus whose `answers:` are the whole variable."""
+    return {
+        "name": name,
+        "family": "document-read",
+        "prompt": prompt,
+        "document_setup": [{**(entry or IN_WINDOW), "answers": answers}],
+        "scoring": scoring or {"kind": "contains", "expected": [SMALL_UNITS]},
+    }
+
+
+def refused(task, tmp_path, config="bare"):
+    """Materialise, assert the SCORED half has no complaint, then apply the question half."""
+    fixtures = materialise_documents(task, tmp_path, config)
+    assert check_expected_against_corpus(task, fixtures) is None
+    with pytest.raises(UnaskedAnswerError) as exc:
+        check_question_against_prompt(task, fixtures)
+    return str(exc.value)
+
+
+def test_a_task_that_declares_no_question_address_at_all_is_refused(tmp_path):
+    """THE FLOOR. `expected_units` is a claim about the scoring payload and says nothing about
+    the question, so this task has not said what its prompt asks about — and before RB-P91 that
+    silence was accepted with the prompt free to ask for anything."""
+    task = corpus_task({"expected_units": "stock!C138"})
+    message = refused(task, tmp_path)
+    assert "declares neither a question address nor an 'unasked_' label" in message
+    assert "['expected_units']" in message
+
+
+def test_saying_nothing_is_a_thing_a_task_can_say_and_it_is_accepted(tmp_path):
+    """The other side of the floor, and the whole reason the floor is a floor and not a ban.
+
+    An aggregation addresses no single row. That case has to stay expressible or the floor would
+    be a rule that only lookup tasks can satisfy — so it is said, in the vocabulary `unasked_`
+    already provides, and this node is what keeps it sayable.
+    """
+    task = corpus_task({"unasked_question_sku": "stock!A138", "expected_units": "stock!C138"})
+    fixtures = materialise_documents(task, tmp_path, "bare")
+    assert check_expected_against_corpus(task, fixtures) is None
+    assert check_question_against_prompt(task, fixtures) is None
+
+
+def test_omitting_the_question_label_no_longer_lets_the_prompt_ask_for_any_row(tmp_path):
+    """EVASION 1, measured ACCEPTED before this. A committed task, whose prompt is pointed at a
+    row its corpus does not hold, with `question_sku:` deleted — the deletion is the whole
+    defect, and RB-P90's check ran to completion over nothing."""
+    task = committed()
+    task["prompt"] = task["prompt"].replace("SKU-000137", "SKU-999999")
+    del task["document_setup"][0]["answers"]["question_sku"]
+    message = refused(task, tmp_path)
+    assert "declares neither a question address nor an 'unasked_' label" in message
+
+
+def test_renaming_the_question_label_unasked_no_longer_lets_the_prompt_ask_for_any_row(tmp_path):
+    """EVASION 2, measured ACCEPTED before this, and it is THE FALSIFIER that catches it.
+
+    The floor is satisfied here — the task did say something — so this refusal is the second
+    clause holding that saying to account, and the assertions pin which clause spoke.
+    """
+    task = committed()
+    task["prompt"] = task["prompt"].replace("SKU-000137", "SKU-999999")
+    answers = task["document_setup"][0]["answers"]
+    answers["unasked_question_sku"] = answers.pop("question_sku")
+    message = refused(task, tmp_path)
+    assert "declares neither" not in message
+    assert "the prompt names the row identity 'SKU-999999'" in message
+    assert "inventory-small.xlsx stock.sku does not hold it (SKU-000001..SKU-000400)" in message
+
+
+def test_a_floor_that_only_counted_question_labels_would_have_passed_this_one(tmp_path):
+    """Why the falsifier and not a required count — stated as the task a count would admit.
+
+    `question_region` is a real question address resolving to `east`, which the prompt does name,
+    so every clause that existed before RB-P91 is satisfied AND any rule that merely required one
+    question label is satisfied. The prompt still asks about SKU-999999, and the corpus still
+    does not hold it. Only a clause stated on the PROMPT can see this.
+    """
+    task = corpus_task(
+        {"question_region": "stock!B138", "expected_units": "stock!C138"},
+        prompt="In the east region, what is the units value for SKU-999999?",
+    )
+    message = refused(task, tmp_path)
+    assert "declares neither" not in message
+    assert "the prompt names the row identity 'SKU-999999'" in message
+    assert "resolve to ['east']" in message
+
+
+def test_a_row_identity_the_corpus_does_hold_is_refused_when_no_address_names_it(tmp_path):
+    """The other half of the falsifier's subject. A prompt naming a REAL row of the corpus is
+    still a prompt whose question no address says where it came from, and the message says which
+    of the two it is rather than reporting every unmatched token as a missing row."""
+    task = corpus_task(
+        {"unasked_question_sku": "stock!A138", "expected_units": "stock!C138"},
+        prompt="What is the units value for SKU-000261?",
+    )
+    message = refused(task, tmp_path)
+    assert "the prompt names the row identity 'SKU-000261'" in message
+    assert "inventory-small.xlsx stock.sku holds it (SKU-000001..SKU-000400)" in message
+    assert "declared asked by nothing" in message
+
+
+def test_the_row_identity_shape_is_the_key_column_s_own_prefix_and_width(tmp_path):
+    """A row identity is DERIVED, not pattern-guessed: `_doc_field` builds every key out of the
+    declared `prefix:` and `width:`, so those two are the shape a prompt token must have.
+
+    Both directions on one fixture. `SKU-0002610` is seven digits and is no row of a six-digit
+    corpus, so it is not a row identity and nothing fires; the same token at the declared width
+    is refused. Without the trailing-digit guard the first half reads `SKU-000261` out of the
+    longer token and this node goes red on a row the prompt never named.
+    """
+    answers = {"unasked_question_sku": "stock!A138", "expected_units": "stock!C138"}
+    wide = corpus_task(answers, prompt="Look up part SKU-0002610 in the archive.")
+    fixtures = materialise_documents(wide, tmp_path, "bare")
+    assert check_question_against_prompt(wide, fixtures) is None
+    narrow = corpus_task(answers, prompt="Look up part SKU-000261 in the archive.")
+    assert "the prompt names the row identity 'SKU-000261'" in refused(narrow, tmp_path / "b")
+
+
+def test_a_docx_corpus_gets_the_same_two_clauses_from_its_top_level_columns(tmp_path):
+    """A `.docx` declares `rows:`/`columns:` at the top level rather than under `sheets:`, so a
+    clause that read only `sheets:` would leave every `.docx` corpus with no floor and no
+    falsifier — the RB-P91 shape one file format over.
+
+    `tool_trace` scoring, so the scored half returns without an opinion and the corpus's only
+    live check is this one. Both directions again: the refusal, then the same declaration under
+    a prompt that names no row.
+    """
+    scoring = {"kind": "tool_trace", "expected": ["document_read"]}
+    asks = corpus_task(
+        {"unasked_target_line": "document!A138"},
+        prompt="Find the line for SKU-000999.",
+        entry=NOTES_DOCX,
+        scoring=scoring,
+    )
+    fixtures = materialise_documents(asks, tmp_path, "bare")
+    assert check_expected_against_corpus(asks, fixtures) is None
+    with pytest.raises(UnaskedAnswerError) as exc:
+        check_question_against_prompt(asks, fixtures)
+    assert "the prompt names the row identity 'SKU-000999'" in str(exc.value)
+    assert "notes.docx document.sku does not hold it (SKU-000001..SKU-000200)" in str(exc.value)
+    quiet = corpus_task(
+        {"unasked_target_line": "document!A138"},
+        prompt="How many lines does this document hold?",
+        entry=NOTES_DOCX,
+        scoring=scoring,
+    )
+    assert check_question_against_prompt(quiet, materialise_documents(quiet, tmp_path / "b",
+                                                                     "bare")) is None
+
+
+def test_run_task_refuses_a_task_that_says_nothing_before_it_calls_the_model(tmp_path):
+    """Where the floor runs, stated as a property of the wire — the same statement the two
+    clauses above it make. A task that never said what it asks about buys no model call, and the
+    error ESCAPES `run_task` rather than becoming a `config-error` row in a report that exits 0.
+    """
+    from conftest import FakeClient  # noqa: PLC0415
+
+    client = FakeClient([])
+    with pytest.raises(UnaskedAnswerError, match="declares neither a question address"):
+        run_task(client, corpus_task({"expected_units": "stock!C138"}), "bare", tmp_path)
+    assert client.calls == []
