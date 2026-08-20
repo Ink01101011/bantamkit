@@ -555,8 +555,20 @@ def tsc_program(wt: str) -> tuple[int, set[str]]:
     `2026-08-20-j24-module-graph-containment-bar.md` §2). `--listFiles` prints;
     it does not diagnose, and the bar's control §5.3 checks that the exit code is
     unchanged by the flag on a clean AND on a type-erroring tree rather than
-    assuming it. Measured at `1a8e382`: `tsc --noEmit` 0.25 s, the same command
-    with `--listFiles` 0.52 s -- no extra process, `+0.27 s` for the flag.
+    assuming it.
+
+    NO EXTRA PROCESS, and -- RB-P92, re-derived at `9a7b886` -- no measurable
+    extra TIME either. The `+0.27 s for the flag` once recorded here was N-16
+    wearing the flag's name, not the flag: `tsconfig.base.json` sets
+    `composite: true`, so any `tsc` here leaves
+    `packages/shared/tsconfig.tsbuildinfo` behind and the NEXT one runs warm.
+    The `0.25 s` was a warm run and the `0.52 s` a cold one, and the flag was
+    charged the difference between them. Measured cold-against-cold and
+    warm-against-warm instead, 7 trials each, arm order counterbalanced, the
+    tsbuildinfo removed before every cold trial the way `restore()`'s `-fdx`
+    removes it: `--noEmit` 0.555 s cold / 0.272 s warm, `--noEmit --listFiles`
+    0.559 s cold / 0.269 s warm. The flag costs `+0.004 s` cold and `-0.003 s`
+    warm -- nothing this instrument can resolve.
 
     Paths are returned as REALPATHS filtered to the agent's write surface, which
     is the fence the whole guard is defined over; see `write_surface`."""
@@ -567,10 +579,33 @@ def tsc_program(wt: str) -> tuple[int, set[str]]:
     return p.returncode, inside_write_surface(wt, p.stdout.splitlines())
 
 
+# What the guard pair costs the process table, DECLARED so the sentences about
+# it can be checked instead of believed. `run_one` calls `run_guard_t` and then
+# `guard_graph`; between them they launch one `tsc` for GUARD-T, one `vitest`
+# for the graph recorder, and a SECOND `tsc` for the build graph. Measured on
+# every `selfcheck` by M14 -- see RB-P92 in `run_guard_t`'s docstring for the
+# defect that made writing the number down worth a constant.
+GUARD_PROCESS_BUDGET = {"tsc": 2, "vitest": 1}
+
+
 def run_guard_t(wt: str) -> int:
     """Bar section 1.4's GUARD-T, unchanged as a VERDICT and now one caller of
-    `tsc_program`. `run_one` calls `tsc_program` directly so the build graph
-    costs a flag and not a second `tsc`."""
+    `tsc_program`.
+
+    RB-P92 IS THE SENTENCE THAT USED TO BE HERE: "`run_one` calls `tsc_program`
+    directly so the build graph costs a flag and not a second `tsc`." That fold
+    was really written and it was really backed out -- `guard_graph` runs its
+    own `tsc`, for the two properties its docstring prices -- but the sentence
+    describing it stayed. One commit then carried two opposite mechanisms, and
+    the stale half was the refuted advice, re-armed: anyone reading THIS
+    docstring would have believed the build graph was free.
+
+    What `run_one` actually does is call this function and then `guard_graph`,
+    and the pair spends `GUARD_PROCESS_BUDGET` -- TWO `tsc` and one `vitest`.
+    Re-derived at `9a7b886` with a counting spy wrapped around `subprocess.run`
+    on a `81ac1a1` tree: 3 processes, 2 of them `tsc --noEmit --listFiles`, in
+    the order `tsc`, `vitest`, `tsc`. The number is now a constant a case reads,
+    so the next fold cannot be reverted while its sentence survives."""
     return tsc_program(wt)[0]
 
 
@@ -677,7 +712,7 @@ def guard_graph(wt: str) -> tuple[list[str], str, int, int]:
     entry point `run_one` uses.
 
     IT RUNS ITS OWN `tsc` RATHER THAN TAKING GUARD-T's, and that is a deliberate
-    trade of 0.52 s for two properties. `run_guard_t` stays the SINGLE authority
+    trade of 0.27 s for two properties. `run_guard_t` stays the SINGLE authority
     on the `guard_type_exit` column, unchanged in name and signature -- and
     `2026-08-19-loop-u5-closure-field-measurement.py` drives `run_one` on a
     STUBBED worktree by replacing `run_guard_t`, `run_oracle` and the two diff
@@ -686,7 +721,18 @@ def guard_graph(wt: str) -> tuple[list[str], str, int, int]:
     went from `closed` to `NOT CLOSED` with `FileNotFoundError` on
     `<tmp>/packages/shared`. The brief priced the build side as free "a flag, not
     a run"; keeping the committed program working costs the run back, and the
-    honest number is +0.52 s.
+    honest number is +0.27 s.
+
+    RB-P92 RE-DERIVED THAT PRICE at `9a7b886`, and the `+0.52 s` this docstring
+    used to charge was N-16 again, not this guard. `composite: true` means
+    GUARD-T's `tsc` leaves `packages/shared/tsconfig.tsbuildinfo` behind, so the
+    second `tsc` -- THIS one -- always runs WARM, and 0.52 s is what a COLD one
+    costs. Median of 7 trials on a `81ac1a1` tree, the tsbuildinfo removed
+    before each trial exactly as `restore()`'s `-fdx` removes it between
+    repeats: GUARD-T's cold `tsc` 0.554 s, this guard's warm `tsc` 0.274 s, the
+    graph recorder 0.439 s. So the SECOND `tsc` costs +0.27 s, and the guard as
+    a whole costs `run_one` +0.72 s/run in its own call order -- the recorder is
+    the larger half of the bill, and no rewiring of the `tsc` can refund it.
 
     `status` carries the bar's §6 UNINFORMATIVE cases, because a guard that is
     silent because it SAW NOTHING is indistinguishable downstream from a guard
@@ -1136,7 +1182,9 @@ def run_one(wt: str, arm: str, repeat: int, *, verbose: bool = False) -> dict:
     guard_t = run_guard_t(wt)
     # RB-P78's containment guard. It runs its own `tsc --listFiles`; the reason
     # it does not reuse GUARD-T's is in `guard_graph`'s own docstring and was
-    # measured, not preferred.
+    # measured, not preferred. THIS LINE AND THE ONE ABOVE IT are the pair
+    # `GUARD_PROCESS_BUDGET` is declared over -- two `tsc` and one `vitest`,
+    # +0.72 s/run for the guard -- and selfcheck M14 measures that pair.
     (graph_escapes, graph_status, oracle_graph_n,
      build_graph_n) = guard_graph(wt)
     tampered = guard_tamper(wt)
@@ -1939,6 +1987,57 @@ def cmd_selfcheck(args) -> int:
          "not on oracle argv",
          GRAPH_CONFIG in oracle_argv(os.path.join("/no-such-worktree", SHARED)),
          False)
+
+    # --- M14. THE GUARD PAIR SPENDS EXACTLY ITS DECLARED PROCESS BUDGET, AND
+    # IN `run_one`'s OWN ORDER: `tsc`, `vitest`, `tsc`.
+    #
+    # RB-P92 is the finding, and it is a finding about PROSE. A fix that made
+    # `run_one` call `tsc_program` directly -- one `tsc` for both the verdict
+    # and the build graph -- was written, measured, refuted and backed out, and
+    # its docstring was left behind. The file then asserted two opposite
+    # mechanisms in one commit: `run_guard_t` said one `tsc`, `guard_graph` said
+    # two. Nothing in it could adjudicate, because the number the sentences were
+    # ABOUT had never been written down anywhere a check could read it.
+    #
+    # `GUARD_PROCESS_BUDGET` writes it down and this case measures it, so the
+    # count stops being a claim and becomes a column. The instrument is a
+    # counting spy wrapped around `subprocess.run` that LAUNCHES NOTHING: the
+    # count is fixed by control flow and not by what the processes return --
+    # `oracle_module_graph` and `tsc_program` each launch unconditionally, and
+    # every early return in `guard_graph` is downstream of both. No `tsc` and no
+    # `vitest` run, no worktree is touched, and the case costs milliseconds.
+    #
+    # ONE-SIDED ON PURPOSE, like M11's pin, and for the same reason: there is no
+    # committed mutant of this file's own call graph to run the RED half
+    # against. What replaces it is non-vacuity, checked as its own two cases --
+    # the spy really saw processes, and it really tells the two binaries apart
+    # -- so a fold that collapses the two `tsc` into one reddens the budget case
+    # instead of emptying it. Verified by mutation at `9a7b886`: rewiring
+    # `guard_graph` to take GUARD-T's program turned this case RED with
+    # `{'tsc': 1, 'vitest': 1}`, and the ORDER case RED with
+    # `['tsc', 'vitest']`.
+    procs: list[str] = []
+    _real_run = subprocess.run
+
+    def _count_launch(argv, *a, **kw):
+        procs.append(os.path.basename(argv[0]))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    try:
+        subprocess.run = _count_launch
+        run_guard_t("/no-such-worktree")      # `run_one`, first line of the pair
+        guard_graph("/no-such-worktree")      # `run_one`, second line
+    finally:
+        subprocess.run = _real_run
+    launched = {name: procs.count(name) for name in set(procs)}
+    case("M14 setup: the spy saw the guard pair launch anything at all",
+         f"{len(procs)} processes", len(procs) > 0, True)
+    case("M14 setup: and it tells the two binaries apart", "tsc + vitest",
+         sorted(launched), ["tsc", "vitest"])
+    case("M14 RED: the pair spends exactly its DECLARED process budget",
+         "2 tsc + 1 vitest", launched, GUARD_PROCESS_BUDGET)
+    case("M14 RED: and in `run_one`'s order -- GUARD-T cold, the guard warm",
+         "tsc, vitest, tsc", procs, ["tsc", "vitest", "tsc"])
 
     print()
     if fails:
