@@ -33,6 +33,8 @@ REQUIRED_KEYS = (
     "document_manifest_omitted_media",
     "document_manifest_omitted_blank",
     "document_manifest_omitted_format",
+    "document_manifest_omitted_unread_page",
+    "document_manifest_omitted_unmapped",
     "document_manifest_omitted_other",
     "document_page_header",
     "document_page_next",
@@ -194,6 +196,17 @@ def _omission_line(contract: dict, entry: dict, omission: dict) -> str:
             where=", ".join(omission["where"]),
             count=omission["count"],
             what=omission["what"],
+        )
+    if subject == "unread-page":
+        # A PDF page that rendered nothing. The count is the images drawn on it and `what` is
+        # how many text-showing operators it ran; the reason those two numbers add up to
+        # "could not read" rather than "is empty" is this sentence's job, not the reader's.
+        return contract["document_manifest_omitted_unread_page"].format(
+            count=omission["count"], bytes=omission["size"], what=omission["what"]
+        )
+    if subject == "unmapped-text":
+        return contract["document_manifest_omitted_unmapped"].format(
+            count=omission["count"], what=omission["what"]
         )
     return contract["document_manifest_omitted_other"].format(
         count=omission["count"], subject=subject, what=omission["what"]
