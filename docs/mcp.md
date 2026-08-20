@@ -102,6 +102,52 @@ validation-visibly instead of corrupting.
   it). The tools take an explicit path, so the convention is
   documentation, not code.
 
+### One name, two endpoints
+
+Registering both scopes means **one name resolves to two different builds**:
+user scope is a *pinned* install, frozen at whatever `main` was on the day it
+was installed; project scope is the repo's *editable* `.venv`, which tracks
+HEAD. `claude mcp list` prints `[Conflicting scopes]` and then connects you to
+one of them without saying which build you got.
+
+> **The rule.** When the same tool is reachable by more than one endpoint,
+> something must notice when they stop being the same tool. A silent
+> disagreement between two builds under one name is indistinguishable from a
+> bug in whichever one you happened to reach.
+
+Measured on 2026-08-20: the two endpoints on the author's machine had been
+**twelve minor versions apart for eleven days** — user scope pinned at
+`v0.13.0` (`9436cf7`), project scope at `0.25.0` — so every session whose cwd
+was outside this repo ran a build carrying the `RB-P1` k-floor defect, and
+nothing anywhere noticed. The mechanism that would have noticed is:
+
+```bash
+python tools/mcpdrift/mcpdrift.py check          # from the project directory
+```
+
+It discovers every registration of the name (user and local scope from
+`~/.claude.json`, project scope from `.mcp.json`), does a real stdio
+`initialize` + `tools/list` + six `tools/call` probes against each, and
+compares them. Exit codes are the interface: `0` AGREE or SINGLE, `1` DIFFER,
+`2` ERROR (an endpoint could not be handshaken — *cannot compare*, which is
+not the same statement as *compared and agreed*), `3` UNDETERMINED (no
+registration found, which is deliberately not `0`).
+
+**It does not trust the version string**, because that string has already lied
+here: before `RB-P45` an editable checkout of `v0.25.0` advertised `0.3.0`.
+Behaviour is compared over a fixture the checker authors in a temp directory
+and rebuilds byte-identically for each endpoint, with `HOME` pointed at an
+empty directory and `BANTAMKIT_ASSETS` stripped from the child environment —
+so every compared byte is a function of the *build*, never of the operator's
+real memory store. Calibrated against a build with the `RB-P1` k-floor
+reverted and `__version__` left at `0.25.0`: both endpoints advertise the same
+version, and the checker still goes red on `memory_recall(k=1)` returning one
+fact against three.
+
+It needs a live registration, so it **cannot run on CI** and no node pretends
+to. `runtime-py/tests/test_mcpdrift.py` guards the checker's logic on synthetic
+MCP servers it writes itself; the checker guards the machine, run deliberately.
+
 | Resource | Serves |
 |---|---|
 | `bantamkit://skills/{name}` | Skill markdown (e.g. `bantamkit://skills/memory`) |
