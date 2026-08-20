@@ -551,6 +551,16 @@ def _date_formats(zf: zipfile.ZipFile) -> tuple[str, ...]:
     A cell's `s` attribute indexes `cellXfs`; that entry's `numFmtId` is either a built-in or
     points into the file's own `<numFmts>`. Both are resolved here so the caller only has to
     ask "does this style render a date".
+
+    DECLARED GAP (J25-D2). A `xl/styles.xml` that will not parse yields no formats and
+    therefore no disclosure, silently — which is the very failure this module was changed to
+    end, one level down. Unlike media there is no member-list fallback to fall back ON: the
+    formats exist nowhere else in the package, so there is no count to report. Refusing the
+    whole workbook is worse (the cells are readable and their values are right; only the
+    reason a number looks like `46235` is lost). It is left as a known limit rather than
+    papered over, and it is not hypothetical: a fixture with an unescaped `"` in a format code
+    made a test in `test_docread.py` pass for exactly this reason until a mutation run caught
+    it.
     """
     if "xl/styles.xml" not in zf.namelist():
         return ()
