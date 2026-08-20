@@ -999,6 +999,83 @@ def check_expected_against_corpus(task: dict, fixtures: list[DocumentFixture]) -
         _check_unkeyed_expected(name, expected, claims)
 
 
+# THE OTHER HALF OF THE SAME SENTENCE (RB-P90). `check_expected_against_corpus` above refuses a
+# task whose SCORED answer nobody read out of its own corpus. It says nothing about the half of
+# the task that does the ASKING, and by construction: `_answer_claims` skips every label without
+# the `expected_` prefix, and the nine committed tasks put the lookup key into the prompt through
+# `question_sku:`, which has none. So a task could ask about `SKU-999999`, score the row its
+# corpus actually holds, and report the model wrong — the closed drift, one field over, and again
+# attributed to the model.
+#
+# The property, both clauses:
+#
+#   A cell a task resolves FOR THE PROMPT'S SAKE must be one the prompt actually names, and a
+#   task that resolves a cell for NEITHER the prompt NOR the scoring must say so.
+#
+# The spelling is the label's, because that is where this file already keeps a label's role:
+# `expected_<key>` says "scored", so `unasked_<label>` says "asked by nothing", and the two
+# prefixes are read at the same place by the same rule. Every other label is a question address
+# and its resolved value must occur in `task["prompt"]`.
+#
+# The declaration is CHECKED, not merely honoured: `unasked_` on a cell the prompt does name is
+# refused too. Without that, renaming `question_sku:` to `unasked_question_sku:` across the nine
+# committed tasks would silence this check on all of them and nothing would say a word — an
+# escape hatch nobody can falsify is the hole with a longer name.
+
+QUESTION_EXEMPT_PREFIX = "unasked_"
+
+
+class UnaskedAnswerError(EvalConfigError):
+    """A task resolves a corpus cell for the prompt's sake that its own prompt never names.
+
+    Sibling to `UncheckedAnswerError`, not a subclass: they are two different sentences about
+    one task file, and a node that means to catch the question half must not go green on the
+    scored half's refusal. Raised at the same place — before the agent is built — and left to
+    ESCAPE `run_task` for the same reason: a `config-error` row is a suite that measured
+    nothing and still exited 0.
+    """
+
+
+def check_question_against_prompt(task: dict, fixtures: list[DocumentFixture]) -> None:
+    """Refuse a document task whose question addresses a row its prompt does not name.
+
+    A no-op for a task that materialised no document, for the same reason the scored half is:
+    no corpus, no cell, no subject. `expected_*` labels are not subjects either — they are the
+    scored half's, and a scored answer has no business being spelled out in the prompt.
+    """
+    if not fixtures:
+        return
+    name = task.get("name")
+    prompt = task.get("prompt")
+    prompt = prompt if isinstance(prompt, str) else ""
+    entries = [e for e in (task.get("document_setup") or []) if isinstance(e, dict)]
+    for entry, fixture in zip(entries, fixtures, strict=False):
+        declared = entry.get("answers") or {}
+        for label, value in fixture.answers.items():
+            if label.startswith(ANSWER_CLAIM_PREFIX):
+                continue
+            where = f"{fixture.name} {declared.get(label, label)}"
+            named = value in prompt
+            if label.startswith(QUESTION_EXEMPT_PREFIX):
+                if named:
+                    raise UnaskedAnswerError(
+                        f"task {name!r}: answers[{label!r}] declares the cell at {where} to be "
+                        f"asked by nothing, but the prompt names the value {value!r} it "
+                        f"resolves to. Drop the {QUESTION_EXEMPT_PREFIX!r} prefix so the "
+                        f"address is checked against the prompt that uses it."
+                    )
+                continue
+            if not named:
+                raise UnaskedAnswerError(
+                    f"task {name!r}: answers[{label!r}] resolves to {value!r} at {where}, which "
+                    f"this task's prompt does not name. The prompt asks about some other row, so "
+                    f"a run would score the model on a question its corpus was never asked. Fix "
+                    f"the prompt or the address, or rename the label "
+                    f"{QUESTION_EXEMPT_PREFIX}{label} if this cell is deliberately asked by "
+                    f"nothing."
+                )
+
+
 # ---- the reader pair the model actually sees (`document_list`, `document_read`) ---------
 #
 # TWO polymorphic tools, not five typed ones. Both `.xlsx` and `.docx` reduce to the same
@@ -1360,6 +1437,10 @@ def run_task(
     # paid for the model; and outside the `try` below, so it ESCAPES rather than becoming a
     # `config-error` row in a report that still exits 0.
     check_expected_against_corpus(task, document_fixtures)
+    # And the same moment for the other half of that sentence: the answer the task SCORES is
+    # checked above, the row the task ASKS ABOUT here. Second rather than first so an existing
+    # refusal keeps its existing message when a task file is wrong in both halves at once.
+    check_question_against_prompt(task, document_fixtures)
     tracking = TrackingClient(client)
     workspace_tools = _workspace_tools(task.get("workspace") or {})
     tools = [

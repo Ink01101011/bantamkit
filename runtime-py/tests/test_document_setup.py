@@ -24,9 +24,11 @@ import pytest
 from bantamkit.docread import extract
 from bantamkit.evalrun import (
     DocumentSetupError,
+    UnaskedAnswerError,
     UncheckedAnswerError,
     build_document,
     check_expected_against_corpus,
+    check_question_against_prompt,
     document_dir,
     load_tasks,
     materialise_documents,
@@ -396,9 +398,16 @@ def test_run_task_materialises_a_valid_declaration_before_the_agent_runs(tmp_pat
     task = {
         "name": "doc-lookup",
         "family": "document-lookup",
+        # A stub prompt, because this node is about the FILE being on disk before the client is
+        # called. `IN_WINDOW`'s `question_sku` is therefore asked by nothing, and
+        # `check_question_against_prompt` refuses that unless the label says so — hence the
+        # `unasked_` spelling here rather than a prompt invented to satisfy a checker.
         "prompt": "unused",
         "scoring": {"kind": "contains", "expected": ["7726"]},
-        "document_setup": [IN_WINDOW],
+        "document_setup": [
+            {**IN_WINDOW, "answers": {"unasked_question_sku": "stock!A138",
+                                      "expected_units": "stock!C138"}}
+        ],
     }
     result = run_task(client, task, "bare", tmp_path)
     assert result.passed is True
@@ -613,3 +622,131 @@ def test_run_task_still_runs_a_committed_task_whose_answer_the_corpus_confirms(t
     result = run_task(client, committed(), "bare", tmp_path)
     assert len(client.calls) == 1
     assert result.passed is True
+
+
+# ------------------------------- the question against the prompt that asks it (RB-P90)
+#
+# The other half of the same sentence. The section above pins A SUITE MUST NOT SCORE AN ANSWER
+# THAT NO ONE CHECKED AGAINST THE CORPUS IT CAME FROM; this one pins A TASK'S QUESTION MUST NAME
+# A ROW ITS OWN CORPUS HOLDS, and the clause the first half's own carve-out created: a task that
+# resolves a cell for NEITHER the prompt NOR the scoring must say so, in the label.
+#
+# `check_expected_against_corpus` cannot see this defect and was never meant to: `question_sku:`
+# has no `expected_` prefix, so the scored half skips it and a task can ask about SKU-999999,
+# score the row its corpus does hold, and put the mismatch on the model's record. Every node
+# below calls ONLY `check_question_against_prompt`, so no refusal here can be the scored half's
+# refusal wearing this section's name.
+
+
+def asked(task, tmp_path, config="bare"):
+    """Materialise for real, then apply the question check exactly as `run_task` applies it."""
+    fixtures = materialise_documents(task, tmp_path, config)
+    check_question_against_prompt(task, fixtures)
+
+
+def test_a_committed_task_asks_about_the_row_its_own_corpus_holds(tmp_path):
+    """The floor. If this needs a mutation to pass, every refusal below is unreadable."""
+    asked(committed(), tmp_path)
+
+
+def test_a_prompt_naming_a_row_the_corpus_does_not_hold_is_refused(tmp_path):
+    """RB-P90 itself: the prompt asks for SKU-999999, `question_sku:` resolves to the row the
+    corpus actually holds, and before this check the run started anyway and scored the model.
+
+    The scored half is asserted to ACCEPT this same task first. That is what makes the refusal
+    below attributable: `scoring.expected` still matches the corpus cell by cell, so the only
+    defect present is the one in this node's name.
+    """
+    task = committed()
+    assert "SKU-000137" in task["prompt"]
+    task["prompt"] = task["prompt"].replace("SKU-000137", "SKU-999999")
+    fixtures = materialise_documents(task, tmp_path, "bare")
+    assert check_expected_against_corpus(task, fixtures) is None
+    with pytest.raises(UnaskedAnswerError) as exc:
+        check_question_against_prompt(task, fixtures)
+    assert "answers['question_sku'] resolves to 'SKU-000137'" in str(exc.value)
+    assert "inventory-small.xlsx stock!A138" in str(exc.value)
+    assert "this task's prompt does not name" in str(exc.value)
+
+
+def test_a_scored_answer_is_not_required_to_appear_in_the_prompt(tmp_path):
+    """The carve-out, written as a passing node so it is visible rather than being an unstated
+    gap between two refusals. A prompt that spelled out `7726` would be handing the model the
+    answer; only the QUESTION half is required to occur in the prompt."""
+    task = committed()
+    assert "7726" not in task["prompt"] and "east" not in task["prompt"]
+    asked(task, tmp_path)
+
+
+def test_a_cell_the_prompt_never_names_is_refused_until_the_label_says_it_is_unasked(tmp_path):
+    """Both directions of the second clause, on one fixture, in one node.
+
+    `IN_WINDOW` under a stub prompt is a corpus cell addressed for neither the prompt nor the
+    scoring — the exact shape three of this suite's own fixtures had on the day this landed. It
+    is refused while the label claims to be a question, and accepted the moment the label says
+    what it is. Renaming is the fix; deleting the address is not, because a deleted address
+    leaves nothing for this clause to be about.
+    """
+    scored = {"kind": "contains", "expected": ["7726"]}
+    entry = {**IN_WINDOW, "answers": {"question_sku": "stock!A138", "expected_units": "stock!C138"}}
+    task = {
+        "name": "probe",
+        "family": "document-read",
+        "prompt": "unused",
+        "document_setup": [entry],
+        "scoring": scored,
+    }
+    with pytest.raises(UnaskedAnswerError) as exc:
+        asked(task, tmp_path)
+    assert "rename the label unasked_question_sku" in str(exc.value)
+    task["document_setup"] = [
+        {**entry, "answers": {"unasked_question_sku": "stock!A138", "expected_units": "stock!C138"}}
+    ]
+    asked(task, tmp_path / "again")
+
+
+def test_declaring_a_cell_unasked_while_the_prompt_names_it_is_refused(tmp_path):
+    """The declaration is CHECKED, not merely honoured.
+
+    Without this, `unasked_` is an escape hatch nobody can falsify: renaming `question_sku:` to
+    `unasked_question_sku:` across the nine committed tasks would silence the check on all nine
+    and nothing would say a word. Here it is a committed task, unmodified except for the rename,
+    and the rename alone is the defect.
+    """
+    task = committed()
+    answers = task["document_setup"][0]["answers"]
+    answers["unasked_question_sku"] = answers.pop("question_sku")
+    with pytest.raises(UnaskedAnswerError) as exc:
+        asked(task, tmp_path)
+    assert "declares the cell at inventory-small.xlsx stock!A138 to be asked by nothing" in str(
+        exc.value
+    )
+    assert "the prompt names the value 'SKU-000137'" in str(exc.value)
+
+
+def test_the_question_check_is_a_no_op_for_every_task_in_the_frozen_suite():
+    """No corpus, no cell, no subject — the same no-op the scored half is, asserted for the same
+    reason: if a frozen task ever gained a `document_setup:`, this would stop being a statement
+    about no-ops and would start laundering a skip as a pass."""
+    frozen = load_tasks()
+    assert len(frozen) >= 22
+    assert all(not task.get("document_setup") for task in frozen)
+    for task in frozen:
+        assert check_question_against_prompt(task, []) is None
+
+
+def test_run_task_refuses_an_unasked_question_before_it_calls_the_model(tmp_path):
+    """Where the check runs, stated as a property of the wire.
+
+    A run that starts against a corpus whose question is wrong has already spent the expensive
+    part, so `client.calls == []` is the load-bearing assertion. And it ESCAPES `run_task` rather
+    than becoming a `config-error` row, for the reason `UnaskedAnswerError` records.
+    """
+    from conftest import FakeClient  # noqa: PLC0415
+
+    task = committed()
+    task["prompt"] = task["prompt"].replace("SKU-000137", "SKU-999999")
+    client = FakeClient([])
+    with pytest.raises(UnaskedAnswerError, match="prompt does not name"):
+        run_task(client, task, "bare", tmp_path)
+    assert client.calls == []
