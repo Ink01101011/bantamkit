@@ -194,11 +194,22 @@ MOVED_FRAGMENTS = (
     "NOT in those rows",
     "carry no cell value at all",
     "renders the stored serial number verbatim",
+    # 2026-08-20, J25-D3. The PDF reader's two page-level silences. `pdfread` counts show-ops,
+    # images and unmapped characters; the sentence that turns those counts into "could not
+    # read, NOT empty" is this layer's and must not drift back into the reader.
+    #
+    # Only the MANIFEST's own phrasing is guarded here. `/ToUnicode` and "glyph" are the
+    # format's vocabulary and a REFUSAL in core names them too (`docread._pdf_refusal`, which
+    # raises an exception rather than rendering an observation) — guarding a shared noun would
+    # be guarding the subject rather than the wording.
+    "rendered NO row",
+    "NOT an empty page",
 )
 CORE_MODULES = (
     "agent.py",
     "budget.py",
     "docread.py",
+    "pdfread.py",
     "loopguard.py",
     "structured.py",
     "critique.py",
@@ -318,6 +329,44 @@ OMITTING_PACKAGE = [
 def test_document_manifest_omission_bytes():
     got = document_manifest([OMITTING_PART], OMITTING_PACKAGE)
     assert got == GOLDEN_DOCUMENT_MANIFEST_OMISSIONS
+
+
+# J25-D3. The two page-level omissions the PDF reader produces. The entry below is the shape
+# `docread.extract_pdf` builds for a page that rendered nothing: `unread-page` carries the
+# image count in `count` and the SHOW-OPERATOR count in `what`, both machine facts, and this
+# layer is where they become a sentence a model can act on.
+GOLDEN_DOCUMENT_MANIFEST_PDF_PAGE = (
+    'scan.pdf (pdf) part 4 "page 5": 0 rows, numbered 0 to -1\n'
+    "  812 character(s) shown on this part are NOT in those rows: their codes came from "
+    "font(s) with no /ToUnicode map (ABCDEF+Loma), so the file stores indices into a font's "
+    "own glyphs and says nowhere which character each glyph draws \u2014 this reader drops "
+    "them rather than guess, because a guess here is indistinguishable from content\n"
+    "  this part rendered NO row: the page ran 46 text-showing operator(s) and draws 3 "
+    "image(s), 91234 bytes, that no row can carry \u2014 a page with no row is a page this "
+    "reader could not read, NOT an empty page, and there is no OCR here"
+)
+
+
+def test_document_manifest_pdf_page_omission_bytes():
+    entry = {
+        "document": "scan.pdf",
+        "kind": "pdf",
+        "index": 4,
+        "part": "page 5",
+        "row_count": 0,
+        "rows": [],
+        "omissions": [
+            {
+                "subject": "unmapped-text",
+                "count": 812,
+                "size": 0,
+                "where": [],
+                "what": "ABCDEF+Loma",
+            },
+            {"subject": "unread-page", "count": 3, "size": 91234, "where": [], "what": "46"},
+        ],
+    }
+    assert document_manifest([entry]) == GOLDEN_DOCUMENT_MANIFEST_PDF_PAGE
 
 
 def test_document_manifest_prints_a_subject_it_has_no_template_for():

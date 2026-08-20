@@ -382,7 +382,12 @@ def test_missing_file(tmp_path):
 
 def test_a_real_pdf_refusal_names_the_pdf_and_its_version(tmp_path):
     """Was `test_unsupported_suffix_names_what_is_supported`. The suffix is no longer the
-    reason for anything, so the refusal names the CONTENT and its version instead."""
+    reason for anything, so the refusal names the CONTENT and its version instead.
+
+    J25-D3 changed WHY this one refuses — a PDF is now dispatched to the PDF reader — and
+    deliberately not what the refusal has to carry. This file holds a catalogue and no page,
+    so the reason is the structure, and the container and its version are still named.
+    """
     path = tmp_path / "notes.pdf"
     path.write_bytes(b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n")
     with pytest.raises(DocumentReadError) as excinfo:
@@ -390,7 +395,7 @@ def test_a_real_pdf_refusal_names_the_pdf_and_its_version(tmp_path):
     message = str(excinfo.value)
     assert "it is a PDF document (PDF-1.7)" in message
     assert "45 bytes on disk" in message
-    assert "reads xlsx, docx, html and mhtml" in message
+    assert "no page at all" in message
 
 
 def test_no_suffix_at_all(tmp_path):
