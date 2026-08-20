@@ -329,6 +329,11 @@ def main() -> int:
     base_text = CONTRACT.read_text()
     commit = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"],
                             capture_output=True, text=True, check=False).stdout.strip()
+    # A dirty tree is not the commit it names, and a table headed with a commit it was not
+    # measured at is the defect this whole program exists to make checkable.
+    if subprocess.run(["git", "-C", str(REPO), "status", "--porcelain"],
+                      capture_output=True, text=True, check=False).stdout.strip():
+        commit += "-dirty"
     print(f"repo {REPO}\nmode {args.mode}  commit {commit}")
 
     rc, baseline = measure(base_text)
