@@ -9834,4 +9834,334 @@ a temp copy of the harness and none in the working tree: making `graph_containme
 those is the one that matters here: **the property this section says is wrong has a must-be-red
 case proving the harness would notice if someone wrote it.**
 
+#### AB (2026-08-20) — J28's must-be-red catalogue exists at last, and the figure it was built to produce turns out to be a property of one test file rather than of the suite
+
+`RB-P89` filed a defect whose root cause was an absence: every provenance comment in this file
+that quotes a laundering measurement attributes it to *"a Z2 mutation script over a `git archive`
+tree"*, and **that script was never committed and does not exist**. The program's central
+anti-laundering discipline — section S's class, section T's procedure, four instances since — has
+therefore been a procedure re-improvised from memory each time, with nothing in the repository
+able to re-run any of it. `feat/launder-catalogue` commits the instrument: `0ba46f5`
+`docs/eval-data/2026-08-20-j28-contract-mutation-catalogue.py` with its record, `01c3e25` the
+one-line change that stops the program heading a table with a commit it was not measured at.
+
+**The headline is not "`RB-P89` is closed".** It is that the number the catalogue was built to
+produce — **`0 of 32` strings pinned by nothing at all** — is true, and is a statement about
+**`runtime-py/tests/test_layers.py`** rather than about `runtime-py/tests`. Strike that one
+file's `*_bytes` goldens and the same run reads **2 pinned, 26 laundering, 4 pinned by nothing**.
+The contract surface's defence against rewording is held almost entirely by byte-identity, not by
+tests that assert meaning, and nothing in this repository measures that concentration. This
+section owns `docs/eval.md`; it adds no `.py`, regenerates no `.jsonl` and restates no committed
+row.
+
+##### AB.0 The register was read at HEAD across every live writer, before any number was chosen
+
+`RB-P75`'s precaution, applied again — and this time it is not a formality. A concurrent branch
+that is **not on `main`** already holds two numbers above this branch's ceiling, so a number that
+looks free here is taken there.
+
+<!-- provenance: value=ceiling RB-P94 over 31 refs/heads, standing on exactly ONE — docs/bar-rule-defects (14fdbc0), which is PR #48, CI green and not merged; main, feat/question-floor, feat/module-graph-containment and this branch feat/launder-catalogue (01c3e25) all stand at RB-P92; commit=01c3e25; command=for r in $(git for-each-ref --format='%(refname:short)' refs/heads/); do git show $r:docs/eval.md | grep -oE 'RB-P[0-9]+' | sed 's/RB-P//' | sort -n | tail -1; done | sort -rn | head -1 -->
+
+    ceiling over all 31 refs/heads            ->  RB-P94
+    the only ref standing at it               ->  docs/bar-rule-defects (14fdbc0), §AA,
+                                                  minting RB-P93 and RB-P94, NOT on main
+    this branch, main, and two others         ->  RB-P92
+
+`(ceiling RB-P94 over 31 refs, 01c3e25, the command above)`. **`RB-P95` is the next free number,
+and this section mints exactly one: `RB-P95`.** Had the ceiling been read on this branch alone it
+would have read `RB-P92` and this section would have minted `RB-P93` — a number `docs/eval.md`
+already carries on another live ref, which is `RB-P75`'s collision exactly.
+
+**The section identifier, read the same way.** `L`–`Z` are exhausted and `docs/bar-rule-defects`
+has claimed `AA`, so the scheme is now **(length, then lexicographic)** and the next free
+identifier is **`AB`**.
+
+<!-- provenance: value=the section identifiers taken across all 31 refs/heads and their remotes are exactly L M N O P Q R S T U V W X Y Z AA — nothing of length 2 beyond AA; commit=01c3e25; command=for r in $(git for-each-ref --format='%(refname:short)' refs/heads/ refs/remotes/); do git show $r:docs/eval.md 2>/dev/null | grep -oE '^#### [A-Z]{1,3} '; done | awk '{print $2}' | sort -u -->
+
+**This section and §AA will conflict at merge, and that is expected.** Both append immediately
+above the file's `Back to the README` footer. **The documented resolution is to keep BOTH sides in
+MINT ORDER — `AA` before `AB`, `RB-P93`/`RB-P94` before `RB-P95` — and not in merge order.**
+Nothing below depends on being adjacent to any other section.
+
+##### AB.1 What makes the catalogue an instrument rather than a script
+
+For each top-level string of `assets/contracts/default.yaml`: reword that string and only that
+string, copy the whole asset pack to a temporary directory, run the entire `runtime-py/tests`
+suite against it, and diff the failing-node set against the unmutated baseline.
+
+**The design decision that matters is not the mutation, it is the verdict.** The verdict comes
+from a **fixed predicate on the node NAME** — it contains one of `verbatim`, `bytes`, `golden`,
+`wording`, `phrasing` — applied identically to all 34 keys. There is no per-string `pins` list,
+so the author does not get to pick which nodes count. That closes, **for this one surface**, the
+loophole `docs/eval-data/2026-08-14-pinning-harness-false-positives.md` filed and could not close:
+*"`pins` is chosen by the person writing the claim ... the attack direction: derive `pins`
+mechanically ... so the author does not get to choose."* The price is that the predicate is
+crude, and §AB.5 is what that costs.
+
+**Calibrated against two answers known by hand, and re-run in this unit rather than carried.**
+
+<!-- provenance: value=--calibrate at 01c3e25 exits 0 with CAL-RED expected PINNED-BY-NAME measured PINNED-BY-NAME (schema_instruction, 8 new red) and CAL-GREEN expected UNPINNED measured UNPINNED; commit=01c3e25; command=PYTHONPATH=$PWD/runtime-py/src .venv/bin/python docs/eval-data/2026-08-20-j28-contract-mutation-catalogue.py --calibrate -->
+
+    PINNED-BY-NAME  schema_instruction           8 new red
+    CAL-RED    expected PINNED-BY-NAME   measured PINNED-BY-NAME   OK
+    CAL-GREEN  expected UNPINNED         measured UNPINNED   OK
+
+`CAL-GREEN` — reword a YAML **comment** and no string at all — is the control the pinning harness
+lost on 2026-08-14. Without it, an instrument that reports every string pinned cannot be told from
+a detector stuck on, and §AB.2's entire table would be unreadable.
+
+##### AB.2 The three numbers, and the disclosure that matters more than the headline
+
+At `0ba46f5`, `--mode prose`, over `runtime-py/tests` — J28's committed sweep, which this unit did
+**not** re-run (it runs the whole suite 32 times and takes ~46 minutes; §AB.9 says which
+invocations were run instead):
+
+<!-- provenance: value=31 of 32 pinned by a node that names its reason, 1 of 32 pinned only by nodes promising a different claim (evidence_no_observation), 0 of 32 pinned by nothing at all, 0 broken mutants, and 26 of 32 strings carry at least one laundering node over 48 distinct nodes; commit=0ba46f5; command=PYTHONPATH=$PWD/runtime-py/src python3 docs/eval-data/2026-08-20-j28-contract-mutation-catalogue.py --jobs 5 -->
+
+    pinned by a node that NAMES its reason      31 of 32
+    pinned ONLY by a different claim             1 of 32   evidence_no_observation
+    pinned by NOTHING AT ALL                      0 of 32
+    strings with >=1 laundering node             26 of 32   48 distinct nodes
+
+**`0 of 32` is the figure nobody in this program had ever measured, and it holds for one reason.**
+For **29 of the 32**, the ONLY node naming its reason is a single `*_bytes` golden. Re-derived
+here as arithmetic over the committed table's own columns, not as a second sweep:
+
+<!-- provenance: value=parsing the 34-row table of docs/eval-data/2026-08-20-j28-contract-mutation-catalogue.md gives 32 non-EXCLUDED rows, naming-count histogram {1: 29, 4: 2, 0: 1}, as-measured 31 pinned / 1 laundering-only / 0 nothing, and striking one *_bytes golden per string gives 2 pinned / 26 laundering / 4 pinned-by-nothing, the four being validation_error, loop_note, loop_warn and document_paste_preamble; every row satisfies new-red = naming + not-naming; commit=01c3e25; command=a 15-line parse of the committed .md table, reproduced in this section's text -->
+
+    strings whose ONLY naming node is one golden          29 of 32
+    strike that golden from every killer set:
+      still pinned by a node that names its reason         2 of 32   the two argument-type strings
+      pinned ONLY by a different claim (LAUNDERING)        26 of 32
+      pinned by NOTHING AT ALL                              4 of 32   validation_error, loop_note,
+                                                                      loop_warn,
+                                                                      document_paste_preamble
+
+**And the concentration is tighter than "the goldens".** Every node in the whole of
+`runtime-py/tests` whose name satisfies the predicate **and** covers a contract string lives in
+one file, in one 190-line span, and there are **15 of them** — so 29 strings are floored by at
+most 15 nodes, and by pigeonhole at least 14 of those strings share their sole pin with another
+string. `test_document_manifest_bytes` alone stands under five of them.
+
+<!-- provenance: value=15 nodes matching def test_[a-z0-9_]*(verbatim|bytes|golden|wording|phrasing) in runtime-py/tests/test_layers.py, all between line 200 and line 390; test_layers.py holds more such nodes than any other test file (15, next is 5); commit=01c3e25; command=grep -noE 'def test_[a-z0-9_]*(verbatim|bytes|golden|wording|phrasing)[a-z0-9_]*' runtime-py/tests/test_layers.py -->
+
+    *_bytes / golden / verbatim nodes in test_layers.py        15   lines 200-390
+    the next most of any test file                              5   test_agent.py, test_filegraph.py
+
+**This is the finding, and it is not the same claim as `31 of 32`.** `31 of 32` is true and the
+count is correct. What it does not say is that the count's **resolution is the file, not the
+string**: a figure reported per-subject when 29 of the subjects are held by one shared, coarse
+mechanism reads as a property of the suite and is a property of one file. It is minted as
+`RB-P95` in §AB.7, with the argument against minting stated there too.
+
+##### AB.3 `RB-P89`'s own instance, re-derived on the BEFORE tree — and the mode is evidence, not a guess
+
+Re-derived in this unit at **`640c6b0`** (a detached worktree with the catalogue copied in
+untracked, which is why the program's own header reads `640c6b0-dirty` — `01c3e25`'s fix
+demonstrating itself), not carried from the handoff:
+
+<!-- provenance: value=at 640c6b0 under --mode prose the frame tool_argument_types reddens 4 new nodes (4 naming wording, 0 not) and the item tool_argument_type reddens 5 (4 naming, 1 not, the one being test_agent.py::test_a_wrong_typed_declared_argument_is_reported_rather_than_dropped); the program headed the table 640c6b0-dirty; commit=640c6b0; command=git worktree add --detach ../wt-before 640c6b0 then PYTHONPATH=$PWD/runtime-py/src .venv/bin/python docs/eval-data/2026-08-20-j28-contract-mutation-catalogue.py --only tool_argument_type --only tool_argument_types --jobs 2 -->
+
+    tool_argument_types  (frame)  reworded    4 new red    4 name wording, 0 do not
+    tool_argument_type   (item)   reworded    5 new red    4 name wording, 1 does NOT
+      the fifth: test_agent.py::test_a_wrong_typed_declared_argument_is_reported_rather_than_dropped
+
+Exactly as `RB-P89` filed it. **One correction to the entry's reading, not to its numbers**, and
+one correction to the correction. The entry says the four are *"three `verbatim` + the byte
+golden"* — true, and the third `verbatim` node is
+`test_dispatch_names_the_argument_verbatim_when_a_string_will_not_convert_to_its_type`, which the
+entry does not quote. J28's record places it *"450 lines above the `RB-P86` block"*. **Measured,
+it is 410**, and identically so at all three commits.
+
+<!-- provenance: value=test_dispatch_names_the_argument_verbatim_when_a_string_will_not_convert_to_its_type is at line 323 and the RB-P86 block comment at line 733 of runtime-py/tests/test_agent.py, a distance of 410, at each of 640c6b0, 0ba46f5 and 01c3e25; commit=01c3e25; command=for c in 640c6b0 0ba46f5 01c3e25; do git show "${c}:runtime-py/tests/test_agent.py" | grep -n 'def test_dispatch_names_the_argument_verbatim'; git show "${c}:runtime-py/tests/test_agent.py" | grep -n '2026-08-20, RB-P86: a DECLARED'; done -->
+
+**Why `prose` and not `whole` is the mode that re-derives `4`, and why that is evidence about the
+lost script.** Under `--mode whole`, which rewords the leading `error: ` marker too, the frame
+reddens **6**, not 4 — re-derived here at `01c3e25`, where the two extra nodes are exactly the two
+that assert `startswith("error: ")`:
+
+<!-- provenance: value=--mode whole at 01c3e25 gives tool_argument_types 6 new red (4 naming, 2 not) with the two being test_document_tools.py::test_document_read_answers_the_thirteen_calls_the_3b_actually_made_in_its_own_words and test_memory_component.py::test_malformed_k_still_becomes_an_error_observation, and document_error 6 new red (1 naming, 5 not); commit=01c3e25; command=PYTHONPATH=$PWD/runtime-py/src .venv/bin/python docs/eval-data/2026-08-20-j28-contract-mutation-catalogue.py --mode whole --only tool_argument_types --only document_error -->
+
+    --mode prose   frame reddens 4       `RB-P89`'s number
+    --mode whole   frame reddens 6       + the two nodes asserting startswith("error: ")
+
+`RB-P89`'s number is 4 and not 6, so **`M5` preserved the `error: ` marker**. The mode this
+catalogue reconstructs was derived from the surviving evidence about the script, not assumed —
+which is the only kind of claim anyone can now make about a program that no longer exists.
+
+##### AB.4 The node was fixed, and it is non-vacuous in both directions
+
+`test_a_wrong_typed_declared_argument_is_reported_rather_than_dropped` ended
+`assert "offset must be type integer, not type object" in observation` — the item string asserted
+verbatim inside a node whose name promises a claim about **dropping**. It now asserts the claim
+its name makes, in three parts, none of them the asset's phrasing: the handler never runs, its
+default never reaches the model, and the argument the call got wrong is named back (`offset` is
+data off the call and off the schema, not phrasing). **After the fix the item reads 4 new red, 4
+naming wording, 0 not** — the same four as the frame, its laundering column empty and its pinning
+unchanged. Re-derived here:
+
+<!-- provenance: value=at 01c3e25 --mode prose gives tool_argument_type PINNED-BY-NAME 4 new red 4 naming 0 not, tool_argument_types PINNED-BY-NAME 4 new red 4 naming 0 not, and evidence_no_observation LAUNDERING 2 new red 0 naming 2 not with the two being test_critique.py::test_render_evidence_missing_observation and test_critique.py::test_render_evidence_observation_before_call_does_not_pair; commit=01c3e25; command=PYTHONPATH=$PWD/runtime-py/src .venv/bin/python docs/eval-data/2026-08-20-j28-contract-mutation-catalogue.py --only tool_argument_type --only tool_argument_types --only evidence_no_observation --jobs 3 -->
+
+    640c6b0   item   5 new red   4 naming, 1 not      the laundered node
+    01c3e25   item   4 new red   4 naming, 0 not      one node removed, nothing added
+
+**The other direction, because a node that stops reddening under a rewording has to still redden
+under the thing it claims to guard.** Deliberate defect applied to a **copy** of
+`runtime-py/src` — `git status` was confirmed clean at `01c3e25` before and after — restoring the
+pre-`RB-P86` behaviour the node's name is about, dropping mistyped declared arguments instead of
+reporting them:
+
+<!-- provenance: value=with mistyped declared arguments dropped instead of reported in a copy of runtime-py/src, pytest runtime-py/tests/test_agent.py -q -p no:randomly gives 5 failed 68 passed, and test_a_wrong_typed_declared_argument_is_reported_rather_than_dropped is among the five, failing at test_agent.py:853 on assert seen == {} with {'offset': 0} == {}; the working tree was and stayed clean; commit=01c3e25; command=cp -R runtime-py/src $SCRATCH/mutsrc; patch _dispatch in the copy; PYTHONPATH=$SCRATCH/mutsrc .venv/bin/python -m pytest runtime-py/tests/test_agent.py -q -p no:randomly -->
+
+    5 failed, 68 passed
+    FAILED test_a_wrong_typed_declared_argument_is_reported_rather_than_dropped
+    >  assert seen == {}, "the handler must not run at all"      test_agent.py:853
+    E  assert {'offset': 0} == {}
+
+The handler ran on a default the model never asked for. **That is the sentence the node's name
+makes, and it is now the sentence that reddens it** — the fix moved the node's assertion from
+someone else's claim onto its own, and did not weaken it.
+
+##### AB.5 What this instrument does NOT establish, stated rather than discovered later
+
+- **`48` is an UPPER BOUND on the laundering class, not a count of defects.** The predicate is
+  five tokens; `test_no_documents_at_all_says_so` arguably does promise wording and is read as
+  laundering because `says_so` is not one of the five. It is crude in the other direction too: a
+  node named `..._bytes` that asserts nothing about wording would be counted as naming its
+  reason. **Nothing here inspects a node's body.**
+- **A rewording is ONE mutation shape.** A string can be pinned against rewording and unpinned
+  against a placeholder rename, a truncation, or a swap of two strings for each other. None of
+  those is measured.
+- **UNMEASURED, in writing:** `name: default`, the placeholder names, the YAML comments, every
+  asset outside `assets/contracts/default.yaml`, and the whole of `runtime-ts`. Laundering under
+  each of those is unmeasured, and `RB-P51`'s rule applies — an unmeasured check is not a passed
+  one, so none of these is a clean column.
+- **`0 of 32` is a statement about `runtime-py/tests` at `0ba46f5` and about nothing else** — and
+  §AB.2 is why even that is really a statement about one file.
+- **`RB-P95` is filed and NOT fixed.** No golden was added, moved or duplicated by this section,
+  and the fan-out of the 15 goldens is not gated by anything.
+
+##### AB.6 Handoff corrections — three, and the third is this unit's own
+
+**Both of J28's self-corrections are disclosed here rather than quietly absorbed**, because a
+correction the register never sees is the same as one that was never made.
+
+1. **The counterfactual was first written as "3 pinned / 29 laundering" and it is 2 / 26 / 4.**
+   The first form has no `pinned by nothing` column at all, which loses the only number in the
+   counterfactual that is qualitatively new: four strings become reworded-into-anything with the
+   suite green. Re-derived independently in §AB.2 from the committed table.
+2. **The AFTER numbers were first attributed to `640c6b0` while the fix was uncommitted in the
+   working tree.** `01c3e25` is that correction turned into a mechanism: the program appends
+   `-dirty` when `git status --porcelain` is non-empty, so a table can never again be headed with
+   a commit it was not measured at. **§AB.3's `640c6b0-dirty` header is that mechanism firing on
+   its first use by a second unit** — the correct behaviour, on a run whose tree genuinely was
+   not the commit it named.
+3. **This unit's own: "47 laundering nodes across 25 strings" is not derivable and is not
+   asserted here.** The committed figure is **48 distinct nodes over 26 strings**, of which
+   `evidence_no_observation` contributes two. Whether the remainder is 46 or 47 depends on
+   whether either of those two also reddens on another string, and **the committed table does not
+   carry the overlap structure**: its per-string columns sum to **56** occurrences over **48**
+   distinct nodes, so eight occurrences are shared and the table cannot say which.
+
+<!-- provenance: value=the sum of the 'of which do not' column over the 32 non-EXCLUDED rows of the committed table is 56, against 48 distinct nodes reported by the same run, so 8 occurrences are repeats and the per-string overlap is not recoverable from the table; 26 rows have a non-zero 'do not' column; commit=0ba46f5 for the table, 01c3e25 for the arithmetic; command=the same 15-line parse as AB.2 -->
+
+##### AB.7 Minted here — `RB-P95`, and the three things that get no number
+
+- **`RB-P95` — the contract surface's wording protection is single-sourced, and the figure that
+  reports it is stated at a resolution finer than the protection actually has.** `31 of 32`
+  strings are pinned by a node that names its reason and `0 of 32` are pinned by nothing; for
+  **29 of those 32 the sole such node is a `*_bytes` golden**, and every candidate golden lives
+  in **one file, `runtime-py/tests/test_layers.py`, 15 nodes across lines 200-390**, several of
+  them standing under four or five strings at once. Strike them and the same run's recorded
+  killers give **2 pinned / 26 laundering / 4 pinned by nothing**. The count is correct; what is
+  wrong is that a per-string figure is read as a property of the suite when 29 of the strings are
+  held by one shared, coarse mechanism, and **nothing in this repository measures or gates that
+  fan-out**. (Suite, open — filed, not fixed.)
+
+  <!-- provenance: value=29 of 32 strings have exactly one node naming their reason (naming-count histogram {1: 29, 4: 2, 0: 1}); striking one *_bytes golden per string turns 31/1/0 into 2/26/4; runtime-py/tests/test_layers.py holds 15 predicate-matching nodes between lines 200 and 390, more than any other test file (next is 5); commit=0ba46f5 for the sweep, 01c3e25 for the census and the arithmetic; command=the parse in AB.2 and grep -noE 'def test_[a-z0-9_]*(verbatim|bytes|golden|wording|phrasing)[a-z0-9_]*' runtime-py/tests/test_layers.py -->
+
+  **The argument against minting it, stated because it is a real argument.** A `*_bytes` golden
+  that asserts a full rendered sentence is *precisely* the node entitled to redden on a
+  rewording — that is the claim its name makes, and it makes it honestly. Nothing is broken; the
+  suite behaves as designed, and on that reading this is a coverage observation, and observations
+  do not mint. **Why it mints anyway:** the defect is not in the goldens, it is in the sentence
+  the measurement licenses. `0 of 32 pinned by nothing` was produced to be quoted, and quoted
+  bare it says the suite defends the surface's meaning; the same run says the suite defends the
+  surface's **bytes**, from one file, and that the two readings differ by 26 strings. A figure
+  whose plain reading is off by 26 of 32 is a defect in the figure, and J28's record disclosing
+  it in a §5 paragraph is the evidence for the entry, not a prior filing of it — a record
+  paragraph is not trackable and a register entry is.
+
+**Three things get no number, and each declination has a reason.**
+
+1. **`evidence_no_observation` gets no number.** It is the one string of 32 whose only killers
+   are nodes promising a different claim — `test_render_evidence_missing_observation` and
+   `test_render_evidence_observation_before_call_does_not_pair` — re-derived at `01c3e25` in
+   §AB.4. But *"pinned only by nodes that name a different claim"* **is** the `LAUNDERING`
+   verdict, which is the class section S already named
+   (*"a check that reddens for a reason its name does not state launders unrelated mutations into
+   its own column"*, `docs/eval.md:7665`) and section T already made a procedure for. This file
+   has twice recorded the same declination in the same words — *"the third application of the
+   laundering lesson is not a new class"* and *"the fourth laundering catch is the lesson working,
+   which is the opposite of a finding"*. This is the fifth. **Filed here as an instance and left
+   unfixed**, because the fix is one line of naming in `runtime-py/tests/test_critique.py` and
+   this section owns `docs/eval.md` — the same ownership split `RB-P89` itself instructed.
+2. **The other laundering nodes get no number** — 46 or 47 of them across 25 strings, and §AB.6
+   is why this section will not say which. They are instances of the class in (1), counted by an
+   upper-bound predicate (§AB.5). Forty-six instances of one named class is one class.
+3. **`RB-P89` is a RECORD and is not edited by being closed.** Its `4` and `5` both reproduce
+   exactly (§AB.3), its reading gains one node it did not quote, and its entry text stands
+   unaltered. **A finding that comes true does not mint, and neither does a lesson working** —
+   the catalogue existing is section T's procedure finally acquiring a program, which is the
+   lesson working at its largest scale so far and is still not a finding.
+
+##### AB.8 What is NOT closed
+
+1. **`RB-P95` is filed, not fixed**, and the shape of a fix is not obvious: adding a second
+   pinning node per string would multiply the very byte-goldens whose concentration is the
+   defect, so the fix is more likely a **gate on fan-out** than more goldens. Nobody has designed
+   it and this section does not.
+2. **The `4 of 32` counterfactual names four strings that are one file away from unpinned** —
+   `validation_error`, `loop_note`, `loop_warn`, `document_paste_preamble`. That is arithmetic
+   over recorded killers, **not a second measurement**, and no run in this repository has ever
+   actually deleted a golden and observed it.
+3. **`evidence_no_observation` is open** (§AB.7 item 1).
+4. **Everything in §AB.5 stays UNMEASURED** — most consequentially `runtime-ts`, where the
+   equivalent figure is not `0`, it is unknown.
+5. **The catalogue is not wired to any gate.** It is a program someone must choose to run; no
+   pytest node calls it, and nothing reddens if the surface's pinning degrades between now and
+   the next time a human types the command.
+
+##### AB.9 Gates, each at the commit it was measured at
+
+Re-run in this unit at `01c3e25`, not carried from the handoff.
+
+<!-- provenance: value=pytest 1272 passed 2 xfailed; ruff check runtime-py All checks passed!; ruff check docs/eval-data All checks passed!; --calibrate exits 0 with both controls OK; commit=01c3e25; command=the four commands in the table below -->
+
+| gate | reading | commit |
+|---|---|---|
+| `.venv/bin/python -m pytest runtime-py/tests -q` | 1272 passed, 2 xfailed | `01c3e25` |
+| `.venv/bin/ruff check runtime-py` | All checks passed! | `01c3e25` |
+| `.venv/bin/ruff check docs/eval-data` | All checks passed! | `01c3e25` |
+| the catalogue's `--calibrate` | `CAL-RED` OK, `CAL-GREEN` OK, exit 0 | `01c3e25` |
+
+**`1268 → 1272` is a CO-MOVING count and not four new tests.**
+`runtime-py/tests/test_field_programs.py` carries four nodes parametrised over
+`git ls-files -- docs/eval-data/*.py`, and this branch commits exactly **one** new field program,
+so each of the four gains one case. The same co-moving arithmetic §Z.9 recorded one branch
+earlier, on a different branch adding a different program — which is the second independent
+confirmation that the co-mover is the **field-program count** and nothing else.
+
+<!-- provenance: value=committed docs/eval-data/*.py goes 19 at 640c6b0 to 20 at 01c3e25, and the four parametrised nodes of test_field_programs.py each gain one case; commit=01c3e25; command=git ls-tree -r --name-only 640c6b0 docs/eval-data | grep -c '\.py$' and the same at 01c3e25 -->
+
+**The full 32-key sweep was deliberately NOT re-run**, and that is a disclosure and not an
+omission: it runs the whole suite 32 times for ~46 minutes, and the figures it produces are
+`0ba46f5`'s, quoted above at `0ba46f5`. What this unit re-derived instead is every figure that
+could be reached with a bounded invocation — `--calibrate`, three keys under `--mode prose` at
+`01c3e25`, two keys under `--mode whole` at `01c3e25`, two keys under `--mode prose` on a
+detached `640c6b0` tree — plus the counterfactual as arithmetic over the committed table and the
+golden census as a source count. **Every one of them reproduced.** The only figure in the handoff
+that did not survive contact is the *"450 lines"* of §AB.3, which is 410, and the *"47 across
+25"* of §AB.6, which the committed table cannot decide.
+
 Back to the [README](../README.md).
