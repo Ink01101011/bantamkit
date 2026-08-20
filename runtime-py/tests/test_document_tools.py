@@ -607,11 +607,17 @@ def test_the_fixture_is_still_generated_and_no_binary_entered_the_repo():
 # The tests are written per clause so that a failure names which clause of the pre-registered
 # contract stopped holding, rather than reporting "the paste changed".
 
+# `unasked_question_sku`, not `question_sku`: `paste_task`'s prompt asks about SKU-004137, the
+# row the LARGE corpus holds, and every `paste` clause below measures BYTES ON THE WIRE — what
+# the prompt asks is not what any of them reads. `check_question_against_prompt` refuses a
+# question address the prompt does not name, so the prefix is how this fixture says the cell is
+# addressed for the generator's sake and asked by nobody. Deleting the address instead would
+# leave that clause with no live subject in the suite.
 SMALL_CORPUS = {
     "path": "inventory-small.xlsx",
     "seed": 4021,
     "sheets": [{"name": "stock", "rows": 400, "columns": COLUMNS}],
-    "answers": {"question_sku": "stock!A138", "expected_units": "stock!C138"},
+    "answers": {"unasked_question_sku": "stock!A138", "expected_units": "stock!C138"},
 }
 
 

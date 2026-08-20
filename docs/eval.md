@@ -9095,5 +9095,355 @@ is that commit's own figure, measured there against `3bcd055`, and is not restat
 `docs/eval.md` on this branch, so it is the row the checker measures. It is written to be an
 insertion and nothing else: no committed line above it is rewritten, deleted, or renumbered.
 
+#### Y (2026-08-20) — `RB-P90`'s question half, closed forward one commit after it was filed; the exemption is falsifiable, and it is not a floor
+
+`RB-P90` was minted in §X.8 as the half `da8ffd6` did not close. `check_expected_against_corpus`
+refuses a task whose **scored** answer nobody read out of its own corpus; it says nothing about
+the half of the task that does the **asking**, and by construction — `_answer_claims`
+(`evalrun.py:868`, `ANSWER_CLAIM_PREFIX = "expected_"`) skips every label without that prefix,
+and the nine committed tasks carry the lookup key into the prompt through `question_sku:`, which
+has none. `39c20ce` closes it: **`check_question_against_prompt` refuses a task whose question
+addresses a row its own prompt does not name.**
+
+This section is `docs/eval.md` only. It adds no `.py`, regenerates no `.jsonl`, and restates no
+committed row; the mechanism is `39c20ce`'s and lives in `runtime-py/`. **The most important
+sentence in it is §Y.4:** the closure is falsifiable and it is **not a floor**, and the residue
+that leaves is the only thing here that gets a number.
+
+##### Y.0 The register was read at HEAD across every live writer, before any number was chosen
+
+§X.8's precaution, `RB-P75`'s before it, applied again and for the same reason — §X.8 recorded
+the ceiling moving six times in one shift, and it has moved again since that sentence was
+written.
+
+<!-- provenance: value=ceiling RB-P90, reached on three refs — main (cbe3740), feat/answers-checked (da8ffd6) and this branch feat/question-checked (39c20ce); max over all 24 refs/heads is 90; commit=39c20ce; command=for r in $(git for-each-ref --format='%(refname:short)' refs/heads/); do git show $r:docs/eval.md | grep -oE 'RB-P[0-9]+' | sed 's/RB-P//' | sort -n | tail -1; done | sort -rn | head -1 -->
+
+    max over all 24 refs/heads   ->  90     (main, feat/answers-checked, this branch)
+
+**`RB-P91` is therefore the next free number, and this section mints exactly one entry.** Section
+letters are the same register with the same hazard, and were read the same way:
+
+<!-- provenance: value=section letters K5 and L-Q and S-X are taken across the 24 refs; no ref carries a section Y; commit=39c20ce; command=for r in $(git for-each-ref --format='%(refname:short)' refs/heads/); do git show $r:docs/eval.md | grep -oE '^#### [A-Z][0-9]* \(' ; done | sort -u -->
+
+    taken, over every ref   ->  K5  L M N O P Q  S T U V W X
+    free                    ->  Y
+
+`U` is on `feat/version-truth` and `main`; `X` is on `main`, `feat/answers-checked` and this
+branch. **This is section Y.**
+
+##### Y.1 What `39c20ce` is, re-derived from the commit rather than from the hand-back
+
+<!-- provenance: value=3 files, +226/-2, all under runtime-py/; commit=39c20ce; command=git show --stat 39c20ce and git diff --stat main...HEAD -->
+
+    runtime-py/src/bantamkit/evalrun.py       +81
+    runtime-py/tests/test_document_setup.py  +139  -1
+    runtime-py/tests/test_document_tools.py    +8  -1
+                                             3 files, +226 -2
+
+No `assets/`, no `docs/`, no `.jsonl`, and none of the nine committed tasks changes what it asks
+or answers. **Layer 1 only**, which is what makes this section legal as Layer 3: the two halves of
+this job never touch the same file.
+
+##### Y.2 Where the refusal runs, and why it is second rather than first
+
+At `39c20ce`, inside `run_task`: `check_expected_against_corpus` at `evalrun.py:1439`,
+`check_question_against_prompt` at `:1443`, `TrackingClient` at `:1444`. The new check sits
+**immediately after the scored half, before the client is wrapped and before the `Agent`
+exists**, and **outside** the `try` that turns a `BantamError` into a `config-error` row.
+
+That is §X.2's argument inherited unchanged, and it is inherited rather than restated because the
+reason is unchanged: `main()` returns `None`, `evalrun.py` has no `sys.exit`, so a `config-error`
+row for a question nobody asked would be a suite that measured nothing and exited 0 — `RB-P51`'s
+failure with a third spelling.
+
+**Second rather than first is a deliberate ordering and it is the smaller of the two decisions.**
+A task file wrong in *both* halves keeps the message it already had; the new check can only ever
+add a refusal, never change one. That is why the seven new nodes could be added without any
+existing message assertion moving.
+
+##### Y.3 The bridge: one rule, two prefixes, and a label whose spelling is its role
+
+The property has two clauses, and only the first is about the prompt:
+
+> A cell a task resolves **for the prompt's sake** must be one the prompt actually names, and a
+> task that resolves a cell for **neither the prompt nor the scoring** must say so.
+
+The second clause needed a spelling, and `39c20ce` put it in the label — `QUESTION_EXEMPT_PREFIX
+= "unasked_"` at `evalrun.py:1025`, read at the same place and by the same rule as `expected_`.
+**The argument for that choice is that the file already keeps a label's role in its spelling**,
+so `unasked_<label>` is not a new mechanism, it is the existing one used twice. Every label that
+is neither `expected_` nor `unasked_` is a question address, and its resolved value must occur in
+`task["prompt"]`.
+
+`UnaskedAnswerError` (`evalrun.py:1028`) is a sibling of `UncheckedAnswerError`, **not a
+subclass**, and the distinction is load-bearing rather than tidy: a must-be-red node that means
+to catch the question half would otherwise go green on the scored half's refusal, which is
+exactly the laundering §T made a procedure against. The type system is doing the §T check here.
+
+##### Y.4 The declaration is CHECKED in both directions — and it is still not a floor
+
+Re-derived against live corpora rebuilt by the committed generator, not read off the source. Five
+rows, each a separate task object built from a committed `.yaml`:
+
+<!-- provenance: value=9 of 9 committed tasks accepted by both checks; ATTACK scored=ACCEPTED question=REFUSED; hatch-on-honest REFUSED; hatch-on-attacked ACCEPTED; no-address-on-attacked ACCEPTED; commit=39c20ce; command=a scratch probe loading assets/evals/document/tasks/*.yaml, calling materialise_documents into a tmpdir at config `bare`, then check_expected_against_corpus and check_question_against_prompt on each variant -->
+
+    nine committed tasks, unchanged                    ->  9 of 9 ACCEPTED by BOTH checks
+    ATTACK: doc-large-in-137, prompt SKU-999999
+        check_expected_against_corpus                  ->  ACCEPTED
+        check_question_against_prompt                  ->  REFUSED  UnaskedAnswerError
+    ESCAPE HATCH on the HONEST task
+        (rename to unasked_, prompt untouched)         ->  REFUSED  UnaskedAnswerError
+    ESCAPE HATCH on the ATTACKED task                  ->  ACCEPTED
+    NO QUESTION ADDRESS AT ALL on the ATTACKED task    ->  ACCEPTED
+
+The ATTACK row is the whole of `RB-P90`: the scored half accepts it — `scoring.expected` still
+matches the corpus cell by cell — while the prompt asks about a row the corpus does not hold.
+Before `39c20ce` such a run started, scored the model, and **put the mismatch on the model's
+record.**
+
+**Row 3 is what makes the exemption honest.** `unasked_` on a cell the prompt *does* name is
+refused too, so renaming the nine committed tasks' `question_sku:` to `unasked_question_sku:`
+cannot silently disarm the check — the rename is itself a refusal. An escape hatch nobody can
+falsify is the hole with a longer name, and this one can be falsified on any task that is honest.
+
+**Rows 4 and 5 are the same fact and they are the most important thing in this section.** The
+exemption is falsifiable **on a task that is honest** and it gives the check **no floor**. A task
+that declares zero asked cells — by omitting the address, or by renaming every question label to
+`unasked_` — may carry a prompt naming any row it likes, and `RB-P90`'s shape returns intact.
+Nothing in `39c20ce` requires a question address to exist; the scored half requires at least one
+`expected_*` address, and the question half requires nothing at all.
+
+`39c20ce` gives a reason for not requiring one: a legitimate prompt may address no single cell —
+an aggregation, or a `tool_trace` task — and forcing one has a blast radius past this job's
+edges. **The verdict on that argument, with its cost side measured rather than assumed:**
+
+<!-- provenance: value=all nine committed document tasks carry exactly {question_sku, expected_region, expected_units}; 0 tasks outside those nine carry a document_setup; exactly 1 committed task is scored tool_trace and it carries no document_setup; commit=39c20ce; command=grep -h -A6 'answers:' assets/evals/document/tasks/*.yaml | grep -E '^\s+\w+:' | sort | uniq -c, plus grep -l 'document_setup' assets/evals/tasks/*.yaml and grep -h 'kind:' over both task directories -->
+
+    the nine's answer labels        ->  question_sku x9, expected_region x9, expected_units x9
+    document_setup outside the nine ->  0 tasks
+    committed tool_trace tasks      ->  1, and it declares no document_setup
+
+**So a floor would break nothing in the tree today, and the argument's cost side is entirely
+prospective.** The argument is accepted anyway, and accepted **as a reason not to fix it here,
+not as a reason it needs no entry.** Two things make that the right call: the floor is a second
+property (it must decide what "at least one question address" means for a `contains`-scored task,
+which has no keys), and it would land in `evalrun.py`, which this section does not own. **That is
+precisely what the register is for — filed, not fixed.** It is minted below as `RB-P91`.
+
+##### Y.5 Non-vacuity, verified against the run rather than the source
+
+`39c20ce`'s two neutralising mutants were **re-run here**, on a twin worktree exported from git
+rather than in the checkout, because `runtime-py/` is the other unit's layer and a live unit's
+file is never mutated in place:
+
+<!-- provenance: value=M1 4 failed, 1255 passed, 2 xfailed — three Failed: DID NOT RAISE UnaskedAnswerError and one IndexError: pop from empty list at tests/conftest.py:13; M2 1 failed, 1258 passed, 2 xfailed, the same IndexError; both reverted, both worktrees git status --short empty; commit=39c20ce; command=git worktree add <scratch> 39c20ce, then PYTHONPATH=<scratch>/runtime-py/src .venv/bin/python -m pytest <scratch>/runtime-py/tests -q with (M1) an early return at the top of check_question_against_prompt and (M2) the call deleted from run_task -->
+
+    M1  check returns immediately      4 red   3 x DID NOT RAISE UnaskedAnswerError
+                                              1 x IndexError: pop from empty list (conftest.py:13)
+    M2  function intact, call removed  1 red   the same IndexError, and nothing else
+
+Both reproduce `39c20ce`'s reported counts exactly. **M2's single red is the wiring claim's only
+guard, and it is the only thing that fires** — the five nodes that call
+`check_question_against_prompt` directly stay green under M2, correctly, because they cannot say
+whether `run_task` calls it.
+
+The seven new nodes were counted from the collected node ids rather than from the diff:
+
+<!-- provenance: value=1254 collected at cbe3740, 1261 at 39c20ce, 7 added and 0 removed, all seven in tests/test_document_setup.py; commit=39c20ce; command=pytest --collect-only -q on twin worktrees at cbe3740 and 39c20ce, node ids sorted and diffed with comm -->
+
+    added    7   test_a_committed_task_asks_about_the_row_its_own_corpus_holds
+                 test_a_prompt_naming_a_row_the_corpus_does_not_hold_is_refused
+                 test_a_scored_answer_is_not_required_to_appear_in_the_prompt
+                 test_a_cell_the_prompt_never_names_is_refused_until_the_label_says_it_is_unasked
+                 test_declaring_a_cell_unasked_while_the_prompt_names_it_is_refused
+                 test_the_question_check_is_a_no_op_for_every_task_in_the_frozen_suite
+                 test_run_task_refuses_an_unasked_question_before_it_calls_the_model
+    removed  0
+
+And the blast radius — the pre-existing nodes the new property would have reddened had the two
+fixture renames not landed with it — was measured by putting `39c20ce`'s `evalrun.py` on top of
+`cbe3740`'s test tree:
+
+<!-- provenance: value=3 failed, 1249 passed, 2 xfailed; the three are test_document_setup.py::test_run_task_materialises_a_valid_declaration_before_the_agent_runs, test_document_tools.py::test_clause_3_one_constant_keeps_the_small_corpus_whole and test_document_tools.py::test_the_budget_is_one_running_total_across_parts_not_a_fresh_ceiling_per_part; commit=39c20ce; command=copy the cbe3740 worktree, overwrite runtime-py/src/bantamkit/evalrun.py with 39c20ce's, then pytest -q --tb=no -->
+
+    3 failed, 1249 passed, 2 xfailed   the exact three, named above
+
+That reproduces the prep probe's **exactly 3 test nodes** and `39c20ce`'s own re-derivation of
+it. One precision note on the wording rather than the number, recorded in §Y.7.
+
+##### Y.6 The self-disclosure against invariant 6, recorded as disclosed, and the verdict on it
+
+`39c20ce` discloses, rather than leaving to be found, that its wiring node
+`test_run_task_refuses_an_unasked_question_before_it_calls_the_model` **reddens under both
+mutations via `IndexError` from `FakeClient([])` rather than via a missing raise.** Its argument:
+that *is* the defect the node's name promises — *"before it calls the model"* surfacing as the
+model being called — and it is the same shape §X.6 recorded for its `M3b`.
+
+**The argument is accepted, and the reason is mechanical rather than charitable.** `conftest.py:13`
+is `return self.responses.pop(0)`, **inside `FakeClient.chat`**. An `IndexError` raised there is
+proof the harness entered a model call — it cannot be reached any other way. The fixture is a
+committed task with one field changed, and the scored half is separately asserted to ACCEPT that
+same task, so **no second defect is present for the node to redden on**; the §T hazard is a
+laundering hazard and there is nothing here to launder. The node also discriminates *late* from
+*absent*: a call site moved to after the model call reddens it too, for the same reason.
+
+**One weakness is real and it is not the one disclosed.** With an empty queue the node dies before
+reaching its own `assert client.calls == []`, so the message a future reader sees names the fake
+client and not the check. Queueing one response would move the failure onto `DID NOT RAISE` and
+leave `client.calls == []` as the live assertion, at no cost to what is proved. **That is a
+legibility defect in a node that is otherwise sound, and it is too small for the register** —
+recorded here, in the section, which is where §W.6's rule 3 puts things that are neither findings
+nor fixes.
+
+##### Y.7 What the hand-off did NOT reproduce as stated — and it is a qualifier and a noun, not a figure
+
+**Every number handed to this section re-derived**: `+226/-2`, three files, seven nodes, the
+`1259 / 1252` gate pair, `M1`'s 4 red and `M2`'s 1 red with their exact messages, the blast radius
+of 3, the 9-of-9 acceptance, the whole five-row attack table, and the prep probe's discrimination:
+
+<!-- provenance: value=exactly 1 corpus key value occurs in the prompt on all nine tasks — 1 of 12000 on the six large corpora, 1 of 400 on the three small; commit=39c20ce; command=a scratch probe materialising each committed task, extracting every rendered row with docread.extract, and counting distinct SKU- key values occurring as substrings of task["prompt"] -->
+
+    six large corpora   ->  1 of 12000 key values occurs in the prompt, on each
+    three small corpora ->  1 of   400 key values occurs in the prompt, on each
+
+Two things do not survive as worded. Neither is a number, and this document records handoff
+corrections as a subsection of the section that catches them (§Q, §T, §W.5, §X.1) — never as a
+register entry.
+
+1. **"`RB-P90` re-opens, *silently*" is measurably too strong, for the one directory it can be
+   wrong about.** Adding a tenth document task with no `question_sku:` and a prompt naming
+   `SKU-999999` does redden the suite. But the honest control is what makes that readable:
+
+   <!-- provenance: value=a tenth task with question_sku deleted and the prompt renamed to SKU-999999 reddens 3 nodes; an HONEST tenth task, question_sku intact and prompt naming the row, reddens 2 of the same 3; the discriminating node is test_g1_the_question_names_the_row_the_answer_was_read_from[doc-small-tenth] and it fails with KeyError: 'question_sku' at test_document_tasks.py:138; commit=39c20ce; command=two copies of the 39c20ce worktree, a tenth .yaml added to assets/evals/document/tasks/ in each, then pytest runtime-py/tests/test_document_tasks.py -q --tb=line -->
+
+       dishonest tenth task  ->  3 failed, 56 passed
+       honest   tenth task   ->  2 failed, 57 passed
+       the difference        ->  exactly ONE node, failing with KeyError: 'question_sku'
+
+   The two nodes common to both are a **census**: `test_the_task_set_is_the_nine_the_bar_pre_registered`
+   (`assert 10 == 9`) and `test_every_stratum_the_bar_declares_is_populated_as_declared`. They fire
+   on *any* tenth task and carry **no information about the defect**. Exactly one node carries
+   information, it does so by `KeyError` on a missing dict key rather than by asserting the
+   property, and it sees only files under `assets/evals/document/tasks/`. **So the honest wording
+   is: silent in the harness; in the suite, caught by a census pinned to nine plus one incidental
+   `KeyError`, in one directory.** That is a weaker guard than "not silent" suggests and a
+   stronger one than "silently" allows, and §Y.8's entry is worded from the measurement.
+
+2. **"Three of this suite's own fixtures … are renamed" is three *nodes* across *two* fixture
+   declarations.** `39c20ce` renames `SMALL_CORPUS` in `test_document_tools.py` (which two nodes
+   read) and one inline `IN_WINDOW` override in `test_document_setup.py` (one node). The count 3
+   is right; the noun is one level off. Recorded because §Y.5's blast-radius figure is quoted
+   against it.
+
+##### Y.8 Minted here — `RB-P91`, and the four things that get no number
+
+- **`RB-P91` — the question check has no floor: a document task that declares zero asked cells is
+  accepted whatever its prompt asks, so `RB-P90`'s shape survives its own closure one step out.**
+  `check_question_against_prompt` refuses a *declared* question address the prompt does not name,
+  and refuses an `unasked_` declaration the prompt *does* name — both directions, so the exemption
+  is falsifiable on any honest task. **Neither direction has a subject when no question address
+  exists.** Omit `question_sku:`, or rename every question label to `unasked_`, and the prompt may
+  name any row it likes: §Y.4 rows 4 and 5 measure both, both ACCEPTED, on a task whose prompt
+  asks for a row its corpus does not hold. Today's only guard is the nine-file checker, which
+  §Y.7(1) measures at **one informative node, firing by `KeyError`, over one directory** — the
+  same shape §11.4 of the bar called insufficient when it was the *only* guard for the scored
+  half. **Attack, stated as the property and not as the mechanism:** a task that materialises a
+  corpus must say what its prompt asks about, and "nothing" must be a thing it can say and be held
+  to; whether that is a required label, a required count, or a declaration at the task level
+  belongs to whoever writes it. **NOT FIXED HERE, and the reason is ownership plus scope:** it is
+  a Layer-1 change to `evalrun.py`, this section owns `docs/eval.md`, and §Y.4 measures the cost
+  side of the deferral as zero committed tasks broken today. **Filed.**
+
+**Four things here get no number, and saying so is most of the entry.**
+
+1. **`RB-P90` is a record and is not edited by being closed.** §X.8 filed it, `39c20ce` is the
+   shape it named, landed. A bar finding — or a register finding — that comes true does not mint a
+   new entry; the closure is noted here, beside it, and §X.8's text stands unamended.
+2. **The `unasked_` bidirectional check is a design decision that worked, not a finding.** It is
+   the answer to an escape hatch that would otherwise be unfalsifiable, it is pinned by a node
+   built on a committed task with the rename as its only defect, and §Y.4 row 3 measures it. A
+   mechanism doing its job is the opposite of a defect.
+3. **The `IndexError` legibility weakness of §Y.6 is a node's message, not a property's hole.**
+   The node proves what its name promises; only its failure text points at the fixture instead of
+   the check. §W.6's rule 3 keeps that in the section.
+4. **The two handoff corrections of §Y.7 are handoff corrections.** A qualifier that overstated and
+   a noun off by one level, both caught by re-derivation, both belonging in the subsection that
+   caught them. **§Y.7 is that subsection.** It is also worth recording that this is the first
+   section in this run of the register where **every figure** handed over survived re-derivation
+   and only the prose around them moved.
+
+##### Y.9 What is NOT claimed
+
+1. **Not claimed: that a task's question is now known to be *about* the row it names.** Membership
+   is literal substring containment over `task["prompt"]`, which is strictly weaker. Measured, not
+   reasoned about:
+
+   <!-- provenance: value=ACCEPTED — a task whose question_sku resolves to SKU-000137, whose prompt names SKU-000137 only inside a parenthetical format example and then asks about SKU-000261, passes check_question_against_prompt unchanged; commit=39c20ce; command=a scratch probe on doc-small-137 with the prompt rewritten to "Find the row whose sku is exactly SKU-000261 ... (Sku codes look like SKU-000137.)" and the answers: block untouched -->
+
+       question_sku resolves to     SKU-000137
+       the prompt asks about        SKU-000261
+       the prompt mentions          SKU-000137, as a format example
+       check_question_against_prompt  ->  ACCEPTED
+
+   The discrimination measured in §Y.7 (1 of 12000, 1 of 400) says this is not a near-miss on
+   today's nine; it does not make the claim any stronger than it is.
+
+2. **Not claimed: that the matching is token-aware, case-folding, or whitespace-normalising.** It
+   is exact substring, so a short or numeric value can occur inside an unrelated number.
+   `expected_*` labels are exempt from the search, so today's exposure is non-`expected_` labels
+   on non-key columns — `NOTES_DOCX`'s `target_line`, which resolves to a whole rendered line, is
+   the shape. Strictness mirrors `_check_unkeyed_expected`; it is a decision, not a derivation.
+
+3. **Not claimed: that a cell named anywhere else counts as asked.** Only `task["prompt"]` is
+   searched. A cell named in a system message, a tool description or a memory fact is *unasked* as
+   far as this check is concerned, and a task built that way must carry the `unasked_` prefix or
+   be refused.
+
+4. **Not claimed: that the `where` in a refusal message always names the right address.** The pairing
+   is `zip(entries, fixtures, strict=False)`, inherited from `_answer_claims`; if entries and
+   fixtures ever desync, the address in the message can be the wrong one. Pre-existing in the
+   scored half, now present in both halves — the refusal still fires, only its pointer can slip.
+
+5. **Nothing about any committed run changes.** No `.jsonl` is regenerated and no committed row is
+   restated by this section or by `39c20ce`. J10's 432 rows measured what §X.9(1) says they
+   measured. **This changes what a tenth task can get away with, and nothing else.**
+
+6. **No live model call was made by this section.** Every figure above comes from committed source
+   read at two commits, from corpora rebuilt by the committed generator into scratch worktrees, and
+   from the test suite.
+
+##### Y.10 Gates
+
+<!-- provenance: value=1259 passed, 2 xfailed at 39c20ce; 1252 passed, 2 xfailed at cbe3740; delta +7; commit=39c20ce; command=PYTHONPATH=$PWD/runtime-py/src .venv/bin/python -m pytest runtime-py/tests -q in the checkout at 39c20ce, and the same against a twin worktree exported at cbe3740 -->
+
+    .venv/bin/python -m pytest runtime-py/tests -q
+        ->  1252 passed, 2 xfailed     at cbe3740   (baseline, twin worktree)
+        ->  1259 passed, 2 xfailed     at 39c20ce   (delta +7, the seven nodes of §Y.5)
+
+<!-- provenance: value=All checks passed! on runtime-py at both cbe3740 and 39c20ce, and on docs/eval-data at 39c20ce; commit=39c20ce; command=.venv/bin/ruff check runtime-py and .venv/bin/ruff check docs/eval-data -->
+
+    .venv/bin/ruff check runtime-py       ->  All checks passed!   at cbe3740 and at 39c20ce
+    .venv/bin/ruff check docs/eval-data   ->  All checks passed!
+
+**This section adds no `.py` and no `.jsonl`**, so the suite count is `39c20ce`'s count, quoted
+with the commit it was measured at, and the `+7` is that commit's own figure measured here against
+`cbe3740` rather than carried.
+
+`amendguard check . cbe3740..HEAD tools/amendguard/ledger.json` reported **UNMEASURED** at
+`39c20ce` — no amend-only path changed in that range — and this section is the first change to
+`docs/eval.md` on this branch, so it is the row the checker measures. Measured rather than
+asserted, on this section's own commit:
+
+<!-- provenance: value=VERDICT path=docs/eval.md classify=insert isolation=mixed derivation=absent verdict=OK, insert 350 lines at line 9098; SUMMARY rows=1 ok=1 red=0 broken=0 merges=0 unmeasured=0; commit=the commit carrying this section; command=.venv/bin/python tools/amendguard/amendguard.py check . cbe3740..HEAD tools/amendguard/ledger.json -->
+
+    classify=insert   isolation=mixed   derivation=absent   verdict=OK
+    insert — 350 lines at line 9098
+    SUMMARY rows=1 ok=1 red=0 broken=0 merges=0 unmeasured=0
+
+`isolation=mixed` gates nothing here: it is `sole` only for a pointer-only single-file commit,
+and the isolation rule is applied to `classify` values beginning `pointer:`. This is an
+insertion and nothing else — **no committed line above it is rewritten, deleted, or
+renumbered**, which is the `+350 / -0` the diff carries.
+
 
 Back to the [README](../README.md).
