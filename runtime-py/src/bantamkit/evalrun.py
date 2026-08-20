@@ -1275,6 +1275,13 @@ def _document_tools(fixtures: list[DocumentFixture]) -> list[ToolDef]:
     default_document = next(iter(docs), "")
 
     def list_documents() -> str:
+        """What exists — and, since J25, what the rendering left out of it.
+
+        The omissions are passed straight through as primitives. Nothing is filtered here:
+        deciding at the harness which counts are worth the model's attention would put back
+        exactly the silence `docread` was changed to end, and it would do it in the layer
+        least able to know. `docread` counts, `contract` words it, this only carries it.
+        """
         return document_manifest(
             [
                 {
@@ -1284,10 +1291,16 @@ def _document_tools(fixtures: list[DocumentFixture]) -> list[ToolDef]:
                     "part": part.name,
                     "row_count": part.row_count,
                     "rows": part.rows,
+                    "omissions": [o.as_dict() for o in part.omissions],
                 }
                 for name, doc in docs.items()
                 for part in doc.parts
-            ]
+            ],
+            [
+                {"document": name, "omissions": [o.as_dict() for o in doc.omissions]}
+                for name, doc in docs.items()
+                if doc.omissions
+            ],
         )
 
     def read_document(

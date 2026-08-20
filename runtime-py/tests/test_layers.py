@@ -77,6 +77,30 @@ GOLDEN_DOCUMENT_MANIFEST = (
     "  row 2 is the last data row: SKU-000002\t9"
 )
 GOLDEN_DOCUMENT_MANIFEST_EMPTY = "no documents are attached to this task"
+# J25-D2. The disclosure lines, pinned for the same reason and one more: they are the ONLY
+# place the model is told that a row count it is about to plan against describes empty lines,
+# or that a number it is about to read back is a serial date. The numbers below are the real
+# ones re-derived from `~/Downloads/step test.xlsx` and the timesheet, not invented shapes.
+GOLDEN_DOCUMENT_MANIFEST_OMISSIONS = (
+    "step test.xlsx: the file also holds 56 embedded file(s) (png) totalling 18590162 bytes, "
+    "which no row can carry \u2014 this reader renders no image or embedded object\n"
+    'step test.xlsx (xlsx) part 2 "Result Ma 2": 28 rows, numbered 0 to 27\n'
+    "  row 0 is the header: \n"
+    "  row 1 is the first data row: \n"
+    "  row 27 is the last data row: \n"
+    "  NOT in those rows: 15 embedded file(s), 4534145 bytes, anchored to this part\n"
+    "  28 of those 28 rows carry no cell value at all and render as an empty line\n"
+    "  column(s) A: 31 cell(s) store a NUMBER under the date/time format "
+    "[$-409]dd\\-mmm\\-yy \u2014 this reader renders the stored serial number verbatim and "
+    "does not convert it to a date; convert it with that format code if you need one"
+)
+# An omission whose subject this layer has no template for is still PRINTED. The count is
+# what must never vanish; a slightly generic line is the acceptable cost of the lag.
+GOLDEN_DOCUMENT_MANIFEST_UNKNOWN_SUBJECT = (
+    'x.xlsx (xlsx) part 0 "s": 1 rows, numbered 0 to 0\n'
+    "  row 0 is the header: a\n"
+    "  NOT in those rows: 7 chart-series (bar, line)"
+)
 GOLDEN_DOCUMENT_PAGE = (
     'inventory.xlsx "stock" rows 4-5 of 12001; each line below begins with its own row number\n'
     "4\tSKU-000004\n"
@@ -164,11 +188,28 @@ MOVED_FRAGMENTS = (
     # reached a handler and the model read `unhashable type: 'dict'`.
     "was called with the wrong type of argument",
     "must be type",
+    # 2026-08-20, J25-D2. The disclosure lines. `docread` counts what it left out and hands
+    # the counts over as primitives; the sentences that carry them are this layer's.
+    "which no row can carry",
+    "NOT in those rows",
+    "carry no cell value at all",
+    "renders the stored serial number verbatim",
+    # 2026-08-20, J25-D3. The PDF reader's two page-level silences. `pdfread` counts show-ops,
+    # images and unmapped characters; the sentence that turns those counts into "could not
+    # read, NOT empty" is this layer's and must not drift back into the reader.
+    #
+    # Only the MANIFEST's own phrasing is guarded here. `/ToUnicode` and "glyph" are the
+    # format's vocabulary and a REFUSAL in core names them too (`docread._pdf_refusal`, which
+    # raises an exception rather than rendering an observation) — guarding a shared noun would
+    # be guarding the subject rather than the wording.
+    "rendered NO row",
+    "NOT the same as the page being empty",
 )
 CORE_MODULES = (
     "agent.py",
     "budget.py",
     "docread.py",
+    "pdfread.py",
     "loopguard.py",
     "structured.py",
     "critique.py",
@@ -252,6 +293,110 @@ def test_document_manifest_bytes():
         == GOLDEN_DOCUMENT_MANIFEST
     )
     assert document_manifest([]) == GOLDEN_DOCUMENT_MANIFEST_EMPTY
+
+
+# The part entry J25-D2 measured out of `~/Downloads/step test.xlsx`, plus the timesheet's
+# real date column, so one golden covers all four disclosure lines.
+OMITTING_PART = {
+    "document": "step test.xlsx",
+    "kind": "xlsx",
+    "index": 2,
+    "part": "Result Ma 2",
+    "row_count": 28,
+    "rows": [""] * 28,
+    "omissions": [
+        {"subject": "media", "count": 15, "size": 4534145, "where": [], "what": "png"},
+        {"subject": "blank-rows", "count": 28, "size": 0, "where": [], "what": ""},
+        {
+            "subject": "number-format",
+            "count": 31,
+            "size": 0,
+            "where": ["A"],
+            "what": r"[$-409]dd\-mmm\-yy",
+        },
+    ],
+}
+OMITTING_PACKAGE = [
+    {
+        "document": "step test.xlsx",
+        "omissions": [
+            {"subject": "media", "count": 56, "size": 18590162, "where": [], "what": "png"}
+        ],
+    }
+]
+
+
+def test_document_manifest_omission_bytes():
+    got = document_manifest([OMITTING_PART], OMITTING_PACKAGE)
+    assert got == GOLDEN_DOCUMENT_MANIFEST_OMISSIONS
+
+
+# J25-D3. The two page-level omissions the PDF reader produces. The entry below is the shape
+# `docread.extract_pdf` builds for a page that rendered nothing: `unread-page` carries the
+# image count in `count` and the SHOW-OPERATOR count in `what`, both machine facts, and this
+# layer is where they become a sentence a model can act on.
+GOLDEN_DOCUMENT_MANIFEST_PDF_PAGE = (
+    'scan.pdf (pdf) part 4 "page 5": 0 rows, numbered 0 to -1\n'
+    "  812 character(s) shown on this part are NOT in those rows: their codes came from "
+    "font(s) with no /ToUnicode map (ABCDEF+Loma), so the file stores indices into a font's "
+    "own glyphs and says nowhere which character each glyph draws \u2014 this reader drops "
+    "them rather than guess, because a guess here is indistinguishable from content\n"
+    "  this part rendered NO row: the page ran 46 text-showing operator(s) and draws 3 "
+    "image(s), 91234 bytes, that no row can carry \u2014 no row means this reader recovered "
+    "no text from the page, which is NOT the same as the page being empty, and there is no "
+    "OCR here"
+)
+
+
+def test_document_manifest_pdf_page_omission_bytes():
+    entry = {
+        "document": "scan.pdf",
+        "kind": "pdf",
+        "index": 4,
+        "part": "page 5",
+        "row_count": 0,
+        "rows": [],
+        "omissions": [
+            {
+                "subject": "unmapped-text",
+                "count": 812,
+                "size": 0,
+                "where": [],
+                "what": "ABCDEF+Loma",
+            },
+            {"subject": "unread-page", "count": 3, "size": 91234, "where": [], "what": "46"},
+        ],
+    }
+    assert document_manifest([entry]) == GOLDEN_DOCUMENT_MANIFEST_PDF_PAGE
+
+
+def test_document_manifest_prints_a_subject_it_has_no_template_for():
+    entry = {
+        "document": "x.xlsx",
+        "kind": "xlsx",
+        "index": 0,
+        "part": "s",
+        "row_count": 1,
+        "rows": ["a"],
+        "omissions": [
+            {"subject": "chart-series", "count": 7, "size": 0, "where": [], "what": "bar, line"}
+        ],
+    }
+    assert document_manifest([entry]) == GOLDEN_DOCUMENT_MANIFEST_UNKNOWN_SUBJECT
+
+
+def test_a_package_omission_that_matches_no_part_is_still_said():
+    """The `pop` leftover branch. Silence one level up is the same defect one level up."""
+    entry = {
+        "document": "a.xlsx",
+        "kind": "xlsx",
+        "index": 0,
+        "part": "s",
+        "row_count": 1,
+        "rows": ["a"],
+    }
+    got = document_manifest([entry], OMITTING_PACKAGE)
+    assert got.splitlines()[-1].startswith("step test.xlsx: the file also holds 56 ")
 
 
 def test_document_page_bytes():

@@ -8,11 +8,14 @@ value — an index instead of a word, a swapped sheet, a shifted column — rath
 
 from __future__ import annotations
 
+import subprocess
 import zipfile
 
 import pytest
 
+from bantamkit import docread
 from bantamkit.docread import (
+    TEXTUTIL,
     Document,
     DocumentReadError,
     Part,
@@ -20,6 +23,8 @@ from bantamkit.docread import (
     extract_docx,
     extract_xlsx,
     page,
+    sniff,
+    textutil_path,
 )
 
 CONTENT_TYPES = (
@@ -340,10 +345,15 @@ def test_extraction_is_byte_identical_across_runs(tmp_path):
 
 
 def test_not_a_zip_says_what_it_saw(tmp_path):
+    """`extract_xlsx` is still reachable directly, and its own message is unchanged.
+
+    `extract()` no longer routes a PDF here — it never opens the zip at all — so this is
+    asserted against the entry point that a caller who has already decided the kind uses.
+    """
     path = tmp_path / "fake.xlsx"
     path.write_bytes(b"%PDF-1.7 not really a spreadsheet")
     with pytest.raises(DocumentReadError) as excinfo:
-        extract(path)
+        extract_xlsx(path)
     message = str(excinfo.value)
     assert "fake.xlsx" in message and "not a zip archive" in message
     assert "%PDF" in message and "33 bytes" in message
@@ -370,17 +380,28 @@ def test_missing_file(tmp_path):
         extract(tmp_path / "absent.xlsx")
 
 
-def test_unsupported_suffix_names_what_is_supported(tmp_path):
+def test_a_real_pdf_refusal_names_the_pdf_and_its_version(tmp_path):
+    """Was `test_unsupported_suffix_names_what_is_supported`. The suffix is no longer the
+    reason for anything, so the refusal names the CONTENT and its version instead.
+
+    J25-D3 changed WHY this one refuses — a PDF is now dispatched to the PDF reader — and
+    deliberately not what the refusal has to carry. This file holds a catalogue and no page,
+    so the reason is the structure, and the container and its version are still named.
+    """
     path = tmp_path / "notes.pdf"
-    path.write_bytes(b"%PDF")
-    with pytest.raises(DocumentReadError, match="pdf suffix, supported are xlsx, docx"):
+    path.write_bytes(b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n")
+    with pytest.raises(DocumentReadError) as excinfo:
         extract(path)
+    message = str(excinfo.value)
+    assert "it is a PDF document (PDF-1.7)" in message
+    assert "45 bytes on disk" in message
+    assert "no page at all" in message
 
 
 def test_no_suffix_at_all(tmp_path):
     path = tmp_path / "README"
     path.write_bytes(b"x")
-    with pytest.raises(DocumentReadError, match="no suffix"):
+    with pytest.raises(DocumentReadError, match="plain text in no document container"):
         extract(path)
 
 
@@ -419,7 +440,7 @@ def test_docx_missing_document_part(tmp_path):
         extract_docx(path)
 
 
-def test_extract_dispatches_on_suffix(tmp_path):
+def test_extract_reads_ooxml_whatever_the_suffix_case(tmp_path):
     xlsx = write_xlsx(
         tmp_path / "a.XLSX",
         [("s", "worksheets/sheet1.xml", row(inline_cell("A1", "v")))],
@@ -427,6 +448,281 @@ def test_extract_dispatches_on_suffix(tmp_path):
     docx = write_docx(tmp_path / "b.DocX", para("p"))
     assert extract(xlsx).kind == "xlsx"
     assert extract(docx).kind == "docx"
+
+
+# ------------------------------------------------------------------- the container, sniffed
+#
+# J25, 2026-08-20. The property under test is that WHAT A FILE IS decides how it is read, and
+# a suffix is only a hint. It is not a hypothetical: on the user's real `~/Downloads` corpus
+# two of 34 files are misnamed — a `.docx` called `.pdf` and an MHTML archive called `.doc` —
+# and under suffix dispatch both refused with a reason about their names. Each fixture below
+# is built so the WRONG reading is a different, checkable outcome, not an error.
+
+
+def test_a_docx_named_pdf_is_read_as_a_docx(tmp_path):
+    """The exact shape of `ข้อความ….pdf`: `PK\\x03\\x04`, and `word/document.xml` inside."""
+    path = write_docx(tmp_path / "ticket.pdf", para("Executor Name: Kasidit"))
+    container = sniff(path)
+    assert container.kind == "docx" and container.named == "pdf"
+    assert container.suffix_lies
+    doc = extract(path)
+    assert doc.kind == "docx"
+    assert doc.parts[0].rows == ("Executor Name: Kasidit",)
+
+
+def test_an_xlsx_named_docx_is_read_as_a_workbook(tmp_path):
+    path = write_xlsx(
+        tmp_path / "sheet.docx",
+        [("stock", "worksheets/sheet1.xml", row(inline_cell("A1", "sku"), inline_cell("B1", "7")))],
+    )
+    assert sniff(path).kind == "xlsx"
+    doc = extract(path)
+    assert doc.kind == "xlsx" and doc.parts[0].name == "stock"
+    assert doc.parts[0].rows == ("sku\t7",)
+
+
+def test_a_pdf_named_xlsx_refuses_naming_the_pdf_and_the_disagreement(tmp_path):
+    path = tmp_path / "report.xlsx"
+    path.write_bytes(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\ntrailer\n")
+    with pytest.raises(DocumentReadError) as excinfo:
+        extract(path)
+    message = str(excinfo.value)
+    assert "it is a PDF document (PDF-1.4)" in message
+    assert "its name says .xlsx, which its bytes do not" in message
+
+
+def test_a_video_refuses_naming_the_container_and_its_brand(tmp_path):
+    """The corpus's one `.mov`. `ftyp` sits at offset 4, so a leading-magic table misses it."""
+    path = tmp_path / "clip.mov"
+    path.write_bytes(b"\x00\x00\x00\x14ftypqt  \x00\x00\x02\x00qt  " + b"\x00" * 64)
+    assert sniff(path).kind == "isobmff"
+    with pytest.raises(DocumentReadError, match=r"ISO base-media container, brand 'qt'"):
+        extract(path)
+
+
+def test_a_zip_that_is_no_ooxml_package_refuses_listing_what_it_holds(tmp_path):
+    path = tmp_path / "bundle.xlsx"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("readme.txt", "hello")
+        z.writestr("data/values.csv", "a,b")
+    with pytest.raises(DocumentReadError) as excinfo:
+        extract(path)
+    message = str(excinfo.value)
+    assert "a zip archive that is no OOXML package" in message
+    assert "data/values.csv, readme.txt" in message
+
+
+def test_an_opendocument_package_is_named_not_mistaken_for_a_workbook(tmp_path):
+    path = tmp_path / "book.xlsx"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("mimetype", "application/vnd.oasis.opendocument.spreadsheet")
+        z.writestr("content.xml", "<x/>")
+    with pytest.raises(DocumentReadError, match="an OpenDocument package"):
+        extract(path)
+
+
+def test_an_empty_file_says_it_is_empty(tmp_path):
+    path = tmp_path / "nothing.docx"
+    path.write_bytes(b"")
+    assert sniff(path).kind == "empty"
+    with pytest.raises(DocumentReadError, match=r"an empty file \(0 bytes\)"):
+        extract(path)
+
+
+def test_a_directory_is_not_a_document(tmp_path):
+    (tmp_path / "folder.xlsx").mkdir()
+    with pytest.raises(DocumentReadError, match="is a directory, not a document"):
+        extract(tmp_path / "folder.xlsx")
+
+
+def test_a_suffix_this_reader_has_no_expectation_for_is_not_a_lie(tmp_path):
+    path = write_docx(tmp_path / "thing.bin", para("x"))
+    assert sniff(path).kind == "docx"
+    assert not sniff(path).suffix_lies
+
+
+# ----------------------------------------------------------------------- MHTML saved as .doc
+#
+# The corpus's one `.doc` is not the OLE2 binary the suffix promises: it is a Confluence
+# "Export to Word" — a `multipart/related` MIME message whose HTML part is quoted-printable.
+# The soft line break in the fixture below is the whole point: `/usr/bin/textutil` on the real
+# file returned its bytes unchanged, and a `-format html` pass split `signature` into
+# `s= ignature`. `email.get_payload(decode=True)` rejoins it, so the assertion is a value the
+# host-converter route measurably gets wrong.
+
+MHTML_DOC = (
+    "Date: Wed, 19 Aug 2026 04:28:21 +0000 (UTC)\n"
+    "Subject: Exported From Confluence\n"
+    "MIME-Version: 1.0\n"
+    'Content-Type: multipart/related; boundary="----=_Part_6"\n'
+    "\n"
+    "------=_Part_6\n"
+    "Content-Type: text/html; charset=UTF-8\n"
+    "Content-Transfer-Encoding: quoted-printable\n"
+    "\n"
+    "<html><head><title>API</title><style>p{color:red}</style></head><body>\n"
+    "<h1>POST /juristic/api/account-service/submission-juma-acct-s=\n"
+    "ignature</h1>\n"
+    "<p>Overview</p>\n"
+    "<table><tr><th>field</th><th>type</th></tr>\n"
+    "<tr><td>account</td><td>string</td></tr></table>\n"
+    "<script>var leaked =3D 1;</script>\n"
+    "</body></html>\n"
+    "\n"
+    "------=_Part_6\n"
+    "Content-Type: image/png\n"
+    "Content-Transfer-Encoding: base64\n"
+    "\n"
+    "iVBORw0KGgo=\n"
+    "\n"
+    "------=_Part_6--\n"
+)
+
+
+def write_mhtml(path, text=MHTML_DOC):
+    path.write_bytes(text.encode())
+    return path
+
+
+def test_an_mhtml_archive_named_doc_is_read(tmp_path):
+    path = write_mhtml(tmp_path / "api.doc")
+    container = sniff(path)
+    assert container.kind == "mhtml" and container.suffix_lies
+    doc = extract(path)
+    assert doc.kind == "mhtml"
+    assert doc.parts[0].name == "document" and doc.parts[0].index == 0
+
+
+def test_a_quoted_printable_soft_break_is_rejoined_not_left_split(tmp_path):
+    """The one assertion `textutil` fails on the real file: the word must come back whole."""
+    rows = extract(write_mhtml(tmp_path / "api.doc")).parts[0].rows
+    joined = "\n".join(rows)
+    assert "submission-juma-acct-signature" in joined
+    assert "s= ignature" not in joined and "s=" not in joined
+
+
+def test_mhtml_drops_the_mime_envelope_and_the_binary_parts(tmp_path):
+    joined = "\n".join(extract(write_mhtml(tmp_path / "api.doc")).parts[0].rows)
+    assert "Content-Transfer-Encoding" not in joined
+    assert "boundary" not in joined
+    assert "iVBORw0KGgo" not in joined
+
+
+def test_html_tables_render_as_tab_separated_rows(tmp_path):
+    rows = extract(write_mhtml(tmp_path / "api.doc")).parts[0].rows
+    assert "field\ttype" in rows
+    assert "account\tstring" in rows
+
+
+def test_script_and_style_bodies_are_not_document_text(tmp_path):
+    joined = "\n".join(extract(write_mhtml(tmp_path / "api.doc")).parts[0].rows)
+    assert "leaked" not in joined and "color:red" not in joined
+
+
+def test_a_plain_html_file_is_read(tmp_path):
+    path = tmp_path / "page.html"
+    path.write_bytes(b"<html><body><h1>Title &amp; more</h1><p>Body</p></body></html>")
+    assert sniff(path).kind == "html"
+    doc = extract(path)
+    assert doc.kind == "html"
+    assert doc.parts[0].rows == ("Title & more", "Body")
+
+
+def test_mhtml_with_several_text_parts_gets_several_addressable_parts(tmp_path):
+    text = (
+        "MIME-Version: 1.0\n"
+        'Content-Type: multipart/related; boundary="b"\n'
+        "\n--b\nContent-Type: text/html\n\n<p>first</p>\n"
+        "\n--b\nContent-Type: text/plain\n\nsecond\n"
+        "\n--b--\n"
+    )
+    doc = extract(write_mhtml(tmp_path / "two.mht", text))
+    assert [p.name for p in doc.parts] == ["part0", "part1"]
+    assert doc.parts[0].rows == ("first",) and doc.parts[1].rows == ("second",)
+
+
+def test_a_text_container_with_no_text_refuses_instead_of_returning_an_empty_document(tmp_path):
+    """Invariant: silent empty text is the defect. `.xlsx` is exempt and stays exempt below."""
+    path = tmp_path / "blank.html"
+    path.write_bytes(b"<html><head><style>p{color:red}</style></head><body></body></html>")
+    with pytest.raises(DocumentReadError) as excinfo:
+        extract(path)
+    message = str(excinfo.value)
+    assert "it is a html container but" in message
+    assert "it is not an empty document" in message
+
+
+def test_an_empty_xlsx_sheet_is_still_a_part_with_no_rows(tmp_path):
+    """The exemption, pinned: J10's `.xlsx` row counts are committed measurements."""
+    path = write_xlsx(tmp_path / "void.xlsx", [("blank", "worksheets/sheet1.xml", "")])
+    doc = extract(path)
+    assert doc.parts[0].name == "blank" and doc.parts[0].rows == ()
+
+
+# ---------------------------------------------------------- legacy `.doc` / `.rtf`, probed
+
+needs_textutil = pytest.mark.skipif(
+    textutil_path() is None, reason=f"{TEXTUTIL} is a macOS built-in and is not on this host"
+)
+
+
+@needs_textutil
+def test_a_real_ole2_doc_is_read_through_textutil(tmp_path):
+    """No binary is committed: `textutil` writes the OLE2 fixture it is then asked to read.
+
+    `sniff` still has to earn its answer — the assertion below is on the D0CF11E0 magic, and
+    the file is written with a suffix that does not match, so a suffix reading gets it wrong.
+    """
+    source = tmp_path / "seed.txt"
+    source.write_text("Hello legacy world.\nSecond paragraph here.\n")
+    target = tmp_path / "legacy.pdf"
+    subprocess.run(
+        [TEXTUTIL, "-convert", "doc", "-output", str(target), str(source)], check=True
+    )
+    assert target.read_bytes()[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+    container = sniff(target)
+    assert container.kind == "doc" and container.suffix_lies
+    doc = extract(target)
+    assert doc.kind == "doc"
+    assert "Hello legacy world." in doc.parts[0].rows
+
+
+@needs_textutil
+def test_an_rtf_document_is_read_through_textutil(tmp_path):
+    path = tmp_path / "note.rtf"
+    path.write_bytes(rb"{\rtf1\ansi Policy number 4\par Second line\par}")
+    assert sniff(path).kind == "rtf"
+    doc = extract(path)
+    assert doc.kind == "rtf"
+    assert "Policy number 4" in doc.parts[0].rows
+
+
+def test_a_legacy_doc_refuses_by_name_when_textutil_is_absent(tmp_path, monkeypatch):
+    """The Linux and CI case. `textutil` is probed, never assumed — so this is the behaviour
+    on every host that is not a Mac, and it must be a refusal that names the converter."""
+    monkeypatch.setattr(docread, "TEXTUTIL", str(tmp_path / "no-such-textutil"))
+    assert docread.textutil_path() is None
+    path = tmp_path / "legacy.doc"
+    path.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 512)
+    with pytest.raises(DocumentReadError) as excinfo:
+        extract(path)
+    message = str(excinfo.value)
+    assert "an OLE2 compound file" in message
+    assert "is not on this host" in message
+
+
+@needs_textutil
+def test_textutil_refusing_a_file_is_reported_not_swallowed(tmp_path):
+    """An OLE2 file that is not a Word document. The path must end in a reason, never in
+    empty rows — `textutil` either errors, which is reported, or converts nothing, which
+    `_nonempty` turns into a refusal."""
+    path = tmp_path / "notword.doc"
+    path.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 4096)
+    with pytest.raises(DocumentReadError) as excinfo:
+        extract(path)
+    message = str(excinfo.value)
+    assert "does not recognise it and reports 'Type: plain text'" in message
+    assert "raw bytes re-encoded" in message
 
 
 # --------------------------------------------------------------------------- paging
@@ -513,3 +809,283 @@ def test_page_rejects_impossible_windows(paged, offset, limit):
 def test_offset_past_the_end_is_empty_and_final(paged):
     result = page(paged, "data", offset=500)
     assert result.rows == () and result.next_offset is None
+
+
+# ------------------------------------------------------- what the reader admits it cannot see
+#
+# J25-D2. `step test.xlsx` on the user's real corpus is 18.62 MB and the reader reported
+# `4 parts, 28 rows, 27 bytes` with no mention of the 56 embedded images that ARE the file,
+# nor that all 28 of those rows render as empty lines (the 27 bytes are 27 newlines). Every
+# test below builds a file with a known, wrong-if-dropped count and asserts the count is
+# stated. A silent reader passes none of them.
+
+DRAWING_RELS = (
+    '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/'
+    "2006/relationships\">{}</Relationships>"
+)
+
+
+def escape_attr(text):
+    for char, entity in (("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"), ('"', "&quot;")):
+        text = text.replace(char, entity)
+    return text
+
+
+def media_pack(sheet_media):
+    """`{part path: [image name, ...]}` -> the extra members that anchor them to their sheets.
+
+    Built through the real two-hop graph a worksheet uses — sheet rels -> drawing, drawing
+    rels -> `xl/media/*` — because that is the graph the reader walks. A fixture that put the
+    images under `xl/media/` and skipped the rels would pass a reader that only counts members
+    and would not detect one that mis-attributes a part.
+    """
+    extra = {}
+    for i, (target, images) in enumerate(sorted(sheet_media.items()), start=1):
+        drawing = f"drawing{i}.xml"
+        extra[f"xl/worksheets/_rels/{target.rsplit('/', 1)[-1]}.rels"] = DRAWING_RELS.format(
+            f'<Relationship Id="rIdD" Type="http://schemas.openxmlformats.org/officeDocument/'
+            f'2006/relationships/drawing" Target="../drawings/{drawing}"/>'
+        )
+        extra[f"xl/drawings/{drawing}"] = "<xdr/>"
+        extra[f"xl/drawings/_rels/{drawing}.rels"] = DRAWING_RELS.format(
+            "".join(
+                f'<Relationship Id="rIdI{j}" Type="http://schemas.openxmlformats.org/'
+                f'officeDocument/2006/relationships/image" Target="../media/{name}"/>'
+                for j, name in enumerate(images)
+            )
+        )
+        for name in images:
+            extra.setdefault(f"xl/media/{name}", "x" * 100)
+    return extra
+
+
+def styles(codes, xfs):
+    """`xl/styles.xml` with custom `numFmt` codes from id 164 up and the given `cellXfs`.
+
+    The escaping is load-bearing, not tidiness: a real accounting format code contains `"`,
+    and an unescaped one closes the attribute early, so `xl/styles.xml` stops being XML and
+    the reader reports no number format at all. That fixture passed the false-positive test
+    for the wrong reason until a mutation run caught it (J25-D2).
+    """
+    fmts = "".join(
+        f'<numFmt numFmtId="{164 + i}" formatCode="{escape_attr(c)}"/>'
+        for i, c in enumerate(codes)
+    )
+    cell_xfs = "".join(f'<xf numFmtId="{i}"/>' for i in xfs)
+    return (
+        f"<styleSheet {SHEET_NS}><numFmts>{fmts}</numFmts>"
+        f'<cellXfs count="{len(xfs)}">{cell_xfs}</cellXfs></styleSheet>'
+    )
+
+
+def only(part_or_doc, subject):
+    return [o for o in part_or_doc.omissions if o.subject == subject]
+
+
+def test_a_document_that_omits_nothing_says_nothing(tmp_path):
+    """The J10 fixtures are exactly this shape, which is why their manifests cannot move."""
+    path = write_xlsx(
+        tmp_path / "clean.xlsx", [("data", "worksheets/sheet1.xml", row(inline_cell("A1", "x")))]
+    )
+    doc = extract_xlsx(path)
+    assert doc.omissions == ()
+    assert doc.parts[0].omissions == ()
+
+
+def test_embedded_images_are_counted_at_the_package_and_at_the_part(tmp_path):
+    """The real defect: 18.6 MB of screenshots reported as `4 parts, 28 rows`."""
+    path = write_xlsx(
+        tmp_path / "shots.xlsx",
+        [
+            ("empty", "worksheets/sheet1.xml", ""),
+            ("data", "worksheets/sheet2.xml", row(inline_cell("A1", "x"))),
+        ],
+        extra=media_pack(
+            {
+                "xl/worksheets/sheet1.xml": ["a.png", "b.png", "c.png"],
+                "xl/worksheets/sheet2.xml": ["d.png"],
+            }
+        ),
+    )
+    doc = extract_xlsx(path)
+    assert [(o.count, o.size, o.what) for o in only(doc, docread.OMIT_MEDIA)] == [(4, 400, "png")]
+    assert [o.count for o in only(doc.parts[0], docread.OMIT_MEDIA)] == [3]
+    assert [o.count for o in only(doc.parts[1], docread.OMIT_MEDIA)] == [1]
+    # The sheet with no rows at all is the one carrying three of the four images: "0 rows"
+    # and "nothing here" are exactly the two things this disclosure separates.
+    assert doc.parts[0].row_count == 0
+
+
+def test_an_image_on_two_sheets_counts_once_in_the_package_and_once_in_each_part(tmp_path):
+    """Stated in the module docstring, so it is pinned: part counts need not sum to the total."""
+    path = write_xlsx(
+        tmp_path / "shared.xlsx",
+        [("one", "worksheets/sheet1.xml", ""), ("two", "worksheets/sheet2.xml", "")],
+        extra=media_pack(
+            {"xl/worksheets/sheet1.xml": ["same.png"], "xl/worksheets/sheet2.xml": ["same.png"]}
+        ),
+    )
+    doc = extract_xlsx(path)
+    assert only(doc, docread.OMIT_MEDIA)[0].count == 1
+    assert only(doc.parts[0], docread.OMIT_MEDIA)[0].count == 1
+    assert only(doc.parts[1], docread.OMIT_MEDIA)[0].count == 1
+
+
+def test_a_package_media_count_survives_an_unreadable_relationship_graph(tmp_path):
+    """Attribution may fail; the package total may not. It comes from the member list."""
+    extra = media_pack({"xl/worksheets/sheet1.xml": ["a.png"]})
+    extra["xl/worksheets/_rels/sheet1.xml.rels"] = "<not xml"
+    path = write_xlsx(
+        tmp_path / "broken.xlsx", [("data", "worksheets/sheet1.xml", "")], extra=extra
+    )
+    doc = extract_xlsx(path)
+    assert only(doc, docread.OMIT_MEDIA)[0].count == 1
+    assert only(doc.parts[0], docread.OMIT_MEDIA) == []
+
+
+def test_rows_that_render_as_empty_lines_are_counted(tmp_path):
+    """28 rows of which 28 are blank is what `step test.xlsx` actually holds."""
+    body = row(index=1) + row(inline_cell("A2", "x"), index=2) + row(index=3)
+    doc = extract_xlsx(write_xlsx(tmp_path / "blank.xlsx", [("s", "worksheets/sheet1.xml", body)]))
+    part = doc.parts[0]
+    assert part.row_count == 3 and part.rows == ("", "x", "")
+    assert [o.count for o in only(part, docread.OMIT_BLANK_ROWS)] == [2]
+
+
+def test_a_date_formatted_number_is_disclosed_with_its_format_code_not_converted(tmp_path):
+    """`46235.0` stays `46235.0`. What changes is that the manifest now says WHY."""
+    path = write_xlsx(
+        tmp_path / "dates.xlsx",
+        [
+            (
+                "s",
+                "worksheets/sheet1.xml",
+                row(
+                    inline_cell("A1", "Month / Year:"),
+                    '<c r="C1" s="1"><v>46235.0</v></c>',
+                    index=1,
+                ),
+            )
+        ],
+        extra={"xl/styles.xml": styles([r"[$-409]mmmm\-yy"], [0, 164])},
+    )
+    doc = extract_xlsx(path)
+    assert doc.parts[0].rows == ("Month / Year:\t\t46235.0",)  # verbatim, unconverted
+    found = only(doc.parts[0], docread.OMIT_NUMBER_FORMAT)
+    assert [(o.count, o.where, o.what) for o in found] == [(1, ("C",), r"[$-409]mmmm\-yy")]
+
+
+def test_a_builtin_date_format_is_named_by_the_code_the_standard_fixes(tmp_path):
+    """numFmtId 20 carries no `formatCode` in the file. ECMA-376 fixes it as `h:mm`."""
+    path = write_xlsx(
+        tmp_path / "time.xlsx",
+        [("s", "worksheets/sheet1.xml", row('<c r="A1" s="1"><v>0.375</v></c>'))],
+        extra={"xl/styles.xml": styles([], [0, 20])},
+    )
+    found = only(extract_xlsx(path).parts[0], docread.OMIT_NUMBER_FORMAT)
+    assert [(o.count, o.where, o.what) for o in found] == [(1, ("A",), "h:mm")]
+
+
+def test_currency_and_percent_formats_are_not_reported_as_dates(tmp_path):
+    """The false positive that would make the disclosure noise. Measured code, real file."""
+    accounting = r'_("$"* #,##0.00_);_("$"* \(#,##0.00\);_("$"* "-"??_);_(@_)'
+    path = write_xlsx(
+        tmp_path / "money.xlsx",
+        [
+            (
+                "s",
+                "worksheets/sheet1.xml",
+                row(
+                    '<c r="A1" s="1"><v>1234.5</v></c>',
+                    '<c r="B1" s="2"><v>0.25</v></c>',
+                    '<c r="C1" s="3"><v>9</v></c>',
+                ),
+            )
+        ],
+        extra={
+            "xl/styles.xml": styles([accounting, "0.00%", r'#,##0.0,,\ "M"'], [0, 164, 165, 166])
+        },
+    )
+    assert only(extract_xlsx(path).parts[0], docread.OMIT_NUMBER_FORMAT) == []
+
+
+def test_a_date_format_on_a_text_cell_is_not_a_serial_number(tmp_path):
+    """Only a stored NUMBER can be a serial. A shared-string cell under a date format is not."""
+    path = write_xlsx(
+        tmp_path / "textdate.xlsx",
+        [("s", "worksheets/sheet1.xml", row('<c r="A1" s="1" t="s"><v>0</v></c>'))],
+        shared=["not a date"],
+        extra={"xl/styles.xml": styles([r"dd\-mmm\-yy"], [0, 164])},
+    )
+    doc = extract_xlsx(path)
+    assert doc.parts[0].rows == ("not a date",)
+    assert only(doc.parts[0], docread.OMIT_NUMBER_FORMAT) == []
+
+
+def test_one_format_code_reports_every_column_it_appears_in(tmp_path):
+    path = write_xlsx(
+        tmp_path / "cols.xlsx",
+        [
+            (
+                "s",
+                "worksheets/sheet1.xml",
+                row('<c r="C1" s="1"><v>0.375</v></c>', '<c r="D1" s="1"><v>0.75</v></c>')
+                + row('<c r="C2" s="1"><v>0.4</v></c>', index=2),
+            )
+        ],
+        extra={"xl/styles.xml": styles([], [0, 20])},
+    )
+    found = only(extract_xlsx(path).parts[0], docread.OMIT_NUMBER_FORMAT)
+    assert [(o.count, o.where) for o in found] == [(3, ("C", "D"))]
+
+
+def test_a_docx_states_the_images_its_paragraphs_do_not_carry(tmp_path):
+    path = tmp_path / "shots.docx"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("[Content_Types].xml", CONTENT_TYPES)
+        z.writestr("_rels/.rels", ROOT_RELS)
+        z.writestr(
+            "word/document.xml",
+            f"<w:document {WORD_NS}><w:body><w:p><w:r><w:t>hi</w:t></w:r></w:p></w:body>"
+            "</w:document>",
+        )
+        z.writestr(
+            "word/_rels/document.xml.rels",
+            DRAWING_RELS.format(
+                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/'
+                'officeDocument/2006/relationships/image" Target="media/image1.png"/>'
+            ),
+        )
+        z.writestr("word/media/image1.png", "x" * 50)
+    doc = docread.extract_docx(path)
+    assert doc.parts[0].rows == ("hi",)
+    assert [(o.count, o.size) for o in only(doc, docread.OMIT_MEDIA)] == [(1, 50)]
+    assert [o.count for o in only(doc.parts[0], docread.OMIT_MEDIA)] == [1]
+
+
+def test_an_mhtml_states_the_parts_it_did_not_render(tmp_path):
+    """MEASURED: the real `.doc` on the corpus drops 174,918 bytes of octet-stream, silently."""
+    path = tmp_path / "export.doc"
+    path.write_text(
+        "MIME-Version: 1.0\r\n"
+        'Content-Type: multipart/related; boundary="B"\r\n\r\n'
+        "--B\r\nContent-Type: text/html\r\n\r\n<html><body><p>hello</p></body></html>\r\n"
+        "--B\r\nContent-Type: application/octet-stream\r\n\r\nZZZZZ\r\n"
+        "--B\r\nContent-Type: image/png\r\n\r\nQQ\r\n"
+        "--B--\r\n"
+    )
+    doc = extract(path)
+    assert doc.kind == "mhtml" and doc.parts[0].rows == ("hello",)
+    found = only(doc, docread.OMIT_MEDIA)
+    assert [(o.count, o.what) for o in found] == [(2, "application/octet-stream, image/png")]
+
+
+def test_omission_renders_to_primitives_for_the_contract_layer():
+    omission = docread.Omission(docread.OMIT_NUMBER_FORMAT, 3, where=("C", "D"), what="h:mm")
+    assert omission.as_dict() == {
+        "subject": "number-format",
+        "count": 3,
+        "size": 0,
+        "where": ["C", "D"],
+        "what": "h:mm",
+    }

@@ -39,6 +39,7 @@ from bantamkit.evalrun import (
     PASTE_CONFIGS,
     PASTE_MAX_BYTES,
     READER_CONFIGS,
+    DocumentFixture,
     _document_tools,
     effective_config,
     materialise_documents,
@@ -962,3 +963,151 @@ def test_document_read_answers_the_thirteen_calls_the_3b_actually_made_in_its_ow
         for key in wrong:
             assert key in observation, (name, key)
             assert declared[key]["type"] in observation, (name, key)
+
+
+# ------------------------------------- what the model is told the rendering does NOT contain
+#
+# J25-D2. The pair's silent under-report, end to end. On the user's own `~/Downloads` the
+# describe call answered `4 parts, 28 rows` for an 18.62 MB workbook whose 28 rows are all
+# empty lines and whose content is 56 embedded PNGs. The shape below is that file in
+# miniature, built here so the assertion is on the OBSERVATION and not on a dataclass.
+
+DISCLOSURE_NS = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+DISCLOSURE_REL_NS = 'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+DISCLOSURE_RELS = (
+    '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/'
+    '2006/relationships">{}</Relationships>'
+)
+
+
+def write_workbook_of_screenshots(path):
+    """One sheet: a header, a blank row, a date-formatted serial, and two anchored images."""
+    body = (
+        '<row r="1"><c r="A1" t="inlineStr"><is><t>Month / Year:</t></is></c>'
+        '<c r="C1" s="1"><v>46235.0</v></c></row>'
+        '<row r="2"/>'
+    )
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(
+            "[Content_Types].xml",
+            '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/'
+            '2006/content-types"><Default Extension="xml" ContentType="application/xml"/>'
+            "</Types>",
+        )
+        z.writestr(
+            "_rels/.rels",
+            DISCLOSURE_RELS.format(
+                '<Relationship Id="rIdWb" Type="http://schemas.openxmlformats.org/'
+                'officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+            ),
+        )
+        z.writestr(
+            "xl/workbook.xml",
+            f"<workbook {DISCLOSURE_NS} {DISCLOSURE_REL_NS}><sheets>"
+            '<sheet name="Result Ma 2" sheetId="1" r:id="rId1"/></sheets></workbook>',
+        )
+        z.writestr(
+            "xl/_rels/workbook.xml.rels",
+            DISCLOSURE_RELS.format(
+                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/'
+                'officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+            ),
+        )
+        z.writestr(
+            "xl/worksheets/sheet1.xml",
+            f"<worksheet {DISCLOSURE_NS}><sheetData>{body}</sheetData></worksheet>",
+        )
+        z.writestr(
+            "xl/worksheets/_rels/sheet1.xml.rels",
+            DISCLOSURE_RELS.format(
+                '<Relationship Id="rIdD" Type="http://schemas.openxmlformats.org/'
+                'officeDocument/2006/relationships/drawing" Target="../drawings/d.xml"/>'
+            ),
+        )
+        z.writestr("xl/drawings/d.xml", "<xdr/>")
+        z.writestr(
+            "xl/drawings/_rels/d.xml.rels",
+            DISCLOSURE_RELS.format(
+                "".join(
+                    f'<Relationship Id="rIdI{i}" Type="http://schemas.openxmlformats.org/'
+                    f'officeDocument/2006/relationships/image" Target="../media/i{i}.png"/>'
+                    for i in (0, 1)
+                )
+            ),
+        )
+        z.writestr("xl/media/i0.png", "x" * 900)
+        z.writestr("xl/media/i1.png", "x" * 100)
+        z.writestr(
+            "xl/styles.xml",
+            f"<styleSheet {DISCLOSURE_NS}><numFmts>"
+            '<numFmt numFmtId="164" formatCode="[$-409]mmmm\\-yy"/></numFmts>'
+            '<cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="164"/></cellXfs></styleSheet>',
+        )
+    return path
+
+
+def screenshot_tools(tmp_path):
+    path = write_workbook_of_screenshots(tmp_path / "step test.xlsx")
+    payload = path.read_bytes()
+    doc = extract(path)
+    fixture = DocumentFixture(
+        name="step test.xlsx",
+        path=path,
+        file_bytes=len(payload),
+        sha256="",
+        text_bytes=doc.text_bytes,
+        row_counts=tuple(p.row_count for p in doc.parts),
+        answers={},
+    )
+    return {t.tool.name: t.handler for t in _document_tools([fixture])}
+
+
+def test_the_manifest_names_the_images_no_row_can_carry(tmp_path):
+    manifest = screenshot_tools(tmp_path)["document_list"]()
+    assert manifest.splitlines()[0] == (
+        "step test.xlsx: the file also holds 2 embedded file(s) (png) totalling 1000 bytes, "
+        "which no row can carry — this reader renders no image or embedded object"
+    )
+    assert (
+        "  NOT in those rows: 2 embedded file(s), 1000 bytes, anchored to this part"
+        in manifest.splitlines()
+    )
+
+
+def test_the_manifest_says_how_many_of_its_own_rows_are_empty(tmp_path):
+    manifest = screenshot_tools(tmp_path)["document_list"]()
+    assert '"Result Ma 2": 2 rows, numbered 0 to 1' in manifest
+    assert "  1 of those 2 rows carry no cell value at all and render as an empty line" in manifest
+
+
+def test_the_manifest_says_a_serial_date_is_a_serial_date_and_document_read_still_returns_it(
+    tmp_path,
+):
+    """Disclosure, not conversion: the ROW is unchanged and the manifest explains it.
+
+    Converting would have moved a rendered value, which is the one thing J10's committed
+    measurements forbid — and it would have required guessing a locale from a format code.
+    """
+    handlers = screenshot_tools(tmp_path)
+    assert (
+        "  column(s) C: 1 cell(s) store a NUMBER under the date/time format "
+        "[$-409]mmmm\\-yy — this reader renders the stored serial number verbatim and "
+        "does not convert it to a date; convert it with that format code if you need one"
+        in handlers["document_list"]().splitlines()
+    )
+    assert "Month / Year:\t\t46235.0" in handlers["document_read"](offset=0, limit=1)
+
+
+def test_a_document_with_nothing_to_disclose_reads_exactly_as_it_did_before(tmp_path):
+    """The J10 guard at this layer: the nine committed rows are generated by THIS path.
+
+    `test_the_manifest_states_count_numbering_and_three_real_rows` pins the same four lines
+    from the other side. Either one failing means a committed measurement moved.
+    """
+    manifest = tools_for(OVER_WINDOW, tmp_path)["document_list"]()
+    assert manifest.splitlines() == [
+        'inventory.xlsx (xlsx) part 0 "stock": 12001 rows, numbered 0 to 12000',
+        "  row 0 is the header: sku\tregion\tunits",
+        "  row 1 is the first data row: SKU-000001\tsouth\t2049",
+        "  row 12000 is the last data row: SKU-012000\twest\t9928",
+    ]
