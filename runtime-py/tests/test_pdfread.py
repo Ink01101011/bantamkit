@@ -370,17 +370,31 @@ def test_a_content_stream_byte_that_starts_no_object_does_not_hang_the_reader(tm
 
 def test_a_false_obj_match_inside_stream_data_is_not_parsed_as_an_object(tmp_path):
     """Scanning for `N G obj` finds matches inside compressed bytes too. The guard is that a
-    stream's data range is skipped; without it, a stream that happens to contain `1 0 obj`
-    would redefine the catalogue."""
-    payload = b"BT /F1 12 Tf 72 720 Td (real text) Tj ET\n1 0 obj\n<< /Type /Catalog >>\nendobj\n"
+    stream's data range is skipped; without it, a stream that happens to spell `4 0 obj` would
+    redefine the page's content — and later definitions win, which is what an incremental
+    update means.
+
+    Two earlier drafts of this fixture were decoys that could not fire. One redefined the
+    CATALOGUE, and `pages()` routed around it through the `/Type/Page` fallback and read the
+    right text with the guard removed. The next put the decoy inside the CONTENT stream, where
+    it is content and runs whether or not the guard exists. The decoy has to sit in a stream
+    nobody executes and redefine something the page depends on.
+    """
+    decoy = b"BT /F1 12 Tf 72 720 Td (decoy text) Tj ET"
+    buried = (
+        b"\x89PNG not really an image\n"
+        b"4 0 obj\n<< /Length " + str(len(decoy)).encode() + b" >>\nstream\n"
+        + decoy + b"\nendstream\nendobj\n"
+    )
     pdf = build_pdf(
         {
             1: b"<< /Type /Catalog /Pages 2 0 R >>",
             2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
             3: b"<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> >> "
             b"/Contents 4 0 R >>",
-            4: stream_obj(b"", payload),
+            4: stream_obj(b"", b"BT /F1 12 Tf 72 720 Td (real text) Tj ET"),
             5: HELVETICA,
+            6: stream_obj(b"/Type /XObject /Subtype /Image /Width 1 /Height 1", buried),
         }
     )
     assert text_of(extract(write(tmp_path, "a.pdf", pdf))) == "real text"
@@ -439,9 +453,15 @@ def test_a_form_xobject_that_draws_itself_terminates(tmp_path):
 
 
 def test_an_inline_image_is_counted_and_its_bytes_do_not_become_text(tmp_path):
+    """The payload here spells a WORKING `(…) Tj` and delimits it with whitespace on purpose.
+
+    The first draft of this test wrote `Tj\\x03\\x04`, and the binary ran into the operator
+    token so that the show never happened at all — the test passed with the inline-image guard
+    REMOVED. A mutation found it. A decoy that cannot fire is not a decoy.
+    """
     content = (
         b"BT /F1 12 Tf 72 720 Td (before) Tj ET\n"
-        b"BI /W 2 /H 2 /CS /G /BPC 8 ID \x01\x02(not text) Tj\x03\x04 EI\n"
+        b"BI /W 2 /H 2 /CS /G /BPC 8 ID \x01\x02 (not text) Tj \x03\x04 EI\n"
         b"BT /F1 12 Tf 72 700 Td (after) Tj ET"
     )
     doc = extract(write(tmp_path, "a.pdf", simple_pdf(content)))
@@ -496,6 +516,36 @@ def test_ascii85_and_asciihex_content_streams_are_read(tmp_path):
 def test_the_png_predictor_undoes_an_up_filter():
     rows = bytes([2]) + bytes([1, 1, 1]) + bytes([2]) + bytes([1, 1, 1])
     assert pdfread._png_predictor(rows, colors=3, bpc=8, columns=1) == bytes([1, 1, 1, 2, 2, 2])
+
+
+def test_the_png_predictor_undoes_a_sub_filter():
+    """A second branch needs its own row. A mutation of the Sub branch left the Up test green,
+    which says nothing about Sub — an untested branch is untested however green the file is."""
+    rows = bytes([1]) + bytes([5, 1, 1, 1])
+    assert pdfread._png_predictor(rows, colors=1, bpc=8, columns=4) == bytes([5, 6, 7, 8])
+
+
+def test_the_tiff_predictor_adds_the_pixel_to_its_left():
+    assert pdfread._tiff_predictor(bytes([5, 1, 1]), colors=1, bpc=8, columns=3) == bytes(
+        [5, 6, 7]
+    )
+
+
+def test_a_row_is_never_whitespace_only(tmp_path):
+    """The invariant that makes `extract_pdf`'s character test and a byte test agree.
+
+    HONEST NOTE, and it is a finding rather than a claim: a mutation replacing that character
+    test with `doc.text_bytes != 0` left the whole suite green. The two are equivalent ON THIS
+    PATH — but only because `_rows_from_runs` drops any row that strips to nothing, so a
+    whitespace-only rendering never reaches the document check. That equivalence is a property
+    of `pdfread`, not of `extract`, and it is this test rather than that one which holds it.
+    """
+    runs = [
+        pdfread._Run(y=700.0, x=10.0, end_x=20.0, size=12.0, text="   "),
+        pdfread._Run(y=680.0, x=10.0, end_x=20.0, size=12.0, text="\u00a0"),
+        pdfread._Run(y=660.0, x=10.0, end_x=20.0, size=12.0, text=" real "),
+    ]
+    assert pdfread._rows_from_runs(runs, 0) == ("real",)
 
 
 def test_glyph_names_resolve_only_when_the_name_states_a_character():
