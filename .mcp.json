@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "bantamkit": {
-      "command": ".venv/bin/bantamkit-mcp",
+      "command": "tools/bantamkit-mcp",
       "args": []
     }
   }

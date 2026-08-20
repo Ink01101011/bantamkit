@@ -1,0 +1,159 @@
+#!/bin/sh
+# The project-scope MCP endpoint. TRACKED, therefore present in every checkout AND in
+# every `git worktree` — which is the whole reason it exists (`RB-P96`).
+#
+# WHAT WAS BROKEN. `.mcp.json` is tracked and carried `".venv/bin/bantamkit-mcp"`, a
+# path the client resolves against the PROJECT DIRECTORY. A worktree has no `.venv`, so
+# from a worktree that endpoint is not there:
+#
+#   canonical checkout : bantamkit: .venv/bin/bantamkit-mcp - OK Connected
+#   worktree           : bantamkit: .venv/bin/bantamkit-mcp - FAILED
+#                        ENOENT ... posix_spawn '.venv/bin/bantamkit-mcp'
+#
+# `[Conflicting scopes]` prints in both cases and says nothing about which endpoint is
+# reachable, so the failure looks like the scope warning everyone has learned to ignore.
+# This program runs implementation units in worktrees as a matter of course and
+# `CLAUDE.md` requires them to be orchestrated through the `shiftwork_*` tools this
+# registration serves, so a subagent in a worktree had no bantamkit tools at all.
+#
+# THE TWO HALVES COME FROM DIFFERENT PLACES, ON PURPOSE.
+#
+#   CODE comes from the checkout this launcher was spawned out of — `$0`'s grandparent.
+#     In a worktree that is THE WORKTREE. `RB-P55`/`RB-P70` is the rule: the venv's
+#     editable install resolves `bantamkit` to the MAIN checkout, so a unit editing
+#     `runtime-py/src` in a worktree would otherwise be answered by somebody else's
+#     copy of the file it just changed. Getting this backwards is worse than the ENOENT
+#     it replaces, because it fails silently and plausibly.
+#   DEPENDENCIES come from wherever someone ran `pip install`. A worktree has no `.venv`
+#     and should not need one; `--git-common-dir` names the main checkout.
+#
+# `PYTHONPATH` is what makes the split hold: it is searched before `site-packages`, so
+# the worktree's source wins over the main checkout's editable install. `PYTHONSAFEPATH`
+# stops the client's cwd from being prepended ahead of it (3.11+, and `requires-python`
+# is `>=3.11`).
+#
+# WHERE IT CANNOT WORK IT SAYS SO. The prototype this replaces fell through to a bare
+# `python3` whenever no `.venv` was found, and died with
+# `ModuleNotFoundError: No module named 'httpx'` — a traceback about a transitive
+# dependency, which reaches the client as `CONNECTION_CLOSED`. Measured twice: on a
+# fresh clone with no `.venv` anywhere, and on a worktree with `git` absent from `PATH`
+# (which loses the main checkout and so loses the deps). A bare `python3` is still tried
+# last, because that is exactly the CI layout — `pip install -e runtime-py[mcp]` into
+# the runner's interpreter, no `.venv` anywhere — but the import is guarded so the
+# failure names the cause and the fix instead of the symptom.
+#
+# `--which` prints where this launcher resolved both halves and exits. It uses
+# `find_spec`, which does not execute the package, so it still answers on a checkout
+# whose dependencies are missing. `tools/mcpreach/mcpreach.py` reads it.
+#
+# POSIX `sh` only, and no heredoc: stdin is the JSON-RPC channel and anything this
+# script reads from it is a message the server will never see.
+
+set -u
+
+here=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd) || exit 127
+
+root=$here
+common=
+
+# A worktree's `.git` is a FILE holding `gitdir: <main>/.git/worktrees/<name>`, and that
+# directory holds `commondir` pointing back at the main `.git`. Reading the two costs no
+# subprocess and no external command at all — `read` is a shell builtin — so unlike
+# `git rev-parse` it still answers when `git` is not on `PATH`, which is one of the two
+# ways the prototype lost the dependencies.
+gitdir=
+if [ -f "$here/.git" ]; then
+    label=
+    read -r label gitdir < "$here/.git" || :
+    [ "$label" = "gitdir:" ] || gitdir=
+fi
+case ${gitdir:-} in
+    "") ;;
+    /*) ;;
+    *) gitdir=$here/$gitdir ;;
+esac
+if [ -n "${gitdir:-}" ] && [ -f "$gitdir/commondir" ]; then
+    relative=
+    read -r relative < "$gitdir/commondir" || :
+    case ${relative:-} in
+        "") ;;
+        /*) common=$relative ;;
+        *) common=$gitdir/$relative ;;
+    esac
+fi
+
+# Fallback for layouts the two files do not describe. With `-C`, `--git-common-dir`
+# answers ABSOLUTE from a worktree and RELATIVE (".git") from the canonical checkout;
+# the relative case means "already at the root", so it is the answer, not a failure.
+if [ -z "$common" ] && common_out=$(git -C "$here" rev-parse --git-common-dir 2>/dev/null); then
+    case $common_out in
+        /*) common=$common_out ;;
+    esac
+fi
+
+if [ -n "$common" ] && [ -d "$common" ]; then
+    root=$(CDPATH= cd -- "$common/.." && pwd) || root=$here
+fi
+
+py=
+for candidate in "$here/.venv/bin/python" "$root/.venv/bin/python"; do
+    if [ -x "$candidate" ]; then
+        py=$candidate
+        break
+    fi
+done
+if [ -z "$py" ]; then
+    py=$(command -v python3 2>/dev/null) || py=
+fi
+if [ -z "$py" ]; then
+    echo "bantamkit-mcp: no Python interpreter found." >&2
+    echo "  looked in : $here/.venv/bin/python" >&2
+    echo "              $root/.venv/bin/python" >&2
+    echo "              python3 on PATH" >&2
+    exit 127
+fi
+
+BANTAMKIT_LAUNCH_CHECKOUT=$here
+BANTAMKIT_LAUNCH_DEPSROOT=$root
+PYTHONPATH="$here/runtime-py/src${PYTHONPATH:+:$PYTHONPATH}"
+PYTHONSAFEPATH=1
+export BANTAMKIT_LAUNCH_CHECKOUT BANTAMKIT_LAUNCH_DEPSROOT PYTHONPATH PYTHONSAFEPATH
+
+exec "$py" -c '
+import os
+import sys
+
+checkout = os.environ.pop("BANTAMKIT_LAUNCH_CHECKOUT", "?")
+deps_root = os.environ.pop("BANTAMKIT_LAUNCH_DEPSROOT", "?")
+
+if "--which" in sys.argv[1:]:
+    import importlib.util
+    try:
+        spec = importlib.util.find_spec("bantamkit")
+        origin = spec.origin if spec is not None else None
+    except BaseException as exc:
+        origin = "unresolvable: " + repr(exc)
+    print("checkout=" + checkout)
+    print("deps_root=" + deps_root)
+    print("python=" + sys.executable)
+    print("source=" + (origin or "-"))
+    raise SystemExit(0)
+
+try:
+    from bantamkit.mcpserver import main
+except ImportError as exc:
+    raise SystemExit(
+        "bantamkit-mcp: cannot import bantamkit.\n"
+        "  checkout    : " + checkout + "\n"
+        "  source      : " + checkout + "/runtime-py/src\n"
+        "  interpreter : " + sys.executable + "\n"
+        "  error       : " + str(exc) + "\n"
+        "No interpreter carrying bantamkit dependencies was found: neither\n"
+        "  " + checkout + "/.venv/bin/python nor " + deps_root + "/.venv/bin/python\n"
+        "exists, so python3 from PATH was used and it cannot import the package.\n"
+        "Fix, in " + deps_root + ":\n"
+        "  python3 -m venv .venv && .venv/bin/pip install -e \"runtime-py[mcp]\""
+    )
+
+raise SystemExit(main())
+' "$@"
