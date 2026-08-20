@@ -325,7 +325,9 @@ def test_a_page_that_shows_only_spaces_is_not_a_document(tmp_path):
     content = b"BT /F1 12 Tf 72 720 Td (   ) Tj 1 0 0 1 72 700 Tm (  ) Tj ET"
     with pytest.raises(DocumentReadError) as caught:
         extract(write(tmp_path, "blank.pdf", simple_pdf(content)))
-    assert "produced no character" in str(caught.value)
+    message = str(caught.value)
+    assert "every one of them whitespace" in message
+    assert "5 character(s)" in message
 
 
 def test_an_encrypted_pdf_refuses_by_name(tmp_path):

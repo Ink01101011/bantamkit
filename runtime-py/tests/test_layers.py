@@ -203,7 +203,7 @@ MOVED_FRAGMENTS = (
     # raises an exception rather than rendering an observation) — guarding a shared noun would
     # be guarding the subject rather than the wording.
     "rendered NO row",
-    "NOT an empty page",
+    "NOT the same as the page being empty",
 )
 CORE_MODULES = (
     "agent.py",
@@ -342,8 +342,9 @@ GOLDEN_DOCUMENT_MANIFEST_PDF_PAGE = (
     "own glyphs and says nowhere which character each glyph draws \u2014 this reader drops "
     "them rather than guess, because a guess here is indistinguishable from content\n"
     "  this part rendered NO row: the page ran 46 text-showing operator(s) and draws 3 "
-    "image(s), 91234 bytes, that no row can carry \u2014 a page with no row is a page this "
-    "reader could not read, NOT an empty page, and there is no OCR here"
+    "image(s), 91234 bytes, that no row can carry \u2014 no row means this reader recovered "
+    "no text from the page, which is NOT the same as the page being empty, and there is no "
+    "OCR here"
 )
 
 
