@@ -32,7 +32,7 @@ document_manifest_omitted_format: "  column(s) {where}: {count} cell(s) store a 
 # spreadsheet cannot: a page that rendered no row (a scan, or glyphs no font maps), and
 # characters dropped because the file states no mapping for them. An empty page and a page
 # nobody could read are different facts and the model must be able to tell them apart.
-document_manifest_omitted_unread_page: "  this part rendered NO row: the page ran {what} text-showing operator(s) and draws {count} image(s), {bytes} bytes, that no row can carry — a page with no row is a page this reader could not read, NOT an empty page, and there is no OCR here"
+document_manifest_omitted_unread_page: "  this part rendered NO row: the page ran {what} text-showing operator(s) and draws {count} image(s), {bytes} bytes, that no row can carry — no row means this reader recovered no text from the page, which is NOT the same as the page being empty, and there is no OCR here"
 document_manifest_omitted_unmapped: "  {count} character(s) shown on this part are NOT in those rows: their codes came from font(s) with no /ToUnicode map ({what}), so the file stores indices into a font's own glyphs and says nowhere which character each glyph draws — this reader drops them rather than guess, because a guess here is indistinguishable from content"
 document_manifest_omitted_other: "  NOT in those rows: {count} {subject} ({what})"
 document_page_header: "{document} \"{part}\" rows {start}-{end} of {rows}; each line below begins with its own row number"
