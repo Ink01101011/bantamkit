@@ -1123,8 +1123,14 @@ def extract_pdf(path: str | Path) -> Document:
         )
     doc = Document(kind="pdf", parts=tuple(parts))
     # CHARACTERS, not bytes. D2 measured a document of 28 rows and `text_bytes=27` whose
-    # every character count is zero: the bytes were the newlines between empty rows. A
-    # `text_bytes == 0` test passes on exactly the file this reader must refuse.
+    # every character count is zero: the bytes were the newlines between empty rows, and a
+    # `text_bytes == 0` test passes on exactly the file that has to be refused.
+    #
+    # MEASURED, and stated because it is not what it looks like: on the PDF path the two forms
+    # are today EQUIVALENT — a mutation to `doc.text_bytes != 0` leaves the suite green —
+    # because `pdfread._rows_from_runs` drops any row that strips to nothing. The character
+    # form is kept anyway: that equivalence is a property of the renderer, one layer down,
+    # and `test_a_row_is_never_whitespace_only` is what holds it rather than this line.
     if any(row.strip() for part in doc.parts for row in part.rows):
         return doc
     raise _refuse(path, container, _pdf_refusal(text))

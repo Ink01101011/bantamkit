@@ -796,7 +796,6 @@ class _Font:
     encoding: dict[int, str]
     widths: dict[int, float]
     default_width: float
-    has_map: bool  # does anything in the FILE state what these codes mean?
 
     def codes(self, raw: bytes) -> list[int]:
         if self.two_byte:
@@ -854,10 +853,11 @@ def _build_font(doc: PdfDocument, name: str, node: object) -> _Font:
             to_unicode=to_unicode,
             encoding={},
             widths=widths,
-            default_width=default_width,
             # A composite font says nothing about characters without a ToUnicode map: its
             # codes are CIDs, and for Identity-H they are glyph indices in a subset font.
-            has_map=bool(to_unicode),
+            # `encoding` is therefore left EMPTY, which is what makes `char()` return None
+            # for every code — the trust decision is that emptiness and nothing else.
+            default_width=default_width,
         )
     encoding_obj = doc.resolve(d.get("Encoding"))
     base_name, differences = "", []
@@ -867,8 +867,6 @@ def _build_font(doc: PdfDocument, name: str, node: object) -> _Font:
         base_name = str(doc.resolve(encoding_obj.get("BaseEncoding")) or "")
         differences = doc.resolve(encoding_obj.get("Differences")) or []
     encoding = _base_encoding_map(base_name)
-    named_map = bool(_STANDARD_CODECS.get(base_name))
-    resolved_any = False
     code = 0
     for item in differences if isinstance(differences, list) else []:
         item = doc.resolve(item)
@@ -880,7 +878,6 @@ def _build_font(doc: PdfDocument, name: str, node: object) -> _Font:
                 encoding.pop(code, None)  # the file named a glyph, not a character
             else:
                 encoding[code] = ch
-                resolved_any = True
             code += 1
     widths, default_width = _simple_widths(doc, d)
     return _Font(
@@ -891,7 +888,6 @@ def _build_font(doc: PdfDocument, name: str, node: object) -> _Font:
         encoding=encoding,
         widths=widths,
         default_width=default_width,
-        has_map=bool(to_unicode) or named_map or resolved_any or not differences,
     )
 
 
@@ -1028,7 +1024,7 @@ def _run_content(
                 fonts[key] = _build_font(doc, key, font_dict[key])
             else:
                 # A font the page never declared. Its codes mean nothing this file states.
-                fonts[key] = _Font(key, "?", False, {}, {}, {}, 500.0, has_map=False)
+                fonts[key] = _Font(key, "?", False, {}, {}, {}, 500.0)
         return fonts[key]
 
     stack: list[tuple] = []
