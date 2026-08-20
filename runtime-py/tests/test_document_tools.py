@@ -608,12 +608,18 @@ def test_the_fixture_is_still_generated_and_no_binary_entered_the_repo():
 # The tests are written per clause so that a failure names which clause of the pre-registered
 # contract stopped holding, rather than reporting "the paste changed".
 
-# `unasked_question_sku`, not `question_sku`: `paste_task`'s prompt asks about SKU-004137, the
-# row the LARGE corpus holds, and every `paste` clause below measures BYTES ON THE WIRE — what
-# the prompt asks is not what any of them reads. `check_question_against_prompt` refuses a
-# question address the prompt does not name, so the prefix is how this fixture says the cell is
-# addressed for the generator's sake and asked by nobody. Deleting the address instead would
-# leave that clause with no live subject in the suite.
+# `unasked_question_sku`, not `question_sku`: every `paste` clause below measures BYTES ON THE
+# WIRE, so this corpus's sku cell is addressed for the generator's sake and asked by nobody, and
+# the label is where this fixture says so. Deleting the address instead would leave that clause
+# with no live subject in the suite.
+#
+# RB-P91 found what that declaration was covering. One prompt used to serve both corpora — "the
+# units value for SKU-004137", a row only the LARGE corpus holds — and `unasked_` silenced the
+# question check on the small one, so this fixture asked `inventory-small.xlsx` for a row it does
+# not contain and nothing said a word. That is RB-P90's defect wearing RB-P91's exemption. The
+# prompt is per corpus now (`CORPUS_PROMPTS`), and the small one addresses its row BY POSITION
+# rather than by identity — which is what makes `unasked_` here a true statement rather than a
+# way out of a check.
 SMALL_CORPUS = {
     "path": "inventory-small.xlsx",
     "seed": 4021,
@@ -631,12 +637,22 @@ SMALL_CORPUS = {
 CORPUS_UNITS = {"inventory.xlsx": "7508", "inventory-small.xlsx": "7726"}
 
 
+# A prompt is a question about A CORPUS, so it is keyed by corpus like `CORPUS_UNITS` above and
+# for the same reason. The large entry's prompt names the row its `question_sku` resolves to; the
+# small entry's names no row identity at all, which is the only honest prompt for a corpus whose
+# sku cell is declared `unasked_`. Both resolve to the units cell each `expected_units` reads.
+CORPUS_PROMPTS = {
+    "inventory.xlsx": "What is the units value for SKU-004137?",
+    "inventory-small.xlsx": "What is the units value on data row 138 of the sheet?",
+}
+
+
 def paste_task(entry=None, name="doc-lookup"):
     entry = entry or OVER_WINDOW
     return {
         "name": name,
         "family": "document-read",
-        "prompt": "What is the units value for SKU-004137?",
+        "prompt": CORPUS_PROMPTS[entry["path"]],
         "tools": [],
         "document_setup": [entry],
         "scoring": {"kind": "contains", "expected": [CORPUS_UNITS[entry["path"]]]},

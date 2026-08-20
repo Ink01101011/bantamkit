@@ -9834,4 +9834,813 @@ a temp copy of the harness and none in the working tree: making `graph_containme
 those is the one that matters here: **the property this section says is wrong has a must-be-red
 case proving the harness would notice if someone wrote it.**
 
+#### AA (2026-08-20) — `RB-P87` and `RB-P88` are closed forward by amendment beside the records they correct; the denominator the pre-registered text compels, a guard that could not fire at the only tier that needed it, and a scoping noun with five referents
+
+Two rule defects filed by §V.8 on the same day they were found are closed on
+`docs/bar-rule-defects`, each by an amendment appended to the bar that carries it —
+**`81f847b`, Amendment 2, `RB-P88`**, and **`3d71134`, Amendment 3, `RB-P87`**. Both are pure
+insertions at the end of `docs/eval-data/2026-08-20-document-read-bar.md`; between them they
+change no threshold, flip no clause, regenerate no row and re-score nothing.
+
+<!-- provenance: value=81f847b is 276 insertions 0 deletions with its single hunk at @@ -818,0 +819,276 @@; 3d71134 is 292 insertions 0 deletions with its single hunk at @@ -1094,0 +1095,292 @@; combined against main 640c6b0 it is 568 insertions 0 deletions in one file, one hunk at @@ -818,0 +819,568 @@; commit=0a2084b; command=git diff --numstat 81f847b^ 81f847b and 3d71134^ 3d71134 and 640c6b0 HEAD, each with git diff -U0 … | grep '^@@' -->
+
+    81f847b   Amendment 2 (RB-P88)   276 / 0   hunk @@ -818,0  +819,276 @@
+    3d71134   Amendment 3 (RB-P87)   292 / 0   hunk @@ -1094,0 +1095,292 @@
+    combined against main 640c6b0    568 / 0   one file, one hunk, append-only
+
+`(276/0 and 292/0, both append-only at EOF, 0a2084b, the commands above)`. **The headline is
+not "two entries are closed".** It is that both closures had to argue from the bar's own
+pre-registered text rather than from the rows, because in each case the defect is a *sentence*
+and the rows were already committed — and that in both cases the argument reaches the same
+place: **the verdict does not move, and it does not move for a reason the bar wrote down before
+any arm ran.** This section owns `docs/eval.md`. It adds no `.py`, edits no bar, regenerates no
+`.jsonl` and restates no committed row.
+
+##### AA.0 The register and the section letter were read at HEAD across every live writer, and the single-letter run is exhausted
+
+`RB-P75`'s precaution, applied by §V.0, §W.6, §X.8, §Y.0 and §Z.0 before this one. §X.8 recorded
+the ceiling moving six times in one shift; it has moved twice more since §Z.0 was written, and
+`RB-P92` — the number §Z minted — is on four refs already.
+
+<!-- provenance: value=ceiling RB-P92 over 30 refs/heads, standing on four of them — main (640c6b0), feat/module-graph-containment (d1eac06), feat/launder-catalogue (01c3e25) and this branch docs/bar-rule-defects (0a2084b); commit=0a2084b; command=for r in $(git for-each-ref --format='%(refname:short)' refs/heads/); do git show $r:docs/eval.md | grep -oE 'RB-P[0-9]+' | sed 's/RB-P//' | sort -n | tail -1; done | sort -rn | head -1 -->
+
+    ceiling over all 30 refs/heads   ->  RB-P92
+    refs standing at it              ->  main (640c6b0), feat/module-graph-containment (d1eac06),
+                                         feat/launder-catalogue (01c3e25),
+                                         this branch (0a2084b)
+
+`(ceiling RB-P92 over 30 refs, 0a2084b, the command above)`. **`RB-P93` is the next free number,
+and this section mints exactly two: `RB-P93` and `RB-P94`.**
+
+**The section letter needed a new scheme, and here is the one chosen and why.** Read the same
+way, over the same 30 refs: the run of single-letter sections is `L`–`Z` and it is **full**, and
+the only other identifiers are `K5` and `K4B`.
+
+<!-- provenance: value=over 30 refs/heads the taken '#### <id>' section identifiers are exactly L M N O P Q R S T U V W X Y Z plus K5 and K4B; AA occurs on no ref; commit=0a2084b; command=for r in $(git for-each-ref --format='%(refname:short)' refs/heads/); do git show $r:docs/eval.md | grep -oE '^#### [A-Z][0-9A-Z]* '; done | sed 's/^#### //;s/ *$//' | sort -u | awk '{print length($0), $0}' | sort -n -k1,1 -k2,2 | cut -d' ' -f2- -->
+
+    the run, in order       ->  L M N O P Q R S T U V W X Y Z          (full)
+    outside the run         ->  K5, K4B                                 (K-generation)
+    free                    ->  AA
+
+`(L–Z taken, K5 and K4B outside the run, 0a2084b, the command above)`. **This section is `AA`.**
+The argument, because the brief asked for one:
+
+1. **A two-character identifier already has precedent, but not the precedent it looks like.**
+   `K5` and `K4B` are **subdivisions of a K generation** — a letter carrying a suffix means *"a
+   later pass over K's material"*. So `Z2` or `ZA` would be the wrong shape: they would announce
+   an amendment to §Z, which this section is not. It is the next section, not Z's second draft.
+2. **`AA` is the spreadsheet-column continuation and it is the one every reader already knows.**
+   Ordered by **(length, then lexicographic)** the run reads `L M N … Z AA AB … AZ BA …`, which
+   is monotone, needs no rule anybody has to be told, and buys 676 more identifiers before the
+   next exhaustion rather than 25.
+3. **The cost is stated rather than hidden: a naive `sort` puts `AA` first.** The run has not
+   been ASCII-sortable since `K4B` and `K5` were minted — they sort between `K` and `L` only by
+   accident — so the enumeration command above sorts by length first. That command is the one to
+   carry forward; the one in §Z.0's provenance, which sorts lexicographically, will report `AA`
+   as the *lowest* section from here on.
+
+##### AA.1 `RB-P87` and `RB-P88` are RECORDS and are not edited by being closed
+
+**Both entries stand exactly as `2749b70` committed them.** Their measurements, their dispositions
+and their wording are §V's and stay §V's. The two amendments do not annotate them, and neither
+does this section: what a closure produces is a **note beside the record**, by the same rule §Z.3
+applied to `RB-P78` and §Y.8 applied to `RB-P90`. Where a closure found the entry's own wording
+wrong, the correction is in §AA.6 and the entry keeps its text.
+
+That rule is doing real work here, because **each entry turns out to have understated itself.**
+`RB-P87` calls its own defect *"silently inapplicable"* (`docs/eval.md:8527`); measured, it is
+**unfireable**. `RB-P88` says the ambiguity is *"a single under-specified predicate, not a
+systemic one"* (`docs/eval.md:8545`); the predicate claim survives exactly as written, and the
+noun underneath it does not. Neither entry is edited for either.
+
+##### AA.2 `RB-P88` closed — the denominator the pre-registered text compels, and all four figures re-derived from the committed rows
+
+Amendment 2 splits the entry into **two separable determinations**, which is the part worth
+carrying forward: *does U-4 fire?* and *does R3's pool keep the cell U-4 fires on?* They are
+questions about two different sentences and either one alone leaves the verdict where it is.
+
+Re-derived in this unit from the four committed `.jsonl` — they landed at `39f7aaf` and are
+unchanged at `0a2084b` — not read out of the amendment:
+
+<!-- provenance: value=7b/reader/large-IN has 4 bad-outcome runs; 4/12=0.3333 fires U-4 and 4/36=0.1111 does not; the numerator is 4 under BOTH readings; large-IN pooled McNemar exact two-sided with the 7b admitted is n=36 b=1 c=11 p=0.006348 (P(paste)=0.8889, P(reader)=0.6111) and with it excluded is n=24 b=0 c=5 p=0.062500 (P(paste)=1.0000, P(reader)=0.7917); commit=0a2084b (rows unchanged since 39f7aaf); command=python over docs/eval-data/2026-08-20-document-read-{4b,7b,14b}.jsonl, bad = outcome in {malformed-output, schema-exhausted}, pairs keyed (task, repeat) within tier, p = min(1, 2·Σ C(b+c,i)/2^(b+c)) per bar §9 -->
+
+    U-4 reader-arm cell (Reading A)   4/12 = 0.3333   FIRES   (> 0.30)
+    U-4 three-arm block (Reading B)   4/36 = 0.1111   silent
+    numerator under both readings     4               identical
+
+    McNemar admitted  4b+7b+14b   n=36  b=1  c=11  p=0.006348   -> §5.2 REFUTED
+    McNemar excluded  4b+14b      n=24  b=0  c=5   p=0.062500   -> §5.3 NEITHER
+
+`(4/12 and 4/36; p = 0.006348 and p = 0.062500, 0a2084b, the command above)`. **All four
+reproduce to the digit, and so does the numerator's immobility** — the four bad-outcome runs at
+`7b`/large-IN are all in the `reader` arm, so widening the denominator to 36 widens nothing else.
+
+**The decisive ground for the 12-denominator is not the definitional text, it is the arithmetic
+on the rule's own purpose.** Amendment 2 gives three grounds in descending strength; the third is
+the one that survives an argument, because the first two can be met with *"the drafter wrote
+loosely"* and this one cannot:
+
+<!-- provenance: value=the paste arm produced ZERO bad-outcome rows in all twelve (tier, stratum) blocks; the bare arm produced 5 of its 108 runs across the three compared tiers; a reader arm bad on 10 of its own 12 runs computes to 10/36 = 0.2778 under Reading B and does not clear 0.30; commit=0a2084b (rows unchanged since 39f7aaf); command=python over all four committed .jsonl counting outcome in {malformed-output, schema-exhausted} per (tier, stratum, config) -->
+
+    paste bad-outcome rows, over all TWELVE blocks       0
+    bare  bad-outcome rows, three compared tiers         5 of 108
+    a reader arm bad on 10 of its OWN 12 runs (83.3%)
+      Reading A   10/12 = 0.8333   FIRES
+      Reading B   10/36 = 0.2778   does NOT fire
+
+`(paste 0 of 12 blocks; bare 5/108; the 83.3% cell computes to 27.78%, 0a2084b, the command
+above)`. **Reading B divides the reader's format-failure rate by three and dilutes it with two
+arms that measurably cannot contribute.** A predicate whose stated purpose is *"format swamped
+the signal"* and which cannot void a cell that is 83% format failure is not doing the thing its
+own sentence says it does. That is a defect argued from the rule, not a preference between two
+grammars, and it is why the conclusion is a reading the text *compels* rather than one it
+*permits*.
+
+**The second determination goes the other way, and the asymmetry is the whole of it.** §5 fixes
+`n = 36 per cell`. To exclude the cell you must overwrite a pre-registered number; to admit it
+you overwrite nothing. Add that §6.3's VOID carries an express *"may not be compared"* which
+§6.1's UNINFORMATIVE does not, and that the bar put the *"with a non-UNINFORMATIVE cell"* proviso
+in R2 and C3 and in none of C1, C2, R1, **R3** or R4 — and the cell stays in the pool. **U-4
+fires, the cell is UNINFORMATIVE, R3 admits it anyway, and J10's verdict of REFUTED stands
+unmoved.**
+
+**Grade the two determinations separately, because they are not equally safe.** The denominator
+rests on express definitional text in two independent sections (§6.1's opening sentence and §8's
+`n = 12`) plus the purpose argument above — **strong**. The admission rests on the *absence* of a
+proviso in five clauses and on the taxonomy's placement of *"may not be compared"* — **strong,
+but constructional**: it is an argument from what the drafter did not write. It is right, and it
+is the kind of right that a differently-drafted bar would not reproduce. Which is exactly why
+Amendment 2's forward rule D-2 exists.
+
+**Six words is the whole margin.** Had R3 carried R2's *"with a non-UNINFORMATIVE cell"*, this
+run is §5.3 NEITHER at p = 0.0625. The verdict did not survive because the finding was small; it
+survived because a clause the bar never wrote would have been needed to move it.
+
+##### AA.3 `RB-P87` closed — the served window was MEASURED, and the clamp is established by two facts that are not the number's roundness
+
+§6.4 named the 3b's served window UNMEASURED. Amendment 3 measures it, and the measurement is a
+live one: `ollama` **0.18.0** answering on `localhost:11434`, `llama3.2:3b` already pulled,
+**nothing fetched**, no `OLLAMA_*` variable in the environment. Re-run in this unit against the
+same daemon:
+
+<!-- provenance: value=ollama version 0.18.0 and llama3.2:3b present in /api/tags with no model pulled and no OLLAMA_* variable set; llama3.2:3b prompt_eval_count = 4096 on the system message and on system+task, for both corpora, at PASTE_MAX_BYTES=8621; system messages 8,962 B (small) and 9,016 B (large); requests 9,324 B and 9,378 B with a one-byte joiner; commit=0a2084b (code unchanged since 1a8e382); command=curl -s localhost:11434/api/version and /api/tags, then PYTHONPATH=runtime-py/src BANTAMKIT_ASSETS=assets python calling bantamkit.evalrun.materialise_documents + _paste_head and POSTing /api/generate {"model":…,"prompt":…,"stream":false,"options":{"num_predict":1}} -> prompt_eval_count -->
+
+    llama3.2:3b  small  system 8,962 B -> 4096    system+task 9,324 B -> 4096
+    llama3.2:3b  large  system 9,016 B -> 4096    system+task 9,378 B -> 4096
+
+`(four readings of exactly 4,096, 0a2084b, the command above)`. **`RB-P53` is why that table
+cannot be read the obvious way**: on this counter a reading of 4,096 is evidence about the
+*window*, not about the prompt. Amendment 3 does not treat it as a prompt measurement, and
+establishes the clamp two other ways. Both re-derived here:
+
+<!-- provenance: value=two prompts 362 B apart (8,962 B and 9,324 B; 9,016 B and 9,378 B) return the identical prompt_eval_count 4096; the prefix ladder over the 9,016 B large system message reads 2,048 B->900, 4,096 B->1852, 6,000 B->2735, 8,000 B->3665, 8,600 B->3943, 8,800 B->4037, 8,900 B->4084, 9,016 B->4096, so 8,800->8,900 B buys +47 at 2.128 B/token and the last 116 B buys +12 where that rate predicts +54; commit=0a2084b; command=the §AA.3 command above with the prompt replaced by _paste_head(...).encode()[:n].decode('utf-8','ignore') for n in (2048,4096,6000,8000,8600,8800,8900,9016) -->
+
+    1. two prompts 362 B apart return the IDENTICAL count
+         8,962 B -> 4096   and   9,324 B -> 4096      (small)
+         9,016 B -> 4096   and   9,378 B -> 4096      (large)
+
+    2. the reading tracks the prompt, then pins
+         2,048 B -> 900     8,600 B -> 3943
+         4,096 B -> 1852    8,800 B -> 4037
+         6,000 B -> 2735    8,900 B -> 4084     (+47 over 200 B, 2.128 B/token)
+         8,000 B -> 3665    9,016 B -> 4096     (+12 over 116 B; the rate predicts +54)
+
+`(362 B for +0 tokens; the ladder, marginal 2.128 B/token, then +12 where +54 was due, 0a2084b,
+the command above)`. **A counter that reported the prompt could not do either.** The window is
+4,096.
+
+##### AA.4 Why the window-relative form is not a re-scoring, and why a ratio of exactly 1.0000 is the general result
+
+This is the spine of the closure and it is one table. All six compared readings re-derived in
+this unit against the live daemon, at Amendment 1's `PASTE_MAX_BYTES = 8,621`:
+
+<!-- provenance: value=request readings 4b 6602/6627, 7b 6623/6648, 14b 6623/6648 (small/large) against a pinned num_ctx of 8192, ratios 0.8059/0.8090, 0.8085/0.8115, 0.8085/0.8115; the 3b reads 4096 against a served 4096, ratio 1.0000; commit=0a2084b; command=the §AA.3 command with the model replaced by each of bk-rbp27-qwen3-4b-instruct, bk-rbp27-qwen2.5-7b-instruct, bk-rbp27-qwen2.5-14b-instruct and llama3.2:3b -->
+
+| tier | served `W` | request reading, small / large | `V-1` as written, `≥ 6,963` | window-relative, `≥ 0.85 × W` | reading ÷ `W` |
+|---|---:|---:|---|---|---:|
+| 4b | 8,192 | 6,602 / 6,627 | ok | ok | 0.8059 / 0.8090 |
+| 7b | 8,192 | 6,623 / 6,648 | ok | ok | 0.8085 / 0.8115 |
+| 14b | 8,192 | 6,623 / 6,648 | ok | ok | 0.8085 / 0.8115 |
+| **3b** | **4,096** | **4,096 / 4,096** | **ok — does not fire** | **VOID — `≥ 3,481`** | **1.0000 / 1.0000** |
+
+`(all six compared readings and both 3b readings, 0a2084b, the command above)`. Two things this
+table settles, and they are the two that make the closure a closure rather than an opinion:
+
+1. **At `W = 8,192` the two forms are the same predicate.** `0.85 × 8,192` is 6,963 to the
+   integer the bar wrote down, so the window-relative restatement changes no compared reading, no
+   compared cell and no published figure. **It differs from the pre-registered text at exactly
+   one tier — the declared floor — and it differs there by VOIDing an arm §6.4 and §7.5 already
+   forbid anyone to compare.** That is why this is a restatement and not a re-scoring, and it is
+   the sentence a reader should check first, because a rule change that moved a compared cell
+   after the rows were committed would be the one thing an amendment written under §V's tighter
+   rule may not do.
+2. **The ratio reaches exactly 1.0000, and that is the transferable result.** A clamped reading
+   divided by its own window *is* 1 — the largest value the quantity can take. So a
+   window-relative threshold at **any** fraction below 1.0 fires on **every** clamped reading, at
+   every tier, without anyone having to anticipate the window. The predicate stops depending on
+   which window the drafter had in mind; the absolute form depends on nothing else.
+
+**And the entry understated its own defect.** `RB-P87` says the fixed threshold is *"silently
+inapplicable"* at a different window (`docs/eval.md:8527`). Measured, it is **unfireable**: a
+clamped counter cannot return 6,963 at a 4,096 window at **any** prompt of any size, so the guard
+is not weakened there, it is absent. The distinction is not decoration — *"inapplicable"* invites
+a fix that tunes the constant, and no constant at or above the smallest served window can be
+reached from below it.
+
+##### AA.5 What the 3b's `paste` passes reach — and the one place a prohibition is not printed beside its figure
+
+**No compared figure depends on them, counted here from the committed rows and not taken from
+either the entry or the amendment.**
+
+<!-- provenance: value=3b paste passes are small 2/12, large-IN 4/12, large-OUT 0/12 = 6 of 36, tool_calls == 0 on all 36, and all 30 non-passing rows are outcome == wrong-answer; the three published McNemar rows over 4b+7b+14b are small n=36 1.0000/0.4722 b=0 c=19 p=0.000004, large-IN n=36 0.8889/0.6111 b=1 c=11 p=0.006348, large-OUT n=36 0.0000/0.4167 b=15 c=0 p=0.000061; pooling the 3b in gives n=48 rows 0.7917/0.3542 p=0.000001, 0.7500/0.4583 p=0.000519 and 0.0000/0.3125 p=0.000061; commit=0a2084b (rows unchanged since 39f7aaf); command=python over all four committed .jsonl, pairs keyed (task, repeat) within tier, both pools -->
+
+    3b paste   small 2/12   large-IN 4/12   large-OUT 0/12   =  6 of 36
+               tool_calls != 0 on 0 of 36; all 30 non-passing rows are `wrong-answer`
+
+    published pool 4b+7b+14b      small p=0.000004   large-IN p=0.006348   large-OUT p=0.000061
+    with the 3b pooled in (n=48)  small p=0.000001   large-IN p=0.000519   large-OUT p=0.000061
+      P(paste, small)   1.0000 -> 0.7917
+      Δ(large-OUT)      +0.4167 -> +0.3125
+
+`(6 of 36 as 2/4/0; every published row reproduces to the digit, 0a2084b, the command above)`.
+**The exclusion is load-bearing and it is pre-registered four times over** — §8 declares the 3b a
+floor that is never pooled, §5 fixes `n = 36` over the three compared tiers, §6.4 forbids
+comparing any 3b `paste` number to another tier's, and §7.5 declines a tier comparison outright.
+Four sentences, all written before any arm ran. **The protection comes from them and not from
+`V-1`** — which is the precise sense in which `RB-P87` is a rule defect with no consequence for
+this run's verdict, and the sense in which it would have had one for a bar drafted an inch
+differently.
+
+**Two places the 3b's `paste` rows nevertheless reach, both recorded rather than fixed.**
+
+1. **§V.1's pass table prints them, unmarked.** The 3b row at `docs/eval.md:8302` reads
+   `0 / 2 / 0`, `0 / 4 / 0`, `0 / 0 / 0`, and those three `paste` figures **are** these six
+   passes. They are published as descriptive counts of the only arm in the run whose prompt was
+   truncated, on a row whose neighbours were not, and the prohibition on comparing them lives
+   four sections away in §6.4 and §7.5. That is a presentation hazard rather than a wrong figure
+   — and it is `RB-P94`.
+2. **§V.4's `U-3` firing at `3b`/large-OUT reads `P(paste) = 0` in that cell**
+   (`docs/eval.md:8408`), and **that zero is by construction, not by clamp**: §3.1 puts the
+   large-OUT answer row outside the 8,621 B cut deliberately, so the `paste` ceiling on large-OUT
+   is zero at every tier and is `0/36` at the three compared ones too. The firing survives the
+   truncation being there or not. **This one gets no number** — the zero is what §3.1
+   pre-registered, the firing is correct, and a correct reading of a correctly-fired predicate is
+   not a defect. It is recorded because a reader who arrives via `RB-P87` will otherwise wonder
+   whether the clamp produced it.
+
+##### AA.6 Handoff corrections — four that do not reproduce as worded, one that reproduces and is recorded anyway, and two of the four land inside a correction the unit below had already made
+
+§Q, §T, §W.5, §X.1, §Y.7 and §Z.6 are the precedent and §W.6's rule 3 puts these here: **a figure
+a brief asserted and a measurement declined is a handoff correction, recorded in the section that
+caught it, never as a register entry.** Everything else handed to this unit re-derived exactly —
+`276/0` and `292/0`; `4/12` and `4/36` with an immobile numerator; `p = 0.006348` and
+`p = 0.062500`; `paste` at 0 bad rows over twelve blocks and `bare` at 5 of 108; the 83.3% cell
+computing to 27.78%; all four `4,096` readings and the whole saturation ladder; all six compared
+readings and their 0.806–0.812 ratios; the 3b's 6 passes as 2/4/0 with `tool_calls == 0` on all
+36; the `1.0000 -> 0.7917` pooling effect; and the 4b calibration ladder.
+
+**1. `RB-P87`'s superlative is FALSE, and the replacement is stronger — but the *count* handed to
+this unit is not right either.** The entry says the 3b's prompt is *"being truncated harder than
+any arm the rule did VOID"* (`docs/eval.md:8525-8526`). **`V-1` VOIDed no graded arm, ever** —
+§V.4 records it firing at no compared tier, and its only firings in the bar's history are in
+Amendment 1 §A.1's **pre-run calibration**, at the pre-registered `PASTE_MAX_BYTES = 12,288`, in
+a state no arm was ever graded in. So the superlative names an empty set. **The brief said those
+firings were "six pre-run calibration readings". Re-measured, §A.1 is six readings of which
+three fire:**
+
+<!-- provenance: value=at PASTE_MAX_BYTES=12288 the SMALL system message is 8,962 B and reads 6511 (4b), 6532 (7b) and 6532 (14b) — all below the 6,963 threshold, V-1 ok; the LARGE system message is 12,672 B and reads 8,192 clamped at all three tiers, V-1 VOID; so §A.1's six calibration readings are three firings and three passes, all three firings on the large corpus; commit=0a2084b; command=the §AA.3 command with bantamkit.evalrun.PASTE_MAX_BYTES set to 12288 before _paste_head, over bk-rbp27-qwen3-4b-instruct / -qwen2.5-7b-instruct / -qwen2.5-14b-instruct -->
+
+    §A.1 large corpus  12,672 B -> 8192 / 8192 / 8192   (4b / 7b / 14b)   V-1 VOID   x3
+    §A.1 small corpus   8,962 B -> 6511 / 6532 / 6532                     V-1 ok     x3
+
+`(three firings of six calibration readings, 0a2084b, the command above)`. The substantive claim
+is untouched — **no arm was graded in that state, so no graded arm was ever VOIDed** — and the
+replacement statement is the one to keep: **the 3b's `paste` is the only truncated arm in the
+entire graded run, and `V-1`, the single clause written to catch a truncated paste, reports OK on
+it.** A guard silent on the run's *only* truncated arm is a worse finding than a guard silent on
+a worse-truncated arm that never ran.
+
+**2. The magnitudes reproduce, and the 2.4× is 2.36×.** Re-derived on the 4b at the
+pre-registered constant:
+
+<!-- provenance: value=4b at PASTE_MAX_BYTES=12288 on the 12,672 B system message reads 9,016 B->6536, 10,000 B->7266, 11,000 B->8011, 11,200 B->8162, 11,400 B->8192, 12,672 B->8192, so the marginal rate is 1.325 B/token at 11,000->11,200 and the reading pins at 8,192; extrapolated true prompt 9,272.9 tokens, 1,080.9 lost = 11.66%; the 3b's request extrapolates to 4,308.6 tokens, 212.6 lost = 4.93%; the ratio is 2.36x as a fraction and 5.08x in absolute tokens; commit=0a2084b; command=the §AA.3 command with PASTE_MAX_BYTES=12288, model bk-rbp27-qwen3-4b-instruct, prefixes (9016,10000,11000,11200,11400,12672) -->
+
+    4b @ 12,288   9,016 B -> 6536   11,000 B -> 8011   11,400 B -> 8192
+                 10,000 B -> 7266   11,200 B -> 8162   12,672 B -> 8192
+      marginal 1.325 B/token, true prompt ≈ 9,273 tokens, ≈ 1,081 lost  ≈ 11.66%
+    3b @  8,621   marginal 2.128 B/token, request ≈ 4,309 tokens, ≈ 213 lost  ≈  4.93%
+      ratio        2.36x as a fraction of prompt,  5.08x in absolute tokens
+
+`(11.66% against 4.93%; 2.36x and 5.08x, 0a2084b, the command above)`. **The handed 11.7% / 4.9%
+and the "5× in absolute tokens" reproduce; "about 2.4×" is 2.36× and reads as a round-up of a
+figure that was already rounded twice.** Nothing turns on it — the direction is what the
+correction needs — but a ratio of two rounded percentages should be quoted from the unrounded
+pair, and 11.66 ÷ 4.93 is 2.36. Recorded because §AA.6(1)'s conclusion is quoted against it.
+
+**3. `0.85 × 8,192` is not 6,963, and the one integer where that matters is a number this bar has
+written down.** Amendment 3 §C.2 argues, correctly and load-bearingly, that at `W = 8,192` the
+as-written and window-relative forms are *"the same predicate"*, because *"`0.85 × 8,192` **is**
+6,963."*
+
+<!-- provenance: value=0.85 x 8192 = 6963.2 and 0.85 x 4096 = 3481.6, so the as-written threshold 6,963 and the window-relative threshold 0.85·W differ on exactly one integer reading, 6,963, where '>= 6,963' VOIDs and '>= 6,963.2' does not; no measured reading in this bar is 6,963 — the six compared request readings are 6,602/6,627/6,623/6,648/6,623/6,648 — but Amendment 1 §A.3 records the bytes//4 ESTIMATOR reading exactly 6,963 on the 4b; commit=0a2084b; command=python -c "print(0.85*8192, 0.85*4096)" and grep -n '6,963' docs/eval-data/2026-08-20-document-read-bar.md -->
+
+    0.85 x 8,192 = 6,963.2      the bar's V-1 writes "= 6,963"
+    0.85 x 4,096 = 3,481.6      Amendment 3's restatement writes "3,481"
+    the two forms differ on exactly ONE integer reading: 6,963
+
+**Nothing measured lands there** — the six compared readings are 6,602 / 6,627 / 6,623 / 6,648 /
+6,623 / 6,648 — so §C.2's conclusion survives intact for this run and for the restatement. But
+the single integer of disagreement is not hypothetical: **Amendment 1 §A.3 records the `bytes//4`
+estimator reading exactly 6,963 on the 4b, *"exactly at the threshold"*.** So the rounding lives
+one arithmetic step away from a figure the bar prints. **This gets no number.** A threshold
+written as a rounded product is a drafting habit the two amendments' own D-3 already fixes —
+*"written as `f × W(tier)` with the arithmetic shown"* — and a rule whose forward fix is already
+committed in the same file is not a new claim.
+
+**4. Reproduces exactly, and is recorded anyway: the one-byte discrepancy inside the record.**
+`RB-P87`'s table (`docs/eval.md:8517-8518`) gives the request bytes as `9,324` / `9,378` — system
+message plus the 361 B task prompt with a **one-byte** joiner. Amendment 1 §A.3 records the same
+pair as `9,325` / `9,379`, a **two-byte** joiner. Both are re-derived here, and so is the reason
+nothing depends on it:
+
+<!-- provenance: value=small system 8,962 B + 1 + 361 = 9,324 and + 2 + 361 = 9,325; large system 9,016 B + 1 + 361 = 9,378 and + 2 + 361 = 9,379; both joiners return the IDENTICAL prompt_eval_count at every tier — 6602/6602, 6623/6623, 6623/6623 (small) and 6627/6627, 6648/6648, 6648/6648 (large) on 4b/7b/14b, and 4096/4096 on llama3.2:3b for both corpora; commit=0a2084b; command=the §AA.3 command run twice per (tier, corpus), with the system message joined to the task prompt by '\n' and by '\n\n' -->
+
+    small   9,324 B (1 byte) and 9,325 B (2 bytes)  ->  4b 6602/6602  7b 6623/6623  14b 6623/6623
+    large   9,378 B (1 byte) and 9,379 B (2 bytes)  ->  4b 6627/6627  7b 6648/6648  14b 6648/6648
+    llama3.2:3b, both corpora, both joiners         ->  4096
+
+`(twelve compared readings and four 3b readings, both joiners, 0a2084b, the command above)`.
+**Identical to the digit everywhere.** The discrepancy is real, it is one byte, it is inside a
+record, and it moves no number in either document.
+
+**5. *"`cell` has three referents bar-wide" is an undercount: measured, it is five.*** This is the
+finding the brief flagged as a mint candidate, and re-deriving it is what makes it one. Counted
+over the **pre-registered** text only — everything above the *"## 12. Amendments"* heading, so
+that no amendment is counted as evidence for itself:
+
+<!-- provenance: value=in the pre-registered bar text (lines 1-587, above the Amendments heading) the word "cell" carries five distinct referents — §1.4:96-98 two named TASKS, §3.1:171-175 a STRATUM spanning all arms and all tiers, §5:229 a matched (task, repeat) unit, §5:230 eleven words later an (arm, stratum) pool at n=36, and §6.1:274 / §8:380 the (tier, arm, stratum) cell at n=12; Amendment 2 §B.0:855-861 enumerates three of the five and does not name the §1.4 or §3.1 uses; commit=0a2084b; command=awk 'NR<588' docs/eval-data/2026-08-20-document-read-bar.md | grep -n cell, then reading each hit -->
+
+    §1.4  :96-98    "the design its sharpest cell … those two cells"   two TASKS
+    §3.1  :171-175  "This cell carries the job's claim … the SMALL cell"
+                                                         a STRATUM, across arms AND tiers
+    §5    :229      "the pass rate over matched `(task, repeat)` cells"
+                                                         a matched (tier, task, repeat) unit
+    §5    :230      "n = 36 per cell"  — eleven words later
+                                                         an (arm, stratum) pool over three tiers
+    §6.1  :274      "Evaluated per (tier, arm, stratum) cell"
+    §8    :380      "Per (tier, arm, stratum) cell: 3 tasks × 4 repeats = n = 12"
+
+`(five referents in the pre-registered text, 0a2084b, the command above)`. §3.1's is the one that
+settles it: the bullet opens *"The **OUT stratum** asks…"* and closes *"This **cell** carries the
+job's claim"*, four words apart, with the referent spanning all three arms and all four tiers —
+wider than either §5 reading and wider than §6.1's. Amendment 2 §B.0 names three of the five.
+**Both units' narrower claim survives untouched**: the *denominator* defect is single, not
+systemic — U-1, U-2 and U-5 each carry *"of `reader`-arm runs in the cell"* and U-3 names all
+three arms, so those four are denominator-stable under either §5/§6.1 reading, which is four
+unambiguous predicates against one. **What does not survive is reading that as reassurance about
+the noun**, and that is `RB-P93`.
+
+##### AA.7 Minted here — `RB-P93` and `RB-P94`, and the eight things that get no number
+
+Two numbers. **Declined:** the clamp itself is `RB-P53`'s class and §V.8 already declined it; the
+*"unfireable" not "silently inapplicable"* sharpening (§AA.4) and the *"VOIDed no graded arm"*
+correction (§AA.6.1) are corrections to `RB-P87`'s own wording and belong beside it; the
+`9,324`/`9,325` joiner (§AA.6.4) is a one-byte correction inside a record; the `6,963.2` rounding
+(§AA.6.3) has its forward fix already committed in the same file as D-3; the `2.36×` (§AA.6.2) is
+a rounding of a rounding; the U-4 numerator's immobility and U-5's denominator stability (§AA.6.5)
+are **confirmations** of `RB-P88`'s narrow claim rather than new claims; and §V.4's
+`P(paste) = 0` at `3b`/large-OUT (§AA.5.2) is a correct reading of a correctly-fired predicate
+whose zero §3.1 pre-registered. What is left is two claims someone could otherwise repeat, and no
+entry above is a parent to either.
+
+- **`RB-P93` — the noun a bar scopes its predicates with carries five different referents across
+  the document, so an unscoped predicate cannot be read locally at all, and the express
+  definition that governs it is not the nearest one.** In this bar *"cell"* means two named
+  tasks (§1.4), a stratum spanning every arm and tier (§3.1), a matched `(task, repeat)` unit
+  (§5), an `(arm, stratum)` pool at `n = 36` (§5, eleven words later) and the
+  `(tier, arm, stratum)` cell at `n = 12` (§6.1, §8) — measured in §AA.6.5 over the
+  pre-registered text alone. `RB-P88` is the instance: `U-4` names no arm, inherits *"whatever
+  cell means"*, and the two candidate denominators are 12 and 36 with a verdict between them.
+  **The general claim, and it is why this is a number and not a restatement of `RB-P88`:
+  `RB-P88` says one predicate forgot its denominator, which is a fixable omission in one
+  sentence; this says the word it would have inherited is not a word with one meaning, so
+  fixing `U-4` alone leaves every future unscoped predicate exposed to the same five-way
+  choice.** The two are not the same defect and the second is not implied by the first — a bar
+  can have a perfectly unambiguous scoping noun and still forget to name a denominator, and this
+  bar has the opposite problem underneath the one it filed. **Attack:** a bar defines its
+  evaluation unit **once**, in a numbered definition, and every later use is that word or a
+  different word — and a reviewer greps the noun across the whole document before trusting any
+  predicate that does not carry its own scope, because the drafting hole is invisible from
+  inside the subsection that has it. **NOT FIXED HERE** — the bar is a pre-registered record
+  under a published verdict and lives in another unit's layer at this commit; Amendment 2's D-1
+  makes the *next* bar name the denominator, which is the narrower half. (Bar / drafting,
+  **open**.)
+
+  <!-- provenance: value=the five referents and their line pins are re-derived in §AA.6.5 at 0a2084b over lines 1-587 of the bar, the pre-registered text; Amendment 2 §B.0 enumerates three of them; the denominator disagreement is 12 vs 36 on 7b/reader/large-IN and decides REFUTED (p=0.006348) against §5.3 NEITHER (p=0.062500); commit=0a2084b; command=awk 'NR<588' docs/eval-data/2026-08-20-document-read-bar.md | grep -n cell, plus the McNemar command of §AA.2 -->
+
+- **`RB-P94` — a figure a bar forbids anyone to compare is published in the result table with no
+  mark on it, because the prohibition lives in a different section from the number, so it is
+  enforced only by a reader who already knows to go and look for it.** §V.1's pass table
+  (`docs/eval.md:8302`) prints the 3b's `paste` column as `2`, `4` and `0` — six passes from the
+  only arm of the 432 rows whose prompt was truncated (§AA.3), scored against a silently clamped
+  4,096-token window, on a row whose three neighbours were not truncated at all. Nothing on the
+  row says so. The prohibition is real and pre-registered four times (§8, §5, §6.4, §7.5), and
+  every one of those sentences is in a different document from the table that prints the number.
+  **The general claim: a prohibition that does not travel with the figure is not a property of
+  the figure, it is a property of the reader.** A number lifted out of a published table carries
+  its own digits and nothing else, and the more careful the bar was about pre-registering the
+  prohibition, the more confidently the table prints the number without it. **Attack:** where a
+  run publishes a descriptive figure from an arm any clause VOIDs, forbids comparing, or marks
+  UNINFORMATIVE, the mark is printed **in the cell or the row that carries the figure** — not in
+  the section that derived it, not in a footnote, and not in the bar — or the figure is not
+  printed. **NOT FIXED HERE, and the reason is that it cannot be:** §V.1 is a published result
+  table and a record, so annotating it would edit a record to fix a defect found after it was
+  published, which is the one move this program does not make. Amendment 3's §C.5 already binds
+  the *next* bar with the same rule, forward-effect only. (Reporting / documentation, **open**.)
+
+  <!-- provenance: value=docs/eval.md:8302 prints the 3b row as "0 / 2 / 0 | 0 / 4 / 0 | 0 / 0 / 0" and those three paste figures are the six passes re-derived in §AA.5 (small 2/12, large-IN 4/12, large-OUT 0/12); the 3b's paste prompt reads 4,096 against a served 4,096 (ratio 1.0000) while the three compared tiers read 6,602-6,648 against 8,192 (ratios 0.806-0.812), so the 3b is the only truncated arm in the run; the prohibitions are bar §8, §5, §6.4 and §7.5, none of them on the row; commit=0a2084b; command=sed -n '8296,8303p' docs/eval.md, the §AA.3 and §AA.4 readings, and grep -n 'never pooled\|n = 36 per cell\|no 3b paste number\|declines a tier comparison' docs/eval-data/2026-08-20-document-read-bar.md -->
+
+##### AA.8 What is NOT claimed, and what stays open
+
+1. **No verdict moved and none was re-scored.** J10 is REFUTED at `p = 0.006348`, by §5.2's R3,
+   exactly as `2749b70` published it. Both amendments are append-only and neither touches a
+   threshold, a clause, a row or a scorer.
+2. **`RB-P86` is untouched.** The declared-argument type defect §V.8 filed alongside these two is
+   a Layer-1 change to `agent.py` and is not closed by either amendment. It stays open.
+3. **Which end the daemon cut the 3b's paste is NOT determined**, and cannot be from these rows:
+   `V-1` reported OK, so the run recorded nothing that would decide it. The ≈ 213 tokens and
+   ≈ 4.9% of §AA.6.2 are extrapolations off a measured slope and are labelled as estimates in
+   both documents; the readings are 4,096 and 4,096.
+4. **Nothing is claimed about *why* the 3b passed 6 of 36.** Against the 3b's committed floor
+   rate the arm is not distinguishable from the floor, and every non-passing row is
+   `wrong-answer`, which is what the floor produces anyway.
+
+   <!-- provenance: value=the 3b's committed floor rate is 0.2557 (135/528) at docs/eval.md:7147, and P(X <= 6 | n = 36, p = 0.2557) = 0.1499 on the binomial, so 6 of 36 is not distinguishable from the floor at any conventional level; all 30 non-passing 3b paste rows carry outcome == wrong-answer; commit=0a2084b (rows unchanged since 39f7aaf); command=python -c over docs/eval-data/2026-08-20-document-read-3b.jsonl with math.comb, and sed -n '7147p' docs/eval.md -->
+
+       3b committed floor   0.2557 (135/528)      P(X <= 6 | n=36, p=0.2557) = 0.1499
+       the 30 non-passing paste rows              all `wrong-answer`
+
+   `(0.1499 against the 0.2557 floor, 0a2084b, the command above)`. The clamp's effect on that
+   score is unmeasured and, from these rows, unmeasurable.
+5. **`RB-P93` is a claim about this bar's text, not about every bar.** It is measured on one
+   document. What transfers is the *attack* — grep the scoping noun before trusting an unscoped
+   predicate — not a count of five.
+6. **Neither number is fixed here, by construction.** `RB-P93`'s subject is a pre-registered
+   record and `RB-P94`'s is a published result table. A documentation section does not edit a
+   record to close a defect the record's own publication created; both are filed forward, and
+   both have their forward rule already committed in the bar (D-1/D-2 at `81f847b`, D-3/D-4 and
+   the reporting restatement at `3d71134`).
+
+##### AA.9 Gates, each at the commit it was measured at
+
+Re-run in this unit at `0a2084b`, not carried from the handoff. The suite is run with the
+worktree on `PYTHONPATH` because the repo venv otherwise resolves `bantamkit` to the main
+checkout (`RB-P55`, `RB-P70`).
+
+<!-- provenance: value=1268 passed, 2 xfailed; ruff check runtime-py and ruff check docs/eval-data both "All checks passed!"; ollama version 0.18.0 with llama3.2:3b already present and nothing pulled; commit=0a2084b; command=the four commands in the table below -->
+
+| gate | reading | commit |
+|---|---|---|
+| `PYTHONPATH=$PWD/runtime-py/src BANTAMKIT_ASSETS=$PWD/assets .venv/bin/python -m pytest runtime-py/tests -q` | 1268 passed, 2 xfailed | `0a2084b` |
+| `.venv/bin/ruff check runtime-py` | All checks passed! | `0a2084b` |
+| `.venv/bin/ruff check docs/eval-data` | All checks passed! | `0a2084b` |
+| `curl -s localhost:11434/api/version` + `/api/tags` | `0.18.0`; `llama3.2:3b` present, nothing pulled | `0a2084b` |
+
+**`1268` is a co-moving count and this section does not move it.** §Z.9 established that the
+figure tracks the number of committed `docs/eval-data/*.py` field programs, four parametrised
+nodes per program. This branch commits **no** `.py` at all — its whole diff against `main` is
+568 insertions in one `.md` — so the count standing at `1268` is the expected reading and not
+evidence that anything was checked. **A documentation section's gates are a statement that
+nothing was broken, never that anything was verified**, and the verification in this section is
+the twenty-odd re-derivations above, each with its own command.
+#### AB (2026-08-20) — J28's must-be-red catalogue exists at last, and the figure it was built to produce turns out to be a property of one test file rather than of the suite
+
+`RB-P89` filed a defect whose root cause was an absence: every provenance comment in this file
+that quotes a laundering measurement attributes it to *"a Z2 mutation script over a `git archive`
+tree"*, and **that script was never committed and does not exist**. The program's central
+anti-laundering discipline — section S's class, section T's procedure, four instances since — has
+therefore been a procedure re-improvised from memory each time, with nothing in the repository
+able to re-run any of it. `feat/launder-catalogue` commits the instrument: `0ba46f5`
+`docs/eval-data/2026-08-20-j28-contract-mutation-catalogue.py` with its record, `01c3e25` the
+one-line change that stops the program heading a table with a commit it was not measured at.
+
+**The headline is not "`RB-P89` is closed".** It is that the number the catalogue was built to
+produce — **`0 of 32` strings pinned by nothing at all** — is true, and is a statement about
+**`runtime-py/tests/test_layers.py`** rather than about `runtime-py/tests`. Strike that one
+file's `*_bytes` goldens and the same run reads **2 pinned, 26 laundering, 4 pinned by nothing**.
+The contract surface's defence against rewording is held almost entirely by byte-identity, not by
+tests that assert meaning, and nothing in this repository measures that concentration. This
+section owns `docs/eval.md`; it adds no `.py`, regenerates no `.jsonl` and restates no committed
+row.
+
+##### AB.0 The register was read at HEAD across every live writer, before any number was chosen
+
+`RB-P75`'s precaution, applied again — and this time it is not a formality. A concurrent branch
+that is **not on `main`** already holds two numbers above this branch's ceiling, so a number that
+looks free here is taken there.
+
+<!-- provenance: value=ceiling RB-P94 over 31 refs/heads, standing on exactly ONE — docs/bar-rule-defects (14fdbc0), which is PR #48, CI green and not merged; main, feat/question-floor, feat/module-graph-containment and this branch feat/launder-catalogue (01c3e25) all stand at RB-P92; commit=01c3e25; command=for r in $(git for-each-ref --format='%(refname:short)' refs/heads/); do git show $r:docs/eval.md | grep -oE 'RB-P[0-9]+' | sed 's/RB-P//' | sort -n | tail -1; done | sort -rn | head -1 -->
+
+    ceiling over all 31 refs/heads            ->  RB-P94
+    the only ref standing at it               ->  docs/bar-rule-defects (14fdbc0), §AA,
+                                                  minting RB-P93 and RB-P94, NOT on main
+    this branch, main, and two others         ->  RB-P92
+
+`(ceiling RB-P94 over 31 refs, 01c3e25, the command above)`. **`RB-P95` is the next free number,
+and this section mints exactly one: `RB-P95`.** Had the ceiling been read on this branch alone it
+would have read `RB-P92` and this section would have minted `RB-P93` — a number `docs/eval.md`
+already carries on another live ref, which is `RB-P75`'s collision exactly.
+
+**The section identifier, read the same way.** `L`–`Z` are exhausted and `docs/bar-rule-defects`
+has claimed `AA`, so the scheme is now **(length, then lexicographic)** and the next free
+identifier is **`AB`**.
+
+<!-- provenance: value=the section identifiers taken across all 31 refs/heads and their remotes are exactly L M N O P Q R S T U V W X Y Z AA — nothing of length 2 beyond AA; commit=01c3e25; command=for r in $(git for-each-ref --format='%(refname:short)' refs/heads/ refs/remotes/); do git show $r:docs/eval.md 2>/dev/null | grep -oE '^#### [A-Z]{1,3} '; done | awk '{print $2}' | sort -u -->
+
+**This section and §AA will conflict at merge, and that is expected.** Both append immediately
+above the file's `Back to the README` footer. **The documented resolution is to keep BOTH sides in
+MINT ORDER — `AA` before `AB`, `RB-P93`/`RB-P94` before `RB-P95` — and not in merge order.**
+Nothing below depends on being adjacent to any other section.
+
+##### AB.1 What makes the catalogue an instrument rather than a script
+
+For each top-level string of `assets/contracts/default.yaml`: reword that string and only that
+string, copy the whole asset pack to a temporary directory, run the entire `runtime-py/tests`
+suite against it, and diff the failing-node set against the unmutated baseline.
+
+**The design decision that matters is not the mutation, it is the verdict.** The verdict comes
+from a **fixed predicate on the node NAME** — it contains one of `verbatim`, `bytes`, `golden`,
+`wording`, `phrasing` — applied identically to all 34 keys. There is no per-string `pins` list,
+so the author does not get to pick which nodes count. That closes, **for this one surface**, the
+loophole `docs/eval-data/2026-08-14-pinning-harness-false-positives.md` filed and could not close:
+*"`pins` is chosen by the person writing the claim ... the attack direction: derive `pins`
+mechanically ... so the author does not get to choose."* The price is that the predicate is
+crude, and §AB.5 is what that costs.
+
+**Calibrated against two answers known by hand, and re-run in this unit rather than carried.**
+
+<!-- provenance: value=--calibrate at 01c3e25 exits 0 with CAL-RED expected PINNED-BY-NAME measured PINNED-BY-NAME (schema_instruction, 8 new red) and CAL-GREEN expected UNPINNED measured UNPINNED; commit=01c3e25; command=PYTHONPATH=$PWD/runtime-py/src .venv/bin/python docs/eval-data/2026-08-20-j28-contract-mutation-catalogue.py --calibrate -->
+
+    PINNED-BY-NAME  schema_instruction           8 new red
+    CAL-RED    expected PINNED-BY-NAME   measured PINNED-BY-NAME   OK
+    CAL-GREEN  expected UNPINNED         measured UNPINNED   OK
+
+`CAL-GREEN` — reword a YAML **comment** and no string at all — is the control the pinning harness
+lost on 2026-08-14. Without it, an instrument that reports every string pinned cannot be told from
+a detector stuck on, and §AB.2's entire table would be unreadable.
+
+##### AB.2 The three numbers, and the disclosure that matters more than the headline
+
+At `0ba46f5`, `--mode prose`, over `runtime-py/tests` — J28's committed sweep, which this unit did
+**not** re-run (it runs the whole suite 32 times and takes ~46 minutes; §AB.9 says which
+invocations were run instead):
+
+<!-- provenance: value=31 of 32 pinned by a node that names its reason, 1 of 32 pinned only by nodes promising a different claim (evidence_no_observation), 0 of 32 pinned by nothing at all, 0 broken mutants, and 26 of 32 strings carry at least one laundering node over 48 distinct nodes; commit=0ba46f5; command=PYTHONPATH=$PWD/runtime-py/src python3 docs/eval-data/2026-08-20-j28-contract-mutation-catalogue.py --jobs 5 -->
+
+    pinned by a node that NAMES its reason      31 of 32
+    pinned ONLY by a different claim             1 of 32   evidence_no_observation
+    pinned by NOTHING AT ALL                      0 of 32
+    strings with >=1 laundering node             26 of 32   48 distinct nodes
+
+**`0 of 32` is the figure nobody in this program had ever measured, and it holds for one reason.**
+For **29 of the 32**, the ONLY node naming its reason is a single `*_bytes` golden. Re-derived
+here as arithmetic over the committed table's own columns, not as a second sweep:
+
+<!-- provenance: value=parsing the 34-row table of docs/eval-data/2026-08-20-j28-contract-mutation-catalogue.md gives 32 non-EXCLUDED rows, naming-count histogram {1: 29, 4: 2, 0: 1}, as-measured 31 pinned / 1 laundering-only / 0 nothing, and striking one *_bytes golden per string gives 2 pinned / 26 laundering / 4 pinned-by-nothing, the four being validation_error, loop_note, loop_warn and document_paste_preamble; every row satisfies new-red = naming + not-naming; commit=01c3e25; command=a 15-line parse of the committed .md table, reproduced in this section's text -->
+
+    strings whose ONLY naming node is one golden          29 of 32
+    strike that golden from every killer set:
+      still pinned by a node that names its reason         2 of 32   the two argument-type strings
+      pinned ONLY by a different claim (LAUNDERING)        26 of 32
+      pinned by NOTHING AT ALL                              4 of 32   validation_error, loop_note,
+                                                                      loop_warn,
+                                                                      document_paste_preamble
+
+**And the concentration is tighter than "the goldens".** Every node in the whole of
+`runtime-py/tests` whose name satisfies the predicate **and** covers a contract string lives in
+one file, in one 190-line span, and there are **15 of them** — so 29 strings are floored by at
+most 15 nodes, and by pigeonhole at least 14 of those strings share their sole pin with another
+string. `test_document_manifest_bytes` alone stands under five of them.
+
+<!-- provenance: value=15 nodes matching def test_[a-z0-9_]*(verbatim|bytes|golden|wording|phrasing) in runtime-py/tests/test_layers.py, all between line 200 and line 390; test_layers.py holds more such nodes than any other test file (15, next is 5); commit=01c3e25; command=grep -noE 'def test_[a-z0-9_]*(verbatim|bytes|golden|wording|phrasing)[a-z0-9_]*' runtime-py/tests/test_layers.py -->
+
+    *_bytes / golden / verbatim nodes in test_layers.py        15   lines 200-390
+    the next most of any test file                              5   test_agent.py, test_filegraph.py
+
+**This is the finding, and it is not the same claim as `31 of 32`.** `31 of 32` is true and the
+count is correct. What it does not say is that the count's **resolution is the file, not the
+string**: a figure reported per-subject when 29 of the subjects are held by one shared, coarse
+mechanism reads as a property of the suite and is a property of one file. It is minted as
+`RB-P95` in §AB.7, with the argument against minting stated there too.
+
+##### AB.3 `RB-P89`'s own instance, re-derived on the BEFORE tree — and the mode is evidence, not a guess
+
+Re-derived in this unit at **`640c6b0`** (a detached worktree with the catalogue copied in
+untracked, which is why the program's own header reads `640c6b0-dirty` — `01c3e25`'s fix
+demonstrating itself), not carried from the handoff:
+
+<!-- provenance: value=at 640c6b0 under --mode prose the frame tool_argument_types reddens 4 new nodes (4 naming wording, 0 not) and the item tool_argument_type reddens 5 (4 naming, 1 not, the one being test_agent.py::test_a_wrong_typed_declared_argument_is_reported_rather_than_dropped); the program headed the table 640c6b0-dirty; commit=640c6b0; command=git worktree add --detach ../wt-before 640c6b0 then PYTHONPATH=$PWD/runtime-py/src .venv/bin/python docs/eval-data/2026-08-20-j28-contract-mutation-catalogue.py --only tool_argument_type --only tool_argument_types --jobs 2 -->
+
+    tool_argument_types  (frame)  reworded    4 new red    4 name wording, 0 do not
+    tool_argument_type   (item)   reworded    5 new red    4 name wording, 1 does NOT
+      the fifth: test_agent.py::test_a_wrong_typed_declared_argument_is_reported_rather_than_dropped
+
+Exactly as `RB-P89` filed it. **One correction to the entry's reading, not to its numbers**, and
+one correction to the correction. The entry says the four are *"three `verbatim` + the byte
+golden"* — true, and the third `verbatim` node is
+`test_dispatch_names_the_argument_verbatim_when_a_string_will_not_convert_to_its_type`, which the
+entry does not quote. J28's record places it *"450 lines above the `RB-P86` block"*. **Measured,
+it is 410**, and identically so at all three commits.
+
+<!-- provenance: value=test_dispatch_names_the_argument_verbatim_when_a_string_will_not_convert_to_its_type is at line 323 and the RB-P86 block comment at line 733 of runtime-py/tests/test_agent.py, a distance of 410, at each of 640c6b0, 0ba46f5 and 01c3e25; commit=01c3e25; command=for c in 640c6b0 0ba46f5 01c3e25; do git show "${c}:runtime-py/tests/test_agent.py" | grep -n 'def test_dispatch_names_the_argument_verbatim'; git show "${c}:runtime-py/tests/test_agent.py" | grep -n '2026-08-20, RB-P86: a DECLARED'; done -->
+
+**Why `prose` and not `whole` is the mode that re-derives `4`, and why that is evidence about the
+lost script.** Under `--mode whole`, which rewords the leading `error: ` marker too, the frame
+reddens **6**, not 4 — re-derived here at `01c3e25`, where the two extra nodes are exactly the two
+that assert `startswith("error: ")`:
+
+<!-- provenance: value=--mode whole at 01c3e25 gives tool_argument_types 6 new red (4 naming, 2 not) with the two being test_document_tools.py::test_document_read_answers_the_thirteen_calls_the_3b_actually_made_in_its_own_words and test_memory_component.py::test_malformed_k_still_becomes_an_error_observation, and document_error 6 new red (1 naming, 5 not); commit=01c3e25; command=PYTHONPATH=$PWD/runtime-py/src .venv/bin/python docs/eval-data/2026-08-20-j28-contract-mutation-catalogue.py --mode whole --only tool_argument_types --only document_error -->
+
+    --mode prose   frame reddens 4       `RB-P89`'s number
+    --mode whole   frame reddens 6       + the two nodes asserting startswith("error: ")
+
+`RB-P89`'s number is 4 and not 6, so **`M5` preserved the `error: ` marker**. The mode this
+catalogue reconstructs was derived from the surviving evidence about the script, not assumed —
+which is the only kind of claim anyone can now make about a program that no longer exists.
+
+##### AB.4 The node was fixed, and it is non-vacuous in both directions
+
+`test_a_wrong_typed_declared_argument_is_reported_rather_than_dropped` ended
+`assert "offset must be type integer, not type object" in observation` — the item string asserted
+verbatim inside a node whose name promises a claim about **dropping**. It now asserts the claim
+its name makes, in three parts, none of them the asset's phrasing: the handler never runs, its
+default never reaches the model, and the argument the call got wrong is named back (`offset` is
+data off the call and off the schema, not phrasing). **After the fix the item reads 4 new red, 4
+naming wording, 0 not** — the same four as the frame, its laundering column empty and its pinning
+unchanged. Re-derived here:
+
+<!-- provenance: value=at 01c3e25 --mode prose gives tool_argument_type PINNED-BY-NAME 4 new red 4 naming 0 not, tool_argument_types PINNED-BY-NAME 4 new red 4 naming 0 not, and evidence_no_observation LAUNDERING 2 new red 0 naming 2 not with the two being test_critique.py::test_render_evidence_missing_observation and test_critique.py::test_render_evidence_observation_before_call_does_not_pair; commit=01c3e25; command=PYTHONPATH=$PWD/runtime-py/src .venv/bin/python docs/eval-data/2026-08-20-j28-contract-mutation-catalogue.py --only tool_argument_type --only tool_argument_types --only evidence_no_observation --jobs 3 -->
+
+    640c6b0   item   5 new red   4 naming, 1 not      the laundered node
+    01c3e25   item   4 new red   4 naming, 0 not      one node removed, nothing added
+
+**The other direction, because a node that stops reddening under a rewording has to still redden
+under the thing it claims to guard.** Deliberate defect applied to a **copy** of
+`runtime-py/src` — `git status` was confirmed clean at `01c3e25` before and after — restoring the
+pre-`RB-P86` behaviour the node's name is about, dropping mistyped declared arguments instead of
+reporting them:
+
+<!-- provenance: value=with mistyped declared arguments dropped instead of reported in a copy of runtime-py/src, pytest runtime-py/tests/test_agent.py -q -p no:randomly gives 5 failed 68 passed, and test_a_wrong_typed_declared_argument_is_reported_rather_than_dropped is among the five, failing at test_agent.py:853 on assert seen == {} with {'offset': 0} == {}; the working tree was and stayed clean; commit=01c3e25; command=cp -R runtime-py/src $SCRATCH/mutsrc; patch _dispatch in the copy; PYTHONPATH=$SCRATCH/mutsrc .venv/bin/python -m pytest runtime-py/tests/test_agent.py -q -p no:randomly -->
+
+    5 failed, 68 passed
+    FAILED test_a_wrong_typed_declared_argument_is_reported_rather_than_dropped
+    >  assert seen == {}, "the handler must not run at all"      test_agent.py:853
+    E  assert {'offset': 0} == {}
+
+The handler ran on a default the model never asked for. **That is the sentence the node's name
+makes, and it is now the sentence that reddens it** — the fix moved the node's assertion from
+someone else's claim onto its own, and did not weaken it.
+
+##### AB.5 What this instrument does NOT establish, stated rather than discovered later
+
+- **`48` is an UPPER BOUND on the laundering class, not a count of defects.** The predicate is
+  five tokens; `test_no_documents_at_all_says_so` arguably does promise wording and is read as
+  laundering because `says_so` is not one of the five. It is crude in the other direction too: a
+  node named `..._bytes` that asserts nothing about wording would be counted as naming its
+  reason. **Nothing here inspects a node's body.**
+- **A rewording is ONE mutation shape.** A string can be pinned against rewording and unpinned
+  against a placeholder rename, a truncation, or a swap of two strings for each other. None of
+  those is measured.
+- **UNMEASURED, in writing:** `name: default`, the placeholder names, the YAML comments, every
+  asset outside `assets/contracts/default.yaml`, and the whole of `runtime-ts`. Laundering under
+  each of those is unmeasured, and `RB-P51`'s rule applies — an unmeasured check is not a passed
+  one, so none of these is a clean column.
+- **`0 of 32` is a statement about `runtime-py/tests` at `0ba46f5` and about nothing else** — and
+  §AB.2 is why even that is really a statement about one file.
+- **`RB-P95` is filed and NOT fixed.** No golden was added, moved or duplicated by this section,
+  and the fan-out of the 15 goldens is not gated by anything.
+
+##### AB.6 Handoff corrections — three, and the third is this unit's own
+
+**Both of J28's self-corrections are disclosed here rather than quietly absorbed**, because a
+correction the register never sees is the same as one that was never made.
+
+1. **The counterfactual was first written as "3 pinned / 29 laundering" and it is 2 / 26 / 4.**
+   The first form has no `pinned by nothing` column at all, which loses the only number in the
+   counterfactual that is qualitatively new: four strings become reworded-into-anything with the
+   suite green. Re-derived independently in §AB.2 from the committed table.
+2. **The AFTER numbers were first attributed to `640c6b0` while the fix was uncommitted in the
+   working tree.** `01c3e25` is that correction turned into a mechanism: the program appends
+   `-dirty` when `git status --porcelain` is non-empty, so a table can never again be headed with
+   a commit it was not measured at. **§AB.3's `640c6b0-dirty` header is that mechanism firing on
+   its first use by a second unit** — the correct behaviour, on a run whose tree genuinely was
+   not the commit it named.
+3. **This unit's own: "47 laundering nodes across 25 strings" is not derivable and is not
+   asserted here.** The committed figure is **48 distinct nodes over 26 strings**, of which
+   `evidence_no_observation` contributes two. Whether the remainder is 46 or 47 depends on
+   whether either of those two also reddens on another string, and **the committed table does not
+   carry the overlap structure**: its per-string columns sum to **56** occurrences over **48**
+   distinct nodes, so eight occurrences are shared and the table cannot say which.
+
+<!-- provenance: value=the sum of the 'of which do not' column over the 32 non-EXCLUDED rows of the committed table is 56, against 48 distinct nodes reported by the same run, so 8 occurrences are repeats and the per-string overlap is not recoverable from the table; 26 rows have a non-zero 'do not' column; commit=0ba46f5 for the table, 01c3e25 for the arithmetic; command=the same 15-line parse as AB.2 -->
+
+##### AB.7 Minted here — `RB-P95`, and the three things that get no number
+
+- **`RB-P95` — the contract surface's wording protection is single-sourced, and the figure that
+  reports it is stated at a resolution finer than the protection actually has.** `31 of 32`
+  strings are pinned by a node that names its reason and `0 of 32` are pinned by nothing; for
+  **29 of those 32 the sole such node is a `*_bytes` golden**, and every candidate golden lives
+  in **one file, `runtime-py/tests/test_layers.py`, 15 nodes across lines 200-390**, several of
+  them standing under four or five strings at once. Strike them and the same run's recorded
+  killers give **2 pinned / 26 laundering / 4 pinned by nothing**. The count is correct; what is
+  wrong is that a per-string figure is read as a property of the suite when 29 of the strings are
+  held by one shared, coarse mechanism, and **nothing in this repository measures or gates that
+  fan-out**. (Suite, open — filed, not fixed.)
+
+  <!-- provenance: value=29 of 32 strings have exactly one node naming their reason (naming-count histogram {1: 29, 4: 2, 0: 1}); striking one *_bytes golden per string turns 31/1/0 into 2/26/4; runtime-py/tests/test_layers.py holds 15 predicate-matching nodes between lines 200 and 390, more than any other test file (next is 5); commit=0ba46f5 for the sweep, 01c3e25 for the census and the arithmetic; command=the parse in AB.2 and grep -noE 'def test_[a-z0-9_]*(verbatim|bytes|golden|wording|phrasing)[a-z0-9_]*' runtime-py/tests/test_layers.py -->
+
+  **The argument against minting it, stated because it is a real argument.** A `*_bytes` golden
+  that asserts a full rendered sentence is *precisely* the node entitled to redden on a
+  rewording — that is the claim its name makes, and it makes it honestly. Nothing is broken; the
+  suite behaves as designed, and on that reading this is a coverage observation, and observations
+  do not mint. **Why it mints anyway:** the defect is not in the goldens, it is in the sentence
+  the measurement licenses. `0 of 32 pinned by nothing` was produced to be quoted, and quoted
+  bare it says the suite defends the surface's meaning; the same run says the suite defends the
+  surface's **bytes**, from one file, and that the two readings differ by 26 strings. A figure
+  whose plain reading is off by 26 of 32 is a defect in the figure, and J28's record disclosing
+  it in a §5 paragraph is the evidence for the entry, not a prior filing of it — a record
+  paragraph is not trackable and a register entry is.
+
+**Three things get no number, and each declination has a reason.**
+
+1. **`evidence_no_observation` gets no number.** It is the one string of 32 whose only killers
+   are nodes promising a different claim — `test_render_evidence_missing_observation` and
+   `test_render_evidence_observation_before_call_does_not_pair` — re-derived at `01c3e25` in
+   §AB.4. But *"pinned only by nodes that name a different claim"* **is** the `LAUNDERING`
+   verdict, which is the class section S already named
+   (*"a check that reddens for a reason its name does not state launders unrelated mutations into
+   its own column"*, `docs/eval.md:7665`) and section T already made a procedure for. This file
+   has twice recorded the same declination in the same words — *"the third application of the
+   laundering lesson is not a new class"* and *"the fourth laundering catch is the lesson working,
+   which is the opposite of a finding"*. This is the fifth. **Filed here as an instance and left
+   unfixed**, because the fix is one line of naming in `runtime-py/tests/test_critique.py` and
+   this section owns `docs/eval.md` — the same ownership split `RB-P89` itself instructed.
+2. **The other laundering nodes get no number** — 46 or 47 of them across 25 strings, and §AB.6
+   is why this section will not say which. They are instances of the class in (1), counted by an
+   upper-bound predicate (§AB.5). Forty-six instances of one named class is one class.
+3. **`RB-P89` is a RECORD and is not edited by being closed.** Its `4` and `5` both reproduce
+   exactly (§AB.3), its reading gains one node it did not quote, and its entry text stands
+   unaltered. **A finding that comes true does not mint, and neither does a lesson working** —
+   the catalogue existing is section T's procedure finally acquiring a program, which is the
+   lesson working at its largest scale so far and is still not a finding.
+
+##### AB.8 What is NOT closed
+
+1. **`RB-P95` is filed, not fixed**, and the shape of a fix is not obvious: adding a second
+   pinning node per string would multiply the very byte-goldens whose concentration is the
+   defect, so the fix is more likely a **gate on fan-out** than more goldens. Nobody has designed
+   it and this section does not.
+2. **The `4 of 32` counterfactual names four strings that are one file away from unpinned** —
+   `validation_error`, `loop_note`, `loop_warn`, `document_paste_preamble`. That is arithmetic
+   over recorded killers, **not a second measurement**, and no run in this repository has ever
+   actually deleted a golden and observed it.
+3. **`evidence_no_observation` is open** (§AB.7 item 1).
+4. **Everything in §AB.5 stays UNMEASURED** — most consequentially `runtime-ts`, where the
+   equivalent figure is not `0`, it is unknown.
+5. **The catalogue is not wired to any gate.** It is a program someone must choose to run; no
+   pytest node calls it, and nothing reddens if the surface's pinning degrades between now and
+   the next time a human types the command.
+
+##### AB.9 Gates, each at the commit it was measured at
+
+Re-run in this unit at `01c3e25`, not carried from the handoff.
+
+<!-- provenance: value=pytest 1272 passed 2 xfailed; ruff check runtime-py All checks passed!; ruff check docs/eval-data All checks passed!; --calibrate exits 0 with both controls OK; commit=01c3e25; command=the four commands in the table below -->
+
+| gate | reading | commit |
+|---|---|---|
+| `.venv/bin/python -m pytest runtime-py/tests -q` | 1272 passed, 2 xfailed | `01c3e25` |
+| `.venv/bin/ruff check runtime-py` | All checks passed! | `01c3e25` |
+| `.venv/bin/ruff check docs/eval-data` | All checks passed! | `01c3e25` |
+| the catalogue's `--calibrate` | `CAL-RED` OK, `CAL-GREEN` OK, exit 0 | `01c3e25` |
+
+**`1268 → 1272` is a CO-MOVING count and not four new tests.**
+`runtime-py/tests/test_field_programs.py` carries four nodes parametrised over
+`git ls-files -- docs/eval-data/*.py`, and this branch commits exactly **one** new field program,
+so each of the four gains one case. The same co-moving arithmetic §Z.9 recorded one branch
+earlier, on a different branch adding a different program — which is the second independent
+confirmation that the co-mover is the **field-program count** and nothing else.
+
+<!-- provenance: value=committed docs/eval-data/*.py goes 19 at 640c6b0 to 20 at 01c3e25, and the four parametrised nodes of test_field_programs.py each gain one case; commit=01c3e25; command=git ls-tree -r --name-only 640c6b0 docs/eval-data | grep -c '\.py$' and the same at 01c3e25 -->
+
+**The full 32-key sweep was deliberately NOT re-run**, and that is a disclosure and not an
+omission: it runs the whole suite 32 times for ~46 minutes, and the figures it produces are
+`0ba46f5`'s, quoted above at `0ba46f5`. What this unit re-derived instead is every figure that
+could be reached with a bounded invocation — `--calibrate`, three keys under `--mode prose` at
+`01c3e25`, two keys under `--mode whole` at `01c3e25`, two keys under `--mode prose` on a
+detached `640c6b0` tree — plus the counterfactual as arithmetic over the committed table and the
+golden census as a source count. **Every one of them reproduced.** The only figure in the handoff
+that did not survive contact is the *"450 lines"* of §AB.3, which is 410, and the *"47 across
+25"* of §AB.6, which the committed table cannot decide.
+
 Back to the [README](../README.md).

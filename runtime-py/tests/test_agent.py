@@ -831,15 +831,28 @@ def test_an_argument_the_schema_can_accept_reaches_the_handler_untouched(argumen
 
 def test_a_wrong_typed_declared_argument_is_reported_rather_than_dropped():
     """Dropping is right for an UNDECLARED key and wrong here: the schema names this argument,
-    so dropping it hands the model the handler's default as though it had asked for it."""
+    so dropping it hands the model the handler's default as though it had asked for it.
+
+    RB-P89. This node's last line used to assert `assets/contracts/default.yaml`'s
+    `tool_argument_type` string verbatim, so a rewording of that ONE string reddened a node
+    whose name promises a claim about dropping — the laundering class, and the only reason the
+    item string measured as pinned by five nodes where the frame measured four
+    (`docs/eval-data/2026-08-20-j28-contract-mutation-catalogue.md`). The claim the name makes
+    is that the argument is REPORTED rather than silently dropped, and these three assertions
+    are the whole of it: the handler never runs, its default never reaches the model, and the
+    argument the call got wrong is named back. `offset` is data off the CALL and off the
+    schema, not the asset's phrasing — the phrasing belongs to
+    `test_layers.py::test_tool_argument_types_bytes` and to the two `_verbatim` nodes above,
+    all three of which redden on a rewording because their names say they will.
+    """
     seen = {}
     observation = _observe(
         typed_tool(lambda offset=0, **kw: seen.update({"offset": offset}) or f"page {offset}"),
         {"offset": {"description": "Row number of the first row to return"}},
     )
     assert seen == {}, "the handler must not run at all"
-    assert observation != "page 0"
-    assert "offset must be type integer, not type object" in observation
+    assert observation != "page 0", "the handler's default must not reach the model"
+    assert "offset" in observation, "the argument that was not used must be named back"
 
 
 def test_an_undeclared_key_is_still_dropped_and_never_reported_as_mistyped():
