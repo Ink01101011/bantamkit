@@ -1092,3 +1092,295 @@ non-UNINFORMATIVE cell"* and R3's lack of one. Three things it did not state, fo
    referents, one of them in the same sentence as the other (§B.0). The entry's narrower claim
    — that the *denominator* defect is single rather than systemic — still holds, and D-1 is
    scoped to predicates for that reason.
+
+## Amendment 3 — 2026-08-20
+
+**Status: the run has been scored.** This amendment is held to the same rule as Amendment 2:
+**it changes no threshold, flips no clause, re-scores no row, and does not edit one character
+above this heading.** It records a defect in a *guard* — a predicate that was written to catch a
+truncated prompt and cannot catch one at the tier where it happened. The forward rules in §C.5
+bind the *next* bar; they do not re-score this one.
+
+Written by the `RB-P87` unit. Every figure below was re-derived in this worktree at `81f847b`:
+the token readings by running G-3's own instrument against the live daemon, the pass counts by
+reading the committed `.jsonl`. No row was regenerated, no model was pulled — `llama3.2:3b` was
+already resident — and the `PASTE_MAX_BYTES` in the code this unit called is Amendment 1's
+**8,621**.
+
+### C.0 The defect, in one sentence
+
+**`V-1`'s threshold is an absolute token count — `0.85 × 8,192 = 6,963` — derived from *one*
+tier's window, and the counter it reads cannot return more than the window it is served, so at
+any tier served a window below 6,963 the predicate is not merely unlikely to fire: it is
+UNFIREABLE, at any prompt of any size, and it reports OK most confidently where the truncation
+is deepest.**
+
+That last clause is the part that makes it a rule defect rather than a tuning miss. A clamped
+counter returns the window. The smaller the served window, the smaller every reading from that
+tier, the further every reading sits below a fixed threshold — so a guard written this way gets
+*quieter* as the thing it guards against gets *worse*. It fails safe-looking.
+
+| served window `W` | largest reading the counter can ever return | `V-1`'s threshold | can `V-1` fire, at any prompt? |
+|---:|---:|---:|---|
+| 8,192 — the three compared tiers, pinned in the Modelfile (§8) | 8,192 | 6,963 | yes |
+| **4,096 — `llama3.2:3b`, measured in §C.1** | **4,096** | 6,963 | **no** |
+| any `W` < 6,963 | `W` | 6,963 | **no** |
+
+### C.1 The 3b's served window, measured — and what a clamped reading is *not* evidence of
+
+§6.4 named the served window of `llama3.2:3b` UNMEASURED. It is measured here, with G-3's own
+instrument: `/api/generate`, `num_predict=1`, reading `prompt_eval_count`, never `/v1`'s
+`usage.prompt_tokens`. Daemon: `ollama version 0.18.0`, no `OLLAMA_*` variable set in the
+environment; G-2 re-derived at the same time — `ollama show --modelfile llama3.2:3b` declares
+**no `num_ctx`**, and the three `bk-rbp27-*` tags each declare `PARAMETER num_ctx 8192`.
+
+<!-- provenance: value=llama3.2:3b prompt_eval_count = 4096 on the system reading and the system+task reading, for both corpora, at PASTE_MAX_BYTES=8621; commit=81f847b (worktree, code unchanged since 1a8e382); command=PYTHONPATH=runtime-py/src BANTAMKIT_ASSETS=assets python3 -c "import json,tempfile,urllib.request,yaml;from pathlib import Path;from bantamkit.evalrun import materialise_documents,_paste_head;g=lambda m,p:json.loads(urllib.request.urlopen(urllib.request.Request('http://localhost:11434/api/generate',data=json.dumps({'model':m,'prompt':p,'stream':False,'options':{'num_predict':1}}).encode(),headers={'Content-Type':'application/json'}),timeout=900).read())['prompt_eval_count'];[print(c,len(s.encode()),g('llama3.2:3b',s)) for c,t in (('small','doc-small-137'),('large','doc-large-in-137')) for k in [yaml.safe_load(open('assets/evals/document/tasks/%s.yaml'%t).read())] for d in [tempfile.mkdtemp()] for f in [materialise_documents(k,Path(d)/t,'paste')] for h in [_paste_head(f)] for s in (h,h+'\n'+k['prompt'])]" -->
+
+    llama3.2:3b  small corpus  system 8,962 B -> 4096   system+task 9,324 B -> 4096
+    llama3.2:3b  large corpus  system 9,016 B -> 4096   system+task 9,378 B -> 4096
+
+**`RB-P53` is the reason this table cannot be read the obvious way.** A reading of 4,096 is
+**not** a measurement that the prompt is 4,096 tokens; it is evidence that the *window* is
+4,096 and that the counter has been pinned to it. Two independent facts establish the clamp,
+and neither is an inference from the number's roundness:
+
+1. **Two prompts of different sizes return the identical count.** The system message and the
+   system message plus the 361 B task prompt differ by 362 B — about 168 tokens at this
+   content's measured rate — and both read exactly 4,096, at both corpora. A counter that
+   reported the prompt could not do that.
+2. **The reading saturates, and the saturation is visible.** Prefixes of the 9,016 B large-corpus
+   system message, same instrument, same model:
+
+<!-- provenance: value="the 3b saturation ladder below"; commit=81f847b; command=the §C.1 command above with the prompt replaced by _paste_head(...).encode()[:n].decode('utf-8','ignore') for n in (2048,4096,6000,8000,8600,8800,8900,9016) -->
+
+    prefix  2,048 B -> 900     prefix  8,600 B -> 3943
+    prefix  4,096 B -> 1852    prefix  8,800 B -> 4037
+    prefix  6,000 B -> 2735    prefix  8,900 B -> 4084
+    prefix  8,000 B -> 3665    prefix  9,016 B -> 4096
+
+   The reading tracks the prompt all the way up — `8,800 → 8,900 B` buys **+47** tokens, a
+   marginal **2.128 B/token** — and then the last 116 B buys **+12**, where the same rate
+   predicts +54. It stops at 4,096 and does not move again for another 362 B. **That is where
+   the window is.**
+
+**How much is being lost, stated as an estimate and labelled as one.** Extrapolating the
+measured marginal rate of 2.128 B/token past the saturation point, the true prompt is **≈ 4,139
+tokens** for the system message and **≈ 4,309** for the request the run actually sends. Against
+a 4,096 window that is **≈ 213 tokens, ≈ 4.9% of the request**, that never reached the model —
+about **21 of the paste's 401 rendered rows**, at the corpus's 21.50 B/row. These four numbers
+are estimates off a measured slope, not readings; the two readings are 4,096 and 4,096.
+
+**Which end the daemon cut is not determined here, and the run recorded nothing that would
+determine it.** §10.2 spends a whole clause on never cutting a row in half, because *"half a row
+is a value the model can misread as a whole one"*; the daemon's clamp is under no such
+discipline and announces nothing. **That absence is part of the defect, not a gap in this
+amendment:** `V-1` existed to make exactly this decidable before the run, it reported OK, so the
+432 committed rows carry no record of what was removed from the 3b's paste.
+
+### C.2 What `V-1` catches as written, and what it would catch window-relatively
+
+All six compared readings re-derived in this worktree, and all six reproduce Amendment 1 §A.3
+and §V.4 to the digit.
+
+<!-- provenance: value="the six compared-tier request readings 6,602 / 6,627 / 6,623 / 6,648 / 6,623 / 6,648, re-derived"; commit=81f847b; command=the §C.1 command with 'llama3.2:3b' replaced by each of bk-rbp27-qwen3-4b-instruct, bk-rbp27-qwen2.5-7b-instruct, bk-rbp27-qwen2.5-14b-instruct -->
+
+| tier | served `W` (G-2) | request reading (G-3), small / large | clamped? | `V-1` as written, `≥ 6,963` | window-relative, `≥ 0.85 × W` | reading ÷ `W` |
+|---|---:|---:|---|---|---|---:|
+| 4b | 8,192 | 6,602 / 6,627 | no | ok | ok — `≥ 6,963` | 0.806 / 0.809 |
+| 7b | 8,192 | 6,623 / 6,648 | no | ok | ok — `≥ 6,963` | 0.808 / 0.812 |
+| 14b | 8,192 | 6,623 / 6,648 | no | ok | ok — `≥ 6,963` | 0.808 / 0.812 |
+| **3b** | **4,096** | **4,096 / 4,096** | **yes** | **ok — does not fire** | **VOID — `≥ 3,481`** | **1.0000 / 1.0000** |
+
+**Three things this table settles, and the first one is why the window-relative form is not a
+re-scoring.**
+
+1. **At the three compared tiers the two forms are the same predicate.** `0.85 × 8,192` *is*
+   6,963. The window-relative form changes no compared reading, no compared cell, and no figure
+   in §V. It differs from the pre-registered text at **exactly one tier**, the declared floor,
+   and it differs there by VOIDing an arm the bar already forbids anyone to compare (§6.4).
+2. **The ratio column reaches exactly 1.0000, and that is the general result.** A clamped
+   reading divided by its own window is 1 — the largest value the quantity can take. So a
+   window-relative threshold at *any* fraction below 1.0 fires on *every* clamped reading,
+   automatically, at every tier, forever. The predicate stops depending on which window the
+   drafter had in mind.
+3. **The refusal form is cheaper still and needs no instrument.** §6.4 had already written down
+   that this tier's window was UNMEASURED. A clause that refuses to evaluate where the window is
+   unknown would have VOIDed the 3b's `paste` arm **on the strength of §6.4 alone**, before G-3
+   was called at all and before anybody knew the number was 4,096. The information needed to
+   protect the run was in the document at pre-registration; what was missing was a sentence that
+   made the absence of a measurement do something.
+
+### C.3 What the entry's superlative claims, and what actually reproduces
+
+The register entry says the 3b's prompt is *"being truncated harder than any arm the rule did
+VOID."* **That does not reproduce**, and the statement that replaces it is sharper.
+
+1. **`V-1` VOIDed no graded arm, in this run or ever.** §V.4 records *"V-1 did not fire at any
+   compared tier"*, and this unit re-derived all six readings (§C.2). `V-1`'s only firings in
+   the bar's whole history are Amendment 1 §A.1's six **pre-run calibration** readings at the
+   pre-registered `PASTE_MAX_BYTES = 12,288` — and no arm was ever graded in that state, because
+   the constant was amended instead. *"Any arm the rule did VOID"* names an empty set.
+2. **Measured against those calibration readings, the 3b is truncated LESS, not more.**
+   Re-derived on the 4b at the pre-registered constant: the 12,672 B system message reads
+   **8,192 — clamped**, saturating from about 11,300 B, at a measured marginal **1.325 B/token**;
+   extrapolated, the true prompt is **≈ 9,273 tokens**, so **≈ 1,081 tokens ≈ 11.7%** did not
+   reach the model. The 3b's 4.9% is about **2.4× smaller as a fraction and 5× smaller in
+   absolute tokens**.
+
+<!-- provenance: value=4b at PASTE_MAX_BYTES=12288 reads 8,192 on the 12,672 B system message, saturating between 11,200 B (8,162) and 11,400 B (8,192); commit=81f847b; command=the §C.1 command with bantamkit.evalrun.PASTE_MAX_BYTES set to 12288 before _paste_head, model bk-rbp27-qwen3-4b-instruct, prefixes (9016,10000,11000,11200,11400,12672) -->
+
+    4b @ 12,288  prefix  9,016 B -> 6536   11,000 B -> 8011   11,400 B -> 8192
+                 prefix 10,000 B -> 7266   11,200 B -> 8162   12,672 B -> 8192
+
+3. **The claim that does reproduce is the one worth making.** In the graded run, **the 3b's
+   `paste` arm is the only arm of the 432 rows whose prompt was truncated at all** — every
+   compared cell sat 1,544 tokens under its window, a 18.85% margin (§A.3) — **and `V-1`, the
+   single clause in this bar written to catch a truncated paste, reports OK on it.** A guard
+   silent on the run's *only* truncated arm is a worse finding than a guard silent on a
+   worse-truncated arm that never ran.
+
+### C.4 Whether any published figure depends on the 3b's `paste` passes
+
+**Counted here from the committed rows, not taken from the entry.** The four run files landed at
+`39f7aaf` and are unchanged at `81f847b`.
+
+<!-- provenance: value=3b paste passes 2 (small), 4 (large-IN), 0 (large-OUT) = 6 of 36, and tool_calls == 0 on every paste row; commit=81f847b (rows unchanged since 39f7aaf); command=python3 -c "import json;R=[json.loads(l) for l in open('docs/eval-data/2026-08-20-document-read-3b.jsonl')];st=lambda t:'small' if t.startswith('doc-small') else 'large-IN' if t.startswith('doc-large-in') else 'large-OUT';P=[r for r in R if r['config']=='paste'];[print(s,sum(1 for r in P if st(r['task'])==s and r['passed']),'/',sum(1 for r in P if st(r['task'])==s)) for s in ('small','large-IN','large-OUT')];print('tool_calls nonzero:',sum(1 for r in P if r.get('tool_calls')))" -->
+
+    small 2/12    large-IN 4/12    large-OUT 0/12    total 6/36    tool_calls nonzero: 0
+
+**The entry's count reproduces exactly: 2, 4, 0.**
+
+**No compared figure reads them.** §V.1's three McNemar rows and every `P(paste)` / `P(reader)`
+in them are pooled over 4b/7b/14b at the `n = 36` §5 fixes. Re-derived on both pools:
+
+<!-- provenance: value="the two-pool table below"; commit=81f847b (rows unchanged since 39f7aaf); command=python3 -c "import json,math;P='docs/eval-data/2026-08-20-document-read-%s.jsonl';L=lambda t:[json.loads(l) for l in open(P%t)];st=lambda t:'small' if t.startswith('doc-small') else 'large-IN' if t.startswith('doc-large-in') else 'large-OUT';M=lambda b,c:min(1.0,2*sum(math.comb(b+c,i) for i in range(min(b,c)+1))/2**(b+c));[print(pool,s,'n=%d paste=%d reader=%d b=%d c=%d p=%.6f'%(len(k),sum(d[(*x,'paste')] for x in k),sum(d[(*x,'reader')] for x in k),b,c,M(b,c))) for pool in (['4b','7b','14b'],['4b','7b','14b','3b']) for s in ('small','large-IN','large-OUT') for d in [{(t,r['task'],r['repeat'],r['config']):r['passed'] for t in pool for r in L(t) if st(r['task'])==s}] for k in [sorted({x[:3] for x in d})] for b in [sum(1 for x in k if d[(*x,'reader')] and not d[(*x,'paste')])] for c in [sum(1 for x in k if d[(*x,'paste')] and not d[(*x,'reader')])]]" -->
+
+| stratum | pool | `n` | `P(paste)` | `P(reader)` | Δ | `b` | `c` | `p` |
+|---|---|---:|---:|---:|---:|---:|---:|---|
+| small | 4b+7b+14b — **as published** | 36 | 1.0000 | 0.4722 | −0.5278 | 0 | 19 | 0.000004 |
+| small | with the 3b pooled in | 48 | 0.7917 | 0.3542 | −0.4375 | 0 | 21 | 0.000001 |
+| large-IN | 4b+7b+14b — **as published** | 36 | 0.8889 | 0.6111 | −0.2778 | 1 | 11 | **0.006348** |
+| large-IN | with the 3b pooled in | 48 | 0.7500 | 0.4583 | −0.2917 | 1 | 15 | 0.000519 |
+| large-OUT | 4b+7b+14b — **as published** | 36 | 0.0000 | 0.4167 | +0.4167 | 15 | 0 | 0.000061 |
+| large-OUT | with the 3b pooled in | 48 | 0.0000 | 0.3125 | +0.3125 | 15 | 0 | 0.000061 |
+
+Every published row is the 4b+7b+14b row, to the digit. **The exclusion is load-bearing — pooling
+the 3b in would move `P(paste, small)` from 1.0000 to 0.7917 and Δ(large-OUT) from +0.4167 to
++0.3125 — and it is pre-registered rather than chosen after the fact:** §8 declares the 3b a
+floor that is never pooled, §5 fixes `n = 36` over the three compared tiers, §6.4 forbids
+comparing any 3b `paste` number to another tier's, and §7.5 declines a tier comparison outright,
+naming the unequal windows as one reason. **Four sentences, all written before any arm ran, and
+the protection comes from them and not from `V-1`.**
+
+**What the 3b's `paste` rows DO reach, recorded so it is not discovered later.** Two things,
+neither of them compared:
+
+1. **§V.1's pass table prints them.** The 3b row reads `0 / 2 / 0`, `0 / 4 / 0`, `0 / 0 / 0` —
+   those three `paste` figures **are** these passes. They are published as descriptive counts of
+   an arm whose prompt was silently truncated, on a row of a table whose other rows were not,
+   and the prohibition on comparing them lives in §6.4 and §7.5 rather than beside the number.
+   That is a presentation hazard, not a wrong figure, and §C.5's restatement is where it is
+   closed for the next bar.
+2. **§V.4's `U-3` firing at `3b`/large-OUT reads `P(paste) = 0` in that cell.** That zero does
+   not depend on the clamp: §3.1 puts the large-OUT answer row outside the 8,621 B cut by
+   construction, so the `paste` ceiling there is zero at every tier and is 0/36 at the three
+   compared ones too. The firing survives the truncation being there or not.
+
+**And nothing can be inferred from the 6 in either direction.** Against the 3b's committed floor
+rate of **0.2557 (135/528, `docs/eval.md:7147`, re-derived by §8)**, 6 of 36 gives
+`P(X ≤ 6) = 0.1499` on the binomial — the arm is **not distinguishable from the declared floor**.
+Per task the passes are `doc-large-in-359` 4/4 and `doc-small-388` 2/4, with the other seven
+tasks 0/4; every compared tier scores 4/4 on `doc-small-137` and `doc-large-in-137` where the 3b
+scores 0/4. **No causal reading of that pattern is offered here and none is available**: all 30
+non-passing rows are `outcome == "wrong-answer"`, which is what the floor produces anyway, and
+§C.1 could not establish which end the daemon cut. **The clamp's effect on the 3b's `paste`
+score is unmeasured and, from these rows, unmeasurable.**
+
+### C.5 The forward rule — binding on the next bar, not on this run
+
+**Two rules, in the shape of §B.4's D-1 and D-2, and they are not optional for any bar written
+after this date:**
+
+- **D-3 — a predicate that compares a measurement to a window is a function of the window it is
+  evaluated against.** Its threshold is written as a fraction of `W(tier)`, the served window of
+  the tier the predicate is being evaluated at, with `W(tier)` named and sourced to the gate that
+  reads it. A bare constant is admissible only where the bar has *pinned* the same window for
+  every tier the predicate ranges over, and even then it is written as `f × W(tier)` with the
+  arithmetic shown, so that adding a tier cannot silently disarm it. **Corollary, because it is
+  the mechanism that made this fail quietly: a counter that can clamp is read against its own
+  ceiling.** A reading equal to the served window is a clamp, never a prompt size; the bar
+  records the reading, the window, and their ratio, and never the reading alone.
+- **D-4 — where the window is unknown, the predicate refuses to evaluate and the arm is VOID.**
+  A bar that names a served window UNMEASURED has already said its window predicate cannot be
+  evaluated at that tier; the consequence is **VOID — the row is not a measurement of anything**,
+  not *"uncompared but reported"*. **Silence from a guard is not a pass.** A guard that cannot
+  reach its own threshold must say so at the moment it is evaluated, not leave a reader to infer
+  it from a number that looks fine.
+
+**Applied to this bar's own text as an explicit restatement, forward-effect only.** These change
+no threshold, flip no clause, re-score no row, and annotate no published table; they exist so a
+re-deriver never has to repeat §C.1–§C.3.
+
+- **`V-1` (restated).** *For any `paste`-arm run at a tier, if the pre-run calibration of §10.3
+  measured the paste request at **`≥ 0.85 × W(tier)`**, where `W(tier)` is the served `num_ctx`
+  of that tier as read by G-2, the `paste` arm is **VOID at that tier** and may not be compared.*
+  Firings under the restatement, at `81f847b`: **the 3b's `paste` arm, both corpora
+  (4,096 ≥ 3,481, i.e. `0.85 × 4,096`)**, and **no compared cell** — at `W = 8,192`, `0.85 × W`
+  is 6,963 and the restatement is the pre-registered sentence, unchanged, arithmetic and all.
+- **`V-1` (restated) — the refusal limb.** *Where G-2 cannot read a tier's `num_ctx`, the `paste`
+  arm at that tier is VOID without a G-3 call.* Under the restatement the 3b's `paste` arm was
+  VOID at pre-registration, on §6.4's own admission, before any number existed.
+- **§6.4 (restated).** An UNMEASURED served window makes the `paste` arm at that tier **VOID**,
+  not merely uncompared. *"No number may be compared"* and *"the row is a measurement"* cannot
+  both be true of the same row.
+- **§10.3's G-2 and G-3 (restated).** G-2 runs for **every declared model, the floor included**,
+  and its reading is what G-3's predicate is evaluated against. G-3 records, per (tier, corpus),
+  the reading, the window, and the ratio — three numbers, not one — and **a ratio of exactly
+  1.0000 is reported as a clamp on its face.**
+- **Reporting (restated).** Where a run publishes a descriptive figure from an arm that any
+  clause VOIDs or forbids comparing, the figure carries that mark **in the table that prints it**.
+  This is forward-effect only and does not annotate §V; what it requires of the next bar is that
+  such a cell is printed with its mark or not printed at all.
+
+### C.6 What this amendment does NOT change
+
+No threshold, no arm, no task, no scorer, no tier, no repeat count, no `n`, and no row. `V-1`'s
+6,963 stands as pre-registered and as applied. §5's C1/C2/C3 and R1–R4 keep their inequalities
+and their numbers; §6.1's U-1 … U-5 keep their thresholds; §6.2, §6.3 and §6.4 are untouched.
+**§V's verdict of REFUTED is unchanged, and it never depended on the 3b's `paste` arm** — §C.4
+re-derives that from the committed rows. `PASTE_MAX_BYTES` stays at Amendment 1's 8,621. Nothing
+above the *"Amendment 3"* heading is edited.
+
+### C.7 What of `RB-P87`'s own claims did not reproduce
+
+The register entry is a claim and was re-derived rather than transcribed.
+
+**Reproduces:** all four `4,096` readings, on both counters for both corpora; the 8,962 B and
+9,016 B system messages; `V-1`'s `0.85 × 8,192 = 6,963`; `4,096 < 6,963`, so `V-1` as written
+does not fire and the 3b's `paste` arm is not VOID by the rule; §6.4's naming of the served
+window as UNMEASURED and its prohibition on comparing a 3b `paste` number; **the 6 paste passes,
+2 small / 4 large-IN / 0 large-OUT**; and that no figure in §V.1's compared pool depends on them.
+
+**Four things it did not state, or stated differently, found here:**
+
+1. **Does not reproduce — *"truncated harder than any arm the rule did VOID."*** `V-1` VOIDed no
+   graded arm in this bar's history, and measured against the pre-run calibration readings it
+   *did* fire on, the 3b is truncated **≈ 2.4× less** as a fraction of prompt (4.9% against
+   11.7%) and ≈ 5× less in absolute tokens. §C.3 states what replaces it: the 3b's `paste` is the
+   **only** truncated arm in the graded run, and `V-1` reports OK on it.
+2. **The entry understates the failure.** It says a fixed-fraction threshold is *"silently
+   inapplicable"* at a different window. Measured, it is **unfireable**: no prompt of any size
+   can make a clamped counter return 6,963 at a 4,096 window, so the guard is not weakened
+   there — it is absent. And because `4,096 ÷ 4,096 = 1.0000` exactly, **any** window-relative
+   threshold below 1.0 catches this clamp automatically (§C.2).
+3. **A one-byte discrepancy inside the record, which changes nothing and is recorded anyway.**
+   The entry's `9,324` / `9,378` are the system message joined to the 361 B task prompt by a
+   **single** newline; Amendment 1 §A.3 records the same pair as `9,325` / `9,379`, a two-byte
+   joiner. Both readings return the **identical** `prompt_eval_count` at every tier measured
+   here — 6,602 / 6,627 / 6,623 / 6,648 / 6,623 / 6,648 on the compared tiers and 4,096 on the
+   3b — so no number in either document depends on it.
+4. **How much is lost, and what is not knowable about it.** The entry gives no magnitude. It is
+   ≈ 213 tokens, ≈ 4.9% of the request, ≈ 21 of 401 rendered rows (§C.1, extrapolated off a
+   measured slope and labelled as an estimate) — and **which end the daemon cut is not
+   determined, because `V-1` reported OK and so the run recorded nothing that would determine
+   it.**
