@@ -10643,4 +10643,260 @@ golden census as a source count. **Every one of them reproduced.** The only figu
 that did not survive contact is the *"450 lines"* of §AB.3, which is 410, and the *"47 across
 25"* of §AB.6, which the committed table cannot decide.
 
+#### AC (2026-08-21) — four findings closed forward in one shift, three of the four filings refuted by the units sent to close them, and one endpoint that wins the name is absent in the mode this program works in
+
+Four units ran in parallel on disjoint surfaces against `9a7b886`. All four landed.
+The interesting result is not that the findings closed — it is that **three of the four
+filings were wrong about their own subject**, and each was corrected by the unit sent to
+act on it rather than by a reviewer. The filings were written by the orchestrator, which
+is the least-checked source in this program (`RB-P73`).
+
+##### AC.0 The ceiling, read across every ref and not on one branch
+
+<!-- provenance: value=ceiling RB-P95 over 69 refs (refs/heads + refs/remotes), 95 distinct numbers, contiguous 1..95, no gaps and nothing above; commit=3e029f9; command=for r in $(git for-each-ref --format='%(refname:short)' refs/heads/ refs/remotes/); do git show $r:docs/eval.md | grep -oE 'RB-P[0-9]+' | sed 's/RB-P//' | sort -n | tail -1; done | sort -rn | head -1 -->
+
+```
+ceiling over all 69 refs                    ->  RB-P95
+distinct numbers on main                    ->  95
+contiguity check, seq 1..95 against main    ->  no gaps, nothing above
+```
+
+`(ceiling RB-P95 over 69 refs, 3e029f9, the command above)`. **`RB-P96` is the next free
+number, and this section mints exactly one: `RB-P96`.** Four branches were live while this
+was read, which is why it was read across refs and not on `main` — §Z.0's lesson, and the
+near-collision it records happened again in this shift's planning.
+
+##### AC.1 `RB-P92` — CLOSED (2026-08-20, PR #52, `6583679`), by prose and one selfcheck case
+
+The finding was that a fold — `run_one` calling `tsc_program` directly so the build graph
+"costs a flag and not a second `tsc`" — was written, measured, refuted, backed out, and its
+docstring stayed. One commit then carried two opposite mechanisms and nothing in the file
+could adjudicate, **because the count the sentences were about had never been written down
+where a check could read it.**
+
+What closed it: `GUARD_PROCESS_BUDGET = {"tsc": 2, "vitest": 1}` is declared, and selfcheck
+**M14** measures it with a counting spy around `subprocess.run` that **launches nothing** —
+the count is fixed by control flow, since `oracle_module_graph` and `tsc_program` both run
+before every return in `guard_graph`. No behaviour moved; the fold stays backed out.
+
+**Non-vacuity, verified against the run.** Re-landing the fold on a throwaway copy turns the
+budget case red with `{'tsc': 1, 'vitest': 1}` and the order case red with `['tsc', 'vitest']`.
+The orchestrator added a mutation the unit never ran — swapping the order of the two calls
+inside `guard_graph` — which reddens the **order** case alone while the budget case stays
+green, so the two cases are not redundant. The case is one-sided, like M11's pin, and its
+scope is stated where it lives: it closes docstrings asserting a *count* or a mechanism the
+process table can see, not prose-vs-behaviour in general.
+
+**And the finding had a second instance the filing did not name.** `tsc_program`'s own
+recorded *"`tsc --noEmit` 0.25 s, the same command with `--listFiles` 0.52 s — no extra
+process, `+0.27 s` for the flag"* is **N-16 wearing the flag's name**. `composite: true`
+means any `tsc` leaves a `tsconfig.tsbuildinfo`, so `0.25 s` was a warm run and `0.52 s` a
+cold one and the flag was charged the difference between two states.
+
+<!-- provenance: value=flag cost +0.009 s cold / +0.001 s warm; cold tsc 0.541 s, warm 0.265 s, recorder 0.438 s, |ORACLE|=21 |BUILD|=32; medians of 7 trials (5 for the recorder), arm order counterbalanced, tsconfig.tsbuildinfo removed before every cold trial; measured by the orchestrator on a tree built read-only by `git archive` of packnplan-mono at 81ac1a1, the real checkout never written to; commit=4a79a24; command=.venv/bin/python scratchpad/time_flag.py <tree> 7 -->
+
+Measured cold-against-cold and warm-against-warm, **the flag costs `+0.009 s` cold and
+`+0.001 s` warm — nothing this instrument can resolve.** `"no extra process"` was always the
+load-bearing half and stands. `guard_graph`'s `+0.52 s` is corrected to `+0.27 s` for the
+same reason: the second `tsc` always runs warm behind the first. The unit reported
+`+0.004 / −0.003`; the orchestrator's independent re-measurement gives `+0.009 / +0.001`, and
+the two agree on the only thing either can support — **the flag is free, and the number the
+docstring used to carry was measuring the buildinfo cache.**
+
+##### AC.2 `RB-P93` and `RB-P94` — CLOSED FORWARD (2026-08-20, PR #53, `f029dd2`), and both filings were wrong about their subject
+
+Neither is fixed in place, by construction: `RB-P93`'s subject is a pre-registered record and
+`RB-P94`'s is a published result table. Amendment 4 (`§D.0`–`§D.7` of the document-read bar)
+is **322 insertions and zero deletions**, and `docs/eval.md` was not touched by it.
+
+`RB-P93` gets a seven-noun glossary with every count re-derived from the rows (`trial` 432,
+`pair` 144, `task` 9, `stratum` 3, `cell` 36, `block` 12, `pool` 9), a catalogue resolving all
+**23** occurrences of the noun to one referent each, and forward rule **`D-5`**. The sharpest
+thing the catalogue surfaces is not in the filing: **`block` (tier, stratum) and `pool`
+(arm, stratum) are both n=36 and are different sets of trials.** A matching denominator is not
+a matching population.
+
+**No program, and the argument is recorded rather than the omission.** A `D-5` scanner needs a
+per-noun "does this sentence disambiguate" predicate that the author picks — the loophole
+`2026-08-14-pinning-harness-false-positives.md` filed and `RB-P89` closed by deriving from the
+node *name*. There is no name to read in prose. Unenforced with a stated reason is a position;
+a checker nobody runs is not.
+
+`RB-P94` gets a machine-readable prohibition index (`P-POOL`, `P-CMP`, `P-TIER`, each sourced
+to its bar lines), forward rule **`D-6`**, and
+`docs/eval-data/2026-08-21-prohibition-mark-check.py`. `--calibrate` is **3 of 3**: **CAL-FIRE**
+requires the three `3b`/`paste` figures of §V.1 to read UNMARKED under `P-CMP` and to be the
+*only* cell findings; **CAL-QUIET-NOT-COVERED** requires the nine compared-tier `paste` figures
+to produce nothing; **CAL-QUIET-MARKED** requires the six `3b` `bare`/`reader` figures to read
+MARKED, and it is the detector-stuck-on control.
+
+**Correction to `RB-P94` as filed, and it is not a quibble.** The entry says the figures are
+printed *"with no mark"* and that *"nothing on the row says so"*. **That does not reproduce.**
+
+<!-- provenance: value=docs/eval.md:8301 row label reads `3b (declared floor, never pooled)`, which carries P-POOL's mark; the 3b paste figures are 2 (small), 4 (large-IN), 0 (large-OUT), matching CAL-FIRE; commit=3e029f9; command=sed -n '8296,8302p' docs/eval.md -->
+
+`docs/eval.md:8301` reads **`3b (declared floor, never pooled)`** — which **does** carry
+`P-POOL`'s mark, in the row, where the figure is printed. **The real defect is worse than the
+one filed:** the row carries *one* prohibition's mark and not the other's, so a reader lifting
+the figure sees a row that is already marked, and the mark is row-scoped and therefore cannot
+discriminate the `paste` arm that §6.4 actually prohibits comparing. `CAL-QUIET-MARKED` exists
+precisely so the checker does not repeat the filing's mistake — **the naive reading, which is
+what the entry filed, is what that control fails.**
+
+Two further pointer corrections, both `AA`'s: the *"four words after"* of `RB-P93` does not
+reproduce — the distance is **19 words** (§3.1:170→171); a four-word distance exists at
+§5.2:248, a different referent. And *"never pooled"* is **§9:411**, not §8; §8:362/371 declares
+the floor. `P-POOL` cites all four lines.
+
+**Non-vacuity.** Four mutants on `git show HEAD:` scratch copies: mark added to the `3b` row
+`3 → 0`; the same mark added to the `4b` row instead, unchanged at `3`; index removed, `exit=2`
+unparseable rather than a quiet "0 findings"; bad section `exit=2`. The orchestrator added a
+fifth: **dropping only the `P-CMP` index line takes findings `3 → 0` and moves those three
+figures into MARKED under `P-POOL`** — so the `3` is derived from `P-CMP` and is not a constant.
+
+##### AC.3 `RB-P95` — CLOSED (2026-08-21, PR #55, `f5fb6af`), by a fan-out gate and not by more goldens
+
+The finding: the contract surface's wording protection is single-sourced. The obvious fix —
+add more `*_bytes` goldens — is the same defect with a bigger denominator.
+
+`runtime-py/tests/test_contract_fanout.py` (48 nodes) counts **files that write the sentence
+out**, not nodes that go red. That distinction is the design: a node asserting
+`loop_note(3) in injected` moves with the asset and would agree with any rewording, and an
+`RB-P89` laundering node states nothing. **Zero deletions, and `test_layers.py` is not in the
+diff at all** — no golden was touched, weakened or removed.
+
+**The property is verified by a mutation that a node census would have missed.** Replacing the
+four literal fragments in the new `loop_note` node with `assert loop_note(3) in injected`
+leaves that node **passing** — it is still a good behavioural test — while the gate reddens
+four nodes: the per-key floor for `loop_note`, the golden-strike, the register-equality and the
+share ceiling.
+
+Thresholds are declared as data with their arguments: `MIN_SOURCE_FILES = 2` (one file means
+the sentence and its only assertion move in the same diff, by the same hand; `3` would fail 30
+of 38 on landing day); `MIN_QUOTED_CHARS = 12`, **on a measured plateau** — the single-sourced
+set is identical at 10, 12 and 14, and a node asserts it, while at 16 `tool_argument_type`
+falls out of measurement; `MAX_SINGLE_SOURCED_SHARE = 3/38`, **explicitly not a principled
+tolerance** — the principled value is `0`, and this is the measurement at landing written down
+so that raising it is a defended diff line. `UNATTRIBUTABLE` and `SINGLE_SOURCED_DEBT` are
+asserted exactly in both directions, so a silent zero fails.
+
+**Two corrections to `RB-P95` as filed.**
+
+<!-- provenance: value=test_layers.py holds 17 nodes whose names match the catalogue's WORDING_TOKENS, spanning lines 241-531; test_document_manifest_pdf_page_omission_bytes is at line 351; the entry filed "15 nodes, lines 200-390" and named four single-sourced strings where there are five; commit=3e029f9; command=grep -n 'def test_.*_bytes' runtime-py/tests/test_layers.py | awk -F: 'NR==1{f=$1} {c++; l=$1} END{print c, f, l}' -->
+
+1. **The strings pinned by nothing are five, not four.** `document_manifest_omitted_unread_page`
+   is a fifth, held only by `test_layers.py:351` — **which sits inside the very line range the
+   entry named**, and still went uncounted. It was closed with the others.
+2. **"15 nodes in `test_layers.py`, lines 200–390" is wrong on both numbers.** Re-derived:
+   **17 nodes spanning lines 241–531**. The substance — that all candidate goldens live in that
+   one file — holds.
+
+**The instrument caught its own author.** The gate's first draft had three of its own nodes
+classed **LAUNDERING** by the `RB-P89` catalogue: red on a rewording, but named for something
+else. They were renamed to carry the wording token, **not exempted**; re-measured, 0 laundering.
+
+##### AC.4 The MCP drift detector — a mechanism for `RB-P84`, and it gets no number
+
+`tools/mcpdrift/mcpdrift.py` (PR #54, `3e029f9`) closes the *"nothing notices"* half of
+`RB-P84` from outside the process. It is not a new finding and does not mint: **the register
+mints numbers for findings, not for the fixes that answer them**, and `RB-P84` already files
+this defect and prescribes this attack.
+
+**It does not discriminate on the version string, because the version string has already lied
+once in this program** (a build running `v0.25.0` source advertised `0.3.0` until PR #41). It
+fingerprints 18 surfaces per endpoint, six of them real read-only `tools/call` probes over a
+fixture it seeds itself with `HOME` redirected and `BANTAMKIT_ASSETS` stripped from the child.
+
+The decisive calibration is a mutant with the `RB-P1` k-floor reverted and `__version__` left
+at `0.25.0`: **both endpoints advertise the same string and the checker is red anyway**, with
+`server_version` not firing. That property is pinned in CI without either venv. The null
+control is not free either — the live AGREE row compares a non-editable wheel install against
+an editable `.pth` install in two different venvs and calls them identical.
+
+`mcpdrift check` needs a live registration, so it is **deliberately not a pytest node and
+nothing skips** — a silently skipping node is `RB-P51`'s defect — and `UNDETERMINED` is a
+separate exit code from `AGREE` so that "could not compare" never reads as "they agree".
+
+**One figure the calibration sharpens.** Across twelve minor versions only **3 of 18** surfaces
+differ: `instructions`, every `tool_schema`, `capabilities`, `tool_names`, the `validate_json`
+wording, `shiftwork_status` and the bad-argument error are byte-identical between `v0.13.0` and
+`v0.25.0`. That corroborates `RB-P84`'s 6864 identical protocol bytes and sharpens it — **after
+the version string, the k-floor defect is the only discriminator on any surface probed.**
+
+##### AC.5 Minted here — `RB-P96`, and only `RB-P96`
+
+- **`RB-P96` — the tracked project-scope command is relative, so in a git worktree the endpoint
+  that wins the name is not there.** `.mcp.json` is tracked and carries
+  `"command": ".venv/bin/bantamkit-mcp"`, resolved against the project directory. A
+  `git worktree` of this repository has no `.venv`, so the project-scope endpoint does not
+  exist in it — and the client agrees.
+
+  <!-- provenance: value=from a worktree, `claude mcp list` reads `bantamkit: .venv/bin/bantamkit-mcp - FAILED to connect — ENOENT: no such file or directory, posix_spawn '.venv/bin/bantamkit-mcp'`, while the identical row from the canonical checkout reads `Connected`; `[Conflicting scopes]` is printed in BOTH cases and names both endpoints; `mcpdrift check` from the worktree gives VERDICT ERROR exit 2; commit=3e029f9; command=cd <worktree> && claude mcp list ; cd <checkout> && claude mcp list ; git ls-files .mcp.json -->
+
+  From a worktree at `9a7b886`, `claude mcp list` reports
+  `bantamkit: .venv/bin/bantamkit-mcp - ✘ Failed to connect — ENOENT: … posix_spawn
+  '.venv/bin/bantamkit-mcp'`, while the identical row from the canonical checkout reads
+  `✔ Connected`. `[Conflicting scopes]` is printed in **both** cases and names both endpoints,
+  so the footnote that would tell you is present and says nothing about which one is reachable.
+  **Project scope wins the name in both places; in a worktree the thing it wins with is not
+  installed.**
+
+  This matters because **this program runs implementation units in worktrees as a matter of
+  course** — four were live on the day it was measured — and `CLAUDE.md` requires every
+  multi-unit job to be orchestrated through the `shiftwork_*` MCP tools that this registration
+  serves.
+
+  **Distinct from `RB-P84`, and neither fix closes the other.** `RB-P84` is about two live
+  builds being indistinguishable; this is about one of them being *absent* in the working mode
+  the program uses most. Refreshing both installs leaves the worktree `ENOENT` exactly as it
+  was, and making the path absolute leaves the two builds exactly as indistinguishable.
+
+  **NOT FIXED HERE, deliberately:** it is a change to a tracked config file that every other
+  checkout and CI reads, and the unit that found it was mandated to build the detector, not to
+  edit the registration. **Attack:** either make the project-scope command independent of the
+  checkout root, or have the worktree setup provision a `.venv`; and pin whichever with a check
+  that reads the *client's* resolution rather than the file. (Configuration — not
+  `mcpserver.py`.)
+
+##### AC.6 What gets no number
+
+1. **The four closures.** A fix is not a finding.
+2. **The three filing errors corrected in `AC.2` and `AC.3`** — the mark on the `3b` row, the
+   nineteen-word distance, the `17 nodes / 241–531` span and the fifth single-sourced string.
+   These are corrections to records this register already holds, and `docs/record-vs-pointer.md`
+   makes line pins and counts inside an entry **pointers**, correctable beside the record. They
+   are recorded here rather than minted.
+3. **The orchestrator's own procedural failure this shift**, recorded because the register is
+   where this program keeps things it would rather forget: **the four units were spawned before
+   any checkpoint existed**, which `CLAUDE.md` forbids for any job of two or more units. The
+   checkpoint (`job26-close-the-register`) was created late so that the accounting was still
+   captured and every unit was still reviewed and clocked out; **the brief synthesis is the half
+   that stayed missing, and no brief was reconstructed after the fact** — a reconstructed brief
+   is a fabricated record. See `.shiftwork/job26-close-the-register/briefs/PROVENANCE.md`.
+   No number, because it is a process failure and not a defect in the instrument.
+
+##### AC.7 What stays open
+
+- **`RB-P84`'s attack is half done.** It asks for build identity readable *over the wire* — a
+  field carrying `assets_root()` / package `__file__` / the commit, so a *caller* can assert
+  which build answered — and for a duplicate `mcpServers` name to be a hard error at startup.
+  Neither is built. Both are `mcpserver.py` changes. The detector tells a *person* the builds
+  differ; it does not let an *agent mid-call* know which one it is talking to.
+- **The scope collision itself is untouched.** `claude mcp list` still prints
+  `[Conflicting scopes]`. Removing a registration is the user's call, and per `RB-P84`'s stated
+  ordering constraint the refresh comes before the removal.
+- **`§V.1` is unfixable in place** — the three figures are still printed without `P-CMP`'s mark.
+  That is the pre-registration constraint, not an omission.
+- **Prohibition-index completeness is UNMEASURED.** A prohibition written in prose and left out
+  of the index is invisible to the checker.
+- **Three contract strings remain declared debt** (`evidence_no_observation`,
+  `document_manifest_omitted_other`, `document_paste_none`), and two are `UNATTRIBUTABLE` —
+  no line carrying twelve literal characters. Declared, not silent.
+- **`runtime-ts` is not read by the fan-out gate**, so whether the TypeScript suite states any
+  contract sentence is unmeasured.
+- **`RB-P95`'s own `29 of 32` and `2 pinned / 26 laundering / 4 pinned by nothing` are still
+  unverified.** They need the full sweep, which the unit was told not to run, so they are not
+  asserted anywhere in this section.
+- **`RB-P96`**, for the reason given.
+
 Back to the [README](../README.md).
