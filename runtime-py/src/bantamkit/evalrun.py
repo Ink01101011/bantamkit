@@ -816,6 +816,189 @@ def materialise_documents(task: dict, workdir: Path, config: str) -> list[Docume
     return fixtures
 
 
+# ---- the scored answer and the corpus it came from -------------------------------------
+#
+# `materialise_documents` above resolves every `answers:` address OUT OF the file it has just
+# written, which is what makes an answer and its corpus incapable of disagreeing. Nothing
+# consumed that. `run_task` touched `document_fixtures` only to decide whether to register the
+# reader pair or the paste, and `score_output` reads `task["scoring"]["expected"]` — a literal
+# typed into the YAML by hand. The drift `document_setup:` was built to make impossible was
+# therefore reintroduced one layer up, and the nine committed `document-read` tasks were safe
+# only because a checker in the test suite rebuilds them (`tests/test_document_tasks.py`); the
+# tenth task anybody writes was not. Filed as §11.4 of the document-read bar and confirmed
+# again after it; this is the harness half neither filing was allowed to touch.
+#
+# The property, and the whole of it:
+#
+#     A suite must not score an answer that no one checked against the corpus it came from.
+#
+# Enforced BEFORE the agent runs, at the same point and for the same reason a malformed
+# declaration is: a run that starts against a corpus whose answer is wrong has already spent
+# the expensive part, and it would then report a defect in the task file as a `wrong-answer`
+# row about the model.
+#
+# THE TWO SHAPES, AND THE BRIDGE. `answers:` is `label -> "part!CELL"` and resolves to STRINGS
+# sliced out of a rendered row. `scoring.expected` is a scoring payload whose TYPE is chosen by
+# `scoring.kind`. They are not the same type, this check does not pretend they are, and it
+# bridges them per kind — refusing outright for any kind it has no bridge for:
+#
+#   json_equal  a mapping. KEYED bridge: a label spelled `expected_<key>` claims the payload
+#               key `<key>`. Every key the payload scores must carry such a label, and the two
+#               must be equal AS STRINGS — `7726` the int scored against `"7726"` the cell text
+#               is one claim, and the cell is text because a rendered row is.
+#   contains    a list of terms and NO keys at all, so key-matching is not available and
+#               pretending otherwise would be the fiction. UNKEYED bridge: every term the
+#               payload demands must equal some `expected_*` value this task's corpora
+#               resolved. Membership, stated as membership, and exact — `contains_term`
+#               matches case-insensitively at scoring time, but a task file whose literal is
+#               spelled differently from the cell is a task file that misreports the corpus to
+#               its reviewer, so it is refused rather than quietly accepted.
+#   tool_trace  a list of TOOL NAMES. It scores the transcript, not an answer, so no cell of a
+#               spreadsheet could ever be one of its terms and the property has no subject
+#               here. Named explicitly rather than reached by falling off the end of a branch,
+#               so a kind nobody anticipated REFUSES instead of passing. A task that declares
+#               `expected_*` labels next to it is still refused: those answers would be scored
+#               by nothing, which is the hole under a different spelling.
+#
+# The direction is one-way and that is deliberate: every SCORED literal must come from the
+# corpus; not every corpus answer must be scored. The property's subject is the scored answer.
+# A task may address a cell for the prompt's sake (`question_sku:` in all nine committed tasks)
+# or ship a second corpus whose answer is not the one under test, and neither is drift.
+
+ANSWER_CLAIM_PREFIX = "expected_"
+
+# Which bridge a scoring kind gets. Membership in one of these three is what decides whether
+# the comparison can be made at all; anything outside them is an unknown kind and refuses.
+KEYED_SCORING_KINDS = ("json_equal",)
+UNKEYED_SCORING_KINDS = ("contains",)
+TRACE_SCORING_KINDS = ("tool_trace",)
+
+
+class UncheckedAnswerError(EvalConfigError):
+    """A task scores an expected answer that its own corpus was never asked about.
+
+    An `EvalConfigError` like `DocumentSetupError`, raised at the same place — before the agent
+    is built — and left to ESCAPE `run_task` for the same reason: `main()` prints its report and
+    returns whatever the outcomes were, so no outcome class moves the process exit status and a
+    `config-error` row would be a suite that measured nothing and still exited 0.
+    """
+
+
+def _answer_claims(task: dict, fixtures: list[DocumentFixture]) -> dict[str, dict[str, str]]:
+    """`<key> -> {resolved value -> where it was read}`, over every entry of the task.
+
+    Only labels spelled `expected_<key>` are claims about `scoring.expected`. A label without
+    the prefix addresses a cell for some other purpose — the nine committed tasks use
+    `question_sku:` to put the lookup key into the prompt — and asserts nothing about the
+    scoring payload, so it is not compared. That silence is bounded and visible: the prefix is
+    right there in the task file, and a label that means to be checked is one rename away.
+
+    Values are collected per key rather than overwritten, so a task carrying two corpora that
+    both answer `expected_units` is DETECTABLE as ambiguous instead of resolving to whichever
+    entry happened to be last.
+    """
+    entries = [e for e in (task.get("document_setup") or []) if isinstance(e, dict)]
+    claims: dict[str, dict[str, str]] = {}
+    for entry, fixture in zip(entries, fixtures, strict=False):
+        declared = entry.get("answers") or {}
+        for label, value in fixture.answers.items():
+            if not label.startswith(ANSWER_CLAIM_PREFIX):
+                continue
+            key = label[len(ANSWER_CLAIM_PREFIX) :]
+            where = f"{fixture.name} {declared.get(label, label)}"
+            claims.setdefault(key, {}).setdefault(value, where)
+    return claims
+
+
+def _check_keyed_expected(name: object, expected: object, claims: dict[str, dict[str, str]]):
+    """`json_equal`: every scored key names a cell, and the cell holds what the key scores."""
+    if not isinstance(expected, dict) or not expected:
+        raise UncheckedAnswerError(
+            f"task {name!r}: json_equal scoring takes a non-empty mapping, got "
+            f"{expected!r}; there is nothing for a corpus answer to be keyed against"
+        )
+    for key in expected:
+        found = claims.get(str(key))
+        if not found:
+            raise UncheckedAnswerError(
+                f"task {name!r}: scoring.expected[{key!r}] is scored, but no "
+                f"{ANSWER_CLAIM_PREFIX}{key} address reads it out of the corpus. The corpus "
+                f"answers this task declares are {sorted(claims)}."
+            )
+        if len(found) > 1:
+            raise UncheckedAnswerError(
+                f"task {name!r}: {ANSWER_CLAIM_PREFIX}{key} resolves to {sorted(found)} across "
+                f"{sorted(found.values())}; a keyed payload cannot say which corpus it meant"
+            )
+        value, where = next(iter(found.items()))
+        if str(expected[key]) != value:
+            raise UncheckedAnswerError(
+                f"task {name!r}: scoring.expected[{key!r}] is {expected[key]!r}, but the "
+                f"corpus holds {value!r} at {where}"
+            )
+
+
+def _check_unkeyed_expected(name: object, expected: object, claims: dict[str, dict[str, str]]):
+    """`contains`: no keys exist, so the honest comparison is exact membership."""
+    if not isinstance(expected, list) or not expected:
+        raise UncheckedAnswerError(
+            f"task {name!r}: contains scoring takes a non-empty list, got {expected!r}; "
+            f"there is nothing for a corpus answer to be compared against"
+        )
+    resolved = {v: w for by_value in claims.values() for v, w in by_value.items()}
+    for term in expected:
+        if str(term) not in resolved:
+            raise UncheckedAnswerError(
+                f"task {name!r}: scoring.expected demands {str(term)!r}, which no "
+                f"{ANSWER_CLAIM_PREFIX}* address reads out of this task's corpus. It holds "
+                f"{sorted(resolved)} at {sorted(resolved.values())}. `contains` has no keys, "
+                f"so the comparison is membership and it is exact: spell the term the way the "
+                f"cell does."
+            )
+
+
+def check_expected_against_corpus(task: dict, fixtures: list[DocumentFixture]) -> None:
+    """Refuse a document task whose `scoring.expected` was never read out of its own corpus.
+
+    A no-op for a task that materialised no document: it has no corpus, so the property has
+    nothing to say about it, and the twenty-two frozen suite tasks are untouched.
+    """
+    if not fixtures:
+        return
+    name = task.get("name")
+    scoring = task.get("scoring") or {}
+    kind = scoring.get("kind")
+    expected = scoring.get("expected")
+    claims = _answer_claims(task, fixtures)
+
+    if kind in TRACE_SCORING_KINDS:
+        if claims:
+            raise UncheckedAnswerError(
+                f"task {name!r}: scoring kind {kind!r} scores the tool trace and not an "
+                f"answer, so the corpus answer(s) {sorted(claims)} would be scored by nothing. "
+                f"Drop the {ANSWER_CLAIM_PREFIX!r} prefix from those labels, or score an answer."
+            )
+        return
+    if kind not in KEYED_SCORING_KINDS + UNKEYED_SCORING_KINDS:
+        raise UncheckedAnswerError(
+            f"task {name!r}: there is no bridge from a corpus answer to scoring kind {kind!r}, "
+            f"so this task's expected answer cannot be checked against the document it came "
+            f"from. Bridged kinds are "
+            f"{sorted(KEYED_SCORING_KINDS + UNKEYED_SCORING_KINDS + TRACE_SCORING_KINDS)}."
+        )
+    if not claims:
+        raise UncheckedAnswerError(
+            f"task {name!r} declares document_setup: but no {ANSWER_CLAIM_PREFIX}<key> answer "
+            f"address, so scoring.expected is a literal nothing checked against the corpus. "
+            f"Add answers: {{{ANSWER_CLAIM_PREFIX}<key>: '<part>!<CELL>'}} naming the cell the "
+            f"answer is read out of."
+        )
+    if kind in KEYED_SCORING_KINDS:
+        _check_keyed_expected(name, expected, claims)
+    else:
+        _check_unkeyed_expected(name, expected, claims)
+
+
 # ---- the reader pair the model actually sees (`document_list`, `document_read`) ---------
 #
 # TWO polymorphic tools, not five typed ones. Both `.xlsx` and `.docx` reduce to the same
@@ -1171,6 +1354,12 @@ def run_task(
     # letting the run start with no document and record a `wrong-answer` row, which would
     # report a defect in the task file as a defect in the model.
     document_fixtures = materialise_documents(task, workdir, config)
+    # And immediately: a corpus that was built is a corpus the task's expected answer can be
+    # checked against, and this is the last moment before anything expensive happens. Placed
+    # here rather than beside `score_output` because a run that scores at the end has already
+    # paid for the model; and outside the `try` below, so it ESCAPES rather than becoming a
+    # `config-error` row in a report that still exits 0.
+    check_expected_against_corpus(task, document_fixtures)
     tracking = TrackingClient(client)
     workspace_tools = _workspace_tools(task.get("workspace") or {})
     tools = [

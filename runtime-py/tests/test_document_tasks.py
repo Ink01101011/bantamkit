@@ -28,7 +28,7 @@ import pytest
 import yaml
 
 from bantamkit.docread import extract
-from bantamkit.evalrun import materialise_documents
+from bantamkit.evalrun import check_expected_against_corpus, materialise_documents
 
 REPO = Path(__file__).resolve().parents[2]
 TASKS_DIR = REPO / "assets" / "evals" / "document" / "tasks"
@@ -111,6 +111,19 @@ def test_g1_the_committed_answer_is_a_slice_of_the_generated_corpus(path, built)
     expected = task["scoring"]["expected"]
     assert fixture.answers["expected_region"] == expected["region"]
     assert int(fixture.answers["expected_units"]) == expected["units"]
+
+
+@pytest.mark.parametrize("path", task_paths(), ids=lambda p: p.stem)
+def test_g1_is_now_the_harness_check_and_not_only_this_file(path, built):
+    """The same gate, applied by the function `run_task` calls before every run.
+
+    The two assertions above are this file's own re-derivation and they stay. This one says
+    the HARNESS agrees: `check_expected_against_corpus` is what refuses a task at setup, so a
+    task that satisfies G-1 here and not there would still be refused in the field, and a task
+    that satisfies it there and not here would ship a checker that is decoration.
+    """
+    task, fixture = built[load(path)["name"]]
+    assert check_expected_against_corpus(task, [fixture]) is None
 
 
 @pytest.mark.parametrize("path", task_paths(), ids=lambda p: p.stem)

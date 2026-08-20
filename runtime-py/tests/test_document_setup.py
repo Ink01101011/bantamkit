@@ -24,7 +24,9 @@ import pytest
 from bantamkit.docread import extract
 from bantamkit.evalrun import (
     DocumentSetupError,
+    UncheckedAnswerError,
     build_document,
+    check_expected_against_corpus,
     document_dir,
     load_tasks,
     materialise_documents,
@@ -401,3 +403,213 @@ def test_run_task_materialises_a_valid_declaration_before_the_agent_runs(tmp_pat
     result = run_task(client, task, "bare", tmp_path)
     assert result.passed is True
     assert (tmp_path / "doc-lookup-bare-docs" / "inventory-small.xlsx").is_file()
+
+
+# ------------------------------- the scored answer against the corpus it came from
+#
+# The property: A SUITE MUST NOT SCORE AN ANSWER THAT NO ONE CHECKED AGAINST THE CORPUS IT
+# CAME FROM. `materialise_documents` has always resolved `answers:` out of the file it just
+# built; until `check_expected_against_corpus` nothing read the result, so `scoring.expected`
+# was a hand-typed literal on a path the harness never compared. The nine committed
+# `document-read` tasks were covered by a checker over those nine files; the tenth task
+# anybody writes was not, and it is the harness that is fixed here.
+#
+# Every node below states the refusal it expects AND the reason, because a node that only
+# asserts "something raised" would stay green if the check started refusing for an unrelated
+# reason — which is the failure this suite has already been bitten by.
+
+DOC_TASKS = REPO / "assets" / "evals" / "document" / "tasks"
+
+
+def committed(name="doc-small-137"):
+    """One committed task, read off disk. The small corpus, so a run costs 400 rows."""
+    import yaml  # noqa: PLC0415
+
+    return yaml.safe_load((DOC_TASKS / f"{name}.yaml").read_text())
+
+
+def unchecked(task, tmp_path, config="bare"):
+    """Materialise for real, then apply the check exactly as `run_task` applies it."""
+    fixtures = materialise_documents(task, tmp_path, config)
+    check_expected_against_corpus(task, fixtures)
+
+
+def test_a_committed_task_run_unmodified_is_accepted_by_the_check(tmp_path):
+    """The floor. If this ever needs a mutation to pass, every refusal below is unreadable."""
+    unchecked(committed(), tmp_path)
+
+
+def test_json_equal_expected_that_the_corpus_contradicts_is_refused(tmp_path):
+    """The headline case: a scored value the addressed cell does not hold."""
+    task = committed()
+    task["scoring"]["expected"]["units"] = 1
+    with pytest.raises(UncheckedAnswerError) as exc:
+        unchecked(task, tmp_path)
+    assert "scoring.expected['units'] is 1" in str(exc.value)
+    assert "the corpus holds '7726' at inventory-small.xlsx stock!C138" in str(exc.value)
+
+
+def test_json_equal_key_with_no_answer_address_is_refused(tmp_path):
+    """A scored key nothing reads out of the corpus is the hole itself, per key.
+
+    Built from `IN_WINDOW` rather than from a committed task ON PURPOSE. The first draft used
+    `committed()` and added the unaddressed key beside the two real ones; a mutation of the
+    committed `units` literal then made this node go red on the CONTRADICTION and never reach
+    the missing address, which is a node reddening for a reason its name does not state. Here
+    the missing address is the only defect the task has.
+    """
+    entry = {**IN_WINDOW, "answers": {"expected_units": "stock!C138"}}
+    task = {
+        "name": "probe",
+        "family": "document-read",
+        "prompt": "unused",
+        "document_setup": [entry],
+        "scoring": {"kind": "json_equal", "expected": {"units": 7726, "warehouse": "north"}},
+    }
+    with pytest.raises(UncheckedAnswerError) as exc:
+        unchecked(task, tmp_path)
+    assert "no expected_warehouse address reads it out of the corpus" in str(exc.value)
+    assert "The corpus answers this task declares are ['units']" in str(exc.value)
+
+
+def test_a_document_task_with_no_expected_answer_address_at_all_is_refused(tmp_path):
+    """`question_sku:` addresses a cell but claims nothing about scoring, so this task has
+    zero claims — and its `expected` is exactly the hand-written literal the property bans."""
+    task = committed()
+    task["document_setup"][0]["answers"] = {"question_sku": "stock!A138"}
+    with pytest.raises(UncheckedAnswerError) as exc:
+        unchecked(task, tmp_path)
+    assert "declares document_setup: but no expected_<key> answer address" in str(exc.value)
+
+
+def test_contains_term_the_corpus_does_not_hold_is_refused(tmp_path):
+    """The UNKEYED bridge. `contains` has no keys, so the comparison is exact membership."""
+    task = {
+        "name": "probe",
+        "family": "document-read",
+        "prompt": "unused",
+        "document_setup": [IN_WINDOW],
+        "scoring": {"kind": "contains", "expected": ["7508"]},
+    }
+    with pytest.raises(UncheckedAnswerError) as exc:
+        unchecked(task, tmp_path)
+    assert "scoring.expected demands '7508'" in str(exc.value)
+    assert "It holds ['7726']" in str(exc.value)
+
+
+def test_contains_term_that_differs_only_in_case_is_refused(tmp_path):
+    """`contains_term` scores case-insensitively; this check does NOT inherit that leniency.
+
+    A task file whose literal is spelled differently from the cell misreports the corpus to
+    the reviewer who reads the YAML, which is the thing `scoring.expected` is kept visible for.
+    """
+    entry = {**IN_WINDOW, "answers": {"expected_region": "stock!B138"}}
+    task = {
+        "name": "probe",
+        "family": "document-read",
+        "prompt": "unused",
+        "document_setup": [entry],
+        "scoring": {"kind": "contains", "expected": ["East"]},
+    }
+    with pytest.raises(UncheckedAnswerError, match="spell the term the way the cell does"):
+        unchecked(task, tmp_path)
+    task["scoring"]["expected"] = ["east"]
+    unchecked(task, tmp_path / "again")
+
+
+def test_two_corpora_answering_one_key_differently_are_refused_as_ambiguous(tmp_path):
+    """A KEYED payload has one slot per key, so two candidate sources make it unreadable.
+
+    Not silently resolved to whichever entry is last: that would be a check picking an answer
+    on the author's behalf and calling it agreement.
+    """
+    task = committed()
+    task["document_setup"].append(
+        {**OVER_WINDOW, "answers": {"expected_units": "stock!C4138"}}
+    )
+    with pytest.raises(UncheckedAnswerError) as exc:
+        unchecked(task, tmp_path)
+    assert "expected_units resolves to ['7508', '7726']" in str(exc.value)
+
+
+def test_tool_trace_scoring_beside_a_corpus_answer_is_refused(tmp_path):
+    """`tool_trace` scores tool names. An `expected_*` address next to it is scored by
+    nothing — the same hole, spelled as a kind mismatch instead of a wrong literal."""
+    task = {
+        "name": "probe",
+        "family": "document-read",
+        "prompt": "unused",
+        "document_setup": [IN_WINDOW],
+        "scoring": {"kind": "tool_trace", "expected": ["document_list"]},
+    }
+    with pytest.raises(UncheckedAnswerError) as exc:
+        unchecked(task, tmp_path)
+    assert "scores the tool trace and not an answer" in str(exc.value)
+
+
+def test_tool_trace_scoring_with_no_corpus_answer_is_allowed(tmp_path):
+    """The one deliberate carve-out, and it is narrow: nothing claims to be scored, so the
+    property has no subject. Written as a passing node so the carve-out is visible rather
+    than being an unstated gap between two refusals."""
+    entry = {**IN_WINDOW, "answers": {"question_sku": "stock!A138"}}
+    task = {
+        "name": "probe",
+        "family": "document-read",
+        "prompt": "unused",
+        "document_setup": [entry],
+        "scoring": {"kind": "tool_trace", "expected": ["document_list"]},
+    }
+    unchecked(task, tmp_path)
+
+
+def test_a_scoring_kind_with_no_bridge_is_refused_rather_than_skipped(tmp_path):
+    """The anti-silence clause. An unknown kind cannot be compared, and a check that passes
+    when it cannot compare is worse than no check — this program has one of those on record.
+    """
+    task = committed()
+    task["scoring"] = {"kind": "cosine_similarity", "expected": {"units": 7726}}
+    with pytest.raises(UncheckedAnswerError) as exc:
+        unchecked(task, tmp_path)
+    assert "no bridge from a corpus answer to scoring kind 'cosine_similarity'" in str(exc.value)
+
+
+def test_the_check_is_a_no_op_for_every_task_in_the_frozen_suite():
+    """The twenty-two frozen tasks declare no corpus, so the property has nothing to say.
+
+    The REASON is asserted first: if a frozen task ever gained a `document_setup:`, the second
+    assertion below would stop being a statement about no-ops and this node would be laundering
+    a skip as a pass.
+    """
+    frozen = load_tasks()
+    assert len(frozen) >= 22
+    assert all(not task.get("document_setup") for task in frozen)
+    for task in frozen:
+        assert check_expected_against_corpus(task, []) is None
+
+
+def test_run_task_refuses_a_contradicted_answer_before_it_calls_the_model(tmp_path):
+    """Where the check runs, stated as a property of the wire.
+
+    `client.calls == []` is the load-bearing assertion: the point of putting this before the
+    agent is that a corpus whose answer is wrong never buys a model call. And it ESCAPES
+    `run_task` rather than becoming a `config-error` row, because `main()` prints its report
+    and returns — a suite that measured nothing would otherwise still exit 0.
+    """
+    from conftest import FakeClient  # noqa: PLC0415
+
+    task = committed()
+    task["scoring"]["expected"]["region"] = "north"
+    client = FakeClient([])
+    with pytest.raises(UncheckedAnswerError, match="the corpus holds 'east'"):
+        run_task(client, task, "bare", tmp_path)
+    assert client.calls == []
+
+
+def test_run_task_still_runs_a_committed_task_whose_answer_the_corpus_confirms(tmp_path):
+    """The other side of the same node: the check is a gate, not a wall."""
+    from conftest import FakeClient, assistant  # noqa: PLC0415
+
+    client = FakeClient([assistant('{"region": "east", "units": 7726}')])
+    result = run_task(client, committed(), "bare", tmp_path)
+    assert len(client.calls) == 1
+    assert result.passed is True

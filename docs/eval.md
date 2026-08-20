@@ -8865,4 +8865,235 @@ figure, measured against `39f7aaf` in that commit's own message, and is not rest
 `docs/eval.md` on this branch, so it is the row the checker measures. It is written to be an
 insertion and nothing else: no committed line above is rewritten, deleted, or renumbered.
 
+#### X (2026-08-20) — the `answers:` hole: found twice, fixed neither time, both times correctly; closed forward in the harness, and the half of it that is still open
+
+`document_setup:` was built for one purpose beyond making a corpus. `materialise_documents`
+resolves every `answers:` address **out of the file it has just written**, so a task's expected
+answer and the document it came from cannot disagree. **Nothing consumed the result.**
+`score_output` reads `task["scoring"]["expected"]` — a literal typed into the YAML by hand — so
+the drift the generator makes impossible was reintroduced **one layer up, in the harness, where
+nothing was looking for it.**
+
+It was **found twice and fixed neither time, and both refusals were correct.** X4 was writing
+the document-read bar and filed it as its §11.4 (`6271f43`); X5 was proving the reader path and
+confirmed the same thing after it (`19ceffa`). Both said the harness was above their layer and
+both were right about that. What it cost is the part worth recording: the finding lived for a
+day in a bar section and a unit report, and **the register — which is where triage looks — never
+carried it.** `da8ffd6` closes the scored half of it. This section is `docs/eval.md` only: it
+adds no `.py`, no `.jsonl` was regenerated, no committed row is restated, and none of the nine
+committed tasks changes what it asks or answers.
+
+##### X.1 The mechanism, re-derived — and the one figure this section was handed that does not reproduce as stated
+
+<!-- provenance: value=0 hits at 3bcd055, 1 hit at da8ffd6 (evalrun.py:904, fixture.answers.items() inside _answer_claims); commit=da8ffd6; command=git grep -e '\.answers' 3bcd055 -- runtime-py/src, then the same against da8ffd6 -->
+
+    git grep -e '\.answers' 3bcd055 -- runtime-py/src   ->  no hits
+    git grep -e '\.answers' da8ffd6 -- runtime-py/src   ->  one, evalrun.py:904
+
+The brief this section was handed says that grep "found the construction site and no reader".
+**It does not, and the true reading is stronger than the one handed over.** The construction
+site is a keyword argument — `answers={...}` at `evalrun.py:810-812` on `3bcd055` — and does not
+match `.answers` at all. At `3bcd055` the field `DocumentFixture.answers` had **no attribute
+access anywhere in `runtime-py/src`**: written, validated address by address, and never read by
+anything. The single hit at `da8ffd6` is the first reader the field has ever had.
+
+The other two ends of the mechanism hold as filed. `run_task` used `document_fixtures` only to
+decide which tools to register (`evalrun.py:1401` and `evalrun.py:1409` at `da8ffd6`), and
+`score_output` (`evalrun.py:388`) scores against the committed literal.
+
+##### X.2 Where the check runs, and why it is deliberately not inside the `try`
+
+At `da8ffd6`, inside `run_task` (`evalrun.py:1316`): `materialise_documents` at `:1356`,
+`check_expected_against_corpus` at `:1362`, `TrackingClient` at `:1363`. The check is
+**immediately after materialisation, before the client is wrapped and before the `Agent`
+exists** — the last moment before anything expensive happens — and it sits **outside** the `try`
+at `:1502` that turns a `BantamError` into a `config-error` row.
+
+That placement is the same argument `DocumentSetupError` already rests on, applied one step
+later. `main()` (`evalrun.py:1689`) returns `None` and `evalrun.py` contains no `sys.exit` and
+no `SystemExit`, so **no outcome class moves the process exit status.** A `config-error` row for
+an unchecked answer would therefore be a suite that measured nothing and exited 0, which is
+`RB-P51`'s failure with a different spelling.
+
+##### X.3 The bridge: two types, and they were not flattened into one
+
+`answers:` resolves to **strings sliced out of a rendered row**. `scoring.expected` is a payload
+whose type `scoring.kind` chooses. They are not the same type and the check does not pretend
+they are — it bridges them per kind:
+
+- **`json_equal` is checked KEYED.** Every key the payload scores must carry its own
+  `expected_<key>` address, compared as strings, because a rendered cell is text and `7726`-the-
+  int against `"7726"`-the-cell is one claim.
+- **`contains` is checked UNKEYED, as membership**, because that payload is a bag of terms with
+  no keys at all and pretending it had keys would be the fiction. Exact rather than inheriting
+  `contains_term`'s case-insensitivity: a literal spelled differently from the cell misreports
+  the corpus to the reviewer the literal is kept visible for.
+- **The direction is one-way on purpose:** every **scored** literal must come from the corpus,
+  but not every corpus answer must be scored. The subject of the property is the scored answer.
+
+Re-derived against live corpora rather than by reading the source — four calls into
+`check_expected_against_corpus` over a corpus rebuilt by the committed generator:
+
+<!-- provenance: value=4 calls, 3 refused and 1 accepted, messages transcribed from the raised UncheckedAnswerError; commit=da8ffd6; command=a scratch probe building document_setup {inventory-small.xlsx, seed 4021, 400 rows} via materialise_documents and calling check_expected_against_corpus with each scoring payload below -->
+
+    contains ["7508"]  vs inventory-small.xlsx   REFUSED   names the term, what the corpus holds, and where
+    contains ["7726"]  vs the same corpus        ACCEPTED
+    kind "rubric"                                REFUSED   no bridge; names the three bridged kinds
+    tool_trace beside an `expected_units` address REFUSED   those answers would be scored by nothing
+
+##### X.4 The anti-silence clause
+
+An unknown `scoring.kind` **refuses**. The one carve-out — `tool_trace` with no `expected_*`
+label beside it — is reached by an **explicit named branch** and pinned by a passing node
+(`test_tool_trace_scoring_with_no_corpus_answer_is_allowed`), **not by falling off the end of a
+chain of `if`s**. The rule it serves is `RB-P51`'s, quoted as filed: *a check that quietly
+passes on data it cannot see is not the same as one that reports it read nothing.* The brief
+motivated this clause with a measurement script that skipped its live sections and exited 0;
+**this section did not re-derive which script that was** and rests the clause on `RB-P51`
+instead.
+
+##### X.5 The finding: the check found a live inconsistency on its first run, outside the nine tasks
+
+At `3bcd055`, `paste_task()` in `runtime-py/tests/test_document_tools.py` hard-coded
+`"expected": ["7508"]` — the **large** corpus's answer — for **every** entry it was given, while
+`SMALL_CORPUS` ships `inventory-small.xlsx`. So
+`test_clause_3_one_constant_keeps_the_small_corpus_whole` shipped a document and scored a
+literal that document does not contain.
+
+<!-- provenance: value="7508" absent from all 401 rendered rows of inventory-small.xlsx and from the file's raw bytes; the corpus's expected_units cell (stock!C138) holds "7726"; commit=da8ffd6; command=a scratch probe calling materialise_documents on {inventory-small.xlsx, seed 4021, 400 rows} then docread.extract, testing membership over the rendered rows and over path.read_bytes() -->
+
+    "7508" in inventory-small.xlsx rendered rows (401)  ->  False
+    "7508" in inventory-small.xlsx raw file bytes       ->  False
+    its expected_units cell, stock!C138                 ->  "7726"
+
+**Nothing went red, because that test reads the paste and discards the result** — it asserts on
+the pasted row count, the byte total and the completeness banner, and never looks at scoring at
+all. **The defect the property names was already in the tree, and the property found it the
+first time it ran.** That is the strongest thing in this section, and what it says about the
+class is that the drift needed neither age nor carelessness: one helper took `expected` as a
+constant while its corpus was a parameter.
+
+##### X.6 Wiring and non-vacuity, verified against the run rather than the source
+
+A1's two neutralising mutants were **re-run here**, not carried:
+
+<!-- provenance: value=M3a 9 failed, 1240 passed, 2 xfailed; M3b 1 failed, 1248 passed, 2 xfailed, the single failure raising IndexError: pop from empty list at runtime-py/tests/conftest.py:13; both reverted and the tree restored; commit=da8ffd6; command=PYTHONPATH=$PWD/runtime-py/src .venv/bin/python -m pytest runtime-py/tests -q with (M3a) an early return at the top of check_expected_against_corpus and (M3b) the call deleted from run_task -->
+
+    M3a  check returns immediately          9 red     nothing was passing on a technicality
+    M3b  function intact, call removed      1 red     and it reddened with `IndexError: pop from
+                                                      empty list` out of the fake client, which is
+                                                      direct proof the model call was reached
+
+**The wiring claim has exactly one guard and it is the only thing that fires.** The nine
+parametrised `test_g1_is_now_the_harness_check_and_not_only_this_file` nodes stay green under
+M3b, correctly: they call the function, so they cannot say whether `run_task` does.
+
+##### X.7 Two things A1 disclosed about its own nodes, recorded as disclosed
+
+1. **One of its own must-be-red nodes was caught laundering — the fourth catch of that class in
+   this shift.** `test_json_equal_key_with_no_answer_address_is_refused` was built on a committed
+   task plus an extra unaddressed key; under the mutation it went red on the **units
+   contradiction** and never reached the **missing address** its name promises. It was rebuilt on
+   a local task where the missing address is the only defect present. Section S named this class
+   and section T made it a procedure; **the practice is now what lands a must-be-red node here**,
+   and a fourth catch is the lesson working.
+2. **One node is trivially true and says so in its own name.**
+   `test_the_check_is_a_no_op_for_every_task_in_the_frozen_suite` passes because the check returns
+   early when no document was materialised. It is a **scope statement, not a strength statement**,
+   it asserts its reason first, and it carries `no-op` in its own name. Recorded as the honest
+   disclosure it is rather than dressed up as coverage.
+
+##### X.8 Minted here — `RB-P90`, and the four things that get no number
+
+**The register was read at HEAD across every live writer before any number was chosen, not taken
+from a brief or an orchestrator.** That precaution is `RB-P75`'s, §V.0's and §W.6's; the ceiling
+moved six times in this shift, so the read is recorded:
+
+<!-- provenance: value=ceiling RB-P89, reached on three refs — main (3bcd055), feat/declared-arg-types (9b0ce97) and this branch feat/answers-checked (da8ffd6); max over all 24 refs/heads is 89; commit=da8ffd6; command=for r in $(git for-each-ref --format='%(refname:short)' refs/heads/); do git show $r:docs/eval.md | grep -oE 'RB-P[0-9]+' | sed 's/RB-P//' | sort -n | tail -1; done | sort -rn | head -1 -->
+
+    max over all 24 refs/heads   ->  89     (main, feat/declared-arg-types, this branch)
+
+**`RB-P90` is the next free number and this section mints exactly one entry.** Section letters
+are the same register with the same hazard: `L`–`Q`, `S`, `T` and `V`, `W` are taken on this
+branch and on `main`, `U` on `feat/version-truth`, so this is **section X**.
+
+- **`RB-P90` — the bar's §11.4 named two missing paths and `da8ffd6` closes one of them. The
+  question half is still open in the harness, and the nine committed tasks are covered for it
+  only by a nine-file test-suite checker — which is the exact arrangement §11.4 itself called
+  insufficient.** §11.4's words are *"no path from `DocumentFixture.answers` to a prompt or to
+  `scoring.expected`"*. The scored half now has `check_expected_against_corpus`. The prompt half
+  has `test_document_tasks.py::test_g1_the_question_names_the_row_the_answer_was_read_from`,
+  which asserts `fixture.answers["question_sku"] in task["prompt"]` **over the nine committed
+  files only**; the harness declines the comparison by design, because a label without the
+  `expected_` prefix is not a claim about scoring.
+
+  <!-- provenance: value=ACCEPTED — a task whose prompt names SKU-999999 while question_sku (stock!A138) resolves to SKU-000137 raises nothing from check_expected_against_corpus; commit=da8ffd6; command=a scratch probe building {inventory-small.xlsx, seed 4021, 400 rows} with answers {question_sku: stock!A138, expected_units: stock!C138}, prompt naming SKU-999999, scoring contains ["7726"] -->
+
+      question_sku resolves to  SKU-000137
+      the prompt names          SKU-999999
+      check_expected_against_corpus  ->  ACCEPTED
+
+  A run built that way **asks about a row its corpus does not hold, scores an answer its corpus
+  does hold, and reports the model wrong** — the same drift, one field over, and again
+  attributed to the model. **Attack, stated as the property and not as the mechanism:** a cell a
+  task resolves for the prompt's sake must be one the prompt actually names, and a task that
+  resolves a cell for neither the prompt nor the scoring must say so; how that is declared
+  belongs to whoever writes it. **NOT FIXED HERE, and the reason is ownership, not effort:** it
+  is a Layer-1 change to `evalrun.py` and this section owns `docs/eval.md`. **Filed.**
+
+**Four things here get no number, and saying so is most of the entry.**
+
+1. **The fix itself is a closure, not a defect.** §11.4 named the hole and named the shape of the
+   fix; `da8ffd6` is that shape landed. A bar finding that comes true does not mint a register
+   entry, and §11.4 is a record and is not edited by it.
+2. **The `paste_task` inconsistency of §X.5 is an instance of the class §11.4 already named**, not
+   a new class, and it was fixed in the same commit that found it. Its value is as evidence that
+   the property is live on day one, and §X.5 is where that is recorded.
+3. **The fourth laundering catch is the lesson working, which is the opposite of a finding** —
+   §W.6's rule 3, applied unchanged.
+4. **The brief figure that does not reproduce is a handoff correction.** This document records
+   those as a subsection of the section that caught them (§Q, §T, and §W.5's *"Four times tonight
+   the orchestrator has relayed a figure a unit then had to re-derive"*), never as a register
+   entry. **§X.1 is that subsection, and it is one more of the same shape.**
+
+##### X.9 What is NOT claimed
+
+1. **J10's verdict and its rows are untouched, and what its 432 rows can still support is exactly
+   what they supported before.** The scored literals in that run **were** equal to the corpus —
+   checked file by file by `runtime-py/tests/test_document_tasks.py`, whose non-vacuity the bar's
+   §11.7 measured by mutation (`M1`: one committed `expected.units` flipped 7508 → 7509 reddens a
+   node). **This fix therefore changes nothing about what those 432 rows measured. It changes what
+   the tenth task can get away with.**
+2. **The harness is not drift-proof and this does not claim it is.** Still unchecked at this HEAD:
+   `RB-P90`'s question half; `contains`, which is membership and has no addresses, so a term that
+   equals the right string for the wrong reason is accepted; and any task that materialises no
+   document, for which the check returns early by design — **the twenty-two frozen tasks are
+   exactly as checked as they were, which is by nothing of this kind.**
+3. **No live model call was made by this section.** Every figure above comes from committed source
+   read at two commits, from corpora rebuilt by the committed generator, and from the test suite.
+4. **Not claimed: that the nine mismatch cases `da8ffd6` names are the whole of the ways a task can
+   misreport its corpus.** They are the nine it refuses. §X.9(2) names three it does not.
+
+##### X.10 Gates
+
+<!-- provenance: value=1249 passed, 2 xfailed; commit=da8ffd6; command=PYTHONPATH=$PWD/runtime-py/src .venv/bin/python -m pytest runtime-py/tests -q, from the worktree with the absolute interpreter -->
+
+    .venv/bin/python -m pytest runtime-py/tests -q
+        ->  1249 passed, 2 xfailed     at da8ffd6, delta 0, unchanged by this section
+
+<!-- provenance: value=All checks passed! on both surfaces; commit=da8ffd6; command=.venv/bin/ruff check runtime-py and .venv/bin/ruff check docs/eval-data -->
+
+    .venv/bin/ruff check runtime-py       ->  All checks passed!
+    .venv/bin/ruff check docs/eval-data   ->  All checks passed!
+
+**This section adds no `.py` and no `.jsonl`**, so the count is `da8ffd6`'s count, re-derived
+here and quoted with the commit it was measured at. The `+22` that `da8ffd6` added to the suite
+is that commit's own figure, measured there against `3bcd055`, and is not restated here.
+
+`amendguard check . 3bcd055..HEAD tools/amendguard/ledger.json` reported **UNMEASURED** at
+`da8ffd6` — no amend-only path changed in that range — and this section is the first change to
+`docs/eval.md` on this branch, so it is the row the checker measures. It is written to be an
+insertion and nothing else: no committed line above it is rewritten, deleted, or renumbered.
+
+
 Back to the [README](../README.md).
