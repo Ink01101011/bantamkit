@@ -62,6 +62,26 @@ def test_structured_retries_with_pointed_error():
     assert "email" in retry_msg and "ONLY a JSON object" in retry_msg
 
 
+def test_the_schema_mismatch_the_model_reads_names_the_place_in_the_schema_verbatim():
+    """RB-P95. `validation_error` is the sentence a model is handed when its JSON parsed and
+    then failed the schema, and the only node in the suite that went red on a rewording of it
+    was `test_layers.py::test_schema_error_bytes` — a byte golden, in the one file every other
+    naming pin also lives in. The assertion above is not a second source: `email` is the field
+    name and `ONLY a JSON object` belongs to `schema_retry`, so neither says a word about the
+    mismatch sentence. This writes it out, through the retry the model actually receives."""
+    client = FakeClient(
+        [
+            assistant(content='{"name": "Ann"}'),  # parses, then fails `required`
+            assistant(content='{"name": "Ann", "email": "a@x.com"}'),
+        ]
+    )
+    structured(client, "extract", SCHEMA)
+    retry_msg = client.calls[1]["messages"][-1].content
+    assert "JSON does not match schema at" in retry_msg
+    assert "'root'" in retry_msg  # WHERE, which is the whole point of a pointed error
+    assert "'email' is a required property" in retry_msg
+
+
 def test_structured_retries_on_unparseable():
     client = FakeClient(
         [

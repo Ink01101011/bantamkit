@@ -80,6 +80,37 @@ def test_streak_of_five_prepends_the_warn():
     assert dispatch(agent, "lookup") == f"{loop_warn()}\nalpha"  # and beyond
 
 
+# RB-P95. The two nodes above compare against `loop_note(3)` and `loop_warn()`, which are
+# RENDERED FROM THE ASSET: reword `assets/contracts/default.yaml` and both sides of the
+# comparison move together, so they agree with any rewording and say nothing about the words.
+# The J28 catalogue confirms it — mutate `loop_note` and the only node in the whole suite that
+# goes red is `test_layers.py::test_loop_note_bytes`, one byte golden in one file. These two
+# write the words out and assert what the injection has to make the model DO, which is the
+# claim `loop_note` and `loop_warn` exist to carry and the one a byte golden does not make.
+
+
+def test_the_note_the_model_reads_at_the_streak_says_the_result_will_not_change_verbatim():
+    agent = guarded_agent(LoopGuard(), echo_tool({"out": "alpha"}))
+    dispatch(agent, "lookup")
+    dispatch(agent, "lookup")
+    injected = dispatch(agent, "lookup")
+    assert "you have now received this exact result" in injected
+    assert "result 3 times" in injected  # the count is the evidence, not decoration
+    assert "times; it will not change." in injected
+    assert "Do something different or give your final answer now" in injected
+    assert injected.endswith("\nalpha")
+
+
+def test_the_warn_the_model_reads_at_warn_at_says_stop_calling_tools_verbatim():
+    agent = guarded_agent(LoopGuard(), echo_tool({"out": "alpha"}))
+    for _ in range(4):
+        dispatch(agent, "lookup")
+    warned = dispatch(agent, "lookup")
+    assert "STOP calling tools" in warned
+    assert "Give your final answer now, in exactly the format the task asked for" in warned
+    assert warned.endswith("\nalpha")
+
+
 def test_a_different_observation_resets_the_streak():
     state = {"out": "alpha"}
     agent = guarded_agent(LoopGuard(), echo_tool(state))
