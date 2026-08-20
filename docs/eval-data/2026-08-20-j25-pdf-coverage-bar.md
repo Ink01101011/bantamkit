@@ -170,3 +170,142 @@ The pin check, the U2 audit and the U1 demonstration are
   file's own `/ToUnicode` says they are.
 - **Not encrypted files.** Not one file on this corpus is encrypted, so any code for it would
   be unmeasured. Encryption is refused by name.
+
+---
+
+# CLOSEOUT — measured at `d709b17`, appended, nothing above edited
+
+Command, and it prints which reader answered:
+
+    PYTHONPATH=<tree>/runtime-py/src BANTAMKIT_ASSETS=<tree>/assets \
+      /Users/kktest/Documents/Claude/Projects/bantamkit/.venv/bin/python \
+      /Users/kktest/Documents/Claude/Projects/bantamkit/.shiftwork/probes/J25-D3-pdf-coverage.py \
+      <tree>/docs/eval-data/2026-08-20-j25-corpus-pin.tsv
+
+## The claims
+
+| claim | bar said | measured at `d709b17` | verdict |
+|---|---|---|---|
+| **C1** coverage over the pinned 34 | ≥ 24 | **33 of 34** (6 at `6994f96`) | **HELD** |
+| **C2** files returned with no character and no omission | 0 | **0** | **HELD** |
+| **C2** parts with no character and no omission | 0 | **0**, of 12 such parts | **HELD** |
+| **C3** refusals naming a reason from the closed list | all | **1 of 1** — the `.mov`, reason (e) | **HELD** |
+| **U2** files failing the character-class audit | 0 | **0 of 32 audited** | **HELD** |
+
+**One file returns no character: `step test.xlsx`**, and it is not a C2 violation — it declares
+56 embedded files, 18,590,162 bytes and 28 blank rows through D2's omissions. It is also the
+one file U2 cannot score, because U2 audits *text that was returned* and there is none. That is
+the domain of each check, stated; the raw character count stays printed beside it either way.
+
+## The refusal budget, and the prediction that was WRONG
+
+Budget was ≤ 10 refusals. **Measured: 1.** But the prediction underneath it failed:
+
+| # | reason | predicted | measured | |
+|---|---|---|---|---|
+| 1 | (e) container not read at all | 1 | **1** — the `.mov` | held |
+| 2 | (a) scan, no text-showing operator | 3–5 | **0** | **REFUTED** |
+| 3 | (b) no usable character map | 0–3 | **0** whole files (514 characters) | held |
+| 4 | (c) encrypted | 0 | **0** | held |
+| 5 | (d) structure unparseable | 0–1 | **0** | held |
+
+**The `submission-juma-acct-signature` trio are not scans.** They carry 199, 199 and 229 images
+*and* a full text layer — 824, 824 and 869 rows. The J25-PREP census called them `SCAN?` because
+its naive pass counted only literal-string show-operators `( … ) Tj` and these files write hex
+strings. The same mislabel covered `AP1827-[STB]…` (37 pages, 882 rows), `CV_Pattanapol.pdf`
+(75 rows) and `crypto_agreement.pdf` / `customer_agreement.pdf` (1,056 and 1,410 rows). **The
+two hedged predictions the bar did make both held**: at least two of those four read (all four
+did), and at least 10 of the 13 object-stream files read (all 13 did).
+
+**Not one PDF on this corpus is a scan.** The scanned-page refusal path is therefore
+**unexercised on real data** and is held only by `test_a_scanned_page_refuses_and_says_it_is_a_scan`.
+
+## The mojibake guard — U1 fired, and U2 proves what it suppressed
+
+**514 characters across 6 files** were recovered and refused. Rendered permissively
+(`read_pdf(vouch=False)`, which nothing in the runtime calls), the exact suppressed characters
+audit as:
+
+| file | suppressed | fonts | U2 on the suppressed characters |
+|---|---|---|---|
+| `submission-juma-…-035623.pdf` | 95 | `?`, `FAAAAA+Loma` | **bad 100%** — U+F70A×47, U+F70B×47, U+F70E×1 |
+| `submission-juma-…-042849.pdf` | 95 | same | **bad 100%** |
+| `submission-juma-…-103139.pdf` | 96 | same | **bad 100%** |
+| `AP1827-[STB]…pdf` | 113 | `?`, `BAAAAA+Loma` | **bad 100%** — U+F70B×68, U+F70A×40, U+F70E×4 |
+| `21_Day_Challenge.pdf` | 64 | `AGTMRD+Mali-Regular`, … | **bad 100%** — U+FFFD×64 |
+| `Approved_Timesheet_July_2026….pdf` | 51 | `AAAAAD+font000000003010a7b1` | bad 0%, alnum 82% — *see below* |
+
+Five of six are private-use or replacement codepoints: U2's `bad ≤ 0.5%` rule rejects them
+outright. **The sixth is the interesting one and it is reported rather than hidden.** Its
+suppressed characters render as `چѰѰٖٖ҃щщщщ҆٘٘ҿҿҿ…` — Arabic and Cyrillic letters inside a Thai
+and English timesheet, from a subset font's raw codes read as `chr(code)`. **U2 would pass that
+text**: they are letters, category `L`. It is caught by U1 alone, because U1 asks where a
+character came from and U2 only asks what it looks like. That is the case that justifies having
+both, and it is also the honest limit of U2 as a check: *U2 cannot catch mojibake that happens
+to be well-formed letters.*
+
+The guard is exercised on real data, and on synthetic data in both directions:
+`test_identity_h_without_tounicode_refuses_and_names_the_font` and
+`test_identity_h_with_tounicode_is_read` differ only in whether the file states what its codes
+mean.
+
+## The control — nothing moved
+
+| control | result at `d709b17` |
+|---|---|
+| the 4 `.xlsx` | rows 1000 / 22 / 22 / 28, `text_bytes` 4276 / 2433 / 2433 / 27 — **identical to `6994f96`** |
+| the `.docx` named `.pdf` | 15 rows, 1489 B — **identical** |
+| the MHTML named `.doc` | 667 rows, 27528 B — **identical** |
+| the nine J10 `document-read` rows | `J25-D2-j10-rows.py` before vs after: **`diff` empty** |
+| dependencies | `["httpx>=0.27", "jsonschema>=4.21", "pyyaml>=6.0"]` — **three, unchanged** |
+| suite | **1338 passed, 2 xfailed** (1301 / 2 at `6994f96`); `ruff check runtime-py` clean |
+
+## Non-vacuity — 23 mutations, 22 redden
+
+`.shiftwork/probes/J25-D3-mutations.py`. Three findings the pass produced that the tests alone
+did not:
+
+1. **`_Font.has_map` was dead.** Computed in three places, read in none. A field that names the
+   vouching property without enforcing it is a check that cannot fail. Deleted; no test moved,
+   which is the proof.
+2. **Three decoys could not fire.** The inline-image fixture wrote `Tj\x03\x04`, and the binary
+   ran into the operator token so the show never happened with the guard removed. The
+   false-object fixture first redefined the catalogue (which `pages()` routes around via the
+   `/Type/Page` fallback) and then sat inside the content stream (where it is content and runs
+   either way). The PNG predictor had a row for `Up` and none for `Sub` or TIFF.
+3. **The harness itself lied once.** Two mutations of one file that change its length by the
+   *same* number of bytes, run in the same wall-clock second, satisfy CPython's `(mtime, size)`
+   cache check — so the second run imports the first mutation's bytecode. `M12b` was called a
+   survivor twice before `PYTHONDONTWRITEBYTECODE` was added.
+
+**The one stated survivor, kept rather than tuned away.** `M4` replaces the character-based
+emptiness test with `doc.text_bytes != 0` and the suite stays green: on the PDF path the two are
+**equivalent today**, because `_rows_from_runs` drops any row that strips to nothing. The
+character form stays — that equivalence is a property of the renderer one layer down — and
+`test_a_row_is_never_whitespace_only` (mutation `M21`) is what holds it.
+
+## What this unit did NOT close
+
+- **The `.mov`.** 1 of 34, refused by name. No stdlib video reader exists and none was written.
+- **No OCR, and that is permanent on this dependency list.** No pinned file needed it.
+- **A `/ToUnicode` map can be wrong, and this reader is wrong with it.** In
+  `ทำรายการ MA ปฏิเสธ Consent….pdf` the file's own CMap maps code `0xB5` to U+0E33 (ำ) and
+  maps *nothing* to U+0E32 (า), so `ทำรายการ` extracts as `ทำรำยกำร`. The character is wrong
+  and it is wrong **because the file says so**. U2 cannot see it — both are valid Thai letters
+  — and the alternative is guessing, which is the one thing this reader is built not to do.
+  **This is the largest open correctness gap and it is not closable without a font-shaping
+  layer.**
+- **Thai combining marks come out in visual order**, not logical order: `หน้า` extracts as
+  `หนา้`, `ข้อมูล` as `ขอม้ ลู`. The characters are right; their order is the order the page
+  paints them. Reordering would require a shaping engine.
+- **A symbolic simple font whose codes are not ASCII is trusted in the ASCII range.** A
+  subset TrueType marked symbolic that draws something other than `A` at code `0x41` would be
+  read as `A`, and neither U1 nor U2 would see it. No pinned file is known to be in that shape;
+  none was checked for it.
+- **`21_Day_Challenge.pdf` takes ~34 s** (87.7 MB, 241 pages). No performance work was done.
+- **A 241-page PDF becomes 241 parts**, and `document_manifest` prints a line per part. Whether
+  that fits a worker window is a question for the manifest, not the reader, and it was not
+  measured here.
+- **The scan-refusal path is unexercised on real data** (see the budget above).
+- **Encryption is unexercised on real data**: `/Encrypt` is absent from all 28 files, so
+  `test_an_encrypted_pdf_refuses_by_name` is the only thing holding it.
