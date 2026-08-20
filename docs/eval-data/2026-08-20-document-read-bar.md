@@ -1384,3 +1384,325 @@ window as UNMEASURED and its prohibition on comparing a 3b `paste` number; **the
    measured slope and labelled as an estimate) — and **which end the daemon cut is not
    determined, because `V-1` reported OK and so the run recorded nothing that would determine
    it.**
+
+## Amendment 4 — 2026-08-21
+
+**Status: the run has been scored.** This amendment is held to the same rule as Amendments 2
+and 3: **it changes no threshold, flips no clause, re-scores no row, edits no character above
+the *"Amendment 2"* heading, and annotates nothing in `docs/eval.md`.** It records two drafting
+defects that cannot be fixed where they happened — one in a *word* this bar scopes its
+predicates with, one in a *table* that is a published record — and lands the forward mechanism
+for each. The rules in §D.4 bind the *next* bar; they do not re-score this one.
+
+Written by the `RB-P93` / `RB-P94` unit. Every figure below was re-derived in this worktree at
+`9a7b886` from the committed `.jsonl` and from the committed text of this file and of
+`docs/eval.md`. The four run files landed at `39f7aaf` and have not changed since; no row was
+regenerated, no model was called, and no published table was touched.
+
+### D.0 The two defects, in one sentence each
+
+**`RB-P93`.** *The noun this bar scopes its predicates with — **"cell"** — carries **five**
+referents across the pre-registered text, so an unscoped predicate cannot be read locally and
+the express definition governing it is not the nearest one.*
+
+This is distinct from `RB-P88` and strictly wider. `RB-P88` says one predicate (`U-4`) forgot
+its denominator: a fixable omission in one sentence, and Amendment 2's `D-1` fixes the class.
+`RB-P93` says the word `U-4` would have inherited **has no single meaning**, so the next
+unscoped predicate anybody writes faces the same five-way choice whether or not `U-4` is
+restated. `D-1` makes a predicate carry its own factors; it does not give the noun one referent.
+
+**`RB-P94`.** *A figure this bar forbids anyone to compare is published in `§V.1`'s result table
+with no mark that names the prohibition, because all four prohibitions live in a different
+document from the number.*
+
+`§V.1`'s pass table prints the `3b` row's `paste` column as **`2` / `4` / `0`** — six passes,
+the only truncated arm in the run's 432 rows (§C.1, §C.3) — and the prohibitions on reading
+them are at §5:229-230, §6.4:313, §7.5:334 and §8:362 / §9:411 of *this* file. **Neither defect
+is fixed in place and neither can be:** everything above the *"Amendment 2"* heading is
+pre-registered text, and `§V.1` is a published result table under a published verdict.
+
+### D.1 The glossary — one referent per name, and none of them is the bare word
+
+**Forward-effect only, and a restatement rather than a redefinition.** Nothing here changes what
+any pre-registered sentence meant; §D.2 catalogues every existing use to one of these entries so
+that a re-deriver never has to guess. The names are the ones `D-5` requires the *next* bar to
+declare before it writes its first predicate.
+
+| name | the set it denotes | size, this run | it is NOT |
+|---|---|---:|---|
+| **`trial`** | one graded run: one `(tier, task, repeat, arm)` row of a committed `.jsonl` | **432** | a pair; a repeat is not a trial on its own |
+| **`pair`** | one matched `(tier, task, repeat)`; the three arms' trials that share a seed. McNemar's pairing key (§9) | **144** | a cell; it spans arms and nothing else |
+| **`task`** | one committed task file (§3's nine) | **9** | a stratum; three tasks make one |
+| **`stratum`** | one of `small`, `large-IN`, `large-OUT`, spanning **every** arm and **every** tier | **3** | a cell; it is a factor *of* one |
+| **`cell`** | `(tier, arm, stratum)` — **the only thing this word names** | **36**, n = 12 each | a pool and not a block; both are 36 trials and neither is this |
+| **`block`** | `(tier, stratum)` across all three arms — `U-3`'s scope (§B.4) | **12**, n = 36 each | a pool: same n, different set |
+| **`pool`** | `(arm, stratum)` over the three **compared** tiers — §5's headline unit | **9**, n = 36 each | a block: same n, different set |
+
+**The sharpest thing in that table is that `block` and `pool` are both n = 36 and are different
+sets of trials.** §5 writes *"n = 36 per cell"* and §B.1's Reading B reads `U-4`'s *"cell"* as
+the 36 of a `(tier, stratum)` block. One word, two 36s, neither of them the 12 that §6.1's own
+opening sentence and §8 both name. A number that agrees is not a referent that agrees.
+
+<!-- provenance: value=432 trials, 144 pairs, 36 cells, 12 blocks, 9 pools (3 arms x 3 strata over the three compared tiers); commit=9a7b886 (rows unchanged since 39f7aaf); command=python3 -c "import json,glob; R=[json.loads(l) for f in glob.glob('docs/eval-data/2026-08-20-document-read-*.jsonl') for l in open(f)]; s=lambda t:'small' if t.startswith('doc-small') else ('large-IN' if t.startswith('doc-large-in') else 'large-OUT'); print(len(R), len({(r['model'],r['task'],r['repeat']) for r in R}), len({(r['model'],r['config'],s(r['task'])) for r in R}), len({(r['model'],s(r['task'])) for r in R}))" -->
+
+### D.2 The catalogue — every use of the word in the pre-registered text, resolved
+
+**Scope: lines 1–587, which is the text as pre-registered** (§11.8 ends at 585; the `## 12.
+Amendments` heading is 588). **23 occurrences, 5 referents.** The count was re-derived here and
+not taken from the entry: `RB-P93` was first filed saying *three* and corrected to *five*, so it
+had already been wrong once, and §B.0's own enumeration stops at three.
+
+| # | line | the fragment | resolves to |
+|---:|---:|---|---|
+| 1 | 96 | *"the design its sharpest **cell**: `doc-small-137` and `doc-large-in-137`"* | **`task`** (a pair of them) |
+| 2 | 98 | *"Any gap between those two **cells**"* | **`task`** |
+| 3 | 162 | *"a design with zero IN **cells**"* | **`task`** — see the note below |
+| 4 | 171 | *"This **cell** carries the job's claim"* (the OUT stratum) | **`stratum`** |
+| 5 | 173 | *"the **cell** that can refute the reader"* (the IN stratum) | **`stratum`** |
+| 6 | 175 | *"The **SMALL cell** asks"* | **`stratum`** |
+| 7 | 229 | *"the pass rate over matched `(task, repeat)` **cells**"* | **`pair`** |
+| 8 | 230 | *"n = 36 per **cell**"* | **`pool`** |
+| 9 | 237 | *"McNemar … on the matched **cells**"* | **`pair`** |
+| 10 | 240 | *"§6 `U-2` fires first and the **cell** is UNINFORMATIVE"* | **`cell`** — `pool` also available |
+| 11 | 248 | *"on large-OUT with a non-UNINFORMATIVE **cell**"* | **`cell`** — `pool` also available |
+| 12 | 272 | §6.1's heading: *"the **cell** measured something other than the question"* | **`cell`** |
+| 13 | 274 | *"Evaluated per `(tier, arm, stratum)` **cell**"* | **`cell`** — express |
+| 14 | 276 | `U-1`: *"of `reader`-arm runs in the **cell**"* | **`cell`** |
+| 15 | 277 | `U-1`: *"The **cell** measured the 10-turn budget"* | **`cell`** |
+| 16 | 279 | `U-2`: *"of `reader`-arm runs in the **cell**"* | **`cell`** |
+| 17 | 280 | `U-2`: *"a **cell** that skipped it measured blind paging"* | **`cell`** |
+| 18 | 283 | `U-3`: *"`P(reader) = P(paste) = P(bare) = 0` in the **cell**"* | **`cell`** — `block` also available, resolved by §B.4 |
+| 19 | 286 | `U-4`: *"in > 30% of runs in the **cell**"* | **`cell`** — **the `RB-P88` defect**, resolved by §B.4 |
+| 20 | 286 | `U-4`: *"The **cell** measured JSON emission"* | **`cell`** |
+| 21 | 302 | `V-3`: *"Any `bare`-arm pass in a **cell** VOIDs that task for every arm"* | **`pair`** — see the note below |
+| 22 | 380 | *"Per `(tier, arm, stratum)` **cell**: 3 tasks × 4 repeats = n = 12"* | **`cell`** — express |
+| 23 | 397 | *"`b` = **cells** where `reader` passed and `paste` failed"* | **`pair`** |
+
+**Counts: `task` 3, `stratum` 3, `pair` 4, `pool` 1, `cell` 12.** Two of the five are the ones
+§B.0 already named; `pair` is §B.0's first referent; `task` (§1.4) and `stratum` (§3.1) are the
+two it did not reach, because §B.0 was scoped to §5 and §6.1.
+
+**Two resolutions that are arguments rather than readings, recorded as such.**
+
+- **#3 (162)** resolves to `task` because the sentence immediately before it counts tasks
+  (*"Over 6 large tasks that is 0.29 tasks inside"*). Read as `stratum` — *"a design with zero
+  IN stratum"* — it is still true and still supports the same conclusion, so nothing in §3.1
+  turns on it. It is listed under `task` and the alternative is stated.
+- **#21 (302)** resolves to `pair` because it is the **only** reading under which *"that task"*
+  is determined: a `cell` contains three tasks, so *"a `bare`-arm pass in a cell VOIDs that
+  task"* would not say which. `V-3` is therefore unambiguous **in consequence** while using the
+  ambiguous word, which is exactly the failure mode `RB-P93` names — the sentence is saved by
+  its own object, not by the noun.
+
+**A sixth candidate exists and is a *reading*, not a use.** `U-3` (#18) reads naturally as the
+`(tier, stratum)` **block**, because its three `P(·)` terms need all three arms. Amendment 2
+§B.4 already compelled it to the `(tier, arm, stratum)` cell whose block supplies the terms, so
+it is counted once, as `cell`. **Five is the count of referents the text *uses*; six is the
+count of readings it *admits*, and the second number is the one a predicate is exposed to.**
+
+<!-- provenance: value=23 occurrences of the word "cell"/"cells" in lines 1-587, resolving to 5 referents (task 3, stratum 3, pair 4, pool 1, cell 12); commit=9a7b886; command=python3 -c "import re; L=open('docs/eval-data/2026-08-20-document-read-bar.md').read().split(chr(10))[:587]; p=re.compile(r'\bcells?\b',re.I); print(sum(len(p.findall(l)) for l in L)); [print(i,l) for i,l in enumerate(L,1) if p.search(l)]" -->
+
+**What did NOT reproduce, from the entry as filed.** The entry pins the `stratum` referent at
+*"§3.1:171-175, four words after the text writes 'the OUT stratum'"*. **The referent and the
+line range reproduce; the four-word distance does not.** The nearest occurrence of the word
+after *"The **OUT stratum**"* (170) is **19 words later**, at 171. A four-word distance does
+occur, but at §5.2's `R2` (248): *"large-OUT with a non-UNINFORMATIVE cell"* — which is
+occurrence #11, an instance of the `cell`/`pool` ambiguity and not of the `stratum` referent.
+Nothing in the entry's claim depends on the distance.
+
+### D.3 The prohibition index — the four prohibitions, machine-readable, attached to this bar
+
+**This is a restatement of sentences that already exist, in a form a program can read. It
+declares no new prohibition, changes no threshold and annotates no published table.** `D-6`
+requires the next bar to carry one of these *before* its results are written, so that the check
+in §D.5 has something to check against.
+
+Grammar: one prohibition per line inside the block, `id | key=value | …`. `scope=cell` selects
+figures by `tier` / `arm` / `stratum` (`*` = all, comma-separated lists allowed); `scope=table`
+covers the table as a whole. `mark` is the literal text that must appear **where the figure is
+printed** — in the figure's own cell, its row label, or its column header — for the prohibition
+to travel with it. `source` pins the sentence.
+
+<!-- prohibition-index v1
+P-POOL | scope=cell | tier=3b | arm=* | stratum=* | mark=never pooled | source=bar §8:362,§8:371,§9:411,§5:229-230 — declared floor, never pooled, n=36 is the three compared tiers
+P-CMP  | scope=cell | tier=3b | arm=paste | stratum=* | mark=UNMEASURED window | source=bar §6.4:308-313 — served window UNMEASURED, no 3b paste number may be compared to any other tier's
+P-TIER | scope=table | mark=descriptive | source=bar §7.5:334-336 — no tier comparison is claimed; every cross-tier statement is descriptive
+-->
+
+| id | what it forbids | source, re-derived at `9a7b886` |
+|---|---|---|
+| `P-POOL` | pooling **any** `3b` figure with another tier's | §8:362 *"declared FLOOR, not a target"*; §8:371 *"The 3b is a declared floor"*; §9:411 *"The 3b is never pooled"*; §5:229-230 fixes `n = 36` over the three compared tiers |
+| `P-CMP` | comparing a `3b` **`paste`** figure to any other tier's | §6.4:313 *"no 3b paste number may be compared to any other tier's"* |
+| `P-TIER` | reading the table across tiers as a comparison | §7.5:334 *"Not claimed: a tier comparison"* |
+
+**One correction to the register entry, and it is the reason the check needs three calibration
+answers rather than one.** The entry says the 3b's figures are printed *"with no mark"* and that
+*"Nothing on the row says so."* **That is not what the row says.** `docs/eval.md:8302`'s row
+label reads **`3b (declared floor, never pooled)`** — which **does** carry `P-POOL`'s mark, in
+the row, where the figure is printed. What it does not carry is `P-CMP`'s: the window
+prohibition of §6.4 is nowhere on the row, and the mark that *is* there is **row-scoped**, so it
+cannot discriminate the one arm — `paste` — that §6.4 names. **The entry's general claim stands
+and its specific one is narrower than filed:** the defect is not an unmarked row, it is a row
+carrying one prohibition's mark and not the other's, which reads to a lifting reader as a row
+that has been marked.
+
+<!-- provenance: value=the four prohibition sentences at bar lines 230, 313, 334, 362 and 411, and the eval.md:8302 row label "3b (declared floor, never pooled)"; commit=9a7b886; command=grep -n 'never pooled\|n = 36 per cell\|no 3b paste number\|Not claimed: a tier comparison\|declared FLOOR' docs/eval-data/2026-08-20-document-read-bar.md | awk -F: '$1<588'  and  sed -n '8302p' docs/eval.md -->
+
+### D.4 The forward rule — binding on the next bar, not on this run
+
+**Two rules, in the shape of §B.4's `D-1`/`D-2` and §C.5's `D-3`/`D-4`, and they are not
+optional for any bar written after this date:**
+
+- **D-5 — a bar declares its scoping nouns once, in a glossary, before its first predicate; one
+  name per referent and one referent per name.** Each name states the factor tuple it denotes
+  and the count of them the run contains. **The bare word is not a scope:** a noun used with
+  more than one referent is not narrowed by context, it is left to whichever definition the
+  reader reaches first, and the nearest definition is not the governing one. Two units of the
+  same size are two names — `block` and `pool` here are both n = 36 — because a matching
+  denominator is not a matching population. Every predicate names the glossary entry it ranges
+  over; `D-1` then makes it name the arm and the denominator within that entry. **`D-1` without
+  `D-5` fixes the sentence and not the word:** a predicate that spells out its own factors is
+  safe, and the next one written without them inherits the same ambiguity `U-4` inherited.
+- **D-6 — a figure any clause VOIDs, forbids comparing, or marks UNINFORMATIVE carries that
+  clause's mark in the cell or the row that prints it, per prohibition and not in aggregate.**
+  A mark that discharges one prohibition does not discharge another, and a **row-scoped** mark
+  does not discharge an **arm-scoped** prohibition — `docs/eval.md:8302` carries `P-POOL`'s and
+  not `P-CMP`'s and is the worked example. The bar carries a **machine-readable prohibition
+  index** (§D.3's grammar) written **before** the results, and every published result table is
+  run through the checker of §D.5 before it is published. A figure whose prohibition cannot be
+  made to travel with it is **not printed**. *A prohibition that lives in another section is a
+  prohibition the reader of the table does not have* — and the more carefully it was
+  pre-registered, the more confidently the table prints the number without it.
+
+**Applied to this bar's own text as an explicit restatement, forward-effect only.** These change
+no threshold, flip no clause, re-score no row, and annotate no published table.
+
+- **The glossary (§D.1) and the catalogue (§D.2)** are `D-5` applied backwards: every existing
+  use of the word is resolved to one entry, so no future reader of this bar repeats §D.2.
+- **The prohibition index (§D.3)** is `D-6`'s artefact for this bar, written after the fact and
+  therefore **not** a compliance record for `§V.1` — it is the input that lets the checker state
+  precisely which figures `§V.1` prints unmarked.
+- **§C.5's reporting limb (restated).** *"Where a run publishes a descriptive figure from an arm
+  that any clause VOIDs or forbids comparing, the figure carries that mark in the table that
+  prints it"* — `D-6` adds the two things that limb leaves open: the mark is **per prohibition**,
+  and the check is **mechanical and committed** rather than a reader's diligence.
+
+### D.5 The mechanical check — what it measures, its calibration, and what it does not measure
+
+`docs/eval-data/2026-08-21-prohibition-mark-check.py`, committed and rerunnable. Given a bar
+carrying a §D.3 index and a document containing a result table, it resolves every printed figure
+to its `(tier, arm, stratum)` and reports every figure that a prohibition covers and whose mark
+is not present where it is printed.
+
+**It is calibrated against three answers known by hand, and `--calibrate` exits non-zero if any
+of them fails** — the standard `2026-08-20-j28-contract-mutation-catalogue.py` sets:
+
+| answer | what it asserts | why it is the answer |
+|---|---|---|
+| **CAL-FIRE** | the three `3b`/`paste` figures of `§V.1` (`2`, `4`, `0`) are reported unmarked under `P-CMP`, and they are the only cell findings | this is `RB-P94`, and the figures are the 6 passes re-derived below |
+| **CAL-QUIET-NOT-COVERED** | the nine `4b`/`7b`/`14b` `paste` figures produce no finding | `P-CMP`'s tier selector is `3b`; an instrument that flagged a whole column would fail here |
+| **CAL-QUIET-MARKED** | the six `3b` `bare` / `reader` figures produce no finding | they **are** covered, by `P-POOL`, and the row label carries its mark. **This is the detector-stuck-on control**: an instrument that flagged every `3b` figure — the naive reading of the entry — would fail here, and §D.3 records that the naive reading is what the entry filed |
+
+**Measured at `9a7b886`: `--calibrate` reports all three answers correct and exits 0.** The
+default run over `§V.1` reports **3 cell findings** — `(3b, paste, small) = 2`,
+`(3b, paste, large-IN) = 4`, `(3b, paste, large-OUT) = 0`, all under `P-CMP` — and **1
+table-scope finding** under `P-TIER`, the table carrying no *"descriptive"* caveat in its
+caption.
+
+<!-- provenance: value=CAL-FIRE/CAL-QUIET-NOT-COVERED/CAL-QUIET-MARKED all correct, exit 0; the default run reports 3 cell findings (3b/paste = 2, 4, 0 under P-CMP) and 1 table-scope finding under P-TIER; commit=9a7b886 plus this commit's working tree, which is where the index block of D.3 and the program first exist; command=python3 docs/eval-data/2026-08-21-prohibition-mark-check.py --calibrate ; python3 docs/eval-data/2026-08-21-prohibition-mark-check.py -->
+
+**Non-vacuity was measured, not asserted — 4 of 4 mutants behave as the rule requires.** Every
+mutant was applied to a `git show HEAD:` copy in a scratch directory; neither `docs/eval.md` nor
+this file was mutated in the working tree.
+
+| # | mutant | required behaviour | observed |
+|---|---|---|---|
+| M1 | the `3b` row label given `P-CMP`'s mark (`…; paste: UNMEASURED window`) — the fix `RB-P94` says cannot be made in place | the three findings go away | **3 → 0**, 9 figures MARKED |
+| M2 | the same mark added to the `4b` row instead — a mark on a row the prohibition does not cover | unchanged | **3**, still under `P-CMP` |
+| M3 | the index block removed from the bar (`HEAD`'s copy, which has none) | unparseable, non-zero — never *"0 findings"* | `exit=2`, *"no `<!-- prohibition-index v1` block"* |
+| M4 | the section name pointed at a heading that does not exist | unparseable, non-zero | `exit=2`, *"no heading contains …"* |
+
+**M1 is the one that matters:** an instrument that reported three findings whether or not the
+mark was there would be a detector stuck on, and `RB-P94` would be unfalsifiable by it. M2 is
+its complement — a mark printed somewhere else in the same table does not discharge anything.
+
+<!-- provenance: value=M1 3 findings -> 0; M2 3 findings unchanged; M3 exit=2 unparseable; M4 exit=2 unparseable; commit=9a7b886 plus this commit's working tree; command=git show HEAD:docs/eval.md > $SP/mut-eval.md; sed the 3b row label; python3 docs/eval-data/2026-08-21-prohibition-mark-check.py --doc $SP/mut-eval.md  (and the three siblings) -->
+
+**The six passes the three flagged figures are, re-derived from the rows and not from `§V.1`:**
+`3b`/`paste` is **2/12 small, 4/12 large-IN, 0/12 large-OUT = 6 of 36**, over 432 committed
+trials. `§V.1`'s row reproduces to the digit.
+
+<!-- provenance: value=3b paste passes 2/12 small, 4/12 large-IN, 0/12 large-OUT = 6 of 36; 432 rows across the four tier files; commit=9a7b886 (rows unchanged since 39f7aaf); command=python3 -c "import json,collections; R=[json.loads(l) for l in open('docs/eval-data/2026-08-20-document-read-3b.jsonl')]; s=lambda t:'small' if t.startswith('doc-small') else ('large-IN' if t.startswith('doc-large-in') else 'large-OUT'); c=collections.Counter((r['config'],s(r['task'])) for r in R if r['passed']); print([c[('paste',k)] for k in ('small','large-IN','large-OUT')])" -->
+
+**COVERAGE — what the check does not measure, named so it is not read as wider than it is.**
+
+- **NOT: whether the index is complete.** The checker reads the prohibitions a bar *declares*.
+  A prohibition written in prose and omitted from the index is invisible to it, and that gap is
+  UNMEASURED. The check makes a declared prohibition enforceable; it does not find undeclared
+  ones. This is why `D-6` puts the index *before* the results — an index written afterwards is
+  written by somebody who already knows which figures are awkward.
+- **NOT: whether a mark is adequate.** Presence of the literal `mark` text is the whole test. A
+  mark that is present but misleading passes.
+- **NOT: a table whose figures are not resolvable to the index's factors.** The checker reads a
+  markdown table whose first column keys the row and whose header names the strata (and, where a
+  cell holds a `/`-separated tuple, the arms). A table shaped differently is reported as
+  unparseable and exits non-zero rather than reporting zero findings.
+- **NOT: `docs/eval.md` as a whole.** One named section per run.
+
+**Why `RB-P93` gets a rule and no program, stated as an argument rather than as a shortfall.**
+A mechanical check for `D-5` would have to decide, per occurrence of a glossary noun, whether
+the surrounding sentence disambiguates it. That predicate is not available without an author
+choosing, per noun, which nearby strings count as disambiguating — and that is precisely the
+loophole `docs/eval-data/2026-08-14-pinning-harness-false-positives.md` filed and the `RB-P89`
+catalogue closed by **giving up the per-claim pin list entirely** and deriving its verdict from
+the node *name*, a fixed predicate applied identically to all 34 keys. No equivalent
+author-independent predicate exists for a noun in prose: there is no name to read. A scanner
+built on a hand-picked vocabulary would report whatever its author's vocabulary was arranged to
+report, and would be the third instrument in this program's history to be stuck on. **What is
+mechanical for `RB-P93` is the catalogue itself** — §D.2 is fixed, complete over lines 1–587,
+and re-derivable by the one-line command in its provenance comment. The rule is `D-5` and it is
+forward-effect and unenforced by a program, deliberately.
+
+### D.6 What this amendment does NOT change
+
+No threshold, no arm, no task, no scorer, no tier, no repeat count, no `n`, and no row. §5's
+C1/C2/C3 and R1–R4 keep their inequalities and their numbers; §6.1's U-1 … U-5 keep their
+thresholds; §6.2, §6.3 and §6.4 are untouched; `V-1`'s 6,963 stands as pre-registered and as
+applied; `PASTE_MAX_BYTES` stays at Amendment 1's 8,621. **§V's verdict of REFUTED is
+unchanged**, and `§V.1` is not annotated, marked, footnoted or edited in any way — the three
+figures §D.5 reports are reported *here*, about that table, and the table is left as published.
+Nothing above the *"Amendment 2"* heading is edited. The glossary of §D.1 renames nothing in the
+pre-registered text: §D.2 resolves the existing word, it does not replace it.
+
+### D.7 What of `RB-P93`'s and `RB-P94`'s own claims did not reproduce
+
+Both entries are claims and were re-derived rather than transcribed.
+
+**Reproduces:** the **five** referents and the 23 occurrences over lines 1–587; `task` at
+§1.4:96-98 and `stratum` at §3.1:171-175 as the two §B.0 did not reach; the two referents inside
+one sentence of §5 (229-230, `pair` and `pool`); §V.1's `3b` `paste` column as `2` / `4` / `0`,
+which is 6 of 36 passes and reproduces to the digit from the committed rows; 432 rows; the four
+prohibitions, all four in this file and none of them in `docs/eval.md`; and `RB-P93`'s
+distinction from `RB-P88` — `D-1` restates `U-4` and leaves the noun with five referents.
+
+**Three things that did not reproduce as worded, or that the entries did not state:**
+
+1. **Does not reproduce — *"four words after the text writes 'the OUT stratum'"*.** The distance
+   is **19 words** (§3.1:170 → 171). A four-word distance occurs at §5.2:248, on a different
+   referent. §D.2 records both.
+2. **Does not reproduce — *"with no mark"* / *"Nothing on the row says so."*** The row label at
+   `docs/eval.md:8302` reads `3b (declared floor, never pooled)` and **carries `P-POOL`'s mark**.
+   The defect is a row that carries one prohibition's mark and not the other's, which is worse
+   than an unmarked row rather than better: a lifting reader sees a marked row. §D.3 states the
+   correction and §D.5's `CAL-QUIET-MARKED` is the control that keeps the checker from making
+   the entry's mistake.
+3. **Not stated by `RB-P93` — the word admits a sixth reading it does not use.** `U-3` (§6.1:283)
+   reads naturally as the `(tier, stratum)` **block**; Amendment 2 §B.4 already resolved it to
+   the `(tier, arm, stratum)` cell. Five is what the text *uses*; six is what it *admits*, and a
+   predicate is exposed to the second number (§D.2).
+
+**One thing the register attributed to the wrong section, recorded because it is a line pin.**
+The `RB-P94` entry and §AA.5 both say *"§8 declares the 3b a floor that is never pooled"*. §8
+declares the floor (362, 371); the sentence *"The 3b is never pooled"* is at **§9:411**. Both
+sentences exist, both are pre-registered, and the prohibition is unaffected — `P-POOL` cites all
+four lines.
