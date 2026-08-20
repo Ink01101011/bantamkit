@@ -22,6 +22,14 @@ Every path out of `extract()` is either rows or a `DocumentReadError` naming the
 Readable containers, and what reads them:
 
 - `xlsx`, `docx` — `zipfile` + `xml.etree`, unchanged; these are J10's committed measurements.
+- `pdf` — `bantamkit.pdfread`, written for this program because J25-PREP measured every PDF
+  library and every command-line converter absent from this host and the dependency list is
+  fixed at three. One `Part` per page, so a page that is a picture can say so where its row
+  count is stated instead of rendering as an empty page. **A character whose meaning the file
+  does not state is never emitted** — a composite font with no `/ToUnicode` map addresses
+  glyphs, not characters, and decoding those anyway is the mojibake class above with a
+  different cause. Measured over the user's corpus at `6994f96`: 27 of 28 PDFs read, 514
+  characters refused across 6 of them, 0 files returned empty.
 - `html`, `mhtml` — `email` + `html.parser`, still stdlib. MHTML is the format a "Save as .doc"
   from Confluence or Word actually writes, and `email` decodes its quoted-printable parts
   correctly where `/usr/bin/textutil` (measured, 2026-08-20) leaves the soft breaks in and
@@ -95,6 +103,11 @@ Deliberate lossiness, stated so downstream does not have to guess, and — where
   elements end a row and `<td>`/`<th>` separate fields with a tab, so an HTML table renders
   in the same tab-separated shape a worksheet row does. No CSS is applied and no layout is
   reconstructed; a `<div>` grid will not come back as columns.
+- **A PDF page is not a spreadsheet row and is not claimed to be one.** A PDF holds glyphs at
+  coordinates; `pdfread` groups them into rows by baseline and orders them by x so that
+  `page()` has a slice unit. A two-column page interleaves and a table does not come back as
+  columns. `OMIT_UNREAD_PAGE` and `OMIT_UNMAPPED` are what keep the difference between "this
+  page held nothing" and "this page was not readable" from collapsing into silence.
 - **An empty extraction from a text container is a refusal, not a document.** `.xlsx` keeps
   its existing behaviour — a declared-but-empty sheet is a real part with no rows, and J10's
   rows are committed measurements — but a `.doc`, `.rtf`, `.html` or `.mhtml` that yields no
@@ -120,6 +133,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+from bantamkit import pdfread
 from bantamkit.client import BantamError
 
 NS_S = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
@@ -127,7 +141,7 @@ NS_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 NS_R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 
 # Read directly, by this module, with nothing outside the standard library.
-SUPPORTED = ("xlsx", "docx", "html", "mhtml")
+SUPPORTED = ("xlsx", "docx", "pdf", "html", "mhtml")
 # Read only if the host has `/usr/bin/textutil`. Probed, never assumed — see `textutil_path`.
 TEXTUTIL_SUPPORTED = ("doc", "rtf")
 TEXTUTIL = "/usr/bin/textutil"
@@ -138,6 +152,13 @@ DEFAULT_ROW_LIMIT = 50
 OMIT_MEDIA = "media"
 OMIT_BLANK_ROWS = "blank-rows"
 OMIT_NUMBER_FORMAT = "number-format"
+# A page that produced no row at all: a scan, a graphics-only page, or one whose every
+# character came from a font with no character map. It is a page nobody could read rather
+# than a page holding nothing, and that difference is the whole reason this token exists.
+OMIT_UNREAD_PAGE = "unread-page"
+# Characters this reader met and refused to guess at: codes shown through a font that carries
+# no `/ToUnicode` map, i.e. glyph indices. Dropped from the rows and counted here.
+OMIT_UNMAPPED = "unmapped-text"
 
 
 class DocumentReadError(BantamError):
@@ -1008,9 +1029,111 @@ def extract_textutil(path: str | Path, kind: str = "doc") -> Document:
     return _nonempty(doc, path, f"{TEXTUTIL} converted it to no text at all")
 
 
+# ------------------------------------------------------------------ PDF, stdlib, `pdfread`
+
+
+def _pdf_refusal(text: pdfread.PdfText) -> str:
+    """The one sentence for a PDF that yielded no text, and it says WHICH of the reasons."""
+    pages = len(text.pages)
+    if text.show_ops == 0:
+        return (
+            f"its {pages} page(s) carry no text-showing operator at all and draw "
+            f"{text.images} image(s): it is a scan. This reader extracts text and does no OCR, "
+            "so there is nothing here it can read — the pages are pictures"
+        )
+    if text.vouched == 0 and text.unmapped:
+        return (
+            f"its {pages} page(s) show {text.unmapped} character code(s) through font(s) with "
+            f"no /ToUnicode map ({', '.join(text.unmapped_fonts)}) — the codes are indices into "
+            "a subset font's glyphs, not characters, and nothing in the file says which "
+            "character each glyph draws. Decoding them anyway would return text that is "
+            "indistinguishable from content and is not content"
+        )
+    return (
+        f"its {pages} page(s) ran {text.show_ops} text-showing operator(s) and produced no "
+        "character this reader can vouch for"
+    )
+
+
+def extract_pdf(path: str | Path) -> Document:
+    """One `Part` per page, and a page with no rows says why rather than rendering empty.
+
+    The page is the part because the disclosure has to be per page: a 40-page report with two
+    scanned pages in the middle is readable, and the two pages that are pictures have to say
+    so where their row count is stated. A document whose every page is like that is not a
+    document with no text — it is a document this reader could not read, and it refuses.
+    """
+    path = Path(path)
+    container = sniff(path)
+    try:
+        text = pdfread.read_pdf(path)
+    except pdfread.PdfError as exc:
+        # Through `_refuse`, so a PDF refusal carries what every other refusal carries: the
+        # container, its size, and — D1's rule — the disagreement when the name lies.
+        raise _refuse(path, container, str(exc)) from None
+    except Exception as exc:  # noqa: BLE001 - see below; the type is NAMED, not swallowed
+        # A PDF is a container of arbitrary bytes and this reader parses it by hand, so a
+        # malformed one can reach code that expected a different shape. The property this
+        # module promises is that every path out of `extract` is rows or a refusal WITH A
+        # REASON — a traceback is neither. So an unexpected failure becomes a refusal that
+        # names the exception type and message verbatim: the defect stays visible (it is in
+        # the sentence the caller reads) while the contract holds.
+        raise _refuse(
+            path,
+            container,
+            f"its PDF structure broke this reader — {type(exc).__name__}: {exc}. That is a "
+            "defect in the reader, not a property of the file, and the type above is what to "
+            "report",
+        ) from None
+    parts = []
+    for page in text.pages:
+        omissions: list[Omission] = []
+        if page.images and page.rows:
+            omissions.append(
+                Omission(
+                    OMIT_MEDIA,
+                    page.images,
+                    size=page.image_bytes,
+                    what=", ".join(page.image_kinds) or "?",
+                )
+            )
+        if page.unmapped:
+            omissions.append(
+                Omission(OMIT_UNMAPPED, page.unmapped, what=", ".join(page.unmapped_fonts))
+            )
+        if not page.rows:
+            # Counts only. WHY a page rendered nothing is one of three machine facts — no
+            # text-showing operator, images drawn, characters no font maps — and the sentence
+            # that carries them belongs to `contract`, not here.
+            omissions.append(
+                Omission(
+                    OMIT_UNREAD_PAGE,
+                    page.images,
+                    size=page.image_bytes,
+                    what=str(page.show_ops),
+                )
+            )
+        parts.append(
+            Part(
+                name=f"page {page.number}",
+                index=page.number - 1,
+                rows=page.rows,
+                omissions=tuple(omissions),
+            )
+        )
+    doc = Document(kind="pdf", parts=tuple(parts))
+    # CHARACTERS, not bytes. D2 measured a document of 28 rows and `text_bytes=27` whose
+    # every character count is zero: the bytes were the newlines between empty rows. A
+    # `text_bytes == 0` test passes on exactly the file this reader must refuse.
+    if any(row.strip() for part in doc.parts for row in part.rows):
+        return doc
+    raise _refuse(path, container, _pdf_refusal(text))
+
+
 _EXTRACTORS = {
     "xlsx": extract_xlsx,
     "docx": extract_docx,
+    "pdf": extract_pdf,
     "mhtml": extract_mhtml,
     "html": extract_html,
     "doc": lambda path: extract_textutil(path, "doc"),
