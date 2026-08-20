@@ -10,3 +10,56 @@ loop_warn: "(STOP calling tools. Give your final answer now, in exactly the form
 evidence_line: "{name}({arguments}) -> {observation}"
 evidence_no_observation: "(no observation)"
 evidence_empty: "(no tool calls were made)"
+# The document reader pair's observations (`document_list`, `document_read`). Every string a
+# reader hands back to the model lives here and not in the harness, for the reason the layer
+# rule gives: the mechanics measured in `docread.py` transfer across models, this wording is
+# exactly what does not.
+document_manifest_empty: "no documents are attached to this task"
+document_manifest_part: "{document} ({kind}) part {index} \"{part}\": {rows} rows, numbered 0 to {last}"
+document_manifest_header_row: "  row 0 is the header: {row}"
+document_manifest_first_row: "  row 1 is the first data row: {row}"
+document_manifest_last_row: "  row {index} is the last data row: {row}"
+document_page_header: "{document} \"{part}\" rows {start}-{end} of {rows}; each line below begins with its own row number"
+document_page_next: "more rows follow: call document_read again with offset={next_offset}"
+document_page_end: "that was the last row of \"{part}\""
+document_page_truncated: "row {index} was too long for one page and was cut: {dropped} bytes dropped"
+document_unknown: "error: no document named {name}; this task has: {available}"
+document_offset_past_end: "error: offset {offset} is past the end of \"{part}\", which has {rows} rows numbered 0 to {last}"
+document_error: "error: {detail}"
+# The `paste` arm's system message (`docs/eval-data/2026-08-20-document-read-bar.md` §10.2,
+# PASTE_MAX_BYTES = 8621 under Amendment 1, 2026-08-20). The arm registers NO tools, so these four lines are the whole of
+# what the model is told ABOUT the corpus; the rows themselves are docread's own rendering,
+# unprefixed and unreformatted, so `paste` and `document_read` differ in DELIVERY and not in
+# content. Clause 4 makes stating the paste's own completeness part of the contract, and
+# `paste_truncated` says the missing rows are unreachable rather than leaving the model to
+# hunt for a tool that is not there: a paste that lets a truncated head read as the whole
+# sheet is a different, worse arm than the one the bar pre-registered.
+document_paste_preamble: "The following document content is attached to this task. Fields in a row are separated by tabs, rows are given in order, and row 0 of each part is its header."
+document_paste_part: "{document} ({kind}) part {index} \"{part}\": {rows} rows, numbered 0 to {last}; {shown} of them are shown below."
+document_paste_complete: "  rows 0 to {last_shown} are shown, which is every row of \"{part}\": this copy is COMPLETE."
+document_paste_truncated: "  rows 0 to {last_shown} are shown; rows {first_missing} to {last} of \"{part}\" are NOT shown and no tool is attached that can fetch them. This copy is PARTIAL."
+document_paste_none: "  no rows of \"{part}\" are shown and no tool is attached that can fetch them."
+# What the model is told when a tool CALL cannot be made or fails, rather than when a tool
+# answers with its own error (`document_unknown` and friends above are that). It lives here
+# for the reason the layer rule gives and for one measured reason: before 2026-08-20 the
+# dispatcher formatted this sentence itself and interpolated the raw exception, so a model
+# that sent one extra argument was handed
+# `_document_tools.<locals>.list_documents() got an unexpected keyword argument 'document'`
+# — a Python qualname, model-facing, owned by no asset and pinned by no golden. The
+# argument-shaped failures are intercepted before the handler is called now, so `{detail}`
+# carries a handler's OWN sentence and no longer a signature fragment.
+tool_failed: "error: {tool} failed: {detail}. fix the arguments and retry."
+tool_arguments: "error: {tool} does not take the arguments it was given. it takes: {accepts}. fix the arguments and retry."
+tool_arguments_none: "error: {tool} takes no arguments at all. call it with none and retry."
+# 2026-08-20, `RB-P86`. The sibling of the two above, one layer in. `select_declared_arguments`
+# drops keys the schema does not declare and type-checks nothing, so `llama3.2:3b` — which
+# emits a JSON-Schema FRAGMENT as the value of a declared parameter,
+# `{"document": {"description": "stock", "type": "string"}}` — got its dict straight through to
+# `docs.get(name)` and the model read `unhashable type: 'dict'`, thirteen times over 432 graded
+# runs. That is CPython's sentence about a hash table, not a tool's sentence about its own
+# arguments, and a 3b that receives it stops calling tools and answers that it cannot access
+# the workbook. What it is told now names the argument, the type the tool declares and the type
+# it was sent, so the next turn has something to correct. One frame for one or many, because
+# the count is not the thing the model has to act on.
+tool_argument_types: "error: {tool} was called with the wrong type of argument. {problems}. fix the arguments and retry."
+tool_argument_type: "{argument} must be type {expected}, not type {actual}"

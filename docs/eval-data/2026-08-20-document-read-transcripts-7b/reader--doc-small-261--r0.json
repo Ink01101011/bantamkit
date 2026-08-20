@@ -1,0 +1,130 @@
+{
+  "task": "doc-small-261",
+  "config": "reader",
+  "repeat": 0,
+  "passed": true,
+  "outcome": "pass",
+  "seed": 758998608,
+  "model": "bk-rbp27-qwen2.5-7b-instruct",
+  "output": "{\n\"region\": \"south\",\n\"units\": 3788\n}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-000261 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_719znbss",
+          "name": "document_list",
+          "arguments": {}
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory-small.xlsx (xlsx) part 0 \"stock\": 401 rows, numbered 0 to 400\n  row 0 is the header: sku\tregion\tunits\n  row 1 is the first data row: SKU-000001\tsouth\t2049\n  row 400 is the last data row: SKU-000400\teast\t2621",
+      "tool_calls": [],
+      "tool_call_id": "call_719znbss"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_mch5peh5",
+          "name": "document_read",
+          "arguments": {
+            "part": "stock",
+            "offset": 1,
+            "limit": 1
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory-small.xlsx \"stock\" rows 1-1 of 401; each line below begins with its own row number\n1\tSKU-000001\tsouth\t2049\nmore rows follow: call document_read again with offset=2",
+      "tool_calls": [],
+      "tool_call_id": "call_mch5peh5"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_yv09965a",
+          "name": "document_read",
+          "arguments": {
+            "limit": 1,
+            "offset": 401,
+            "part": "stock"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "error: offset 401 is past the end of \"stock\", which has 401 rows numbered 0 to 400",
+      "tool_calls": [],
+      "tool_call_id": "call_yv09965a"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_fagmz2ji",
+          "name": "document_read",
+          "arguments": {
+            "limit": 1,
+            "offset": 265,
+            "part": "stock"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory-small.xlsx \"stock\" rows 265-265 of 401; each line below begins with its own row number\n265\tSKU-000265\twest\t3181\nmore rows follow: call document_read again with offset=266",
+      "tool_calls": [],
+      "tool_call_id": "call_fagmz2ji"
+    },
+    {
+      "role": "assistant",
+      "content": "Since the exact SKU-000261 wasn't found directly at any of the offsets, I'll try another approach. Given that there are 401 rows in total and we need to find row number 261, which is within the range provided by the row counts:\n\n",
+      "tool_calls": [
+        {
+          "id": "call_0lim24rv",
+          "name": "document_read",
+          "arguments": {
+            "limit": 1,
+            "offset": 261,
+            "part": "stock"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory-small.xlsx \"stock\" rows 261-261 of 401; each line below begins with its own row number\n261\tSKU-000261\tsouth\t3788\nmore rows follow: call document_read again with offset=262",
+      "tool_calls": [],
+      "tool_call_id": "call_0lim24rv"
+    },
+    {
+      "role": "assistant",
+      "content": "{\n\"region\": \"south\",\n\"units\": 3788\n}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

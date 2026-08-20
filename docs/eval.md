@@ -8251,4 +8251,618 @@ it has an ordering constraint attached (`RB-P84`). **No `pip install` of any kin
 stale dist-info that makes `RB-P45` visible is still in place and every gate above was measured
 against it. **Nothing merged, nothing pushed, no `git tag` in any form.**
 
+#### V (2026-08-20) — J10's paged document reader: the claim held, the falsifier fired on the stratum §3.1 wrote in so that it could, and the verdict is REFUTED
+
+**RB-P86 · The reader recovers what a truncated paste cannot see — `0/36 → 15/36` on the
+outside-the-cut stratum, Δ = +0.4167, McNemar exact two-sided p = 0.000061 — and it costs
+competence on the rows the paste can already see: `32/36 → 22/36`, Δ = −0.2778, p = 0.006348.
+Both halves are the same run. The bar's own falsifier §5.2 R3 fires on the second, so the
+VERDICT is REFUTED and `reader` does not enter `CONFIGS`.**
+
+The bar is `docs/eval-data/2026-08-20-document-read-bar.md` (pre-registered at `6271f43`,
+Amendment 1 at `901b414`, written before any graded arm ran). X6 ran **all 432 declared
+runs**, none dropped, no `.jsonl` edited after writing: `93c2f32` (4b), `c388786` (7b),
+`8c0f648` (14b), `4f7efeb` (3b), `2749b70` (the 432 transcripts, because U-2 and U-5 are only
+decidable from them). **Every figure below was re-derived by this unit from those committed
+rows and transcripts before being written here**, and §V.5 records the one clause of the
+handoff that did not survive that re-derivation.
+
+##### V.0 The register was read at HEAD, and the number this branch shows is not the free one
+
+`feat/document-readers` branched at `8689ac6` and has never merged `main`. Reading its own
+`docs/eval.md` gives ceiling `RB-P76` and would mint `RB-P77` — **which is already taken, nine
+times over, on branches that are live right now.** Read across every live writer instead, which
+is what `RB-P75` says a shared allocation register with no single writer requires:
+
+<!-- provenance: value=ceiling RB-P85 on feat/version-truth, RB-P83 on main, RB-P76 on this branch; commit=2749b70; command=for r in $(git for-each-ref --format='%(refname:short)' refs/heads/); do git show $r:docs/eval.md | grep -oE 'RB-P[0-9]+' | sed 's/RB-P//' | sort -n | tail -1; done | sort -rn | head -1 -->
+
+    this branch (2749b70)   grep -oE 'RB-P[0-9]+' docs/eval.md | sed 's/RB-P//' | sort -n | tail -1   ->  76
+    main       (a4993d0)    git show main:docs/eval.md            | ... same pipeline           ->  83
+    feat/version-truth (4b5723d)                                    ... same pipeline           ->  85
+    max over all 22 refs/heads                                                                  ->  85
+
+Digit-unbounded pattern, per `RB-P74`. **`RB-P86` is the next free number and this section mints
+`RB-P86`, `RB-P87` and `RB-P88`.** Section letters are the same register with the same hazard:
+`S`, `T` and `U` exist on `feat/version-truth` and `main`, so this is **section V**, not
+section S. `RB-P75`'s rule is applied as written — *skipping costs a visible gap if the other
+branch is abandoned, colliding costs a silent one* — so `RB-P77 … RB-P85` are deliberately
+absent from this branch's file and are not a truncated read.
+
+##### V.1 The result
+
+`n = 12` per (tier, arm, stratum) cell; 3 arms × 3 strata × 4 tiers × (3 tasks × 4 repeats).
+
+<!-- provenance: value="the pass table and the three McNemar rows below"; commit=2749b70; command=python over docs/eval-data/2026-08-20-document-read-{4b,7b,14b,3b}.jsonl, grouped by (config, stratum), matched on (task, repeat) within tier -->
+
+| tier | `bare` / `paste` / `reader`, small | large-IN | large-OUT |
+|---|---|---|---|
+| 4b | 0 / 12 / 2 | 0 / 12 / 11 | 0 / 0 / **11** |
+| 7b | 0 / 12 / 9 | 0 / 8 / 3 | 0 / 0 / 1 |
+| 14b | 0 / 12 / 6 | 0 / 12 / 8 | 0 / 0 / 3 |
+| 3b (declared floor, never pooled) | 0 / 2 / 0 | 0 / 4 / 0 | 0 / 0 / 0 |
+
+**McNemar exact, two-sided, hand-rolled from `math.comb` per §9, pooled over the three compared
+tiers, paired on `(task, repeat)` within a tier** — `b` = reader passed and paste failed, `c` =
+the reverse:
+
+| stratum | `P(paste)` | `P(reader)` | Δ | `b` | `c` | n | p |
+|---|---|---|---:|---:|---:|---:|---|
+| small | 36/36 = 1.0000 | 17/36 = 0.4722 | −0.5278 | 0 | 19 | 19 | 0.000004 |
+| large-IN | 32/36 = 0.8889 | 22/36 = 0.6111 | −0.2778 | 1 | 11 | 12 | **0.006348** |
+| large-OUT | 0/36 = 0.0000 | 15/36 = 0.4167 | **+0.4167** | **15** | 0 | 15 | **0.000061** |
+
+**VERDICT: REFUTED, by §5.2's R3, and R3 is the only clause of the four that fires.**
+`P(reader, large-IN) = 0.6111` is below `P(paste, large-IN) − 0.10 = 0.7889` with p = 0.006348.
+§5.2 makes any one clause sufficient. R1 does not fire (Δ on large-OUT is +0.4167, not < 0.10);
+R2 does not fire (p = 0.000061); R4 does not fire (`P(reader, small) − P(reader, large-OUT)` =
+0.4722 − 0.4167 = **0.0556**, nowhere near 0.50). **CONFIRMED is simultaneously unavailable
+because §5.1 requires C1∧C2∧C3 and C2 fails on the same inequality R3 fires on.** C1 holds
+(Δ = +0.4167 ≥ 0.30, p < 0.05) and C3 holds (`document_list` successfully called in 12/12,
+12/12 and 11/12 of the large-OUT reader cells, all ≥ 50%). **`reader` stays calibration-only in
+`CONFIG_CHOICES` and does not enter `CONFIGS`.** §7.6 pre-registered that even a CONFIRMED
+result would only have been a *recommendation* to promote, ruled by the user and never
+automatic; REFUTED removes the recommendation and changes nothing about who decides.
+
+The instrument checks out against the bar's own pre-registered MDE table (§9): re-derived here,
+10-of-12 → p = 0.0386 and 9-of-12 → p = 0.1460; 25-of-36 → p = 0.0288 and 24-of-36 → p = 0.0652.
+All four reproduce to the digit.
+
+##### V.2 What this entry must not be read as, in either direction
+
+**This is not a null result, and writing it as one would be false.** On the stratum where the
+paste is incomplete **by construction** — the answer row is outside the 8,621 B cut, so the
+paste arm's ceiling there is zero and stays zero, 0/36 at every tier — the reader goes to 15/36
+at p = 0.000061. **The job's own claim held.** The reader does recover what truncation loses.
+
+**And it is not a confirmation.** The falsifier fired on **large-IN**, the stratum §3.1 wrote
+into the design *precisely so that the experiment could lose*: *"this is the cell that can
+refute the reader — if the reader loses on rows a paste can see, the tool costs competence
+rather than buying it. Without this stratum the experiment cannot lose."* It lost there, at
+n = 12 discordant, 11 of 12 the paste's way.
+
+**Both sentences are the same measurement:** *the reader recovers what the paste cannot see, and
+costs competence where the paste can already see it.* A tool that makes a model worse on
+material it already had is not a tool you switch on by default, and the bar said that in
+advance rather than after seeing which way it went.
+
+##### V.3 Three things that make the result honest, and none of them is a footnote
+
+**1. The reader's wins on large-OUT are arithmetic on the key column, not paging — and that
+caps what +0.4167 means.** The corpus's `sku` is a pure function of the row index
+(`SKU-004137` is data row 4137), so the target's offset is *computable* from the manifest
+rather than searchable. Measured over the 15 passing large-OUT reader runs:
+
+<!-- provenance: value=14 of 15 large-OUT passes read within one row of the target, 11 of 11 at the 4b in a single document_read; commit=2749b70; command=python over docs/eval-data/2026-08-20-document-read-transcripts-*/reader--doc-large-out-*.json, collecting every document_read offset -->
+
+- **14 of the 15** passes include a `document_read` whose `offset` lands **within one row** of
+  the target; the fifteenth lands 2 rows short, still inside the 50-row page.
+- **All 11 of the 4b's passes are a single `document_read` and nothing else** — `offset=4136`,
+  `offset=8021`, `offset=11763`/`11764`. One call, straight to the row.
+
+§7.4 already declined to generalise past a generated corpus with *"a key column that is a pure
+function of the row index"*. **This run is direct evidence for that disclaimer, measured rather
+than assumed.** On a workbook whose key is not that function, the mechanism demonstrated here —
+compute the offset, read once — does not exist, and nothing in this result says what a reader
+would do there.
+
+**2. The small-cell failures are fabrication, not truncation, and the manifest is the source.**
+The small paste is COMPLETE (§1.4) and scores 36/36; the reader scores 17/36 on the same rows.
+The failure mode is not a missing row. In `reader--doc-small-261--r1` at the 4b the model called
+`document_list`, was shown the manifest's three sample rows —
+
+    row 0 is the header: sku	region	units
+    row 1 is the first data row: SKU-000001	south	2049
+    row 400 is the last data row: SKU-000400	east	2621
+
+— then read rows 1–50 (which do not contain row 261) and answered `{"region": "south",
+"units": 2621}`. The expected answer is `south` / **3788**. **`2621` is row 400's `units`,
+printed in `document_list`'s own manifest.** The tool showed it a row and it answered with that
+row. Those three sample rows exist to make the offset computable — they are the reason honesty
+item 1 works at all — and **this is the cost side of that same design choice**, a contract
+finding about the manifest, not a paging failure.
+
+**3. `7b/large-OUT` is UNINFORMATIVE, and the sensitivity is reported here rather than left for
+a reader to ask for.** U-1 fires on that cell at **8/12** `turns-exhausted` (≥ 50%). §6.2's
+run-level rule needs the large-OUT stratum UNINFORMATIVE at **≥ 2 of 3** compared tiers and does
+not fire at 1 of 3, so the run is not UNINFORMATIVE as a whole. Excluding that cell:
+**Δ(large-OUT) = +0.5833, b = 14, c = 0, n = 14, p = 0.000122** — larger, not smaller. C1 holds
+either way, and R3 does not live on that stratum.
+
+##### V.4 The clauses, each with its number
+
+- **V-1 did not fire at any compared tier.** G-3's six readings at the amended
+  `PASTE_MAX_BYTES = 8,621` (bar §A.3, request reading) are **6,602 / 6,623 / 6,623 / 6,627 /
+  6,648 / 6,648** against the **6,963** threshold — worst reading 6,648, a margin of 315 tokens
+  (4.52%). The `paste` arm is comparable at 4b, 7b and 14b.
+- **V-3 is zero: 0 of 144 `bare` passes across all four tiers.** At 1 in 36,000 per run, the
+  contamination detector §1.2 built stayed silent — which is what a working detector looks like,
+  and is why no task is voided for any arm.
+- **V-2 and V-4 are zero.** No `DocumentSetupError` escaped; **0 rows** carry
+  `outcome == "transport-error"` across all 432. No row was re-run and no row was replaced.
+- **U-5 is 0/12 in all nine compared cells.** Amendment 1's `select_declared_arguments` /
+  `handler_accepts` fix — landed *before* the sweep on smoke evidence — held under all
+  **108 compared `reader` runs**. That is the strongest single piece of evidence that amending the bar before the run,
+  rather than adjusting after it, was the right call.
+- **U-2 (amended) does not fire at any compared tier**: successful `document_list` calls run
+  12/12, 12/12, 12/12, 12/12, 12/12, 12/12, 12/12, 12/12 and 11/12 over the nine reader cells.
+- **U-3 fires once, at `3b`/large-OUT** (all three arms at zero). The 3b is a declared floor and
+  is never pooled, so this costs nothing the bar claims — recorded so it is not discovered later.
+
+##### V.5 What did NOT reproduce — the handoff's robustness clause, and it is the one clause the verdict leans on
+
+The handoff to this unit asserted: *"the verdict is unchanged either way, **because R3 lives on
+`large-IN` where no compared cell is UNINFORMATIVE**."* **The second half does not reproduce.**
+
+<!-- provenance: value=7b/reader/large-IN is malformed-output on 4 of 12 runs = 33.3%, above U-4's 30% threshold; commit=2749b70; command=python over docs/eval-data/2026-08-20-document-read-7b.jsonl counting outcome in {malformed-output, schema-exhausted} among config==reader rows of the large-IN stratum -->
+
+`7b`/`reader`/`large-IN` has **4 of 12 runs at `outcome == "malformed-output"` = 33.3%**, and
+§6.1's **U-4** makes a cell UNINFORMATIVE at **> 30%**. Under §6.1's own scoping sentence —
+*"evaluated per (tier, arm, stratum) cell"* — the denominator is that cell's 12 runs and **U-4
+fires**. It is the only compared cell besides `7b`/large-OUT that any UNINFORMATIVE predicate
+touches, and it sits on the stratum the verdict rests on.
+
+**What it costs, stated as arithmetic rather than as reassurance.** Dropping the 7b from the
+large-IN pool the way honesty item 3 drops it from large-OUT: reader 19/24 = 0.7917, paste
+24/24 = 1.0000, so R3's **inequality still holds** (0.7917 < 0.90) but its **McNemar p becomes
+0.0625**, which is **not < 0.05**. R3 as pre-registered would then not fire, and with R1, R2 and
+R4 all silent the run would land in §5.3's NEITHER band rather than at REFUTED.
+
+**The verdict stands as REFUTED, and the reason is textual, not statistical.** §5 defines
+`P(arm, stratum)` as the pooled rate over the three compared tiers at n = 36 and states no
+exclusion for an UNINFORMATIVE cell; §6.2 escalates to a run-level verdict only from
+**large-OUT**; and **R3, unlike R2, carries no non-UNINFORMATIVE proviso** — R2's *"with a
+non-UNINFORMATIVE cell"* is the bar demonstrating it knew how to write that condition where it
+wanted one. The bar as pre-registered is applied as written and is not edited to say otherwise.
+But **"the verdict is robust to the UNINFORMATIVE cells" is false and this entry does not say
+it**: the refutation depends on the 7b's contribution to the large-IN pool, and that is
+`RB-P88` below.
+
+Everything else in the handoff reproduced exactly: all twelve cells of the pass table, all three
+pooled McNemar rows to six decimals, the R3 inequality, the 0/144 `bare` passes, the
+0/12 U-5 readings, the six G-3 numbers, the 13 dict-argument observations, the 4b's one-shot
+`offset=4136` solve, `units: 2621` in `reader--doc-small-261--r1`, and the four MDE figures.
+
+##### V.6 The cost axis, stated separately and never netted
+
+§0.3 and §4 pre-register that capability and cost are reported side by side and **never divided
+into a ratio**. Median `context_bytes_sent` per (tier, arm, stratum), in bytes:
+
+<!-- provenance: value="the median context_bytes_sent table below"; commit=2749b70; command=statistics.median over context_bytes_sent in the four committed jsonl, grouped by (config, stratum) -->
+
+| tier | arm | small | large-IN | large-OUT |
+|---|---|---:|---:|---:|
+| all | `bare` | 414 | 414 | 414 |
+| all | `paste` | 10,620 | 10,674 | 10,674 |
+| 4b | `reader` | **8,325** | **8,371** | **8,430** |
+| 7b | `reader` | 18,148 | 28,491 | **39,351** |
+| 14b | `reader` | 10,976 | 18,338 | 29,559 |
+
+The `paste` arm is **one model call** on all 144 of its rows and **zero tool calls**, exactly as
+§10.2 clause 5 requires, so its figure is identical at all four tiers. Stated separately and
+never netted, as the bar requires: **the reader's roster share is 1,414 B × `model_calls`** —
+4,242 B at the 4b (median 3 calls) rising to **14,140 B at 7b large-OUT**, where the median
+run spends the entire 10-turn budget — and **the paste's corpus share is 8,621 B × 1**.
+
+**The reader is cheaper than the paste only at the 4b** (0.78–0.79×). At the 14b it is 1.03× on
+small and 2.77× on large-OUT; at **7b large-OUT it costs 3.69× the paste** — the tier and
+stratum where it also scores 1/12. The one cell where the reader is both cheaper *and* better is
+`4b`/large-OUT: 8,430 B against 10,674 B, 11/12 against 0/12.
+
+##### V.7 What is NOT claimed
+
+§7's ten items are the list and are not replaced here. What this run adds to them:
+
+1. **Not claimed: that the reader is useless.** C1 held at p = 0.000061. REFUTED is a verdict
+   on the pair *as a default*, delivered by R3, and not a finding that the mechanism does
+   nothing.
+2. **Not claimed: that the reader is safe to default on.** C2 failed on the same inequality.
+3. **Not claimed: any of this about real workbooks.** §7.4, now with the measurement behind it
+   in §V.3 item 1: the wins run through the key column being a pure function of the row index.
+4. **Not claimed: a tier comparison.** §7.5 stands — `run_seed` hashes the model name, the tiers
+   are unpaired, and every cross-tier sentence above is descriptive. The *within-tier* pairing on
+   `(task, repeat)` that McNemar uses is the one §9 pre-registered and is unaffected.
+5. **Not claimed: that a 3b failure is a reader defect** (§7.8) — but see `RB-P86`, which is a
+   defect the 3b **exposed** rather than a defect of the 3b.
+6. **Not claimed: that this verdict is robust to §6's own UNINFORMATIVE predicates.** §V.5.
+7. **Not claimed: anything about `.docx`, `.pptx`, PDF or video** (§7.2). Nine `.xlsx` LOOKUP
+   tasks over two generated corpora is the entire evidence base.
+
+##### V.8 Minted here — `RB-P86`, `RB-P87`, `RB-P88`
+
+- **`RB-P86` — a live argument-shape defect that survives `select_declared_arguments`, because
+  that filter drops UNDECLARED keys and never type-checks DECLARED ones.** All three `3b`
+  `reader` cells are UNINFORMATIVE with **U-5 at 4/12, 4/12 and 5/12** — **13 observations** of
+  `error: document_read failed: unhashable type: 'dict'. fix the arguments and retry.`, all 13
+  on `document_read`. The 3b emits a **JSON-Schema fragment as the value of a declared
+  parameter**, e.g. `{"document": {"description": "stock", "type": "string"}}`; `document` **is**
+  declared, so Amendment 1's filter passes it straight through, and it reaches `docs.get(name)`
+  in `_document_tools` (`evalrun.py`) where a dict is not hashable. **This is the same class as
+  the defect Amendment 1 fixed, one layer in:** Amendment 1 stopped an *undeclared* key from
+  crashing a handler; nothing stops a *declared* key of the wrong type from doing it.
+  The 3b also fires the amended **U-2** in the same three cells (successful `document_list` in
+  **0/12, 1/12, 1/12**), so the floor's reader arm measured the dispatcher, not the model.
+  **NOT FIXED HERE, and the reason is layer discipline, not effort:** a Layer-1 change to
+  `agent.py` after 432 graded rows exist would change the instrument under a committed result,
+  and the only cells affected are the declared floor's, which §7.8 already declines to read.
+  **Filed.** The fix has an obvious shape — coerce or reject a declared argument whose value
+  does not match its declared `type`, in the same top-level-only scope as `coerce_arguments` —
+  and it belongs to the layer, not to this job.
+- **`RB-P87` — V-1's threshold is an absolute token count derived from one assumed window, so at
+  a tier served a SMALLER window the clamped reading falls BELOW the threshold and the guard
+  reports OK exactly where the truncation is worst.** §6.4 named the 3b's served window
+  UNMEASURED. Measured now, with G-3's own instrument:
+
+  <!-- provenance: value=llama3.2:3b prompt_eval_count = 4096 on both readings for both corpora at PASTE_MAX_BYTES=8621; commit=2749b70; command=POST /api/generate {"model":"llama3.2:3b","prompt":<_paste_head(fixtures)[+task prompt]>,"stream":false,"options":{"num_predict":1}} -> prompt_eval_count, run 2026-08-20 in this worktree -->
+
+      llama3.2:3b  small corpus  system 8,962 B -> 4096   system+task 9,324 B -> 4096
+      llama3.2:3b  large corpus  system 9,016 B -> 4096   system+task 9,378 B -> 4096
+
+  **Exactly 4,096 on both counters for both corpora** — the `RB-P53` clamp signature, on the
+  `/api/generate` counter the bar trusts, at a daemon-default window of 4,096. **The clamp
+  itself is `RB-P53`'s class and gets no number here**, by the same rule that cross-referenced
+  J7's `N-1` rather than splitting one class across two entries. What is new is the **guard**:
+  V-1 fires at `≥ 0.85 × 8,192 = 6,963`, and 4,096 < 6,963, so **V-1 as written does not fire
+  and the 3b's `paste` arm is not VOID by the rule** — even though its prompt is being truncated
+  harder than any arm the rule did VOID. A threshold that is 85% of *an* assumed window is
+  silently inapplicable at any tier served a different one; the predicate has to be a function
+  of the window it is evaluated against, or it has to refuse to evaluate where that window is
+  unknown. **The result is protected by a different sentence, not by V-1:** §6.4 already forbids
+  comparing any 3b `paste` number to another tier's, so the 3b's **6 paste passes** (2 small,
+  4 large-IN, 0 large-OUT) are uncompared and no figure in §V.1's compared pool depends on them.
+  **Filed as a rule defect. Nothing in the bar is edited; it is committed evidence now.**
+- **`RB-P88` — an UNINFORMATIVE predicate whose denominator is ambiguous fires on the one cell a
+  verdict's significance rests on, and the ambiguity is inside the section that defines the
+  predicate.** §6.1 opens *"evaluated per (tier, arm, stratum) cell"*, which makes U-4's *"> 30%
+  of runs in the cell"* a fraction of that cell's 12 runs — and `7b`/`reader`/`large-IN` is
+  **4/12 = 33.3%**, so U-4 fires. But §6.1's own **U-3** is written as
+  `P(reader) = P(paste) = P(bare) = 0` **"in the cell"**, which requires *"cell"* to span all
+  three arms — and under that reading U-4's denominator is 36, the fraction is 11.1%, and U-4
+  does not fire. **One word carries two readings inside one subsection, and which one is meant
+  decides whether the cell that supplies R3's significance is admissible.** Measured cost of the
+  disagreement, §V.5: with the 7b in, R3 fires at p = 0.006348 and the run is REFUTED; with it
+  out, p = 0.0625 and the run is §5.3 NEITHER. The bar's *other* rules are not ambiguous this
+  way — U-1 and U-2 both say *"of `reader`-arm runs in the cell"* and V-3 says *"that task for
+  every arm"* — so this is a single under-specified predicate, not a systemic one, and it is the
+  kind that only shows up when it lands on the deciding cell. **Attack:** an UNINFORMATIVE
+  predicate must name its own denominator in its own sentence, and a criterion clause must state
+  whether it admits UNINFORMATIVE cells — §5.2's **R2 does** (*"with a non-UNINFORMATIVE cell"*)
+  and **R3 does not**, which is what leaves the verdict resting on a reading rather than on a
+  rule. Found by re-derivation, not handed to this unit; the handoff asserted the opposite.
+
+##### V.9 Gates
+
+<!-- provenance: value=1206 passed, 2 xfailed; commit=2749b70; command=PYTHONPATH=$PWD/runtime-py/src .venv/bin/python -m pytest runtime-py/tests -q -->
+
+    PYTHONPATH=$PWD/runtime-py/src .venv/bin/python -m pytest runtime-py/tests -q
+        ->  1206 passed, 2 xfailed        at 2749b70, unchanged by this section
+    .venv/bin/ruff check runtime-py       ->  All checks passed!
+    .venv/bin/ruff check docs/eval-data   ->  All checks passed!
+
+The `PYTHONPATH` prefix is not decoration: the editable install resolves `bantamkit` to the
+main checkout, so a worktree gate run without it measures a different tree. Verified rather
+than assumed — `bantamkit.__file__` printed from under this prefix resolves inside this
+worktree. **This section adds no `.py` and no `.jsonl`; the count is the baseline count and is
+quoted with the commit it was measured at, per the rule `amendguard` was built to enforce and
+this job's own invariant.** `amendguard check . 8689ac6..HEAD tools/amendguard/ledger.json` reports **`rows=3 ok=2 red=1`**
+over this branch. **The one red row is `6271f43`'s**, and it is the bar's own §10.3 quoting its
+checker's node count with no provenance stamp beside it:
+
+<!-- provenance: value=45 passed; commit=0b95d3f; command=PYTHONPATH=$PWD/runtime-py/src .venv/bin/python -m pytest runtime-py/tests/test_document_tasks.py -q -->
+
+    PYTHONPATH=$PWD/runtime-py/src .venv/bin/python -m pytest runtime-py/tests/test_document_tasks.py -q
+        ->  45 passed        re-measured here, unmoved from the bar's reading at 6271f43
+
+The number is real and re-measured; **the bar is not edited to carry the stamp, because it is
+committed evidence and nothing is retro-edited to make a checker green** — the same refusal
+recorded when `amendguard` first ran red over its own branch. The stamp lives here, in the
+record that quotes the number, which is where a stamp is allowed to be added.
+
+#### W (2026-08-20) — `RB-P86` goes from filed to fixed inside the same shift, the second time tonight; and the giving-up figure this unit was handed is not the one the transcripts carry
+
+`RB-P86` was minted in **§V.8 above**, hours ago in this same shift, and filed **NOT FIXED HERE**
+— *"a Layer-1 change to `agent.py` after 432 graded rows exist would change the instrument under
+a committed result."* `c2cfb89` is that fix. **Section T is the first entry in this program to go
+from filed to fixed inside one shift** (`RB-P79`, seventeen minutes); **this is the second**, and
+the amendment below is written to be read straight after `RB-P86` itself and repeats none of it.
+**`RB-P86` is a record and is not edited.** No `.jsonl` was regenerated and no committed row is
+restated. Every figure below was re-derived by this unit in its own scripts rather than carried
+from `c2cfb89`'s message; **three figures this unit was handed did not survive that, and they are
+in §W.5** — including the one the handoff told it to correct, which needed correcting again.
+
+##### W.1 Amendment 1 to `RB-P86` — 2026-08-20, the fix, and what the model now reads
+
+**What landed.** `mistyped_arguments(arguments, parameters)` in `agent.py` returns the DECLARED
+arguments whose value does not match their declared JSON-Schema `type`, as
+`(argument, declared, sent)` triples; `_dispatch` calls it after `coerce_arguments` and
+`select_declared_arguments` and returns before the handler. The sentence is the asset's
+(`assets/contracts/default.yaml`, `tool_argument_types` and `tool_argument_type`), rendered by
+`contract.py`. **The whole of the fix is which vocabulary the answer is written in.** `RB-P86`'s
+defect was not that a dict reached a hash lookup; it was that the model was answered in Python.
+`json_type_of` therefore names a sent value in the schema's own seven words — a dict is
+`object`, never `dict` — because a model holding a JSON-Schema `document_read` has no referent
+for `dict` and has one for `object`.
+
+Re-derived here by replaying the payload out of the committed transcript rather than
+transcribing it, through a real `Agent` on `_document_tools` over the committed
+`doc-large-out-4137` corpus with the committed `assets/tools/document_read.json` schema, with
+only `agent.py`, `contract.py` and `default.yaml` differing between the two runs:
+
+<!-- provenance: value=reader--doc-small-261--r1 sent {"document": {"description": " workbook", "type": "string"}}; BEFORE at 39f7aaf reads `error: document_read failed: unhashable type: 'dict'. fix the arguments and retry.`; AFTER at c2cfb89 reads `error: document_read was called with the wrong type of argument. document must be type string, not type object. fix the arguments and retry.`; commit=c2cfb89; command=a Z2 replay script over `git archive 39f7aaf` vs the working tree, PYTHONPATH and BANTAMKIT_ASSETS pointed at the matching tree, payload read from docs/eval-data/2026-08-20-document-read-transcripts-3b/reader--doc-small-261--r1.json -->
+
+    sent    {"document": {"description": " workbook", "type": "string"}}
+    before  error: document_read failed: unhashable type: 'dict'. fix the arguments and retry.
+    after   error: document_read was called with the wrong type of argument. document must be
+            type string, not type object. fix the arguments and retry.
+
+The `before` line is byte-identical to what that run's transcript records the model reading, so
+the replay is a replay and not a reconstruction. **One frame carries one problem or many**:
+`reader--doc-large-out-11764--r2` sent four wrong-typed declared arguments at once and reads one
+sentence naming `document`, `limit`, `offset` and `part`, because the count is not the thing the
+model has to act on.
+
+##### W.2 The before/after over all 13 real payloads
+
+Every `document_read` call that produced one of `RB-P86`'s 13 observations, read out of the
+committed transcripts and replayed through the same real `Agent`. The only difference between
+the two runs is which commit the three source files come from:
+
+<!-- provenance: value=13 payloads replayed each way; BEFORE at 39f7aaf 13 of 13 observations carry Python text; AFTER at c2cfb89 0 of 13; commit=c2cfb89; command=Z2 replay script, PYTHONPATH=<tree>/runtime-py/src BANTAMKIT_ASSETS=<tree>/assets, markers searched: unhashable type, <locals>, TypeError, KeyError, Traceback, 'dict', 'list', 'str', 'int', NoneType, object is not -->
+
+    BEFORE (39f7aaf)    13 payloads replayed    13 observations carry a Python exception's text
+    AFTER  (c2cfb89)    13 payloads replayed     0 observations carry a Python exception's text
+
+The denominator is re-derived and not quoted: **13 observations of that error string, in 13
+distinct transcript files, one each, every one of them on `document_read`**, and **0 of the 13
+runs passed**.
+
+<!-- provenance: value=13 files under docs/eval-data/2026-08-20-document-read-transcripts-3b contain exactly one `error: document_read failed: unhashable type: 'dict'. fix the arguments and retry.` tool message each, all in the reader arm, all on document_read; passed=false in all 13; outcome wrong-answer 9, malformed-output 4; commit=c2cfb89; command=a Z2 python census over the 108 committed 3b transcripts, matching the tool-role message content exactly and resolving each observation back to the assistant tool_call carrying its tool_call_id -->
+
+##### W.3 Reported — not coerced, and not dropped
+
+**Dropping is right for an UNDECLARED key and wrong here, and the asymmetry is the argument.**
+An undeclared key is one the tool has no way to act on, so there is nothing to negotiate. A
+declared one is named by the schema, so dropping it hands the model the handler's default *as
+though it had asked for it* — a model that asked for `offset` as an object would be given page 0
+and never told the question had changed. This repository already refuses that shape;
+`document_offset_past_end` exists because an empty page is a dead end a model cannot tell from a
+real one.
+
+**`coerce_arguments` is untouched and runs first**, so the one unambiguous conversion a small
+model needs survives and is never reported. Re-derived against the committed
+`document_read` schema:
+
+<!-- provenance: value=after coerce+select, {"offset": "4137"} -> {"offset": 4137} mistyped []; {"limit": "50"} -> {"limit": 50} mistyped []; {"offset": "0"} -> {"offset": 0} mistyped []; {"offset": 4137.0} mistyped [(offset, integer, number)]; {"limit": true} mistyped [(limit, integer, boolean)]; {"part": 0} mistyped [(part, string, integer)]; {"document": null, "limit": null} mistyped []; {"document": {"type": "string"}} mistyped [(document, string, object)]; {"document_list": {...}} -> {} mistyped []; commit=c2cfb89; command=PYTHONPATH=$PWD/runtime-py/src .venv/bin/python over coerce_arguments then select_declared_arguments then mistyped_arguments with load_tool('document_read').parameters -->
+
+    "4137" for a declared integer   ->  4137          reported: no
+    "50"   for a declared integer   ->  50            reported: no
+    4137.0 for a declared integer   ->  4137.0        reported: offset must be type integer
+    true   for a declared integer   ->  true          reported: limit must be type integer
+    0      for a declared string    ->  0             reported: part must be type string
+    an undeclared key of any type   ->  dropped       reported: no, it is gone before the check
+
+The last row is the one that matters for `RB-P86`'s neighbour: **`select_declared_arguments` is
+not weakened.** An undeclared key is dropped before the type check can see it, so it is never
+reported, and U-5's 0/12 in all nine compared cells is untouched behaviour.
+
+**`null` is exempt**, as the wire spelling of "omitted" — every handler here defaults its
+arguments to `None`. The figure this unit was handed for how often the 13 real payloads exercise
+that exemption does not reproduce; the reproducible readings are in §W.5.
+
+##### W.4 The vacuity work, which is the transferable part
+
+**Six mutants, six deaths**, re-derived by this unit in a throwaway `git archive c2cfb89` tree
+rather than read from `c2cfb89`'s message. Counts are NEW red nodes against that tree's own
+baseline, and the tree was restored and re-measured identical afterwards:
+
+<!-- provenance: value=M1 6 new red, M2 7, M3 5, M4 1, M5 4, M6 4, and an M5 variant reworded on the other contract string 5; baseline and restored runs identical in their failure sets; commit=c2cfb89; command=a Z2 mutation script over a `git archive c2cfb89` tree, each mutant applied by exact-anchor string replacement and reverted in a finally block, .venv/bin/python -m pytest runtime-py/tests -q -p no:randomly under PYTHONPATH and BANTAMKIT_ASSETS pointed at that tree -->
+
+    M1  the type check removed (mistyped_arguments returns [])              6 nodes
+    M2  the dispatcher DROPS the wrong-typed argument instead of reporting  7 nodes
+    M3  the check runs BEFORE coerce_arguments ("4137" reported)            5 nodes
+    M4  null no longer exempt                                              1 node
+    M5  the contract FRAME reworded in the asset                           4 nodes
+    M6  select_declared_arguments weakened to pass undeclared keys         4 nodes
+
+The baseline of that throwaway tree is not the repository's: **10 nodes fail there and all 10
+are in `test_criticreplay.py`**, which resolves paths against a real git checkout and cannot see
+one in a `tar -x` copy. They are in the baseline set and subtract out of every column; no
+mutant's column contains one.
+
+**The property node stays green under M5, and that is the design, not a gap.** `M5` is a Layer-2
+rewording; `test_no_dispatch_observation_can_carry_a_python_exception_for_a_declared_argument`
+asserts only that no Python text reaches the model and that each offending argument is named, so
+a reworded sentence must not redden it. Every node that *does* redden under M5 says why in its
+own name: three carry `verbatim`, and the fourth is the byte golden
+`test_layers.py::test_tool_argument_types_bytes`.
+
+**Z1 caught its own node reddening for a reason its name did not state, and rewrote it before
+the commit rather than after.** The node had been drafted asserting the sentence's *frame*, which
+would have made it red on a rewording that leaks no Python at all. **That is the third time in
+this shift the laundering lesson has been applied ahead of a commit rather than discovered
+behind one**, and the count is checkable rather than asserted: the lesson is born in section S
+(a third `M11` case written, measured and deleted — *"a check that reddens for a reason its name
+does not state launders unrelated mutations into its own column"*, `docs/eval.md:7665`),
+promoted to a procedure in section T and applied to `M12` before `9b9ad0c` (`docs/eval.md:7826`),
+and applied again here before `c2cfb89`. Those are the only two committed sites of the sentence
+in any live branch's `docs/eval.md`. **It is this program's standing practice now, not an
+anecdote**, and §W.6 is what happened when this unit ran the practice against the fix itself.
+
+##### W.5 Three figures this unit was handed that do NOT reproduce
+
+Reported rather than quietly adjusted, because a figure that moved is evidence about how it was
+read. **The first of the three is the correction this unit was handed to carry — a unit had
+already caught the orchestrator relaying the wrong giving-up figure, which is the fourth such
+catch tonight — and the corrected figure needed correcting again.**
+
+<!-- provenance: value=0 of 13 passed; 11 of 13 issue no tool call in any message after the observation; of those 11, 5 outputs carry both a top-level "name" and a "parameters"/"arguments" key; reader--doc-small-261--r2 answers {"region": "US", "units": 500}, exactly the JSON shape its own task prompt demanded; commit=c2cfb89; command=a Z2 python census over the 13 transcripts, counting tool_calls in every message after the offending observation and regex-matching the recorded `output` field -->
+
+**1. "0 of 13 passed, and 11 of 13 issued no further tool call of any kind afterwards, answering
+with invented tool-call JSON."** The first two clauses reproduce exactly. **The third does not.**
+
+    passed                                                     0 of 13
+    no further tool call of any kind after the observation     11 of 13
+    of those 11, output shaped like an invented tool call       5
+
+The two that kept calling issued 3 further calls and 1. **Of the 11 that stopped, 5 answered
+with something shaped like a tool call it had invented** — `read_rows`, `query`,
+`document_update_fields`, `document_read`, `readSheetValues` — and the rest answered with
+something else, including one (`reader--doc-small-261--r2`) that answered in exactly the JSON
+shape its task asked for and was simply wrong. **The load-bearing half is the tool call that
+never came**, and it is intact at 11 of 13; the clause about what filled the silence is not.
+
+**2. "The phrase 'I'm unable to access the workbook' appears in exactly two files, both `bare`."**
+The direction of this correction is right and its count is not. **The literal phrase appears in
+zero of the 432 committed transcripts.**
+
+<!-- provenance: value=over all 432 committed transcripts (108 each at 3b, 4b, 7b, 14b): "unable to access the workbook" 0 files; "unable to access" 1 file (3b bare--doc-large-out-11764--r2); "I am unable" 1 file (the same); "cannot access" 1 file (3b bare--doc-large-out-11764--r1); "unable to" 3 files (those two 3b files plus 14b bare--doc-large-in-137--r3); every match is in the bare arm and none is a reader run; commit=c2cfb89; command=a Z2 case-insensitive census over docs/eval-data/2026-08-20-document-read-transcripts-{3b,4b,7b,14b}/*.json -->
+
+    "unable to access the workbook"   0 of 432 files
+    "unable to access"                1 of 432    3b   bare--doc-large-out-11764--r2
+    "cannot access"                   1 of 432    3b   bare--doc-large-out-11764--r1
+    "unable to"                       3 of 432    the two above plus 14b bare--doc-large-in-137--r3
+
+**All three matches are in the `bare` arm, none is a `reader` run, and none is a dict-argument
+run** — so the conclusion the correction was carrying survives untouched and only its count
+fails. The phrasing's real home is a **smoke pass whose transcripts are not committed to this
+repository** (`agent.py:124`, which attributes it to the 4b and to `document_list`, not to the
+3b and not to `document_read`); it cannot be checked here and is not disputed here.
+
+**And the refuted phrasing survived into `c2cfb89` itself.** `assets/contracts/default.yaml:60`
+— a comment added by the very commit whose message records that this phrasing does not
+reproduce — says *"a 3b that receives it stops calling tools and answers that it cannot access
+the workbook."* The first half is the reproducible finding (11 of 13). The second half is the
+4b smoke claim, transplanted onto the 3b, where the committed evidence is 0 of 108. **The asset
+is not edited to make this record right**: it is committed evidence, nothing is retro-edited to
+make a reader green, and the correction lives here, in the record that quotes it.
+
+**3. "`null` is exempt … and 4 of the 13 real payloads carry one."** Not at any scope. Four is
+the count of null *values* anywhere in the 13 payloads, including one nested inside an object
+value where a top-level check can never see it; the payload count is three, and at the only
+scope `mistyped_arguments` operates in it is **two payloads carrying three nulls**.
+
+<!-- provenance: value=across the 13 committed payloads: 4 null values at any depth in 3 payloads (doc-large-out-8022--r0 1 nested inside the `document` object, doc-large-out-8022--r2 1 top-level, doc-small-137--r3 2 top-level); 3 null values at top level in 2 payloads; commit=c2cfb89; command=a Z2 python census counting `is None` at top level and recursively over each of the 13 recorded tool_call argument dicts -->
+
+    null values anywhere        4    in 3 payloads
+    null values at top level    3    in 2 payloads   <- the only scope the exemption acts in
+
+**The exemption is not thereby unjustified** — it rests on every handler here defaulting its
+arguments to `None`, which is an argument about the handlers and not a headcount — but the
+headcount that was offered as its support is not the one the payloads carry.
+
+##### W.6 Minted here — `RB-P89`, and the three things that get no number
+
+**The register was read at HEAD across every live writer before any number was chosen, not taken
+from a brief or an orchestrator.** That precaution is `RB-P75`'s and §V.0's; the ceiling moved
+five times in this shift, so the read is recorded:
+
+<!-- provenance: value=ceiling RB-P88, reached on three refs — main (39f7aaf), feat/document-readers (2c77fcc) and feat/declared-arg-types (c2cfb89); max over all 23 refs/heads is 88; 87 distinct entries in this branch's file with 84 absent as prose-range only, per §V.0's deliberate RB-P77…RB-P85 skip; commit=c2cfb89; command=for r in $(git for-each-ref --format='%(refname:short)' refs/heads/); do git show $r:docs/eval.md | grep -oE 'RB-P[0-9]+' | sed 's/RB-P//' | sort -n | tail -1; done | sort -rn | head -1 -->
+
+    max over all 23 refs/heads   ->  88     (main, feat/document-readers, this branch)
+
+**`RB-P89` is the next free number and this section mints exactly one entry.** Section letters
+are the same register: `U` is taken on `feat/version-truth` and `V` on this branch and `main`,
+so this is **section W**.
+
+- **`RB-P89` — a must-be-red mutation that changes one string of a two-string contract surface
+  under-reports laundering, and section T's procedure does not catch it, because the procedure
+  checks that a NEW case does not appear in an existing column and never checks that the
+  MUTATION is as wide as the surface its column claims to pin.** `c2cfb89`'s asset carries two
+  strings, a frame (`tool_argument_types`) and an item (`tool_argument_type`), and its `M5`
+  reworded the frame. Reworded the *frame*, 4 nodes redden and every one names its reason:
+  three carry `verbatim`, the fourth is the byte golden. Reworded the *item* instead, **a fifth
+  node reddens — `test_a_wrong_typed_declared_argument_is_reported_rather_than_dropped`, whose
+  name promises a claim about dropping and whose last line asserts the item string verbatim
+  (`test_agent.py:842`).**
+
+  <!-- provenance: value=M5 frame rewording 4 new red nodes; the same mutant applied to the item string instead 5 new red nodes, the fifth being test_agent.py::test_a_wrong_typed_declared_argument_is_reported_rather_than_dropped; both measured against the same baseline failure set and both reverted to it; commit=c2cfb89; command=the Z2 mutation script above, re-run with the anchor moved from the tool_argument_types line to the tool_argument_type line of assets/contracts/default.yaml -->
+
+      M5  frame reworded   4 new red   3 named `verbatim` + the byte golden
+      M5  item  reworded   5 new red   the same 4, plus one whose name states a different claim
+
+  **This is the class section S named and section T made a procedure — its fourth instance —
+  and the class does not get a second number**, by the same rule §V.8 applied when it declined
+  to renumber `RB-P53`'s clamp. What is new, and what `RB-P89` is, is that **the procedure is
+  blind here by construction**: the catalogue was re-run with every new case present, every
+  column's membership was checked, and this node still did not appear, because it only reddens
+  under a mutation nobody wrote. **The attack:** a must-be-red catalogue must mutate every
+  string of the surface its nodes assert on, or state which strings it does not mutate and
+  accept that laundering under those is unmeasured — `RB-P51`'s rule, that an unmeasured check
+  is not a passed one, applied to the mutation rather than to the run. **NOT FIXED HERE**, and
+  the reason is ownership, not effort: the node lives in `runtime-py/tests/test_agent.py` and
+  this section owns `docs/eval.md`. The fix is one line of naming — the node either carries
+  `verbatim` like its three siblings or asserts on the argument name rather than the item
+  string — and it belongs to the layer that holds the node. **Filed.**
+
+**Three things here get no number, and saying so is the entry.**
+
+1. **The fix itself is an amendment, not a defect.** `RB-P86` named the defect and named the
+   shape of the fix; `c2cfb89` is that shape landed. A record that comes true does not mint a
+   second record.
+2. **The corrected giving-up figure is a handoff correction**, and this document records those
+   as a subsection of the section that caught them (section Q's *"Two figures this section was handed
+   that do NOT reproduce at HEAD"*, section T's *"One thing this unit was handed that does not
+   reproduce"*), never as a register entry. §W.5 is that subsection. **Four times tonight the
+   orchestrator has relayed a figure a unit then had to re-derive**; that is a fact about this
+   shift's handoffs, and the register is for defects in the instrument and the bar.
+3. **The third application of the laundering lesson is not a new class.** It is the lesson
+   working, which is the opposite of a finding.
+
+##### W.7 What is NOT claimed
+
+1. **J10's verdict is untouched.** The `3b` was a **declared floor and was never pooled**; §7.8
+   already declines to read its cells, and nothing in this section re-litigates what the three
+   compared tiers measured. No `.jsonl` was regenerated and no committed row is restated.
+2. **This does not make the `3b` usable.** It makes one failure mode legible. Whether a 3B can
+   drive a paged reader is **UNMEASURED after this fix and stays UNMEASURED** until someone runs
+   it; a replay of 13 recorded payloads is a statement about what the tool now says, not about
+   what a model would then do with it.
+3. **No live model call was made by this section.** Every figure above comes from committed
+   transcripts, committed assets, and code replayed at two commits.
+4. **Not claimed: that the 13 are the whole of the `3b`'s reader failures.** They are the 13 that
+   read a Python exception. §V.8's U-2 and U-5 readings are unchanged and are not re-derived
+   here.
+
+##### W.8 Gates
+
+<!-- provenance: value=1227 passed, 2 xfailed; commit=c2cfb89; command=.venv/bin/python -m pytest runtime-py/tests -q, in the main checkout on feat/declared-arg-types -->
+
+    .venv/bin/python -m pytest runtime-py/tests -q
+        ->  1227 passed, 2 xfailed        at c2cfb89, unchanged by this section
+
+<!-- provenance: value=All checks passed! on both surfaces; commit=c2cfb89; command=.venv/bin/ruff check runtime-py and .venv/bin/ruff check docs/eval-data -->
+
+    .venv/bin/ruff check runtime-py       ->  All checks passed!
+    .venv/bin/ruff check docs/eval-data   ->  All checks passed!
+
+The same reading with the `PYTHONPATH=$PWD/runtime-py/src` prefix §V.9 insists on is identical
+here, which is what that section predicts for the main checkout and not for a worktree. **This
+section adds no `.py` and no `.jsonl`, so the count is `c2cfb89`'s baseline count and is quoted
+with the commit it was measured at.** The `+17` this fix added to the suite is `c2cfb89`'s
+figure, measured against `39f7aaf` in that commit's own message, and is not restated here.
+
+`amendguard check . 39f7aaf..HEAD tools/amendguard/ledger.json` reports **UNMEASURED** at
+`c2cfb89` — no amend-only path changed in that range — and this section is the first change to
+`docs/eval.md` on this branch, so it is the row the checker measures. It is written to be an
+insertion and nothing else: no committed line above is rewritten, deleted, or renumbered.
+
 Back to the [README](../README.md).

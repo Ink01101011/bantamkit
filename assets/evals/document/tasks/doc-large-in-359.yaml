@@ -1,0 +1,44 @@
+# PRE-REGISTERED by docs/eval-data/2026-08-20-document-read-bar.md, before any arm ran.
+# `expected` was READ OUT OF the generated document (the same slice `answers:` names),
+# never hand-written: the bar's gate G-1 rebuilds the fixture and fails the run if the
+# two ever disagree.
+# Cell LARGE-IN. Corpus `inventory.xlsx`, 12,000 data rows, 258,129 extracted bytes
+# (~64,532 est. tokens, 1.97x WORKER_NUM_CTX). The answer's data row is <= 400, so it
+# sits INSIDE the head truncation (8,621 B = rendered rows 0..400). The `paste` arm CAN
+# answer here. This is the cell that can refute the reader.
+#
+# REPLACES doc-large-in-529 under Amendment 1 (2026-08-20, bar section 12). 529 was picked
+# as the near-the-cut IN row when the cut was at data row 570, i.e. 41 rows inside it.
+# Amendment 1 re-sized PASTE_MAX_BYTES 12,288 -> 8,621 on a MEASURED bytes-per-token ratio
+# and the cut moved to data row 400, which put 529 OUTSIDE. This row is the same design
+# element re-derived at the new boundary: 400 - 359 = 41, the identical offset, so a
+# boundary-effect failure still has somewhere to show. The corpus, the seed, the columns,
+# the prompt shape and the scoring are byte-identical to the row it replaces.
+name: doc-large-in-359
+family: document-read
+tools: []
+document_setup:
+  - path: inventory.xlsx
+    seed: 4021
+    sheets:
+      - name: stock
+        rows: 12000
+        columns:
+          - {name: sku, kind: key, prefix: 'SKU-', width: 6}
+          - {name: region, kind: choice, values: [north, south, east, west]}
+          - {name: units, kind: int, low: 1000, high: 9999}
+    answers:
+      question_sku: stock!A360
+      expected_region: stock!B360
+      expected_units: stock!C360
+prompt: >-
+  A workbook is attached to this task. Its sheet `stock` has the columns sku, region
+  and units, one row per sku. Find the single row whose sku is exactly SKU-000359 and
+  report that row's region and units. Do not compute anything and do not summarise the
+  sheet; read the one row. Answer with ONLY this JSON, nothing else:
+  {"region": "<region>", "units": <integer>}
+scoring:
+  kind: json_equal
+  expected:
+    region: south
+    units: 1187

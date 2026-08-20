@@ -1,0 +1,818 @@
+# Pre-registered bar: does a paged document reader buy anything a truncated paste cannot?
+
+**Dated 2026-08-20. Status: PRE-REGISTERED. No arm has run. No model has been called by this
+job at any point. No `ollama` generate/chat request has been issued. Every number below is a
+property of an instrument, a declaration or a file on disk — none is an outcome of the question
+this bar asks.**
+
+This artifact is **amended, never rewritten** (RB-P50, J7 precedent). If something below turns
+out wrong, a dated amendment goes in §12 and the original text stays exactly as it is.
+
+X4 of job `job19-document-readers`. The mechanism this bar grades is the reader pair
+`assets/tools/document_list.json` + `assets/tools/document_read.json` at commit `f92d5ad`, over
+the `document_setup:` fixture generator at `b298de5` and the `docread` extraction at `3f971e9`.
+
+---
+
+## 0. Disclosure, before anything else
+
+1. **Every figure handed to this unit was re-derived.** §11 lists what reproduced, what
+   reproduced only under a different command than the obvious one, and the one figure in the
+   brief that is a rounding of a different number. Two things the brief did **not** say are
+   recorded there as findings, and one of them (§11.4) changes what the harness has to do
+   before a single run is legal.
+2. **`bare` is not this bar's control and is not reported as one.** §1.2 states what it *is*
+   for, which is narrower and load-bearing.
+3. **The axis is CAPABILITY, not token saving.** The reader costs tokens; it does not save
+   them. §4 pre-registers the cost report anyway, and pre-registers that the two axes are
+   reported together and never netted into a ratio (J6 died on a netted ratio; J7 §4 is the
+   precedent for refusing to net).
+4. **Video is out of scope, refuted by `.shiftwork/probes/J10-PREP-readers.md` Q2. PDF is out
+   of scope, deferred by the same probe.** Nothing here measures either, and no result here may
+   be cited about either.
+5. **The corpus is GENERATED, and the probe's real-file corpus figures are unverified.** X1
+   recorded that none of the six real `.xlsx`/`.docx` the probe named is locatable by a second
+   party. This bar therefore plans nothing on them and claims nothing about them (§7).
+
+---
+
+## 1. The arms, and the defence of the arm set
+
+### 1.1 The three arms
+
+| arm | config name | corpus reaches the model by | reader tools |
+|---|---|---|---|
+| **reader** | `reader` | two paged tools, on demand | `document_list`, `document_read` |
+| **paste** | `paste` | the head of the rendering, in the system prompt, capped at **PASTE_MAX_BYTES = 12,288 B**, cut on a row boundary | none |
+| **floor** | `bare` | not at all | none |
+
+`reader` exists at `f92d5ad` (`READER_CONFIGS = {"reader": "bare"}`, `evalrun.py:180`). `bare`
+exists. **`paste` does not exist and landing it is a precondition of the run** — §10.2 states
+its contract exactly, so that landing it is transcription and not design.
+
+### 1.2 Why `bare` is in the set and why it is NOT the control
+
+`bare` registers no reader and receives no corpus, so it **cannot open an `.xlsx` at all**. An
+experiment whose only control is a floor can only discover that zero is less than something.
+That is J4's shape and this bar refuses it.
+
+What `bare` *is* here is a **contamination detector, and it is the only one available.** The
+answer is a `(region, units)` pair drawn from 4 regions × 9,000 integers, so a run that has
+never seen the corpus has a **1 in 36,000** chance of guessing it. **Any `bare` pass is
+therefore evidence that the answer reached the model by some path other than the corpus**, and
+§6 V-3 makes that finding VOID the task for every arm. A floor that can fire is worth keeping;
+a floor reported as a comparison is not.
+
+### 1.3 Why `paste` is the real comparison, and why the truncation is honest
+
+J4's argument was *"paste the corpus into the prompt instead of offering a tool to search
+it"*, and it killed the finder axis. That argument has a precondition the probe stated and J4
+never did: **the corpus must fit.** `inventory.xlsx` extracts to 258,129 B ≈ 64,532 est. tokens
+= **1.97× WORKER_NUM_CTX (32,768)** (§2), and at the served window this job actually runs
+against (**8,192**, §10.1) it is **7.88×** over. So the paste that J4 would have run is
+unconstructible, and the arm that replaces it is *as much of the rendering as fits* — which on
+the large corpus is **incomplete by construction**.
+
+This is the arm the reader competes with in the world. It is not a strawman: it is what a
+practitioner with no reader tool actually does, and on the small corpus (§1.4) it is a
+**complete** paste that the reader has to beat on level ground.
+
+### 1.4 One paste rule, two corpora — and why that is the whole design
+
+**PASTE_MAX_BYTES = 12,288 is one constant applied identically to both corpora.** It is not
+tuned per corpus and there is no arm-specific special case:
+
+| corpus | rendered bytes | paste keeps | paste is |
+|---|---:|---|---|
+| `inventory-small.xlsx` (400 data rows) | 8,621 (incl. newlines) | **all 401 rendered rows** | **COMPLETE** |
+| `inventory.xlsx` (12,000 data rows) | 258,130 (incl. newlines) | rendered rows **0–570** = header + data rows **1–570**, 12,277 B | **TRUNCATED at 4.7579% of rows** |
+
+Measured, not assumed: at a 12,288 B head cut on a row boundary the large corpus keeps **571
+rendered rows / 12,001 = 4.7579%** and the first EXCLUDED rendered index is **571**, i.e. **data
+row 570 is the last one inside**. The small corpus needs 8,621 B and so is kept whole.
+
+The small corpus **shares the seed, the sheet name and the columns** with the large one and
+differs only in row count, so it is a **literal prefix** of it — re-derived in §2. That gives
+the design its sharpest cell: **`doc-small-137` and `doc-large-in-137` ask the identical
+question and have the identical answer (`SKU-000137` → `east` / `7726`)**, and differ only in
+whether the corpus is 0.07× or 1.97× the window. Any gap between those two cells is corpus size
+and nothing else.
+
+---
+
+## 2. The corpus, re-derived at `f92d5ad` in this worktree
+
+Command: `materialise_documents` from `runtime-py/src/bantamkit/evalrun.py` imported from this
+worktree (`__file__` printed and inside the worktree), on the declarations committed in
+`runtime-py/tests/test_document_setup.py`.
+
+| fixture | file bytes | extracted | est. tokens (`bytes // 4`) | × 32,768 | rendered rows | sha256 |
+|---|---:|---:|---:|---:|---:|---|
+| `inventory.xlsx` | 1,883,561 | **258,129** | **64,532** | **1.9694×** | 12,001 | `1d97571e…` |
+| `inventory-small.xlsx` | 62,436 | **8,620** | **2,155** | **0.0658×** | 401 | `3fcca5c0…` |
+
+**Both reproduce.** The brief's `1.97×` and `0.07×` are roundings of `1.9694` and `0.0658`.
+
+**The prefix claim reproduces**, by the check that actually tests it: the small corpus's
+rendered text is a literal prefix of the large one's (`big_text.startswith(small_text)` → True;
+8,620 B is the first 8,620 B of 258,129 B). A naive `big.rows[:401] == list(small.rows)`
+returns **False** and means nothing — `Part.rows` is a tuple, so the comparison fails on type.
+Recorded because the wrong check here would have silently retracted a true claim.
+
+**The invariant holds: `inventory.xlsx` at 64,532 est. tokens EXCEEDS the 32,768 worker window
+by 1.97×, and exceeds the 8,192 window this job is served at by 7.88×.** Six of the nine tasks
+use it. If it did not, this job would have rebuilt J4 and would have to die the same way.
+
+---
+
+## 3. The tasks — LOOKUP, never aggregation, and every answer's position declared
+
+Nine tasks, committed at `assets/evals/document/tasks/*.yaml`, family **`document-read`**.
+
+**They live in their own directory, not in `assets/evals/tasks/`, and that is not a
+preference.** `assets/evals/devteam/tasks/` is the committed precedent for a task set outside
+the frozen suite. Adding to `assets/evals/tasks/` would turn two committed tests red — see
+§11.5.
+
+**Every task is a single-row LOOKUP.** The prompt is byte-identical across all nine except for
+the SKU, and it says *"Do not compute anything and do not summarise the sheet; read the one
+row."* An aggregation task would measure small-model arithmetic and report it as reader
+quality (probe Q1, X1's finding). There is no sum, no count, no max and no filter anywhere in
+this task set.
+
+| task | corpus | data row | address | position vs the 12,288 B boundary | expected |
+|---|---|---:|---|---|---|
+| `doc-small-137` | small | 137 | `stock!C138` | **complete paste** (whole corpus in) | `east` / `7726` |
+| `doc-small-261` | small | 261 | `stock!C262` | complete paste | `south` / `3788` |
+| `doc-small-388` | small | 388 | `stock!C389` | complete paste | `east` / `5208` |
+| `doc-large-in-137` | large | 137 | `stock!C138` | **INSIDE** (137 ≤ 570) | `east` / `7726` |
+| `doc-large-in-372` | large | 372 | `stock!C373` | INSIDE | `south` / `7796` |
+| `doc-large-in-529` | large | 529 | `stock!C530` | INSIDE, 41 rows from the cut | `west` / `6982` |
+| `doc-large-out-4137` | large | 4137 | `stock!C4138` | **OUTSIDE** | `north` / `7508` |
+| `doc-large-out-8022` | large | 8022 | `stock!C8023` | OUTSIDE | `south` / `8935` |
+| `doc-large-out-11764` | large | 11764 | `stock!C11765` | OUTSIDE, 236 rows from the end | `south` / `7509` |
+
+Scoring is **`json_equal`** on `{"region": <str>, "units": <int>}` for all nine — exact
+structural equality, no judge, no substring.
+
+### 3.1 How the answer's position was chosen — the rule, fixed before any result exists
+
+**A proportional draw was considered and REJECTED, with its arithmetic.** If answer rows were
+drawn uniformly from the corpus, P(inside) = the coverage fraction = **0.047579**. Over 6 large
+tasks that is **0.29 tasks inside — i.e. zero**, and a design with zero IN cells is a design in
+which the paste arm scores 0 by construction. That would have rebuilt the floor with extra
+steps and would have made the run unable to refute anything.
+
+**So the position is a STRATIFIED, BALANCED factor, not a sample:** on the large corpus,
+**exactly 3 tasks INSIDE and exactly 3 tasks OUTSIDE**, and every result is reported **per
+stratum**.
+
+- The **OUT stratum** asks: does the reader recover what truncation lost? The paste arm's
+  ceiling there is 0 by construction. This cell carries the job's claim.
+- The **IN stratum** asks: where paste *can* answer, does the reader still match it? **This is
+  the cell that can refute the reader** — if the reader loses on rows a paste can see, the tool
+  costs competence rather than buying it. Without this stratum the experiment cannot lose.
+- The **SMALL cell** asks: with a complete paste and a corpus that fits, is the model capable
+  of the task at all? It is what separates *"the reader is useless"* from *"the model is"*.
+
+**Any corpus-weighted single number is pre-registered here or it is not computed at all:**
+weights **w_out = 0.952421, w_in = 0.047579**, i.e. the true coverage fraction from §1.4. It is
+declared now so that nobody can pick it later, and §5 states that the per-stratum figures are
+the headline and the weighted number is never reported alone.
+
+Positions within a stratum were fixed by re-derivation before any arm existed and are not
+adjustable: `137` because it is the one row that exists identically in both corpora; `529`
+because it is deliberately near the cut (41 rows inside), so a boundary-effect failure has
+somewhere to show; `11764` because it is deep and near the end, where a blind pager runs out of
+turns.
+
+---
+
+## 4. The cost axis, pre-registered before it can be chosen
+
+**The reported cost is `TaskResult.context_bytes_sent`** — the harness's own sum of
+`request_wire_bytes(messages, tools)` over every request (`evalrun.py:297`), reported as the
+**median per (tier, arm, stratum)**, in bytes.
+
+**It is NOT the token column, and the reason is measured.** The eval client posts to the
+OpenAI-compatible `/v1` route and sends `{model, messages, tools?, seed?, response_format?}`
+with **no `num_ctx` and no `options`** (`client.py:243-249`). RB-P53 measured that on that
+route `usage.prompt_tokens` is **clamped to the context window** and returns silently and
+green. The paste arm is the one arm that runs near the window. **Its token column would
+therefore be a reading of the window, not of the prompt** — so the token column is not this
+bar's cost axis and no arm's cost is quoted in tokens from it.
+
+**The comparison reported is exactly this, and no other:**
+
+1. `context_bytes_sent`, median, per (tier, arm, stratum) — the whole axis.
+2. The reader's roster share stated separately as **1,414 B/request × `model_calls`**
+   (re-derived, §11.2), so the fixed cost of *offering* the pair is visible next to the
+   variable cost of *using* it.
+3. The paste's corpus share stated separately as **12,288 B × `model_calls`**, because the
+   system prompt is re-sent on every request. That is the prefix-resend cost and it is the
+   reason a paste is not "the corpus once".
+
+**Pre-registered arithmetic that is not a result** (both measured off the tools at `f92d5ad`,
+against `doc-large-out-4137`): one `document_list` observation is **217 B**; one
+`document_read` page at the default limit is **1,487 B**. So an ideal two-call solve exposes
+**1,704 B** of corpus, against **12,288 B** for one paste — **13.9%**. This is stated as the
+mechanism's arithmetic, not as a prediction of what any model will do, and it is not a success
+criterion.
+
+**No ratio is netted.** The pass-rate axis and the byte axis are reported side by side. A
+"tokens saved per point of pass rate" figure is refused in advance.
+
+---
+
+## 5. The success criterion and the falsifier, as inequalities with arm names in them
+
+Let `P(arm, stratum)` be the pass rate over matched `(task, repeat)` cells, pooled over the
+three compared tiers (4b/7b/14b — see §8), n = 36 per cell.
+
+### 5.1 CONFIRMED — the reader buys something
+
+**All three must hold:**
+
+- **C1 (the claim).** `P(reader, large-OUT) − P(paste, large-OUT) ≥ 0.30`
+  **and** McNemar exact two-sided **p < 0.05** on the matched cells.
+- **C2 (no harm where paste can see).** `P(reader, large-IN) ≥ P(paste, large-IN) − 0.10`.
+- **C3 (the mechanism, not luck).** `document_list` is called in **≥ 50%** of `reader`-arm
+  runs in the large-OUT stratum (otherwise §6 U-2 fires first and the cell is UNINFORMATIVE
+  rather than confirmed).
+
+### 5.2 REFUTED — the reader buys nothing
+
+**Any one of these is sufficient:**
+
+- **R1.** `P(reader, large-OUT) − P(paste, large-OUT) < 0.10`.
+- **R2.** McNemar exact two-sided **p ≥ 0.05** on large-OUT with a non-UNINFORMATIVE cell —
+  the reader bought nothing detectable at this n, stated as that and not as "no difference".
+- **R3 (the reader costs competence).** `P(reader, large-IN) < P(paste, large-IN) − 0.10`
+  with McNemar **p < 0.05**. The tool made the model worse where the corpus was already
+  visible.
+- **R4 (it was never the corpus).** `P(reader, small) − P(reader, large-OUT) ≥ 0.50` **and**
+  `P(paste, small) ≥ 0.50`. The model can do the task on a corpus that fits and the reader
+  fails to carry it to one that does not — the paging, not the reading, is what failed, and
+  the pair as shipped does not deliver the capability.
+
+### 5.3 The band between them
+
+`0.10 ≤ Δ < 0.30`, or `Δ ≥ 0.30` with `p ≥ 0.05`, is **NEITHER**: recorded as an effect too
+small or too thin to carry a decision at this n, with the observed Δ and p printed. It does not
+promote `reader` into `CONFIGS` and it does not retire the pair.
+
+---
+
+## 6. UNINFORMATIVE, VOID and UNMEASURED — the conditions, so that a run that cannot answer says so by itself
+
+J7's run was UNINFORMATIVE at the measured scope and said so by its own pre-registered rule.
+These are this job's, and **each is a computable predicate over the committed `.jsonl`, decided
+by the rule and not by anybody's reading afterwards.**
+
+### 6.1 UNINFORMATIVE — the cell measured something other than the question
+
+Evaluated **per (tier, arm, stratum) cell**:
+
+- **U-1 — the tool was never reached.** ≥ 50% of `reader`-arm runs in the cell have
+  `outcome == "turns-exhausted"` or `tool_calls == 0`. The cell measured the 10-turn budget.
+- **U-2 — the model never called `document_list`.** `document_list` appears in the transcript
+  of < 50% of `reader`-arm runs in the cell. The manifest is what makes an offset computable
+  rather than searchable (`contract.document_manifest`); a cell that skipped it measured blind
+  paging, which is 240 pages against a 10-turn budget and is the tool's ergonomics reported as
+  the model's competence.
+- **U-3 — every arm at zero.** `P(reader) = P(paste) = P(bare) = 0` in the cell. A floor cannot
+  be told from a ceiling there.
+- **U-4 — format swamped the signal.** `outcome ∈ {malformed-output, schema-exhausted}` in
+  > 30% of runs in the cell. The cell measured JSON emission.
+
+### 6.2 The run-level rule
+
+**The whole run is UNINFORMATIVE if the large-OUT stratum is UNINFORMATIVE for ≥ 2 of the 3
+compared tiers**, because that stratum is the only one that carries the claim. No confirmation
+and no refutation may be reported from a run in that state.
+
+### 6.3 VOID — the row is not a measurement of anything
+
+- **V-1 — window clamp (RB-P53).** For any `paste`-arm run at a tier, if the pre-run
+  calibration of §10.3 measured the paste prompt at **≥ 0.85 × 8,192 = 6,963 tokens**, the
+  `paste` arm is **VOID at that tier** and may not be compared. It is not silently shrunk: a
+  smaller `PASTE_MAX_BYTES` is an amendment to this bar with its own date, never an adjustment.
+- **V-2 — setup failure.** `DocumentSetupError` escapes `run_task` (by design, `evalrun.py`
+  docstring): the corpus was never built, the run is VOID, and the suite must not be reported.
+- **V-3 — contamination.** Any `bare`-arm pass in a cell VOIDs **that task for every arm**. At
+  1 in 36,000 the answer reached the model by a path that is not the corpus, and the arms are
+  no longer comparable on it.
+- **V-4 — transport.** `outcome == "transport-error"`. Re-run permitted; the replacement row
+  carries the same `(task, config, repeat)` key so the pairing survives.
+
+### 6.4 UNMEASURED — named now so it cannot be quietly filled in later
+
+- The **served window of `llama3.2:3b`**. Its Modelfile declares no `num_ctx` (§10.1), so it is
+  served at whatever the daemon defaults to. The 3b is a **declared floor** (§8), so this costs
+  nothing that this bar claims — but the 3b's `paste` arm is **UNMEASURED against a known
+  window** and no 3b paste number may be compared to any other tier's.
+- The **real bytes-per-token ratio of the rendering under each tier's tokenizer.** `bytes // 4`
+  is the repo's estimator and this content is denser than 4 B/token. §10.3 makes measuring it
+  the run's first act.
+
+---
+
+## 7. What is NOT claimed — written now, before the temptation exists
+
+1. **Not claimed: the reader saves tokens.** It costs them: 1,414 B/request forever, plus every
+   page. §4 reports the cost; no line of this bar promises a reduction.
+2. **Not claimed: anything about `.docx`, `.pptx`, `.pdf` or video.** No task here uses any of
+   them. Video is refuted by measurement; PDF is deferred; `.pptx` has no corpus.
+3. **Not claimed: that the reader beats a FINDER.** The pair has no search argument and X3
+   asserted its absence in a test. A result here is about *paged reading*, and says nothing
+   about whether a `find`-shaped primitive would do better, worse or the same.
+4. **Not claimed: anything about real spreadsheets.** The corpus is generated: one sheet, three
+   columns, fixed row width, a key column that is a pure function of the row index. Real
+   workbooks are none of those. The probe's real-file figures (137,861 / 690,945 / 8,247 B) are
+   **single-sourced and unverified** — X1 could not locate any of the six named files — and are
+   not used here.
+5. **Not claimed: a tier comparison.** `run_seed` hashes the model name, so no two tiers share
+   a seed; and as measured today they are not even served at the same window (§10.1). Every
+   cross-tier statement in the result is **descriptive**.
+6. **Not claimed: that `reader` belongs in `CONFIGS`.** It stays calibration-only in
+   `CONFIG_CHOICES` until this bar's own criterion says otherwise. A CONFIRMED result is a
+   *recommendation* to promote, ruled by the user, not an automatic promotion.
+7. **Not claimed: generalisation past the declared budgets.** `max_turns = 10`,
+   `observation_budget = 4096`, `DOCUMENT_PAGE_MAX_BYTES = 3072`,
+   `DOCUMENT_PAGE_ROW_LIMIT = 50`. A different budget is a different experiment.
+8. **Not claimed: that a 3b failure is a reader defect.** The 3b is a declared floor (§8).
+9. **Not claimed: that `bare` is a baseline.** It is a contamination detector (§1.2). Its pass
+   rate is reported and is expected to be 0; a non-zero value is a finding about the *harness*,
+   not about the reader.
+10. **Not claimed: that `PASTE_MAX_BYTES = 12,288` is the best paste.** It is *a* declared
+    paste, sized in §10.2 to fit the served window with margin. A larger window would give a
+    larger paste and a smaller Δ; that dependence is stated, not hidden.
+
+---
+
+## 8. The tiers, the repeats, and the total run count
+
+**Tiers, and the model strings are declared exactly:**
+
+| rung | model | served `num_ctx` (Modelfile, measured today) | role |
+|---|---|---:|---|
+| 4b | `bk-rbp27-qwen3-4b-instruct` | **8192** | compared |
+| 7b | `bk-rbp27-qwen2.5-7b-instruct` | **8192** | compared |
+| 14b | `bk-rbp27-qwen2.5-14b-instruct` | **8192** | compared |
+| 3b | `llama3.2:3b` | **unset → daemon default** | **declared FLOOR, not a target** |
+
+**The rbp27 trio is chosen over the stock tags for one reason and it is not convenience: all
+three pin `num_ctx = 8192` in their Modelfile, so the paste arm is the SAME arm at all three
+tiers.** A ceiling that floats with the model would make `paste` a different arm per rung and
+the comparison would stop being between arms. The stock tags (`qwen3:4b-instruct`,
+`qwen2.5:7b-instruct`, `qwen2.5:14b-instruct`, `llama3.2:3b`) declare **no** `num_ctx` at all —
+measured today with `ollama show --modelfile` — which is exactly the RB-P53 hazard.
+
+**The 3b is a declared floor**, and the ground is committed: `docs/eval.md:7147`, 528 rows per
+tier, 3b **0.2557 (135/528)** against 4b 0.6648, 7b 0.6307, 14b 0.6458, with Fisher two-sided
+3b-vs-7b **p < 0.0001** and 4b/7b/14b mutually **p ≥ 0.2734**. **Re-derived at its source and it
+reproduces.** A 3b failure on this family is predicted here, in advance, and is not a reader
+defect.
+
+**The n, and it is a number this bar is held to:**
+
+- 9 tasks × 3 arms × **R = 4 repeats** × 4 tiers = **432 runs**.
+- Per (tier, arm, stratum) cell: 3 tasks × 4 repeats = **n = 12**.
+- Pooled over the three compared tiers: **n = 36**.
+
+---
+
+## 9. The statistical test, pre-registered
+
+**McNemar exact, two-sided, hand-rolled from `math.comb`.** `scipy` is not in `.venv`
+(verified: `ModuleNotFoundError`), and the exact test is exact rather than asymptotic, which
+matters at n = 12.
+
+**The pairing key is `(task, repeat)` within a tier.** This is available and is not recovered
+by inverting a hash: `run_seed(model, task_name, repeat)` **deliberately excludes `config`**
+(`evalrun.py:966-977`), so every arm of a `(task, repeat)` shares one seed; and as of `8689ac6`
+**`repeat` is a recorded column on `TaskResult`**, so nothing has to be inverted. The precedent
+and the method are committed at `docs/eval.md:7263-7272`.
+
+`p = min(1, 2 · Σ_{i=0..min(b,c)} C(b+c, i) / 2^(b+c))`, where `b` = cells where `reader`
+passed and `paste` failed, `c` = the reverse. Concordant pairs are excluded, which is the
+point of the test.
+
+**The minimum detectable effect, computed before the run:**
+
+| n discordant | split needed for p < 0.05 | p at that split |
+|---|---|---|
+| **12** (per tier) | **≥ 10 of 12 one way** | 0.0386 (9/12 → 0.1460, not significant) |
+| **36** (pooled) | **≥ 25 of 36 one way** | 0.0288 (24/36 → 0.0652, not significant) |
+
+**Pooling across 4b/7b/14b is pre-registered here and its warrant is the committed ladder:**
+those three are one population at n = 528 (Fisher p ≥ 0.2734; paired McNemar p ≥ 0.0567). The
+4b–7b paired p of **0.0567 is at the edge**, so the pooled figure is reported **alongside** the
+three per-tier figures and **never instead of them**. The 3b is never pooled.
+
+**Cross-tier comparisons get no test.** Different seeds and, today, different served windows.
+
+---
+
+## 10. The declared configuration, frozen now
+
+### 10.1 Read at named commits, measured in this worktree
+
+| thing | value | source |
+|---|---|---|
+| reader pair | `document_list` + `document_read` | `f92d5ad` |
+| `document_setup:` generator | as committed | `b298de5` |
+| extraction / paging | `docread.py` | `3f971e9` |
+| `WORKER_NUM_CTX` | **32768** | `docs/eval-data/2026-08-18-loop-harness.py:91` |
+| served window, the three compared tiers | **8192** | `ollama show --modelfile bk-rbp27-*`, measured 2026-08-19 |
+| `max_turns` / `observation_budget` | **10 / 4096** | `profile_default`, default profile |
+| `DOCUMENT_PAGE_ROW_LIMIT` / `MAX_ROWS` / `MAX_BYTES` | **50 / 200 / 3072** | `evalrun.py:778-785` |
+| roster cost of the pair | **1,414 B/request = 353 tok = 3.406% of J7's 10,364-token median call** | re-derived, §11.2 |
+| runtime dependencies | `httpx`, `jsonschema`, `pyyaml` — **three, unchanged** | `runtime-py/pyproject.toml` |
+
+### 10.2 The `paste` arm's contract, so that landing it is transcription
+
+`paste` mirrors `bare` exactly — no schema gate, no critic, no graph, no memory, and **no
+reader tools** — plus one system message, and it is calibration-only in `CONFIG_CHOICES`,
+never in `CONFIGS`, exactly as `reader` is.
+
+1. It materialises the same `document_setup:` fixtures as every other arm (`run_task` already
+   does this unconditionally, per config).
+2. For each fixture, in declaration order, it renders each part as `header + rows` joined by
+   `\n`, in `docread`'s own rendering — **the same bytes `document_read` would return**, so the
+   two arms differ in *delivery*, not in *content*.
+3. It takes the **head** of that text, adding whole rendered rows in order while the running
+   total (each row plus its newline) stays **≤ PASTE_MAX_BYTES = 12,288**. **A row is never cut
+   mid-row**: a half row is a value the model can misread as a whole one.
+4. It states, in the same system message, the part name, the total row count, and **how many
+   rows are shown** — so the model is told the paste is partial rather than left to infer it.
+   A paste that lies about its own completeness is a different, worse arm.
+5. It registers **no tools at all**. `tool_calls` on a `paste` row must be 0.
+
+**Cut from the head, not the tail or the middle**, because a head cut is what every truncating
+consumer does and it makes the boundary a single declared number rather than a policy.
+
+### 10.3 The pre-run gates — run before the first live call, in this order
+
+- **G-1 — the expected value is a slice of the corpus.** For each of the nine tasks, rebuild
+  the fixture and assert `fixture.answers["expected_region"] == scoring.expected["region"]`,
+  `int(fixture.answers["expected_units"]) == scoring.expected["units"]`, and
+  `fixture.answers["question_sku"]` occurs in the prompt. **Landed as a checker, not left as a
+  declaration**: `runtime-py/tests/test_document_tasks.py`, which also pins the stratum split,
+  the truncation boundary, and one corpus per name. Run in this unit: **45 passed**, and **8 of
+  8 mutants killed** rather than grepped (§11.7). It is still listed here because a gate a
+  runner does not know about is a gate that stops being run the day the file is renamed.
+- **G-2 — the served window.** `ollama show --modelfile` for each declared model; the three
+  compared tiers must read `num_ctx 8192`. Any other value is an amendment, not an adjustment.
+- **G-3 — the paste actually fits (RB-P53).** One `/api/generate` call per compared tier with
+  the paste system message and `num_predict=1`, reading **`prompt_eval_count`** — the
+  `/api/generate` counter, never `/v1`'s clamped `usage.prompt_tokens`. Record the measured
+  bytes-per-token ratio. If any tier reads **≥ 6,963**, that tier's `paste` arm is VOID (§6
+  V-1). **This is the run's first act and its three numbers are recorded whatever they say.**
+- **G-4 — the floor is a floor.** `bare` over all nine tasks at one tier, before the ladder. A
+  pass here is V-3 and stops the run.
+
+### 10.4 The command
+
+```
+python -m bantamkit.evalrun --base-url <ollama>/v1 --model <declared model> \
+  --tasks assets/evals/document/tasks \
+  --config bare --config paste --config reader \
+  --repeats 4 --json <artifact>.jsonl --transcripts <dir>
+```
+
+One `.jsonl` per tier under `docs/eval-data/`, named for the date and the tier. Transcripts are
+kept: U-2 is only decidable from them.
+
+---
+
+## 11. What of the brief and the prior units did NOT reproduce, or reproduced only under a different command
+
+### 11.1 The corpus figures — reproduce (§2)
+
+`1.97×` and `0.07×` are roundings of `1.9694` and `0.0658`. The prefix claim reproduces under
+the text comparison and appears to FAIL under the obvious row-list comparison, for a type
+reason (§2).
+
+### 11.2 The roster price — reproduces, but NOT by the obvious command
+
+The brief's **1,414 B = 353 tok = 3.41%** reproduces exactly: `request_wire_bytes([], pair) −
+request_wire_bytes([], None)` = **1414**, `1414 // 4` = **353**, `353 / 10364` = **3.406%**.
+
+**The obvious command gives a different number.** Summing `len(json.dumps(tool.to_wire()))`
+over the two tools gives **1,399** (430 + 969) — it misses the `"tools"` key, the brackets and
+the separator that the request actually carries. This is the same class of error the probe
+already recorded for `file_graph` (265 B on disk vs 290 B on the wire) and that X3 found inside
+a *correction* about number hygiene. **Anyone re-deriving 1,414 by summing tool objects will
+get 1,399 and will think the figure moved.**
+
+### 11.3 The 3b floor — reproduces at its source
+
+`docs/eval.md:7147`: 3b **0.2557 (135/528)**, 528 rows, and the Fisher figures that make the
+other three one population, are all present as the brief describes.
+
+### 11.4 **FINDING — `answers:` is resolved, recorded, and consumed by NOTHING**
+
+`materialise_documents` validates each answer address, reads the value **out of the document it
+just built**, and stores it on `DocumentFixture.answers` (`evalrun.py:751-754`). **`run_task`
+never reads it.** The only use of `document_fixtures` in `run_task` is the tool-registration
+gate at `evalrun.py:1110`. Nothing substitutes an answer into the prompt and nothing
+substitutes it into `scoring.expected`.
+
+**Consequence:** a committed task's `expected` is a hand-written literal that the harness never
+checks against the corpus — which is precisely the drift X2's design was built to make
+impossible, reintroduced one layer up. The nine tasks here carry values **derived from the
+generator and verified against it**, and that verification is now a committed checker
+(`runtime-py/tests/test_document_tasks.py`), not a sentence in this file.
+
+**The finding stands anyway, and is NOT closed by that checker.** The checker guards *these
+nine* tasks. The harness still has no path from `DocumentFixture.answers` to a prompt or to
+`scoring.expected`, so the next `document_setup:` task written by anybody re-enters the same
+hole. Wiring substitution into `run_task` is a harness change, above this unit's layer, and is
+left open.
+
+### 11.5 **FINDING — the brief's "no enum to extend" is true of the harness and FALSE of the suite**
+
+`family` is free-form in `evalrun.py` (missing → `EvalConfigError`, value never checked), and
+`assets/evals/devteam/tasks/` ships `dev-repo-code` / `dev-repo-history`, neither of which is in
+any enum. **But `assets/evals/tasks/` is guarded:** `test_conformance.py:18` pins
+`FAMILIES = {structured-extraction, tool-use, memory-recall, file-nav}` and line 59 asserts
+membership, and `test_criticreplay.py::test_the_frozen_suite_is_still_the_twenty_two_prompts_these_tables_cover`
+asserts `len(_frozen_prompts()) == 22` over that same glob. **Putting these nine tasks in
+`assets/evals/tasks/` would have turned both red** — the second one for a reason that has
+nothing to do with families. They are in `assets/evals/document/tasks/`, following the devteam
+precedent, and the frozen suite is untouched.
+
+### 11.6 **FINDING — the stock tier tags declare no `num_ctx`, and the eval client sends none either**
+
+Measured today: `qwen3:4b-instruct`, `qwen2.5:7b-instruct`, `qwen2.5:14b-instruct` and
+`llama3.2:3b` all have **no `PARAMETER num_ctx`** in their Modelfile; only the `bk-rbp27-*`
+trio (8192) and `bk-j7-*` (32768) pin one. And `OpenAICompatible` sends no `options` and no
+`num_ctx` (`client.py:243-249`). Under RB-P53 that combination is a **silent, green clamp**,
+and it is the reason §8 declares the rbp27 trio and §10.3 makes G-3 the run's first act.
+`ollama show`'s "context length" (262144 / 131072 / 32768) is the **architecture maximum**, not
+the served window, and must not be read as one.
+
+### 11.7 The gate this unit landed, measured by mutation rather than by reading
+
+`runtime-py/tests/test_document_tasks.py`: **45 nodes, all green at this commit.** Non-vacuity
+was measured, not asserted — **8 of 8 mutants go red**:
+
+| # | mutant | nodes red |
+|---|---|---:|
+| M1 | one committed `expected.units` flipped 7508 → 7509 | 1 |
+| M2 | one task's `seed:` moved 4021 → 4022 | 1 |
+| M3 | a `large-out` answer address moved inside the boundary (4138 → 138) | 3 |
+| M4 | `answers:` addresses made to span two rows (`B4139` with `C4138`) | 2 |
+| M5 | one task's corpus shrunk 12,000 → 11,000 rows | 1 |
+| M6 | a lookup prompt turned into an aggregation | 1 |
+| M7 | this bar file deleted | 1 |
+| M8 | one column's `low:` moved 1000 → 1001 | 2 |
+
+**Two of them were found by measuring, not by writing.** M5 originally **SURVIVED** — the
+stratum still resolved, the boundary check found a 12,000-row task in another file, and the
+corpus still exceeded the window — which is what added
+`test_one_corpus_per_name_across_every_task_that_declares_it`. And the aggregation check was
+first written as a substring test, which **reddened 9 of 9 tasks** on the word `sum` inside the
+prompt's own instruction *"do not summarise the sheet"*; it is a word-boundary test now, and
+the reason is in its docstring.
+
+### 11.8 Nothing else failed to reproduce
+
+`WORKER_NUM_CTX = 32768` at `docs/eval-data/2026-08-18-loop-harness.py:91`: reproduces. Three
+runtime dependencies: unchanged. `run_seed` excludes `config`: confirmed in source. `repeat` is
+a recorded column: confirmed at `8689ac6`.
+
+---
+
+## 12. Amendments
+
+None. This section exists so that the first one has somewhere to go that is not this text.
+
+## Amendment 1 — 2026-08-20
+
+**Status: still PRE-REGISTERED. No graded arm has run.** X5 (`19ceffa`) landed `paste` and ran
+the mandatory smoke pass; this amendment is written on what that pass MEASURED, before a single
+row of the sweep exists. What is forbidden is amending after seeing a *result*; what is
+required is not running a sweep that this document's own rules VOID. Everything above this
+heading is the text as pre-registered and is not edited — where a number below supersedes one
+above, both are readable and the older one is the one that was wrong.
+
+Written by X5B. Every figure here was re-measured in the worktree at
+`feat/document-readers`; §A.4 lists what of X5's report did not reproduce.
+
+### A.1 The estimator is no longer UNMEASURED, and it was 2.83–2.91× wrong
+
+§6.4 named `bytes // 4` as UNMEASURED. It is measured now. Command (G-3's own instrument —
+`/api/generate`, `num_predict=1`, reading `prompt_eval_count`, never `/v1`'s clamped
+`usage.prompt_tokens`), one call per (tier, corpus, reading):
+
+```
+POST http://localhost:11434/api/generate
+{"model": <tier>, "prompt": <the paste system message>, "stream": false,
+ "options": {"num_predict": 1}}   -> response["prompt_eval_count"]
+```
+
+At the **pre-registered** `PASTE_MAX_BYTES = 12,288`, on the paste system message alone:
+
+| tier | corpus | prompt B | `bytes // 4` | measured `prompt_eval_count` | V-1 (≥ 6,963) |
+|---|---|---:|---:|---:|---|
+| 4b | large | 12,672 | 3,168 | **8,192** | **VOID** |
+| 7b | large | 12,672 | 3,168 | **8,192** | **VOID** |
+| 14b | large | 12,672 | 3,168 | **8,192** | **VOID** |
+| 4b | small | 8,962 | 2,240 | 6,511 | ok |
+| 7b / 14b | small | 8,962 | 2,240 | 6,532 | ok |
+
+Every large reading is **exactly 8,192 on both counters — clamped**. The true prompt therefore
+EXCEEDS the served window: the `paste` arm was already being truncated server-side, silently
+and green, which is RB-P53's failure mode. **V-1 fires at all three compared tiers, `paste` is
+uncomparable, and C1, C2, R1 and R3 are uncomputable. A sweep run in that state measures
+nothing.** That is the whole warrant for this amendment.
+
+**The measured ratio, off the unclamped readings only:** **1.372–1.379 B/token** for the paste
+system message and **1.408–1.415 B/token** for the message plus the task prompt. So `bytes // 4`
+under-counts this content by **2.83–2.91×** (4 ÷ 1.415 … 4 ÷ 1.372). No token figure in this bar
+may be computed from `bytes // 4` again; §2's `est. tokens` column stays as the *file property*
+it always was and is not a claim about any tokenizer.
+
+### A.2 V-1's scope, resolved: per **(tier, corpus)**, and G-3 is six calls, not three
+
+X5 recorded the ambiguity and correctly refused to resolve it. Resolved here, before it can be
+chosen to save a cell: **a paste is a per-corpus object** — two corpora produce two different
+system messages, of different sizes, saying different things about their own completeness — so
+the predicate is evaluated per (tier, corpus) and **VOIDs the `paste` arm only for the strata
+drawn from that corpus at that tier** (`small` for `inventory-small.xlsx`; `large-IN` and
+`large-OUT` for `inventory.xlsx`).
+
+**G-3 is amended to six calls**: each compared tier × each corpus. And the calibrated prompt is
+the **system message plus the task prompt** (361 B for all nine tasks; they are byte-identical
+but for the SKU), because that is what the request actually carries — measuring the system
+message alone understates the prompt by 91 tokens. Both readings are recorded below; the
+**request** reading is the one V-1 is evaluated on, which is the stricter of the two.
+
+This resolution is deliberately not load-bearing for the run it precedes: at the amended
+constant **both corpora pass at all three tiers** (§A.3), so no cell survives *because of* the
+reading chosen here.
+
+### A.3 `PASTE_MAX_BYTES = 8,621`, and why that number and not another
+
+The constant is re-sized on the measured ratio. The three constraints of §1.4 and §10.2 are
+unchanged and all three are binding:
+
+1. **one constant over both corpora**, cut on a row boundary — unchanged;
+2. **the small corpus stays whole** — it needs 8,621 B (401 rendered rows), so the constant
+   **cannot go below 8,621**;
+3. the large paste's **measured** `prompt_eval_count` must sit under the served window with a
+   stated margin — which is what caps it from above.
+
+Measured, at the amended constant, in the worktree:
+
+| tier | corpus | rows kept | row B | system B | system `prompt_eval` | +task B | **request `prompt_eval`** |
+|---|---|---:|---:|---:|---:|---:|---:|
+| 4b | large | 401 | 8,621 | 9,016 | 6,536 | 9,379 | **6,627** |
+| 7b | large | 401 | 8,621 | 9,016 | 6,557 | 9,379 | **6,648** |
+| 14b | large | 401 | 8,621 | 9,016 | 6,557 | 9,379 | **6,648** |
+| 4b | small | 401 | 8,621 | 8,962 | 6,511 | 9,325 | **6,602** |
+| 7b | small | 401 | 8,621 | 8,962 | 6,532 | 9,325 | **6,623** |
+| 14b | small | 401 | 8,621 | 8,962 | 6,532 | 9,325 | **6,623** |
+
+**The margin, stated as a number.** Worst reading over all six cells: **6,648 tokens**
+(large, 7b and 14b, request reading).
+
+- against the served window 8,192: **1,544 tokens of headroom, 18.85%**;
+- against V-1's threshold 6,963: **315 tokens, 4.52%**.
+
+**Why not larger.** Measured, not argued: at a cap of **9,088 B** (422 rows) the large paste
+reads **6,963** on the 4b and **6,984** on the 7b — exactly at and over the V-1 threshold. The
+feasible band is roughly 8,621–9,050 B, and every byte of it buys the large paste ~1 row at the
+cost of the margin V-1 exists to protect. **Why not smaller.** Constraint 2: below 8,621 the
+small paste stops being COMPLETE and §1.4's level-ground cell — the one that separates *"the
+reader is useless"* from *"the model is"* — stops existing.
+
+**A consequence worth stating rather than discovering later:** the small corpus is a literal
+prefix of the large one (§2), so at 8,621 B **both pastes carry the identical 401 rendered
+rows**. `doc-small-137` and `doc-large-in-137` now differ in *nothing* but the corpus behind
+them and what the paste says about its own completeness — §1.4's sharpest cell is sharper than
+it was pre-registration, not weaker.
+
+### A.4 The boundary moves, and §1.4's and §3.1's numbers move with it
+
+Re-derived at the amended constant on the built corpus:
+
+| | pre-registered | **Amendment 1** |
+|---|---:|---:|
+| `PASTE_MAX_BYTES` | 12,288 | **8,621** |
+| rendered rows kept, large | 571 | **401** |
+| bytes kept, large | 12,277 | **8,621** |
+| **last data row INSIDE** | 570 | **400** |
+| first rendered index OUTSIDE | 571 | **401** |
+| coverage of the large corpus | 4.7579% | **3.3414%** |
+| §3.1 `w_in` / `w_out` | 0.047579 / 0.952421 | **0.033414 / 0.966586** |
+
+The §3.1 weights are the true coverage fraction by construction, so they move with it; they are
+re-declared here, still before any result, and the rule that the per-stratum figures are the
+headline and the weighted number is never reported alone is unchanged.
+
+§4's pre-registered arithmetic moves too, and is re-derived here rather than rescaled: one
+`document_list` observation is **217 B** (reproduces) and one `document_read` page at the
+default limit is **1,486 B** (the pre-registered figure says 1,487 — see §A.7). So an ideal
+two-call solve exposes **1,703 B** against **8,621 B** for one paste — **19.75%**, where §4 said
+13.9% against the larger paste. The paste's corpus share in §4 becomes **8,621 B × `model_calls`**.
+The roster share is untouched and reproduces exactly: **1,414 B/request = 353 tok = 3.406%**.
+
+### A.5 The task set: one file changed, and the 3/3/3 design is re-established, not patched
+
+At the new boundary `doc-large-in-529` (data row 529 > 400) falls **OUTSIDE**, which would have
+left the design 2 IN / 4 OUT. `doc-large-in-137` (137) and `doc-large-in-372` (372) are both
+still inside and are **unchanged**.
+
+**`doc-large-in-529` is replaced by `doc-large-in-359`.** §3 chose 529 as the near-the-cut IN
+row *because* it sat 41 rows inside the cut, so that a boundary effect would have somewhere to
+show; 359 is the same design element re-derived at the new cut (400 − 359 = 41, the identical
+offset). Corpus, seed, columns, prompt shape and scoring kind are byte-identical to the row it
+replaces; the answer (`south` / `1187`) was read out of the built document by the generator and
+G-1's checker rebuilds it. The other eight task files change only in their header comment, which
+named the old boundary.
+
+The design after the amendment, unchanged in shape: **3 IN / 3 OUT / 3 small**, `doc-small-137`
+and `doc-large-in-137` still the identical question over the two corpora, still nine tasks,
+still `assets/evals/document/tasks/`, still `n = 432`.
+
+| task | data row | stratum, pre-registered | **stratum now** |
+|---|---:|---|---|
+| `doc-small-137` / `-261` / `-388` | 137 / 261 / 388 | small, COMPLETE paste | **small, COMPLETE paste** |
+| `doc-large-in-137` | 137 | IN | **IN** |
+| `doc-large-in-372` | 372 | IN | **IN** |
+| `doc-large-in-529` | 529 | IN, 41 rows from the cut | **withdrawn — now outside** |
+| **`doc-large-in-359`** | 359 | — | **IN, 41 rows from the cut** |
+| `doc-large-out-4137` / `-8022` / `-11764` | 4137 / 8022 / 11764 | OUT | **OUT** |
+
+### A.6 The reader pair could not be called, and that was a defect in the mechanism
+
+X5 measured that **5 of 5 seeds on the 4b** (and 0 of 5 on the 7b) called `document_list` — a
+tool whose schema declares **no properties** — with a spurious `document` argument. The handler
+raised `TypeError`; the dispatcher formatted its own sentence and interpolated the exception, so
+the model was handed
+`error: document_list failed: _document_tools.<locals>.list_documents() got an unexpected
+keyword argument 'document'`. Three of four smoke repeats then answered *"I'm unable to access
+the workbook"* and scored 0.
+
+**This bar grades whether a paged reader helps. A reader whose describe call cannot be invoked
+is not the thing being graded**, and the reading it would have produced — that the 4b cannot use
+the pair — would have been a reading of a handler signature. Two defects, fixed in the layer
+each belongs to:
+
+1. **Robustness — Layer 1 (`agent.py`).** `select_declared_arguments` drops arguments a tool's
+   schema does not declare, before the handler is called; `handler_accepts` binds the handler's
+   signature without calling it, so an argument-shaped mismatch never becomes a raised
+   `TypeError`. Ignoring an undeclared key rather than lecturing about it is deliberate: the
+   tool has no way to act on it, and the alternative spends one of ten turns saying so.
+2. **The leak — Layer 2 (`contract.py` + `assets/contracts/default.yaml`).** The dispatcher's
+   two model-facing sentences were owned by no contract asset and pinned by no golden.
+   `tool_failed` (byte-identical to the wording it replaces) and `tool_arguments` /
+   `tool_arguments_none` now live in the asset with goldens in `test_layers.py`, and the
+   argument-shaped failures are settled before the handler runs — so a `{detail}` reaching the
+   model is a handler's own sentence and not a signature fragment.
+
+**§6's U-2 does not catch this**, because `document_list` *is* in the transcript; it just fails.
+Amended, so that the next run cannot mistake a crashing tool for a model that chose not to call
+it:
+
+- **U-2 (amended).** *The model never SUCCESSFULLY called `document_list`.* A `document_list`
+  entry whose observation begins with `error:` does not count as a call. Threshold unchanged:
+  < 50% of `reader`-arm runs in the cell.
+- **U-5 (new) — the tool crashed rather than answered.** A tool observation ending in
+  `fix the arguments and retry.` (the dispatcher's own sentence, and the only observation in
+  the harness that ends that way — a reader's own errors are `document_unknown` and friends and
+  do not) in **> 10%** of `reader`-arm runs in a cell makes that cell **UNINFORMATIVE**, and the
+  defect is reported as a defect. A tool that crashed is not a model that declined.
+
+### A.7 What of X5's report did NOT reproduce
+
+1. **The G-3 prompt bytes.** X5 reports 13,035 B (large) and 9,325 B (small); the paste system
+   message alone measures **12,672 B** and **8,962 B**. The difference is 363 B, and it is the
+   task prompt: X5 calibrated the system message **plus the task prompt**, which §10.3's wording
+   ("the paste system message") does not say. Not an error in either direction — the readings
+   are of two different things — and §A.2 resolves which one G-3 means from here.
+2. **The bytes-per-token range.** X5's `1.41–1.59 B/token`: the 1.41 end reproduces exactly
+   (9,325 / 6,602). **The 1.59 end is not a measurement** — it is 12,672 (or 13,035) ÷ 8,192,
+   and 8,192 is the *clamped* counter, so it is a lower bound on the token count and therefore
+   an upper bound on the ratio that no observation supports. The measured range is
+   **1.372–1.415**, and the estimator error is **2.83–2.91×**, not 2.3–2.8×.
+3. **`document_read`'s page size.** §4 pre-registers 1,487 B for one page at the default limit;
+   re-derived at this commit against `doc-large-out-4137` it is **1,486 B**, so the two-call
+   solve is 1,703 B and not 1,704 B. One byte; recorded because §11 recorded the same class of
+   discrepancy for the roster price and the next re-deriver should not think the figure moved.
+4. Everything else reproduced: the two corpus hashes and sizes, 12,001 / 401 rendered rows, the
+   571-row / 12,277 B / 4.7579% cut at the pre-registered constant, the clamp at all three
+   tiers, `document_list` = 217 B, the roster at 1,414 B = 353 tok = 3.406%, and the 4b's
+   spurious `document` argument.
+
+### A.8 What this amendment does NOT change
+
+The arms and their contracts (§1, §10.2 clauses 1–5); the LOOKUP-only rule and the nine tasks'
+prompts; the scorer; **the criterion and the falsifier as inequalities** (§5's C1/C2/C3 and
+R1–R4, thresholds included); the tiers, the repeats and `n = 432` (§8); the test (§9); every
+line of §7's *not claimed* list; and V-2, V-3, V-4. §7.10 is reaffirmed and now has a measured
+number behind it: this is *a* declared paste, and a larger served window would give a larger
+paste and a smaller Δ.

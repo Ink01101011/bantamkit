@@ -1,0 +1,63 @@
+{
+  "task": "doc-large-out-11764",
+  "config": "reader",
+  "repeat": 2,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 967623251,
+  "model": "llama3.2:3b",
+  "output": "{\"sku\":\"SKU-011764\",\"name\":\"\",\"row_index\":0,\"document\":{\"description\":\"File name as document_list reported it; omit if the task has one\",\"type\":\"string\"},\"limit\":{\"description\":\"How many rows; default 50, a byte ceiling may return fewer\",\"type\":\"integer\"},\"offset\":{\"description\":\"Row number of the first row to return\",\"type\":\"integer\"},\"PartNumber\":1,\"part\":[]}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-011764 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_ldmrdi55",
+          "name": "document_read",
+          "arguments": {
+            "document": {
+              "description": "File name as document_list reported it; omit if the task has one",
+              "type": "string"
+            },
+            "limit": {
+              "description": "How many rows; default 50, a byte ceiling may return fewer",
+              "type": "integer"
+            },
+            "offset": {
+              "description": "Row number of the first row to return",
+              "type": "integer"
+            },
+            "part": {
+              "elements": {
+                "description": "Part name as document_list reported it; omit for the first",
+                "type": "string"
+              },
+              "length": 1,
+              "type": "array"
+            }
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "error: document_read failed: unhashable type: 'dict'. fix the arguments and retry.",
+      "tool_calls": [],
+      "tool_call_id": "call_ldmrdi55"
+    },
+    {
+      "role": "assistant",
+      "content": "{\"sku\":\"SKU-011764\",\"name\":\"\",\"row_index\":0,\"document\":{\"description\":\"File name as document_list reported it; omit if the task has one\",\"type\":\"string\"},\"limit\":{\"description\":\"How many rows; default 50, a byte ceiling may return fewer\",\"type\":\"integer\"},\"offset\":{\"description\":\"Row number of the first row to return\",\"type\":\"integer\"},\"PartNumber\":1,\"part\":[]}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "task": "doc-small-388",
+  "config": "reader",
+  "repeat": 2,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 2165187898,
+  "model": "llama3.2:3b",
+  "output": "{\"name\": \"worksheet_find_value\", \"parameters\": {\"sheetName\": \"stock\", \"searchValue\": \"[\\\"SKU-000388\\\"]\"}}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-000388 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "}\n\n {\"name\": \"document_list\", \n \"parameters\": {\"document\":{\"type\":\"string\",\"description\":\"File name; omit if the task has one\"},\"part\":\n\n    [{\"type\":\"string\",\"description\":\"Part name; omitted for the first\"},{\"type\":\"array\",\"description\":\"Worksheet (omitted)\",\"value\":\"\"}],\"header_rows\": \"[1, 0, -1]\",\n\n     {\"type\":\"\",\"description\":\"Column names: sku, region, units\"},\n\n     {\"type\":\"integer\",\"description\":\"Row count in each column; default 10\"}],\n\n \"document\":\"\",\"part\": null}}",
+      "tool_calls": [
+        {
+          "id": "call_dh1vddoo",
+          "name": "document_read",
+          "arguments": {
+            "limit": {}
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "error: '<' not supported between instances of 'dict' and 'int'",
+      "tool_calls": [],
+      "tool_call_id": "call_dh1vddoo"
+    },
+    {
+      "role": "assistant",
+      "content": "{\"name\": \"worksheet_find_value\", \"parameters\": {\"sheetName\": \"stock\", \"searchValue\": \"[\\\"SKU-000388\\\"]\"}}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

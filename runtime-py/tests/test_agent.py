@@ -320,9 +320,19 @@ def test_dispatch_coerces_string_int_before_calling_the_handler():
     assert client.calls[1]["messages"][-1].content == "deploy:10"
 
 
-def test_dispatch_leaves_unconvertible_arguments_to_the_existing_error_path():
+def test_dispatch_names_the_argument_verbatim_when_a_string_will_not_convert_to_its_type():
+    """The handler is not called and the loop does not crash -- unchanged since the coercion
+    landed. What the model READS changed on 2026-08-20 (RB-P86): this node asserted
+    `error: recall failed: <whatever "x" * "many" raises>`, which is CPython describing a
+    sequence, and it now asserts the sentence that names `k` and its declared type. The
+    handler still dies on a str `k` so the no-crash half is still exercised; the
+    handler-raised path itself keeps its coverage in
+    `test_tool_error_is_actionable_observation_not_crash` and in
+    `test_no_dispatch_observation_can_carry_a_python_qualname`. Aligned rather than exempted,
+    the same call Amendment 1 made on the four fixtures its filter surfaced.
+    """
     def handler(query, k=3):
-        return "x" * k  # dies on a str k, exactly as today
+        return "x" * k  # would die on a str k; never reached now
 
     client = FakeClient(
         [
@@ -332,7 +342,10 @@ def test_dispatch_leaves_unconvertible_arguments_to_the_existing_error_path():
     )
     Agent(client=client, tools=[recall_tool(handler)]).run("t")
     obs = client.calls[1]["messages"][-1].content
-    assert obs.startswith("error: recall failed:") and "retry" in obs
+    assert obs == (
+        "error: recall was called with the wrong type of argument. "
+        "k must be type integer, not type string. fix the arguments and retry."
+    )
 
 
 def test_plain_hook_still_gets_two_args_alongside_transcript_hook():
@@ -474,14 +487,14 @@ def test_batch_scope_wraps_the_whole_tool_call_batch():
         [
             assistant(
                 tool_calls=[
-                    call("lookup", {"key": "a"}, id="c1"),
-                    call("lookup", {"key": "b"}, id="c2"),
+                    call("lookup", {"item": "a"}, id="c1"),
+                    call("lookup", {"item": "b"}, id="c2"),
                 ]
             ),
             assistant(content="done"),
         ]
     )
-    agent = Agent(client=client, tools=[lookup_tool(lambda key: events.append(key) or key)])
+    agent = Agent(client=client, tools=[lookup_tool(lambda item: events.append(item) or item)])
     agent.add_batch_scope(_scope_recorder(events, "s"))
     agent.run("t")
     assert events == ["enter-s", "a", "b", "exit-s"]
@@ -491,12 +504,12 @@ def test_batch_scope_is_re_entered_per_turn_and_skipped_on_a_toolless_turn():
     events = []
     client = FakeClient(
         [
-            assistant(tool_calls=[call("lookup", {"key": "a"})]),
-            assistant(tool_calls=[call("lookup", {"key": "b"})]),
+            assistant(tool_calls=[call("lookup", {"item": "a"})]),
+            assistant(tool_calls=[call("lookup", {"item": "b"})]),
             assistant(content="done"),
         ]
     )
-    agent = Agent(client=client, tools=[lookup_tool(lambda key: key)])
+    agent = Agent(client=client, tools=[lookup_tool(lambda item: item)])
     agent.add_batch_scope(_scope_recorder(events, "s"))
     agent.run("t")
     assert events == ["enter-s", "exit-s", "enter-s", "exit-s"]
@@ -506,12 +519,12 @@ def test_batch_scope_exits_even_when_a_handler_explodes():
     events = []
     client = FakeClient(
         [
-            assistant(tool_calls=[call("lookup", {"key": "a"})]),
+            assistant(tool_calls=[call("lookup", {"item": "a"})]),
             assistant(content="done"),
         ]
     )
 
-    def boom(key):
+    def boom(item):
         raise ValueError("nope")
 
     agent = Agent(client=client, tools=[lookup_tool(boom)])
@@ -523,11 +536,11 @@ def test_batch_scope_exits_even_when_a_handler_explodes():
 def test_an_agent_with_no_batch_scope_is_unchanged():
     client = FakeClient(
         [
-            assistant(tool_calls=[call("lookup", {"key": "port"})]),
+            assistant(tool_calls=[call("lookup", {"item": "port"})]),
             assistant(content="5432"),
         ]
     )
-    agent = Agent(client=client, tools=[lookup_tool(lambda key: "5432")])
+    agent = Agent(client=client, tools=[lookup_tool(lambda item: "5432")])
     assert agent.run("t").output == "5432"
     assert client.calls[1]["messages"][-1].content == "5432"
 
@@ -590,3 +603,290 @@ def test_only_the_observations_actually_over_budget_are_counted():
 def test_the_columns_default_to_zero_on_a_hand_built_result():
     result = AgentResult(output="o", messages=[], usage=Usage())
     assert (result.observations_truncated, result.observation_bytes_dropped) == (0, 0)
+
+
+# ---- 2026-08-20: an undeclared argument must not raise, and no qualname may reach the model
+#
+# Measured need, not imagined: X5's smoke pass for job19 found 5 of 5 seeds on the 4b calling
+# `document_list` -- a tool whose schema declares NO properties -- with a spurious `document`
+# argument. `handler(**arguments)` raised TypeError and the dispatcher handed the model
+# `error: document_list failed: _document_tools.<locals>.list_documents() got an unexpected
+# keyword argument 'document'`. Three of four repeats then said they could not access the
+# workbook and scored 0, which would have been recorded as a reader result.
+
+
+def no_argument_tool(handler, name="describe"):
+    return ToolDef(
+        tool=Tool(name=name, description="d", parameters={"type": "object", "properties": {}}),
+        handler=handler,
+    )
+
+
+def test_an_undeclared_argument_is_dropped_and_the_tool_still_answers():
+    """The 4b's exact failure, as a unit: the call succeeds and the model gets the answer."""
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("describe", {"document": "inventory.xlsx"})]),
+            assistant(content="done"),
+        ]
+    )
+    agent = Agent(client=client, tools=[no_argument_tool(lambda: "the manifest")])
+    agent.run("t")
+    assert client.calls[1]["messages"][-1].content == "the manifest"
+
+
+def test_an_undeclared_argument_beside_a_declared_one_keeps_the_declared_one():
+    seen = {}
+
+    def handler(item):
+        seen["item"] = item
+        return "ok"
+
+    client = FakeClient(
+        [
+            assistant(tool_calls=[call("lookup", {"item": "port", "sheet": "stock"})]),
+            assistant(content="done"),
+        ]
+    )
+    Agent(client=client, tools=[lookup_tool(handler)]).run("t")
+    assert seen == {"item": "port"}
+    assert client.calls[1]["messages"][-1].content == "ok"
+
+
+def test_a_tool_that_opens_itself_with_additional_properties_still_gets_everything():
+    """`additionalProperties: true` is a tool saying the schema is not the whole story."""
+    seen = {}
+    tool = ToolDef(
+        tool=Tool(
+            name="anything",
+            description="d",
+            parameters={"type": "object", "properties": {}, "additionalProperties": True},
+        ),
+        handler=lambda **kw: seen.update(kw) or "ok",
+    )
+    client = FakeClient(
+        [assistant(tool_calls=[call("anything", {"x": 1})]), assistant(content="done")]
+    )
+    Agent(client=client, tools=[tool]).run("t")
+    assert seen == {"x": 1}
+
+
+def test_a_missing_declared_argument_names_what_the_tool_takes_and_no_python():
+    """The other half of the argument-shaped TypeErrors: `qualname() missing 1 required
+    positional argument` used to reach the model verbatim. Now the tool's own argument list
+    does, in the contract's words."""
+    client = FakeClient(
+        [assistant(tool_calls=[call("lookup", {})]), assistant(content="done")]
+    )
+    Agent(client=client, tools=[lookup_tool(lambda item: item)]).run("t")
+    observation = client.calls[1]["messages"][-1].content
+    assert observation == (
+        "error: lookup does not take the arguments it was given. it takes: item. "
+        "fix the arguments and retry."
+    )
+
+
+def test_a_tool_that_takes_nothing_says_so_when_it_cannot_be_called():
+    client = FakeClient(
+        [assistant(tool_calls=[call("describe", {"document": "x"})]), assistant(content="done")]
+    )
+    agent = Agent(client=client, tools=[no_argument_tool(lambda required: required)])
+    agent.run("t")
+    assert client.calls[1]["messages"][-1].content == (
+        "error: describe takes no arguments at all. call it with none and retry."
+    )
+
+
+def test_no_dispatch_observation_can_carry_a_python_qualname():
+    """The property, stated over every path a model can drive: undeclared key, missing key,
+    and a handler that raises. `<locals>` and `()` are what a signature TypeError looks like.
+
+    Vacuity-guarded: the same three calls against a dispatcher that formats the exception
+    inline reproduce the leak, which is what `test_layers.py::test_core_purity` now forbids.
+    """
+    calls = [
+        call("describe", {"document": "x"}),
+        call("lookup", {}),
+        call("lookup", {"item": "a"}),
+    ]
+
+    def explode(item):
+        raise RuntimeError("the sheet is unreadable")
+
+    for tc in calls:
+        client = FakeClient([assistant(tool_calls=[tc]), assistant(content="done")])
+        agent = Agent(
+            client=client,
+            tools=[no_argument_tool(lambda: "manifest"), lookup_tool(explode)],
+        )
+        agent.run("t")
+        observation = client.calls[1]["messages"][-1].content
+        assert "<locals>" not in observation
+        assert "unexpected keyword argument" not in observation
+        assert "missing 1 required positional argument" not in observation
+    # and the handler's OWN sentence still reaches the model when a handler really fails
+    assert observation == (
+        "error: lookup failed: the sheet is unreadable. fix the arguments and retry."
+    )
+
+
+# ---- 2026-08-20, RB-P86: a DECLARED argument of the wrong type is the tool's sentence too
+#
+# The sibling of the block above, one layer in. `select_declared_arguments` drops keys the
+# schema does not declare and type-checks nothing, so `llama3.2:3b` -- which emits a
+# JSON-Schema fragment as the VALUE of a declared parameter -- had its dict passed straight
+# through to `docs.get(name)`. J10's 432 graded runs carry 13 observations of
+# `error: document_read failed: unhashable type: 'dict'. fix the arguments and retry.`, all on
+# `document_read`, and all three `3b` reader cells are UNINFORMATIVE on U-5 because of them.
+# Re-derived from the committed transcripts at 2749b70: 0 of the 13 passed and 11 of the 13
+# issued no further tool call of any kind afterwards.
+
+
+def typed_tool(handler, name="page"):
+    """A tool declaring one of every JSON-Schema type this repository's assets use."""
+    return ToolDef(
+        tool=Tool(
+            name=name,
+            description="d",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "document": {"type": "string"},
+                    "offset": {"type": "integer"},
+                    "ratio": {"type": "number"},
+                    "verbose": {"type": "boolean"},
+                    "filters": {"type": "object"},
+                    "columns": {"type": "array"},
+                    "anything": {},
+                },
+            },
+        ),
+        handler=handler,
+    )
+
+
+def _observe(tool, arguments):
+    """One dispatch of `arguments` against `tool`, returning what the model reads."""
+    client = FakeClient(
+        [assistant(tool_calls=[call(tool.tool.name, arguments)]), assistant(content="done")]
+    )
+    Agent(client=client, tools=[tool]).run("t")
+    return client.calls[1]["messages"][-1].content
+
+
+def test_a_schema_fragment_in_a_declared_argument_reads_as_the_contract_sentence_verbatim():
+    """The 3b's exact failure as a unit: no exception text, and the argument is named.
+
+    The payload is the one `reader--doc-small-261--r1` sent, with `document_read`'s declared
+    `document: string` holding `{"description": ..., "type": "string"}`.
+    """
+    observation = _observe(
+        typed_tool(lambda document=None: document),
+        {"document": {"description": " workbook", "type": "string"}},
+    )
+    assert observation == (
+        "error: page was called with the wrong type of argument. "
+        "document must be type string, not type object. fix the arguments and retry."
+    )
+
+
+def test_every_wrong_typed_declared_argument_is_named_in_one_sentence_verbatim():
+    """`reader--doc-large-out-11764--r2` sent four at once. Four names, one sentence, one turn."""
+    observation = _observe(
+        typed_tool(lambda **kw: "ok"),
+        {"document": {"a": 1}, "offset": {"b": 2}, "columns": "sku", "verbose": 1},
+    )
+    assert observation == (
+        "error: page was called with the wrong type of argument. "
+        "columns must be type array, not type string; "
+        "document must be type string, not type object; "
+        "offset must be type integer, not type object; "
+        "verbose must be type boolean, not type integer. fix the arguments and retry."
+    )
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        ({"offset": "4137"}, {"offset": 4137}),  # coerce_arguments still runs first
+        ({"ratio": "0.5"}, {"ratio": 0.5}),
+        ({"verbose": "true"}, {"verbose": True}),
+        ({"document": "inv.xlsx", "offset": 12}, {"document": "inv.xlsx", "offset": 12}),
+        ({"ratio": 3}, {"ratio": 3}),  # JSON Schema: an integer IS a number
+        ({"filters": {"region": "north"}}, {"filters": {"region": "north"}}),
+        ({"columns": ["sku"]}, {"columns": ["sku"]}),
+        ({"anything": {"x": 1}}, {"anything": {"x": 1}}),  # no declared type, nothing to hold it to
+        ({"document": None, "offset": None}, {"document": None, "offset": None}),
+    ],
+)
+def test_an_argument_the_schema_can_accept_reaches_the_handler_untouched(arguments, expected):
+    """The no-op half. A null is the wire spelling of "omitted" and is not a type error:
+    every handler here defaults its arguments to `None` and `_document_int` documents
+    None-as-fallback, so reporting it would break calls that work today."""
+    seen = {}
+    observation = _observe(typed_tool(lambda **kw: seen.update(kw) or "ok"), arguments)
+    assert seen == expected
+    assert observation == "ok"
+
+
+def test_a_wrong_typed_declared_argument_is_reported_rather_than_dropped():
+    """Dropping is right for an UNDECLARED key and wrong here: the schema names this argument,
+    so dropping it hands the model the handler's default as though it had asked for it."""
+    seen = {}
+    observation = _observe(
+        typed_tool(lambda offset=0, **kw: seen.update({"offset": offset}) or f"page {offset}"),
+        {"offset": {"description": "Row number of the first row to return"}},
+    )
+    assert seen == {}, "the handler must not run at all"
+    assert observation != "page 0"
+    assert "offset must be type integer, not type object" in observation
+
+
+def test_an_undeclared_key_is_still_dropped_and_never_reported_as_mistyped():
+    """U-5 at 0/12 in all nine compared cells is Amendment 1's measured behaviour. A key the
+    schema does not declare has no declared type to be wrong about, and is gone before this
+    check sees it -- `reader--doc-large-in-359--r3` sent `document_list` as an argument."""
+    seen = {}
+    observation = _observe(
+        typed_tool(lambda **kw: seen.update(kw) or "the page"),
+        {"offset": "0", "document_list": {"description": "1", "type": "number"}},
+    )
+    assert seen == {"offset": 0}
+    assert observation == "the page"
+
+
+def test_no_dispatch_observation_can_carry_a_python_exception_for_a_declared_argument():
+    """The property, over every declared type the assets use: a tool call the model can issue
+    reaches the model as the tool's own words, and a Python exception's text is never those.
+
+    The BEFORE is not a paraphrase -- `unhashable type: 'dict'` is what a dict does at
+    `docs.get(name)`, and this handler reproduces the same lookup on the same argument.
+    """
+    lookups = {"inventory.xlsx": "the page"}
+
+    def read(document=None, offset=0, ratio=0.0, verbose=False, filters=None, columns=None,
+             anything=None):
+        return lookups.get(document, "no such document")
+
+    fragment = {"description": "stock", "type": "string"}
+    for arguments in (
+        {"document": fragment},
+        {"document": fragment, "offset": fragment, "columns": fragment},
+        {"offset": [4136]},
+        {"verbose": "yes please"},
+        {"columns": {"elements": fragment, "length": 1, "type": "array"}},
+    ):
+        observation = _observe(typed_tool(read), arguments)
+        assert "unhashable type" not in observation, arguments
+        assert "<locals>" not in observation, arguments
+        assert "keyword argument" not in observation, arguments
+        assert "positional argument" not in observation, arguments
+        assert "no such document" not in observation, "the handler must not have run"
+        # Names the argument and the type the SCHEMA declares -- both data off the call and
+        # the schema. The asset's wording is not asserted here; that is
+        # `test_layers.py::test_tool_argument_types_bytes`, so a rewording reddens the golden
+        # and not this node, whose name is about Python text and not about phrasing.
+        for argument in arguments:
+            assert argument in observation, argument
+    # and a well-typed call on the same tool still reaches the handler
+    assert _observe(typed_tool(read), {"document": "inventory.xlsx"}) == "the page"

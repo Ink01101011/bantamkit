@@ -1,0 +1,24 @@
+{
+  "task": "doc-small-388",
+  "config": "bare",
+  "repeat": 2,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 696807514,
+  "model": "bk-rbp27-qwen2.5-14b-instruct",
+  "output": "To provide an accurate answer in the requested format, I would need to access the workbook and extract the specific row with sku SKU-000388 from the sheet named `stock`, then output that data as JSON. Since accessing external files is not possible here, you can input the exact region and units for SKU-000388 based on your own data to receive the desired JSON format here.\n\nHere's how you would frame it once you have those details: \n\n{\"region\": \"US-East\", \"units\": 120} \n\nReplace US-East with the actual region, and adjust '120' per the units quantity of SKU-000388.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-000388 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "To provide an accurate answer in the requested format, I would need to access the workbook and extract the specific row with sku SKU-000388 from the sheet named `stock`, then output that data as JSON. Since accessing external files is not possible here, you can input the exact region and units for SKU-000388 based on your own data to receive the desired JSON format here.\n\nHere's how you would frame it once you have those details: \n\n{\"region\": \"US-East\", \"units\": 120} \n\nReplace US-East with the actual region, and adjust '120' per the units quantity of SKU-000388.",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

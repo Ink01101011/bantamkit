@@ -1,0 +1,24 @@
+{
+  "task": "doc-large-in-359",
+  "config": "bare",
+  "repeat": 3,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 3180378049,
+  "model": "bk-rbp27-qwen2.5-14b-instruct",
+  "output": "To provide an accurate answer, I would need to access the workbook you mentioned and locate the specific row for SKU-000359 in the `stock` sheet. Since I don't have direct access to external files or documents, I can\u2019t pull that data directly here. However, assuming hypothetical values based on common data scenarios:\n\n```json\n{\"region\": \"North America\", \"units\": 42}\n```\n\nYou should replace `<region>` with the actual region and provide the exact number of `units` for SKU-000359 as per your workbook's content.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-000359 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "To provide an accurate answer, I would need to access the workbook you mentioned and locate the specific row for SKU-000359 in the `stock` sheet. Since I don't have direct access to external files or documents, I can\u2019t pull that data directly here. However, assuming hypothetical values based on common data scenarios:\n\n```json\n{\"region\": \"North America\", \"units\": 42}\n```\n\nYou should replace `<region>` with the actual region and provide the exact number of `units` for SKU-000359 as per your workbook's content.",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

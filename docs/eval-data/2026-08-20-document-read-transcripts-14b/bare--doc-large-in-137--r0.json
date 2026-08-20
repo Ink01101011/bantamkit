@@ -1,0 +1,24 @@
+{
+  "task": "doc-large-in-137",
+  "config": "bare",
+  "repeat": 0,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 755643322,
+  "model": "bk-rbp27-qwen2.5-14b-instruct",
+  "output": "To provide an accurate response, I would need to see or access the workbook as mentioned in your query. Since I don't have direct access to files or workbooks, you can manually find the row with `sku` equal to `SKU-000137` in your sheet named `stock`, and then extract the corresponding values for `region` and `units`.\n\nGiven the structure of your request, here is a template of how the answer should look based on an assumed example where SKU-000137 has 'North America' as region and 456 as units:\n\n{\"region\": \"North America\", \"units\": 456}\n\nReplace \"North America\" with the actual region value from your sheet, and replace 456 with the actual unit number. If you can provide this information directly or give me more specific instructions on how to find it within a hypothetical data set, I could help format that into JSON accordingly for you.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-000137 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "To provide an accurate response, I would need to see or access the workbook as mentioned in your query. Since I don't have direct access to files or workbooks, you can manually find the row with `sku` equal to `SKU-000137` in your sheet named `stock`, and then extract the corresponding values for `region` and `units`.\n\nGiven the structure of your request, here is a template of how the answer should look based on an assumed example where SKU-000137 has 'North America' as region and 456 as units:\n\n{\"region\": \"North America\", \"units\": 456}\n\nReplace \"North America\" with the actual region value from your sheet, and replace 456 with the actual unit number. If you can provide this information directly or give me more specific instructions on how to find it within a hypothetical data set, I could help format that into JSON accordingly for you.",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

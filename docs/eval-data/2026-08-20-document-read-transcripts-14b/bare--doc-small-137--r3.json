@@ -1,0 +1,24 @@
+{
+  "task": "doc-small-137",
+  "config": "bare",
+  "repeat": 3,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 3180548191,
+  "model": "bk-rbp27-qwen2.5-14b-instruct",
+  "output": "To answer your request accurately, I would need to access the attached workbook since I cannot view or interact with external files directly. Since a direct interaction isn't possible here, you'll have to manually find the row where `sku` equals `SKU-000137`, then extract and replace `<region>` with its value, and `<integer>` with the corresponding units value.\n\nFor example, if SKU-000137 has a region of \"West\" and 456 units in the sheet:\n{\"region\": \"West\", \"units\": 456}\n\nPlease fill in these values based on the actual content of your file.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-000137 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "To answer your request accurately, I would need to access the attached workbook since I cannot view or interact with external files directly. Since a direct interaction isn't possible here, you'll have to manually find the row where `sku` equals `SKU-000137`, then extract and replace `<region>` with its value, and `<integer>` with the corresponding units value.\n\nFor example, if SKU-000137 has a region of \"West\" and 456 units in the sheet:\n{\"region\": \"West\", \"units\": 456}\n\nPlease fill in these values based on the actual content of your file.",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

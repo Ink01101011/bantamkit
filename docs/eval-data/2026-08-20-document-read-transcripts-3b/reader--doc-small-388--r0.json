@@ -1,0 +1,47 @@
+{
+  "task": "doc-small-388",
+  "config": "reader",
+  "repeat": 0,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 2134532747,
+  "model": "llama3.2:3b",
+  "output": "{\"sheet\": \"stock\", \"csv\": [{\"sku\": \"SKU-000388\", \"region\": \"\", \"units\": \"\"}]}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-000388 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_1hz8aulz",
+          "name": "document_read",
+          "arguments": {
+            "document": "workbook",
+            "limit": 1,
+            "offset": 0,
+            "part": "stock"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "error: no document named workbook; this task has: inventory-small.xlsx",
+      "tool_calls": [],
+      "tool_call_id": "call_1hz8aulz"
+    },
+    {
+      "role": "assistant",
+      "content": "{\"sheet\": \"stock\", \"csv\": [{\"sku\": \"SKU-000388\", \"region\": \"\", \"units\": \"\"}]}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

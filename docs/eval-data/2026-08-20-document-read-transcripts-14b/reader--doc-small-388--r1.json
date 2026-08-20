@@ -1,0 +1,89 @@
+{
+  "task": "doc-small-388",
+  "config": "reader",
+  "repeat": 1,
+  "passed": true,
+  "outcome": "pass",
+  "seed": 889276332,
+  "model": "bk-rbp27-qwen2.5-14b-instruct",
+  "output": "\u0e08\u0e32\u0e01\u0e1c\u0e25\u0e01\u0e32\u0e23\u0e04\u0e49\u0e19\u0e2b\u0e32\u0e40\u0e23\u0e32\u0e1e\u0e1a\u0e27\u0e48\u0e32 SKU-000388 \u0e2d\u0e22\u0e39\u0e48\u0e43\u0e19\u0e41\u0e16\u0e27\u0e17\u0e35\u0e48 388 \u0e41\u0e25\u0e30\u0e15\u0e23\u0e07\u0e15\u0e32\u0e21\u0e23\u0e32\u0e22\u0e25\u0e30\u0e40\u0e2d\u0e35\u0e22\u0e14\u0e15\u0e48\u0e2d\u0e44\u0e1b\u0e19\u0e35\u0e49:\n\n{\"region\": \"east\", \"units\": 5208}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-000388 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "\u9996\u5148\uff0c\u6211\u9700\u8981\u8c03\u7528`document_list`\u51fd\u6570\u6765\u83b7\u53d6\u5173\u4e8e\u5de5\u4f5c\u8868`stock`\u7684\u4fe1\u606f\u3002\u8fd9\u5c06\u5e2e\u52a9\u6211\u4eec\u4e86\u89e3\u8be5\u8868\u683c\u6709\u591a\u5c11\u884c\u6570\u636e\uff0c\u5e76\u786e\u5b9aSKU-000388\u6240\u5728\u7684\u8fd1\u4f3c\u4f4d\u7f6e\u3002\n\n```json\n",
+      "tool_calls": [
+        {
+          "id": "call_t0h7nyug",
+          "name": "document_list",
+          "arguments": {
+            "document": "workbook"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory-small.xlsx (xlsx) part 0 \"stock\": 401 rows, numbered 0 to 400\n  row 0 is the header: sku\tregion\tunits\n  row 1 is the first data row: SKU-000001\tsouth\t2049\n  row 400 is the last data row: SKU-000400\teast\t2621",
+      "tool_calls": [],
+      "tool_call_id": "call_t0h7nyug"
+    },
+    {
+      "role": "assistant",
+      "content": "\u0e42\u0e23\u0e07\u0e1e\u0e22\u0e32\u0e1a\u0e32\u0e1a\u0e32\u0e25\u0e44\u0e21\u0e48\u0e21\u0e35\u0e04\u0e33\u0e16\u0e32\u0e21\u0e2b\u0e23\u0e37\u0e2d\u0e04\u0e33\u0e2a\u0e31\u0e48\u0e07\u0e17\u0e35\u0e48\u0e15\u0e49\u0e2d\u0e07\u0e01\u0e32\u0e23\u0e04\u0e33\u0e15\u0e2d\u0e1a JSON \u0e43\u0e19\u0e23\u0e39\u0e1b\u0e41\u0e1a\u0e1a\u0e40\u0e09\u0e1e\u0e32\u0e30\u0e19\u0e35\u0e49 \u0e14\u0e31\u0e07\u0e19\u0e31\u0e49\u0e19 \u0e40\u0e23\u0e32\u0e2a\u0e32\u0e21\u0e32\u0e23\u0e16\u0e17\u0e33\u0e07\u0e32\u0e19\u0e15\u0e32\u0e21\u0e02\u0e31\u0e49\u0e19\u0e15\u0e2d\u0e19\u0e41\u0e25\u0e30\u0e04\u0e49\u0e19\u0e2b\u0e32 SKU-000388 \u0e43\u0e19\u0e15\u0e32\u0e23\u0e32\u0e07 stock \u0e08\u0e32\u0e01\u0e19\u0e31\u0e49\u0e19\u0e01\u0e25\u0e31\u0e1a\u0e44\u0e1b\u0e43\u0e0a\u0e49 document_read \u0e40\u0e1e\u0e37\u0e48\u0e2d\u0e40\u0e23\u0e35\u0e22\u0e01\u0e41\u0e16\u0e27\u0e40\u0e09\u0e1e\u0e32\u0e30\u0e17\u0e35\u0e48\u0e21\u0e35 SKU-000388\n\n\u0e40\u0e23\u0e32\u0e08\u0e30\u0e1b\u0e23\u0e30\u0e21\u0e32\u0e13\u0e15\u0e33\u0e41\u0e2b\u0e19\u0e48\u0e07\u0e02\u0e2d\u0e07 SKU \u0e15\u0e48\u0e2d\u0e44\u0e1b\u0e14\u0e49\u0e27\u0e22\u0e01\u0e32\u0e23\u0e17\u0e33\u0e04\u0e27\u0e32\u0e21\u0e40\u0e02\u0e49\u0e32\u0e43\u0e08\u0e27\u0e48\u0e32\u0e21\u0e31\u0e19\u0e2d\u0e22\u0e39\u0e48\u0e43\u0e19\u0e0a\u0e48\u0e27\u0e07\u0e44\u0e2b\u0e19 \u0e42\u0e14\u0e22\u0e02\u0e49\u0e2d\u0e21\u0e39\u0e25\u0e40\u0e23\u0e34\u0e48\u0e21\u0e08\u0e32\u0e01 SKU-000001 \u0e41\u0e25\u0e30\u0e2a\u0e38\u0e14\u0e17\u0e49\u0e32\u0e22\u0e04\u0e37\u0e2d SKU-000400. SKU-000388 \u0e08\u0e30\u0e2d\u0e22\u0e39\u0e48\u0e23\u0e30\u0e2b\u0e27\u0e48\u0e32\u0e07\u0e41\u0e16\u0e27 250 \u0e16\u0e36\u0e07 350 (SKU 98-198). \u0e40\u0e23\u0e32\u0e08\u0e30\u0e40\u0e23\u0e35\u0e22\u0e01 document_read \u0e14\u0e49\u0e27\u0e22 offset 250 \u0e41\u0e25\u0e30 limit 100 \u0e40\u0e1e\u0e37\u0e48\u0e2d\u0e2b\u0e32 SKU-000388.\n",
+      "tool_calls": [
+        {
+          "id": "call_eethn5du",
+          "name": "document_read",
+          "arguments": {
+            "limit": 100,
+            "document": "inventory-small.xlsx",
+            "part": "stock",
+            "offset": 250
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory-small.xlsx \"stock\" rows 250-349 of 401; each line below begins with its own row number\n250\tSKU-000250\teast\t4295\n251\tSKU-000251\teast\t3700\n252\tSKU-000252\tsouth\t4691\n253\tSKU-000253\tsouth\t8157\n254\tSKU-000254\tsouth\t4871\n255\tSKU-000255\teast\t4200\n256\tSKU-000256\twest\t1885\n257\tSKU-000257\teast\t6451\n258\tSKU-000258\teast\t1369\n259\tSKU-000259\twest\t4232\n260\tSKU-000260\tsouth\t1767\n261\tSKU-000261\tsouth\t3788\n262\tSKU-000262\twest\t4656\n263\tSKU-000263\tnorth\t5265\n264\tSKU-000264\tnorth\t7065\n265\tSKU-000265\twest\t3181\n266\tSKU-000266\teast\t3714\n267\tSKU-000267\tnorth\t9653\n268\tSKU-000268\tsouth\t1336\n269\tSKU-000269\tsouth\t7178\n270\tSKU-000270\teast\t5963\n271\tSKU-000271\tsouth\t8759\n272\tSKU-000272\twest\t7372\n273\tSKU-000273\tsouth\t7914\n274\tSKU-000274\twest\t9882\n275\tSKU-000275\tnorth\t9327\n276\tSKU-000276\teast\t7942\n277\tSKU-000277\twest\t8788\n278\tSKU-000278\tnorth\t3493\n279\tSKU-000279\tsouth\t5111\n280\tSKU-000280\tsouth\t6597\n281\tSKU-000281\twest\t5934\n282\tSKU-000282\tnorth\t1460\n283\tSKU-000283\teast\t8920\n284\tSKU-000284\tnorth\t9434\n285\tSKU-000285\tsouth\t7406\n286\tSKU-000286\twest\t2005\n287\tSKU-000287\tsouth\t9373\n288\tSKU-000288\teast\t2695\n289\tSKU-000289\tnorth\t6209\n290\tSKU-000290\tsouth\t9018\n291\tSKU-000291\teast\t8134\n292\tSKU-000292\twest\t5000\n293\tSKU-000293\tsouth\t1320\n294\tSKU-000294\twest\t7829\n295\tSKU-000295\teast\t6917\n296\tSKU-000296\twest\t9186\n297\tSKU-000297\teast\t4460\n298\tSKU-000298\twest\t5926\n299\tSKU-000299\tsouth\t5030\n300\tSKU-000300\teast\t5405\n301\tSKU-000301\twest\t4567\n302\tSKU-000302\tsouth\t2969\n303\tSKU-000303\tsouth\t4207\n304\tSKU-000304\tsouth\t9093\n305\tSKU-000305\tsouth\t4238\n306\tSKU-000306\teast\t2976\n307\tSKU-000307\tnorth\t8878\n308\tSKU-000308\twest\t5747\n309\tSKU-000309\teast\t4510\n310\tSKU-000310\twest\t5319\n311\tSKU-000311\tsouth\t9494\n312\tSKU-000312\tsouth\t2025\n313\tSKU-000313\tnorth\t9435\n314\tSKU-000314\twest\t1845\n315\tSKU-000315\tnorth\t2053\n316\tSKU-000316\tsouth\t2463\n317\tSKU-000317\twest\t3057\n318\tSKU-000318\twest\t2565\n319\tSKU-000319\teast\t6780\n320\tSKU-000320\tsouth\t9096\n321\tSKU-000321\tsouth\t6157\n322\tSKU-000322\tsouth\t2287\n323\tSKU-000323\tnorth\t9407\n324\tSKU-000324\twest\t8433\n325\tSKU-000325\teast\t6129\n326\tSKU-000326\teast\t1738\n327\tSKU-000327\twest\t1308\n328\tSKU-000328\twest\t8906\n329\tSKU-000329\teast\t4688\n330\tSKU-000330\teast\t6226\n331\tSKU-000331\twest\t6182\n332\tSKU-000332\tsouth\t1617\n333\tSKU-000333\twest\t4944\n334\tSKU-000334\tnorth\t9214\n335\tSKU-000335\twest\t4506\n336\tSKU-000336\teast\t5718\n337\tSKU-000337\teast\t2992\n338\tSKU-000338\tsouth\t2790\n339\tSKU-000339\tnorth\t5770\n340\tSKU-000340\twest\t2884\n341\tSKU-000341\tnorth\t8462\n342\tSKU-000342\twest\t2347\n343\tSKU-000343\tnorth\t7881\n344\tSKU-000344\twest\t4273\n345\tSKU-000345\twest\t6530\n346\tSKU-000346\tsouth\t2580\n347\tSKU-000347\teast\t5148\n348\tSKU-000348\tsouth\t5246\n349\tSKU-000349\twest\t6384\nmore rows follow: call document_read again with offset=350",
+      "tool_calls": [],
+      "tool_call_id": "call_eethn5du"
+    },
+    {
+      "role": "assistant",
+      "content": "\u0e04\u0e49\u0e19\u0e1e\u0e1a\u0e27\u0e48\u0e32 SKU \u0e15\u0e31\u0e27\u0e19\u0e35\u0e49\u0e2d\u0e22\u0e39\u0e48\u0e43\u0e19\u0e0a\u0e48\u0e27\u0e07\u0e23\u0e30\u0e2b\u0e27\u0e48\u0e32\u0e07\u0e41\u0e16\u0e27 250 \u0e41\u0e25\u0e30 349. \u0e2b\u0e32\u0e01\u0e44\u0e21\u0e48\u0e1e\u0e1a\u0e23\u0e32\u0e22\u0e01\u0e32\u0e23, \u0e08\u0e30\u0e1b\u0e23\u0e31\u0e1a offset \u0e40\u0e1b\u0e47\u0e19 350 \u0e40\u0e1e\u0e37\u0e48\u0e2d\u0e40\u0e23\u0e35\u0e22\u0e01\u0e14\u0e39\u0e41\u0e16\u0e27\u0e17\u0e35\u0e48\u0e15\u0e48\u0e2d\u0e44\u0e1b.\n\n\u0e01\u0e32\u0e23\u0e2b\u0e32 SKU-000388 \u0e2d\u0e32\u0e08\u0e2d\u0e22\u0e39\u0e48\u0e23\u0e30\u0e2b\u0e27\u0e48\u0e32\u0e07\u0e41\u0e16\u0e27 360 \u0e16\u0e36\u0e07 401 \u0e40\u0e19\u0e37\u0e48\u0e2d\u0e07\u0e08\u0e32\u0e01\u0e41\u0e16\u0e27\u0e2a\u0e38\u0e14\u0e17\u0e49\u0e32\u0e22\u0e04\u0e37\u0e2d SKU-000400. \u0e40\u0e23\u0e32\u0e08\u0e30\u0e02\u0e2d document_read \u0e2d\u0e35\u0e01\u0e04\u0e23\u0e31\u0e49\u0e07\u0e40\u0e1e\u0e37\u0e48\u0e2d\u0e23\u0e31\u0e1a\u0e02\u0e49\u0e2d\u0e21\u0e39\u0e25\u0e0a\u0e48\u0e27\u0e07 offset = 350 \u0e40\u0e1e\u0e37\u0e48\u0e2d\u0e2b\u0e32\u0e15\u0e33\u0e41\u0e2b\u0e19\u0e48\u0e07\u0e02\u0e2d\u0e07 SKU \u0e15\u0e31\u0e27\u0e19\u0e35\u0e49.\n\n```json\n",
+      "tool_calls": [
+        {
+          "id": "call_qnll1x6c",
+          "name": "document_read",
+          "arguments": {
+            "part": "stock",
+            "offset": 350,
+            "limit": 100
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory-small.xlsx \"stock\" rows 350-400 of 401; each line below begins with its own row number\n350\tSKU-000350\teast\t3000\n351\tSKU-000351\tsouth\t7750\n352\tSKU-000352\tsouth\t8146\n353\tSKU-000353\tnorth\t2117\n354\tSKU-000354\tnorth\t7904\n355\tSKU-000355\tsouth\t9892\n356\tSKU-000356\tsouth\t8156\n357\tSKU-000357\tnorth\t5491\n358\tSKU-000358\teast\t8095\n359\tSKU-000359\tsouth\t1187\n360\tSKU-000360\tsouth\t9791\n361\tSKU-000361\twest\t4816\n362\tSKU-000362\tnorth\t5781\n363\tSKU-000363\teast\t7228\n364\tSKU-000364\teast\t8604\n365\tSKU-000365\twest\t9805\n366\tSKU-000366\tsouth\t8504\n367\tSKU-000367\tnorth\t5566\n368\tSKU-000368\twest\t5787\n369\tSKU-000369\twest\t7855\n370\tSKU-000370\tsouth\t1818\n371\tSKU-000371\teast\t4809\n372\tSKU-000372\tsouth\t7796\n373\tSKU-000373\twest\t9792\n374\tSKU-000374\tnorth\t3611\n375\tSKU-000375\tnorth\t3020\n376\tSKU-000376\tsouth\t8957\n377\tSKU-000377\tsouth\t9195\n378\tSKU-000378\teast\t9579\n379\tSKU-000379\tsouth\t5639\n380\tSKU-000380\tnorth\t6314\n381\tSKU-000381\twest\t1128\n382\tSKU-000382\twest\t2886\n383\tSKU-000383\tsouth\t3364\n384\tSKU-000384\tnorth\t5875\n385\tSKU-000385\teast\t8313\n386\tSKU-000386\twest\t6629\n387\tSKU-000387\tsouth\t7865\n388\tSKU-000388\teast\t5208\n389\tSKU-000389\teast\t1970\n390\tSKU-000390\twest\t2921\n391\tSKU-000391\tnorth\t3440\n392\tSKU-000392\tsouth\t2687\n393\tSKU-000393\twest\t2634\n394\tSKU-000394\twest\t6899\n395\tSKU-000395\teast\t2214\n396\tSKU-000396\twest\t2726\n397\tSKU-000397\tnorth\t1278\n398\tSKU-000398\tnorth\t6211\n399\tSKU-000399\twest\t4433\n400\tSKU-000400\teast\t2621\nthat was the last row of \"stock\"",
+      "tool_calls": [],
+      "tool_call_id": "call_qnll1x6c"
+    },
+    {
+      "role": "assistant",
+      "content": "\u0e08\u0e32\u0e01\u0e1c\u0e25\u0e01\u0e32\u0e23\u0e04\u0e49\u0e19\u0e2b\u0e32\u0e40\u0e23\u0e32\u0e1e\u0e1a\u0e27\u0e48\u0e32 SKU-000388 \u0e2d\u0e22\u0e39\u0e48\u0e43\u0e19\u0e41\u0e16\u0e27\u0e17\u0e35\u0e48 388 \u0e41\u0e25\u0e30\u0e15\u0e23\u0e07\u0e15\u0e32\u0e21\u0e23\u0e32\u0e22\u0e25\u0e30\u0e40\u0e2d\u0e35\u0e22\u0e14\u0e15\u0e48\u0e2d\u0e44\u0e1b\u0e19\u0e35\u0e49:\n\n{\"region\": \"east\", \"units\": 5208}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

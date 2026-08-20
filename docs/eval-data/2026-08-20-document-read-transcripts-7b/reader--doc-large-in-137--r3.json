@@ -1,0 +1,227 @@
+{
+  "task": "doc-large-in-137",
+  "config": "reader",
+  "repeat": 3,
+  "passed": false,
+  "outcome": "turns-exhausted",
+  "seed": 1520181860,
+  "model": "bk-rbp27-qwen2.5-7b-instruct",
+  "output": null,
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-000137 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_k113ysey",
+          "name": "document_list",
+          "arguments": {}
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx (xlsx) part 0 \"stock\": 12001 rows, numbered 0 to 12000\n  row 0 is the header: sku\tregion\tunits\n  row 1 is the first data row: SKU-000001\tsouth\t2049\n  row 12000 is the last data row: SKU-012000\twest\t9928",
+      "tool_calls": [],
+      "tool_call_id": "call_k113ysey"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_v586ec2m",
+          "name": "document_read",
+          "arguments": {
+            "part": "stock",
+            "offset": 1,
+            "limit": 1
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx \"stock\" rows 1-1 of 12001; each line below begins with its own row number\n1\tSKU-000001\tsouth\t2049\nmore rows follow: call document_read again with offset=2",
+      "tool_calls": [],
+      "tool_call_id": "call_v586ec2m"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_fn3p1vwd",
+          "name": "document_read",
+          "arguments": {
+            "limit": 1,
+            "offset": 12000,
+            "part": "stock"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx \"stock\" rows 12000-12000 of 12001; each line below begins with its own row number\n12000\tSKU-012000\twest\t9928\nthat was the last row of \"stock\"",
+      "tool_calls": [],
+      "tool_call_id": "call_fn3p1vwd"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_fesbx6wr",
+          "name": "document_read",
+          "arguments": {
+            "offset": 3,
+            "part": "stock"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx \"stock\" rows 3-52 of 12001; each line below begins with its own row number\n3\tSKU-000003\teast\t4020\n4\tSKU-000004\tsouth\t6098\n5\tSKU-000005\teast\t1600\n6\tSKU-000006\tnorth\t6549\n7\tSKU-000007\tsouth\t4268\n8\tSKU-000008\tnorth\t8618\n9\tSKU-000009\teast\t8869\n10\tSKU-000010\tnorth\t1802\n11\tSKU-000011\twest\t9325\n12\tSKU-000012\twest\t4734\n13\tSKU-000013\twest\t1013\n14\tSKU-000014\teast\t5047\n15\tSKU-000015\twest\t9346\n16\tSKU-000016\twest\t2408\n17\tSKU-000017\teast\t5602\n18\tSKU-000018\tsouth\t1605\n19\tSKU-000019\teast\t8917\n20\tSKU-000020\twest\t2926\n21\tSKU-000021\twest\t9584\n22\tSKU-000022\teast\t7620\n23\tSKU-000023\tnorth\t6007\n24\tSKU-000024\tnorth\t2837\n25\tSKU-000025\tsouth\t5885\n26\tSKU-000026\tnorth\t6061\n27\tSKU-000027\twest\t9209\n28\tSKU-000028\twest\t2882\n29\tSKU-000029\tnorth\t3253\n30\tSKU-000030\tnorth\t6247\n31\tSKU-000031\twest\t2545\n32\tSKU-000032\tnorth\t2961\n33\tSKU-000033\teast\t2741\n34\tSKU-000034\tsouth\t7517\n35\tSKU-000035\tnorth\t2727\n36\tSKU-000036\tnorth\t1689\n37\tSKU-000037\tnorth\t2102\n38\tSKU-000038\twest\t3651\n39\tSKU-000039\tsouth\t8461\n40\tSKU-000040\twest\t5752\n41\tSKU-000041\twest\t7085\n42\tSKU-000042\teast\t3258\n43\tSKU-000043\teast\t7499\n44\tSKU-000044\tsouth\t9983\n45\tSKU-000045\tnorth\t5289\n46\tSKU-000046\teast\t8818\n47\tSKU-000047\twest\t9566\n48\tSKU-000048\twest\t8856\n49\tSKU-000049\tsouth\t1360\n50\tSKU-000050\twest\t6732\n51\tSKU-000051\tnorth\t8574\n52\tSKU-000052\teast\t7322\nmore rows follow: call document_read again with offset=53",
+      "tool_calls": [],
+      "tool_call_id": "call_fesbx6wr"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_twmg40r4",
+          "name": "document_read",
+          "arguments": {
+            "offset": 1,
+            "part": "stock"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx \"stock\" rows 1-50 of 12001; each line below begins with its own row number\n1\tSKU-000001\tsouth\t2049\n2\tSKU-000002\tsouth\t9085\n3\tSKU-000003\teast\t4020\n4\tSKU-000004\tsouth\t6098\n5\tSKU-000005\teast\t1600\n6\tSKU-000006\tnorth\t6549\n7\tSKU-000007\tsouth\t4268\n8\tSKU-000008\tnorth\t8618\n9\tSKU-000009\teast\t8869\n10\tSKU-000010\tnorth\t1802\n11\tSKU-000011\twest\t9325\n12\tSKU-000012\twest\t4734\n13\tSKU-000013\twest\t1013\n14\tSKU-000014\teast\t5047\n15\tSKU-000015\twest\t9346\n16\tSKU-000016\twest\t2408\n17\tSKU-000017\teast\t5602\n18\tSKU-000018\tsouth\t1605\n19\tSKU-000019\teast\t8917\n20\tSKU-000020\twest\t2926\n21\tSKU-000021\twest\t9584\n22\tSKU-000022\teast\t7620\n23\tSKU-000023\tnorth\t6007\n24\tSKU-000024\tnorth\t2837\n25\tSKU-000025\tsouth\t5885\n26\tSKU-000026\tnorth\t6061\n27\tSKU-000027\twest\t9209\n28\tSKU-000028\twest\t2882\n29\tSKU-000029\tnorth\t3253\n30\tSKU-000030\tnorth\t6247\n31\tSKU-000031\twest\t2545\n32\tSKU-000032\tnorth\t2961\n33\tSKU-000033\teast\t2741\n34\tSKU-000034\tsouth\t7517\n35\tSKU-000035\tnorth\t2727\n36\tSKU-000036\tnorth\t1689\n37\tSKU-000037\tnorth\t2102\n38\tSKU-000038\twest\t3651\n39\tSKU-000039\tsouth\t8461\n40\tSKU-000040\twest\t5752\n41\tSKU-000041\twest\t7085\n42\tSKU-000042\teast\t3258\n43\tSKU-000043\teast\t7499\n44\tSKU-000044\tsouth\t9983\n45\tSKU-000045\tnorth\t5289\n46\tSKU-000046\teast\t8818\n47\tSKU-000047\twest\t9566\n48\tSKU-000048\twest\t8856\n49\tSKU-000049\tsouth\t1360\n50\tSKU-000050\twest\t6732\nmore rows follow: call document_read again with offset=51",
+      "tool_calls": [],
+      "tool_call_id": "call_twmg40r4"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_oxwpycan",
+          "name": "document_read",
+          "arguments": {
+            "offset": 12000,
+            "part": "stock"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx \"stock\" rows 12000-12000 of 12001; each line below begins with its own row number\n12000\tSKU-012000\twest\t9928\nthat was the last row of \"stock\"",
+      "tool_calls": [],
+      "tool_call_id": "call_oxwpycan"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_k4dtgvnt",
+          "name": "document_read",
+          "arguments": {
+            "offset": 3,
+            "part": "stock"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx \"stock\" rows 3-52 of 12001; each line below begins with its own row number\n3\tSKU-000003\teast\t4020\n4\tSKU-000004\tsouth\t6098\n5\tSKU-000005\teast\t1600\n6\tSKU-000006\tnorth\t6549\n7\tSKU-000007\tsouth\t4268\n8\tSKU-000008\tnorth\t8618\n9\tSKU-000009\teast\t8869\n10\tSKU-000010\tnorth\t1802\n11\tSKU-000011\twest\t9325\n12\tSKU-000012\twest\t4734\n13\tSKU-000013\twest\t1013\n14\tSKU-000014\teast\t5047\n15\tSKU-000015\twest\t9346\n16\tSKU-000016\twest\t2408\n17\tSKU-000017\teast\t5602\n18\tSKU-000018\tsouth\t1605\n19\tSKU-000019\teast\t8917\n20\tSKU-000020\twest\t2926\n21\tSKU-000021\twest\t9584\n22\tSKU-000022\teast\t7620\n23\tSKU-000023\tnorth\t6007\n24\tSKU-000024\tnorth\t2837\n25\tSKU-000025\tsouth\t5885\n26\tSKU-000026\tnorth\t6061\n27\tSKU-000027\twest\t9209\n28\tSKU-000028\twest\t2882\n29\tSKU-000029\tnorth\t3253\n30\tSKU-000030\tnorth\t6247\n31\tSKU-000031\twest\t2545\n32\tSKU-000032\tnorth\t2961\n33\tSKU-000033\teast\t2741\n34\tSKU-000034\tsouth\t7517\n35\tSKU-000035\tnorth\t2727\n36\tSKU-000036\tnorth\t1689\n37\tSKU-000037\tnorth\t2102\n38\tSKU-000038\twest\t3651\n39\tSKU-000039\tsouth\t8461\n40\tSKU-000040\twest\t5752\n41\tSKU-000041\twest\t7085\n42\tSKU-000042\teast\t3258\n43\tSKU-000043\teast\t7499\n44\tSKU-000044\tsouth\t9983\n45\tSKU-000045\tnorth\t5289\n46\tSKU-000046\teast\t8818\n47\tSKU-000047\twest\t9566\n48\tSKU-000048\twest\t8856\n49\tSKU-000049\tsouth\t1360\n50\tSKU-000050\twest\t6732\n51\tSKU-000051\tnorth\t8574\n52\tSKU-000052\teast\t7322\nmore rows follow: call document_read again with offset=53",
+      "tool_calls": [],
+      "tool_call_id": "call_k4dtgvnt"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_95v8q35y",
+          "name": "document_read",
+          "arguments": {
+            "offset": 1,
+            "part": "stock"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx \"stock\" rows 1-50 of 12001; each line below begins with its own row number\n1\tSKU-000001\tsouth\t2049\n2\tSKU-000002\tsouth\t9085\n3\tSKU-000003\teast\t4020\n4\tSKU-000004\tsouth\t6098\n5\tSKU-000005\teast\t1600\n6\tSKU-000006\tnorth\t6549\n7\tSKU-000007\tsouth\t4268\n8\tSKU-000008\tnorth\t8618\n9\tSKU-000009\teast\t8869\n10\tSKU-000010\tnorth\t1802\n11\tSKU-000011\twest\t9325\n12\tSKU-000012\twest\t4734\n13\tSKU-000013\twest\t1013\n14\tSKU-000014\teast\t5047\n15\tSKU-000015\twest\t9346\n16\tSKU-000016\twest\t2408\n17\tSKU-000017\teast\t5602\n18\tSKU-000018\tsouth\t1605\n19\tSKU-000019\teast\t8917\n20\tSKU-000020\twest\t2926\n21\tSKU-000021\twest\t9584\n22\tSKU-000022\teast\t7620\n23\tSKU-000023\tnorth\t6007\n24\tSKU-000024\tnorth\t2837\n25\tSKU-000025\tsouth\t5885\n26\tSKU-000026\tnorth\t6061\n27\tSKU-000027\twest\t9209\n28\tSKU-000028\twest\t2882\n29\tSKU-000029\tnorth\t3253\n30\tSKU-000030\tnorth\t6247\n31\tSKU-000031\twest\t2545\n32\tSKU-000032\tnorth\t2961\n33\tSKU-000033\teast\t2741\n34\tSKU-000034\tsouth\t7517\n35\tSKU-000035\tnorth\t2727\n36\tSKU-000036\tnorth\t1689\n37\tSKU-000037\tnorth\t2102\n38\tSKU-000038\twest\t3651\n39\tSKU-000039\tsouth\t8461\n40\tSKU-000040\twest\t5752\n41\tSKU-000041\twest\t7085\n42\tSKU-000042\teast\t3258\n43\tSKU-000043\teast\t7499\n44\tSKU-000044\tsouth\t9983\n45\tSKU-000045\tnorth\t5289\n46\tSKU-000046\teast\t8818\n47\tSKU-000047\twest\t9566\n48\tSKU-000048\twest\t8856\n49\tSKU-000049\tsouth\t1360\n50\tSKU-000050\twest\t6732\nmore rows follow: call document_read again with offset=51",
+      "tool_calls": [],
+      "tool_call_id": "call_95v8q35y"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_742e1bab",
+          "name": "document_read",
+          "arguments": {
+            "offset": 9,
+            "part": "stock"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx \"stock\" rows 9-58 of 12001; each line below begins with its own row number\n9\tSKU-000009\teast\t8869\n10\tSKU-000010\tnorth\t1802\n11\tSKU-000011\twest\t9325\n12\tSKU-000012\twest\t4734\n13\tSKU-000013\twest\t1013\n14\tSKU-000014\teast\t5047\n15\tSKU-000015\twest\t9346\n16\tSKU-000016\twest\t2408\n17\tSKU-000017\teast\t5602\n18\tSKU-000018\tsouth\t1605\n19\tSKU-000019\teast\t8917\n20\tSKU-000020\twest\t2926\n21\tSKU-000021\twest\t9584\n22\tSKU-000022\teast\t7620\n23\tSKU-000023\tnorth\t6007\n24\tSKU-000024\tnorth\t2837\n25\tSKU-000025\tsouth\t5885\n26\tSKU-000026\tnorth\t6061\n27\tSKU-000027\twest\t9209\n28\tSKU-000028\twest\t2882\n29\tSKU-000029\tnorth\t3253\n30\tSKU-000030\tnorth\t6247\n31\tSKU-000031\twest\t2545\n32\tSKU-000032\tnorth\t2961\n33\tSKU-000033\teast\t2741\n34\tSKU-000034\tsouth\t7517\n35\tSKU-000035\tnorth\t2727\n36\tSKU-000036\tnorth\t1689\n37\tSKU-000037\tnorth\t2102\n38\tSKU-000038\twest\t3651\n39\tSKU-000039\tsouth\t8461\n40\tSKU-000040\twest\t5752\n41\tSKU-000041\twest\t7085\n42\tSKU-000042\teast\t3258\n43\tSKU-000043\teast\t7499\n44\tSKU-000044\tsouth\t9983\n45\tSKU-000045\tnorth\t5289\n46\tSKU-000046\teast\t8818\n47\tSKU-000047\twest\t9566\n48\tSKU-000048\twest\t8856\n49\tSKU-000049\tsouth\t1360\n50\tSKU-000050\twest\t6732\n51\tSKU-000051\tnorth\t8574\n52\tSKU-000052\teast\t7322\n53\tSKU-000053\tsouth\t7952\n54\tSKU-000054\teast\t2214\n55\tSKU-000055\teast\t9187\n56\tSKU-000056\tsouth\t4226\n57\tSKU-000057\tsouth\t3833\n58\tSKU-000058\teast\t2142\nmore rows follow: call document_read again with offset=59",
+      "tool_calls": [],
+      "tool_call_id": "call_742e1bab"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_jtd7qwzl",
+          "name": "document_read",
+          "arguments": {
+            "offset": 137,
+            "part": "stock"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx \"stock\" rows 137-186 of 12001; each line below begins with its own row number\n137\tSKU-000137\teast\t7726\n138\tSKU-000138\twest\t8229\n139\tSKU-000139\tnorth\t1789\n140\tSKU-000140\tnorth\t8049\n141\tSKU-000141\teast\t3988\n142\tSKU-000142\twest\t4468\n143\tSKU-000143\teast\t2305\n144\tSKU-000144\tnorth\t2348\n145\tSKU-000145\twest\t1861\n146\tSKU-000146\tnorth\t8529\n147\tSKU-000147\teast\t3023\n148\tSKU-000148\teast\t2956\n149\tSKU-000149\tnorth\t9496\n150\tSKU-000150\twest\t5493\n151\tSKU-000151\teast\t6354\n152\tSKU-000152\twest\t4147\n153\tSKU-000153\teast\t7880\n154\tSKU-000154\teast\t1023\n155\tSKU-000155\twest\t6255\n156\tSKU-000156\twest\t5210\n157\tSKU-000157\teast\t8558\n158\tSKU-000158\teast\t9170\n159\tSKU-000159\tsouth\t1689\n160\tSKU-000160\teast\t9247\n161\tSKU-000161\tsouth\t8956\n162\tSKU-000162\tnorth\t1022\n163\tSKU-000163\tsouth\t5723\n164\tSKU-000164\tsouth\t6461\n165\tSKU-000165\tnorth\t9950\n166\tSKU-000166\tsouth\t3207\n167\tSKU-000167\tnorth\t4350\n168\tSKU-000168\tnorth\t6337\n169\tSKU-000169\twest\t1182\n170\tSKU-000170\teast\t3034\n171\tSKU-000171\tsouth\t4155\n172\tSKU-000172\twest\t6502\n173\tSKU-000173\tsouth\t3561\n174\tSKU-000174\tnorth\t6092\n175\tSKU-000175\tnorth\t9231\n176\tSKU-000176\twest\t8274\n177\tSKU-000177\tnorth\t9369\n178\tSKU-000178\teast\t5090\n179\tSKU-000179\tnorth\t2196\n180\tSKU-000180\tsouth\t1805\n181\tSKU-000181\tsouth\t9389\n182\tSKU-000182\tnorth\t2772\n183\tSKU-000183\tsouth\t1244\n184\tSKU-000184\twest\t7372\n185\tSKU-000185\tnorth\t8788\n186\tSKU-000186\teast\t3943\nmore rows follow: call document_read again with offset=187",
+      "tool_calls": [],
+      "tool_call_id": "call_jtd7qwzl"
+    }
+  ]
+}

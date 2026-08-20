@@ -1,0 +1,24 @@
+{
+  "task": "doc-large-out-8022",
+  "config": "bare",
+  "repeat": 3,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 221081487,
+  "model": "bk-rbp27-qwen2.5-14b-instruct",
+  "output": "To complete the task as described, I would need to access a workbook or data source that contains the specific information requested. Since no actual file is provided here for interaction, I can't directly retrieve and report on the values of SKU-008022 in JSON format. However, following the instructions strictly and hypothetically:\n\nIf we had the data, it would look like this based on your request:\n\n{\"region\": \"example-region\", \"units\": 123}\n\nPlease replace `\"example-region\"` with the actual region value from the workbook's row that has `sku` equal to `SKU-008022`, and `123` should be replaced by the actual number of units.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-008022 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "To complete the task as described, I would need to access a workbook or data source that contains the specific information requested. Since no actual file is provided here for interaction, I can't directly retrieve and report on the values of SKU-008022 in JSON format. However, following the instructions strictly and hypothetically:\n\nIf we had the data, it would look like this based on your request:\n\n{\"region\": \"example-region\", \"units\": 123}\n\nPlease replace `\"example-region\"` with the actual region value from the workbook's row that has `sku` equal to `SKU-008022`, and `123` should be replaced by the actual number of units.",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

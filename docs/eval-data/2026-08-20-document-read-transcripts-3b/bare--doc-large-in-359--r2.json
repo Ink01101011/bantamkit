@@ -1,0 +1,24 @@
+{
+  "task": "doc-large-in-359",
+  "config": "bare",
+  "repeat": 2,
+  "passed": false,
+  "outcome": "malformed-output",
+  "seed": 296330468,
+  "model": "llama3.2:3b",
+  "output": "You haven't provided the workbook or its sheets. I can only simulate based on your request here.\n\nAssuming there's a workbook attached to this task:\n\n```\n{\n  \"sheet\": {\n    \"columns\": [\"sku\", \"region\", \"units\"],\n    \"rows\": [\n      {\"sku\": SKU-000349, \"region\": Region1, \"units\": Units1},\n      {\"sku\": SKU-000350, \"region\": Region2, \"units\": Units2},\n      /* more rows */\n      {\"sku\": \"SKU-000359\", \"region\": RegionX, \"units\": UnitsY}\n    ]\n  }\n}\n```\n\nIf the row for SKU-000359 has:\n\n- Region: RegionXYZ\n- Units: 23\n\nThen your JSON would look like this:\n\n{\"region\": \"RegionXYZ\",\"units\": 23}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-000359 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "You haven't provided the workbook or its sheets. I can only simulate based on your request here.\n\nAssuming there's a workbook attached to this task:\n\n```\n{\n  \"sheet\": {\n    \"columns\": [\"sku\", \"region\", \"units\"],\n    \"rows\": [\n      {\"sku\": SKU-000349, \"region\": Region1, \"units\": Units1},\n      {\"sku\": SKU-000350, \"region\": Region2, \"units\": Units2},\n      /* more rows */\n      {\"sku\": \"SKU-000359\", \"region\": RegionX, \"units\": UnitsY}\n    ]\n  }\n}\n```\n\nIf the row for SKU-000359 has:\n\n- Region: RegionXYZ\n- Units: 23\n\nThen your JSON would look like this:\n\n{\"region\": \"RegionXYZ\",\"units\": 23}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

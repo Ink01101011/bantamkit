@@ -1,0 +1,131 @@
+{
+  "task": "doc-large-in-137",
+  "config": "reader",
+  "repeat": 3,
+  "passed": true,
+  "outcome": "pass",
+  "seed": 2674300906,
+  "model": "bk-rbp27-qwen2.5-14b-instruct",
+  "output": "{\"region\": \"east\", \"units\": 7726}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-000137 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_bq2613wj",
+          "name": "document_list",
+          "arguments": {}
+        },
+        {
+          "id": "call_81yxqdvs",
+          "name": "document_read",
+          "arguments": {
+            "document": "workbook.xlsx",
+            "part": "stock",
+            "offset": 138,
+            "limit": 2
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx (xlsx) part 0 \"stock\": 12001 rows, numbered 0 to 12000\n  row 0 is the header: sku\tregion\tunits\n  row 1 is the first data row: SKU-000001\tsouth\t2049\n  row 12000 is the last data row: SKU-012000\twest\t9928",
+      "tool_calls": [],
+      "tool_call_id": "call_bq2613wj"
+    },
+    {
+      "role": "tool",
+      "content": "error: no document named workbook.xlsx; this task has: inventory.xlsx",
+      "tool_calls": [],
+      "tool_call_id": "call_81yxqdvs"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_mtm42wpl",
+          "name": "document_list",
+          "arguments": {}
+        },
+        {
+          "id": "call_e3umoapw",
+          "name": "document_read",
+          "arguments": {
+            "document": "inventory.xlsx",
+            "limit": 2,
+            "offset": 138,
+            "part": "stock"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx (xlsx) part 0 \"stock\": 12001 rows, numbered 0 to 12000\n  row 0 is the header: sku\tregion\tunits\n  row 1 is the first data row: SKU-000001\tsouth\t2049\n  row 12000 is the last data row: SKU-012000\twest\t9928",
+      "tool_calls": [],
+      "tool_call_id": "call_mtm42wpl"
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx \"stock\" rows 138-139 of 12001; each line below begins with its own row number\n138\tSKU-000138\twest\t8229\n139\tSKU-000139\tnorth\t1789\nmore rows follow: call document_read again with offset=140",
+      "tool_calls": [],
+      "tool_call_id": "call_e3umoapw"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_p0mtr84r",
+          "name": "document_read",
+          "arguments": {
+            "document": "inventory.xlsx",
+            "limit": 2,
+            "offset": 136,
+            "part": "stock"
+          }
+        },
+        {
+          "id": "call_7l8ojb8n",
+          "name": "document_read",
+          "arguments": {
+            "document": "inventory.xlsx",
+            "limit": 2,
+            "offset": 137,
+            "part": "stock"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx \"stock\" rows 136-137 of 12001; each line below begins with its own row number\n136\tSKU-000136\tnorth\t8794\n137\tSKU-000137\teast\t7726\nmore rows follow: call document_read again with offset=138",
+      "tool_calls": [],
+      "tool_call_id": "call_p0mtr84r"
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx \"stock\" rows 137-138 of 12001; each line below begins with its own row number\n137\tSKU-000137\teast\t7726\n138\tSKU-000138\twest\t8229\nmore rows follow: call document_read again with offset=139",
+      "tool_calls": [],
+      "tool_call_id": "call_7l8ojb8n"
+    },
+    {
+      "role": "assistant",
+      "content": "{\"region\": \"east\", \"units\": 7726}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

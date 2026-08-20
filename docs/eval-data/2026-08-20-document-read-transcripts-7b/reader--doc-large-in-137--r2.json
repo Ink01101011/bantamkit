@@ -1,0 +1,130 @@
+{
+  "task": "doc-large-in-137",
+  "config": "reader",
+  "repeat": 2,
+  "passed": true,
+  "outcome": "pass",
+  "seed": 2095905660,
+  "model": "bk-rbp27-qwen2.5-7b-instruct",
+  "output": "{\n  \"region\": \"east\",\n  \"units\": 7726\n}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-000137 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_1dooh6ra",
+          "name": "document_list",
+          "arguments": {}
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx (xlsx) part 0 \"stock\": 12001 rows, numbered 0 to 12000\n  row 0 is the header: sku\tregion\tunits\n  row 1 is the first data row: SKU-000001\tsouth\t2049\n  row 12000 is the last data row: SKU-012000\twest\t9928",
+      "tool_calls": [],
+      "tool_call_id": "call_1dooh6ra"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_gva0sixg",
+          "name": "document_read",
+          "arguments": {
+            "part": "stock",
+            "offset": 1,
+            "limit": 1
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx \"stock\" rows 1-1 of 12001; each line below begins with its own row number\n1\tSKU-000001\tsouth\t2049\nmore rows follow: call document_read again with offset=2",
+      "tool_calls": [],
+      "tool_call_id": "call_gva0sixg"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_w7w3ysyx",
+          "name": "document_read",
+          "arguments": {
+            "limit": 1,
+            "offset": 12000,
+            "part": "stock"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx \"stock\" rows 12000-12000 of 12001; each line below begins with its own row number\n12000\tSKU-012000\twest\t9928\nthat was the last row of \"stock\"",
+      "tool_calls": [],
+      "tool_call_id": "call_w7w3ysyx"
+    },
+    {
+      "role": "assistant",
+      "content": "Let's find the exact row for `SKU-000137` now, given our understanding of the structure.\n\n",
+      "tool_calls": [
+        {
+          "id": "call_6lim2xc3",
+          "name": "document_read",
+          "arguments": {
+            "limit": 1,
+            "offset": 258,
+            "part": "stock"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx \"stock\" rows 258-258 of 12001; each line below begins with its own row number\n258\tSKU-000258\teast\t1369\nmore rows follow: call document_read again with offset=259",
+      "tool_calls": [],
+      "tool_call_id": "call_6lim2xc3"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_g8nwwyxb",
+          "name": "document_read",
+          "arguments": {
+            "limit": 1,
+            "offset": 137,
+            "part": "stock"
+          }
+        }
+      ],
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": "inventory.xlsx \"stock\" rows 137-137 of 12001; each line below begins with its own row number\n137\tSKU-000137\teast\t7726\nmore rows follow: call document_read again with offset=138",
+      "tool_calls": [],
+      "tool_call_id": "call_g8nwwyxb"
+    },
+    {
+      "role": "assistant",
+      "content": "{\n  \"region\": \"east\",\n  \"units\": 7726\n}",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}

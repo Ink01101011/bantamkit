@@ -1,0 +1,24 @@
+{
+  "task": "doc-small-137",
+  "config": "bare",
+  "repeat": 1,
+  "passed": false,
+  "outcome": "wrong-answer",
+  "seed": 3552060139,
+  "model": "bk-rbp27-qwen2.5-14b-instruct",
+  "output": "To provide an accurate response based on your instruction, I'll need to simulate accessing the specified workbook's sheet `stock`. Since I cannot physically access external files, I will fabricate an example answer based on what you requested assuming SKU-000137 exists in the data:\n\n```json\n{\"region\": \"East\", \"units\": 45}\n```\n\nPlease replace `\"East\"` and `45` with actual values if you have specific details. If you provide me with the actual content or a snippet from that workbook, I can give a precise answer.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A workbook is attached to this task. Its sheet `stock` has the columns sku, region and units, one row per sku. Find the single row whose sku is exactly SKU-000137 and report that row's region and units. Do not compute anything and do not summarise the sheet; read the one row. Answer with ONLY this JSON, nothing else: {\"region\": \"<region>\", \"units\": <integer>}",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": "To provide an accurate response based on your instruction, I'll need to simulate accessing the specified workbook's sheet `stock`. Since I cannot physically access external files, I will fabricate an example answer based on what you requested assuming SKU-000137 exists in the data:\n\n```json\n{\"region\": \"East\", \"units\": 45}\n```\n\nPlease replace `\"East\"` and `45` with actual values if you have specific details. If you provide me with the actual content or a snippet from that workbook, I can give a precise answer.",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ]
+}
