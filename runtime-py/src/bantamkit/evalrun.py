@@ -1049,14 +1049,23 @@ def check_question_against_prompt(task: dict, fixtures: list[DocumentFixture]) -
     prompt = task.get("prompt")
     prompt = prompt if isinstance(prompt, str) else ""
     entries = [e for e in (task.get("document_setup") or []) if isinstance(e, dict)]
+    # Collected across every entry, because the prompt is one: an address declared on the
+    # second corpus answers a row identity the prompt names just as well as one on the first.
+    asked: dict[str, str] = {}
+    exempt: dict[str, str] = {}
+    labels: list[str] = []
+    identities: list[_RowIdentity] = []
     for entry, fixture in zip(entries, fixtures, strict=False):
         declared = entry.get("answers") or {}
+        identities.extend(_row_identity_patterns(entry))
         for label, value in fixture.answers.items():
+            labels.append(label)
             if label.startswith(ANSWER_CLAIM_PREFIX):
                 continue
             where = f"{fixture.name} {declared.get(label, label)}"
             named = value in prompt
             if label.startswith(QUESTION_EXEMPT_PREFIX):
+                exempt.setdefault(value, where)
                 if named:
                     raise UnaskedAnswerError(
                         f"task {name!r}: answers[{label!r}] declares the cell at {where} to be "
@@ -1065,6 +1074,7 @@ def check_question_against_prompt(task: dict, fixtures: list[DocumentFixture]) -
                         f"address is checked against the prompt that uses it."
                     )
                 continue
+            asked.setdefault(value, where)
             if not named:
                 raise UnaskedAnswerError(
                     f"task {name!r}: answers[{label!r}] resolves to {value!r} at {where}, which "
@@ -1074,6 +1084,138 @@ def check_question_against_prompt(task: dict, fixtures: list[DocumentFixture]) -
                     f"{QUESTION_EXEMPT_PREFIX}{label} if this cell is deliberately asked by "
                     f"nothing."
                 )
+    _check_question_floor(name, prompt, labels, asked, exempt, identities)
+
+
+# THE FLOOR UNDER BOTH OF THOSE DIRECTIONS (RB-P91). Every clause above is a check on a DECLARED
+# question address: one refuses an address the prompt does not name, the other refuses an
+# `unasked_` declaration the prompt does name. NEITHER HAS A SUBJECT WHEN NO QUESTION ADDRESS
+# EXISTS. Omit `question_sku:`, or rename every question label to `unasked_`, and the loop above
+# runs to completion over nothing while the prompt asks for whatever it likes — RB-P90's own
+# shape surviving its closure one step out, measured ACCEPTED both ways before this landed.
+#
+# The property, and the whole of it:
+#
+#     A task that materialises a corpus must SAY WHAT ITS PROMPT ASKS ABOUT, and "nothing" must
+#     be a thing it can say and be HELD TO.
+#
+# Two clauses, because "say" and "held to" are two different failures, and one rule trying to be
+# both is a rule nobody can falsify:
+#
+#   THE FLOOR      A task with a corpus must carry at least one label that is either a question
+#                  address or an `unasked_` declaration. SILENCE IS NOT A DECLARATION. No new
+#                  field and no new vocabulary is invented for this: `unasked_<label>` already
+#                  means "this cell is asked by nothing" and is already refused in the other
+#                  direction, so the deliberate case — an aggregation, a `tool_trace` task, a
+#                  prompt that addresses no single row — stays one line away and stays
+#                  falsifiable. What is refused is the task that says NOTHING AT ALL, which is
+#                  the shape the two evasions above share.
+#
+#   THE FALSIFIER  Every ROW IDENTITY the prompt names must be the value of a question address.
+#                  This is what holds a declaration to account, and it is what makes the floor
+#                  more than a counting rule — counting rules are cheap to satisfy. Point one
+#                  question address at `stock!B138`, write `east` into a prompt that goes on to
+#                  ask about SKU-999999, and a floor that only counted labels passes it; this
+#                  clause does not, because the prompt still names a row identity no address
+#                  resolves to.
+#
+# The falsifier is the load-bearing half and it is stated ON THE PROMPT rather than on the label
+# set, because the defect is a property of the prompt: the task asks about a row, so it must say
+# which cell that row came from. Its two limits are on `_row_identity_patterns` rather than left
+# to be discovered.
+
+
+@dataclass(frozen=True)
+class _RowIdentity:
+    """The shape a row identity takes in one corpus, and the range of them that corpus holds."""
+
+    where: str
+    pattern: re.Pattern[str]
+    prefix: str
+    width: int
+    rows: int
+
+    def spelling(self, index: int) -> str:
+        return f"{self.prefix}{index:0{self.width}d}"
+
+    def holds(self, token: str) -> bool:
+        return 1 <= int(token[len(self.prefix) :]) <= self.rows
+
+
+def _row_identity_patterns(entry: dict) -> list[_RowIdentity]:
+    """Every `kind: key` column of one entry, as the token shape it can put in a prompt.
+
+    Not guessed and not a convention: `_doc_field` builds every key in the corpus out of the
+    declared `prefix:` and `width:` and nothing else, so those same two give the shape a token
+    in a prompt must have to be one of them. The trailing/leading digit guards keep `SKU-000137`
+    out of `SKU-0001370`.
+
+    TWO EXPOSURES, recorded here rather than left to be discovered. (1) A corpus with NO `key`
+    column has no row identity to match, so this clause has no subject there and the floor is
+    the only guard left — a declaration held to by nothing. (2) A key column with no `prefix:`
+    is bare digits, so any number of that width anywhere in the prompt reads as a row identity.
+    Both err toward REFUSING: (2) costs a task file one extra address, and (1) is the residual.
+    """
+    holders = entry.get("sheets") or [entry]
+    out: list[_RowIdentity] = []
+    for holder in holders:
+        if not isinstance(holder, dict):
+            continue
+        for column in holder.get("columns") or []:
+            if not isinstance(column, dict) or column.get("kind") != "key":
+                continue
+            prefix, width = str(column.get("prefix", "")), int(column.get("width", 6))
+            out.append(
+                _RowIdentity(
+                    where=f"{entry.get('path')} {holder.get('name', 'document')}."
+                    f"{column.get('name')}",
+                    pattern=re.compile(rf"(?<!\d){re.escape(prefix)}\d{{{width}}}(?!\d)"),
+                    prefix=prefix,
+                    width=width,
+                    rows=int(holder.get("rows", 0)),
+                )
+            )
+    return out
+
+
+def _check_question_floor(
+    name: object,
+    prompt: str,
+    labels: list[str],
+    asked: dict[str, str],
+    exempt: dict[str, str],
+    identities: list[_RowIdentity],
+) -> None:
+    """The two clauses of RB-P91, in the order a task file should read them."""
+    if not asked and not exempt:
+        raise UnaskedAnswerError(
+            f"task {name!r} materialises a corpus but declares neither a question address nor "
+            f"an {QUESTION_EXEMPT_PREFIX!r} label, so it says nothing about what its prompt "
+            f"asks and its prompt may ask for any row at all. Its corpus labels are "
+            f"{sorted(labels)}, which are the scored half's and say nothing about the question. "
+            f"Name the cell the prompt asks about, or — if this prompt deliberately asks about "
+            f"no single cell — say so with {QUESTION_EXEMPT_PREFIX}<label> on the cell it does "
+            f"not ask about, which is then checked against the prompt in the other direction."
+        )
+    for identity in identities:
+        for token in identity.pattern.findall(prompt):
+            if token in asked:
+                continue
+            span = f"{identity.spelling(1)}..{identity.spelling(identity.rows)}"
+            held = "holds" if identity.holds(token) else "does not hold"
+            raise UnaskedAnswerError(
+                f"task {name!r}: the prompt names the row identity {token!r}, which no question "
+                f"address in this task resolves to, so the task does not say where that row "
+                f"came from. The corpus column {identity.where} {held} it ({span}). Question "
+                f"addresses in this task resolve to {sorted(asked)}"
+                + (
+                    f"; {sorted(exempt)} are declared asked by nothing."
+                    if exempt
+                    else ", and no cell is declared asked by nothing."
+                )
+                + " Add answers: {question_<label>: '<part>!<CELL>'} for the row the prompt"
+                " names, or fix the prompt."
+            )
 
 
 # ---- the reader pair the model actually sees (`document_list`, `document_read`) ---------
