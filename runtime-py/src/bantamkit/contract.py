@@ -29,6 +29,11 @@ REQUIRED_KEYS = (
     "document_manifest_header_row",
     "document_manifest_first_row",
     "document_manifest_last_row",
+    "document_manifest_package_media",
+    "document_manifest_omitted_media",
+    "document_manifest_omitted_blank",
+    "document_manifest_omitted_format",
+    "document_manifest_omitted_other",
     "document_page_header",
     "document_page_next",
     "document_page_end",
@@ -167,7 +172,35 @@ def render_evidence(messages: list[Message], budget: int = 4096) -> str:
 # to — a rendered row is already a string by the time a reader has one.
 
 
-def document_manifest(parts: list[dict]) -> str:
+def _omission_line(contract: dict, entry: dict, omission: dict) -> str:
+    """One omission, as one line. An unknown subject is PRINTED, never dropped.
+
+    That fallback is the whole point of the mechanism. `docread` can add a subject without
+    this layer being updated in the same breath, and the failure mode of that lag has to be a
+    line the model reads as slightly generic — never a count that vanishes, which is exactly
+    the silence the omission record was added to end.
+    """
+    subject = omission["subject"]
+    if subject == "media":
+        return contract["document_manifest_omitted_media"].format(
+            count=omission["count"], bytes=omission["size"]
+        )
+    if subject == "blank-rows":
+        return contract["document_manifest_omitted_blank"].format(
+            count=omission["count"], rows=entry["row_count"]
+        )
+    if subject == "number-format":
+        return contract["document_manifest_omitted_format"].format(
+            where=", ".join(omission["where"]),
+            count=omission["count"],
+            what=omission["what"],
+        )
+    return contract["document_manifest_omitted_other"].format(
+        count=omission["count"], subject=subject, what=omission["what"]
+    )
+
+
+def document_manifest(parts: list[dict], documents: list[dict] | None = None) -> str:
     """The answer to "what exists", as one observation.
 
     This is the design decision of the pair, written out. A corpus of 12,001 rows cannot be
@@ -182,14 +215,36 @@ def document_manifest(parts: list[dict]) -> str:
     it names no value the caller asked about. A `find`/`filter` argument would be a finder
     primitive, which is a different axis and would make this job unable to say whether the
     READER bought anything.
+
+    **And it states what the rendering left out.** J25 measured the alternative on the user's
+    own files: for an 18.62 MB workbook this said `4 parts, 28 rows` and stopped, when all 28
+    of those rows are empty lines and the file's content is 56 embedded images. A row count
+    with nothing beside it is not a neutral omission — it is a claim about what is there. So
+    each part's `omissions:` (and each document's, for what belongs to no part) is rendered
+    as a COUNT, right where the count it qualifies is stated. Both keys are optional and an
+    entry without them renders byte-for-byte as it did before, which is what keeps J10's nine
+    committed `document-read` rows where they are.
     """
     contract = load_contract()
     if not parts:
         return contract["document_manifest_empty"]
+    package = {entry["document"]: entry.get("omissions") or [] for entry in documents or []}
     lines = []
     for entry in parts:
         rows: list[str] = entry["rows"]
         last = entry["row_count"] - 1
+        for omission in package.pop(entry["document"], []):
+            if omission["subject"] == "media":
+                lines.append(
+                    contract["document_manifest_package_media"].format(
+                        document=entry["document"],
+                        count=omission["count"],
+                        what=omission["what"],
+                        bytes=omission["size"],
+                    )
+                )
+            else:
+                lines.append(_omission_line(contract, entry, omission))
         lines.append(
             contract["document_manifest_part"].format(
                 document=entry["document"],
@@ -207,6 +262,23 @@ def document_manifest(parts: list[dict]) -> str:
         if len(rows) > 2:
             lines.append(
                 contract["document_manifest_last_row"].format(index=last, row=rows[-1])
+            )
+        for omission in entry.get("omissions") or []:
+            lines.append(_omission_line(contract, entry, omission))
+    # A document whose omissions matched no part above still gets said. `pop` is what makes
+    # this reachable at all, and it is reachable: a package can declare a sheet the manifest
+    # never lists. Dropping the line here would put the silence back one level up.
+    for document, omissions in package.items():
+        for omission in omissions:
+            lines.append(
+                contract["document_manifest_package_media"].format(
+                    document=document,
+                    count=omission["count"],
+                    what=omission["what"],
+                    bytes=omission["size"],
+                )
+                if omission["subject"] == "media"
+                else _omission_line(contract, {"row_count": 0}, omission)
             )
     return "\n".join(lines)
 

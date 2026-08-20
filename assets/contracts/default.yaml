@@ -19,6 +19,16 @@ document_manifest_part: "{document} ({kind}) part {index} \"{part}\": {rows} row
 document_manifest_header_row: "  row 0 is the header: {row}"
 document_manifest_first_row: "  row 1 is the first data row: {row}"
 document_manifest_last_row: "  row {index} is the last data row: {row}"
+# What the rendering left out, stated in the one place that says what exists. Measured need
+# (J25, the user's real ~/Downloads, 2026-08-20): `step test.xlsx` is 18.62 MB and the manifest
+# said `4 parts, 28 rows` — all 28 of those rows are empty lines and the file's actual content
+# is 56 embedded PNGs. Every line here is a COUNT: an adjective ("some images") tells a model
+# nothing it can decide with, and silence tells it something false.
+document_manifest_package_media: "{document}: the file also holds {count} embedded file(s) ({what}) totalling {bytes} bytes, which no row can carry — this reader renders no image or embedded object"
+document_manifest_omitted_media: "  NOT in those rows: {count} embedded file(s), {bytes} bytes, anchored to this part"
+document_manifest_omitted_blank: "  {count} of those {rows} rows carry no cell value at all and render as an empty line"
+document_manifest_omitted_format: "  column(s) {where}: {count} cell(s) store a NUMBER under the date/time format {what} — this reader renders the stored serial number verbatim and does not convert it to a date; convert it with that format code if you need one"
+document_manifest_omitted_other: "  NOT in those rows: {count} {subject} ({what})"
 document_page_header: "{document} \"{part}\" rows {start}-{end} of {rows}; each line below begins with its own row number"
 document_page_next: "more rows follow: call document_read again with offset={next_offset}"
 document_page_end: "that was the last row of \"{part}\""
