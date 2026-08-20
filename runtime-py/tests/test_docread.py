@@ -8,11 +8,14 @@ value — an index instead of a word, a swapped sheet, a shifted column — rath
 
 from __future__ import annotations
 
+import subprocess
 import zipfile
 
 import pytest
 
+from bantamkit import docread
 from bantamkit.docread import (
+    TEXTUTIL,
     Document,
     DocumentReadError,
     Part,
@@ -20,6 +23,8 @@ from bantamkit.docread import (
     extract_docx,
     extract_xlsx,
     page,
+    sniff,
+    textutil_path,
 )
 
 CONTENT_TYPES = (
@@ -340,10 +345,15 @@ def test_extraction_is_byte_identical_across_runs(tmp_path):
 
 
 def test_not_a_zip_says_what_it_saw(tmp_path):
+    """`extract_xlsx` is still reachable directly, and its own message is unchanged.
+
+    `extract()` no longer routes a PDF here — it never opens the zip at all — so this is
+    asserted against the entry point that a caller who has already decided the kind uses.
+    """
     path = tmp_path / "fake.xlsx"
     path.write_bytes(b"%PDF-1.7 not really a spreadsheet")
     with pytest.raises(DocumentReadError) as excinfo:
-        extract(path)
+        extract_xlsx(path)
     message = str(excinfo.value)
     assert "fake.xlsx" in message and "not a zip archive" in message
     assert "%PDF" in message and "33 bytes" in message
@@ -370,17 +380,23 @@ def test_missing_file(tmp_path):
         extract(tmp_path / "absent.xlsx")
 
 
-def test_unsupported_suffix_names_what_is_supported(tmp_path):
+def test_a_real_pdf_refusal_names_the_pdf_and_its_version(tmp_path):
+    """Was `test_unsupported_suffix_names_what_is_supported`. The suffix is no longer the
+    reason for anything, so the refusal names the CONTENT and its version instead."""
     path = tmp_path / "notes.pdf"
-    path.write_bytes(b"%PDF")
-    with pytest.raises(DocumentReadError, match="pdf suffix, supported are xlsx, docx"):
+    path.write_bytes(b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n")
+    with pytest.raises(DocumentReadError) as excinfo:
         extract(path)
+    message = str(excinfo.value)
+    assert "it is a PDF document (PDF-1.7)" in message
+    assert "45 bytes on disk" in message
+    assert "reads xlsx, docx, html and mhtml" in message
 
 
 def test_no_suffix_at_all(tmp_path):
     path = tmp_path / "README"
     path.write_bytes(b"x")
-    with pytest.raises(DocumentReadError, match="no suffix"):
+    with pytest.raises(DocumentReadError, match="plain text in no document container"):
         extract(path)
 
 
@@ -419,7 +435,7 @@ def test_docx_missing_document_part(tmp_path):
         extract_docx(path)
 
 
-def test_extract_dispatches_on_suffix(tmp_path):
+def test_extract_reads_ooxml_whatever_the_suffix_case(tmp_path):
     xlsx = write_xlsx(
         tmp_path / "a.XLSX",
         [("s", "worksheets/sheet1.xml", row(inline_cell("A1", "v")))],
@@ -427,6 +443,281 @@ def test_extract_dispatches_on_suffix(tmp_path):
     docx = write_docx(tmp_path / "b.DocX", para("p"))
     assert extract(xlsx).kind == "xlsx"
     assert extract(docx).kind == "docx"
+
+
+# ------------------------------------------------------------------- the container, sniffed
+#
+# J25, 2026-08-20. The property under test is that WHAT A FILE IS decides how it is read, and
+# a suffix is only a hint. It is not a hypothetical: on the user's real `~/Downloads` corpus
+# two of 34 files are misnamed — a `.docx` called `.pdf` and an MHTML archive called `.doc` —
+# and under suffix dispatch both refused with a reason about their names. Each fixture below
+# is built so the WRONG reading is a different, checkable outcome, not an error.
+
+
+def test_a_docx_named_pdf_is_read_as_a_docx(tmp_path):
+    """The exact shape of `ข้อความ….pdf`: `PK\\x03\\x04`, and `word/document.xml` inside."""
+    path = write_docx(tmp_path / "ticket.pdf", para("Executor Name: Kasidit"))
+    container = sniff(path)
+    assert container.kind == "docx" and container.named == "pdf"
+    assert container.suffix_lies
+    doc = extract(path)
+    assert doc.kind == "docx"
+    assert doc.parts[0].rows == ("Executor Name: Kasidit",)
+
+
+def test_an_xlsx_named_docx_is_read_as_a_workbook(tmp_path):
+    path = write_xlsx(
+        tmp_path / "sheet.docx",
+        [("stock", "worksheets/sheet1.xml", row(inline_cell("A1", "sku"), inline_cell("B1", "7")))],
+    )
+    assert sniff(path).kind == "xlsx"
+    doc = extract(path)
+    assert doc.kind == "xlsx" and doc.parts[0].name == "stock"
+    assert doc.parts[0].rows == ("sku\t7",)
+
+
+def test_a_pdf_named_xlsx_refuses_naming_the_pdf_and_the_disagreement(tmp_path):
+    path = tmp_path / "report.xlsx"
+    path.write_bytes(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\ntrailer\n")
+    with pytest.raises(DocumentReadError) as excinfo:
+        extract(path)
+    message = str(excinfo.value)
+    assert "it is a PDF document (PDF-1.4)" in message
+    assert "its name says .xlsx, which its bytes do not" in message
+
+
+def test_a_video_refuses_naming_the_container_and_its_brand(tmp_path):
+    """The corpus's one `.mov`. `ftyp` sits at offset 4, so a leading-magic table misses it."""
+    path = tmp_path / "clip.mov"
+    path.write_bytes(b"\x00\x00\x00\x14ftypqt  \x00\x00\x02\x00qt  " + b"\x00" * 64)
+    assert sniff(path).kind == "isobmff"
+    with pytest.raises(DocumentReadError, match=r"ISO base-media container, brand 'qt'"):
+        extract(path)
+
+
+def test_a_zip_that_is_no_ooxml_package_refuses_listing_what_it_holds(tmp_path):
+    path = tmp_path / "bundle.xlsx"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("readme.txt", "hello")
+        z.writestr("data/values.csv", "a,b")
+    with pytest.raises(DocumentReadError) as excinfo:
+        extract(path)
+    message = str(excinfo.value)
+    assert "a zip archive that is no OOXML package" in message
+    assert "data/values.csv, readme.txt" in message
+
+
+def test_an_opendocument_package_is_named_not_mistaken_for_a_workbook(tmp_path):
+    path = tmp_path / "book.xlsx"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("mimetype", "application/vnd.oasis.opendocument.spreadsheet")
+        z.writestr("content.xml", "<x/>")
+    with pytest.raises(DocumentReadError, match="an OpenDocument package"):
+        extract(path)
+
+
+def test_an_empty_file_says_it_is_empty(tmp_path):
+    path = tmp_path / "nothing.docx"
+    path.write_bytes(b"")
+    assert sniff(path).kind == "empty"
+    with pytest.raises(DocumentReadError, match=r"an empty file \(0 bytes\)"):
+        extract(path)
+
+
+def test_a_directory_is_not_a_document(tmp_path):
+    (tmp_path / "folder.xlsx").mkdir()
+    with pytest.raises(DocumentReadError, match="is a directory, not a document"):
+        extract(tmp_path / "folder.xlsx")
+
+
+def test_a_suffix_this_reader_has_no_expectation_for_is_not_a_lie(tmp_path):
+    path = write_docx(tmp_path / "thing.bin", para("x"))
+    assert sniff(path).kind == "docx"
+    assert not sniff(path).suffix_lies
+
+
+# ----------------------------------------------------------------------- MHTML saved as .doc
+#
+# The corpus's one `.doc` is not the OLE2 binary the suffix promises: it is a Confluence
+# "Export to Word" — a `multipart/related` MIME message whose HTML part is quoted-printable.
+# The soft line break in the fixture below is the whole point: `/usr/bin/textutil` on the real
+# file returned its bytes unchanged, and a `-format html` pass split `signature` into
+# `s= ignature`. `email.get_payload(decode=True)` rejoins it, so the assertion is a value the
+# host-converter route measurably gets wrong.
+
+MHTML_DOC = (
+    "Date: Wed, 19 Aug 2026 04:28:21 +0000 (UTC)\n"
+    "Subject: Exported From Confluence\n"
+    "MIME-Version: 1.0\n"
+    'Content-Type: multipart/related; boundary="----=_Part_6"\n'
+    "\n"
+    "------=_Part_6\n"
+    "Content-Type: text/html; charset=UTF-8\n"
+    "Content-Transfer-Encoding: quoted-printable\n"
+    "\n"
+    "<html><head><title>API</title><style>p{color:red}</style></head><body>\n"
+    "<h1>POST /juristic/api/account-service/submission-juma-acct-s=\n"
+    "ignature</h1>\n"
+    "<p>Overview</p>\n"
+    "<table><tr><th>field</th><th>type</th></tr>\n"
+    "<tr><td>account</td><td>string</td></tr></table>\n"
+    "<script>var leaked =3D 1;</script>\n"
+    "</body></html>\n"
+    "\n"
+    "------=_Part_6\n"
+    "Content-Type: image/png\n"
+    "Content-Transfer-Encoding: base64\n"
+    "\n"
+    "iVBORw0KGgo=\n"
+    "\n"
+    "------=_Part_6--\n"
+)
+
+
+def write_mhtml(path, text=MHTML_DOC):
+    path.write_bytes(text.encode())
+    return path
+
+
+def test_an_mhtml_archive_named_doc_is_read(tmp_path):
+    path = write_mhtml(tmp_path / "api.doc")
+    container = sniff(path)
+    assert container.kind == "mhtml" and container.suffix_lies
+    doc = extract(path)
+    assert doc.kind == "mhtml"
+    assert doc.parts[0].name == "document" and doc.parts[0].index == 0
+
+
+def test_a_quoted_printable_soft_break_is_rejoined_not_left_split(tmp_path):
+    """The one assertion `textutil` fails on the real file: the word must come back whole."""
+    rows = extract(write_mhtml(tmp_path / "api.doc")).parts[0].rows
+    joined = "\n".join(rows)
+    assert "submission-juma-acct-signature" in joined
+    assert "s= ignature" not in joined and "s=" not in joined
+
+
+def test_mhtml_drops_the_mime_envelope_and_the_binary_parts(tmp_path):
+    joined = "\n".join(extract(write_mhtml(tmp_path / "api.doc")).parts[0].rows)
+    assert "Content-Transfer-Encoding" not in joined
+    assert "boundary" not in joined
+    assert "iVBORw0KGgo" not in joined
+
+
+def test_html_tables_render_as_tab_separated_rows(tmp_path):
+    rows = extract(write_mhtml(tmp_path / "api.doc")).parts[0].rows
+    assert "field\ttype" in rows
+    assert "account\tstring" in rows
+
+
+def test_script_and_style_bodies_are_not_document_text(tmp_path):
+    joined = "\n".join(extract(write_mhtml(tmp_path / "api.doc")).parts[0].rows)
+    assert "leaked" not in joined and "color:red" not in joined
+
+
+def test_a_plain_html_file_is_read(tmp_path):
+    path = tmp_path / "page.html"
+    path.write_bytes(b"<html><body><h1>Title &amp; more</h1><p>Body</p></body></html>")
+    assert sniff(path).kind == "html"
+    doc = extract(path)
+    assert doc.kind == "html"
+    assert doc.parts[0].rows == ("Title & more", "Body")
+
+
+def test_mhtml_with_several_text_parts_gets_several_addressable_parts(tmp_path):
+    text = (
+        "MIME-Version: 1.0\n"
+        'Content-Type: multipart/related; boundary="b"\n'
+        "\n--b\nContent-Type: text/html\n\n<p>first</p>\n"
+        "\n--b\nContent-Type: text/plain\n\nsecond\n"
+        "\n--b--\n"
+    )
+    doc = extract(write_mhtml(tmp_path / "two.mht", text))
+    assert [p.name for p in doc.parts] == ["part0", "part1"]
+    assert doc.parts[0].rows == ("first",) and doc.parts[1].rows == ("second",)
+
+
+def test_a_text_container_with_no_text_refuses_instead_of_returning_an_empty_document(tmp_path):
+    """Invariant: silent empty text is the defect. `.xlsx` is exempt and stays exempt below."""
+    path = tmp_path / "blank.html"
+    path.write_bytes(b"<html><head><style>p{color:red}</style></head><body></body></html>")
+    with pytest.raises(DocumentReadError) as excinfo:
+        extract(path)
+    message = str(excinfo.value)
+    assert "it is a html container but" in message
+    assert "it is not an empty document" in message
+
+
+def test_an_empty_xlsx_sheet_is_still_a_part_with_no_rows(tmp_path):
+    """The exemption, pinned: J10's `.xlsx` row counts are committed measurements."""
+    path = write_xlsx(tmp_path / "void.xlsx", [("blank", "worksheets/sheet1.xml", "")])
+    doc = extract(path)
+    assert doc.parts[0].name == "blank" and doc.parts[0].rows == ()
+
+
+# ---------------------------------------------------------- legacy `.doc` / `.rtf`, probed
+
+needs_textutil = pytest.mark.skipif(
+    textutil_path() is None, reason=f"{TEXTUTIL} is a macOS built-in and is not on this host"
+)
+
+
+@needs_textutil
+def test_a_real_ole2_doc_is_read_through_textutil(tmp_path):
+    """No binary is committed: `textutil` writes the OLE2 fixture it is then asked to read.
+
+    `sniff` still has to earn its answer — the assertion below is on the D0CF11E0 magic, and
+    the file is written with a suffix that does not match, so a suffix reading gets it wrong.
+    """
+    source = tmp_path / "seed.txt"
+    source.write_text("Hello legacy world.\nSecond paragraph here.\n")
+    target = tmp_path / "legacy.pdf"
+    subprocess.run(
+        [TEXTUTIL, "-convert", "doc", "-output", str(target), str(source)], check=True
+    )
+    assert target.read_bytes()[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+    container = sniff(target)
+    assert container.kind == "doc" and container.suffix_lies
+    doc = extract(target)
+    assert doc.kind == "doc"
+    assert "Hello legacy world." in doc.parts[0].rows
+
+
+@needs_textutil
+def test_an_rtf_document_is_read_through_textutil(tmp_path):
+    path = tmp_path / "note.rtf"
+    path.write_bytes(rb"{\rtf1\ansi Policy number 4\par Second line\par}")
+    assert sniff(path).kind == "rtf"
+    doc = extract(path)
+    assert doc.kind == "rtf"
+    assert "Policy number 4" in doc.parts[0].rows
+
+
+def test_a_legacy_doc_refuses_by_name_when_textutil_is_absent(tmp_path, monkeypatch):
+    """The Linux and CI case. `textutil` is probed, never assumed — so this is the behaviour
+    on every host that is not a Mac, and it must be a refusal that names the converter."""
+    monkeypatch.setattr(docread, "TEXTUTIL", str(tmp_path / "no-such-textutil"))
+    assert docread.textutil_path() is None
+    path = tmp_path / "legacy.doc"
+    path.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 512)
+    with pytest.raises(DocumentReadError) as excinfo:
+        extract(path)
+    message = str(excinfo.value)
+    assert "an OLE2 compound file" in message
+    assert "is not on this host" in message
+
+
+@needs_textutil
+def test_textutil_refusing_a_file_is_reported_not_swallowed(tmp_path):
+    """An OLE2 file that is not a Word document. The path must end in a reason, never in
+    empty rows — `textutil` either errors, which is reported, or converts nothing, which
+    `_nonempty` turns into a refusal."""
+    path = tmp_path / "notword.doc"
+    path.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 4096)
+    with pytest.raises(DocumentReadError) as excinfo:
+        extract(path)
+    message = str(excinfo.value)
+    assert "does not recognise it and reports 'Type: plain text'" in message
+    assert "raw bytes re-encoded" in message
 
 
 # --------------------------------------------------------------------------- paging
