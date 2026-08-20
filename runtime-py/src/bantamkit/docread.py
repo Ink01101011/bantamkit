@@ -1049,9 +1049,19 @@ def _pdf_refusal(text: pdfread.PdfText) -> str:
             "character each glyph draws. Decoding them anyway would return text that is "
             "indistinguishable from content and is not content"
         )
+    if text.vouched:
+        # MEASURED on the user's corpus: pages that run text-showing operators whose every
+        # character is a space. Saying "no character" there would be false — the characters
+        # were recovered and they carry nothing — so the count is given and named for what
+        # it is.
+        return (
+            f"its {pages} page(s) ran {text.show_ops} text-showing operator(s) and produced "
+            f"{text.vouched} character(s), every one of them whitespace — the file draws "
+            f"{text.images} image(s) and no text"
+        )
     return (
         f"its {pages} page(s) ran {text.show_ops} text-showing operator(s) and produced no "
-        "character this reader can vouch for"
+        "character at all"
     )
 
 
