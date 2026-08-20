@@ -762,6 +762,21 @@ def test_clause_4_the_paste_states_its_own_completeness_on_both_corpora(tmp_path
     assert "This copy is PARTIAL." in system
 
 
+def test_the_paste_preamble_states_the_tab_separator_and_the_row_order_verbatim(tmp_path):
+    """RB-P95. `document_paste_preamble` is the first line of the only message the `paste` arm
+    puts in front of the model, and the ONLY node in the suite that reddened on a rewording of
+    it was `test_layers.py::test_document_paste_bytes`. `pasted_rows` above skips these three
+    lines by index, which is why nothing here noticed them. What the preamble has to carry is
+    how to READ the rows that follow — the separator, the ordering, and which row is the header
+    — because the arm attaches no tool that could answer any of those."""
+    client, _ = run_paste(tmp_path)
+    preamble = system_of(client).splitlines()[0]
+    assert "The following document content is attached to this task." in preamble
+    assert "Fields in a row are separated by tabs" in preamble
+    assert "rows are given in order" in preamble
+    assert "row 0 of each part is its header" in preamble
+
+
 def test_clause_2_the_pasted_bytes_are_the_bytes_document_read_would_return(tmp_path):
     """§10.2 clause 2, as an equality rather than a description: the rows the paste shows are
     docread's own rendering, so the same offsets fetched through `document_read` carry the

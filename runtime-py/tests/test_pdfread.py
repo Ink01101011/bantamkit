@@ -20,6 +20,7 @@ import zlib
 import pytest
 
 from bantamkit import pdfread
+from bantamkit.contract import document_manifest
 from bantamkit.docread import (
     OMIT_UNMAPPED,
     OMIT_UNREAD_PAGE,
@@ -317,6 +318,45 @@ def test_a_scanned_page_inside_a_text_document_is_declared_not_silently_empty(tm
     assert len(unread) == 1
     assert unread[0].count == 1  # one image drawn
     assert unread[0].what == "0"  # zero text-showing operators
+
+
+def test_the_unread_page_reaches_the_model_as_a_sentence_that_says_not_empty_verbatim(
+    tmp_path,
+):
+    """RB-P95. The node above stops at the RECORD: a count in an omission, which no model ever
+    sees. The sentence that turns it into something a model can act on is
+    `document_manifest_omitted_unread_page`, and the only node in the suite that reddened on a
+    rewording of it was `test_layers.py::test_document_manifest_pdf_page_omission_bytes` — one
+    byte golden, in one file. The distinction it has to carry is the unit's whole point: a page
+    nobody could read is NOT an empty page, and a model told the second will answer from a
+    document it thinks it has finished."""
+    objects = dict(IMAGE_PAGE_OBJECTS)
+    objects[2] = b"<< /Type /Pages /Kids [6 0 R 3 0 R] /Count 2 >>"
+    objects[6] = (
+        b"<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 8 0 R >> >> /Contents 7 0 R >>"
+    )
+    objects[7] = stream_obj(b"", b"BT /F1 12 Tf 72 720 Td (page one has words) Tj ET")
+    objects[8] = HELVETICA
+    doc = extract(write(tmp_path, "mixed.pdf", build_pdf(objects)))
+    observed = document_manifest(
+        [
+            {
+                "document": "mixed.pdf",
+                "kind": doc.kind,
+                "index": part.index,
+                "part": part.name,
+                "row_count": part.row_count,
+                "rows": part.rows,
+                "omissions": [o.as_dict() for o in part.omissions],
+            }
+            for part in doc.parts
+        ]
+    )
+    assert "this part rendered NO row: the page ran" in observed
+    assert "text-showing operator(s) and draws" in observed
+    assert "no row means this reader recovered no text from the page" in observed
+    assert "NOT the same as the page being empty" in observed
+    assert "there is no OCR here" in observed
 
 
 def test_a_page_that_shows_only_spaces_is_not_a_document(tmp_path):
