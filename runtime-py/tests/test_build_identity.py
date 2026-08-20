@@ -92,12 +92,12 @@ class _Session:
     would be reporting on the wrong thing.
     """
 
-    def __init__(self, tree: Path, cwd: Path, home: Path):
+    def __init__(self, import_path: Path, cwd: Path, home: Path):
         env = {k: v for k, v in os.environ.items() if k != "BANTAMKIT_ASSETS"}
         # Stripped for mcpdrift's reason: an inherited override would point every tree at
         # ONE asset pack, and the asset half of the fingerprint could never fire.
         env["HOME"] = str(home)
-        env["PYTHONPATH"] = str(tree / "runtime-py" / "src")
+        env["PYTHONPATH"] = str(import_path)
         self.proc = subprocess.Popen(
             [sys.executable, "-c", "from bantamkit.mcpserver import main; main()"],
             stdin=subprocess.PIPE,
@@ -144,10 +144,11 @@ class _Session:
 
 
 def _tree(root: Path, name: str) -> Path:
-    """A complete, self-contained bantamkit source tree — package plus asset pack.
+    """A CHECKOUT-shaped build: package under `runtime-py/src`, pack at the tree root.
 
     The layout matters: `assets_root()` falls back to `<package>/../../../assets`, so the
     pack must sit at the tree root for a tree to be a build rather than half of one.
+    Returns the tree; its import path is `<tree>/runtime-py/src`.
     """
     tree = root / name
     (tree / "runtime-py" / "src").mkdir(parents=True)
@@ -160,13 +161,36 @@ def _tree(root: Path, name: str) -> Path:
     return tree
 
 
-def _identity_of(tree: Path, tmp_path: Path) -> dict:
-    """Launch that tree as a server and ask it, over the wire, who it is."""
-    home = tmp_path / f"home-{tree.name}"
-    cwd = tmp_path / f"cwd-{tree.name}"
+def _import_path(tree: Path) -> Path:
+    return tree / "runtime-py" / "src"
+
+
+def _wheel_shaped(root: Path, name: str) -> Path:
+    """A WHEEL-shaped build of the same content: pack INSIDE the package.
+
+    This is the layout `RB-P85` pins (`bantamkit/assets/` inside the installed package)
+    and the one the user-scope install on a developer machine actually has, while the
+    project-scope editable install has the checkout shape. Returns the import path.
+    """
+    pkgroot = root / name / "pkgroot"
+    pkgroot.mkdir(parents=True)
+    shutil.copytree(
+        PACKAGE_SRC, pkgroot / "bantamkit", ignore=shutil.ignore_patterns("__pycache__")
+    )
+    shutil.copytree(
+        ASSET_SRC, pkgroot / "bantamkit" / "assets", ignore=shutil.ignore_patterns("__pycache__")
+    )
+    return pkgroot
+
+
+def _identity_of(import_path: Path, tmp_path: Path) -> dict:
+    """Launch that build as a server and ask it, over the wire, who it is."""
+    label = import_path.parent.name
+    home = tmp_path / f"home-{label}"
+    cwd = tmp_path / f"cwd-{label}"
     home.mkdir(exist_ok=True)
     cwd.mkdir(exist_ok=True)
-    session = _Session(tree, cwd, home)
+    session = _Session(import_path, cwd, home)
     try:
         init = session.request(
             "initialize",
@@ -189,9 +213,9 @@ def _identity_of(tree: Path, tmp_path: Path) -> dict:
     # a checkout that is not the tree under test, and every comparison below would then
     # be one build compared with itself and would agree. The child says which tree it
     # loaded, and this is the only place that answer is allowed to be wrong.
-    assert identity["package_path"].startswith(str(tree)), (
-        f"the child loaded {identity['package_path']}, not the tree under test at {tree}; "
-        "the arms are not independent and every comparison in this file is vacuous"
+    assert identity["package_path"].startswith(str(import_path)), (
+        f"the child loaded {identity['package_path']}, not the build under test at "
+        f"{import_path}; the arms are not independent and every comparison here is vacuous"
     )
     return identity
 
@@ -200,7 +224,7 @@ def _identity_of(tree: Path, tmp_path: Path) -> dict:
 def pristine(tmp_path_factory) -> dict:
     """One untouched arm, launched once, that every mutation below is compared against."""
     root = tmp_path_factory.mktemp("pristine")
-    return _identity_of(_tree(root, "A"), root)
+    return _identity_of(_import_path(_tree(root, "A")), root)
 
 
 # ------------------------------------------------------------- the advertised surface
@@ -248,8 +272,15 @@ def test_git_commit_is_a_stated_refusal_and_never_reads_as_a_value():
 def test_the_digests_covered_the_files_that_are_really_there():
     """Vacuity: a digest over zero files is a constant that agrees with every other one."""
     identity = build_identity()
+    # Same two exclusions the surface documents, restated independently here: derived
+    # bytecode, and a pack that sits inside the package only in a wheel-shaped install.
+    packed = PACKAGE_SRC / "assets"
     expected_code = len(
-        [p for p in PACKAGE_SRC.rglob("*.py") if "__pycache__" not in p.parts]
+        [
+            p
+            for p in PACKAGE_SRC.rglob("*.py")
+            if "__pycache__" not in p.parts and not p.is_relative_to(packed)
+        ]
     )
     expected_assets = len([p for p in assets_root().rglob("*") if p.is_file()])
     assert identity["code_files"] == expected_code > 1
@@ -299,7 +330,7 @@ def test_two_builds_under_one_version_string_are_told_apart_over_the_protocol(
     assert floored in source, "the RB-P1 k-floor moved; this mutation no longer means CAL-2"
     component.write_text(source.replace(floored, "budget = self.k if k is None else k", 1))
 
-    mutant = _identity_of(tree, tmp_path)
+    mutant = _identity_of(_import_path(tree), tmp_path)
 
     assert mutant["version"] == pristine["version"]
     assert mutant["_server_version"] == pristine["_server_version"] == pristine["version"]
@@ -321,7 +352,7 @@ def test_a_change_no_behavioural_probe_could_see_is_still_a_different_build(pris
     target = tree / "runtime-py" / "src" / "bantamkit" / "textutil.py"
     target.write_text(target.read_text() + "\n# a comment that changes no behaviour\n")
 
-    mutant = _identity_of(tree, tmp_path)
+    mutant = _identity_of(_import_path(tree), tmp_path)
 
     assert mutant["version"] == pristine["version"]
     assert mutant["code_digest"] != pristine["code_digest"]
@@ -340,7 +371,7 @@ def test_an_asset_only_change_moves_the_build_id_on_its_own(pristine, tmp_path):
     assert contract.is_file(), "the asset this node edits moved; pick another and say so"
     contract.write_text(contract.read_text() + "\n# edited by test_build_identity\n")
 
-    mutant = _identity_of(tree, tmp_path)
+    mutant = _identity_of(_import_path(tree), tmp_path)
 
     assert mutant["code_digest"] == pristine["code_digest"]
     assert mutant["assets_digest"] != pristine["assets_digest"]
@@ -360,10 +391,39 @@ def test_two_copies_of_one_build_at_two_paths_are_one_build(pristine, tmp_path):
     project-scope installs different builds on the day they were refreshed from the same
     commit.
     """
-    twin = _identity_of(_tree(tmp_path, "twin"), tmp_path)
+    twin = _identity_of(_import_path(_tree(tmp_path, "twin")), tmp_path)
 
     assert twin["package_path"] != pristine["package_path"]
     assert twin["assets_root"] != pristine["assets_root"]
     assert twin["build_id"] == pristine["build_id"]
     for field in ("version", "code_digest", "code_files", "assets_digest", "assets_files"):
         assert twin[field] == pristine[field], field
+
+
+def test_one_build_in_two_install_shapes_is_one_build(pristine, tmp_path):
+    """The control that FOUND A DEFECT, and it is the reason it is here.
+
+    This project installs as two shapes: a wheel, where the asset pack sits INSIDE the
+    package (`RB-P85`), and an editable checkout, where it sits beside the repository
+    root. That is not hypothetical — it is exactly the pair registered under one name on
+    a developer machine, user scope a wheel and project scope editable.
+
+    The first version of this surface walked `<package>/**/*.py` with no exclusion. The
+    asset pack carries eleven `.py` files of its own (`assets/evals/devteam/repo/`), so
+    the wheel shape counted 33 source files and the checkout shape 22 — and the two
+    reported DIFFERENT `build_id`s for byte-identical content. A fingerprint that calls
+    one build two builds is worse than none: it is an alarm that fires on the normal
+    state of the machine it was written for, and it would have been believed once.
+
+    Both arms below hold identical content; only the shape differs.
+    """
+    wheel = _identity_of(_wheel_shaped(tmp_path, "wheelish"), tmp_path)
+
+    assert wheel["package_path"] != pristine["package_path"]
+    assert wheel["assets_root"].startswith(wheel["package_path"])
+    assert not pristine["assets_root"].startswith(pristine["package_path"])
+    assert wheel["code_files"] == pristine["code_files"]
+    assert wheel["assets_files"] == pristine["assets_files"]
+    assert wheel["code_digest"] == pristine["code_digest"]
+    assert wheel["assets_digest"] == pristine["assets_digest"]
+    assert wheel["build_id"] == pristine["build_id"]

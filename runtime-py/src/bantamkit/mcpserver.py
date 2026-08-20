@@ -127,14 +127,29 @@ def _code_fingerprint() -> tuple[str, int, Path]:
     `bantamkit.__file__` is the same resolution the import system already performed, so
     this reads the tree that is actually serving the call — not a checkout that happens
     to be nearby, which is exactly the confusion `RB-P55` names inside a worktree.
-    `__pycache__` is excluded: bytecode is derived, and including it would make one build
-    fingerprint differently before and after its first import.
+
+    TWO EXCLUSIONS, AND THE SECOND WAS MEASURED RATHER THAN REASONED. `__pycache__`
+    because bytecode is derived, and a build must not fingerprint differently before and
+    after its first import. `<package>/assets/` because THE ASSET PACK LIVES INSIDE THE
+    PACKAGE IN A WHEEL and beside the repository root in a checkout (`RB-P85`,
+    `docs/install.md`, `assets_root()`), while carrying eleven `.py` files of its own
+    (`assets/evals/devteam/repo/`): a walk that swept them in counted 22 files from an
+    editable checkout and 33 from a wheel-shaped install OF IDENTICAL CONTENT, and
+    reported the two as different builds. That is the false positive this whole surface
+    exists to avoid — a machine's user-scope wheel and project-scope editable install of
+    one commit are ONE build. The pack is fingerprinted in full by `_assets_fingerprint`,
+    so nothing goes unmeasured; it is measured once, under the field that names it.
     """
     located = getattr(bantamkit, "__file__", None)
     if not located:
         raise _Undetermined("bantamkit has no __file__; the running code is not on disk")
     root = Path(located).resolve().parent
-    files = sorted(p for p in root.rglob("*.py") if "__pycache__" not in p.parts)
+    packed_assets = root / "assets"
+    files = sorted(
+        p
+        for p in root.rglob("*.py")
+        if "__pycache__" not in p.parts and not p.is_relative_to(packed_assets)
+    )
     if not files:
         # A digest over nothing is a constant, and two servers that both computed one
         # would agree — the vacuity this whole surface exists to prevent.
