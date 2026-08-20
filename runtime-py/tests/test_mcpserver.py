@@ -37,13 +37,19 @@ VALID_SCHEMA = {
 }
 
 
-def test_lists_exactly_the_six_tools(tmp_path):
-    """One server, one entry point: memory and shiftwork ride the same instance."""
+def test_lists_exactly_the_seven_tools(tmp_path):
+    """One server, one entry point: memory and shiftwork ride the same instance.
+
+    Seven since `build_identity` (RB-P84's second half): the list is EXACT, so a tool
+    added to the server is a deliberate edit here. The assertion is not relaxed to a
+    membership check — an exact list is the only form that notices a tool arriving.
+    """
 
     async def scenario():
         async with Client(make_server(tmp_path)) as c:
             names = sorted(t.name for t in (await c.list_tools()).tools)
             assert names == [
+                "build_identity",
                 "memory_recall",
                 "memory_save",
                 "shiftwork_clock_in",
