@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from importlib import metadata
 from typing import Any
 
-from bantamkit import shiftwork
+from bantamkit import __version__, shiftwork
 from bantamkit.assets import AssetNotFound, assets_root, load_skill, load_tool
 from bantamkit.contract import schema_error, schema_retry_feedback
 from bantamkit.memory import Memory
@@ -50,10 +49,15 @@ STATUS_DESCRIPTION = (
 
 
 def _version() -> str:
-    try:
-        return metadata.version("bantamkit")
-    except metadata.PackageNotFoundError:
-        return "0.0.0"
+    """The version this checkout declares — never the one the last install recorded.
+
+    RB-P45: `metadata.version("bantamkit")` reads the installed dist-info, and a *stale*
+    editable install is not a `PackageNotFoundError`, so the old body could not fall back
+    — it returned a confidently wrong number. `__version__` is the same bytes hatchling
+    builds the wheel from, is already imported by the time this module exists, and has no
+    failure mode to fall back from.
+    """
+    return __version__
 
 
 def build_server(memory: Memory) -> Any:
