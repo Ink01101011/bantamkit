@@ -1072,7 +1072,7 @@ def main(argv: list[str] | None = None) -> int:
         ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
         capture_output=True,
         text=True,
-        check=False,
+        check=False, encoding="utf-8",
     ).stdout.strip()
     print(f"repo root:             {root}")
     print(f"git HEAD:              {head or 'unknown'}")
@@ -1115,7 +1115,7 @@ def main(argv: list[str] | None = None) -> int:
         if not out.exists():
             print(f"FAILED — {ARTIFACT} is not there, so there is nothing to check against.")
             return 1
-        problems, added, drift = compare_on_committed_keys(out.read_text(), rows)
+        problems, added, drift = compare_on_committed_keys(out.read_text(encoding="utf-8"), rows)
         print(RULE)
         if drift:
             # Printed BEFORE the verdict and whether or not the verdict is a pass, so a
@@ -1146,7 +1146,7 @@ def main(argv: list[str] | None = None) -> int:
         print(RULE)
         return 0
 
-    out.write_text(text)
+    out.write_text(text, encoding="utf-8")
     print(RULE)
     print(f"WROTE {ARTIFACT} — {len(text)} B, {len(rows)} rows.")
     print(RULE)

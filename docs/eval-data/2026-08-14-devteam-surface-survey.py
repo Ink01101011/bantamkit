@@ -32,7 +32,7 @@ CONFIG_SUFFIXES = {".yaml", ".yml", ".json", ".ini", ".toml", ".env", ".cfg"}
 
 def tasks() -> list[tuple[Path, dict]]:
     files = sorted(TASKS.glob("*.yaml"))
-    return [(p, yaml.safe_load(p.read_text())) for p in files]
+    return [(p, yaml.safe_load(p.read_text(encoding="utf-8"))) for p in files]
 
 
 def classify(path: str) -> str:
@@ -162,7 +162,7 @@ def survey_accounting() -> None:
         ("report score/1k = passes / (tokens/1000)", "evalrun.py", r"per_1k = passed / \(tokens / 1000\)", "derive"),
     ]
     for label, fname, pat, kind in sites:
-        text = (SRC / fname).read_text().splitlines()
+        text = (SRC / fname).read_text(encoding="utf-8").splitlines()
         rx = re.compile(pat)
         hits = [i + 1 for i, line in enumerate(text) if rx.search(line)]
         loc = f"{fname}:{','.join(map(str, hits)) if hits else 'NOT FOUND'}"
@@ -172,7 +172,9 @@ def survey_accounting() -> None:
     print("a single scalar per (task, config, repeat). No per-call, per-tool, per-gate")
     print("or per-mechanism token column exists anywhere in TaskResult.")
     print()
-    fields = re.search(r"class TaskResult:\n(.*?)\n\n", (SRC / "evalrun.py").read_text(), re.DOTALL)
+    fields = re.search(r"class TaskResult:\n(.*?)\n\n", (SRC / "evalrun.py").read_text(
+        encoding="utf-8"
+    ), re.DOTALL)
     names = re.findall(r"^\s{4}(\w+):", fields.group(1), re.MULTILINE) if fields else []
     print("TaskResult columns: " + ", ".join(names))
     print()
@@ -182,7 +184,7 @@ def survey_filegraph() -> None:
     print(RULE)
     print("TABLE 6 — FileAccessGraph mechanisms and their token route")
     print(RULE)
-    text = (SRC / "filegraph.py").read_text().splitlines()
+    text = (SRC / "filegraph.py").read_text(encoding="utf-8").splitlines()
 
     def line_of(pat: str) -> str:
         rx = re.compile(pat)

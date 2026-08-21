@@ -102,7 +102,7 @@ def _load(path: Path, name: str):
 def _before_source() -> str:
     out = subprocess.run(
         ["git", "-C", str(REPO), "show", BEFORE_SHA + ":" + HARNESS_REL],
-        capture_output=True, text=True, check=True)
+        capture_output=True, text=True, check=True, encoding="utf-8")
     return out.stdout
 
 

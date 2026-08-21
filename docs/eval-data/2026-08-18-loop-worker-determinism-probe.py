@@ -134,7 +134,9 @@ def unload(model: str) -> None:
 
 
 def ps_context() -> str:
-    out = subprocess.run(["ollama", "ps"], check=False, capture_output=True, text=True)
+    out = subprocess.run(
+        ["ollama", "ps"], check=False, capture_output=True, text=True, encoding="utf-8"
+    )
     return out.stdout.strip()
 
 

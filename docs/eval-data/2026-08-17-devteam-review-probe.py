@@ -382,7 +382,9 @@ def attack_transcript(m3, root: Path) -> dict:
 
 def load_arm(root: Path, config: str) -> list[dict]:
     path = root / "docs" / "eval-data" / f"2026-08-17-devteam-ladder-{config}.jsonl"
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    return [json.loads(line) for line in path.read_text(
+        encoding="utf-8"
+    ).splitlines() if line.strip()]
 
 
 def index_by_task_seed(rows: list[dict]) -> dict[tuple[str, int], dict]:

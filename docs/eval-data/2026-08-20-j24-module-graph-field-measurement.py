@@ -122,7 +122,7 @@ def _module_pair():
     this program writes into the repository."""
     blob = subprocess.run(["git", "-C", str(REPO), "show",
                            f"{BEFORE_SHA}:{HARNESS_REL}"],
-                          capture_output=True, text=True, check=True).stdout
+                          capture_output=True, text=True, check=True, encoding="utf-8").stdout
     before_path = HERE / f".bk-j24-before-{os.getpid()}.py"
     before_path.write_text(blob, encoding="utf-8")
     try:
@@ -144,7 +144,7 @@ def _transpile(wt: str, rels: list[str]) -> dict[str, str]:
         argv = [os.path.join(wt, "node_modules/.bin/tsc"), "--module", "esnext",
                 "--target", "es2022", "--outDir", td, "--rootDir", shared]
         argv += [os.path.join(shared, r) for r in rels]
-        subprocess.run(argv, check=False, capture_output=True, text=True)
+        subprocess.run(argv, check=False, capture_output=True, text=True, encoding="utf-8")
         for rel in rels:
             js = os.path.join(td, rel[:-3] + ".js")
             if not os.path.exists(js):
@@ -239,7 +239,7 @@ def section_control(before, after, wt: str, real: str) -> int:
                 os.remove(bi)
             rcs.append(subprocess.run(argv, cwd=shared, check=False,
                                       capture_output=True,
-                                      text=True).returncode)
+                                      text=True, encoding="utf-8").returncode)
         return rcs[0], rcs[1]
 
     clean_pair = rc_pair()

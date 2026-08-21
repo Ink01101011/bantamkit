@@ -78,7 +78,9 @@ def _import_bantamkit(root: Path):
 def manifest(root: Path) -> dict:
     import yaml
 
-    return yaml.safe_load((root / "assets" / "evals" / "devteam" / "manifest.yaml").read_text())
+    return yaml.safe_load((root / "assets" / "evals" / "devteam" / "manifest.yaml").read_text(
+        encoding="utf-8"
+    ))
 
 
 def tool_sequence(spec: dict, prompt: str) -> list[tuple[str, str | None]]:
@@ -285,12 +287,15 @@ def pass2(root: Path, tasks, specs, jsonl: Path) -> tuple[list[dict], str, int]:
     ]
     try:
         proc = subprocess.run(
-            command, cwd=root, capture_output=True, text=True, timeout=300, check=False
+            command, cwd=root, capture_output=True, text=True, timeout=300, check=False,
+            encoding="utf-8",
         )
     finally:
         server.shutdown()
         server.server_close()
-    rows = [json.loads(line) for line in jsonl.read_text().splitlines() if line.strip()]
+    rows = [json.loads(line) for line in jsonl.read_text(
+        encoding="utf-8"
+    ).splitlines() if line.strip()]
     printable = " ".join(command).replace(str(jsonl), "<jsonl>").replace(sys.executable, "python")
     return rows, printable, proc.returncode
 

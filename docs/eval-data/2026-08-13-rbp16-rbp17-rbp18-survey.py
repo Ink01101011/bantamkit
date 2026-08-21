@@ -41,7 +41,7 @@ def summaries() -> list[tuple[Path, dict]]:
     """Every committed summary that carries a §7 `comparisons` block."""
     out = []
     for path in sorted(DATA.glob("*.json")):
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         if '"comparisons"' not in text:
             continue
         out.append((path, json.loads(text)))
@@ -153,7 +153,7 @@ def survey_report_discriminability(rows: list[dict]) -> None:
     print("SURVEY 1b (RB-P16) — is the band's REPORT a function of the effect size?")
     print(RULE)
     path = DATA / "2026-08-11-pb14-14b-nav-prod-port-perturbation-summary.json"
-    summary = json.loads(path.read_text())
+    summary = json.loads(path.read_text(encoding="utf-8"))
     picked = {}
     for cell in summary["cells"]:
         for comp in cell["comparisons"]:
@@ -181,7 +181,7 @@ def survey_point_level_agreement() -> None:
     print(RULE)
     path = DATA / "2026-08-11-pb14-14b-nav-prod-port-perturbation.jsonl"
     passed: dict[tuple[int, str], dict[str, bool]] = {}
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         row = json.loads(line)
         passed.setdefault((row["repeat"], row["variant"]), {})[row["point"]] = row["passed"]
     print(f"{'cell':6} {'F':>2} {'B':>4} {'C':>4} {'agree':>5}  B-only / C-only")
@@ -229,7 +229,7 @@ def survey_provenance() -> None:
         in_repo = (ROOT / ref).is_file() if not ref.startswith("/") else False
         recovered = None
         if in_repo:
-            recovered = sha256_text((ROOT / ref).read_text())
+            recovered = sha256_text((ROOT / ref).read_text(encoding="utf-8"))
         verdict = (
             "resolvable today (repo-relative path)"
             if in_repo and recovered in entry["shas"]
@@ -249,7 +249,7 @@ def survey_provenance() -> None:
         ["git", "-C", str(ROOT), "show", "d2f78b7:assets/rubrics/task-completion.yaml"],
         capture_output=True,
         text=True,
-        check=True,
+        check=True, encoding="utf-8",
     ).stdout
     template = _parse_rubric(raw, "git:d2f78b7").prompt
     print(f"  git:d2f78b7:assets/rubrics/task-completion.yaml file sha256 = {sha256_text(raw)}")
@@ -263,7 +263,7 @@ def survey_provenance() -> None:
     manifest = DATA.parent.parent / "assets" / "evals" / "perturbations" / "task-completion.yaml"
     import yaml
 
-    data = yaml.safe_load(manifest.read_text())
+    data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     print(f"  manifest: {manifest.relative_to(ROOT)}  points: {len(data['points'])}")
     for point in data["points"]:
         b = point["variants"].get("B-nonewline", {})
@@ -282,11 +282,13 @@ def survey_payload() -> None:
     print(RULE)
     print("SURVEY 3 (RB-P18) — every `payload_sha256` recipe, re-measured")
     print(RULE)
-    sa3 = json.loads((DATA / "2026-08-11-sa3-14b-nav-prod-port-critic-replay.json").read_text())
+    sa3 = json.loads((DATA / "2026-08-11-sa3-14b-nav-prod-port-critic-replay.json").read_text(
+        encoding="utf-8"
+    ))
     bar_rows = [
         json.loads(line)
         for line in (DATA / "2026-08-11-pb14-14b-nav-prod-port-perturbation.jsonl")
-        .read_text()
+        .read_text(encoding="utf-8")
         .splitlines()
     ]
     identity = {(r["variant"], r["repeat"]): r for r in bar_rows if r["point"] == "identity"}
@@ -300,7 +302,7 @@ def survey_payload() -> None:
             ["git", "-C", str(ROOT), "show", f"{ref}:assets/rubrics/task-completion.yaml"],
             capture_output=True,
             text=True,
-            check=True,
+            check=True, encoding="utf-8",
         ).stdout
         rubric = _parse_rubric(raw, f"git:{ref}")
         for repeat, seed in ((0, 2331795949), (1, 4094558621), (2, 634446002)):

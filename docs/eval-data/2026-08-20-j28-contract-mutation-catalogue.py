@@ -187,7 +187,7 @@ def run_suite(contract_text: str, workdir: Path) -> tuple[int, set[str]]:
     """Run the whole suite against an asset pack whose contract is `contract_text`."""
     pack = workdir / "assets"
     shutil.copytree(REPO / "assets", pack)
-    (pack / "contracts" / "default.yaml").write_text(contract_text)
+    (pack / "contracts" / "default.yaml").write_text(contract_text, encoding="utf-8")
     env = dict(os.environ)
     env["BANTAMKIT_ASSETS"] = str(pack)
     env["PYTHONPATH"] = str(REPO / "runtime-py" / "src")
@@ -195,7 +195,7 @@ def run_suite(contract_text: str, workdir: Path) -> tuple[int, set[str]]:
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", TESTS, "-q", "--tb=no",
          "-p", "no:randomly", "-p", "no:cacheprovider"],
-        cwd=REPO, env=env, capture_output=True, text=True, check=False,
+        cwd=REPO, env=env, capture_output=True, text=True, check=False, encoding="utf-8",
     )
     failed = {
         line.split(" ", 1)[1].split(" - ")[0].strip()
@@ -326,13 +326,14 @@ def main() -> int:
     args = ap.parse_args()
 
     keep_marker = args.mode == "prose"
-    base_text = CONTRACT.read_text()
+    base_text = CONTRACT.read_text(encoding="utf-8")
     commit = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"],
-                            capture_output=True, text=True, check=False).stdout.strip()
+                            capture_output=True, text=True, encoding="utf-8",
+                            check=False).stdout.strip()
     # A dirty tree is not the commit it names, and a table headed with a commit it was not
     # measured at is the defect this whole program exists to make checkable.
     if subprocess.run(["git", "-C", str(REPO), "status", "--porcelain"],
-                      capture_output=True, text=True, check=False).stdout.strip():
+                      capture_output=True, text=True, check=False, encoding="utf-8").stdout.strip():
         commit += "-dirty"
     print(f"repo {REPO}\nmode {args.mode}  commit {commit}")
 
@@ -354,9 +355,9 @@ def main() -> int:
     report = render(rows, args.mode, commit, baseline)
     print("\n" + report)
     if args.out:
-        Path(args.out).write_text(report)
+        Path(args.out).write_text(report, encoding="utf-8")
     if args.json:
-        Path(args.json).write_text(json.dumps(rows, indent=2) + "\n")
+        Path(args.json).write_text(json.dumps(rows, indent=2) + "\n", encoding="utf-8")
     return 1 if any(r["verdict"] == "BROKEN" for r in rows) else 0
 
 

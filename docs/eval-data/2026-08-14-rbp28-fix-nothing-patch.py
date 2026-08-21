@@ -110,14 +110,14 @@ def main() -> int:
 
     src = wt / "runtime-py" / "src"
     target = src / "bantamkit" / "criticreplay.py"
-    text = target.read_text()
+    text = target.read_text(encoding="utf-8")
     for i, (anchor, replacement) in [(i, EDITS[i]) for i in which]:
         n = text.count(anchor)
         assert n == 1, f"edit {i}: anchor appears {n}x, not once"
         after = text.replace(anchor, replacement)
         assert after != text, f"edit {i}: produced identical text"
         text = after
-    target.write_text(text)
+    target.write_text(text, encoding="utf-8")
 
     env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
     env["PYTHONPATH"] = str(src)
@@ -128,7 +128,7 @@ def main() -> int:
     resolved = Path(r.stdout.strip())
     print(f"resolved __file__ = {resolved}")
     assert str(resolved).startswith(str(wt)), "PYTHONPATH pin did not take"
-    got = resolved.read_text()
+    got = resolved.read_text(encoding="utf-8")
     assert got == text, "the resolved module is not the mutated text"
     for i in which:
         assert EDITS[i][1] in got, f"edit {i} did not apply"
@@ -209,7 +209,7 @@ def main() -> int:
                     "output": out,
                     "messages": [],
                 }
-            )
+            ), encoding="utf-8"
         )
     summary = field / "summary.json"
     fenv = dict(env)
@@ -240,14 +240,14 @@ def main() -> int:
         env=fenv,
     )
     print(r.stdout.strip())
-    err = (field / "err.txt").read_text().strip()
+    err = (field / "err.txt").read_text(encoding="utf-8").strip()
     if err:
         print("stderr:", err[-500:])
-    for ln in (field / "out.txt").read_text().splitlines():
+    for ln in (field / "out.txt").read_text(encoding="utf-8").splitlines():
         if ln.startswith("    effect: "):
             print(ln)
     if summary.is_file():
-        s = json.loads(summary.read_text())
+        s = json.loads(summary.read_text(encoding="utf-8"))
         print("recorded rubric_refs:", [v["rubric_ref"] for v in s["variants"]])
     return 0
 

@@ -247,7 +247,7 @@ def c1_both_grains_are_reported(ladder, root: Path) -> dict:
         # Propagate the mutation into the subprocess: the instrument's own mutation
         # `suite-floor-as-max` collapses the suite grain back onto the per-task max.
         argv += ["--mutate", "suite-floor-as-max"]
-    proc = subprocess.run(argv, capture_output=True, text=True, check=False)
+    proc = subprocess.run(argv, capture_output=True, text=True, check=False, encoding="utf-8")
     lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("GRAIN|")]
     ok = proc.returncode == 0 and len(lines) == len(ladder.PAIRS)
     detail = (
@@ -328,7 +328,7 @@ def c2_a_committed_row_exercises_the_dark_columns(root: Path) -> dict:
     witnesses: dict[str, list[str]] = {c: [] for c in DARK_COLUMNS}
     scanned = 0
     for path in sorted(glob.glob(str(root / "docs" / "eval-data" / "*.jsonl"))):
-        for line in Path(path).read_text().splitlines():
+        for line in Path(path).read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
             try:
@@ -372,13 +372,13 @@ def c2_the_artifact_is_labelled_and_is_not_an_arm(ladder, root: Path) -> dict:
             f"{VALIDATION_JSONL} does not exist, so F2's four dark columns rest on fixtures",
         )
         return {"rows": []}
-    rows = [json.loads(ln) for ln in jsonl.read_text().splitlines() if ln.strip()]
+    rows = [json.loads(ln) for ln in jsonl.read_text(encoding="utf-8").splitlines() if ln.strip()]
     arm_paths = {here / f"2026-08-17-devteam-ladder-{cfg}.jsonl" for _, cfg in ladder.ARMS}
     labelled = all(
         r.get("kind") == "instrument-validation" and r.get("ladder_arm") is False for r in rows
     )
     not_an_arm = jsonl not in arm_paths
-    doc_text = doc.read_text() if doc.exists() else ""
+    doc_text = doc.read_text(encoding="utf-8") if doc.exists() else ""
     missing = [s for s in REQUIRED_LABEL_SENTENCES if s not in doc_text]
     ok = bool(rows) and labelled and not_an_arm and not missing
     record(
@@ -511,7 +511,7 @@ def main(argv: list[str] | None = None) -> int:
         ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
         capture_output=True,
         text=True,
-        check=False,
+        check=False, encoding="utf-8",
     ).stdout.strip()
     print(f"repo root:             {root}")
     print(f"git HEAD:              {head or 'unknown'}")

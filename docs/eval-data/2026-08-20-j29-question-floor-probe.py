@@ -73,10 +73,10 @@ def before_module(tmp: Path):
     """The committed pre-change harness, fetched from git rather than described."""
     blob = subprocess.run(
         ["git", "-C", str(REPO), "show", f"{BEFORE_SHA}:{MODULE_PATH}"],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, check=True, encoding="utf-8",
     ).stdout
     path = tmp / "evalrun_before.py"
-    path.write_text(blob)
+    path.write_text(blob, encoding="utf-8")
     return load_module("evalrun_before", path)
 
 
@@ -92,7 +92,7 @@ def verdict(module, task: dict, workdir: Path) -> str:
 
 
 def committed(name: str = "doc-small-137") -> dict:
-    return yaml.safe_load((TASKS_DIR / f"{name}.yaml").read_text())
+    return yaml.safe_load((TASKS_DIR / f"{name}.yaml").read_text(encoding="utf-8"))
 
 
 def ask_a_row_the_corpus_does_not_hold(task: dict) -> dict:
@@ -151,7 +151,7 @@ CASES = [
 
 def census() -> list[str]:
     """The cost side of the deferral, re-derived from the committed task files."""
-    tasks = {p: yaml.safe_load(p.read_text())
+    tasks = {p: yaml.safe_load(p.read_text(encoding="utf-8"))
              for p in sorted((REPO / "assets" / "evals").rglob("tasks/*.yaml"))}
     with_corpus = {p: t for p, t in tasks.items() if t.get("document_setup")}
     asked = {
@@ -187,7 +187,7 @@ def main() -> int:
         print("\nCONTROL: the nine committed tasks, unmodified")
         bad = 0
         for i, path in enumerate(sorted(TASKS_DIR.glob("*.yaml"))):
-            task = yaml.safe_load(path.read_text())
+            task = yaml.safe_load(path.read_text(encoding="utf-8"))
             b = verdict(before, task, tmp / f"nine-b-{i}")
             a = verdict(after, task, tmp / f"nine-a-{i}")
             flag = "" if (b, a) == ("ACCEPTED", "ACCEPTED") else "   <-- MOVED"
