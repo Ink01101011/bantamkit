@@ -396,3 +396,12 @@ def main() -> None:
     args = _parse_args()
     server = build_server(_build_memory(args))
     asyncio.run(server.run_stdio_async())
+
+
+# `python -m bantamkit.mcpserver` is the invocation a host config reaches for when the
+# console script is not on PATH. Without this guard the module imported fine, defined
+# `main`, and exited 0 with nothing on either stream; the client saw CONNECTION_CLOSED,
+# which names the symptom and not the cause. Measured 2026-08-21 before this line:
+# `.venv/bin/python -m bantamkit.mcpserver` -> exit 0, stdout 0 bytes, stderr 0 bytes.
+if __name__ == "__main__":
+    main()
