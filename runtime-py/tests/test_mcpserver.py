@@ -399,6 +399,59 @@ def test_stdio_subprocess_initializes(tmp_path):
     run(scenario())
 
 
+def test_module_entrypoint_serves_over_stdio(tmp_path):
+    """`python -m bantamkit.mcpserver` must SERVE, not exit 0 in silence.
+
+    Its sibling above spawns `-c "from bantamkit.mcpserver import main; main()"`, which
+    routes around the module entry point entirely. That workaround is why the missing
+    `__main__` guard survived: with no guard, `-m` imported the module, defined `main`,
+    and exited 0 with zero bytes on both streams, so every client reported
+    CONNECTION_CLOSED -- the symptom, never the cause -- while this suite stayed green.
+    Measured 2026-08-21 with the guard deleted: this node fails at `initialize`; with the
+    guard present it completes the handshake. `-m` is the invocation a host config
+    reaches for when the console script is not on PATH, so it is a contract surface and
+    it gets its own node.
+
+    `env=` is not optional here, for the reason the sibling states at length: the mcp
+    stdio client's `get_default_environment()` strips PYTHONPATH, so without this the
+    subprocess would serve whatever `bantamkit` is INSTALLED rather than this checkout.
+    """
+    import sys
+
+    from mcp import ClientSession
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(SRC) + os.pathsep + env.get("PYTHONPATH", "")
+    params = StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "bantamkit.mcpserver", "--start", str(tmp_path)],
+        cwd=str(tmp_path),
+        env=env,
+    )
+
+    async def scenario():
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                init = await session.initialize()
+                assert init.server_info.name == "bantamkit"
+                assert init.server_info.version == bantamkit.__version__
+                tools = await session.list_tools()
+                # An EXACT list, matching both siblings: a count says "not seven" and a
+                # list names WHICH tool the module entry point is or is not serving.
+                assert sorted(t.name for t in tools.tools) == [
+                    "build_identity",
+                    "memory_recall",
+                    "memory_save",
+                    "shiftwork_clock_in",
+                    "shiftwork_clock_out",
+                    "shiftwork_status",
+                    "validate_json",
+                ]
+
+    run(scenario())
+
+
 def test_nonpositive_k_flag_is_rejected():
     with pytest.raises(SystemExit, match=">= 1"):
         _build_memory(_parse_args(["--k", "0"]))
