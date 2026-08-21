@@ -15,7 +15,7 @@ from bantamkit import Agent, Memory, OpenAICompatible
 client = OpenAICompatible(base_url="http://localhost:11434/v1", model="qwen2.5:7b-instruct")
 
 agent = Agent(client=client).use(
-    Memory(store="./.bantam-memory", k=3, index_budget=4096)
+    Memory(store="./.bantam-memory", k=3, index_budget=24000)
 )
 print(agent.run("Which team owns the payments API? Check memory first.").output)
 ```
@@ -97,10 +97,16 @@ budget error the *model* sees therefore names what the model can do (shorten the
 description, or save under an existing name); the `MemoryBudgetExceeded` text
 names `compact()`, and that one is for host code.
 
+That position only holds if the operator has a lever, and until 2026-08-21 there
+was none: `index_budget` was on no argument parser, and the four ops above were
+reachable only by importing `MemoryStore` from Python. Both halves now exist —
+see [The operator CLI](#the-operator-cli) below and `--index-budget` on
+`bantamkit-mcp`. The agent surface is unchanged and still exactly seven tools.
+
 ```python
 from bantamkit.memory import MemoryBudgetExceeded, MemoryStore, MemoryValidationError
 
-store = MemoryStore("./.bantam-memory", index_budget=4096, k=3)
+store = MemoryStore("./.bantam-memory", index_budget=24000, k=3)
 store.save("project", "deploy-command", "how we deploy to production",
            "Deploy with `make ship-prod` from the repo root.")
 
@@ -158,9 +164,21 @@ canonical fact per topic instead of near-duplicates.
 
 ## Budget and lifecycle
 
-`index_budget` (default 4096 bytes) caps the UTF-8 size of the index, not the
+`index_budget` (default 24000 bytes) caps the UTF-8 size of the index, not the
 size of the facts. The bodies can be as long as you like; what must stay small
 is the always-loaded index.
+
+The default was 4096 and that number had never been measured against a store
+anyone used. Measured against the live 20-fact project store on 2026-08-21: the
+index was **3943 bytes**, the median index line **199 bytes**, so 4096 left
+**153 bytes** of headroom and **19 of the 20 lines were individually larger than
+that**. Replaying 25 fresh saves onto a copy of that store at 4096 archived **18
+facts, the first of them on the very first save**; the same 25 saves at 24000
+archived **none**. That store was not near its budget, it was on a treadmill —
+forgetting roughly a fact per fact it learned. 24000 is the figure the sibling
+`memory-keeper` store on this machine has run in production for the same
+always-loaded index. Pass `index_budget=4096` to keep the old ceiling; nothing
+about the budget *mechanism* changed.
 
 **Saves are transactional against the budget.** If a write would push the index
 over, the fact file is rolled back (deleted, or restored to its previous
@@ -205,6 +223,65 @@ committed store, or on startup.
 There is no automatic compression or summarization in v1 — archiving is the only
 lifecycle action, and you trigger it.
 
+## The operator CLI
+
+`python -m bantamkit.memory` is how you trigger it without writing Python.
+
+```
+python -m bantamkit.memory status   [--store PATH | --start DIR] [--budget BYTES]
+python -m bantamkit.memory lint     [...]
+python -m bantamkit.memory compact  [...] [--reserve BYTES]
+python -m bantamkit.memory archived [...]
+python -m bantamkit.memory restore NAME [...]
+```
+
+With neither `--store` nor `--start`, it resolves the project store the same way
+`Memory.layered()` does — `discover_project_store(cwd)`. It resolves **only** the
+project layer: grants and the profile store are read-only to the component and
+this CLI cannot reach them either, which is a property of the code path, not a
+convention.
+
+Exit codes are `0` success, `1` a failure you must act on (over budget, a
+malformed fact, a refused restore), `2` a usage error — so `lint` drops into a
+pre-commit hook or CI job unchanged:
+
+```console
+$ python -m bantamkit.memory lint --budget 3000
+lint: FAIL — index is 3943 bytes, budget is 3000
+  try: python -m bantamkit.memory compact --store /repo/.bantamkit/memory --budget 3000
+$ echo $?
+1
+```
+
+`compact` prints every name that left, with its type and its index cost, plus the
+byte arithmetic and the command that brings one back:
+
+```console
+$ python -m bantamkit.memory compact --budget 3000
+compacted 7 fact(s)
+index: 3943 -> 2639 bytes (budget 3000, target 2712, reserve 288, headroom 361)
+archived -> /repo/.bantamkit/memory/archive
+  some-stale-fact (project, 178 bytes)
+  ...
+restore one with: python -m bantamkit.memory restore <name> --store /repo/.bantamkit/memory
+```
+
+That report is the point. `archive/` is a directory nothing reads back on its own,
+so a compaction whose output is not printed is a silent deletion as far as the
+operator is concerned.
+
+Lifecycle **actions** stay off `bantamkit-mcp`, which speaks MCP over stdout and
+cannot also print reports there. What the server does take is `--index-budget
+BYTES`, so the ceiling is a deployment decision rather than a source edit; it
+applies to whichever store the server builds, under `--store` or the layered
+default alike.
+
+Running `compact` twice in a row archives nothing the second time, because
+`reserve` is recomputed from the survivors. That idempotence holds **only with no
+save in between** — the target is a standing invariant about the current facts,
+not a fixed watermark, so a save that lands between two compactions can legitimately
+give the second one work to do.
+
 ## Layers
 
 `Memory(store=...)` reads and writes one directory. `Memory.layered()` builds
@@ -217,7 +294,7 @@ from bantamkit import Agent, Memory
 agent = Agent(client=client).use(Memory.layered())   # client as above
 ```
 
-`Memory.layered(start=None, k=3, index_budget=4096)` is a classmethod; `k`
+`Memory.layered(start=None, k=3, index_budget=24000)` is a classmethod; `k`
 bounds the merged result and `index_budget` governs the project store.
 
 | Layer | Where | Written? |
