@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import tomllib
 from pathlib import Path
 
@@ -13,6 +14,10 @@ from mcp import Client, MCPError  # noqa: E402
 
 import bantamkit  # noqa: E402
 from bantamkit.assets import load_skill, load_tool  # noqa: E402
+
+# The checkout under test, so a subprocess can be pointed at IT rather than at whatever
+# `bantamkit` is installed in the interpreter that spawns it.
+SRC = Path(__file__).resolve().parents[1] / "src"
 from bantamkit.mcpserver import (  # noqa: E402
     _build_memory,
     _parse_args,
@@ -37,13 +42,19 @@ VALID_SCHEMA = {
 }
 
 
-def test_lists_exactly_the_six_tools(tmp_path):
-    """One server, one entry point: memory and shiftwork ride the same instance."""
+def test_lists_exactly_the_seven_tools(tmp_path):
+    """One server, one entry point: memory and shiftwork ride the same instance.
+
+    Seven since `build_identity` (RB-P84's second half): the list is EXACT, so a tool
+    added to the server is a deliberate edit here. The assertion is not relaxed to a
+    membership check — an exact list is the only form that notices a tool arriving.
+    """
 
     async def scenario():
         async with Client(make_server(tmp_path)) as c:
             names = sorted(t.name for t in (await c.list_tools()).tools)
             assert names == [
+                "build_identity",
                 "memory_recall",
                 "memory_save",
                 "shiftwork_clock_in",
@@ -346,10 +357,23 @@ def test_stdio_subprocess_initializes(tmp_path):
     from mcp import ClientSession
     from mcp.client.stdio import StdioServerParameters, stdio_client
 
+    # THE ENVIRONMENT IS PASSED EXPLICITLY, and that is the point of this line.
+    # `StdioServerParameters` defaults to `get_default_environment()`, which passes only
+    # HOME/LOGNAME/PATH/SHELL/TERM/USER — **`PYTHONPATH` is stripped**. So this node used
+    # to serve whatever `bantamkit` happened to be INSTALLED in the interpreter's
+    # environment, never the checkout under test. On a developer machine with a stale
+    # install that is a different build from the one being reviewed, and the node passed
+    # while asserting a tool count that the checkout had already moved past; CI, which
+    # installs the branch, was the only place it could fail. That is `RB-P55`/`RB-P70`
+    # reaching through a subprocess, and it is measured: with the default environment this
+    # server answers with 6 tools, and with the line below it answers with 7.
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(SRC) + os.pathsep + env.get("PYTHONPATH", "")
     params = StdioServerParameters(
         command=sys.executable,
         args=["-c", "from bantamkit.mcpserver import main; main()", "--start", str(tmp_path)],
         cwd=str(tmp_path),
+        env=env,
     )
 
     async def scenario():
@@ -360,7 +384,17 @@ def test_stdio_subprocess_initializes(tmp_path):
                 assert init.server_info.version == bantamkit.__version__
                 assert (init.instructions or "").startswith("# Memory")
                 tools = await session.list_tools()
-                assert len(tools.tools) == 6
+                # An EXACT list, not a count, for the reason the sibling node states: a
+                # count says "not six" and an exact list says WHICH tool arrived.
+                assert sorted(t.name for t in tools.tools) == [
+                    "build_identity",
+                    "memory_recall",
+                    "memory_save",
+                    "shiftwork_clock_in",
+                    "shiftwork_clock_out",
+                    "shiftwork_status",
+                    "validate_json",
+                ]
 
     run(scenario())
 
