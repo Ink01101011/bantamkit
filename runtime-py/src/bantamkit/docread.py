@@ -120,6 +120,7 @@ caller that budgets from `stat().st_size` is wrong by up to three orders of magn
 
 from __future__ import annotations
 
+import codecs
 import email
 import email.message
 import email.policy
@@ -344,6 +345,9 @@ _ZIP_MEMBERS = (
     ("word/document.xml", "docx"),
     ("ppt/presentation.xml", "pptx"),
 )
+# How much of a file `sniff` looks at. Named, not inlined, so a bar can vary it and prove the
+# verdict does not move with it -- the value is an efficiency choice and nothing more.
+_HEAD_BYTES = 4096
 _HTML_HEAD = re.compile(r"<(?:!doctype\s+html|html\b|head\b|body\b)", re.IGNORECASE)
 _MIME_HEADER = re.compile(r"^[A-Za-z][A-Za-z0-9\-]*:[ \t]")
 
@@ -368,11 +372,42 @@ def _zip_kind(path: Path, head: bytes) -> Container:
     return Container("zip", f"a zip archive that is no OOXML package; it holds: {sample}", named)
 
 
+# The C0 codes a plain-text document legitimately carries: tab, the newline family, and ESC.
+# ESC is the ECMA-48 introducer for the ANSI colour sequences that ordinary terminal logs are
+# written with, and a coloured log is a document a reader can hand back. Every other C0 code --
+# NUL first among them -- is binary framing, and its presence is taken as evidence these bytes
+# are not text. This is a rule about which codes mean what, not a tolerance to be tuned.
+_TEXT_CONTROLS = frozenset({0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x1B})
+
+
+def _is_binary_control(ch: str) -> bool:
+    code = ord(ch)
+    return code < 0x20 and code not in _TEXT_CONTROLS
+
+
+def _decode_head(head: bytes) -> str | None:
+    """Decode a TRUNCATED sample, tolerating a character the sample cut in half.
+
+    Where the read stopped is a fact about this reader, never a fact about the file, so it must
+    not be allowed to decide the verdict. An incremental decoder holds an incomplete final
+    character back instead of failing on it; only a genuinely invalid sequence -- one that no
+    continuation could complete -- returns None. Raising the sample size would only move the
+    boundary; this removes its vote.
+    """
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    # A boundary exists exactly when the read hit its cap, and `final` is lowered exactly
+    # there. A file shorter than the cap was read whole, so a dangling partial character in it
+    # is real damage rather than an artefact of sampling, and still refuses.
+    try:
+        return decoder.decode(head, final=len(head) < _HEAD_BYTES)
+    except UnicodeDecodeError:
+        return None
+
+
 def _text_kind(head: bytes, named: str) -> Container | None:
     """MHTML, HTML, or plain text — the three that have no magic number to check."""
-    try:
-        text = head.decode("utf-8")
-    except UnicodeDecodeError:
+    text = _decode_head(head)
+    if text is None:
         return None
     stripped = text.lstrip("﻿ \t\r\n")
     lines = [line for line in stripped.splitlines() if line.strip()]
@@ -382,7 +417,7 @@ def _text_kind(head: bytes, named: str) -> Container | None:
             return Container("mhtml", "a MIME message / MHTML web archive", named)
     if _HTML_HEAD.search(stripped[:2048]):
         return Container("html", "an HTML document", named)
-    if not any(ord(ch) < 9 or 14 <= ord(ch) < 32 for ch in text):
+    if not any(_is_binary_control(ch) for ch in text):
         return Container("text", "plain text in no document container", named)
     return None
 
@@ -400,7 +435,7 @@ def sniff(path: str | Path) -> Container:
         raise DocumentReadError(f"no such file: {path}")
     named = path.suffix.lower().lstrip(".")
     with path.open("rb") as handle:
-        head = handle.read(4096)
+        head = handle.read(_HEAD_BYTES)
     if not head:
         return Container("empty", "an empty file (0 bytes)", named)
     if head[:2] == b"PK":
