@@ -265,7 +265,7 @@ class DriverLock:
             fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         except FileExistsError:
             return False
-        with os.fdopen(fd, "w") as fh:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(json.dumps({"pid": self.pid, "started": self.now()}))
         self.held = True
         return True
