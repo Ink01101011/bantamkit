@@ -226,7 +226,7 @@ def _quoted_by(literal: str, fragments, patterns) -> set[str]:
 
 def _literals(path: Path) -> list[str]:
     """Every string literal in the file that is not a docstring."""
-    tree = ast.parse(path.read_text())
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     docstrings = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):

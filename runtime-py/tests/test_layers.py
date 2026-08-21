@@ -543,14 +543,14 @@ def test_tool_argument_types_bytes():
 
 @pytest.mark.parametrize("module", CORE_MODULES)
 def test_core_purity(module):
-    source = (SRC / module).read_text()
+    source = (SRC / module).read_text(encoding="utf-8")
     for fragment in MOVED_FRAGMENTS:
         assert fragment not in source, f"contract literal {fragment!r} leaked back into {module}"
 
 
 @pytest.mark.parametrize("module", LAYER_MODULES)
 def test_import_direction(module):
-    source = (SRC / module).read_text()
+    source = (SRC / module).read_text(encoding="utf-8")
     for target in FORBIDDEN_IMPORTS:
         imported = (
             f"from bantamkit.{target}" in source or f"import bantamkit.{target}" in source
@@ -608,7 +608,9 @@ def test_load_contract_missing_asset(tmp_path, monkeypatch):
 
 def test_load_contract_missing_key(tmp_path, monkeypatch):
     (tmp_path / "contracts").mkdir(parents=True)
-    (tmp_path / "contracts" / "default.yaml").write_text('name: default\nschema_instruction: "x"\n')
+    (tmp_path / "contracts" / "default.yaml").write_text(
+        'name: default\nschema_instruction: "x"\n', encoding="utf-8"
+    )
     monkeypatch.setenv("BANTAMKIT_ASSETS", str(tmp_path))
     with pytest.raises(BantamError, match="missing key"):
         load_contract()
@@ -624,7 +626,9 @@ def test_load_profile_missing_asset(tmp_path, monkeypatch):
 
 def test_load_profile_missing_key(tmp_path, monkeypatch):
     (tmp_path / "profiles").mkdir(parents=True)
-    (tmp_path / "profiles" / "default.yaml").write_text("name: default\nagent:\n  max_turns: 10\n")
+    (tmp_path / "profiles" / "default.yaml").write_text(
+        "name: default\nagent:\n  max_turns: 10\n", encoding="utf-8"
+    )
     monkeypatch.setenv("BANTAMKIT_ASSETS", str(tmp_path))
     with pytest.raises(BantamError, match="missing key"):
         load_profile()

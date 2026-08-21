@@ -68,7 +68,7 @@ def _committed_programs() -> set[Path]:
             capture_output=True,
             text=True,
             timeout=30,
-            check=True,
+            check=True, encoding="utf-8",
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return set()  # not a git checkout; the glob below is the whole inventory
@@ -129,7 +129,7 @@ def _bantamkit_references(path: Path) -> list[tuple[str, str | None]]:
     """
     _require(path)
     refs: list[tuple[str, str | None]] = []
-    for node in ast.walk(ast.parse(path.read_text())):
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
         if isinstance(node, ast.ImportFrom):
             if node.module and node.module.split(".")[0] == "bantamkit":
                 refs += [(node.module, alias.name) for alias in node.names]
@@ -152,7 +152,7 @@ def _named_program_filenames(path: Path) -> set[str]:
     _require(path)
     return {
         node.value
-        for node in ast.walk(ast.parse(path.read_text()))
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
         if isinstance(node, ast.Constant)
         and isinstance(node.value, str)
         and _PROGRAM_FILENAME.match(node.value)

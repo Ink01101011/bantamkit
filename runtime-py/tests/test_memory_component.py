@@ -275,7 +275,7 @@ def test_layered_save_writes_project_layer_only(tmp_path, fake_home):
     _seed(other, "b-fact", "b body", description="grant fact")
     (project / ".bantamkit").mkdir()
     (project / ".bantamkit" / "config.yaml").write_text(
-        "extra_stores:\n  - ../../companyB/.bantamkit/memory\n"
+        "extra_stores:\n  - ../../companyB/.bantamkit/memory\n", encoding="utf-8"
     )
     grant_before = sorted(p.name for p in (other / "facts").glob("*.md"))
 
@@ -291,10 +291,10 @@ def test_layered_recall_does_not_stamp_readonly_layers(tmp_path, fake_home):
     project.mkdir()
     profile_store = fake_home / ".bantamkit" / "memory"
     _seed(profile_store, "prof", "profile body", description="deploy fact")
-    before = (profile_store / "facts" / "prof.md").read_text()
+    before = (profile_store / "facts" / "prof.md").read_text(encoding="utf-8")
 
     Memory.layered(start=project)._recall("deploy")
-    assert (profile_store / "facts" / "prof.md").read_text() == before
+    assert (profile_store / "facts" / "prof.md").read_text(encoding="utf-8") == before
 
 
 def test_layered_corrupt_grant_does_not_break_project_recall(tmp_path, fake_home):
@@ -303,9 +303,9 @@ def test_layered_corrupt_grant_does_not_break_project_recall(tmp_path, fake_home
     _seed(project / ".bantamkit" / "memory", "deploy", "project truth")
     bad = tmp_path / "companyB" / ".bantamkit" / "memory"
     (bad / "facts").mkdir(parents=True)
-    (bad / "facts" / "junk.md").write_text("no frontmatter at all")
+    (bad / "facts" / "junk.md").write_text("no frontmatter at all", encoding="utf-8")
     (project / ".bantamkit" / "config.yaml").write_text(
-        "extra_stores:\n  - ../../companyB/.bantamkit/memory\n"
+        "extra_stores:\n  - ../../companyB/.bantamkit/memory\n", encoding="utf-8"
     )
 
     out = Memory.layered(start=project)._recall("deploy")
@@ -316,7 +316,9 @@ def test_layered_dangling_grant_raises_at_construction(tmp_path, fake_home):
     project = tmp_path / "companyA"
     project.mkdir()
     (project / ".bantamkit").mkdir()
-    (project / ".bantamkit" / "config.yaml").write_text("extra_stores:\n  - ../../nope\n")
+    (project / ".bantamkit" / "config.yaml").write_text(
+        "extra_stores:\n  - ../../nope\n", encoding="utf-8"
+    )
     with pytest.raises(MemoryValidationError):
         Memory.layered(start=project)
 
@@ -366,7 +368,9 @@ def test_corrupt_project_layer_raises_on_recall(tmp_path, fake_home):
     project_store = project / ".bantamkit" / "memory"
     (project_store / "facts").mkdir(parents=True)
     # Write a corrupted fact file with no frontmatter
-    (project_store / "facts" / "broken.md").write_text("no frontmatter here at all")
+    (project_store / "facts" / "broken.md").write_text(
+        "no frontmatter here at all", encoding="utf-8"
+    )
 
     with pytest.raises(MemoryValidationError):
         Memory.layered(start=project)._recall("test")
@@ -376,7 +380,7 @@ def test_v1_corrupt_layer_raises_on_recall(tmp_path):
     """Corrupt layer in v1 mode also raises MemoryValidationError on recall."""
     store_path = tmp_path / "m"
     (store_path / "facts").mkdir(parents=True)
-    (store_path / "facts" / "broken.md").write_text("no frontmatter here at all")
+    (store_path / "facts" / "broken.md").write_text("no frontmatter here at all", encoding="utf-8")
 
     mem = Memory(store=store_path)
     with pytest.raises(MemoryValidationError):
@@ -439,7 +443,7 @@ def test_layered_readonly_layer_with_invalid_utf8_does_not_break_recall(tmp_path
     (bad / "facts" / "corrupted.md").write_bytes(b"\xff\xfe")
 
     (project / ".bantamkit" / "config.yaml").write_text(
-        "extra_stores:\n  - ../../companyB/.bantamkit/memory\n"
+        "extra_stores:\n  - ../../companyB/.bantamkit/memory\n", encoding="utf-8"
     )
 
     # Verify the project fact is returned despite the corrupt grant layer
@@ -583,9 +587,9 @@ def test_batch_isolation_does_not_snapshot_read_only_layers(tmp_path, fake_home)
     _seed(project / ".bantamkit" / "memory", "deploy", "project truth")
     bad = tmp_path / "companyB" / ".bantamkit" / "memory"
     (bad / "facts").mkdir(parents=True)
-    (bad / "facts" / "junk.md").write_text("no frontmatter at all")
+    (bad / "facts" / "junk.md").write_text("no frontmatter at all", encoding="utf-8")
     (project / ".bantamkit" / "config.yaml").write_text(
-        "extra_stores:\n  - ../../companyB/.bantamkit/memory\n"
+        "extra_stores:\n  - ../../companyB/.bantamkit/memory\n", encoding="utf-8"
     )
     client = FakeClient(
         [

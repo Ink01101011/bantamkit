@@ -55,12 +55,12 @@ class _ScriptedCritic:
 
 if __name__ == "__main__":
     repo, sa3_path, ref, repeat, seed = sys.argv[1:6]
-    sa3 = json.loads(Path(sa3_path).read_text())
+    sa3 = json.loads(Path(sa3_path).read_text(encoding="utf-8"))
     raw = subprocess.run(
         ["git", "-C", repo, "show", f"{ref}:assets/rubrics/task-completion.yaml"],
         capture_output=True,
         text=True,
-        check=True,
+        check=True, encoding="utf-8",
     ).stdout
     rubric = criticreplay._parse_rubric(raw, f"git:{ref}")
     case = criticreplay.Case(

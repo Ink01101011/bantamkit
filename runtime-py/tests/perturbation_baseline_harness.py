@@ -70,12 +70,14 @@ def _variants(criticreplay, assets: Path, workdir: Path) -> list:
     Labels the shipped manifest does not materialize, so `_check_materialization` stays
     out of the way and the family is the manifest's own twelve points.
     """
-    raw = yaml.safe_load((assets / "rubrics" / "task-completion.yaml").read_text())
+    raw = yaml.safe_load((assets / "rubrics" / "task-completion.yaml").read_text(encoding="utf-8"))
     workdir.mkdir(parents=True, exist_ok=True)
     paths = []
     for label, prompt in (("L1", raw["prompt"]), ("L2", raw["prompt"][:-1])):
         path = workdir / f"{label}.yaml"
-        path.write_text(yaml.safe_dump({**raw, "prompt": prompt}, sort_keys=False))
+        path.write_text(
+            yaml.safe_dump({**raw, "prompt": prompt}, sort_keys=False), encoding="utf-8"
+        )
         paths.append(criticreplay.parse_rubric_arg(f"{label}={path}"))
     return paths
 
@@ -128,7 +130,7 @@ def _synthetic(criticreplay, workdir: Path) -> dict:
                 "schema": SYNTHETIC_SCHEMA,
             },
             sort_keys=False,
-        )
+        ), encoding="utf-8"
     )
     variants = [criticreplay.parse_rubric_arg(f"S={path}")]
     cases = [
@@ -159,7 +161,9 @@ def produce(criticreplay, workdir: Path, assets: Path | None = None) -> dict:
             task=task,
             repeat=repeat,
             seed=seed,
-            prompt=yaml.safe_load((assets / "evals" / "tasks" / f"{task}.yaml").read_text())[
+            prompt=yaml.safe_load(
+                (assets / "evals" / "tasks" / f"{task}.yaml").read_text(encoding="utf-8")
+            )[
                 "prompt"
             ],
             output=output,
@@ -221,5 +225,5 @@ if __name__ == "__main__":
     from bantamkit import criticreplay as module
 
     out = Path(sys.argv[1])
-    out.write_text(serialize(produce(module, out.parent / "_harness_rubrics")))
+    out.write_text(serialize(produce(module, out.parent / "_harness_rubrics")), encoding="utf-8")
     print(f"wrote {out} from {module.__file__}")

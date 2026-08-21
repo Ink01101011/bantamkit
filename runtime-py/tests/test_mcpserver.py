@@ -136,7 +136,9 @@ def test_layered_recall_reads_granted_store_readonly(tmp_path, monkeypatch):
     )
     project_root = tmp_path / "proj"
     (project_root / ".bantamkit" / "memory").mkdir(parents=True)
-    (project_root / ".bantamkit" / "config.yaml").write_text(f"extra_stores:\n  - {grant}\n")
+    (project_root / ".bantamkit" / "config.yaml").write_text(
+        f"extra_stores:\n  - {grant}\n", encoding="utf-8"
+    )
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "nohome")
     server = build_server(Memory.layered(start=project_root))
 
@@ -234,7 +236,7 @@ EXAMPLE_CHECKPOINT = (
 
 def checkpoint_copy(tmp_path):
     path = tmp_path / "checkpoint.json"
-    path.write_text(EXAMPLE_CHECKPOINT.read_text())
+    path.write_text(EXAMPLE_CHECKPOINT.read_text(encoding="utf-8"), encoding="utf-8")
     return path
 
 
@@ -269,7 +271,9 @@ def test_shiftwork_round_trip_beside_memory_on_one_server(tmp_path):
             assert again.structured_content["unit"]["id"] == "U4"
             status = await c.call_tool("shiftwork_status", {"checkpoint": str(path)})
             assert status.structured_content["units"] == {"done": 2, "todo": 1}
-        log = json.loads((tmp_path / "checkpoint.json.log.jsonl").read_text().splitlines()[0])
+        log = json.loads(
+            (tmp_path / "checkpoint.json.log.jsonl").read_text(encoding="utf-8").splitlines()[0]
+        )
         assert log["model"] == "haiku" and log["unit"] == "U3"
 
     run(scenario())
@@ -278,9 +282,9 @@ def test_shiftwork_round_trip_beside_memory_on_one_server(tmp_path):
 def test_shiftwork_refusals_come_back_structured_not_raised(tmp_path):
     async def scenario():
         path = checkpoint_copy(tmp_path)
-        ckpt = json.loads(path.read_text())
+        ckpt = json.loads(path.read_text(encoding="utf-8"))
         ckpt["handoff"]["open_questions"] = ["ask the user"]
-        path.write_text(json.dumps(ckpt))
+        path.write_text(json.dumps(ckpt), encoding="utf-8")
         async with Client(make_server(tmp_path)) as c:
             r = await c.call_tool("shiftwork_clock_in", {"checkpoint": str(path)})
             assert r.structured_content["result"] == "escalate"
@@ -485,7 +489,7 @@ def test_advertised_version_does_not_come_from_installed_metadata(monkeypatch):
 
 def test_packaging_reads_the_same_declaration_the_server_reads():
     """One source of truth: the wheel's version and the served version are the same bytes."""
-    config = tomllib.loads(PYPROJECT.read_text())
+    config = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
     assert "version" in config["project"]["dynamic"]
     assert "version" not in config["project"], "a static version would shadow the module's"
     declared = PYPROJECT.parent / config["tool"]["hatch"]["version"]["path"]

@@ -32,7 +32,9 @@ ATTEMPTED_REF = "e57f1a6"
 
 
 def _shipped_template() -> str:
-    return yaml.safe_load((ASSETS / "rubrics" / "task-completion.yaml").read_text())["prompt"]
+    return yaml.safe_load(
+        (ASSETS / "rubrics" / "task-completion.yaml").read_text(encoding="utf-8")
+    )["prompt"]
 
 
 def _attempted_template() -> str | None:
@@ -43,7 +45,7 @@ def _attempted_template() -> str | None:
             capture_output=True,
             text=True,
             cwd=ASSETS.parent,
-            check=True,
+            check=True, encoding="utf-8",
         ).stdout
     except (OSError, subprocess.CalledProcessError):
         return None
@@ -273,7 +275,7 @@ UNION_TABLE = {
 
 def _frozen_prompts() -> dict[str, str]:
     return {
-        path.stem: yaml.safe_load(path.read_text())["prompt"]
+        path.stem: yaml.safe_load(path.read_text(encoding="utf-8"))["prompt"]
         for path in sorted((ASSETS / "evals" / "tasks").glob("*.yaml"))
     }
 
@@ -444,7 +446,9 @@ def test_b_nonewline_identity_equals_a_asfiled_w1_bytes(manifest):
 
 def test_shipped_rubric_asset_still_reproduces_the_sa3_prompt_sha():
     """Gate 0's precondition, checked without a model: the assembled bytes are right."""
-    task_prompt = yaml.safe_load((ASSETS / "evals" / "tasks" / "nav-prod-port.yaml").read_text())[
+    task_prompt = yaml.safe_load(
+        (ASSETS / "evals" / "tasks" / "nav-prod-port.yaml").read_text(encoding="utf-8")
+    )[
         "prompt"
     ]
     case = criticreplay.Case(
@@ -533,7 +537,7 @@ def test_criticreplay_is_the_only_reader_of_the_perturbation_assets():
     for path in sorted(SRC.rglob("*.py")):
         if path.name == "criticreplay.py":
             continue
-        assert "perturbations" not in path.read_text(), (
+        assert "perturbations" not in path.read_text(encoding="utf-8"), (
             f"{path.name} reads the perturbation manifest — it is Measurement input, "
             "not a Contract asset, and criticreplay.py is its only reader"
         )
@@ -543,7 +547,7 @@ def test_no_product_module_imports_criticreplay():
     for path in sorted(SRC.rglob("*.py")):
         if path.name == "criticreplay.py":
             continue
-        assert "criticreplay" not in path.read_text(), path.name
+        assert "criticreplay" not in path.read_text(encoding="utf-8"), path.name
 
 
 def test_the_perturbation_manifest_lives_under_assets_evals():
@@ -552,7 +556,7 @@ def test_the_perturbation_manifest_lives_under_assets_evals():
 
 
 def test_frozen_suite_tasks_are_read_only_here():
-    source = (SRC / "criticreplay.py").read_text()
+    source = (SRC / "criticreplay.py").read_text(encoding="utf-8")
     for verb in ("write_text(", "mkdir(", "unlink(", "open(\"w\")"):
         assert f"tasks{verb}" not in source
 
@@ -574,7 +578,7 @@ def _transcript(dirpath: Path, config: str, task: str, repeat: int, seed: int, o
                 "output": output,
                 "messages": [],
             }
-        )
+        ), encoding="utf-8"
     )
 
 
@@ -588,10 +592,10 @@ def asset_tree(tmp_path, monkeypatch):
     for pack in ("profiles", "contracts"):
         shutil.copytree(ASSETS / pack, root / pack)
     (root / "evals" / "tasks" / "alpha.yaml").write_text(
-        yaml.safe_dump({"name": "alpha", "family": "f", "prompt": "ALPHA PROMPT"})
+        yaml.safe_dump({"name": "alpha", "family": "f", "prompt": "ALPHA PROMPT"}), encoding="utf-8"
     )
     (root / "evals" / "tasks" / "beta.yaml").write_text(
-        yaml.safe_dump({"name": "beta", "family": "f", "prompt": "BETA PROMPT"})
+        yaml.safe_dump({"name": "beta", "family": "f", "prompt": "BETA PROMPT"}), encoding="utf-8"
     )
     monkeypatch.setenv("BANTAMKIT_ASSETS", str(root))
     return root
@@ -627,7 +631,9 @@ def test_load_cases_requires_a_pinned_seed(asset_tree, tmp_path):
     dirpath = tmp_path / "transcripts"
     _transcript(dirpath, "critique", "alpha", 0, 111, "a")
     path = dirpath / "critique--alpha--r0.json"
-    path.write_text(json.dumps({**json.loads(path.read_text()), "seed": None}))
+    path.write_text(
+        json.dumps({**json.loads(path.read_text(encoding="utf-8")), "seed": None}), encoding="utf-8"
+    )
     with pytest.raises(criticreplay.PerturbationError, match="seed"):
         criticreplay.load_cases(dirpath)
 
@@ -636,7 +642,10 @@ def test_load_cases_skips_runs_with_no_answer(asset_tree, tmp_path):
     dirpath = tmp_path / "transcripts"
     _transcript(dirpath, "critique", "alpha", 0, 111, "a")
     path = dirpath / "critique--alpha--r0.json"
-    path.write_text(json.dumps({**json.loads(path.read_text()), "output": None}))
+    path.write_text(
+        json.dumps({**json.loads(path.read_text(encoding="utf-8")), "output": None}),
+        encoding="utf-8",
+    )
     assert criticreplay.load_cases(dirpath) == []
 
 
@@ -645,7 +654,9 @@ def test_load_cases_skips_runs_with_no_answer(asset_tree, tmp_path):
 
 def test_rubric_spec_accepts_a_filesystem_path(tmp_path):
     path = tmp_path / "r.yaml"
-    path.write_text((ASSETS / "rubrics" / "task-completion.yaml").read_text())
+    path.write_text(
+        (ASSETS / "rubrics" / "task-completion.yaml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
     variant = criticreplay.parse_rubric_arg(f"before={path}")
     assert variant.label == "before" and variant.rubric.name == "task-completion"
     assert variant.ref == str(path)
@@ -780,13 +791,15 @@ def tmp_git_repo_with_a_newlineless_rubric(_cache={}):  # noqa: B006
     import tempfile
 
     root = Path(tempfile.mkdtemp(prefix="bk-rbp17-"))
-    raw = yaml.safe_load((ASSETS / "rubrics" / "task-completion.yaml").read_text())
+    raw = yaml.safe_load((ASSETS / "rubrics" / "task-completion.yaml").read_text(encoding="utf-8"))
     raw["prompt"] = raw["prompt"][:-1]
-    (root / "r.yaml").write_text(yaml.safe_dump(raw, sort_keys=False))
+    (root / "r.yaml").write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
     # A byte copy of the frozen manifest, so every segment of a `derive:` spec resolved
     # from inside this repo is repo-relative. `assets/` is read, never touched.
     (root / "m.yaml").write_text(
-        (ASSETS / "evals" / "perturbations" / "task-completion.yaml").read_text()
+        (ASSETS / "evals" / "perturbations" / "task-completion.yaml").read_text(
+            encoding="utf-8"
+        ), encoding="utf-8"
     )
     for argv in (
         ["git", "init", "-q"],
@@ -846,11 +859,11 @@ def test_rubric_template_sha256_is_the_rubric_and_rubric_sha256_is_the_file(tmp_
     Reproduced here on two files that differ only in `name:` — nothing the critic ever
     reads — so the file column MUST differ and the rubric column MUST NOT.
     """
-    raw = yaml.safe_load((ASSETS / "rubrics" / "task-completion.yaml").read_text())
+    raw = yaml.safe_load((ASSETS / "rubrics" / "task-completion.yaml").read_text(encoding="utf-8"))
     specs = []
     for index, name in enumerate(("task-completion", "task-completion-renamed")):
         path = tmp_path / f"{index}.yaml"
-        path.write_text(yaml.safe_dump({**raw, "name": name}, sort_keys=False))
+        path.write_text(yaml.safe_dump({**raw, "name": name}, sort_keys=False), encoding="utf-8")
         specs.append(criticreplay.parse_rubric_arg(f"v{index}={path}"))
     assert specs[0].sha256 != specs[1].sha256
     assert specs[0].template_sha256 == specs[1].template_sha256 == _A_ASFILED_TEMPLATE_SHA
@@ -894,7 +907,7 @@ def _template_a_recorded_ref_names(repo: Path, ref: str) -> str | None:
         manifest_file = _repo_relative(repo, manifest_spec)
         if manifest_file is None or not manifest_file.is_file():
             return None
-        points = yaml.safe_load(manifest_file.read_text())["points"]
+        points = yaml.safe_load(manifest_file.read_text(encoding="utf-8"))["points"]
         point = next((p for p in points if p["id"] == rule_id), None)
         template = _template_a_recorded_ref_names(repo, base)
         if point is None or template is None:
@@ -911,12 +924,12 @@ def _template_a_recorded_ref_names(repo: Path, ref: str) -> str | None:
         shown = subprocess.run(
             ["git", "-C", str(repo), "show", f"{git_ref}:{path}"],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
         )
         return yaml.safe_load(shown.stdout)["prompt"] if shown.returncode == 0 else None
     inside = _repo_relative(repo, ref)
     if inside is not None and inside.is_file():
-        return yaml.safe_load(inside.read_text())["prompt"]
+        return yaml.safe_load(inside.read_text(encoding="utf-8"))["prompt"]
     return None
 
 
@@ -941,7 +954,10 @@ def test_a_derive_manifest_segment_may_not_be_an_absolute_path_either(tmp_path):
     the disk could not have said "this can never work on any machine".
     """
     manifest = tmp_path / "m.yaml"
-    manifest.write_text((ASSETS / "evals" / "perturbations" / "task-completion.yaml").read_text())
+    manifest.write_text(
+        (ASSETS / "evals" / "perturbations" / "task-completion.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     assert manifest.is_file()
     base = "git:d2f78b7:assets/rubrics/task-completion.yaml"
     for bad, why in (
@@ -995,9 +1011,13 @@ def test_a_derived_variant_records_the_bytes_of_the_manifest_it_resolved_through
     cwd = os.getcwd()
     try:
         os.chdir(root)
-        (root / "m.yaml").write_text((root / "m-strip.yaml").read_text())
+        (root / "m.yaml").write_text(
+            (root / "m-strip.yaml").read_text(encoding="utf-8"), encoding="utf-8"
+        )
         before = criticreplay.parse_rubric_arg(spec)
-        (root / "m.yaml").write_text((root / "m-append.yaml").read_text())
+        (root / "m.yaml").write_text(
+            (root / "m-append.yaml").read_text(encoding="utf-8"), encoding="utf-8"
+        )
         after = criticreplay.parse_rubric_arg(spec)
     finally:
         os.chdir(cwd)
@@ -1023,15 +1043,19 @@ def _tmp_repo_with_two_manifests_at_one_path(_cache={}):  # noqa: B006
     import tempfile
 
     root = Path(tempfile.mkdtemp(prefix="bk-rbp17-manifest-"))
-    frozen = (ASSETS / "evals" / "perturbations" / "task-completion.yaml").read_text()
-    (root / "r.yaml").write_text((ASSETS / "rubrics" / "task-completion.yaml").read_text())
-    (root / "m-strip.yaml").write_text(frozen)
+    frozen = (ASSETS / "evals" / "perturbations" / "task-completion.yaml").read_text(
+        encoding="utf-8"
+    )
+    (root / "r.yaml").write_text(
+        (ASSETS / "rubrics" / "task-completion.yaml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (root / "m-strip.yaml").write_text(frozen, encoding="utf-8")
     swapped = yaml.safe_load(frozen)
     next(p for p in swapped["points"] if p["id"] == "W1-trailing-newline")["op"] = (
         "append-trailing-newline"
     )
-    (root / "m-append.yaml").write_text(yaml.safe_dump(swapped, sort_keys=False))
-    (root / "m.yaml").write_text(frozen)
+    (root / "m-append.yaml").write_text(yaml.safe_dump(swapped, sort_keys=False), encoding="utf-8")
+    (root / "m.yaml").write_text(frozen, encoding="utf-8")
     for argv in (
         ["git", "init", "-q"],
         ["git", "config", "user.email", "t@t"],
@@ -1053,7 +1077,9 @@ def test_a_resolver_that_takes_repo_slash_ref_reads_this_machine(tmp_path):
     fresh-run node's resolver here and the committed field checker had it.
     """
     outside = tmp_path / "outside.yaml"
-    outside.write_text(yaml.safe_dump({"prompt": "SECRET {task} {output}"}, sort_keys=False))
+    outside.write_text(
+        yaml.safe_dump({"prompt": "SECRET {task} {output}"}, sort_keys=False), encoding="utf-8"
+    )
     repo = Path(__file__).resolve().parents[2]
     # The naive form, demonstrated rather than described.
     assert (repo / str(outside)) == outside
@@ -1148,7 +1174,8 @@ def test_rubric_spec_rejects_a_missing_label():
 def test_rubric_spec_rejects_a_rubric_without_placeholders(tmp_path):
     path = tmp_path / "r.yaml"
     path.write_text(
-        yaml.safe_dump({"name": "x", "threshold": 7, "prompt": "no slots", "schema": {}})
+        yaml.safe_dump({"name": "x", "threshold": 7, "prompt": "no slots", "schema": {}}),
+        encoding="utf-8",
     )
     with pytest.raises(criticreplay.PerturbationError, match="placeholder"):
         criticreplay.parse_rubric_arg(f"x={path}")
@@ -1282,7 +1309,7 @@ def _write_manifest(root: Path, points=None, rubric="task-completion") -> Path:
                 "points": points if points is not None else TINY_POINTS,
             },
             sort_keys=False,
-        )
+        ), encoding="utf-8"
     )
     return path
 
@@ -1305,7 +1332,7 @@ def _write_rubric(root: Path, name: str, prompt: str, threshold: int = 7) -> Pat
                 },
             },
             sort_keys=False,
-        )
+        ), encoding="utf-8"
     )
     return path
 
@@ -1548,7 +1575,9 @@ def test_summary_records_requests_tokens_total_and_the_manifest_sha(rig):
 def test_routine_before_after_profile_costs_at_most_96_requests(asset_tree, tmp_path):
     """Success criterion 9, on the shipped 12-point family: 2 variants x 3 cells."""
     real = ASSETS / "evals" / "perturbations" / "task-completion.yaml"
-    (asset_tree / "evals" / "perturbations" / "task-completion.yaml").write_text(real.read_text())
+    (asset_tree / "evals" / "perturbations" / "task-completion.yaml").write_text(
+        real.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     manifest = criticreplay.load_manifest(rubric_name="task-completion")
     base = _shipped_template()
     variants = [
@@ -1876,7 +1905,7 @@ INWORD_POINT = {
 
 def _reading_rig(asset_tree, tmp_path, prompt, point, task, task_prompt, output):
     (asset_tree / "evals" / "tasks" / f"{task}.yaml").write_text(
-        yaml.safe_dump({"name": task, "family": "f", "prompt": task_prompt})
+        yaml.safe_dump({"name": task, "family": "f", "prompt": task_prompt}), encoding="utf-8"
     )
     manifest = criticreplay.load_manifest(
         _write_manifest(asset_tree, points=[GUARD_POINTS[0], point])
@@ -1982,7 +2011,8 @@ def test_the_printed_table_shows_both_readings_for_every_violation(asset_tree, t
 def test_guard_error_mode_names_the_reading_that_flagged(asset_tree, tmp_path):
     """The strict reading still refuses before any spend, and says which reading fired."""
     (asset_tree / "evals" / "tasks" / "gamma.yaml").write_text(
-        yaml.safe_dump({"name": "gamma", "family": "f", "prompt": "TWO STEP GAMMA"})
+        yaml.safe_dump({"name": "gamma", "family": "f", "prompt": "TWO STEP GAMMA"}),
+        encoding="utf-8",
     )
     manifest = criticreplay.load_manifest(
         _write_manifest(asset_tree, points=[GUARD_POINTS[0], SURVIVOR_POINT])
@@ -2005,7 +2035,8 @@ def test_guard_table_is_public_so_a_hand_rolled_loop_can_call_it(asset_tree, tmp
     """I6: guard 2 needs a cell, so it cannot ride inside `apply_point` — it ships as
     one public call instead, and `run()` uses the same one."""
     (asset_tree / "evals" / "tasks" / "gamma.yaml").write_text(
-        yaml.safe_dump({"name": "gamma", "family": "f", "prompt": "TWO STEP GAMMA"})
+        yaml.safe_dump({"name": "gamma", "family": "f", "prompt": "TWO STEP GAMMA"}),
+        encoding="utf-8",
     )
     manifest = criticreplay.load_manifest(
         _write_manifest(asset_tree, points=[GUARD_POINTS[0], SURVIVOR_POINT])
@@ -2116,14 +2147,14 @@ def test_the_whole_offline_run_is_byte_identical_to_f8404ab_modulo_the_named_rbp
 ):
     from perturbation_baseline_harness import produce, serialize
 
-    expected = json.loads(BASELINE.read_text())
+    expected = json.loads(BASELINE.read_text(encoding="utf-8"))
     produced = produce(criticreplay, tmp_path / "rubrics")
     for section in ("rows", "summary", "identity_only", "guard_error_refusal", "synthetic"):
         assert _without_rbp16_additions(produced[section]) == expected[section], section
     assert _table_without_rbp16_lines(produced["table"]) == expected["table"]
     stripped = _without_rbp16_additions(produced)
     stripped["table"] = _table_without_rbp16_lines(stripped["table"])
-    assert serialize(stripped) == BASELINE.read_text()
+    assert serialize(stripped) == BASELINE.read_text(encoding="utf-8")
 
 
 def test_the_rbp16_additions_the_floor_strips_are_present_and_loaded(tmp_path):
@@ -2173,7 +2204,7 @@ def test_the_rbp16_additions_the_floor_strips_are_present_and_loaded(tmp_path):
 
 def test_the_baseline_covers_a_populated_guard_table_and_a_zero_spend_refusal():
     """A floor that measured nothing would pass any refactor."""
-    expected = json.loads(BASELINE.read_text())
+    expected = json.loads(BASELINE.read_text(encoding="utf-8"))
     assert len(expected["rows"]) == 75
     assert len(expected["summary"]["guard"]["violations"]) >= 3
     readings = {r["point"]: r["readings"] for r in expected["summary"]["guard"]["violations"]}
@@ -2968,9 +2999,9 @@ def test_cli_writes_jsonl_rows_and_a_summary(rig, tmp_path, monkeypatch, capsys)
             "--json", str(rows_path), "--summary", str(summary_path),
         ]
     )
-    rows = [json.loads(line) for line in rows_path.read_text().splitlines()]
+    rows = [json.loads(line) for line in rows_path.read_text(encoding="utf-8").splitlines()]
     assert len(rows) == 28 and rows[0]["bar"] == "perturbation"
-    summary = json.loads(summary_path.read_text())
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary["cells"][0]["comparisons"][0]["verdict"] == "indistinguishable"
     out = capsys.readouterr().out
     assert "before" in out and "pass" in out
@@ -2989,7 +3020,7 @@ def test_cli_restricts_to_named_tasks(rig, tmp_path, monkeypatch):
             "--json", str(rows_path),
         ]
     )
-    rows = [json.loads(line) for line in rows_path.read_text().splitlines()]
+    rows = [json.loads(line) for line in rows_path.read_text(encoding="utf-8").splitlines()]
     assert {r["task"] for r in rows} == {"beta"}
 
 
@@ -3023,9 +3054,9 @@ def test_cli_exposes_the_guard_mode_and_defaults_to_warn(guard_rig, tmp_path, mo
             ]
         )
     assert excinfo.value.code == criticreplay.GUARD_VIOLATION_EXIT
-    rows = [json.loads(line) for line in rows_path.read_text().splitlines()]
+    rows = [json.loads(line) for line in rows_path.read_text(encoding="utf-8").splitlines()]
     assert [r["guard_violations"] for r in rows if r["point"] == "P-taskword"] == [["alpha"]]
-    summary = json.loads(summary_path.read_text())
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary["guard"]["mode"] == "warn"
     assert summary["guard"]["violations"][0]["point"] == "P-taskword"
     assert "GUARD" in capsys.readouterr().out
@@ -3261,11 +3292,13 @@ def _shell_status(
         capture_output=True,
         text=True,
         cwd=None if cwd is None else str(cwd),
-        env=_child_env(BK_OUT=str(out), BK_ERR=str(err)),
+        env=_child_env(BK_OUT=str(out), BK_ERR=str(err)), encoding="utf-8",
     )
     assert proc.returncode == 0, proc.stderr  # the shell itself ran
     assert proc.stdout.startswith("status="), proc.stdout
-    return int(proc.stdout.split("=", 1)[1]), out.read_text(), err.read_text()
+    return int(proc.stdout.split("=", 1)[1]), out.read_text(
+        encoding="utf-8"
+    ), err.read_text(encoding="utf-8")
 
 
 def _cli(rig, *extra: str, entry: list[str] | None = None) -> list[str]:
@@ -3297,9 +3330,9 @@ def test_a_violating_run_exits_three_and_still_writes_every_artifact(guard_rig, 
         _cli(guard_rig, "--json", str(rows_path), "--summary", str(summary_path)), tmp_path
     )
     assert status == criticreplay.GUARD_VIOLATION_EXIT, err
-    rows = [json.loads(line) for line in rows_path.read_text().splitlines()]
+    rows = [json.loads(line) for line in rows_path.read_text(encoding="utf-8").splitlines()]
     assert [r["guard_violations"] for r in rows if r["point"] == "P-taskword"] == [["alpha"]]
-    summary = json.loads(summary_path.read_text())
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary["guard"]["mode"] == "warn"
     assert summary["guard"]["violations"][0]["point"] == "P-taskword"
     assert "GUARD VIOLATIONS" in out and "| variant |" in out
@@ -3393,7 +3426,7 @@ def _unwritable(tmp_path: Path) -> Path:
     be is an `OSError` for everyone.
     """
     blocker = tmp_path / "blocker"
-    blocker.write_text("not a directory\n")
+    blocker.write_text("not a directory\n", encoding="utf-8")
     return blocker / "summary.json"
 
 
@@ -3419,7 +3452,7 @@ def test_a_measured_run_whose_summary_cannot_be_written_does_not_report_the_refu
     )
     assert status == criticreplay.ARTIFACT_WRITE_EXIT, err
     assert status != criticreplay.REFUSAL_EXIT
-    rows = [json.loads(line) for line in rows_path.read_text().splitlines()]
+    rows = [json.loads(line) for line in rows_path.read_text(encoding="utf-8").splitlines()]
     assert len(rows) > 0  # it MEASURED, which is the whole point of the finding
     assert "| variant |" in out  # and the table is still the measurement's report
     assert "could not be written" in err
@@ -3659,9 +3692,9 @@ def _closed_pipe_status(argv: list[str], tmp_path: Path, label: str) -> tuple[in
     finally:
         os.close(write_fd)
     assert proc.wait() == 0  # the shell itself ran to the end of its command list
-    text = status_file.read_text()
+    text = status_file.read_text(encoding="utf-8")
     assert text.startswith("status="), text
-    return int(text.split("=", 1)[1]), err.read_text()
+    return int(text.split("=", 1)[1]), err.read_text(encoding="utf-8")
 
 
 _DUMP_PYTEST_KEYS = (
@@ -3753,7 +3786,7 @@ def test_closed_pipe_unwritable_summary_still_exits_four(guard_rig, tmp_path):
     assert status == criticreplay.ARTIFACT_WRITE_EXIT, err
     assert status != _CLOSED_PIPE_PREFIX_STATUS  # what c7d0b72 read here
     assert "could not be written" in err
-    assert len(rows_path.read_text().splitlines()) > 0  # it measured
+    assert len(rows_path.read_text(encoding="utf-8").splitlines()) > 0  # it measured
 
 
 # The controls. These pass on c7d0b72 and must keep passing after the fix: they are what
@@ -4000,9 +4033,9 @@ def _closed_stderr_status(argv: list[str], tmp_path: Path, label: str) -> tuple[
     finally:
         os.close(write_fd)
     assert proc.wait() == 0
-    text = status_file.read_text()
+    text = status_file.read_text(encoding="utf-8")
     assert text.startswith("status="), text
-    return int(text.split("=", 1)[1]), out.read_text()
+    return int(text.split("=", 1)[1]), out.read_text(encoding="utf-8")
 
 
 def test_help_with_no_reader_on_stdout_is_still_the_interpreters_number(tmp_path):
@@ -4046,10 +4079,10 @@ def test_help_with_no_reader_on_stdout_is_still_the_interpreters_number(tmp_path
     argv = [sys.executable, "-m", "bantamkit.criticreplay", "--help"]
     status, _ = _closed_pipe_status(argv, tmp_path, "help")
     rendered = subprocess.run(
-        argv, capture_output=True, text=True, check=True, env=_child_env()
+        argv, capture_output=True, text=True, check=True, env=_child_env(), encoding="utf-8"
     ).stdout
     replica = tmp_path / "help-bytes.txt"
-    replica.write_text(rendered)
+    replica.write_text(rendered, encoding="utf-8")
     control, _ = _closed_pipe_status(
         [
             sys.executable,
@@ -4204,7 +4237,7 @@ def _readonly_stdout_status(argv, tmp_path, label: str) -> tuple[int, str, int]:
     where = tmp_path / f"_ro-{label}"
     where.mkdir(parents=True, exist_ok=True)
     target = where / "readonly-target"
-    target.write_text("fd 1 is a dup of a READ-ONLY fd on this file\n")
+    target.write_text("fd 1 is a dup of a READ-ONLY fd on this file\n", encoding="utf-8")
     err, status_file = where / "stderr.txt", where / "status.txt"
     ro_fd = os.open(target, os.O_RDONLY)
     try:
@@ -4217,9 +4250,9 @@ def _readonly_stdout_status(argv, tmp_path, label: str) -> tuple[int, str, int]:
     finally:
         os.close(ro_fd)
     assert proc.wait() == 0  # the shell itself ran to the end of its command list
-    text = status_file.read_text()
+    text = status_file.read_text(encoding="utf-8")
     assert text.startswith("status="), text
-    return int(text.split("=", 1)[1]), err.read_text(), blksize
+    return int(text.split("=", 1)[1]), err.read_text(encoding="utf-8"), blksize
 
 
 def _no_stdout_status(argv, tmp_path, label: str) -> tuple[int, str]:
@@ -4241,9 +4274,9 @@ def _no_stdout_status(argv, tmp_path, label: str) -> tuple[int, str]:
         env=_child_env(BK_ERR=str(err), BK_STATUS=str(status_file)),
     )
     assert proc.returncode == 0
-    text = status_file.read_text()
+    text = status_file.read_text(encoding="utf-8")
     assert text.startswith("status="), text
-    return int(text.split("=", 1)[1]), err.read_text()
+    return int(text.split("=", 1)[1]), err.read_text(encoding="utf-8")
 
 
 def test_the_two_render_failure_rigs_straddle_the_measured_stdout_buffer(
@@ -4459,7 +4492,7 @@ def _encoding_stdout_status(
         ),
     )
     assert proc.returncode == 0  # the shell itself ran to the end of its command list
-    text = status_file.read_text()
+    text = status_file.read_text(encoding="utf-8")
     assert text.startswith("status="), text
     return int(text.split("=", 1)[1]), out.read_bytes(), err.read_bytes()
 
@@ -4607,7 +4640,7 @@ def test_the_render_failure_status_outranks_the_unwritable_summary_status(
     assert status != criticreplay.ARTIFACT_WRITE_EXIT  # the rung below, which fired too
     assert "could not be written" in err  # 4's reason
     assert "could not be rendered" in err  # 5's reason
-    assert len(rows_path.read_text().splitlines()) > 0  # and it MEASURED
+    assert len(rows_path.read_text(encoding="utf-8").splitlines()) > 0  # and it MEASURED
 
 
 @pytest.mark.parametrize("encoding", ["latin-1", "ascii"])
@@ -4661,7 +4694,7 @@ def test_an_unwritable_summary_does_not_promise_a_table_that_went_nowhere(
     assert "could not be rendered" not in err  # a gone reader raises no render failure
     assert "printed after this line" not in err  # the false promise, gone
     assert "IF STDOUT TOOK IT" in err  # and what replaced it says what it cannot promise
-    assert len(rows_path.read_text().splitlines()) > 0
+    assert len(rows_path.read_text(encoding="utf-8").splitlines()) > 0
 
 
 def test_a_non_transcript_json_is_refused_rather_than_delivered_as_a_traceback(
@@ -4682,7 +4715,7 @@ def test_a_non_transcript_json_is_refused_rather_than_delivered_as_a_traceback(
     transcripts.mkdir()
     for path in Path(rig["transcripts"]).glob("*.json"):
         shutil.copy(path, transcripts / path.name)
-    (transcripts / "notes.json").write_text('{"note": "not a transcript"}\n')
+    (transcripts / "notes.json").write_text('{"note": "not a transcript"}\n', encoding="utf-8")
     argv = _cli(rig, entry=[sys.executable, "-m", "bantamkit.criticreplay"])
     argv[argv.index(str(rig["transcripts"]))] = str(transcripts)
     status, out, err = _shell_status(argv, tmp_path, "m2-nontranscript")
@@ -4720,9 +4753,9 @@ def test_fd_one_on_a_directory_never_reaches_this_module(tmp_path):
     finally:
         os.close(dir_fd)
     assert proc.returncode == 0
-    text = status_file.read_text()
+    text = status_file.read_text(encoding="utf-8")
     assert text.startswith("status="), text
-    complaint = err.read_text()
+    complaint = err.read_text(encoding="utf-8")
     assert "init_sys_streams" in complaint, complaint  # it died BEFORE main existed
     assert int(text.split("=", 1)[1]) == 1
     assert "could not be rendered" not in complaint  # nothing here chose that number
@@ -4956,7 +4989,7 @@ def _shape_rule_flags_from_the_code() -> tuple[set[str], int]:
     the rubric rules (whose messages are built in `rubric_arg_shape_problem` and
     `rubric_label_collision_problem`) count as much as the inline one.
     """
-    tree = ast.parse((SRC / "criticreplay.py").read_text())
+    tree = ast.parse((SRC / "criticreplay.py").read_text(encoding="utf-8"))
     functions = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
     above: list[ast.stmt] = []
     for statement in functions["main"].body:
@@ -5039,7 +5072,7 @@ def test_the_usage_status_names_exactly_the_shape_rules_the_code_has():
     assert epilog_block, "the epilog no longer has a line for the usage status"
     comment_block = re.search(
         rf"^#   {criticreplay.USAGE_EXIT}  (.*?)(?=^#   \d  )",
-        (SRC / "criticreplay.py").read_text(),
+        (SRC / "criticreplay.py").read_text(encoding="utf-8"),
         re.S | re.M,
     )
     assert comment_block, "the module comment no longer has a block for the usage status"
@@ -5181,7 +5214,7 @@ def _comment_status_block(status: int) -> str:
     """
     found = re.search(
         rf"^#   {status}  (.*?)(?=^#   \d  |^# \S|\Z)",
-        (SRC / "criticreplay.py").read_text(),
+        (SRC / "criticreplay.py").read_text(encoding="utf-8"),
         re.S | re.M,
     )
     assert found, f"the module comment no longer has a block for status {status}"
@@ -5297,7 +5330,7 @@ def _status_changes(record: Path) -> list[str]:
     """
     changed: list[str] = []
     columns: tuple[int, int] | None = None
-    for line in record.read_text().splitlines():
+    for line in record.read_text(encoding="utf-8").splitlines():
         if not line.startswith("|"):
             columns = None
             continue
@@ -5425,6 +5458,11 @@ EVAL_DATA = Path(__file__).resolve().parents[2] / "docs" / "eval-data"
 # `indistinguishable`, zero `distinguishable`, zero `attributable`.
 _ACCEPTANCE_SUMMARY = EVAL_DATA / "2026-08-11-pb14-14b-nav-prod-port-perturbation-summary.json"
 _ACCEPTANCE_ROWS = EVAL_DATA / "2026-08-11-pb14-14b-nav-prod-port-perturbation.jsonl"
+
+
+def _acceptance_rows():
+    """The committed acceptance JSONL, one parsed row per line."""
+    return [json.loads(line) for line in _ACCEPTANCE_ROWS.read_text(encoding="utf-8").splitlines()]
 _SA3_REPLAY = EVAL_DATA / "2026-08-11-sa3-14b-nav-prod-port-critic-replay.json"
 
 
@@ -5432,7 +5470,7 @@ def _committed_summaries() -> list[tuple[Path, dict]]:
     """Every committed summary carrying a §7 `comparisons` block."""
     out = []
     for path in sorted(EVAL_DATA.glob("*.json")):
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         if '"comparisons"' in text:
             out.append((path, json.loads(text)))
     return out
@@ -5450,7 +5488,7 @@ def _rows_as_replay_rows(path: Path) -> list[criticreplay.ReplayRow]:
     reader supplying the absence, not the record being rewritten.
     """
     rows = []
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         data = json.loads(line)
         data["point_class"] = data.pop("class")
         data.setdefault("calls", 1)
@@ -5531,7 +5569,7 @@ def test_the_committed_acceptance_artifacts_are_the_ones_these_three_specs_aim_a
 
     committed = {
         (cell["repeat"], comparison["a"], comparison["b"]): comparison
-        for cell in json.loads(_ACCEPTANCE_SUMMARY.read_text())["cells"]
+        for cell in json.loads(_ACCEPTANCE_SUMMARY.read_text(encoding="utf-8"))["cells"]
         for comparison in cell["comparisons"]
     }
     assert committed[(0, "A-asfiled", "C-attempted")]["a_pass_rate"] == "1/12"
@@ -5670,12 +5708,12 @@ def test_every_rubric_ref_in_a_committed_summary_resolves_from_this_repo():
                 shown = subprocess.run(
                     ["git", "-C", str(repo), "show", f"{git_ref}:{git_path}"],
                     capture_output=True,
-                    text=True,
+                    text=True, encoding="utf-8",
                 )
                 if shown.returncode == 0:
                     recovered = criticreplay.sha256_text(shown.stdout)
             elif not ref.startswith("/") and (repo / ref).is_file():
-                recovered = criticreplay.sha256_text((repo / ref).read_text())
+                recovered = criticreplay.sha256_text((repo / ref).read_text(encoding="utf-8"))
             if recovered != sha:
                 unresolvable.append(f"{path.name}: {variant['label']} -> {ref}")
     assert not unresolvable, (
@@ -5733,10 +5771,10 @@ def test_payload_sha256_does_not_name_two_recipes_at_once():
     The node passes either way RB-P18's attack could go: make the two agree, or
     stop sharing the name. It does not choose between them.
     """
-    sa3 = json.loads(_SA3_REPLAY.read_text())
+    sa3 = json.loads(_SA3_REPLAY.read_text(encoding="utf-8"))
     bar_row = next(
         row
-        for row in (json.loads(line) for line in _ACCEPTANCE_ROWS.read_text().splitlines())
+        for row in _acceptance_rows()
         if row["point"] == "identity" and row["variant"] == "A-asfiled" and row["repeat"] == 0
     )
     sa3_entries = [
@@ -6051,10 +6089,10 @@ def _rbp18_frozen_pair():
     through `payload_shas_recorded` so the `str`/`list` shapes are handled by the shipped
     reader instead of by a `[0]` in a test.
     """
-    sa3 = json.loads(_SA3_REPLAY.read_text())
+    sa3 = json.loads(_SA3_REPLAY.read_text(encoding="utf-8"))
     bar_row = next(
         row
-        for row in (json.loads(line) for line in _ACCEPTANCE_ROWS.read_text().splitlines())
+        for row in _acceptance_rows()
         if row["point"] == "identity"
         and row["variant"] == "A-asfiled"
         and row["repeat"] == _RBP18_CELL_REPEAT
@@ -6084,7 +6122,7 @@ def _rbp18_fresh_verdict():
     raw = subprocess.run(
         ["git", "-C", str(repo), "show",
          f"{_RBP18_CELL_REF}:assets/rubrics/task-completion.yaml"],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, check=True, encoding="utf-8",
     ).stdout
     rubric = criticreplay._parse_rubric(raw, f"git:{_RBP18_CELL_REF}")
     case = criticreplay.Case(
@@ -6338,10 +6376,12 @@ def test_OUTSIDE_pytest_a_fresh_runs_verdict_carries_its_effect_size(tmp_path):
     rubric pair separates" — the hash critic decides that and nothing here chose it — but
     "whatever this run measured, the report states the size of it".
     """
-    raw = yaml.safe_load((ASSETS / "rubrics" / "task-completion.yaml").read_text())
+    raw = yaml.safe_load((ASSETS / "rubrics" / "task-completion.yaml").read_text(encoding="utf-8"))
     a_path, b_path = tmp_path / "A.yaml", tmp_path / "B.yaml"
-    a_path.write_text(yaml.safe_dump(raw, sort_keys=False))
-    b_path.write_text(yaml.safe_dump({**raw, "prompt": raw["prompt"][:-1]}, sort_keys=False))
+    a_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    b_path.write_text(
+        yaml.safe_dump({**raw, "prompt": raw["prompt"][:-1]}, sort_keys=False), encoding="utf-8"
+    )
     summary_path = tmp_path / "summary.json"
 
     status, out, err = _shell_status(
@@ -6361,7 +6401,7 @@ def test_OUTSIDE_pytest_a_fresh_runs_verdict_carries_its_effect_size(tmp_path):
     # result). So the status is checked first, and it is the guard's, not the harness's.
     assert status in (0, 3), (status, err)
     assert summary_path.is_file(), err
-    summary = json.loads(summary_path.read_text())
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
 
     comparisons = [c for cell in summary["cells"] for c in cell["comparisons"]]
     assert len(comparisons) == 3, comparisons
@@ -6424,7 +6464,7 @@ def test_OUTSIDE_pytest_a_fresh_runs_rubric_ref_resolves_from_this_repo(tmp_path
     )
     assert status in (0, 3), (status, err)
     assert summary_path.is_file(), err
-    variants = json.loads(summary_path.read_text())["variants"]
+    variants = json.loads(summary_path.read_text(encoding="utf-8"))["variants"]
     assert {v["label"] for v in variants} == {"A-asfiled", "B-nonewline"}, variants
 
     unresolvable = [

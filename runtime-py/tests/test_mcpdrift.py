@@ -147,7 +147,7 @@ def _server(tmp_path: Path, name: str, **overrides) -> str:
     """Write one executable synthetic server and return its command path."""
     path = tmp_path / f"{name}-server.py"
     source = _SERVER_SOURCE.format(personality=repr(_personality(**overrides)))
-    path.write_text(f"#!{sys.executable}\n{source}")
+    path.write_text(f"#!{sys.executable}\n{source}", encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
     return str(path)
 
@@ -263,7 +263,7 @@ def test_each_non_version_surface_can_fire_on_its_own(tmp_path, surface, overrid
 def test_a_dead_endpoint_is_error_not_agreement(tmp_path):
     """Cannot compare is a different statement from compared and agreed."""
     dead = tmp_path / "dead"
-    dead.write_text(f"#!{sys.executable}\nimport sys\nsys.exit(3)\n")
+    dead.write_text(f"#!{sys.executable}\nimport sys\nsys.exit(3)\n", encoding="utf-8")
     dead.chmod(dead.stat().st_mode | stat.S_IXUSR)
     code, report = _check(f"live={_server(tmp_path, 'live')}", f"dead={dead}")
     assert code == 2
@@ -311,7 +311,7 @@ def test_discovery_reads_all_three_scopes_from_a_synthetic_config(tmp_path):
     home = tmp_path / "home"
     repo = tmp_path / "repo"
     (repo / ".venv" / "bin").mkdir(parents=True)
-    (repo / ".venv" / "bin" / "bantamkit-mcp").write_text("#!/bin/sh\n")
+    (repo / ".venv" / "bin" / "bantamkit-mcp").write_text("#!/bin/sh\n", encoding="utf-8")
     home.mkdir()
     (home / ".claude.json").write_text(
         json.dumps(
@@ -321,10 +321,11 @@ def test_discovery_reads_all_three_scopes_from_a_synthetic_config(tmp_path):
                     str(repo): {"mcpServers": {"bantamkit": {"command": "/local/bin/bk"}}}
                 },
             }
-        )
+        ), encoding="utf-8"
     )
     (repo / ".mcp.json").write_text(
-        json.dumps({"mcpServers": {"bantamkit": {"command": ".venv/bin/bantamkit-mcp"}}})
+        json.dumps({"mcpServers": {"bantamkit": {"command": ".venv/bin/bantamkit-mcp"}}}),
+        encoding="utf-8",
     )
     found = mcpdrift.discover("bantamkit", repo, home)
     assert [endpoint.scope for endpoint in found] == ["user", "local", "project"]
@@ -335,7 +336,9 @@ def test_discovery_reads_all_three_scopes_from_a_synthetic_config(tmp_path):
 def test_discovery_of_an_unregistered_name_is_empty(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
-    (home / ".claude.json").write_text(json.dumps({"mcpServers": {"other": {"command": "/x"}}}))
+    (home / ".claude.json").write_text(
+        json.dumps({"mcpServers": {"other": {"command": "/x"}}}), encoding="utf-8"
+    )
     assert mcpdrift.discover("bantamkit", tmp_path, home) == []
 
 

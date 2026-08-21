@@ -83,7 +83,9 @@ def build(entry, tmp_path, name="probe", config="bare"):
 
 def test_harness_worker_window_is_still_the_number_this_file_asserts_against():
     """The corpus bar is relative to a constant that lives in another file; pin the link."""
-    match = re.search(r"^WORKER_NUM_CTX = (\d+)$", HARNESS.read_text(), re.MULTILINE)
+    match = re.search(
+        r"^WORKER_NUM_CTX = (\d+)$", HARNESS.read_text(encoding="utf-8"), re.MULTILINE
+    )
     assert match is not None, f"WORKER_NUM_CTX no longer assigned at top level in {HARNESS}"
     assert int(match.group(1)) == WORKER_NUM_CTX
 
@@ -434,7 +436,7 @@ def committed(name="doc-small-137"):
     """One committed task, read off disk. The small corpus, so a run costs 400 rows."""
     import yaml  # noqa: PLC0415
 
-    return yaml.safe_load((DOC_TASKS / f"{name}.yaml").read_text())
+    return yaml.safe_load((DOC_TASKS / f"{name}.yaml").read_text(encoding="utf-8"))
 
 
 def unchecked(task, tmp_path, config="bare"):

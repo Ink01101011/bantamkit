@@ -21,7 +21,7 @@ def test_save_writes_fact_file_and_index(store):
     assert result == SaveResult(status="saved", name="deploy-command")
     fact_file = store.root / "facts" / "deploy-command.md"
     assert fact_file.exists()
-    text = fact_file.read_text()
+    text = fact_file.read_text(encoding="utf-8")
     assert "type: project" in text and "make ship-prod" in text
     assert "- [[deploy-command]] (project) — how we deploy to prod" in store.index_text()
 
@@ -46,7 +46,7 @@ def test_save_same_name_updates_without_duplicate_flag(store):
     store.save("project", "deploy-command", "how we deploy to prod", "old")
     result = store.save("project", "deploy-command", "how we deploy to prod", "new")
     assert result.status == "saved"
-    assert "new" in (store.root / "facts" / "deploy-command.md").read_text()
+    assert "new" in (store.root / "facts" / "deploy-command.md").read_text(encoding="utf-8")
 
 
 def test_save_enforces_index_budget(tmp_path):
@@ -64,7 +64,9 @@ def test_recall_returns_topk_and_stamps(store):
     store.save("reference", "ci-dashboard", "link to the ci dashboard", "https://ci")
     facts = store.recall("how do we deploy prod", k=1)
     assert [f.name for f in facts] == ["deploy-command"]
-    assert "last_recalled: '2026-08-06'" in (store.root / "facts" / "deploy-command.md").read_text()
+    assert "last_recalled: '2026-08-06'" in (store.root / "facts" / "deploy-command.md").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_recall_no_match_returns_empty(store):
@@ -99,7 +101,7 @@ def test_compact_archives_least_recently_recalled(tmp_path):
 def test_lint_catches_drifted_frontmatter(tmp_path):
     store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-06")
     # Write a drifted fact file with invalid frontmatter (empty, so yaml.safe_load returns None)
-    (store.root / "facts" / "drifted.md").write_text("---\n---\n\nbody\n")
+    (store.root / "facts" / "drifted.md").write_text("---\n---\n\nbody\n", encoding="utf-8")
     with pytest.raises(MemoryValidationError, match="frontmatter is not a mapping"):
         store.lint()
 
@@ -129,10 +131,10 @@ def test_save_creates_dirs_lazily_for_create_false_store(tmp_path):
 def test_recall_stamp_false_leaves_files_unchanged(tmp_path):
     store = MemoryStore(tmp_path / "m", today=lambda: "2026-08-07")
     store.save("project", "deploy-cmd", "how to deploy", "make ship")
-    before = (tmp_path / "m" / "facts" / "deploy-cmd.md").read_text()
+    before = (tmp_path / "m" / "facts" / "deploy-cmd.md").read_text(encoding="utf-8")
     hits = store.recall("deploy", stamp=False)
     assert [f.name for f in hits] == ["deploy-cmd"]
-    assert (tmp_path / "m" / "facts" / "deploy-cmd.md").read_text() == before
+    assert (tmp_path / "m" / "facts" / "deploy-cmd.md").read_text(encoding="utf-8") == before
 
 
 def test_public_save_recall_round_trip(tmp_path):
@@ -208,7 +210,7 @@ def test_snapshot_leaves_save_semantics_untouched(store):
         result = store.save("project", "db-port", "port the database listens on", "6543")
     assert result.status == "saved"
     assert sorted(p.name for p in (store.root / "facts").glob("*.md")) == ["db-port.md"]
-    assert "6543" in (store.root / "facts" / "db-port.md").read_text()
+    assert "6543" in (store.root / "facts" / "db-port.md").read_text(encoding="utf-8")
 
 
 def test_snapshot_stamp_never_writes_pinned_content_back(store):
@@ -217,7 +219,7 @@ def test_snapshot_stamp_never_writes_pinned_content_back(store):
     with store.snapshot():
         store.save("project", "db-port", "port the database listens on", "6543")
         store.recall("database port", k=1)
-    text = (store.root / "facts" / "db-port.md").read_text()
+    text = (store.root / "facts" / "db-port.md").read_text(encoding="utf-8")
     assert "6543" in text and "5432" not in text
     assert "last_recalled: '2026-08-06'" in text
 
@@ -242,7 +244,7 @@ def test_snapshot_restores_live_reads_on_exit_even_after_an_error(store):
 def test_snapshot_of_an_unreadable_store_falls_back_to_live_reads(tmp_path):
     """Pinning is an isolation nicety; a corrupt store must still raise where it always did."""
     store = MemoryStore(tmp_path / "mem")
-    (store.root / "facts" / "broken.md").write_text("no frontmatter at all")
+    (store.root / "facts" / "broken.md").write_text("no frontmatter at all", encoding="utf-8")
     with store.snapshot():
         with pytest.raises(MemoryValidationError):
             store.recall("anything")

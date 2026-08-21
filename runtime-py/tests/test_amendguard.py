@@ -84,7 +84,8 @@ def _git(repo: Path, *args: str) -> None:
     env = dict(os.environ)
     env.update(FIXTURE_ENV)
     r = subprocess.run(
-        ["git", "-C", str(repo), *args], capture_output=True, text=True, env=env, check=False
+        ["git", "-C", str(repo), *args], capture_output=True, text=True, env=env, check=False,
+        encoding="utf-8",
     )
     assert r.returncode == 0, "git " + " ".join(args) + " -> " + r.stderr
 
@@ -94,7 +95,7 @@ def _run(repo: Path, rev_range: str, ledger: Path, *extra: str):
         [sys.executable, str(CHECKER), "check", str(repo), rev_range, str(ledger), *extra],
         capture_output=True,
         text=True,
-        check=False,
+        check=False, encoding="utf-8",
     )
     rows = {}
     for line in r.stdout.splitlines():
@@ -132,16 +133,17 @@ def _mini(tmp_path: Path, first: str, second: str) -> tuple[Path, Path, str]:
     repo.mkdir()
     _git(repo, "init", "-q")
     _git(repo, "symbolic-ref", "HEAD", "refs/heads/main")
-    (repo / "doc.md").write_text(first)
+    (repo / "doc.md").write_text(first, encoding="utf-8")
     _git(repo, "add", "--", "doc.md")
     _git(repo, "commit", "-q", "-m", "base")
-    (repo / "doc.md").write_text(second)
+    (repo / "doc.md").write_text(second, encoding="utf-8")
     _git(repo, "add", "--", "doc.md")
     _git(repo, "commit", "-q", "-m", "change")
     ledger = tmp_path / "ledger.json"
-    ledger.write_text(json.dumps({"amend_only": ["*.md"]}))
+    ledger.write_text(json.dumps({"amend_only": ["*.md"]}), encoding="utf-8")
     head = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+        encoding="utf-8",
     ).stdout.strip()
     return repo, ledger, head
 
@@ -301,7 +303,7 @@ def test_a_gate_expectation_whose_stamp_is_missing_a_key_is_red(fixture):
 # The instrument's own hygiene.
 # ---------------------------------------------------------------------------------------
 def test_every_calibration_expectation_holds_on_the_fixture(fixture):
-    expectations = json.loads(CALIBRATION.read_text())["expect"]
+    expectations = json.loads(CALIBRATION.read_text(encoding="utf-8"))["expect"]
     assert expectations, "the calibration is empty, which calibrates nothing"
     for e in expectations:
         row = _row(fixture, e["label"], e["path"])
@@ -311,7 +313,7 @@ def test_every_calibration_expectation_holds_on_the_fixture(fixture):
 
 
 def test_the_calibration_carries_both_a_must_be_red_and_a_must_be_green(fixture):
-    expectations = json.loads(CALIBRATION.read_text())["expect"]
+    expectations = json.loads(CALIBRATION.read_text(encoding="utf-8"))["expect"]
     verdicts = {e["verdict"] for e in expectations}
     assert "OK" in verdicts
     assert verdicts - {"OK"}, "a calibration with no red case is a positive control only"
@@ -340,12 +342,13 @@ def test_every_closed_list_entry_has_a_fixture_case(fixture):
 
     def blob(rev: str) -> list[str]:
         r = subprocess.run(
-            ["git", "-C", str(repo), "show", rev], capture_output=True, text=True, check=True
+            ["git", "-C", str(repo), "show", rev], capture_output=True, text=True, check=True,
+            encoding="utf-8",
         )
         return r.stdout.splitlines()
 
     exercised: set[int] = set()
-    for e in json.loads(CALIBRATION.read_text())["expect"]:
+    for e in json.loads(CALIBRATION.read_text(encoding="utf-8"))["expect"]:
         if not e["classify"].startswith("pointer:"):
             continue
         sha = fixture["labels"][e["label"]]
@@ -369,7 +372,7 @@ def test_every_closed_list_entry_has_a_fixture_case(fixture):
 def test_every_calibration_path_belongs_to_the_synthetic_fixture():
     """The property that keeps this file from ever asserting a fact about this repository."""
     fixture_paths = {op["path"] for spec in AG.FIXTURE_COMMITS for op in spec["ops"]}
-    for e in json.loads(CALIBRATION.read_text())["expect"]:
+    for e in json.loads(CALIBRATION.read_text(encoding="utf-8"))["expect"]:
         assert e["path"] in fixture_paths, e["path"] + " is not a path the fixture creates"
 
 
@@ -411,7 +414,8 @@ def test_a_bare_invocation_exits_2_and_writes_nothing(tmp_path):
     required, so there is no path on which a bare call reaches a write."""
     before = sorted(p.name for p in tmp_path.iterdir())
     r = subprocess.run(
-        [sys.executable, str(CHECKER)], capture_output=True, text=True, cwd=tmp_path, check=False
+        [sys.executable, str(CHECKER)], capture_output=True, text=True, cwd=tmp_path, check=False,
+        encoding="utf-8",
     )
     assert r.returncode == 2
     assert sorted(p.name for p in tmp_path.iterdir()) == before
@@ -432,7 +436,7 @@ def test_a_ledger_that_matches_nothing_reports_unmeasured_and_does_not_exit_zero
     is not the same as one that reports it read nothing."""
     repo, _ledger, _head = _mini(tmp_path, "# Doc\n\nA number: 1.\n", "# Doc\n\nA number: 2.\n")
     empty = tmp_path / "empty-ledger.json"
-    empty.write_text(json.dumps({"amend_only": ["*.rst"]}))
+    empty.write_text(json.dumps({"amend_only": ["*.rst"]}), encoding="utf-8")
     r, rows, summary = _run(repo, "HEAD", empty)
     assert rows == {}
     assert summary["unmeasured"] == "1"

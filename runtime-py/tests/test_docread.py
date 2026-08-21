@@ -768,7 +768,7 @@ def test_a_real_ole2_doc_is_read_through_textutil(tmp_path):
     the file is written with a suffix that does not match, so a suffix reading gets it wrong.
     """
     source = tmp_path / "seed.txt"
-    source.write_text("Hello legacy world.\nSecond paragraph here.\n")
+    source.write_text("Hello legacy world.\nSecond paragraph here.\n", encoding="utf-8")
     target = tmp_path / "legacy.pdf"
     subprocess.run(
         [TEXTUTIL, "-convert", "doc", "-output", str(target), str(source)], check=True
@@ -1166,7 +1166,7 @@ def test_an_mhtml_states_the_parts_it_did_not_render(tmp_path):
         "--B\r\nContent-Type: text/html\r\n\r\n<html><body><p>hello</p></body></html>\r\n"
         "--B\r\nContent-Type: application/octet-stream\r\n\r\nZZZZZ\r\n"
         "--B\r\nContent-Type: image/png\r\n\r\nQQ\r\n"
-        "--B--\r\n"
+        "--B--\r\n", encoding="utf-8"
     )
     doc = extract(path)
     assert doc.kind == "mhtml" and doc.parts[0].rows == ("hello",)

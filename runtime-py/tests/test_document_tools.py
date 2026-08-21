@@ -203,7 +203,8 @@ def roster_bytes(tools: list[Tool]) -> int:
 def test_b0_median_call_is_still_the_denominator_this_file_divides_by():
     """The fraction is only meaningful against a number that is still there. Pin the link."""
     b0 = REPO / "docs" / "eval-data" / "2026-08-18-loop-b0-compact-off.jsonl"
-    rows = [json.loads(line) for line in b0.read_text().splitlines() if line.strip()]
+    lines = b0.read_text(encoding="utf-8").splitlines()
+    rows = [json.loads(line) for line in lines if line.strip()]
     counts = sorted(c["prompt_eval_count"] for r in rows for c in r["calls"])
     assert len(counts) == 131
     assert counts[len(counts) // 2] == B0_MEDIAN_PROMPT_TOKENS
@@ -918,7 +919,7 @@ def rbp86_payloads():
     """
     found = []
     for path in sorted(TRANSCRIPTS_3B.glob("reader--*.json")):
-        messages = json.loads(path.read_text())["messages"]
+        messages = json.loads(path.read_text(encoding="utf-8"))["messages"]
         for index, message in enumerate(messages):
             content = message.get("content")
             if not (isinstance(content, str) and "unhashable type" in content):

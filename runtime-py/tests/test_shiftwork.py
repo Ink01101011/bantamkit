@@ -30,7 +30,7 @@ def schema():
 
 @pytest.fixture
 def example():
-    return json.loads(EXAMPLE.read_text())
+    return json.loads(EXAMPLE.read_text(encoding="utf-8"))
 
 
 # --- load_schema -----------------------------------------------------------
@@ -150,7 +150,7 @@ def test_history_beyond_five_entries_rejected(schema, example):
 
 def write_checkpoint(tmp_path, ckpt):
     path = tmp_path / "checkpoint.json"
-    path.write_text(json.dumps(ckpt) if isinstance(ckpt, dict) else ckpt)
+    path.write_text(json.dumps(ckpt) if isinstance(ckpt, dict) else ckpt, encoding="utf-8")
     return path
 
 
@@ -216,7 +216,7 @@ def read_log(path):
     log = Path(str(path) + ".log.jsonl")
     if not log.exists():
         return []
-    return [json.loads(line) for line in log.read_text().splitlines()]
+    return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
 
 
 def test_clock_out_round_trips_a_valid_update(tmp_path, schema, example):
@@ -231,7 +231,7 @@ def test_clock_out_round_trips_a_valid_update(tmp_path, schema, example):
     )
     assert r["result"] == "ok"
     assert r["cursor"] == "U4"
-    written = path.read_text()
+    written = path.read_text(encoding="utf-8")
     assert schema_error(written, schema) is None  # the re-read passes the full schema
     doc = json.loads(written)
     assert doc["plan"]["units"][1]["status"] == "done"
@@ -279,9 +279,9 @@ def test_clock_out_pushes_the_history_ring_with_driver_identical_truncation(
     path = write_checkpoint(tmp_path, example)
     r = ops.clock_out(str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"})
     assert r["result"] == "ok"
-    doc = json.loads(path.read_text())
+    doc = json.loads(path.read_text(encoding="utf-8"))
     assert [h["unit"] for h in doc["history"]] == ["H1", "H2", "H3", "H4", "U3"]
-    assert schema_error(path.read_text(), schema) is None
+    assert schema_error(path.read_text(encoding="utf-8"), schema) is None
 
 
 def test_clock_out_unknown_unit_errors_without_writing(tmp_path, example):
@@ -442,11 +442,11 @@ def test_status_errors_on_invalid_checkpoint(tmp_path):
 
 
 def test_codefix_example_validates(schema):
-    assert schema_error(CODEFIX.read_text(), schema) is None
+    assert schema_error(CODEFIX.read_text(encoding="utf-8"), schema) is None
 
 
 def test_codefix_example_shapes_the_job(schema):
-    ckpt = json.loads(CODEFIX.read_text())
+    ckpt = json.loads(CODEFIX.read_text(encoding="utf-8"))
     units = ckpt["plan"]["units"]
     assert [u["id"] for u in units] == ["CF1", "CF2", "CF3", "CF4"]
     assert ckpt["plan"]["cursor"] == "CF1"
@@ -502,7 +502,7 @@ class FakeClock:
 
 
 def base_checkpoint():
-    ckpt = json.loads(EXAMPLE.read_text())
+    ckpt = json.loads(EXAMPLE.read_text(encoding="utf-8"))
     ckpt["plan"]["units"] = [u for u in ckpt["plan"]["units"] if u["id"] in {"U1", "U3"}]
     ckpt["state"]["external"] = []
     return ckpt
@@ -510,7 +510,7 @@ def base_checkpoint():
 
 def make_driver(tmp_path, ckpt, *, sessions=(), until=(), alive=False, **config):
     path = tmp_path / "checkpoint.json"
-    path.write_text(json.dumps(ckpt) if isinstance(ckpt, dict) else ckpt)
+    path.write_text(json.dumps(ckpt) if isinstance(ckpt, dict) else ckpt, encoding="utf-8")
     runner = FakeRunner(sessions=sessions, until_results=until)
     sleeps = []
     config.setdefault("notify_cmd", ["notify"])
@@ -532,7 +532,7 @@ def edit(path, **changes):
     """Return a session behavior that mutates the checkpoint (i.e. clocks out)."""
 
     def behave():
-        ckpt = json.loads(path.read_text())
+        ckpt = json.loads(path.read_text(encoding="utf-8"))
         if changes.get("finish"):
             for unit in ckpt["plan"]["units"]:
                 unit["status"] = "done"
@@ -540,7 +540,7 @@ def edit(path, **changes):
             ckpt["handoff"]["next_action"] = changes["note"]
         if changes.get("escalate"):
             ckpt["handoff"]["open_questions"] = [changes["escalate"]]
-        path.write_text(json.dumps(ckpt))
+        path.write_text(json.dumps(ckpt), encoding="utf-8")
         return changes.get("code", 0)
 
     return behave
@@ -553,11 +553,13 @@ def noop(code=0):
 
 def log_lines(harness):
     log = harness.dir / "driver-log.jsonl"
-    return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
 
 
 def driver_state(harness):
-    return json.loads((harness.dir / "driver-state.json").read_text())
+    return json.loads((harness.dir / "driver-state.json").read_text(encoding="utf-8"))
 
 
 # --- driver: exits ---------------------------------------------------------
@@ -726,16 +728,20 @@ def test_settled_external_is_not_waited_on(tmp_path):
 
 def test_second_driver_refuses_to_start(tmp_path):
     h = make_driver(tmp_path, base_checkpoint(), alive=True)
-    (tmp_path / "driver.lock").write_text(json.dumps({"pid": 999, "started": 1.0}))
+    (tmp_path / "driver.lock").write_text(
+        json.dumps({"pid": 999, "started": 1.0}), encoding="utf-8"
+    )
     assert h.driver.run() == shiftwork.EXIT_LOCKED
     assert h.runner.sessions_run == []
-    assert json.loads((tmp_path / "driver.lock").read_text())["pid"] == 999
+    assert json.loads((tmp_path / "driver.lock").read_text(encoding="utf-8"))["pid"] == 999
 
 
 def test_lock_refusal_notifies_naming_the_holder(tmp_path):
     """A refusal that only prints to stderr is invisible to whoever walked away."""
     h = make_driver(tmp_path, base_checkpoint(), alive=True)
-    (tmp_path / "driver.lock").write_text(json.dumps({"pid": 999, "started": 1.0}))
+    (tmp_path / "driver.lock").write_text(
+        json.dumps({"pid": 999, "started": 1.0}), encoding="utf-8"
+    )
     assert h.driver.run() == shiftwork.EXIT_LOCKED
     message = h.runner.notifications[0][-1]
     assert message.startswith("shift-work refused to start:")
@@ -750,7 +756,7 @@ def test_lock_acquisition_is_atomic(tmp_path):
     assert first.acquire() is None
     assert "pid 1001" in second.acquire()
     assert second.held is False
-    assert json.loads(lock.read_text())["pid"] == 1001
+    assert json.loads(lock.read_text(encoding="utf-8"))["pid"] == 1001
     second.release()  # a loser must never delete the winner's lock
     assert lock.exists()
 
@@ -760,7 +766,9 @@ def test_stale_lock_is_taken_over(tmp_path):
     for unit in ckpt["plan"]["units"]:
         unit["status"] = "done"
     h = make_driver(tmp_path, ckpt, alive=False)  # pid 999 is dead
-    (tmp_path / "driver.lock").write_text(json.dumps({"pid": 999, "started": 1.0}))
+    (tmp_path / "driver.lock").write_text(
+        json.dumps({"pid": 999, "started": 1.0}), encoding="utf-8"
+    )
     assert h.driver.run() == shiftwork.EXIT_SUCCESS
     assert not (tmp_path / "driver.lock").exists()  # released on exit
 
@@ -834,14 +842,14 @@ def test_retry_counters_live_outside_the_checkpoint(tmp_path):
     h = make_driver(tmp_path, base_checkpoint(), max_retries=0)
     h.runner.sessions = [noop()]
     h.driver.run()
-    assert "retries" not in h.path.read_text()
+    assert "retries" not in h.path.read_text(encoding="utf-8")
     assert driver_state(h)["retries"] == {"U3": 1}
 
 
 def test_driver_resumes_from_persisted_state(tmp_path):
     h = make_driver(tmp_path, base_checkpoint(), max_sessions=2)
     (tmp_path / "driver-state.json").write_text(
-        json.dumps({"seq": 5, "sessions": 2, "retries": {"U3": 1}})
+        json.dumps({"seq": 5, "sessions": 2, "retries": {"U3": 1}}), encoding="utf-8"
     )
     assert h.driver.run() == shiftwork.EXIT_BUDGET
     assert h.runner.sessions_run == []
@@ -878,8 +886,8 @@ def test_main_runs_end_to_end_without_spawning(tmp_path):
     ckpt = base_checkpoint()
     for unit in ckpt["plan"]["units"]:
         unit["status"] = "done"
-    (tmp_path / "checkpoint.json").write_text(json.dumps(ckpt))
-    (tmp_path / "driver.json").write_text(json.dumps({"notify_cmd": []}))
+    (tmp_path / "checkpoint.json").write_text(json.dumps(ckpt), encoding="utf-8")
+    (tmp_path / "driver.json").write_text(json.dumps({"notify_cmd": []}), encoding="utf-8")
     code = shiftwork.main(
         [
             "--checkpoint",
