@@ -235,6 +235,28 @@ def test_the_tool_is_listed_and_takes_no_arguments(tmp_path):
 
     A resource would be host-facing and an `initialize` field is read once at handshake,
     which is the gap RB-P84 names — the tool-calling agent never sees either.
+
+    NOT VACUOUS, AND MEASURED RATHER THAN ARGUED. This was the one node in this file whose
+    red had never been run. Each assertion below now has one, and each mutation is named
+    so it can be re-run:
+
+    - `"build_identity" in tools` is SUBSUMED and is kept only as the precondition for the
+      two below. Renaming the registration to `build_identity_v2` reddens it — but the
+      same edit reddens `test_lists_exactly_the_seven_tools` on a strictly stronger exact
+      list, and errors every stdio node here with `Unknown tool: build_identity`.
+    - `not ...get("properties")` is the reason this node exists. Giving the handler one
+      OPTIONAL parameter (`def build_identity_tool(refresh: bool = False)`) reddens this
+      node and nothing else in the tree: 1 failed, 1456 passed, 2 xfailed. An optional
+      argument is invisible to every stdio arm, because they call with `arguments: {}` and
+      still succeed. Delete this node and that edit lands unnoticed.
+    - `not ...get("required")` fires ALONE — properties stays empty and this assert is the
+      one that goes — when a schema handed to `build_server`'s `_tool_manager` override
+      declares `required` for a field it never declared in `properties`.
+
+    Do not "strengthen" this by adding `input_schema["type"] == "object"`. That assert
+    cannot fail: the SDK's own `ListToolsResult` model requires the key and pins it to the
+    literal `object`, so `{}` and `{"type": "string"}` both die in pydantic before
+    `list_tools()` returns and never reach an assertion here.
     """
 
     import asyncio
