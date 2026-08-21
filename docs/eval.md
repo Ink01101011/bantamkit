@@ -11046,4 +11046,154 @@ directory in a wheel, so the code walk was fingerprinting it too and calling one
 - **The stale `0.3.0` install** is still in the venv. Nothing depends on it and the editable
   `.pth` wins the import, but it is what `importlib.metadata` answers from.
 
+#### AE (2026-08-21) — the module invocation served nothing and only a test that routed around it could stay green; and the node the register would not vouch for turns out to be the only thing guarding its property
+
+<!-- provenance: value=ceiling RB-P97 over 79 refs (refs/heads + refs/remotes), 97 distinct numbers on main, contiguous 1..97, no gaps and nothing above; commit=e5917b3; command=for r in $(git for-each-ref --format='%(refname:short)' refs/heads/ refs/remotes/); do git show $r:docs/eval.md | grep -oE 'RB-P[0-9]+' | sed 's/RB-P//' | sort -n | tail -1; done | sort -rn | head -1 -->
+
+```
+    ceiling over all 79 refs                     ->  RB-P97
+    distinct numbers on main, contiguous 1..97   ->  97
+    tags before and after this section           ->  22
+```
+
+`(ceiling RB-P97 over 79 refs, e5917b3, the command above)`. **`RB-P98` is the next free number,
+and this section mints exactly one: `RB-P98`.**
+
+Two of the six items §AD.5 left open are closed here. **Neither was found by this section — both
+were nominated by a prep probe, and the probe was right about one and wrong about the other.**
+That ratio is the section's most useful output and it is stated before the findings rather than
+after: a nomination is a claim, and this register has now been wrong about its own subjects often
+enough that checking one is a unit of work rather than a formality.
+
+##### AE.1 The `__main__` guard — FIXED (`317a363`), and the discriminator is not the one the filing named
+
+§AD.5 filed it as *"`bantamkit.mcpserver` has no `__main__` guard, so `python -m bantamkit.mcpserver`
+exits silently and the client reports `CONNECTION_CLOSED` — the symptom, not the cause."* Reproduced
+exactly: exit `0`, **stdout 0 bytes, stderr 0 bytes**.
+
+<!-- provenance: value=`python -m bantamkit.mcpserver` pre-fix exits 0 with 0 bytes on both streams, and `-m bantamkit.mcpserver --help` does the same; post-fix --help prints argparse usage for prog bantamkit-mcp; commit=317a363; command=subprocess.run([".venv/bin/python","-m","bantamkit.mcpserver"], capture_output=True, timeout=30, stdin=DEVNULL) -->
+
+**The unit corrected the filing on the point that matters for testing it.** The bare `-m` run is
+**not** a discriminator: post-fix, with stdin closed, a stdio server also exits 0 silently, because
+that is what a stdio server does at EOF. `-m bantamkit.mcpserver --help` is the discriminator — 0
+bytes before, argparse usage for prog `bantamkit-mcp` after. **A test written against the bare run
+would have passed in both worlds**, which is one more reason this survived.
+
+The fix is two lines. The deliverable is the node beside it, and the reason is arithmetic:
+
+<!-- provenance: value=under the mutation `delete the __main__ guard` (verified by grep -c '__main__' -> 0), test_module_entrypoint_serves_over_stdio fails at session.initialize() with mcp.shared.exceptions.MCPError: Connection closed, while the rest of the file is 27 passed — including test_stdio_subprocess_initializes; commit=981d73f; command=pytest runtime-py/tests/test_mcpserver.py -q -->
+
+```
+    under the exact defect, before this section:
+      test_stdio_subprocess_initializes (the -c sibling)  ->  PASSED
+      the rest of test_mcpserver.py                       ->  27 passed
+      anything red anywhere                               ->  none
+```
+
+**All twenty-seven pre-existing nodes stay green through the bug.** `test_stdio_subprocess_initializes`
+launches the server with `-c "from bantamkit.mcpserver import main; main()"` — it routes around the
+broken path by construction, and that routing is itself inherited from `RB-P97`'s fix, where `env=`
+had to be passed explicitly because the SDK strips `PYTHONPATH`. So the suite did not miss this
+through carelessness; it missed it because the one node that spawns a server was pointed at the one
+invocation that worked. `test_module_entrypoint_serves_over_stdio` (`981d73f`) spawns
+`[sys.executable, "-m", "bantamkit.mcpserver"]` with an explicit `env` and asserts the **exact tool
+list**, matching its sibling — a count is the symptom, a list names the missing tool.
+
+Suite `1456 passed, 2 xfailed` → `1457 passed, 2 xfailed`. Delta **+1**, exactly the node added.
+
+##### AE.2 The node with no demonstrated red — the filing is WITHDRAWN, and the node is named
+
+§AD.5 said *"One node in `test_build_identity.py` has no demonstrated red. The unit disclosed it
+before dying and the orchestrator does not claim its non-vacuity."* **The node is
+`test_the_tool_is_listed_and_takes_no_arguments`**, and the hedge is withdrawn: its red is
+demonstrated, three times, on the record below.
+
+A prep probe nominated it for **deletion**, reasoning that it never calls `build_identity()` so no
+mutation of that function can redden it, that its `in tools` assertion is subsumed by four other
+nodes, and that its two negative `.get()` assertions *"pass identically whether the key is absent,
+empty, or the schema is `{}`"*. **The first two are right. The third is false at the protocol layer,
+and deleting the node was the one move that would have opened a hole silently.**
+
+<!-- provenance: value=parameters={} raises ValidationError `tools.6.inputSchema.type Field required` and parameters={"type":"string"} raises `Input should be 'object'`, both inside pydantic during tools/list; adding one OPTIONAL parameter `def build_identity_tool(refresh: bool = False)` gives full suite 1 failed, 1456 passed, 2 xfailed; commit=62c9c3f; command=pytest runtime-py/tests -q under each named mutation -->
+
+```
+    mutation                                          reddens
+    ------------------------------------------------  ---------------------------------------
+    rename the registration to build_identity_v2      this node AND test_lists_exactly_the_
+                                                        seven_tools (strictly stronger) AND
+                                                        every stdio node  -> SUBSUMED
+    def build_identity_tool(refresh: bool = False)    THIS NODE ALONE, 1 of 1459
+    schema declaring required:['refresh'] with an     the third assertion alone
+      empty properties map
+```
+
+**The degenerate schema the probe reasoned about is unreachable.** The MCP SDK's `ListToolsResult`
+requires `inputSchema.type` and pins it to the literal `object`, so `{}` and `{"type":"string"}`
+both die in pydantic during `tools/list` and never reach an assertion. `**kwargs` does not produce
+an open schema either — it emits a `kwargs` property the current form already catches.
+
+**What the node uniquely guards is that the tool takes no arguments at all.** Adding one *optional*
+parameter is an ordinary change; the five stdio arms call with `arguments: {}` and keep passing, so
+nothing else in 1,459 nodes notices. The probe called that mutation implausible. It is not, and
+"implausible" was doing the load-bearing work in an argument for deletion.
+
+`62c9c3f` changes **no assertion**. It records the three mutations in the node's docstring, in the
+file's existing voice, including a warning against the vacuous strengthening
+`assert input_schema["type"] == "object"` — which **cannot fail**, because pydantic rejects the
+input before any assertion runs. Suite unchanged at `1457 passed, 2 xfailed`; delta zero is correct
+for a docstring-only commit.
+
+##### AE.3 Minted here — `RB-P98`, and only `RB-P98`
+
+- **`RB-P98` — a declared entry point is not a tested one, and this repo has exactly one class of
+  node that would notice.** `AE.1` fixed one instance and the class is untouched.
+
+  <!-- provenance: value=grep -rn '__main__' runtime-py/src/bantamkit/ finds guards at evalrun.py:1991 and criticreplay.py:3064 and no node spawns `python -m` on either; [project.scripts] bantamkit-mcp is asserted only as a pyproject string by test_packaging_reads_the_same_declaration_the_server_reads and nothing spawns the installed executable; commit=e5917b3; command=grep -rn '__main__' runtime-py/src/bantamkit/ && grep -rn 'project.scripts' -A2 runtime-py/pyproject.toml -->
+
+  Two live instances, both disclosed by the unit that fixed the third rather than found by an
+  audit. **`evalrun.py:1991` and `criticreplay.py:3064` carry `__main__` guards that no node
+  exercises** — either could be deleted and the suite would stay green, which is precisely the
+  state `mcpserver.py` was in before `AE.1`. And **the console script `bantamkit-mcp` is asserted
+  only as a string in `pyproject.toml`**; nothing spawns the installed executable, so a regression
+  in the entry point is invisible to the suite while being the single path a third-party install
+  actually uses.
+
+  It earns a number rather than a footnote for the reason `AE.1` demonstrates: the failure is
+  **silent in the direction that matters**. `python -m` on a broken module exits **0**. A missing
+  console script fails only on someone else's machine. Both are the shape this register exists for
+  — a gate that cannot see its own subject — and the fix is a node per entry point, not a guard per
+  module.
+
+  **Attack:** a check that every declared entry point — each `__main__` guard and each
+  `[project.scripts]` target — is spawned by at least one node. Note it composes with `RB-P97`:
+  any such node must pass `env=` explicitly or it tests a build nobody chose.
+
+##### AE.4 What gets no number
+
+1. **The two fixes.** A fix is not a finding.
+2. **The probe's refuted reasoning.** Being wrong about a node is not a defect in the tree, and
+   `AE.2` records it as evidence rather than minting it. What it cost was one unit of work, which
+   is what a nomination is supposed to cost.
+3. **`{"type":"object","properties":{},"additionalProperties":true}`** would pass all three of the
+   node's assertions while advertising "send me anything". It is reachable only through the
+   `_tool_manager` override, **the mutation was NOT RUN**, and the unit declined to claim a red it
+   had not demonstrated. Recorded as a candidate. The register does not mint candidates.
+
+##### AE.5 What stays open
+
+- **`RB-P98`**, for the reason given. `AE.1` closed one of its three known instances.
+- **`RB-P97`'s sweep** — still no check that every `StdioServerParameters` passes `env=`. A prep
+  probe measured the population at **one construction, already correct**, so a lint here would be
+  future-proofing over a population of one and cannot go red today. Recorded so the next reader
+  does not re-measure it.
+- **The scope collision is HALF CLOSED, and by configuration, not by code.** `claude mcp list` no
+  longer prints `[Conflicting scopes]`: the user-scope registration was removed on the user's
+  instruction, and `bantamkit` now resolves to the project build alone. The removed endpoint was a
+  **six-tool build without `build_identity`** — an older install that would have answered silently
+  had the project registration ever been unapproved, which is `RB-P45`'s hazard standing in the
+  working environment for the second section running.
+- **`RB-P95`'s own `29 of 32`** and `2 pinned / 26 laundering / 4 pinned by nothing` remain
+  unverified; they need the full sweep nobody has run.
+- **The stale `0.3.0` install** is still in the venv.
+
 Back to the [README](../README.md).
