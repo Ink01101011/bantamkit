@@ -11046,4 +11046,589 @@ directory in a wheel, so the code walk was fingerprinting it too and calling one
 - **The stale `0.3.0` install** is still in the venv. Nothing depends on it and the editable
   `.pth` wins the import, but it is what `importlib.metadata` answers from.
 
+#### AF (2026-08-21) — `extract()` refused 99.85% of the corpus it was written for; and a must-be-red node that stayed GREEN under its own mutation turns out to be six nodes, because a fixture with one hardcoded dimension samples a boundary at the one value where broken and correct agree
+
+Two units, four commits, on `fix/docread-sniff-coverage`. Every number below was RE-MEASURED by
+this section against the worktree's own source before it was written down, and **seven of the
+figures this section was handed do not reproduce, and an eighth claim — that a named node does
+not exist — is false.** They are listed in `§AF.6` rather than quietly corrected, and where a
+measurement here disagrees with the hand-off, **the measurement is what stands**.
+
+The venv's editable install resolves `bantamkit` to the CANONICAL checkout, so every command in
+this section sets `PYTHONPATH` to the worktree's `runtime-py/src` and every run was confirmed by
+`bantamkit.docread.__file__` before its output was believed — `RB-P97`, applied rather than
+cited.
+
+##### AF.0 The ceiling, read across every ref — and this branch alone would have collided
+
+<!-- provenance: value=ceiling RB-P98 over 80 refs (refs/heads + refs/remotes), 98 distinct numbers on main, contiguous 1..98, no gaps and nothing above; 22 tags; this branch's own eval.md reads RB-P97; commit=23b0463; command=for r in $(git for-each-ref --format='%(refname:short)' refs/heads/ refs/remotes/); do git show "${r}:docs/eval.md" | grep -oE 'RB-P[0-9]+' | sed 's/RB-P//' | sort -n | tail -1; done | sort -rn | head -1 -->
+
+```
+    ceiling over all 80 refs                     ->  RB-P98
+    distinct numbers on main, contiguous 1..98   ->  98
+    tags before and after this section           ->  22
+    ceiling read on THIS BRANCH alone            ->  RB-P97
+```
+
+`(ceiling RB-P98 over 80 refs, 23b0463, the command above)`. **`RB-P99` is the next free number,
+and this section mints exactly one: `RB-P99`.**
+
+The last line of that block is the point. **This branch's `docs/eval.md` ends at `§AD` and its
+ceiling reads `RB-P97`**, because `§AE` and `RB-P98` landed on `main` in `7a97a2f` after this
+branch was cut. Reading the ceiling here would have minted `RB-P98` — a number `docs/eval.md`
+already carries. That is `RB-P74`/`RB-P75` standing live for the third section running, and it
+cost nothing only because the rule was followed.
+
+**Disclosed rather than discovered later:** this section is `§AF` and it is appended to a file
+whose last section is `§AD`. `§AE` is on `main` and not here; it was read from
+`git show main:docs/eval.md` before a word of this was written. The four commits were not
+rebased and the section letter is the one the merged file will need, not the one this file
+implies.
+
+##### AF.1 Unit I — where the read stopped had a vote, and 233 files changed answer when it lost it
+
+`sniff` read a 4,096-byte head and decoded it with a single `head.decode("utf-8")`. A character
+straddling that boundary raised, and the file fell through to `unknown` — so **where this
+reader happened to stop decided what the file WAS**. `4bd1924` replaces the decode with an
+incremental decoder that lowers `final` exactly where a boundary exists:
+
+```python
+return decoder.decode(head, final=len(head) < _HEAD_BYTES)
+```
+
+A file shorter than the cap was read whole, so a dangling half-character in it is real damage
+rather than an artefact of sampling, and still refuses. The head size is named `_HEAD_BYTES` so
+a bar can vary it.
+
+Second, `_TEXT_CONTROLS = {0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x1B}` — tab, the newline family, and
+ESC as the ECMA-48 introducer for ANSI colour. Every other C0 code stays binary evidence. This
+widens the classifier by a stated rule about which codes mean what, not by a tolerance.
+
+<!-- provenance: value=sniffing ~/Documents/Claude/Projects twice in one pass, once against e5917b3's docread.py and once against the worktree's, over 49,556 files: 233 move unknown->text and NOTHING moves in any other direction; of the 211 files whose decodable head carries a C0 code beyond tab and the newline family, 24 carry ESC and no other (ANSI logs, -> text) and 187 carry NUL (-> unknown); commit=23b0463; command=scratch/final.py, one os.walk pruned at node_modules .venv venv .git __pycache__ dist build .next target site-packages .cache, symlinks not followed, both trees imported in one process -->
+
+```
+    unknown -> text                    233
+    anything -> anything else            0
+    heads carrying a C0 beyond \t\n\v\f\r     211
+      of which ESC-only (ANSI logs)            24   -> text
+      of which NUL-bearing                    187   -> unknown
+```
+
+**Nothing became less readable.** The 187 NUL-bearing files are PostgreSQL heap/FSM/VM/WAL under
+`.docker-data`; a NUL at offset 0 is binary framing under the old rule and under the new one
+alike, and they stay `unknown` by the rule rather than by luck.
+
+**The bar is the property, not the constant.**
+`test_the_verdict_does_not_move_when_the_head_size_does` builds a file carrying a 3-byte
+character every 4 characters and sniffs it once for every head size from 1 byte to past EOF,
+with `_HEAD_BYTES` monkeypatched:
+
+<!-- provenance: value=the sweep fixture is 1200 bytes and range(1, size+32) sweeps 1,231 head sizes; against the shipped decoder all 1,231 read `text`; against head.decode("utf-8") 400 of the 1,231 read `unknown` and 831 read `text`; commit=23b0463; command=for hb in range(1, size+32): docread._HEAD_BYTES = hb; sniff(path).kind, run once per tree -->
+
+```
+    boundaries swept                      1,231
+    shipped decoder                       1,231 text        0 unknown
+    head.decode("utf-8")                    831 text      400 unknown
+```
+
+400 of 1,231 is one third, which is what a 3-byte character every 4 characters is arithmetically
+required to produce. The fixture's dimension and the property's period were chosen to agree —
+which, as `§AF.4` shows, is the same lever that goes the other way when nobody checks it.
+
+Node count `77 -> 88`, collected, not counted by hand.
+
+##### AF.2 Unit J — `extract()` could hand back 76 files out of 49,556, and the brief's own refusal rate was wrong in the direction that flattered it
+
+`kind == "text"` was not a key in `_EXTRACTORS`, so `extract()` **raised** on every plain UTF-8
+text file. `de4a11c` adds `extract_text`, whose one part `document` has the file's lines as rows.
+
+<!-- provenance: value=over ~/Documents/Claude/Projects, 49,556 files under the exclusion list: text 43,629 / unknown 3,924 / empty 964 / png 848 / html 76 / gzip 61 / gif 48 / zip 6, summing to 49,556 with zero xlsx, docx, pdf, mhtml, doc or rtf anywhere in the corpus; extract() could answer 76 before (all html) and 43,705 after; commit=23b0463; command=scratch/final.py, the single pass of §AF.1 -->
+
+```
+    kind census                     extract() could answer
+    text      43,629                  before      76   (all html)   refusal  99.85%
+    unknown    3,924                  after   43,705                refusal  11.81%
+    empty        964
+    png          848                xlsx docx pdf mhtml doc rtf   ->  0, none exist
+    html          76
+    gzip          61                text share                    ->  88.04%
+    gif           48
+    zip            6
+    ------------  -----
+    total     49,556
+```
+
+**The brief this section was handed framed `89.30%` as the refusal rate.** The refusal rate was
+`99.85%` — `49,480` of `49,556` files. `89.30%` is not the refusal rate and is not the text
+share either; the text share is **`88.04%`**. A figure that understates a defect by ten points,
+carried into a register, is worse than no figure, and this one arrived pre-labelled as the
+headline.
+
+<!-- provenance: value=extract_text over all 43,629 text files under Projects returns 5,577,850 rows with ZERO omissions raised and zero refusals; re-run twice, identical both times; commit=23b0463; command=scratch/rows.py over the text-path list from the census pass -->
+
+**43,629 text files, 5,577,850 rows, zero omissions raised.** Not `5,577,842`; the run was
+repeated and returned `5,577,850` both times.
+
+##### AF.3 The three decisions, each re-derived — and one figure that is a property of the fixture and not of the cap
+
+**`_text_rows`, not `_plain_rows`.** `_plain_rows` strips each line, flattens tabs and drops the
+empty ones. Measured over the same 43,629 files, decoding each and rendering it both ways:
+
+<!-- provenance: value=over the 43,629 Projects text files, _plain_rows returns 4,708,577 rows against _text_rows' 5,577,850 -- 869,273 lines dropped, 15.58%; 33,990 files carry at least one line beginning with a space or a tab; 86 files contain a tab anywhere; _plain_rows differs from _text_rows on 37,278 of the 43,629; commit=23b0463; command=scratch/plain2.py, len(D._plain_rows(text)) vs len(D._text_rows(text)) on each file's strict decode -->
+
+```
+    files de-indented by .strip()        33,990 of 43,629    77.9%
+    files whose tabs would flatten           86
+    lines dropped as blank              869,273 of 5,577,850   15.58%
+    files rendered differently at all    37,278 of 43,629
+```
+
+**`77.9%` and `86` reproduce exactly.** The blank-line figure does not: it is `869,273 of
+5,577,850` (`15.58%`), not `909,880 of 5,618,108` (`16.2%`). Both halves of the handed ratio are
+about 40,000 high and this section could not reproduce either.
+
+One measurement fell out of that pass and is worth its own line: **`text.splitlines()` over the
+corpus returns exactly `5,577,850` — the same number `_text_rows` returns.** `_text_rows` splits
+on `\n` alone; `splitlines()` also breaks on `\r`, `\v`, `\f`, `\x85`, `\u2028` and `\u2029`.
+The two agreeing to the row means **no file in this corpus uses any of them as a line break**,
+which prices the `\r`-only hazard in `§AF.9` at zero files today.
+
+**`TEXT_MAX_BYTES = 16 MiB`, with `OMIT_SIZE_CAP` on the shortfall.** The largest text file on
+this host is a **764,017,864-byte `.sql` dump**, with a `134,000,722`-byte one behind it — both
+reproduce to the byte.
+
+<!-- provenance: value=walking ~/Documents/Claude/Projects, ~/Documents and ~/Downloads and DEDUPLICATING by realpath gives 72,902 text files, of which exactly 2 exceed 16 MiB and the same 2 exceed 64 MiB; the per-root counts are 43,629 / 72,893 / 9 and Projects is a SUBTREE of Documents, so the naive sum is 116,531; commit=23b0463; command=scratch/threeroots.py and scratch/perroot.py -->
+
+```
+    ~/Documents/Claude/Projects   text  43,629     <- a SUBTREE of the next line
+    ~/Documents                   text  72,893
+    ~/Downloads                   text       9
+    naive sum                          116,531
+    deduplicated union                  72,902     <- what "across three roots" is worth
+    covered by a 16 MiB cap             72,900
+```
+
+**The `116,529` this section was handed double-counts.** `~/Documents/Claude/Projects` is inside
+`~/Documents`, so every Projects text file is counted twice; the naive sum is `116,531`, within
+two of the figure carried, which is how the double-count is identified rather than guessed at.
+The **`2 over the cap`** is right in both readings — it is the denominator that was never a
+population.
+
+The cost figure needs a sharper qualification, and it is the same disease `§AF.4` is about.
+Measured at three fixture line widths against the same two caps:
+
+<!-- provenance: value=tracemalloc peak and wall time for extract_text over a 64 MiB log, at TEXT_MAX_BYTES 16 MiB and 64 MiB, for line widths 20 / 68 / 200 bytes: peaks 109.8/441.7, 77.5/310.0, 68.6/274.3 MiB and the 64:16 ratio is 4.02 / 4.00 / 4.00; commit=23b0463; command=tracemalloc.start(); extract_text(path); tracemalloc.get_traced_memory() per (width, cap) -->
+
+```
+    line width    16 MiB cap        64 MiB cap       ratio
+       20 B       109.8 MiB 0.20s   441.7 MiB 0.83s  4.02x
+       68 B        77.5 MiB 0.15s   310.0 MiB 0.37s  4.00x
+      200 B        68.6 MiB 0.08s   274.3 MiB 0.25s  4.00x
+```
+
+**The peak at one cap moves by 1.6x with nothing but the fixture's line width.** So `58.2 MiB`
+is a statement about a fixture nobody wrote down, and this section measures `77.5 MiB` for its
+own. **The only figure here that is a property of the cap is the ratio, and it is `4.00x` at
+every width.** A constant chosen against the absolute number would be chosen against a
+fixture; a constant chosen against the ratio would not.
+
+**Strict decode with `OMIT_UNREAD_TAIL`, never `errors="replace"`.** A character the file does
+not state is never emitted. Extracting every text file in the deduplicated union:
+
+<!-- provenance: value=extract_text over all 72,902 text files of the deduplicated union returns 10,291,819 rows, 0 OMIT_UNREAD_TAIL, 2 OMIT_SIZE_CAP and 1 DocumentReadError; the refusing file is a 1-byte .md whose only byte is 0x0A; commit=23b0463; command=scratch/tail.py, then scratch/find_refusal.py to identify the single refusal by size and byte values, never by content -->
+
+```
+    text files extracted        72,902
+    rows                    10,291,819
+    OMIT_UNREAD_TAIL                 0   <- the claim holds; the denominator was 116,529
+    OMIT_SIZE_CAP                    2   <- the two files over the cap
+    DocumentReadError                1
+```
+
+**`0` reproduces. `116,529` does not.** The tail path is unexercised by any real file across
+`72,902`, and it is handled because it is constructible and unbounded, not because it is common.
+
+The `1` is new and was in no hand-off. **One file in the union sniffs `text` and then
+`extract()` refuses it**: a 1-byte `.md` whose only byte is `0x0A`. It is not a defect — the
+module's stated rule is that an empty extraction from a text container is a refusal — but it
+means **`sniff().kind in SUPPORTED` is not a guarantee that `extract()` answers**, which is a
+weaker contract than the one the fix was written to restore. Recorded in `§AF.9`.
+
+##### AF.4 The node that was GREEN under the very mutation it existed to catch
+
+`test_the_cap_cuts_at_a_line_break_so_no_half_row_is_handed_back`
+(`runtime-py/tests/test_docread.py:1356`) exists to hold one property: where the cap stops the
+read, the rows are cut back to the last line break, so no row this reader never saw the end of
+is handed back. Its first version pinned `TEXT_MAX_BYTES` to the single value `5001` over a
+fixture of 41-byte lines.
+
+```
+    line = b"line %04d " + b"-"*30 + b"\n"      41 bytes, 40 of them characters
+    5001 // 41 == 121   5001 % 41 == 40
+```
+
+**The remainder is exactly one whole line missing only its terminator.** Under the mutation the
+node was written to catch — the cut-back removed from the cap path — the 122nd row comes back at
+40 characters, indistinguishable from a clean cut. The node passed.
+
+<!-- provenance: value=a faithful reconstruction of the single-cap node and the shipped sweep, both run against the shipped tree and against the mutant `if why or capped:` -> `if why:`; control 45 passed; under the mutant the single-cap node PASSES, the sweep FAILS, and of the 42 caps 5000..5041 parametrised individually exactly 2 pass -- 5001 and 5002; commit=23b0463; command=scratch/vacuity_test.py under PYTHONPATH=<shipped> and PYTHONPATH=<mutant> -->
+
+```
+    under the mutation it exists to catch
+      the BEFORE shape, one cap of 5001                    PASSED   <- false green
+      the AFTER shape, every cap across a full line        FAILED
+      the 42 caps 5000..5041, one node each          2 passed, 40 failed
+                                                       the 2 are 5001 and 5002
+```
+
+**Two of 42 consecutive caps hide the defect and the node picked one of them.** `5002` is a
+genuinely clean cut (`5002 % 41 == 0`); `5001` is the coincidence. The rewritten node sweeps
+every cap across a full line and reddens **3 of 106** under the same mutation, which reproduces
+exactly.
+
+This is the strongest possible false signal. A red says "look here". A green says nothing at
+all, and a green from a must-be-red node says "this property is guarded" while guarding
+nothing. **The fixture's dimensions and the mutation's boundary coincided, and no amount of
+care in writing the mutation would have caught it, because the mutation was correct.**
+
+##### AF.5 The class, hunted — six live instances, every one confirmed by a RUN and not by reading
+
+A number with one instance is an anecdote. The suite was searched for the same shape: a node
+whose fixture carries a **single hardcoded size, width, offset or count** checked against a
+**boundary**, where one coincident value hides the defect. **Every candidate below was
+confirmed by applying the named mutation and running the full suite against a control** —
+`RB-P51`'s rule, and `feedback-verify-against-the-run-not-the-source` applied to a hunt whose
+whole subject is reasoning that looked sound.
+
+<!-- provenance: value=control = the worktree's src copied to scratch and run unmutated: 2 failed, 1483 passed, 2 xfailed, the two reds being test_packaging_reads_the_same_declaration_the_server_reads and test_assets_root_finds_repo_assets, both of which assert on package LOCATION and are red only because the harness imports from a copy; each mutation below then run identically; commit=23b0463; command=BANTAMKIT_ASSETS=$PWD/assets PYTHONPATH=<mutant copy> pytest runtime-py/tests -q -->
+
+```
+    control (unmutated copy)                                   2 failed, 1483 passed, 2 xfailed
+    ------------------------------------------------------------------------------------------
+    docread.py:1395  size = len(...) + (1 if rows else 0)
+                       -> size = len(...)        [ceiling overrun]  2 failed, 1483 passed  0 RED
+    docread.py:1395  used + size > max_bytes -> >=  [off-by-one]    2 failed, 1483 passed  0 RED
+    docread.py:1399  decode(errors="ignore") -> errors="replace"    2 failed, 1483 passed  0 RED
+    evalrun.py:1328  rows = min(rows, DOCUMENT_PAGE_MAX_ROWS)
+                       -> the clamp DELETED                         2 failed, 1483 passed  0 RED
+    shiftwork.py:159 [-HISTORY_RING_SIZE:] -> [1:]                  2 failed, 1483 passed  0 RED
+    contract.py:167  truncate(text, budget) -> budget * 4           2 failed, 1483 passed  0 RED
+```
+
+**Six mutations, six live defects, and not one node in 1,485 goes red for any of them.** Each
+is named with the coincidence that hides it.
+
+**1. `test_docread.py:861` `test_max_bytes_bounds_the_slice_below_the_row_limit`.** The fixture
+renders 120 rows of exactly 7 bytes and the boundary is the single hardcoded `max_bytes=40`.
+`page()` books the joining newline (`+ (1 if rows else 0)`), which is the entire reason
+`len(text.encode()) <= max_bytes` holds. Delete that term and the accounting becomes `7N <= 40`
+instead of `8N - 1 <= 40`; both stop at **5 rows / 39 bytes**.
+
+<!-- provenance: value=for max_bytes 7..59, shipped and the newline-term mutant return identical (rows, bytes) at 28 of the 53 values, and the mutant RETURNS MORE BYTES THAN ITS OWN CEILING at 25 of the 53; at 40 both give (5, 39); at 42 shipped gives (5, 39) and the mutant gives (6, 47) against a 42-byte ceiling; commit=23b0463; command=page(doc,"data",limit=50,max_bytes=mb) for mb in range(7,60), run once per tree -->
+
+```
+    caps 7..59 where the two accountings AGREE                28 of 53
+    caps where the mutant overruns its own declared ceiling   25 of 53
+    max_bytes = 40  sits inside the agreement window {39, 40, 41}
+    max_bytes = 42  shipped (5 rows, 39 B)   mutant (6 rows, 47 B vs a 42 B ceiling)
+```
+
+**This is not even a rare coincidence — a cap picked at random has a better-than-even chance of
+hiding it.** Two independent mutations of this node's subject (the newline term, and `>` to
+`>=`) both come back green.
+
+**2. `test_docread.py:869` `test_a_single_row_over_the_ceiling_is_cut_and_the_loss_reported`.**
+The fixture is `"x" * 500` — pure ASCII — against `max_bytes=100`. `page()` cuts at a BYTE
+offset (`row.encode()[:max_bytes].decode(errors="ignore")`), and **on an all-ASCII row a byte
+cut and a character cut are the same operation**, so the multibyte hazard is invisible.
+Measured: with a 200-character Thai row the shipped code returns 99 bytes and no `U+FFFD`,
+while `errors="replace"` returns 102 bytes **containing `U+FFFD`** — a character the file never
+stated, emitted by the one module whose stated rule forbids exactly that. Zero nodes notice.
+`extract_text` has a dedicated sweep for this (`test_the_cap_never_cuts_a_character_in_half`,
+`test_docread.py:1374`, Thai, `range(90, 130)`); **`page()`, the other place in the same module
+that cuts at a byte offset, has none.**
+
+**3. `test_document_tools.py:388` `test_limit_is_capped_rather_than_honoured`.** It exists to
+pin `evalrun.py:1328`, the 200-row clamp. Its corpus renders ~21-byte rows, and `page()` is
+called with `DOCUMENT_PAGE_MAX_BYTES = 3072` — so the **byte** ceiling binds at roughly 140
+rows, **below the 200-row clamp, which is therefore never reached**. Delete the clamp outright
+and the observation is unchanged. The node asserts `<= 200` and 140 satisfies it. The coincidence
+here is between two boundaries rather than a fixture and one: the wrong ceiling binds first, so
+the node measures the one it was not written for.
+
+**4. `test_shiftwork.py:275`
+`test_clock_out_pushes_the_history_ring_with_driver_identical_truncation`.** The fixture's
+history is **exactly `HISTORY_RING_SIZE` long**, so `[-5:]` of the 6-entry result and `[1:]` of
+it are the same slice. Replace the ring with an unconditional "drop the oldest" and the node is
+byte-identical.
+
+<!-- provenance: value=the shipped ring and the [1:] mutant, over histories of length 0/1/2/5: shipped -> [NEW] / [H0,NEW] / [H0,H1,NEW] / [H1..H4,NEW]; mutant -> [] / [NEW] / [H1,NEW] / [H1..H4,NEW]; identical ONLY at length 5, which is the only length any node uses; commit=23b0463; command=(history + [entry])[-HISTORY_RING_SIZE:] vs (history + [entry])[1:] at each length -->
+
+```
+    history length     shipped                 mutant
+        0              ['NEW']                 []          <- THE NEW ENTRY IS LOST
+        1              ['H0','NEW']            ['NEW']
+        2              ['H0','H1','NEW']       ['H1','NEW']
+        5              ['H1'..'H4','NEW']      ['H1'..'H4','NEW']   <- the only length tested
+```
+
+**On an empty history the mutant loses the entry it was called to write, and the suite is
+green.** The other push node in the file uses a 1-entry history and asserts only that the last
+element is `U3`, which the mutant also satisfies. **No node anywhere asserts `len(history)`
+after a push.**
+
+**5. `test_critique.py:254` `test_render_evidence_truncates_at_budget`.** 100 bytes of content,
+`budget=20`, and the assertion is `len(evidence.encode()) < 120` — an upper bound equal to the
+fixture size plus the budget. Any effective budget from about 21 to 98 satisfies it. Quadruple
+the budget in `contract.py:167` and the output is ~102 bytes, still marked `[truncated`, still
+under 120. **The assertion is six times looser than the boundary it names.**
+
+**Two candidates were checked and CLEARED, and they are the reason this is a class and not a
+verdict on the suite.** `test_document_tools.py:713`'s paste fixture weighs exactly
+`PASTE_MAX_BYTES` — 401 rows, 8,621 bytes — so `remaining` lands on 0 and a `>` / `>=`
+mutation flips 401 to 400 and reddens. `test_memory.py:52` pins `index_budget=119` against a
+120-byte index, one byte over. **Both are single hardcoded values and both are sound, because
+the value was chosen AT the boundary rather than near it.** The defect is not "a hardcoded
+number"; it is a hardcoded number chosen without asking what else would satisfy it.
+
+##### AF.6 Handoff corrections — seven figures that do not reproduce, and the brief was wrong about its own correction
+
+This document records these as a subsection of the section that caught them (`§Q`, `§T`,
+`§W.5`, `§X.1`, `§Z.6`, `§AA.6`, `§AB.6`), never as a register entry. `§AF.6` is that
+subsection.
+
+1. **`234 files moved unknown -> text` is `233`.** One file appeared in the corpus between two
+   commands minutes apart, which is also why the census reads `49,556` here and `49,555`
+   in `de4a11c`'s message. `feedback-gate-counts-are-co-moving`: a corpus count is a function of
+   the corpus at the instant of the command, and both readings are true of their own moment.
+2. **`5,577,842` rows is `5,577,850`.** Run twice, identical.
+3. **`909,880 of 5,618,108 lines (16.2%)` is `869,273 of 5,577,850 (15.58%)`.** Neither half
+   reproduces.
+4. **`116,529 text files across three roots` is `72,902`.** The three roots overlap; see
+   `§AF.3`. `116,527 of 116,529` and `0 of 116,529` become `72,900 of 72,902` and `0 of 72,902`
+   — both CLAIMS survive, both DENOMINATORS do not.
+5. **`58.2 MiB / 0.04 s` against `232.1 MiB` is `77.5 MiB / 0.15 s` against `310.0 MiB /
+   0.37 s`**, and the absolute number is a property of the fixture, not of the cap. See
+   `§AF.3`.
+6. **`89.30%` was handed to this section as the refusal rate. It is neither the refusal rate
+   (`99.85%`) nor the text share (`88.04%`).**
+7. **`a mutation expanding the head to 1 MiB left 3 nodes red` does not reproduce, and the
+   error is a dropped conjunct.** Expanding `_HEAD_BYTES` to 1 MiB and changing nothing else
+   reddens **0 of 88** — which is CORRECT, and is the whole point: a suite that pins invariance
+   to head size must stay green when the head size moves. The mutation `c39ec48`'s own message
+   names is compound: **the old `head.decode("utf-8")` AND the head raised to 1 MiB**, "the
+   non-fix of moving the boundary". That one reddens **3 of 88**, the same three the old decode
+   alone reddens.
+
+<!-- provenance: value=at unit I's own state (4bd1924 runtime, c39ec48 tests) the control is 88 passed; _HEAD_BYTES = 1 MiB alone -> 88 passed, 0 red; whole source reverted to e5917b3 -> 5 failed, 83 passed; _decode_head -> head.decode("utf-8") -> 3 failed, 85 passed; 0x1B dropped from _TEXT_CONTROLS -> 1 failed, 87 passed; final=False -> 1 failed, 87 passed; old decode AND 1 MiB -> 3 failed, 85 passed; commit=c39ec48; command=PYTHONPATH=<mutant copy> pytest <c39ec48's test_docread.py> -q, once per mutation -->
+
+```
+    unit I, five mutations RUN at its own state (control 88 passed)
+      whole source -> e5917b3                            5 failed, 83 passed
+      _decode_head -> head.decode("utf-8")               3 failed, 85 passed
+      0x1B dropped from _TEXT_CONTROLS                   1 failed, 87 passed
+      final=len(head) < _HEAD_BYTES -> final=False       1 failed, 87 passed
+      old decode AND _HEAD_BYTES = 1 MiB                 3 failed, 85 passed
+      _HEAD_BYTES = 1 MiB ALONE  (as handed)             0 failed, 88 passed
+```
+
+**And the correction the brief carried about itself was also wrong.** It stated that a node
+named `test_packaging_reads_the_same_declaration_the_server_reads` **does not exist in this
+worktree**, offered as evidence that the orchestrator is unreliable. **It exists**, at
+`runtime-py/tests/test_mcpserver.py:433`; it passes; and it has been on this branch since
+`bc8c553` (PR #41), which is twenty commits before this job began.
+
+<!-- provenance: value=grep -n finds `def test_packaging_reads_the_same_declaration_the_server_reads` at runtime-py/tests/test_mcpserver.py:433 in the worktree, the node runs 1 passed, and git log -S dates it to bc8c553; commit=23b0463; command=grep -n 'def test_packaging_reads' runtime-py/tests/test_mcpserver.py && pytest 'runtime-py/tests/test_mcpserver.py::test_packaging_reads_the_same_declaration_the_server_reads' -q -->
+
+That is the most useful thing in this subsection. **A brief written to warn that its own figures
+were unreliable was itself unreliable about which of its figures were unreliable**, and the only
+reason it is recorded as a fact rather than as a doubt is that a `grep` and a one-node run
+settle it in four seconds. `feedback-real-probe-only`: the cost of checking is the argument for
+checking.
+
+**One pointer error, recorded and NOT corrected here.** `§AC.0` (`docs/eval.md:10652`) cites
+**`RB-P73`** for *"the orchestrator is the least-checked source in this program"*. `RB-P73`
+(`docs/eval.md:6477`) is *"a guard built on `git diff` over tracked paths is blind in three
+separately measured ways"* — a different subject entirely. The claim `§AC.0` makes is real and
+this document has ruled on it repeatedly (`§W.6.2`, `§X.8.4`, `§Y.8.4`), but it is ruled as
+**unnumbered**, so there is no number to cite. Pointers are correctable in place in their own
+commit; this section is a record and does not carry one.
+
+##### AF.7 Minted here — `RB-P99`, and the seven things that get no number
+
+- **`RB-P99` — a must-be-red mutation can be defeated by an arithmetic coincidence between a
+  fixture's single hardcoded dimension and the boundary's position, and it fails GREEN, which is
+  the strongest possible false signal.** The mutation is correct, it is applied to the right
+  line, and the node still passes, because the fixture samples the boundary at one of the values
+  where broken and correct agree.
+
+  <!-- provenance: value=six mutations, each applied to the named source line and each run against a 2 failed / 1483 passed / 2 xfailed control, all six leaving the suite at exactly the control: docread.py:1395 (two independent mutations), docread.py:1399, evalrun.py:1328, shiftwork.py:159, contract.py:167; and the prototype at test_docread.py:1356 reconstructed and shown green under the mutation the shipped sweep reddens on; commit=23b0463; command=BANTAMKIT_ASSETS=$PWD/assets PYTHONPATH=<mutant copy> pytest runtime-py/tests -q, once per mutation, plus scratch/vacuity_test.py -->
+
+  **Six live instances, named, each confirmed by a RUN** — `test_docread.py:861` (two ways),
+  `test_docread.py:869`, `test_document_tools.py:388`, `test_shiftwork.py:275`,
+  `test_critique.py:254` — plus the prototype at `test_docread.py:1356`, which is the only one
+  already fixed. Full arithmetic in `§AF.5`.
+
+  **It is NOT `RB-P89` and it is NOT `RB-P67`, and the difference is where the failure lives.**
+  `RB-P89` is a mutation that was **too narrow** — a string of the surface that nobody mutated,
+  fixed by widening the catalogue. `RB-P67` is a branch that **can never redden at all**, fixed
+  by making it reachable. `RB-P99` is a mutation that is **wide enough, applied, and still
+  green**, because the FIXTURE is degenerate at one point. Widening the catalogue does not
+  touch it and reachability analysis does not see it: the arm IS reached, the assertion IS
+  evaluated, and it is true.
+
+  **Why it earns a number rather than a footnote.** `§AF.5`'s first instance has a
+  better-than-even hit rate: over `max_bytes` 7..59, `28 of 53` values hide the ceiling-overrun
+  defect. This is not a rare alignment that a careful author avoids; it is the **default
+  outcome** of picking a round number for a fixture and a round number for a boundary, and the
+  two cleared candidates show that avoiding it takes a deliberate act — choosing the value AT
+  the boundary, not near it.
+
+  **Attack, and it is cheap:** a node that pins a boundary must sweep its fixture's dimension
+  across one full period of that boundary — every cap across a line, every offset across a
+  character, every history length across the ring — or pin the value exactly AT the boundary so
+  that any movement shows. **A single sample is admissible only where the sample IS the
+  boundary.** The register's existing discipline covers what a check reddens for (`§S`/`§T`'s
+  laundering) and whether it can redden at all (`RB-P67`); this covers **whether the one input
+  it was given can tell the difference**, and none of the three subsumes another. **Filed, five
+  of six instances NOT fixed** — they live in four test files this section does not own, and
+  `§AF.4`'s prototype is the worked example of what each fix costs: one `for` loop.
+
+What gets no number:
+
+1. **The two fixes.** A fix is not a finding — `§Z.5`'s rule, unchanged.
+2. **The seven handoff corrections of `§AF.6`.** A figure a brief asserted and a measurement
+   declined is a handoff correction, recorded in the section that caught it and never as a
+   register entry. This is `§W.6.2`, applied for the seventh section running.
+3. **The orchestrator being the least-checked source is ALREADY-RULED territory, and it is
+   ruled UNNUMBERED.** `§W.6.2` settled it — *"that is a fact about this shift's handoffs, and
+   the register is for defects in the instrument and the bar"* — and `§X.8.4`, `§Y.8.4`, `§Z.6`,
+   `§AA.6` and `§AB.6` each re-applied it. Eight wrong claims in one brief is the same rule at a
+   higher count, not a new class. **What is new is only that the brief was wrong about its own
+   unreliability** (`§AF.6`), and that is a sharper anecdote, not a defect in the instrument.
+4. **`§AC.0`'s mis-citation of `RB-P73`.** A pointer, correctable in place in its own commit.
+5. **The `1` file that sniffs `text` and then refuses.** Correct behaviour under a stated rule.
+   It narrows what `sniff` promises and is recorded in `§AF.9` rather than minted.
+6. **The two cleared candidates** (`test_document_tools.py:713`, `test_memory.py:52`). A node
+   that is sound is not a finding, and they are recorded because the contrast is what makes
+   `RB-P99` a class rather than a complaint about hardcoded numbers.
+7. **Two of unit J's own seven mutation figures do not reproduce as this section ran them, and
+   the disagreement makes the suite look STRONGER, not weaker.** *"cap applied, shortfall not
+   reported"* is recorded as `1 failed, 105 passed`; the faithful mutation reddens **2 of 106**,
+   the second being the line-break node, which cannot survive an `OMIT_SIZE_CAP` that is never
+   emitted. *"`_BINARY_CONTROL` re-listed by hand"* is recorded as `2 failed, 104 passed`; the
+   natural drift — a hand-written list that forgets the newest member, ESC — reddens **1 of
+   106**. A mutation named in prose is not a mutation specified, and neither figure is
+   reproducible from the words that describe it. **That is a lesson about how to write down a
+   mutation, and this section writes its own out as source lines rather than as descriptions.**
+
+<!-- provenance: value=the five reproducing unit J mutations at 23b0463 against a 106-passed control: whole source -> c39ec48 19 failed / 87 passed; "text" dropped from _EXTRACTORS 17/89; _text_rows -> _plain_rows 3/103; errors="replace" with the control-code stop removed 4/102; cut-back removed on the CAP path only 3/103; and the two that do not: shortfall suppressed 2/104 (recorded 1/105), _BINARY_CONTROL hand-relisted without 0x1B 1/105 (recorded 2/104); commit=23b0463; command=PYTHONPATH=<mutant copy> pytest runtime-py/tests/test_docread.py -q, once per mutation -->
+
+```
+    unit J, seven mutations RUN here (control 106 passed)      as recorded   as measured
+      whole source -> c39ec48                                  19 / 87       19 / 87
+      "text": extract_text dropped from _EXTRACTORS             17 / 89       17 / 89
+      _text_rows -> _plain_rows                                  3 / 103       3 / 103
+      strict stop -> errors="replace"                            4 / 102       4 / 102
+      cap cuts mid-line (cut-back removed on the cap path)       3 / 103       3 / 103
+      cap applied, shortfall not reported                        1 / 105       2 / 104
+      _BINARY_CONTROL re-listed by hand                          2 / 104       1 / 105
+```
+
+##### AF.8 What is NOT claimed
+
+1. **`RB-P99` is filed and five of its six instances are NOT fixed.** No test file outside
+   `docs/eval.md` is touched by this section.
+2. **The six mutations are evidence of six BLIND SPOTS, not of six live bugs.** Each names a
+   defect the suite cannot see; none of them is present in the shipped code. What is measured is
+   the suite's sensitivity, not the runtime's correctness.
+3. **The hunt is not exhaustive.** It covered the truncation, window, ring and budget sites
+   reachable from the boundary constants in `runtime-py/src/bantamkit/`. `pdfread.py:1087`'s
+   sliding window (`del operands[:-32]`) has **no test node at all**, which is a different
+   defect class and is not counted here. A node that pins a boundary this hunt did not reach is
+   unmeasured, and `RB-P51`'s rule says an unmeasured check is not a passed one.
+4. **`AF.5`'s control carries two reds that are artefacts of the harness**, not of the tree:
+   `test_packaging_reads_the_same_declaration_the_server_reads` and
+   `test_assets_root_finds_repo_assets` both assert on package LOCATION and go red because the
+   mutation harness imports from a copied tree. The worktree's own suite is `1485 passed, 2
+   xfailed`, and `1483 + 2 == 1485`. Every mutation was compared against that control and not
+   against zero.
+
+##### AF.9 What stays open
+
+- **Non-UTF-8 encodings are NOT the largest remaining lever, and this section refutes the claim
+  it was handed.** The brief named the `3,923` `unknown` files under Projects as latin-1 /
+  cp1252 / UTF-16 waiting to be recovered. Measured over the deduplicated union of all three
+  roots — `4,809` `unknown` files — the lever is worth **two files**.
+
+  <!-- provenance: value=of the 4,809 unknown files across the deduplicated union, 4,799 carry a NUL inside the first 4,096 bytes, 8 are binary under utf-8, cp1252 and latin-1 alike, ZERO carry a UTF-16 BOM, and 2 decode whole and clean under cp1252 -- one .csv and one .txt; under Projects alone all 3,923 carry a NUL in the head; commit=23b0463; command=scratch/unk_union.py and scratch/unknowns.py, classifying by BOM, by NUL-in-head, then by whole-file decode under each codec with _BINARY_CONTROL as the text test -->
+
+  ```
+      NUL inside the first 4,096 bytes      4,799 of 4,809
+      binary under every codec tried            8
+      UTF-16 BOM                                0
+      recoverable (clean under cp1252)          2      <- one .csv, one .txt
+  ```
+
+  Under Projects alone, **all 3,923 carry a NUL in the head** — they are PostgreSQL heap/WAL
+  and `.zst` / `.db` payloads, not documents in another encoding. **An encoding lever is still
+  worth building for correctness; it is not worth building for volume on this host**, and the
+  figure that justified it was off by three orders of magnitude. Whether it is worth it on a
+  corpus that is not this one is unmeasured.
+- **The tail path is unexercised by any real file.** `OMIT_UNREAD_TAIL` fires `0` times across
+  `72,902`. It is guarded by constructed fixtures alone, which is the correct decision and also
+  means the corpus cannot confirm it.
+- **`sniff().kind in SUPPORTED` does not guarantee `extract()` answers.** One file in the union
+  proves it (`§AF.3`). The rule is stated and deliberate; the contract is nonetheless weaker
+  than "hand it any file and get content or a stated refusal", because a refusal here is a
+  `DocumentReadError` and not an `Omission`.
+- **Two renderers in one module now disagree about what a plain-text line is.** `_plain_rows` is
+  still what `extract_mhtml` uses for a `text/plain` part (`docread.py:985`), and it strips,
+  flattens and drops.
+
+  <!-- provenance: value=the identical 4-line body "def f():\n\tif x:\n\n\t\treturn 1\n" written once as a .txt and once as the single text/plain part of an .mhtml gives ('def f():', '\tif x:', '', '\t\treturn 1') from extract_text and ('def f():', 'if x:', 'return 1') from extract_mhtml; commit=23b0463; command=extract(txt).parts[0].rows vs extract(mhtml).parts[0].rows on the same bytes -->
+
+  ```
+      same bytes, same module
+        extract_text    4 rows   indentation kept, blank line kept
+        extract_mhtml   3 rows   indentation stripped, blank line dropped
+  ```
+
+  The `77.9%` / `86` / `15.58%` argument in `§AF.3` is an argument about text, and it applies
+  verbatim to a `text/plain` MIME part. Whether the mail-body provenance justifies the
+  difference is a decision nobody has made in writing.
+- **`OMIT_UNREAD_TAIL` and `OMIT_SIZE_CAP` reach the model through `contract._omission_line`'s
+  generic fallback**, not a purpose-written sentence.
+
+  <!-- provenance: value=_omission_line renders subject "size-cap" as `  NOT in those rows: 35999 size-cap (41000 bytes on disk; this reader reads 5000)` and "unread-tail" identically, versus the purpose-written sentences the five known subjects get; commit=23b0463; command=contract._omission_line(load_contract(), {"row_count":122}, {"subject":"size-cap","count":35999,"size":35999,"what":"..."}) -->
+
+  The fallback is deliberate and is the right failure mode — a count that goes generic beats a
+  count that vanishes — but **the raw token `size-cap` is what the model reads**, and two of
+  `docread`'s seven subjects are now in that state.
+- **`TEXT_MAX_BYTES` has no per-call override.** `extract_text(path: str | Path) -> Document` —
+  a caller that knows it wants the 764 MB dump has no way to say so, and `page()`'s `max_bytes`
+  parameter shows the module already has the shape for one.
+- **`\r`-only line endings come back as ONE row**, because `_text_rows` splits on `\n` alone.
+  Priced: **zero files in this corpus** use `\r`, `\v`, `\f`, `\x85`, `\u2028` or `\u2029` as a
+  line break (`§AF.3`), so this is constructible and not current — the same standing
+  `OMIT_UNREAD_TAIL` has.
+- **`RB-P99`, for the reason given**, with five of six instances unfixed.
+- **`RB-P98`'s entry-point sweep, `RB-P97`'s `env=` sweep, and `RB-P95`'s `29 of 32`** are
+  untouched by this section and stand exactly as `§AE.5` left them.
+
+##### AF.10 Gates, each at the commit it was measured at
+
+<!-- provenance: value=full suite from the worktree with PYTHONPATH set to the worktree's runtime-py/src reads 1485 passed, 2 xfailed in 54.99s; ruff check runtime-py and ruff check docs/eval-data both report All checks passed; docread.py collects 106 nodes against 88 at c39ec48 and 77 at e5917b3; commit=23b0463; command=PYTHONPATH=$PWD/runtime-py/src .venv/bin/python -m pytest runtime-py/tests -q ; .venv/bin/ruff check runtime-py ; .venv/bin/ruff check docs/eval-data -->
+
+```
+    full suite, from the worktree, PYTHONPATH set     1485 passed, 2 xfailed   54.99s
+    ruff check runtime-py                             All checks passed
+    ruff check docs/eval-data                         All checks passed
+    test_docread.py collected   e5917b3  77  ->  c39ec48  88  ->  23b0463  106
+```
+
+`bantamkit.docread.__file__` was confirmed to point into `bantamkit-sniff` before each of the
+measurements above; without `PYTHONPATH` it resolves to the canonical checkout, and every figure
+in this section would have been a figure about a tree this branch does not own.
+
 Back to the [README](../README.md).
