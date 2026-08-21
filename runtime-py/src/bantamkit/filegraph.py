@@ -207,11 +207,12 @@ class FileAccessGraph:
         return rendered
 
     def save(self, path: str | Path) -> None:
-        Path(path).write_text(json.dumps([asdict(r) for r in self.reads.values()]))
+        payload = json.dumps([asdict(r) for r in self.reads.values()])
+        Path(path).write_text(payload, encoding="utf-8")
 
     def load(self, path: str | Path) -> None:
         """Restore a saved ledger. Precondition: only resume a ledger together with the
         transcript it was built against — restored entries collapse repeat reads to markers,
         which a model that never saw the original content cannot act on."""
-        for entry in json.loads(Path(path).read_text()):
+        for entry in json.loads(Path(path).read_text(encoding="utf-8")):
             self.reads[entry["path"]] = FileRead(**entry)

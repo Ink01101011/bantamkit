@@ -101,7 +101,7 @@ def load_rubric(name: str) -> Rubric:
     path = assets_root() / "rubrics" / f"{name}.yaml"
     if not path.exists():
         raise AssetNotFound(f"rubric asset not found: {path}")
-    data = yaml.safe_load(path.read_text())
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
     rubric = Rubric(
         name=data["name"],
         threshold=int(data["threshold"]),

@@ -580,7 +580,7 @@ def load_manifest(path: Path | None = None, rubric_name: str | None = None) -> M
     path = Path(path)
     if not path.is_file():
         raise PerturbationError(f"perturbation manifest not found: {path}")
-    raw = path.read_text()
+    raw = path.read_text(encoding="utf-8")
     data = yaml.safe_load(raw)
     points = []
     for entry in data["points"]:
@@ -1120,7 +1120,7 @@ def parse_rubric_arg(arg: str) -> RubricVariant:
         file = Path(spec)
         if not file.is_file():
             raise PerturbationError(f"rubric not found: {spec}")
-        raw = file.read_text()
+        raw = file.read_text(encoding="utf-8")
     return RubricVariant(
         label=label, spec=spec, ref=spec, rubric=_parse_rubric(raw, spec), sha256=sha256_text(raw)
     )
@@ -1173,7 +1173,11 @@ def _derive_rubric(spec: str) -> tuple[Rubric, str]:
 def _git_show(ref: str, path: str) -> str:
     try:
         return subprocess.run(
-            ["git", "show", f"{ref}:{path}"], capture_output=True, text=True, check=True
+            ["git", "show", f"{ref}:{path}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
         ).stdout
     except (OSError, subprocess.CalledProcessError) as e:
         raise PerturbationError(f"cannot read git:{ref}:{path}: {e}") from e
@@ -1231,7 +1235,7 @@ def load_cases(
         # not a way this module reports anything. Refusing rather than skipping is
         # deliberate: a silently skipped file is a cell missing from the run.
         try:
-            data = json.loads(path.read_text())
+            data = json.loads(path.read_text(encoding="utf-8"))
         except ValueError as e:
             raise PerturbationError(f"{path.name} is not readable as JSON: {e}") from e
         if not isinstance(data, dict) or "task" not in data or "repeat" not in data:
@@ -1273,7 +1277,7 @@ def _task_prompt(tasks_dir: Path, name: str) -> str:
     path = Path(tasks_dir) / f"{name}.yaml"
     if not path.is_file():
         raise PerturbationError(f"task asset not found: {path}")
-    return yaml.safe_load(path.read_text())["prompt"]
+    return yaml.safe_load(path.read_text(encoding="utf-8"))["prompt"]
 
 
 def render_prompt(template: str, case: Case) -> str:
@@ -2882,7 +2886,7 @@ def main(argv: list[str] | None = None) -> None:
         sink = None
         if args.json:
             args.json.parent.mkdir(parents=True, exist_ok=True)
-            jsonl = args.json.open("a")
+            jsonl = args.json.open("a", encoding="utf-8")
 
             def sink(row: ReplayRow) -> None:
                 jsonl.write(json.dumps(row.row()) + "\n")
@@ -2918,7 +2922,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.summary:
         try:
             args.summary.parent.mkdir(parents=True, exist_ok=True)
-            args.summary.write_text(json.dumps(summary, indent=2) + "\n")
+            args.summary.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
         except OSError as e:
             write_failure = e
             print(

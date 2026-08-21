@@ -59,7 +59,7 @@ def _error(reason: str) -> dict[str, Any]:
 def _read_valid(path: Path) -> tuple[dict | None, dict[str, Any] | None]:
     """Read and full-schema-validate. Returns (document, None) or (None, refusal)."""
     try:
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
     except OSError as e:
         return None, _error(f"checkpoint unreadable: {e}")
     try:
@@ -171,14 +171,14 @@ def clock_out(
     record.update(accounting or {})
     log_path = Path(str(path) + ".log.jsonl")
     try:
-        with log_path.open("a") as fh:
+        with log_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, sort_keys=True) + "\n")
     except OSError as e:
         return _error(f"accounting log unwritable, checkpoint untouched: {e}")
 
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
-        tmp.write_text(json.dumps(document, indent=2) + "\n")
+        tmp.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
         tmp.replace(path)
     except OSError as e:
         with contextlib.suppress(OSError):

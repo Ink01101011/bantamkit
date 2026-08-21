@@ -30,7 +30,7 @@ def load_tool(name: str) -> Tool:
     path = assets_root() / "tools" / f"{name}.json"
     if not path.exists():
         raise AssetNotFound(f"tool asset not found: {path}")
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     return Tool(name=data["name"], description=data["description"], parameters=data["parameters"])
 
 
@@ -39,11 +39,11 @@ def load_schema(name: str) -> dict:
     path = assets_root() / "schemas" / f"{name}.json"
     if not path.exists():
         raise AssetNotFound(f"schema asset not found: {path}")
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def load_skill(name: str) -> str:
     path = assets_root() / "skills" / f"{name}.md"
     if not path.exists():
         raise AssetNotFound(f"skill asset not found: {path}")
-    return path.read_text()
+    return path.read_text(encoding="utf-8")
