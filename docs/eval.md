@@ -10899,4 +10899,151 @@ the version string, the k-floor defect is the only discriminator on any surface 
   asserted anywhere in this section.
 - **`RB-P96`**, for the reason given.
 
+#### AD (2026-08-21) — the two things that were actually broken get fixed, and a node that had never tested this repository's code is the reason CI is not optional
+
+`RB-P96` and the second half of `RB-P84` are closed by **runtime and configuration
+changes**, not by instruments. The shift before this one shipped `2645` insertions and
+moved `runtime-py/src` by **zero bytes**; this one moves it.
+
+Both units were **terminated mid-flight by an API session limit**, after committing and
+before finishing their own verification. The orchestrator did the load-bearing checks
+itself rather than shipping on a hand-back that was never completed, and says so in each
+entry below.
+
+##### AD.0 The ceiling
+
+<!-- provenance: value=ceiling RB-P96 over every ref, 96 distinct numbers on main, contiguous 1..96, no gaps; commit=ddd5135; command=for r in $(git for-each-ref --format='%(refname:short)' refs/heads/ refs/remotes/); do git show $r:docs/eval.md | grep -oE 'RB-P[0-9]+' | sed 's/RB-P//' | sort -n | tail -1; done | sort -rn | head -1 -->
+
+`(ceiling RB-P96, 96 distinct, contiguous, `ddd5135`)`. **`RB-P97` is the next free number,
+and this section mints exactly one: `RB-P97`.**
+
+##### AD.1 `RB-P96` — FIXED (2026-08-21, PR #58, `927b2a8`)
+
+`.mcp.json` is tracked and carried `".venv/bin/bantamkit-mcp"`, resolved against the
+project directory. A worktree has no `.venv`, so the endpoint that wins the name was not
+there, and `[Conflicting scopes]` printed in both places without saying which one was
+reachable — so the failure looked like the scope warning everyone has learned to ignore.
+
+`.mcp.json` now points at `tools/bantamkit-mcp`, which is **tracked** and therefore present
+in every checkout *and* every worktree. **The two halves come from different places on
+purpose:** code from the checkout the launcher was spawned out of — in a worktree, THE
+WORKTREE — and dependencies from wherever someone ran `pip install`. Getting that backwards
+would be worse than the `ENOENT` it replaces, because a worktree served the main checkout's
+source fails silently and plausibly. That is `RB-P55`/`RB-P70`.
+
+<!-- provenance: value=from a fresh worktree of merged main and from the canonical checkout, `claude mcp list` reads `bantamkit: tools/bantamkit-mcp - ✔ Connected` in both; --which reports source=<worktree>/runtime-py/src with python=<main>/.venv/bin/python from a worktree, and both resolving to the checkout itself from the canonical checkout; commit=927b2a8; command=cd <worktree> && claude mcp list ; ./tools/bantamkit-mcp --which -->
+
+**The unit refuted the prototype it was handed rather than copying it**, which is what it
+was told to do. The prototype fell through to a bare `python3` whenever no `.venv` was
+found and died with `ModuleNotFoundError: No module named 'httpx'` — a traceback about a
+transitive dependency, which reaches the client as `CONNECTION_CLOSED`. Measured twice: a
+fresh clone with no `.venv`, and a worktree with `git` absent from `PATH`. The shipped
+launcher therefore **does not shell out to `git` at all**; it reads the worktree's `.git`
+file and the `commondir` beside it with shell builtins, and guards the import so the
+failure names the cause and the fix instead of the symptom.
+
+**The falsifier was already on `main` and no new one was built.** `tools/mcpdrift/mcpdrift.py`
+run from the same worktree reads `VERDICT ERROR` before the fix and `VERDICT AGREE` after.
+Red on the broken state, green on the fixed one, watched both ways.
+
+**Not shipped, deliberately:** the unit's half-built `tools/mcpreach/` checker was
+uncommitted and had **never been seen to fire**. A check nobody has watched go red is not
+a check, so it was set aside rather than merged.
+
+##### AD.2 `RB-P84`'s second half — FIXED (2026-08-21, PR #57, `ddd5135`)
+
+`RB-P84` asked for build identity readable **over the wire**, so that an agent holding a
+tool result can ask which build produced it. `mcpdrift` closed the outside half — it tells
+a *person* two endpoints differ. `build_identity` closes this one.
+
+**`build_id` is computed from content alone** — server name, declared version, code digest,
+asset digest. **`version` is echoed and is deliberately not identity:** it moves on release
+bumps and it has already lied in this program. `package_path`, `assets_root` and
+`interpreter` are reported as LOCATION and kept out of `build_id`, because two installs of
+one build at two paths are one build.
+
+<!-- provenance: value=two builds agreeing on version 0.25.0 and differing by one byte of agent.py, assets pinned identically, give build_id sha256:aa5e98aa... and sha256:2b54c31e...; commit=ddd5135; command=BANTAMKIT_ASSETS=<pin> PYTHONPATH=<copy> python -c "from bantamkit.mcpserver import build_identity; print(build_identity())" -->
+
+Same version string, different build, **told apart over the tool.** That is exactly
+`mcpdrift`'s CAL-2 case, which until now only a behavioural probe could catch.
+
+**Refusal is structural, not a gap.** `git_commit` reports *"refused, not missing"* — an
+installed wheel carries no repository — and the response carries an explicit
+`unavailable: ["git_commit"]` list, so `RB-P51`'s rule holds. **And the refusal composes:**
+when an input cannot be derived, `build_id` **declines to compute at all**, on the stated
+ground that a `build_id` short of an input would agree with every other build that lost the
+same input. A silently-colliding partial fingerprint is closed by construction.
+
+**Stated coverage gap:** the dependency tree is not fingerprinted beyond `mcp_sdk_version`,
+so two builds whose `pydantic` differs read identically here.
+
+The unit also caught its own false positive: the asset pack ships **inside** the package
+directory in a wheel, so the code walk was fingerprinting it too and calling one build two.
+
+##### AD.3 Minted here — `RB-P97`, and only `RB-P97`
+
+- **`RB-P97` — the stdio node was serving whatever `bantamkit` was installed in the
+  interpreter, never the checkout it was reviewing, and only CI could see it.**
+
+  <!-- provenance: value=mcp.client.stdio.get_default_environment() returns exactly ['HOME','LOGNAME','PATH','SHELL','TERM','USER'] — PYTHONPATH is absent; with the default environment the spawned server answered with 6 tools and with env= passed it answered with 7; commit=ddd5135; command=python -c "from mcp.client.stdio import get_default_environment as g; print(sorted(g()))" -->
+
+  `test_stdio_subprocess_initializes` asserted `len(tools.tools) == 6`. The count was the
+  symptom. `StdioServerParameters` defaults to `get_default_environment()`, which passes
+  exactly `HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM` and `USER` — **`PYTHONPATH` is
+  stripped.** So the spawned server imported whatever `bantamkit` the interpreter's
+  environment resolved, which on this machine is the editable `.pth` pointing at the
+  **canonical checkout**. The node therefore passed in a worktree while asserting a count
+  the worktree's own code had already moved past, and **CI, which installs the branch, was
+  the only place it could fail.**
+
+  This is `RB-P55`/`RB-P70` reaching **through a subprocess**, where `PYTHONPATH` — the
+  documented remedy for the worktree trap, and the one every unit in this program is
+  instructed to set — is silently discarded by the SDK. Every earlier statement in this
+  register about that node was a statement about a build nobody chose.
+
+  **FIXED in the same PR** (`ddd5135`), in two parts: `env=` is passed explicitly so the
+  subprocess is pointed at the checkout, and the assertion becomes an **exact list** rather
+  than a count, matching its sibling. Verified by mutation: removing `env=` reddens it with
+  `['memory_reca...alidate_json'] == ['build_ident..._status', ...]` — **naming the missing
+  tool rather than a number.**
+
+  **What is not closed:** nothing audits the rest of the suite for the same shape. Any
+  other test that spawns a server over stdio, now or later, inherits the same silent
+  substitution unless it passes `env=`. **Attack:** a check that no `StdioServerParameters`
+  construction in the tree omits `env=`.
+
+##### AD.4 What gets no number
+
+1. **The two fixes.** A fix is not a finding.
+2. **A live instance of `RB-P45`, recorded as evidence rather than minted.** The repo venv
+   today carries **two** installs of `bantamkit`: an editable `.pth` pointing at the
+   checkout, and a stale non-editable copy with `bantamkit-0.3.0.dist-info` beside it.
+
+   <!-- provenance: value=in the repo venv, bantamkit.__version__ is 0.25.0 while importlib.metadata.version("bantamkit") is 0.3.0; commit=ddd5135; command=cd /tmp && .venv/bin/python -c "from importlib import metadata; import bantamkit; print(bantamkit.__version__, metadata.version('bantamkit'))" -->
+
+   `__version__` reads `0.25.0` and `metadata.version("bantamkit")` reads **`0.3.0`**. This
+   is precisely the divergence `RB-P45` was fixed to survive: had `_version()` still read
+   the dist-info, **the MCP server would advertise `0.3.0` on this machine today.** The
+   finding is already filed and already fixed; what is new is that the hazard is standing
+   in the working environment rather than hypothetical.
+3. **The orchestrator's `--force-with-lease` attempt**, refused by the permission layer
+   because no live instruction named a force push of that branch. The refusal was correct
+   and was not routed around; the rebase was undone and the branch pushed fast-forward.
+
+##### AD.5 What stays open
+
+- **`RB-P97`'s sweep** — no check yet that every `StdioServerParameters` in the tree passes
+  `env=`.
+- **One node in `test_build_identity.py` has no demonstrated red.** The unit disclosed it
+  before dying and the orchestrator does **not** claim its non-vacuity.
+- **`bantamkit.mcpserver` has no `__main__` guard**, so `python -m bantamkit.mcpserver`
+  exits silently and the client reports `CONNECTION_CLOSED` — the symptom, not the cause.
+  The launcher works around it by importing `main` directly. A different layer, unfixed.
+- **The scope collision** — `claude mcp list` still prints `[Conflicting scopes]`. Removing
+  a registration is the user's call, and per `RB-P84` the refresh comes before the removal.
+- **`RB-P95`'s own `29 of 32`** and `2 pinned / 26 laundering / 4 pinned by nothing` remain
+  unverified; they need the full sweep nobody has run.
+- **The stale `0.3.0` install** is still in the venv. Nothing depends on it and the editable
+  `.pth` wins the import, but it is what `importlib.metadata` answers from.
+
 Back to the [README](../README.md).
