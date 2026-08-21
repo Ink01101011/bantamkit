@@ -399,10 +399,18 @@ def test_a_real_pdf_refusal_names_the_pdf_and_its_version(tmp_path):
 
 
 def test_no_suffix_at_all(tmp_path):
+    """A file with no suffix is still identified by its bytes -- and plain text is CONTENT.
+
+    This node used to assert `extract` RAISED here. That was the defect, not the contract:
+    `kind == "text"` was simply not a key in `_EXTRACTORS`. The subject it was really pinning
+    -- that a suffix-less file is sniffed rather than rejected for having no name to dispatch
+    on -- is kept, and the refusal it also asserted is now the content it should always have
+    been.
+    """
     path = tmp_path / "README"
     path.write_bytes(b"x")
-    with pytest.raises(DocumentReadError, match="plain text in no document container"):
-        extract(path)
+    assert sniff(path).kind == "text"
+    assert extract(path).parts[0].rows == ("x",)
 
 
 # --------------------------------------------------------------------------- docx
@@ -539,6 +547,92 @@ def test_a_suffix_this_reader_has_no_expectation_for_is_not_a_lie(tmp_path):
     path = write_docx(tmp_path / "thing.bin", para("x"))
     assert sniff(path).kind == "docx"
     assert not sniff(path).suffix_lies
+
+
+# ------------------------------------------- a truncation boundary does not decide the verdict
+#
+# `sniff` reads a bounded head and asks whether it is text. The head's last bytes can be half
+# of a character, and that half is a fact about how much this reader read -- never a fact about
+# the file. The two bars below pin the PROPERTY (the verdict does not move with the boundary),
+# not the symptom (one file at one head size): raising `_HEAD_BYTES` would satisfy a symptom
+# bar and leave the defect standing behind a longer fuse.
+
+# A three-byte character. Splitting it one byte in and two bytes in are different truncations,
+# and both must survive.
+ARROW = "\u2192"
+
+
+def _straddling(inside: int) -> bytes:
+    """Text whose 3-byte character has exactly `inside` of its bytes below the head boundary."""
+    lead = b"a" * (docread._HEAD_BYTES - inside)
+    return lead + ARROW.encode("utf-8") + b"b" * 64
+
+
+@pytest.mark.parametrize("inside", [1, 2])
+def test_a_character_the_head_boundary_cuts_in_half_is_still_text(tmp_path, inside):
+    path = tmp_path / f"cut{inside}.md"
+    path.write_bytes(_straddling(inside))
+    head = path.open("rb").read(docread._HEAD_BYTES)
+    # The fixture earns its name: the head really does end mid-character.
+    with pytest.raises(UnicodeDecodeError):
+        head.decode("utf-8")
+    assert sniff(path).kind == "text"
+
+
+def test_the_verdict_does_not_move_when_the_head_size_does(tmp_path, monkeypatch):
+    """The property bar. One file, every boundary from 1 byte to past its end: one verdict.
+
+    The fixture carries a 3-byte character every 4 characters, so a third of these boundaries
+    land inside one. A fix that merely enlarged the head would still fail here, because here
+    the head size is the variable.
+    """
+    body = ("abc" + ARROW) * 200
+    path = tmp_path / "sweep.txt"
+    path.write_bytes(body.encode("utf-8"))
+    size = path.stat().st_size
+
+    verdicts = {}
+    for head_bytes in range(1, size + 32):
+        monkeypatch.setattr(docread, "_HEAD_BYTES", head_bytes)
+        verdicts.setdefault(sniff(path).kind, []).append(head_bytes)
+
+    assert set(verdicts) == {"text"}, {k: (len(v), v[:5]) for k, v in verdicts.items()}
+
+
+def test_bytes_no_continuation_could_complete_are_still_not_text(tmp_path):
+    """The tolerance is for an INCOMPLETE character, not for an invalid one."""
+    path = tmp_path / "broken.txt"
+    path.write_bytes(b"plain enough so far \xff\xfe and then some more" + b"c" * 4096)
+    assert sniff(path).kind == "unknown"
+
+
+def test_a_short_file_ending_mid_character_is_damage_not_a_boundary(tmp_path):
+    """Read whole, below the cap: there is no boundary to blame, so the dangling half refuses."""
+    path = tmp_path / "damaged.txt"
+    path.write_bytes(b"short and sweet" + ARROW.encode("utf-8")[:2])
+    assert path.stat().st_size < docread._HEAD_BYTES
+    assert sniff(path).kind == "unknown"
+
+
+# ------------------------------------------------- which C0 codes mean "not a document" at all
+#
+# The rule, stated rather than tuned: tab, the newline family and ESC are codes a plain-text
+# document legitimately carries -- ESC because it is the ECMA-48 introducer for the ANSI colour
+# sequences terminal logs are written with. Every other C0 code, NUL first, is binary framing.
+
+
+def test_an_ansi_coloured_log_is_a_text_document(tmp_path):
+    path = tmp_path / "turbo-test.log"
+    path.write_bytes(b"\x1b[31mFAIL\x1b[39m one suite\n\x1b[38;5;3mwarn\x1b[39m two\n")
+    assert sniff(path).kind == "text"
+
+
+@pytest.mark.parametrize("code", [0x00, 0x01, 0x07, 0x0E, 0x1F])
+def test_every_other_c0_code_keeps_a_file_out_of_the_text_bucket(tmp_path, code):
+    """The guard on the widening above: it admits ESC and nothing else."""
+    path = tmp_path / "framed.dat"
+    path.write_bytes(b"looks like words " + bytes([code]) + b" but is not")
+    assert sniff(path).kind == "unknown"
 
 
 # ----------------------------------------------------------------------- MHTML saved as .doc
@@ -1089,3 +1183,216 @@ def test_omission_renders_to_primitives_for_the_contract_layer():
         "where": ["C", "D"],
         "what": "h:mm",
     }
+
+
+# ------------------------------------------------- plain text, which used to be a refusal
+#
+# The population these nodes serve, MEASURED 2026-08-21 over `~/Documents/Claude/Projects`
+# (49,555 files, pruned at node_modules .venv venv .git __pycache__ dist build .next target
+# site-packages .cache): 43,629 files sniff as `text` -- 88.04% -- and `extract` could hand
+# back 76 of the 49,555 before `extract_text` existed.
+
+
+def test_a_plain_text_file_is_content_not_a_refusal(tmp_path):
+    """The whole defect in one node: `extract` used to RAISE on this file."""
+    path = tmp_path / "notes.txt"
+    path.write_text("hello world\nsecond line\n", encoding="utf-8")
+    doc = extract(path)
+    assert doc.kind == "text"
+    assert [p.name for p in doc.parts] == ["document"]
+    assert doc.parts[0].rows == ("hello world", "second line")
+    assert doc.omissions == ()
+
+
+def test_text_is_dispatched_on_bytes_not_on_the_suffix(tmp_path):
+    """A `.xlsx` that is really a shell script is text, and says so under its own name."""
+    path = tmp_path / "report.xlsx"
+    path.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    container = sniff(path)
+    assert container.kind == "text" and container.suffix_lies
+    assert extract(path).parts[0].rows == ("#!/bin/sh", "echo hi")
+
+
+def test_a_text_row_keeps_its_indentation(tmp_path):
+    """MEASURED: 33,990 of 43,629 corpus text files (77.9%) carry an indented line.
+
+    `_plain_rows`, which renders a `text/plain` MIME part, would `.strip()` every one of them.
+    """
+    path = tmp_path / "mod.py"
+    path.write_text("def f():\n    if x:\n        return 1\n", encoding="utf-8")
+    assert extract(path).parts[0].rows == ("def f():", "    if x:", "        return 1")
+
+
+def test_a_text_row_keeps_its_tabs_because_a_tab_is_the_field_separator(tmp_path):
+    """The rest of this module renders columns as tabs; flattening them here loses the table."""
+    path = tmp_path / "table.tsv"
+    path.write_text("sku\tunits\nSKU-1\t7\n", encoding="utf-8")
+    assert extract(path).parts[0].rows == ("sku\tunits", "SKU-1\t7")
+
+
+def test_a_blank_line_is_a_row_so_a_text_offset_is_a_line_number(tmp_path):
+    """The one container where a row offset IS a line offset. 16.2% of corpus lines are blank."""
+    path = tmp_path / "spaced.txt"
+    path.write_text("one\n\n\nfour\n", encoding="utf-8")
+    doc = extract(path)
+    assert doc.parts[0].rows == ("one", "", "", "four")
+    assert page(doc, offset=3).rows == ("four",)
+
+
+def test_a_final_line_break_does_not_open_a_row_and_a_missing_one_does_not_lose_one(tmp_path):
+    with_break = tmp_path / "a.txt"
+    with_break.write_bytes(b"one\ntwo\n")
+    without = tmp_path / "b.txt"
+    without.write_bytes(b"one\ntwo")
+    assert extract(with_break).parts[0].rows == extract(without).parts[0].rows == ("one", "two")
+
+
+def test_a_crlf_terminator_does_not_survive_into_the_row(tmp_path):
+    path = tmp_path / "dos.txt"
+    path.write_bytes(b"one\r\ntwo\r\n")
+    assert extract(path).parts[0].rows == ("one", "two")
+
+
+def test_a_text_file_whose_every_line_is_blank_refuses(tmp_path):
+    """This module's standing rule: an empty extraction from a text container is a refusal."""
+    path = tmp_path / "empty.txt"
+    path.write_bytes(b"\n\n   \n\n")
+    with pytest.raises(DocumentReadError, match="no line in it carries a character"):
+        extract(path)
+
+
+# ----------------------------------------- bytes `sniff` never saw, which `extract` does see
+
+
+def head_then(tail: bytes) -> bytes:
+    """A body longer than `_HEAD_BYTES`, so `tail` is provably past what `sniff` looked at."""
+    body = b"".join(b"row %04d %s\n" % (i, b"a" * 40) for i in range(200))
+    assert len(body) > docread._HEAD_BYTES
+    return body + tail
+
+
+def test_a_nul_past_the_head_is_counted_not_decoded(tmp_path):
+    """A NUL at byte 5000 is invisible to a 4,096-byte head, so `extract` meets it alone.
+
+    First asserts the premise -- `sniff` really does call this file text -- so the node cannot
+    pass because the fixture stopped being the case it was written for.
+    """
+    path = tmp_path / "log.txt"
+    path.write_bytes(head_then(b"\x00\x00binary junk here"))
+    assert sniff(path).kind == "text"
+    doc = extract(path)
+    assert doc.parts[0].rows[-1] == "row 0199 " + "a" * 40
+    assert len(doc.parts[0].rows) == 200
+    (omission,) = only(doc, docread.OMIT_UNREAD_TAIL)
+    assert omission.count == omission.size == 18
+    # The offset named is the byte the NUL actually sits at, and it is past the sniffed head.
+    stop = len(head_then(b""))
+    assert "0x00" in omission.what and str(stop) in omission.what
+    assert stop > docread._HEAD_BYTES
+
+
+def test_an_invalid_utf8_sequence_past_the_head_is_counted_not_replaced(tmp_path):
+    """Never `errors="replace"`: a character the file does not state is never emitted."""
+    path = tmp_path / "mixed.txt"
+    path.write_bytes(head_then(b"\xff\xfe\xff garbage"))
+    assert sniff(path).kind == "text"
+    with pytest.raises(UnicodeDecodeError):
+        path.read_bytes().decode("utf-8")  # the fixture really is undecodable as a whole
+    doc = extract(path)
+    assert len(doc.parts[0].rows) == 200
+    assert "\ufffd" not in "\n".join(doc.parts[0].rows)
+    (omission,) = only(doc, docread.OMIT_UNREAD_TAIL)
+    assert omission.count == 11 and "not UTF-8" in omission.what
+
+
+def test_a_partial_row_at_the_stop_goes_into_the_count_rather_than_into_the_rows(tmp_path):
+    """A row whose end this reader never saw is a row it cannot vouch for."""
+    path = tmp_path / "cut.txt"
+    path.write_bytes(head_then(b"this line never ends\x00"))
+    doc = extract(path)
+    assert all("this line never ends" not in row for row in doc.parts[0].rows)
+    (omission,) = only(doc, docread.OMIT_UNREAD_TAIL)
+    assert omission.count == len(b"this line never ends\x00")
+
+
+def test_a_text_head_over_a_body_with_no_whole_row_refuses(tmp_path):
+    """Nothing survived the stop, so there is no content -- and a refusal says which byte."""
+    path = tmp_path / "trap.txt"
+    path.write_bytes(b"a" * 5000 + b"\x00" * 10)
+    assert sniff(path).kind == "text"
+    with pytest.raises(DocumentReadError, match="binary framing"):
+        extract(path)
+
+
+def test_the_whole_file_scan_agrees_with_the_head_rule_on_every_c0_code():
+    """`_BINARY_CONTROL` is derived from `_TEXT_CONTROLS`; this is what stops them drifting."""
+    for code in list(range(0x21)) + [0x7F, 0xA0, 0x2028]:
+        char = chr(code)
+        assert bool(docread._BINARY_CONTROL.match(char)) == docread._is_binary_control(char), (
+            f"disagreement at 0x{code:02x}"
+        )
+
+
+# ------------------------------------------------------------------- the stated size ceiling
+
+
+def test_a_file_over_the_cap_reports_the_shortfall_rather_than_truncating_silently(
+    tmp_path, monkeypatch
+):
+    """A 200 MB log read whole is a different failure. The ceiling is stated, so is the loss."""
+    path = tmp_path / "huge.log"
+    body = b"".join(b"line %04d %s\n" % (i, b"-" * 30) for i in range(1000))
+    path.write_bytes(body)
+    monkeypatch.setattr(docread, "TEXT_MAX_BYTES", 5000)
+    doc = extract(path)
+    (omission,) = only(doc, docread.OMIT_SIZE_CAP)
+    assert omission.count == omission.size
+    assert str(len(body)) in omission.what and "5000" in omission.what
+    # Exact accounting: what came back plus what was declared missing IS the file.
+    kept = sum(len(row.encode()) + 1 for row in doc.parts[0].rows)
+    assert kept + omission.count == len(body)
+
+
+def test_the_cap_cuts_at_a_line_break_so_no_half_row_is_handed_back(tmp_path, monkeypatch):
+    """Every cap that lands strictly inside a line, so the fixture cannot dodge the case.
+
+    A single cap can pass vacuously here: 41-byte lines and a cap of 5001 leave a remainder of
+    exactly 40 characters, which is a WHOLE line missing only its terminator. Sweeping the cap
+    across a whole line is what makes the half-row real.
+    """
+    width = len("line 0000 " + "-" * 30)
+    path = tmp_path / "huge.log"
+    path.write_bytes(b"".join(b"line %04d %s\n" % (i, b"-" * 30) for i in range(1000)))
+    for cap in range(5000, 5000 + width + 2):
+        monkeypatch.setattr(docread, "TEXT_MAX_BYTES", cap)
+        doc = extract(path)
+        assert all(len(row) == width for row in doc.parts[0].rows), f"cap {cap}"
+        kept = sum(len(row.encode()) + 1 for row in doc.parts[0].rows)
+        assert kept + only(doc, docread.OMIT_SIZE_CAP)[0].count == path.stat().st_size
+
+
+def test_the_cap_never_cuts_a_character_in_half(tmp_path, monkeypatch):
+    """`_decode_head`'s rule, one layer on: a boundary this reader chose is never mojibake."""
+    path = tmp_path / "thai.txt"
+    path.write_bytes(("\u0e01" * 10 + "\n").encode() * 100)  # 3 bytes per character
+    for cap in range(90, 130):  # every offset across a line and through several characters
+        monkeypatch.setattr(docread, "TEXT_MAX_BYTES", cap)
+        doc = extract(path)
+        assert "\ufffd" not in "\n".join(doc.parts[0].rows), f"cap {cap}"
+        assert all(row == "\u0e01" * 10 for row in doc.parts[0].rows), f"cap {cap}"
+
+
+def test_a_file_under_the_cap_declares_no_shortfall(tmp_path):
+    """Guards against the omission being emitted unconditionally, which would make it noise."""
+    path = tmp_path / "small.txt"
+    path.write_text("one\ntwo\n", encoding="utf-8")
+    assert extract(path).omissions == ()
+
+
+def test_the_default_cap_covers_the_measured_corpus():
+    """1,474,568 bytes is the largest text file under `~/Documents/Claude/Projects`, 2026-08-21.
+
+    A cap below that would silently start reporting shortfalls on real files, which is the
+    change this number exists to make visible.
+    """
+    assert docread.TEXT_MAX_BYTES >= 1_474_568 * 4
