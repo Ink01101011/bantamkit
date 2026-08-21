@@ -1,18 +1,23 @@
 import itertools
 import os
+import subprocess
+import sys
 import time
 from datetime import date, datetime
 from pathlib import Path
 
 import pytest
 
+import bantamkit
 from bantamkit.memory import (
+    DEFAULT_INDEX_BUDGET,
     Memory,
     MemoryBudgetExceeded,
     MemoryStore,
     MemoryValidationError,
     SaveResult,
 )
+from bantamkit.memory.__main__ import main as memory_main
 
 
 @pytest.fixture
@@ -586,3 +591,248 @@ def test_nested_snapshot_keeps_the_outermost_pin(store):
         with store.snapshot():
             assert store.recall("database port", k=1)[0].body == "5432"
         assert store.recall("database port", k=1)[0].body == "5432"
+
+
+# ---------------------------------------------------------------------------
+# The operator entry point (`python -m bantamkit.memory`).
+#
+# `docs/memory.md` holds a deliberate position: `lint`, `compact`, `archived`
+# and `restore` are NOT agent tools, because lifecycle is an operator decision.
+# Measured 2026-08-21, the operator had no way to make that decision — the
+# budget was not on any argument parser and the four ops were reachable only
+# from Python. These nodes are the other half of that position: they assert on
+# what an operator actually SEES on stdout, so the report cannot become a
+# write-only artifact the way `archive/` and `index.md` both did.
+# ---------------------------------------------------------------------------
+
+
+def _fill(store, n, *, width=60, prefix="fact"):
+    """`n` distinct facts whose descriptions cannot collide under the dedupe check."""
+    for i in range(n):
+        store.save(
+            "project",
+            f"{prefix}-{i:03d}",
+            " ".join(f"w{i:03d}q{j}" for j in range(width // 8)),
+            f"body {i}",
+        )
+
+
+def _run(argv, capsys):
+    code = memory_main(argv)
+    captured = capsys.readouterr()
+    return code, captured.out, captured.err
+
+
+def test_store_and_component_index_budget_defaults_cannot_drift(tmp_path):
+    """Three declarations of one number; a change to any one of them alone is a defect."""
+    assert MemoryStore(tmp_path / "a").index_budget == DEFAULT_INDEX_BUDGET
+    assert Memory(store=tmp_path / "b").store.index_budget == DEFAULT_INDEX_BUDGET
+    assert Memory.layered(start=tmp_path / "c").store.index_budget == DEFAULT_INDEX_BUDGET
+
+
+def test_the_default_budget_holds_the_real_stores_shape_without_evicting(tmp_path):
+    """The live project store measured 3943 bytes over 20 facts on 2026-08-21.
+
+    At the old default of 4096 that store had 153 bytes of headroom and 19 of its
+    20 index lines were individually larger than that, so the very next save
+    evicted a fact — a store permanently on a compaction treadmill. This node
+    pins the property that made the default move: a store the size of the real
+    one still has room to grow at the default budget.
+    """
+    store = MemoryStore(tmp_path / "mem")
+    _fill(store, 20, width=190)
+    lived = len(store.index_text().encode())
+    assert lived > 3000, lived  # a store genuinely the shape of the real one
+    assert store.index_budget - lived > lived, (
+        "the default budget must leave a real store more headroom than it has used"
+    )
+
+
+@pytest.mark.parametrize("budget", [256, 512, 1024, 4096, 24_000, 100_000])
+def test_operator_sets_the_budget_on_the_command_line(tmp_path, capsys, budget):
+    """P5, swept: every one of these is reachable without editing a line of source."""
+    store = MemoryStore(tmp_path / "mem")
+    _fill(store, 2)
+    code, out, err = _run(["status", "--store", str(store.root), "--budget", str(budget)], capsys)
+    assert code == 0, err
+    assert f"budget: {budget}" in out
+    assert f"index: {len(store.index_text().encode())} bytes" in out
+    assert f"facts: {len(store._facts())}" in out
+
+
+@pytest.mark.parametrize("n_facts", [1, 2, 5, 9])
+def test_lint_exit_code_flips_exactly_at_the_budget_not_near_it(tmp_path, capsys, n_facts):
+    """RB-P99 on the budget dimension: the boundary is SWEPT, both sides, per store size.
+
+    A single hardcoded budget would pass against an off-by-one comparison. Each
+    store here is linted at exactly its own index size and at one byte under it.
+    """
+    store = MemoryStore(tmp_path / "mem")
+    _fill(store, n_facts)
+    size = len(store.index_text().encode())
+    root = str(store.root)
+
+    code, out, _ = _run(["lint", "--store", root, "--budget", str(size)], capsys)
+    assert code == 0, f"{size} bytes must lint clean against a budget of exactly {size}"
+    assert f"{size}/{size} bytes" in out
+
+    code, _, err = _run(["lint", "--store", root, "--budget", str(size - 1)], capsys)
+    assert code == 1, f"{size} bytes must fail a budget of {size - 1}"
+    assert f"index is {size} bytes" in err and f"budget is {size - 1}" in err
+    assert "compact" in err, "a FAIL must name the operator's remedy, not just the number"
+
+
+def test_lint_names_the_malformed_fact_rather_than_the_budget(tmp_path, capsys):
+    store = MemoryStore(tmp_path / "mem")
+    _fill(store, 1)
+    (store.root / "facts" / "broken.md").write_text("no frontmatter at all")
+    code, _, err = _run(["lint", "--store", str(store.root)], capsys)
+    assert code == 1
+    assert "budget" not in err.lower(), err
+
+
+@pytest.mark.parametrize("n_facts,budget_lines", [(4, 1), (4, 2), (6, 3), (9, 4), (3, 3)])
+def test_compact_prints_the_arithmetic_an_operator_can_check(
+    tmp_path, capsys, n_facts, budget_lines
+):
+    """P7 swept over how much has to leave, including the case where nothing does.
+
+    Every number on stdout is re-derived from the store afterwards, so a report
+    that drifts from what actually happened reddens this.
+    """
+    store = MemoryStore(tmp_path / "mem")
+    _fill(store, n_facts)
+    line = len(store.index_text().encode()) // n_facts
+    budget = budget_lines * line
+    before = len(store.index_text().encode())
+
+    code, out, err = _run(
+        ["compact", "--store", str(store.root), "--budget", str(budget)], capsys
+    )
+    assert code == 0, err
+
+    after = MemoryStore(store.root, index_budget=budget)
+    gone = after.archived()
+    assert f"compacted {len(gone)} fact(s)" in out
+    assert f"index: {before} -> {len(after.index_text().encode())} bytes" in out
+    assert f"budget {budget}" in out
+    for name in gone:
+        assert name in out, f"{name} left the index and the operator was not told"
+    for fact in after._facts():
+        assert fact.name not in out, f"{fact.name} is still live and must not be reported as gone"
+
+
+def test_compact_that_archives_nothing_says_so_instead_of_printing_an_empty_list(
+    tmp_path, capsys
+):
+    store = MemoryStore(tmp_path / "mem")
+    _fill(store, 3)
+    code, out, _ = _run(["compact", "--store", str(store.root), "--budget", "100000"], capsys)
+    assert code == 0
+    assert "compacted 0 fact(s)" in out
+    assert "nothing to archive" in out
+
+
+@pytest.mark.parametrize("n_archived", [1, 2, 4])
+def test_archived_lists_every_name_compaction_moved_out(tmp_path, capsys, n_archived):
+    store = MemoryStore(tmp_path / "mem")
+    _fill(store, n_archived + 2)
+    line = len(store.index_text().encode()) // (n_archived + 2)
+    _run(["compact", "--store", str(store.root), "--budget", str(2 * line)], capsys)
+
+    names = MemoryStore(store.root).archived()
+    code, out, _ = _run(["archived", "--store", str(store.root)], capsys)
+    assert code == 0
+    assert f"archived facts: {len(names)}" in out
+    for name in names:
+        assert name in out
+
+
+def test_restore_brings_a_fact_back_and_reports_the_new_index(tmp_path, capsys):
+    store = MemoryStore(tmp_path / "mem")
+    _fill(store, 4)
+    line = len(store.index_text().encode()) // 4
+    _run(["compact", "--store", str(store.root), "--budget", str(2 * line)], capsys)
+    gone = MemoryStore(store.root).archived()
+    assert gone, "the fixture must actually archive something"
+
+    code, out, err = _run(
+        ["restore", gone[0], "--store", str(store.root), "--budget", "100000"], capsys
+    )
+    assert code == 0, err
+    assert f"restored '{gone[0]}'" in out
+    back = MemoryStore(store.root)
+    assert gone[0] in {f.name for f in back._facts()}
+    assert gone[0] not in back.archived()
+    assert f"{len(back.index_text().encode())}" in out
+
+
+def test_restore_over_budget_fails_loudly_and_changes_nothing(tmp_path, capsys):
+    store = MemoryStore(tmp_path / "mem")
+    _fill(store, 4)
+    line = len(store.index_text().encode()) // 4
+    _run(["compact", "--store", str(store.root), "--budget", str(2 * line)], capsys)
+    gone = MemoryStore(store.root).archived()
+    before_live = sorted(f.name for f in MemoryStore(store.root)._facts())
+    before_archive = MemoryStore(store.root).archived()
+
+    code, _, err = _run(
+        ["restore", gone[0], "--store", str(store.root), "--budget", str(line)], capsys
+    )
+    assert code == 1
+    assert gone[0] in err
+    assert sorted(f.name for f in MemoryStore(store.root)._facts()) == before_live
+    assert MemoryStore(store.root).archived() == before_archive
+
+
+def test_restore_of_an_unknown_name_is_an_error_not_a_traceback(tmp_path, capsys):
+    store = MemoryStore(tmp_path / "mem")
+    _fill(store, 1)
+    code, _, err = _run(["restore", "no-such-fact", "--store", str(store.root)], capsys)
+    assert code == 1
+    assert "no-such-fact" in err
+
+
+def test_start_discovers_the_project_store_and_never_the_profile(tmp_path, capsys):
+    """`compact` touches only the writable project layer; the CLI must not widen that."""
+    project = tmp_path / "repo" / ".bantamkit" / "memory"
+    store = MemoryStore(project)
+    _fill(store, 2)
+    nested = tmp_path / "repo" / "pkg" / "deep"
+    nested.mkdir(parents=True)
+    code, out, err = _run(["status", "--start", str(nested)], capsys)
+    assert code == 0, err
+    assert f"store: {project}" in out
+    assert str(Path.home() / ".bantamkit") not in out
+
+
+def test_store_and_start_are_mutually_exclusive(tmp_path, capsys):
+    with pytest.raises(SystemExit):
+        memory_main(["status", "--store", str(tmp_path), "--start", str(tmp_path)])
+
+
+@pytest.mark.parametrize("budget", ["0", "-1", "notanint"])
+def test_a_nonsense_budget_is_refused_rather_than_silently_applied(tmp_path, capsys, budget):
+    with pytest.raises(SystemExit):
+        memory_main(["status", "--store", str(tmp_path / "mem"), "--budget", budget])
+
+
+def test_the_entry_point_runs_as_a_real_subprocess(tmp_path):
+    """P6 proven by invocation, not by import: `python -m bantamkit.memory` must work.
+
+    Imported-and-called is not the claim; the claim is that an operator with a
+    shell can reach this. `mcp.client.stdio` strips PYTHONPATH (RB-P97), so the
+    path is passed explicitly and derived from the module actually under test.
+    """
+    store = MemoryStore(tmp_path / "mem")
+    _fill(store, 3)
+    src = Path(bantamkit.__file__).resolve().parent.parent
+    proc = subprocess.run(
+        [sys.executable, "-m", "bantamkit.memory", "status", "--store", str(store.root)],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(src)},
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert f"facts: {len(store._facts())}" in proc.stdout
+    assert f"budget: {DEFAULT_INDEX_BUDGET}" in proc.stdout
