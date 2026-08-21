@@ -15,6 +15,14 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # W1: the emitting half of the encoding gate. `EncodingWarning` is raised only when
+    # the interpreter is started with this on, and it CANNOT be set from pytest's
+    # `addopts` (`-X` is an interpreter flag; pytest exits 4 on it). `filterwarnings` in
+    # runtime-py/pyproject.toml turns what this emits into a failure, and
+    # tests/test_encoding_gate.py goes red if this line is ever removed from a CI run --
+    # without that node, deleting this line would leave the whole gate green and blind.
+    env:
+      PYTHONWARNDEFAULTENCODING: "1"
     strategy:
       fail-fast: false
       matrix:

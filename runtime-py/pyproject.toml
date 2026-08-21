@@ -56,6 +56,20 @@ testpaths = ["tests"]
 # that they assert facts about the world (RB-P14 Gate 2), which is filed, not fixed.
 xfail_strict = true
 
+# W1, 2026-08-22. The Windows-portability class: 259 executing call sites opened a text
+# file without naming an encoding, so what they read was `locale.getencoding()` -- utf-8
+# here, cp1252/cp932/cp936 on a Windows runner. This filter is the half of the gate that
+# TURNS A VIOLATION RED. It is not the whole gate and on its own it is VACUOUS, because
+# `EncodingWarning` is only ever emitted when the interpreter was started with
+# `-X warn_default_encoding` / `PYTHONWARNDEFAULTENCODING=1`.
+#
+# MEASURED: `-X` cannot be delivered from here. `addopts = "-X warn_default_encoding"`
+# makes pytest exit 4 with `error: unrecognized arguments: -X` -- it is an interpreter
+# flag, parsed before pytest exists, not a pytest flag. So the emitting half lives in the
+# environment (`env: PYTHONWARNDEFAULTENCODING` in .github/workflows/ci.yml) and
+# `tests/test_encoding_gate.py` is what stops that env line from being deleted silently.
+filterwarnings = ["error::EncodingWarning"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
