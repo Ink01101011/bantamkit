@@ -11,6 +11,7 @@ from bantamkit.assets import load_skill, load_tool
 from bantamkit.client import BantamError
 from bantamkit.memory.layers import discover_project_store, load_grants
 from bantamkit.memory.store import (
+    DEFAULT_INDEX_BUDGET,
     Fact,
     MemoryBudgetExceeded,
     MemoryStore,
@@ -39,7 +40,9 @@ def _layer_label(root: Path) -> str:
 
 
 class Memory:
-    def __init__(self, store: str | Path, k: int = 3, index_budget: int = 4096):
+    def __init__(
+        self, store: str | Path, k: int = 3, index_budget: int = DEFAULT_INDEX_BUDGET
+    ):
         self.store = MemoryStore(store, index_budget=index_budget, k=k)
         self.k = k
         self._layers: list[tuple[str, MemoryStore, bool]] = [("project", self.store, True)]
@@ -47,7 +50,10 @@ class Memory:
 
     @classmethod
     def layered(
-        cls, start: str | Path | None = None, k: int = 3, index_budget: int = 4096
+        cls,
+        start: str | Path | None = None,
+        k: int = 3,
+        index_budget: int = DEFAULT_INDEX_BUDGET,
     ) -> Memory:
         """Project store (discovered) + configured read-only grants + profile store."""
         project_root = discover_project_store(start)

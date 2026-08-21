@@ -17,6 +17,20 @@ VALID_TYPES = {"user", "feedback", "project", "reference"}
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 DUPLICATE_JACCARD = 0.5
 
+# The index is loaded into the prompt every session, so this is a context bill, not a
+# disk limit. It was 4096 and that number was never measured against a real store.
+# Measured 2026-08-21 against the live 20-fact project store: index 3943 bytes, median
+# index line 199 bytes, so 4096 left 153 bytes of headroom and 19 of the 20 lines were
+# individually larger than that. Replaying 25 fresh saves onto a copy of that store at
+# 4096 evicted 18 facts and the FIRST save already triggered one — the store was not
+# near its budget, it was on a treadmill, archiving a fact for nearly every fact it
+# learned. The same 25 saves at 24000 evicted none. 24000 is also what the sibling
+# `memory-keeper` store on this machine has defaulted to in production for the same
+# always-loaded index (scripts/memctl.py: DEFAULT_BUDGET = 24_000), so this aligns with
+# a number that has run rather than inventing a fresh guess. Callers that want the old
+# ceiling pass `index_budget=4096`; nothing about the budget mechanism changed.
+DEFAULT_INDEX_BUDGET = 24_000
+
 
 class MemoryValidationError(BantamError):
     pass
@@ -112,7 +126,7 @@ class MemoryStore:
     def __init__(
         self,
         root: str | Path,
-        index_budget: int = 4096,
+        index_budget: int = DEFAULT_INDEX_BUDGET,
         k: int = 3,
         today: Callable[[], str] | None = None,
         create: bool = True,
