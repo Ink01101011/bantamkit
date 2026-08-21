@@ -45,7 +45,7 @@ print(memory.recall("postgres port"))
     payments-api-owner.md
     deploy-command.md
   archive/
-    old-fact.md     # compacted out; on disk, out of the index
+    old-fact.md     # compacted out; on disk, out of the index, restorable
 ```
 
 Each fact is Markdown with YAML frontmatter:
@@ -55,6 +55,7 @@ Each fact is Markdown with YAML frontmatter:
 name: payments-api-owner
 description: which team owns the payments api
 type: project
+created: '2026-08-01'
 last_recalled: '2026-08-06'
 links: []
 ---
@@ -66,6 +67,11 @@ The payments API is owned by team Atlas.
 - `description` — one line, written to match the *future recall query*, not to
   summarize the body. This is the only text (with `name`) that recall searches.
 - `type` — one of `user`, `feedback`, `project`, `reference`.
+- `created` — ISO date the fact first landed. An **update** under the same name
+  keeps it, so re-saving cannot launder a stale fact into a fresh one. A fact
+  written before this field existed has none: the store falls back to the file's
+  own mtime and persists that date on the fact's next write, so no store on disk
+  needs a migration pass.
 - `last_recalled` — ISO date, stamped by `recall`; `null` until first recalled.
 - `links` — names of related facts.
 
@@ -74,17 +80,22 @@ is the thing the budget is measured against, and is rebuilt after every save and
 compact. Fact files are written through a temp file and an atomic rename; the
 index is rewritten in place, and is always derivable from the fact files.
 
-## The four ops
+## The ops
 
 | Op | Who runs it | When |
 |---|---|---|
 | `recall(query, k=None)` | the agent, via `memory_recall` | before a task resembling past work |
 | `save(type, name, description, body, links=())` | the agent, via `memory_save` | after learning a durable fact |
 | `lint()` | you, from host code or CI | to fail fast on a corrupted or over-budget store |
-| `compact()` | you, from host code or a maintenance job | when the index no longer fits its budget |
+| `compact(reserve=None)` | you, from host code or a maintenance job | when a save has hit the budget |
+| `archived()` | you | to list what compaction has moved out |
+| `restore(name)` | you | to bring an archived fact back into the index |
 
-`lint` and `compact` are deliberately **not** exposed as agent tools — lifecycle
-is an operator decision, not a model decision.
+`lint`, `compact`, `archived` and `restore` are deliberately **not** exposed as
+agent tools — lifecycle is an operator decision, not a model decision. The
+budget error the *model* sees therefore names what the model can do (shorten the
+description, or save under an existing name); the `MemoryBudgetExceeded` text
+names `compact()`, and that one is for host code.
 
 ```python
 from bantamkit.memory import MemoryBudgetExceeded, MemoryStore, MemoryValidationError
@@ -99,7 +110,8 @@ for fact in store.recall("how do we deploy"):
 try:
     store.lint()
 except MemoryBudgetExceeded:
-    print("archived:", store.compact())
+    result = store.compact()
+    print("archived:", result.names, "headroom now:", result.headroom)
 except MemoryValidationError as e:
     print("corrupt store:", e)
 ```
@@ -110,7 +122,8 @@ Scores every fact by how many lowercased alphanumeric tokens the query shares
 with `"{name} {description}"`, keeps those with a non-zero score, sorts by score
 then name, and returns the top `k` (default 3, or `k` passed per call). Every
 returned fact has `last_recalled` stamped with today's date — that stamp is what
-`compact()` later uses to decide what to drop.
+`compact()` later uses to decide what to drop, falling back to `created` for a
+fact nobody has recalled yet.
 
 **The body is not searched.** A fact is only findable through the words in its
 name and description; this is why the skill insists descriptions be written to
@@ -155,11 +168,35 @@ content), the index is rebuilt, and `MemoryBudgetExceeded` is raised. Via the
 agent tool it lands as an `error: memory_save failed: ...` observation, so the
 model is told and the store stays consistent.
 
-`compact()` archives the least valuable facts until the index fits: it sorts by
-`(last_recalled or "", name)`, so never-recalled facts go first and
-long-unrecalled ones next. It moves files from `facts/` to `archive/` — nothing
-is deleted — rebuilds the index, and returns the list of archived names. If the
-index already fits, it archives nothing and returns `[]`.
+`compact(reserve=None)` archives the stalest facts until the index sits at
+`index_budget - reserve` or below, and returns a `CompactResult`.
+
+Two things about that target matter, and both were measured defects:
+
+- **It is below the budget, not at it.** A save rolls its fact back *before* it
+  raises, so by the time you can act on the error the index is under budget
+  again. Compacting only until the index "fits" archives nothing in exactly that
+  state — on a real 20-fact store, three over-budget saves in a row each got
+  `[]` back and left `archive/` empty. Compacting to a target *below* the budget
+  is what lets the save that failed succeed on retry instead of looping.
+- **The default `reserve` is the largest index line the store currently holds**,
+  capped at half the budget. That buys exactly "a fact as big as the biggest one
+  you keep will fit", a number that scales with your data rather than a guessed
+  constant, and it is recomputed from the survivors, so calling `compact()` twice
+  archives nothing the second time.
+
+It sorts by `(last_recalled or created, name)`. A fact written seconds ago and
+one nobody has wanted in a year are no longer the same value: under the old key
+both were `None`, `None or ""` sorted before every real date, and the **newest**
+fact was the first evicted.
+
+Archiving is a `facts/` → `archive/` move, never a delete. `CompactResult`
+carries the name, type, description and index size of everything that left plus
+the byte arithmetic (`index_before`, `index_after`, `budget`, `target`,
+`reserve`, `headroom`, `archive_dir`), because the caller that triggered it will
+never read `archive/` itself. `archived()` lists what is in there and
+`restore(name)` moves one back — an over-budget restore is undone and raises,
+the same transaction `save` gets.
 
 `lint()` walks every fact, raising `MemoryValidationError` on malformed
 frontmatter or an invalid `type`, then re-checks the budget. Run it in CI over a
