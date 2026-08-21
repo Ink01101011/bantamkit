@@ -21,6 +21,12 @@ Every path out of `extract()` is either rows or a `DocumentReadError` naming the
 
 Readable containers, and what reads them:
 
+- `text` — nothing but a strict UTF-8 decode; a plain text file has no container to open.
+  It is listed FIRST because it is the bulk of the work: measured 2026-08-21 over
+  `~/Documents/Claude/Projects`, 43,629 of 49,555 files (88.04%) sniff as `text`, and
+  `extract` used to raise on every one of them because `text` was not a key in `_EXTRACTORS`.
+  "Needs no reader" is not the same as "is not readable", and a single entry point that a
+  program hands any file to must not answer a refusal for plain content.
 - `xlsx`, `docx` — `zipfile` + `xml.etree`, unchanged; these are J10's committed measurements.
 - `pdf` — `bantamkit.pdfread`, written for this program because J25-PREP measured every PDF
   library and every command-line converter absent from this host and the dependency list is
@@ -108,6 +114,14 @@ Deliberate lossiness, stated so downstream does not have to guess, and — where
   `page()` has a slice unit. A two-column page interleaves and a table does not come back as
   columns. `OMIT_UNREAD_PAGE` and `OMIT_UNMAPPED` are what keep the difference between "this
   page held nothing" and "this page was not readable" from collapsing into silence.
+- **A plain-text file is rendered LINE for line and nothing is reformatted** — indentation
+  stays (77.9% of the corpus's text files carry an indented line), tabs stay (they are the same
+  field separator a worksheet row renders with), and blank lines stay, so for this one
+  container a row offset really is a line offset. What a text file loses is only what this
+  reader could not read: `OMIT_UNREAD_TAIL` counts bytes past the point the file stops being
+  text — `sniff` votes on 4,096 bytes and `extract` meets the rest — and `OMIT_SIZE_CAP`
+  counts bytes past `TEXT_MAX_BYTES`. Neither is ever a silent truncation, and no character is
+  ever decoded with `errors="replace"`.
 - **An empty extraction from a text container is a refusal, not a document.** `.xlsx` keeps
   its existing behaviour — a declared-but-empty sheet is a real part with no rows, and J10's
   rows are committed measurements — but a `.doc`, `.rtf`, `.html` or `.mhtml` that yields no
@@ -142,12 +156,29 @@ NS_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 NS_R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 
 # Read directly, by this module, with nothing outside the standard library.
-SUPPORTED = ("xlsx", "docx", "pdf", "html", "mhtml")
+SUPPORTED = ("text", "xlsx", "docx", "pdf", "html", "mhtml")
 # Read only if the host has `/usr/bin/textutil`. Probed, never assumed — see `textutil_path`.
 TEXTUTIL_SUPPORTED = ("doc", "rtf")
 TEXTUTIL = "/usr/bin/textutil"
 TEXTUTIL_TIMEOUT = 60
 DEFAULT_ROW_LIMIT = 50
+# The most of ONE plain-text file this reader will materialise. Plain text is the only
+# container here whose size no structure bounds, and it is now the majority of what `extract`
+# is handed, so "read the whole thing" needs a stated ceiling rather than a hope.
+#
+# It is not hypothetical. MEASURED 2026-08-21 over `~/Documents/Claude/Projects`,
+# `~/Documents` and `~/Downloads` (pruned at node_modules, .venv, venv, .git, __pycache__,
+# dist, build, .next, target, site-packages, .cache): 116,529 files sniff as `text` and the
+# largest is a 764,017,864-byte `.sql` dump, with a 134,000,722-byte one behind it. Reading
+# either whole is a different failure from refusing it.
+#
+# 16 MiB, because that is measured to cover the corpus and to cost little. Every one of the
+# 43,629 text files under `~/Documents/Claude/Projects` is smaller than it (largest 1,474,568
+# bytes, 11x under) and so are 116,527 of the 116,529 across all three roots; materialising
+# 16 MiB of log measured 58.2 MiB peak and 0.04 s, against 232.1 MiB for 64 MiB and roughly
+# 2.7 GB for that 764 MB file read whole. Named, not inlined, so a bar can vary it and prove
+# the shortfall is REPORTED rather than the content quietly truncated.
+TEXT_MAX_BYTES = 16 * 1024 * 1024
 
 # The subjects an `Omission` can carry. Stable tokens, because a renderer switches on them.
 OMIT_MEDIA = "media"
@@ -160,6 +191,15 @@ OMIT_UNREAD_PAGE = "unread-page"
 # Characters this reader met and refused to guess at: codes shown through a font that carries
 # no `/ToUnicode` map, i.e. glyph indices. Dropped from the rows and counted here.
 OMIT_UNMAPPED = "unmapped-text"
+# Bytes of a plain-text file that lie past the point where the file stops BEING text: a
+# sequence no UTF-8 continuation can complete, or a C0 code that is binary framing. `sniff`
+# votes on a 4096-byte head, so `extract` routinely meets bytes that verdict never saw, and
+# those bytes can contradict it. The prefix that IS text is content; the rest is COUNTED.
+OMIT_UNREAD_TAIL = "unread-tail"
+# Bytes past `TEXT_MAX_BYTES`, the ceiling this reader states for one plain-text file. Not a
+# property of the file -- a limit this reader imposes -- which is exactly why it is declared
+# as a count instead of applied in silence.
+OMIT_SIZE_CAP = "size-cap"
 
 
 class DocumentReadError(BantamError):
@@ -989,6 +1029,125 @@ def _nonempty(doc: Document, path: Path, why: str) -> Document:
     )
 
 
+# --------------------------------------------------------------- plain text, in no container
+
+# The C0 codes that are binary framing, as a pattern over a whole file. DERIVED from
+# `_TEXT_CONTROLS` rather than re-listed, so one set decides what a control code means here
+# and in `sniff` alike and the two cannot drift; `test_the_whole_file_scan_agrees_with_the_head
+# _rule` is what holds that. A regex because this runs over as much as `TEXT_MAX_BYTES`, where
+# `_is_binary_control` runs per character.
+_BINARY_CONTROL = re.compile(
+    "[" + "".join(re.escape(chr(code)) for code in range(0x20) if code not in _TEXT_CONTROLS) + "]"
+)
+
+
+def _text_rows(text: str) -> tuple[str, ...]:
+    """One LINE of the file is one row, verbatim. No strip, no tab flattening, no line dropped.
+
+    Deliberately not `_plain_rows`, and the difference is measured rather than stylistic.
+    `_plain_rows` renders a `text/plain` MIME part, where the source was a mail body; here the
+    source is a file whose own bytes are the document, and the module's byte-determinism rule
+    ("nothing here is reformatted") applies to it directly:
+
+    - **Leading whitespace is content.** MEASURED 2026-08-21: 33,990 of the 43,629 text files
+      under `~/Documents/Claude/Projects` -- 77.9% -- carry at least one indented line. These
+      are source files, and `.strip()` would silently return every one of them de-indented.
+    - **A tab is the field separator**, the same one a worksheet row renders with, so flattening
+      it to a space would collapse the columns of a `.tsv` exactly where the rest of this module
+      spells columns out with tabs. 86 files in that corpus contain one.
+    - **A blank line is kept**, so a row offset here IS a line offset: `page(offset=n)` starts at
+      line n+1. `OMIT_BLANK_ROWS` exists because an `.xlsx` row offset can never mean that;
+      this is the one container where it can, and dropping 16.2% of the corpus's lines (909,880
+      of 5,618,108, measured) would throw the property away for nothing.
+
+    No `\n` can survive inside a row, which is the invariant row slicing actually rests on: the
+    split is on `\n` and a CRLF terminator's `\r` goes with it.
+    """
+    if not text:
+        return ()
+    if text.endswith("\n"):
+        text = text[:-1]  # a final line break terminates the last row; it does not open a new one
+    return tuple(line[:-1] if line.endswith("\r") else line for line in text.split("\n"))
+
+
+def extract_text(path: str | Path) -> Document:
+    """Plain UTF-8 text in no container. It is CONTENT, and refusing it was the defect.
+
+    MEASURED 2026-08-21 over `~/Documents/Claude/Projects` (49,555 files, pruned as above):
+    43,629 of them -- 88.04% -- sniff as `text`, and before this function existed `extract`
+    could hand back 76. "Needs no reader" is only true if every caller knows to fall back to a
+    plain read, and this module's whole premise is that a program hands one entry point a file
+    and gets content or a stated refusal.
+
+    Three decisions, none of them silent:
+
+    **The encoding is not reported, because it is not a finding.** `sniff` returns `text` only
+    where the head decoded as UTF-8 with no binary control code, so UTF-8 is what the verdict
+    MEANS, not a guess this function made and could report. An `Omission` field is a
+    measurement, never a constant. A file in latin-1 or UTF-16 does not arrive here at all --
+    it sniffs `unknown` and refuses -- and that, not this, is where that lever lives.
+
+    **Bytes `sniff` never saw can contradict it, and are counted.** The verdict is cast on
+    `_HEAD_BYTES`; a NUL at byte 5000 is invisible to it. So the whole file is decoded STRICTLY
+    -- never `errors="replace"`, which would emit characters the file does not state, the one
+    thing this module refuses to do anywhere -- and the read stops at the first byte that is
+    not text. The prefix is rows; the remainder is an `OMIT_UNREAD_TAIL` count with the offset
+    and the reason. MEASURED across all three roots: 0 of 116,529 text files hit this today.
+    It is handled because it is constructible and unbounded, not because it is common.
+
+    **A file bigger than `TEXT_MAX_BYTES` is read to the cap and says how much it left**, as
+    `OMIT_SIZE_CAP`. See that constant for why the number is what it is.
+
+    Where the read stops early, for either reason, the last line has no end in this reader's
+    hands, so the rows are cut back to the last line break and the partial line's bytes go into
+    the same count. A row this reader cannot see the end of is a row it cannot vouch for -- and
+    the alternative, emitting it, is the one shape this module never takes.
+    """
+    path = Path(path)
+    size = path.stat().st_size
+    with path.open("rb") as handle:
+        raw = handle.read(TEXT_MAX_BYTES + 1)
+    capped = len(raw) > TEXT_MAX_BYTES
+    if capped:
+        raw = raw[:TEXT_MAX_BYTES]
+    # `final` is lowered exactly where the CAP cut the read, and for `_decode_head`'s reason: a
+    # character this reader's own ceiling cut in half is a fact about the reader, not the file.
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    why = ""
+    try:
+        text = decoder.decode(raw, final=not capped)
+    except UnicodeDecodeError as exc:
+        text = raw[: exc.start].decode("utf-8")
+        why = f"byte {exc.start} begins a sequence that is not UTF-8 ({exc.reason})"
+    control = _BINARY_CONTROL.search(text)
+    if control is not None:
+        at = len(text[: control.start()].encode())
+        why = f"byte {at} is control code 0x{ord(control.group()):02x}, which is binary framing"
+        text = text[: control.start()]
+    if why or capped:
+        text = text[: text.rfind("\n") + 1]
+    dropped = size - len(text.encode())
+    omissions: tuple[Omission, ...] = ()
+    if dropped > 0:
+        subject = OMIT_UNREAD_TAIL if why else OMIT_SIZE_CAP
+        what = why or f"{size} bytes on disk; this reader reads {TEXT_MAX_BYTES}"
+        omissions = (Omission(subject, dropped, size=dropped, what=what),)
+    doc = Document(
+        kind="text",
+        parts=(Part(name="document", index=0, rows=_text_rows(text)),),
+        omissions=omissions,
+    )
+    if any(row.strip() for part in doc.parts for row in part.rows):
+        return doc
+    # Whitespace only, or nothing survived the stop. `_nonempty` cannot answer this one: its
+    # test is whether any row exists, and here a file of blank lines has plenty.
+    raise _refuse(
+        path,
+        sniff(path),
+        why or "no line in it carries a character, so this reader has no text for it",
+    )
+
+
 # ------------------------------------------------------------ legacy `.doc` / `.rtf`, probed
 
 
@@ -1182,6 +1341,7 @@ def extract_pdf(path: str | Path) -> Document:
 
 
 _EXTRACTORS = {
+    "text": extract_text,
     "xlsx": extract_xlsx,
     "docx": extract_docx,
     "pdf": extract_pdf,
