@@ -8,6 +8,17 @@ on:
 permissions:
   contents: read
 
+# DIAGNOSTIC ONLY -- not a fix, and must not survive into main.
+# Round 1 on windows-latest died during COLLECTION on the first file that
+# read a non-ASCII byte through a text open() with no encoding= (cp1252 is
+# the Windows default). One file stopping collection means the run reported
+# exactly one problem and hid every other one behind it. PYTHONUTF8=1 forces
+# UTF-8 everywhere so the rest of the failures become visible in a single
+# run. The real repo has 277 encoding-less text-I/O sites; masking them here
+# answers "what ELSE breaks on Windows", it does not repair anything.
+env:
+  PYTHONUTF8: "1"
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -39,4 +50,4 @@ jobs:
       - name: Lint examples
         run: ruff check --config runtime-py/pyproject.toml examples
       - name: Test
-        run: python -m pytest runtime-py -q
+        run: python -m pytest runtime-py -q --continue-on-collection-errors
