@@ -88,8 +88,9 @@ validation-visibly instead of corrupting.
 ### Scopes
 
 - **Project scope (this repo):** the committed `.mcp.json` points at
-  `.venv/bin/bantamkit-mcp` — every bantamkit session sees the tools with
-  zero setup.
+  `tools/bantamkit-mcp` — every bantamkit session sees the tools with zero
+  setup, **including a session running in a `git worktree`**. See
+  [The endpoint has to exist in a worktree too](#the-endpoint-has-to-exist-in-a-worktree-too).
 - **User scope (every other project):** register the server once against a
   [pinned install](install.md#pinned-install-from-a-tag):
 
@@ -101,6 +102,64 @@ validation-visibly instead of corrupting.
   `.shiftwork/checkpoint.json` in the target repo (the log lands beside
   it). The tools take an explicit path, so the convention is
   documentation, not code.
+
+### The endpoint has to exist in a worktree too
+
+A relative `command` in `.mcp.json` is resolved against the **project
+directory**, so the tracked file means a different path in every checkout. It
+used to name `.venv/bin/bantamkit-mcp`, and a `git worktree` has no `.venv`:
+
+```
+canonical checkout : bantamkit: .venv/bin/bantamkit-mcp - ✔ Connected
+worktree           : bantamkit: .venv/bin/bantamkit-mcp - ✘ Failed to connect
+                     ENOENT ... posix_spawn '.venv/bin/bantamkit-mcp'
+```
+
+`[Conflicting scopes]` prints in **both** cases and says nothing about which
+endpoint is reachable, so the real failure looked like the scope warning
+everyone has learned to scroll past. This program runs implementation units in
+worktrees as a matter of course and `CLAUDE.md` requires them to be
+orchestrated through the `shiftwork_*` tools this registration serves, so a
+subagent in a worktree had no bantamkit tools at all (`RB-P96`).
+
+The endpoint is now `tools/bantamkit-mcp`, a tracked POSIX-`sh` launcher —
+tracked, therefore present in every checkout and every worktree. It splits
+where the two halves come from, and the split is the point:
+
+| half | comes from | why |
+|---|---|---|
+| **code** | the checkout the launcher was spawned out of (`$0`'s grandparent), exported as `PYTHONPATH` | in a worktree that is *the worktree*. The venv's editable install resolves `bantamkit` to the **main** checkout (`RB-P55`/`RB-P70`), so a unit editing `runtime-py/src` in a worktree would otherwise be answered by somebody else's copy of the file it just changed |
+| **dependencies** | `.venv/bin/python` of this checkout, else of the main checkout named by `.git`/`commondir`, else `python3` | a worktree has no `.venv` and should not need one. The two pointer files are read with the shell's `read` builtin, so this still resolves when `git` is not on `PATH` |
+
+`PYTHONPATH` is searched before `site-packages`, which is what makes the
+worktree's source beat the main checkout's editable install; `PYTHONSAFEPATH=1`
+stops the client's cwd from being prepended ahead of it. Both are load-bearing
+and both are calibrated — with the cwd guard removed, a decoy `bantamkit/`
+directory in the client's working directory wins the import.
+
+**Where it cannot work it says so.** A checkout with no `.venv` anywhere falls
+through to `python3`, and a bare `python3` cannot import the package. The
+import is guarded, so that reaches the operator as the checkout, the
+interpreter, the missing module and the `pip install` that fixes it — not as
+`ModuleNotFoundError: No module named 'httpx'`, which reaches a client as
+`CONNECTION_CLOSED` and names the symptom rather than the cause. A bare
+`python3` is still tried last on purpose: that is exactly the CI layout, where
+`pip install -e "runtime-py[mcp]"` goes into the runner's interpreter and there
+is no `.venv` anywhere.
+
+Whether the declared endpoint actually reaches, and whether it serves *this*
+checkout's source, is not a thing to reason about:
+
+```bash
+python tools/mcpreach/mcpreach.py check          # from any checkout or worktree
+```
+
+Exit codes are the interface: `0` REACHABLE, `1` UNREACHABLE (the `RB-P96`
+defect), `2` FOREIGN (it launched, but it is serving a *different* checkout's
+source — the worktree trap, which is the failure worth more than the one it
+replaces because it is silent), `3` UNDECLARED (no project-scope entry), `4`
+NO_ENV (nothing on this machine carries the dependencies — a fresh clone, which
+is deliberately not `0`).
 
 ### One name, two endpoints
 
