@@ -541,6 +541,92 @@ def test_a_suffix_this_reader_has_no_expectation_for_is_not_a_lie(tmp_path):
     assert not sniff(path).suffix_lies
 
 
+# ------------------------------------------- a truncation boundary does not decide the verdict
+#
+# `sniff` reads a bounded head and asks whether it is text. The head's last bytes can be half
+# of a character, and that half is a fact about how much this reader read -- never a fact about
+# the file. The two bars below pin the PROPERTY (the verdict does not move with the boundary),
+# not the symptom (one file at one head size): raising `_HEAD_BYTES` would satisfy a symptom
+# bar and leave the defect standing behind a longer fuse.
+
+# A three-byte character. Splitting it one byte in and two bytes in are different truncations,
+# and both must survive.
+ARROW = "\u2192"
+
+
+def _straddling(inside: int) -> bytes:
+    """Text whose 3-byte character has exactly `inside` of its bytes below the head boundary."""
+    lead = b"a" * (docread._HEAD_BYTES - inside)
+    return lead + ARROW.encode("utf-8") + b"b" * 64
+
+
+@pytest.mark.parametrize("inside", [1, 2])
+def test_a_character_the_head_boundary_cuts_in_half_is_still_text(tmp_path, inside):
+    path = tmp_path / f"cut{inside}.md"
+    path.write_bytes(_straddling(inside))
+    head = path.open("rb").read(docread._HEAD_BYTES)
+    # The fixture earns its name: the head really does end mid-character.
+    with pytest.raises(UnicodeDecodeError):
+        head.decode("utf-8")
+    assert sniff(path).kind == "text"
+
+
+def test_the_verdict_does_not_move_when_the_head_size_does(tmp_path, monkeypatch):
+    """The property bar. One file, every boundary from 1 byte to past its end: one verdict.
+
+    The fixture carries a 3-byte character every 4 characters, so a third of these boundaries
+    land inside one. A fix that merely enlarged the head would still fail here, because here
+    the head size is the variable.
+    """
+    body = ("abc" + ARROW) * 200
+    path = tmp_path / "sweep.txt"
+    path.write_bytes(body.encode("utf-8"))
+    size = path.stat().st_size
+
+    verdicts = {}
+    for head_bytes in range(1, size + 32):
+        monkeypatch.setattr(docread, "_HEAD_BYTES", head_bytes)
+        verdicts.setdefault(sniff(path).kind, []).append(head_bytes)
+
+    assert set(verdicts) == {"text"}, {k: (len(v), v[:5]) for k, v in verdicts.items()}
+
+
+def test_bytes_no_continuation_could_complete_are_still_not_text(tmp_path):
+    """The tolerance is for an INCOMPLETE character, not for an invalid one."""
+    path = tmp_path / "broken.txt"
+    path.write_bytes(b"plain enough so far \xff\xfe and then some more" + b"c" * 4096)
+    assert sniff(path).kind == "unknown"
+
+
+def test_a_short_file_ending_mid_character_is_damage_not_a_boundary(tmp_path):
+    """Read whole, below the cap: there is no boundary to blame, so the dangling half refuses."""
+    path = tmp_path / "damaged.txt"
+    path.write_bytes(b"short and sweet" + ARROW.encode("utf-8")[:2])
+    assert path.stat().st_size < docread._HEAD_BYTES
+    assert sniff(path).kind == "unknown"
+
+
+# ------------------------------------------------- which C0 codes mean "not a document" at all
+#
+# The rule, stated rather than tuned: tab, the newline family and ESC are codes a plain-text
+# document legitimately carries -- ESC because it is the ECMA-48 introducer for the ANSI colour
+# sequences terminal logs are written with. Every other C0 code, NUL first, is binary framing.
+
+
+def test_an_ansi_coloured_log_is_a_text_document(tmp_path):
+    path = tmp_path / "turbo-test.log"
+    path.write_bytes(b"\x1b[31mFAIL\x1b[39m one suite\n\x1b[38;5;3mwarn\x1b[39m two\n")
+    assert sniff(path).kind == "text"
+
+
+@pytest.mark.parametrize("code", [0x00, 0x01, 0x07, 0x0E, 0x1F])
+def test_every_other_c0_code_keeps_a_file_out_of_the_text_bucket(tmp_path, code):
+    """The guard on the widening above: it admits ESC and nothing else."""
+    path = tmp_path / "framed.dat"
+    path.write_bytes(b"looks like words " + bytes([code]) + b" but is not")
+    assert sniff(path).kind == "unknown"
+
+
 # ----------------------------------------------------------------------- MHTML saved as .doc
 #
 # The corpus's one `.doc` is not the OLE2 binary the suffix promises: it is a Confluence
