@@ -100,9 +100,17 @@ class Memory:
             return f"error: {e}"
         except MemoryBudgetExceeded as e:
             # Not an argument problem: retrying the same call cannot fit the index.
+            # Two audiences, two remedies. The store's own text names `compact()`,
+            # which is now true for host code (it was a guaranteed no-op in exactly
+            # this state until it grew a headroom target). This reply goes to the
+            # MODEL, which by design has no compaction tool — `docs/memory.md` keeps
+            # lifecycle an operator decision — so it must name what the model can do
+            # instead of a remedy it cannot reach.
             return (
-                f"error: {e}. Nothing was saved and retrying will not help — "
-                f"compact or archive existing memories first, then save again."
+                f"error: {e}. Nothing was saved and retrying will not help — shorten "
+                f"the description, or save under the name of an existing memory to "
+                f"replace it. Compacting the index to free room is an operator job, "
+                f"not a tool you have."
             )
         if result.status == "duplicate":
             return (
@@ -145,6 +153,34 @@ class Memory:
         if not picked:
             return "no memories matched. Try different words, or proceed without."
         return "\n\n".join(self._format(label, fact) for label, fact in picked)
+
+    def compact(self, reserve: int | None = None) -> str:
+        """Free index headroom by archiving the stalest facts, and say what it cost.
+
+        Only the writable project layer is compacted: a read-only grant is not this
+        person's to evict, and the profile layer belongs to another store's budget.
+
+        The reply names every archived fact with its description, because `archive/`
+        is a directory the model calling this will never look in — if the return value
+        does not carry what was lost, nothing does.
+        """
+        result = self.store.compact(reserve)
+        if not result.archived:
+            return (
+                f"nothing archived: the index is {result.index_after} bytes against a "
+                f"{result.budget}-byte budget, already at or under the "
+                f"{result.target}-byte compaction target."
+            )
+        lost = "\n".join(
+            f"- {fact.name} ({fact.type}) — {fact.description}" for fact in result.archived
+        )
+        return (
+            f"archived {len(result.archived)} memories; the index went from "
+            f"{result.index_before} to {result.index_after} bytes against a "
+            f"{result.budget}-byte budget, leaving {result.headroom} bytes of headroom. "
+            f"These moved to {result.archive_dir} and are NOT deleted — they can be "
+            f"restored by name:\n{lost}"
+        )
 
     # Back-compat aliases: the component's API predates the public names.
     _save = save
