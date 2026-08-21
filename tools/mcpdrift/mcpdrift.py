@@ -161,7 +161,7 @@ class Fingerprint:
 
 def _read_json(path: Path) -> dict[str, Any]:
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
 
@@ -222,7 +222,7 @@ def _write_fixture(root: Path) -> tuple[Path, Path]:
             "last_recalled: null\n"
             "links: []\n"
             "---\n\n"
-            f"{body}\n"
+            f"{body}\n", encoding="utf-8"
         )
     if EXAMPLE_CHECKPOINT.is_file():
         shutil.copyfile(EXAMPLE_CHECKPOINT, project / "checkpoint.json")
@@ -247,7 +247,7 @@ class _Session:
             text=True,
             bufsize=1,
             cwd=str(cwd),
-            env=env,
+            env=env, encoding="utf-8",
         )
         self._id = 0
 
