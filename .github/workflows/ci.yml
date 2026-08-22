@@ -14,7 +14,32 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # W10: the matrix is ARMED, and arming it is the whole point of job 31.
+    #
+    # WHAT THIS BUYS. The nine fix units closed 24 collected Windows-suspect node ids.
+    # Three of them -- and only three -- were closed by `skipif`, because Windows cannot
+    # be put into the scenario at all (see the `windows_cannot_construct` marker in
+    # runtime-py/tests/conftest.py, where each skip is priced by what it thereby fails to
+    # measure, per RB-P51). The other 21 were left DELIBERATELY LIVE. Their Windows
+    # outcome has never been measured post-fix -- not once, by anyone. The 61-failure
+    # reading everyone quotes was taken on probe/windows-ci BEFORE those nine fixes
+    # landed, so it is not evidence about the code that runs here. This matrix is the
+    # first measurement those 21 nodes have ever had, which means a red among them is a
+    # READING, not a regression: the run is telling us something about Windows that no
+    # amount of reasoning off the source was going to settle. Read it before fixing it.
+    #
+    # WHAT IS DELIBERATELY ABSENT. No PYTHONUTF8, no -X utf8, no
+    # --continue-on-collection-errors. Those three exist on probe/windows-ci and that
+    # branch must never merge: PYTHONUTF8 forces every unencoded text open to utf-8,
+    # which makes the encoding gate below pass by fiat and hides the exact class of
+    # defect this job was opened to find. The mask is not the fix; the fix is the fix.
+    #
+    # HOW TO TELL THIS RAN. Four green jobs are only evidence if the Windows steps could
+    # have gone red. Confirm from the log, not from the colour: each Windows job's Test
+    # step must print a pytest summary line with a nonzero passed count. GitHub's pwsh
+    # wrapper propagates $LASTEXITCODE, so a nonzero pytest exit does fail the step -- but
+    # a step that never ran prints no summary at all, and that is what to look for.
+    runs-on: ${{ matrix.os }}
     # W1: the emitting half of the encoding gate. `EncodingWarning` is raised only when
     # the interpreter is started with this on, and it CANNOT be set from pytest's
     # `addopts` (`-X` is an interpreter flag; pytest exits 4 on it). `filterwarnings` in
@@ -26,6 +51,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Four jobs. `fail-fast: false` is load-bearing: the Windows readings are the
+        # product here, and cancelling siblings on the first red would throw away three
+        # quarters of the measurement to save a few runner-minutes.
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
