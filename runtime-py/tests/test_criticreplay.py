@@ -4331,6 +4331,81 @@ def test_the_same_einval_is_still_a_render_failure_where_it_does_not_mean_that(
     assert "could not be rendered" in capsys.readouterr().err
 
 
+# The child of the node below. It puts the ONE platform difference in front of a run that
+# is otherwise entirely real: fd 1 is a genuine pipe with a genuine dead reader, the CLI is
+# a genuine process, and the status is read by `wait()` — only the WORD the OS uses for the
+# failure is swapped, from the `BrokenPipeError` POSIX raises to the plain `OSError`
+# carrying EINVAL that windows-latest raised in CI run 32555258828. Nothing here fakes the
+# pipe, the write or the exit status.
+_WINDOWS_SPELLING_BOOTSTRAP = """
+import errno, runpy, sys
+import bantamkit.criticreplay as criticreplay
+
+criticreplay._EINVAL_MEANS_LOST_READER = {flag}
+
+
+class _WindowsSpelling:
+    def __init__(self, stream):
+        self._stream = stream
+
+    def write(self, text):
+        try:
+            return self._stream.write(text)
+        except BrokenPipeError:
+            raise OSError(errno.EINVAL, "Invalid argument") from None
+
+    def flush(self):
+        try:
+            return self._stream.flush()
+        except BrokenPipeError:
+            raise OSError(errno.EINVAL, "Invalid argument") from None
+
+
+sys.stdout = _WindowsSpelling(sys.stdout)
+runpy.run_path({probe!r}, run_name="__main__")
+"""
+
+
+@pytest.mark.parametrize(
+    ("flag", "expected"),
+    [
+        pytest.param("True", 0, id="einval-is-a-lost-reader"),
+        pytest.param("False", criticreplay.RENDER_FAILURE_EXIT, id="einval-is-not"),
+    ],
+)
+def test_a_real_dead_pipe_spelled_the_windows_way_still_earns_its_own_status(
+    rig, tmp_path, flag, expected
+):
+    """SIMULATED, and the label is load-bearing: this runner is not Windows.
+
+    RB-P24's rule is that a status claim is read from a real process's exit status, and
+    the three in-process nodes above cannot supply that for the Windows spelling. This one
+    can, for everything except the spelling itself: the pipe, the closed read end, the
+    child, the failing write and the number `wait()` reports are all real, and the single
+    thing transcribed by hand is that the write raises `OSError(EINVAL)` instead of
+    `BrokenPipeError`. That is exactly and only the platform difference CI measured.
+
+    ON WINDOWS THIS NODE MEASURES MORE, not less: there the real write already raises
+    `OSError(EINVAL)`, the translating `except BrokenPipeError` never fires, and the
+    `True` cell becomes a field reading rather than a simulation. It is written to assert
+    the same two numbers on both platforms so that it can be.
+
+    The `False` cell is the control that keeps the `True` cell from being a tautology:
+    same pipe, same spelling, one constant flipped, and the run reports 5.
+    """
+    argv = _cli(
+        rig,
+        entry=[
+            sys.executable,
+            "-c",
+            _WINDOWS_SPELLING_BOOTSTRAP.format(flag=flag, probe=str(PROBE)),
+        ],
+    )
+    status, err = _closed_pipe_status(argv, tmp_path, f"winspell-{flag}")
+    assert status == expected, err
+    assert status != _CLOSED_PIPE_PREFIX_STATUS, err  # what c7d0b72 read here
+
+
 # ---- What the handler does NOT cover, measured rather than assumed ----
 #
 # The v0.19.0 contract claims coverage for exactly one thing: the run path's own write to
