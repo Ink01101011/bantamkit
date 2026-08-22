@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import jsonschema
 import pytest
+from conftest import windows_cannot_construct
 
 from bantamkit import shiftwork as ops
 from bantamkit.assets import AssetNotFound, load_schema
@@ -306,6 +307,24 @@ def test_clock_out_rejects_a_non_cursor_unit(tmp_path, example):
     assert read_log(path) == []
 
 
+@windows_cannot_construct(
+    because=(
+        "the rig is `dir.chmod(0o555)`, and clearing a DIRECTORY's write bit is a POSIX "
+        "permission fact with no Windows counterpart -- `chmod` there toggles the "
+        "read-only attribute on files and is a no-op for directories, so the write "
+        "SUCCEEDS and nothing raises. MEASURED on real Windows, not inferred: "
+        "windows-latest / CPython 3.12.10, CI run 32508028806 of 2026-08-21, this node "
+        "read `assert 'ok' == 'error'`"
+    ),
+    unmeasured=(
+        "that an OSError on the WRITE path comes back as a structured refusal carrying "
+        "'unwritable' with the checkpoint's prior bytes and an empty log intact, rather "
+        "than as an exception out of `clock_out`. The sibling node "
+        "`test_clock_out_unwritable_log_leaves_the_checkpoint_untouched` still covers "
+        "the log leg on Windows (a directory where a file belongs is portable); what is "
+        "uncovered there is the CHECKPOINT leg's own refusal"
+    ),
+)
 def test_clock_out_read_only_dir_is_a_structured_refusal(tmp_path, example):
     """A write-path OSError mirrors the read side: structured error, never an exception."""
     path = write_checkpoint(tmp_path, example)

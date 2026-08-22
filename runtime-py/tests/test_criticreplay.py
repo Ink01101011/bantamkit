@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import errno
+import importlib
 import json
 import os
 import re
@@ -18,6 +19,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from conftest import WINDOWS_SKIP_TOKEN, windows_cannot_construct
 
 from bantamkit import criticreplay
 from bantamkit.client import Message, Response, Usage
@@ -4659,8 +4661,33 @@ def test_a_render_failure_above_the_buffer_reports_the_render_failure_status(
     assert "could not be rendered" in err
 
 
+@windows_cannot_construct(
+    because=(
+        "fd 1 is closed between fork and exec by `preexec_fn`, which `Popen.__init__` "
+        "refuses outright off POSIX -- `ValueError: preexec_fn is not supported on "
+        "Windows platforms`, raised before any child exists (CPython Lib/subprocess.py, "
+        "the `if _mswindows:` branch of `Popen.__init__`) -- and the state it is opening "
+        "that fork to construct is not one a Windows process can be LAUNCHED in either, "
+        "so there is no second route to it"
+    ),
+    unmeasured=(
+        "that a run whose fd 1 was never open still reports RENDER_FAILURE_EXIT with its "
+        "JSONL rows and summary byte-identical to a live-stdout run -- the `sys.stdout is "
+        "None` branch, the one cell of the render-failure matrix that carries no OSError "
+        "for any `except` arm to catch, is never executed on Windows"
+    ),
+)
 def test_a_closed_stdout_does_not_turn_a_measured_run_into_a_refusal(asset_tree, tmp_path):
     """fd 1 CLOSED outright. A real shell read 1 at 5538624, at BOTH table sizes.
+
+    W9, 2026-08-22: THIS NODE IS MIXED AND THE SKIP IS STILL WHOLE-NODE, because the half
+    that is portable is not lost with it. Before its POSIX-only assertion this node takes
+    an independent live-reader reading through `_child_status` -- the earned 3 -- and a
+    whole-node skip would normally cost that reading too. It does not here:
+    `test_a_render_failure_below_the_buffer_reports_the_render_failure_status` takes the
+    same `_child_status` reading on the same `_wide_guard_rig(..., _RBP31_SMALL_CELLS)`
+    and is NOT skipped, and so does the straddle guard. The control survives; only the
+    closed-fd cell is bought.
 
     Not in RB-P31 as filed, found while running its matrix, and the worst cell in it: no
     buffer is involved, so there was no size at which this was anything but `REFUSAL_EXIT`
@@ -4979,6 +5006,21 @@ def test_a_non_transcript_json_is_refused_rather_than_delivered_as_a_traceback(
     assert out == ""
 
 
+@windows_cannot_construct(
+    because=(
+        "`os.open(<a directory>, os.O_RDONLY)` cannot be done on Windows at all, so the "
+        "fd this harness hands the child as its stdout cannot be obtained. MEASURED on "
+        "real Windows, not inferred: windows-latest / CPython 3.12.10, CI run "
+        "32508028806 of 2026-08-21, `PermissionError: [Errno 13] Permission denied` out "
+        "of the `os.open` line, before any child is spawned"
+    ),
+    unmeasured=(
+        "that fd 1 on a directory kills the interpreter in `init_sys_streams` before "
+        "`main` exists -- so on Windows nothing checks that this module did NOT choose "
+        "that status, and the `_EXIT_CONTRACT` sentence naming the case would not be "
+        "corrected by a Windows run if a future interpreter started that way"
+    ),
+)
 def test_fd_one_on_a_directory_never_reaches_this_module(tmp_path):
     """K4B/M3, and it is NOT this module's defect — written down so it is not re-filed.
 
@@ -6774,3 +6816,100 @@ def test_OUTSIDE_pytest_a_fresh_run_reproduces_both_frozen_payload_recipes(tmp_p
     # written twice — that difference IS what RB-P18 filed.
     assert bar_row["payload_sha256"] != sa3_sha
     assert recorded["payload_sha256"] != recorded["payload_canonical_sha256"]
+
+
+# ---- W9: the roster of Windows-only skips, and the one way a skip can do damage ----
+#
+# A `skipif` whose condition is true EVERYWHERE is a deleted test wearing a disguise: the
+# suite stays green, the node never executes, and nothing in the report distinguishes
+# "ran and passed" from "was never run". `-rs` would say so to a reader who looked, and
+# the whole point of this class of defect is that nobody looks. So it is pinned instead.
+#
+# The node below evaluates every `windows_cannot_construct` condition in the suite and
+# requires them all FALSE here and all TRUE on Windows -- so the marker cannot go inert in
+# either direction -- and it pins the POPULATION, so a later unit cannot quietly add a
+# third skip without the roster below being edited in the same commit. It lives in this
+# file because this file is where the class was found; it covers `test_shiftwork.py` too,
+# which is why the module list is explicit rather than "whatever happens to be imported".
+
+_WINDOWS_SKIP_MODULES = ("test_criticreplay", "test_shiftwork")
+
+_WINDOWS_ONLY_SKIPS = {
+    "test_criticreplay::test_a_closed_stdout_does_not_turn_a_measured_run_into_a_refusal",
+    "test_criticreplay::test_fd_one_on_a_directory_never_reaches_this_module",
+    "test_shiftwork::test_clock_out_read_only_dir_is_a_structured_refusal",
+}
+"""Every node in the suite that a Windows runner does not execute. THREE, and priced.
+
+Each one is a scenario Windows cannot be put INTO -- the harness raises before the code
+under test is reached -- and each mark names the measurement that established that.
+Nodes whose harness constructs fine on Windows and whose OUTCOME is merely unknown are
+deliberately NOT here: skipping one of those would throw away the reading the matrix
+exists to take (RB-P51, and the reason W2's 16-node and W4's 5-node hand-off lists are
+not reproduced here -- see the W9 report).
+"""
+
+
+def _windows_only_skip_conditions() -> dict[str, bool]:
+    """Every `windows_cannot_construct` mark in the suite, as `node id -> condition value`."""
+    found: dict[str, bool] = {}
+    for module_name in _WINDOWS_SKIP_MODULES:
+        module = importlib.import_module(module_name)
+        for name, obj in vars(module).items():
+            if not (name.startswith("test_") and callable(obj)):
+                continue
+            for mark in getattr(obj, "pytestmark", ()):
+                if mark.name != "skipif":
+                    continue
+                if WINDOWS_SKIP_TOKEN not in str(mark.kwargs.get("reason", "")):
+                    continue
+                assert len(mark.args) == 1, (name, mark.args)
+                found[f"{module_name}::{name}"] = bool(mark.args[0])
+    return found
+
+
+def test_the_windows_only_skips_do_not_fire_on_this_platform():
+    """The population is fixed, and off Windows every one of these conditions is FALSE.
+
+    Two mutations this catches, and they are the two that matter. Change any condition to
+    something true here -- `True`, `sys.platform != "nothing"`, an inverted comparison --
+    and the third assertion goes red on macOS and on `ubuntu-latest`, where a green suite
+    would otherwise have been the only report. Add a fourth `windows_cannot_construct`
+    anywhere in the suite without editing `_WINDOWS_ONLY_SKIPS` and the first goes red, so
+    the ledger W11 files cannot silently fall behind the code.
+
+    The Windows branch is not decoration either: a condition that went FALSE everywhere
+    would leave the marker inert in the other direction, i.e. a skip that never skips and
+    a node that fails on the platform it was excused from.
+    """
+    conditions = _windows_only_skip_conditions()
+    assert set(conditions) == _WINDOWS_ONLY_SKIPS
+    assert len(conditions) == 3
+    if sys.platform == "win32":
+        assert all(conditions.values()), conditions
+    else:
+        assert not any(conditions.values()), conditions
+
+
+def test_every_windows_only_skip_says_what_it_fails_to_measure():
+    """RB-P51 as an assertion: the reason names the property, not just the platform.
+
+    "POSIX only" is a reason that tells a reader nothing they can act on. The user's
+    decision for job 31 is that a skip is a RECORDED COST, so each reason has to carry
+    the claim that goes unpinned. This checks the shape that carries it -- the token, a
+    named measurement or interpreter behaviour behind `because`, and enough text after
+    the token to be a sentence rather than a label.
+    """
+    for module_name in _WINDOWS_SKIP_MODULES:
+        module = importlib.import_module(module_name)
+        for name, obj in vars(module).items():
+            if not (name.startswith("test_") and callable(obj)):
+                continue
+            for mark in getattr(obj, "pytestmark", ()):
+                reason = str(mark.kwargs.get("reason", "")) if mark.name == "skipif" else ""
+                if WINDOWS_SKIP_TOKEN not in reason:
+                    continue
+                bill = reason.split(WINDOWS_SKIP_TOKEN, 1)[1]
+                assert len(bill) > 120, (name, bill)
+                assert "POSIX only" not in reason, name
+                assert "that" in bill or "whether" in bill, (name, bill)
