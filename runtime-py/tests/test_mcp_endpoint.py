@@ -167,17 +167,34 @@ the correct direction for a gate whose whole purpose is to not outlive its excus
 # A child that reports its own environment and exits. Spawned through the SAME
 # `stdio_client` with the SAME `env=`, because the question is what THIS SDK hands a
 # child, and that is not readable off `env=` -- see the node below.
+# Written to a sibling and renamed into place, NOT straight to `sys.argv[1]`. The reader
+# below polls for the file to appear, and `json.dump` writes through a buffered stream:
+# measured 2026-08-23, this child's environment serializes to 7,602 bytes against an
+# 8,192-byte default buffer, so today it lands in one `write()` and the poll cannot see a
+# partial file. 590 bytes of margin is not a contract. A larger environment -- a CI runner
+# is the obvious case, and whether any of ours crosses it is UNMEASURED -- splits the dump
+# into several syscalls and the poll starts reading truncated JSON, reddening this node
+# with a `JSONDecodeError` that says nothing about what it guards. `os.replace` is atomic,
+# so the name either does not exist or names a complete file.
 _ENV_DUMP_SOURCE = (
-    "import json,os,sys;json.dump(dict(os.environ), open(sys.argv[1], 'w', encoding='utf-8'))"
+    "import json,os,sys;"
+    "p=sys.argv[1];tmp=p+'.part';"
+    "json.dump(dict(os.environ), open(tmp, 'w', encoding='utf-8'));"
+    "os.replace(tmp, p)"
 )
 
 
 def _environment_the_sdk_hands_a_child(env: dict[str, str], scratch: Path) -> dict[str, str]:
     """The child's ACTUAL environment, read out of a child this SDK really spawned.
 
-    Not `get_default_environment() | env` restated here: that is `stdio.py:128` copied
-    into a test, and a copy cannot notice the original changing. This spawns through the
-    same `stdio_client` with the same `env=` and asks the child. `sys.executable` rather
+    Not `get_default_environment() | env` restated here -- though be precise about why,
+    because an earlier revision of this docstring overclaimed. That form calls the SDK's
+    own function, so it WOULD have caught the drift that motivated this guard. What it
+    could not catch is the class beyond the allow-list: the merge being reordered or
+    removed, `env=` being ignored, or a platform-specific process path injecting its own
+    environment. This spawns through the same `stdio_client` with the same `env=` and asks
+    the child, so it measures the end state instead of a model of how the end state is
+    computed. `sys.executable` rather
     than the endpoint on purpose -- the subject is how the SDK builds a child's
     environment, and the launcher would overwrite the one key in question.
 
@@ -376,7 +393,7 @@ def test_the_endpoint_as_configured_serves_and_names_this_checkout_as_its_source
 
         launcher            where the saved fact landed
         ------------------  --------------------------------------------------
-        as shipped          <the --store this node passed>/f2-argv-probe.md
+        as shipped          <the --store this node passed>/facts/f2-argv-probe.md
         `"$@"` dropped      <cwd>/.bantamkit/memory/facts/f2-argv-probe.md
 
     In row two the asked-for store was never created at all, and `cwd` is the checkout.
