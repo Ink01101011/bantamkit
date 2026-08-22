@@ -79,14 +79,28 @@ xfail_strict = true
 # summary, where a node that never touches the lost stream STAYS GREEN.
 #
 # MEASURED, CI run 32555258828, windows-latest 3.11 and 3.12, 6 dead reader threads per
-# job on 6 nodes. Five of the six failed downstream and were legible from the failure
-# list (four `AttributeError: 'NoneType' object has no attribute 'splitlines'`, one
-# `TypeError: data must be str, not NoneType`). The sixth,
+# job on 6 nodes -- and ON THAT RUN THIS LINE WOULD HAVE CAUGHT NOTHING NEW. All six
+# landed on nodes that were ALREADY RED (5 FAILED + 1 ERROR at setup). The gate's value
+# on that particular run was zero, and the sentence that used to stand here said the
+# opposite.
+#
+# WHAT USED TO STAND HERE, AND WHY IT IS GONE (`RB-P102`). It claimed the sixth node,
 # `test_amendguard.py::test_a_pointer_fix_bundled_with_anything_else_is_pointer_not_isolated`,
-# REPORTED PASS: the dead thread belonged to its module-scoped fixture, whose rows come
-# from the `--out` file and not from the stdout that was lost, so every assertion in the
-# node held while a capture thread had died under it. That is the case this line exists
-# for -- a green node standing on a stream that never arrived.
+# REPORTED PASS while its fixture read rows from the `--out` file. Both halves are false:
+# that node ERRORED at setup -- it is one of the run's 20 errors -- and its fixture at
+# `f2b9078` passes no `--out` at all and builds every row from `r.stdout.splitlines()`,
+# which is precisely the `AttributeError` in the traceback. The author searched the
+# `FAILED` list, did not find the node there, and inferred a pass -- the same log-reading
+# trap that unit had been sent to correct, committed into a justification comment one
+# round later. Recorded rather than quietly deleted, because the failure mode is the
+# point: an anecdote is the part of a justification nobody re-derives.
+#
+# SO WHY KEEP THE LINE. Not for the anecdote -- for the mechanism above, which is real
+# and is pinned by `tests/test_thread_exception_gate.py` measured in both directions
+# (remove this string and 2 nodes go red; weaken `error::` to `default::` and the same 2
+# go red). A dead capture thread CAN leave a node green whenever the node's assertions
+# do not depend on the stream that was lost. That has not yet been observed here; the
+# gate is armed against it rather than after it, and this comment now says which.
 #
 # WHY HERE AND NOT ON THE `Test` LINE IN .github/workflows/ci.yml. W1's gate had to be
 # split across two files because its emitting half is `-X warn_default_encoding`, an

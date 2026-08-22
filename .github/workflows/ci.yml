@@ -30,9 +30,19 @@ jobs:
     #
     # WHAT IS DELIBERATELY ABSENT. No PYTHONUTF8, no -X utf8, no
     # --continue-on-collection-errors. Those three exist on probe/windows-ci and that
-    # branch must never merge: PYTHONUTF8 forces every unencoded text open to utf-8,
-    # which makes the encoding gate below pass by fiat and hides the exact class of
-    # defect this job was opened to find. The mask is not the fix; the fix is the fix.
+    # branch must never merge.
+    #
+    # THE REASON WRITTEN HERE USED TO BE WRONG, and it was wrong in the direction that
+    # flatters the gate. It said PYTHONUTF8 "makes the encoding gate pass by fiat". It
+    # does not: MEASURED with three probes, EncodingWarning is still emitted under
+    # PYTHONUTF8=1 and under -X utf8, so the gate keeps firing and keeps failing the run.
+    # What the mask actually does is force every unencoded text open() to utf-8, which
+    # hides the class's SYMPTOMS -- the cp1252 decode failures that are the whole reason
+    # this job existed -- while leaving the gate itself intact. Excluding the mask is
+    # still right; the argument for excluding it was not. A justification that overstates
+    # its own gate is how a gate stops being re-checked.
+    #
+    # The mask is not the fix; the fix is the fix.
     #
     # HOW TO TELL THIS RAN. Four green jobs are only evidence if the Windows steps could
     # have gone red. Confirm from the log, not from the colour: each Windows job's Test
