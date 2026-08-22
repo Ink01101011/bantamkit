@@ -1222,7 +1222,18 @@ def test_omission_renders_to_primitives_for_the_contract_layer():
         "size": 0,
         "where": ["C", "D"],
         "what": "h:mm",
+        "facts": {},
     }
+
+
+def test_named_facts_are_a_mapping_and_are_present_even_when_a_subject_has_none():
+    """`facts` is the slot a subject uses when one number cannot say what it is. It is ALWAYS
+    in the primitive form, empty for the subjects that do not need it, so the contract layer
+    reads a mapping rather than testing for a key that may or may not be there."""
+    omission = docread.Omission(
+        docread.OMIT_UNREAD_PAGE, 1, facts=(("show_ops", 15), ("vouched", 15))
+    )
+    assert omission.as_dict()["facts"] == {"show_ops": 15, "vouched": 15}
 
 
 # ------------------------------------------------- plain text, which used to be a refusal

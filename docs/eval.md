@@ -12861,3 +12861,387 @@ in the first unit of this job, and it is why every number above carries the comm
 produced it.**
 
 Back to the [README](../README.md).
+
+#### AI (2026-08-22) — one module carried two taxonomies of the same question, seventy-nine lines and one grain apart, and the FINER grain was the poorer one; the case it could not name is 7 of the 10 real instances, and the case it could name is 0
+
+Job 32, two units, PR #66 at `dd7c1fa`, branched from `059840c`. Five commits, layer-separated:
+`docread.py`, then `contract.py` with its asset, then three test commits, then this section.
+`pdfread.py` is not touched and **nothing about what the reader EXTRACTS changes** — every
+number below is about what the reader SAYS about what it could not extract.
+
+This section is written by the closing unit, which re-derived the corpus split from the files
+rather than relaying it, re-ran the load-bearing mutation rather than reading the test, and
+records **seven** corrections in `AI.10` — six to the material it was handed, two of those being
+the orchestrator's own published figures, and one to its own measuring procedure.
+
+##### AI.1 The finding is not "a missing fourth case"
+
+`docread._pdf_refusal` (`runtime-py/src/bantamkit/docread.py:1243` at `dd7c1fa`, `:1229` at the
+base `059840c`) has chosen between **four** reasons a PDF yields no text since J25-D3:
+
+```
+    1  no text-showing operator at all                     it is a scan
+    2  every character shown through a font with no map    glyph indices, refused on purpose
+    3  every character MAPPED, and every one WHITESPACE    the text was found and it is blank
+    4  operators that placed no character either way       neither mapped nor dropped
+```
+
+**Seventy-nine lines below it, in the same module, the page-grain `unread-page` omission named
+three** — and said so in its own comment, which read "WHY a page rendered nothing is one of
+three machine facts". It shipped `page.images`, `page.image_bytes` and `page.show_ops`, which
+can express (1) and, with the separate `OMIT_UNMAPPED` record, (2). It had **no discriminator
+at all** between (3) and (4), so the two collapsed into one indistinguishable state.
+
+The defect is therefore not an oversight about a rare case. **It is that one module carried two
+different taxonomies of one question, at two grains, and the finer grain — the one a caller
+actually reads, per page, at the point of use — was the poorer one.** The document grain knew
+there were four. The page grain asserted there were three. Nothing made them agree, and nothing
+could have: they were two independent enumerations of the same fact, seventy-nine lines apart,
+and
+neither referred to the other.
+
+The branch that (3) fell into is the branch that **blames this reader**. A page whose every
+character mapped and is whitespace arrived at the model as "operators ran, nothing was dropped,
+no rows" — which reads as a bug in the extractor. It is not a bug in the extractor. The page is
+blank.
+
+##### AI.2 The corpus, RE-DERIVED by this unit and not relayed
+
+Every figure in this subsection was recomputed by the closing unit from the files themselves,
+with its own probe, against the branch tree — not carried over from the implementing unit.
+**All of them reproduce.** Counts only; no document content was read out, and files are
+identified by index in a sorted enumeration.
+
+<!-- provenance: value=over every `*.pdf` under ~/Downloads and ~/Documents/Claude/Projects at dd7c1fa: find returns 30 files, all under ~/Downloads and none under Projects; exactly 1 has no `%PDF-` header and docread.sniff calls it Container(kind='docx', named='pdf'); docread.extract succeeds on all 30 and refuses 0, yielding 512 parts and 14274 rows that strip non-empty; pdfread.read_pdf over the 29 real PDFs yields 511 pages; 10 pages carry no row, across 6 distinct files; classified by the shipped four-way rule they are no-operator 3, unmapped 0, whitespace 7, no-character 0; every one of the 10 rowless parts carries exactly one unread-page omission with a populated facts tuple, so omission-missing=0 and omission-ambiguous=0; commit=dd7c1fa; command=find ~/Downloads ~/Documents/Claude/Projects -type f -iname '*.pdf' | sort, then a probe importing bantamkit.docread and bantamkit.pdfread over that list -->
+
+```
+    .pdf-extension files found                                    30
+      of which carry no `%PDF-` header                             1   sniffed `docx`, extracts fine
+      real PDFs                                                   29
+    parts returned by docread.extract over all 30                512
+    pages returned by pdfread.read_pdf over the 29               511   512 = 511 + the 1 that lies
+    rows that strip non-empty                                 14,274
+    pages that rendered NO row                                    10   across 6 distinct files
+    page-level text coverage                                 502/512   98.05%
+```
+
+**The ten, with the four machine facts that classify each.** File indices, not names.
+
+```
+    file  page   show_ops  vouched  unmapped  images     reason
+      1      3          1        1         0       1     whitespace
+      1      7          2        2         0       1     whitespace
+      3      2          0        0         0       2     no-operator
+      4     31          0        0         0       0     no-operator
+      4     32          0        0         0       1     no-operator
+      6      2         23       23         0       2     whitespace
+     18      2          3        3         0       2     whitespace
+     18      3          4        4         0       3     whitespace
+     18      4         15       15         0       0     whitespace
+     24      2          2        2         0       2     whitespace
+```
+
+**The split is the finding, and it is sharper than "a case was missing".**
+
+- **`whitespace` — the case the old record could NOT express — is 7 of 10, 70%.**
+- **`unmapped` — the case the old record COULD express — is 0 of 10.**
+- `no-operator` is 3 of 10; `no-character` is 0 of 10.
+- **0 pages are unexplained and 0 are ambiguous.** The four-way rule is total and exclusive on
+  every rowless page in the corpus, checked as a property and not by eye.
+
+So the three-fact record named a case that occurs zero times in the real corpus and omitted the
+one that accounts for seven of ten. **A taxonomy can be wrong in a way that a pass rate cannot
+see: it was never incomplete about anything it was asked, because nothing ever asked it.**
+
+**File 18 page 4 is the sharpest single instance**: 15 text-showing operators, all 15 characters
+mapped, 0 dropped, **0 images**. Under the old record its omission carried `count=0` (images) and
+`what="15"` (operators), and the old contract sentence rendered as "the page ran 15
+text-showing operator(s) and draws 0 image(s), 0 bytes, that no row can carry". There is nothing
+in that sentence a caller could use, and its plain reading — operators ran, nothing was dropped,
+nothing came out — is an accusation against the reader.
+
+**File 4 page 31 is the opposite pole and is worth recording beside it**: `show_ops=0`,
+`images=0`. A page with nothing on it at all. It is `no-operator`, correctly, and it shows that
+the first branch is not really "it is a scan" — it is "nothing on this page was ever text", of
+which a scan is the common case and an empty page is the other.
+
+##### AI.3 The mechanism, at the line
+
+In the `show()` closure inside `pdfread._run_content` (`runtime-py/src/bantamkit/pdfread.py:1040`
+— it is a nested function, not a module-level `pdfread.show`), a run whose characters all map to
+whitespace increments `state.vouched` and appends to `pieces`, and then fails `if text.strip():`
+— so no `_Run` is appended and the row never exists. `state.show_ops` was already incremented on
+entry, before any of this.
+The page therefore ends with `show_ops > 0`, `vouched > 0`, `unmapped == 0`, and no rows.
+
+That is why `vouched` is the discriminator and why the fix adds **no new counter**. On a page
+with no rows, every vouched character is by construction sitting inside a run the renderer
+dropped for stripping to nothing, so `vouched > 0` already *is* the fact "the text was recovered
+and it is whitespace" — and it is the same discriminator `_pdf_refusal` was already using for
+the same distinction one grain up. **Two different tests for one distinction would have been the
+defect, not the fix.**
+
+##### AI.4 Two errors by the orchestrator of this job, recorded as method findings
+
+Both are the orchestrator's, both were published before they were checked, and both are the
+shape this document exists to catch.
+
+**AI.4.1 — A field named `count`, on a subject named `unread-page`, that did not count pages.
+It was misread the first time anyone read it, and the misreading was published as a coverage
+figure.** The old omission overloaded `count` with `page.images` and `what` with
+`str(page.show_ops)`. The orchestrator read `count` as a number of pages and published
+**`512/526 = 97.34%`**.
+
+<!-- provenance: value=the published 97.34% reproduces exactly and its mechanism is now known: the images drawn on the ten rowless pages are 1,1,2,0,1,2,2,3,0,2 and sum to 14; 512+14=526 and 512/526=97.34%, so the wrong denominator IS the sum of an image count that was read as a page count, added to a part total that already contained those ten pages; the correct figure recomputed at dd7c1fa is 502/512=98.05%; commit=dd7c1fa; command=the AI.2 probe, summing the images column of the ten rowless pages -->
+
+The arithmetic of the error is now fully recovered, and it is worse than a slip. The images on
+those ten pages are `1,1,2,0,1,2,2,3,0,2` — **they sum to exactly 14, and 512 + 14 = 526.** So
+the wrong denominator was literally an image count added to a page total, and the ten blank
+pages were **already inside** the 512, so they were counted twice over. The correct figure is
+**`502/512 = 98.05%`**.
+
+**The defect being recorded is the field, not the figure.** The wrong number is only the
+evidence. A slot whose name states a unit it does not carry will be read in that unit, and the
+first reader to consult one read it that way. This is why the fix moves the numbers into a named
+`facts` tuple and sets `count = 1` — one page, because the subject is one page — rather than
+merely documenting the overload. **A number that has to be decoded is a number that will be.**
+
+**AI.4.2 — A 100% pass with a zero payload, produced by a probe written to check for exactly
+that.** The orchestrator's first reading of the corpus reported **"35 files OK, 0 characters
+extracted"** and did not stop. The probe traversed `d.pages`; the dataclass field is `d.parts`.
+Every file "passed" and every file yielded nothing, and the two facts were printed side by side
+without the second refuting the first.
+
+(The `35` is recorded as reported and is **not** reconciled: the corpus of `AI.2` is 30 files,
+and this unit did not reconstruct whatever file set the number was taken over. An unreconciled
+figure from a probe already known to be vacuous is left standing as unreconciled rather than
+quietly adjusted to 30.)
+
+This is `RB-P51`'s family — a check that reports on data it cannot see — arriving inside a probe
+whose whole purpose was to detect vacuity, written by the agent that had just filed the rule. **A
+pass rate computed over an attribute that does not exist is 100% by construction**, and the only
+thing that made it visible was the payload figure sitting next to it. Had the probe printed only
+the pass rate, it would have been believed.
+
+##### AI.5 A round-number coincidence, found by RUNNING a mutation on a test written in THIS job
+
+`RB-P99` is the finding that a must-be-red node can pass GREEN because a fixture's value
+coincides with the value the mutation produces. It has a fresh instance, and the instance is in
+a test **written in this job, to gate this fix**.
+
+Mutation **M3** restores the old overload — `Omission(OMIT_UNREAD_PAGE, page.images, ...)` in
+place of `Omission(OMIT_UNREAD_PAGE, 1, ...)`. The node that is supposed to catch it asserts
+`unread.count == 1`. The image-only fixture drew **exactly one image**. So `count = page.images`
+and `count = 1` were the same number, the assertion tested nothing, and **the mutation left the
+entire suite green**.
+
+The fixture now draws **two** images. Both readings below were re-measured by the closing unit,
+independently of the unit that filed them, one mutation at a time.
+
+<!-- provenance: value=re-derived by the closing unit at dd7c1fa, not relayed: M3-A, the tree as committed with the two-image fixture, mutating docread.py `Omission(OMIT_UNREAD_PAGE, 1,` to `Omission(OMIT_UNREAD_PAGE, page.images,` reads `1 failed, 1723 passed, 2 skipped, 2 xfailed in 64.59s`, the failing node being test_a_page_with_no_text_operator_says_so_and_says_only_that, so 1 of 1724; M3-B, the SAME docread mutation with runtime-py/tests/test_pdfread.py restored to its pre-dd7c1fa state at 93fac4a (one image, and the matching one-image assertion) reads `1724 passed, 2 skipped, 2 xfailed in 65.37s`, i.e. zero red; commit=dd7c1fa; command=PYTHONPATH=$PWD/runtime-py/src .venv/bin/python -m pytest runtime-py/tests -q, once per arm, with git checkout of the mutated paths between arms -->
+
+```
+    M3, fixture draws TWO images (as committed)     1 failed, 1723 passed    RED,   1 of 1728
+    M3, fixture draws ONE image  (pre-dd7c1fa)      1724 passed              GREEN, 0 of 1728
+```
+
+<!-- provenance: value=M is the COLLECTED total and is 1728 on both M3 arms at dd7c1fa: the unmutated suite reads 1724 passed / 2 skipped / 2 xfailed and the M3-A arm reads 1 failed / 1723 passed / 2 skipped / 2 xfailed, so 1724+2+2 = 1+1723+2+2 = 1728 and the collection is the same on both; the base 059840c collected 1714 by the same arithmetic, giving the +14 of AI.9; the convention M = collected is stated verbatim in AH's ladder stamp as "M = 1714 collected"; commit=dd7c1fa; command=PYTHONPATH=$PWD/runtime-py/src .venv/bin/python -m pytest runtime-py/tests -q, unmutated and with the M3 mutation applied -->
+**`M` is 1,728, the COLLECTED total, and that is a correction.** The implementing unit and the
+brief both reported this mutation as "1 of 1724", which uses the unmutated run's PASSED count as
+the denominator. `§AH`'s ladder states the convention explicitly — *"M = 1714 collected"* — and
+collected here is `1724 + 2 skipped + 2 xfailed = 1728`, on both arms. The verdict is unchanged
+and the correction is small, but a denominator that silently drops four nodes is the same class
+of defect as `AI.4.1`, two sections up, and it would be odd to record that one and not this.
+
+**The second row is the finding and it is a direct measurement, not an inference.** The same
+mutation against the same assertion is red or green depending only on whether a fixture drew one
+picture or two. Nothing about the test's text differs between the arms; the arms differ in the
+fixture.
+
+**And the general lesson is the method, not the fixture.** This was found by RUNNING the
+mutation and reading the summary line. It is not visible in the test source: `assert
+unread.count == 1` looks like a claim about a page count in both arms, and it reads as a correct
+and well-motivated assertion in the arm where it is inert. **A must-be-red node is a hypothesis
+about a run. Reading it is not testing it.**
+
+##### AI.6 What the corpus could not have taught, and why two guards exist that no corpus file motivates
+
+Two of the guards written for this fix are unreachable from the sample, and that is the reason to
+record them rather than an objection to them.
+
+**(1) A page that is PART unmapped and PART whitespace.** No corpus file is: `unmapped` is 0 on
+all ten rowless pages (AI.2). The branch order resolves it to **whitespace**, and the ordering is
+forced rather than chosen — the unmapped sentence claims that *every* character was dropped, and
+on a page where some characters mapped to whitespace that sentence is simply false. A design
+validated on the sample would have had no reason to consider the case and no evidence to order
+the branches by.
+
+**(2) The fourth state: operators that place no character at all** (`Tj ()`). **Zero instances on
+the corpus.** It exists because the enumeration must be total: `show_ops > 0`, `vouched == 0`,
+`unmapped == 0` is a reachable combination of the three counters, and a taxonomy with no residual
+branch cannot be observed to be wrong. **A four-way rule with a residual can be falsified by a
+page; a three-way rule with no residual is right about every page by construction, which is what
+the old record was.**
+
+**This is the general point and it outlives the fix.** The corpus told us which case is common —
+7 of 10 — and it could not have told us the taxonomy needed a floor. Frequency data motivates
+the branch you are missing most; it cannot motivate the branch that keeps you honest about the
+ones you are not missing.
+
+##### AI.7 The mutation table
+
+Seven mutations, each reverted before the next, plus a green control so that the harness is not
+merely stuck red. `M` is the collected total on this branch, **1,728**.
+
+<!-- provenance: value=the seven-mutation ladder is the implementing unit's, relayed as its work and marked as such; the closing unit independently re-derived two of its rows at dd7c1fa — M3 red at 1 of 1724 and M3 green at 0 of 1724 under the one-image fixture (AI.5) — and independently re-derived the GREEN CONTROL on a clean tree, renaming the local `facts` to `facts_renamed_control` at both its binding and its two uses in extract_pdf, which reads `1724 passed, 2 skipped, 2 xfailed in 63.84s`, i.e. 0 of 1728 red; M = 1728 collected on every arm; git status --porcelain is empty after every arm; commit=dd7c1fa; command=PYTHONPATH=$PWD/runtime-py/src .venv/bin/python -m pytest runtime-py/tests -q, one mutation at a time, git checkout -- between arms -->
+
+```
+    7 of 7 mutations RED                                        implementing unit, relayed
+    M3 re-derived by the closing unit                           1 of 1728 RED
+    M3 under the one-image fixture, re-derived                  0 of 1728, GREEN  (AI.5)
+    green control: rename a local, behaviour preserved          1724 passed, GREEN
+```
+
+The control matters here more than usual. **This job's own headline finding is a mutation that
+passed green when it should have been red**, so a ladder reporting 7 of 7 red has to be able to
+show that green is still reachable — otherwise the ladder is measuring the harness, not the code.
+
+##### AI.8 Minted here — `RB-P103`, and the things that get no number
+
+<!-- provenance: value=ceiling RB-P102 over 117 refs (refs/heads + refs/remotes + refs/tags), read from each ref's own docs/eval.md; non-eval sources on main also top out at RB-P102; HEAD's eval.md carries 102 distinct numbers, contiguous 1..102, no gaps and nothing above; 22 tags; commit=dd7c1fa; command=for r in $(git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags); do git show "$r:docs/eval.md" 2>/dev/null | grep -oE 'RB-P[0-9]+' | sed 's/RB-P//' | sort -n | tail -1; done | sort -n | tail -1 -->
+
+`(ceiling RB-P102 over 117 refs, dd7c1fa, the command above)`. **`RB-P103` is the next free
+number, and this section mints exactly one: `RB-P103`.**
+
+- **`RB-P103` — when one module enumerates the same question at two grains, nothing makes the
+  enumerations agree, and the finer grain is the one a caller reads; here the finer grain named
+  three cases where the coarser named four, the omitted case is 70% of the real instances, and
+  the case it did name is 0% of them.** Filed and **CLOSED FORWARD in the same shift**: the
+  page-grain record now ships four named counts (`facts`), the contract layer branches on them in
+  `_pdf_refusal`'s exact order, and the two grains derive their answer from the same
+  discriminator so they cannot disagree about a file.
+
+  The residual risk is stated rather than closed: **the branch orders are now identical but they
+  are still two pieces of code**, one in `docread._pdf_refusal` and one in
+  `contract._omission_line`, and nothing in the suite fails if a future edit moves one and not
+  the other. That is a real remaining hole and it is not closed here.
+
+**What gets no number, and why.**
+
+1. **The `count`/`what` overload (AI.4.1) is inside `RB-P103`, not beside it.** The illegible
+   record and the three-case taxonomy are the same defect seen from two sides, and they are
+   closed by the same commit.
+2. **The round-number coincidence (AI.5) is a fresh instance of `RB-P99`, not a new finding.**
+   It is recorded because it is the first instance found in a test written *in the same job that
+   filed it*, and because it was found by running rather than reading — but the finding already
+   has a number.
+3. **The vacuous probe (AI.4.2) is an instance of `RB-P51`'s family** — a check reporting on data
+   it could not see. It is the orchestrator's own error inside a probe written to catch that
+   class, which is worth the paragraph and is not worth a number.
+4. **The two unmotivated-by-corpus guards (AI.6) are a design note, not a defect.** Nothing is
+   wrong; the record exists so that a later reader does not delete them for having no corpus
+   instance.
+
+##### AI.9 Gates, each at the commit it was measured at
+
+<!-- provenance: value=at dd7c1fa in the bantamkit-pdf worktree with PYTHONPATH set to that worktree's runtime-py/src, the full suite reads 1724 passed / 2 skipped / 2 xfailed in 63.84s and ruff check runtime-py reports All checks passed; the same suite under PYTHONWARNDEFAULTENCODING=1 CI=true reads 1726 passed / 2 xfailed in 64.56s, the two macOS encoding-gate skips becoming live nodes; CI run 32563730800 at the same commit reads 1723 passed / 3 skipped / 2 xfailed on ubuntu-latest 3.11 and 3.12 and 1720 passed / 6 skipped / 2 xfailed on windows-latest 3.11 and 3.12, all four conclusion success; all five readings reconcile to 1728 collected, against 1714 at the base 059840c; git status --porcelain is empty; commit=dd7c1fa for the code gates and the docs commit for the amendguard reading; command=PYTHONPATH=$PWD/runtime-py/src .venv/bin/python -m pytest runtime-py/tests -q ; ruff check runtime-py ; gh api repos/Ink01101011/bantamkit/actions/jobs/<id>/logs ; python tools/amendguard/amendguard.py check . <range> tools/amendguard/ledger.json -->
+
+```
+    full suite, branch worktree, PYTHONPATH set     1724 passed, 2 skipped, 2 xfailed   63.84s
+    ruff check runtime-py                           All checks passed
+    PYTHONWARNDEFAULTENCODING=1 CI=true             1726 passed, 2 xfailed
+    CI ubuntu-latest 3.11 / 3.12                    1723 passed, 3 skipped, 2 xfailed
+    CI windows-latest 3.11 / 3.12                   1720 passed, 6 skipped, 2 xfailed
+    git status --porcelain                          empty
+    tags                                            22, unchanged
+```
+
+**All five readings reconcile to 1728 collected**, one collection on three platforms. The
+platform deltas are the standing ones and not new: ubuntu carries three `needs_textutil` skips
+where macOS carries two encoding-gate skips, and Windows carries those three plus the three
+`windows_cannot_construct` marks of `§AH.4`.
+
+**The `+14` reconciles, node by node, and was checked rather than asserted.** Base `059840c`
+collects 1,714; this branch collects 1,728.
+
+```
+    runtime-py/tests/test_pdfread.py    + 6   new test functions
+    runtime-py/tests/test_layers.py     + 3   new test functions
+    runtime-py/tests/test_docread.py    + 1   new test function
+    test_contract_fanout.py             + 4   parametrised over the 4 new contract keys
+                                        ----
+                                          14
+```
+
+The last row is not a hand count: `test_contract_fanout.py` carries
+`@pytest.mark.parametrize("key", MEASURED)` over the contract's measured wording set, so the four
+new `document_manifest_unread_*` keys add exactly four nodes with no test written for them. It
+also means those four sentences are held to `RB-P95`'s fan-out floor like every other contract
+string — a new contract sentence cannot be added here without being written out in at least two
+test files.
+
+**Vacuity check on CI, applied to the log and not to the colour.** All four jobs printed a real
+pytest summary line with a nonzero passed count, and the greps that would have caught a hollow
+green all read zero on all four.
+
+```
+    every job printed a real summary with a nonzero passed count     YES, 4 of 4
+    PytestUnhandledThreadExceptionWarning                             0
+    UnicodeDecodeError / EncodingWarning                              0
+    warnings summary                                                  0
+    FAILED / ERROR / "no tests ran"                              0 / 0 / 0
+```
+
+`ERROR` is grepped explicitly and separately from `FAILED` because `§AH.5.8` measured that 20 of
+46 red nodes per Windows job lived in the ERROR bucket and appeared on no `FAILED` line — 43.5%
+of that reading invisible to a `FAILED` grep. Reading only `FAILED` here would have repeated it.
+
+##### AI.10 Corrections this unit made to the material it was handed
+
+Recorded because the pattern is now consistent across jobs: in job 31 every one of eight units
+corrected its brief on at least one thing, and the closing unit refuted the unit before it.
+
+1. **The two orchestrator figures of `AI.4` were corrected, and one had its mechanism recovered.**
+   `512/526 = 97.34%` is wrong; `502/512 = 98.05%` is right; and the 14-page gap is exactly the
+   image count of the ten rowless pages, which is what makes it a field-naming defect rather than
+   a slip.
+2. **The ceiling read as handed was under-scoped.** The brief said "`RB-P102` is the current top"
+   and said to verify it. Verifying it by reading the working tree gives the right answer for the
+   wrong reason: the convention this register has used since `§AF` is a read across
+   `refs/heads + refs/remotes + refs/tags`, 117 refs here, because a number minted on an unmerged
+   branch is still minted. The ceiling is `RB-P102` either way — but the working-tree read would
+   not have detected it if it were not.
+3. **This unit's own first revert was incomplete, and the rule caught it.** Arm M3-B restored a
+   test file with `git checkout <commit> -- <path>`, which writes the INDEX; the paired
+   `git checkout -- <path>` then restored *from that index* and left the file at the old commit,
+   staged. `git status --porcelain` reported `M runtime-py/tests/test_pdfread.py` and the arm that
+   ran next was re-run on the repaired tree. **The requirement to prove the porcelain empty after
+   every mutation is not ceremony**; it is the only thing that separated a contaminated control
+   from a clean one, and it fired on the unit that was writing the section about vacuous
+   measurements. Two arms — the green control and the encoding-gate run — had already executed
+   against the contaminated tree; both were discarded unread and re-run, and only the re-runs are
+   quoted in `AI.7` and `AI.9`.
+
+4. **`_pdf_refusal` was cited at `docread.py:1229`, which is its line at the BASE and not at the
+   commit this section documents.** It is at `:1243` at `dd7c1fa`; `df188ff` inserted 14 lines
+   above it. Both are recorded above. This is precisely the hazard `amendguard` names when it
+   classifies a body insertion separately from an append — *"an insertion in the body shifts every
+   line number below it, which is the hazard the `file:line` pin convention exists for"* — and it
+   arrived in a brief inside a job whose diff is what shifted it.
+
+5. **"Thirty lines below" is 79 lines.** `def _pdf_refusal` to `if not page.rows:` measures
+   1243 → 1322 at `dd7c1fa` and 1229 → 1308 at `059840c` — **the same 79 lines at both commits**,
+   so the figure was never right rather than having gone stale. The phrase appears in the brief,
+   in `df188ff`'s commit message, and in the comment `df188ff` added to `docread.py`, which reads
+   "thirty lines up in this same module". **The finding does not depend on the distance** — two
+   taxonomies in one module is the defect whether they are thirty lines apart or seventy-nine —
+   and the correction is recorded here, in the docs layer, rather than by touching the source,
+   because a comment is not a pointer class and this unit holds no source commit.
+
+6. **The mutation denominator was the passed count, not the collected total** — "1 of 1724"
+   against `M = 1728`. Corrected in `AI.7`, with the convention it departs from quoted there.
+
+7. **`pdfread.show` is not a module-level function.** `show` is a closure defined inside
+   `_run_content` at `pdfread.py:1040`. The mechanism described by that name is exactly right and
+   was verified line by line at `AI.3`; the qualified name is not addressable. The same name
+   appears in `df188ff`'s comment and commit message. Recorded, not edited, for the reason in 5.

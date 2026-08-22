@@ -113,7 +113,9 @@ Deliberate lossiness, stated so downstream does not have to guess, and — where
   coordinates; `pdfread` groups them into rows by baseline and orders them by x so that
   `page()` has a slice unit. A two-column page interleaves and a table does not come back as
   columns. `OMIT_UNREAD_PAGE` and `OMIT_UNMAPPED` are what keep the difference between "this
-  page held nothing" and "this page was not readable" from collapsing into silence.
+  page held nothing" and "this page was not readable" from collapsing into silence, and
+  `OMIT_UNREAD_PAGE` carries the four counts that say WHICH of the two it is — the same four
+  `_pdf_refusal` chooses between one grain up.
 - **A plain-text file is rendered LINE for line and nothing is reformatted** — indentation
   stays (77.9% of the corpus's text files carry an indented line), tabs stay (they are the same
   field separator a worksheet row renders with), and blank lines stay, so for this one
@@ -184,9 +186,11 @@ TEXT_MAX_BYTES = 16 * 1024 * 1024
 OMIT_MEDIA = "media"
 OMIT_BLANK_ROWS = "blank-rows"
 OMIT_NUMBER_FORMAT = "number-format"
-# A page that produced no row at all: a scan, a graphics-only page, or one whose every
-# character came from a font with no character map. It is a page nobody could read rather
-# than a page holding nothing, and that difference is the whole reason this token exists.
+# A page that produced no row at all: a scan or graphics-only page that ran no text-showing
+# operator; a page whose every character came from a font with no character map; a page whose
+# every character mapped and is WHITESPACE; or one whose operators placed no character either
+# way. It is a page nobody could read rather than a page holding nothing, and that difference
+# is the whole reason this token exists — so which of the four it is travels in `facts`.
 OMIT_UNREAD_PAGE = "unread-page"
 # Characters this reader met and refused to guess at: codes shown through a font that carries
 # no `/ToUnicode` map, i.e. glyph indices. Dropped from the rows and counted here.
@@ -224,6 +228,14 @@ class Omission:
     - `where` — the column letters it applies to, in column order; `()` for the whole part.
     - `what` — the exact machine fact: the `numFmt` format code, the MIME types. What a caller
       needs to act on the omission itself rather than merely be told about it.
+    - `facts` — named counts, in a fixed order, for a subject that needs MORE THAN ONE number
+      to say what it is. `count`/`size`/`what` are three slots; a subject whose reason is a
+      choice between four cases does not fit in them, and cramming it in was measured to be
+      illegible rather than merely tight: the first reader to consult an `unread-page` record
+      read its `count` (the images on the page) as a number of PAGES and published a coverage
+      figure that was wrong. A number that has to be decoded is a number that will be. Every
+      entry is a name and an integer, and `what` is rendered FROM them so the two cannot
+      disagree.
     """
 
     subject: str
@@ -231,6 +243,7 @@ class Omission:
     size: int = 0
     where: tuple[str, ...] = ()
     what: str = ""
+    facts: tuple[tuple[str, int], ...] = ()
 
     def as_dict(self) -> dict:
         """The primitive form the contract layer takes. `contract.py` may not import this."""
@@ -240,6 +253,7 @@ class Omission:
             "size": self.size,
             "where": list(self.where),
             "what": self.what,
+            "facts": dict(self.facts),
         }
 
 
@@ -1306,15 +1320,44 @@ def extract_pdf(path: str | Path) -> Document:
                 Omission(OMIT_UNMAPPED, page.unmapped, what=", ".join(page.unmapped_fonts))
             )
         if not page.rows:
-            # Counts only. WHY a page rendered nothing is one of three machine facts — no
-            # text-showing operator, images drawn, characters no font maps — and the sentence
-            # that carries them belongs to `contract`, not here.
+            # Counts only. WHY a page rendered nothing is FOUR machine facts, and this record
+            # used to carry three of them.
+            #
+            # `_pdf_refusal`, thirty lines up in this same module, has named four since J25-D3:
+            # no text-showing operator at all; every character shown through a font with no
+            # map; every character MAPPED AND WHITESPACE; and operators that placed no
+            # character either way. The page-grain record named the first two and left the
+            # third indistinguishable from the fourth — so the case the real corpus has most of
+            # arrived at the model as "operators ran, nothing was dropped, no rows", which
+            # reads as a defect in this reader and is not one. MEASURED 2026-08-21 over the 29
+            # readable PDFs under `~/Downloads` and `~/Documents/Claude/Projects`: 10 pages
+            # rendered no row, 3 of them no-operator and 7 of them mapped-and-whitespace.
+            #
+            # `vouched` is the discriminator, and deliberately not a new counter. On a page
+            # with no rows every vouched character is by construction inside a run that
+            # `pdfread.show` dropped for stripping to nothing, so `vouched > 0` IS "the text
+            # was recovered and it is whitespace" — and it is the same discriminator
+            # `_pdf_refusal` already uses for the same distinction one grain up. Two different
+            # tests for one distinction would be the defect, not the fix.
+            #
+            # The numbers travel under their own names because the two slots they used to
+            # travel in were misread the first time anyone read them: `count` was the image
+            # count, and on a subject named `unread-page` a count reads as a number of PAGES.
+            # It is one page, so `count` is 1, and the fallback renderer's "1 unread-page" is
+            # now true. The sentence that turns these four into a reason stays in `contract`.
+            facts = (
+                ("show_ops", page.show_ops),
+                ("vouched", page.vouched),
+                ("unmapped", page.unmapped),
+                ("images", page.images),
+                ("image_bytes", page.image_bytes),
+            )
             omissions.append(
                 Omission(
                     OMIT_UNREAD_PAGE,
-                    page.images,
-                    size=page.image_bytes,
-                    what=str(page.show_ops),
+                    1,
+                    what=" ".join(f"{name}={value}" for name, value in facts),
+                    facts=facts,
                 )
             )
         parts.append(

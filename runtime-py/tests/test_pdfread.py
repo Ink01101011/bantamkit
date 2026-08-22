@@ -316,8 +316,9 @@ def test_a_scanned_page_inside_a_text_document_is_declared_not_silently_empty(tm
     assert doc.parts[1].rows == ()
     unread = [o for o in doc.parts[1].omissions if o.subject == OMIT_UNREAD_PAGE]
     assert len(unread) == 1
-    assert unread[0].count == 1  # one image drawn
-    assert unread[0].what == "0"  # zero text-showing operators
+    assert unread[0].count == 1  # ONE page, which is what a count on `unread-page` reads as
+    assert dict(unread[0].facts)["images"] == 1
+    assert dict(unread[0].facts)["show_ops"] == 0  # zero text-showing operators
 
 
 def test_the_unread_page_reaches_the_model_as_a_sentence_that_says_not_empty_verbatim(
@@ -353,7 +354,8 @@ def test_the_unread_page_reaches_the_model_as_a_sentence_that_says_not_empty_ver
         ]
     )
     assert "this part rendered NO row: the page ran" in observed
-    assert "text-showing operator(s) and draws" in observed
+    assert "It draws 1 image(s), " in observed
+    assert "that no row can carry" in observed
     assert "no row means this reader recovered no text from the page" in observed
     assert "NOT the same as the page being empty" in observed
     assert "there is no OCR here" in observed
@@ -368,6 +370,215 @@ def test_a_page_that_shows_only_spaces_is_not_a_document(tmp_path):
     message = str(caught.value)
     assert "every one of them whitespace" in message
     assert "5 character(s)" in message
+
+
+# ------------------------------------ the four reasons a page can render no row, one by one
+#
+# `docread._pdf_refusal` has chosen between FOUR reasons since J25-D3 — no text-showing
+# operator; every character shown through a font with no map; every character mapped and
+# WHITESPACE; and operators that placed no character either way. The page-grain record named
+# three of them, so a whitespace page arrived as "operators ran, nothing was dropped, no rows"
+# and rendered through the branch that calls the reader broken.
+#
+# MEASURED 2026-08-21 over the 29 readable PDFs under the user's `~/Downloads` and
+# `~/Documents/Claude/Projects` (511 pages): 10 pages rendered no row, 3 no-operator and 7
+# mapped-and-whitespace, with the sharpest instance running 15 operators, mapping all 15
+# characters and drawing no image at all. Nothing in this section reads that corpus — the
+# fixtures below are written here byte by byte, so the taxonomy is pinned by files this
+# repository owns and the corpus is a separate measurement rather than a dependency.
+#
+# The markers are the fragment of each contract sentence that only that sentence carries. A
+# page is DISTINGUISHABLE when its manifest contains exactly one of them.
+UNREAD_REASON_MARKERS = {
+    "no-operator": "no text-showing operator at all, so nothing on it was ever text",
+    "unmapped": "came through a font that declares no character map",
+    "whitespace": "every one of those characters is WHITESPACE",
+    "no-character": "put no character on the page at all, neither one this reader could map",
+}
+
+# Page 1 always has readable text. Without it the DOCUMENT refuses and there is no manifest to
+# read — the distinction under test is per PAGE, inside a document that is otherwise fine.
+FIRST_PAGE_TEXT = b"BT /F1 12 Tf 72 720 Td (page one has words) Tj ET"
+
+
+def blank_second_page_pdf(
+    content: bytes,
+    font: bytes = HELVETICA,
+    resources: bytes = b"/Font << /F1 12 0 R >>",
+    extra: dict | None = None,
+) -> bytes:
+    """Two pages: one that reads, and one that renders no row for the reason `content` gives."""
+    objects = {
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R 10 0 R] /Count 2 >>",
+        3: b"<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> >> "
+        b"/Contents 4 0 R >>",
+        4: stream_obj(b"", FIRST_PAGE_TEXT),
+        5: HELVETICA,
+        6: DESCENDANT,
+        10: b"<< /Type /Page /Parent 2 0 R /Resources << " + resources + b" >> "
+        b"/Contents 11 0 R >>",
+        11: stream_obj(b"", content),
+        12: font,
+    }
+    objects.update(extra or {})
+    return build_pdf(objects)
+
+
+# TWO images, and that is not decoration. `count` on this omission used to be the image count
+# and is now 1, because the subject is one PAGE -- and a fixture that draws exactly one image
+# cannot tell the two apart. MEASURED: with one image, restoring the old overload leaves the
+# whole suite GREEN. With two, it goes red. A count that happens to equal the right answer is
+# not a test of the count.
+IMAGE_ONLY_PAGE = (
+    b"q 612 0 0 792 0 0 cm /Im0 Do Q q 306 0 0 396 0 0 cm /Im0 Do Q",
+    b"/XObject << /Im0 13 0 R >>",
+    {13: IMAGE_PAGE_OBJECTS[5]},
+)
+
+
+def unread_page(tmp_path, name: str, pdf: bytes):
+    """The document, the second page's `unread-page` omission, and the rendered manifest."""
+    doc = extract(write(tmp_path, name, pdf))
+    assert [part.name for part in doc.parts] == ["page 1", "page 2"]
+    assert doc.parts[0].rows == ("page one has words",)
+    assert doc.parts[1].rows == ()
+    (unread,) = [o for o in doc.parts[1].omissions if o.subject == OMIT_UNREAD_PAGE]
+    # `what` is the fallback renderer's copy of the same numbers. It is RENDERED from `facts`,
+    # and this is what stops the two from drifting into disagreeing about one page.
+    assert unread.what == " ".join(f"{name}={value}" for name, value in unread.facts)
+    observed = document_manifest(
+        [
+            {
+                "document": name,
+                "kind": doc.kind,
+                "index": part.index,
+                "part": part.name,
+                "row_count": part.row_count,
+                "rows": part.rows,
+                "omissions": [o.as_dict() for o in part.omissions],
+            }
+            for part in doc.parts
+        ]
+    )
+    return unread, observed
+
+
+def reasons_named(observed: str) -> set:
+    return {name for name, mark in UNREAD_REASON_MARKERS.items() if mark in observed}
+
+
+def test_a_page_with_no_text_operator_says_so_and_says_only_that(tmp_path):
+    """Case 1 of 4. A picture. The three counters that could name another reason are zero."""
+    content, resources, extra = IMAGE_ONLY_PAGE
+    unread, observed = unread_page(
+        tmp_path, "scan.pdf", blank_second_page_pdf(content, resources=resources, extra=extra)
+    )
+    facts = dict(unread.facts)
+    assert unread.count == 1  # ONE page. Not the image count, which is 2 here on purpose.
+    assert (facts["show_ops"], facts["vouched"], facts["unmapped"]) == (0, 0, 0)
+    assert facts["images"] == 2 and facts["image_bytes"] > 0
+    assert reasons_named(observed) == {"no-operator"}
+
+
+def test_a_page_whose_every_character_is_unmapped_says_so_and_says_only_that(tmp_path):
+    """Case 2 of 4. Identity-H with no /ToUnicode: three codes shown, three dropped."""
+    unread, observed = unread_page(
+        tmp_path,
+        "subset.pdf",
+        blank_second_page_pdf(
+            b"BT /F1 12 Tf 72 720 Td <002400450003> Tj ET", font=IDENTITY_FONT
+        ),
+    )
+    facts = dict(unread.facts)
+    assert (facts["show_ops"], facts["vouched"], facts["unmapped"]) == (1, 0, 3)
+    assert reasons_named(observed) == {"unmapped"}
+
+
+def test_a_page_whose_every_mapped_character_is_whitespace_says_so_and_says_only_that(tmp_path):
+    """Case 3 of 4, and the reason this section exists.
+
+    7 of the 10 blank pages on the user's corpus are this. Every character MAPPED — `unmapped`
+    is 0, there is no font to blame — and every one of them is a space, so `pdfread.show`
+    dropped the run for stripping to nothing and the page ends with operators, characters and
+    no rows. Under the three-reason sentence that fell through to "put no character on the page
+    at all", which is false twice over: characters were put on the page, and the sentence
+    blamed this reader for a property of the file.
+    """
+    unread, observed = unread_page(
+        tmp_path,
+        "spaces.pdf",
+        blank_second_page_pdf(b"BT /F1 12 Tf 72 720 Td (   ) Tj 0 -20 Td (  ) Tj ET"),
+    )
+    facts = dict(unread.facts)
+    assert (facts["show_ops"], facts["vouched"], facts["unmapped"]) == (2, 5, 0)
+    assert facts["images"] == 0
+    assert reasons_named(observed) == {"whitespace"}
+
+
+def test_a_page_whose_operators_place_no_character_says_so_and_says_only_that(tmp_path):
+    """Case 4 of 4, the residual. `Tj` on an empty string runs the operator and shows nothing,
+    so no counter but `show_ops` moves. Keeping it separate is what makes case 3 a claim: a
+    taxonomy with no residual can only ever be right."""
+    unread, observed = unread_page(
+        tmp_path, "empty.pdf", blank_second_page_pdf(b"BT /F1 12 Tf 72 720 Td () Tj () Tj ET")
+    )
+    facts = dict(unread.facts)
+    assert (facts["show_ops"], facts["vouched"], facts["unmapped"]) == (2, 0, 0)
+    assert reasons_named(observed) == {"no-character"}
+
+
+def test_a_page_that_is_part_unmapped_and_part_whitespace_says_both(tmp_path):
+    """The mixed page, which the taxonomy has to handle on the MECHANISM and not on the sample.
+
+    No file on the user's corpus does this today, so a design that only worked on the corpus
+    would never be caught. One run through a font with no map, one run of spaces through a font
+    with one: `unmapped` and `vouched` are both nonzero and the page still has no row.
+
+    The reason chosen is the whitespace one -- `_pdf_refusal`'s order, where the unmapped
+    sentence claims EVERY character was dropped and here that is false. The dropped characters
+    are not lost from the manifest: `unmapped-text` is its own omission and states them on its
+    own line, one grain finer than the reason.
+    """
+    unread, observed = unread_page(
+        tmp_path,
+        "mixed-cause.pdf",
+        blank_second_page_pdf(
+            b"BT /F1 12 Tf 72 720 Td <002400450003> Tj /F2 12 Tf 0 -20 Td (   ) Tj ET",
+            font=IDENTITY_FONT,
+            resources=b"/Font << /F1 12 0 R /F2 5 0 R >>",
+        ),
+    )
+    facts = dict(unread.facts)
+    assert (facts["show_ops"], facts["vouched"], facts["unmapped"]) == (2, 3, 3)
+    assert reasons_named(observed) == {"whitespace"}
+    assert "3 character(s) shown on this part are NOT in those rows" in observed
+    assert "ABCDEF+Subset" in observed
+
+
+def test_the_four_unread_page_reasons_are_told_apart_by_the_omission_alone(tmp_path):
+    """The property, as one node. Four pages that all render zero rows, and the record each
+    one leaves has to be enough to say which of the four it is — not the file, not the page's
+    bytes, the omission. Collapse any two counters into one and this goes red."""
+    image_content, image_resources, image_extra = IMAGE_ONLY_PAGE
+    built = {
+        "no-operator": blank_second_page_pdf(
+            image_content, resources=image_resources, extra=image_extra
+        ),
+        "unmapped": blank_second_page_pdf(
+            b"BT /F1 12 Tf 72 720 Td <002400450003> Tj ET", font=IDENTITY_FONT
+        ),
+        "whitespace": blank_second_page_pdf(b"BT /F1 12 Tf 72 720 Td (   ) Tj ET"),
+        "no-character": blank_second_page_pdf(b"BT /F1 12 Tf 72 720 Td () Tj ET"),
+    }
+    facts, named = {}, {}
+    for case, pdf in built.items():
+        unread, observed = unread_page(tmp_path, f"{case}.pdf", pdf)
+        facts[case] = dict(unread.facts)
+        named[case] = reasons_named(observed)
+    assert named == {case: {case} for case in built}
+    # And the records themselves differ, not merely the sentences rendered from them.
+    assert len({tuple(sorted(f.items())) for f in facts.values()}) == len(built)
 
 
 def test_an_encrypted_pdf_refuses_by_name(tmp_path):
