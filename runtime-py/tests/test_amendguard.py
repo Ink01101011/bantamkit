@@ -90,7 +90,7 @@ def _git(repo: Path, *args: str) -> None:
     assert r.returncode == 0, "git " + " ".join(args) + " -> " + r.stderr
 
 
-def _checker_env(**extra: str) -> dict[str, str]:
+def _checker_env() -> dict[str, str]:
     """This process's environment with the CHILD's stdout/stderr codec pinned to UTF-8.
 
     THE PIN, AND WHY IT IS ON THE WRITER (job 31, W15; the same ruling W12 wrote into
@@ -114,10 +114,15 @@ def _checker_env(**extra: str) -> dict[str, str]:
     would be a change to what the checker sees, not a portability fix. RB-P28's
     "the child can tell it is observed" exposure is unchanged here, neither opened nor
     closed.
+
+    NO `**extra` HOOK, unlike `test_criticreplay._child_env`. There it is load-bearing --
+    two cells pass `PYTHONIOENCODING=latin-1`/`=ascii` to make the child's codec fail on
+    purpose, so the ordering of the pin against the override is itself pinned. Nothing
+    here does, and a parameter no node exercises is a branch that cannot be reddened:
+    measured, swapping the pin past an `env.update(extra)` left all 30 nodes green.
     """
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"  # the child's WRITER, not our reader; see above
-    env.update(extra)
     return env
 
 
