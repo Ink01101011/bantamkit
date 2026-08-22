@@ -250,8 +250,9 @@ def test_the_tool_is_listed_and_takes_no_arguments(tmp_path):
       argument is invisible to every stdio arm, because they call with `arguments: {}` and
       still succeed. Delete this node and that edit lands unnoticed.
     - `not ...get("required")` fires ALONE — properties stays empty and this assert is the
-      one that goes — when a schema handed to `build_server`'s `_tool_manager` override
-      declares `required` for a field it never declared in `properties`.
+      one that goes — when the manifest entry this tool is registered from
+      (`assets/tools/build_identity.json`) declares `required` for a field it never
+      declared in `properties`.
 
     Do not "strengthen" this by adding `input_schema["type"] == "object"`. That assert
     cannot fail: the SDK's own `ListToolsResult` model requires the key and pins it to the
