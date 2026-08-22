@@ -2157,6 +2157,122 @@ def test_the_whole_offline_run_is_byte_identical_to_f8404ab_modulo_the_named_rbp
     assert serialize(stripped) == BASELINE.read_text(encoding="utf-8")
 
 
+# ---- the scrub that stands between the run above and that floor ----
+#
+# The floor's expectation is `<workdir>/L1.yaml`. Getting there means removing the
+# absolute directory the run happened in, and until 2026-08-21 that was a text-level
+# `replace` over `json.dumps(artifact)`. `json.dumps` escapes a backslash, so on Windows
+# the needle never occurred in the haystack: the scrub replaced NOTHING, raised nothing,
+# and the floor above failed with an absolute path in `rubric_ref`. Windows is NEVER
+# MEASURED from here, but the Windows CONDITION is just a string shape, so these nodes
+# construct it and measure it on this machine rather than inferring it. They deliberately
+# do not skipif: a skip measures nothing (RB-P51).
+
+_CI_WINDOWS_WORKDIR = (
+    r"C:\Users\runneradmin\AppData\Local\Temp\pytest-of-runneradmin"
+    r"\pytest-0\test_the_whole_offline_run_is0\rubrics"
+)
+
+
+def test_the_workdir_scrub_removes_a_windows_workdir_and_joins_with_a_forward_slash():
+    r"""The exact CI shape, fed to the scrub directly. Reddens on the text-level replace.
+
+    Two separate failures are pinned here and they are not the same one. The `<workdir>`
+    prefix pins that the scrub finds a backslashed root at all -- a `json.dumps` haystack
+    hides it behind `\\`. The forward slash pins the SECOND-ORDER problem: an
+    escaping-aware text replace still leaves `<workdir>\L1.yaml`, which is not what the
+    baseline says. MEASURED on macOS: the old one line returns the input unchanged here.
+    """
+    from perturbation_baseline_harness import scrub_leaf, scrub_workdir
+
+    leaf = _CI_WINDOWS_WORKDIR + r"\L1.yaml"
+    assert scrub_leaf(leaf, (_CI_WINDOWS_WORKDIR,)) == ("<workdir>/L1.yaml", 1)
+    # Deeper than the baseline's one level, so a fix that only normalises the single
+    # joining separator does not pass.
+    assert scrub_leaf(_CI_WINDOWS_WORKDIR + r"\a\b\L1.yaml", (_CI_WINDOWS_WORKDIR,)) == (
+        "<workdir>/a/b/L1.yaml",
+        1,
+    )
+    # The root itself, and a leaf reached through the whole walk including a dict KEY.
+    artifact = {
+        "rows": [{"rubric_ref": leaf}],
+        _CI_WINDOWS_WORKDIR + r"\by-key": _CI_WINDOWS_WORKDIR,
+    }
+    scrubbed, hits = scrub_workdir(artifact, _CI_WINDOWS_WORKDIR)
+    assert scrubbed == {
+        "rows": [{"rubric_ref": "<workdir>/L1.yaml"}],
+        "<workdir>/by-key": "<workdir>",
+    }, scrubbed
+    assert hits == 3, hits
+    assert "runneradmin" not in json.dumps(scrubbed)
+
+
+def test_the_workdir_scrub_does_not_normalise_a_backslash_that_is_not_a_separator():
+    r"""Separator normalisation is scoped to the relative tail of a path under the root.
+
+    A global `replace("\\", "/")` over the artifact would also pass the node above, and
+    would corrupt every one of these: a regex, prose carrying an escape, and a Windows
+    path that is DATA rather than the workdir. Each is asserted byte-unchanged.
+    """
+    from perturbation_baseline_harness import scrub_leaf
+
+    roots = (_CI_WINDOWS_WORKDIR,)
+    for untouched in (
+        r"\d+\s*ok",
+        r"a line ending in \n then \\ then done",
+        r"D:\some\other\place\L1.yaml",
+        r"C:\Users\runneradmin\AppData\Local\Temp\elsewhere\L1.yaml",
+    ):
+        assert scrub_leaf(untouched, roots) == (untouched, 0), untouched
+    # A leaf that MERELY CONTAINS the root is substring-scrubbed and its tail is left
+    # byte-exact -- no separator guessing outside a path.
+    prose = "ran in " + _CI_WINDOWS_WORKDIR + r" and matched \d+"
+    assert scrub_leaf(prose, roots) == (r"ran in <workdir> and matched \d+", 1)
+
+
+def test_the_workdir_scrub_refuses_to_match_nothing_instead_of_doing_it_quietly():
+    """A no-op scrub is the defect, so `produce` raises rather than returning the paths.
+
+    The zero-hit report is asserted first on the scrub itself, then the wiring is
+    asserted by forcing the scrub to report zero: without the guard `produce` hands back
+    an artifact carrying an absolute path and the floor above is the only thing that
+    notices -- on the one platform this suite is not run on.
+    """
+    import perturbation_baseline_harness as harness
+
+    assert harness.scrub_workdir({"a": ["nothing here"]}, _CI_WINDOWS_WORKDIR) == (
+        {"a": ["nothing here"]},
+        0,
+    )
+
+
+def test_produce_raises_when_the_scrub_becomes_a_no_op_again(tmp_path, monkeypatch):
+    import perturbation_baseline_harness as harness
+    from perturbation_baseline_harness import WorkdirScrubFoundNothing
+
+    monkeypatch.setattr(harness, "scrub_workdir", lambda artifact, workdir: (artifact, 0))
+    with pytest.raises(WorkdirScrubFoundNothing) as excinfo:
+        harness.produce(criticreplay, tmp_path / "rubrics")
+    assert "matched nothing" in str(excinfo.value)
+
+
+def test_the_produced_artifact_carries_no_absolute_path_on_this_platform(tmp_path):
+    """End to end on the real run: the workdir is gone and `<workdir>/` is what replaced it."""
+    from perturbation_baseline_harness import produce, serialize
+
+    workdir = tmp_path / "rubrics"
+    text = serialize(produce(criticreplay, workdir))
+    for spelling in (str(workdir), str(workdir.resolve()), str(tmp_path)):
+        assert spelling not in text, spelling
+        assert json.dumps(spelling)[1:-1] not in text, spelling
+    # Counted against the committed baseline rather than against a literal: a count of
+    # rows is a function of repo content, and a literal here would be a second golden
+    # nobody remembers to move. MEASURED 2026-08-21: 102 in both.
+    assert text.count("<workdir>/") == BASELINE.read_text(encoding="utf-8").count(
+        "<workdir>/"
+    ), text.count("<workdir>/")
+
+
 def test_the_rbp16_additions_the_floor_strips_are_present_and_loaded(tmp_path):
     """The floor above strips three keys. A strip is how you hide a regression in one.
 
