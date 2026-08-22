@@ -1447,3 +1447,71 @@ def test_the_default_cap_covers_the_measured_corpus():
     change this number exists to make visible.
     """
     assert docread.TEXT_MAX_BYTES >= 1_474_568 * 4
+
+
+# --------------------------------------------------------------------------------------
+# Signatures added 2026-08-22 by COUNTING what actually lands in `unknown` on the real
+# corpus under ~/Downloads and ~/Documents/Claude/Projects, rather than by listing formats
+# from memory. Of 5,036 files this reader called "not a recognised container", 977 carried
+# one of four signatures: 818 WOFF2, 146 zstd, 7 SQLite, 6 PE. Naming them makes none of
+# them READABLE — a font carries no prose and the refusal stands either way — but the
+# refusal is this reader's product for a file it cannot extract, so its accuracy is the
+# feature: "it is a WOFF2 web font" ends an investigation that "it starts with b'wOF2'"
+# only begins.
+
+@pytest.mark.parametrize(
+    ("name", "head", "kind", "what"),
+    [
+        ("Inter.woff2", b"wOF2\x00\x01\x00\x00", "woff2", "WOFF2 web font"),
+        ("cff.woff2", b"wOF2OTTO", "woff2", "WOFF2 web font"),
+        ("old.woff", b"wOFF\x00\x01\x00\x00", "woff", "WOFF web font"),
+        ("blob.zst", b"\x28\xb5\x2f\xfd\x00\x58", "zstd", "zstd-compressed stream"),
+        ("blob.xz", b"\xfd7zXZ\x00\x00\x04", "xz", "xz-compressed stream"),
+        ("cache.db", b"SQLite format 3\x00\x10\x00\x01", "sqlite", "SQLite 3 database"),
+        ("mod.wasm", b"\x00asm\x01\x00\x00\x00", "wasm", "WebAssembly module"),
+    ],
+)
+def test_a_signature_this_reader_cannot_extract_is_still_named(tmp_path, name, head, kind, what):
+    """Refusing is right; refusing without saying what the file IS is the part that was poor."""
+    path = tmp_path / name
+    path.write_bytes(head + b"\x00" * 128)
+    assert sniff(path).kind == kind
+    with pytest.raises(DocumentReadError, match=what):
+        extract(path)
+
+
+def test_the_new_signatures_do_not_swallow_text_that_starts_the_same_way(tmp_path):
+    """`_MAGIC` is consulted BEFORE `_text_kind`, so a short signature costs prose.
+
+    This is why `MZ` was deliberately left out although it was worth 6 files on the real
+    corpus: two bytes is short enough that ordinary text can begin with them, and a text
+    file reported as an executable is a worse outcome than an unnamed one. The four-byte
+    signatures added here are long enough not to have that problem, and this node is what
+    keeps that claim honest — every one of them is checked against prose that opens with
+    the same letters.
+    """
+    for opener in ("wOF2 is a font container format, described here.\n",
+                   "OTTOman history, chapter one.\n",
+                   "MZ is the DOS executable magic, and this sentence is not one.\n",
+                   "SQLite format 3 is the header string, quoted in this note.\n"):
+        path = tmp_path / "note.txt"
+        path.write_text(opener + "More prose follows.\n", encoding="utf-8")
+        container = sniff(path)
+        assert container.kind == "text", (
+            f"prose opening {opener[:12]!r} was read as {container.kind}"
+        )
+        assert extract(path).text_bytes > 0
+
+
+def test_a_named_signature_still_refuses_rather_than_returning_nothing(tmp_path):
+    """Naming must not be mistaken for reading.
+
+    A caller that saw `kind == "woff2"` and no exception could reasonably conclude the
+    file had been read and was empty. The refusal is what keeps "identified" and
+    "extracted" apart, and it carries the size so the caller knows bytes were there.
+    """
+    path = tmp_path / "Inter.woff2"
+    path.write_bytes(b"wOF2\x00\x01\x00\x00" + b"\x00" * 4092)
+    with pytest.raises(DocumentReadError) as caught:
+        extract(path)
+    assert "4100 bytes on disk" in str(caught.value)

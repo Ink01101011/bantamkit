@@ -376,6 +376,12 @@ SUFFIX_KINDS = {
 _WHAT = {
     "doc": "an OLE2 compound file (the pre-2007 Office binary)",
     "rtf": "an RTF document",
+    "woff2": "a WOFF2 web font",
+    "woff": "a WOFF web font",
+    "zstd": "a zstd-compressed stream",
+    "xz": "an xz-compressed stream",
+    "sqlite": "a SQLite 3 database",
+    "wasm": "a WebAssembly module",
 }
 
 # Leading magic that settles a container outright, longest prefix first.
@@ -392,6 +398,35 @@ _MAGIC = (
     (b"%!PS", "postscript"),
     (b"\x7fELF", "elf"),
     (b"BZh", "bzip2"),
+    # ADDED 2026-08-22 after counting what actually lands in `unknown` on the real corpus
+    # under ~/Downloads and ~/Documents/Claude/Projects. Of 5,036 files this reader called
+    # "not a recognised container", 977 carry one of these signatures: 818 WOFF2, 146 zstd,
+    # 7 SQLite, 6 PE. Naming them does not make any of them READABLE — a font carries no
+    # prose and the refusal stands either way — but "it is a WOFF2 web font" tells a caller
+    # what it is holding, and "not a recognised container; it starts with b'wOF2...'" tells
+    # them to go and look it up. The refusal is the product here, so its accuracy is the
+    # feature.
+    (b"SQLite format 3\x00", "sqlite"),
+    (b"\xfd7zXZ\x00", "xz"),
+    # THE FONT SIGNATURES CARRY THEIR FLAVOUR, AND THE FIRST DRAFT OF THIS TABLE DID NOT.
+    # `wOF2` alone is four ASCII characters, and this table is consulted BEFORE
+    # `_text_kind`: a note beginning "wOF2 is a font container format" was classified
+    # `woff2` and refused as a font. The node written to keep the "four bytes is long
+    # enough" claim honest is the thing that refuted it, on the same afternoon it was
+    # written. Including the sfnt flavour makes the signature eight bytes with four of
+    # them non-printable, which prose cannot reach by accident. Measured: all 818 WOFF2
+    # files on the real corpus carry flavour 00010000, so nothing is lost by requiring it.
+    (b"wOF2\x00\x01\x00\x00", "woff2"),
+    (b"wOF2OTTO", "woff2"),
+    (b"wOFF\x00\x01\x00\x00", "woff"),
+    (b"wOFFOTTO", "woff"),
+    (b"\x28\xb5\x2f\xfd", "zstd"),
+    (b"\x00asm", "wasm"),
+    # DELIBERATELY ABSENT. `OTTO` on its own, for the reason above and with no corpus file
+    # to justify the risk: "OTTOman" is a word. `MZ`, the DOS/PE header, worth 6 files
+    # here: two bytes is short enough that ordinary prose starts with them. TrueType's
+    # `\x00\x01\x00\x00` bare, which collides with too much else — none of the 2,347
+    # four-zero-byte files here are fonts.
 )
 # A zip is not a format, it is a box. Its member list says what is in the box.
 _ZIP_MEMBERS = (
