@@ -1,0 +1,23 @@
+{
+  "name": "validate_json",
+  "description": "Validate candidate output text against a JSON Schema. Returns {valid, feedback}; when invalid, feed the feedback back to the model and retry.",
+  "parameters": {
+    "properties": {
+      "output": {
+        "title": "Output",
+        "type": "string"
+      },
+      "schema": {
+        "additionalProperties": true,
+        "title": "Schema",
+        "type": "object"
+      }
+    },
+    "required": [
+      "output",
+      "schema"
+    ],
+    "type": "object",
+    "title": "validate_jsonArguments"
+  }
+}

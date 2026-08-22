@@ -1,0 +1,17 @@
+{
+  "name": "shiftwork_status",
+  "description": "Shift-work status: read-only progress summary of a checkpoint — units by status, cursor, open-question count, last history entry. Never mutates.",
+  "parameters": {
+    "properties": {
+      "checkpoint": {
+        "title": "Checkpoint",
+        "type": "string"
+      }
+    },
+    "required": [
+      "checkpoint"
+    ],
+    "type": "object",
+    "title": "shiftwork_statusArguments"
+  }
+}
