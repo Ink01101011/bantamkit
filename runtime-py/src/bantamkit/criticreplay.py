@@ -61,8 +61,10 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import errno
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -286,8 +288,13 @@ GUARD_MODES = ("warn", "error")
 # false about the very case the first half named: that run HAD run to completion, every
 # JSONL row and the summary were on disk to prove it, and it reported 120 anyway.
 #
-# COVERED SINCE v0.19.0: the READER GOING AWAY (EPIPE) at the run path's own write to
+# COVERED SINCE v0.19.0: the READER GOING AWAY at the run path's own write to
 # stdout — the table print, its flush, and the interpreter's shutdown flush behind them.
+# THE STATE, NOT ONE OS'S SPELLING OF IT (job 31). Until then this was written as EPIPE
+# and keyed on `BrokenPipeError`, which is what POSIX raises and what Windows does NOT:
+# there the same dead pipe arrives as a plain `OSError` with `errno == EINVAL` and no
+# `winerror`, so the arm was never entered and a clean run reported 5. The question is
+# now asked once, by `_stdout_reader_is_gone`, and that function carries the reading.
 # If the reader of stdout is gone there, the run reports the status it EARNED (0, 3 or 4)
 # and never the interpreter's number. A lost stdout may DOWNGRADE to a number the run
 # already had; it may not invent one. Read from a real shell's `$?` for all three earned
@@ -2794,7 +2801,7 @@ _EXIT_CONTRACT = f"""exit status (RB-P24):
      {ARTIFACT_WRITE_EXIT}; --violations-exit-zero does not suppress it.
 Branch on 0-{RENDER_FAILURE_EXIT}. A stdout that fails at the table print
 no longer leaves the range, and the two arms report DIFFERENT numbers on
-purpose: if the reader is gone (EPIPE) nothing was owed to anyone, so the run
+purpose: if the reader is gone nothing was owed to anyone, so the run
 reports the status it EARNED (RB-P27); if the write fails for any other reason
 the report was wanted and is now lost, so the run
 reports {RENDER_FAILURE_EXIT} instead of claiming a clean measurement (RB-P31).
@@ -2819,6 +2826,62 @@ this process's sys.stdout is replaced by a sink that RAISES the original
 failure on any further write, and fd 1 itself is left exactly as it was found.
 A caller that keeps writing after main gets an exception, never silence.
 """
+
+
+_EINVAL_MEANS_LOST_READER = os.name == "nt"
+"""Does `EINVAL` from a write to stdout mean the READER of stdout is gone?
+
+On Windows it does, and the reason is a MAPPING, not a state. The CRT's `_write()`
+calls `WriteFile`; when that fails it runs the Win32 error through `_dosmaperr`, whose
+table has no entry for `ERROR_BROKEN_PIPE` (109) or `ERROR_NO_DATA` (232) - the two
+errors a write to a pipe with no reader produces - so both reach Python as a plain
+`OSError` with `errno == EINVAL` and NO `winerror`, and the `except BrokenPipeError`
+clause this module used to key on was never entered.
+
+MEASURED, windows-latest 3.11 and 3.12, CI run 32555258828 (job 31): a clean run whose
+stdout was a pipe with no reader reported `5` instead of the `0` it earned, with
+`error: measured, but the report could not be rendered on stdout: [Errno 22] Invalid
+argument` on stderr. That the prefix is `[Errno 22]` and not `[WinError ...]` is itself
+the evidence that no `winerror` came with it: the SAME log renders a `winerror`-carrying
+`OSError` two nodes later as `[WinError 183] Cannot create a file when that file already
+exists`. A `winerror` that DOES survive needs no clause here - CPython maps both 109 and
+232 to `EPIPE` in `PC/errmap.h`, so such an `OSError` arrives already a
+`BrokenPipeError`.
+
+WHY A PLATFORM CONSTANT AND NOT A BARE `errno` TEST, which is the narrower thing to do
+and is done here anyway. `EINVAL` is Windows' CATCH-ALL for Win32 errors its table does
+not name, so it carries this meaning only on the platform whose CRT put it there. On
+POSIX a write's `EINVAL` says nothing about a reader, and reading it as one would let
+this module report a clean `0` for a report that a waiting reader never got - the exact
+invention the arm below is forbidden to make (`a lost stdout may DOWNGRADE to a number
+the run already had; it may never invent one`).
+
+So the platform FACT and the RULE are split, and the seam is here on purpose: the fact
+is this constant, which no non-Windows runner can exercise and which therefore measures
+nothing off Windows; the rule is `_stdout_reader_is_gone`, which
+`test_einval_is_a_lost_reader_only_where_the_c_runtime_says_so` exercises in BOTH
+directions on any platform. What is still NOT measured anywhere but a Windows runner is
+this line's own `os.name == "nt"`.
+"""
+
+
+def _stdout_reader_is_gone(e: BaseException) -> bool:
+    """Was `e`, raised by the run path's write to stdout, THE READER GOING AWAY?
+
+    The state, not one OS's spelling of it. Two arms hang off this answer and they
+    report different numbers on purpose (see `_EXIT_CONTRACT`): a gone reader downgrades
+    to the status the run EARNED, because nothing was owed to anyone; anything else is
+    `RENDER_FAILURE_EXIT`, because the report was wanted and is lost.
+
+    It stays a PREDICATE over the errno rather than a wider `except`: `ENOSPC`, `EBADF`
+    and `UnicodeEncodeError` must keep falling through to `RENDER_FAILURE_EXIT`, and they
+    do - `test_an_enospc_failure_at_the_table_write_reports_the_render_failure_status`
+    and `test_a_lost_stdout_raises_on_the_next_write_instead_of_swallowing_it` go red if
+    this ever answers True for them.
+    """
+    if isinstance(e, BrokenPipeError):
+        return True  # POSIX EPIPE, and any Windows error CPython already mapped to it
+    return _EINVAL_MEANS_LOST_READER and isinstance(e, OSError) and e.errno == errno.EINVAL
 
 
 class _LostStdout:
@@ -3058,59 +3121,67 @@ def main(argv: list[str] | None = None) -> None:
         try:
             print(table)
             sys.stdout.flush()
-        except BrokenPipeError as e:
-            # RB-P27 lever (2). The reader of stdout is gone (`... | head -1` once `head`
-            # has exited), so the table cannot be delivered — and NOBODY WAS WAITING FOR
-            # IT. Its absence costs no reader anything, so the run reports the status it
-            # EARNED below rather than the interpreter's 120: a lost stdout may DOWNGRADE
-            # to a number the run already had; it may never invent one. This is the ONLY
-            # arm that downgrades, and "nobody was reading" is the whole of the reason.
-            #
-            # The explicit `flush()` is load-bearing: `print` writes into a buffer, and
-            # without it the EPIPE would surface at interpreter shutdown instead of here,
-            # where it can be handled.
-            sys.stdout = _LostStdout(e)
         except (OSError, UnicodeEncodeError) as e:
-            # RB-P31, and the line K4B had to draw again because the first one was one
-            # class too narrow. The write failed and the reader was NOT gone: fd 1 is
-            # read-only (EBADF), or the device is full (ENOSPC), or the fd is otherwise
-            # unusable — or stdout's CODEC cannot represent the table
-            # (`PYTHONIOENCODING=latin-1` or `=ascii`, where the GUARD section's U+2014
-            # and U+00A7 raise `UnicodeEncodeError`). stderr is live in every measured
-            # cell of this class, so this is a report that could not be RENDERED, not a
-            # reader that walked away — the difference the two arms exist to keep apart.
-            # The run measured, so it does not report REFUSAL_EXIT; the report is gone,
-            # so it does not report the earned status either. It reports
-            # RENDER_FAILURE_EXIT, and says why on stderr.
-            #
-            # WHERE THE LINE IS NOW, AND WHY IT IS NOT `except Exception`. The two
-            # classes here are the two things about stdout that THE CALLER OWNS and this
-            # module cannot fix: the descriptor (`OSError`) and the codec that
-            # descriptor was wrapped in (`UnicodeEncodeError`). The shell chose fd 1; the
-            # environment and the locale chose the encoding; neither is editable from
-            # inside this file, and on both the measurement is complete and only the
-            # delivery is lost. Everything else a write can raise is still a bug in this
-            # module and still propagates with its traceback — a `RuntimeError`, a
-            # `TypeError`, an `AttributeError`, and any `ValueError` that is not a
-            # `UnicodeEncodeError` (`I/O operation on closed file` is the realistic one,
-            # and it is reachable only from an in-process caller who closed
-            # `sys.stdout`: a shell cannot hand a fresh process a stdout that is closed
-            # at the Python-object level — `1>&-` gives `sys.stdout is None`, which is
-            # the branch above). Pinned on that side by
-            # `test_a_non_oserror_at_the_table_write_is_not_downgraded`, which raises a
-            # `RuntimeError` from the write, and by
-            # `test_a_non_unicode_valueerror_at_the_table_write_is_not_downgraded`,
-            # which raises a bare `ValueError` — the sibling class of the one now
-            # caught, so the widening is pinned exactly where it stops.
-            #
-            # WHAT THIS DOES NOT REACH: an encoding failure on STDERR. Every arm here
-            # reports on stderr, so the messages this module writes there are ASCII on
-            # purpose (below); a `BantamError` whose own message is not, on a stderr
-            # that cannot encode it, still leaves by traceback with the same number the
-            # refusal would have had. Measured in
-            # docs/eval-data/2026-08-13-k4b-c1-stdout-encoding-matrix.md.
-            render_failure = str(e)
-            sys.stdout = _LostStdout(e)
+            # ONE arm, then the question that decides which number this run reports:
+            # WAS THE READER GONE. It used to be two `except` clauses, `BrokenPipeError`
+            # and everything else, which spelled the question as `EPIPE` — one OS's word
+            # for the state rather than the state. The caught set is unchanged
+            # (`BrokenPipeError` is an `OSError`); only the test moved from the clause to
+            # `_stdout_reader_is_gone`, where a platform that spells it differently can be
+            # added without widening what this arm catches.
+            if _stdout_reader_is_gone(e):
+                # RB-P27 lever (2). The reader of stdout is gone (`... | head -1` once `head`
+                # has exited), so the table cannot be delivered — and NOBODY WAS WAITING FOR
+                # IT. Its absence costs no reader anything, so the run reports the status it
+                # EARNED below rather than the interpreter's 120: a lost stdout may DOWNGRADE
+                # to a number the run already had; it may never invent one. This is the ONLY
+                # arm that downgrades, and "nobody was reading" is the whole of the reason.
+                #
+                # The explicit `flush()` is load-bearing: `print` writes into a buffer, and
+                # without it the EPIPE would surface at interpreter shutdown instead of here,
+                # where it can be handled.
+                sys.stdout = _LostStdout(e)
+            else:
+                # RB-P31, and the line K4B had to draw again because the first one was one
+                # class too narrow. The write failed and the reader was NOT gone: fd 1 is
+                # read-only (EBADF), or the device is full (ENOSPC), or the fd is otherwise
+                # unusable — or stdout's CODEC cannot represent the table
+                # (`PYTHONIOENCODING=latin-1` or `=ascii`, where the GUARD section's U+2014
+                # and U+00A7 raise `UnicodeEncodeError`). stderr is live in every measured
+                # cell of this class, so this is a report that could not be RENDERED, not a
+                # reader that walked away — the difference the two arms exist to keep apart.
+                # The run measured, so it does not report REFUSAL_EXIT; the report is gone,
+                # so it does not report the earned status either. It reports
+                # RENDER_FAILURE_EXIT, and says why on stderr.
+                #
+                # WHERE THE LINE IS NOW, AND WHY IT IS NOT `except Exception`. The two
+                # classes here are the two things about stdout that THE CALLER OWNS and this
+                # module cannot fix: the descriptor (`OSError`) and the codec that
+                # descriptor was wrapped in (`UnicodeEncodeError`). The shell chose fd 1; the
+                # environment and the locale chose the encoding; neither is editable from
+                # inside this file, and on both the measurement is complete and only the
+                # delivery is lost. Everything else a write can raise is still a bug in this
+                # module and still propagates with its traceback — a `RuntimeError`, a
+                # `TypeError`, an `AttributeError`, and any `ValueError` that is not a
+                # `UnicodeEncodeError` (`I/O operation on closed file` is the realistic one,
+                # and it is reachable only from an in-process caller who closed
+                # `sys.stdout`: a shell cannot hand a fresh process a stdout that is closed
+                # at the Python-object level — `1>&-` gives `sys.stdout is None`, which is
+                # the branch above). Pinned on that side by
+                # `test_a_non_oserror_at_the_table_write_is_not_downgraded`, which raises a
+                # `RuntimeError` from the write, and by
+                # `test_a_non_unicode_valueerror_at_the_table_write_is_not_downgraded`,
+                # which raises a bare `ValueError` — the sibling class of the one now
+                # caught, so the widening is pinned exactly where it stops.
+                #
+                # WHAT THIS DOES NOT REACH: an encoding failure on STDERR. Every arm here
+                # reports on stderr, so the messages this module writes there are ASCII on
+                # purpose (below); a `BantamError` whose own message is not, on a stderr
+                # that cannot encode it, still leaves by traceback with the same number the
+                # refusal would have had. Measured in
+                # docs/eval-data/2026-08-13-k4b-c1-stdout-encoding-matrix.md.
+                render_failure = str(e)
+                sys.stdout = _LostStdout(e)
     if render_failure is not None:
         # ASCII ONLY, and the reason is NOT the one it looks like (K4B, and this is a
         # claim K4B made, measured, and had to correct). One of the failures this line
