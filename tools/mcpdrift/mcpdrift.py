@@ -122,6 +122,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -263,21 +264,54 @@ class _Session:
         self._id = 0
 
     def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Send one request and read until the matching id, under a DEADLINE.
+
+        WHY A WATCHDOG AND NOT `select`. `--timeout` used to be applied in `close()`
+        only, so this loop had no deadline at all and a server that launched and then
+        said nothing blocked `readline()` forever — `mcpdrift check` against a mute
+        binary hung indefinitely, on every platform. `select` is the obvious fix and is
+        not available: on Windows it does not work on pipes, and this tool is required
+        to run there. A watchdog thread that kills the child is portable, needs no
+        per-platform branch, and converts the hang into the EOF this loop already knows
+        how to report.
+
+        THE DEADLINE SPANS THE WHOLE REQUEST, not each line. A server that streams log
+        noise forever would reset a per-line timer on every line and never trip it,
+        which is the same hang wearing a timer.
+        """
         self._id += 1
         message = {"jsonrpc": "2.0", "id": self._id, "method": method, "params": params}
         assert self.proc.stdin is not None and self.proc.stdout is not None
         self.proc.stdin.write(json.dumps(message) + "\n")
         self.proc.stdin.flush()
-        while True:
-            line = self.proc.stdout.readline()
-            if not line:
-                raise OSError(f"{method}: the server closed stdout without answering")
-            try:
-                parsed = json.loads(line)
-            except ValueError:
-                continue  # a server that logs to stdout; skip its noise, keep reading
-            if parsed.get("id") == self._id:
-                return parsed
+        self._timed_out = False
+
+        def _give_up() -> None:
+            self._timed_out = True
+            self.proc.kill()  # closes stdout, so the readline below returns ''
+
+        watchdog = threading.Timer(self.timeout, _give_up)
+        watchdog.daemon = True
+        watchdog.start()
+        try:
+            while True:
+                line = self.proc.stdout.readline()
+                if not line:
+                    if self._timed_out:
+                        raise TimeoutError(
+                            f"{method}: the server did not answer within "
+                            f"{self.timeout:g}s and was killed. A server that launches "
+                            f"and stays silent is a drift finding, not a reason to wait."
+                        )
+                    raise OSError(f"{method}: the server closed stdout without answering")
+                try:
+                    parsed = json.loads(line)
+                except ValueError:
+                    continue  # a server that logs to stdout; skip its noise, keep reading
+                if parsed.get("id") == self._id:
+                    return parsed
+        finally:
+            watchdog.cancel()
 
     def notify(self, method: str) -> None:
         assert self.proc.stdin is not None
