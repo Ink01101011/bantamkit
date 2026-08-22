@@ -539,12 +539,19 @@ def test_the_ambient_pin_guard_reaches_this_node_without_being_asked(request):
     assert MEMORY_DIR_ENV not in os.environ
 
 
-def test_the_ambient_pin_guard_puts_back_the_store_a_pin_had_taken(tmp_path, monkeypatch):
+def test_the_ambient_pin_guard_puts_back_the_store_a_pin_had_taken(tmp_path, monkeypatch, request):
     """The hazard and the guard in one node, so the guard cannot be emptied quietly.
 
     The fixture's own function is called here rather than re-implemented: a copy of
     the body would keep passing after the body it copies is deleted, which is
     exactly the failure this node exists to catch.
+
+    THIS NODE'S OWN `request` is handed over, not a stub. The fixture grew a
+    `realpair` exemption on a sibling branch, and passing a real unmarked request
+    is what proves an ordinary node is not exempt -- a stub would have been written
+    to whatever the fixture happened to read that day. Calling it with `monkeypatch`
+    alone stopped working the moment the exemption landed, which is how the two
+    branches discovered they disagreed.
     """
     import conftest  # noqa: PLC0415
 
@@ -558,7 +565,7 @@ def test_the_ambient_pin_guard_puts_back_the_store_a_pin_had_taken(tmp_path, mon
         "an ambient pin outranks the walk -- this is what the guard is for"
     )
 
-    conftest._no_ambient_memory_pin.__wrapped__(monkeypatch)
+    conftest._no_ambient_memory_pin.__wrapped__(request, monkeypatch)
 
     assert MEMORY_DIR_ENV not in os.environ
     assert resolve_project_store(tmp_path / "companyA").path == own
