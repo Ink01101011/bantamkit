@@ -439,6 +439,9 @@ def unread_page(tmp_path, name: str, pdf: bytes):
     assert doc.parts[0].rows == ("page one has words",)
     assert doc.parts[1].rows == ()
     (unread,) = [o for o in doc.parts[1].omissions if o.subject == OMIT_UNREAD_PAGE]
+    # `what` is the fallback renderer's copy of the same numbers. It is RENDERED from `facts`,
+    # and this is what stops the two from drifting into disagreeing about one page.
+    assert unread.what == " ".join(f"{name}={value}" for name, value in unread.facts)
     observed = document_manifest(
         [
             {
@@ -518,6 +521,34 @@ def test_a_page_whose_operators_place_no_character_says_so_and_says_only_that(tm
     facts = dict(unread.facts)
     assert (facts["show_ops"], facts["vouched"], facts["unmapped"]) == (2, 0, 0)
     assert reasons_named(observed) == {"no-character"}
+
+
+def test_a_page_that_is_part_unmapped_and_part_whitespace_says_both(tmp_path):
+    """The mixed page, which the taxonomy has to handle on the MECHANISM and not on the sample.
+
+    No file on the user's corpus does this today, so a design that only worked on the corpus
+    would never be caught. One run through a font with no map, one run of spaces through a font
+    with one: `unmapped` and `vouched` are both nonzero and the page still has no row.
+
+    The reason chosen is the whitespace one -- `_pdf_refusal`'s order, where the unmapped
+    sentence claims EVERY character was dropped and here that is false. The dropped characters
+    are not lost from the manifest: `unmapped-text` is its own omission and states them on its
+    own line, one grain finer than the reason.
+    """
+    unread, observed = unread_page(
+        tmp_path,
+        "mixed-cause.pdf",
+        blank_second_page_pdf(
+            b"BT /F1 12 Tf 72 720 Td <002400450003> Tj /F2 12 Tf 0 -20 Td (   ) Tj ET",
+            font=IDENTITY_FONT,
+            resources=b"/Font << /F1 12 0 R /F2 5 0 R >>",
+        ),
+    )
+    facts = dict(unread.facts)
+    assert (facts["show_ops"], facts["vouched"], facts["unmapped"]) == (2, 3, 3)
+    assert reasons_named(observed) == {"whitespace"}
+    assert "3 character(s) shown on this part are NOT in those rows" in observed
+    assert "ABCDEF+Subset" in observed
 
 
 def test_the_four_unread_page_reasons_are_told_apart_by_the_omission_alone(tmp_path):
