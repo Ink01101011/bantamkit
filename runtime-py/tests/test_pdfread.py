@@ -425,8 +425,13 @@ def blank_second_page_pdf(
     return build_pdf(objects)
 
 
+# TWO images, and that is not decoration. `count` on this omission used to be the image count
+# and is now 1, because the subject is one PAGE -- and a fixture that draws exactly one image
+# cannot tell the two apart. MEASURED: with one image, restoring the old overload leaves the
+# whole suite GREEN. With two, it goes red. A count that happens to equal the right answer is
+# not a test of the count.
 IMAGE_ONLY_PAGE = (
-    b"q 612 0 0 792 0 0 cm /Im0 Do Q",
+    b"q 612 0 0 792 0 0 cm /Im0 Do Q q 306 0 0 396 0 0 cm /Im0 Do Q",
     b"/XObject << /Im0 13 0 R >>",
     {13: IMAGE_PAGE_OBJECTS[5]},
 )
@@ -470,9 +475,9 @@ def test_a_page_with_no_text_operator_says_so_and_says_only_that(tmp_path):
         tmp_path, "scan.pdf", blank_second_page_pdf(content, resources=resources, extra=extra)
     )
     facts = dict(unread.facts)
-    assert unread.count == 1
+    assert unread.count == 1  # ONE page. Not the image count, which is 2 here on purpose.
     assert (facts["show_ops"], facts["vouched"], facts["unmapped"]) == (0, 0, 0)
-    assert facts["images"] == 1 and facts["image_bytes"] > 0
+    assert facts["images"] == 2 and facts["image_bytes"] > 0
     assert reasons_named(observed) == {"no-operator"}
 
 
