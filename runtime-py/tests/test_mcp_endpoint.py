@@ -34,11 +34,31 @@ exists for exactly this question (`RB-P84`), and the answer this file asserts ag
 derived from the TREE -- the directory the launcher must have imported, the number of
 `.py` files actually on disk in it, and a content digest -- never from a version string.
 
-WHAT A GREEN HERE DOES NOT COVER. The launcher's dependency-root half. On this machine
-the worktree carries a `.venv` symlink, so `$here/.venv/bin/python` is found on the first
-candidate and `$root` is never consulted for the interpreter. A worktree with no `.venv`
-at all exercises a branch this node does not reach; that is `mcpreach`'s territory and it
-is stated here rather than implied.
+WHAT A GREEN HERE DOES NOT COVER, AND WHO COVERS IT: NOBODY. The launcher's
+dependency-root half. On this machine the worktree carries a `.venv` symlink, so
+`$here/.venv/bin/python` is found on the first candidate and `$root` is never consulted
+for the interpreter. A worktree with no `.venv` at all exercises a branch this node does
+not reach. MEASURED 2026-08-23 rather than reasoned about: against a `git archive HEAD`
+copy given the two-file worktree layout the launcher parses by hand (a `.git` FILE
+holding `gitdir:`, and a `commondir` beside it), inverting the launcher's
+`[ "$label" = "gitdir:" ]` test collapses `--which`'s `deps_root=` from the main checkout
+to the worktree itself -- and this file still reports `2 passed`. The whole `commondir`
+reader can be wrong without one node in the suite noticing.
+
+An earlier revision of this docstring deferred that gap to `mcpreach`. It does not exist:
+
+    $ git log --all --oneline --diff-filter=A -- '*mcpreach*'
+    $ git ls-tree -r --name-only origin/main | grep -i mcpreach
+
+both empty -- the path has never been added on any ref in this repository's history. It
+is cited as a real command anyway, by `tools/bantamkit-mcp`'s own header ("`--which` ...
+`tools/mcpreach/mcpreach.py` reads it") and by `docs/mcp.md`, which documents a five-value
+exit-code interface for it -- `2 FOREIGN` being precisely the silent wrong-checkout
+failure this file exists to catch. So the endpoint's own documentation points an operator
+at vaporware for the one check it calls "not a thing to reason about". Naming a
+nonexistent owner is worse than naming none, because it reads as covered. The gap is
+recorded here as OPEN and UNOWNED until something in the tree actually takes it; closing
+it means touching `tools/` and `docs/`, which this file's layer does not.
 """
 
 from __future__ import annotations
@@ -95,6 +115,27 @@ Windows has no shebang, so today this is true there -- but the day someone ships
 `test_criticreplay.py::test_the_windows_only_skips_do_not_fire_on_this_platform` reddens
 on the Windows runner until this entry is struck from its roster. A skip that expires
 when its cause is fixed is the only kind that cannot outlive the defect it excuses.
+
+THAT EXPIRY IS MEASURED, NOT ASSERTED. 2026-08-23, on `git archive HEAD` copies, with
+`conftest.ON_WINDOWS` forced true and the test modules reloaded so every condition and
+every `skipif` mark re-executes as a Windows runner would build them -- then the roster
+node called directly. Four scratch trees:
+
+    tree                                    NO_WINDOWS_ENDPOINT   roster node
+    --------------------------------------  --------------------  -----------
+    as shipped                              True                  PASS
+    + tools/bantamkit-mcp.cmd               False                 FAIL
+    + .cmd, .mcp.json repointed at it       False                 FAIL
+    + tools/bantamkit-mcp.ps1               False                 FAIL
+
+Rows two and three are the claim, confirmed on both routes: the day a Windows launcher
+lands, this stops skipping and the roster goes red until someone edits it. Row four is a
+known imprecision -- `CreateProcess` cannot run a `.ps1` directly, so that suffix flips
+the gate for a form Windows still cannot spawn. It is left in deliberately: the failure
+it produces is LOUD (the roster reddens, and the node below runs and fails WinError 193)
+rather than a silent skip, and a `.ps1` appearing beside the launcher is a fair signal
+that someone is mid-way through shipping the Windows endpoint. Erring toward noise is
+the correct direction for a gate whose whole purpose is to not outlive its excuse.
 """
 
 
@@ -197,6 +238,43 @@ def test_the_endpoint_as_configured_serves_and_names_this_checkout_as_its_source
     host would hand it. What this node contracts for is one named absence, not an
     allow-list the SDK is free to change under it. A host does not export `PYTHONPATH`
     either, so this is also the truer invocation.
+
+    WHAT THIS NODE ACTUALLY CATCHES, mutation by mutation. 2026-08-23, each against a
+    fresh `git archive HEAD` copy with the `.venv` symlink restored, launcher corrupted
+    the way a real one could rot. The point of the last two rows is that they are GREEN:
+
+        mutation of tools/bantamkit-mcp              outcome     caught by
+        -------------------------------------------  ----------  --------------------
+        shebang -> `#!/bin/shh`                      1 failed    spawn, FileNotFoundError
+        `PYTHONPATH=$here/...` -> `$root/...`        1 failed    package_path
+        `PYTHONSAFEPATH=1` deleted                   2 passed    NOTHING
+        `[ "$label" = "gitdir:" ]` inverted          2 passed    NOTHING
+
+    ROW ONE reports `FileNotFoundError: [Errno 2] ... 'tools/bantamkit-mcp'`, and the
+    errno is a lie worth knowing about: the file is present and `+x`: it is `/bin/shh`
+    that is missing. The sibling node above stays GREEN on this mutation, because
+    `os.access(X_OK)` is true of a script whose interpreter does not exist. Only actually
+    spawning it tells them apart, which is why "it is executable" is not the assertion.
+
+    ROW TWO is the one the launcher's own header calls "worse than the ENOENT it
+    replaces, because it fails silently and plausibly", and it was reproduced against a
+    fabricated-but-faithful worktree layout so `$root` names a different tree. The child
+    handshakes, serves `bantamkit`, reports the same `version` (`0.25.0`), the same
+    `code_files` (23) and -- both trees being the same archive -- a BYTE-IDENTICAL
+    `code_digest`. Every assertion in this node passes except `package_path`. So
+    `package_path` is not one check among four here; on a same-content wrong checkout it
+    is the ONLY one with any discriminating power, and deleting it would leave a node
+    that cannot tell two checkouts apart at all.
+
+    ROW THREE is green because the defence is untested, not because the line is dead.
+    `PYTHONSAFEPATH` stops the client's cwd being prepended ahead of `PYTHONPATH`, and no
+    `bantamkit/` sits at this repository's root, so nothing contests the path. Plant a
+    complete one there (sources plus an `assets/` tree, or the server dies at startup on
+    `AssetNotFound` and reddens this node for the wrong reason) and the same mutation
+    goes `1 failed` on `package_path`, serving a decoy that reported `version
+    6.6.6-DECOY`. The precondition, not the guard, is what this tree is missing.
+
+    ROW FOUR is the dependency-root half, and the module docstring above prices it.
 
     WHICH BUILD ANSWERED, and why the version string is not the answer. Three
     resolutions are live in this venv -- the worktree's `runtime-py/src`, the main
