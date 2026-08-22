@@ -4160,18 +4160,32 @@ def test_a_refusal_whose_stderr_has_no_reader_leaves_the_range(rig, tmp_path):
 # see the module comment's `#   5` block for the argument, and the block above
 # `_RBP31_XFAIL` for why these three nodes assert a different number than K1 wrote.
 #
-# THE AXIS IS THE BUFFER, AND THE BUFFER IS A PROPERTY OF FD 1, NOT OF THIS TOOL. Which
-# wrong number the shell reads depends on whether the failing write went through
-# `BufferedWriter`'s buffer or straight past it, and that buffer is `os.fstat(1).st_blksize`
-# — 4096 for a regular file here, 16384 for a pipe, 65536 for `/dev/null`. Measured
-# 2026-08-13 in a real shell (docs/eval-data/2026-08-13-rbp31-render-failure-matrix.md):
+# THE AXIS IS WHETHER THE BYTES ARE STILL INSIDE THE PROCESS, AND THAT IS A PROPERTY OF
+# FD 1, NOT OF THIS TOOL. Which wrong number the shell reads depends on whether the
+# failing write left the doomed bytes behind it or had already pushed them at the fd.
+# Measured 2026-08-13 in a real shell
+# (docs/eval-data/2026-08-13-rbp31-render-failure-matrix.md):
 #
-#   table+newline <= the buffer  ->  the bytes sit in the buffer, `flush()` raises, the
-#                                    interpreter's shutdown flush raises AGAIN, and the
-#                                    status becomes 120
-#   table+newline  > the buffer  ->  the write goes straight to the fd and raises with an
-#                                    empty buffer behind it, shutdown has nothing left to
-#                                    fail on, and the uncaught OSError's own 1 stands
+#   table still inside  ->  `flush()` raises, the bytes are still there, the
+#                           interpreter's shutdown flush raises AGAIN, and the status
+#                           becomes 120
+#   table already out   ->  the write went straight to the fd and raised with nothing
+#                           behind it, shutdown has nothing left to fail on, and the
+#                           uncaught OSError's own 1 stands
+#
+# `st_blksize` IS NOT THAT BOUNDARY, AND THIS COMMENT USED TO SAY IT WAS. `st_blksize`
+# is the size of `BufferedWriter` and only that; a text `print` goes through
+# `TextIOWrapper` FIRST, and `TextIOWrapper` holds everything until its own 8192-unit
+# chunk fires. So the crossover is `max(io.DEFAULT_BUFFER_SIZE, st_blksize + 1)`, and
+# when `st_blksize < 8192` the smaller number decides nothing. Measured 2026-08-22 on
+# macOS/APFS, CPython 3.13 (scratchpad probe, quoted in the W4 report): with
+# `st_blksize == 4096`, an 8191-byte text write leaves 0 bytes on fd 1 before any flush
+# and an 8192-byte one leaves 8192 — the crossover is 8192, not 4097. Behind a pipe
+# (`st_blksize == 16384`) 16384 leaves 0 and 16385 leaves 16385, which is what confirms
+# `st_blksize` really is the `BufferedWriter` size and really is not the crossover.
+# Nothing about the FIX turns on the number; what turned on it was this file's own
+# straddle guard, which is why that guard now measures the crossover instead of
+# deriving it (see `_bytes_that_reach_fd_one`).
 #
 # 1 is the worse half: that is REFUSAL_EXIT, "did not complete a measurement", on a run
 # that completed — the RB-P24 defect class, alive one line from where RB-P24 fixed it.
