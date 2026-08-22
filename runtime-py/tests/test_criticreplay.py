@@ -4300,6 +4300,9 @@ def test_help_with_no_reader_on_stdout_is_still_the_interpreters_number(tmp_path
     rendered = subprocess.run(
         argv, capture_output=True, text=True, check=True, env=_child_env(), encoding="utf-8"
     ).stdout
+    assert rendered is not None, (
+        f"W15-DIAG criticreplay: capture came back None for {argv!r}"
+    )
     replica = tmp_path / "help-bytes.txt"
     replica.write_text(rendered, encoding="utf-8")
     control, _ = _closed_pipe_status(

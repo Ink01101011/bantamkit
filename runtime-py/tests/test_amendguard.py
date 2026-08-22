@@ -98,6 +98,10 @@ def _run(repo: Path, rev_range: str, ledger: Path, *extra: str):
         check=False, encoding="utf-8",
     )
     rows = {}
+    assert r.stdout is not None, (
+        f"W15-DIAG amendguard: rc={r.returncode!r} stdout={r.stdout!r} "
+        f"stderr={r.stderr!r} args={r.args!r}"
+    )
     for line in r.stdout.splitlines():
         if not line.startswith("VERDICT "):
             continue
