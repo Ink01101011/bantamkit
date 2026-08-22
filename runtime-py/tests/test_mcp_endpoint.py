@@ -51,14 +51,38 @@ An earlier revision of this docstring deferred that gap to `mcpreach`. It does n
     $ git ls-tree -r --name-only origin/main | grep -i mcpreach
 
 both empty -- the path has never been added on any ref in this repository's history. It
-is cited as a real command anyway, by `tools/bantamkit-mcp`'s own header ("`--which` ...
-`tools/mcpreach/mcpreach.py` reads it") and by `docs/mcp.md`, which documents a five-value
-exit-code interface for it -- `2 FOREIGN` being precisely the silent wrong-checkout
-failure this file exists to catch. So the endpoint's own documentation points an operator
-at vaporware for the one check it calls "not a thing to reason about". Naming a
-nonexistent owner is worse than naming none, because it reads as covered. The gap is
-recorded here as OPEN and UNOWNED until something in the tree actually takes it; closing
-it means touching `tools/` and `docs/`, which this file's layer does not.
+is cited as a real command anyway, by `tools/bantamkit-mcp:47` ("`--which` ...
+`tools/mcpreach/mcpreach.py` reads it") and by `docs/mcp.md:154`, which documents a
+five-value exit-code interface for it -- `2 FOREIGN` being precisely the silent
+wrong-checkout failure this file exists to catch. So the endpoint's own documentation
+points an operator at vaporware for the one check it calls "not a thing to reason about".
+
+IT IS NOT AN UNOWNED GAP, WHICH IS WHAT AN EARLIER REVISION OF THIS PARAGRAPH CALLED IT.
+`docs/eval.md:10949` -- in `AD.1 RB-P96 -- FIXED (2026-08-21, PR #58, 927b2a8)`, the very
+section that shipped this launcher -- records the decision in writing:
+
+    **Not shipped, deliberately:** the unit's half-built `tools/mcpreach/` checker was
+    uncommitted and had **never been seen to fire**. A check nobody has watched go red is
+    not a check, so it was set aside rather than merged.
+
+That is a reasoned decision with a named owner, and it inverts the conclusion. What is
+open is not an absent checker but a THREE-FILE CONTRADICTION about one: `docs/eval.md`
+says deliberately withheld, while `docs/mcp.md:154` presents the same program as the
+runnable answer with five documented exit codes and `tools/bantamkit-mcp:47` says it reads
+`--which`. Two of the three document a program the third says was consciously not
+shipped, and the contradiction is not inert. Measured 2026-08-23, running the command
+`docs/mcp.md:154` gives an operator verbatim:
+
+    $ .venv/bin/python tools/mcpreach/mcpreach.py check
+    can't open file '.../tools/mcpreach/mcpreach.py': [Errno 2] No such file or directory
+    $ echo $?
+    2
+
+and `2` is the value that same page documents as `FOREIGN`, "it launched, but it is
+serving a DIFFERENT checkout's source". A missing file and the silent wrong-checkout
+failure are the same exit code to anything scripting the documented interface. Naming
+that is this file's obligation; closing it means editing `tools/` and `docs/`, which this
+file's layer does not.
 """
 
 from __future__ import annotations
@@ -66,6 +90,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -137,6 +162,45 @@ rather than a silent skip, and a `.ps1` appearing beside the launcher is a fair 
 that someone is mid-way through shipping the Windows endpoint. Erring toward noise is
 the correct direction for a gate whose whole purpose is to not outlive its excuse.
 """
+
+
+# A child that reports its own environment and exits. Spawned through the SAME
+# `stdio_client` with the SAME `env=`, because the question is what THIS SDK hands a
+# child, and that is not readable off `env=` -- see the node below.
+_ENV_DUMP_SOURCE = (
+    "import json,os,sys;json.dump(dict(os.environ), open(sys.argv[1], 'w', encoding='utf-8'))"
+)
+
+
+def _environment_the_sdk_hands_a_child(env: dict[str, str], scratch: Path) -> dict[str, str]:
+    """The child's ACTUAL environment, read out of a child this SDK really spawned.
+
+    Not `get_default_environment() | env` restated here: that is `stdio.py:128` copied
+    into a test, and a copy cannot notice the original changing. This spawns through the
+    same `stdio_client` with the same `env=` and asks the child. `sys.executable` rather
+    than the endpoint on purpose -- the subject is how the SDK builds a child's
+    environment, and the launcher would overwrite the one key in question.
+
+    The child writes and exits; `stdio_client` never gets a handshake and does not need
+    one. The poll is bounded by the same timeout as the real one, so a child that never
+    writes reports instead of wedging the suite.
+    """
+    dump = scratch / "child-environment.json"
+
+    async def run() -> None:
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=["-c", _ENV_DUMP_SOURCE, str(dump)],
+            cwd=str(REPO),
+            env=env,
+        )
+        async with stdio_client(params) as (_read, _write):
+            async with asyncio.timeout(HANDSHAKE_TIMEOUT_S):
+                while not (dump.is_file() and dump.stat().st_size):
+                    await asyncio.sleep(0.02)
+
+    asyncio.run(run())
+    return json.loads(dump.read_text(encoding="utf-8"))
 
 
 def _package_py_files() -> list[Path]:
@@ -235,13 +299,37 @@ def test_the_endpoint_as_configured_serves_and_names_this_checkout_as_its_source
     kept anyway, and the honest reason is not "otherwise the wrong build answers": it is
     that the launcher's own discovery reads `PATH` for `git` and for its `python3`
     fallback, and an operator's `BANTAMKIT_*` overrides are part of the environment a
-    host would hand it. What this node contracts for is one named absence, not an
-    allow-list the SDK is free to change under it. A host does not export `PYTHONPATH`
-    either, so this is also the truer invocation.
+    host would hand it. A host does not export `PYTHONPATH` either, so this is also the
+    truer invocation.
+
+    AND THE ABSENCE IS CONTRACTED RATHER THAN ASSUMED, because `env=` does not deliver
+    it. `mcp/client/stdio.py:128` spawns with `env=get_default_environment() |
+    (server.env or {})` -- a MERGE, not a substitution -- so any key the SDK carries in
+    `DEFAULT_INHERITED_ENV_VARS` reaches the child however this node builds `env=`. On
+    posix that list is `HOME LOGNAME PATH SHELL TERM USER`, and `PYTHONPATH` not being on
+    it is the ONLY reason the deletion above holds. Measured 2026-08-23, one line of
+    upstream drift appended to that list before this file was collected:
+
+        DEFAULT_INHERITED_ENV_VARS   child's PYTHONPATH   node, before / after the guard
+        ---------------------------  -------------------  -----------------------------
+        as installed                 absent               2 passed / 2 passed
+        + "PYTHONPATH"               PRESENT              2 passed / 1 failed  <- caught
+
+    The `before` column is the defect, and it is worse in combination. Delete the
+    launcher's own `PYTHONPATH` line as well -- the r2 mutation two tables down, the one
+    this node exists to catch -- and the pair reads `1 failed` without the drift and
+    `2 passed` WITH it, before the guard; `1 failed` both ways after. One upstream line
+    was enough to retire the only node in the suite that can see a launcher which stopped
+    setting `PYTHONPATH`. `_environment_the_sdk_hands_a_child` reads the environment out
+    of a child THIS SDK spawned with THIS `env=`, so the guard moves with the SDK's real
+    behaviour -- allow-list, merge order, or the merge itself going away -- rather than
+    restating line 128 and hoping it stays put.
 
     WHAT THIS NODE ACTUALLY CATCHES, mutation by mutation. 2026-08-23, each against a
     fresh `git archive HEAD` copy with the `.venv` symlink restored, launcher corrupted
-    the way a real one could rot. The point of the last two rows is that they are GREEN:
+    the way a real one could rot. The point of the last three rows is that they are GREEN,
+    and the set is priced rather than complete -- row five was found by review, after the
+    first four had been written up as though they were the whole of it:
 
         mutation of tools/bantamkit-mcp              outcome     caught by
         -------------------------------------------  ----------  --------------------
@@ -249,6 +337,7 @@ def test_the_endpoint_as_configured_serves_and_names_this_checkout_as_its_source
         `PYTHONPATH=$here/...` -> `$root/...`        1 failed    package_path
         `PYTHONSAFEPATH=1` deleted                   2 passed    NOTHING
         `[ "$label" = "gitdir:" ]` inverted          2 passed    NOTHING
+        trailing `"$@"` dropped from `exec`          2 passed    NOTHING
 
     ROW ONE reports `FileNotFoundError: [Errno 2] ... 'tools/bantamkit-mcp'`, and the
     errno is a lie worth knowing about: the file is present and `+x`: it is `/bin/shh`
@@ -276,6 +365,26 @@ def test_the_endpoint_as_configured_serves_and_names_this_checkout_as_its_source
 
     ROW FOUR is the dependency-root half, and the module docstring above prices it.
 
+    ROW FIVE swallows the host's entire argv: `exec "$py" -c '...' "$@"` with the trailing
+    `"$@"` gone. Every assertion in this node still passes, because none of them is about
+    what the server was ASKED for -- and this node's own isolation argument, four
+    paragraphs up, is exactly that. With argv forwarded the server binds the `--store` it
+    was handed; without it `_build_memory` falls through to `Memory.layered(start=None)`,
+    which is `--start` semantics, and `discover_project_store` walks up from the client's
+    `cwd`. Measured 2026-08-23 on the same two archive copies, by opening the same session
+    this node opens and then asking the server to WRITE:
+
+        launcher            where the saved fact landed
+        ------------------  --------------------------------------------------
+        as shipped          <the --store this node passed>/f2-argv-probe.md
+        `"$@"` dropped      <cwd>/.bantamkit/memory/facts/f2-argv-probe.md
+
+    In row two the asked-for store was never created at all, and `cwd` is the checkout.
+    So the launcher can be silently writing memory INTO the repository it was launched
+    from and this node reports `2 passed`. It stays unclosed here on purpose: nothing on
+    the wire reports the bound store -- `build_identity` is location-of-code, not
+    location-of-store -- so closing it is a `runtime-py/src` change, not a test-layer one.
+
     WHICH BUILD ANSWERED, and why the version string is not the answer. Three
     resolutions are live in this venv -- the worktree's `runtime-py/src`, the main
     checkout's `runtime-py/src` reachable through `_editable_impl_bantamkit.pth`, and a
@@ -300,6 +409,18 @@ def test_the_endpoint_as_configured_serves_and_names_this_checkout_as_its_source
     )
 
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+
+    # The deletion above is a REQUEST, not a guarantee: the SDK merges. Contract the
+    # absence against a child it actually spawned, or the one node that can catch a
+    # launcher which stopped setting `PYTHONPATH` is one upstream line from passing
+    # forever. See "AND THE ABSENCE IS CONTRACTED" above.
+    child_env = _environment_the_sdk_hands_a_child(env, tmp_path)
+    assert "PYTHONPATH" not in child_env, (
+        "the SDK handed the child a PYTHONPATH this node deleted, so the launcher's own "
+        "PYTHONPATH line is no longer what puts this checkout on the child's path and "
+        "the assertions below can no longer tell two checkouts apart: "
+        f"PYTHONPATH={child_env['PYTHONPATH']!r}"
+    )
 
     async def scenario(store: Path) -> dict:
         params = StdioServerParameters(
