@@ -37,6 +37,7 @@ import io
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -422,3 +423,75 @@ def test_the_child_never_inherits_the_asset_override_and_never_sees_the_real_hom
     assert len(list((Path(seen["cwd"]) / ".bantamkit" / "memory" / "facts").iterdir())) == len(
         mcpdrift.FIXTURE_FACTS
     )
+
+
+# --------------------------------------------------------------------------------------
+# A server that launches and then says nothing. Found 2026-08-22 by W3 and left unfixed:
+# `_Session.request` looped on `readline()` with NO deadline, and `--timeout` was applied
+# in `close()` only, so `mcpdrift check` against a mute binary hung FOREVER on every
+# platform. It was never reached on Windows because launches were failing earlier at
+# `Popen`; it surfaced only when a mutation produced a process that started and stayed
+# silent, and that mutation had to be KILLED at 45s rather than failing.
+#
+# The fix is a watchdog thread rather than `select`, because `select` does not work on
+# pipes on Windows and this tool has to run there.
+
+_MUTE_SERVER = """\
+import sys, time
+# Read the request so the parent's write() cannot block, then answer nothing at all.
+sys.stdin.readline()
+time.sleep(3600)
+"""
+
+
+def _mute_server(tmp_path: Path) -> list[str]:
+    path = tmp_path / "mute-server.py"
+    path.write_text(_MUTE_SERVER, encoding="utf-8")
+    return [sys.executable, str(path)]
+
+
+def test_a_server_that_launches_and_never_answers_times_out_instead_of_hanging(tmp_path):
+    """The deadline must be REACHED, not merely configured.
+
+    Asserting only "it raised" would pass against a server that closed stdout, which is
+    the OTHER error this loop reports and needs no timeout to produce. So this pins the
+    exception TYPE and the elapsed time: the call must return in about the deadline, not
+    in a millisecond (wrong error) and not never (the defect).
+    """
+    session = mcpdrift._Session(_mute_server(tmp_path), tmp_path, tmp_path, timeout=1.0)
+    started = time.monotonic()
+    try:
+        with pytest.raises(TimeoutError) as caught:
+            session.request("initialize", {})
+    finally:
+        session.close()
+    elapsed = time.monotonic() - started
+    assert 0.5 <= elapsed < 20.0, f"the deadline did not govern: {elapsed:.2f}s"
+    assert "did not answer within" in str(caught.value)
+
+
+def test_the_deadline_covers_the_whole_request_not_each_line(tmp_path):
+    """A server that streams noise forever would reset a per-line timer on every line.
+
+    That is the same hang wearing a timer, and it is the mistake this node exists to
+    prevent. The server below never answers but never stops talking either.
+    """
+    path = tmp_path / "noisy-server.py"
+    path.write_text(
+        "import sys\n"
+        "sys.stdin.readline()\n"
+        "while True:\n"
+        "    sys.stdout.write('not json, just noise\\n')\n"
+        "    sys.stdout.flush()\n",
+        encoding="utf-8",
+    )
+    session = mcpdrift._Session(
+        [sys.executable, str(path)], tmp_path, tmp_path, timeout=1.0
+    )
+    started = time.monotonic()
+    try:
+        with pytest.raises(TimeoutError):
+            session.request("initialize", {})
+    finally:
+        session.close()
+    assert time.monotonic() - started < 20.0, "a chatty server outlived its deadline"

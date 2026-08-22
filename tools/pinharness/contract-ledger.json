@@ -26,9 +26,9 @@
       "pins": [
         "test_closed_pipe_"
       ],
-      "anchor": "            sys.stdout = _LostStdout(e)\n        except (OSError, UnicodeEncodeError) as e:",
-      "replacement": "            render_failure = str(e)\n            sys.stdout = _LostStdout(e)\n        except (OSError, UnicodeEncodeError) as e:",
-      "note": "Mutation makes a dead pipe report 5 instead of the earned status."
+      "anchor": "                sys.stdout = _LostStdout(e)\n            else:",
+      "replacement": "                render_failure = str(e)\n                sys.stdout = _LostStdout(e)\n            else:",
+      "note": "Mutation makes a dead pipe report 5 instead of the earned status. RE-ANCHORED 2026-08-22: job31's W13 replaced the two `except` clauses with one clause plus `_stdout_reader_is_gone`, so the old anchor (which quoted `except (OSError, UnicodeEncodeError)`) matched 0x and the ledger refused to sweep. The MUTATION IS UNCHANGED - it still makes the reader-gone arm invent a render failure; only the text it hangs on moved."
     },
     {
       "cid": "B02",
@@ -40,9 +40,9 @@
         "test_a_lost_stdout_raises_on_the_next_write_instead_of_swallowing_it",
         "test_a_lost_pipe_also_raises_on_the_next_write_instead_of_swallowing_it"
       ],
-      "anchor": "            sys.stdout = _LostStdout(e)\n        except (OSError, UnicodeEncodeError) as e:",
-      "replacement": "            sys.stdout = type(\"SilentSink\", (), {\"write\": lambda s, t: len(t), \"flush\": lambda s: None})()\n        except (OSError, UnicodeEncodeError) as e:",
-      "note": "K4 I6: this scored 748/748 at 3981efd."
+      "anchor": "                sys.stdout = _LostStdout(e)\n            else:",
+      "replacement": "                sys.stdout = type(\"SilentSink\", (), {\"write\": lambda s, t: len(t), \"flush\": lambda s: None})()\n            else:",
+      "note": "K4 I6: this scored 748/748 at 3981efd. RE-ANCHORED 2026-08-22, same cause as B01. The mutation still swaps the lost-stdout sentinel for a sink that silently swallows, which is the one behaviour RB-P33 says is unavailable."
     },
     {
       "cid": "B03",
