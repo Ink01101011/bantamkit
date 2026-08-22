@@ -3867,7 +3867,9 @@ def test_this_modules_own_validation_errors_are_argparses_number(tmp_path):
 # in job 31 after 70 paired invocations showed `$?` and `Popen.returncode` never differ.)
 # The read end is closed BEFORE the child is spawned, so there is no window in which a
 # reader exists and no race to lose —
-# every write to fd 1 fails with EPIPE from the first byte. That is a reader that is
+# every write to fd 1 fails from the first byte (EPIPE on POSIX; on Windows the same
+# state arrives as a plain OSError carrying EINVAL — see `_closed_pipe_status`). That is
+# a reader that is
 # actually gone (`... | head -1` once `head` has exited), not a mock and not a patched
 # `sys.stdout`, which would measure what a function returns rather than what a process
 # leaves behind.
@@ -3898,10 +3900,17 @@ def _closed_pipe_status(argv: list[str], tmp_path: Path, label: str) -> tuple[in
     nothing here reads a Python return value out of the code under test. stderr is a file,
     so the interpreter's shutdown complaint (if any) is readable.
 
-    POSIX-ONLY BY ITS SUBJECT, not by its plumbing. Removing `/bin/sh` removed the only
-    part of this harness a non-POSIX runner could have supplied; what is left — a write
-    to a pipe whose reader is gone raising EPIPE, and CPython's 120 for a failed shutdown
-    flush behind it — is the thing being measured and has no Windows equivalent.
+    NOT POSIX-ONLY, AND THIS DOCSTRING SAID IT WAS (job 31, corrected against a run).
+    Removing `/bin/sh` removed the only part of this harness a non-POSIX runner could not
+    have supplied, and the sentence that replaced it — that a write to a pipe whose reader
+    is gone, and CPython's 120 for the failed shutdown flush behind it, "has no Windows
+    equivalent" — is false. MEASURED on windows-latest 3.11 and 3.12, CI run 32555258828:
+    this harness builds the pipe, closes the read end, spawns the child and reads its
+    status there exactly as it does here, and two of the five nodes below passed unchanged.
+    What differs is the NAME the OS gives the state — EPIPE on POSIX, a plain `OSError`
+    with errno EINVAL and no `winerror` on Windows — which is why the other three were red
+    there, and why the handler now asks `criticreplay._stdout_reader_is_gone` rather than
+    naming an exception class.
     """
     where = tmp_path / f"_pipe-{label}"
     where.mkdir(parents=True, exist_ok=True)
@@ -4219,6 +4228,107 @@ def test_a_lost_pipe_also_raises_on_the_next_write_instead_of_swallowing_it(rig,
     with pytest.raises(BrokenPipeError) as exc:
         sys.stdout.write("a caller that keeps writing must be told, not lied to")
     assert exc.value is boom
+
+
+# ---- Job 31: a gone reader is a gone reader wherever the write happens ----
+#
+# MEASURED, windows-latest 3.11 and 3.12, CI run 32555258828. The harness above RUNS on
+# Windows: the pipe is made, the read end is closed, the child is spawned and its status
+# is read, and `test_closed_pipe_refusal_is_still_a_refusal` and
+# `test_closed_pipe_usage_error_is_still_the_usage_status` passed there UNCHANGED. What
+# failed was the clean case, which reported 5 instead of the 0 it earned, with
+# `error: measured, but the report could not be rendered on stdout: [Errno 22] Invalid
+# argument` on the child's stderr. So the state is reachable there and only its NAME is
+# different: the CRT's `_write` has no `_dosmaperr` entry for ERROR_BROKEN_PIPE (109) or
+# ERROR_NO_DATA (232) and falls through to EINVAL, with no `winerror` attached — the same
+# log renders a winerror-carrying OSError as `[WinError 183] Cannot create a file when
+# that file already exists`, so the missing `WinError` prefix is evidence and not a guess.
+#
+# NEITHER OF THE NODES BELOW IS A WINDOWS MEASUREMENT and neither may be read as one. The
+# platform FACT — `os.name == "nt"` — lives in `criticreplay._EINVAL_MEANS_LOST_READER`
+# and nothing off Windows can exercise it; what these measure is the RULE that hangs off
+# it, in BOTH directions, on whatever runner they are on. They are written so that they
+# assert the same thing on every platform, including the Windows runner that supplies the
+# reading they exist to complement.
+
+
+@pytest.mark.parametrize(
+    ("boom", "einval_is_a_lost_reader", "gone"),
+    [
+        pytest.param(BrokenPipeError(errno.EPIPE, "Broken pipe"), False, True, id="EPIPE"),
+        pytest.param(BrokenPipeError(errno.EPIPE, "Broken pipe"), True, True, id="EPIPE-win"),
+        pytest.param(OSError(errno.EINVAL, "Invalid argument"), True, True, id="EINVAL-win"),
+        pytest.param(OSError(errno.EINVAL, "Invalid argument"), False, False, id="EINVAL-posix"),
+        pytest.param(OSError(errno.ENOSPC, "No space left"), True, False, id="ENOSPC-win"),
+        pytest.param(OSError(errno.EBADF, "Bad file descriptor"), True, False, id="EBADF-win"),
+        pytest.param(
+            UnicodeEncodeError("ascii", "\u2014", 0, 1, "ordinal not in range(128)"),
+            True,
+            False,
+            id="codec-win",
+        ),
+    ],
+)
+def test_einval_is_a_lost_reader_only_where_the_c_runtime_says_so(
+    boom, einval_is_a_lost_reader, gone, monkeypatch
+):
+    """The rule, both directions, and the four cells that stop it widening into uselessness.
+
+    `except OSError` would also have made the Windows node green and would have taken
+    ENOSPC, EBADF and the codec failure with it — the three classes RB-P31 exists to route
+    to RENDER_FAILURE_EXIT rather than to a downgrade. Those three are here on the
+    Windows side of the switch, where a careless widening would show, and they must answer
+    False with the switch ON.
+
+    The `EINVAL-posix` cell is the other half and it is the one that is NOT free: it is
+    what says the widening is inert on the platform this suite usually runs on, so a fix
+    that dropped the gate and read EINVAL as a lost reader everywhere goes red here.
+    """
+    monkeypatch.setattr(criticreplay, "_EINVAL_MEANS_LOST_READER", einval_is_a_lost_reader)
+    assert criticreplay._stdout_reader_is_gone(boom) is gone
+
+
+def test_an_einval_at_the_table_write_downgrades_where_it_means_a_lost_reader(rig, monkeypatch):
+    """End to end through `main`: the Windows spelling earns the same 0 that EPIPE does.
+
+    The sibling of `test_a_lost_pipe_also_raises_on_the_next_write_instead_of_swallowing_it`
+    with the only difference that matters on Windows — the exception is a plain `OSError`
+    carrying EINVAL, not a `BrokenPipeError`. The rig earns 0, so `main` must RETURN: a
+    `SystemExit` here is the pre-fix behaviour (RENDER_FAILURE_EXIT), which is exactly what
+    CI run 32555258828 read on windows-latest.
+
+    SIMULATED, and the label is the point: the switch is forced on, because this runner is
+    not Windows and cannot produce the errno the way a Windows pipe does.
+    """
+    monkeypatch.setattr(criticreplay, "OpenAICompatible", lambda **kw: ScriptedCritic(lambda p: 9))
+    monkeypatch.setattr(criticreplay, "_EINVAL_MEANS_LOST_READER", True)
+    boom = OSError(errno.EINVAL, "Invalid argument")
+    monkeypatch.setattr(sys, "stdout", _RaisingStdout(boom))
+    criticreplay.main(_cli(rig)[2:])  # earned 0, and a gone reader may not change that
+
+    assert isinstance(sys.stdout, criticreplay._LostStdout)
+    sys.stdout.flush()  # the finalization flush's own call: it must NOT raise
+    with pytest.raises(OSError) as exc:
+        sys.stdout.write("a caller that keeps writing must be told, not lied to")
+    assert exc.value is boom  # RB-P33 holds for this spelling too, not just for EPIPE
+
+
+def test_the_same_einval_is_still_a_render_failure_where_it_does_not_mean_that(
+    rig, monkeypatch, capsys
+):
+    """The control, and it passes on EVERY platform because it forces the switch OFF.
+
+    Same run, same exception object, one constant different — and the number changes from
+    the earned 0 to RENDER_FAILURE_EXIT. That is what makes the node above a reading about
+    the RULE rather than about EINVAL: nothing here treats errno 22 as special on its own.
+    """
+    monkeypatch.setattr(criticreplay, "OpenAICompatible", lambda **kw: ScriptedCritic(lambda p: 9))
+    monkeypatch.setattr(criticreplay, "_EINVAL_MEANS_LOST_READER", False)
+    monkeypatch.setattr(sys, "stdout", _RaisingStdout(OSError(errno.EINVAL, "Invalid argument")))
+    with pytest.raises(SystemExit) as exc:
+        criticreplay.main(_cli(rig)[2:])
+    assert exc.value.code == criticreplay.RENDER_FAILURE_EXIT
+    assert "could not be rendered" in capsys.readouterr().err
 
 
 # ---- What the handler does NOT cover, measured rather than assumed ----
