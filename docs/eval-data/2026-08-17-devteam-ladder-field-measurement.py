@@ -468,7 +468,9 @@ def query_resend_weighted(rows: list[dict], setup_constant: int) -> dict:
 
 
 def load_arm(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    return [json.loads(line) for line in path.read_text(
+        encoding="utf-8"
+    ).splitlines() if line.strip()]
 
 
 def reconcile(arms: dict[str, list[dict]], family: list[str]) -> None:

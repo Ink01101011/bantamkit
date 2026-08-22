@@ -167,7 +167,7 @@ class Config:
     def load(cls, path: Path | None) -> Config:
         if path is None:
             return cls.from_dict({})
-        return cls.from_dict(json.loads(Path(path).read_text()))
+        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
 @dataclass
@@ -265,7 +265,7 @@ class DriverLock:
             fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         except FileExistsError:
             return False
-        with os.fdopen(fd, "w") as fh:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(json.dumps({"pid": self.pid, "started": self.now()}))
         self.held = True
         return True
@@ -279,7 +279,7 @@ class DriverLock:
 
     def _read_owner(self) -> int | None:
         try:
-            return int(json.loads(self.path.read_text())["pid"])
+            return int(json.loads(self.path.read_text(encoding="utf-8"))["pid"])
         except (OSError, ValueError, KeyError, TypeError):
             return None
 
@@ -341,7 +341,7 @@ class Driver:
         state = self._load_state()
         while True:
             try:
-                ckpt = parse_checkpoint(self.checkpoint_path.read_text())
+                ckpt = parse_checkpoint(self.checkpoint_path.read_text(encoding="utf-8"))
             except (OSError, CheckpointError) as e:
                 # Never overwrite a checkpoint we could not read.
                 return self._finish(EXIT_ESCALATE, f"checkpoint unusable: {e}", state)
@@ -482,7 +482,7 @@ class Driver:
     def _load_state(self) -> dict:
         state = {"seq": 0, "sessions": 0, "retries": {}}
         try:
-            stored = json.loads(self.state_path.read_text())
+            stored = json.loads(self.state_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return state
         if isinstance(stored, dict):
@@ -496,7 +496,7 @@ class Driver:
     def _save_state(self, state: dict) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.state_path.with_suffix(self.state_path.suffix + ".tmp")
-        tmp.write_text(json.dumps(state, indent=2, sort_keys=True))
+        tmp.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
         tmp.replace(self.state_path)
 
     def _log(self, *, seq, cursor, role, exit_code, duration, progressed) -> None:
@@ -513,7 +513,7 @@ class Driver:
         if exit_code != 0 and progressed:
             record["anomaly"] = "non-zero exit but checkpoint advanced"
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.log_path.open("a") as fh:
+        with self.log_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, sort_keys=True) + "\n")
 
     def _finish(self, code: int, reason: str, state: dict) -> int:

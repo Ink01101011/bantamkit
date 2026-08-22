@@ -40,7 +40,7 @@ def test_load_grants_missing_config_is_empty(tmp_path):
 
 def test_load_grants_empty_config_is_empty(tmp_path):
     store = _mkstore(tmp_path / "companyA")
-    (store.parent / "config.yaml").write_text("")
+    (store.parent / "config.yaml").write_text("", encoding="utf-8")
     assert load_grants(store) == []
 
 
@@ -48,28 +48,30 @@ def test_load_grants_resolves_relative_to_config(tmp_path):
     store = _mkstore(tmp_path / "companyA")
     other = _mkstore(tmp_path / "companyB")
     (store.parent / "config.yaml").write_text(
-        "extra_stores:\n  - ../../companyB/.bantamkit/memory\n"
+        "extra_stores:\n  - ../../companyB/.bantamkit/memory\n", encoding="utf-8"
     )
     assert load_grants(store) == [other.resolve()]
 
 
 def test_load_grants_malformed_yaml_raises(tmp_path):
     store = _mkstore(tmp_path / "companyA")
-    (store.parent / "config.yaml").write_text("extra_stores: [unclosed\n")
+    (store.parent / "config.yaml").write_text("extra_stores: [unclosed\n", encoding="utf-8")
     with pytest.raises(MemoryValidationError):
         load_grants(store)
 
 
 def test_load_grants_non_mapping_config_raises(tmp_path):
     store = _mkstore(tmp_path / "companyA")
-    (store.parent / "config.yaml").write_text("just a string\n")
+    (store.parent / "config.yaml").write_text("just a string\n", encoding="utf-8")
     with pytest.raises(MemoryValidationError):
         load_grants(store)
 
 
 def test_load_grants_dangling_path_raises(tmp_path):
     store = _mkstore(tmp_path / "companyA")
-    (store.parent / "config.yaml").write_text("extra_stores:\n  - ../../nope/memory\n")
+    (store.parent / "config.yaml").write_text(
+        "extra_stores:\n  - ../../nope/memory\n", encoding="utf-8"
+    )
     with pytest.raises(MemoryValidationError):
         load_grants(store)
 
@@ -86,7 +88,7 @@ def test_discover_skips_file_named_store(tmp_path):
     ancestor = tmp_path / "ancestor"
     ancestor.mkdir()
     (ancestor / ".bantamkit").mkdir()
-    (ancestor / ".bantamkit" / "memory").write_text("not a directory")
+    (ancestor / ".bantamkit" / "memory").write_text("not a directory", encoding="utf-8")
 
     start = ancestor / "src"
     start.mkdir()
@@ -111,7 +113,7 @@ def test_load_grants_config_as_directory_raises(tmp_path):
 
 def test_load_grants_no_extra_stores_key_is_empty(tmp_path):
     store = _mkstore(tmp_path / "companyA")
-    (store.parent / "config.yaml").write_text("some_other_key: value\n")
+    (store.parent / "config.yaml").write_text("some_other_key: value\n", encoding="utf-8")
     assert load_grants(store) == []
 
 
@@ -137,7 +139,7 @@ def test_load_grants_symlinked_store_reads_adjacent_config(tmp_path):
 
     other_store = _mkstore(tmp_path / "other")
     (proj / ".bantamkit" / "config.yaml").write_text(
-        "extra_stores:\n  - ../../other/.bantamkit/memory\n"
+        "extra_stores:\n  - ../../other/.bantamkit/memory\n", encoding="utf-8"
     )
 
     result = load_grants(discover_project_store(proj))

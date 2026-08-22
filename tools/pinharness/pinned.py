@@ -106,7 +106,7 @@ class Claim:
 
 
 def load_ledger(p: Path) -> list[Claim]:
-    raw = json.loads(p.read_text())
+    raw = json.loads(p.read_text(encoding="utf-8"))
     claims = [Claim(**c) for c in raw["claims"]]
     ids = [c.cid for c in claims]
     if len(set(ids)) != len(ids):
@@ -140,7 +140,9 @@ def run(cmd: list[str], cwd: Path, env: dict | None = None) -> subprocess.Comple
     e = dict(os.environ)
     if env:
         e.update(env)
-    return subprocess.run(cmd, cwd=cwd, env=e, capture_output=True, text=True, check=False)
+    return subprocess.run(
+        cmd, cwd=cwd, env=e, capture_output=True, text=True, encoding="utf-8", check=False
+    )
 
 
 def make_worktree(repo: Path, commit: str, dest: Path) -> None:
@@ -156,7 +158,7 @@ def drop_worktree(repo: Path, dest: Path) -> None:
 
 def apply_mutation(wt: Path, c: Claim) -> None:
     f = wt / c.path
-    text = f.read_text()
+    text = f.read_text(encoding="utf-8")
     for idx, (anchor, replacement) in enumerate(c.edit_list()):
         n = text.count(anchor)
         if n == 0:
@@ -171,7 +173,7 @@ def apply_mutation(wt: Path, c: Claim) -> None:
         if after == text:
             raise MutationError(f"{c.cid}: edit {idx} produced identical text")
         text = after
-    f.write_text(text)
+    f.write_text(text, encoding="utf-8")
 
 
 def revert(wt: Path, path: str) -> None:
@@ -207,7 +209,7 @@ def assert_anchors_apply(wt: Path, claims: list[Claim]) -> None:
     """
     stale = []
     for c in claims:
-        text = (wt / c.path).read_text()
+        text = (wt / c.path).read_text(encoding="utf-8")
         for index, (anchor, _replacement) in enumerate(c.edit_list()):
             n = text.count(anchor)
             if n != 1:
@@ -433,7 +435,7 @@ def report(rows, out: Path | None, commit: str, baseline: str) -> int:
 
     text = "\n".join(lines) + "\n"
     if out:
-        out.write_text(text)
+        out.write_text(text, encoding="utf-8")
         print(f"\nwrote {out}")
     counts = {s: sum(1 for _, st, _, _ in rows if st == s) for s in (PINNED, UNPINNED, FALSE_PINNED, BROKEN)}
     print(f"\nbehaviour-pinned {bh}/{bt} ({bp:.0f}%) · prose-pinned {ph}/{pt} ({pp:.0f}%)")

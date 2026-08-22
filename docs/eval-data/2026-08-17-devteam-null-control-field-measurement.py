@@ -55,7 +55,9 @@ def _import_bantamkit(root: Path):
 def manifest(root: Path) -> dict:
     import yaml
 
-    return yaml.safe_load((root / "assets" / "evals" / "devteam" / "manifest.yaml").read_text())
+    return yaml.safe_load((root / "assets" / "evals" / "devteam" / "manifest.yaml").read_text(
+        encoding="utf-8"
+    ))
 
 
 def tool_sequence(task: dict) -> list[tuple[str, str | None]]:

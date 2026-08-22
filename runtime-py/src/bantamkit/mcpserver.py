@@ -361,7 +361,7 @@ def build_server(memory: Memory) -> Any:
         path = assets_root() / "rubrics" / f"{name}.yaml"
         if not path.is_file():
             raise ResourceError(f"unknown rubric asset: {name}")
-        return path.read_text()
+        return path.read_text(encoding="utf-8")
 
     return server
 

@@ -32,7 +32,7 @@ def test_save_writes_fact_file_and_index(store):
     assert result == SaveResult(status="saved", name="deploy-command")
     fact_file = store.root / "facts" / "deploy-command.md"
     assert fact_file.exists()
-    text = fact_file.read_text()
+    text = fact_file.read_text(encoding="utf-8")
     assert "type: project" in text and "make ship-prod" in text
     assert "- [[deploy-command]] (project) — how we deploy to prod" in store.index_text()
 
@@ -57,7 +57,7 @@ def test_save_same_name_updates_without_duplicate_flag(store):
     store.save("project", "deploy-command", "how we deploy to prod", "old")
     result = store.save("project", "deploy-command", "how we deploy to prod", "new")
     assert result.status == "saved"
-    assert "new" in (store.root / "facts" / "deploy-command.md").read_text()
+    assert "new" in (store.root / "facts" / "deploy-command.md").read_text(encoding="utf-8")
 
 
 def test_save_enforces_index_budget(tmp_path):
@@ -75,7 +75,9 @@ def test_recall_returns_topk_and_stamps(store):
     store.save("reference", "ci-dashboard", "link to the ci dashboard", "https://ci")
     facts = store.recall("how do we deploy prod", k=1)
     assert [f.name for f in facts] == ["deploy-command"]
-    assert "last_recalled: '2026-08-06'" in (store.root / "facts" / "deploy-command.md").read_text()
+    assert "last_recalled: '2026-08-06'" in (store.root / "facts" / "deploy-command.md").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_recall_no_match_returns_empty(store):
@@ -320,7 +322,7 @@ def test_the_index_file_on_disk_tracks_the_facts(tmp_path, op):
         store.index_budget = 100_000
         store.restore("gone-fact")
 
-    on_disk = (store.root / "index.md").read_text()
+    on_disk = (store.root / "index.md").read_text(encoding="utf-8")
     assert on_disk == store.index_text()
     assert "kept-fact" in on_disk
     assert ("gone-fact" in on_disk) is (op != "compact")
@@ -331,7 +333,9 @@ def test_restore_of_an_unknown_or_live_name_is_a_validation_error(tmp_path):
     store.save("project", "live-fact", "a subject in use", "b")
     with pytest.raises(MemoryValidationError, match="no archived fact"):
         store.restore("never-existed")
-    (store.root / "archive" / "live-fact.md").write_text("---\nname: live-fact\n---\n\nb\n")
+    (store.root / "archive" / "live-fact.md").write_text(
+        "---\nname: live-fact\n---\n\nb\n", encoding="utf-8"
+    )
     with pytest.raises(MemoryValidationError, match="already live"):
         store.restore("live-fact")
 
@@ -359,7 +363,7 @@ def test_a_fact_saved_before_created_existed_is_dated_by_its_file_not_evicted_fi
             f"---\nname: {name}\ndescription: {_describe(name)}\n"
             f"type: project\nlast_recalled: null\nlinks: []\n---\n\nbody\n"
         )
-        (store.root / "facts" / f"{name}.md").write_text(legacy)
+        (store.root / "facts" / f"{name}.md").write_text(legacy, encoding="utf-8")
         assert "created" not in legacy
     old = time.mktime(datetime(2025, 3, 4).timetuple())
     os.utime(store.root / "facts" / f"{stale_name}.md", (old, old))
@@ -376,14 +380,15 @@ def test_created_is_persisted_on_the_next_write_of_a_legacy_fact(tmp_path):
     store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-21")
     (store.root / "facts" / "legacy-fact.md").write_text(
         "---\nname: legacy-fact\ndescription: an alpha subject\n"
-        "type: project\nlast_recalled: null\nlinks: []\n---\n\nbody\n"
+        "type: project\nlast_recalled: null\nlinks: []\n---\n\nbody\n",
+        encoding="utf-8",
     )
     old = time.mktime(datetime(2025, 3, 4).timetuple())
     os.utime(store.root / "facts" / "legacy-fact.md", (old, old))
 
     store.recall("alpha subject")  # any write of the fact carries the derived date through
 
-    text = (store.root / "facts" / "legacy-fact.md").read_text()
+    text = (store.root / "facts" / "legacy-fact.md").read_text(encoding="utf-8")
     assert "created: '2025-03-04'" in text
     # and it survives an mtime the migration would now read differently
     os.utime(store.root / "facts" / "legacy-fact.md", None)
@@ -435,7 +440,7 @@ def test_memory_component_compact_reports_the_names_and_the_arithmetic(tmp_path)
 def test_lint_catches_drifted_frontmatter(tmp_path):
     store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-06")
     # Write a drifted fact file with invalid frontmatter (empty, so yaml.safe_load returns None)
-    (store.root / "facts" / "drifted.md").write_text("---\n---\n\nbody\n")
+    (store.root / "facts" / "drifted.md").write_text("---\n---\n\nbody\n", encoding="utf-8")
     with pytest.raises(MemoryValidationError, match="frontmatter is not a mapping"):
         store.lint()
 
@@ -465,10 +470,10 @@ def test_save_creates_dirs_lazily_for_create_false_store(tmp_path):
 def test_recall_stamp_false_leaves_files_unchanged(tmp_path):
     store = MemoryStore(tmp_path / "m", today=lambda: "2026-08-07")
     store.save("project", "deploy-cmd", "how to deploy", "make ship")
-    before = (tmp_path / "m" / "facts" / "deploy-cmd.md").read_text()
+    before = (tmp_path / "m" / "facts" / "deploy-cmd.md").read_text(encoding="utf-8")
     hits = store.recall("deploy", stamp=False)
     assert [f.name for f in hits] == ["deploy-cmd"]
-    assert (tmp_path / "m" / "facts" / "deploy-cmd.md").read_text() == before
+    assert (tmp_path / "m" / "facts" / "deploy-cmd.md").read_text(encoding="utf-8") == before
 
 
 def test_public_save_recall_round_trip(tmp_path):
@@ -544,7 +549,7 @@ def test_snapshot_leaves_save_semantics_untouched(store):
         result = store.save("project", "db-port", "port the database listens on", "6543")
     assert result.status == "saved"
     assert sorted(p.name for p in (store.root / "facts").glob("*.md")) == ["db-port.md"]
-    assert "6543" in (store.root / "facts" / "db-port.md").read_text()
+    assert "6543" in (store.root / "facts" / "db-port.md").read_text(encoding="utf-8")
 
 
 def test_snapshot_stamp_never_writes_pinned_content_back(store):
@@ -553,7 +558,7 @@ def test_snapshot_stamp_never_writes_pinned_content_back(store):
     with store.snapshot():
         store.save("project", "db-port", "port the database listens on", "6543")
         store.recall("database port", k=1)
-    text = (store.root / "facts" / "db-port.md").read_text()
+    text = (store.root / "facts" / "db-port.md").read_text(encoding="utf-8")
     assert "6543" in text and "5432" not in text
     assert "last_recalled: '2026-08-06'" in text
 
@@ -578,7 +583,7 @@ def test_snapshot_restores_live_reads_on_exit_even_after_an_error(store):
 def test_snapshot_of_an_unreadable_store_falls_back_to_live_reads(tmp_path):
     """Pinning is an isolation nicety; a corrupt store must still raise where it always did."""
     store = MemoryStore(tmp_path / "mem")
-    (store.root / "facts" / "broken.md").write_text("no frontmatter at all")
+    (store.root / "facts" / "broken.md").write_text("no frontmatter at all", encoding="utf-8")
     with store.snapshot():
         with pytest.raises(MemoryValidationError):
             store.recall("anything")
@@ -685,7 +690,9 @@ def test_lint_exit_code_flips_exactly_at_the_budget_not_near_it(tmp_path, capsys
 def test_lint_names_the_malformed_fact_rather_than_the_budget(tmp_path, capsys):
     store = MemoryStore(tmp_path / "mem")
     _fill(store, 1)
-    (store.root / "facts" / "broken.md").write_text("no frontmatter at all")
+    (store.root / "facts" / "broken.md").write_text(
+        "no frontmatter at all", encoding="utf-8"
+    )
     code, _, err = _run(["lint", "--store", str(store.root)], capsys)
     assert code == 1
     assert "budget" not in err.lower(), err
@@ -831,6 +838,7 @@ def test_the_entry_point_runs_as_a_real_subprocess(tmp_path):
         [sys.executable, "-m", "bantamkit.memory", "status", "--store", str(store.root)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env={**os.environ, "PYTHONPATH": str(src)},
     )
     assert proc.returncode == 0, proc.stderr

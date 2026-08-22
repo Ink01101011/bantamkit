@@ -106,7 +106,7 @@ class _Session:
             text=True,
             bufsize=1,
             cwd=str(cwd),
-            env=env,
+            env=env, encoding="utf-8",
         )
         self._id = 0
 
@@ -347,10 +347,12 @@ def test_two_builds_under_one_version_string_are_told_apart_over_the_protocol(
     """
     tree = _tree(tmp_path, "kfloor-reverted")
     component = tree / "runtime-py" / "src" / "bantamkit" / "memory" / "component.py"
-    source = component.read_text()
+    source = component.read_text(encoding="utf-8")
     floored = "budget = self.k if k is None else max(k, self.k)"
     assert floored in source, "the RB-P1 k-floor moved; this mutation no longer means CAL-2"
-    component.write_text(source.replace(floored, "budget = self.k if k is None else k", 1))
+    component.write_text(
+        source.replace(floored, "budget = self.k if k is None else k", 1), encoding="utf-8"
+    )
 
     mutant = _identity_of(_import_path(tree), tmp_path)
 
@@ -372,7 +374,10 @@ def test_a_change_no_behavioural_probe_could_see_is_still_a_different_build(pris
     """
     tree = _tree(tmp_path, "comment-only")
     target = tree / "runtime-py" / "src" / "bantamkit" / "textutil.py"
-    target.write_text(target.read_text() + "\n# a comment that changes no behaviour\n")
+    target.write_text(
+        target.read_text(encoding="utf-8") + "\n# a comment that changes no behaviour\n",
+        encoding="utf-8",
+    )
 
     mutant = _identity_of(_import_path(tree), tmp_path)
 
@@ -391,7 +396,10 @@ def test_an_asset_only_change_moves_the_build_id_on_its_own(pristine, tmp_path):
     tree = _tree(tmp_path, "asset-only")
     contract = tree / "assets" / "contracts" / "default.yaml"
     assert contract.is_file(), "the asset this node edits moved; pick another and say so"
-    contract.write_text(contract.read_text() + "\n# edited by test_build_identity\n")
+    contract.write_text(
+        contract.read_text(encoding="utf-8") + "\n# edited by test_build_identity\n",
+        encoding="utf-8",
+    )
 
     mutant = _identity_of(_import_path(tree), tmp_path)
 

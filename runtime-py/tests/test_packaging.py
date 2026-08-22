@@ -73,7 +73,8 @@ def _build(cwd: Path, target: str, outdir: Path) -> Build:
     outdir.mkdir(parents=True, exist_ok=True)
     code = f"import hatchling.build as b; print(b.build_{target}({str(outdir)!r}))"
     proc = subprocess.run(
-        [sys.executable, "-c", code], cwd=cwd, capture_output=True, text=True, check=False
+        [sys.executable, "-c", code], cwd=cwd, capture_output=True, text=True, check=False,
+        encoding="utf-8",
     )
     if proc.returncode != 0:
         return Build(proc.returncode, proc.stderr, None)

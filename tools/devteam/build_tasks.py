@@ -29,14 +29,14 @@ TOOLS = ["read_file", "list_files"]
 
 
 def load_manifest(asset: Path = ASSET) -> dict:
-    return yaml.safe_load((asset / "manifest.yaml").read_text())
+    return yaml.safe_load((asset / "manifest.yaml").read_text(encoding="utf-8"))
 
 
 def load_repo(asset: Path = ASSET, root: str = "repo") -> dict[str, str]:
     """Every file under `repo/`, keyed by its repo-relative posix path."""
     base = asset / root
     return {
-        str(p.relative_to(base).as_posix()): p.read_text()
+        str(p.relative_to(base).as_posix()): p.read_text(encoding="utf-8")
         for p in sorted(base.rglob("*"))
         if p.is_file()
     }
@@ -79,14 +79,14 @@ def build(asset: Path = ASSET, write: bool = True) -> dict[str, str]:
         target = asset / "tasks"
         target.mkdir(parents=True, exist_ok=True)
         for name, text in out.items():
-            (target / f"{name}.yaml").write_text(text)
+            (target / f"{name}.yaml").write_text(text, encoding="utf-8")
     return out
 
 
 def check(asset: Path = ASSET) -> int:
     expected = build(asset, write=False)
     target = asset / "tasks"
-    on_disk = {p.stem: p.read_text() for p in sorted(target.glob("*.yaml"))}
+    on_disk = {p.stem: p.read_text(encoding="utf-8") for p in sorted(target.glob("*.yaml"))}
     drifted = sorted(set(expected) ^ set(on_disk)) + sorted(
         name for name in expected if name in on_disk and on_disk[name] != expected[name]
     )

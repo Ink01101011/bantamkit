@@ -56,6 +56,65 @@ testpaths = ["tests"]
 # that they assert facts about the world (RB-P14 Gate 2), which is filed, not fixed.
 xfail_strict = true
 
+# W1, 2026-08-22. The Windows-portability class: 259 executing call sites opened a text
+# file without naming an encoding, so what they read was `locale.getencoding()` -- utf-8
+# here, cp1252/cp932/cp936 on a Windows runner. This filter is the half of the gate that
+# TURNS A VIOLATION RED. It is not the whole gate and on its own it is VACUOUS, because
+# `EncodingWarning` is only ever emitted when the interpreter was started with
+# `-X warn_default_encoding` / `PYTHONWARNDEFAULTENCODING=1`.
+#
+# MEASURED: `-X` cannot be delivered from here. `addopts = "-X warn_default_encoding"`
+# makes pytest exit 4 with `error: unrecognized arguments: -X` -- it is an interpreter
+# flag, parsed before pytest exists, not a pytest flag. So the emitting half lives in the
+# environment (`env: PYTHONWARNDEFAULTENCODING` in .github/workflows/ci.yml) and
+# `tests/test_encoding_gate.py` is what stops that env line from being deleted silently.
+# W14, 2026-08-22. THE SECOND FAILING HALF, and unlike W1's it needs no second file.
+#
+# WHAT IT CATCHES. On Windows `subprocess` decodes a captured stream inside a DAEMON
+# READER THREAD (`_readerthread`, subprocess.py:1599, `buffer.append(fh.read())`). A
+# `UnicodeDecodeError` there dies WITH THE THREAD: the `join()` returns normally, the
+# buffer is left empty, and `communicate()` hands back `stdout=None` beside an intact
+# `returncode` and an intact `stderr`. pytest notices -- `threadexception.py` turns it
+# into `PytestUnhandledThreadExceptionWarning` -- and then files it in the warnings
+# summary, where a node that never touches the lost stream STAYS GREEN.
+#
+# MEASURED, CI run 32555258828, windows-latest 3.11 and 3.12, 6 dead reader threads per
+# job on 6 nodes -- and ON THAT RUN THIS LINE WOULD HAVE CAUGHT NOTHING NEW. All six
+# landed on nodes that were ALREADY RED (5 FAILED + 1 ERROR at setup). The gate's value
+# on that particular run was zero, and the sentence that used to stand here said the
+# opposite.
+#
+# WHAT USED TO STAND HERE, AND WHY IT IS GONE (`RB-P102`). It claimed the sixth node,
+# `test_amendguard.py::test_a_pointer_fix_bundled_with_anything_else_is_pointer_not_isolated`,
+# REPORTED PASS while its fixture read rows from the `--out` file. Both halves are false:
+# that node ERRORED at setup -- it is one of the run's 20 errors -- and its fixture at
+# `f2b9078` passes no `--out` at all and builds every row from `r.stdout.splitlines()`,
+# which is precisely the `AttributeError` in the traceback. The author searched the
+# `FAILED` list, did not find the node there, and inferred a pass -- the same log-reading
+# trap that unit had been sent to correct, committed into a justification comment one
+# round later. Recorded rather than quietly deleted, because the failure mode is the
+# point: an anecdote is the part of a justification nobody re-derives.
+#
+# SO WHY KEEP THE LINE. Not for the anecdote -- for the mechanism above, which is real
+# and is pinned by `tests/test_thread_exception_gate.py` measured in both directions
+# (remove this string and 2 nodes go red; weaken `error::` to `default::` and the same 2
+# go red). A dead capture thread CAN leave a node green whenever the node's assertions
+# do not depend on the stream that was lost. That has not yet been observed here; the
+# gate is armed against it rather than after it, and this comment now says which.
+#
+# WHY HERE AND NOT ON THE `Test` LINE IN .github/workflows/ci.yml. W1's gate had to be
+# split across two files because its emitting half is `-X warn_default_encoding`, an
+# INTERPRETER flag that pytest's `addopts` cannot carry (it exits 4 on it). THAT
+# CONSTRAINT DOES NOT APPLY HERE: pytest's `threadexception` plugin emits this warning
+# unconditionally, with no flag, so there is no emitting half to place and only the
+# failing half exists. Putting it in the workflow instead would arm it in CI ONLY -- and
+# a developer reproducing a Windows failure locally would get the same silent green that
+# hid the sixth node for a whole job. One list, one behaviour, every machine.
+filterwarnings = [
+    "error::EncodingWarning",
+    "error::pytest.PytestUnhandledThreadExceptionWarning",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

@@ -194,7 +194,7 @@ def _resolve_ref() -> str:
     try:
         return subprocess.run(
             ["git", "-C", str(REPO), "rev-parse", "--short", HYGIENE_REF],
-            capture_output=True, text=True, timeout=30, check=True).stdout.strip()
+            capture_output=True, text=True, timeout=30, check=True, encoding="utf-8").stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return ""
 
@@ -204,7 +204,7 @@ def _grep_ref(pattern: str) -> tuple[bool, list[str]]:
     try:
         out = subprocess.run(
             ["git", "-C", str(REPO), "show", HYGIENE_REF + ":docs/eval.md"],
-            capture_output=True, text=True, timeout=30, check=True).stdout
+            capture_output=True, text=True, timeout=30, check=True, encoding="utf-8").stdout
     except (OSError, subprocess.SubprocessError):
         return False, []
     found = sorted(set(re.findall(pattern, out)),

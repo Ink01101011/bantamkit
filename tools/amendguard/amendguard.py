@@ -176,7 +176,11 @@ class Broken(RuntimeError):
 # --------------------------------------------------------------------------------------
 def git(repo: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=False
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
     )
 
 
@@ -463,7 +467,7 @@ def severity_key(kind: str) -> int:
 
 
 def load_ledger(p: Path) -> list[str]:
-    raw = json.loads(p.read_text())
+    raw = json.loads(p.read_text(encoding="utf-8"))
     pats = raw.get("amend_only")
     if not pats or not all(isinstance(x, str) and x.strip() for x in pats):
         raise ValueError(str(p) + ": `amend_only` must list at least one path pattern")
@@ -694,7 +698,7 @@ def build_fixture(dest: Path) -> dict[str, str]:
 
     def g(*args: str) -> None:
         r = subprocess.run(["git", "-C", str(dest), *args], capture_output=True, text=True,
-                           env=env, check=False)
+                           env=env, check=False, encoding="utf-8")
         if r.returncode:
             raise Broken("fixture: git " + " ".join(args) + " -> " + r.stderr.strip())
 
@@ -705,28 +709,28 @@ def build_fixture(dest: Path) -> dict[str, str]:
         for op in spec["ops"]:
             f = dest / op["path"]
             if "write" in op:
-                f.write_text(op["write"])
+                f.write_text(op["write"], encoding="utf-8")
             elif "append" in op:
-                f.write_text(f.read_text() + op["append"])
+                f.write_text(f.read_text(encoding="utf-8") + op["append"], encoding="utf-8")
             else:
                 anchor, replacement = op["sub"]
-                text = f.read_text()
+                text = f.read_text(encoding="utf-8")
                 n = text.count(anchor)
                 if n != 1:
                     raise Broken("fixture " + spec["label"] + ": anchor appears " + str(n)
                                  + "x in " + op["path"] + " — the fixture is stale")
-                f.write_text(text.replace(anchor, replacement))
+                f.write_text(text.replace(anchor, replacement), encoding="utf-8")
             g("add", "--", op["path"])
         g("commit", "-q", "-m", spec["label"])
         labels[spec["label"]] = subprocess.run(
             ["git", "-C", str(dest), "rev-parse", "HEAD"], capture_output=True, text=True,
-            env=env, check=True).stdout.strip()
+            env=env, check=True, encoding="utf-8").stdout.strip()
     return labels
 
 
 def fixture_ledger_path(dest: Path) -> Path:
     p = dest.parent / "fixture-ledger.json"
-    p.write_text(json.dumps(FIXTURE_LEDGER, indent=2) + "\n")
+    p.write_text(json.dumps(FIXTURE_LEDGER, indent=2) + "\n", encoding="utf-8")
     return p
 
 
@@ -838,7 +842,8 @@ def _fields(text: str) -> list[str]:
 
 def calibrate(keep: Path | None = None) -> int:
     here = Path(__file__).resolve()
-    expectations = json.loads((here.parent / "calibration.json").read_text())["expect"]
+    calibration = here.parent / "calibration.json"
+    expectations = json.loads(calibration.read_text(encoding="utf-8"))["expect"]
     # RESOLVED, AND THE SWEEP'S OWN VACUITY DETECTOR DEPENDS ON IT. Every mutant runs
     # through `main()`, which does `args.repo.resolve()`; the baseline below is built
     # in-process from this path as given. On macOS `tempfile.mkdtemp()` returns
@@ -890,7 +895,7 @@ def calibrate(keep: Path | None = None) -> int:
     print("# mutation sweep — one mutation per DECISION BRANCH, effect measured on the")
     print("# checker's printed VERDICT/SUMMARY fields and on nothing else.")
     print()
-    source = here.read_text()
+    source = here.read_text(encoding="utf-8")
     # THE CATALOGUE QUOTES ITS OWN ANCHORS. Counting over the whole file finds every
     # anchor twice — once in the code it is meant to reach and once in the MUTATIONS
     # literal below — and a mutation applied to both edits the catalogue rather than the
@@ -907,9 +912,12 @@ def calibrate(keep: Path | None = None) -> int:
             coverage.append((mut, "STALE", "anchor appears " + str(n) + "x above the catalogue"))
             continue
         mutated = tmp / ("mutant-" + mut["id"] + ".py")
-        mutated.write_text(code.replace(mut["anchor"], mut["replacement"]) + marker + catalogue)
+        mutated.write_text(
+            code.replace(mut["anchor"], mut["replacement"]) + marker + catalogue,
+            encoding="utf-8",
+        )
         r = subprocess.run([sys.executable, str(mutated), "check", str(fixture), "HEAD", str(ledger)],
-                           capture_output=True, text=True, check=False)
+                           capture_output=True, text=True, check=False, encoding="utf-8")
         if r.returncode not in (0, 1, 3):
             coverage.append((mut, "BROKEN", "the mutant did not run: " + r.stderr.strip()[-200:]))
             continue
@@ -991,7 +999,7 @@ def main() -> int:
     text, rc = render(rows, notes, repo, args.rev_range, patterns)
     print(text, end="")
     if args.out:
-        args.out.write_text(text)
+        args.out.write_text(text, encoding="utf-8")
         print("# wrote " + str(args.out))
     return rc
 

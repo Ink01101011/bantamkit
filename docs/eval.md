@@ -12302,4 +12302,562 @@ What gets no number:
 the measurements above; without `PYTHONPATH` it resolves to the canonical checkout, and every
 figure in this section would have been a figure about a tree this branch does not own.
 
+#### AH (2026-08-22) — Windows CI goes from never-run to green in one shift; the encoding class a linter could see 5.79% of is closed and the linter now sees none of it; and the unit sent to correct a log-reading miss made the same miss, about the same six lines, one round later
+
+Job 31, fifteen units, PR #64 at `99016f8`. This section is the only write to
+`docs/eval.md` in the job — every other unit held the docs layer, deliberately, and handed
+its findings here. It records four things: what the four-job matrix measured, what the 46
+red nodes actually were, what the three skips cost, and — the part this document exists
+for — the five corrections units made to briefs they were handed, one of which is a
+correction to a correction and is made here, against the run that was cited for it.
+
+##### AH.1 The run: never-executed to green, in four readings
+
+**Windows CI had never run against this repository before 2026-08-21.** Not once. The
+matrix was `ubuntu-latest` only, and every portability claim in this document before today
+is a claim about a platform nobody had measured.
+
+<!-- provenance: value=four CI readings taken in order: probe round 1 (32507201510) windows-latest 3.11 `1 error in 4.26s` and 3.12 `1 error in 4.54s` against ubuntu `1483 passed, 3 skipped, 2 xfailed`; probe round 2 behind the mask (32508028806) windows both `61 failed, 1422 passed, 3 skipped, 2 xfailed`; armed matrix (32555258828, f2b9078) ubuntu both `1688 passed, 3 skipped, 2 xfailed` and windows both `26 failed, 1639 passed, 6 skipped, 2 xfailed, 6 warnings, 20 errors`; green (32560032687, 99016f8) ubuntu both `1709 passed, 3 skipped, 2 xfailed` and windows both `1706 passed, 6 skipped, 2 xfailed`; commit=99016f8; command=gh run view <id> --log, summary lines extracted per job -->
+
+```
+    reading                              ubuntu 3.11/3.12       windows 3.11/3.12
+    probe round 1   32507201510          1483 p, 3 s, 2 xf      1 error in 4.26s / 4.54s
+    probe round 2   32508028806  MASKED  1483 p, 3 s, 2 xf      61 F, 1422 p, 3 s, 2 xf
+    armed matrix    32555258828  f2b9078 1688 p, 3 s, 2 xf      26 F, 1639 p, 6 s, 2 xf, 20 E
+    green           32558709489  389e36a 1702 p, 3 s, 2 xf      1699 p, 6 s, 2 xf
+    green           32560032687  99016f8 1709 p, 3 s, 2 xf      1706 p, 6 s, 2 xf
+```
+
+**Round 1 established exactly one fact and that is the whole finding about it.** Both
+Windows jobs died during COLLECTION in about four seconds, on the first non-ASCII byte
+read through an unencoded text `open()` under cp1252. A collection error is a report with
+one bit in it: the suite did not start. Everything behind that byte was unmeasured, and
+`1 error in 4.26s` is what an unarmed portability claim looks like when it is finally asked
+a question.
+
+<!-- provenance: value=the masked probe round, CI run 32508028806: windows-latest 3.11 summarises `61 failed, 1422 passed, 3 skipped, 2 xfailed in 157.08s` and 3.12 the same counts in 150.70s, against ubuntu-latest `1483 passed, 3 skipped, 2 xfailed`, all four reconciling to 1488 collected; the mask is `PYTHONUTF8: "1"` plus `--continue-on-collection-errors`, both still present on probe/windows-ci at 4c5f93f; commit=99016f8; command=gh run view 32508028806 --log ; git show origin/probe/windows-ci:.github/workflows/ci.yml -->
+**Round 2 is a masked reading and is recorded as one.** `PYTHONUTF8=1` plus
+`--continue-on-collection-errors` bought a number — `61 failed` — at the cost of measuring
+an interpreter no user runs. **The mask never merged.** It is the `61` everyone quoted for
+a day, and it is not evidence about the code that runs on `main`: it was taken before the
+nine Phase-1 fixes landed.
+
+**The last two rows are the product.** Both green readings reconcile: `1709 + 3 + 2` and
+`1706 + 6 + 2` are both **1714**, one collection on both platforms, and Windows' three
+extra skips are exactly the three `windows_cannot_construct` marks of `§AH.4`.
+
+**Vacuity check, applied and passed.** Four green jobs are only evidence if the Windows
+steps could have gone red, so the colour was not read — the log was.
+
+<!-- provenance: value=over the complete log of run 32560032687, grep -c reads 0 for each of PytestUnhandledThreadExceptionWarning, UnicodeDecodeError, EncodingWarning, `warnings summary`, `FAILED ` and `ERROR `, while all four Test steps printed a pytest summary line with a nonzero passed count; the same greps over 32555258828 read 24, 120, 0, 2, 26x2 and 20x2, so the greps are not inert; commit=99016f8; command=gh run view 32560032687 --log | grep -c <pattern> -->
+
+```
+    every job printed a real pytest summary with a nonzero passed count   YES
+    PytestUnhandledThreadExceptionWarning                                 0
+    UnicodeDecodeError                                                    0
+    EncodingWarning                                                       0
+    warnings summary                                                      0
+    FAILED / ERROR                                                        0 / 0
+```
+
+The same six greps over the armed-matrix log return non-zero, which is what stops this
+table from being six greps that cannot fire.
+
+##### AH.2 The 46, and the one with no owner
+
+The armed matrix produced 46 red nodes per Windows job, **byte-identical on 3.11 and
+3.12**, so the platform is the only axis. They live in two files and the split is not the
+one the orchestrator handed out.
+
+<!-- provenance: value=run 32555258828, windows-latest 3.11 and 3.12, both summarising `26 failed, 1639 passed, 6 skipped, 2 xfailed, 6 warnings, 20 errors`; counting the 3.11 job's short-test-summary lines by file gives FAILED 22 test_criticreplay + 4 test_amendguard and ERROR 20 test_amendguard + 0 test_criticreplay, so the 46 splits 22 / 24 and the 24 are one module-scoped fixture failure replayed onto every node requesting it; commit=99016f8; command=gh run view 32555258828 --log | grep -oE '(FAILED|ERROR) runtime-py.tests.test_[a-z]+[.]py' | sort | uniq -c -->
+```
+    26 failed  =  22 test_criticreplay  +   4 test_amendguard
+    20 errors  =   0 test_criticreplay  +  20 test_amendguard
+    -----------------------------------------------------------
+    46         =  22 criticreplay       +  24 amendguard
+```
+
+The 24 amendguard nodes are **one defect, not 24**: a module-scoped fixture failed and its
+failure was replayed onto every node that requested it. The 22 criticreplay nodes are the
+genuine platform readings — 18 `UnicodeDecodeError` on bytes `0x97` and `0xa7` (cp1252 for
+em-dash and section-sign) where a child wrote its stdout in the runner's locale and the
+parent read it back as UTF-8; 1 `OSError [Errno 22]`; 2 `[WinError 183]`; 1 `TypeError`.
+
+**Four fix classes closed them**, each in its own layer, and the layer is the interesting
+part: only one of the four is a runtime change.
+
+```
+    W12  the child-stream codec pin        tests   f014082   PYTHONIOENCODING before **extra
+    W13  the EINVAL broken-pipe predicate  SOURCE  b734aa3   + 3 test commits
+    W15  the amendguard capture pin        tests   f5b0be3 2a498f2 389e36a
+    W14  the earned-4 cell + thread gate   ci+test 5a83d1d 4ba6fd9 99016f8
+```
+
+##### AH.3 The encoding class, measured and not grepped — and the linter that gets worse as the code gets better
+
+The class: a text file opened without naming an encoding reads `locale.getencoding()` —
+UTF-8 on the authoring machine, cp1252 on a Windows runner. **The population was measured
+by running the suite, not by grepping it.**
+
+<!-- provenance: value=W1's BEFORE measurement, relayed: `-X warn_default_encoding` over the suite reported 259 distinct executing call sites firing 11,373 warnings, split 213 tests / 28 shipped runtime / 17 tools / 1 docs, where a static grep said 277 and missed subprocess.run(text=True); INDEPENDENTLY RE-MEASURED HERE on the AFTER tree with a pytest_warning_recorded plugin under PYTHONWARNDEFAULTENCODING=1 and -W default::EncodingWarning: total=1 warning at 1 distinct site, runtime-py/tests/test_encoding_gate.py:276, which is the gate's own `# gate: deliberate violation`; commit=99016f8; command=PYTHONWARNDEFAULTENCODING=1 PYTHONPATH=$PWD/runtime-py/src pytest runtime-py/tests -q -p w11count -W default::EncodingWarning -->
+
+```
+    BEFORE (W1, relayed)   executing call sites      259     warnings fired  11,373
+                           static grep said          277     and missed subprocess.run(text=True)
+    AFTER  (re-measured)   executing call sites        1     warnings fired       1
+                           the one site: test_encoding_gate.py:276, the deliberate violation
+```
+
+**The AFTER figure is the one this section vouches for**, because it was taken here: with
+the emitting half armed, the entire suite now raises exactly one `EncodingWarning`, and it
+is the one the gate performs on purpose in order to prove it bites. The class is closed,
+not masked — a masked run would show zero, and zero is the reading that cannot tell a fix
+from a filter.
+
+**The linter's coverage is 15 of 259, and its coverage is inversely correlated with code
+quality.** `ruff --preview --select PLW1514` flags a site only when the receiver is
+syntactically `Path(...)`: `filegraph.py:210 Path(path).write_text(...)` is flagged,
+`memory/store.py:137 path.read_text()` is not.
+
+<!-- provenance: value=ruff 0.16.1 --preview --select PLW1514 --isolated, counted by grep -c on the rule NAME (concise output prints `unspecified-encoding`, not the code — counting the code returns 0 and is the trap): 27 findings on a git archive export of the pre-sweep tree cbde819, split 9 docs/eval-data, 9 runtime-py/tests, 5 runtime-py/src, and 1 each in tools/amendguard, tools/mcpdrift, tools/pinharness, tools/shiftwork; 0 findings on the worktree at 99016f8; a three-line control file confirms the rule fires on open(), on Path(x).read_text() and on a variable bound to Path(); the 15-of-259 overlap is W1's and is relayed; commit=99016f8; command=ruff check --preview --select PLW1514 --no-cache --output-format=concise --isolated <tree> | grep -c unspecified-encoding -->
+
+```
+    ruff PLW1514, pre-sweep tree cbde819       27 findings
+    ruff PLW1514, this branch 99016f8           0 findings
+    of the 27, also among the 259 (W1)         15   ->  coverage 15/259 = 5.79%
+```
+
+<!-- provenance: value=`ruff check runtime-py` reports `All checks passed!` on this tree at 99016f8, and reported the same on the pre-sweep ancestor cbde819 which carries 27 PLW1514 findings — the rule is preview-gated and absent from this repository's select list, so the default invocation was silent about all 27; the per-file "four executing violations" figure is W1's and is RELAYED, not re-derived here; commit=99016f8; command=ruff check runtime-py ; ruff check --preview --select PLW1514 --no-cache --isolated <tree> -->
+**Both ruff figures were re-taken here and both reproduce.** 27 before, 0 after. And the
+27 is the whole indictment: a tool that reports `All checks passed!` on a file holding four
+executing violations is not a gate, it is a second opinion that agrees with you. **The
+better the code gets at binding paths to variables, the less of this class ruff can see.**
+
+**The real gate is two files, and it has to be.** `PYTHONWARNDEFAULTENCODING=1` in the CI
+job env emits; `filterwarnings = ["error::EncodingWarning"]` in `runtime-py/pyproject.toml`
+refuses. The split is forced, not stylistic: `-X warn_default_encoding` is an interpreter
+flag and `addopts` cannot carry it — pytest exits 4 on it. `tests/test_encoding_gate.py`
+holds the halves together, and it prices its own two skips in RB-P51's language rather than
+going quietly green off CI.
+
+**One correction to a load-bearing comment in the shipped `ci.yml`, measured here.** That
+comment says `PYTHONUTF8` "makes the encoding gate below pass by fiat and hides the exact
+class of defect this job was opened to find." **The first clause is false.**
+
+<!-- provenance: value=three one-line probes on CPython 3.11 against a file holding `hello`: `-X warn_default_encoding -W error::EncodingWarning -c "open('probe.txt').read()"` raises EncodingWarning; the same command with PYTHONUTF8=1 in the environment ALSO raises EncodingWarning; the same command with -X utf8 ALSO raises EncodingWarning; commit=99016f8; command=[PYTHONUTF8=1] python [-X utf8] -X warn_default_encoding -W error::EncodingWarning -c "open('probe.txt').read()" -->
+
+UTF-8 mode changes what an unencoded open *decodes as*; it does not change whether
+`EncodingWarning` is *emitted*. Under the mask the gate still bites on every one of the 259
+sites. What the mask really hides is the class's **symptoms** — the decode failures that
+only appear when the locale is not UTF-8 — and that is a sufficient reason to keep it out
+of CI, because a matrix running UTF-8 mode measures a Windows no user has. **The decision
+was right and the reason written beside it was wrong**, which is the same shape as `§AH.6`
+and is recorded rather than numbered.
+
+##### AH.4 Three skips, each priced — against two hand-off lists that proposed about twenty-one
+
+The user's decision for this job was binding: a POSIX-only scenario is closed with
+`skipif`, and **each skip must state in the node what it thereby fails to measure**. RB-P51
+says a skip measures nothing, so it is a recorded cost and never a free out. `conftest.py`
+implements that as a marker, `windows_cannot_construct(because=..., unmeasured=...)`, whose
+`because` names the measurement that established impossibility and whose `unmeasured` names
+the claim that now goes unpinned.
+
+**The population is three.** Two hand-off lists proposed 16 and 5.
+
+```
+    test_criticreplay::test_a_closed_stdout_does_not_turn_a_measured_run_into_a_refusal
+      because     Popen refuses preexec_fn off POSIX, before any child exists
+      unmeasured  the `sys.stdout is None` branch — the one render-failure cell
+                  carrying no OSError for any `except` arm to catch
+    test_criticreplay::test_fd_one_on_a_directory_never_reaches_this_module
+      because     os.open(<a directory>, O_RDONLY) is impossible on Windows;
+                  MEASURED, run 32508028806, PermissionError [Errno 13]
+      unmeasured  that fd 1 on a directory kills the interpreter in init_sys_streams
+                  before `main` exists, so nothing on Windows checks this module
+                  did NOT choose that status
+    test_shiftwork::test_clock_out_read_only_dir_is_a_structured_refusal
+      because     dir.chmod(0o555) is a POSIX fact with no Windows counterpart —
+                  the write SUCCEEDS; MEASURED, run 32508028806, `assert 'ok' == 'error'`
+      unmeasured  that an OSError on the WRITE path returns a structured refusal
+                  carrying 'unwritable' with prior bytes and an empty log intact
+```
+
+**21 of the 24 suspect nodes were left deliberately live, and the armed matrix was their
+first measurement.** That is the decision the whole job turns on. W9 refused both lists and
+read the real Windows tracebacks instead, which showed the harnesses working right up to a
+blocker two earlier units had already removed — `_closed_pipe_status` built
+`c2pwrite = Handle(736)` successfully and only `CreateProcess('/bin/sh')` failed. **Skipping
+a node whose harness constructs fine and whose outcome is merely unknown throws away the
+reading the matrix exists to take**, and an errno is exactly the kind of thing that has to
+be read from a run rather than reasoned about.
+
+**The skips cannot go inert in either direction, and that is pinned by two nodes.** The
+population is asserted (`len(conditions) == 3` plus the exact node-id set, so a fourth skip
+cannot be added without editing the roster in the same commit); every condition is required
+FALSE off Windows and TRUE on Windows; and a second node requires each reason to carry the
+token, a named measurement, and more than 120 characters of bill after it, with
+`"POSIX only"` explicitly rejected as a reason.
+
+<!-- provenance: value=the skip arithmetic closes with no residue on all three platforms at 99016f8: macOS local reads 1710 passed / 2 skipped / 2 xfailed with `-rs` naming both skips as test_encoding_gate.py:246 and :258; ubuntu CI reads 1709 / 3 / 2, the 3 being needs_textutil (textutil is a macOS built-in, so those never skip locally) with both encoding-gate nodes RUNNING because CI sets the env; windows CI reads 1706 / 6 / 2 = 3 needs_textutil + 3 windows_cannot_construct; all three totals reconcile to 1714 collected; commit=99016f8; command=PYTHONPATH=$PWD/runtime-py/src pytest runtime-py/tests -q -rs, and gh run view 32560032687 --log -->
+
+```
+    platform   passed  skipped  xfail   collected   which skips
+    macOS      1710    2        2       1714        encoding-gate :246 (not CI), :258 (no -X)
+    ubuntu     1709    3        2       1714        3 x needs_textutil
+    windows    1706    6        2       1714        3 x needs_textutil + 3 x cannot_construct
+```
+
+##### AH.5 Five corrections to the briefs — four made by the units, and the fifth made here against the fourth
+
+Per `§W.6.2` these are recorded as a subsection of the section that caught them and **none
+of them is a register entry**. They are the reason this section exists.
+
+1. **W12: the unit split accounted for 45 of 46, not 46.** Reconciled from the CI log line
+   by line, as `§AH.2` reproduces. The orphan was
+   `test_criticreplay::test_help_with_no_reader_on_stdout_is_still_the_interpreters_number`
+   — a `TypeError: data must be str, not NoneType`, the **same call shape and the same
+   `None`** as the amendguard fixture in an unrelated file. W12 refused to guess the
+   mechanism without a Windows machine, and named the consequence anyway: whatever explains
+   it closes 25 nodes, not one.
+
+2. **W13: the CI evidence line quoted in its own brief was not what CI said.** The brief
+   quoted `test_closed_pipe_clean_run_still_exits_zero -> OSError: [Errno 22]`. The actual
+   line is `assert 5 == 0`, and the `[Errno 22]` string sits inside the **child's stderr,
+   quoted through an assertion message**. Nothing raised an `OSError` in the test process —
+   the harness works on Windows. **That distinction decides which layer the fix belongs
+   in**, and it is the difference between "fix the harness" and `b734aa3`, the job's only
+   runtime-source commit. W13 also declined to add a `WinError 109/232` clause by
+   *measuring* rather than assuming: the same log two nodes later renders `[WinError 183]`,
+   so an OSError carrying a winerror says so, and W13's renders `[Errno 22]` and therefore
+   carries none.
+
+3. **W14 hit the identical misreading one round later, with `[WinError 183]`.** Same trap,
+   same log, different string: the brief read a quoted child stderr as an exception in the
+   test process. Both nodes were already closed by W13's commit, and W14 settled that by
+   running it rather than inheriting the prediction. **Two units, one round apart, on the
+   same class of mistake** — which is the observation, not either instance.
+
+4. **W13 found its own new code unmeasured by anything and fixed that before reporting.**
+   Its new platform constant `_EINVAL_MEANS_LOST_READER = (os.name == 'nt')` mutated to a
+   hardcoded `True` reddened **0 of 245** — every other node forces the constant. Commit
+   `55f006f` exists only to take that mutation from 0 to 1. **A unit auditing the
+   reddenability of the code it just wrote is the discipline working**, and W15 made the
+   same self-check independently (`2a498f2`, because `_run`'s `env=` was otherwise
+   unreddenable).
+
+5. **W15: the orchestrator's entire diagnostic branch was unnecessary, and the answer had
+   been sitting in a log it had already downloaded and searched twice.** PR #65 was opened,
+   run, and closed unmerged. The proof was in run 32555258828's **warnings summary** — a
+   section the orchestrator never grepped, having searched that same file for `FAILED` lines
+   and for specific error strings. The mechanism: on Windows `subprocess` decodes a captured
+   stream inside a **daemon reader thread** (`_readerthread`, `subprocess.py:1599`), so a
+   `UnicodeDecodeError` there **dies with the thread** — `join()` returns normally, the
+   buffer stays empty, and `communicate()` hands back `stdout=None` beside an intact
+   `returncode` and an intact `stderr=''`. POSIX decodes on the calling thread and raises.
+   **Same cause, two presentations, and only one of them names itself.** The information cost
+   of this class was a log-reading miss, not a measurement gap.
+
+6. **W14's correction to W15's headline is right, and its arithmetic is half-stated.**
+   W15's "24 occurrences" is 6 per job. `grep -c` over the whole log returns 24 because each
+   warning prints **two** matching lines (a header and a `warnings.warn(...)` line) **and
+   the log holds two Windows jobs**. W14 named only the line-doubling, which accounts for a
+   factor of two of the factor of four. The `6` is independently confirmed without any
+   division at all: each Windows job's own summary line reads `6 warnings`.
+
+7. **W14 is also right that the 24-node `UnicodeDecodeError` class is a different mechanism
+   the new gate does not cover, and this section repeats the point rather than the
+   conflation.** Those failures were raised **directly in the test process** by
+   `Path.read_text(encoding="utf-8")` on a captured artifact, they are in the `FAILED` list
+   with their tracebacks, and they were **never hidden**. Only the thread class was.
+
+**8. THE CORRECTION THIS SECTION MAKES, and it is to the correction in item 6.** W14's
+stated field justification for the thread gate — carried into the commit message of
+`5a83d1d` and into a comment now standing in `runtime-py/pyproject.toml` — is that of the
+six dead reader threads, five failed visibly and **"exactly one — `test_amendguard.py::`
+`test_a_pointer_fix_bundled_with_anything_else_is_pointer_not_isolated` — REPORTED PASS"**,
+its rows coming "from the checker's `--out` FILE rather than the stdout that was lost."
+**Both halves are false, and the run cited for them says so.**
+
+<!-- provenance: value=in run 32555258828, windows-latest 3.11, the six nodes carrying a PytestUnhandledThreadExceptionWarning resolve as 5 FAILED and 1 ERROR and none as passed: test_an_unlisted_construct_falls_through_to_record FAILED, test_check_writes_only_when_out_is_given FAILED, test_a_ledger_that_matches_nothing_reports_unmeasured_and_does_not_exit_zero FAILED, test_a_red_verdict_makes_the_run_exit_non_zero FAILED, test_criticreplay.py::test_help_with_no_reader_on_stdout_is_still_the_interpreters_number FAILED, and test_a_pointer_fix_bundled_with_anything_else_is_pointer_not_isolated ERROR, printed by the run as `_ ERROR at setup of test_a_pointer_fix_bundled_with_anything_else_is_pointer_not_isolated _`; at the cited commit f2b9078 the module-scoped `fixture` calls `_run` with no --out argument and `_run` builds its rows from `r.stdout.splitlines()`, which is the AttributeError in the traceback; commit=99016f8; command=gh run view 32555258828 --log, then per node grep for its FAILED/ERROR line, and git show f2b9078:runtime-py/tests/test_amendguard.py -->
+
+```
+    the six nodes carrying a dead-thread warning, windows-latest 3.11, run 32555258828
+      test_an_unlisted_construct_falls_through_to_record                  FAILED
+      test_check_writes_only_when_out_is_given                            FAILED
+      test_a_ledger_that_matches_nothing_reports_unmeasured...            FAILED
+      test_a_red_verdict_makes_the_run_exit_non_zero                      FAILED
+      test_help_with_no_reader_on_stdout_is_still_the_interpreters_number FAILED
+      test_a_pointer_fix_bundled_with_anything_else_is_pointer_not_...    ERROR
+    ------------------------------------------------------------------------------
+    reported PASS                                                             0
+```
+
+**The node did not pass. It ERRORed at setup**, as one of the 20 errors `§AH.2` counts, and
+its fixture at `f2b9078` passes no `--out` at all and builds every row from
+`r.stdout.splitlines()` — which is precisely *why* it errored. **In that run, all six dead
+threads landed on nodes that were already red, and the gate would have added zero red nodes
+to it.**
+
+**How the mistake was made is the whole point, and it is the third instance of one trap in
+one job.** W14 read the `FAILED` list, did not find the node there, and concluded it passed.
+`ERROR` is a different bucket. W15 searched a log for `FAILED` and missed the warnings
+summary; W13's brief and then W14's brief read a quoted child stderr as a raised exception;
+and W14, correcting the first of those, read `not in FAILED` as `passed`. **Every one of the
+three is the same error: taking the absence of a string from the one section you searched as
+evidence about the whole run.** That is `feedback-verify-against-the-run-not-the-source` with
+the emphasis moved — reading *a* run is not reading *the* run — and it is what `RB-P102`
+below is filed about.
+
+**What this does NOT do is refute the gate**, and saying so precisely matters. The gate's
+non-vacuity does not rest on the amendguard anecdote; it rests on W14's own constructed rig,
+which was measured in both directions. What is refuted is the *field instance* offered as
+the reason for it, and one prediction built on that instance — "if W15's pin did not close
+all six threads, the next Windows run shows that node RED where it was previously GREEN" —
+which was never falsifiable, because the node was never green. **A gate justified by a real
+mechanism and a constructed demonstration is a gate; the anecdote attached to it was wrong
+and the comment in `runtime-py/pyproject.toml` still says it.**
+
+##### AH.6 A control that was not a control
+
+The orchestrator's `amendguard-shape` diagnostic probe was written to test whether the
+`subprocess.run(capture_output=True, text=True, encoding="utf-8")` **call shape** was
+responsible for `stdout=None`. It printed `VERDICT commit=x path=y` — **pure ASCII**. It
+therefore omitted the single character that causes the defect, passed, and was read as
+exonerating the call shape. The call shape was never the subject; the child's **codec** was,
+and U+2014 at position 13 of the checker's first output line is the byte that proves it.
+
+**This document already has precedent for exactly this and the precedent is cited rather
+than re-derived**: `§W12`'s scoping probe found `--json` rows and `--summary` byte-identical
+under both codecs, then noticed every byte was ASCII and that identity therefore proved
+nothing, and re-ran it with U+2014 and U+00E9 forced into the variant label so they landed
+in every row. **A control that differs from its subject in one hidden respect is not a
+control, and the hidden respect is reliably the one thing that mattered.** The difference
+between the two instances is that one unit caught it before reporting and one orchestrator
+did not.
+
+##### AH.7 The gate placement argument, measured rather than asserted
+
+W14 put the thread-exception gate in `runtime-py/pyproject.toml` and rejected the `-W` flag
+on the `Test` line of `.github/workflows/ci.yml`. **The rejected placement was run, as
+mutation M8, and it reddens identically to having no gate at all.**
+
+<!-- provenance: value=W14's mutation ladder, relayed, M = 1714 collected, one mutation at a time with git checkout -- . after each and git status --porcelain verified empty: M1 remove the filterwarnings entry 2 of 1714; M2 weaken error:: to default:: 2 of 1714, the same two; M8 the rejected placement, gate moved to the ci.yml Test line 2 of 1714, IDENTICAL TO M1; M3 neuter the control's -W default:: to error:: 1 of 1714; M4 point -c at a nonexistent pyproject 3 of 1714; M5 the rig's thread stops dying 2 of 1714; INDEPENDENTLY CONFIRMED HERE: running the suite with -W default::EncodingWarning to disarm the ini entry reddens test_encoding_gate.py::test_the_failing_half_actually_bites, 1 of 1714, so the two-file encoding gate is reddenable from the failing half as well; commit=99016f8; command=PYTHONWARNDEFAULTENCODING=1 PYTHONPATH=$PWD/runtime-py/src pytest runtime-py/tests -q -W default::EncodingWarning -->
+
+```
+    M1  remove the gate line from pyproject                2 of 1714
+    M2  weaken error:: to default::                        2 of 1714   same two
+    M8  THE REJECTED PLACEMENT, moved to the ci.yml line   2 of 1714   IDENTICAL TO M1
+    M3  neuter the control's -W default:: to error::       1 of 1714   control not vacuous
+    M5  the rig's thread stops dying                       2 of 1714   fires on the mechanism
+```
+
+**Why M8 reads that way is the argument.** A CI-only arming hands a developer reproducing a
+Windows failure locally the same silent green that the class had already exploited for a
+whole job. `M8 == M1` says that, in the only terms this document accepts.
+
+**And the constraint that forced the OTHER gate apart does not apply here.** W1's encoding
+gate *had* to be split across two files because its emitting half is
+`-X warn_default_encoding`, an interpreter flag `addopts` cannot carry — pytest exits 4 on
+it. **pytest's `threadexception` plugin emits unconditionally, with no flag**, so this gate
+has no emitting half to place and only a failing half exists. One list, one behaviour, every
+machine. Recording this is the point: two gates in one job, one split across files and one
+not, and **the difference is a measured property of the interpreter, not a taste in
+layout.**
+
+##### AH.8 Minted here — `RB-P101` and `RB-P102`, and the seven things that get no number
+
+- **`RB-P101` — a green test matrix on a platform is evidence about the SUITE on that
+  platform and says nothing about whether the PRODUCT starts there; this repository now has
+  the first and has never once measured the second, and unlike `RB-P51`'s subject there is
+  not even a skip to record the absence.** Four green Windows jobs, 1,706 passing nodes, and
+  **zero of them execute the shipped entry point.**
+
+  <!-- provenance: value=`git grep tools/bantamkit-mcp` over the whole tree returns exactly five hits — .mcp.json:4, docs/eval.md:10927, docs/eval.md:10934, docs/mcp.md:91, docs/mcp.md:125 — and ZERO in runtime-py/tests; the tracked .mcp.json names `"command": "tools/bantamkit-mcp"` whose first line is `#!/bin/sh` and which docs/mcp.md:125 calls "a tracked POSIX-`sh` launcher"; second instance: `tools/amendguard/amendguard.py check` prints U+2014 as the only non-ASCII character in its output, confirmed by piping check's stdout through a codepoint filter, and nothing in runtime-py/tests runs that tool on Windows; commit=99016f8; command=git grep -n tools/bantamkit-mcp ; head -1 tools/bantamkit-mcp ; python tools/amendguard/amendguard.py check . main..HEAD tools/amendguard/ledger.json | grep -oP '[^\x00-\x7F]' | sort -u -->
+
+  **Two instances, both measured, neither fixed.**
+
+  (1) **The MCP endpoint.** `.mcp.json` is tracked and names `tools/bantamkit-mcp`, whose
+  first line is `#!/bin/sh`. **Windows does not read shebangs.** `git grep` finds the path in
+  five places — the registration, two lines of this document, two lines of `docs/mcp.md` —
+  and **in no test**. The one node that looked like it measured this was measuring a
+  synthetic fixture the test itself writes (`§AH.9.4`).
+
+  (2) **The register's own checker.** `amendguard.py check` prints U+2014, and U+2014 is the
+  only non-ASCII codepoint it prints. A Windows console at cp437 cannot encode it, so
+  `print(text, end="")` raises `UnicodeEncodeError` and kills the field program. Flagged by
+  W15, deliberately not fixed: the codec of fd 1 belongs to the caller, which is `§W12`'s
+  `RENDER_FAILURE_EXIT` ruling, and the one artifact the checker owns — the `--out` file —
+  already writes `encoding="utf-8"`.
+
+  **Why it earns a number rather than a footnote.** The v1 bar this program wrote for itself
+  says "windows CI green". **That bar is now satisfied, and it does not mean what it was
+  written to mean.** It was written to mean the product runs on Windows; it measures that the
+  tests do. This is `RB-P51`'s shape one level up and strictly worse than `RB-P51`'s subject:
+  a skip at least prints itself in `-rs` and is priced by `§AH.4`'s marker, whereas an entry
+  point nothing invokes produces **no line at all** in a green run. The three skips of
+  `§AH.4` cost this job explicit prose about what they fail to measure; the entire product
+  surface costs nothing and reports nothing.
+
+  **Attack:** a Windows-runnable launcher — a `.cmd` sibling, or a console-script entry point
+  in `runtime-py/pyproject.toml`, which `§AG.9` already notes does not exist — plus **one
+  node that starts the shipped endpoint and reads one response**, so the matrix has something
+  to say about it. **Filed, NOT fixed:** it is a runtime and packaging change, this section
+  owns `docs/eval.md` alone, and a launcher is its own job.
+
+- **`RB-P102` — this program reads its own instrument by grepping one section of the output
+  for one string, and a red node outside the section it grepped is recorded as a pass;
+  it did that three times in one job, and the third instance is now a false sentence in
+  committed source.** `pytest` reports a failed node in `FAILED`, a node that died in setup
+  or teardown in `ERROR`, and a dead thread in the warnings summary. **A reader who greps
+  `FAILED` sees the first and misses the other two.**
+
+  <!-- provenance: value=in the armed-matrix reading, 20 of the 46 red nodes per Windows job are in the ERROR bucket and appear on no FAILED line — 43.5% of the reading invisible to a grep for FAILED; the three instances in this job: W15 searched run 32555258828 for FAILED lines and for error strings and never for warnings, and opened PR #65 to re-derive what that log already held; the briefs to W13 and to W14 each read a child stderr quoted through an assertion message as an exception raised in the test process; and W14, correcting the first, read the pointer-fix node's absence from the FAILED list as a PASS when it was an ERROR (§AH.5.8); the shipped vacuity procedure in .github/workflows/ci.yml has the same hole, requiring only "a pytest summary line with a nonzero passed count" and never errors=0; commit=99016f8; command=gh run view 32555258828 --log | grep -c 'ERROR runtime' , and .github/workflows/ci.yml lines 33-38 -->
+
+  ```
+      armed matrix, per windows job:  26 in FAILED   20 in ERROR   6 in warnings summary
+      visible to `grep FAILED`:       26 of 46  =  56.5%
+      invisible:                      20 of 46  =  43.5%
+  ```
+
+  **It is NOT `RB-P51` and the difference is where the silence is.** `RB-P51` is about a
+  check that did not run and reports nothing; `RB-P102` is about a check that **ran, went
+  red, and printed it in a place the reader did not look**. The information was on disk both
+  times. **No gate can fix this, because the defect is in the reading**, which is exactly
+  why it belongs in a register rather than in a test file — and it is why the three
+  corrections of `§AH.5` are the most valuable output of a job whose headline is a green
+  matrix.
+
+  **Attack, and it is cheap:** the vacuity procedure in `ci.yml` names one condition, a
+  nonzero passed count. It should name three — `failed`, `errors` and `warnings` all zero, or
+  a stated reason per non-zero — and any claim of the form "node X passed" taken from a log
+  must come from the summary line's arithmetic reconciling, not from absence in one list.
+  `§AH.1`'s vacuity table is written that way on purpose and is the shape proposed. **Filed,
+  NOT fixed:** the `ci.yml` change is a CI-layer commit and this section owns `docs/eval.md`
+  alone.
+
+What gets no number:
+
+1. **The fifteen units' work.** A fix is not a finding — `§Z.5`'s rule, unchanged, for the
+   ninth section running.
+2. **The five brief corrections of `§AH.5`**, including the one this section makes to
+   another unit's correction. `§W.6.2` rules handoff corrections unnumbered and this section
+   follows the chain rather than arguing with it — even though `§AH.5.8` corrects a sentence
+   that is not in a brief but in **committed source**, which is a stronger claim than the
+   rule contemplates. The remedy for that is a comment edit in `runtime-py/pyproject.toml`,
+   which is a code-layer commit this section may not make; it is listed in `§AH.10` instead.
+3. **`ci.yml`'s wrong reason for excluding `PYTHONUTF8` (`§AH.3`).** The decision is right,
+   the sentence beside it is false, and `§AG.5`'s ruling — what is wrong here is a citation —
+   applies unchanged.
+4. **The `WinError 193` misattribution.** Filed by the orchestrator as "Windows refusing to
+   exec `tools/bantamkit-mcp`", it is nothing of the kind: all four occurrences across both
+   Windows jobs of run 32508028806 are **one node**,
+   `test_mcpdrift.py::test_the_child_never_inherits_the_asset_override_and_never_sees_the_real_home`,
+   dying at `_winapi.CreateProcess` on a **synthetic** server the test writes with a `#!`
+   line. Test layer, closed by W3 at `8d79af1`. **Re-verified here from the log.** It gets no
+   number because the correction is a handoff correction — but the gap it opened is
+   `RB-P101`, and a misattribution that leads to a real finding is worth the round it cost.
+5. **`RB-P27`'s `dup2` paragraph does NOT need an amendment, because it already has one.**
+   W13 handed this forward as an open question. It is closed and was closed on 2026-08-13:
+   the paragraph is followed by **Amendment (K5, v0.20.0)**, which states in its own words
+   that the two sentences about the `dup2` "are true of v0.19.0 and FALSE of HEAD", names
+   `RB-P33` as the finding against that `dup2`, and names `_LostStdout` as the replacement.
+   **The amend-only discipline worked exactly as designed** — the record stands, the
+   correction sits beside it — and the unit that flagged it, and the orchestrator that
+   relayed it, each read the record without reading the amendment attached to it. **That is
+   `RB-P102`'s shape in this document rather than in a log**, and it is the reason it is
+   listed here rather than silently dropped.
+6. **W12's residual on the evidence scripts.** Eight of the nine `docs/eval-data/*.sh`
+   programs redirect the CLI into committed `.md` files without pinning `PYTHONIOENCODING`,
+   so a hand-rerun under a non-UTF-8 POSIX locale would capture different bytes into a
+   committed artifact. No red node, docs layer, `.sh` only, never runs on Windows. Recorded,
+   scoped out, and it is `§AH.10` territory.
+7. **The orchestrator being the least-checked source is ALREADY-RULED and ruled UNNUMBERED.**
+   `§W.6.2` settled it and `§X.8.4`, `§Y.8.4`, `§Z.6`, `§AA.6`, `§AB.6`, `§AF.7` and `§AG.7.3`
+   each re-applied it. This section adds one observation and not a number: **every one of the
+   five implementation units in the second phase corrected the brief it was handed**, and the
+   sharpest of them, `§AH.5.8`, is a unit correcting *another unit's* correction, caught only
+   because this section re-read the cited run instead of the citation. `§AG.7.3`'s formulation
+   — a unit that measures beats a unit that remembers, whichever direction the handoff runs —
+   holds with one word added: **whichever unit is remembering.**
+
+##### AH.9 What is NOT claimed
+
+1. **`RB-P101` and `RB-P102` are filed and NOT fixed.** No file outside `docs/eval.md` is
+   touched by this section.
+2. **The `259` / `11,373` / `15 of 259` figures are W1's and are RELAYED, not re-derived
+   here.** What was re-derived here is the AFTER reading (1 warning, 1 site, and that site is
+   the gate's own deliberate violation) and both ruff readings (27 on the pre-sweep tree, 0
+   on this branch). A reader who needs the BEFORE population re-measured must check out
+   `cbde819` and run it; this section did not.
+3. **The mutation ladders of `§AH.7` are W14's and W13's, relayed as `N of M` with M stated.**
+   The one mutation this section RAN is the `-W default::EncodingWarning` disarming, `1 of
+   1714`.
+4. **"Byte-identical on 3.11 and 3.12" is a node-name-level claim**, established by W12 after
+   stripping a ` - <reason>` suffix that one saved extract kept and the other did not. It is
+   not a claim about tracebacks.
+5. **Nothing here measures the shipped MCP endpoint on Windows.** That is the finding, not an
+   omission from it, and `RB-P101` would be refuted by one node that starts it.
+   <!-- provenance: value=the `61 failed` figure is run 32508028806's windows-latest summary line, taken behind PYTHONUTF8=1 and --continue-on-collection-errors on probe/windows-ci at 4c5f93f, which is an ancestor of none of the thirteen Phase-1 and Phase-2 fix commits listed by git log main..trial/win-merge; commit=99016f8; command=gh run view 32508028806 --log ; git log --oneline main..trial/win-merge -->
+6. **The `61 failed` reading is masked and is not evidence about `main`.** It was taken behind
+   `PYTHONUTF8=1` on a tree that predates the nine Phase-1 fixes.
+7. **The three `windows_cannot_construct` skips are asserted impossible, not proven
+   impossible.** Each names the measurement that established it — two of them from run
+   32508028806 — and `§AH.4`'s roster node fixes the population at three, but "Windows cannot
+   be put into this scenario" remains a claim about an OS, and RB-P51 says the skipped nodes
+   measure nothing regardless.
+
+##### AH.10 What stays open
+
+- **`RB-P101`, with both instances unfixed**, and no console script for the operator CLI —
+  which is `§AG.9`'s standing item now carrying a second reason.
+- **`RB-P102`, with the `ci.yml` vacuity procedure still naming one condition** where it
+  needs three.
+- **A false sentence stands in `runtime-py/pyproject.toml`.** The comment above
+  `filterwarnings` says the pointer-fix node "REPORTED PASS" and that its rows come from the
+  `--out` file. `§AH.5.8` refutes both against the run the comment cites. **The gate the
+  comment guards is correct and reddenable and must not be touched**; only the anecdote is
+  wrong. A code-layer commit, not this one's.
+- **PR #62 is OPEN, not closed, and still carries the mask.** It is a draft against `main`
+  whose `.github/workflows/ci.yml` sets `PYTHONUTF8: "1"` and passes
+  `--continue-on-collection-errors` — the exact configuration the merged `ci.yml`'s own
+  comment says "must never merge". Nothing in the repository prevents it. `§AH.3` measures
+  that the encoding gate would still bite under that mask, so the hazard is narrower than it
+  looks, but a draft PR is not a gate and the branch should be closed or renamed.
+- **`_EINVAL_MEANS_LOST_READER` carries a named residual risk, declared by W13 and not
+  closed here.** If a future Windows run shows `[WinError 109]` or `[WinError 232]` at that
+  site, the predicate needs one more clause. The reason one is not needed today is a
+  source-level claim about CPython's `PC/errmap.h` that W13 could not verify on this machine.
+- **The eight unpinned evidence scripts** of `§AH.8.6`.
+- **Nothing measures the amendguard checker, or any tool under `tools/`, on Windows.** The
+  suite exercises `tools/amendguard/amendguard.py` through a child process on every platform
+  the matrix runs, which is how `§AH.5` got its evidence; but `tools/bantamkit-mcp`,
+  `tools/mcpdrift` and `tools/shiftwork` have no equivalent, and `RB-P101` is about the first
+  of those.
+- **`RB-P100`'s two instances, `RB-P99`'s five, `RB-P98`'s entry-point sweep, `RB-P97`'s
+  `env=` sweep and `RB-P95`'s `29 of 32`** are untouched by this section and stand exactly as
+  `§AG.9` left them.
+
+##### AH.11 Gates, each at the commit it was measured at
+
+<!-- provenance: value=at 99016f8 from the trial worktree with PYTHONPATH set to that worktree's runtime-py/src, the full suite reads 1710 passed / 2 skipped / 2 xfailed in 59.37s and ruff check runtime-py reports All checks passed; CI run 32560032687 at the same commit reads 1709 passed / 3 skipped / 2 xfailed on ubuntu-latest 3.11 and 3.12 and 1706 passed / 6 skipped / 2 xfailed on windows-latest 3.11 and 3.12, all four conclusion success, all four reconciling to 1714 collected; tools/amendguard/amendguard.py check over the range holding this commit exits 0 with rows=1 ok=1 red=0 broken=0 unmeasured=0; git status --porcelain is empty; commit=99016f8 for the code gates and the docs commit for the amendguard reading; command=PYTHONPATH=$PWD/runtime-py/src pytest runtime-py/tests -q ; ruff check runtime-py ; gh run view 32560032687 ; python tools/amendguard/amendguard.py check . <range> tools/amendguard/ledger.json -->
+
+```
+    full suite, trial worktree, PYTHONPATH set        1710 passed, 2 skipped, 2 xfailed  59.37s
+    ruff check runtime-py                             All checks passed
+    CI 32560032687  ubuntu-latest 3.11 / 3.12         1709 passed, 3 skipped, 2 xfailed
+    CI 32560032687  windows-latest 3.11 / 3.12        1706 passed, 6 skipped, 2 xfailed
+    all four jobs reconcile to                        1714 collected
+    windows_cannot_construct marks                    3, roster pinned by node
+    EncodingWarnings raised by the whole suite        1, and it is the deliberate violation
+    ruff PLW1514   cbde819 -> 99016f8                 27 -> 0
+```
+
+`bantamkit.memory.store.__file__` was confirmed to point into `bantamkit-trial` before the
+local measurement; without `PYTHONPATH` the venv's editable install resolves to the
+canonical checkout and every local figure in this section would have been a figure about a
+tree this branch does not own. **That trap is W10's correction to its own orchestrator, made
+in the first unit of this job, and it is why every number above carries the command that
+produced it.**
+
 Back to the [README](../README.md).

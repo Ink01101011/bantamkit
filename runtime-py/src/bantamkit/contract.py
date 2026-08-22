@@ -60,7 +60,7 @@ def load_contract(name: str = "default") -> dict:
     path = assets_root() / "contracts" / f"{name}.yaml"
     if not path.exists():
         raise AssetNotFound(f"contract asset not found: {path}")
-    data = yaml.safe_load(path.read_text())
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
     missing = [k for k in REQUIRED_KEYS if k not in data]
     if missing:
         raise BantamError(f"contract '{name}' missing key(s): {', '.join(missing)}")

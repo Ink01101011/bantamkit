@@ -44,7 +44,7 @@ def load_grants(project_store: str | Path) -> list[Path]:
     if not config_path.is_file():
         raise MemoryValidationError(f"invalid memory config {config_path}: not a file")
     try:
-        data = yaml.safe_load(config_path.read_text())
+        data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
         raise MemoryValidationError(f"invalid memory config {config_path}: {e}") from e
     if data is None:

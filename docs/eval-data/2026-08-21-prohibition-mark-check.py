@@ -361,8 +361,8 @@ def main() -> int:
 
     index_path, doc_path = Path(args.index), Path(args.doc)
     try:
-        index = parse_index(index_path.read_text())
-        table = parse_table(doc_path.read_text(), args.section)
+        index = parse_index(index_path.read_text(encoding="utf-8"))
+        table = parse_table(doc_path.read_text(encoding="utf-8"), args.section)
     except (OSError, Unparseable) as exc:
         print(f"unparseable: {exc}", file=sys.stderr)
         return 2
@@ -374,7 +374,7 @@ def main() -> int:
 
     print(render(index, table, result, doc_path, args.section))
     if args.json:
-        Path(args.json).write_text(json.dumps(result, indent=2) + "\n")
+        Path(args.json).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     findings = sum(1 for r in result["records"] if r["verdict"] == "UNMARKED")
     findings += len(result["table_findings"])
     return 1 if (args.strict and findings) else 0

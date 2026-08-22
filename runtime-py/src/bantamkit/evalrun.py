@@ -53,7 +53,8 @@ CONFIGS = ["bare", "structured", "critique", "grounded", "graph", "memory", "lea
 
 
 def _catalog() -> dict:
-    return json.loads((assets_root() / "evals" / "fixtures" / "catalog.json").read_text())
+    path = assets_root() / "evals" / "fixtures" / "catalog.json"
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _lookup(field: str):
@@ -370,7 +371,7 @@ def load_tasks(tasks_dir: Path | None = None) -> list[dict]:
     files = sorted(Path(tasks_dir).glob("*.yaml"))
     if not files:
         raise EvalConfigError(f"no task files found in {tasks_dir}")
-    return [yaml.safe_load(f.read_text()) for f in files]
+    return [yaml.safe_load(f.read_text(encoding="utf-8")) for f in files]
 
 
 def contains_term(output: str, term: str) -> bool:
@@ -1540,7 +1541,7 @@ def _write_transcript(
         "messages": [_message_dict(m) for m in messages],
     }
     try:
-        path.write_text(json.dumps(payload, indent=2))
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     except (OSError, TypeError, ValueError) as e:
         print(f"warning: could not write transcript {path}: {e}", file=sys.stderr)
 
@@ -1956,7 +1957,7 @@ def main(argv: list[str] | None = None) -> None:
     sink: Callable[[TaskResult], None] | None = None
     jsonl = None
     if args.json:
-        jsonl = args.json.open("a")
+        jsonl = args.json.open("a", encoding="utf-8")
 
         def sink(result: TaskResult) -> None:
             jsonl.write(json.dumps(asdict(result)) + "\n")

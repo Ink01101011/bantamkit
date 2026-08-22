@@ -393,7 +393,7 @@ def clamp_verdict(usage_prompt_tokens: int | None, num_ctx: int) -> str:
 # ------------------------------------------------------------------------ worktree
 def git(wt: str, *args: str, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-C", wt, *args], capture_output=True,
-                          text=True, check=check)
+                          text=True, check=check, encoding="utf-8")
 
 
 SHARED = "packages/shared"
@@ -543,7 +543,7 @@ def run_oracle(wt: str) -> tuple[int, str]:
     # APPENDED, not folded in: the command is now that command PLUS
     # `--config ORACLE_CONFIG`, for the reasons in the block above the constant.
     p = subprocess.run(oracle_argv(cwd),
-                       check=False, cwd=cwd, capture_output=True, text=True)
+                       check=False, cwd=cwd, capture_output=True, text=True, encoding="utf-8")
     return p.returncode, p.stdout + p.stderr
 
 
@@ -575,7 +575,7 @@ def tsc_program(wt: str) -> tuple[int, set[str]]:
     cwd = os.path.join(wt, SHARED)
     p = subprocess.run([os.path.join(wt, "node_modules/.bin/tsc"), "--noEmit",
                         "--listFiles"],
-                       check=False, cwd=cwd, capture_output=True, text=True)
+                       check=False, cwd=cwd, capture_output=True, text=True, encoding="utf-8")
     return p.returncode, inside_write_surface(wt, p.stdout.splitlines())
 
 
@@ -698,7 +698,7 @@ def oracle_module_graph(wt: str) -> set[str]:
         subprocess.run([os.path.join(cwd, "node_modules/.bin/vitest"), "run",
                         "--config", GRAPH_CONFIG],
                        check=False, cwd=cwd, capture_output=True, text=True,
-                       env=dict(os.environ, **{GRAPH_OUT_ENV: out}))
+                       env=dict(os.environ, **{GRAPH_OUT_ENV: out}), encoding="utf-8")
         if not os.path.exists(out):
             return set()
         with open(out, encoding="utf-8") as fh:

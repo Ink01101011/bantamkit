@@ -57,7 +57,7 @@ def task_paths() -> list[Path]:
 
 
 def load(path: Path) -> dict:
-    return yaml.safe_load(path.read_text())
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
 def stratum(task: dict) -> str:
@@ -266,6 +266,6 @@ def test_the_shared_row_is_the_same_answer_in_both_corpora(built):
 
 def test_the_bar_is_committed_beside_the_tasks_it_governs():
     """A pre-registration that is not in the tree is not pre-registered."""
-    text = BAR.read_text()
+    text = BAR.read_text(encoding="utf-8")
     assert f"PASTE_MAX_BYTES = {PASTE_MAX_BYTES:,}" in text
     assert "Status: PRE-REGISTERED" in text

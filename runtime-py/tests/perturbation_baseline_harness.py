@@ -23,8 +23,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import yaml
 
@@ -70,12 +71,14 @@ def _variants(criticreplay, assets: Path, workdir: Path) -> list:
     Labels the shipped manifest does not materialize, so `_check_materialization` stays
     out of the way and the family is the manifest's own twelve points.
     """
-    raw = yaml.safe_load((assets / "rubrics" / "task-completion.yaml").read_text())
+    raw = yaml.safe_load((assets / "rubrics" / "task-completion.yaml").read_text(encoding="utf-8"))
     workdir.mkdir(parents=True, exist_ok=True)
     paths = []
     for label, prompt in (("L1", raw["prompt"]), ("L2", raw["prompt"][:-1])):
         path = workdir / f"{label}.yaml"
-        path.write_text(yaml.safe_dump({**raw, "prompt": prompt}, sort_keys=False))
+        path.write_text(
+            yaml.safe_dump({**raw, "prompt": prompt}, sort_keys=False), encoding="utf-8"
+        )
         paths.append(criticreplay.parse_rubric_arg(f"{label}={path}"))
     return paths
 
@@ -128,7 +131,7 @@ def _synthetic(criticreplay, workdir: Path) -> dict:
                 "schema": SYNTHETIC_SCHEMA,
             },
             sort_keys=False,
-        )
+        ), encoding="utf-8"
     )
     variants = [criticreplay.parse_rubric_arg(f"S={path}")]
     cases = [
@@ -150,6 +153,137 @@ def _synthetic(criticreplay, workdir: Path) -> dict:
     }
 
 
+# ---- scrubbing the working directory out of the artifact ----
+#
+# THIS IS SCRUBBED ON THE PARSED STRUCTURE, NOT ON THE SERIALIZED TEXT, AND THAT IS THE
+# WHOLE POINT (2026-08-21). It used to be one line:
+#
+#     json.loads(json.dumps(artifact).replace(str(Path(workdir).resolve()), "<workdir>"))
+#
+# `json.dumps` escapes a backslash as `\\`, so on Windows the needle `C:\Users\...`
+# does not occur in the haystack `C:\\Users\\...`. The replace matched nothing, raised
+# nothing, warned nothing, and the byte-identity floor then failed on an absolute path in
+# `rubric_ref` — measured `'C:\\Users\\runneradmin\\AppData\\...\\rubrics\\L1.yaml'` against a
+# fixture that says `'<workdir>/L1.yaml'`. A text-level replace over JSON compares a
+# needle in source encoding to a haystack in JSON encoding; every escape json.dumps
+# applies (`\\`, `\"`, `\uXXXX`) is another way for that comparison to be silently
+# wrong. Walking the object and replacing in string leaves compares data to data, so the
+# escaping layer is not in the loop at all. That closes the class, not the instance.
+
+_TOKEN = "<workdir>"
+_WINDOWS_ROOT = re.compile(r"^[A-Za-z]:|\\")
+
+
+class WorkdirScrubFoundNothing(RuntimeError):
+    """The scrub ran over the artifact and matched nothing anywhere.
+
+    A SILENT NO-OP IS THE ACTUAL DEFECT the one-line version had, so this is an error and
+    not a warning. `produce` always writes L1, L2 and synthetic.yaml under `workdir` and
+    every row records the path it parsed, so zero matches means the scrub stopped working
+    -- never that there was nothing to scrub.
+    """
+
+
+def workdir_roots(workdir) -> tuple[str, ...]:
+    """The root strings to look for, longest first.
+
+    Both the resolved and the unresolved spelling: `rubric_ref` records `str(path)` as
+    handed to `parse_rubric_arg`, which is NOT resolved, while the old scrub only ever
+    looked for the resolved form. They coincide on this machine; on Windows a short
+    (`RUNNER~1`) tmp path and its long form do not, which is a second way for the same
+    one line to match nothing. Longest first so a root that is a prefix of another cannot
+    shadow it.
+    """
+    raw = str(Path(workdir))
+    roots = {raw, str(Path(workdir).resolve())}
+    return tuple(sorted(roots, key=len, reverse=True))
+
+
+def _flavours(root: str):
+    r"""Windows path semantics only when the ROOT is Windows-shaped.
+
+    Chosen from the root rather than from `os.name` for two reasons. It keeps POSIX
+    behaviour byte-exactly POSIX -- `PureWindowsPath` is case-insensitive and treats `/`
+    and `\` as the same character, so letting it near a POSIX root would scrub
+    `/a/RUBRICS/L1.yaml` under root `/a/rubrics`, which is a different directory. And it
+    lets the Windows condition be constructed and MEASURED from a POSIX machine by
+    handing this function a Windows-shaped root, rather than inferred.
+    """
+    return PureWindowsPath if _WINDOWS_ROOT.search(root) else PurePosixPath
+
+
+def scrub_leaf(text: str, roots: tuple[str, ...]) -> tuple[str, int]:
+    r"""One string leaf -> (scrubbed, number of root occurrences removed).
+
+    TWO BRANCHES, AND THEY ARE NOT THE SAME RULE.
+
+    (1) The leaf IS a path under a root. Then it is relocated as a path: the root is
+    discarded and the RELATIVE remainder is re-rendered with `as_posix()`. Separator
+    normalisation therefore applies to the relative tail and to nothing else -- the
+    fixture's `<workdir>/L1.yaml` falls out of `as_posix()` rather than out of a global
+    `replace("\\", "/")` over the artifact. A global normalisation would corrupt any
+    value that legitimately contains a backslash: a regex (`\\d+`), an escaped string in
+    prose, or a Windows path that is DATA rather than the workdir. None of those can
+    reach this branch, because none of them is a path under the workdir.
+
+    (2) The leaf merely CONTAINS a root -- an embedded mention inside prose, say. Then
+    the root substring is replaced and the rest of the leaf is left byte-exact, with NO
+    separator normalisation, because outside a path this function cannot know whether a
+    backslash is a separator or an escape. `<workdir>\file` is honest there; a guessed
+    `/` would not be. Cost, stated: on Windows an embedded mention keeps a backslash
+    join, so a fixture that pinned one would need to say so. The artifact this harness
+    produces has no such leaf -- every workdir-bearing leaf is a whole path -- and the
+    hit count below is what makes it visible if that ever changes.
+    """
+    for root in roots:
+        flavour = _flavours(root)
+        try:
+            rel = flavour(text).relative_to(flavour(root))
+        except ValueError:
+            continue
+        tail = rel.as_posix()
+        return (_TOKEN if tail == "." else f"{_TOKEN}/{tail}"), 1
+    hits = 0
+    for root in roots:
+        for spelling in (root, root.replace("\\", "/")):
+            if spelling and spelling in text:
+                hits += text.count(spelling)
+                text = text.replace(spelling, _TOKEN)
+    return text, hits
+
+
+def scrub_workdir(artifact, workdir) -> tuple[object, int]:
+    """Walk the artifact and scrub `workdir` out of every string leaf AND every dict key.
+
+    Keys are scrubbed too: the old text-level replace covered them by accident of being
+    text, and a path can perfectly well be a key.
+    """
+    roots = workdir_roots(workdir)
+    total = 0
+
+    def walk(node):
+        nonlocal total
+        if isinstance(node, dict):
+            out = {}
+            for key, value in node.items():
+                if isinstance(key, str):
+                    key, hits = scrub_leaf(key, roots)
+                    total += hits
+                out[key] = walk(value)
+            return out
+        if isinstance(node, list):
+            return [walk(v) for v in node]
+        if isinstance(node, tuple):
+            return [walk(v) for v in node]
+        if isinstance(node, str):
+            node, hits = scrub_leaf(node, roots)
+            total += hits
+            return node
+        return node
+
+    return walk(artifact), total
+
+
 def produce(criticreplay, workdir: Path, assets: Path | None = None) -> dict:
     assets = Path(assets) if assets else assets_root()
     manifest = criticreplay.load_manifest(rubric_name="task-completion")
@@ -159,7 +293,9 @@ def produce(criticreplay, workdir: Path, assets: Path | None = None) -> dict:
             task=task,
             repeat=repeat,
             seed=seed,
-            prompt=yaml.safe_load((assets / "evals" / "tasks" / f"{task}.yaml").read_text())[
+            prompt=yaml.safe_load(
+                (assets / "evals" / "tasks" / f"{task}.yaml").read_text(encoding="utf-8")
+            )[
                 "prompt"
             ],
             output=output,
@@ -210,7 +346,13 @@ def produce(criticreplay, workdir: Path, assets: Path | None = None) -> dict:
     # `rubric_ref` is the path the variant was parsed from, so it carries wherever this
     # ran. Scrubbing it is the only thing between the artifact and byte identity, and it
     # is done on the whole blob so nothing can hide a path in a field this file forgot.
-    return json.loads(json.dumps(artifact).replace(str(Path(workdir).resolve()), "<workdir>"))
+    scrubbed, hits = scrub_workdir(json.loads(json.dumps(artifact)), workdir)
+    if not hits:
+        raise WorkdirScrubFoundNothing(
+            "the workdir scrub matched nothing in the artifact; roots tried: "
+            + repr(workdir_roots(workdir))
+        )
+    return scrubbed
 
 
 def serialize(artifact: dict) -> str:
@@ -221,5 +363,5 @@ if __name__ == "__main__":
     from bantamkit import criticreplay as module
 
     out = Path(sys.argv[1])
-    out.write_text(serialize(produce(module, out.parent / "_harness_rubrics")))
+    out.write_text(serialize(produce(module, out.parent / "_harness_rubrics")), encoding="utf-8")
     print(f"wrote {out} from {module.__file__}")

@@ -117,7 +117,7 @@ def seed_for(model: str, attempt: int) -> int:
 
 
 def load_prompt() -> tuple[str, str, str]:
-    raw = PROMPT_PATH.read_text()
+    raw = PROMPT_PATH.read_text(encoding="utf-8")
     sha = hashlib.sha256(raw.encode()).hexdigest()
     if sha != PROMPT_SHA256:
         raise SystemExit(
@@ -144,7 +144,7 @@ def clone(into: Path) -> Path:
         ["git", "-C", str(scratch), "status", "--porcelain"],
         capture_output=True,
         text=True,
-        check=True,
+        check=True, encoding="utf-8",
     ).stdout
     if dirty.strip():
         raise SystemExit(f"error: a fresh clone is already dirty:\n{dirty}")
@@ -177,7 +177,7 @@ def apply_patch(scratch: Path, completion: str) -> str:
     if not blocks:
         raise OracleFail("no-patch: the completion contains no SEARCH/REPLACE block")
     target = scratch / DECLARED_SOURCE
-    text = target.read_text()
+    text = target.read_text(encoding="utf-8")
     for i, (search, replace) in enumerate(blocks):
         hits = text.count(search)
         if hits != 1:
@@ -186,7 +186,7 @@ def apply_patch(scratch: Path, completion: str) -> str:
                 f"{DECLARED_SOURCE} (must be exactly 1)"
             )
         text = text.replace(search, replace, 1)
-    target.write_text(text)
+    target.write_text(text, encoding="utf-8")
     return "\n".join(
         f"<<<<<<< SEARCH\n{s}=======\n{r}>>>>>>> REPLACE" for s, r in blocks
     )
@@ -204,6 +204,7 @@ def _run(cmd: list[str], cwd: Path, timeout: float, env_src: Path) -> subprocess
         timeout=timeout,
         check=False,
         env={**os.environ, "PYTHONPATH": str(env_src), "PYTHONDONTWRITEBYTECODE": "1"},
+        encoding="utf-8",
     )
 
 
@@ -213,7 +214,7 @@ def check_boundary(scratch: Path) -> list[str]:
         ["git", "-C", str(scratch), "status", "--porcelain", "--untracked-files=all"],
         capture_output=True,
         text=True,
-        check=True,
+        check=True, encoding="utf-8",
     ).stdout.splitlines()
     touched = sorted(line[3:].strip().strip('"') for line in porcelain)
     if touched != [DECLARED_SOURCE]:
@@ -316,7 +317,7 @@ def self_test() -> None:
     with tempfile.TemporaryDirectory(prefix="qwen-impl-selftest-") as tmp:
         root = Path(tmp)
         scratch = clone(root)
-        src_text = (scratch / DECLARED_SOURCE).read_text()
+        src_text = (scratch / DECLARED_SOURCE).read_text(encoding="utf-8")
 
         expect("no block in the completion", lambda: apply_patch(scratch, "here is my fix, trust me"))
         expect(
@@ -327,16 +328,18 @@ def self_test() -> None:
             "SEARCH text that is absent",
             lambda: apply_patch(scratch, "<<<<<<< SEARCH\nnot in this file at all\n=======\nx\n>>>>>>> REPLACE"),
         )
-        assert (scratch / DECLARED_SOURCE).read_text() == src_text, "a failed apply wrote bytes"
+        after = (scratch / DECLARED_SOURCE).read_text(encoding="utf-8")
+        assert after == src_text, "a failed apply wrote bytes"
 
         # A test file edited, which is the automatic fail the invariant names.
         touched = scratch / "runtime-py" / "tests" / "test_criticreplay.py"
-        touched.write_text(touched.read_text() + "\n# tampered\n")
+        touched.write_text(touched.read_text(encoding="utf-8") + "\n# tampered\n", encoding="utf-8")
         expect("an edited test file", lambda: check_boundary(scratch))
         subprocess.run(["git", "-C", str(scratch), "checkout", "--", "."], check=True)
 
         # An untracked file smuggled in beside the source (a conftest, a sitecustomize).
-        (scratch / "runtime-py" / "tests" / "conftest_extra.py").write_text("# smuggled\n")
+        smuggled = scratch / "runtime-py" / "tests" / "conftest_extra.py"
+        smuggled.write_text("# smuggled\n", encoding="utf-8")
         expect("an untracked file", lambda: check_boundary(scratch))
         (scratch / "runtime-py" / "tests" / "conftest_extra.py").unlink()
 
@@ -417,7 +420,8 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.patch_file is not None:
         a = Attempt(model="none (--patch-file)", attempt=-1, seed=-1, prompt_sha256=sha)
-        run_attempt(args.patch_file.read_text(), a, args.python, args.oracle_timeout)
+        patch_text = args.patch_file.read_text(encoding="utf-8")
+        run_attempt(patch_text, a, args.python, args.oracle_timeout)
         print(json.dumps({"verdict": a.verdict, "reason": a.reason, "phases": a.phases}, indent=2))
         raise SystemExit(0 if a.verdict == "pass" else 1)
 
@@ -456,9 +460,9 @@ def main(argv: list[str] | None = None) -> None:
         a.wall_clock_s = round(time.monotonic() - t0, 3)
         record = a.__dict__
         (args.out / f"{args.date}-{args.tag}-{slug}-a{n}.json").write_text(
-            json.dumps(record, indent=2) + "\n"
+            json.dumps(record, indent=2) + "\n", encoding="utf-8"
         )
-        with index.open("a") as fh:
+        with index.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps({k: v for k, v in record.items() if k != "raw_completion"}) + "\n")
         print(f"[{args.model} a{n} seed={a.seed}] {a.verdict}: {a.reason}  ({a.wall_clock_s}s)")
 
@@ -467,7 +471,7 @@ def main(argv: list[str] | None = None) -> None:
         ["git", "-C", str(REPO), "status", "--porcelain"],
         capture_output=True,
         text=True,
-        check=False,
+        check=False, encoding="utf-8",
     ).stdout
     leaked = [ln for ln in dirty.splitlines() if "docs/eval-data" not in ln]
     if leaked:

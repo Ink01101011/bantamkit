@@ -14,10 +14,57 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # W10: the matrix is ARMED, and arming it is the whole point of job 31.
+    #
+    # WHAT THIS BUYS. The nine fix units closed 24 collected Windows-suspect node ids.
+    # Three of them -- and only three -- were closed by `skipif`, because Windows cannot
+    # be put into the scenario at all (see the `windows_cannot_construct` marker in
+    # runtime-py/tests/conftest.py, where each skip is priced by what it thereby fails to
+    # measure, per RB-P51). The other 21 were left DELIBERATELY LIVE. Their Windows
+    # outcome has never been measured post-fix -- not once, by anyone. The 61-failure
+    # reading everyone quotes was taken on probe/windows-ci BEFORE those nine fixes
+    # landed, so it is not evidence about the code that runs here. This matrix is the
+    # first measurement those 21 nodes have ever had, which means a red among them is a
+    # READING, not a regression: the run is telling us something about Windows that no
+    # amount of reasoning off the source was going to settle. Read it before fixing it.
+    #
+    # WHAT IS DELIBERATELY ABSENT. No PYTHONUTF8, no -X utf8, no
+    # --continue-on-collection-errors. Those three exist on probe/windows-ci and that
+    # branch must never merge.
+    #
+    # THE REASON WRITTEN HERE USED TO BE WRONG, and it was wrong in the direction that
+    # flatters the gate. It said PYTHONUTF8 "makes the encoding gate pass by fiat". It
+    # does not: MEASURED with three probes, EncodingWarning is still emitted under
+    # PYTHONUTF8=1 and under -X utf8, so the gate keeps firing and keeps failing the run.
+    # What the mask actually does is force every unencoded text open() to utf-8, which
+    # hides the class's SYMPTOMS -- the cp1252 decode failures that are the whole reason
+    # this job existed -- while leaving the gate itself intact. Excluding the mask is
+    # still right; the argument for excluding it was not. A justification that overstates
+    # its own gate is how a gate stops being re-checked.
+    #
+    # The mask is not the fix; the fix is the fix.
+    #
+    # HOW TO TELL THIS RAN. Four green jobs are only evidence if the Windows steps could
+    # have gone red. Confirm from the log, not from the colour: each Windows job's Test
+    # step must print a pytest summary line with a nonzero passed count. GitHub's pwsh
+    # wrapper propagates $LASTEXITCODE, so a nonzero pytest exit does fail the step -- but
+    # a step that never ran prints no summary at all, and that is what to look for.
+    runs-on: ${{ matrix.os }}
+    # W1: the emitting half of the encoding gate. `EncodingWarning` is raised only when
+    # the interpreter is started with this on, and it CANNOT be set from pytest's
+    # `addopts` (`-X` is an interpreter flag; pytest exits 4 on it). `filterwarnings` in
+    # runtime-py/pyproject.toml turns what this emits into a failure, and
+    # tests/test_encoding_gate.py goes red if this line is ever removed from a CI run --
+    # without that node, deleting this line would leave the whole gate green and blind.
+    env:
+      PYTHONWARNDEFAULTENCODING: "1"
     strategy:
       fail-fast: false
       matrix:
+        # Four jobs. `fail-fast: false` is load-bearing: the Windows readings are the
+        # product here, and cancelling siblings on the first red would throw away three
+        # quarters of the measurement to save a few runner-minutes.
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4

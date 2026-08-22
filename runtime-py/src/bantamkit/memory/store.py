@@ -209,7 +209,7 @@ class MemoryStore:
             created=existing.created if existing is not None else self._today(),
         )
         path = self._fact_path(name)
-        existed = path.read_text() if path.exists() else None
+        existed = path.read_text(encoding="utf-8") if path.exists() else None
         self._write_fact(fact)
         try:
             self._check_index_budget()
@@ -217,7 +217,7 @@ class MemoryStore:
             if existed is None:
                 path.unlink()
             else:
-                path.write_text(existed)
+                path.write_text(existed, encoding="utf-8")
             self._rebuild_index()
             raise
         self._rebuild_index()
@@ -360,7 +360,7 @@ class MemoryStore:
     def _facts(self) -> list[Fact]:
         facts = []
         for path in sorted((self.root / "facts").glob("*.md")):
-            text = path.read_text()
+            text = path.read_text(encoding="utf-8")
             try:
                 _, front, body = text.split("---\n", 2)
                 meta = yaml.safe_load(front)
@@ -419,11 +419,11 @@ class MemoryStore:
         )
         path = self._fact_path(fact.name)
         tmp = path.with_suffix(".md.tmp")
-        tmp.write_text(text)
+        tmp.write_text(text, encoding="utf-8")
         tmp.replace(path)
 
     def _rebuild_index(self) -> None:
-        (self.root / "index.md").write_text(self.index_text())
+        (self.root / "index.md").write_text(self.index_text(), encoding="utf-8")
 
     def _check_index_budget(self) -> None:
         size = len(self.index_text().encode())

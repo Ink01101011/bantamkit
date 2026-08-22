@@ -768,7 +768,7 @@ def test_a_real_ole2_doc_is_read_through_textutil(tmp_path):
     the file is written with a suffix that does not match, so a suffix reading gets it wrong.
     """
     source = tmp_path / "seed.txt"
-    source.write_text("Hello legacy world.\nSecond paragraph here.\n")
+    source.write_text("Hello legacy world.\nSecond paragraph here.\n", encoding="utf-8")
     target = tmp_path / "legacy.pdf"
     subprocess.run(
         [TEXTUTIL, "-convert", "doc", "-output", str(target), str(source)], check=True
@@ -1157,21 +1157,61 @@ def test_a_docx_states_the_images_its_paragraphs_do_not_carry(tmp_path):
     assert [o.count for o in only(doc.parts[0], docread.OMIT_MEDIA)] == [1]
 
 
+# A MIME boundary is a CRLF-delimited BYTE sequence, so the fixture that carries one is
+# declared as bytes and written with `write_bytes`. It used to be a `write_text` of the same
+# characters, which is correct only on a platform whose text mode does not translate: 237
+# bytes here, 253 on Windows, because each of the 16 intended `\r\n` becomes `\r\r\n`. See
+# `test_a_text_mode_write_is_what_breaks_the_boundary` for that translation performed and
+# measured on this machine, and `tests/test_newline_gate.py` for the repo-wide census.
+MHTML_CRLF = (
+    b"MIME-Version: 1.0\r\n"
+    b'Content-Type: multipart/related; boundary="B"\r\n\r\n'
+    b"--B\r\nContent-Type: text/html\r\n\r\n<html><body><p>hello</p></body></html>\r\n"
+    b"--B\r\nContent-Type: application/octet-stream\r\n\r\nZZZZZ\r\n"
+    b"--B\r\nContent-Type: image/png\r\n\r\nQQ\r\n"
+    b"--B--\r\n"
+)
+
+
 def test_an_mhtml_states_the_parts_it_did_not_render(tmp_path):
     """MEASURED: the real `.doc` on the corpus drops 174,918 bytes of octet-stream, silently."""
     path = tmp_path / "export.doc"
-    path.write_text(
-        "MIME-Version: 1.0\r\n"
-        'Content-Type: multipart/related; boundary="B"\r\n\r\n'
-        "--B\r\nContent-Type: text/html\r\n\r\n<html><body><p>hello</p></body></html>\r\n"
-        "--B\r\nContent-Type: application/octet-stream\r\n\r\nZZZZZ\r\n"
-        "--B\r\nContent-Type: image/png\r\n\r\nQQ\r\n"
-        "--B--\r\n"
-    )
+    path.write_bytes(MHTML_CRLF)
+    # What is on disk is what this node meant to put there. Vacuous on a platform whose text
+    # mode is a no-op -- it cannot fail on macOS or Linux -- and the line that names the defect
+    # on Windows, where a reverted `write_text` fails HERE, before `extract` is ever reached.
+    assert path.read_bytes() == MHTML_CRLF, "a fixture that means bytes must write bytes"
     doc = extract(path)
     assert doc.kind == "mhtml" and doc.parts[0].rows == ("hello",)
     found = only(doc, docread.OMIT_MEDIA)
     assert [(o.count, o.what) for o in found] == [(2, "application/octet-stream, image/png")]
+
+
+def test_a_text_mode_write_is_what_breaks_the_boundary(tmp_path):
+    """Windows' default text mode, performed and measured HERE rather than assumed.
+
+    `newline="\\r\\n"` makes a text-mode write translate every `\\n` on the way out, which is
+    exactly what Windows does by default and macOS does not -- so the platform difference this
+    file used to depend on becomes a thing this node can execute. MEASURED on this machine:
+    237 bytes become 253, all 16 `\\r\\n` become `\\r\\r\\n`, no `--B` line matches the declared
+    boundary any more, and `extract` hands back ONE part of 11 rows with ZERO omissions in
+    place of one part of 1 row with two. The `.doc` still sniffs as `mhtml`, which is why the
+    failure reads as a row mismatch rather than as a refusal.
+    """
+    intended, translated = tmp_path / "bytes.doc", tmp_path / "textmode.doc"
+    intended.write_bytes(MHTML_CRLF)
+    with translated.open("w", encoding="utf-8", newline="\r\n") as handle:
+        handle.write(MHTML_CRLF.decode("utf-8"))
+
+    on_disk = translated.read_bytes()
+    assert len(MHTML_CRLF) == 237 and len(on_disk) == 253
+    assert on_disk.count(b"\r\r\n") == MHTML_CRLF.count(b"\r\n") == 16
+    assert b"\r\r\n" not in MHTML_CRLF
+
+    good, bad = extract(intended), extract(translated)
+    assert good.kind == bad.kind == "mhtml"  # the sniffer is not what notices
+    assert good.parts[0].rows == ("hello",) and [o.count for o in good.omissions] == [2]
+    assert len(bad.parts) == 1 and len(bad.parts[0].rows) == 11 and bad.omissions == ()
 
 
 def test_omission_renders_to_primitives_for_the_contract_layer():

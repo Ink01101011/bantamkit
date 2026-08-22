@@ -248,7 +248,7 @@ def main(argv: list[str] | None = None) -> int:
         ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
         capture_output=True,
         text=True,
-        check=False,
+        check=False, encoding="utf-8",
     ).stdout.strip()
     print(f"repo root:             {root}")
     print(f"git HEAD:              {head or 'unknown'}")
@@ -292,7 +292,7 @@ def main(argv: list[str] | None = None) -> int:
         if not out.exists():
             print(f"FAILED — {ARTIFACT} does not exist, so there is nothing to check against.")
             return 1
-        committed = out.read_text()
+        committed = out.read_text(encoding="utf-8")
         if committed == text:
             print(RULE)
             print(
@@ -325,7 +325,7 @@ def main(argv: list[str] | None = None) -> int:
         print(RULE)
         return 0
 
-    out.write_text(text)
+    out.write_text(text, encoding="utf-8")
     print(RULE)
     print(f"WROTE {out.relative_to(root)} — {len(rows)} rows, {len(text)} B.")
     print("It is an instrument-validation artifact: evidence that four COLUMNS work on a real")

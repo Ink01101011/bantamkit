@@ -97,7 +97,7 @@ def _user(text: str, *, timestamp: str = BEFORE, cwd: str = BK) -> dict:
 def _write(directory: Path, name: str, events: list[dict]) -> Path:
     path = directory / name
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(json.dumps(event) + "\n" for event in events))
+    path.write_text("".join(json.dumps(event) + "\n" for event in events), encoding="utf-8")
     return path
 
 
@@ -570,7 +570,7 @@ def test_a_malformed_line_cannot_drift_the_checked_line_types_column(survey, tmp
     body = "".join(
         json.dumps(event) + "\n" for event in [_user("go")] + _one_reply_three_blocks(1000)
     )
-    path.write_text(body + "{not json at all\n" + json.dumps([1, 2, 3]) + "\n")
+    path.write_text(body + "{not json at all\n" + json.dumps([1, 2, 3]) + "\n", encoding="utf-8")
     row = _rows(survey, tmp_path)[0][0]
     assert "UNPARSEABLE" not in row["line_types"]
     assert "NOT_AN_OBJECT" not in row["line_types"]

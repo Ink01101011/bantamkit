@@ -22,7 +22,7 @@ def load_profile(name: str = "default") -> dict:
     path = assets_root() / "profiles" / f"{name}.yaml"
     if not path.exists():
         raise AssetNotFound(f"profile asset not found: {path}")
-    data = yaml.safe_load(path.read_text())
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
     for section, keys in REQUIRED.items():
         missing = [k for k in keys if k not in data.get(section, {})]
         if missing:

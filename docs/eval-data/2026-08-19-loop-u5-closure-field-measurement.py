@@ -82,7 +82,7 @@ def _load(path: Path, name: str):
 def _before_source() -> str:
     out = subprocess.run(
         ["git", "-C", str(REPO), "show", BEFORE_SHA + ":" + HARNESS_REL],
-        capture_output=True, text=True, check=True)
+        capture_output=True, text=True, check=True, encoding="utf-8")
     return out.stdout
 
 
@@ -202,14 +202,14 @@ def section_c1(before, after, wt: str, real_repo: str) -> int:
     print("  the workload's own ignore list is what `clean -fd` was using:")
     ignore = subprocess.run(
         ["git", "-C", real_repo, "show", before.WORKLOAD_COMMIT + ":.gitignore"],
-        capture_output=True, text=True, check=True).stdout
+        capture_output=True, text=True, check=True, encoding="utf-8").stdout
     for line in ("dist/", "*.tsbuildinfo", "node_modules/"):
         print("    .gitignore contains " + repr(line) + ": "
               + str(line in ignore.splitlines()))
     composite = subprocess.run(
         ["git", "-C", real_repo, "show",
          before.WORKLOAD_COMMIT + ":tsconfig.base.json"],
-        capture_output=True, text=True, check=True).stdout
+        capture_output=True, text=True, check=True, encoding="utf-8").stdout
     print('    tsconfig.base.json sets "composite": true: '
           + str('"composite": true' in composite))
     print()
@@ -299,7 +299,7 @@ def section_c2a(tmp: Path) -> int:
                 [sys.executable, str(script), "run", "--arm", arm,
                  "--repeats", "6", "--write", str(rows_path),
                  "--worktree", nowhere],
-                capture_output=True, text=True, check=False)
+                capture_output=True, text=True, check=False, encoding="utf-8")
             tail = (proc.stdout + proc.stderr).strip().splitlines()
             last = tail[-1] if tail else "(no output)"
             print("  " + tag + "  --arm " + arm)
@@ -308,7 +308,7 @@ def section_c2a(tmp: Path) -> int:
     proc = subprocess.run(
         [sys.executable, str(HARNESS), "run", "--arm", "compact-on",
          "--repeats", "6", "--write", str(rows_path), "--worktree", nowhere],
-        capture_output=True, text=True, check=False)
+        capture_output=True, text=True, check=False, encoding="utf-8")
     rejected = "invalid choice" in (proc.stdout + proc.stderr)
     wrote = rows_path.exists()
     print("  the discriminating evidence is WHICH GATE STOPPED IT, not the exit "
@@ -468,7 +468,7 @@ def section_n21(after, wt: str, real_repo: str) -> int:
     print(RULE)
     tracked = subprocess.run(
         ["git", "-C", wt, "ls-files", "--", "packages/shared/vitest.config.ts"],
-        capture_output=True, text=True, check=False).stdout.strip()
+        capture_output=True, text=True, check=False, encoding="utf-8").stdout.strip()
     print("  tracked `packages/shared/vitest.config.ts` at the pinned commit: "
           + (tracked or "NONE -- so a WRITE CREATES it and `git diff` is blind"))
     print()

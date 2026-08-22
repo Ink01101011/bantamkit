@@ -39,7 +39,9 @@ def _import_bantamkit(root: Path):
 
 
 def profile_numbers(root: Path) -> dict:
-    data = yaml.safe_load((root / "assets" / "profiles" / f"{PROFILE}.yaml").read_text())
+    data = yaml.safe_load((root / "assets" / "profiles" / f"{PROFILE}.yaml").read_text(
+        encoding="utf-8"
+    ))
     return {
         "observation_budget": data["agent"]["observation_budget"],
         "max_turns": data["agent"]["max_turns"],
@@ -51,13 +53,13 @@ def asset(root: Path) -> Path:
 
 
 def manifest(root: Path) -> dict:
-    return yaml.safe_load((asset(root) / "manifest.yaml").read_text())
+    return yaml.safe_load((asset(root) / "manifest.yaml").read_text(encoding="utf-8"))
 
 
 def surface(root: Path) -> dict[str, str]:
     base = asset(root) / manifest(root)["surface"]["root"]
     return {
-        p.relative_to(base).as_posix(): p.read_text()
+        p.relative_to(base).as_posix(): p.read_text(encoding="utf-8")
         for p in sorted(base.rglob("*"))
         if p.is_file()
     }
@@ -119,7 +121,7 @@ MARKERS = {
 
 
 def _tasks(directory: Path) -> list[dict]:
-    return [yaml.safe_load(p.read_text()) for p in sorted(directory.glob("*.yaml"))]
+    return [yaml.safe_load(p.read_text(encoding="utf-8")) for p in sorted(directory.glob("*.yaml"))]
 
 
 def table_markers(root: Path) -> None:
@@ -548,7 +550,7 @@ def _code_stats(files: dict[str, str], package: str) -> dict:
 def table_realism(root: Path) -> None:
     synth = _code_stats(surface(root), "ledger")
     real_files = {
-        p.name: p.read_text()
+        p.name: p.read_text(encoding="utf-8")
         for p in sorted((root / "runtime-py" / "src" / "bantamkit").rglob("*.py"))
     }
     real = _code_stats(real_files, "bantamkit")

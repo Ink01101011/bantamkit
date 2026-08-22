@@ -24,7 +24,7 @@ def test_tool_assets_are_valid():
     tool_files = sorted((assets_root() / "tools").glob("*.json"))
     assert {f.stem for f in tool_files} >= {"memory_save", "memory_recall"}
     for f in tool_files:
-        data = json.loads(f.read_text())
+        data = json.loads(f.read_text(encoding="utf-8"))
         assert set(data) == {"name", "description", "parameters"}
         assert data["name"] == f.stem
         jsonschema.Draft202012Validator.check_schema(data["parameters"])
@@ -34,7 +34,7 @@ def test_rubric_assets_are_valid():
     rubric_files = sorted((assets_root() / "rubrics").glob("*.yaml"))
     assert {f.stem for f in rubric_files} >= {"code-quality", "task-completion"}
     for f in rubric_files:
-        data = yaml.safe_load(f.read_text())
+        data = yaml.safe_load(f.read_text(encoding="utf-8"))
         assert data["name"] == f.stem
         assert isinstance(data["threshold"], int) and not isinstance(data["threshold"], bool)
         assert "{task}" in data["prompt"] and "{output}" in data["prompt"]
@@ -54,7 +54,7 @@ def test_eval_tasks_are_valid():
     assert len(task_files) >= 22
     families = []
     for f in task_files:
-        task = yaml.safe_load(f.read_text())
+        task = yaml.safe_load(f.read_text(encoding="utf-8"))
         assert task["name"] == f.stem
         assert task["family"] in FAMILIES
         families.append(task["family"])
@@ -97,7 +97,9 @@ def test_eval_tasks_are_valid():
 
 
 def test_eval_fixture_catalog_shape():
-    catalog = json.loads((assets_root() / "evals" / "fixtures" / "catalog.json").read_text())
+    catalog = json.loads(
+        (assets_root() / "evals" / "fixtures" / "catalog.json").read_text(encoding="utf-8")
+    )
     # Ensure required items are present
     assert {"widget", "gadget", "doohickey", "sprocket"} <= set(catalog)
     for item, entry in catalog.items():

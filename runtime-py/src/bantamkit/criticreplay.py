@@ -61,15 +61,17 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import errno
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from itertools import combinations
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import yaml
 
@@ -286,8 +288,13 @@ GUARD_MODES = ("warn", "error")
 # false about the very case the first half named: that run HAD run to completion, every
 # JSONL row and the summary were on disk to prove it, and it reported 120 anyway.
 #
-# COVERED SINCE v0.19.0: the READER GOING AWAY (EPIPE) at the run path's own write to
+# COVERED SINCE v0.19.0: the READER GOING AWAY at the run path's own write to
 # stdout — the table print, its flush, and the interpreter's shutdown flush behind them.
+# THE STATE, NOT ONE OS'S SPELLING OF IT (job 31). Until then this was written as EPIPE
+# and keyed on `BrokenPipeError`, which is what POSIX raises and what Windows does NOT:
+# there the same dead pipe arrives as a plain `OSError` with `errno == EINVAL` and no
+# `winerror`, so the arm was never entered and a clean run reported 5. The question is
+# now asked once, by `_stdout_reader_is_gone`, and that function carries the reading.
 # If the reader of stdout is gone there, the run reports the status it EARNED (0, 3 or 4)
 # and never the interpreter's number. A lost stdout may DOWNGRADE to a number the run
 # already had; it may not invent one. Read from a real shell's `$?` for all three earned
@@ -336,12 +343,24 @@ GUARD_MODES = ("warn", "error")
 #     all. That cell is why "give the print an `except OSError` arm", RB-P31's own filed
 #     attack direction, would not have closed it.
 #
-# The buffer is not the axis of the FIX, but it is why the defect looked like two
-# defects: CPython gives `sys.stdout` a `BufferedWriter` of `os.fstat(1).st_blksize`
-# bytes — 4096 for a regular file, 16384 for a pipe, 65536 for `/dev/null` — and whether
-# the doomed bytes are still in that buffer when the failure surfaces decides whether the
-# interpreter's finalization flush re-fails and overwrites the status with 120. Both
-# sides are handled by the same arm and both are pinned, at both sizes.
+# The buffering is not the axis of the FIX, but it is why the defect looked like two
+# defects: whether the doomed bytes are still INSIDE THE PROCESS when the failure
+# surfaces decides whether the interpreter's finalization flush re-fails and overwrites
+# the status with 120. Both sides are handled by the same arm and both are pinned, at
+# both sizes.
+#
+# TWO LAYERS DECIDE THAT, AND THIS COMMENT USED TO NAME ONLY THE LOWER ONE. CPython does
+# give `sys.stdout` a `BufferedWriter` of `os.fstat(1).st_blksize` bytes — 4096 for a
+# regular file, 16384 for a pipe, 65536 for `/dev/null` — but a text `print` reaches it
+# through a `TextIOWrapper` that holds everything until its own 8192-unit chunk fires, so
+# the point at which bytes actually leave is `max(io.DEFAULT_BUFFER_SIZE, st_blksize + 1)`
+# and `st_blksize` alone decides nothing whenever it is below 8192. Measured 2026-08-22,
+# macOS/APFS, CPython 3.13: with `st_blksize == 4096`, an 8191-byte text write leaves 0
+# bytes on fd 1 before any flush and an 8192-byte one leaves 8192 — crossover 8192, not
+# 4097. Behind a pipe (`st_blksize == 16384`) 16384 leaves 0 and 16385 leaves 16385,
+# which is what shows `st_blksize` really is the `BufferedWriter` size and really is not
+# the crossover. Nothing in this module reads either number; the file that did was the
+# test file's own straddle guard, and it now measures the crossover instead.
 #
 # STILL OUTSIDE THE RANGE, measured 2026-08-13 rather than assumed, because "everything
 # outside 0-4 means the run did not complete" is STILL not a true reading. This list is
@@ -580,7 +599,7 @@ def load_manifest(path: Path | None = None, rubric_name: str | None = None) -> M
     path = Path(path)
     if not path.is_file():
         raise PerturbationError(f"perturbation manifest not found: {path}")
-    raw = path.read_text()
+    raw = path.read_text(encoding="utf-8")
     data = yaml.safe_load(raw)
     points = []
     for entry in data["points"]:
@@ -917,8 +936,50 @@ class RubricVariant:
         return sha256_text(self.rubric.prompt)
 
 
+_DRIVE_ABSOLUTE_HEAD = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _names_a_machine(path: str) -> bool:
+    r"""Is `path` absolute on the platform it CAME FROM, rather than on the one reading it?
+
+    W5, MEASURED 2026-08-21 on macOS under CPython 3.12.13, which is why this is two
+    questions and not one. The single-flavour check this replaces asked only
+    `PurePosixPath(path).is_absolute()`, and:
+
+        PurePosixPath(r"C:\Users\x\m.yaml").is_absolute()      -> False
+        PurePosixPath(r"\\server\share\m.yaml").is_absolute()  -> False
+
+    so the rule whose entire purpose is to refuse a path that cannot work on another
+    machine was blind to exactly the class of absolute path most likely to have ARRIVED
+    from another machine. `PureWindowsPath` alone is no fix in the other direction:
+
+        PureWindowsPath("/private/tmp/s/m.yaml").is_absolute() -> False
+
+    because a Windows path is absolute only with BOTH a drive and a root. Neither flavour
+    is a superset of the other, so both are asked and either one is enough.
+
+    `windows.root` is asked BEYOND `windows.is_absolute()` for the drive-less rooted form
+    `\Users\x\m.yaml`, which both flavours call relative: it has a root and no drive, so
+    it names the top of whichever drive happens to be current — not this repository, and
+    not anything a second reader can obtain.
+
+    NOT INCLUDED, deliberately: the drive-RELATIVE form `C:foo`, which is absolute on no
+    platform — it names the working directory of drive `C:` and is a genuinely relative
+    path. It is out of a predicate called "absolute" by that predicate's own definition.
+    It is also unrepresentable in the `derive:` grammar for the colon reason documented
+    at `rubric_arg_shape_problem`, so no run can record one.
+
+    This asks the STRING and nothing else. It resolves no path and opens no file, so
+    `_not_repo_relative` stays a shape rule under RB-P32 and keeps reporting `USAGE_EXIT`.
+    """
+    if PurePosixPath(path).is_absolute():
+        return True
+    windows = PureWindowsPath(path)
+    return windows.is_absolute() or bool(windows.root)
+
+
 def _not_repo_relative(path: str) -> str | None:
-    """Why `path` cannot name a file in THIS repository, or `None` if nothing does.
+    r"""Why `path` cannot name a file in THIS repository, or `None` if nothing does.
 
     A function of the string and of nothing else — no path resolved, no file opened — so
     it is an argument-SHAPE rule under RB-P32's definition and reports `USAGE_EXIT`. The
@@ -929,14 +990,41 @@ def _not_repo_relative(path: str) -> str | None:
     `pathlib` will not do this for you and that is the trap L5 caught in two resolvers at
     once: `Path(repo) / "/private/tmp/x.yaml"` is `/private/tmp/x.yaml`, so a checker
     written as `repo / ref` silently reads the absolute path and calls it resolved.
+
+    NOR WILL ONE FLAVOUR OF `pathlib` DO IT (W5). Both refusals below used to ask
+    `PurePosixPath` alone, i.e. they asked whether the string is absolute on the platform
+    that happens to be READING it. Measured at `97c14c7`: `\\server\share\m.yaml` was
+    ACCEPTED as a repo-relative manifest path — a path that names another machine by
+    name, which is the single shape this function exists to refuse. The `..` refusal had
+    the same one-separator blindness, so `assets\..\..\etc\m.yaml` was accepted whole:
+    `PurePosixPath` splits on `/` only and sees one part, `PureWindowsPath` splits on both
+    and sees the escape. Both flavours are asked for both refusals.
     """
     if path.startswith("~"):
         return "a `~` names a home directory, which is not this repository"
-    if PurePosixPath(path).is_absolute():
+    if _names_a_machine(path):
         return "an absolute path names a machine, not a repository"
-    if ".." in PurePosixPath(path).parts:
+    if ".." in PurePosixPath(path).parts or ".." in PureWindowsPath(path).parts:
         return "a `..` segment leaves the repository"
     return None
+
+
+def _derive_manifest_refusal(manifest: str, problem: str) -> str:
+    """The one wording of the manifest-segment refusal, for the two places that reach it.
+
+    Two call sites judge the same rule (before the split for a drive-lettered path, after
+    it for every other shape) and a refusal whose text depended on which one fired would
+    be two rules under one name. `N11` in `tools/pinharness/contract-ledger.json` anchors
+    on the post-split site's three lines, which are unchanged.
+    """
+    return (
+        f"--rubric derive spec wants a repo-relative manifest path, got "
+        f"{manifest!r} — {problem}. A derived variant has no file of its own, so "
+        "the only thing that makes its recorded ref resolvable is that every "
+        "segment of it names something a second reader can obtain from this "
+        "repository. An absolute path names this machine, and RB-P17 is the "
+        "problem of a record that points at one."
+    )
 
 
 def rubric_arg_shape_problem(arg: str) -> str | None:
@@ -968,6 +1056,27 @@ def rubric_arg_shape_problem(arg: str) -> str | None:
         if len(parts) < 3 or not parts[1] or not parts[2]:
             return f"--rubric git spec wants git:<ref>:<path>, got {spec!r}"
     if spec.startswith("derive:"):
+        # ORDERING (W5, 2026-08-21). For ONE shape the absolute-path refusal has to be
+        # asked BEFORE the split, because the split destroys the evidence. This grammar
+        # is colon-delimited and a drive letter's colon IS that delimiter, so
+        # `derive:C:\Users\x\m.yaml:W1-trailing-newline:git:<ref>:<path>` splits into
+        # manifest `'C'` — repo-relative, and accepted — with the rest of the path
+        # shifted one segment along, and the refusal that then fires is the BASE rule's:
+        # "wants a git: base, got 'W1-trailing-newline:git:…'". MEASURED at `97c14c7` on
+        # macOS: refused, right exit, WRONG reason — and for a shape rule the reason is
+        # the whole of what it delivers, since the caller's next move is to fix the argv.
+        #
+        # This does NOT make a Windows absolute path representable, and is not meant to.
+        # It was refused before and it is refused here; the colon collision is real and
+        # stays. What changes is that the refusal names the actual defect. The rejoin
+        # below exists ONLY to name the offender in the message — this branch returns a
+        # refusal or falls through to the ordinary path, and never yields a manifest.
+        head = spec[len("derive:") :]
+        if _DRIVE_ABSOLUTE_HEAD.match(head):
+            offender = ":".join(head.split(":", 2)[:2])
+            problem = _not_repo_relative(offender)
+            if problem is not None:
+                return _derive_manifest_refusal(offender, problem)
         parts = spec.split(":", 3)
         if len(parts) < 4 or not all(parts[1:]):
             return (
@@ -985,14 +1094,7 @@ def rubric_arg_shape_problem(arg: str) -> str | None:
             # was ACCEPTED and recorded verbatim in `ref` with `sha256=''` — the exact
             # absolute-scratchpad shape RB-P17 was filed about, inside the fix that
             # closes RB-P17. It is the same defect and it gets the same answer.
-            return (
-                f"--rubric derive spec wants a repo-relative manifest path, got "
-                f"{manifest!r} — {problem}. A derived variant has no file of its own, so "
-                "the only thing that makes its recorded ref resolvable is that every "
-                "segment of it names something a second reader can obtain from this "
-                "repository. An absolute path names this machine, and RB-P17 is the "
-                "problem of a record that points at one."
-            )
+            return _derive_manifest_refusal(manifest, problem)
         base = parts[3]
         if not base.startswith("git:"):
             return (
@@ -1089,7 +1191,13 @@ def parse_rubric_arg(arg: str) -> RubricVariant:
     can also tell whether the manifest they just read is the one the run used.
 
     Ordering is manifest, then rule, then base, because the base is the only segment that
-    contains a `:` — three splits and the remainder is the base spec, with no escaping.
+    is SUPPOSED to contain a `:` — three splits and the remainder is the base spec, with
+    no escaping. CORRECTED (W5): "the only segment that contains a `:`" was a statement
+    about the grammar mistaken for one about the input. A Windows drive letter puts a
+    colon in the manifest segment, and the split then shifts every segment one along. The
+    form stays unrepresentable — refs are repo-relative by design and a drive letter is
+    not — but `rubric_arg_shape_problem` now judges that shape before the split, so it is
+    refused as the absolute path it is rather than as a malformed base.
 
     NO SILENT NO-OP, AND NO CYCLE. A rule whose anchor is absent from the base raises
     rather than returning the base unchanged: `W1-trailing-newline` on a template that
@@ -1120,7 +1228,7 @@ def parse_rubric_arg(arg: str) -> RubricVariant:
         file = Path(spec)
         if not file.is_file():
             raise PerturbationError(f"rubric not found: {spec}")
-        raw = file.read_text()
+        raw = file.read_text(encoding="utf-8")
     return RubricVariant(
         label=label, spec=spec, ref=spec, rubric=_parse_rubric(raw, spec), sha256=sha256_text(raw)
     )
@@ -1173,7 +1281,11 @@ def _derive_rubric(spec: str) -> tuple[Rubric, str]:
 def _git_show(ref: str, path: str) -> str:
     try:
         return subprocess.run(
-            ["git", "show", f"{ref}:{path}"], capture_output=True, text=True, check=True
+            ["git", "show", f"{ref}:{path}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
         ).stdout
     except (OSError, subprocess.CalledProcessError) as e:
         raise PerturbationError(f"cannot read git:{ref}:{path}: {e}") from e
@@ -1231,7 +1343,7 @@ def load_cases(
         # not a way this module reports anything. Refusing rather than skipping is
         # deliberate: a silently skipped file is a cell missing from the run.
         try:
-            data = json.loads(path.read_text())
+            data = json.loads(path.read_text(encoding="utf-8"))
         except ValueError as e:
             raise PerturbationError(f"{path.name} is not readable as JSON: {e}") from e
         if not isinstance(data, dict) or "task" not in data or "repeat" not in data:
@@ -1273,7 +1385,7 @@ def _task_prompt(tasks_dir: Path, name: str) -> str:
     path = Path(tasks_dir) / f"{name}.yaml"
     if not path.is_file():
         raise PerturbationError(f"task asset not found: {path}")
-    return yaml.safe_load(path.read_text())["prompt"]
+    return yaml.safe_load(path.read_text(encoding="utf-8"))["prompt"]
 
 
 def render_prompt(template: str, case: Case) -> str:
@@ -2689,7 +2801,7 @@ _EXIT_CONTRACT = f"""exit status (RB-P24):
      {ARTIFACT_WRITE_EXIT}; --violations-exit-zero does not suppress it.
 Branch on 0-{RENDER_FAILURE_EXIT}. A stdout that fails at the table print
 no longer leaves the range, and the two arms report DIFFERENT numbers on
-purpose: if the reader is gone (EPIPE) nothing was owed to anyone, so the run
+purpose: if the reader is gone nothing was owed to anyone, so the run
 reports the status it EARNED (RB-P27); if the write fails for any other reason
 the report was wanted and is now lost, so the run
 reports {RENDER_FAILURE_EXIT} instead of claiming a clean measurement (RB-P31).
@@ -2714,6 +2826,62 @@ this process's sys.stdout is replaced by a sink that RAISES the original
 failure on any further write, and fd 1 itself is left exactly as it was found.
 A caller that keeps writing after main gets an exception, never silence.
 """
+
+
+_EINVAL_MEANS_LOST_READER = os.name == "nt"
+"""Does `EINVAL` from a write to stdout mean the READER of stdout is gone?
+
+On Windows it does, and the reason is a MAPPING, not a state. The CRT's `_write()`
+calls `WriteFile`; when that fails it runs the Win32 error through `_dosmaperr`, whose
+table has no entry for `ERROR_BROKEN_PIPE` (109) or `ERROR_NO_DATA` (232) - the two
+errors a write to a pipe with no reader produces - so both reach Python as a plain
+`OSError` with `errno == EINVAL` and NO `winerror`, and the `except BrokenPipeError`
+clause this module used to key on was never entered.
+
+MEASURED, windows-latest 3.11 and 3.12, CI run 32555258828 (job 31): a clean run whose
+stdout was a pipe with no reader reported `5` instead of the `0` it earned, with
+`error: measured, but the report could not be rendered on stdout: [Errno 22] Invalid
+argument` on stderr. That the prefix is `[Errno 22]` and not `[WinError ...]` is itself
+the evidence that no `winerror` came with it: the SAME log renders a `winerror`-carrying
+`OSError` two nodes later as `[WinError 183] Cannot create a file when that file already
+exists`. A `winerror` that DOES survive needs no clause here - CPython maps both 109 and
+232 to `EPIPE` in `PC/errmap.h`, so such an `OSError` arrives already a
+`BrokenPipeError`.
+
+WHY A PLATFORM CONSTANT AND NOT A BARE `errno` TEST, which is the narrower thing to do
+and is done here anyway. `EINVAL` is Windows' CATCH-ALL for Win32 errors its table does
+not name, so it carries this meaning only on the platform whose CRT put it there. On
+POSIX a write's `EINVAL` says nothing about a reader, and reading it as one would let
+this module report a clean `0` for a report that a waiting reader never got - the exact
+invention the arm below is forbidden to make (`a lost stdout may DOWNGRADE to a number
+the run already had; it may never invent one`).
+
+So the platform FACT and the RULE are split, and the seam is here on purpose: the fact
+is this constant, which no non-Windows runner can exercise and which therefore measures
+nothing off Windows; the rule is `_stdout_reader_is_gone`, which
+`test_einval_is_a_lost_reader_only_where_the_c_runtime_says_so` exercises in BOTH
+directions on any platform. What is still NOT measured anywhere but a Windows runner is
+this line's own `os.name == "nt"`.
+"""
+
+
+def _stdout_reader_is_gone(e: BaseException) -> bool:
+    """Was `e`, raised by the run path's write to stdout, THE READER GOING AWAY?
+
+    The state, not one OS's spelling of it. Two arms hang off this answer and they
+    report different numbers on purpose (see `_EXIT_CONTRACT`): a gone reader downgrades
+    to the status the run EARNED, because nothing was owed to anyone; anything else is
+    `RENDER_FAILURE_EXIT`, because the report was wanted and is lost.
+
+    It stays a PREDICATE over the errno rather than a wider `except`: `ENOSPC`, `EBADF`
+    and `UnicodeEncodeError` must keep falling through to `RENDER_FAILURE_EXIT`, and they
+    do - `test_an_enospc_failure_at_the_table_write_reports_the_render_failure_status`
+    and `test_a_lost_stdout_raises_on_the_next_write_instead_of_swallowing_it` go red if
+    this ever answers True for them.
+    """
+    if isinstance(e, BrokenPipeError):
+        return True  # POSIX EPIPE, and any Windows error CPython already mapped to it
+    return _EINVAL_MEANS_LOST_READER and isinstance(e, OSError) and e.errno == errno.EINVAL
 
 
 class _LostStdout:
@@ -2882,7 +3050,7 @@ def main(argv: list[str] | None = None) -> None:
         sink = None
         if args.json:
             args.json.parent.mkdir(parents=True, exist_ok=True)
-            jsonl = args.json.open("a")
+            jsonl = args.json.open("a", encoding="utf-8")
 
             def sink(row: ReplayRow) -> None:
                 jsonl.write(json.dumps(row.row()) + "\n")
@@ -2918,7 +3086,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.summary:
         try:
             args.summary.parent.mkdir(parents=True, exist_ok=True)
-            args.summary.write_text(json.dumps(summary, indent=2) + "\n")
+            args.summary.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
         except OSError as e:
             write_failure = e
             print(
@@ -2953,59 +3121,67 @@ def main(argv: list[str] | None = None) -> None:
         try:
             print(table)
             sys.stdout.flush()
-        except BrokenPipeError as e:
-            # RB-P27 lever (2). The reader of stdout is gone (`... | head -1` once `head`
-            # has exited), so the table cannot be delivered — and NOBODY WAS WAITING FOR
-            # IT. Its absence costs no reader anything, so the run reports the status it
-            # EARNED below rather than the interpreter's 120: a lost stdout may DOWNGRADE
-            # to a number the run already had; it may never invent one. This is the ONLY
-            # arm that downgrades, and "nobody was reading" is the whole of the reason.
-            #
-            # The explicit `flush()` is load-bearing: `print` writes into a buffer, and
-            # without it the EPIPE would surface at interpreter shutdown instead of here,
-            # where it can be handled.
-            sys.stdout = _LostStdout(e)
         except (OSError, UnicodeEncodeError) as e:
-            # RB-P31, and the line K4B had to draw again because the first one was one
-            # class too narrow. The write failed and the reader was NOT gone: fd 1 is
-            # read-only (EBADF), or the device is full (ENOSPC), or the fd is otherwise
-            # unusable — or stdout's CODEC cannot represent the table
-            # (`PYTHONIOENCODING=latin-1` or `=ascii`, where the GUARD section's U+2014
-            # and U+00A7 raise `UnicodeEncodeError`). stderr is live in every measured
-            # cell of this class, so this is a report that could not be RENDERED, not a
-            # reader that walked away — the difference the two arms exist to keep apart.
-            # The run measured, so it does not report REFUSAL_EXIT; the report is gone,
-            # so it does not report the earned status either. It reports
-            # RENDER_FAILURE_EXIT, and says why on stderr.
-            #
-            # WHERE THE LINE IS NOW, AND WHY IT IS NOT `except Exception`. The two
-            # classes here are the two things about stdout that THE CALLER OWNS and this
-            # module cannot fix: the descriptor (`OSError`) and the codec that
-            # descriptor was wrapped in (`UnicodeEncodeError`). The shell chose fd 1; the
-            # environment and the locale chose the encoding; neither is editable from
-            # inside this file, and on both the measurement is complete and only the
-            # delivery is lost. Everything else a write can raise is still a bug in this
-            # module and still propagates with its traceback — a `RuntimeError`, a
-            # `TypeError`, an `AttributeError`, and any `ValueError` that is not a
-            # `UnicodeEncodeError` (`I/O operation on closed file` is the realistic one,
-            # and it is reachable only from an in-process caller who closed
-            # `sys.stdout`: a shell cannot hand a fresh process a stdout that is closed
-            # at the Python-object level — `1>&-` gives `sys.stdout is None`, which is
-            # the branch above). Pinned on that side by
-            # `test_a_non_oserror_at_the_table_write_is_not_downgraded`, which raises a
-            # `RuntimeError` from the write, and by
-            # `test_a_non_unicode_valueerror_at_the_table_write_is_not_downgraded`,
-            # which raises a bare `ValueError` — the sibling class of the one now
-            # caught, so the widening is pinned exactly where it stops.
-            #
-            # WHAT THIS DOES NOT REACH: an encoding failure on STDERR. Every arm here
-            # reports on stderr, so the messages this module writes there are ASCII on
-            # purpose (below); a `BantamError` whose own message is not, on a stderr
-            # that cannot encode it, still leaves by traceback with the same number the
-            # refusal would have had. Measured in
-            # docs/eval-data/2026-08-13-k4b-c1-stdout-encoding-matrix.md.
-            render_failure = str(e)
-            sys.stdout = _LostStdout(e)
+            # ONE arm, then the question that decides which number this run reports:
+            # WAS THE READER GONE. It used to be two `except` clauses, `BrokenPipeError`
+            # and everything else, which spelled the question as `EPIPE` — one OS's word
+            # for the state rather than the state. The caught set is unchanged
+            # (`BrokenPipeError` is an `OSError`); only the test moved from the clause to
+            # `_stdout_reader_is_gone`, where a platform that spells it differently can be
+            # added without widening what this arm catches.
+            if _stdout_reader_is_gone(e):
+                # RB-P27 lever (2). The reader of stdout is gone (`... | head -1` once `head`
+                # has exited), so the table cannot be delivered — and NOBODY WAS WAITING FOR
+                # IT. Its absence costs no reader anything, so the run reports the status it
+                # EARNED below rather than the interpreter's 120: a lost stdout may DOWNGRADE
+                # to a number the run already had; it may never invent one. This is the ONLY
+                # arm that downgrades, and "nobody was reading" is the whole of the reason.
+                #
+                # The explicit `flush()` is load-bearing: `print` writes into a buffer, and
+                # without it the EPIPE would surface at interpreter shutdown instead of here,
+                # where it can be handled.
+                sys.stdout = _LostStdout(e)
+            else:
+                # RB-P31, and the line K4B had to draw again because the first one was one
+                # class too narrow. The write failed and the reader was NOT gone: fd 1 is
+                # read-only (EBADF), or the device is full (ENOSPC), or the fd is otherwise
+                # unusable — or stdout's CODEC cannot represent the table
+                # (`PYTHONIOENCODING=latin-1` or `=ascii`, where the GUARD section's U+2014
+                # and U+00A7 raise `UnicodeEncodeError`). stderr is live in every measured
+                # cell of this class, so this is a report that could not be RENDERED, not a
+                # reader that walked away — the difference the two arms exist to keep apart.
+                # The run measured, so it does not report REFUSAL_EXIT; the report is gone,
+                # so it does not report the earned status either. It reports
+                # RENDER_FAILURE_EXIT, and says why on stderr.
+                #
+                # WHERE THE LINE IS NOW, AND WHY IT IS NOT `except Exception`. The two
+                # classes here are the two things about stdout that THE CALLER OWNS and this
+                # module cannot fix: the descriptor (`OSError`) and the codec that
+                # descriptor was wrapped in (`UnicodeEncodeError`). The shell chose fd 1; the
+                # environment and the locale chose the encoding; neither is editable from
+                # inside this file, and on both the measurement is complete and only the
+                # delivery is lost. Everything else a write can raise is still a bug in this
+                # module and still propagates with its traceback — a `RuntimeError`, a
+                # `TypeError`, an `AttributeError`, and any `ValueError` that is not a
+                # `UnicodeEncodeError` (`I/O operation on closed file` is the realistic one,
+                # and it is reachable only from an in-process caller who closed
+                # `sys.stdout`: a shell cannot hand a fresh process a stdout that is closed
+                # at the Python-object level — `1>&-` gives `sys.stdout is None`, which is
+                # the branch above). Pinned on that side by
+                # `test_a_non_oserror_at_the_table_write_is_not_downgraded`, which raises a
+                # `RuntimeError` from the write, and by
+                # `test_a_non_unicode_valueerror_at_the_table_write_is_not_downgraded`,
+                # which raises a bare `ValueError` — the sibling class of the one now
+                # caught, so the widening is pinned exactly where it stops.
+                #
+                # WHAT THIS DOES NOT REACH: an encoding failure on STDERR. Every arm here
+                # reports on stderr, so the messages this module writes there are ASCII on
+                # purpose (below); a `BantamError` whose own message is not, on a stderr
+                # that cannot encode it, still leaves by traceback with the same number the
+                # refusal would have had. Measured in
+                # docs/eval-data/2026-08-13-k4b-c1-stdout-encoding-matrix.md.
+                render_failure = str(e)
+                sys.stdout = _LostStdout(e)
     if render_failure is not None:
         # ASCII ONLY, and the reason is NOT the one it looks like (K4B, and this is a
         # claim K4B made, measured, and had to correct). One of the failures this line

@@ -172,7 +172,7 @@ scoring:
 
 
 def test_load_tasks_from_custom_dir(tmp_path):
-    (tmp_path / "tiny.yaml").write_text(TINY_TASK)
+    (tmp_path / "tiny.yaml").write_text(TINY_TASK, encoding="utf-8")
     tasks = evalrun.load_tasks(tmp_path)
     assert [t["name"] for t in tasks] == ["tiny"]
 
@@ -189,7 +189,7 @@ def test_load_tasks_empty_dir_raises(tmp_path):
 def test_run_suite_repeats_and_streams_results(tmp_path):
     taskdir = tmp_path / "tasks"
     taskdir.mkdir()
-    (taskdir / "tiny.yaml").write_text(TINY_TASK)
+    (taskdir / "tiny.yaml").write_text(TINY_TASK, encoding="utf-8")
     client = FakeClient([assistant(content="hi")] * 3)
     seen = []
     results = evalrun.run_suite(
@@ -208,7 +208,7 @@ def test_run_suite_repeats_and_streams_results(tmp_path):
 def test_run_suite_repeats_reseed_memory_freshly(tmp_path):
     taskdir = tmp_path / "tasks"
     taskdir.mkdir()
-    (taskdir / "tinymem.yaml").write_text(TINY_MEMORY_TASK)
+    (taskdir / "tinymem.yaml").write_text(TINY_MEMORY_TASK, encoding="utf-8")
     client = FakeClient(
         [
             assistant(tool_calls=[call("memory_recall", {"query": "deploy"})]),
@@ -252,20 +252,20 @@ def test_cli_new_flags_reach_run_suite(monkeypatch, tmp_path):
 
 def test_cli_json_flag_appends_and_flushes(monkeypatch, tmp_path):
     out = tmp_path / "results.jsonl"
-    out.write_text('{"task": "earlier-run"}\n')
+    out.write_text('{"task": "earlier-run"}\n', encoding="utf-8")
 
     def fake_run_suite(client, configs=None, tasks_dir=None, repeats=1, on_result=None):
         result = make_result()
         on_result(result)
         # flushed mid-run: the line must be on disk before run_suite returns
-        assert out.read_text().count("\n") == 2
+        assert out.read_text(encoding="utf-8").count("\n") == 2
         return [result]
 
     monkeypatch.setattr(evalrun, "OpenAICompatible", lambda **kw: object())
     monkeypatch.setattr(evalrun, "run_suite", fake_run_suite)
     monkeypatch.setattr(evalrun, "format_report", lambda results: "")
     evalrun.main(["--base-url", "http://x", "--model", "m", "--json", str(out)])
-    lines = out.read_text().splitlines()
+    lines = out.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 2
     assert json.loads(lines[0]) == {"task": "earlier-run"}
     data = json.loads(lines[1])
@@ -1058,7 +1058,7 @@ DEVTEAM = assets_root() / "evals" / "devteam"
 
 
 def _devteam_manifest():
-    return yaml.safe_load((DEVTEAM / "manifest.yaml").read_text())
+    return yaml.safe_load((DEVTEAM / "manifest.yaml").read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize("arm", ["graph-off", "graph-annotate", "graph-cache", "graph"])
@@ -1315,7 +1315,7 @@ def test_accounting_columns_reach_the_jsonl_row(monkeypatch, tmp_path):
     monkeypatch.setattr(evalrun, "run_suite", fake_run_suite)
     monkeypatch.setattr(evalrun, "format_report", lambda results: "")
     evalrun.main(["--base-url", "http://x", "--model", "m", "--json", str(out)])
-    row = json.loads(out.read_text().splitlines()[0])
+    row = json.loads(out.read_text(encoding="utf-8").splitlines()[0])
     assert (row["reader_calls"], row["repeat_reader_calls"]) == (5, 2)
     assert set(row) >= {
         "reader_calls",
@@ -1372,7 +1372,7 @@ def test_classify_outcome_maps_max_turns_to_its_own_bucket():
 
 
 def read_transcript(directory, config, task, repeat=0):
-    return json.loads((directory / f"{config}--{task}--r{repeat}.json").read_text())
+    return json.loads((directory / f"{config}--{task}--r{repeat}.json").read_text(encoding="utf-8"))
 
 
 def test_transcript_written_with_run_fields(tmp_path):
@@ -1451,7 +1451,7 @@ def test_transcript_write_failure_does_not_change_the_result(tmp_path, capsys):
 def test_run_suite_passes_transcripts_dir_and_repeat_index(tmp_path):
     taskdir = tmp_path / "tasks"
     taskdir.mkdir()
-    (taskdir / "tiny.yaml").write_text(TINY_TASK)
+    (taskdir / "tiny.yaml").write_text(TINY_TASK, encoding="utf-8")
     transcripts = tmp_path / "t"
     transcripts.mkdir()
     client = FakeClient([assistant(content="hi")] * 2)
@@ -1550,7 +1550,7 @@ def test_run_task_leaves_seedless_clients_alone_and_records_none(tmp_path):
 def test_run_suite_reseeds_per_repeat(tmp_path):
     taskdir = tmp_path / "tasks"
     taskdir.mkdir()
-    (taskdir / "tiny.yaml").write_text(TINY_TASK)
+    (taskdir / "tiny.yaml").write_text(TINY_TASK, encoding="utf-8")
     client = SeedableClient([assistant(content="hi")] * 2)
     results = evalrun.run_suite(
         client, configs=["bare"], workdir=tmp_path / "work", tasks_dir=taskdir, repeats=2
@@ -1572,7 +1572,7 @@ def test_seed_lands_in_the_jsonl_line_as_the_last_field(monkeypatch, tmp_path):
     monkeypatch.setattr(evalrun, "run_suite", fake_run_suite)
     monkeypatch.setattr(evalrun, "format_report", lambda results: "")
     evalrun.main(["--base-url", "http://x", "--model", "m", "--json", str(out)])
-    data = json.loads(out.read_text().splitlines()[0])
+    data = json.loads(out.read_text(encoding="utf-8").splitlines()[0])
     assert data["seed"] == 1861749954
     # Additive: appended, never inserted mid-row. `seed` was terminal when this node was
     # written; M3.5's accounting columns were appended AFTER it, so the invariant this
@@ -1643,7 +1643,7 @@ def test_a_fresh_row_from_a_real_run_suite_carries_the_model(monkeypatch, tmp_pa
     """
     taskdir = tmp_path / "tasks"
     taskdir.mkdir()
-    (taskdir / "tiny.yaml").write_text(TINY_TASK)
+    (taskdir / "tiny.yaml").write_text(TINY_TASK, encoding="utf-8")
     out = tmp_path / "results.jsonl"
     monkeypatch.setattr(
         evalrun,
@@ -1664,7 +1664,7 @@ def test_a_fresh_row_from_a_real_run_suite_carries_the_model(monkeypatch, tmp_pa
             str(out),
         ]
     )
-    row = json.loads(out.read_text().splitlines()[0])
+    row = json.loads(out.read_text(encoding="utf-8").splitlines()[0])
     assert "model" in row  # red if the field is dropped from TaskResult
     assert row["model"] == "qwen2.5:14b-instruct"  # red if it stops coming off the client
 
@@ -1682,7 +1682,9 @@ def test_the_transcript_a_run_dumps_also_names_the_model(tmp_path):
         transcripts_dir=transcripts,
         repeat=0,
     )
-    dumped = json.loads((transcripts / "bare--extract-contact--r0.json").read_text())
+    dumped = json.loads(
+        (transcripts / "bare--extract-contact--r0.json").read_text(encoding="utf-8")
+    )
     assert dumped["model"] == "qwen3:4b-instruct"
 
 
@@ -1714,7 +1716,7 @@ def test_a_rows_recorded_repeat_regenerates_its_own_seed(monkeypatch, tmp_path):
     """
     taskdir = tmp_path / "tasks"
     taskdir.mkdir()
-    (taskdir / "tiny.yaml").write_text(TINY_TASK)
+    (taskdir / "tiny.yaml").write_text(TINY_TASK, encoding="utf-8")
     out = tmp_path / "results.jsonl"
     monkeypatch.setattr(
         evalrun,
@@ -1737,7 +1739,7 @@ def test_a_rows_recorded_repeat_regenerates_its_own_seed(monkeypatch, tmp_path):
             str(out),
         ]
     )
-    rows = [json.loads(line) for line in out.read_text().splitlines()]
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
     assert len(rows) == 3
     for row in rows:
         assert run_seed(row["model"], row["task"], row["repeat"]) == row["seed"]
@@ -2001,7 +2003,7 @@ def test_profile_critique_rounds_reach_the_gate(tmp_path):
 def test_run_suite_threads_the_profile_to_every_task(tmp_path, monkeypatch):
     taskdir = tmp_path / "tasks"
     taskdir.mkdir()
-    (taskdir / "tiny.yaml").write_text(TINY_TASK)
+    (taskdir / "tiny.yaml").write_text(TINY_TASK, encoding="utf-8")
     seen = {}
 
     def spy(client, task, config, workdir, transcripts_dir=None, repeat=0, profile=None):

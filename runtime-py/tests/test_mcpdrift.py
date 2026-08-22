@@ -36,7 +36,6 @@ import importlib.util
 import io
 import json
 import os
-import stat
 import sys
 from pathlib import Path
 
@@ -143,18 +142,30 @@ def _personality(**overrides):
     return base
 
 
-def _server(tmp_path: Path, name: str, **overrides) -> str:
-    """Write one executable synthetic server and return its command path."""
+def _server(tmp_path: Path, name: str, **overrides) -> list[str]:
+    """Write one synthetic server and return the ARGV that launches it.
+
+    The interpreter is named on the command line. It is not written into a `#!` line and
+    the file is not marked executable, because `#!` is a loader feature of one family of
+    operating systems and NOT a property of this program: a registration is a `command`
+    plus an `args` list — `discover` folds exactly that pair into an argv — and every
+    real Python MCP server is registered as an interpreter plus a script. A fixture that
+    handed the checker a bare `.py` path was exercising the POSIX loader rather than the
+    checker, and that was the single cause of all nine failures this file produced on
+    `windows-latest`, where `CreateProcess` refuses a `.py` payload with `WinError 193`.
+    """
     path = tmp_path / f"{name}-server.py"
     source = _SERVER_SOURCE.format(personality=repr(_personality(**overrides)))
-    path.write_text(f"#!{sys.executable}\n{source}")
-    path.chmod(path.stat().st_mode | stat.S_IXUSR)
-    return str(path)
+    path.write_text(source, encoding="utf-8")
+    return [sys.executable, str(path)]
 
 
-def _check(*endpoints: str, extra: list[str] | None = None):
+def _check(*endpoints: tuple[str, list[str]], extra: list[str] | None = None):
     """Drive the checker in-process and return (exit code, parsed JSON report)."""
-    argv = ["check", "--json", *[f"--endpoint={spec}" for spec in endpoints], *(extra or [])]
+    argv = ["check", "--json"]
+    for label, command in endpoints:
+        argv += ["--endpoint", f"{label}={command[0]}", *command[1:]]
+    argv += extra or []
     buffer = io.StringIO()
     with contextlib.redirect_stdout(buffer):
         code = mcpdrift.main(argv)
@@ -191,11 +202,39 @@ def test_the_fixture_seeds_more_matching_facts_than_the_recall_floor():
     assert len(matching) >= 4, "too few facts share the probe query for the floor to show"
 
 
+def test_an_endpoint_spec_carries_its_arguments_into_the_launch(tmp_path):
+    """`--endpoint` must express what a registration expresses: a command AND its args.
+
+    `discover` already folds a registration's `command` plus `args` into a multi-token
+    argv, and an interpreter-plus-script registration is the ordinary shape, not an
+    exotic one. Every server in this file is launched that way, so this is the contract
+    the whole file rides on: if the flag silently dropped everything after the command,
+    the checker would launch a bare interpreter, which reads stdin as a script and never
+    answers `initialize` — an ERROR that would read as a broken endpoint rather than as
+    a broken flag. Asserted from the report, which prints the argv actually handed to
+    `subprocess.Popen`.
+    """
+    command = _server(tmp_path, "argv")
+    assert len(command) == 2, "the fixture stopped naming its interpreter on the argv"
+    code, report = _check(("only", command))
+    assert code == 0
+    assert report["endpoints"][0]["argv"] == command
+
+
+def test_an_endpoint_spec_missing_a_label_or_a_command_is_refused(capsys):
+    """Both halves are required. A spec naming only one is a usage error, not an ERROR
+    verdict wearing a dead endpoint's clothes."""
+    assert mcpdrift.main(["check", "--json", "--endpoint", "no-equals-sign"]) == 2
+    assert "LABEL=COMMAND" in capsys.readouterr().err
+    assert mcpdrift.main(["check", "--json", "--endpoint", "=/x/bin/server"]) == 2
+    assert "LABEL=COMMAND" in capsys.readouterr().err
+
+
 # ------------------------------------------------------------------------- the verdicts
 
 
 def test_two_identical_servers_agree(tmp_path):
-    code, report = _check(f"a={_server(tmp_path, 'a')}", f"b={_server(tmp_path, 'b')}")
+    code, report = _check(("a", _server(tmp_path, "a")), ("b", _server(tmp_path, "b")))
     assert report["verdict"] == "AGREE", report["differing"]
     assert code == 0
     assert report["differing"] == []
@@ -211,8 +250,8 @@ def test_a_behavioural_difference_under_one_version_string_is_red(tmp_path):
     answers with three, and both call themselves `9.9.9`.
     """
     code, report = _check(
-        f"floored={_server(tmp_path, 'floored', recall_lines=3)}",
-        f"literal={_server(tmp_path, 'literal', recall_lines=1)}",
+        ("floored", _server(tmp_path, "floored", recall_lines=3)),
+        ("literal", _server(tmp_path, "literal", recall_lines=1)),
     )
     assert code == 1
     assert report["verdict"] == "DIFFER"
@@ -230,8 +269,8 @@ def test_a_behavioural_difference_under_one_version_string_is_red(tmp_path):
 
 def test_a_version_difference_alone_is_red(tmp_path):
     code, report = _check(
-        f"old={_server(tmp_path, 'old', version='0.13.0')}",
-        f"new={_server(tmp_path, 'new', version='0.25.0')}",
+        ("old", _server(tmp_path, "old", version="0.13.0")),
+        ("new", _server(tmp_path, "new", version="0.25.0")),
     )
     assert code == 1
     assert report["differing"] == ["server_version"]
@@ -253,8 +292,8 @@ def test_each_non_version_surface_can_fire_on_its_own(tmp_path, surface, overrid
     per surface keeps them honest, and each case changes exactly one thing.
     """
     code, report = _check(
-        f"base={_server(tmp_path, 'base')}",
-        f"changed={_server(tmp_path, 'changed', **overrides)}",
+        ("base", _server(tmp_path, "base")),
+        ("changed", _server(tmp_path, "changed", **overrides)),
     )
     assert code == 1
     assert surface in report["differing"], report["differing"]
@@ -262,10 +301,11 @@ def test_each_non_version_surface_can_fire_on_its_own(tmp_path, surface, overrid
 
 def test_a_dead_endpoint_is_error_not_agreement(tmp_path):
     """Cannot compare is a different statement from compared and agreed."""
-    dead = tmp_path / "dead"
-    dead.write_text(f"#!{sys.executable}\nimport sys\nsys.exit(3)\n")
-    dead.chmod(dead.stat().st_mode | stat.S_IXUSR)
-    code, report = _check(f"live={_server(tmp_path, 'live')}", f"dead={dead}")
+    dead = tmp_path / "dead.py"
+    dead.write_text("import sys\nsys.exit(3)\n", encoding="utf-8")
+    code, report = _check(
+        ("live", _server(tmp_path, "live")), ("dead", [sys.executable, str(dead)])
+    )
     assert code == 2
     assert report["verdict"] == "ERROR"
     assert any(endpoint["error"] for endpoint in report["endpoints"])
@@ -273,7 +313,8 @@ def test_a_dead_endpoint_is_error_not_agreement(tmp_path):
 
 def test_a_missing_binary_is_error_not_agreement(tmp_path):
     code, report = _check(
-        f"live={_server(tmp_path, 'live')}", f"gone={tmp_path / 'not-installed'}"
+        ("live", _server(tmp_path, "live")),
+        ("gone", [str(tmp_path / "not-installed")]),
     )
     assert code == 2
     assert report["verdict"] == "ERROR"
@@ -281,7 +322,7 @@ def test_a_missing_binary_is_error_not_agreement(tmp_path):
 
 def test_one_endpoint_is_single_and_names_itself(tmp_path):
     """One name, one endpoint: nothing can drift, and the verdict says which case it is."""
-    code, report = _check(f"only={_server(tmp_path, 'only')}")
+    code, report = _check(("only", _server(tmp_path, "only")))
     assert code == 0
     assert report["verdict"] == "SINGLE"
 
@@ -311,7 +352,7 @@ def test_discovery_reads_all_three_scopes_from_a_synthetic_config(tmp_path):
     home = tmp_path / "home"
     repo = tmp_path / "repo"
     (repo / ".venv" / "bin").mkdir(parents=True)
-    (repo / ".venv" / "bin" / "bantamkit-mcp").write_text("#!/bin/sh\n")
+    (repo / ".venv" / "bin" / "bantamkit-mcp").write_text("#!/bin/sh\n", encoding="utf-8")
     home.mkdir()
     (home / ".claude.json").write_text(
         json.dumps(
@@ -321,10 +362,11 @@ def test_discovery_reads_all_three_scopes_from_a_synthetic_config(tmp_path):
                     str(repo): {"mcpServers": {"bantamkit": {"command": "/local/bin/bk"}}}
                 },
             }
-        )
+        ), encoding="utf-8"
     )
     (repo / ".mcp.json").write_text(
-        json.dumps({"mcpServers": {"bantamkit": {"command": ".venv/bin/bantamkit-mcp"}}})
+        json.dumps({"mcpServers": {"bantamkit": {"command": ".venv/bin/bantamkit-mcp"}}}),
+        encoding="utf-8",
     )
     found = mcpdrift.discover("bantamkit", repo, home)
     assert [endpoint.scope for endpoint in found] == ["user", "local", "project"]
@@ -335,7 +377,9 @@ def test_discovery_reads_all_three_scopes_from_a_synthetic_config(tmp_path):
 def test_discovery_of_an_unregistered_name_is_empty(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
-    (home / ".claude.json").write_text(json.dumps({"mcpServers": {"other": {"command": "/x"}}}))
+    (home / ".claude.json").write_text(
+        json.dumps({"mcpServers": {"other": {"command": "/x"}}}), encoding="utf-8"
+    )
     assert mcpdrift.discover("bantamkit", tmp_path, home) == []
 
 
@@ -357,7 +401,7 @@ def test_the_child_never_inherits_the_asset_override_and_never_sees_the_real_hom
     monkeypatch.setenv("BANTAMKIT_ASSETS", str(tmp_path / "some-other-pack"))
     real_home = os.path.expanduser("~")
     project, home = mcpdrift._write_fixture(tmp_path / "fixture")
-    session = mcpdrift._Session([_server(tmp_path, "env")], project, home, 30.0)
+    session = mcpdrift._Session(_server(tmp_path, "env"), project, home, 30.0)
     try:
         session.request(
             "initialize",

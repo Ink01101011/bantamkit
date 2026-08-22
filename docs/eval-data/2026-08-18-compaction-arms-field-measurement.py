@@ -559,7 +559,7 @@ class MechanismSession:
             stderr=subprocess.DEVNULL,
             env=env,
             text=True,
-            bufsize=1,
+            bufsize=1, encoding="utf-8",
         )
         self._id = 0
         self._rpc(
@@ -879,7 +879,9 @@ def read_rows(name: str) -> list[dict]:
     path = HERE / name
     if not path.exists():
         return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return [json.loads(line) for line in path.read_text(
+        encoding="utf-8"
+    ).splitlines() if line.strip()]
 
 
 def write_rows(name: str, rows: list[dict]) -> None:
