@@ -934,7 +934,7 @@ def _template_a_recorded_ref_names(repo: Path, ref: str) -> str | None:
 
 
 def test_a_derive_manifest_segment_may_not_be_an_absolute_path_either(tmp_path):
-    """RB-P17's own defect, found INSIDE the fix that closes RB-P17 (L5; fixed by L6).
+    r"""RB-P17's own defect, found INSIDE the fix that closes RB-P17 (L5; fixed by L6).
 
     The BASE segment was refused a working-tree path from the day this form shipped, with
     an explicit argument: a derived variant has no file of its own, so the only thing that
@@ -952,6 +952,34 @@ def test_a_derive_manifest_segment_may_not_be_an_absolute_path_either(tmp_path):
     manifest under `tmp_path` below EXISTS and is a valid manifest — the refusal is about
     the form of the string and not about the state of the disk, and a rule that consulted
     the disk could not have said "this can never work on any machine".
+
+    WIDENED 2026-08-21 (W5). "Absolute" was asked of the platform READING the string, not
+    the platform it came FROM: the check was `PurePosixPath(path).is_absolute()` alone.
+    So the rule that exists to refuse a path which cannot work on another machine was
+    blind to the paths that most often ARRIVE from one. Measured at `97c14c7` through
+    this same function, on macOS:
+
+        \\server\share\m.yaml     ACCEPTED
+        \Users\x\m.yaml           ACCEPTED
+        C:\Users\x\m.yaml         refused, but "wants a git: base" — the WRONG segment
+        assets\..\..\etc\m.yaml   ACCEPTED
+
+    The first two are RB-P17's own shape, accepted and recorded verbatim in `ref` with
+    `rubric_sha256=""`, i.e. the defect this node was written to close was still open for
+    a path spelled the other way. NOTE THAT NONE OF THIS NEEDED WINDOWS: every row is a
+    string, the function reads the string and nothing else, and all of them reproduce on
+    this machine — which is why there is no `skipif` here and nothing goes unmeasured by
+    running on macOS. What is NEVER MEASURED here is a real Windows filesystem, and the
+    rule never consults one, by construction.
+
+    ORDERING, for the drive-lettered rows. The `derive:` grammar is colon-delimited and a
+    drive letter's colon is that same delimiter, so `derive:C:\Users\x\m.yaml:…` splits
+    into manifest `'C'` — repo-relative, accepted — with every later segment shifted one
+    along, and the refusal that fired was the base rule's. The shape is therefore judged
+    BEFORE the split. This does not make a Windows absolute path representable and is not
+    meant to: refs are repo-relative by design, the collision is real, and the form is
+    refused either way. What the assertions below pin is that it is refused for the true
+    reason, which for a shape rule is the whole of what it delivers.
     """
     manifest = tmp_path / "m.yaml"
     manifest.write_text(
@@ -964,6 +992,13 @@ def test_a_derive_manifest_segment_may_not_be_an_absolute_path_either(tmp_path):
         (str(manifest), "absolute path names a machine"),
         ("../outside/m.yaml", "`..` segment leaves the repository"),
         ("~/m.yaml", "`~` names a home directory"),
+        # W5: absolute on the platform the argument came from. The first two were
+        # ACCEPTED at `97c14c7`; the next two were refused for the base segment's reason.
+        (r"\\server\share\m.yaml", "absolute path names a machine"),
+        (r"\Users\x\m.yaml", "absolute path names a machine"),
+        (r"C:\Users\x\m.yaml", "absolute path names a machine"),
+        ("C:/Users/x/m.yaml", "absolute path names a machine"),
+        (r"assets\..\..\etc\m.yaml", "`..` segment leaves the repository"),
     ):
         spec = f"derive:{bad}:W1-trailing-newline:{base}"
         problem = criticreplay.rubric_arg_shape_problem(f"B={spec}")
@@ -973,6 +1008,13 @@ def test_a_derive_manifest_segment_may_not_be_an_absolute_path_either(tmp_path):
     # CONTROL. The repo-relative form of the same manifest is accepted, so the rule is
     # about the shape of the path and not about `derive:` having stopped working.
     assert criticreplay.rubric_arg_shape_problem(f"B={_NULL_CONTROL_SPEC}") is None
+    # CONTROL, second half (W5). A repo-relative path written with the OTHER platform's
+    # separator is still accepted, so what the widened rule asks is "is this absolute" and
+    # not "does this contain a backslash" — the second would refuse this line.
+    relative_with_backslashes = "assets\\evals\\perturbations\\task-completion.yaml"
+    assert criticreplay.rubric_arg_shape_problem(
+        f"B=derive:{relative_with_backslashes}:W1-trailing-newline:{base}"
+    ) is None
 
 
 def test_a_derived_variant_records_the_bytes_of_the_manifest_it_resolved_through():
