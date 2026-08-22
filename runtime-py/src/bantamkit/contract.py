@@ -34,6 +34,10 @@ REQUIRED_KEYS = (
     "document_manifest_omitted_blank",
     "document_manifest_omitted_format",
     "document_manifest_omitted_unread_page",
+    "document_manifest_unread_no_operator",
+    "document_manifest_unread_unmapped",
+    "document_manifest_unread_whitespace",
+    "document_manifest_unread_no_character",
     "document_manifest_omitted_unmapped",
     "document_manifest_omitted_other",
     "document_page_header",
@@ -198,11 +202,36 @@ def _omission_line(contract: dict, entry: dict, omission: dict) -> str:
             what=omission["what"],
         )
     if subject == "unread-page":
-        # A PDF page that rendered nothing. The count is the images drawn on it and `what` is
-        # how many text-showing operators it ran; the reason those two numbers add up to
-        # "could not read" rather than "is empty" is this sentence's job, not the reader's.
+        # A PDF page that rendered nothing, and WHICH of the four reasons. The reader ships
+        # four named counts and no prose; choosing between them is this layer's job, exactly as
+        # `docread._pdf_refusal` chooses between the same four one grain up. The branch order
+        # is that function's, so the page-grain sentence and the document-grain refusal cannot
+        # disagree about a file.
+        #
+        # `vouched` is the whitespace case: on a page with no rows, a character this reader
+        # mapped can only be sitting in a run the renderer dropped for stripping to nothing.
+        # That sentence is the one this fix exists for — it was previously indistinguishable
+        # from the last branch, which blames the reader, and it is not the reader's fault.
+        facts = omission.get("facts") or {}
+        show_ops = int(facts.get("show_ops", 0))
+        vouched = int(facts.get("vouched", 0))
+        unmapped = int(facts.get("unmapped", 0))
+        if show_ops == 0:
+            why = contract["document_manifest_unread_no_operator"]
+        elif vouched == 0 and unmapped:
+            why = contract["document_manifest_unread_unmapped"].format(
+                show_ops=show_ops, unmapped=unmapped
+            )
+        elif vouched:
+            why = contract["document_manifest_unread_whitespace"].format(
+                show_ops=show_ops, vouched=vouched
+            )
+        else:
+            why = contract["document_manifest_unread_no_character"].format(show_ops=show_ops)
         return contract["document_manifest_omitted_unread_page"].format(
-            count=omission["count"], bytes=omission["size"], what=omission["what"]
+            why=why,
+            count=int(facts.get("images", 0)),
+            bytes=int(facts.get("image_bytes", 0)),
         )
     if subject == "unmapped-text":
         return contract["document_manifest_omitted_unmapped"].format(
