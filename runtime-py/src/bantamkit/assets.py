@@ -26,11 +26,29 @@ def assets_root() -> Path:
     raise AssetNotFound("no assets directory found; set BANTAMKIT_ASSETS")
 
 
-def load_tool(name: str) -> Tool:
+def load_tool_asset(name: str) -> dict:
+    """Return one tool asset VERBATIM — every key, including the ones no surface uses.
+
+    `load_tool` below narrows the same file to the three fields a model is shown. This
+    returns the whole manifest entry, because a server has to read `surfaces` (may I
+    register this at all?) and `output_schema` (what do I advertise as the return shape?)
+    and neither belongs on the agent-facing `Tool`.
+    """
     path = assets_root() / "tools" / f"{name}.json"
     if not path.exists():
         raise AssetNotFound(f"tool asset not found: {path}")
-    data = json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_tool(name: str) -> Tool:
+    """The agent-facing view of a tool asset: name, description, input schema.
+
+    The three keys are named EXPLICITLY rather than splatted. `assets/tools/` is shared by
+    two tool surfaces and carries fields that only the MCP one consumes; a loader that
+    passed the dict through would add them to every tool definition an eval-run model is
+    shown, changing the agent surface every time the manifest grows.
+    """
+    data = load_tool_asset(name)
     return Tool(name=data["name"], description=data["description"], parameters=data["parameters"])
 
 

@@ -1,0 +1,31 @@
+{
+  "name": "validate_json",
+  "description": "Validate candidate output text against a JSON Schema. Returns {valid, feedback}; when invalid, feed the feedback back to the model and retry.",
+  "surfaces": [
+    "mcp"
+  ],
+  "parameters": {
+    "properties": {
+      "output": {
+        "title": "Output",
+        "type": "string"
+      },
+      "schema": {
+        "additionalProperties": true,
+        "title": "Schema",
+        "type": "object"
+      }
+    },
+    "required": [
+      "output",
+      "schema"
+    ],
+    "type": "object",
+    "title": "validate_jsonArguments"
+  },
+  "output_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "title": "validate_jsonDictOutput"
+  }
+}

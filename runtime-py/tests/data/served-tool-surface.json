@@ -1,0 +1,240 @@
+{
+  "order": [
+    "memory_save",
+    "memory_recall",
+    "validate_json",
+    "shiftwork_clock_in",
+    "shiftwork_clock_out",
+    "shiftwork_status",
+    "build_identity"
+  ],
+  "tools": {
+    "build_identity": {
+      "description": "Which bantamkit build is answering you, readable mid-call. Returns `build_id` — a content fingerprint of the running source and the asset pack it loads — plus the paths it was computed over. Call it when one MCP server name may resolve to more than one install: two endpoints reporting the same `version` are the SAME build only if their `build_id` matches, because a version string moves on release bumps and not on builds. Any fact that cannot be derived comes back as {\"unavailable\": \"<reason>\"} and is named in the `unavailable` list — never omitted, never a placeholder that reads as a value. Takes no arguments and reads no state.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object",
+        "title": "build_identity_toolArguments"
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true,
+        "title": "build_identity_toolDictOutput"
+      }
+    },
+    "memory_recall": {
+      "description": "Search persistent memory. Call BEFORE starting a task that resembles past work. Returns at most k matching facts.",
+      "inputSchema": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Words a past-you would have used to describe the fact"
+          },
+          "k": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object",
+        "title": "memory_recallOutput"
+      }
+    },
+    "memory_save": {
+      "description": "Save ONE durable fact to persistent memory. Use only for facts needed in a future session; never for things derivable from the repo or one-off state.",
+      "inputSchema": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "user",
+              "feedback",
+              "project",
+              "reference"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]*$",
+            "description": "short-kebab-case slug"
+          },
+          "description": {
+            "type": "string",
+            "description": "One line written to match the FUTURE recall query, not to summarize the body"
+          },
+          "body": {
+            "type": "string",
+            "description": "The fact itself, terse"
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "names of related memories"
+          }
+        },
+        "required": [
+          "type",
+          "name",
+          "description",
+          "body"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object",
+        "title": "memory_saveOutput"
+      }
+    },
+    "shiftwork_clock_in": {
+      "description": "Shift-work clock-in: schema-validate the checkpoint file and return the brief for the unit at plan.cursor — {unit, role, invariants, handoff, do_not, files} — to hand to the spawned agent verbatim. Structured refusals, never exceptions: result=escalate when handoff.open_questions is non-empty, result=success when every unit is done or dropped, result=error when the checkpoint fails validation.",
+      "inputSchema": {
+        "properties": {
+          "checkpoint": {
+            "title": "Checkpoint",
+            "type": "string"
+          }
+        },
+        "required": [
+          "checkpoint"
+        ],
+        "type": "object",
+        "title": "shiftwork_clock_inArguments"
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true,
+        "title": "shiftwork_clock_inDictOutput"
+      }
+    },
+    "shiftwork_clock_out": {
+      "description": "Shift-work clock-out: record a finished unit — set its status, advance plan.cursor, merge handoff_patch, push history_entry onto the 5-entry ring — validating the whole mutated document against the checkpoint schema BEFORE an atomic write (a failure writes nothing and returns result=error). Every success appends one accounting line (unit, role, status, ts, plus your accounting fields, e.g. tokens/duration/model) to <checkpoint>.log.jsonl.",
+      "inputSchema": {
+        "properties": {
+          "checkpoint": {
+            "title": "Checkpoint",
+            "type": "string"
+          },
+          "unit_id": {
+            "title": "Unit Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "handoff_patch": {
+            "additionalProperties": true,
+            "title": "Handoff Patch",
+            "type": "object"
+          },
+          "history_entry": {
+            "additionalProperties": true,
+            "title": "History Entry",
+            "type": "object"
+          },
+          "accounting": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Accounting"
+          }
+        },
+        "required": [
+          "checkpoint",
+          "unit_id",
+          "status",
+          "handoff_patch",
+          "history_entry"
+        ],
+        "type": "object",
+        "title": "shiftwork_clock_outArguments"
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true,
+        "title": "shiftwork_clock_outDictOutput"
+      }
+    },
+    "shiftwork_status": {
+      "description": "Shift-work status: read-only progress summary of a checkpoint — units by status, cursor, open-question count, last history entry. Never mutates.",
+      "inputSchema": {
+        "properties": {
+          "checkpoint": {
+            "title": "Checkpoint",
+            "type": "string"
+          }
+        },
+        "required": [
+          "checkpoint"
+        ],
+        "type": "object",
+        "title": "shiftwork_statusArguments"
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true,
+        "title": "shiftwork_statusDictOutput"
+      }
+    },
+    "validate_json": {
+      "description": "Validate candidate output text against a JSON Schema. Returns {valid, feedback}; when invalid, feed the feedback back to the model and retry.",
+      "inputSchema": {
+        "properties": {
+          "output": {
+            "title": "Output",
+            "type": "string"
+          },
+          "schema": {
+            "additionalProperties": true,
+            "title": "Schema",
+            "type": "object"
+          }
+        },
+        "required": [
+          "output",
+          "schema"
+        ],
+        "type": "object",
+        "title": "validate_jsonArguments"
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true,
+        "title": "validate_jsonDictOutput"
+      }
+    }
+  }
+}

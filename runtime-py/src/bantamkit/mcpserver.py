@@ -9,62 +9,28 @@ import json
 import os
 import platform
 import sys
+from collections.abc import Callable
 from importlib import metadata
 from pathlib import Path
 from typing import Any
 
 import bantamkit
 from bantamkit import __version__, shiftwork
-from bantamkit.assets import AssetNotFound, assets_root, load_skill, load_tool
+from bantamkit.assets import AssetNotFound, assets_root, load_skill, load_tool_asset
+from bantamkit.client import BantamError
 from bantamkit.contract import schema_error, schema_retry_feedback
 from bantamkit.memory import DEFAULT_INDEX_BUDGET, Memory
 
 try:
     from mcp.server import MCPServer
     from mcp.server.mcpserver.exceptions import ResourceError
+    from mcp.server.mcpserver.tools import Tool as SDKTool
 except ImportError:  # surfaced as a clear SystemExit in main()
     MCPServer = None  # type: ignore[assignment]
     ResourceError = None  # type: ignore[assignment]
+    SDKTool = None  # type: ignore[assignment]
 
 _INSTALL_HINT = 'bantamkit-mcp needs the MCP extra: pip install "bantamkit[mcp]"'
-
-VALIDATE_DESCRIPTION = (
-    "Validate candidate output text against a JSON Schema. Returns {valid, feedback}; "
-    "when invalid, feed the feedback back to the model and retry."
-)
-
-CLOCK_IN_DESCRIPTION = (
-    "Shift-work clock-in: schema-validate the checkpoint file and return the brief for "
-    "the unit at plan.cursor — {unit, role, invariants, handoff, do_not, files} — to hand "
-    "to the spawned agent verbatim. Structured refusals, never exceptions: "
-    "result=escalate when handoff.open_questions is non-empty, result=success when every "
-    "unit is done or dropped, result=error when the checkpoint fails validation."
-)
-
-CLOCK_OUT_DESCRIPTION = (
-    "Shift-work clock-out: record a finished unit — set its status, advance plan.cursor, "
-    "merge handoff_patch, push history_entry onto the 5-entry ring — validating the whole "
-    "mutated document against the checkpoint schema BEFORE an atomic write (a failure "
-    "writes nothing and returns result=error). Every success appends one accounting line "
-    "(unit, role, status, ts, plus your accounting fields, e.g. tokens/duration/model) to "
-    "<checkpoint>.log.jsonl."
-)
-
-STATUS_DESCRIPTION = (
-    "Shift-work status: read-only progress summary of a checkpoint — units by status, "
-    "cursor, open-question count, last history entry. Never mutates."
-)
-
-BUILD_IDENTITY_DESCRIPTION = (
-    "Which bantamkit build is answering you, readable mid-call. Returns `build_id` — a "
-    "content fingerprint of the running source and the asset pack it loads — plus the "
-    "paths it was computed over. Call it when one MCP server name may resolve to more "
-    "than one install: two endpoints reporting the same `version` are the SAME build "
-    "only if their `build_id` matches, because a version string moves on release bumps "
-    "and not on builds. Any fact that cannot be derived comes back as "
-    '{"unavailable": "<reason>"} and is named in the `unavailable` list — never omitted, '
-    "never a placeholder that reads as a value. Takes no arguments and reads no state."
-)
 
 SERVER_NAME = "bantamkit"
 
@@ -281,28 +247,65 @@ def build_identity() -> dict[str, Any]:
     return identity
 
 
+def _from_manifest(fn: Callable[..., Any], name: str) -> Any:
+    """Bind one handler to its manifest entry — description, BOTH schemas, and the surface.
+
+    The asset pack under `assets/tools/` is the tool contract for every runtime that
+    serves this surface, so the schema has to arrive WITH the registration rather than be
+    corrected onto it afterwards. Until this function existed, `build_server` registered
+    each handler by decorator (description from a Python constant, schema derived from the
+    signature) and then reached through a private attribute of the SDK's tool manager to
+    overwrite two of the schemas after the fact. The served bytes were right, but only for
+    as long as that attribute stayed reachable under that name: an SDK that renamed it
+    would have gone back to advertising whatever the Python signature says, silently, and
+    a port to a second runtime would have had to re-read Python to learn the contract.
+
+    `MCPServer(..., tools=[...])` is the public seam. The object handed to the constructor
+    already carries the manifest's description and schema, so registration and truth are
+    one step. `from_function` still derives `fn_metadata` from the signature, and that is
+    what validates arguments at CALL time; the signatures mirror the manifest. Only what
+    is ADVERTISED changes hands here, and it now has exactly one source.
+
+    `output_schema` goes through the same seam by a different route. It is not a field on
+    the SDK's `Tool`; it is a `cached_property` returning `fn_metadata.output_schema`, and
+    `MCPServer.list_tools` copies it straight onto the wire's `outputSchema`. Putting the
+    manifest's value in the instance dict is what a `cached_property` reads first, so the
+    override lands — and it lands on the ADVERTISEMENT ONLY, because the call path
+    (`FuncMetadata.convert_result`) consults `fn_metadata`, which is untouched. That is
+    the same division `parameters` already has: the manifest says what is promised, the
+    signature still says what is enforced.
+
+    The `surfaces` check is what makes that field load-bearing. `assets/tools/` serves the
+    eval agent too, and a manifest entry that does not claim `mcp` must not become a tool
+    on this server — otherwise the field is a comment, and a port that trusts it would
+    serve a different set of tools than this runtime does.
+    """
+    asset = load_tool_asset(name)
+    if "mcp" not in asset["surfaces"]:
+        raise BantamError(
+            f"tool asset {name!r} does not claim the mcp surface: {asset['surfaces']}"
+        )
+    tool = SDKTool.from_function(fn, name=asset["name"], description=asset["description"])
+    return tool.model_copy(
+        update={"parameters": asset["parameters"], "output_schema": asset["output_schema"]}
+    )
+
+
 def build_server(memory: Memory) -> Any:
     """Assemble the MCP server around one Memory instance (the per-person state)."""
     if MCPServer is None:
         raise SystemExit(_INSTALL_HINT)
-    server = MCPServer(SERVER_NAME, instructions=load_skill("memory"), version=_version())
 
-    save_asset = load_tool("memory_save")
-    recall_asset = load_tool("memory_recall")
-
-    @server.tool(name="memory_save", description=save_asset.description)
     def memory_save(
         type: str, name: str, description: str, body: str, links: list[str] | None = None
     ) -> str:
         return memory.save(type, name, description, body, links)
 
-    @server.tool(name="memory_recall", description=recall_asset.description)
     def memory_recall(query: str, k: int | None = None) -> str:
         if k is not None:
             k = max(1, min(k, 5))  # the advertised schema's bounds; clients may ignore it
         return memory.recall(query, k)
 
-    @server.tool(name="validate_json", description=VALIDATE_DESCRIPTION)
     def validate_json(output: str, schema: dict[str, Any]) -> dict[str, Any]:
         error = schema_error(output, schema)
         if error is None:
@@ -312,11 +315,9 @@ def build_server(memory: Memory) -> Any:
             "feedback": schema_retry_feedback(error),
         }
 
-    @server.tool(name="shiftwork_clock_in", description=CLOCK_IN_DESCRIPTION)
     def shiftwork_clock_in(checkpoint: str) -> dict[str, Any]:
         return shiftwork.clock_in(checkpoint)
 
-    @server.tool(name="shiftwork_clock_out", description=CLOCK_OUT_DESCRIPTION)
     def shiftwork_clock_out(
         checkpoint: str,
         unit_id: str,
@@ -329,7 +330,6 @@ def build_server(memory: Memory) -> Any:
             checkpoint, unit_id, status, handoff_patch, history_entry, accounting
         )
 
-    @server.tool(name="shiftwork_status", description=STATUS_DESCRIPTION)
     def shiftwork_status(checkpoint: str) -> dict[str, Any]:
         return shiftwork.status(checkpoint)
 
@@ -338,16 +338,28 @@ def build_server(memory: Memory) -> Any:
     # tool-calling model never sees it, and `resources/read` is a host-facing surface
     # most clients never expose to the model at all. A tool is in `tools/list`, so the
     # model that just received a `memory_recall` answer can ask who answered it.
-    @server.tool(name="build_identity", description=BUILD_IDENTITY_DESCRIPTION)
     def build_identity_tool() -> dict[str, Any]:
         return build_identity()
 
-    # Advertise the asset pack's schemas verbatim: one source of truth for every
-    # transport. Call-time argument validation still follows the handler signatures
-    # above, which mirror the same schemas. _tool_manager is SDK-internal; the
-    # schema-equality test fails loudly if an SDK upgrade moves it.
-    for tool_name, asset in (("memory_save", save_asset), ("memory_recall", recall_asset)):
-        server._tool_manager.get_tool(tool_name).parameters = asset.parameters
+    # The served surface, in one place, read out of the asset pack. Adding a tool here
+    # without an asset raises AssetNotFound at startup — the manifest cannot drift behind
+    # the server, because the server cannot start without it.
+    tools = [
+        _from_manifest(memory_save, "memory_save"),
+        _from_manifest(memory_recall, "memory_recall"),
+        _from_manifest(validate_json, "validate_json"),
+        _from_manifest(shiftwork_clock_in, "shiftwork_clock_in"),
+        _from_manifest(shiftwork_clock_out, "shiftwork_clock_out"),
+        _from_manifest(shiftwork_status, "shiftwork_status"),
+        _from_manifest(build_identity_tool, "build_identity"),
+    ]
+
+    server = MCPServer(
+        SERVER_NAME,
+        instructions=load_skill("memory"),
+        version=_version(),
+        tools=tools,
+    )
 
     @server.resource("bantamkit://skills/{name}")
     def skill_resource(name: str) -> str:

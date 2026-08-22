@@ -1,0 +1,17 @@
+{
+  "name": "build_identity",
+  "description": "Which bantamkit build is answering you, readable mid-call. Returns `build_id` — a content fingerprint of the running source and the asset pack it loads — plus the paths it was computed over. Call it when one MCP server name may resolve to more than one install: two endpoints reporting the same `version` are the SAME build only if their `build_id` matches, because a version string moves on release bumps and not on builds. Any fact that cannot be derived comes back as {\"unavailable\": \"<reason>\"} and is named in the `unavailable` list — never omitted, never a placeholder that reads as a value. Takes no arguments and reads no state.",
+  "surfaces": [
+    "mcp"
+  ],
+  "parameters": {
+    "properties": {},
+    "type": "object",
+    "title": "build_identity_toolArguments"
+  },
+  "output_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "title": "build_identity_toolDictOutput"
+  }
+}

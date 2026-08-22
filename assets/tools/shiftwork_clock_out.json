@@ -1,0 +1,60 @@
+{
+  "name": "shiftwork_clock_out",
+  "description": "Shift-work clock-out: record a finished unit — set its status, advance plan.cursor, merge handoff_patch, push history_entry onto the 5-entry ring — validating the whole mutated document against the checkpoint schema BEFORE an atomic write (a failure writes nothing and returns result=error). Every success appends one accounting line (unit, role, status, ts, plus your accounting fields, e.g. tokens/duration/model) to <checkpoint>.log.jsonl.",
+  "surfaces": [
+    "mcp"
+  ],
+  "parameters": {
+    "properties": {
+      "checkpoint": {
+        "title": "Checkpoint",
+        "type": "string"
+      },
+      "unit_id": {
+        "title": "Unit Id",
+        "type": "string"
+      },
+      "status": {
+        "title": "Status",
+        "type": "string"
+      },
+      "handoff_patch": {
+        "additionalProperties": true,
+        "title": "Handoff Patch",
+        "type": "object"
+      },
+      "history_entry": {
+        "additionalProperties": true,
+        "title": "History Entry",
+        "type": "object"
+      },
+      "accounting": {
+        "anyOf": [
+          {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Accounting"
+      }
+    },
+    "required": [
+      "checkpoint",
+      "unit_id",
+      "status",
+      "handoff_patch",
+      "history_entry"
+    ],
+    "type": "object",
+    "title": "shiftwork_clock_outArguments"
+  },
+  "output_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "title": "shiftwork_clock_outDictOutput"
+  }
+}

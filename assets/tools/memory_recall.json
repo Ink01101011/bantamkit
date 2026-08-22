@@ -1,12 +1,38 @@
 {
   "name": "memory_recall",
   "description": "Search persistent memory. Call BEFORE starting a task that resembles past work. Returns at most k matching facts.",
+  "surfaces": [
+    "agent",
+    "mcp"
+  ],
   "parameters": {
     "type": "object",
-    "required": ["query"],
+    "required": [
+      "query"
+    ],
     "properties": {
-      "query": {"type": "string", "description": "Words a past-you would have used to describe the fact"},
-      "k": {"type": "integer", "minimum": 1, "maximum": 5}
+      "query": {
+        "type": "string",
+        "description": "Words a past-you would have used to describe the fact"
+      },
+      "k": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 5
+      }
     }
+  },
+  "output_schema": {
+    "properties": {
+      "result": {
+        "title": "Result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "result"
+    ],
+    "type": "object",
+    "title": "memory_recallOutput"
   }
 }
