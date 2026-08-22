@@ -11780,4 +11780,526 @@ What gets no number:
 measurements above; without `PYTHONPATH` it resolves to the canonical checkout, and every figure
 in this section would have been a figure about a tree this branch does not own.
 
+#### AG (2026-08-22) — the remedy the budget error names was inert at the only moment it was ever needed; it is now live for every fact smaller than the biggest one you keep, and above that boundary it still returns "nothing to archive" and the caller still loops forever
+
+Two units, six commits, on `fix/memory-budget-remedy`. Every number below was RE-MEASURED by
+this section against the worktree's own source before it was written down, and **eight of the
+figures this section was handed do not reproduce — including two of the three findings the
+hand-off led with.** They are listed in `§AG.6` rather than quietly corrected, and where a
+measurement here disagrees with the hand-off, **the measurement is what stands**.
+
+The venv's editable install resolves `bantamkit` to the CANONICAL checkout, so every command in
+this section sets `PYTHONPATH` to the worktree's `runtime-py/src` and every run was confirmed by
+`bantamkit.memory.store.__file__` before its output was believed — `RB-P97`, applied rather than
+cited. Every store figure was measured on a `cp -R` copy of the live 20-fact project store; the
+store itself was never written to, and no fact body appears here.
+
+##### AG.0 Provenance — the ceiling read across 104 refs, and this branch would have been six commits behind the section it was appending to
+
+<!-- provenance: value=ceiling RB-P99 over 104 refs (refs/heads + refs/remotes + refs/tags), read from each ref's own docs/eval.md; non-eval sources on main also top out at RB-P99; refs/stash carries no docs/eval.md; this branch's own eval.md read RB-P98 before the merge; commit=f713cd9; command=for r in $(git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags); do git show "$r:docs/eval.md" 2>/dev/null | grep -oE 'RB-P[0-9]+' | sed 's/RB-P//' | sort -n | tail -1; done | sort -n | tail -1 -->
+
+```
+    ceiling over all 104 refs                    ->  RB-P99
+    ceiling over non-eval.md sources on main     ->  RB-P99
+    ceiling read on THIS BRANCH before merging   ->  RB-P98
+    tags                                         ->  22
+```
+
+`(ceiling RB-P99 over 104 refs, f713cd9, the command above)`. **`RB-P100` is the next free
+number, and this section mints exactly one: `RB-P100`.**
+
+The last line of that block is the point, for the second section running. **This branch was cut
+at `7a97a2f`; `§AF` and `RB-P99` landed on `main` in `cbde819` afterwards**, so the branch's own
+`docs/eval.md` ended at `§AE` and read `RB-P98`. Reading the ceiling here would have minted
+`RB-P99` — a number `docs/eval.md` already carries. `§AF.0` recorded the identical near-miss one
+section ago and named it `RB-P74`/`RB-P75` standing live; it is now standing live for the fourth
+section running, and it has cost nothing only because the rule keeps being followed.
+
+**Handled differently from `§AF`, and disclosed.** `§AF` appended to a file whose last section
+was `§AD` and left the rebase to the merge. Here `main` was merged into the branch first
+(`f713cd9`), so `§AG` is appended after a `§AF` that is actually in the file. The merge was
+clean: 3 files, 1094 insertions, 0 conflicts.
+
+**The six commits covered.** `8be753b` runtime / `7dcc055` tests / `c8adcb5` docs (unit K);
+`7302051` runtime / `0aa1d82` tests / `d4b8681` docs (unit L). Layer discipline holds — no
+commit touches two layers.
+
+##### AG.1 The kill finding — RE-DERIVED on a copy of the live store, and it reproduces exactly
+
+`save()` writes the fact, checks the budget, and on `MemoryBudgetExceeded` **rolls the fact back
+before it raises**. So by the time a caller reaches the `compact()` that the exception message
+names, the store is back UNDER budget. The old loop tested `_check_index_budget()` first and
+`break`ed on its first iteration.
+
+<!-- provenance: value=three consecutive over-budget saves on a copy of the live 20-fact store at index_budget=4096, once against 7a97a2f's store.py and once against the worktree's; BEFORE: raise -> compact() -> [] three times, facts 20 archive 0 index 3943 unchanged; AFTER: first raise -> compact() -> ['bantamkit-program-resume-pointer'], facts 19 archive 1 index 3800; commit=f713cd9; command=scratchpad/k1_inert.py under PYTHONPATH=<7a97a2f src> and PYTHONPATH=<worktree src> -->
+
+```
+    live store, copied: 20 facts, index 3943 B, archive/ empty, budget 4096
+
+    BEFORE (7a97a2f)        save 0  raise -> compact() -> []   facts 20  archive 0
+                            save 1  raise -> compact() -> []   facts 20  archive 0
+                            save 2  raise -> compact() -> []   facts 20  archive 0
+    AFTER  (worktree)       save 0  raise -> compact() -> 1    facts 19  archive 1
+```
+
+**`facts: 20, archive files: 0` after three rounds of the documented remedy reproduces to the
+count.** This is the strongest kind of defect: the error message is correct about what to run,
+the function runs, it returns successfully, and it does nothing.
+
+**The `compact(reserve=None)` arithmetic — three of five figures reproduce, two do not.**
+
+<!-- provenance: value=four consecutive compact() calls on a fresh copy of the live store at budget 4096: #1 archives 1 (index 3943 -> 3800, target 3808, reserve 288, headroom 296), #2/#3/#4 archive 0 and leave 3800; the store's index lines are min 143 / median 200 / max 288 bytes over 20 facts; commit=f713cd9; command=scratchpad/k2_compact.py -->
+
+```
+                          as handed      as measured
+    index_before             3943           3943      reproduces
+    target                   3808           3808      reproduces
+    reserve                   288            288      reproduces
+    index_after              3765           3800      DOES NOT reproduce
+    headroom                  331            296      DOES NOT reproduce
+    four compacts        1, 0, 0, 0     1, 0, 0, 0    reproduces
+```
+
+`3943 - 3800 = 143`, which is the store's **smallest** index line; `3943 - 3765 = 178` is a line
+the store does not hold. The archived name is the stalest fact under `(last_recalled or created,
+name)`, and a recall between the two runs moves which one that is —
+`feedback-gate-counts-are-co-moving`, applied to an eviction order rather than a pass count.
+**The reserve policy reproduces; the byte outcome of one run against a live store does not, and
+should never have been carried as a fixed figure.**
+
+**`created`, and the stores already on disk.** All four legs reproduce, in one run.
+
+<!-- provenance: value=a fact saved and then stripped of `created:` with its mtime set to 2025-03-04: _facts() dates it 2025-03-04 from the mtime, the file is still without the field (no migration pass), the next save writes `created: '2025-03-04'` into the frontmatter, and a same-name update under a today() of 2027-01-01 leaves it at '2025-03-04'; commit=f713cd9; command=scratchpad/l3_created.py -->
+
+```
+    field stripped, mtime set to 2025-03-04
+      _facts() reports created            2025-03-04      from the file's own mtime
+      field still absent from the file    True            no migration pass
+      after the next save                 created: '2025-03-04'   persisted
+      after a same-name update at 2027    created: '2025-03-04'   PRESERVED
+```
+
+**The node that was rewritten, and the one node it replaced.** At `7a97a2f`,
+`grep -rn 'compact(' runtime-py/tests/` over the **whole test tree** returns exactly one line —
+`test_memory.py:92`. One node in 1,459 called the function this job is about, and it seeded its
+"stale" fact as never-recalled, so it asserted the very conflation the fix breaks. `test_memory.py`
+collects **25 -> 96**; the replacement is two nodes over three roles, each parametrised across
+all six name permutations, so an answer the alphabetical tiebreak produced by luck cannot pass.
+
+##### AG.2 Where the fixed remedy still does not terminate — a boundary the fix's own node cannot reach, and `compact()` reports it with the word "already"
+
+The default `reserve` is `max(sizes.values())` over the facts the store holds
+(`store.py:271`), so `compact()` guarantees headroom of "one line as big as your biggest".
+**A fact bigger than anything the store holds is therefore outside the guarantee**, and in that
+state `compact()` is exactly as inert as it was before the fix.
+
+<!-- provenance: value=on a copy of the live 20-fact store at budget 4096, saving one fact and retrying save/compact up to 30 times, swept over description lengths 240..299 (index lines 272..331 bytes): every index line up to and including 296 B terminates on the first compact; every index line from 297 B up loops 30 rounds with 0 facts archived per round and never saves; the store's own largest index line is 288 B and the headroom bought is 296 B; commit=f713cd9; command=scratchpad/k4_sweep.py, 60 sizes, one fresh store copy per size -->
+
+```
+    new fact's index line     outcome
+      272 .. 296 B            SAVED after 1 compact          25 of 60 sizes
+      297 .. 331 B            30 compacts, 0 archived,       35 of 60 sizes
+                              never saves                    <- the BEFORE behaviour
+    boundary: largest terminating line 296 B / smallest looping line 297 B
+```
+
+**The lever exists and is not the default.** The same 432-byte fact that loops forever under
+`compact()` saves on the FIRST call to `compact(reserve=432)`:
+
+<!-- provenance: value=same store copy, same 400-character description (index line 432 B): compact() archives 1 then 0,0,0 and the save never succeeds in 10 rounds; compact(reserve=432) archives 2 (index 3943 -> 3584, target 3664) and the save succeeds immediately; commit=f713cd9; command=scratchpad/k5_reserve.py -->
+
+```
+    compact()            archived 1, then 0, 0, 0 ...   after 3800  target 3808   NEVER SAVES
+    compact(reserve=432) archived 2                     after 3584  target 3664   SAVED
+```
+
+**The same door, the other way round.** `restore()` is the way back out of `archive/`, and it
+raises `MemoryBudgetExceeded` — whose text names `compact()` — when the fact will not fit. An
+archived fact larger than any live one can therefore never be restored:
+
+<!-- provenance: value=a constructed store where one 319-byte-line fact is archived and the store is then refilled with facts whose largest live index line is 57 bytes: 20 consecutive restore() -> MemoryBudgetExceeded -> compact() rounds archive 1 fact on the first round and 0 on the following 19, and restore never succeeds; commit=f713cd9; command=scratchpad/k8.py -->
+
+```
+    archived fact's index line   319 B      largest LIVE index line   57 B
+      round 1   restore raised -> compact() archived 1, target 453, reserve 57
+      round 2   restore raised -> compact() archived 0, target 453, reserve 57
+      ...
+      round 20  restore NEVER SUCCEEDS: 0 archived, 0 progress
+```
+
+**And the result cannot be told apart from success.** `compact()`'s second, third and fourth
+calls on a healthy store return `archived=0, index_after=3800, target=3808`. `compact()`'s
+second, third and fourth calls inside the stuck loop return `archived=0, index_after=3800,
+target=3808`. **Byte-identical.** `Memory.compact()` renders both as
+`"nothing archived: the index is N bytes ... already at or under the M-byte compaction target"`
+(`component.py:176-178`) — literally true in both cases, and the word **"already"** asserts the
+benign reading to a caller that is in the other one.
+
+**The suite cannot see any of it, and the reason is `RB-P99`.**
+`test_compact_frees_room_in_the_state_the_budget_error_leaves_behind`
+(`runtime-py/tests/test_memory.py:179`) sweeps two dimensions — four budgets by three
+description lengths — and its fixture writes `filler = "y" * desc_len` for **every** fact,
+survivors and failing fact alike. The load-bearing third dimension, how much bigger the failing
+fact is than the largest survivor, is held at **0 bytes at all twelve sweep points**, which is
+the one value where the remedy always terminates.
+
+<!-- provenance: value=the shipped node reconstructed with a third parameter `extra` -- bytes by which the failing fact's description exceeds every survivor's -- swept over 0/1/8/64 against the node's own 4 budgets x 3 description lengths: extra=0 12 passed 0 failed, extra=1 12 passed 0 failed, extra=8 11 passed 1 failed, extra=64 3 passed 9 failed, 10 of 48 failed overall; commit=f713cd9; command=PYTHONPATH=<worktree src> pytest scratchpad/vacuity_reserve.py -q -->
+
+```
+    extra bytes on the failing fact      result
+        0   <- the shipped fixture's own value, all 12 points   12 passed   0 failed
+        1                                                       12 passed   0 failed
+        8                                                       11 passed   1 failed
+       64                                                        3 passed   9 failed
+                                                        total   38 passed  10 failed
+```
+
+`extra=1` still passes because `index_after` usually lands a few bytes below `target` — the same
+8-byte slack that makes the live store's boundary 296 rather than 288. **A node that sweeps two
+dimensions is not a node that sweeps the dimension that decides the answer**, and this is
+`RB-P99` landing on the node written to close this job's own kill finding, in the same commit.
+
+**The escape hatch is unguarded at every layer.**
+
+<!-- provenance: value=against a mutant-copy control of 2 failed / 1563 passed / 2 xfailed, deleting the `if reserve is None:` guard in store.py so an explicit reserve= is always overwritten by the default leaves 2 failed / 1563 passed; replacing `store.compact(reserve=args.reserve)` with `store.compact()` in memory/__main__.py:141 leaves 2 failed / 1563 passed; the two control reds are test_packaging_reads_the_same_declaration_the_server_reads and test_assets_root_finds_repo_assets, both artefacts of importing from a copied tree; commit=f713cd9; command=BANTAMKIT_ASSETS=$PWD/assets PYTHONPATH=<mutant copy> pytest runtime-py/tests -q, once per mutation -->
+
+```
+    control (unmutated copy)                              2 failed, 1563 passed, 2 xfailed
+    store.py:270  explicit reserve= silently ignored      2 failed, 1563 passed    0 RED
+    __main__.py:141  --reserve dropped on the floor       2 failed, 1563 passed    0 RED
+```
+
+**`--reserve` is not merely unswept — its effect is deletable from both the library and the CLI
+with 1,565 nodes green.** For contrast, and run identically: `recall(k=)` ignored reddens **2**,
+`save(links=)` dropped reddens **1**, `MemoryStore(create=)` ignored reddens **2**. `reserve` is
+the only optional parameter in this surface that nothing holds.
+
+##### AG.3 Unit L — the operator had no lever, and the store was on a treadmill
+
+`docs/memory.md:94` states a deliberate position: `lint`, `compact`, `archived` and `restore`
+are **not** agent tools, because lifecycle is an operator decision. Measured at `7a97a2f`,
+`_parse_args` in `mcpserver.py` declared exactly three flags — `--k`, `--store`, `--start`.
+`index_budget` was on no parser, and the four ops were reachable only by importing
+`MemoryStore`. The position was true of the design and false of the deployment.
+
+**Three declarations of the constant, collapsed to one.** At `7a97a2f`: `store.py:60`,
+`component.py:42`, `component.py:50`, each an independent `4096`. Now one
+`DEFAULT_INDEX_BUDGET` in `store.py:32`, imported by all four modules.
+
+**The treadmill — the direction reproduces, the count does not.**
+
+<!-- provenance: value=25 fresh saves of median-sized facts (the live store's median index line is 200 bytes) replayed onto a copy of the live 20-fact / 3943-byte store: at 4096, 16 raises and 21 evictions with the first eviction on save #0; at 8192 and at 24000, 0 raises and 0 evictions; commit=f713cd9; command=scratchpad/l1_treadmill.py -->
+
+```
+    budget    raises   evictions   first eviction   final facts   archive
+      4096       16        21       save #0             24          21
+      8192        0         0       none                45           0
+     24000        0         0       none                45           0
+```
+
+**`18` does not reproduce; `21` does.** The eviction count is a function of the replayed fact's
+size, which the hand-off did not state, so no figure is recoverable from the words that describe
+it — `§AF.7`'s lesson about writing a mutation down, applied to a fixture. **What reproduces is
+the claim, and the claim is the finding:** at 4096 the FIRST save already evicted, and 25 saves
+cost 21 facts. That is not a store near its ceiling; it is a store forgetting nearly a fact for
+every fact it learns.
+
+**The calibration nobody had, measured here.** The nodes pin the anti-treadmill property, not
+the literal — correct per invariant 1, and it leaves `24000` versus any other adequate value
+undefended. The number that distinguishes them is how many saves the budget buys:
+
+<!-- provenance: value=saves before the first eviction, replaying 200-byte-index-line facts onto a copy of the live 20-fact / 3943-byte store, at seven budgets; commit=f713cd9; command=scratchpad/l2_headroom.py -->
+
+```
+    budget      saves before the first eviction      resulting index
+      4096                  0                          3943 B  (already over)
+      6144                 12                          6067 B
+      8192                 24                          8191 B
+     12288                 47                         12262 B
+     16384                 70                         16333 B
+     24000                113                         23944 B
+     32768                162                         32617 B
+```
+
+**`8192` buys 24 saves and `24000` buys 113.** Both pass every node; only this table says why one
+was chosen. It is recorded so the next reader does not have to re-derive it to defend the
+constant.
+
+**The operator CLI, run for real.** All five subcommands were invoked as
+`python -m bantamkit.memory <sub> --store <path>` in a real subprocess from a directory that is
+not the repo:
+
+<!-- provenance: value=python -m bantamkit.memory status/lint/compact/archived/restore against a seeded 6-fact store: status exits 0 and prints facts 6 / index 456 bytes / budget 24000; lint exits 0 with "ok -- 6 facts, 456/24000 bytes"; compact --budget 400 exits 0, archives 2, prints "456 -> 304 bytes (budget 400, target 324, reserve 76, headroom 96)" and names both archived facts; compact --budget 400 --reserve 200 exits 0 and archives 2 more to target 200; archived exits 0 and lists 2 names; restore exits 0; lint --budget 100 exits 1 and prints the compact command to run; commit=f713cd9; command=cd /tmp && PYTHONPATH=<worktree src> .venv/bin/python -m bantamkit.memory <sub> --store <scratch store> -->
+
+```
+    status                                exit 0    facts 6, index 456 B, budget 24000
+    lint                                  exit 0    ok -- 6 facts, 456/24000 bytes
+    compact --budget 400                  exit 0    456 -> 304, target 324, reserve 76
+    compact --budget 400 --reserve 200    exit 0    304 -> 152, target 200, reserve 200
+    archived                              exit 0    2 names
+    restore cli-fact-0                    exit 0    index now 228/24000
+    lint --budget 100                     exit 1    prints the compact command to run
+```
+
+`--reserve 200` moved the target from 324 to 200, so **the flag works; nothing tests that it
+does.** `lint` exits 1 over budget, which is what makes it usable from CI.
+
+**Two of L's own mutation figures reproduce exactly**, run against the same control:
+
+```
+    control                                             2 failed, 1563 passed, 2 xfailed
+    mcpserver.py:404  --index-budget threaded into
+      the --store branch ONLY                           6 failed, 1559 passed   4 RED
+    store.py:430  `size > budget` -> `size >= budget`   6 failed, 1559 passed   4 RED
+```
+
+##### AG.4 The write-only-artifact class, hunted — and it is REFUTED as a live class
+
+The nomination: a program writes an artifact, a document promises it, no code reads it, no node
+asserts on it, so deleting the write is green. Three instances were handed over — `archive/`,
+`index.md`, and the `query` ledger's render path. **Every write site reachable in this repo was
+mutated and run; not one is green.**
+
+<!-- provenance: value=nine write-site mutations against a 2 failed / 1563 passed / 2 xfailed mutant-copy control: _rebuild_index() body neutered 5 failed; the call deleted from compact() alone 3 failed; from save() 3 failed; from restore() 3 failed; filegraph.save() writing nothing 3 failed; filegraph.render() returning a constant 3 failed; the shiftwork .log.jsonl append 6 failed; the evalrun transcript write 13 failed; the criticreplay --summary write 4 failed; the evalrun --json sink write 7 failed; commit=f713cd9; command=BANTAMKIT_ASSETS=$PWD/assets PYTHONPATH=<mutant copy> pytest runtime-py/tests -q, once per mutation -->
+
+```
+    control                                                 2 failed, 1563 passed   ----
+    store.py:426   _rebuild_index() body neutered           5 failed, 1560 passed    3 RED
+    store.py:294   call deleted from compact() alone        3 failed, 1562 passed    1 RED
+    store.py:221   call deleted from save()                 3 failed, 1562 passed    1 RED
+    store.py:332   call deleted from restore()              3 failed, 1562 passed    1 RED
+    filegraph.py:210  save() writes nothing                 3 failed, 1562 passed    1 RED
+    filegraph.py:207  render() returns a constant           3 failed, 1562 passed    1 RED
+    shiftwork.py:175  .log.jsonl append deleted             6 failed, 1559 passed    4 RED
+    evalrun.py:1543   transcript write deleted             13 failed, 1552 passed   11 RED
+    criticreplay.py:2921  --summary write deleted           4 failed, 1561 passed    2 RED
+    evalrun.py:1962   --json sink write deleted             7 failed, 1558 passed    5 RED
+```
+
+**Nine mutations, nine reds, zero survivors.** The instance that prompted the nomination —
+`index.md` — was closed by **unit K's own commit**, `7dcc055`, in this same job:
+`test_the_index_file_on_disk_tracks_the_facts[save|compact|restore]` at `test_memory.py:299`, a
+node whose docstring says it was FOUND BY MUTATION rather than designed. `archive/` was closed
+by unit K's `archived()` / `restore()`. The render path is guarded too.
+
+**And the BEFORE claim is true, which is why the AFTER claim had to be checked.** At `7a97a2f`,
+against a git-archive control of 10 failed / 1447 passed (harness artefacts of running from an
+exported tree), neutering `_rebuild_index()` gives **10 failed / 1447 passed — identical, 0 of
+1,457 differ.** The finding was real when it was found and it was closed before it was reported.
+
+**A class with three instances, all three of them closed, is not a class.** Not minted; the
+hunt is the finding, and it is recorded in `§AG.7` under what gets no number.
+
+##### AG.5 The superset gate, hunted — one mis-citation, and no class under it
+
+The nomination: assertions cited as guarding a count, an exact set, or an exhaustive
+enumeration, whose operator admits supersets. `test_conformance.py:25` is
+`assert {f.stem for f in tool_files} >= {"memory_save", "memory_recall"}`.
+
+**Measured, the gate is not merely loose about the seven-tool count — it is about a different
+population entirely.** `assets/tools/` holds **five** files (`document_list`, `document_read`,
+`file_graph`, `memory_recall`, `memory_save`). The MCP server registers **seven** tools
+(`mcpserver.py:293-341`). The two sets intersect in two names. **There is no seven anywhere in
+`test_conformance.py`**, which collects **6 nodes**.
+
+<!-- provenance: value=an eighth tool ASSET dropped into a copied pack leaves test_conformance.py at 6 passed and the full suite at 1565 passed / 2 xfailed, 0 red; three further extra asset-pack members (a rubric, a skill, a catalog item) also leave the full suite at 1565 passed / 2 xfailed; an eighth REGISTERED MCP tool added to a mutant mcpserver.py leaves 3 failed / 1562 passed against a 2-failed control, the single new red being test_mcpserver.py::test_lists_exactly_the_seven_tools; commit=f713cd9; command=BANTAMKIT_ASSETS=<mutated pack> pytest runtime-py/tests -q, and PYTHONPATH=<mutant copy> pytest runtime-py/tests -q -->
+
+```
+    an eighth tool ASSET in the pack                1565 passed, 2 xfailed    0 RED
+    + an extra rubric, skill and catalog item       1565 passed, 2 xfailed    0 RED
+    an eighth REGISTERED MCP tool                   3 failed, 1562 passed     1 RED
+      the one red: test_mcpserver.py::test_lists_exactly_the_seven_tools
+```
+
+**`docs/memory.md:104` claims "still exactly seven tools". Exactly one node in 1,565 holds it.**
+Unit L was right that there is one gate and not two, and the correction did not go far enough:
+the node named as the second gate is not a weaker gate on the same thing, it is a check on
+another directory.
+
+**But the looseness is not a defect, and that is why nothing is minted.** Every `>=` site found
+in the suite admits supersets **on purpose**: `test_conformance.py:102` carries the comment
+*"Ensure required items are present"*, and the asset pack is an extension point where a
+superset check is the correct assertion. Adding four members to it is invisible to the suite by
+design, and drift in the pack is caught at runtime instead, through `build_identity`'s
+`assets_digest` / `assets_files`. **A node that is sound is not a finding** — `§AF.5`'s rule
+about its two cleared candidates, applied. What is wrong here is a *citation*, in a brief, about
+which node guards what, and `§W.6.2` rules that unnumbered.
+
+##### AG.6 Handoff corrections — eight figures that do not reproduce, and two of the three headline findings are among them
+
+This document records these as a subsection of the section that caught them (`§Q`, `§T`, `§W.5`,
+`§X.1`, `§Z.6`, `§AA.6`, `§AB.6`, `§AF.6`), never as a register entry. `§AG.6` is that
+subsection.
+
+1. **`compact()` on the real store gives `3943 -> 3800`, not `3943 -> 3765`, and headroom
+   `296`, not `331`.** `target 3808`, `reserve 288` and the `1, 0, 0, 0` sequence all reproduce.
+   The gap is one eviction landing on a different fact; see `§AG.1`.
+2. **"Deleting `_rebuild_index()` left the entire suite green" is true of `7a97a2f` and FALSE of
+   the shipped tree.** Measured here: `1 of 1565` per call site, `3 of 1565` for the writer. The
+   guard is `test_memory.py:299`, added by unit K in `7dcc055` — **the finding was closed in the
+   commit that found it and was relayed as if open.** The strongest correction in this list,
+   because it made the tree look worse than it is.
+3. **"Three write-only artifacts, each invisible to the whole suite" — all three are guarded**,
+   and so are six further write sites. Nine mutations, nine reds (`§AG.4`).
+4. **`42 passed` for the conformance file is `6`.** `test_conformance.py` collects six nodes.
+   The claim it carried — green under an eighth tool asset — reproduces; the denominator does
+   not, and the full-suite reading is `1565 passed, 2 xfailed`.
+5. **`3 of 52` for an eighth registered MCP tool is `1 of 1565`** (`1 of 36` within
+   `test_mcpserver.py`), against a control that already carries two harness reds. One node
+   reddens, not three.
+6. **`18 evictions at 4096` is `21`.** First-eviction-on-the-first-save and zero-at-24000 both
+   reproduce; the count is a property of the replayed fact's size, which was never stated.
+7. **`largest 41 of 212` has no denominator this section can produce.** The memory test files
+   collect **152** (`test_memory.py` 96, `test_memory_component.py` 40, `test_memory_layers.py`
+   16); the full suite is 1,565. No selection reaching 212 was found, and no mutation run here
+   reddened 41.
+8. **The brief's "two gates enforce the seven-tool position" is ONE gate**, and the node named
+   as the second is a superset check over a five-file asset directory (`§AG.5`). **Unit L caught
+   this and corrected its own orchestrator**; the correction was right and understated.
+
+**The pattern across 1, 2, 6 and 7 is worth more than any of them.** All four are figures a unit
+measured correctly at its own moment and that arrived here detached from the state that produced
+them — a store whose eviction order had moved, a tree whose guard had since been added, a
+fixture whose size was dropped, a denominator whose selection was dropped. `feedback-real-probe-only`
+and `feedback-verify-against-the-run-not-the-source`: **a figure is only as portable as the
+command printed beside it**, which is the entire reason this document requires one.
+
+##### AG.7 Minted here — `RB-P100`, and the six things that get no number
+
+- **`RB-P100` — a remedy whose sufficiency is computed from the state it is remedying can never
+  make room for anything larger than what survives it, and it reports that impossibility with a
+  result byte-identical to success, so the loop the error message prescribes does not
+  terminate.** The remedy runs, returns normally, says "nothing to archive ... already at or
+  under the target", and the caller retries forever.
+
+  <!-- provenance: value=three RUN legs: (1) a 60-value sweep of the failing fact's index line on a copy of the live 20-fact store shows termination for 272..296 B and 30 compacts with 0 archived for 297..331 B; (2) a constructed store where the archived fact's line is 319 B against a 57-B largest live line gives 20 restore->compact rounds with 0 progress; (3) against a 2 failed / 1563 passed / 2 xfailed control, ignoring an explicit reserve= in store.py and dropping --reserve in memory/__main__.py:141 each leave 2 failed / 1563 passed, 0 RED; commit=f713cd9; command=scratchpad/k4_sweep.py, scratchpad/k8.py, and BANTAMKIT_ASSETS=$PWD/assets PYTHONPATH=<mutant copy> pytest runtime-py/tests -q per mutation -->
+
+  **Two live instances, both confirmed by a RUN**, both rooted at `store.py:271`:
+  `save()` -> `compact()` for any fact whose index line exceeds every survivor's (boundary
+  measured at 296/297 bytes on the live store, 35 of 60 swept sizes never terminate); and
+  `restore()` -> `compact()` for any archived fact larger than the largest live one (20 rounds,
+  0 archived). **A third leg makes it a register entry rather than a bug report:** the one
+  parameter that breaks both loops is unguarded at both layers — deleting the effect of
+  `compact(reserve=)` and of `--reserve` each leaves 1,565 nodes green.
+
+  **It is NOT `RB-P99`, and the difference is where the failure lives.** `RB-P99` is about a
+  FIXTURE that samples a boundary at the one value where broken and correct agree; the fix is
+  one `for` loop in a test file. `RB-P100` is about a RETURN VALUE that cannot express the
+  difference between "no work needed" and "no work will help"; **no test can sweep its way out
+  of it, because after the sweep there is still nothing for the node to assert on.** The two
+  meet here — `§AG.2` shows `test_memory.py:179` is a live `RB-P99` instance — and the fix for
+  each is in a different file.
+
+  **Why it earns a number rather than a footnote.** This is the *only* remedy this program names
+  to a caller, in the *only* error message the memory layer raises, and the state where it is
+  named is the state it was just fixed for. The residue is not exotic: the failing fact is
+  simply the longest description the operator has yet written. And the conflation it turns on is
+  the same one unit K removed from `_staleness_key` — `None` meaning both "never recalled" and
+  "recalled long ago" — reappearing one layer up, in the return value of the function that fixed
+  it. A defect a program fixes in its sort key and reintroduces in its result type is a shape,
+  not an accident.
+
+  **Attack, and it is cheap:** a remedy must report the difference between "at target" and
+  "target unreachable" — one boolean on `CompactResult`, or a `compact(fit=<bytes>)` that takes
+  the size it must make room for — and a node must pin the escape-hatch parameter by passing a
+  value the default would not produce. **Filed, NOT fixed:** the fix is a runtime and a test
+  change, and this section owns `docs/eval.md` alone.
+
+What gets no number:
+
+1. **The two units' work.** A fix is not a finding — `§Z.5`'s rule, unchanged.
+2. **The eight handoff corrections of `§AG.6`.** A figure a brief asserted and a measurement
+   declined is a handoff correction, recorded in the section that caught it and never as a
+   register entry. `§W.6.2`, applied for the eighth section running.
+3. **The orchestrator being the least-checked source is ALREADY-RULED territory, and it is ruled
+   UNNUMBERED.** `§W.6.2` settled it, and `§X.8.4`, `§Y.8.4`, `§Z.6`, `§AA.6`, `§AB.6` and
+   `§AF.7` each re-applied it. **This section follows the chain and does not argue against it**,
+   and it adds one observation rather than a number: the brief carried a claim about the gate
+   count that unit L refuted from below, and BOTH units corrected figures the orchestrator
+   relayed. That is the layer working — a unit that measures beats a unit that remembers,
+   whichever direction the handoff runs — and `§AF.6`'s version of this ("a brief written to
+   warn that its own figures were unreliable was itself unreliable about which") is the sharper
+   anecdote. Neither is a defect in the instrument.
+4. **The write-only-artifact class (`§AG.4`).** Nominated with three instances, all three
+   measured CLOSED, and six further write sites measured guarded. **A refuted nomination costs
+   one unit of work and is recorded as evidence, which is what a nomination is supposed to
+   cost** — `§AE.4`'s wording, applied to a hunt that came back empty. The nine-mutation table
+   is kept because it is the population an eventual instance would have to be found against.
+5. **The superset-gate class (`§AG.5`).** Every `>=` in the suite that was run is intentional
+   and its looseness is the documented intent. The one thing wrong is a citation in a brief.
+6. **`DEFAULT_INDEX_BUDGET = 24_000` is a calibration no node defends, and that is CORRECT.**
+   Setting it to `8192` leaves the suite at `2 failed, 1563 passed` — **0 red** — because the
+   nodes pin the anti-treadmill property, not the literal, exactly as unit L disclosed. Setting
+   it to `4096` reddens **1**, so the property is not vacuous. Invariant 1 says prescribe the
+   property; a node that pinned `24000` would be pinning a fixture. The `§AG.3` table is
+   recorded so the constant has an argument even though it has no guard.
+
+##### AG.8 What is NOT claimed
+
+1. **`RB-P100` is filed and NOT fixed.** No file outside `docs/eval.md` is touched by this
+   section.
+2. **The nine write-site mutations measure the suite's SENSITIVITY, not the runtime's
+   correctness.** Every one of those writes is present and working in the shipped code.
+3. **The hunt in `§AG.4` is not exhaustive.** It covered every `write_text` / `.write(` /
+   `json.dump` site reachable by grep under `runtime-py/src/bantamkit/`. An artifact written
+   through a path that grep did not name is unmeasured, and `RB-P51`'s rule says an unmeasured
+   check is not a passed one.
+4. **The control carries two reds that are artefacts of the harness**, not of the tree:
+   `test_packaging_reads_the_same_declaration_the_server_reads` and
+   `test_assets_root_finds_repo_assets` both assert on package LOCATION and go red because the
+   mutation harness imports from a copied tree. `1563 + 2 == 1565`, and every mutation above was
+   compared against that control and not against zero.
+5. **The `§AG.1` BEFORE control is 10 failed / 1447 passed**, because it runs from a
+   `git archive` export where more packaging nodes lose their repo. The claim rests on the
+   mutation changing NOTHING against that control, not on the control being clean.
+6. **Every store measurement is on a `cp -R` copy.** The live `.bantamkit/memory/` was read and
+   never written: 20 facts, empty `archive/`, `index.md` 3,943 bytes, before and after.
+
+##### AG.9 What stays open
+
+- **`RB-P100`, for the reason given**, with both instances unfixed and the `RB-P99` instance at
+  `test_memory.py:179` unfixed beside them.
+- **`--reserve` is implemented, documented, functional and UNSWEPT** — worse than unswept:
+  `§AG.2` measures its effect as deletable at both layers with the suite green. It is the
+  parameter `RB-P100` turns on.
+- **There is no console script.** `runtime-py/pyproject.toml` declares `bantamkit-mcp` and
+  nothing else; the operator CLI is `python -m bantamkit.memory` only. Deliberate, and it means
+  an operator without the venv's `python` on the path has no entry point — which is `RB-P98`'s
+  territory standing beside a surface that just acquired five subcommands.
+- **No auto-compaction hook exists**, so `MemoryBudgetExceeded` still requires a human between
+  the raise and the remedy. Given `§AG.2`, an automatic retry loop written against the current
+  `compact()` would be a hang, not a fix.
+- **`Memory.compact()` only touches the writable project layer** (`component.py:166-167`), by
+  design: a read-only grant is not this person's to evict and the profile layer is another
+  store's budget. Nothing measures what a layered deployment does when the *combined* index is
+  the thing over budget.
+- **A save -> compact -> save -> compact loop drains the store slowly.** `compact()` is
+  idempotent with no save between (`1, 0, 0, 0` measured), because `reserve` is recomputed from
+  the survivors; each interleaved save moves the target and buys another eviction. The invariant
+  is a standing one, not a fixed point.
+- **`test_conformance.py` does not guard what `docs/memory.md:104` implies.** One node holds
+  "exactly seven tools", and it lives in `test_mcpserver.py`. The asset pack admits arbitrary
+  additions silently (`§AG.5`); whether pack drift deserves a gate of its own is a decision
+  nobody has made in writing.
+- **`RB-P99`'s five unfixed instances, `RB-P98`'s entry-point sweep, `RB-P97`'s `env=` sweep and
+  `RB-P95`'s `29 of 32`** are untouched by this section and stand exactly as `§AF.9` left them.
+
+##### AG.10 Gates, each at the commit it was measured at
+
+<!-- provenance: value=full suite from the worktree with PYTHONPATH set to the worktree's runtime-py/src reads 1565 passed, 2 xfailed in 60.35s; ruff check runtime-py and ruff check docs/eval-data both report All checks passed; test_memory.py collects 96 against 25 at 7a97a2f; commit=f713cd9 for the code gates and f815c6a for the re-run; command=BANTAMKIT_ASSETS=$PWD/assets PYTHONPATH=$PWD/runtime-py/src .venv/bin/python -m pytest runtime-py/tests -q ; .venv/bin/ruff check runtime-py ; .venv/bin/ruff check docs/eval-data -->
+
+```
+    full suite, from the worktree, PYTHONPATH set     1565 passed, 2 xfailed   60.35s
+    the same suite re-run AT this docs commit         1565 passed, 2 xfailed   60.72s
+    ruff check runtime-py                             All checks passed
+    ruff check docs/eval-data                         All checks passed
+    test_memory.py collected     7a97a2f  25  ->  f713cd9  96
+    memory test files, collected                      152
+    nodes calling compact()      7a97a2f   1  ->  f713cd9  16 call sites, all in test_memory.py
+```
+
+`bantamkit.memory.store.__file__` was confirmed to point into `bantamkit-memory` before each of
+the measurements above; without `PYTHONPATH` it resolves to the canonical checkout, and every
+figure in this section would have been a figure about a tree this branch does not own.
+
 Back to the [README](../README.md).

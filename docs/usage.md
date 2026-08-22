@@ -146,7 +146,7 @@ from bantamkit import Agent, CritiqueGate, Memory, OpenAICompatible
 client = OpenAICompatible(base_url="http://localhost:11434/v1", model="qwen2.5:7b-instruct")
 
 agent = Agent(client=client).use(
-    Memory(store="./.bantam-memory", k=3, index_budget=4096),
+    Memory(store="./.bantam-memory", k=3, index_budget=24000),
     CritiqueGate("task-completion", max_rounds=3),
 )
 

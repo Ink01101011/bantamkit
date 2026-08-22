@@ -17,7 +17,7 @@ import bantamkit
 from bantamkit import __version__, shiftwork
 from bantamkit.assets import AssetNotFound, assets_root, load_skill, load_tool
 from bantamkit.contract import schema_error, schema_retry_feedback
-from bantamkit.memory import Memory
+from bantamkit.memory import DEFAULT_INDEX_BUDGET, Memory
 
 try:
     from mcp.server import MCPServer
@@ -372,6 +372,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="bantamkit MCP server (stdio): per-person memory + JSON validation.",
     )
     parser.add_argument("--k", type=int, default=3, help="default recall budget (default: 3)")
+    # The index is loaded into every prompt, so its ceiling is a deployment decision.
+    # It had no flag: 4096 was reachable only by editing `store.py`, which made
+    # `docs/memory.md`'s "lifecycle is an operator decision" true of the design and
+    # false of the deployment. Lifecycle ACTIONS stay off this process — it speaks MCP
+    # over stdout — and live on `python -m bantamkit.memory`.
+    parser.add_argument(
+        "--index-budget",
+        type=int,
+        default=DEFAULT_INDEX_BUDGET,
+        metavar="BYTES",
+        help=f"memory index byte budget (default: {DEFAULT_INDEX_BUDGET})",
+    )
     stores = parser.add_mutually_exclusive_group()
     stores.add_argument("--store", help="single memory store path (disables layering)")
     stores.add_argument(
@@ -383,11 +395,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def _build_memory(args: argparse.Namespace) -> Memory:
     if args.k < 1:
         raise SystemExit("--k must be >= 1")
+    if args.index_budget < 1:
+        raise SystemExit("--index-budget must be >= 1")
     if args.store is not None:
         if not args.store:
             raise SystemExit("--store requires a non-empty path")
-        return Memory(store=args.store, k=args.k)
-    return Memory.layered(start=args.start, k=args.k)
+        return Memory(store=args.store, k=args.k, index_budget=args.index_budget)
+    return Memory.layered(start=args.start, k=args.k, index_budget=args.index_budget)
 
 
 def main() -> None:
