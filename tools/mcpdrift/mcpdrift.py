@@ -95,9 +95,20 @@ USAGE
     python tools/mcpdrift/mcpdrift.py check --repo /path/to/project --json
     python tools/mcpdrift/mcpdrift.py check --endpoint a=/x/bin/bantamkit-mcp \\
                                             --endpoint b=/y/bin/bantamkit-mcp
+    python tools/mcpdrift/mcpdrift.py check --endpoint a=/usr/bin/python3 /x/server.py \\
+                                            --endpoint b=/usr/bin/python3 /y/server.py
 
 `--endpoint` REPLACES discovery entirely and is how the checker is calibrated against a
-deliberately older build. `--repo` defaults to the cwd, because project scope is resolved
+deliberately older build. It takes `LABEL=COMMAND` followed by zero or more arguments,
+because that is the shape a registration actually has: `.claude.json` and `.mcp.json`
+both carry a `command` AND an `args` list, `discover` already folds that pair into a
+multi-token argv, and a calibration flag that could express only a bare command could
+not calibrate against the registrations this checker exists to compare — an interpreter
+plus a script (`python -m ...`, `npx -y ...`) is the common shape, not the exotic one.
+Nothing here relies on the operating system reading a `#!` line: the interpreter is
+named on the command line, or it is not named at all.
+
+`--repo` defaults to the cwd, because project scope is resolved
 relative to the project you are actually in — not relative to where this file lives.
 """
 
@@ -453,9 +464,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--endpoint",
         action="append",
+        nargs="+",
         default=[],
-        metavar="LABEL=COMMAND",
-        help="compare these instead of discovering; repeatable",
+        metavar="LABEL=COMMAND [ARG ...]",
+        help="compare these instead of discovering; repeatable. Trailing tokens are the "
+             "command's arguments, mirroring a registration's command+args pair",
     )
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--json", action="store_true", dest="as_json")
@@ -473,11 +486,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.endpoint:
         endpoints = []
         for spec in args.endpoint:
-            label, _, command = spec.partition("=")
-            if not command:
-                print(f"ERROR --endpoint needs LABEL=COMMAND, got {spec!r}", file=sys.stderr)
+            label, _, command = spec[0].partition("=")
+            if not label or not command:
+                print(f"ERROR --endpoint needs LABEL=COMMAND, got {spec[0]!r}", file=sys.stderr)
                 return ERROR
-            endpoints.append(Endpoint(label=f"{label}:{command}", scope=label, argv=[command]))
+            argv_for = [command, *spec[1:]]
+            endpoints.append(
+                Endpoint(label=f"{label}:{' '.join(argv_for)}", scope=label, argv=argv_for)
+            )
     else:
         endpoints = discover(args.server, repo, home)
 
