@@ -71,3 +71,44 @@ def test_the_devteam_tasks_on_disk_still_match_their_manifest():
         "the checker exited 0 without saying it compared anything, which is the vacuous "
         f"pass this node exists to refuse. stdout: {done.stdout.strip()!r}"
     )
+
+
+def test_the_devteam_workspace_order_does_not_depend_on_the_path_flavour(tmp_path):
+    """The generator must emit the same bytes on every platform.
+
+    `load_repo` used `sorted(base.rglob("*"))`, which orders `Path` OBJECTS, and the two
+    flavours disagree. `PurePosixPath` compares case-sensitively, so `HISTORY.md` and
+    `README.md` precede `docs/...`; `PureWindowsPath` folds case and puts `docs/...`
+    first. Six of the seventeen real files change position, the workspace dict is built
+    in a different insertion order, the rendered YAML differs, and `check` reported all
+    EIGHT tasks as drifted on windows-latest against files nobody had touched.
+
+    THE RIG IS SYNTHETIC ON PURPOSE, and not because the real one is inconvenient: on the
+    real file list `sorted(Path)` and `sorted(str)` happen to COINCIDE under posix, so a
+    node built on it would stay green here no matter what and could only ever fail on
+    Windows. `a.py` beside `a/b.py` is the smallest pair where the two disagree on EVERY
+    platform — a plain string puts `a.py` first, a `Path` puts `a/b.py` first, because the
+    separator stops being a character and becomes a boundary between parts.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("build_tasks_under_test", BUILD_TASKS)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    asset = tmp_path / "devteam"
+    (asset / "repo" / "a").mkdir(parents=True)
+    (asset / "repo" / "a.py").write_text("top\n", encoding="utf-8")
+    (asset / "repo" / "a" / "b.py").write_text("nested\n", encoding="utf-8")
+    (asset / "repo" / "README.md").write_text("readme\n", encoding="utf-8")
+
+    keys = list(module.load_repo(asset=asset))
+    assert keys == sorted(keys), (
+        "the workspace is not keyed in posix-string order, so its insertion order — and "
+        f"therefore the rendered YAML — depends on the running platform. got {keys}"
+    )
+    assert keys.index("a.py") < keys.index("a/b.py"), (
+        "'a.py' must precede 'a/b.py'. A Path sort puts the nested file first because the "
+        "separator is a part boundary rather than a character, and that is exactly the "
+        "ordering that differs between flavours."
+    )
