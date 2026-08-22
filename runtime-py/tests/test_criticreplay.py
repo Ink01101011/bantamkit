@@ -3396,7 +3396,44 @@ PROBE = Path(__file__).resolve().parent / "cli_exit_status_probe.py"
 
 
 def _child_env(**extra: str) -> dict[str, str]:
-    """The environment every shell-status child gets: this process's, minus `PYTEST_*`.
+    """The environment every shell-status child gets: this process's, minus `PYTEST_*`,
+    with the child's OWN stdout/stderr codec pinned to UTF-8.
+
+    THE CODEC PIN (job 31, W12, 2026-08-22). Every harness below redirects the child's
+    stdout and stderr into a FILE and then reads that file back as UTF-8. What encodes
+    those bytes is the child's `TextIOWrapper`, and absent `PYTHONIOENCODING` CPython
+    builds it from the RUNNER'S LOCALE — cp1252 on windows-latest, UTF-8 here. The
+    table's GUARD section always carries U+2014 and U+00A7 and the epilog carries
+    U+00A7, so on windows-latest the child wrote `\x97`/`\xa7`, the read-back raised
+    `UnicodeDecodeError`, and 18 nodes went red (CI run 32555258828). Both codecs can
+    represent the characters; what differs is WHICH BYTES land on disk, and an artifact
+    whose bytes are a function of the runner's locale is the thing this repo's
+    byte-identity floor forbids. Pinning it HERE fixes the writer, which is the only
+    place it can be fixed without lying: a fallback or a second `encoding=` on the
+    read-back would restore the accidental round-trip and leave the bytes locale-bound.
+
+    `extra` STILL WINS, and that is load-bearing rather than incidental: the K4B/C1
+    cells pass `PYTHONIOENCODING=latin-1` and `=ascii` precisely to make the child's
+    codec fail, and they must keep reaching a child whose codec is theirs.
+
+    WHY NOT `sys.stdout.reconfigure("utf-8")` IN `criticreplay.main`. Because the codec
+    of fd 1 is the CALLER'S property, in the same way EBADF is — that sentence is the
+    whole basis of `RENDER_FAILURE_EXIT`, and `PYTHONIOENCODING=latin-1` is its only
+    non-`OSError` instance. A module that reconfigured its own stdout could never raise
+    `UnicodeEncodeError` at the table write again, so it would delete a measured status
+    class from the shipped contract and make eight nodes here unreachable. Measured, not
+    argued: with a `reconfigure` in `main` those eight go red (job 31, W12).
+
+    WHY NOT `PYTHONUTF8=1`. It is the same fix plus side effects nobody asked for — it
+    also moves the child's `open()` and filesystem-encoding defaults, which is exactly
+    the axis W1's `PYTHONWARNDEFAULTENCODING` gate is measuring. `PYTHONIOENCODING` is
+    the narrow instrument and it is already this file's own (see `_encoding_stdout_status`).
+
+    NOT A NEW `PYTEST_*`-CLASS TELL. `PYTHONIOENCODING` is an ordinary caller-set
+    variable that says nothing about being observed; a child cannot read "I am under a
+    test runner" out of it. What it does change is that the child's stdout codec is no
+    longer the field's default, so a status that turns on the LOCALE codec would not be
+    measured here — the K4B/C1 cells that set it explicitly are where that is measured.
 
     RB-P28, and the half of it that is closeable here. Both status harnesses used to
     hand the child `{**os.environ, ...}`, and pytest puts `PYTEST_CURRENT_TEST` in
@@ -3438,6 +3475,7 @@ def _child_env(**extra: str) -> dict[str, str]:
     """
     env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
     env["PYTHONPATH"] = str(SRC.parent)
+    env["PYTHONIOENCODING"] = "utf-8"  # the child's WRITER, not our reader; see above
     env.update(extra)
     return env
 
