@@ -336,12 +336,24 @@ GUARD_MODES = ("warn", "error")
 #     all. That cell is why "give the print an `except OSError` arm", RB-P31's own filed
 #     attack direction, would not have closed it.
 #
-# The buffer is not the axis of the FIX, but it is why the defect looked like two
-# defects: CPython gives `sys.stdout` a `BufferedWriter` of `os.fstat(1).st_blksize`
-# bytes — 4096 for a regular file, 16384 for a pipe, 65536 for `/dev/null` — and whether
-# the doomed bytes are still in that buffer when the failure surfaces decides whether the
-# interpreter's finalization flush re-fails and overwrites the status with 120. Both
-# sides are handled by the same arm and both are pinned, at both sizes.
+# The buffering is not the axis of the FIX, but it is why the defect looked like two
+# defects: whether the doomed bytes are still INSIDE THE PROCESS when the failure
+# surfaces decides whether the interpreter's finalization flush re-fails and overwrites
+# the status with 120. Both sides are handled by the same arm and both are pinned, at
+# both sizes.
+#
+# TWO LAYERS DECIDE THAT, AND THIS COMMENT USED TO NAME ONLY THE LOWER ONE. CPython does
+# give `sys.stdout` a `BufferedWriter` of `os.fstat(1).st_blksize` bytes — 4096 for a
+# regular file, 16384 for a pipe, 65536 for `/dev/null` — but a text `print` reaches it
+# through a `TextIOWrapper` that holds everything until its own 8192-unit chunk fires, so
+# the point at which bytes actually leave is `max(io.DEFAULT_BUFFER_SIZE, st_blksize + 1)`
+# and `st_blksize` alone decides nothing whenever it is below 8192. Measured 2026-08-22,
+# macOS/APFS, CPython 3.13: with `st_blksize == 4096`, an 8191-byte text write leaves 0
+# bytes on fd 1 before any flush and an 8192-byte one leaves 8192 — crossover 8192, not
+# 4097. Behind a pipe (`st_blksize == 16384`) 16384 leaves 0 and 16385 leaves 16385,
+# which is what shows `st_blksize` really is the `BufferedWriter` size and really is not
+# the crossover. Nothing in this module reads either number; the file that did was the
+# test file's own straddle guard, and it now measures the crossover instead.
 #
 # STILL OUTSIDE THE RANGE, measured 2026-08-13 rather than assumed, because "everything
 # outside 0-4 means the run did not complete" is STILL not a true reading. This list is
