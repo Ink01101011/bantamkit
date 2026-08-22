@@ -3,6 +3,30 @@ import sys
 import pytest
 
 from bantamkit.client import Message, Response, ToolCall, Usage
+from bantamkit.memory.layers import MEMORY_DIR_ENV
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_memory_pin(monkeypatch):
+    """No node in this suite may be answered by the operator's own pinned store.
+
+    `BANTAMKIT_MEMORY_DIR` outranks the whole discovery walk by design, so a
+    developer who has set it -- which `docs/mcp.md` now tells every operator to do
+    -- silently redirects every store this suite resolves. Measured 2026-08-22 on
+    this machine before this fixture existed: running the full suite with
+    `BANTAMKIT_MEMORY_DIR` set to a populated store took it from 1790 passed to
+    `2 failed, 1788 passed` -- `test_mcpserver.py::test_layered_recall_reads_
+    granted_store_readonly` and `test_memory.py::test_start_discovers_the_project_
+    store_and_never_the_profile`. Both are real nodes whose verdict came from the
+    environment rather than from the code, which is the same defect as a node that
+    reads the operator's real `~/.bantamkit`.
+
+    Session-wide and autouse, not per-module: the two nodes that broke live in two
+    files, neither of which is about pinning, and the next one will land in a third.
+    A node that wants a pin sets one itself; `monkeypatch.setenv` inside the test
+    body runs after this and wins.
+    """
+    monkeypatch.delenv(MEMORY_DIR_ENV, raising=False)
 
 
 class FakeClient:

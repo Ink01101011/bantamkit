@@ -320,6 +320,26 @@ def test_build_memory_default_is_layered(tmp_path, monkeypatch):
     assert len(mem._layers) >= 2
 
 
+def test_the_store_flag_outranks_the_env_pin_and_start_does_not(tmp_path, monkeypatch):
+    """`docs/mcp.md` tells operators `--store` still wins; this is that claim, run.
+
+    They are not two settings of one dial. `--store` names a store outright and
+    never enters resolution, so the pin has nothing to outrank; `--start` only says
+    where a walk would begin, and `BANTAMKIT_MEMORY_DIR` replaces the walk.
+    """
+    from bantamkit.memory.layers import MEMORY_DIR_ENV
+
+    named = tmp_path / "named"
+    pinned = tmp_path / "pinned"
+    for d in (named, pinned):
+        (d / "facts").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "nohome")
+    monkeypatch.setenv(MEMORY_DIR_ENV, str(pinned))
+
+    assert _build_memory(_parse_args(["--store", str(named)])).store.root == named
+    assert _build_memory(_parse_args(["--start", str(tmp_path)])).store.root == pinned
+
+
 def test_missing_extra_yields_install_hint(tmp_path, monkeypatch):
     import bantamkit.mcpserver as m
 

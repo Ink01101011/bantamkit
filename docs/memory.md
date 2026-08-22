@@ -362,6 +362,29 @@ keeps its `config.yaml` beside the symlink.
 `resolve_project_store()` reports which route was taken: `origin` is `"pin"` or
 `"walk"`, and `searched_from` is `None` under a pin, because no walk ran.
 
+### What an empty recall says
+
+`Memory.recall` used to answer every empty result with `no memories matched. Try
+different words, or proceed without.` — true of a populated store that missed,
+and misleading in the two cases where nothing was searched at all. It now splits:
+
+| Situation | Reply |
+|---|---|
+| some layer holds facts, none matched | `no memories matched. Try different words, or proceed without.` — unchanged, byte for byte |
+| every layer bound here is empty | `no memories to search: nothing is saved in any layer bound here.` |
+
+and, whenever the **project** layer itself holds nothing, the reply also names
+that store, how it came to be bound (`BANTAMKIT_MEMORY_DIR pinned it`, or `bound
+by walking up from <start>, which has no store of its own`, or `No memory store
+existed at or above <start>, so the empty <path> was created for this session`),
+and the remedy. That last one is the `designated` state, and it is reported from
+the binding rather than from disk because constructing the store creates the
+directory — a designated store and a store found empty are indistinguishable a
+moment later.
+
+The diagnosis stops as soon as the project store holds a fact, so a store you
+have started using is never described as empty from a stale binding.
+
 ### Grants
 
 Extra stores are opt-in per project and declared in a `config.yaml` sitting

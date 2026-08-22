@@ -7,6 +7,7 @@ from bantamkit.agent import Agent
 from bantamkit.assets import assets_root, load_skill, load_tool
 from bantamkit.memory import Memory
 from bantamkit.memory.component import normalize_name
+from bantamkit.memory.layers import MEMORY_DIR_ENV
 from bantamkit.memory.store import MemoryStore, MemoryValidationError
 
 
@@ -614,3 +615,153 @@ def test_batch_isolation_does_not_snapshot_read_only_layers(tmp_path, fake_home)
     )
     Agent(client=client).use(Memory.layered(start=project)).run("t")
     assert "[project] [deploy]" in client.calls[1]["messages"][-1].content
+
+
+# ---- N3: the live topology, rebuilt, and the answer it used to give ------------
+#
+# Read off this machine 2026-08-22 rather than assumed -- three commands, all
+# rerunnable:
+#
+#     lsof -a -p 34377 -d cwd -Fn                     -> .../Projects/trader-platform
+#     ls ~/.bantamkit/memory/facts/ | wc -l           -> 0
+#     ls .../bantamkit/.bantamkit/memory/facts/*.md | wc -l   -> 65
+#
+# A project with no store of its own; an ancestor — the home directory — carrying
+# a store that exists and holds nothing; the operator's actual facts in a SIBLING
+# project the walk never visits. The walk binds the empty ancestor, and until this
+# unit a recall against it returned the same sentence a populated store returns for
+# a question that matches nothing.
+#
+# Nothing below touches any of those real paths. The shape is rebuilt under
+# `tmp_path` with `fake_home`, and every count is read back off the fixture rather
+# than written down: a node whose result depends on the operator's own
+# `~/.bantamkit` means something different on CI, which is the exact way this repo
+# has been burned before.
+
+
+def _trader_platform_shape(fake_home):
+    """project (no store) under a home carrying an EMPTY store, facts in a sibling."""
+    ancestor = fake_home / ".bantamkit" / "memory"
+    (ancestor / "facts").mkdir(parents=True)
+    project = fake_home / "Projects" / "trader-platform"
+    project.mkdir(parents=True)
+    sibling = fake_home / "Projects" / "bantamkit" / ".bantamkit" / "memory"
+    _seed(sibling, "deploy-command", "make ship-prod", description="how we deploy to prod")
+    return project, ancestor, sibling
+
+
+def test_an_empty_ancestor_store_no_longer_answers_like_a_query_that_missed(
+    tmp_path, fake_home
+):
+    project, ancestor, sibling = _trader_platform_shape(fake_home)
+    assert list((ancestor / "facts").glob("*.md")) == []
+    assert len(list((sibling / "facts").glob("*.md"))) == 1
+
+    out = Memory.layered(start=project)._recall("deploy prod")
+
+    # The pre-N1 answer, in full: "no memories matched. Try different words, or
+    # proceed without." Every clause of it was wrong here.
+    assert "Try different words" not in out
+    assert str(ancestor) in out, "the answer must name the cabinet it opened"
+    assert str(project) in out, "and why that cabinet and not another"
+    assert MEMORY_DIR_ENV in out, "and the one lever the operator actually holds"
+
+
+def test_the_pin_the_message_names_is_the_one_that_reaches_the_facts(
+    tmp_path, fake_home, monkeypatch
+):
+    """The remedy in the message is not advice; this runs it."""
+    project, _ancestor, sibling = _trader_platform_shape(fake_home)
+    assert MEMORY_DIR_ENV in Memory.layered(start=project)._recall("deploy prod")
+
+    monkeypatch.setenv(MEMORY_DIR_ENV, str(sibling))
+    assert "make ship-prod" in Memory.layered(start=project)._recall("deploy prod")
+
+
+def test_a_populated_store_that_genuinely_misses_keeps_its_exact_wording(tmp_path, fake_home):
+    """The case that already worked, pinned byte for byte."""
+    project = tmp_path / "companyA"
+    project.mkdir()
+    _seed(project / ".bantamkit" / "memory", "deploy", "make ship-prod")
+
+    out = Memory.layered(start=project)._recall("zzz nothing like this")
+    assert out == "no memories matched. Try different words, or proceed without."
+
+
+def test_a_designated_store_says_none_existed_rather_than_none_matched(tmp_path, fake_home):
+    """Third state: the walk found no store anywhere, so one was created empty."""
+    project = tmp_path / "fresh"
+    project.mkdir()
+
+    out = Memory.layered(start=project)._recall("deploy prod")
+    assert "No memory store existed at or above" in out
+    assert str(project.resolve()) in out
+    assert "walking up from" not in out  # that is the OTHER state's sentence
+
+
+def test_a_pinned_empty_store_blames_the_pin_and_not_the_query(tmp_path, fake_home, monkeypatch):
+    pinned = tmp_path / "elsewhere" / ".bantamkit" / "memory"
+    (pinned / "facts").mkdir(parents=True)
+    monkeypatch.setenv(MEMORY_DIR_ENV, str(pinned))
+
+    out = Memory.layered(start=tmp_path)._recall("deploy prod")
+    assert f"{MEMORY_DIR_ENV} pinned it" in out
+    assert "walking up from" not in out  # no walk ran, so none may be claimed
+
+
+def test_the_three_states_are_three_different_sentences(tmp_path, fake_home):
+    """N1 named three states; a message that collapses two of them is the defect."""
+    populated = tmp_path / "full"
+    populated.mkdir()
+    _seed(populated / ".bantamkit" / "memory", "deploy", "make ship-prod")
+    hollow = tmp_path / "hollow"
+    (hollow / ".bantamkit" / "memory" / "facts").mkdir(parents=True)
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+
+    answers = {
+        Memory.layered(start=start)._recall("zzz nothing like this")
+        for start in (populated, hollow, fresh)
+    }
+    assert len(answers) == 3
+
+
+def test_the_diagnosis_stops_once_the_store_it_named_holds_a_fact(tmp_path, fake_home):
+    """A store that was empty at construction and has been saved to since can answer,
+    and must not keep being described from a binding taken before the save."""
+    project, _ancestor, _sibling = _trader_platform_shape(fake_home)
+    mem = Memory.layered(start=project)
+    assert MEMORY_DIR_ENV in mem._recall("deploy prod")
+
+    mem.save("project", "deploy-command", "how we deploy to prod", "make ship-prod")
+
+    assert (
+        mem._recall("zzz nothing like this")
+        == "no memories matched. Try different words, or proceed without."
+    )
+
+
+def test_a_populated_profile_layer_still_names_the_empty_project_binding(tmp_path, fake_home):
+    """Something really was searched, so the verdict is a true miss — but the store
+    that saves land in is still the wrong one, and the miss must not hide that."""
+    project = tmp_path / "companyA"
+    (project / ".bantamkit" / "memory" / "facts").mkdir(parents=True)
+    _seed(
+        fake_home / ".bantamkit" / "memory",
+        "profile-note",
+        "a profile body",
+        description="an unrelated topic",
+    )
+
+    out = Memory.layered(start=project)._recall("deploy prod")
+    assert out.startswith("no memories matched.")
+    assert str(project / ".bantamkit" / "memory") in out
+    assert MEMORY_DIR_ENV in out
+
+
+def test_a_caller_named_store_reports_no_walk_it_never_ran(tmp_path):
+    """`Memory(store=...)` resolved nothing, so it may not narrate a resolution."""
+    out = Memory(store=tmp_path / "mem")._recall("deploy prod")
+    assert str(tmp_path / "mem") in out
+    assert "walking up from" not in out
+    assert "No memory store existed" not in out
