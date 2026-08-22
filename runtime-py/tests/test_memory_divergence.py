@@ -14,11 +14,15 @@ from pathlib import Path
 import pytest
 
 from bantamkit.memory.divergence import (
+    ABSENT,
+    PRESENT,
+    UNREADABLE,
     DivergenceReport,
     bantamkit_store_root,
     compare_stores,
     native_store_root,
     read_store,
+    store_availability,
 )
 
 BANTAMKIT_SHAPE = """---
@@ -348,3 +352,161 @@ def test_a_missing_store_directory_is_an_error_not_an_empty_clean_report(tmp_pat
     with pytest.raises(Exception) as excinfo:
         compare_stores(a, tmp_path / "does-not-exist")
     assert "does-not-exist" in str(excinfo.value)
+
+
+# ---- description drift: the class MS2 hit and this instrument used to miss ----
+
+
+def test_a_description_only_drift_is_reported_and_is_not_clean(tmp_path):
+    """Measured by MS2 on the real pair: four facts with byte-identical bodies and
+    different `description:` values. `compare_stores()` called them clean, because the
+    description was not compared. It is now, and this is the node that keeps it so.
+    """
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    write(a / "facts" / "same.md", BANTAMKIT_SHAPE, "same", "one identical body")
+    (b / "same.md").parent.mkdir(parents=True, exist_ok=True)
+    (b / "same.md").write_text(
+        NATIVE_SHAPE.format(
+            name="same",
+            desc="a completely different sentence about the same fact",
+            type="project",
+            body="one identical body",
+        ),
+        encoding="utf-8",
+    )
+
+    report = compare_stores(a, b)
+
+    assert report.clean is False
+    assert report.body_differs == []
+    assert [d.name for d in report.description_differs] == ["same"]
+    d = report.description_differs[0]
+    assert d.a_description == "description of same"
+    assert d.b_description == "a completely different sentence about the same fact"
+    assert d.a_path.endswith("same.md") and d.b_path.endswith("same.md")
+
+
+def test_description_and_body_drift_are_reported_separately(tmp_path):
+    """Different remedies: one needs the two bodies read, the other does not."""
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    write(a / "facts" / "body-only.md", BANTAMKIT_SHAPE, "body-only", "A body")
+    write(b / "body-only.md", NATIVE_SHAPE, "body-only", "B body")
+    write(a / "facts" / "desc-only.md", BANTAMKIT_SHAPE, "desc-only", "shared body")
+    (b / "desc-only.md").write_text(
+        NATIVE_SHAPE.format(
+            name="desc-only", desc="other words", type="project", body="shared body"
+        ),
+        encoding="utf-8",
+    )
+
+    report = compare_stores(a, b)
+
+    assert [d.name for d in report.body_differs] == ["body-only"]
+    assert [d.name for d in report.description_differs] == ["desc-only"]
+
+
+def test_a_description_differing_only_in_whitespace_is_not_a_drift(tmp_path):
+    """One writer hard-wraps the YAML scalar and the other does not."""
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    (a / "facts").mkdir(parents=True)
+    (a / "facts" / "w.md").write_text(
+        "---\nname: w\ndescription: 'a long sentence about the thing'\n"
+        "type: project\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    b.mkdir()
+    (b / "w.md").write_text(
+        "---\nname: w\ndescription: >-\n  a long sentence about the thing\n"
+        "metadata:\n  type: project\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+
+    assert compare_stores(a, b).clean is True
+
+
+# ---- can this store be read at all: three answers, not two ----
+
+
+def test_a_root_that_does_not_exist_is_absent(tmp_path):
+    a = store_availability(tmp_path / "nope")
+    assert a.state == ABSENT
+    assert a.present is False
+    assert "nope" in a.reason
+
+
+def test_a_readable_directory_is_present_even_when_it_holds_no_facts(tmp_path):
+    """An empty store is present, not absent. It answers, and a wrong answer is worse
+    than none -- see `bantamkit_store_root`, where an empty store above the repo
+    reported `0 facts vs 59`.
+    """
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    a = store_availability(empty)
+    assert (a.state, a.present, a.reason) == (PRESENT, True, "")
+
+
+def test_a_file_where_a_directory_belongs_is_unreadable_not_absent(tmp_path):
+    impostor = tmp_path / "memory"
+    impostor.write_text("not a store\n", encoding="utf-8")
+    a = store_availability(impostor)
+    assert a.state == UNREADABLE
+    assert "is not a directory" in a.reason
+
+
+def test_a_dangling_symlink_where_a_store_belongs_is_unreadable_not_absent(tmp_path):
+    """`Path.exists()` follows the link and says False; that would report a broken store
+    as "this machine simply does not have one", which is the exact confusion the three
+    states exist to prevent.
+    """
+    link = tmp_path / "memory"
+    link.symlink_to(tmp_path / "gone")
+    a = store_availability(link)
+    assert a.state == UNREADABLE
+    assert "points at nothing" in a.reason
+
+
+# ---- the report has to name the facts, not just count them ----
+
+
+def test_explain_names_every_diverging_fact_in_every_category(tmp_path):
+    """A gate that says "2 facts differ" makes the reader redo the search it just did."""
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    write(a / "facts" / "gone-from-b.md", BANTAMKIT_SHAPE, "gone-from-b", "x")
+    write(b / "gone-from-a.md", NATIVE_SHAPE, "gone-from-a", "y")
+    write(a / "facts" / "drifted-body.md", BANTAMKIT_SHAPE, "drifted-body", "A text")
+    write(b / "drifted-body.md", NATIVE_SHAPE, "drifted-body", "B text")
+    write(a / "facts" / "drifted-desc.md", BANTAMKIT_SHAPE, "drifted-desc", "same")
+    (b / "drifted-desc.md").write_text(
+        NATIVE_SHAPE.format(
+            name="drifted-desc", desc="a different key", type="project", body="same"
+        ),
+        encoding="utf-8",
+    )
+    (b / "broken.md").write_text("no fences\n", encoding="utf-8")
+
+    text = compare_stores(a, b).explain()
+
+    for name in ("gone-from-b", "gone-from-a", "drifted-body", "drifted-desc", "broken.md"):
+        assert name in text, f"{name} is missing from the failure message"
+    assert "a different key" in text
+    assert str(a) in text and str(b) in text
+    # Every category headline is present, so no category can be silently dropped.
+    headlines = ("only in A", "only in B", "body differs", "description differs", "unparseable")
+    for headline in headlines:
+        assert headline in text
+
+
+def test_explain_on_a_clean_pair_says_so_without_listing_anything(tmp_path):
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    write(a / "facts" / "one.md", BANTAMKIT_SHAPE, "one", "b")
+    write(b / "one.md", NATIVE_SHAPE, "one", "b")
+
+    text = compare_stores(a, b).explain()
+
+    assert "no divergence." in text
+    assert "clean=True" in text

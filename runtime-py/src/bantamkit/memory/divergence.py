@@ -91,12 +91,114 @@ class BodyDiff:
     b_bytes: int
 
 
+@dataclass(frozen=True)
+class DescriptionDiff:
+    """One name both stores hold, agreeing about the body and disagreeing about the
+    line that gets it recalled.
+
+    This category exists because MS2 hit it and this instrument was blind to it: four
+    facts had byte-identical bodies and different `description:` values, so the two
+    indexes described the same knowledge differently while `compare_stores()` reported
+    clean. It is kept apart from `BodyDiff` because the remedy is different and much
+    cheaper -- the knowledge already agrees, only the recall key does -- and because a
+    description-only drift is the one class where reading the two bodies tells you
+    nothing.
+
+    `description` is compared even though the rest of the frontmatter is not, and the
+    reason is that it is the only other field BOTH shapes carry at the top level and
+    that recall actually matches on. Measured over the real pair on 2026-08-22:
+    65 of 65 bantamkit facts and 64 of 64 native facts carry a non-empty top-level
+    `description`, so comparing it can never fire merely because one shape omits it.
+    """
+
+    name: str
+    a_path: str
+    b_path: str
+    a_description: str
+    b_description: str
+
+
+# NOT compared, and looked at rather than overlooked: `type`. It is the other field both
+# shapes carry (top level in one, under `metadata:` in the other -- it is what shape
+# detection keys on), and over the 64 names the real pair shares it drifted 0 times when
+# measured on 2026-08-22. Left out to keep this unit's extension to the single class MS2
+# actually hit; it is a two-line addition for whoever measures a nonzero there. Rerun:
+#   PYTHONPATH=runtime-py/src .venv/bin/python -c "from bantamkit.memory.divergence \
+#     import read_store, bantamkit_store_root, native_store_root; \
+#     A={f.name:f for f in read_store(bantamkit_store_root())[0]}; \
+#     B={f.name:f for f in read_store(native_store_root())[0]}; \
+#     print([n for n in A.keys()&B.keys() if A[n].type!=B[n].type])"
+
+
+# ---- can this store be read at all? ----
+#
+# Three answers, not two, and the third is the whole point. A store that is ABSENT means
+# this machine is not the one the real-pair tripwire is for -- a CI runner has neither
+# root, because `.bantamkit/memory/` is gitignored (0 files tracked) and `~/.claude/` is
+# not checked out at all. A store that is present but UNREADABLE is a finding: something
+# put a file, a dangling symlink, or an unlistable directory where a store belongs, and
+# reporting that as "absent" would let a real breakage buy itself a green skip.
+PRESENT = "present"
+ABSENT = "absent"
+UNREADABLE = "unreadable"
+
+
+@dataclass(frozen=True)
+class StoreAvailability:
+    """Whether a store root can be read, and -- when it cannot -- which kind of cannot."""
+
+    root: str
+    state: str  # PRESENT | ABSENT | UNREADABLE
+    reason: str
+
+    @property
+    def present(self) -> bool:
+        return self.state == PRESENT
+
+
+def store_availability(root: str | Path) -> StoreAvailability:
+    """Probe a store root without reading a single fact out of it.
+
+    Separated from `read_store` on purpose: `read_store` raises on a missing root, and a
+    caller that has to tell "not this machine" from "broken on this machine" cannot get
+    that out of an exception it must catch to survive.
+    """
+    root = Path(root)
+    try:
+        exists = root.exists()
+    except OSError as e:  # pragma: no cover - a stat that raises needs a hostile fs
+        return StoreAvailability(str(root), UNREADABLE, f"cannot stat {root}: {e}")
+    if not exists:
+        if os.path.lexists(root):
+            return StoreAvailability(
+                str(root),
+                UNREADABLE,
+                f"a symlink at {root} points at nothing -- a store was expected here",
+            )
+        return StoreAvailability(str(root), ABSENT, f"no directory at {root}")
+    if not root.is_dir():
+        return StoreAvailability(
+            str(root), UNREADABLE, f"{root} exists but is not a directory"
+        )
+    try:
+        next(iter(root.iterdir()), None)
+    except OSError as e:
+        return StoreAvailability(
+            str(root), UNREADABLE, f"{root} is a directory that cannot be listed: {e}"
+        )
+    return StoreAvailability(str(root), PRESENT, "")
+
+
 @dataclass
 class DivergenceReport:
-    """The four ways two stores can disagree, named separately.
+    """The five ways two stores can disagree, named separately.
 
-    They are separate because the remedies differ: copy A->B, copy B->A, resolve by
-    hand, and go look at the file. Collapsing them into one count would hide which.
+    They are separate because the remedies differ: copy A->B, copy B->A, resolve the
+    body by hand, reconcile the recall key, and go look at the file. Collapsing them
+    into one count would hide which.
+
+    `description_differs` was added by MS3 after MS2 reconciled four of them BY HAND
+    that this report called clean. See `DescriptionDiff`.
     """
 
     a_root: str
@@ -106,19 +208,76 @@ class DivergenceReport:
     only_in_a: list[str] = field(default_factory=list)
     only_in_b: list[str] = field(default_factory=list)
     body_differs: list[BodyDiff] = field(default_factory=list)
+    description_differs: list[DescriptionDiff] = field(default_factory=list)
     unparseable: list[UnparseableFact] = field(default_factory=list)
 
     @property
     def clean(self) -> bool:
-        return not (self.only_in_a or self.only_in_b or self.body_differs or self.unparseable)
+        return not (
+            self.only_in_a
+            or self.only_in_b
+            or self.body_differs
+            or self.description_differs
+            or self.unparseable
+        )
 
     def summary(self) -> str:
         return (
             f"A {self.a_root} ({self.a_count} facts) vs B {self.b_root} "
             f"({self.b_count} facts): only_in_a={len(self.only_in_a)} "
             f"only_in_b={len(self.only_in_b)} body_differs={len(self.body_differs)} "
+            f"description_differs={len(self.description_differs)} "
             f"unparseable={len(self.unparseable)} clean={self.clean}"
         )
+
+    def explain(self) -> str:
+        """Every diverging fact BY NAME, with the path to each side of it.
+
+        A gate that reports "2 facts differ" has told the reader only that there is an
+        investigation to do, and they then do the same search this function already did.
+        So the counts are the headline and the names are the body, and every name is
+        printed -- there is no elision at N, because the one line that got elided is the
+        one nobody goes and looks up.
+        """
+        lines = [
+            self.summary(),
+            f"  A = {self.a_root}",
+            f"  B = {self.b_root}",
+        ]
+        if self.clean:
+            lines.append("  no divergence.")
+            return "\n".join(lines)
+
+        if self.only_in_a:
+            lines.append(f"  only in A ({len(self.only_in_a)}) -- B is owed a copy:")
+            lines.extend(f"    {name}" for name in self.only_in_a)
+        if self.only_in_b:
+            lines.append(f"  only in B ({len(self.only_in_b)}) -- A is owed a copy:")
+            lines.extend(f"    {name}" for name in self.only_in_b)
+        if self.body_differs:
+            lines.append(
+                f"  body differs ({len(self.body_differs)}) -- resolve by hand, never by "
+                f"mtime; recall() rewrites the stamps:"
+            )
+            for d in self.body_differs:
+                lines.append(f"    {d.name}  ({d.a_bytes} B vs {d.b_bytes} B)")
+                lines.append(f"      A: {d.a_path}")
+                lines.append(f"      B: {d.b_path}")
+        if self.description_differs:
+            lines.append(
+                f"  description differs ({len(self.description_differs)}) -- same body, "
+                f"different recall key:"
+            )
+            for d in self.description_differs:
+                lines.append(f"    {d.name}")
+                lines.append(f"      A: {d.a_description!r}")
+                lines.append(f"      B: {d.b_description!r}")
+        if self.unparseable:
+            lines.append(f"  unparseable ({len(self.unparseable)}) -- go look at the file:")
+            for u in self.unparseable:
+                lines.append(f"    {u.path}")
+                lines.append(f"      {u.reason}")
+        return "\n".join(lines)
 
 
 # ---- roots ----
@@ -167,6 +326,15 @@ def bantamkit_store_root(start: str | Path | None = None) -> Path:
     the fallback for a checkout with no `.git` marker (a tarball, a vendored copy),
     where anchoring has nothing to anchor to.
     """
+    # HAZARD, noted 2026-08-22 and deliberately NOT acted on here. A sibling branch adds
+    # `BANTAMKIT_MEMORY_DIR`, an env pin that outranks the store walk for the WRITER. This
+    # resolver does not read it, so once that lands, a session with the pin set writes its
+    # facts somewhere this function will not look -- and the real-pair tripwire would then
+    # compare an abandoned `<repo>/.bantamkit/memory` against the native store and report
+    # CLEAN while the store actually in use drifts unwatched. A gate that goes green by
+    # looking at the wrong file is worse than no gate. Whoever merges that branch owns
+    # teaching this function the same precedence; this unit is not on it and will not
+    # depend on a symbol it cannot import.
     anchored = _canonical_repo_root(start) / ".bantamkit" / "memory"
     if anchored.is_dir():
         return anchored
@@ -322,9 +490,12 @@ def compare_stores(
     not. Which body wins is a hand judgement; this instrument only says where one is
     owed.
 
-    Frontmatter beyond the name is also not compared: the two shapes disagree about it
-    by construction (`metadata.originSessionId` has no bantamkit counterpart), so a
-    field-by-field diff would report dozens of divergences that mean nothing.
+    Frontmatter beyond the name and the description is also not compared: the two shapes
+    disagree about the rest by construction (`metadata.originSessionId` has no bantamkit
+    counterpart), so a field-by-field diff would report dozens of divergences that mean
+    nothing. `description` is the exception because both shapes carry it at the top level
+    in 129 of 129 real facts and because it is what recall matches on -- see
+    `DescriptionDiff` for the four this instrument used to miss.
     """
     a_root = Path(a) if a is not None else bantamkit_store_root(start)
     b_root = Path(b) if b is not None else native_store_root(start)
@@ -335,6 +506,7 @@ def compare_stores(
     b_by_name = {f.name: f for f in b_facts}
 
     body_differs = []
+    description_differs = []
     for name in sorted(a_by_name.keys() & b_by_name.keys()):
         left, right = a_by_name[name], b_by_name[name]
         if left.body != right.body:
@@ -347,6 +519,19 @@ def compare_stores(
                     b_bytes=len(right.body.encode("utf-8")),
                 )
             )
+        # `.strip()` because one writer hard-wraps the YAML scalar and the other does
+        # not, so the two carry the same sentence with different trailing whitespace.
+        # A drift that is only whitespace is not a drift a human is owed a look at.
+        if left.description.strip() != right.description.strip():
+            description_differs.append(
+                DescriptionDiff(
+                    name=name,
+                    a_path=left.path,
+                    b_path=right.path,
+                    a_description=left.description.strip(),
+                    b_description=right.description.strip(),
+                )
+            )
 
     return DivergenceReport(
         a_root=str(a_root),
@@ -356,5 +541,6 @@ def compare_stores(
         only_in_a=sorted(a_by_name.keys() - b_by_name.keys()),
         only_in_b=sorted(b_by_name.keys() - a_by_name.keys()),
         body_differs=body_differs,
+        description_differs=description_differs,
         unparseable=a_bad + b_bad,
     )
