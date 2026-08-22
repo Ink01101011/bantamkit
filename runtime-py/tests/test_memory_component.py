@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from conftest import FakeClient, assistant, call
 
@@ -223,8 +225,21 @@ def test_save_normalized_name_survives_the_agent_loop(tmp_path):
 
 @pytest.fixture
 def fake_home(tmp_path, monkeypatch):
+    """Point the profile memory layer at a scratch dir, on every platform.
+
+    `Memory.layered` locates the profile store under `Path.home()`, and which
+    environment variable that consults is platform-specific: POSIX
+    (`posixpath.expanduser`) reads `HOME` and falls back to `pwd`; Windows
+    (`ntpath.expanduser`) reads `USERPROFILE`, then `HOMEDRIVE`+`HOMEPATH`,
+    and never reads `HOME` at all. Setting environment names is therefore
+    correct only while that list is complete, and the list belongs to CPython,
+    not to us. Replacing `Path.home` retires the question: the call site gets
+    this directory whatever the platform's rule is. `HOME` is still set so an
+    environment-reading consumer agrees with it where `HOME` is the rule.
+    """
     home = tmp_path / "home"
     home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.setenv("HOME", str(home))
     return home
 
