@@ -4257,8 +4257,8 @@ _RBP31_SMALL_CELLS = 1
 _RBP31_LARGE_CELLS = 40
 
 
-def _readonly_stdout_status(argv, tmp_path, label: str) -> tuple[int, str, int]:
-    """Run `argv` with fd 1 a dup of a READ-ONLY fd. Return its status, stderr, fd 1's buffer.
+def _readonly_stdout_status(argv, tmp_path, label: str) -> tuple[int, str]:
+    """Run `argv` with fd 1 a dup of a READ-ONLY fd. Return its status and its stderr.
 
     A read-only fd is the cheapest render failure that is NOT a gone reader: every write
     to fd 1 fails with `EBADF`, and stderr stays live throughout, so this is a report that
@@ -4266,11 +4266,15 @@ def _readonly_stdout_status(argv, tmp_path, label: str) -> tuple[int, str, int]:
     handed to the child as its stdout, so nothing is patched and no exception is injected.
 
     The status is the OS's, for the CLI's own process — RB-P24's rule, and no shell.
-    The third return value is `os.fstat(1).st_blksize`, which IS the `BufferedWriter`
-    size CPython gives that fd and therefore the axis this spec is written across.
 
-    POSIX-only by its subject: a descriptor that is open, valid and writes-refused is a
-    POSIX file-mode fact, and `st_blksize` — the axis — is a POSIX stat field.
+    POSIX-only by its subject, and by that ALONE: a descriptor that is open, valid and
+    writes-refused is a POSIX file-mode fact. This used to return `os.fstat(1).st_blksize`
+    as a third value for the straddle guard, which made it POSIX-only a second time over
+    for a reason that had nothing to do with EBADF — `st_blksize` is absent from
+    `os.stat_result` on Windows, so the guard raised `AttributeError` before reaching any
+    claim of its own. The guard now measures its boundary instead of reading it off a
+    stat field (`_bytes_that_reach_fd_one`), and the only caller of that third value is
+    gone, so the field is gone with it.
     """
     where = tmp_path / f"_ro-{label}"
     where.mkdir(parents=True, exist_ok=True)
@@ -4279,14 +4283,13 @@ def _readonly_stdout_status(argv, tmp_path, label: str) -> tuple[int, str, int]:
     err = where / "stderr.txt"
     ro_fd = os.open(target, os.O_RDONLY)
     try:
-        blksize = os.fstat(ro_fd).st_blksize
         with open(err, "wb") as err_fh:
             proc = subprocess.Popen(
                 argv, stdout=ro_fd, stderr=err_fh, env=_child_env()
             )
     finally:
         os.close(ro_fd)
-    return proc.wait(), err.read_text(encoding="utf-8"), blksize
+    return proc.wait(), err.read_text(encoding="utf-8")
 
 
 def _no_stdout_status(argv, tmp_path, label: str) -> tuple[int, str]:
@@ -4316,6 +4319,59 @@ def _no_stdout_status(argv, tmp_path, label: str) -> tuple[int, str]:
     return proc.returncode, err.read_text(encoding="utf-8")
 
 
+_REPLAY_TO_FD_ONE = (
+    "import os,sys;"
+    "sys.stdout.reconfigure(encoding='utf-8');"
+    "sys.stdout.write(open(sys.argv[1],encoding='utf-8').read());"
+    "sys.stderr.write(str(os.fstat(1).st_size));"
+    "sys.stderr.flush();"
+    "os._exit(0)"
+)
+"""Write a recorded stdout back out, then report how much of it left the process.
+
+`os._exit` so no finalization flush runs: the only bytes that can have reached fd 1
+by then are the ones the stream layers pushed out on their own, which is the thing
+being measured. `st_size` is read from fd 1 itself, and `st_size` — unlike
+`st_blksize` — is a member of `os.stat_result` on every platform CPython builds for.
+"""
+
+
+def _bytes_that_reach_fd_one(text: str, tmp_path, label: str) -> int:
+    """How many bytes of `text`, written to fd 1 as TEXT, leave the process before a flush.
+
+    THE STRADDLE'S BOUNDARY, MEASURED RATHER THAN DERIVED. `os.fstat(1).st_blksize` is
+    the size of `BufferedWriter` and NOT the crossover — `TextIOWrapper` sits above it
+    and holds everything until its own 8192-unit chunk fires, so the real crossover is
+    `max(io.DEFAULT_BUFFER_SIZE, st_blksize + 1)` and the two numbers differ whenever
+    `st_blksize < 8192` (measured: with `st_blksize == 4096`, 8191 bytes leave 0 behind
+    and 8192 bytes leave all 8192 — see the section comment above). Deriving the
+    boundary from `st_blksize` therefore certified the wrong cell: a table of 5000 bytes
+    satisfies `written > 4096` while never leaving the process at all.
+
+    So this asks the streams instead of a stat field. fd 1 is an ordinary file, exactly
+    as `_child_status` gives the real runs, and the child replays the SAME TEXT the real
+    run printed — character counts, not byte counts, are what `TextIOWrapper` chunks on,
+    and this table is not ASCII (that is what the codec cells are for), so a synthetic
+    payload of the same byte length would be measuring a different write.
+
+    Portable by construction: no descriptor in an unusual mode, no POSIX-only stat field,
+    nothing this cannot do on any platform CPython runs on.
+    """
+    where = tmp_path / f"_reach-{label}"
+    where.mkdir(parents=True, exist_ok=True)
+    payload, out = where / "payload.txt", where / "stdout.txt"
+    payload.write_text(text, encoding="utf-8")
+    with open(out, "wb") as out_fh:
+        proc = subprocess.run(
+            [sys.executable, "-c", _REPLAY_TO_FD_ONE, str(payload)],
+            stdout=out_fh,
+            stderr=subprocess.PIPE,
+            env=_child_env(),
+        )
+    assert proc.returncode == 0, proc.stderr
+    return int(proc.stderr.decode())
+
+
 def test_the_two_render_failure_rigs_straddle_the_measured_stdout_buffer(
     asset_tree, tmp_path
 ):
@@ -4323,18 +4379,24 @@ def test_the_two_render_failure_rigs_straddle_the_measured_stdout_buffer(
 
     An `xfail` that fails because its rig drifted pins nothing (the RB-P28 lesson applied
     to this file's own fixtures). The two status nodes below claim to sit on OPPOSITE
-    sides of fd 1's `BufferedWriter`, and that is a property of the rig, the filesystem
-    and the table's width — none of which this file controls. So the straddle is asserted
-    HERE, where a drift is a red suite rather than a silently mis-aimed `xfail`.
+    sides of the point where fd 1's bytes leave the process, and that is a property of the
+    rig, the filesystem and the table's width — none of which this file controls. So the
+    straddle is asserted HERE, where a drift is a red suite rather than a silently
+    mis-aimed `xfail`.
 
     Both rigs also have to EARN 3, read from an independent live-reader run, or the status
     nodes would be pinning a downgrade that was never a downgrade.
-    """
-    _, _, blksize = _readonly_stdout_status(
-        [sys.executable, "-c", "pass"], tmp_path, "blksize"
-    )
-    assert blksize > 0
 
+    WHAT IS ASSERTED IS THE OUTCOME, NOT A BYTE COUNT AGAINST A DERIVED SIZE. This guard
+    used to compute `os.fstat(1).st_blksize` and compare the table's length to it, which
+    was wrong twice: `st_blksize` is not the crossover (`TextIOWrapper` decides, and it
+    fires at 8192 — see the section comment), so the comparison certified any table over
+    4096 bytes as "above the buffer" including ones that never left the process; and
+    `st_blksize` is absent from `os.stat_result` on Windows, so a guard whose subject is
+    portable raised `AttributeError` there. Replaying each table and asking how much of it
+    actually reached the fd fixes both: it is the property itself, and it needs no POSIX
+    stat field and no read-only descriptor to obtain.
+    """
     for label, cells, side in (
         ("small", _RBP31_SMALL_CELLS, "below"),
         ("large", _RBP31_LARGE_CELLS, "above"),
@@ -4344,15 +4406,18 @@ def test_the_two_render_failure_rigs_straddle_the_measured_stdout_buffer(
         assert status == criticreplay.GUARD_VIOLATION_EXIT, err  # what the run EARNS
         assert "GUARD VIOLATIONS" in out
         written = len(out.encode())  # `print` writes the table AND its newline
+        reached = _bytes_that_reach_fd_one(out, tmp_path, label)
         if side == "below":
-            assert written <= blksize, (
-                f"the {label} rig writes {written} bytes, which no longer fits fd 1's "
-                f"{blksize}-byte buffer — the below-buffer node is aimed at the wrong cell"
+            assert reached == 0, (
+                f"the {label} rig writes {written} bytes and {reached} of them already "
+                f"reach fd 1 before any flush — nothing is left for the finalization "
+                f"flush to re-fail on, so the below-buffer node is aimed at the wrong cell"
             )
         else:
-            assert written > blksize, (
-                f"the {label} rig writes {written} bytes, which now fits fd 1's "
-                f"{blksize}-byte buffer — the above-buffer node is aimed at the wrong cell"
+            assert reached > 0, (
+                f"the {label} rig writes {written} bytes and NONE of them reach fd 1 "
+                f"before a flush — the whole table is still inside the process, so the "
+                f"above-buffer node is aimed at the wrong cell"
             )
 
 
@@ -4382,7 +4447,7 @@ def test_a_render_failure_below_the_buffer_reports_the_render_failure_status(
     assert "GUARD VIOLATIONS" in out
 
     dark_rows, dark_summary = tmp_path / "dark-s.jsonl", tmp_path / "dark-s.json"
-    status, err, _ = _readonly_stdout_status(
+    status, err = _readonly_stdout_status(
         _cli(rig, "--json", str(dark_rows), "--summary", str(dark_summary)),
         tmp_path,
         "small",
@@ -4422,7 +4487,7 @@ def test_a_render_failure_above_the_buffer_reports_the_render_failure_status(
     assert "GUARD VIOLATIONS" in out
 
     dark_rows, dark_summary = tmp_path / "dark-l.jsonl", tmp_path / "dark-l.json"
-    status, err, _ = _readonly_stdout_status(
+    status, err = _readonly_stdout_status(
         _cli(rig, "--json", str(dark_rows), "--summary", str(dark_summary)),
         tmp_path,
         "large",
@@ -4636,7 +4701,7 @@ def test_the_hatch_does_not_suppress_a_render_failure_from_a_dead_fd(asset_tree,
     produce with an environment variable, the fd cell is the one RB-P31 was filed on.
     """
     rig = _wide_guard_rig(asset_tree, tmp_path, _RBP31_SMALL_CELLS)
-    status, err, _ = _readonly_stdout_status(
+    status, err = _readonly_stdout_status(
         _cli(rig, "--violations-exit-zero"), tmp_path, "hatch-ebadf"
     )
     assert status == criticreplay.RENDER_FAILURE_EXIT, err
@@ -4662,7 +4727,7 @@ def test_the_render_failure_status_outranks_the_unwritable_summary_status(
     """
     rig = _wide_guard_rig(asset_tree, tmp_path, _RBP31_SMALL_CELLS)
     rows_path = tmp_path / "both-rungs.jsonl"
-    status, err, _ = _readonly_stdout_status(
+    status, err = _readonly_stdout_status(
         _cli(rig, "--json", str(rows_path), "--summary", str(_unwritable(tmp_path))),
         tmp_path,
         "outranks-four",
