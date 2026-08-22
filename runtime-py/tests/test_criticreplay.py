@@ -4331,6 +4331,66 @@ def test_the_same_einval_is_still_a_render_failure_where_it_does_not_mean_that(
     assert "could not be rendered" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    "einval_is_a_lost_reader, expected, reports_a_render_failure",
+    [
+        pytest.param(True, criticreplay.ARTIFACT_WRITE_EXIT, False, id="windows"),
+        pytest.param(False, criticreplay.RENDER_FAILURE_EXIT, True, id="posix"),
+    ],
+)
+def test_an_einval_with_an_unwritable_summary_reports_the_write_status_not_the_render_one(
+    guard_rig, tmp_path, monkeypatch, capsys,
+    einval_is_a_lost_reader, expected, reports_a_render_failure,
+):
+    """W14: the EARNED-4 cell of the same rule, which the two nodes above do not reach.
+
+    The pair above runs a rig that earns 0, so it measures "a gone reader does not INVENT
+    a number". This is the other half of RB-P24's ordering: a run that earned 4 because
+    its `--summary` could not be written, whose stdout then dies with the WINDOWS spelling
+    of a gone reader. 4 must survive, and no render failure may be reported alongside it —
+    a gone reader downgrades, it does not raise a report.
+
+    THIS IS THE CELL CI RUN 32555258828 READ, and reading it wrongly is what put W14 on
+    the board. `test_closed_pipe_unwritable_summary_still_exits_four` and
+    `test_an_unwritable_summary_does_not_promise_a_table_that_went_nowhere` both failed on
+    windows-latest 3.11 and 3.12 with `assert 5 == 4`, and both failure lines carried
+    `[WinError 183] Cannot create a file when that file already exists`. That string was
+    read as the defect and it is not: it is the CHILD'S STDERR, quoted into pytest's output
+    because `err` is the assertion's message. `_unwritable` WORKS on Windows — WinError 183
+    is the OSError it exists to provoke, the refusal path caught it, and the runtime's own
+    "could not be written" sentence is in that same quoted stderr. What was broken was one
+    layer down: the closed pipe arrived as `OSError(EINVAL)` rather than `BrokenPipeError`,
+    the RB-P31 arm ran, and 5 outranked the 4 the run had earned.
+
+    So those two nodes were already asserting the right thing — the STATUS the runtime
+    chose, never the sentence the OS wrote underneath it — and nothing about them needed
+    changing. What they could not do is go red off Windows, which left the fix that closes
+    them measured nowhere a developer can run. This node is that measurement: both
+    directions, on any runner, from `main` end to end.
+
+    SIMULATED, and the label is the point (W13's words, and the same limit applies): the
+    switch is forced, because this runner cannot produce the errno the way a Windows pipe
+    does. What stays unmeasured here is that a real Windows pipe produces EINVAL at all;
+    only windows-latest can say that, and CI run 32555258828 is where it said it.
+    """
+    monkeypatch.setattr(criticreplay, "OpenAICompatible", lambda **kw: ScriptedCritic(lambda p: 9))
+    monkeypatch.setattr(criticreplay, "_EINVAL_MEANS_LOST_READER", einval_is_a_lost_reader)
+    monkeypatch.setattr(sys, "stdout", _RaisingStdout(OSError(errno.EINVAL, "Invalid argument")))
+    rows_path = tmp_path / "einval-rows.jsonl"
+    argv = _cli(
+        guard_rig, "--json", str(rows_path), "--summary", str(_unwritable(tmp_path))
+    )[2:]
+
+    with pytest.raises(SystemExit) as exc:
+        criticreplay.main(argv)
+
+    err = capsys.readouterr().err
+    assert exc.value.code == expected, err
+    assert "could not be written" in err  # the 4 is reported, whichever way the switch went
+    assert ("could not be rendered" in err) is reports_a_render_failure, err
+    assert len(rows_path.read_text(encoding="utf-8").splitlines()) > 0  # it MEASURED
+
+
 def test_the_unforced_switch_follows_this_runners_platform(rig, monkeypatch, capsys):
     """The only node that reads `_EINVAL_MEANS_LOST_READER` WITHOUT setting it first.
 
