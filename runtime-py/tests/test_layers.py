@@ -331,43 +331,141 @@ def test_document_manifest_omission_bytes():
     assert got == GOLDEN_DOCUMENT_MANIFEST_OMISSIONS
 
 
-# J25-D3. The two page-level omissions the PDF reader produces. The entry below is the shape
-# `docread.extract_pdf` builds for a page that rendered nothing: `unread-page` carries the
-# image count in `count` and the SHOW-OPERATOR count in `what`, both machine facts, and this
-# layer is where they become a sentence a model can act on.
+# J25-D3, corrected 2026-08-22. The two page-level omissions the PDF reader produces. The
+# entries below are the shape `docread.extract_pdf` builds for a page that rendered nothing:
+# `count` is 1 because it is ONE page, and the four machine facts that say WHY travel in
+# `facts` under their own names. They used to travel in `count` (the images) and `what` (the
+# operators), and the first reader to consult one read `count` as a page count and published a
+# coverage figure that was wrong — which is the argument for the named form and the reason it
+# is written down here.
+#
+# FOUR cases, not three. `docread._pdf_refusal` has chosen between four since J25-D3; the
+# page-grain sentence chose between three, so a page whose every character MAPPED and is
+# whitespace was rendered by the branch that blames the reader. MEASURED 2026-08-21 over the
+# user's 29 readable PDFs: 10 pages rendered no row, 3 no-operator and 7 mapped-and-whitespace.
+UNREAD_PAGE_ENTRY = {
+    "document": "scan.pdf",
+    "kind": "pdf",
+    "index": 4,
+    "part": "page 5",
+    "row_count": 0,
+    "rows": [],
+}
 GOLDEN_DOCUMENT_MANIFEST_PDF_PAGE = (
     'scan.pdf (pdf) part 4 "page 5": 0 rows, numbered 0 to -1\n'
     "  812 character(s) shown on this part are NOT in those rows: their codes came from "
     "font(s) with no /ToUnicode map (ABCDEF+Loma), so the file stores indices into a font's "
     "own glyphs and says nowhere which character each glyph draws \u2014 this reader drops "
     "them rather than guess, because a guess here is indistinguishable from content\n"
-    "  this part rendered NO row: the page ran 46 text-showing operator(s) and draws 3 "
-    "image(s), 91234 bytes, that no row can carry \u2014 no row means this reader recovered "
-    "no text from the page, which is NOT the same as the page being empty, and there is no "
-    "OCR here"
+    "  this part rendered NO row: the page ran 46 text-showing operator(s) and every one of "
+    "the 812 character(s) they showed came through a font that declares no character map, so "
+    "this reader dropped them rather than guess at them. It draws 3 image(s), 91234 bytes, "
+    "that no row can carry \u2014 no row means this reader recovered no text from the page, "
+    "which is NOT the same as the page being empty, and there is no OCR here"
 )
 
 
 def test_document_manifest_pdf_page_omission_bytes():
-    entry = {
-        "document": "scan.pdf",
-        "kind": "pdf",
-        "index": 4,
-        "part": "page 5",
-        "row_count": 0,
-        "rows": [],
-        "omissions": [
+    entry = dict(
+        UNREAD_PAGE_ENTRY,
+        omissions=[
             {
                 "subject": "unmapped-text",
                 "count": 812,
                 "size": 0,
                 "where": [],
                 "what": "ABCDEF+Loma",
+                "facts": {},
             },
-            {"subject": "unread-page", "count": 3, "size": 91234, "where": [], "what": "46"},
+            {
+                "subject": "unread-page",
+                "count": 1,
+                "size": 0,
+                "where": [],
+                "what": "show_ops=46 vouched=0 unmapped=812 images=3 image_bytes=91234",
+                "facts": {
+                    "show_ops": 46,
+                    "vouched": 0,
+                    "unmapped": 812,
+                    "images": 3,
+                    "image_bytes": 91234,
+                },
+            },
         ],
-    }
+    )
     assert document_manifest([entry]) == GOLDEN_DOCUMENT_MANIFEST_PDF_PAGE
+
+
+def _unread_page_entry(**facts):
+    what = " ".join(f"{name}={value}" for name, value in facts.items())
+    return dict(
+        UNREAD_PAGE_ENTRY,
+        omissions=[
+            {
+                "subject": "unread-page",
+                "count": 1,
+                "size": 0,
+                "where": [],
+                "what": what,
+                "facts": dict(facts),
+            }
+        ],
+    )
+
+
+GOLDEN_UNREAD_PAGE_NO_OPERATOR = (
+    'scan.pdf (pdf) part 4 "page 5": 0 rows, numbered 0 to -1\n'
+    "  this part rendered NO row: the page ran no text-showing operator at all, so nothing "
+    "on it was ever text. It draws 3 image(s), 91234 bytes, that no row can carry \u2014 no "
+    "row means this reader recovered no text from the page, which is NOT the same as the "
+    "page being empty, and there is no OCR here"
+)
+
+
+def test_document_manifest_pdf_page_no_text_operator_bytes():
+    """Case 1 of 4: a scan. Nothing on the page was ever text."""
+    entry = _unread_page_entry(
+        show_ops=0, vouched=0, unmapped=0, images=3, image_bytes=91234
+    )
+    assert document_manifest([entry]) == GOLDEN_UNREAD_PAGE_NO_OPERATOR
+
+
+GOLDEN_UNREAD_PAGE_WHITESPACE = (
+    'scan.pdf (pdf) part 4 "page 5": 0 rows, numbered 0 to -1\n'
+    "  this part rendered NO row: the page ran 15 text-showing operator(s) and this reader "
+    "mapped every one of the 15 character(s) they showed, and every one of those characters "
+    "is WHITESPACE \u2014 the text was recovered and it carries nothing, which is a fact "
+    "about the page and not a failure of this reader. It draws 0 image(s), 0 bytes, that no "
+    "row can carry \u2014 no row means this reader recovered no text from the page, which is "
+    "NOT the same as the page being empty, and there is no OCR here"
+)
+
+
+def test_document_manifest_pdf_page_whitespace_only_bytes():
+    """Case 3 of 4, and the one this sentence was missing. The numbers are a real page of the
+    user's corpus: fifteen operators, every character mapped, no image to blame. Under the
+    three-case sentence it rendered as the reader's fault; it is the page's property."""
+    entry = _unread_page_entry(
+        show_ops=15, vouched=15, unmapped=0, images=0, image_bytes=0
+    )
+    assert document_manifest([entry]) == GOLDEN_UNREAD_PAGE_WHITESPACE
+
+
+GOLDEN_UNREAD_PAGE_NO_CHARACTER = (
+    'scan.pdf (pdf) part 4 "page 5": 0 rows, numbered 0 to -1\n'
+    "  this part rendered NO row: the page ran 2 text-showing operator(s) that put no "
+    "character on the page at all, neither one this reader could map nor one it had to drop. "
+    "It draws 0 image(s), 0 bytes, that no row can carry \u2014 no row means this reader "
+    "recovered no text from the page, which is NOT the same as the page being empty, and "
+    "there is no OCR here"
+)
+
+
+def test_document_manifest_pdf_page_no_character_at_all_bytes():
+    """Case 4 of 4: the residual. It is the branch the whitespace case used to land in, and
+    keeping it separate is what stops the new sentence from claiming more than it knows."""
+    entry = _unread_page_entry(show_ops=2, vouched=0, unmapped=0, images=0, image_bytes=0)
+    assert document_manifest([entry]) == GOLDEN_UNREAD_PAGE_NO_CHARACTER
 
 
 def test_document_manifest_prints_a_subject_it_has_no_template_for():
