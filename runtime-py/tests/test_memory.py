@@ -322,7 +322,7 @@ def test_the_index_file_on_disk_tracks_the_facts(tmp_path, op):
         store.index_budget = 100_000
         store.restore("gone-fact")
 
-    on_disk = (store.root / "index.md").read_text()
+    on_disk = (store.root / "index.md").read_text(encoding="utf-8")
     assert on_disk == store.index_text()
     assert "kept-fact" in on_disk
     assert ("gone-fact" in on_disk) is (op != "compact")
@@ -333,7 +333,9 @@ def test_restore_of_an_unknown_or_live_name_is_a_validation_error(tmp_path):
     store.save("project", "live-fact", "a subject in use", "b")
     with pytest.raises(MemoryValidationError, match="no archived fact"):
         store.restore("never-existed")
-    (store.root / "archive" / "live-fact.md").write_text("---\nname: live-fact\n---\n\nb\n")
+    (store.root / "archive" / "live-fact.md").write_text(
+        "---\nname: live-fact\n---\n\nb\n", encoding="utf-8"
+    )
     with pytest.raises(MemoryValidationError, match="already live"):
         store.restore("live-fact")
 
@@ -361,7 +363,7 @@ def test_a_fact_saved_before_created_existed_is_dated_by_its_file_not_evicted_fi
             f"---\nname: {name}\ndescription: {_describe(name)}\n"
             f"type: project\nlast_recalled: null\nlinks: []\n---\n\nbody\n"
         )
-        (store.root / "facts" / f"{name}.md").write_text(legacy)
+        (store.root / "facts" / f"{name}.md").write_text(legacy, encoding="utf-8")
         assert "created" not in legacy
     old = time.mktime(datetime(2025, 3, 4).timetuple())
     os.utime(store.root / "facts" / f"{stale_name}.md", (old, old))
@@ -378,14 +380,15 @@ def test_created_is_persisted_on_the_next_write_of_a_legacy_fact(tmp_path):
     store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-21")
     (store.root / "facts" / "legacy-fact.md").write_text(
         "---\nname: legacy-fact\ndescription: an alpha subject\n"
-        "type: project\nlast_recalled: null\nlinks: []\n---\n\nbody\n"
+        "type: project\nlast_recalled: null\nlinks: []\n---\n\nbody\n",
+        encoding="utf-8",
     )
     old = time.mktime(datetime(2025, 3, 4).timetuple())
     os.utime(store.root / "facts" / "legacy-fact.md", (old, old))
 
     store.recall("alpha subject")  # any write of the fact carries the derived date through
 
-    text = (store.root / "facts" / "legacy-fact.md").read_text()
+    text = (store.root / "facts" / "legacy-fact.md").read_text(encoding="utf-8")
     assert "created: '2025-03-04'" in text
     # and it survives an mtime the migration would now read differently
     os.utime(store.root / "facts" / "legacy-fact.md", None)
@@ -687,7 +690,9 @@ def test_lint_exit_code_flips_exactly_at_the_budget_not_near_it(tmp_path, capsys
 def test_lint_names_the_malformed_fact_rather_than_the_budget(tmp_path, capsys):
     store = MemoryStore(tmp_path / "mem")
     _fill(store, 1)
-    (store.root / "facts" / "broken.md").write_text("no frontmatter at all")
+    (store.root / "facts" / "broken.md").write_text(
+        "no frontmatter at all", encoding="utf-8"
+    )
     code, _, err = _run(["lint", "--store", str(store.root)], capsys)
     assert code == 1
     assert "budget" not in err.lower(), err
@@ -833,6 +838,7 @@ def test_the_entry_point_runs_as_a_real_subprocess(tmp_path):
         [sys.executable, "-m", "bantamkit.memory", "status", "--store", str(store.root)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env={**os.environ, "PYTHONPATH": str(src)},
     )
     assert proc.returncode == 0, proc.stderr
