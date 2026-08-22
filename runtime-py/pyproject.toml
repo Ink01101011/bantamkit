@@ -68,7 +68,38 @@ xfail_strict = true
 # flag, parsed before pytest exists, not a pytest flag. So the emitting half lives in the
 # environment (`env: PYTHONWARNDEFAULTENCODING` in .github/workflows/ci.yml) and
 # `tests/test_encoding_gate.py` is what stops that env line from being deleted silently.
-filterwarnings = ["error::EncodingWarning"]
+# W14, 2026-08-22. THE SECOND FAILING HALF, and unlike W1's it needs no second file.
+#
+# WHAT IT CATCHES. On Windows `subprocess` decodes a captured stream inside a DAEMON
+# READER THREAD (`_readerthread`, subprocess.py:1599, `buffer.append(fh.read())`). A
+# `UnicodeDecodeError` there dies WITH THE THREAD: the `join()` returns normally, the
+# buffer is left empty, and `communicate()` hands back `stdout=None` beside an intact
+# `returncode` and an intact `stderr`. pytest notices -- `threadexception.py` turns it
+# into `PytestUnhandledThreadExceptionWarning` -- and then files it in the warnings
+# summary, where a node that never touches the lost stream STAYS GREEN.
+#
+# MEASURED, CI run 32555258828, windows-latest 3.11 and 3.12, 6 dead reader threads per
+# job on 6 nodes. Five of the six failed downstream and were legible from the failure
+# list (four `AttributeError: 'NoneType' object has no attribute 'splitlines'`, one
+# `TypeError: data must be str, not NoneType`). The sixth,
+# `test_amendguard.py::test_a_pointer_fix_bundled_with_anything_else_is_pointer_not_isolated`,
+# REPORTED PASS: the dead thread belonged to its module-scoped fixture, whose rows come
+# from the `--out` file and not from the stdout that was lost, so every assertion in the
+# node held while a capture thread had died under it. That is the case this line exists
+# for -- a green node standing on a stream that never arrived.
+#
+# WHY HERE AND NOT ON THE `Test` LINE IN .github/workflows/ci.yml. W1's gate had to be
+# split across two files because its emitting half is `-X warn_default_encoding`, an
+# INTERPRETER flag that pytest's `addopts` cannot carry (it exits 4 on it). THAT
+# CONSTRAINT DOES NOT APPLY HERE: pytest's `threadexception` plugin emits this warning
+# unconditionally, with no flag, so there is no emitting half to place and only the
+# failing half exists. Putting it in the workflow instead would arm it in CI ONLY -- and
+# a developer reproducing a Windows failure locally would get the same silent green that
+# hid the sixth node for a whole job. One list, one behaviour, every machine.
+filterwarnings = [
+    "error::EncodingWarning",
+    "error::pytest.PytestUnhandledThreadExceptionWarning",
+]
 
 [tool.ruff]
 line-length = 100
