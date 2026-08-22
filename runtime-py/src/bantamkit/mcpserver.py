@@ -16,7 +16,8 @@ from typing import Any
 
 import bantamkit
 from bantamkit import __version__, shiftwork
-from bantamkit.assets import AssetNotFound, assets_root, load_skill, load_tool
+from bantamkit.assets import AssetNotFound, assets_root, load_skill, load_tool_asset
+from bantamkit.client import BantamError
 from bantamkit.contract import schema_error, schema_retry_feedback
 from bantamkit.memory import DEFAULT_INDEX_BUDGET, Memory
 
@@ -247,7 +248,7 @@ def build_identity() -> dict[str, Any]:
 
 
 def _from_manifest(fn: Callable[..., Any], name: str) -> Any:
-    """Bind one handler to its manifest entry — name, description AND input schema.
+    """Bind one handler to its manifest entry — description, BOTH schemas, and the surface.
 
     The asset pack under `assets/tools/` is the tool contract for every runtime that
     serves this surface, so the schema has to arrive WITH the registration rather than be
@@ -264,10 +265,30 @@ def _from_manifest(fn: Callable[..., Any], name: str) -> Any:
     one step. `from_function` still derives `fn_metadata` from the signature, and that is
     what validates arguments at CALL time; the signatures mirror the manifest. Only what
     is ADVERTISED changes hands here, and it now has exactly one source.
+
+    `output_schema` goes through the same seam by a different route. It is not a field on
+    the SDK's `Tool`; it is a `cached_property` returning `fn_metadata.output_schema`, and
+    `MCPServer.list_tools` copies it straight onto the wire's `outputSchema`. Putting the
+    manifest's value in the instance dict is what a `cached_property` reads first, so the
+    override lands — and it lands on the ADVERTISEMENT ONLY, because the call path
+    (`FuncMetadata.convert_result`) consults `fn_metadata`, which is untouched. That is
+    the same division `parameters` already has: the manifest says what is promised, the
+    signature still says what is enforced.
+
+    The `surfaces` check is what makes that field load-bearing. `assets/tools/` serves the
+    eval agent too, and a manifest entry that does not claim `mcp` must not become a tool
+    on this server — otherwise the field is a comment, and a port that trusts it would
+    serve a different set of tools than this runtime does.
     """
-    asset = load_tool(name)
-    tool = SDKTool.from_function(fn, name=asset.name, description=asset.description)
-    return tool.model_copy(update={"parameters": asset.parameters})
+    asset = load_tool_asset(name)
+    if "mcp" not in asset["surfaces"]:
+        raise BantamError(
+            f"tool asset {name!r} does not claim the mcp surface: {asset['surfaces']}"
+        )
+    tool = SDKTool.from_function(fn, name=asset["name"], description=asset["description"])
+    return tool.model_copy(
+        update={"parameters": asset["parameters"], "output_schema": asset["output_schema"]}
+    )
 
 
 def build_server(memory: Memory) -> Any:

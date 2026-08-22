@@ -1,6 +1,9 @@
 {
   "name": "shiftwork_clock_in",
   "description": "Shift-work clock-in: schema-validate the checkpoint file and return the brief for the unit at plan.cursor — {unit, role, invariants, handoff, do_not, files} — to hand to the spawned agent verbatim. Structured refusals, never exceptions: result=escalate when handoff.open_questions is non-empty, result=success when every unit is done or dropped, result=error when the checkpoint fails validation.",
+  "surfaces": [
+    "mcp"
+  ],
   "parameters": {
     "properties": {
       "checkpoint": {
@@ -13,5 +16,10 @@
     ],
     "type": "object",
     "title": "shiftwork_clock_inArguments"
+  },
+  "output_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "title": "shiftwork_clock_inDictOutput"
   }
 }

@@ -18,16 +18,44 @@ SCORING_KINDS = {"json_equal", "contains", "tool_trace"}
 FAMILIES = {"structured-extraction", "tool-use", "memory-recall", "file-nav"}
 CORE_FAMILIES = {"structured-extraction", "tool-use", "memory-recall"}
 MEMORY_TYPES = {"user", "feedback", "project", "reference"}
+TOOL_SURFACES = {"agent", "mcp"}  # the eval agent's tool list, and `tools/list`
 
 
 def test_tool_assets_are_valid():
+    """The tool-asset shape, pinned at FIVE keys (it pinned three until 2026-08-23).
+
+    The contract grew because three keys could not express a registration. `surfaces`
+    says which of the two tool surfaces sharing this directory a tool belongs to — ten
+    files serve two surfaces, and without it a runtime that reads the directory serves
+    all ten. `output_schema` says what the tool returns — every MCP tool advertises one
+    over the wire, so a manifest without it describes a surface the server does not have.
+
+    The assertion is EXACT (`==`, not `>=`) for the same reason it always was: a manifest
+    an implementer cannot read to completion is not a manifest, and an unannounced key is
+    a contract change that no port would learn about until it diverged.
+    """
     tool_files = sorted((assets_root() / "tools").glob("*.json"))
     assert {f.stem for f in tool_files} >= {"memory_save", "memory_recall"}
     for f in tool_files:
         data = json.loads(f.read_text(encoding="utf-8"))
-        assert set(data) == {"name", "description", "parameters"}
+        assert set(data) == {"name", "description", "surfaces", "parameters", "output_schema"}
         assert data["name"] == f.stem
         jsonschema.Draft202012Validator.check_schema(data["parameters"])
+
+        surfaces = data["surfaces"]
+        assert surfaces, f.stem
+        assert set(surfaces) <= TOOL_SURFACES, (f.stem, surfaces)
+        assert surfaces == sorted(set(surfaces)), (f.stem, surfaces)
+
+        # Only the MCP surface has an output schema to state. An agent-side tool is
+        # handed to a model as name/description/parameters and advertises no return
+        # shape, so `null` is the honest entry — and a REQUIRED one, because an absent
+        # key and a deliberate "there is none" must not read the same to a port.
+        if "mcp" in surfaces:
+            assert data["output_schema"] is not None, f.stem
+            jsonschema.Draft202012Validator.check_schema(data["output_schema"])
+        else:
+            assert data["output_schema"] is None, f.stem
 
 
 def test_rubric_assets_are_valid():

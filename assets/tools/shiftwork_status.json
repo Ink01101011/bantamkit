@@ -1,6 +1,9 @@
 {
   "name": "shiftwork_status",
   "description": "Shift-work status: read-only progress summary of a checkpoint — units by status, cursor, open-question count, last history entry. Never mutates.",
+  "surfaces": [
+    "mcp"
+  ],
   "parameters": {
     "properties": {
       "checkpoint": {
@@ -13,5 +16,10 @@
     ],
     "type": "object",
     "title": "shiftwork_statusArguments"
+  },
+  "output_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "title": "shiftwork_statusDictOutput"
   }
 }

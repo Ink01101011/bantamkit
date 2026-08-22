@@ -1,15 +1,61 @@
 {
   "name": "memory_save",
   "description": "Save ONE durable fact to persistent memory. Use only for facts needed in a future session; never for things derivable from the repo or one-off state.",
+  "surfaces": [
+    "agent",
+    "mcp"
+  ],
   "parameters": {
     "type": "object",
-    "required": ["type", "name", "description", "body"],
+    "required": [
+      "type",
+      "name",
+      "description",
+      "body"
+    ],
     "properties": {
-      "type": {"type": "string", "enum": ["user", "feedback", "project", "reference"]},
-      "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$", "description": "short-kebab-case slug"},
-      "description": {"type": "string", "description": "One line written to match the FUTURE recall query, not to summarize the body"},
-      "body": {"type": "string", "description": "The fact itself, terse"},
-      "links": {"type": "array", "items": {"type": "string"}, "description": "names of related memories"}
+      "type": {
+        "type": "string",
+        "enum": [
+          "user",
+          "feedback",
+          "project",
+          "reference"
+        ]
+      },
+      "name": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9-]*$",
+        "description": "short-kebab-case slug"
+      },
+      "description": {
+        "type": "string",
+        "description": "One line written to match the FUTURE recall query, not to summarize the body"
+      },
+      "body": {
+        "type": "string",
+        "description": "The fact itself, terse"
+      },
+      "links": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "names of related memories"
+      }
     }
+  },
+  "output_schema": {
+    "properties": {
+      "result": {
+        "title": "Result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "result"
+    ],
+    "type": "object",
+    "title": "memory_saveOutput"
   }
 }
