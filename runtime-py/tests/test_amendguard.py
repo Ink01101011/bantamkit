@@ -90,21 +90,89 @@ def _git(repo: Path, *args: str) -> None:
     assert r.returncode == 0, "git " + " ".join(args) + " -> " + r.stderr
 
 
+def _checker_env(**extra: str) -> dict[str, str]:
+    """This process's environment with the CHILD's stdout/stderr codec pinned to UTF-8.
+
+    THE PIN, AND WHY IT IS ON THE WRITER (job 31, W15; the same ruling W12 wrote into
+    `test_criticreplay._child_env`). Every call below reads the checker's stdout back as
+    UTF-8. What ENCODES those bytes is the child's own `TextIOWrapper`, and absent
+    `PYTHONIOENCODING` CPython builds it from the RUNNER'S LOCALE -- cp1252 on
+    windows-latest, UTF-8 here. `render` puts U+2014 on its first output line
+    (`# amendguard \u2014 the record-vs-pointer rule over ...`) and U+00A7 in the pointer
+    classes, so on windows-latest the child wrote `\x97`/`\xa7` and the read-back could
+    not decode them. Pinning it HERE fixes the writer, which is the only place it can be
+    fixed without lying: an `errors=` or a fallback codec on the reader would restore the
+    accidental round-trip and leave the bytes a function of the runner's locale.
+
+    NOT PINNED IN `amendguard.py` ITSELF. The codec of fd 1 belongs to the CALLER of a
+    field program, not to the program; a `sys.stdout.reconfigure` in `main` would take a
+    decision away from whoever runs it. The one artifact the checker OWNS -- the `--out`
+    file -- already names `encoding="utf-8"` at its own `write_text`.
+
+    WHAT IS NOT SCRUBBED. `PYTEST_*` stays, because it already did: this helper is the
+    first `env=` these calls have ever had, and removing keys the child used to inherit
+    would be a change to what the checker sees, not a portability fix. RB-P28's
+    "the child can tell it is observed" exposure is unchanged here, neither opened nor
+    closed.
+    """
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"  # the child's WRITER, not our reader; see above
+    env.update(extra)
+    return env
+
+
+def _captured(stream: str | None, which: str, r: subprocess.CompletedProcess) -> str:
+    """`stream`, or a failure that names the stream, the status, and the likely codec.
+
+    MEASURED, NOT IMAGINED (CI run 32555258828, windows-latest 3.12 and 3.11). When the
+    decode of a captured stream fails, `subprocess` reports it differently on the two
+    platforms and only one of them says anything:
+
+      * POSIX decodes on the CALLING thread, in `communicate` -> `_translate_newlines`
+        (`subprocess.py:2153`), and raises `UnicodeDecodeError`.
+      * Windows decodes inside a DAEMON READER THREAD -- `_readerthread`, `subprocess.py`
+        line 1599, `buffer.append(fh.read())`. The exception dies with the thread, the
+        `join()` below it returns normally, the buffer is left EMPTY, and the last line of
+        `_communicate` reads `stdout = stdout[0] if stdout else None`. So the caller gets
+        `stdout=None` beside an intact `returncode` and an intact `stderr=''`, which reads
+        exactly like a child that exited non-zero and said nothing.
+
+    That is what 24 node reports in that run actually were, and what they SAID was
+    `AttributeError: 'NoneType' object has no attribute 'splitlines'` -- a message naming
+    neither the child, nor its status, nor a codec. The status is the part worth keeping:
+    `1` and `3` are the checker's own verdict codes for RED and UNMEASURED, so the child
+    was never broken and the whole round spent on the child was spent on the wrong half.
+
+    WHAT THIS DOES NOT DO. It does not recover the bytes and it does not turn the run
+    green. By the time it is called the stream is gone. The repair is upstream, in
+    `_checker_env`, on the writer.
+    """
+    if stream is None:
+        raise AssertionError(
+            which + " came back None from a child that exited " + str(r.returncode)
+            + ": the capture thread died decoding it, which on Windows is silent. The"
+            + " usual cause is a child writing its locale's bytes where this reader"
+            + " expects UTF-8. args=" + repr(r.args)
+        )
+    return stream
+
+
 def _run(repo: Path, rev_range: str, ledger: Path, *extra: str):
     r = subprocess.run(
         [sys.executable, str(CHECKER), "check", str(repo), rev_range, str(ledger), *extra],
         capture_output=True,
         text=True,
-        check=False, encoding="utf-8",
+        check=False, encoding="utf-8", env=_checker_env(),
     )
+    out = _captured(r.stdout, "the checker's stdout", r)
     rows = {}
-    for line in r.stdout.splitlines():
+    for line in out.splitlines():
         if not line.startswith("VERDICT "):
             continue
         fields = dict(part.split("=", 1) for part in line.split(" ")[1:])
         rows[(fields["commit"], fields["path"])] = fields
     summary = {}
-    for line in r.stdout.splitlines():
+    for line in out.splitlines():
         if line.startswith("SUMMARY "):
             summary = dict(part.split("=", 1) for part in line.split(" ")[1:])
     return r, rows, summary
@@ -447,3 +515,57 @@ def test_a_red_verdict_makes_the_run_exit_non_zero(tmp_path):
     repo, ledger, _head = _mini(tmp_path, "# Doc\n\nA number: 1.\n", "# Doc\n\nA number: 2.\n")
     r, _rows, _s = _run(repo, "HEAD", ledger)
     assert r.returncode == 1
+
+
+# ---------------------------------------------------------------------------------------
+# THE CAPTURE ITSELF (job 31, W15). Neither node below is about the record-vs-pointer
+# rule; both are about the pipe the rule's verdicts come back through.
+# ---------------------------------------------------------------------------------------
+def test_the_checker_child_writes_utf8_bytes_whatever_codec_the_environment_names(
+    tmp_path, monkeypatch
+):
+    """The bytes on the checker's stdout are the checker's, not the runner's locale's.
+
+    RED ON ANY RUNNER, and that is the point of the `monkeypatch` line: this process's
+    environment names `cp1252` first, so a `_checker_env` that stopped pinning would hand
+    the child cp1252 and the em dash at position 13 of the first output line would land as
+    the single byte `\x97`. The read here is BINARY on purpose -- the claim is about the
+    bytes, not about whether some decoder was willing to accept them.
+
+    WHAT IT DOES NOT MEASURE. Not the Windows PRESENTATION of the same defect -- a capture
+    thread that dies and leaves `stdout=None`. That is unreachable from POSIX, where the
+    decode runs on the calling thread and raises instead; it was measured on
+    windows-latest in CI run 32555258828 and is not measured here.
+    """
+    monkeypatch.setenv("PYTHONIOENCODING", "cp1252")
+    repo, ledger, _head = _mini(tmp_path, "# Doc\n\nA number: 1.\n", "# Doc\n\nA number: 2.\n")
+    raw = subprocess.run(
+        [sys.executable, str(CHECKER), "check", str(repo), "HEAD", str(ledger)],
+        capture_output=True, check=False, env=_checker_env(),
+    )
+    assert raw.stdout[:20] == b"# amendguard \xe2\x80\x94 the", raw.stdout[:40]
+    assert raw.stdout.decode("utf-8").startswith("# amendguard \u2014 the")
+
+
+def test_a_capture_that_lost_a_stream_names_the_status_that_produced_it():
+    """`None` is not an empty stream, and the failure has to say which one it was.
+
+    The input is a hand-built `CompletedProcess` carrying the exact triple windows-latest
+    handed back -- `returncode=1`, `stdout=None`, `stderr=''` -- because that triple is
+    not constructible on this platform: POSIX raises at the decode instead of returning
+    it. The last assertion is the one that keeps `_captured` from being written as
+    `if not stream`, which would turn every legitimately empty stream into this failure.
+
+    WHAT IT DOES NOT MEASURE. That the guard ever fires in a real run. It is unreachable
+    from POSIX by construction, so this node measures the guard's TEXT and its treatment
+    of an empty stream, and nothing about the platform that produces the `None`.
+    """
+    lost = subprocess.CompletedProcess(
+        args=[sys.executable, str(CHECKER), "check"], returncode=1, stdout=None, stderr=""
+    )
+    with pytest.raises(AssertionError) as caught:
+        _captured(lost.stdout, "the checker's stdout", lost)
+    message = str(caught.value)
+    assert "the checker's stdout" in message
+    assert "exited 1" in message
+    assert _captured("", "the checker's stdout", lost) == ""
