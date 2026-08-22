@@ -17,6 +17,7 @@ anchor still applies — lives in `test_pinharness_ledger.py`.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -25,6 +26,25 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BUILD_TASKS = REPO_ROOT / "tools" / "devteam" / "build_tasks.py"
+
+
+def _utf8_env() -> dict:
+    """Pin the CHILD's stdout codec, because otherwise Windows picks it and we lose the pipe.
+
+    Every program driven from here prints em dashes. On Windows a child's stdout is
+    encoded with the LOCALE (cp1252), the parent reads it back as utf-8, and the decode
+    raises inside `subprocess`'s DAEMON READER THREAD — where the exception dies with the
+    thread, `join()` returns normally, and `communicate()` hands back `stdout=None` beside
+    an intact `returncode`. The caller then fails with `AttributeError: 'NoneType'`, which
+    names nothing.
+
+    This is the same defect `RB-P103`'s neighbours fixed for `_child_env` and
+    `_checker_env`, reproduced by new code the same afternoon, and it was caught by the
+    `PytestUnhandledThreadExceptionWarning` gate rather than by anyone noticing.
+    """
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
 
 
 def test_the_devteam_tasks_on_disk_still_match_their_manifest():
@@ -38,7 +58,8 @@ def test_the_devteam_tasks_on_disk_still_match_their_manifest():
         pytest.fail(f"{BUILD_TASKS} is gone; the devteam tasks are generated from a manifest")
     done = subprocess.run(
         [sys.executable, str(BUILD_TASKS), "check"],
-        cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8", check=False,
+        cwd=REPO_ROOT, capture_output=True, text=True,
+        encoding="utf-8", check=False, env=_utf8_env(),
     )
     assert done.returncode == 0, (
         "assets/evals/devteam/tasks/*.yaml have drifted from manifest.yaml + repo/.\n"

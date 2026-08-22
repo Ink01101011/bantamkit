@@ -15,12 +15,32 @@ the repository this file lives in.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUNNER = REPO_ROOT / "tools" / "mutmatrix" / "mutmatrix.py"
+
+
+def _utf8_env() -> dict:
+    """Pin the CHILD's stdout codec, because otherwise Windows picks it and we lose the pipe.
+
+    Every program driven from here prints em dashes. On Windows a child's stdout is
+    encoded with the LOCALE (cp1252), the parent reads it back as utf-8, and the decode
+    raises inside `subprocess`'s DAEMON READER THREAD — where the exception dies with the
+    thread, `join()` returns normally, and `communicate()` hands back `stdout=None` beside
+    an intact `returncode`. The caller then fails with `AttributeError: 'NoneType'`, which
+    names nothing.
+
+    This is the same defect `RB-P103`'s neighbours fixed for `_child_env` and
+    `_checker_env`, reproduced by new code the same afternoon, and it was caught by the
+    `PytestUnhandledThreadExceptionWarning` gate rather than by anyone noticing.
+    """
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -55,7 +75,7 @@ def _run(repo: Path, spec: Path, *extra: str):
     return subprocess.run(
         [sys.executable, str(RUNNER), "run", str(spec), "--repo", str(repo),
          "--python", sys.executable, *extra],
-        capture_output=True, text=True, encoding="utf-8", check=False,
+        capture_output=True, text=True, encoding="utf-8", check=False, env=_utf8_env(),
     )
 
 
@@ -93,7 +113,7 @@ def test_the_tree_is_restored_after_every_row(tmp_path):
     assert (repo / "subject.py").read_text(encoding="utf-8") == SUBJECT
     porcelain = subprocess.run(
         ["git", "status", "--porcelain"], cwd=repo,
-        capture_output=True, text=True, encoding="utf-8", check=False,
+        capture_output=True, text=True, encoding="utf-8", check=False, env=_utf8_env(),
     ).stdout
     assert not [x for x in porcelain.splitlines() if not x.startswith("??")]
 
@@ -165,7 +185,7 @@ def test_an_empty_selection_is_refused_rather_than_reported_as_100_percent(tmp_p
     assert done.returncode == 0
     empty = subprocess.run(
         [sys.executable, str(RUNNER), "run", str(spec), "--repo", str(repo), "--only", "NOPE"],
-        capture_output=True, text=True, encoding="utf-8", check=False,
+        capture_output=True, text=True, encoding="utf-8", check=False, env=_utf8_env(),
     )
     assert empty.returncode == 2
     assert "no such mutation" in empty.stderr
@@ -178,7 +198,7 @@ def test_check_validates_anchors_without_running_pytest(tmp_path):
                          "replacement": "n * 3", "why": "x"}])
     done = subprocess.run(
         [sys.executable, str(RUNNER), "check", str(spec), "--repo", str(repo)],
-        capture_output=True, text=True, encoding="utf-8", check=False,
+        capture_output=True, text=True, encoding="utf-8", check=False, env=_utf8_env(),
     )
     assert done.returncode == 0
     assert "each match exactly once" in done.stdout

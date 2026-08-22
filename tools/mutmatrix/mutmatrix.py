@@ -114,6 +114,10 @@ def _pytest(repo: Path, args: list[str], env_python: str) -> tuple[str, list[str
     cache = tempfile.mkdtemp(prefix="mutmatrix-pyc-")
     env = dict(os.environ)
     env["PYTHONPYCACHEPREFIX"] = cache
+    # Pin the child pytest's stdout codec: on Windows the locale codec would encode this
+    # module's own em dashes as cp1252, the decode below would raise inside subprocess's
+    # daemon reader thread, and communicate() would hand back stdout=None.
+    env["PYTHONIOENCODING"] = "utf-8"
     try:
         done = subprocess.run(
             [env_python, "-m", "pytest", *args], cwd=repo, env=env,
