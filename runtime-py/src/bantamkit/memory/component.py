@@ -11,7 +11,9 @@ from bantamkit.assets import load_skill, load_tool
 from bantamkit.client import BantamError
 from bantamkit.memory.layers import (
     MEMORY_DIR_ENV,
+    PROJECT_STORE,
     StoreBinding,
+    count_facts,
     load_grants,
     resolve_project_store,
 )
@@ -36,6 +38,16 @@ def normalize_name(name: str) -> str:
     if not isinstance(name, str):
         return name
     return name.strip().lower().replace("_", "-").replace(" ", "-")
+
+
+def _profile_store() -> Path:
+    """The last layer `layered` appends, named once so other code can recognise it.
+
+    It was spelled inline in `layered` and nowhere else, which is how it came to be
+    prescribed as a place to start a project store: nothing that wrote the advice
+    could see that the directory it was recommending is also the machine-wide layer.
+    """
+    return Path.home() / ".bantamkit" / "memory"
 
 
 def _layer_label(root: Path) -> str:
@@ -86,8 +98,7 @@ class Memory:
             mem._layers.append(
                 (f"extra:{_layer_label(grant)}", MemoryStore(grant, k=k, create=False), False)
             )
-        profile = Path.home() / ".bantamkit" / "memory"
-        mem._layers.append(("profile", MemoryStore(profile, k=k, create=False), False))
+        mem._layers.append(("profile", MemoryStore(_profile_store(), k=k, create=False), False))
         return mem
 
     def setup(self, agent: Agent) -> None:
@@ -203,11 +214,19 @@ class Memory:
         on the binding, because `designated` (there was no store) stops being visible
         on disk the moment `MemoryStore` creates the directory.
         """
-        verdict = (
-            "no memories matched. Try different words, or proceed without."
-            if self._searchable_facts()
-            else "no memories to search: nothing is saved in any layer bound here."
-        )
+        if self._searchable_facts():
+            verdict = "no memories matched. Try different words, or proceed without."
+        elif unreadable := self._unreadable_layers():
+            # A layer nobody could open is not a layer that held nothing. Saying
+            # "nothing is saved" here is the same slander as calling an unreadable
+            # store empty, one call further out.
+            verdict = (
+                "no memories matched, and that is not evidence there are none: "
+                + ", ".join(str(root) for root in unreadable)
+                + " could not be read."
+            )
+        else:
+            verdict = "no memories to search: nothing is saved in any layer bound here."
         diagnosis = self._binding_diagnosis()
         return f"{verdict} {diagnosis}" if diagnosis else verdict
 
@@ -220,11 +239,21 @@ class Memory:
         return rather than that two counters disagree. A store that cannot be listed
         answers `None` and never 0: "I could not read it" and "it holds nothing" are
         the two answers this whole unit exists to keep apart.
+
+        Via `count_facts`, because the `glob` this used to call swallowed the
+        `OSError` and returned 0 — which made the `except` below unreachable dead
+        code and this paragraph a description of a branch that could not fire.
         """
         try:
-            return sum(1 for _ in (root / "facts").glob("*.md"))
+            return count_facts(root)
         except OSError:
             return None
+
+    def _unreadable_layers(self) -> list[Path]:
+        """Roots of the layers that could not be listed at all — never counted as 0."""
+        return [
+            store.root for _, store, _ in self._layers if self._fact_count(store.root) is None
+        ]
 
     def _searchable_facts(self) -> int:
         """Facts the layers actually consulted could have matched, counted live.
@@ -234,6 +263,34 @@ class Memory:
         was nothing to read.
         """
         return sum(n for _, store, _ in self._layers if (n := self._fact_count(store.root)))
+
+    @staticmethod
+    def _is_profile_store(root: Path) -> bool:
+        """Is this store also the machine-wide profile layer `layered` appends?
+
+        Resolved on both sides because the walk returns its store path unresolved
+        while `Path.home()` may itself be a symlink; a comparison that missed on a
+        symlink would put the harmful advice back exactly where it does damage.
+        """
+        try:
+            return Path(root).resolve() == _profile_store().resolve()
+        except (OSError, RuntimeError):
+            return False
+
+    def _walk_ascended(self) -> bool:
+        """Did the walk actually leave the directory it started in?
+
+        `origin == "walk"` says a walk ran, not that it climbed. A walk that
+        terminates at step zero has bound `searched_from`'s OWN store, and the
+        clause that reads well for an ancestor binding — "which has no store of its
+        own" — is then simply false about the commonest case there is: a project
+        whose store exists and is empty. That sentence is what sends an operator
+        hunting a binding bug that is not there.
+        """
+        binding = self._binding
+        if binding is None or binding.searched_from is None:
+            return False
+        return Path(binding.path) != Path(binding.searched_from) / PROJECT_STORE
 
     def _binding_diagnosis(self) -> str:
         """Why THIS store, when the project layer is the one that cannot answer.
@@ -256,16 +313,33 @@ class Memory:
             )
         elif binding.origin == "pin":
             where = f"The project store {root} is empty; {MEMORY_DIR_ENV} pinned it."
-        else:
+        elif self._walk_ascended():
             where = (
                 f"The project store {root} is empty; it was bound by walking up from "
                 f"{binding.searched_from}, which has no store of its own."
             )
-        return (
-            f"{where} That is a binding, not a search result — if your facts are in "
-            f"another store, set {MEMORY_DIR_ENV} to its absolute path and restart; "
-            f"otherwise save a memory to start this one."
+        else:
+            where = (
+                f"The project store {root} is empty; it is {binding.searched_from}'s own "
+                f"store, bound without the walk leaving that directory."
+            )
+        remedy = (
+            f"That is a binding, not a search result — if your facts are in another "
+            f"store, set {MEMORY_DIR_ENV} to its absolute path and restart"
         )
+        if self._is_profile_store(root):
+            # The store bound here IS the profile layer (`_profile_store`), which
+            # every project with no store of its own also binds. "Save a memory to
+            # start this one" would therefore start a store that answers for all of
+            # them -- measured end to end by
+            # `test_a_save_into_the_bound_store_answers_for_an_unrelated_project`.
+            return (
+                f"{where} {remedy}. Do NOT save here to start it: {root} is also the "
+                f"profile layer, so a memory saved there answers for every project on "
+                f"this machine that has no store of its own — give this project a store "
+                f"of its own instead."
+            )
+        return f"{where} {remedy}; otherwise save a memory to start this one."
 
     def compact(self, reserve: int | None = None) -> str:
         """Free index headroom by archiving the stalest facts, and say what it cost.

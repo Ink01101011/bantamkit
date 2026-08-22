@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import stat as stat_module
 from dataclasses import dataclass
@@ -97,10 +98,13 @@ def resolve_project_store(start: str | Path | None = None) -> StoreBinding:
     Counted the way the store itself reads facts (`facts/*.md`, see
     `MemoryStore._facts`), so a count of 0 here means recall has nothing to return,
     not that the counting rule differs from the reading rule. An unreadable
-    `facts/` raises rather than reporting "empty" — reporting a store you could not
-    read as a store with nothing in it is the exact conflation this exists to end,
-    and it matches `load_grants` above, where a grant that is wrong raises instead
-    of being silently dropped.
+    `facts/` raises `MemoryValidationError` rather than reporting "empty" —
+    reporting a store you could not read as a store with nothing in it is the exact
+    conflation this exists to end, and it matches `load_grants` above, where a
+    grant that is wrong raises instead of being silently dropped. That raise is
+    `count_facts`' doing and only `count_facts`' doing: this docstring claimed it
+    for a release while `Path.glob` was quietly swallowing the error (measured: a
+    store holding one fact at mode 0o000 came back `state="empty", fact_count=0`).
 
     A pin never yields "designated": `_pinned_store` has already established that
     the pinned directory is there, or raised saying it is not.
@@ -117,8 +121,38 @@ def resolve_project_store(start: str | Path | None = None) -> StoreBinding:
     return _count_into_binding(path, searched_from=base, origin="walk")
 
 
+def count_facts(root: str | Path) -> int:
+    """How many `facts/*.md` a store holds, counted so that unreadable is never zero.
+
+    `Path.glob` is unusable here, and that is the entire reason this function exists:
+    it suppresses the `OSError` raised by its own directory scan and yields nothing,
+    so `facts/` at mode 0o000 with a fact in it counts 0 — a store you could not read,
+    reported as a store with nothing in it. `os.scandir` raises, and each caller
+    decides what to do with the raise; nobody gets to be told "empty" by accident.
+
+    A `facts/` that is simply absent is 0 and not an error: nothing is stored there
+    and that much really is readable. The name filter mirrors `MemoryStore._facts`'
+    `glob("*.md")` exactly — dotfiles and directories included, as `glob` includes
+    them — because a count that disagrees with the read is the other half of the
+    same lie (`test_a_readable_store_is_still_counted_exactly_as_before`).
+    """
+    facts = Path(root) / "facts"
+    try:
+        with os.scandir(facts) as entries:
+            return sum(1 for entry in entries if fnmatch.fnmatch(entry.name, "*.md"))
+    except FileNotFoundError:
+        return 0
+
+
 def _count_into_binding(path: Path, searched_from: Path | None, origin: str) -> StoreBinding:
-    count = sum(1 for _ in (path / "facts").glob("*.md"))
+    try:
+        count = count_facts(path)
+    except OSError as e:
+        raise MemoryValidationError(
+            f"memory store is unreadable: {path / 'facts'}: {e.strerror}; a store that "
+            f"could not be listed is not a store with nothing in it, and answering "
+            f"'empty' here is the conflation this binding exists to end"
+        ) from e
     state = "populated" if count else "empty"
     return StoreBinding(
         path=path, state=state, fact_count=count, searched_from=searched_from, origin=origin

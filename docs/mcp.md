@@ -305,12 +305,24 @@ exist. The reply now names the situation:
 | State | How it arises | A recall with no hits replies |
 |---|---|---|
 | **populated** | the bound store holds facts | `no memories matched. Try different words, or proceed without.` |
-| **empty** | the bound store exists and holds nothing — the walk climbed past your project, or the pin points at a fresh store | `no memories to search: nothing is saved in any layer bound here.` then the store's path, whether it was **pinned** or **bound by walking up from** `<start>`, and the remedy |
+| **empty** | the bound store exists and holds nothing — the walk climbed past your project, the walk stopped in your project's own empty store, or the pin points at a fresh store | `no memories to search: nothing is saved in any layer bound here.` then the store's path, how it was bound (**pinned**, **bound by walking up from** `<start>` — only when the walk really climbed — or `<start>`'s **own** store), and the remedy |
 | **designated** | no `.bantamkit/memory` existed at or above `<start>`, so an empty one was created for this session | `no memories to search: …` then `No memory store existed at or above <start>, so the empty <path> was created for this session.` and the remedy |
 
 The remedy sentence is the same in the last two: *set `BANTAMKIT_MEMORY_DIR` to
 the absolute path of the store your facts are in and restart; otherwise save a
 memory to start this one.*
+
+With one exception, and it is the topology this whole section is about: when the
+store that got bound **is** `~/.bantamkit/memory`, that directory is also the
+**profile layer**, which every project with no store of its own binds as well. A
+memory saved there answers for all of them, so the reply drops the "start this
+one" advice and says to give the project a store of its own instead.
+
+A fourth reply exists for the case where a layer could not be opened at all
+(`facts/` unreadable): *no memories matched, and that is not evidence there are
+none: `<path>` could not be read.* An unreadable store is never reported as an
+empty one — `resolve_project_store` raises on it rather than answering
+`fact_count=0`.
 
 The first state is a fact about your **question**; the other two are facts about
 your **configuration**. The diagnosis is dropped the moment the project store

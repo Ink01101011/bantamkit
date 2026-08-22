@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -757,6 +758,9 @@ def test_a_populated_profile_layer_still_names_the_empty_project_binding(tmp_pat
     assert out.startswith("no memories matched.")
     assert str(project / ".bantamkit" / "memory") in out
     assert MEMORY_DIR_ENV in out
+    # This node was emitting the F2 sentence and asserting nothing about it: the
+    # walk here terminates at step zero, so `no store of its own` was false.
+    assert "which has no store of its own" not in out
 
 
 def test_a_caller_named_store_reports_no_walk_it_never_ran(tmp_path):
@@ -765,3 +769,112 @@ def test_a_caller_named_store_reports_no_walk_it_never_ran(tmp_path):
     assert str(tmp_path / "mem") in out
     assert "walking up from" not in out
     assert "No memory store existed" not in out
+
+
+# ---- N5: the three sentences the message was getting wrong ---------------------
+
+
+def test_a_project_whose_own_store_is_merely_empty_is_not_told_it_has_none(
+    tmp_path, fake_home
+):
+    """F2: the walk clause described an ascent that did not happen.
+
+    The walk terminates at step zero here -- the project's OWN `.bantamkit/memory`
+    is the store it binds -- and the message still said `which has no store of its
+    own`. That sentence sends an operator hunting a binding bug that is not there.
+    """
+    project = tmp_path / "companyA"
+    (project / ".bantamkit" / "memory" / "facts").mkdir(parents=True)
+
+    out = Memory.layered(start=project)._recall("deploy prod")
+
+    assert "which has no store of its own" not in out
+    assert "walking up from" not in out
+    assert str(project / ".bantamkit" / "memory") in out
+    assert MEMORY_DIR_ENV in out
+
+
+def test_a_walk_that_really_ascended_still_narrates_the_ascent(tmp_path, fake_home):
+    """The other half of F2: the clause is not deleted, it is made conditional."""
+    project, ancestor, _sibling = _trader_platform_shape(fake_home)
+
+    out = Memory.layered(start=project)._recall("deploy prod")
+
+    assert "walking up from" in out
+    assert "which has no store of its own" in out
+    assert str(project) in out and str(ancestor) in out
+
+
+def test_the_remedy_never_tells_you_to_seed_the_shared_profile_store(tmp_path, fake_home):
+    """F3: `save a memory to start this one` is harmful when `this one` is shared.
+
+    `Memory.layered` locates the profile layer at `~/.bantamkit/memory`, and the
+    project walk binds that SAME directory whenever a project has no store of its
+    own. Following the old advice there writes a fact that then answers for every
+    unrelated project on the machine.
+    """
+    project, ancestor, _sibling = _trader_platform_shape(fake_home)
+    assert ancestor == fake_home / ".bantamkit" / "memory", "the bound store IS the profile layer"
+
+    out = Memory.layered(start=project)._recall("deploy prod")
+
+    assert "save a memory to start this one" not in out
+    assert "profile layer" in out
+    assert "every project" in out
+
+
+def test_a_store_that_is_this_project_s_alone_still_says_to_start_it(tmp_path, fake_home):
+    """The advice is withdrawn only where it is harmful, never everywhere."""
+    project = tmp_path / "companyA"
+    (project / ".bantamkit" / "memory" / "facts").mkdir(parents=True)
+
+    out = Memory.layered(start=project)._recall("deploy prod")
+
+    assert "save a memory to start this one" in out
+    assert "profile layer" not in out
+
+
+def test_a_save_into_the_bound_store_answers_for_an_unrelated_project(tmp_path, fake_home):
+    """Why F3 is a defect and not a wording quibble: the leak, run rather than argued.
+
+    This is also the tripwire on the deeper defect N4 named and this job does not
+    fix -- the project walk and the profile layer can bind the SAME directory. The
+    day they cannot, this node fails, and the advice withdrawn above can come back.
+    """
+    project_a, ancestor, _sibling = _trader_platform_shape(fake_home)
+    project_b = fake_home / "Projects" / "unrelated"
+    project_b.mkdir(parents=True)
+
+    Memory.layered(start=project_a).save(
+        "project", "leaked-fact", "how we deploy to prod", "make ship-prod"
+    )
+
+    assert (ancestor / "facts" / "leaked-fact.md").exists(), "project A's save landed in $HOME"
+    assert "make ship-prod" in Memory.layered(start=project_b)._recall("deploy prod")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory permissions")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores mode bits")
+def test_a_layer_that_could_not_be_read_is_not_evidence_that_nothing_is_saved(
+    tmp_path, fake_home
+):
+    """F1 at the message: `_fact_count`'s `except OSError` was unreachable.
+
+    `Path.glob` swallowed the error, so an unreadable profile layer counted as zero
+    facts and the recall announced that nothing is saved in any layer bound here --
+    while a fact sat in the layer it could not open.
+    """
+    project = tmp_path / "companyA"
+    (project / ".bantamkit" / "memory" / "facts").mkdir(parents=True)
+    profile_facts = fake_home / ".bantamkit" / "memory" / "facts"
+    profile_facts.mkdir(parents=True)
+    (profile_facts / "a-fact.md").write_text("x", encoding="utf-8")
+    profile_facts.chmod(0o000)
+    try:
+        out = Memory.layered(start=project)._recall("deploy prod")
+    finally:
+        profile_facts.chmod(0o755)
+
+    assert "nothing is saved in any layer bound here" not in out
+    assert "could not be read" in out
+    assert str(profile_facts.parent) in out

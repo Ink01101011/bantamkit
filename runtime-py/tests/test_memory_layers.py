@@ -463,3 +463,102 @@ def test_an_unreadable_pin_is_loud_and_says_why(tmp_path, monkeypatch):
         parent.chmod(0o755)
     assert "ermission" in message
     assert str(store) in message
+
+
+# --- F1: an unreadable store is not an empty one ------------------------------
+#
+# `resolve_project_store`'s docstring has asserted this raise since the function
+# was written, and the raise never happened: `Path.glob` suppresses the OSError
+# from its directory scan and yields nothing, so a store holding a fact at mode
+# 0o000 came back `state="empty", fact_count=0`. The only `chmod(0o000)` in this
+# file before now locks a PIN's parent, which exercises `os.stat` -- the
+# unreadability that was handled. This is the one that was documented and not.
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory permissions")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores mode bits")
+def test_a_store_whose_facts_cannot_be_read_is_never_called_empty(tmp_path):
+    store = _mkstore(tmp_path / "companyA")
+    facts = store / "facts"
+    facts.mkdir()
+    (facts / "a-fact.md").write_text("x", encoding="utf-8")
+    facts.chmod(0o000)
+    try:
+        with pytest.raises(MemoryValidationError) as e:
+            resolve_project_store(tmp_path / "companyA")
+        message = str(e.value)
+    finally:
+        facts.chmod(0o755)
+    assert str(facts) in message
+    assert "ermission" in message
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory permissions")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores mode bits")
+def test_an_unreadable_pinned_store_is_loud_too(tmp_path, monkeypatch):
+    """A pin skips the walk, so it reaches the count by its own route."""
+    store = tmp_path / "pinned"
+    facts = store / "facts"
+    facts.mkdir(parents=True)
+    (facts / "a-fact.md").write_text("x", encoding="utf-8")
+    facts.chmod(0o000)
+    monkeypatch.setenv(MEMORY_DIR_ENV, str(store))
+    try:
+        with pytest.raises(MemoryValidationError):
+            resolve_project_store(tmp_path)
+    finally:
+        facts.chmod(0o755)
+
+
+def test_a_readable_store_is_still_counted_exactly_as_before(tmp_path):
+    """The raise must not be bought by changing what a countable store counts."""
+    store = _mkstore(tmp_path / "companyA")
+    facts = store / "facts"
+    facts.mkdir()
+    for name in ("real.md", ".hidden.md", "notes.txt"):
+        (facts / name).write_text("x", encoding="utf-8")
+    (facts / "dir.md").mkdir()
+
+    binding = resolve_project_store(tmp_path / "companyA")
+    assert binding.fact_count == len(list(facts.glob("*.md")))
+    assert binding.state == "populated"
+
+
+# --- F6: the guard in conftest, which had no node -----------------------------
+#
+# `conftest._no_ambient_memory_pin` deletes BANTAMKIT_MEMORY_DIR for every node in
+# the suite. Deleting its body left CI green, because CI has no ambient pin: the
+# fixture that protects every other node was the one change in this job with
+# nothing watching it. These two nodes watch it, and neither can be satisfied by
+# an environment that happens to be clean.
+
+
+def test_the_ambient_pin_guard_reaches_this_node_without_being_asked(request):
+    """autouse, not opt-in: a node that has to remember to ask is not a guard."""
+    assert "_no_ambient_memory_pin" in request.fixturenames
+    assert MEMORY_DIR_ENV not in os.environ
+
+
+def test_the_ambient_pin_guard_puts_back_the_store_a_pin_had_taken(tmp_path, monkeypatch):
+    """The hazard and the guard in one node, so the guard cannot be emptied quietly.
+
+    The fixture's own function is called here rather than re-implemented: a copy of
+    the body would keep passing after the body it copies is deleted, which is
+    exactly the failure this node exists to catch.
+    """
+    import conftest  # noqa: PLC0415
+
+    own = _mkstore(tmp_path / "companyA")
+    (own / "facts").mkdir()
+    elsewhere = _mkstore(tmp_path / "elsewhere")
+    (elsewhere / "facts").mkdir()
+
+    monkeypatch.setenv(MEMORY_DIR_ENV, str(elsewhere))
+    assert resolve_project_store(tmp_path / "companyA").path == elsewhere, (
+        "an ambient pin outranks the walk -- this is what the guard is for"
+    )
+
+    conftest._no_ambient_memory_pin.__wrapped__(monkeypatch)
+
+    assert MEMORY_DIR_ENV not in os.environ
+    assert resolve_project_store(tmp_path / "companyA").path == own

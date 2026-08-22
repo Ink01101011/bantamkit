@@ -8,23 +8,42 @@ from bantamkit.memory.layers import MEMORY_DIR_ENV
 
 @pytest.fixture(autouse=True)
 def _no_ambient_memory_pin(monkeypatch):
-    """No node in this suite may be answered by the operator's own pinned store.
+    """No node in this suite may be answered by -- or WRITE INTO -- a pinned store.
 
     `BANTAMKIT_MEMORY_DIR` outranks the whole discovery walk by design, so a
     developer who has set it -- which `docs/mcp.md` now tells every operator to do
-    -- silently redirects every store this suite resolves. Measured 2026-08-22 on
-    this machine before this fixture existed: running the full suite with
-    `BANTAMKIT_MEMORY_DIR` set to a populated store took it from 1790 passed to
-    `2 failed, 1788 passed` -- `test_mcpserver.py::test_layered_recall_reads_
-    granted_store_readonly` and `test_memory.py::test_start_discovers_the_project_
-    store_and_never_the_profile`. Both are real nodes whose verdict came from the
-    environment rather than from the code, which is the same defect as a node that
-    reads the operator's real `~/.bantamkit`.
+    -- silently redirects every store this suite resolves.
 
-    Session-wide and autouse, not per-module: the two nodes that broke live in two
-    files, neither of which is about pinning, and the next one will land in a third.
+    RE-MEASURED on this tree, because the first number aged badly: it was taken
+    when the suite was 1790 and said `2 failed` in two files. Command, rerunnable:
+
+        cp -R <a populated store> /tmp/pinrun
+        BANTAMKIT_MEMORY_DIR=/tmp/pinrun PYTHONPATH=runtime-py/src \
+            python -m pytest runtime-py/tests -q
+
+    - guard intact: `1802 passed, 2 skipped, 2 xfailed`, byte-identical to an
+      unpinned run, and `/tmp/pinrun` unchanged afterwards (`diff -rq`).
+    - guard body deleted: `26 failed, 1776 passed` across FOUR files --
+      `test_memory_component.py` (23), `test_memory_layers.py` (1, this fixture's
+      own node), `test_mcpserver.py` (1), `test_memory.py` (1). Twenty-five of
+      those are the pin's doing; the twenty-sixth is the node below noticing that
+      the guard stopped guarding.
+    - and the part no failure count shows: that run MUTATES the pinned store. Two
+      fact files the suite invented (`a-fact.md`, `leaked-fact.md`) appear in it,
+      and eight more files are rewritten -- recall stamps plus a rebuilt
+      `index.md`. An operator who pins their real store and runs the suite has
+      their memory written to. That is the cost this one line buys off.
+
+    Session-wide and autouse, not per-module: the nodes that break live in four
+    files, none of which is about pinning, and the next one will land in a fifth.
     A node that wants a pin sets one itself; `monkeypatch.setenv` inside the test
     body runs after this and wins.
+
+    Watched by `test_memory_layers.py::test_the_ambient_pin_guard_reaches_this_
+    node_without_being_asked` (kills `autouse=True`) and
+    `::test_the_ambient_pin_guard_puts_back_the_store_a_pin_had_taken` (kills the
+    body). Before those existed, both mutations left CI green, because CI has no
+    ambient pin to delete.
     """
     monkeypatch.delenv(MEMORY_DIR_ENV, raising=False)
 
