@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import stat as stat_module
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,6 +13,15 @@ from bantamkit.memory.store import MemoryValidationError
 
 PROJECT_STORE = Path(".bantamkit") / "memory"
 CONFIG_NAME = "config.yaml"
+
+# The operator's one lever over binding, and the only one they actually hold: an
+# MCP server's cwd is chosen by the HOST, not by the user, so every rule derived
+# from cwd is a rule the operator cannot control. The launch environment is the
+# surface every host exposes — `{"command": ..., "env": {"BANTAMKIT_MEMORY_DIR":
+# "/abs/path/to/store"}}`. The name is spelled here and nowhere else, including
+# in the tests, because a magic string duplicated between a resolver and its test
+# is how the two come to be reading different variables.
+MEMORY_DIR_ENV = "BANTAMKIT_MEMORY_DIR"
 
 
 @dataclass(frozen=True)
@@ -40,13 +51,20 @@ class StoreBinding:
     walk itself and hoping it reproduced it; `path` plus `state` is that answer.
 
     `searched_from` is the resolved directory the walk started at, so a caller can
-    say why this store and not another without reconstructing the ascent.
+    say why this store and not another without reconstructing the ascent. It is
+    `None` when no walk ran — see `origin`.
+
+    `origin` is "walk" or "pin". A pinned binding that still reported
+    `searched_from` would be asserting an ascent that never happened, and a
+    diagnostic field that lies is the same defect as a state field that lies.
+    Every consumer that wants to say WHY this store reads the pair.
     """
 
     path: Path
     state: str  # "populated" | "empty" | "designated"
     fact_count: int
-    searched_from: Path
+    searched_from: Path | None
+    origin: str = "walk"  # "walk" | "pin"
 
 
 def discover_project_store(start: str | Path | None = None) -> Path:
@@ -58,9 +76,15 @@ def discover_project_store(start: str | Path | None = None) -> Path:
     further — a symlinked store keeps its config beside the symlink. Callers
     needing store identity comparison must resolve() at the comparison site.
 
+    `BANTAMKIT_MEMORY_DIR` outranks all of it — see `_pinned_store`. When a pin is
+    set, `start` is never consulted; when it is not, this is the walk it always was.
+
     The path this returns does not move: `resolve_project_store` runs the same
     walk and only adds what was found there.
     """
+    pin = _pinned_store()
+    if pin is not None:
+        return pin
     return _walk_to_store(_resolved_base(start))
 
 
@@ -77,14 +101,76 @@ def resolve_project_store(start: str | Path | None = None) -> StoreBinding:
     read as a store with nothing in it is the exact conflation this exists to end,
     and it matches `load_grants` above, where a grant that is wrong raises instead
     of being silently dropped.
+
+    A pin never yields "designated": `_pinned_store` has already established that
+    the pinned directory is there, or raised saying it is not.
     """
+    pin = _pinned_store()
+    if pin is not None:
+        return _count_into_binding(pin, searched_from=None, origin="pin")
     base = _resolved_base(start)
     path = _walk_to_store(base)
     if not path.is_dir():
-        return StoreBinding(path=path, state="designated", fact_count=0, searched_from=base)
+        return StoreBinding(
+            path=path, state="designated", fact_count=0, searched_from=base, origin="walk"
+        )
+    return _count_into_binding(path, searched_from=base, origin="walk")
+
+
+def _count_into_binding(path: Path, searched_from: Path | None, origin: str) -> StoreBinding:
     count = sum(1 for _ in (path / "facts").glob("*.md"))
     state = "populated" if count else "empty"
-    return StoreBinding(path=path, state=state, fact_count=count, searched_from=base)
+    return StoreBinding(
+        path=path, state=state, fact_count=count, searched_from=searched_from, origin=origin
+    )
+
+
+def _pinned_store() -> Path | None:
+    """The store named by `MEMORY_DIR_ENV`, or None if the operator named none.
+
+    Three rulings live here, and each one is a choice about who gets blamed:
+
+    - A blank value is NOT a pin. A host that emits `"BANTAMKIT_MEMORY_DIR": ""`
+      has named no store, and failing there would break the walk for an operator
+      who pinned nothing. Same stance as `assets_root()` on `BANTAMKIT_ASSETS`.
+    - A relative pin RAISES. A path resolved against cwd is a pin whose meaning
+      depends on the exact thing the pin exists to escape. `~` is expanded first,
+      because an MCP host passes `env` verbatim with no shell to expand it, so the
+      tilde arrives literally and would otherwise fail as a nonexistent directory.
+    - A pin that is not there RAISES, and is never created. Creating a store
+      because someone typo'd a path is how an empty store came to answer for a
+      populated one in the first place; the raise is `load_grants`' stance below,
+      where a grant you wrote that is wrong is surfaced rather than dropped.
+
+    `os.stat` rather than `Path.is_dir()` on purpose. `is_dir()` swallows
+    PermissionError and answers False, which would report an operator's real store
+    as a typo — the walk lives with that (it must try many candidates and cannot
+    raise on each unreadable one), but a pin is a single path the operator named
+    out loud, so it gets the accurate reason. The path is not symlink-resolved,
+    matching the walk: a symlinked store keeps its config beside the symlink.
+    """
+    raw = os.environ.get(MEMORY_DIR_ENV)
+    if raw is None or not raw.strip():
+        return None
+    pin = Path(raw).expanduser()
+    if not pin.is_absolute():
+        raise MemoryValidationError(
+            f"pinned memory store must be an absolute path, got {raw!r} "
+            f"({MEMORY_DIR_ENV}={raw}); a relative pin is resolved against a cwd "
+            f"the MCP host chose, which is what the pin exists to override"
+        )
+    try:
+        info = os.stat(pin)
+    except OSError as e:
+        raise MemoryValidationError(
+            f"pinned memory store is unreachable: {pin}: {e.strerror} "
+            f"({MEMORY_DIR_ENV}={raw}); nothing was created"
+        ) from e
+    if not stat_module.S_ISDIR(info.st_mode):
+        raise MemoryValidationError(
+            f"pinned memory store is not a directory: {pin} ({MEMORY_DIR_ENV}={raw})"
+        )
+    return pin
 
 
 def _resolved_base(start: str | Path | None) -> Path:

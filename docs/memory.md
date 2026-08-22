@@ -316,6 +316,52 @@ The ancestor chain is resolved, but the returned store path is **not** resolved
 further: a symlinked store keeps its config beside the symlink, not beside the
 symlink's target. Grant paths, by contrast, are fully resolved.
 
+### Pinning the store: `BANTAMKIT_MEMORY_DIR`
+
+Discovery starts from cwd, and under an MCP host cwd is chosen by the **host**,
+not by you: the server is spawned from whatever directory the session happens to
+sit in. So every rule derived from cwd is a rule you cannot control, and the walk
+can silently climb past a project with no store of its own and bind to an empty
+`~/.bantamkit/memory` — a recall against which returns the same nothing a
+populated store returns for a question that matches nothing.
+
+Set `BANTAMKIT_MEMORY_DIR` in the launch environment to name the store outright:
+
+```json
+{
+  "command": "bantamkit-mcp",
+  "env": { "BANTAMKIT_MEMORY_DIR": "/abs/path/to/project/.bantamkit/memory" }
+}
+```
+
+Precedence, highest first:
+
+1. `BANTAMKIT_MEMORY_DIR`, when set to a non-blank value.
+2. The nearest existing `.bantamkit/memory` at or above `start`.
+3. The designated (uncreated) `<start>/.bantamkit/memory`.
+
+A pin is only ever the store it names. It is never combined with the walk, and
+the walk can never override it. Failure modes, all raised as
+`MemoryValidationError` at **construction** — `Memory.layered()` — rather than at
+the first recall that mysteriously returns nothing:
+
+| pin value | result |
+|---|---|
+| unset, `""`, or whitespace | not a pin; the walk runs exactly as before |
+| an existing directory holding facts | bound, `state="populated"` |
+| an existing directory holding none | bound, `state="empty"` — a legitimate first run, not an error |
+| a path that does not exist | **raises**; the directory is *not* created |
+| a path that exists but is not a directory | **raises** |
+| a path you lack permission to stat | **raises**, and says so — it does not report your store as a typo |
+| a relative path | **raises**; a pin resolved against cwd depends on the thing the pin exists to override |
+
+`~` is expanded, because MCP hosts pass `env` verbatim with no shell to expand it.
+The pinned path is **not** symlink-resolved, matching the walk: a pinned symlink
+keeps its `config.yaml` beside the symlink.
+
+`resolve_project_store()` reports which route was taken: `origin` is `"pin"` or
+`"walk"`, and `searched_from` is `None` under a pin, because no walk ran.
+
 ### Grants
 
 Extra stores are opt-in per project and declared in a `config.yaml` sitting
