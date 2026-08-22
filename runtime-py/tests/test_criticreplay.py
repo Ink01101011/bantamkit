@@ -4331,6 +4331,36 @@ def test_the_same_einval_is_still_a_render_failure_where_it_does_not_mean_that(
     assert "could not be rendered" in capsys.readouterr().err
 
 
+def test_the_unforced_switch_follows_this_runners_platform(rig, monkeypatch, capsys):
+    """The only node that reads `_EINVAL_MEANS_LOST_READER` WITHOUT setting it first.
+
+    Everything above forces the constant, which is what makes those nodes assert the same
+    thing on every runner — and is also what leaves the `os.name == "nt"` on the constant's
+    own line unmeasured by any of them. Replace that line with a bare `True` and not one
+    of them goes red, on either platform. This node is where that mutation lands.
+
+    It has no `skipif` and no platform-specific truth to state twice: it runs one EINVAL
+    through `main` with the constant exactly as import time left it, and asserts the number
+    THIS platform owes for it. On a POSIX runner that is RENDER_FAILURE_EXIT, so a
+    hardcoded `True` is red here; on windows-latest it is the earned 0, so a hardcoded
+    `False` — which is the pre-fix code, and what CI run 32555258828 read — is red here.
+    Each platform measures the half the other cannot, and neither half is a skip.
+    """
+    monkeypatch.setattr(criticreplay, "OpenAICompatible", lambda **kw: ScriptedCritic(lambda p: 9))
+    boom = OSError(errno.EINVAL, "Invalid argument")
+    monkeypatch.setattr(sys, "stdout", _RaisingStdout(boom))
+    if criticreplay._EINVAL_MEANS_LOST_READER:
+        assert os.name == "nt"  # nothing else may turn this on
+        criticreplay.main(_cli(rig)[2:])  # the earned 0, and no SystemExit at all
+        assert isinstance(sys.stdout, criticreplay._LostStdout)
+    else:
+        assert os.name != "nt"  # and nothing else may turn it off
+        with pytest.raises(SystemExit) as exc:
+            criticreplay.main(_cli(rig)[2:])
+        assert exc.value.code == criticreplay.RENDER_FAILURE_EXIT
+        assert "could not be rendered" in capsys.readouterr().err
+
+
 # The child of the node below. It puts the ONE platform difference in front of a run that
 # is otherwise entirely real: fd 1 is a genuine pipe with a genuine dead reader, the CLI is
 # a genuine process, and the status is read by `wait()` — only the WORD the OS uses for the
