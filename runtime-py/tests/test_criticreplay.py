@@ -3213,13 +3213,24 @@ def test_exit_status_ignores_a_violation_on_a_point_dropped_from_every_family(
     assert criticreplay.exit_status(result) == 0
 
 
-# ---- RB-P24: the same contract read from a SHELL, which is the only reader that counts ----
+# ---- RB-P24: the same contract read from a real CHILD PROCESS's status, not a return ----
 #
 # A test that calls `main()` and catches `SystemExit` verifies a return path. What a CI
-# job branches on is `$?`, so every outcome class below is pinned by a real process whose
-# status the SHELL reports. `cli_exit_status_probe.py` is the shipped `main()` with only
-# the client constructor replaced; the refusal and usage classes need no client at all
-# and run the real `-m bantamkit.criticreplay`.
+# job branches on is the status the OS reports for a process that has exited, so every
+# outcome class below is pinned by a real child and the number `waitpid()` gave for it.
+# `cli_exit_status_probe.py` is the shipped `main()` with only the client constructor
+# replaced; the refusal and usage classes need no client at all and run the real
+# `-m bantamkit.criticreplay`.
+#
+# THESE HARNESSES USED TO SPAWN `/bin/sh` AND READ ITS `$?`. They no longer do, and the
+# reason is measured rather than argued (job 31, W2, 2026-08-21). `$?` and
+# `Popen.returncode` are the same reading of the same `waitpid()`: over 70 paired
+# invocations of this file's harnesses — every status class it exercises, 0, 1, 2, 3, 4,
+# 5 and 120 — the two numbers disagreed 0 times and no child died on a signal. The shell
+# bought no number. It cost this file every runner without a POSIX shell on PATH, which
+# is the whole of Windows CI. What the shell never bought is `_child_env`'s scrub, and
+# that is untouched: see its docstring for the RB-P28 exploit it closes and the larger
+# class it does not.
 
 PROBE = Path(__file__).resolve().parent / "cli_exit_status_probe.py"
 
@@ -3271,13 +3282,20 @@ def _child_env(**extra: str) -> dict[str, str]:
     return env
 
 
-def _shell_status(
+def _child_status(
     argv: list[str], tmp_path: Path, label: str = "run", cwd: Path | None = None
 ) -> tuple[int, str, str]:
-    """Run `argv` in /bin/sh; return the status the SHELL read, plus stdout and stderr.
+    """Run `argv` as a real child; return the status the OS reported, plus stdout and stderr.
 
-    The status is echoed by the shell's own `$?` on a stream of its own, with the
-    command's streams redirected to files — so nothing here reads a Python return value.
+    Nothing here reads a Python return value from the code under test: `argv` is a
+    separate process, and the number returned is the one `waitpid()` handed this process
+    for it. That is the same number a shell's `$?` reports — `$?` IS that reading — so
+    the harness no longer needs a shell to obtain it, and therefore no longer needs a
+    POSIX shell on PATH. See the section comment above for the paired measurement.
+
+    Both of the child's streams are FILES, not pipes, exactly as when a shell redirected
+    them: fd 1 is a plain regular-file descriptor, so the interpreter's shutdown flush
+    behaves the way it does in the field rather than the way it does behind a pipe.
 
     `cwd` exists for the RB-P28 acceptance probes at the end of this file: `parse_rubric_arg`
     resolves `git:` and `derive:` specs against the process's working directory, so a probe
@@ -3287,18 +3305,19 @@ def _shell_status(
     where = tmp_path / f"_shell-{label}"
     where.mkdir(parents=True, exist_ok=True)
     out, err = where / "stdout.txt", where / "stderr.txt"
-    proc = subprocess.run(
-        ["/bin/sh", "-c", '"$@" >"$BK_OUT" 2>"$BK_ERR"; echo "status=$?"', "sh", *argv],
-        capture_output=True,
-        text=True,
-        cwd=None if cwd is None else str(cwd),
-        env=_child_env(BK_OUT=str(out), BK_ERR=str(err)), encoding="utf-8",
+    with open(out, "wb") as out_fh, open(err, "wb") as err_fh:
+        proc = subprocess.run(
+            argv,
+            stdout=out_fh,
+            stderr=err_fh,
+            cwd=None if cwd is None else str(cwd),
+            env=_child_env(),
+        )
+    return (
+        proc.returncode,
+        out.read_text(encoding="utf-8"),
+        err.read_text(encoding="utf-8"),
     )
-    assert proc.returncode == 0, proc.stderr  # the shell itself ran
-    assert proc.stdout.startswith("status="), proc.stdout
-    return int(proc.stdout.split("=", 1)[1]), out.read_text(
-        encoding="utf-8"
-    ), err.read_text(encoding="utf-8")
 
 
 def _cli(rig, *extra: str, entry: list[str] | None = None) -> list[str]:
@@ -3312,7 +3331,7 @@ def _cli(rig, *extra: str, entry: list[str] | None = None) -> list[str]:
 
 
 def test_a_clean_run_exits_zero_in_a_real_shell(rig, tmp_path):
-    status, out, err = _shell_status(_cli(rig), tmp_path)
+    status, out, err = _child_status(_cli(rig), tmp_path)
     assert status == 0, err
     assert "GUARD VIOLATIONS" not in out and "| variant |" in out
 
@@ -3326,7 +3345,7 @@ def test_a_violating_run_exits_three_and_still_writes_every_artifact(guard_rig, 
     is the regression `warn` mode exists to avoid.
     """
     rows_path, summary_path = tmp_path / "rows.jsonl", tmp_path / "summary.json"
-    status, out, err = _shell_status(
+    status, out, err = _child_status(
         _cli(guard_rig, "--json", str(rows_path), "--summary", str(summary_path)), tmp_path
     )
     assert status == criticreplay.GUARD_VIOLATION_EXIT, err
@@ -3342,7 +3361,7 @@ def test_a_refusal_exits_one_in_a_real_shell(rig, tmp_path):
     """The refusal status is unchanged, and it is a different number from the new one."""
     argv = _cli(rig, entry=[sys.executable, "-m", "bantamkit.criticreplay"])
     argv[argv.index(str(rig["transcripts"]))] = str(tmp_path / "nope")
-    status, out, err = _shell_status(argv, tmp_path, "refusal")
+    status, out, err = _child_status(argv, tmp_path, "refusal")
     assert status == criticreplay.REFUSAL_EXIT
     assert "no transcripts" in err and out == ""
 
@@ -3354,7 +3373,7 @@ def test_guard_error_still_exits_one_and_spends_nothing(guard_rig, tmp_path):
     the anchor set's first pass reads it. "Refused, measured nothing" and "measured,
     with violations" are two different verdicts and may not share a number.
     """
-    status, out, err = _shell_status(
+    status, out, err = _child_status(
         _cli(guard_rig, "--guard", "error", entry=[sys.executable, "-m", "bantamkit.criticreplay"]),
         tmp_path,
         "guard-error",
@@ -3365,7 +3384,7 @@ def test_guard_error_still_exits_one_and_spends_nothing(guard_rig, tmp_path):
 
 def test_argparses_usage_status_is_measured_not_assumed(tmp_path):
     """Run it with a bad flag and read the number, rather than trusting a manual."""
-    status, out, err = _shell_status(
+    status, out, err = _child_status(
         [sys.executable, "-m", "bantamkit.criticreplay", "--not-a-flag"], tmp_path, "usage"
     )
     assert status == criticreplay.USAGE_EXIT
@@ -3381,7 +3400,7 @@ def test_the_escape_hatch_exits_zero_and_leaves_a_trace_on_stderr(guard_rig, tmp
     no default, it changes nothing that is written, and taking it prints what it
     suppressed on stderr, so a run that used it cannot look like a clean run.
     """
-    status, out, err = _shell_status(
+    status, out, err = _child_status(
         _cli(guard_rig, "--violations-exit-zero"), tmp_path, "hatch"
     )
     assert status == 0
@@ -3403,7 +3422,7 @@ def test_identity_only_over_a_violating_cell_exits_zero_in_a_real_shell(guard_ri
     `test_exit_status_ignores_a_violation_on_a_point_dropped_from_every_family`, which
     builds a run whose table flags a point that no variant replayed.
     """
-    status, out, err = _shell_status(
+    status, out, err = _child_status(
         _cli(guard_rig, "--identity-only"), tmp_path, "identity-only"
     )
     assert status == 0, err
@@ -3441,7 +3460,7 @@ def test_a_measured_run_whose_summary_cannot_be_written_does_not_report_the_refu
     the whole contract exists to prevent.
     """
     rows_path = tmp_path / "rows.jsonl"
-    status, out, err = _shell_status(
+    status, out, err = _child_status(
         _cli(
             guard_rig,
             "--json", str(rows_path),
@@ -3466,7 +3485,7 @@ def test_the_write_status_outranks_the_guard_status(guard_rig, tmp_path):
     the false half of a true statement; 4 is the honest one, and the GUARD section is
     still on stdout for whoever reads it.
     """
-    status, out, err = _shell_status(
+    status, out, err = _child_status(
         _cli(guard_rig, "--summary", str(_unwritable(tmp_path))), tmp_path, "outranks"
     )
     assert status == criticreplay.ARTIFACT_WRITE_EXIT, err
@@ -3475,7 +3494,7 @@ def test_the_write_status_outranks_the_guard_status(guard_rig, tmp_path):
 
 def test_a_clean_run_whose_summary_cannot_be_written_is_not_a_zero(rig, tmp_path):
     """The write status does not need a violation to fire — a clean run reports it too."""
-    status, out, err = _shell_status(
+    status, out, err = _child_status(
         _cli(rig, "--summary", str(_unwritable(tmp_path))), tmp_path, "clean-unwritable"
     )
     assert status == criticreplay.ARTIFACT_WRITE_EXIT, err
@@ -3495,13 +3514,13 @@ def test_the_hatch_does_not_suppress_a_refusal(rig, tmp_path):
         rig, "--violations-exit-zero", entry=[sys.executable, "-m", "bantamkit.criticreplay"]
     )
     argv[argv.index(str(rig["transcripts"]))] = str(tmp_path / "nope")
-    status, out, err = _shell_status(argv, tmp_path, "hatch-refusal")
+    status, out, err = _child_status(argv, tmp_path, "hatch-refusal")
     assert status == criticreplay.REFUSAL_EXIT
     assert "no transcripts" in err
 
 
 def test_the_hatch_does_not_suppress_guard_error(guard_rig, tmp_path):
-    status, out, err = _shell_status(
+    status, out, err = _child_status(
         _cli(
             guard_rig,
             "--guard", "error",
@@ -3516,7 +3535,7 @@ def test_the_hatch_does_not_suppress_guard_error(guard_rig, tmp_path):
 
 
 def test_the_hatch_does_not_suppress_a_usage_error(tmp_path):
-    status, out, err = _shell_status(
+    status, out, err = _child_status(
         [sys.executable, "-m", "bantamkit.criticreplay", "--violations-exit-zero", "--not-a-flag"],
         tmp_path,
         "hatch-usage",
@@ -3526,7 +3545,7 @@ def test_the_hatch_does_not_suppress_a_usage_error(tmp_path):
 
 def test_the_hatch_does_not_suppress_an_unwritable_summary(guard_rig, tmp_path):
     """The hatch says "these violations are expected", never "this run wrote its files"."""
-    status, out, err = _shell_status(
+    status, out, err = _child_status(
         _cli(guard_rig, "--violations-exit-zero", "--summary", str(_unwritable(tmp_path))),
         tmp_path,
         "hatch-unwritable",
@@ -3541,7 +3560,7 @@ def test_the_hatch_does_not_suppress_an_unwritable_summary(guard_rig, tmp_path):
 
 def test_help_prints_the_exit_status_contract(tmp_path):
     """`--help` is where a caller reads the statuses; without this the epilog is undefended."""
-    status, out, err = _shell_status(
+    status, out, err = _child_status(
         [sys.executable, "-m", "bantamkit.criticreplay", "--help"], tmp_path, "help"
     )
     assert status == 0
@@ -3615,7 +3634,7 @@ def test_help_prints_the_exit_status_contract(tmp_path):
 
 def test_this_modules_own_validation_errors_are_argparses_number(tmp_path):
     """M3: `parser.error` is argparse's exit path, so a bad `--replays` is a 2, not a 1."""
-    status, out, err = _shell_status(
+    status, out, err = _child_status(
         [
             sys.executable, "-m", "bantamkit.criticreplay",
             "--rubric", "a=x", "--transcripts", str(tmp_path),
@@ -3643,10 +3662,13 @@ def test_this_modules_own_validation_errors_are_argparses_number(tmp_path):
 # `_CLOSED_PIPE_PREFIX_STATUS` and each node still asserts against it, because the number
 # the fix was written to move is evidence and does not get erased by the fix.
 #
-# METHOD. RB-P24's rule is that a status claim is read from a real `$?`, so the closed-pipe
-# harness keeps the shell: `/bin/sh` runs the CLI and echoes its own `$?` to a FILE, and
-# the whole shell's stdout is a pipe with NO reader. The read end is closed BEFORE the
-# child is spawned, so there is no window in which a reader exists and no race to lose —
+# METHOD. RB-P24's rule is that a status claim is read from a real process's exit status
+# and not from a Python return, so the closed-pipe harness spawns the CLI itself and reads
+# the number `waitpid()` reports for it, with that child's stdout a pipe that has NO
+# reader. (It used to route through `/bin/sh` for the same number; the shell was removed
+# in job 31 after 70 paired invocations showed `$?` and `Popen.returncode` never differ.)
+# The read end is closed BEFORE the child is spawned, so there is no window in which a
+# reader exists and no race to lose —
 # every write to fd 1 fails with EPIPE from the first byte. That is a reader that is
 # actually gone (`... | head -1` once `head` has exited), not a mock and not a patched
 # `sys.stdout`, which would measure what a function returns rather than what a process
@@ -3672,29 +3694,30 @@ in RB-P27's closure in `docs/eval.md`.
 
 
 def _closed_pipe_status(argv: list[str], tmp_path: Path, label: str) -> tuple[int, str]:
-    """Run `argv` with stdout wired to a pipe that has no read end. Return `$?` and stderr.
+    """Run `argv` with stdout wired to a pipe that has no read end. Return its status, stderr.
 
-    The status is the shell's own `$?`, written to a file on the side, exactly as
-    `_shell_status` does it — nothing here reads a Python return value. stderr is a file
-    too, so the interpreter's shutdown complaint (if any) is readable.
+    The status is the OS's, read back with `Popen.wait()` for the CLI's OWN process —
+    nothing here reads a Python return value out of the code under test. stderr is a file,
+    so the interpreter's shutdown complaint (if any) is readable.
+
+    POSIX-ONLY BY ITS SUBJECT, not by its plumbing. Removing `/bin/sh` removed the only
+    part of this harness a non-POSIX runner could have supplied; what is left — a write
+    to a pipe whose reader is gone raising EPIPE, and CPython's 120 for a failed shutdown
+    flush behind it — is the thing being measured and has no Windows equivalent.
     """
     where = tmp_path / f"_pipe-{label}"
     where.mkdir(parents=True, exist_ok=True)
-    err, status_file = where / "stderr.txt", where / "status.txt"
+    err = where / "stderr.txt"
     read_fd, write_fd = os.pipe()
     os.close(read_fd)  # the reader is gone before the child exists: no race, no window
     try:
-        proc = subprocess.Popen(
-            ["/bin/sh", "-c", '"$@" 2>"$BK_ERR"; echo "status=$?" >"$BK_STATUS"', "sh", *argv],
-            stdout=write_fd,
-            env=_child_env(BK_ERR=str(err), BK_STATUS=str(status_file)),
-        )
+        with open(err, "wb") as err_fh:
+            proc = subprocess.Popen(
+                argv, stdout=write_fd, stderr=err_fh, env=_child_env()
+            )
     finally:
         os.close(write_fd)
-    assert proc.wait() == 0  # the shell itself ran to the end of its command list
-    text = status_file.read_text(encoding="utf-8")
-    assert text.startswith("status="), text
-    return int(text.split("=", 1)[1]), err.read_text(encoding="utf-8")
+    return proc.wait(), err.read_text(encoding="utf-8")
 
 
 _DUMP_PYTEST_KEYS = (
@@ -3717,7 +3740,7 @@ def test_the_status_harnesses_hand_the_child_no_pytest_marker(tmp_path):
     """
     assert "PYTEST_CURRENT_TEST" in os.environ  # the thing being scrubbed exists here
 
-    status, out, err = _shell_status(
+    status, out, err = _child_status(
         [sys.executable, "-c", _DUMP_PYTEST_KEYS.format(stream="stdout")], tmp_path, "envscrub"
     )
     assert status == 0, err
@@ -3745,11 +3768,11 @@ def test_closed_pipe_violating_run_still_exits_three_and_writes_the_same_bytes(
     Two properties in one test on purpose. The status is the finding; the byte comparison
     is what stops the fix from being "exit 3 somehow" — the run must still have measured,
     and losing the reader of the table may not change one byte of the JSONL or the summary.
-    The open-pipe run is `_shell_status`, i.e. the already-pinned RB-P24 path, so the
+    The open-pipe run is `_child_status`, i.e. the already-pinned RB-P24 path, so the
     earned status is read from an INDEPENDENT run rather than asserted from this file.
     """
     live_rows, live_summary = tmp_path / "live.jsonl", tmp_path / "live.json"
-    live_status, out, _ = _shell_status(
+    live_status, out, _ = _child_status(
         _cli(guard_rig, "--json", str(live_rows), "--summary", str(live_summary)),
         tmp_path,
         "p27-live",
@@ -4015,27 +4038,25 @@ def _closed_stderr_status(argv: list[str], tmp_path: Path, label: str) -> tuple[
 
     Same method, same guarantee — the read end is closed before the child exists, so
     every write to fd 2 fails with EPIPE from the first byte — and the same independent
-    reader: the status is `/bin/sh`'s own `$?`, echoed to a file on the side. Written as
-    its own function rather than as a flag on `_closed_pipe_status` so that the harness
-    the RB-P27 spec is measured with stays exactly the one that measured the pre-fix 120.
+    reader: the status is the OS's, for the CLI's own process. Written as its own
+    function rather than as a flag on `_closed_pipe_status` so that the harness the
+    RB-P27 spec is measured with stays exactly the one that measured the pre-fix 120.
+
+    POSIX-only by its subject (EPIPE), not by its plumbing; see `_closed_pipe_status`.
     """
     where = tmp_path / f"_pipe-err-{label}"
     where.mkdir(parents=True, exist_ok=True)
-    out, status_file = where / "stdout.txt", where / "status.txt"
+    out = where / "stdout.txt"
     read_fd, write_fd = os.pipe()
     os.close(read_fd)
     try:
-        proc = subprocess.Popen(
-            ["/bin/sh", "-c", '"$@" >"$BK_OUT"; echo "status=$?" >"$BK_STATUS"', "sh", *argv],
-            stderr=write_fd,
-            env=_child_env(BK_OUT=str(out), BK_STATUS=str(status_file)),
-        )
+        with open(out, "wb") as out_fh:
+            proc = subprocess.Popen(
+                argv, stdout=out_fh, stderr=write_fd, env=_child_env()
+            )
     finally:
         os.close(write_fd)
-    assert proc.wait() == 0
-    text = status_file.read_text(encoding="utf-8")
-    assert text.startswith("status="), text
-    return int(text.split("=", 1)[1]), out.read_text(encoding="utf-8")
+    return proc.wait(), out.read_text(encoding="utf-8")
 
 
 def test_help_with_no_reader_on_stdout_is_still_the_interpreters_number(tmp_path):
@@ -4223,60 +4244,62 @@ _RBP31_LARGE_CELLS = 40
 
 
 def _readonly_stdout_status(argv, tmp_path, label: str) -> tuple[int, str, int]:
-    """Run `argv` with fd 1 a dup of a READ-ONLY fd. Return `$?`, stderr, and fd 1's buffer.
+    """Run `argv` with fd 1 a dup of a READ-ONLY fd. Return its status, stderr, fd 1's buffer.
 
     A read-only fd is the cheapest render failure that is NOT a gone reader: every write
     to fd 1 fails with `EBADF`, and stderr stays live throughout, so this is a report that
     could not be rendered rather than a reader that walked away. The fd is opened here and
     handed to the child as its stdout, so nothing is patched and no exception is injected.
 
-    The status is `/bin/sh`'s own `$?`, echoed to a file on the side — RB-P24's rule.
+    The status is the OS's, for the CLI's own process — RB-P24's rule, and no shell.
     The third return value is `os.fstat(1).st_blksize`, which IS the `BufferedWriter`
     size CPython gives that fd and therefore the axis this spec is written across.
+
+    POSIX-only by its subject: a descriptor that is open, valid and writes-refused is a
+    POSIX file-mode fact, and `st_blksize` — the axis — is a POSIX stat field.
     """
     where = tmp_path / f"_ro-{label}"
     where.mkdir(parents=True, exist_ok=True)
     target = where / "readonly-target"
     target.write_text("fd 1 is a dup of a READ-ONLY fd on this file\n", encoding="utf-8")
-    err, status_file = where / "stderr.txt", where / "status.txt"
+    err = where / "stderr.txt"
     ro_fd = os.open(target, os.O_RDONLY)
     try:
         blksize = os.fstat(ro_fd).st_blksize
-        proc = subprocess.Popen(
-            ["/bin/sh", "-c", '"$@" 2>"$BK_ERR"; echo "status=$?" >"$BK_STATUS"', "sh", *argv],
-            stdout=ro_fd,
-            env=_child_env(BK_ERR=str(err), BK_STATUS=str(status_file)),
-        )
+        with open(err, "wb") as err_fh:
+            proc = subprocess.Popen(
+                argv, stdout=ro_fd, stderr=err_fh, env=_child_env()
+            )
     finally:
         os.close(ro_fd)
-    assert proc.wait() == 0  # the shell itself ran to the end of its command list
-    text = status_file.read_text(encoding="utf-8")
-    assert text.startswith("status="), text
-    return int(text.split("=", 1)[1]), err.read_text(encoding="utf-8"), blksize
+    return proc.wait(), err.read_text(encoding="utf-8"), blksize
 
 
 def _no_stdout_status(argv, tmp_path, label: str) -> tuple[int, str]:
-    """`_readonly_stdout_status`'s twin with fd 1 CLOSED outright (`1>&-`), not redirected.
+    """`_readonly_stdout_status`'s twin with fd 1 CLOSED outright, not redirected.
 
     A different failure again, and the one with no `OSError` in it at all: CPython leaves
     `sys.stdout` as `None` when fd 1 is invalid at startup, `print` to a `None` stdout is
     a silent no-op, and the explicit `sys.stdout.flush()` raises `AttributeError`. So the
     handler never sees an exception it could convert, whatever it is narrowed to.
+
+    fd 1 is closed in the CHILD, between fork and exec, rather than by a shell's `1>&-`.
+    That is the same closed fd reaching the same `exec`, and it drops the last shell out
+    of this file — but `preexec_fn` is fork-only, so this harness is POSIX-only twice
+    over: by its plumbing AND by its subject, since "fd 1 is not open at startup" is not
+    a state a Windows process can be launched in.
     """
     where = tmp_path / f"_nofd1-{label}"
     where.mkdir(parents=True, exist_ok=True)
-    err, status_file = where / "stderr.txt", where / "status.txt"
-    proc = subprocess.run(
-        [
-            "/bin/sh", "-c",
-            '{ "$@" 2>"$BK_ERR"; echo "status=$?" >"$BK_STATUS"; } 1>&-', "sh", *argv,
-        ],
-        env=_child_env(BK_ERR=str(err), BK_STATUS=str(status_file)),
-    )
-    assert proc.returncode == 0
-    text = status_file.read_text(encoding="utf-8")
-    assert text.startswith("status="), text
-    return int(text.split("=", 1)[1]), err.read_text(encoding="utf-8")
+    err = where / "stderr.txt"
+    with open(err, "wb") as err_fh:
+        proc = subprocess.run(
+            argv,
+            stderr=err_fh,
+            env=_child_env(),
+            preexec_fn=lambda: os.close(1),  # noqa: PLW1509 - the fd state under test
+        )
+    return proc.returncode, err.read_text(encoding="utf-8")
 
 
 def test_the_two_render_failure_rigs_straddle_the_measured_stdout_buffer(
@@ -4303,7 +4326,7 @@ def test_the_two_render_failure_rigs_straddle_the_measured_stdout_buffer(
         ("large", _RBP31_LARGE_CELLS, "above"),
     ):
         rig = _wide_guard_rig(asset_tree, tmp_path, cells)
-        status, out, err = _shell_status(_cli(rig), tmp_path, f"straddle-{label}")
+        status, out, err = _child_status(_cli(rig), tmp_path, f"straddle-{label}")
         assert status == criticreplay.GUARD_VIOLATION_EXIT, err  # what the run EARNS
         assert "GUARD VIOLATIONS" in out
         written = len(out.encode())  # `print` writes the table AND its newline
@@ -4336,7 +4359,7 @@ def test_a_render_failure_below_the_buffer_reports_the_render_failure_status(
     """
     rig = _wide_guard_rig(asset_tree, tmp_path, _RBP31_SMALL_CELLS)
     live_rows, live_summary = tmp_path / "live-s.jsonl", tmp_path / "live-s.json"
-    live_status, out, _ = _shell_status(
+    live_status, out, _ = _child_status(
         _cli(rig, "--json", str(live_rows), "--summary", str(live_summary)),
         tmp_path,
         "p31-live-small",
@@ -4376,7 +4399,7 @@ def test_a_render_failure_above_the_buffer_reports_the_render_failure_status(
     """
     rig = _wide_guard_rig(asset_tree, tmp_path, _RBP31_LARGE_CELLS)
     live_rows, live_summary = tmp_path / "live-l.jsonl", tmp_path / "live-l.json"
-    live_status, out, _ = _shell_status(
+    live_status, out, _ = _child_status(
         _cli(rig, "--json", str(live_rows), "--summary", str(live_summary)),
         tmp_path,
         "p31-live-large",
@@ -4415,7 +4438,7 @@ def test_a_closed_stdout_does_not_turn_a_measured_run_into_a_refusal(asset_tree,
     """
     rig = _wide_guard_rig(asset_tree, tmp_path, _RBP31_SMALL_CELLS)
     live_rows, live_summary = tmp_path / "live-c.jsonl", tmp_path / "live-c.json"
-    live_status, _, _ = _shell_status(
+    live_status, _, _ = _child_status(
         _cli(rig, "--json", str(live_rows), "--summary", str(live_summary)),
         tmp_path,
         "p31-live-closed",
@@ -4467,34 +4490,28 @@ The number is REFUSAL_EXIT and the run had measured, which is the whole finding.
 def _encoding_stdout_status(
     argv: list[str], tmp_path: Path, label: str, encoding: str
 ) -> tuple[int, bytes, bytes]:
-    """Run `argv` with stdout wrapped in `encoding`. Return `$?`, stdout bytes, stderr bytes.
+    """Run `argv` with stdout wrapped in `encoding`. Return its status, stdout, stderr bytes.
 
     Nothing is patched and no exception is injected: `PYTHONIOENCODING` is read by
     CPython while it builds `sys.stdout`, so the failure happens in the real
     `TextIOWrapper` on a real fd, at the same `write` call the field's EBADF cells fail.
-    fd 1 here is a perfectly good file — that is the point of the cell. The status is
-    `/bin/sh`'s own `$?`, echoed to a file on the side (RB-P24's rule).
+    fd 1 here is a perfectly good file — that is the point of the cell. The status is the
+    OS's, for the CLI's own process (RB-P24's rule), with no shell in between.
 
     Both streams come back as BYTES, because whether stderr's own bytes survive the same
     codec is one of the things under test.
     """
     where = tmp_path / f"_enc-{label}"
     where.mkdir(parents=True, exist_ok=True)
-    out, err, status_file = where / "stdout.txt", where / "stderr.txt", where / "status.txt"
-    proc = subprocess.run(
-        [
-            "/bin/sh", "-c",
-            '"$@" >"$BK_OUT" 2>"$BK_ERR"; echo "status=$?" >"$BK_STATUS"', "sh", *argv,
-        ],
-        env=_child_env(
-            BK_OUT=str(out), BK_ERR=str(err), BK_STATUS=str(status_file),
-            PYTHONIOENCODING=encoding,
-        ),
-    )
-    assert proc.returncode == 0  # the shell itself ran to the end of its command list
-    text = status_file.read_text(encoding="utf-8")
-    assert text.startswith("status="), text
-    return int(text.split("=", 1)[1]), out.read_bytes(), err.read_bytes()
+    out, err = where / "stdout.txt", where / "stderr.txt"
+    with open(out, "wb") as out_fh, open(err, "wb") as err_fh:
+        proc = subprocess.run(
+            argv,
+            stdout=out_fh,
+            stderr=err_fh,
+            env=_child_env(PYTHONIOENCODING=encoding),
+        )
+    return proc.returncode, out.read_bytes(), err.read_bytes()
 
 
 @pytest.mark.parametrize("encoding", ["latin-1", "ascii"])
@@ -4533,7 +4550,7 @@ def test_a_stdout_that_cannot_encode_the_table_reports_the_render_failure_status
     """
     rig = _wide_guard_rig(asset_tree, tmp_path, cells)
     live_rows, live_summary = tmp_path / "live-e.jsonl", tmp_path / "live-e.json"
-    live_status, out, _ = _shell_status(
+    live_status, out, _ = _child_status(
         _cli(rig, "--json", str(live_rows), "--summary", str(live_summary)),
         tmp_path,
         f"c1-live-{cells}",
@@ -4718,7 +4735,7 @@ def test_a_non_transcript_json_is_refused_rather_than_delivered_as_a_traceback(
     (transcripts / "notes.json").write_text('{"note": "not a transcript"}\n', encoding="utf-8")
     argv = _cli(rig, entry=[sys.executable, "-m", "bantamkit.criticreplay"])
     argv[argv.index(str(rig["transcripts"]))] = str(transcripts)
-    status, out, err = _shell_status(argv, tmp_path, "m2-nontranscript")
+    status, out, err = _child_status(argv, tmp_path, "m2-nontranscript")
     assert status == criticreplay.REFUSAL_EXIT, err
     assert "Traceback" not in err, err
     assert "is not a transcript" in err and "notes.json" in err
@@ -4741,23 +4758,21 @@ def test_fd_one_on_a_directory_never_reaches_this_module(tmp_path):
     """
     where = tmp_path / "_fd1-dir"
     where.mkdir()
-    err, status_file = where / "stderr.txt", where / "status.txt"
+    err = where / "stderr.txt"
     dir_fd = os.open(where, os.O_RDONLY)
     try:
-        proc = subprocess.run(
-            ["/bin/sh", "-c", '"$@" 2>"$BK_ERR"; echo "status=$?" >"$BK_STATUS"', "sh",
-             sys.executable, "-m", "bantamkit.criticreplay", "--help"],
-            stdout=dir_fd,
-            env=_child_env(BK_ERR=str(err), BK_STATUS=str(status_file)),
-        )
+        with open(err, "wb") as err_fh:
+            proc = subprocess.run(
+                [sys.executable, "-m", "bantamkit.criticreplay", "--help"],
+                stdout=dir_fd,
+                stderr=err_fh,
+                env=_child_env(),
+            )
     finally:
         os.close(dir_fd)
-    assert proc.returncode == 0
-    text = status_file.read_text(encoding="utf-8")
-    assert text.startswith("status="), text
     complaint = err.read_text(encoding="utf-8")
     assert "init_sys_streams" in complaint, complaint  # it died BEFORE main existed
-    assert int(text.split("=", 1)[1]) == 1
+    assert proc.returncode == 1
     assert "could not be rendered" not in complaint  # nothing here chose that number
 
 
@@ -4899,7 +4914,7 @@ def test_every_argument_shape_error_reports_the_same_number(tmp_path):
     }
     measured = {}
     for index, (label, argv) in enumerate(cases.items()):
-        status, out, err = _shell_status(argv, tmp_path, f"shape-{index}")
+        status, out, err = _child_status(argv, tmp_path, f"shape-{index}")
         measured[label] = status
         assert out == "", f"{label} printed to stdout on a run that never measured: {err}"
         assert "Traceback" not in err, f"{label} reported by traceback, not by status: {err}"
@@ -5150,14 +5165,14 @@ def test_every_shape_rule_flag_is_the_usage_status_in_the_field(tmp_path):
         "with nothing behind it."
     )
     for index, (flag, argv) in enumerate(sorted(shape_cases.items())):
-        status, out, err = _shell_status(argv, tmp_path, f"roster-{index}")
+        status, out, err = _child_status(argv, tmp_path, f"roster-{index}")
         assert status == criticreplay.USAGE_EXIT, f"{flag}: {status}, {err}"
         assert out == "", f"{flag} wrote to stdout on a run that never measured"
         assert "Traceback" not in err, f"{flag} reported by traceback: {err}"
 
     world = sorted(_world_rule_field_cases(tmp_path, rubric).items())
     for index, (label, argv) in enumerate(world):
-        status, out, err = _shell_status(argv, tmp_path, f"world-{index}")
+        status, out, err = _child_status(argv, tmp_path, f"world-{index}")
         assert status == criticreplay.REFUSAL_EXIT, (
             f"{label} reports {status}. It is well formed on its face and names something "
             "this machine did not supply, so the same argv succeeds once the world "
@@ -6311,7 +6326,7 @@ def test_the_payload_sha_reader_is_in_the_published_surface():
 # 10's residual, where at least one signal had to cross into a child process.
 #
 # SO THE PIN MOVES OUT OF THE PROCESS. Each acceptance gets a node here that
-# starts a REAL interpreter through `/bin/sh` with `_child_env`'s scrubbed
+# starts a REAL interpreter as its own child (`_child_status`) with `_child_env`'s scrubbed
 # environment — no `PYTEST_*` key, no pytest on the import path, nothing in
 # `sys.modules` to key on — and reads the result back off what that process
 # WROTE. The in-process nodes above stay as fast regression guards; they are not
@@ -6362,7 +6377,7 @@ def test_OUTSIDE_pytest_a_fresh_runs_verdict_carries_its_effect_size(tmp_path):
     """RB-P16's PIN, in a process with no pytest in it.
 
     Runs `rbp16_effect_probe.py` — the shipped `main()` with only the client constructor
-    replaced by `score = sha256(prompt|seed) % 11` — through `/bin/sh`, and reads the
+    replaced by `score = sha256(prompt|seed) % 11` — as a real child process, and reads the
     effect back off the summary JSON it wrote and the table it printed.
 
     THE ASSERTION IS A COMPARISON BETWEEN TWO DERIVATIONS, not a re-read of one. The
@@ -6384,7 +6399,7 @@ def test_OUTSIDE_pytest_a_fresh_runs_verdict_carries_its_effect_size(tmp_path):
     )
     summary_path = tmp_path / "summary.json"
 
-    status, out, err = _shell_status(
+    status, out, err = _child_status(
         [
             sys.executable, str(EFFECT_PROBE),
             "--summary", str(summary_path),
@@ -6449,7 +6464,7 @@ def test_OUTSIDE_pytest_a_fresh_runs_rubric_ref_resolves_from_this_repo(tmp_path
     mutation that writes an unresolvable segment into the recorded ref.
     """
     summary_path = tmp_path / "summary.json"
-    status, _out, err = _shell_status(
+    status, _out, err = _child_status(
         [
             sys.executable, str(EFFECT_PROBE),
             "--summary", str(summary_path),
@@ -6502,7 +6517,7 @@ def test_OUTSIDE_pytest_a_fresh_run_reproduces_both_frozen_payload_recipes(tmp_p
     which is not SA3's value, and this goes red.
     """
     _sa3, bar_row, sa3_sha = _rbp18_frozen_pair()
-    status, out, err = _shell_status(
+    status, out, err = _child_status(
         [
             sys.executable, str(PAYLOAD_PROBE),
             str(_REPO), str(_SA3_REPLAY), _RBP18_CELL_REF,
