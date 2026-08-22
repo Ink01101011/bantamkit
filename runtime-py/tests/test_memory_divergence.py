@@ -15,15 +15,24 @@ import pytest
 
 from bantamkit.memory.divergence import (
     ABSENT,
+    ACCOUNTED_WRITER_ENV,
     PRESENT,
     UNREADABLE,
     DivergenceReport,
+    bantamkit_store_availability,
     bantamkit_store_root,
     compare_stores,
+    env_names_in_source,
     native_store_root,
     read_store,
+    resolver_honours_env,
     store_availability,
+    unaccounted_writer_env,
+    writer_source_files,
+    writer_store_env_names,
 )
+from bantamkit.memory.layers import MEMORY_DIR_ENV
+from bantamkit.memory.store import MemoryValidationError
 
 BANTAMKIT_SHAPE = """---
 name: {name}
@@ -510,3 +519,266 @@ def test_explain_on_a_clean_pair_says_so_without_listing_anything(tmp_path):
 
     assert "no divergence." in text
     assert "clean=True" in text
+
+
+# ---- a fact is not an index just because of what it is called ----
+#
+# `MemoryStore`'s name regex accepts `index` and `memory`, and the old filename filter
+# dropped both from every scan. Zero of the 65 live facts hit it, so nothing was being
+# lost in practice -- but the direction of the failure is FALSE GREEN, and these four
+# nodes are what stop it coming back.
+
+
+def test_a_fact_called_index_is_a_fact_when_it_sits_where_facts_sit(tmp_path):
+    """`save('index')` writes `facts/index.md`, and neither store's roll-up lives there."""
+    root = tmp_path / "store"
+    write(root / "facts" / "index.md", BANTAMKIT_SHAPE, "index", "b1")
+    write(root / "facts" / "memory.md", BANTAMKIT_SHAPE, "memory", "b2")
+    (root / "index.md").write_text("- [[index]] (project) - d\n", encoding="utf-8")
+
+    facts, unparseable = read_store(root)
+
+    assert [f.name for f in facts] == ["index", "memory"]
+    assert unparseable == []
+
+
+def test_a_flat_fact_called_index_is_a_fact_and_the_rollup_beside_it_is_not(tmp_path):
+    """The native layout keeps facts flat, so a fact and the index share a directory.
+
+    Only the contents separate them, which is why the filter reads the file. On a
+    case-insensitive filesystem -- this machine's -- `memory.md` and `MEMORY.md` are one
+    path, so a name-based rule has nothing left to key on at all.
+    """
+    root = tmp_path / "store"
+    write(root / "index.md", NATIVE_SHAPE, "index", "b1")
+    (root / "MEMORY.md").write_text("# Memory index\n\n- [[index]]\n", encoding="utf-8")
+
+    facts, unparseable = read_store(root)
+
+    assert [f.name for f in facts] == ["index"]
+    assert unparseable == []
+
+
+def test_two_index_named_facts_no_longer_compare_clean_against_an_empty_store(tmp_path):
+    """The measured false green, end to end: MS4 saw `clean=True` over 2 facts vs 0."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    write(a / "facts" / "index.md", BANTAMKIT_SHAPE, "index", "b1")
+    write(a / "facts" / "memory.md", BANTAMKIT_SHAPE, "memory", "b2")
+    b.mkdir()
+    (b / "MEMORY.md").write_text("# Memory index\n", encoding="utf-8")
+
+    report = compare_stores(a, b)
+
+    assert report.clean is False
+    assert report.a_count == 2
+    assert report.only_in_a == ["index", "memory"]
+    assert "index" in report.explain()
+
+
+def test_a_corrupt_file_at_the_index_path_is_dropped_and_the_docstring_says_so(tmp_path):
+    """The one case the identity rule gets wrong, pinned so it stays known rather than
+    discovered.
+
+    A file called `index.md` that parses as neither a fact nor anything else is
+    indistinguishable from a generated roll-up, so it is filtered instead of reported.
+    A corrupt file under ANY OTHER name is still reported, which is what keeps the
+    residue to one file per store.
+    """
+    root = tmp_path / "store"
+    root.mkdir()
+    (root / "index.md").write_text("---\nname: index\nno closing fence\n", encoding="utf-8")
+    (root / "elsewhere.md").write_text("---\nname: x\nno closing fence\n", encoding="utf-8")
+
+    facts, unparseable = read_store(root)
+
+    assert facts == []
+    assert [Path(u.path).name for u in unparseable] == ["elsewhere.md"]
+
+
+# ---- the pin: ONE precedence, and it is the writer's ----
+#
+# MS4 measured the whole reason these nodes exist: with `BANTAMKIT_MEMORY_DIR` live, the
+# writer saved into the pinned store, this resolver read the repo anchor, and the
+# real-pair tripwire reported clean over 1829 green tests.
+
+
+def test_a_live_pin_outranks_the_repo_anchor(tmp_path, monkeypatch):
+    """The store a comparison must be about is the store the WRITER is bound to.
+
+    Both stores exist and both hold facts, so nothing here is decided by one of them
+    being missing -- the anchor is a perfectly good store, and the pin still wins.
+    """
+    repo = tmp_path / "proj"
+    (repo / ".git").mkdir(parents=True)
+    (repo / ".bantamkit" / "memory" / "facts").mkdir(parents=True)
+    anchor = repo / ".bantamkit" / "memory"
+    write(anchor / "facts" / "anchored.md", BANTAMKIT_SHAPE, "anchored", "b")
+    pin = tmp_path / "pinned"
+    (pin / "facts").mkdir(parents=True)
+    write(pin / "facts" / "pinned.md", BANTAMKIT_SHAPE, "pinned", "b")
+
+    assert bantamkit_store_root(repo) == repo / ".bantamkit" / "memory"
+
+    monkeypatch.setenv(MEMORY_DIR_ENV, str(pin))
+
+    assert bantamkit_store_root(repo) == pin
+    assert [f.name for f in read_store(bantamkit_store_root(repo))[0]] == ["pinned"]
+
+
+def test_the_pin_answers_the_same_whether_or_not_an_anchor_exists(tmp_path, monkeypatch):
+    """ONE precedence out of this function, which is not what it used to have.
+
+    Measured on this tree 2026-08-23, before the delegation: `anchor EXISTS -> the repo
+    store` and `anchor ABSENT -> the pin`. Two answers from one function, and which one
+    an operator got depended on whether `<repo>/.bantamkit/memory` happened to be there
+    -- the old fallback to `discover_project_store()` reads the pin and the anchor branch
+    in front of it did not.
+    """
+    repo = tmp_path / "proj"
+    (repo / ".git").mkdir(parents=True)
+    (repo / ".bantamkit" / "memory" / "facts").mkdir(parents=True)
+    nowhere = tmp_path / "no-repo-here"
+    nowhere.mkdir()
+    pin = tmp_path / "pinned"
+    pin.mkdir()
+    monkeypatch.setenv(MEMORY_DIR_ENV, str(pin))
+
+    assert bantamkit_store_root(repo) == pin
+    assert bantamkit_store_root(nowhere) == pin
+
+
+def test_a_blank_pin_is_not_a_pin_and_the_anchor_keeps_the_store(tmp_path, monkeypatch):
+    """Inherited, not re-decided. An MCP host that emits `"BANTAMKIT_MEMORY_DIR": ""` has
+    named no store, and this resolver agrees with the writer about that because it asks
+    the writer instead of reading the variable itself.
+    """
+    repo = tmp_path / "proj"
+    (repo / ".git").mkdir(parents=True)
+    (repo / ".bantamkit" / "memory" / "facts").mkdir(parents=True)
+    monkeypatch.setenv(MEMORY_DIR_ENV, "")
+
+    assert bantamkit_store_root(repo) == repo / ".bantamkit" / "memory"
+
+
+def test_an_unusable_pin_is_a_finding_and_never_a_quiet_fallback(tmp_path, monkeypatch):
+    """A pin the writer refuses must not become "use the anchor instead".
+
+    The anchor here is a real, populated store, so falling back to it would produce a
+    confident, wrong, GREEN comparison -- the operator named a store, the gate read a
+    different one and said the pair agrees. Three unusable shapes, one verdict:
+    `bantamkit_store_root()` propagates the writer's raise, and
+    `bantamkit_store_availability()` turns it into UNREADABLE, which `_precondition()`
+    in test_memory_store_tripwire.py already knows to fail rather than skip.
+    """
+    repo = tmp_path / "proj"
+    (repo / ".git").mkdir(parents=True)
+    (repo / ".bantamkit" / "memory" / "facts").mkdir(parents=True)
+    anchor = repo / ".bantamkit" / "memory"
+    write(anchor / "facts" / "anchored.md", BANTAMKIT_SHAPE, "anchored", "b")
+    a_file = tmp_path / "not-a-store.md"
+    a_file.write_text("this is not a store\n", encoding="utf-8")
+
+    for bad in ("relative/store", str(tmp_path / "never-created"), str(a_file)):
+        monkeypatch.setenv(MEMORY_DIR_ENV, bad)
+
+        with pytest.raises(MemoryValidationError):
+            bantamkit_store_root(repo)
+
+        availability = bantamkit_store_availability(repo)
+        assert availability.state == UNREADABLE, bad
+        assert bad in availability.reason, bad
+
+
+def test_with_no_pin_set_the_availability_wrapper_is_just_the_probe(tmp_path, monkeypatch):
+    """The wrapper must not change the answer in the ordinary case, only add one."""
+    repo = tmp_path / "proj"
+    (repo / ".git").mkdir(parents=True)
+    (repo / ".bantamkit" / "memory" / "facts").mkdir(parents=True)
+    monkeypatch.delenv(MEMORY_DIR_ENV, raising=False)
+
+    assert bantamkit_store_availability(repo) == store_availability(bantamkit_store_root(repo))
+    assert bantamkit_store_availability(repo).state == PRESENT
+
+
+# ---- the register: nothing may move the writer's store behind this resolver's back ----
+
+
+def test_no_environment_variable_moves_the_writers_store_behind_this_resolvers_back():
+    """The population guard. Red ON ARRIVAL when a branch teaches the writer a new lever.
+
+    Not vacuous: measured 2026-08-23, the population is exactly `{BANTAMKIT_MEMORY_DIR}`
+    and the register accounts for it, so the subtraction is empty because both sides say
+    the same non-empty thing. Before the delegation landed, this same call returned
+    `['BANTAMKIT_MEMORY_DIR']` on this tree -- that is the red this node is shaped to
+    produce, and it has already produced it once.
+    """
+    assert writer_store_env_names(), (
+        "the scan found no environment variable in any writer module at all, which "
+        "would make the guard below pass by looking at nothing"
+    )
+    unaccounted = unaccounted_writer_env()
+    assert not unaccounted, (
+        "the memory WRITER now honours "
+        + ", ".join(sorted(unaccounted))
+        + ", and `bantamkit.memory.divergence.bantamkit_store_root()` does not.\n"
+        "Until both change together, the real-pair tripwire compares whatever the ANCHOR\n"
+        "resolves to while the writer saves somewhere else, and reports clean. MS4\n"
+        "measured that exact tree: writer under the pin, tripwire on <repo>/.bantamkit/\n"
+        "memory, clean=True, 1829 passed.\n"
+        "To clear this red you must do BOTH of:\n"
+        "  1. teach bantamkit_store_root() the same precedence the writer uses -- reuse\n"
+        "     the writer's own resolver rather than restating its rules here; and\n"
+        "  2. add the name to ACCOUNTED_WRITER_ENV in memory/divergence.py.\n"
+        "Doing only (2) trades this red for the one in "
+        "test_every_registered_environment_variable_measurably_moves_this_resolver."
+    )
+
+
+def test_the_environment_scan_reads_code_and_not_prose():
+    """Non-vacuity, and the discrimination the AST buys over a text scan.
+
+    Built from the shape of the sibling branch measured 2026-08-22: one wired assignment,
+    the same name repeated in a comment and a docstring, and a second, unrelated
+    `BANTAMKIT_*` name that appears in prose only.
+    """
+    source = (
+        '"""A docstring naming BANTAMKIT_ASSETS and BANTAMKIT_MEMORY_DIR."""\n'
+        "# a comment naming BANTAMKIT_MEMORY_DIR\n"
+        'MEMORY_DIR_ENV = "BANTAMKIT_MEMORY_DIR"\n'
+        "def f():\n"
+        '    """Another docstring naming BANTAMKIT_ASSETS."""\n'
+        "    return os.environ.get(MEMORY_DIR_ENV)\n"
+    )
+
+    assert env_names_in_source(source) == {"BANTAMKIT_MEMORY_DIR"}
+    assert env_names_in_source("x = 1\n") == frozenset()
+    # An inline `os.environ.get("BANTAMKIT_...")` is wired without ever being assigned to
+    # a constant, so the scan must see the literal wherever it sits.
+    assert env_names_in_source('os.environ.get("BANTAMKIT_INLINE")\n') == {"BANTAMKIT_INLINE"}
+
+
+def test_the_scan_covers_every_writer_module_and_never_this_one():
+    """Globbed, not listed, so a module added tomorrow is scanned without being added."""
+    names = {p.name for p in writer_source_files()}
+
+    assert {"layers.py", "store.py", "component.py"} <= names
+    assert "divergence.py" not in names
+    # The instrument's own knob is therefore not in the population it polices.
+    assert "BANTAMKIT_NATIVE_MEMORY" not in writer_store_env_names()
+
+
+def test_every_registered_environment_variable_measurably_moves_this_resolver(tmp_path):
+    """The other side of the register: it cannot be silenced by editing the register.
+
+    The probe is proven capable of saying NO against a name the resolver certainly does
+    not read, so an empty register does not make this node vacuous in the direction that
+    matters.
+    """
+    assert resolver_honours_env("BANTAMKIT_NOT_A_STORE_PIN_AT_ALL", tmp_path) is False
+
+    for name in sorted(ACCOUNTED_WRITER_ENV):
+        assert resolver_honours_env(name, tmp_path), (
+            f"{name} is registered in ACCOUNTED_WRITER_ENV as an environment variable "
+            f"bantamkit_store_root() honours, and it does not honour it. A register that "
+            f"can be satisfied by editing the register is decoration."
+        )

@@ -5,9 +5,14 @@ import pytest
 from bantamkit.client import Message, Response, ToolCall, Usage
 from bantamkit.memory.layers import MEMORY_DIR_ENV
 
+#: The one mark that opts out of `_no_ambient_memory_pin` below. Spelled once, here,
+#: because a marker name duplicated between a fixture and the node it exempts is how the
+#: two come to be talking about different marks.
+REAL_PAIR_MARK = "realpair"
+
 
 @pytest.fixture(autouse=True)
-def _no_ambient_memory_pin(monkeypatch):
+def _no_ambient_memory_pin(request, monkeypatch):
     """No node in this suite may be answered by -- or WRITE INTO -- a pinned store.
 
     `BANTAMKIT_MEMORY_DIR` outranks the whole discovery walk by design, so a
@@ -44,7 +49,21 @@ def _no_ambient_memory_pin(monkeypatch):
     `::test_the_ambient_pin_guard_puts_back_the_store_a_pin_had_taken` (kills the
     body). Before those existed, both mutations left CI green, because CI has no
     ambient pin to delete.
+
+    ONE EXEMPTION, and it is the opposite case rather than an exception to the rule.
+    Every node this fixture is for asks a question about the CODE and must not be
+    answered by the operator's environment. `test_memory_store_tripwire.py`'s
+    `realpair` node asks a question about THE OPERATOR'S MACHINE -- do the two stores
+    this machine actually writes agree -- and under a pin the store it writes IS the
+    pinned one. Clearing the pin there does not isolate that node from the environment,
+    it points it at a store nobody is using and lets it report clean, which is the exact
+    false green the gate was built to prevent. Measured 2026-08-23: with the pin live and
+    this fixture unconditional, the tripwire compares the abandoned repo store. So the
+    mark is honoured here and pinned from the other side by
+    `test_the_ambient_pin_survives_into_a_realpair_node`.
     """
+    if REAL_PAIR_MARK in request.keywords:
+        return
     monkeypatch.delenv(MEMORY_DIR_ENV, raising=False)
 
 

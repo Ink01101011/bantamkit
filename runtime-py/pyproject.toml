@@ -45,6 +45,39 @@ path = "hatch_build.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# MS5, 2026-08-23. THE ONE MARKER IN THIS SUITE, and the only `addopts` line, so read
+# both together: the default run of this suite DOES NOT COMPARE THE TWO REAL MEMORY
+# STORES ON THIS MACHINE. It is deselected, not skipped and not passed -- pytest prints
+# `1 deselected` and makes no claim about it.
+#
+# WHY. `tests/test_memory_store_tripwire.py::test_the_two_real_memory_stores_have_not_
+# drifted_apart` is a hard assertion about MACHINE STATE, not about the diff under test,
+# and MS4 measured the mechanism that makes that state move on its own: no `runtime-py`
+# source writes `~/.claude`, so the bantamkit MCP writes only `<repo>/.bantamkit/memory`
+# and Claude Code's auto-memory writes only the native store. EVERY `memory_save`
+# diverges the pair by +1 until a human mirrors it -- and this program's mandated
+# workflow is one job per context, write memory, clear. Left in the default run, that
+# node charges every unrelated unit in the repo with a red about the user's memory store
+# that its diff did not cause; it already did, to the unit that wrote the node, which
+# then wrote into the user's live store to get green.
+#
+# WHY NOT SOFTEN IT INSTEAD. The alternative was to keep it selected and downgrade the
+# failure to a printed report. That leaves a node that is GREEN while the stores
+# disagree, and a green that means nothing is the exact defect the whole gate exists to
+# prevent. So the node keeps its hard fail and gives up its seat in the default run.
+#
+# WHO RUNS IT. The memory job and the shift closeout, with:
+#   PYTHONPATH=runtime-py/src .venv/bin/python -m pytest runtime-py/tests -m realpair
+# That command is pinned by `test_the_realpair_arrangement_is_the_one_documented_here`,
+# which reads THIS FILE, so it cannot rot into a comment nobody re-derives.
+markers = [
+    """\
+realpair: compares the two real memory stores on THIS machine. Deselected by default \
+because its outcome is a function of machine state, not of the diff. Run it with: \
+PYTHONPATH=runtime-py/src .venv/bin/python -m pytest runtime-py/tests -m realpair""",
+]
+addopts = ["-m", "not realpair"]
 # L6, 2026-08-14 (L5's I6). Both permanent `xfail`s were NON-STRICT, so they could go
 # red neither by failing nor by passing — inert in both directions, while contributing
 # "2 xfailed" to a headline that reads as coverage. Strict makes the passing direction

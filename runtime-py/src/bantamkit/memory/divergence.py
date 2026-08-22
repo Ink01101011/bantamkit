@@ -28,6 +28,7 @@ here, which is why shape is decided per file and never per directory.
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 from dataclasses import dataclass, field
@@ -35,13 +36,24 @@ from pathlib import Path
 
 import yaml
 
-from bantamkit.memory.layers import discover_project_store
+from bantamkit.memory.layers import MEMORY_DIR_ENV, resolve_project_store
 from bantamkit.memory.store import MemoryValidationError
 
 # Both stores keep a generated roll-up beside the facts. It is derived from them, so
 # comparing it would report the same drift twice, and it carries no frontmatter, so
 # leaving it in would make every clean store report one unparseable file.
-INDEX_NAMES = {"index.md", "memory.md"}
+#
+# MS4 measured what filtering it by NAME costs. `MemoryStore`'s fact-name regex
+# `^[a-z0-9][a-z0-9-]*$` accepts `index` and `memory`, so a fact legitimately called
+# either one was dropped from BOTH stores' scans -- `save('index')` writes
+# `facts/index.md`, and `compare_stores()` then saw nothing -- and a store holding two
+# such facts compared CLEAN against an empty store. Zero of the 65 live facts hit it, so
+# it was latent, but the direction is false green, which is the one direction this module
+# exists to prevent.
+#
+# So the names below are only CANDIDATES now, and IDENTITY decides: a candidate is the
+# store's own index only if it does not parse as a fact. See `_is_generated_index`.
+INDEX_CANDIDATE_NAMES = {"index.md", "memory.md"}
 
 # Claude Code names a project directory by rewriting its absolute path. Measured
 # against all 26 slugs under ~/.claude/projects on 2026-08-22: every character outside
@@ -280,6 +292,127 @@ class DivergenceReport:
         return "\n".join(lines)
 
 
+# ---- the writer's levers on WHERE the bantamkit store is ----
+#
+# THE FAILURE THIS SECTION EXISTS FOR, measured by MS4 on the merged tree and reproduced
+# on this one 2026-08-23: with `BANTAMKIT_MEMORY_DIR` live, the writer saved a fact into
+# the pinned store, `bantamkit_store_root()` returned `<repo>/.bantamkit/memory`, and the
+# real-pair tripwire reported `clean=True`. 1829 passed, fully green, while the store
+# actually in use drifted unwatched. A gate that goes green by reading the wrong file is
+# worse than no gate.
+#
+# It was worse than "this resolver ignores the pin". It ignored the pin WHEN THE ANCHOR
+# EXISTED and honoured it WHEN THE ANCHOR DID NOT -- the old fallback to
+# `discover_project_store()` reads the pin -- so one function held two precedences and
+# which one you got depended on whether `<repo>/.bantamkit/memory` happened to be there.
+# Measured 2026-08-23 on this tree, before the fix:
+#     anchor EXISTS  -> <repo>/.bantamkit/memory      (pin ignored)
+#     anchor ABSENT  -> <the pin>                     (pin honoured)
+#     relative pin, anchor ABSENT -> MemoryValidationError
+#     missing pin,  anchor EXISTS -> no raise at all
+#
+# THE FIX IS DELEGATION, NOT IMITATION. `bantamkit_store_root()` now asks the writer's own
+# resolver where it would write and takes its answer whenever that answer came from a pin
+# (`origin == "pin"`). It does not read the environment, does not spell the variable's
+# name, and does not restate the writer's three rulings about a pin (a blank value is not
+# a pin, a relative pin raises, a missing pin raises). A SECOND, DIVERGENT COPY of the
+# writer's precedence would be the same false green in a new costume, and nothing would
+# catch it drifting; there is now exactly one copy and this module imports it.
+#
+# THE REGISTER BELOW IS THE SECOND LINE, for the lever that has not been invented yet.
+# Delegation fixes the pin because the pin is expressed through `StoreBinding.origin`; a
+# FUTURE lever need not be. So the population of `BANTAMKIT_*` names the writer's modules
+# wire to anything is registered here, in the pattern this repo already uses for
+# `_WINDOWS_ONLY_SKIPS`, and two CI-reachable nodes in `tests/test_memory_divergence.py`
+# hold it shut from opposite sides:
+#
+#   * every name the writer wires must appear in this register -- so a branch that adds
+#     one turns the suite red ON ARRIVAL, in the merge commit, and not on some later day
+#     when a store has already drifted unwatched;
+#   * every name IN this register must MEASURABLY move `bantamkit_store_root()` -- so the
+#     register cannot be silenced by editing it. Adding a name without teaching the
+#     resolver swaps one red for another.
+#
+# The one name in it today is imported, never retyped, so the register and the writer
+# cannot come to be talking about different variables.
+ACCOUNTED_WRITER_ENV: frozenset[str] = frozenset({MEMORY_DIR_ENV})
+
+_ENV_NAME_RE = re.compile(r"BANTAMKIT_[A-Z0-9_]+")
+
+
+def writer_source_files() -> list[Path]:
+    """Every module in this package that could be part of the writer's store resolution.
+
+    Globbed rather than listed, so a module added tomorrow is scanned without anybody
+    remembering to add it. This module is excluded: `NATIVE_ROOT_ENV` is the INSTRUMENT's
+    own knob, not the writer's, and registering it against itself would prove nothing.
+    """
+    here = Path(__file__).resolve()
+    return sorted(p for p in here.parent.glob("*.py") if p.name != here.name)
+
+
+def env_names_in_source(source: str) -> frozenset[str]:
+    """Every `BANTAMKIT_*` env name a module NAMES IN CODE. Docstrings do not count.
+
+    Parsed, not grepped, and the difference is load-bearing. On the sibling branch
+    `layers.py` mentions `BANTAMKIT_MEMORY_DIR` in a comment and in a docstring as well as
+    in the one assignment that wires it, and mentions `BANTAMKIT_ASSETS` in prose only --
+    a text scan hands the merger two names to chase, one of which is nothing to do with
+    the memory store. The AST reports the one name that is actually attached to code.
+    """
+    tree = ast.parse(source)
+    prose = {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+    }
+    return frozenset(
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and node not in prose
+        and isinstance(node.value, str)
+        and _ENV_NAME_RE.fullmatch(node.value)
+    )
+
+
+def writer_store_env_names() -> frozenset[str]:
+    """The population: every env name the writer's modules wire to anything, right now."""
+    names: set[str] = set()
+    for path in writer_source_files():
+        names |= env_names_in_source(path.read_text(encoding="utf-8"))
+    return frozenset(names)
+
+
+def unaccounted_writer_env() -> frozenset[str]:
+    """Names the writer honours that this resolver has not been taught. Must stay empty."""
+    return writer_store_env_names() - ACCOUNTED_WRITER_ENV
+
+
+def resolver_honours_env(name: str, target: str | Path) -> bool:
+    """Does `bantamkit_store_root()` actually bind to `target` when `name` names it?
+
+    RUN, not read. The register's second node exists because a name can be added to
+    `ACCOUNTED_WRITER_ENV` in one line while the resolver still ignores it, and a
+    register that can be silenced by editing the register is decoration. Nothing short of
+    calling the resolver answers this.
+
+    The variable is set and restored around the single call, including the case where it
+    was not set before. This is the only place in this read-only module that writes
+    anything at all, and what it writes is one process-local environment slot.
+    """
+    target = Path(target)
+    previous = os.environ.get(name)
+    os.environ[name] = str(target)
+    try:
+        return bantamkit_store_root().resolve() == target.resolve()
+    finally:
+        if previous is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = previous
+
+
 # ---- roots ----
 
 
@@ -325,23 +458,55 @@ def bantamkit_store_root(start: str | Path | None = None) -> Path:
     So the repo's own store wins whenever it exists. The ancestor walk is kept only as
     the fallback for a checkout with no `.git` marker (a tarball, a vendored copy),
     where anchoring has nothing to anchor to.
+
+    A PIN OUTRANKS BOTH, and the answer to whether one is set comes from the writer
+    rather than from this module's own reading of the environment. `origin == "pin"` is
+    the writer saying "I did not walk anywhere; the operator named this store", and that
+    is the store a comparison has to be about. See the section note above for what the
+    two-precedence version of this function measured.
+
+    RAISES `MemoryValidationError`, propagated from the writer, when a pin is set and
+    unusable (relative, missing, not a directory). Deliberately not caught here: this
+    function's contract is "the store the writer would use", and when the writer has no
+    usable answer, inventing one is how a gate comes to read the wrong file. Callers that
+    must survive it use `bantamkit_store_availability()`, which turns the raise into the
+    UNREADABLE finding it is.
     """
-    # HAZARD, noted 2026-08-22 and deliberately NOT acted on here. A sibling branch adds
-    # `BANTAMKIT_MEMORY_DIR`, an env pin that outranks the store walk for the WRITER. This
-    # resolver does not read it, so once that lands, a session with the pin set writes its
-    # facts somewhere this function will not look -- and the real-pair tripwire would then
-    # compare an abandoned `<repo>/.bantamkit/memory` against the native store and report
-    # CLEAN while the store actually in use drifts unwatched. A gate that goes green by
-    # looking at the wrong file is worse than no gate. Whoever merges that branch owns
-    # teaching this function the same precedence; this unit is not on it and will not
-    # depend on a symbol it cannot import.
+    binding = resolve_project_store(start)
+    if binding.origin == "pin":
+        return binding.path
     anchored = _canonical_repo_root(start) / ".bantamkit" / "memory"
     if anchored.is_dir():
         return anchored
-    discovered = discover_project_store(start)
-    if discovered.is_dir():
-        return discovered
+    # Same walk the old fallback ran, already done: `binding.path` for a walk binding is
+    # what `discover_project_store()` returns, and "designated" is its way of saying the
+    # walk found nothing anywhere up the tree.
+    if binding.state != "designated":
+        return binding.path
     return anchored
+
+
+def bantamkit_store_availability(start: str | Path | None = None) -> StoreAvailability:
+    """`store_availability()` for the bantamkit store, with the pin's raise folded in.
+
+    A pinned store that is relative, missing, or not a directory makes
+    `bantamkit_store_root()` raise, and a raise reaching pytest collection is a crash
+    where this package already has a vocabulary for the situation: something is named as
+    a store and cannot be read, which is UNREADABLE, which `_precondition()` turns into a
+    hard fail rather than a skip. A typo'd pin is a finding, not an absence -- exactly the
+    distinction the three-state probe was built to make -- and routing it anywhere else
+    would let a broken pin buy itself a green skip.
+    """
+    try:
+        root = bantamkit_store_root(start)
+    except MemoryValidationError as e:
+        raw = os.environ.get(MEMORY_DIR_ENV) or ""
+        return StoreAvailability(
+            raw or "<the writer's store>",
+            UNREADABLE,
+            f"the store the writer is bound to cannot be resolved: {e}",
+        )
+    return store_availability(root)
 
 
 def native_store_root(start: str | Path | None = None) -> Path:
@@ -431,10 +596,43 @@ def _fact_files(root: Path) -> list[Path]:
 
     Flat files come first so that a name held in both layouts keeps the flat copy and
     reports the nested one, rather than the answer depending on glob order.
+
+    Nothing under `facts/` is filtered, and that is the first half of the `index` fix:
+    NEITHER store puts its roll-up there. `MemoryStore` writes `index.md` beside
+    `facts/`, and the native store writes `MEMORY.md` beside its flat files, so a
+    `facts/index.md` is always a fact and excluding it only ever hid one.
     """
-    flat = sorted(p for p in root.glob("*.md") if p.name.lower() not in INDEX_NAMES)
-    nested = sorted(p for p in (root / "facts").glob("*.md") if p.name.lower() not in INDEX_NAMES)
+    flat = sorted(
+        p
+        for p in root.glob("*.md")
+        if p.name.lower() not in INDEX_CANDIDATE_NAMES or not _is_generated_index(p)
+    )
+    nested = sorted((root / "facts").glob("*.md"))
     return flat + nested
+
+
+def _is_generated_index(path: Path) -> bool:
+    """Is this the store's own roll-up, or a fact that happens to be called `index`?
+
+    Decided by reading the file, never by its name. Both live indexes were measured
+    2026-08-22: `<repo>/.bantamkit/memory/index.md` opens on a `- [[...]]` list item and
+    `~/.claude/projects/<slug>/memory/MEMORY.md` opens on a `# Memory index` heading.
+    Neither carries frontmatter, so neither parses as a fact, while a fact named `index`
+    does -- its writer put frontmatter there. That is the discriminator, and it needs no
+    knowledge of which layout the root is in, which matters because on a case-insensitive
+    filesystem a native fact named `memory` and the native index `MEMORY.md` ARE THE SAME
+    PATH and only the contents can separate them.
+
+    The residue, stated instead of hidden: a fact named `index` or `memory` whose file is
+    CORRUPT parses as neither, so it is dropped here rather than reported unparseable.
+    That is one file, in the one store that holds it, and it is the only case this rule
+    gets wrong -- the rule it replaces got every WELL-FORMED one wrong, in both stores.
+    """
+    try:
+        parse_fact(path)
+    except MemoryValidationError:
+        return True
+    return False
 
 
 def read_store(root: str | Path) -> tuple[list[StoredFact], list[UnparseableFact]]:
