@@ -545,6 +545,12 @@ def test_the_checker_child_writes_utf8_bytes_whatever_codec_the_environment_name
     )
     assert raw.stdout[:20] == b"# amendguard \xe2\x80\x94 the", raw.stdout[:40]
     assert raw.stdout.decode("utf-8").startswith("# amendguard \u2014 the")
+    # AND THROUGH `_run`, because the binary read above goes around it. Without this the
+    # `env=` inside `_run` -- the line that actually repairs every other node in this
+    # file -- has no node that reddens when it is deleted, and an unreddenable repair is
+    # a claim (W13 reported the same gap in its own new code).
+    r, _rows, _summary = _run(repo, "HEAD", ledger)
+    assert r.stdout.startswith("# amendguard \u2014 the")
 
 
 def test_a_capture_that_lost_a_stream_names_the_status_that_produced_it():
