@@ -35,11 +35,19 @@ def load_manifest(asset: Path = ASSET) -> dict:
 def load_repo(asset: Path = ASSET, root: str = "repo") -> dict[str, str]:
     """Every file under `repo/`, keyed by its repo-relative posix path."""
     base = asset / root
-    return {
-        str(p.relative_to(base).as_posix()): p.read_text(encoding="utf-8")
-        for p in sorted(base.rglob("*"))
-        if p.is_file()
-    }
+    # SORT THE POSIX KEY, NOT THE Path. `sorted(base.rglob("*"))` orders `Path` objects,
+    # and the two flavours disagree: `PurePosixPath` compares case-SENSITIVELY, so
+    # `HISTORY.md` and `README.md` precede `docs/...`, while `PureWindowsPath` folds case
+    # and puts `docs/...` first. Six of these seventeen files land in a different position,
+    # the workspace dict is built in a different insertion order, the rendered YAML differs,
+    # and `check` reports all eight tasks as drifted -- on Windows only, against files that
+    # nobody touched. Measured, not inferred: sorting the two flavours over this exact file
+    # list disagrees on 6 of 17 entries. The key is already declared posix one line up;
+    # ordering by it is what makes this generator produce the same bytes on every platform.
+    pairs = sorted(
+        (str(p.relative_to(base).as_posix()), p) for p in base.rglob("*") if p.is_file()
+    )
+    return {key: p.read_text(encoding="utf-8") for key, p in pairs}
 
 
 def render(task: dict, workspace: dict[str, str]) -> str:
