@@ -461,6 +461,39 @@ def test_nonpositive_k_flag_is_rejected():
         _build_memory(_parse_args(["--k", "0"]))
 
 
+@pytest.mark.parametrize("budget", [1, 512, 4096, 24_000, 100_000])
+def test_index_budget_reaches_the_store_on_both_deployment_paths(tmp_path, monkeypatch, budget):
+    """P5, swept: the flag has to survive BOTH branches of `_build_memory`, not one.
+
+    `--store` and the layered default build the store through different calls, so a
+    flag threaded into only one of them passes a single-value node and ships broken
+    for whichever deployment the fixture did not pick.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "nohome")
+    single = _build_memory(
+        _parse_args(["--store", str(tmp_path / "s"), "--index-budget", str(budget)])
+    )
+    assert single.store.index_budget == budget
+    layered = _build_memory(
+        _parse_args(["--start", str(tmp_path / "proj"), "--index-budget", str(budget)])
+    )
+    assert layered.store.index_budget == budget
+
+
+def test_index_budget_defaults_to_the_store_default_not_a_restated_number(tmp_path):
+    """A second literal here would drift from `store.py`; read the one that ships."""
+    from bantamkit.memory import DEFAULT_INDEX_BUDGET
+
+    mem = _build_memory(_parse_args(["--store", str(tmp_path / "s")]))
+    assert mem.store.index_budget == DEFAULT_INDEX_BUDGET
+
+
+@pytest.mark.parametrize("budget", ["0", "-1"])
+def test_nonpositive_index_budget_flag_is_rejected(tmp_path, budget):
+    with pytest.raises(SystemExit, match=">= 1"):
+        _build_memory(_parse_args(["--store", str(tmp_path / "s"), "--index-budget", budget]))
+
+
 PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
 
 
