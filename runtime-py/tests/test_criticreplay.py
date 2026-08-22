@@ -7141,18 +7141,21 @@ def test_OUTSIDE_pytest_a_fresh_run_reproduces_both_frozen_payload_recipes(tmp_p
 # The node below evaluates every `windows_cannot_construct` condition in the suite and
 # requires them all FALSE here and all TRUE on Windows -- so the marker cannot go inert in
 # either direction -- and it pins the POPULATION, so a later unit cannot quietly add a
-# third skip without the roster below being edited in the same commit. It lives in this
-# file because this file is where the class was found; it covers `test_shiftwork.py` too,
-# which is why the module list is explicit rather than "whatever happens to be imported".
+# fourth skip without the roster below being edited in the same commit. It lives in this
+# file because this file is where the class was found; it covers `test_shiftwork.py` and
+# `test_mcp_endpoint.py` too, which is why the module list is explicit rather than
+# "whatever happens to be imported".
 
-_WINDOWS_SKIP_MODULES = ("test_criticreplay", "test_shiftwork")
+_WINDOWS_SKIP_MODULES = ("test_criticreplay", "test_mcp_endpoint", "test_shiftwork")
 
 _WINDOWS_ONLY_SKIPS = {
     "test_criticreplay::test_a_closed_stdout_does_not_turn_a_measured_run_into_a_refusal",
     "test_criticreplay::test_fd_one_on_a_directory_never_reaches_this_module",
+    "test_mcp_endpoint::"
+    "test_the_endpoint_as_configured_serves_and_names_this_checkout_as_its_source",
     "test_shiftwork::test_clock_out_read_only_dir_is_a_structured_refusal",
 }
-"""Every node in the suite that a Windows runner does not execute. THREE, and priced.
+"""Every node in the suite that a Windows runner does not execute. FOUR, and priced.
 
 Each one is a scenario Windows cannot be put INTO -- the harness raises before the code
 under test is reached -- and each mark names the measurement that established that.
@@ -7160,6 +7163,16 @@ Nodes whose harness constructs fine on Windows and whose OUTCOME is merely unkno
 deliberately NOT here: skipping one of those would throw away the reading the matrix
 exists to take (RB-P51, and the reason W2's 16-node and W4's 5-node hand-off lists are
 not reproduced here -- see the W9 report).
+
+THE FOURTH ENTRY IS THE ONE WITH AN EXPIRY, and it is the only condition in this roster
+that is not literally `ON_WINDOWS`. `test_mcp_endpoint` spawns the string `.mcp.json`
+carries, and that string names a `#!/bin/sh` script; its condition therefore reads "on
+Windows AND no Windows-executable form of that command exists". Ship
+`tools/bantamkit-mcp.cmd`, or point `.mcp.json` at one, and the condition goes FALSE on
+Windows, `test_the_windows_only_skips_do_not_fire_on_this_platform` reddens on the
+Windows runner, and this entry has to be struck in the same commit. The user has deferred
+the Windows launcher, so the skip is correct today; it is written so it cannot outlive
+that deferral in silence.
 """
 
 
@@ -7187,9 +7200,11 @@ def test_the_windows_only_skips_do_not_fire_on_this_platform():
     Two mutations this catches, and they are the two that matter. Change any condition to
     something true here -- `True`, `sys.platform != "nothing"`, an inverted comparison --
     and the third assertion goes red on macOS and on `ubuntu-latest`, where a green suite
-    would otherwise have been the only report. Add a fourth `windows_cannot_construct`
-    anywhere in the suite without editing `_WINDOWS_ONLY_SKIPS` and the first goes red, so
-    the ledger W11 files cannot silently fall behind the code.
+    would otherwise have been the only report. Add a fifth Windows-only skip anywhere in
+    the suite without editing `_WINDOWS_ONLY_SKIPS` and the first goes red, so the ledger
+    W11 files cannot silently fall behind the code -- provided the module carrying it is
+    listed in `_WINDOWS_SKIP_MODULES`, which is the one hole this instrument has and the
+    reason the fourth entry's module was added there in the commit that added the skip.
 
     The Windows branch is not decoration either: a condition that went FALSE everywhere
     would leave the marker inert in the other direction, i.e. a skip that never skips and
@@ -7197,7 +7212,7 @@ def test_the_windows_only_skips_do_not_fire_on_this_platform():
     """
     conditions = _windows_only_skip_conditions()
     assert set(conditions) == _WINDOWS_ONLY_SKIPS
-    assert len(conditions) == 3
+    assert len(conditions) == 4
     if sys.platform == "win32":
         assert all(conditions.values()), conditions
     else:
