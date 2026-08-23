@@ -153,6 +153,43 @@ const MULTI = [
   ['matches-type-tiebreak', { properties: { a: { type: 'object', minProperties: 2 } } }, { a: { q: 1 } }],
   ['same-path-two-keywords', { properties: { a: { type: 'string', minimum: 3 } } }, { a: 1 }],
   ['array-index-order', { items: { properties: { k: { type: 'integer' } } } }, [{ k: 'a' }, { k: 'b' }]],
+  // Two errors at one path, both non-weak: the tie falls to relevance's last slot,
+  // `not _matches_type()`. The `type` error's subschema does NOT describe the instance and
+  // the `minimum` error's does, so the `type` error wins.
+  ['matches-type-allOf', { properties: { v: { allOf: [{ type: 'string' }, { type: 'integer', minimum: 5 }] } } },
+    { v: 1 }],
+  ['matches-type-allOf-flipped', { properties: { v: { allOf: [{ type: 'integer', minimum: 5 }, { type: 'string' }] } } },
+    { v: 1 }],
+];
+
+/**
+ * Cases whose OUTPUT TEXT cannot survive `JSON.stringify`, so they are written as bytes.
+ *
+ * `JSON.stringify(1.0)` is `"1"` and a duplicate key cannot be expressed by an object
+ * literal at all, so the two Python-isms that only exist in the TEXT — float-vs-int and
+ * dict insertion order under a repeated key — are unreachable from the corpus above.
+ */
+const RAW = [
+  ['float-integer-is-integer', { properties: { v: { type: 'integer' } } }, '{"v": 1.0}'],
+  ['float-nonintegral-is-not', { properties: { v: { type: 'integer' } } }, '{"v": 1.5}'],
+  ['float-reprs-as-float', { properties: { v: { type: 'string' } } }, '{"v": 1.0}'],
+  ['float-in-a-bound', { properties: { v: { minimum: 1.0 } } }, '{"v": 0}'],
+  ['float-exponent', { properties: { v: { type: 'string' } } }, '{"v": 1e16}'],
+  ['float-small', { properties: { v: { type: 'string' } } }, '{"v": 1e-5}'],
+  ['bigint-exact', { properties: { v: { type: 'string' } } }, '{"v": 12345678901234567890}'],
+  ['bigint-bound', { properties: { v: { minimum: 99999999999999999999 } } }, '{"v": 1}'],
+  ['nan-reprs', { properties: { v: { type: 'string' } } }, '{"v": NaN}'],
+  ['inf-reprs', { properties: { v: { type: 'string' } } }, '{"v": -Infinity}'],
+  ['dup-key-keeps-first-position', { type: 'string' }, '{"a": 1, "b": 2, "a": 3}'],
+  ['dup-key-three', { type: 'string' }, '{"z": 0, "a": 1, "z": 9, "m": 2}'],
+  ['enum-true-is-not-1', { properties: { v: { enum: [1] } } }, '{"v": true}'],
+  ['enum-1-is-not-true', { properties: { v: { enum: [true] } } }, '{"v": 1}'],
+  ['const-true-vs-1', { properties: { v: { const: true } } }, '{"v": 1}'],
+  ['const-1-vs-true', { properties: { v: { const: 1 } } }, '{"v": true}'],
+  ['unique-true-and-1', { properties: { v: { uniqueItems: true } } }, '{"v": [true, 1]}'],
+  ['unique-1-and-1.0', { properties: { v: { uniqueItems: true } } }, '{"v": [1, 1.0]}'],
+  ['unique-0-and-false', { properties: { v: { uniqueItems: true } } }, '{"v": [0, false]}'],
+  ['multipleOf-float-schema', { properties: { v: { multipleOf: 0.5 } } }, '{"v": 0.3}'],
 ];
 
 /** Mutations of a real checkpoint, validated against the REAL shipped schema. */
@@ -243,6 +280,11 @@ const EXTRACT_TEXTS = [
   '```json{"a":1}```',
   '```json\n{"a": 1}\n```\n```json\n{"b": 2}\n```',
   'prose ``` {"a": 1} ``` more',
+  // A brace BEFORE the fence: with the fence arm the answer is {'a': 1}, without it the
+  // first brace wins and the answer is {}. Nothing else in this list can tell them apart.
+  'use {} then\n```json\n{"a": 1}\n```',
+  'the list [] first, then\n```json\n{"a": 1}\n```',
+  'set {"b": 9} aside;\n```\n[1, 2]\n```',
   '```json\nnot json at all\n```',
   '```json\n```',
   'sure! {"a": 1} — anything else?',
@@ -304,6 +346,7 @@ export async function run(ctx) {
     );
   }
   for (const [nm, schema, instance] of MULTI) add(`multi/${nm}`, schema, JSON.stringify(instance));
+  for (const [nm, schema, text] of RAW) add(`raw/${nm}`, schema, text);
 
   for (const [base, path] of Object.entries(realCheckpoints)) {
     const original = readFileSync(path, 'utf8');

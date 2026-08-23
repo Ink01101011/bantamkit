@@ -213,6 +213,50 @@ test('extract_json: CPython accepts NaN and Infinity and repr()s them Python-sty
   );
 });
 
+test('the text is the only record of float-vs-int and of a repeated key', () => {
+  // `JSON.stringify` cannot express either, so both are unreachable from a JS literal.
+  // 1.0 IS an integer under draft 6+, and a repeated key keeps its FIRST position with its
+  // LAST value.
+  assert.equal(contract.schemaError('{"v": 1.0}', js({ properties: { v: { type: 'integer' } } })), null);
+  assert.equal(
+    contract.schemaError('{"v": 1.5}', js({ properties: { v: { type: 'integer' } } })),
+    "JSON does not match schema at 'v': 1.5 is not of type 'integer'",
+  );
+  assert.equal(
+    contract.schemaError('{"a": 1, "b": 2, "a": 3}', js({ type: 'string' })),
+    'JSON does not match schema at \'root\': ' + "{'a': 3, 'b': 2} is not of type 'string'",
+  );
+});
+
+test('True is not 1, in enum, in const and in uniqueItems', () => {
+  assert.equal(
+    contract.schemaError('{"v": true}', js({ properties: { v: { enum: [1] } } })),
+    "JSON does not match schema at 'v': True is not one of [1]",
+  );
+  assert.equal(
+    contract.schemaError('{"v": 1}', js({ properties: { v: { const: true } } })),
+    "JSON does not match schema at 'v': True was expected",
+  );
+  assert.equal(contract.schemaError('{"v": [true, 1]}', js({ properties: { v: { uniqueItems: true } } })), null);
+  assert.equal(
+    contract.schemaError('{"v": [1, 1.0]}', js({ properties: { v: { uniqueItems: true } } })),
+    "JSON does not match schema at 'v': [1, 1.0] has non-unique elements",
+  );
+});
+
+test('the fence arm wins over a brace that appears before it', () => {
+  // Without the fence arm the first `{` is the empty object in the prose, and the answer is
+  // a correct-looking sentence about a document the model never sent.
+  assert.equal(
+    contract.schemaError('use {} then\n```json\n{"a": 1}\n```', js({ required: ['a'] })),
+    null,
+  );
+  assert.equal(
+    contract.schemaError('use {} then {"a": 1}', js({ required: ['a'] })),
+    "JSON does not match schema at 'root': 'a' is a required property",
+  );
+});
+
 test('a float that happens to be integral still reprs as a float', () => {
   assert.equal(
     contract.schemaError('{"n": 1.0}', js({ properties: { n: { type: 'string' } } })),
