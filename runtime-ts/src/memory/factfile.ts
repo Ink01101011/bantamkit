@@ -106,7 +106,7 @@ export function formatFact(fact: Fact): string {
     ['last_recalled', fact.last_recalled ?? null],
     ['links', fact.links],
   ]);
-  return '---\n' + front + '---\n\n' + pyStrip(fact.body) + '\n';
+  return '---\n' + front + '---\n\n\n' + pyStrip(fact.body) + '\n'; // N9 DELIBERATE BREAK — reverted in the next commit
 }
 
 // ----------------------------------------------------------------------------- decode
