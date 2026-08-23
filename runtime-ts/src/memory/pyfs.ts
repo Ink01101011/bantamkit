@@ -16,6 +16,7 @@
  * Nothing here invents a policy. Every function names the CPython call it stands in for.
  */
 import {
+  appendFileSync,
   lstatSync,
   mkdirSync,
   readdirSync,
@@ -108,18 +109,28 @@ export class PyOSError extends Error {
   readonly code: string;
   readonly strerror: string;
   readonly filename: string | null;
+  /** `OSError.filename2` — set by the two-path syscalls, and PRINTED when it is. */
+  readonly filename2: string | null;
 
-  constructor(errno: number, code: string, strerror: string, filename: string | null) {
-    super(
-      filename === null
-        ? `[Errno ${errno}] ${strerror}`
-        : `[Errno ${errno}] ${strerror}: '${filename}'`,
-    );
+  constructor(
+    errno: number,
+    code: string,
+    strerror: string,
+    filename: string | null,
+    filename2: string | null = null,
+  ) {
+    // `OSError.__str__`: `[Errno n] msg`, then `: 'a'`, then ` -> 'b'` when there are two.
+    // `os.replace` is the one that reaches here with two, and shiftwork's clock-out quotes
+    // that string into the refusal a model reads.
+    const where =
+      filename === null ? '' : filename2 === null ? `: '${filename}'` : `: '${filename}' -> '${filename2}'`;
+    super(`[Errno ${errno}] ${strerror}${where}`);
     this.name = OSERROR_SUBCLASS[code] ?? 'OSError';
     this.errno = errno;
     this.code = code;
     this.strerror = strerror;
     this.filename = filename;
+    this.filename2 = filename2;
   }
 }
 
@@ -127,6 +138,7 @@ interface NodeFsError extends Error {
   errno?: number;
   code?: string;
   path?: string;
+  dest?: string;
   syscall?: string;
 }
 
@@ -137,12 +149,12 @@ interface NodeFsError extends Error {
  * one — a wrong capital letter in a sentence a model reads is worse than a visibly
  * different one, and the table is the thing the conformance suite can check.
  */
-export function asPyOSError(error: unknown, fallbackPath?: string): PyOSError {
+export function asPyOSError(error: unknown, fallbackPath?: string, fallbackDest?: string): PyOSError {
   const e = error as NodeFsError;
   const code = e?.code ?? 'EUNKNOWN';
   const errno = Math.abs(e?.errno ?? 0);
   const strerror = STRERROR[code] ?? `${code}: ${e?.message ?? 'unknown error'}`;
-  return new PyOSError(errno, code, strerror, e?.path ?? fallbackPath ?? null);
+  return new PyOSError(errno, code, strerror, e?.path ?? fallbackPath ?? null, e?.dest ?? fallbackDest ?? null);
 }
 
 // -------------------------------------------------------------------------- utf-8 text
@@ -248,6 +260,23 @@ export function pyReadText(path: string): string {
 export function pyWriteText(path: string, text: string): void {
   try {
     writeFileSync(path, text, 'utf8');
+  } catch (e) {
+    throw asPyOSError(e, path);
+  }
+}
+
+/**
+ * `path.open("a", encoding="utf-8").write(text)` — the accounting log's append.
+ *
+ * Same newline ruling as `pyWriteText`: Python opens with `newline=None` and would write
+ * CRLF on Windows, and this writes LF everywhere so the ledger a Node server appends to is
+ * the same file on every platform. One `appendFileSync` is one `open(O_APPEND)/write/close`,
+ * which is what CPython's `with` block does, so a line is never interleaved with another
+ * process's.
+ */
+export function pyAppendText(path: string, text: string): void {
+  try {
+    appendFileSync(path, text, 'utf8');
   } catch (e) {
     throw asPyOSError(e, path);
   }
@@ -802,16 +831,39 @@ export function pyRepr(value: string): string {
  * degenerate `facts/.md` (a fact whose frontmatter name is empty) -> `facts/.md.md.tmp`.
  */
 export function pyWithSuffix(path: string, suffix: string): string {
-  const cut = process.platform === 'win32'
-    ? Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
-    : path.lastIndexOf('/');
+  const cut = lastSeparator(path);
   const head = path.slice(0, cut + 1);
   const name = path.slice(cut + 1);
-  // `PurePath.suffix`: the last dot counts only when it is neither the first character nor
-  // the last one, so `.md` has no suffix and `a.` has none either.
-  const dot = name.lastIndexOf('.');
-  const stem = dot > 0 && dot < name.length - 1 ? name.slice(0, dot) : name;
+  const dot = suffixDot(name);
+  const stem = dot === -1 ? name : name.slice(0, dot);
   return `${head}${stem}${suffix}`;
+}
+
+function lastSeparator(path: string): number {
+  return process.platform === 'win32'
+    ? Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+    : path.lastIndexOf('/');
+}
+
+/**
+ * `PurePath.suffix`: the last dot counts only when it is neither the first character of the
+ * name nor the last one, so `.md` has no suffix and `a.` has none either.
+ */
+function suffixDot(name: string): number {
+  const dot = name.lastIndexOf('.');
+  return dot > 0 && dot < name.length - 1 ? dot : -1;
+}
+
+/**
+ * `PurePath.suffix` as a value, which `shiftwork.clock_out` needs on its own:
+ * `path.with_suffix(path.suffix + ".tmp")` turns `cp.json` into `cp.json.tmp` and a
+ * suffix-less `cp` into `cp.tmp`, and the two arms are only distinguishable by reading the
+ * suffix first.
+ */
+export function pySuffix(path: string): string {
+  const name = path.slice(lastSeparator(path) + 1);
+  const dot = suffixDot(name);
+  return dot === -1 ? '' : name.slice(dot);
 }
 
 /** `Path.unlink()` and `Path.replace(target)`, with CPython's error text. */
@@ -827,7 +879,8 @@ export function pyReplace(source: string, target: string): void {
   try {
     renameSync(source, target);
   } catch (e) {
-    throw asPyOSError(e, source);
+    // TWO filenames: `os.replace` sets `filename2`, so `str(e)` is `... : 'src' -> 'dst'`.
+    throw asPyOSError(e, source, target);
   }
 }
 

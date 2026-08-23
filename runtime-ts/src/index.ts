@@ -11,6 +11,7 @@ export {
   validationErrorMessage,
 } from './contract.js';
 export {
+  dumpJson,
   fromJs,
   PY_NONE,
   parseJson,
@@ -21,7 +22,7 @@ export {
   reprValue,
   toJs,
 } from './pyjson.js';
-export type { PyValue } from './pyjson.js';
+export type { DumpOptions, PyValue } from './pyjson.js';
 export {
   absolutePath,
   bestMatch,
@@ -97,10 +98,22 @@ export {
   PyRuntimeError,
   pyScandirNames,
   PyUnicodeDecodeError,
+  pyAppendText,
   pyStatIsDir,
+  pySuffix,
   pyUnlink,
   pyWithSuffix,
   pyWriteText,
   sortedPathNames,
   STRERROR_NAMES,
 } from './memory/pyfs.js';
+export {
+  clockIn,
+  clockOut,
+  HISTORY_RING_SIZE,
+  SCHEMA_NAME,
+  status,
+  TERMINAL_UNIT_STATUS,
+  timestamp,
+} from './shiftwork.js';
+export type { ClockOptions } from './shiftwork.js';

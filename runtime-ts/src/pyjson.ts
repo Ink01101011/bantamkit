@@ -1,5 +1,6 @@
 /**
- * The CPython `json` seam: `JSONDecoder().raw_decode`, and `repr()` of what it returns.
+ * The CPython `json` seam: `JSONDecoder().raw_decode`, `json.dumps`, and `repr()` of what
+ * the decoder returns.
  *
  * WHY THIS IS NOT `JSON.parse`. `contract.extract_json` calls `raw_decode`, and every
  * validation sentence downstream interpolates `{instance!r}` — Python's `repr` of the value
@@ -26,7 +27,7 @@
  * `.length`. Parsing runs on the JS string with UTF-16 indices — that is what the regexes
  * and `slice` want — and every index that reaches a MESSAGE is converted on the way out.
  */
-import { pyRepr as pyReprString } from './memory/pyfs.js';
+import { cmpCodepoint, pyRepr as pyReprString } from './memory/pyfs.js';
 
 // ------------------------------------------------------------------------- the value
 
@@ -158,6 +159,127 @@ export function reprValue(value: PyValue): string {
     case 'dict':
       return `{${[...value.v].map(([k, v]) => `${pyReprString(k)}: ${reprValue(v)}`).join(', ')}}`;
   }
+}
+
+// ------------------------------------------------------------------------- the encoder
+
+/**
+ * `json.dumps`, which is the OTHER half of this seam and the one that writes files.
+ *
+ * `JSON.stringify` differs from it in four ways, every one of which silently corrupts a
+ * shift-work checkpoint rather than failing:
+ *
+ *   1. **`ensure_ascii=True`.** Python escapes every codepoint outside ` `..`~` as
+ *      `\uXXXX`, astral ones as a surrogate PAIR. `JSON.stringify` emits them raw. The
+ *      document still round-trips to the same string, so nothing errors — the file just
+ *      stops being byte-comparable with the one Python writes, and the whole 29 KB of a
+ *      real checkpoint gets rewritten on the first successful clock-out.
+ *   2. **separators.** `(', ', ': ')` with no indent, `(',', ': ')` with one.
+ *      `JSON.stringify` uses neither.
+ *   3. **`sort_keys` is a codepoint sort.** JS `Array.sort` on strings is UTF-16 order,
+ *      which puts every astral key before U+E000 instead of after it.
+ *   4. **`5.0` is a float.** `JSON.stringify({n: 5.0})` is `{"n":5}`. Python keeps the
+ *      decimal point because it kept the type, which is why this module carries a tagged
+ *      value model at all.
+ *
+ * Also faithful: `allow_nan=True` emits the bare words `NaN`, `Infinity` and `-Infinity`
+ * that no JSON parser accepts, and `/` is NOT escaped.
+ */
+export interface DumpOptions {
+  /** Spaces per level. `null`/omitted is Python's `indent=None` — everything on one line. */
+  indent?: number | null;
+  /** Python's `sort_keys`. The comparison is by CODEPOINT, not by UTF-16 unit. */
+  sortKeys?: boolean;
+}
+
+/**
+ * `json/encoder.py`'s `ESCAPE_DCT`: the seven short escapes, then `\u00xx` for the rest of
+ * C0. Everything from ` ` (0x20) through `~` (0x7e) that is not `"` or `\` is literal, and
+ * everything else — DEL included — is `\uXXXX`.
+ */
+const ESCAPE_DCT: Record<string, string> = {
+  '\\': '\\\\',
+  '"': '\\"',
+  '\b': '\\b',
+  '\f': '\\f',
+  '\n': '\\n',
+  '\r': '\\r',
+  '\t': '\\t',
+};
+
+/**
+ * `py_encode_basestring_ascii`.
+ *
+ * The loop walks UTF-16 units on purpose: a lone surrogate half is exactly what Python
+ * emits for an astral character under `ensure_ascii`, so iterating by codepoint would only
+ * have to split every pair back apart.
+ */
+function encodeBasestringAscii(s: string): string {
+  let out = '"';
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i]!;
+    const short = ESCAPE_DCT[ch];
+    if (short !== undefined) {
+      out += short;
+      continue;
+    }
+    const unit = s.charCodeAt(i);
+    out += unit >= 0x20 && unit <= 0x7e ? ch : `\\u${unit.toString(16).padStart(4, '0')}`;
+  }
+  return `${out}"`;
+}
+
+/** `floatstr` under `allow_nan=True`: `repr` for the finite ones, bare words for the rest. */
+function encodeFloat(x: number): string {
+  if (Number.isNaN(x)) return 'NaN';
+  if (x === Infinity) return 'Infinity';
+  if (x === -Infinity) return '-Infinity';
+  return pyFloatRepr(x);
+}
+
+export function dumpJson(value: PyValue, options: DumpOptions = {}): string {
+  const indent = options.indent ?? null;
+  const sortKeys = options.sortKeys ?? false;
+  const pad = indent === null ? '' : ' '.repeat(indent);
+  // `indent is not None` changes the ITEM separator and leaves the key separator alone.
+  const itemSep = indent === null ? ', ' : ',';
+  const keySep = ': ';
+
+  const encode = (v: PyValue, level: number): string => {
+    switch (v.t) {
+      case 'null':
+        return 'null';
+      case 'bool':
+        return v.v ? 'true' : 'false';
+      case 'int':
+        return v.v.toString();
+      case 'float':
+        return encodeFloat(v.v);
+      case 'str':
+        return encodeBasestringAscii(v.v);
+      case 'list': {
+        if (v.v.length === 0) return '[]';
+        const parts = v.v.map((item) => encode(item, level + 1));
+        if (indent === null) return `[${parts.join(itemSep)}]`;
+        const nl = `\n${pad.repeat(level + 1)}`;
+        return `[${nl}${parts.join(itemSep + nl)}\n${pad.repeat(level)}]`;
+      }
+      case 'dict': {
+        if (v.v.size === 0) return '{}';
+        const entries = [...v.v];
+        // `sorted(dct.items())` — keys are unique, so the value never enters the compare.
+        if (sortKeys) entries.sort((a, b) => cmpCodepoint(a[0], b[0]));
+        const parts = entries.map(
+          ([k, item]) => `${encodeBasestringAscii(k)}${keySep}${encode(item, level + 1)}`,
+        );
+        if (indent === null) return `{${parts.join(itemSep)}}`;
+        const nl = `\n${pad.repeat(level + 1)}`;
+        return `{${nl}${parts.join(itemSep + nl)}\n${pad.repeat(level)}}`;
+      }
+    }
+  };
+
+  return encode(value, 0);
 }
 
 // ------------------------------------------------------------------------- the decoder
