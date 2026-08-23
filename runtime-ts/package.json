@@ -1,0 +1,44 @@
+{
+  "name": "bantamkit-mcp",
+  "version": "0.25.0",
+  "description": "bantamkit MCP server — pure Node, runnable with npx",
+  "type": "module",
+  "bin": {
+    "bantamkit-mcp": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "assets"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "sync-assets": "node scripts/sync-assets.mjs",
+    "prepack": "node scripts/sync-assets.mjs",
+    "pretest": "npm run build",
+    "test": "node scripts/run-tests.mjs"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ink01101011/bantamkit.git",
+    "directory": "runtime-ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0"
+  }
+}

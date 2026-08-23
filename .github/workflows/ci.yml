@@ -86,3 +86,127 @@ jobs:
         run: ruff check --config runtime-py/pyproject.toml examples
       - name: Test
         run: python -m pytest runtime-py -q
+
+  node:
+    # N9: the npm package had never been executed by anything except one laptop.
+    #
+    # WHY THIS IS A SECOND JOB AND NOT FOUR MORE CELLS ON `test`. The Python job's axis is
+    # the Python version; this one's is the NODE version. Folding them together would
+    # multiply to eight cells to measure four things, and would tie a Node regression to a
+    # Python matrix that has nothing to say about it. Two jobs, four cells each.
+    #
+    # WHY THE LOW CELL IS 18 AND NOT SOMETHING COMFORTABLE. `runtime-ts/package.json`
+    # declares `engines.node: ">=18"`. That is a promise made to a teammate whose `node -v`
+    # nobody here controls, and until this job existed it had never been tested by anything:
+    # every number in job38 was taken on v25.2.1. The floor is the thing worth measuring, so
+    # the floor is what the matrix runs. 22 is the upper cell because it is the current LTS
+    # a team is most likely to actually be on.
+    #
+    # WHY THERE IS A PYTHON HERE. The gate is `npm test` AND the conformance harness, and
+    # the harness produces its REFERENCE side by shelling out to CPython (see the header of
+    # tools/conformance/run.mjs). That is a dev-time dependency of the test tooling and not
+    # a runtime one: nothing under `tools/` ships, `runtime-ts` declares
+    # `files: ["dist", "assets"]`, and `npm test` never invokes the harness. A cell without
+    # a Python could still run `npm test`, but it would be asserting that the port matches
+    # CPython without ever running CPython, which is the exact check that has never once
+    # caught the difference that mattered.
+    #
+    # WHAT THIS JOB DOES **NOT** RUN, AND WHY.
+    #   * tools/conformance/npx-cold-start.mjs. It resolves from the PUBLIC registry, and
+    #     `bantamkit-mcp` is not published (`npm view bantamkit-mcp` -> E404), so on a
+    #     shared runner it is a network dependency in front of a name that does not resolve.
+    #     N8 MEASURED the offline arm at 140-590 s before it says anything. A gate that can
+    #     hang for ten minutes on somebody else's network outage is a gate people learn to
+    #     re-run rather than read. It stays a hand-run install gate until there is a
+    #     published tarball for it to reach, and then it belongs on a release workflow, not
+    #     on every push.
+    #   * A separate packaging step. There is no need for one: `test/packaging.test.mjs` is
+    #     inside `npm test` and it shells `npm pack --dry-run --json`, which RUNS `prepack`
+    #     and therefore `scripts/sync-assets.mjs`. The 83-file / 212,480-byte pack gate is
+    #     already in this job, offline, and it is asserted against what npm would publish
+    #     rather than against the checkout.
+    #
+    # WHAT IS DELIBERATELY ABSENT. No PYTHONWARNDEFAULTENCODING here: that variable is the
+    # emitting half of the PYTHON encoding gate and belongs to the `test` job that owns it.
+    # Setting it here would emit EncodingWarning from the harness's reference scripts, whose
+    # stderr nobody reads, and would buy exactly nothing. And, as on the job above: no UTF-8
+    # mode flags, and no Node-side equivalent of one.
+    #
+    # HOW TO TELL THIS RAN. Same rule as the job above, and it needs saying twice because
+    # the trap is different here. `node --test`'s default reporter is NOT stable across the
+    # versions `engines` claims -- 18/20/22 print TAP, 25 prints spec -- so
+    # `scripts/run-tests.mjs` pins `--test-reporter=tap` whenever `CI` is set. That makes
+    # `# pass <n>` the line to look for, on every cell, for as long as the matrix lives.
+    # Read it, and read the Conformance step's `PASS: <n> cases` line: BOTH numbers must be
+    # nonzero on all four cells. A step that never ran prints no summary at all.
+    #
+    # KEEP WINDOWS BEHAVIOUR OFF THE RUNNER'S CRITICAL PATH.
+    #
+    # The first armed run of these cells found seven separate families of Windows
+    # difference, and three of them were pure PATH ALGEBRA -- which `ntpath` and
+    # `PureWindowsPath` compute identically on every operating system. So the port's Windows
+    # path arms are flavour-explicit functions (`ntSplitRoot`, `parseWindowsPath`, `ntJoin`,
+    # `winFormat`) driven against CPython by `store.mjs`'s `ntpath.splitroot and
+    # PureWindowsPath parsing` case, which runs on EVERY cell including a laptop. That case
+    # caught `///a` being reported absolute -- pathlib's test is a SUBSTRING test and the
+    # empty string is a substring of everything -- before any CI cycle was spent on it.
+    #
+    # A Windows arm reachable only through `process.platform` is a seven-minute edit loop;
+    # the same arm behind a flavour-explicit function is a one-second one. Put new Windows
+    # behaviour on that side of the line, and give it a case that runs everywhere.
+    #
+    # Both Node versions give the IDENTICAL result on each OS, which is the finding about
+    # Node: nothing here is version-dependent, and `engines.node: ">=18"` survived contact
+    # with 18 (see the fixture note in runtime-ts/test/assets.test.mjs for the one thing
+    # that did not, and it was the fixture).
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Load-bearing for the same reason as the job above: the Windows readings ARE the
+      # product, and cancelling siblings on the first red throws three of them away.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node-version: ["18", "22"]
+    steps:
+      - uses: actions/checkout@v4
+        # Depth 1 on purpose, unlike the job above. That job needs history because the
+        # perturbation bar pins real refs; nothing here reads a ref. The suites do call
+        # `git rev-parse --git-common-dir`, which a depth-1 checkout answers fine.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: runtime-ts/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          # One Python, pinned: this job's axis is Node. The Python axis is the job above.
+          python-version: "3.12"
+      - name: Install the reference side
+        run: pip install -e "runtime-py[dev,mcp]"
+      - name: Name the reference interpreter
+        # `findPython()` in run.mjs looks for a repo `.venv`, which CI does not have, and it
+        # requires a PATH, not a name. Hand it the absolute path of the interpreter that was
+        # just installed into, so the harness compares against THIS runner's CPython instead
+        # of dying on a venv that was never created. `shell: bash` so one line serves both
+        # operating systems.
+        shell: bash
+        run: python -c "import sys; print('BANTAMKIT_CONFORMANCE_PYTHON=' + sys.executable)" >> "$GITHUB_ENV"
+      - name: Install
+        run: npm ci
+        working-directory: runtime-ts
+      - name: Test
+        # `pretest` builds; a type error fails here.
+        run: npm test
+        working-directory: runtime-ts
+      - name: Conformance
+        # `!cancelled()` so this runs even when `npm test` went red. The two gates measure
+        # different things -- one is the port against its own written-down expectations,
+        # the other is the port against CPython -- and a run that reports only the first
+        # because the first failed costs a whole CI cycle to learn the second. A red here
+        # still fails the job; `if` changes what gets MEASURED, never what gets required.
+        if: ${{ !cancelled() }}
+        # No real fact store exists on a runner, so the corpus-backed suites fall back to
+        # their adversarial sets and SAY SO in their notes ("real corpus: NOT FOUND"). Read
+        # those notes: this cell measures fewer cases than a laptop does, on purpose, and
+        # the alternative -- shipping the operator's own facts into CI -- is not one.
+        run: node tools/conformance/run.mjs --all

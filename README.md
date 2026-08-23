@@ -124,6 +124,9 @@ ship as an [MCP server](docs/mcp.md).
 - [Eval](docs/eval.md) — running the suite, the config matrix, reading the report, adding tasks
 - [MCP](docs/mcp.md) — `bantamkit-mcp`: memory + validation for external agents (Claude Code, Codex, any MCP client)
 - [Shift-work](docs/shiftwork.md) — checkpoint contract + driver for clock-in/clock-out session cycling (experimental)
+- [Porting](docs/porting.md) — the Node port: what was hand-ported from CPython and why, `PyScalar`, the syscall seam, where the two runtimes deliberately differ
+- [Conformance](docs/conformance.md) — the two-runtime diff harness: the six suites, the four kinds of case, and why a `ruling:` pins the wording and not the outcome
+- [Releasing to npm](docs/release-npm.md) — what ships, the asset-vendoring rule, the pre-publish checklist, and the version-float question
 
 The full measured tables behind the defaults above are in
 [Eval → Current results](docs/eval.md#current-results).

@@ -1,0 +1,706 @@
+/**
+ * `MemoryStore`: save, recall, the index and its budget.
+ *
+ * A port of `runtime-py/src/bantamkit/memory/store.py`. The fact-file BYTES are not here —
+ * `factfile.ts` owns them and this imports it, because a second emitter is a second answer
+ * to a question that already has one.
+ *
+ * THE PROPERTY THIS FILE OWES
+ * ---------------------------
+ * Given the same store on disk and the same call, Node and Python leave the directory in
+ * BYTE-IDENTICAL states and return the same string. `index.md` is included on purpose: its
+ * byte length is an input to the budget, so a difference there is not cosmetic — it changes
+ * whether a save is refused. The differential that measures it is
+ * `tools/conformance/suites/store.mjs`, which runs each op against two copies of one store
+ * and diffs the whole tree.
+ *
+ * WHAT IS DELIBERATELY MISSING
+ * ----------------------------
+ * `compact`, `restore`, `archived`, `lint`, `snapshot` and `_staleness_key`. The prep probe
+ * traced a real stdio server through all seven tools, both resource templates and every
+ * error arm, and none of them is reachable; `snapshot` is only entered by
+ * `component.batch`, which is not on the surface either. They are absent rather than
+ * stubbed so that nobody reads a stub and believes the archive door exists here. If a tool
+ * ever calls one, that is a refutation of the trace and wants reporting, not a quiet
+ * addition.
+ *
+ * Because `snapshot` is absent, `recall` reads live and `_stamp` writes the fact it was
+ * handed — the two branches Python takes when `_snapshot` is pinned have no reachable
+ * caller here. Everything else about both functions is the reference's.
+ */
+import { basename } from 'node:path';
+
+import { BantamError } from '../errors.js';
+import type { Fact, FactValue } from './factfile.js';
+import { formatFact, parseFrontmatter, pySplit, pyStrip, todayLocal } from './factfile.js';
+import { PyScalar } from './pyyaml.js';
+import {
+  asPyOSError,
+  cmpCodepoint,
+  matchesMd,
+  pyExists,
+  pyJoin,
+  pyLexists,
+  pyMkdirParents,
+  pyMtimeDate,
+  pyReadText,
+  pyReplace,
+  pyScandirNames,
+  pyUnlink,
+  pyWithSuffix,
+  pyWriteText,
+  PyOSError,
+  sortedPathNames,
+} from './pyfs.js';
+
+export type { Fact } from './factfile.js';
+
+/** `sorted(VALID_TYPES)` is what the error message interpolates, so the order is load-bearing. */
+export const VALID_TYPES = ['feedback', 'project', 'reference', 'user'] as const;
+
+/**
+ * `re.compile(r"^[a-z0-9][a-z0-9-]*$")` used with `re.match`.
+ *
+ * The `\n?` is not decoration and not a widening: Python's `$` matches at the end of the
+ * string OR immediately before a trailing newline, so `re.match` ACCEPTS `"a-fact\n"` and
+ * the JS spelling of the same pattern rejects it. Writing the pattern the obvious way would
+ * make this port refuse a save the reference store performs. `NAME_PATTERN` below is what
+ * the message prints, and it prints Python's spelling.
+ */
+const NAME_RE = /^[a-z0-9][a-z0-9-]*\n?$/;
+const NAME_PATTERN = '^[a-z0-9][a-z0-9-]*$';
+
+export const DUPLICATE_JACCARD = 0.5;
+
+/** See the reference's comment: measured against a real store, not chosen. */
+export const DEFAULT_INDEX_BUDGET = 24_000;
+
+const FACTS_UNREADABLE =
+  'a store whose facts could not be listed is not a store with no facts, and ' +
+  "answering 'empty' here is what rewrites index.md from nothing";
+
+export class MemoryValidationError extends BantamError {}
+export class MemoryBudgetExceeded extends BantamError {}
+
+export interface SaveResult {
+  status: 'saved' | 'duplicate';
+  name: string;
+  /** `SaveResult.similar` is the OTHER fact's `name` field, verbatim — see `pyText`. */
+  similar: FactValue;
+}
+
+export interface MemoryStoreOptions {
+  indexBudget?: number;
+  k?: number;
+  today?: () => string;
+  create?: boolean;
+}
+
+// --------------------------------------------------------------------------- scoring
+
+/**
+ * `set(re.findall(r"[a-z0-9]+", text.lower()))`.
+ *
+ * ASCII-only, no casefold and no Unicode normalization — so a wholly non-ASCII name and
+ * description produce the EMPTY set in both runtimes. That is not a defect to fix in a
+ * port; it is the behaviour the duplicate gate is built on, and `_jaccard` below is where
+ * it stops being a division by zero.
+ */
+export function tokens(text: string): Set<string> {
+  return new Set(text.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+}
+
+/**
+ * `len(a & b) / len(a | b)`, except that an empty side is 0.0 and never a division.
+ *
+ * Python decided this and Python's answer is the one that ships: two facts whose tokens are
+ * both empty score 0.0, so they are NOT duplicates of each other and both save. A port that
+ * "fixed" it to 1.0 for two empty sets would refuse the second of two Thai descriptions.
+ */
+export function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0.0;
+  let shared = 0;
+  for (const t of a) if (b.has(t)) shared += 1;
+  return shared / (a.size + b.size - shared);
+}
+
+/**
+ * Python's `f"{value}"` for the values a hand-edited frontmatter can put in a `str` field.
+ *
+ * `_facts` does no type check: `meta["name"]` is whatever the YAML resolved to, and the
+ * store then interpolates it into the index line, the token text and the FILE PATH. For
+ * `None` Python writes `None` and JS would write `null` — a different index line and a
+ * different file on disk from the same store. Only `null` is reproduced; see the ruling in
+ * `tools/conformance/suites/store.mjs` for the sequence case, which is left differing.
+ *
+ * Exported for `component._format`, which interpolates the same three fields into the line a
+ * model reads. Two spellings of one coercion is how the index line and the recall line would
+ * come to print a different name for the same fact.
+ */
+export function pyText(value: unknown): string {
+  return value === null || value === undefined ? 'None' : String(value);
+}
+
+/**
+ * `hash`/`==` equivalence for the values a `Fact.name` can hold — the key `Memory.recall`'s
+ * `seen` set uses across layers.
+ *
+ * `pyText` is the WRONG key here and the difference is observable: a fact named `7` in the
+ * project layer and one named `'7'` in the profile layer are two different keys to Python
+ * and would collapse into one under `str`. The other direction is just as real — Python's
+ * numeric tower makes `7`, `7.0` and `True` all equal and all one key — so a key built from
+ * the JS type would drop a dedupe Python performs. This spells out both.
+ *
+ * Dates are keyed by their type as well as their text: `date(2026, 8, 23)` and the
+ * `datetime` at midnight of the same day are NOT equal in Python.
+ */
+export function pyHashKey(value: FactValue): string {
+  if (value === null) return 'None';
+  if (typeof value === 'string') return `str:${value}`;
+  switch (value.pyType) {
+    case 'bool':
+      return `num:${value.text === 'True' ? '1' : '0'}`;
+    case 'int':
+      return `num:${value.text}`;
+    case 'float': {
+      // An integral float hashes with the equal int; `inf`/`nan` key on their own text, and
+      // `nan != nan` in Python, which no string key can reproduce — see the ruling.
+      const n = Number(value.text);
+      return Number.isInteger(n) ? `num:${BigInt(value.text.split('.')[0]!).toString()}` : `num:${value.text}`;
+    }
+    default:
+      return `${value.pyType}:${value.text}`;
+  }
+}
+
+/** A Python `TypeError`, raised where CPython raises one and with CPython's sentence. */
+function pyTypeError(message: string): TypeError {
+  const e = new TypeError(message);
+  e.name = 'TypeError';
+  return e;
+}
+
+const typeName = (v: FactValue): string =>
+  v === null ? 'NoneType' : typeof v === 'string' ? 'str' : v.pyType;
+
+/**
+ * `a < b` over the values a `Fact.name` can hold — including the refusals, which are the
+ * point.
+ *
+ * `recall` sorts on `(-score, fact.name)`, so two facts that TIE on score make Python
+ * compare their names, and Python has no order between an `int` and a `str`. The whole
+ * matrix was measured against the reference (90 ordered pairs over ten values) and it is
+ * not one rule but four: `bool`/`int`/`float` are ONE family that compares (`True < 7`),
+ * `str` is its own, `date` and `datetime` are two families that do NOT compare with each
+ * other — and CPython says so with a different sentence, `can't compare datetime.datetime
+ * to datetime.date`, always naming `datetime` first however the operands were written —
+ * and an aware `datetime` does not compare with a naive one at all.
+ */
+function numEq(a: bigint | number, b: bigint | number): boolean {
+  if (typeof a === 'bigint' && typeof b === 'bigint') return a === b;
+  if (typeof a === 'bigint') return Number.isInteger(b) && a === BigInt(b as number);
+  if (typeof b === 'bigint') return Number.isInteger(a) && BigInt(a as number) === b;
+  return a === b;
+}
+
+/**
+ * `a == b` over the same values — the OTHER half of the tuple comparison, and not a
+ * rephrasing of `<`.
+ *
+ * `tuplerichcompare` walks the key tuple with `==` and calls `<` only on the first element
+ * where `==` answers False. That is what keeps `sorted` from raising on two facts both named
+ * `None`: `None == None` is True, the tuples are equal, and `None < None` — which DOES raise
+ * — is never reached. Measured: without this the port raised `'NoneType' and 'NoneType'`
+ * where CPython answered an order.
+ *
+ * `==` never raises. Across types it is simply False — `7 == 'a'`, a `date` against a
+ * `datetime`, a naive `datetime` against an aware one — while `<` on the same pairs raises.
+ * Inside the numeric family it is Python's: `True == 1`, `7 == 7.0`, and `nan == nan` is
+ * False, which is why NaN is not special-cased anywhere here.
+ */
+export function pyEqualValue(a: FactValue, b: FactValue): boolean {
+  if (a === null || b === null) return a === null && b === null;
+  if (typeof a === 'string' || typeof b === 'string') return a === b;
+  const x = a.ord;
+  const y = b.ord;
+  if (x.kind === 'num' && y.kind === 'num') return numEq(x.n, y.n);
+  if (x.kind === 'date' && y.kind === 'date') return x.iso === y.iso;
+  if (x.kind === 'datetime' && y.kind === 'datetime') {
+    return x.aware === y.aware && x.sec === y.sec && x.us === y.us;
+  }
+  return false;
+}
+
+export function pyCompareLt(a: FactValue, b: FactValue): boolean {
+  if (typeof a === 'string' && typeof b === 'string') return cmpCodepoint(a, b) < 0;
+  if (a !== null && b !== null && typeof a !== 'string' && typeof b !== 'string') {
+    const x = a.ord;
+    const y = b.ord;
+    if (x.kind === 'num' && y.kind === 'num') {
+      // A `bigint` and a `number` do not compare with `<` in JS unless one side is coerced;
+      // mixed pairs go through `Number`, which is what Python's int/float comparison
+      // approximates anyway for every magnitude a frontmatter can hold in one line.
+      if (typeof x.n === 'bigint' && typeof y.n === 'bigint') return x.n < y.n;
+      return Number(x.n) < Number(y.n);
+    }
+    if (x.kind === 'date' && y.kind === 'date') return x.iso < y.iso;
+    if (x.kind === 'datetime' && y.kind === 'datetime') {
+      if (x.aware !== y.aware) {
+        throw pyTypeError("can't compare offset-naive and offset-aware datetimes");
+      }
+      return x.sec !== y.sec ? x.sec < y.sec : x.us < y.us;
+    }
+    if ((x.kind === 'date' && y.kind === 'datetime') || (x.kind === 'datetime' && y.kind === 'date')) {
+      throw pyTypeError("can't compare datetime.datetime to datetime.date");
+    }
+  }
+  throw pyTypeError(`'<' not supported between instances of '${typeName(a)}' and '${typeName(b)}'`);
+}
+
+/**
+ * `sorted(scored, key=lambda pair: (-pair[0], pair[1].name))`, comparison for comparison.
+ *
+ * RULING — WHY THE SORT IS SPELLED OUT AND NOT HANDED TO `Array.prototype.sort`. When every
+ * name is a `str` the two agree and this takes the fast path. When they are not, the sort
+ * can RAISE, and then WHICH pair CPython happens to compare first decides the sentence a
+ * model reads: `'int' and 'str'` or `'str' and 'int'`, and with three numeric types in play,
+ * which of `int`/`float`/`bool` gets named. `Array.prototype.sort`'s comparison order is
+ * unspecified and V8's is not Timsort's.
+ *
+ * So the slow path is CPython's `listsort` for a single run: `count_run` (adjacent
+ * `a[i] < a[i-1]`, reversing a strictly descending prefix) then `binarysort` (pivot on the
+ * LEFT of every probe, midpoint `l + ((r - l) >> 1)`), over key tuples compared by
+ * `tuplerichcompare` — `==` down the tuple and `<` only where `==` says they differ.
+ *
+ * MEASURED, and re-measured on every conformance run: the `recall tie-break` case in
+ * `tools/conformance/suites/store.mjs` generates 50,000 `(score, name)` lists from a seeded
+ * LCG — ten name spellings across all four families, n from 2 to 300 — and runs each through
+ * CPython's `sorted` and through this function. 45,629 of them raise. All 50,000 agree, on
+ * the order where there is one and on the TypeError text where there is not.
+ *
+ * TWO MODELS THIS REFUTED, kept because each looks right until it is run. (1) "raise if any
+ * equal-score pair is incomparable" gets the DECISION right — 20,000 of 20,000 in the
+ * derivation probe — and the SENTENCE wrong in 1,087 of 30,000, because the types it names
+ * are whichever pair the binary search actually probed. (2) Calling `<` wherever the scores
+ * tie raises `'NoneType' and 'NoneType'` for two facts both named `None`, where CPython
+ * answers an order: `==` short-circuits the tuple before `<` is ever reached.
+ *
+ * NOT MEASURED, and the honest edge: past 64 elements CPython splits the list into runs and
+ * merges them, while this binary-inserts the whole list. It can only matter if the FIRST
+ * incomparable pair lies past the first run, and the 8,000 generated lists with n between 65
+ * and 300 produced no such case. A store would need 65+ facts tied on one recall score with
+ * the type change late in the file order.
+ */
+export function sortScored<T extends { score: number; name: FactValue }>(scored: readonly T[]): T[] {
+  if (scored.every((s) => typeof s.name === 'string')) {
+    // Every name a `str`: the comparison cannot raise and the order is total, so the stable
+    // library sort is the same answer for less work.
+    return [...scored].sort((a, b) => b.score - a.score || cmpCodepoint(a.name as string, b.name as string));
+  }
+  // `tuplerichcompare`: `==` down the tuple, then `<` on the first element that differs.
+  const lt = (x: T, y: T): boolean =>
+    x.score !== y.score
+      ? x.score > y.score
+      : pyEqualValue(x.name, y.name)
+        ? false
+        : pyCompareLt(x.name, y.name);
+  const a: T[] = [...scored];
+  const n = a.length;
+  if (n < 2) return a;
+  // `count_run`
+  let k: number;
+  if (lt(a[1]!, a[0]!)) {
+    let i = 2;
+    while (i < n && lt(a[i]!, a[i - 1]!)) i += 1;
+    k = i;
+    a.splice(0, k, ...a.slice(0, k).reverse());
+  } else {
+    let i = 2;
+    while (i < n && !lt(a[i]!, a[i - 1]!)) i += 1;
+    k = i;
+  }
+  // `binarysort`
+  for (let start = Math.max(k, 1); start < n; start += 1) {
+    const pivot = a[start]!;
+    let l = 0;
+    let r = start;
+    while (l < r) {
+      const p = l + ((r - l) >> 1);
+      if (lt(pivot, a[p]!)) r = p;
+      else l = p + 1;
+    }
+    a.copyWithin(l + 1, l, start);
+    a[l] = pivot;
+  }
+  return a;
+}
+
+/**
+ * `bool(value)` for a frontmatter value.
+ *
+ * `_facts` asks it twice — `meta.get("links") or []` and `meta.get("created") or
+ * _mtime_date(path)` — and the answer is not "is it a non-empty string". A `PyScalar`
+ * carries Python's own answer (`0`, `0.0` and `false` are falsy; a `date` never is), an
+ * empty list is falsy, and `undefined` stands for the absent key.
+ */
+function pyTruthy(value: FactValue | FactValue[] | undefined): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value === 'string') return value !== '';
+  if (Array.isArray(value)) return value.length > 0;
+  return value.truthy;
+}
+
+/**
+ * `list(meta.get("links") or [])`.
+ *
+ * A string is iterated into its CHARACTERS, which the spread does over codepoints — the
+ * same faithful-not-tidy answer as before. What is new is the last arm: `list(7)` is a
+ * `TypeError` in Python and the `except (ValueError, KeyError, yaml.YAMLError)` in `_facts`
+ * does NOT catch it, so it escapes the store with CPython's own sentence rather than
+ * becoming `malformed fact file …`. That is reproduced, message and escape route both,
+ * because a caller that catches `MemoryValidationError` would swallow one and not the
+ * other. Not fixed in `runtime-py` (invariant 8) — registered.
+ */
+function pyList(value: FactValue | FactValue[] | undefined): FactValue[] {
+  if (!pyTruthy(value)) return [];
+  if (Array.isArray(value)) return [...value];
+  if (typeof value === 'string') return [...value];
+  const e = new TypeError(`'${(value as PyScalar).pyType}' object is not iterable`);
+  e.name = 'TypeError';
+  throw e;
+}
+
+/**
+ * `isinstance(yaml.safe_load(front), dict)` — the QUESTION, not a second YAML parser.
+ *
+ * The reference calls `safe_load` on the frontmatter and rejects anything that is not a
+ * mapping with its own sentence, BEFORE any key lookup. `parseFrontmatter` cannot answer
+ * that: its grammar is the emitter's output, so it raises for a document PyYAML would
+ * happily load as a string or a list, and the store would then report a parse failure where
+ * the reference reports "not a mapping". This decides only the cases where YAML's answer is
+ * unambiguous from the first content line, and hands everything else to the parser — where
+ * the message-text ruling in `facts()` already applies.
+ */
+function looksLikeMapping(front: string): boolean {
+  if (pyStrip(front) === '') return false; // an empty document loads as None
+  const first = front.split('\n').find((line) => pyStrip(line) !== '')!;
+  const head = first.replace(/^[ \t]+/, '');
+  if (head.startsWith('#')) return true; // a comment says nothing; let the parser rule
+  if (head === '-' || head.startsWith('- ') || head.startsWith('[')) return false; // a sequence
+  if (head.startsWith('{') || head.startsWith('? ')) return true; // flow mapping, explicit key
+  return /:(\s|$)/.test(head); // a key, or a plain scalar that is not one
+}
+
+// ----------------------------------------------------------------------------- the store
+
+export class MemoryStore {
+  readonly root: string;
+  readonly indexBudget: number;
+  readonly k: number;
+  private readonly today: () => string;
+
+  constructor(root: string, options: MemoryStoreOptions = {}) {
+    this.root = pyJoin(root);
+    this.indexBudget = options.indexBudget ?? DEFAULT_INDEX_BUDGET;
+    this.k = options.k ?? 3;
+    this.today = options.today ?? ((): string => todayLocal());
+    if (options.create ?? true) this.ensureDirs();
+  }
+
+  private ensureDirs(): void {
+    pyMkdirParents(pyJoin(this.root, 'facts'));
+    pyMkdirParents(pyJoin(this.root, 'archive'));
+  }
+
+  // ---- ops ----
+
+  /**
+   * Write a fact, or refuse it as a near-duplicate of one already here.
+   *
+   * THE FIRST OF TWO READS IS WHAT MAKES THIS SAFE, and the ordering is the reference's, not
+   * an implementation detail: `_facts()` runs for the duplicate check BEFORE `_writeFact`,
+   * so an unreadable store fails the whole op with nothing written and nothing to roll back.
+   * The measured alternative, one directory over in job37: a blind listing let the duplicate
+   * check pass vacuously, the fact landed, and `_rebuildIndex` then wrote a 13,472-byte
+   * index down to zero from the same empty listing.
+   */
+  save(
+    type: string,
+    name: string,
+    description: string,
+    body: string,
+    links: readonly string[] = [],
+  ): SaveResult {
+    this.ensureDirs();
+    if (!(VALID_TYPES as readonly string[]).includes(type)) {
+      throw new MemoryValidationError(
+        `invalid type '${type}'; must be one of [${VALID_TYPES.map((t) => `'${t}'`).join(', ')}]`,
+      );
+    }
+    if (!NAME_RE.test(name || '')) {
+      throw new MemoryValidationError(`invalid name '${name}'; must match ${NAME_PATTERN}`);
+    }
+    if (pyStrip(description || '') === '') {
+      throw new MemoryValidationError('description must be a non-empty line');
+    }
+
+    const newTokens = tokens(`${name} ${description}`);
+    let existing: Fact | null = null;
+    for (const fact of this.facts()) {
+      if (fact.name === name) {
+        existing = fact; // same name = update, not duplicate
+        continue;
+      }
+      if (jaccard(newTokens, tokens(`${pyText(fact.name)} ${pyText(fact.description)}`)) >= DUPLICATE_JACCARD) {
+        return { status: 'duplicate', name, similar: fact.name };
+      }
+    }
+
+    const fact: Fact = {
+      name,
+      description: pyStrip(description),
+      type,
+      body,
+      links: [...links],
+      last_recalled: null,
+      // An update keeps the date the fact first landed: rewriting a fact is not the same
+      // event as creating it, and resetting this would launder a stale fact into a fresh one.
+      created: existing !== null ? existing.created ?? null : this.today(),
+    };
+    const path = this.factPath(name);
+    const existed = pyExists(path) ? pyReadText(path) : null;
+    this.writeFact(fact);
+    try {
+      this.checkIndexBudget();
+    } catch (e) {
+      if (!(e instanceof MemoryBudgetExceeded)) throw e;
+      if (existed === null) pyUnlink(path);
+      else pyWriteText(path, existed);
+      this.rebuildIndex();
+      throw e;
+    }
+    this.rebuildIndex();
+    return { status: 'saved', name, similar: null };
+  }
+
+  /**
+   * Top-`k` facts whose name+description share tokens with `query`.
+   *
+   * An unreadable store raises out of `facts()` rather than scoring zero facts and returning
+   * `[]` — the same answer as a real miss, which `component.Memory` used to turn into "no
+   * memories matched. Try different words", telling a person to rephrase a question at a
+   * filing cabinet nobody could open.
+   */
+  recall(query: string, k: number | null = null, stamp = true): Fact[] {
+    const limit = k ?? this.k;
+    const q = tokens(query);
+    const scored: Array<{ score: number; name: FactValue; fact: Fact }> = [];
+    for (const fact of this.facts()) {
+      let score = 0;
+      for (const t of tokens(`${pyText(fact.name)} ${pyText(fact.description)}`)) if (q.has(t)) score += 1;
+      if (score > 0) scored.push({ score, name: fact.name, fact });
+    }
+    // `key=lambda pair: (-pair[0], pair[1].name)`. The name comparison is CODEPOINT order
+    // for two strings — which is not what `Array.prototype.sort` does — and Python's `<`
+    // for everything else, refusals included. See `sortScored`.
+    const hits = sortScored(scored).slice(0, limit).map((s) => s.fact);
+    if (stamp) for (const fact of hits) this.stamp(fact);
+    return hits;
+  }
+
+  /**
+   * The index as it should be on disk, derived from `facts/` and nothing else.
+   *
+   * An unreadable store raises here rather than answering `""` — that empty string was both
+   * the input `_rebuildIndex` wrote over `index.md` and the number `_checkIndexBudget`
+   * measured, which is the whole shape of the defect and is why the raise lives in the READ.
+   *
+   * THE BUDGET AND THE BYTES ON DISK AGREE IN THIS PORT, on every platform, because
+   * `pyWriteText` writes exactly this string. They do NOT agree in `runtime-py` on Windows:
+   * `write_text` opens with `newline=None`, so the file gets `\r\n` per line while
+   * `_checkIndexBudget` counts this LF text — 65 bytes apart on the live 65-fact store.
+   * Registered as a runtime-py defect, not fixed here (invariant 8).
+   */
+  indexText(): string {
+    return this.facts().map((fact) => this.indexLine(fact)).join('');
+  }
+
+  // ---- internals ----
+
+  private factPath(name: FactValue): string {
+    return pyJoin(this.root, 'facts', `${pyText(name)}.md`);
+  }
+
+  private indexLine(fact: Fact): string {
+    // The em dash is a raw U+2014 and there is no header line. Both are budget inputs.
+    return `- [[${pyText(fact.name)}]] (${pyText(fact.type)}) — ${pyText(fact.description)}\n`;
+  }
+
+  /**
+   * The `*.md` names in one of this store's directories, or a raise. Never a lie.
+   *
+   * THE THREE-WAY, which is the whole of job37's fix and is keyed on `lexists` PRECISELY so
+   * that it does not turn on an errno:
+   *
+   *   1. the scan failed with ENOENT and SOMETHING is at the path  -> unreadable
+   *   2. the scan failed with ENOENT and nothing is at the path    -> [] (a first run)
+   *   3. the scan failed any other way                             -> unreadable
+   *
+   * Arm 1 exists because the same shape reports different errnos on different platforms:
+   * POSIX raises ENOTDIR for a scan of a regular file and lands in arm 3, while a Windows
+   * directory scan of a non-directory reports the path as NOT FOUND and would land in arm 2
+   * — answering "empty" for a store that is a file. A dangling symlink reports ENOENT
+   * everywhere. Keying on "is anything there" gives one answer on all four CI jobs.
+   *
+   * Node's `fs` has none of this shape and libuv's Windows error mapping is not CPython's,
+   * so what is reproduced here is the DECISION. The syscalls and the `strerror` live in
+   * `pyfs.ts`; `layers.count_facts` deliberately decides differently on the same ones.
+   *
+   * `consequence` is the caller's half of the sentence, because the two directories fail
+   * differently and one wording cannot be true of both.
+   */
+  private listing(directory: string, consequence: string): string[] {
+    try {
+      return pyScandirNames(directory).filter(matchesMd);
+    } catch (e) {
+      const error = e instanceof PyOSError ? e : asPyOSError(e, directory);
+      if (error.code === 'ENOENT') {
+        if (pyLexists(directory)) {
+          throw this.unreadable(directory, error, consequence, 'a path exists there');
+        }
+        return [];
+      }
+      throw this.unreadable(directory, error, consequence);
+    }
+  }
+
+  /** Every `facts/*.md`, listed so that "I could not read it" is never "it is empty". */
+  private factPaths(): string[] {
+    const facts = pyJoin(this.root, 'facts');
+    return sortedPathNames(this.listing(facts, FACTS_UNREADABLE)).map((n) => pyJoin(facts, n));
+  }
+
+  /** One sentence for a directory that could not be listed, and it never says "empty". */
+  private unreadable(
+    directory: string,
+    error: PyOSError,
+    consequence: string,
+    detail = '',
+  ): MemoryValidationError {
+    const because = `${error.strerror}${detail ? ` (${detail})` : ''}`;
+    return new MemoryValidationError(
+      `memory store is unreadable: ${directory}: ${because}; ${consequence}`,
+    );
+  }
+
+  /**
+   * Every fact on disk, parsed.
+   *
+   * The `read_text` is OUTSIDE the try in the reference, so a fact file that is not UTF-8
+   * raises a bare `UnicodeDecodeError` rather than a `malformed fact file …` sentence. That
+   * ordering is reproduced: `pyReadText` raises `PyUnicodeDecodeError` with CPython's own
+   * message and it is not caught here.
+   *
+   * RULING — THE MESSAGE TEXT FOR A MALFORMED FILE. `_facts` interpolates the exception into
+   * `malformed fact file {name}: {e}`, and that reaches the model. Three of the four shapes
+   * are matched EXACTLY, because their text is Python's own and short: too few `---\n` parts
+   * (`ValueError` from the tuple unpack), frontmatter that is not a mapping (the store's own
+   * sentence), and a missing key (`KeyError.__str__`, which is the key in single quotes).
+   * The fourth — input outside the grammar `parseFrontmatter` accepts — is NOT matched:
+   * PyYAML answers with a `ScannerError`/`ParserError` carrying its marks and a rendered
+   * snippet, and reproducing that means porting PyYAML's scanner diagnostics, a surface
+   * larger than this whole module, for strings no test in `runtime-py/tests` pins. Node
+   * emits `parseFrontmatter`'s own reason after the identical prefix. The divergence is
+   * carried as a must-differ `ruling` case in the conformance suite so it is re-measured on
+   * every run instead of asserted once and forgotten.
+   */
+  private facts(): Fact[] {
+    const out: Fact[] = [];
+    for (const path of this.factPaths()) {
+      const text = pyReadText(path); // outside the try, exactly as in the reference
+      const file = basename(path);
+      const malformed = (reason: string): MemoryValidationError =>
+        new MemoryValidationError(`malformed fact file ${file}: ${reason}`);
+
+      const parts = pySplit(text, '---\n', 2);
+      if (parts.length !== 3) {
+        throw malformed(`not enough values to unpack (expected 3, got ${parts.length})`);
+      }
+      const front = parts[1]!;
+      let meta: Record<string, unknown>;
+      if (!looksLikeMapping(front)) throw malformed('frontmatter is not a mapping');
+      try {
+        meta = parseFrontmatter(front) as Record<string, unknown>;
+      } catch (e) {
+        throw malformed(e instanceof Error ? e.message : String(e));
+      }
+      for (const key of ['name', 'description', 'type']) {
+        if (!(key in meta)) throw malformed(`'${key}'`);
+      }
+      const rawCreated = meta['created'] as FactValue | FactValue[] | undefined;
+      out.push({
+        name: meta['name'] as FactValue,
+        description: meta['description'] as FactValue,
+        type: meta['type'] as FactValue,
+        body: pyStrip(parts[2]!),
+        links: pyList(meta['links'] as FactValue | FactValue[] | undefined),
+        last_recalled: (meta['last_recalled'] as FactValue) ?? null,
+        // `or`, not `??`: every FALSY value falls back to the mtime, and that is now more
+        // than the empty string — `created: 0`, `created: false` and `created: 0.0` are all
+        // falsy in Python too, while `created: 2026-08-23` is a truthy `date` and is kept.
+        created: pyTruthy(rawCreated) ? (rawCreated as FactValue) : pyMtimeDate(path),
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Date the recall.
+   *
+   * The reference's `snapshot` branch is absent here for the reason given at the top of the
+   * file: nothing on the MCP surface enters a snapshot scope, so `_snapshot` is always
+   * `None` and only this arm ever runs. No fact is left half-dated either way, because the
+   * listing inside `_facts` has already run before any write.
+   */
+  private stamp(fact: Fact): void {
+    fact.last_recalled = this.today();
+    this.writeFact(fact);
+  }
+
+  /** Write via `<name>.md.tmp` and `os.replace`, so a reader never sees a half-written fact. */
+  private writeFact(fact: Fact): void {
+    const path = this.factPath(fact.name);
+    const tmp = pyWithSuffix(path, '.md.tmp');
+    pyWriteText(tmp, formatFact(fact));
+    pyReplace(tmp, path);
+  }
+
+  /**
+   * Write `index.md` from the facts on disk. THE OP THE ORIGINAL DEFECT DESTROYED.
+   *
+   * Note what is deliberately NOT here: a guard refusing to shrink the index. It could not
+   * tell a wipe from a legitimate `compact()`, and it would leave every reader still being
+   * lied to. The read was wrong and the read is where it is fixed.
+   */
+  private rebuildIndex(): void {
+    pyWriteText(pyJoin(this.root, 'index.md'), this.indexText());
+  }
+
+  /**
+   * Raise `MemoryBudgetExceeded` if the index would not fit.
+   *
+   * This is a PARSE, not a listing: `indexText` reads every fact file, so a caller that
+   * pre-read with `factPaths` has not pre-read what this raises on. An unreadable store
+   * raises `MemoryValidationError` from in here — a DIFFERENT error from the budget one, and
+   * `save`'s rollback below is written to re-throw it untouched.
+   */
+  private checkIndexBudget(): void {
+    const size = Buffer.byteLength(this.indexText(), 'utf8');
+    if (size > this.indexBudget) {
+      throw new MemoryBudgetExceeded(
+        `memory index is ${size} bytes, budget is ${this.indexBudget}: ` +
+          'run compact() or tersen descriptions',
+      );
+    }
+  }
+}

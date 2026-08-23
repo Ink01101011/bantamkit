@@ -1,0 +1,7 @@
+node_modules/
+dist/
+# Vendored by `scripts/sync-assets.mjs` at prepack time from the repository-root
+# pack. Tracking it would be a second copy of 83 files that can silently drift
+# from the one `runtime-py` publishes.
+assets/
+*.tgz

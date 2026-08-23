@@ -1,0 +1,258 @@
+# bantamkit-mcp
+
+The bantamkit MCP server as a pure-Node package: `npx bantamkit-mcp`, no Python, no
+`uv`, no `pipx`, no interpreter bootstrap. It serves the same seven tools and two
+resource templates as `runtime-py`'s server, reads and writes the same memory store, and
+is checked against the Python server frame by frame — 4300+ conformance cases, with every
+intentional difference written down as a ruling.
+
+Every number on this page was measured on the machine that wrote it, with a command you
+can rerun. Where something was not measured, it says so.
+
+## Install and run
+
+```jsonc
+// .mcp.json — project scope
+{
+  "mcpServers": {
+    "bantamkit": {
+      "command": "npx",
+      "args": ["-y", "bantamkit-mcp"]
+    }
+  }
+}
+```
+
+That is the whole install. No `pip`, no venv, no `PYTHONPATH`. `runtime-ts/mcp.json.example`
+in the repository is the annotated version, with the four forms and the two measured
+questions that decide between them.
+
+**Pass `-y`.** `npx` historically prompted before installing a package it had not seen,
+and stdin here is the JSON-RPC channel: a prompt that consumed one frame looks like a
+server that lost a request. npm 11.6.2 was measured sending that prompt to stderr rather
+than reading stdin, but that is version-dependent and `-y` costs nothing.
+
+**Pin the version.** `npx -y bantamkit-mcp` resolves `latest` and caches it, so two
+machines can run different builds from one identical config line. See *Silent version
+float* below — it is the failure this package makes easiest to hit and hardest to see.
+
+### Measured: what a cold start costs
+
+`node tools/conformance/npx-cold-start.mjs` in the repo packs the tarball, installs it
+from disk into a cache that has never seen it, and drives a real MCP handshake. On
+node v25.2.1 / npm 11.6.2, macOS (darwin 25.5.0), Apple silicon:
+
+| | cold cache | warm cache |
+|---|---|---|
+| wall to the first JSON-RPC frame | **4.13 s** and **7.36 s**, two runs | **1.07 s** and **1.13 s** |
+| npm/npx bytes on stderr | 211 (an `npm notice` about npm itself) | 0 |
+
+Both cold figures are reported rather than averaged: the spread is the registry round
+trip, so a cold start is worth about **4-7 s** here and will be worse on a slower link.
+The warm figure is the one that is a property of this package, and it is stable.
+
+- **92 packages** installed (top-level, scope-aware); **111** `package.json` in the tree.
+- **15.4 MB** of files under `$npm_config_cache/_npx/<hash>` (25 MB of allocated blocks by
+  `du`), **37.3 MB** for the whole cache including npm's content-addressable store.
+- `bantamkit-mcp` itself is **0.6 MB** of that. The rest is
+  `@modelcontextprotocol/sdk@1.30.0`'s dependency tree, which pulls in `express`, `cors`,
+  `body-parser`, `ajv`, `eventsource`, `hono` and `express-rate-limit` — the SDK's HTTP
+  transport, none of which this stdio server uses. That is the SDK's shape, not a choice
+  this package makes; it declares exactly one runtime dependency.
+- The tarball is **~160 KB**, 123 files: 38 in `dist/`, 83 in `assets/`, plus
+  `package.json` and this README. (The exact byte count moves whenever this file does;
+  the gate prints it, and `test/packaging.test.mjs` pins the file list.)
+
+### Measured: what happens when the registry is not reachable
+
+A cold `npx` start needs the network. Measured with the registry pointed at a closed port
+and at a blackholed address, driving the same handshake:
+
+| registry | seconds before `npx` gave up | bytes the client saw on stdout |
+|---|---|---|
+| connection refused (`http://127.0.0.1:1/`) | **140.3 s** | **0** |
+| packets dropped (`http://192.0.2.1:443/`) | **590.4 s** | **0** |
+
+**Read that as: the failure is silence.** Nothing appears on the JSON-RPC channel for the
+whole interval, and then the process exits 1. An MCP host does not see "no network"; it
+sees a server that accepted the launch and never answered `initialize`, and it reports its
+own handshake timeout. The npm error text goes to stderr, which most hosts do not surface.
+
+A warm cache does not have this problem — `npx` runs the cached install without contacting
+the registry — so this bites a new machine, a cleared cache, or a CI runner, which is
+exactly when nobody is watching.
+
+If offline operation matters, do not use `npx`. Run `npm i -g bantamkit-mcp` once and
+point the config at the installed binary, or keep using `tools/bantamkit-mcp`.
+
+### Measured: `npx` is not on a login-less PATH
+
+```sh
+$ env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin sh -c 'command -v npx'
+$ echo $?
+1
+```
+
+On the machine this was written on, `node`, `npm` and `npx` exist only on the
+mise-injected PATH, and mise is activated from `~/.zshrc` — an **interactive** shell rc.
+`launchctl getenv PATH` is unset, so a GUI-launched application inherits launchd's default
+`/usr/bin:/bin:/usr/sbin:/sbin`, where none of the three is found.
+
+**What a GUI-launched MCP host actually sees is `ENOENT` on `npx`.** Not a bantamkit
+error, not a bad config — the host reports that it could not spawn the command, which is
+the least informative message in the whole chain. This is the RB-P96 failure class
+relocated: the sh launcher was guaranteed present because it was a file in the repository;
+`npx` is guaranteed present only if the host's *process* environment has it.
+
+Two ways out, both in `runtime-ts/mcp.json.example`:
+
+```jsonc
+// absolute path to the npx you actually have
+{ "command": "/Users/you/.local/share/mise/installs/node/latest/bin/npx",
+  "args": ["-y", "bantamkit-mcp@0.25.0"] }
+```
+
+```jsonc
+// or install once and skip npx entirely:  npm i -g bantamkit-mcp
+{ "command": "/usr/local/bin/bantamkit-mcp", "args": [] }
+```
+
+## What `npx` gives up versus `tools/bantamkit-mcp`
+
+The sh launcher is not obsolete. It guarantees things `npx` cannot, and this table is the
+prep probe's, unsoftened.
+
+| guarantee | `tools/bantamkit-mcp` | `npx bantamkit-mcp` |
+|---|---|---|
+| present in every checkout **and** every worktree | yes — it is a file in the tree | **gone.** Depends on the host's PATH, not on the project directory |
+| runs *this* checkout's code | yes | **gone for developers too.** Testing a worktree needs an absolute `node <worktree>/dist/cli.js`, or the host silently runs the published build |
+| code from the worktree, deps from the main checkout | yes (`PYTHONPATH` + `PYTHONSAFEPATH`) | **no Node analogue.** `NODE_PATH` is ignored by ESM and there is no `-P`. `npm link` and workspaces are a different failure surface, not the same one solved |
+| stdin is the JSON-RPC channel | yes | yes, with `-y` |
+| names the cause when dependencies are missing | yes | the analogous failure is *no network*, and it has no message at all — see the table above |
+| starts without a network | yes | **no**, on a cold cache |
+| `--which`, for diagnosing which endpoint answered | the flag exists | not ported — see below |
+| one config line, no clone, no venv | no | **yes.** This is the whole reason the package exists |
+
+### `--which` is deleted, not ported
+
+`tools/bantamkit-mcp:47` says `--which` is read by `tools/mcpreach/mcpreach.py`, and
+`docs/mcp.md:154` documents a five-value exit-code interface for that program
+(`0` REACHABLE, `1` UNREACHABLE, `2` FOREIGN, `3` UNDECLARED, `4` NO_ENV).
+
+**That program has never existed.** `git log --all --diff-filter=A -- '*mcpreach*'` is
+empty across all 506 refs in this repository. `docs/eval.md` records the decision in
+writing — the half-built checker "had never been seen to fire" and was deliberately not
+merged — while two other files went on citing it as the runnable answer.
+`runtime-py/tests/test_mcp_endpoint.py:48-72` documents the three-file contradiction at
+length.
+
+So there is no Node `--which`, and none is planned. The flag had exactly one documented
+consumer and that consumer is vaporware; porting an interface to nothing is not a budget
+worth spending. What the flag was reaching for — *which build is actually answering* — is
+served properly by `build_identity`, which is a tool on the wire rather than a flag on a
+launcher, and which the next section is about.
+
+## Silent version float, and the instrument for it
+
+This is the one that will bite a team hardest.
+
+`npx -y bantamkit-mcp` resolves the dist-tag `latest` and caches the result. Two people
+with byte-identical `.mcp.json` files can be running different builds — one resolved last
+week, one resolved this morning — and nothing in the config, the logs or the tool output
+says so. The sh launcher could not do this: it ran the checkout you were standing in.
+
+Call `build_identity`. Three fields answer it:
+
+- **`runtime`** — `"node"` here, absent on the Python server. Its *presence* is the
+  discriminator, and it is folded into `build_id` so the two lineages cannot collide even
+  if their code digests agreed.
+- **`assets_digest`** — sha256 over every byte of the asset pack, computed identically in
+  both runtimes and **verified equal**: `sha256:b03141bf…` over 83 files from Python and
+  from Node. This is the cross-runtime instrument; two machines disagreeing here are
+  serving different data.
+- **`code_digest`** / **`build_id`** — over `dist/**/*.js` on this side and `*.py` on the
+  other, so they are *required* to differ across runtimes and required to match across two
+  installs of the same version. `build_id` differing between two teammates on the same
+  version string is the float, caught.
+
+The output carries a `cross_runtime` sentence saying in plain words which fields are
+comparable. `git_commit` is refused rather than guessed: an installed npm tarball carries
+no repository, and reading a checkout's HEAD would describe the tree rather than the bytes
+that were imported (RB-P84).
+
+**Pin the version in the config** if you want this to be a non-issue:
+`"args": ["-y", "bantamkit-mcp@0.25.0"]`.
+
+## The default is layered — do not add `--store` by reflex
+
+With **no arguments**, which is what the config above passes and what production runs, the
+server binds `Memory.layered`: the project store discovered from the working directory,
+plus the profile layer, plus any `extra_stores` from `.bantamkit/config.yaml`. Recall lines
+are prefixed with their layer — `[project] `, `[extra:<name>]`, `[profile]`.
+
+`--store <path>` binds one store and drops the tag. It is a debugging flag. A recall string
+produced under `--store` is not a string the deployment ever emits, and the cold-start gate
+asserts the layered form specifically for that reason.
+
+## The asset pack
+
+The pack is language-agnostic data (tool manifests, schemas, skills, rubrics, contract
+wording, eval fixtures) that lives at the **repository root**, one level above this
+package, and is shared verbatim with `runtime-py`. npm cannot reach outside a package
+directory, so `scripts/sync-assets.mjs` vendors it into `runtime-ts/assets/` on `prepack`;
+that directory is generated and git-ignored.
+
+`build_identity` hashes **every byte of the whole tree**, not just the 20 files the tools
+read, so the pack ships whole — 83 files / 212,480 bytes — or `assets_digest` and
+`build_id` change. `test/packaging.test.mjs` asserts that against what `npm pack` would
+actually put in the tarball, never against the source tree.
+
+`assetsRoot()` mirrors `runtime-py/src/bantamkit/assets.py` arm for arm:
+
+1. `$BANTAMKIT_ASSETS`, verbatim, with no existence check.
+2. `<package>/assets/` — one level above `dist/`. **This is the arm `npx` uses.**
+3. `<repo>/assets/` — two levels above `dist/`, for a dev checkout with nothing vendored.
+4. Otherwise `AssetNotFound: no assets directory found; set BANTAMKIT_ASSETS`.
+
+## Sharing a store with the Python server
+
+Both servers read and write the same memory store, and byte-compatibility is the product,
+not a nice-to-have. Two things to know:
+
+- **Concurrent writes are safe for the memory store and lossy for the checkpoint, in both
+  runtimes.** `index.md` is derived from the `facts/` directory, so the last writer
+  re-enumerates everything and the index self-heals — measured over 8 trials of two
+  processes × 15 saves, zero disagreements between `facts/` and `index.md`. A checkpoint is
+  not derived that way: `shiftwork_clock_out` is read-modify-write and the write depends on
+  the document it read, so two concurrent clock-outs on the *same cursor unit* both answer
+  `ok` and one history entry is lost. Measured 10/10 trials on Node **and** 10/10 on the
+  Python reference — reference behaviour reproduced, not something the port introduced. The
+  cursor check serialises the normal case; only the same-unit collision loses.
+- **Do not hand-edit a fact file's `name`, `description` or `type` to a bare non-string.**
+  `description: 2026` is a YAML integer, not the text `2026`. Python interpolates it and
+  carries on; this port refuses the whole store with `malformed fact file …`. Quote it:
+  `description: '2026'`. Every fact the tools *write* is quoted correctly, so this only
+  reaches you through an editor. See `src/memory/factfile.ts:257`.
+
+## Development
+
+```sh
+npm install
+npm run build      # tsc -> dist/
+npm test           # node --test; `npm test -- packaging` selects one file
+npm pack --dry-run # vendors the pack via prepack, lists the tarball
+```
+
+From the repository root:
+
+```sh
+node tools/conformance/run.mjs --all                   # Node vs Python, 4300+ cases
+node tools/conformance/npx-cold-start.mjs              # pack, cold npx, warm npx, PATH
+node tools/conformance/npx-cold-start.mjs --offline    # + the no-registry probe (~2.5 min)
+```
+
+The conformance harness shells out to a CPython to produce the reference side. That is a
+**development-time** dependency of the test tooling; nothing under `tools/` ships, and
+`files: ["dist", "assets"]` is the whole published surface.
+
+Runtime dependencies: exactly one, `@modelcontextprotocol/sdk`, pinned to `1.30.0`.
