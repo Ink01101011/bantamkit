@@ -176,6 +176,39 @@ test('the walk climbs to the nearest ancestor store and stops at the closest one
   assert.equal(discoverProjectStore(join(bed, 'other')), join(bed, '.bantamkit', 'memory'));
 });
 
+/**
+ * `Path.is_dir()` swallows only `_IGNORED_ERRNOS`, and EACCES is not one of them — MEASURED
+ * against CPython, where `discover_project_store` through a `0o000` ancestor raises
+ * PermissionError rather than skipping the candidate. `existsSync` answers `false` there and
+ * would bind a different store in silence, which is why `pyIsDir` re-raises.
+ */
+test('the walk RAISES through an ancestor it cannot traverse', (t) => {
+  const bed = fresh();
+  const locked = join(bed, 'locked');
+  mkdirSync(join(locked, 'x', 'y'), { recursive: true });
+  chmodSync(locked, 0o000);
+  let honoured = true;
+  try {
+    readdirSync(locked);
+    honoured = false;
+  } catch {
+    /* the mode bits were honoured */
+  }
+  try {
+    if (!honoured) {
+      t.diagnostic('NOT MEASURED: this platform listed a 0o000 directory anyway (root?)');
+      return;
+    }
+    for (const call of [discoverProjectStore, resolveProjectStore]) {
+      assert.throws(() => call(join(locked, 'x', 'y')), (e) =>
+        e.name === 'PermissionError' &&
+        e.message === `[Errno 13] Permission denied: '${join(locked, 'x', 'y', '.bantamkit', 'memory')}'`);
+    }
+  } finally {
+    chmodSync(locked, 0o755);
+  }
+});
+
 test('resolve never disagrees with discover about the path', () => {
   const bed = fresh();
   mkstore(join(bed, 'p', '.bantamkit', 'memory'), { a: 'd' });

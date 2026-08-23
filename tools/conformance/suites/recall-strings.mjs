@@ -34,6 +34,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { userInfo } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -550,14 +551,33 @@ export async function run(ctx) {
   materialise(bindingBed, merge(
     storeSpec('full/.bantamkit/memory', { a: 'd' }),
     storeSpec('empty/.bantamkit/memory'),
-    { dirs: ['none', 'full/deep/deeper', 'empty/.bantamkit/memory/facts/sub.md'] },
+    { dirs: ['none', 'full/deep/deeper', 'empty/.bantamkit/memory/facts/sub.md', 'locked/x/y'] },
   ));
-  const starts = ['full', 'empty', 'none', 'full/deep/deeper'].map((s) => join(bindingBed, s));
+  // `locked` is 0o000 for the length of this probe: `Path.is_dir()` swallows only
+  // `_IGNORED_ERRNOS`, so the WALK ITSELF raises PermissionError through an ancestor it
+  // cannot traverse. That refutes `_pinned_store`'s docstring, which says the walk lives
+  // with an unreadable candidate, and it is the arm `existsSync` would answer `false` to.
+  const starts = ['full', 'empty', 'none', 'full/deep/deeper', 'locked/x/y']
+    .map((s) => join(bindingBed, s));
+  chmodSync(join(bindingBed, 'locked'), 0o000);
+  let locked = true;
+  try {
+    readdirSync(join(bindingBed, 'locked'));
+    locked = false;
+  } catch {
+    /* the mode bits were honoured */
+  }
+  if (!locked) {
+    notes.push('NOT MEASURED: this platform listed a 0o000 directory anyway (root?), so the ' +
+      'walk-through-EACCES arm compared two successes rather than two raises');
+  }
   const pyBindings = ctx.runPython(REF, { op: 'resolve', starts: starts.map(b64) }, probeEnv).bindings;
   cases.push({
     name: 'resolve_project_store: path, state, count, searched_from, origin',
     kind: 'json',
-    expected: pyBindings.map((b) => (b.error ? b : {
+    expected: pyBindings.map((b) => (b.error
+      ? `${b.error.type}: ${unb64(b.error.message).split(bindingBed).join('<BED>')}`
+      : {
       path: unb64(b.path).split(bindingBed).join('<BED>'),
       state: b.state,
       fact_count: b.fact_count,
@@ -565,22 +585,37 @@ export async function run(ctx) {
       origin: b.origin,
     })),
     actual: starts.map((start) => {
-      const b = layers.resolveProjectStore(start);
-      return {
-        path: b.path.split(bindingBed).join('<BED>'),
-        state: b.state,
-        fact_count: b.factCount,
-        searched_from: b.searchedFrom === null ? null : b.searchedFrom.split(bindingBed).join('<BED>'),
-        origin: b.origin,
-      };
+      try {
+        const b = layers.resolveProjectStore(start);
+        return {
+          path: b.path.split(bindingBed).join('<BED>'),
+          state: b.state,
+          fact_count: b.factCount,
+          searched_from: b.searchedFrom === null ? null : b.searchedFrom.split(bindingBed).join('<BED>'),
+          origin: b.origin,
+        };
+      } catch (e) {
+        return `${e?.name}: ${String(e?.message).split(bindingBed).join('<BED>')}`;
+      }
     }),
   });
+  const pyPaths = ctx.runPython(REF, { op: 'discover', starts: starts.map(b64) }, probeEnv).paths;
+  const nodePaths = starts.map((s) => {
+    try {
+      return layers.discoverProjectStore(s).split(bindingBed).join('<BED>');
+    } catch (e) {
+      return `${e?.name}: ${String(e?.message).split(bindingBed).join('<BED>')}`;
+    }
+  });
+  chmodSync(join(bindingBed, 'locked'), 0o755);
   cases.push({
     name: 'discover_project_store never disagrees with resolve about the path',
     kind: 'json',
-    expected: ctx.runPython(REF, { op: 'discover', starts: starts.map(b64) }, probeEnv)
-      .paths.map((p) => unb64(p).split(bindingBed).join('<BED>')),
-    actual: starts.map((s) => layers.discoverProjectStore(s).split(bindingBed).join('<BED>')),
+    expected: pyPaths.map((p) =>
+      p.error
+        ? `${p.error.type}: ${unb64(p.error.message).split(bindingBed).join('<BED>')}`
+        : unb64(p).split(bindingBed).join('<BED>')),
+    actual: nodePaths,
   });
 
   const names = ['  A_Fact Name ', 'already-fine', 'MiXeD_case', 'a  b', '', '_', 'ΑΣ', 'İstanbul',
@@ -618,7 +653,10 @@ export async function run(ctx) {
     })(),
   });
 
-  const expanders = ['~', '~/mem', '/abs', 'rel', '', '~/', 'a/~', '/~/x'];
+  // `~<the current user>` is in the list because without it `first.startsWith('~')` and
+  // `first === '~'` are indistinguishable — a mutation sweep found exactly that survivor.
+  const expanders = ['~', '~/mem', '/abs', 'rel', '', '~/', 'a/~', '/~/x',
+    `~${userInfo().username}/mem`];
   cases.push({
     name: 'Path(raw).expanduser() — the pin arrives with no shell to expand it',
     kind: 'json',
