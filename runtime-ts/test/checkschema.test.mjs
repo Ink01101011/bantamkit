@@ -437,6 +437,10 @@ test('winerrorFor re-derives the distinction libuv threw away', () => {
   assert.equal(new pyfs.PyOSError(22, 'EINVAL', 'x', '/a', null, 123).name, 'OSError');
   assert.equal(new pyfs.PyOSError(2, 'ENOENT', 'x', '/a', null, 2).name, 'FileNotFoundError');
   assert.equal(new pyfs.PyOSError(20, 'ENOTDIR', 'x', '/a', null, 267).name, 'NotADirectoryError');
+  // libuv spells two unrelated Windows failures `EINVAL`: a name the API refuses and a
+  // PARAMETER it refuses. Only the first belongs in the path walk.
+  assert.equal(pyfs.winerrorFor('EINVAL', 'win32', '/a/there', null, here), 87);
+  assert.equal(pyfs.winerrorFor('EINVAL', 'win32', '/a/th\nere', null, present(['/a'])), 123);
   // An unmapped code makes NO claim: a visible `[Errno n]` beats a plausible wrong sentence.
   assert.equal(pyfs.winerrorFor('EWHAT', 'win32', '/a', null, here), null);
   // And `open()` never carries one at all, on any code.

@@ -340,7 +340,16 @@ export function winerrorFor(
   exists: (candidate: string) => boolean,
 ): number | null {
   if (origin === 'crt') return null;
-  if (code === 'ENOENT' || code === 'EINVAL') return notFoundWinerror(origin, path, dest, exists);
+  if (code === 'ENOENT') return notFoundWinerror(origin, path, dest, exists);
+  // libuv reports EINVAL for two unrelated things on Windows: a name the API refuses, and a
+  // parameter it refuses. Only the first belongs in the path walk; the second is
+  // `ERROR_INVALID_PARAMETER`, and routing both through the walk would print a not-found
+  // sentence for an argument error.
+  if (code === 'EINVAL') {
+    return ntNameIsInvalid(path) || ntNameIsInvalid(dest)
+      ? notFoundWinerror(origin, path, dest, exists)
+      : 87;
+  }
   switch (code) {
     case 'ENOTDIR':
       return 267;
@@ -353,8 +362,6 @@ export function winerrorFor(
       return 145;
     case 'ELOOP':
       return WINERROR_CANT_RESOLVE_FILENAME;
-    case 'EINVAL':
-      return 87;
     case 'ENAMETOOLONG':
       return 206;
     case 'EBUSY':
