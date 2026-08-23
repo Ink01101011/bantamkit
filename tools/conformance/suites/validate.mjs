@@ -24,7 +24,7 @@
  * bytes. Handing over a parsed object would erase the int/float distinction that
  * `{instance!r}` prints, which is one of the things under test.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -334,9 +334,16 @@ export async function run(ctx) {
     join(repoRoot, 'assets', 'schemas', 'shiftwork-checkpoint.json'),
     'utf8',
   );
+  // The tracked template is always in; the live job checkpoint joins it only when the
+  // checkout happens to have one. `.shiftwork/` is gitignored, so on a runner it never
+  // does, and an unconditional read here threw ENOENT and took this suite plus `wire` down
+  // with it. It is kept as an OPTIONAL extra rather than dropped because a 29 KB document
+  // with Thai and sixteen escaped em dashes is a better instrument than a 2 KB one — but
+  // it can only ever be a bonus, never the thing the suite rests on.
+  const liveCheckpoint = join(repoRoot, '.shiftwork', 'job38-npx-public-install', 'checkpoint.json');
   const realCheckpoints = {
-    live: join(repoRoot, '.shiftwork', 'job38-npx-public-install', 'checkpoint.json'),
     example: join(repoRoot, 'tools', 'shiftwork', 'example-codefix-checkpoint.json'),
+    ...(existsSync(liveCheckpoint) ? { live: liveCheckpoint } : {}),
   };
 
   // ------------------------------------------------------- 1. schema_error, the sentences

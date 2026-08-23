@@ -41,7 +41,14 @@ const repoRoot = dirname(dirname(here));
 const REF = join(here, 'ref', 'wire_ref.py');
 const CLI = join(repoRoot, 'runtime-ts', 'dist', 'cli.js');
 const ASSETS = join(repoRoot, 'assets');
-const REAL_CHECKPOINT = join(repoRoot, '.shiftwork', 'job38-npx-public-install', 'checkpoint.json');
+/**
+ * The tracked template, not the live job checkpoint — same reason as
+ * tools/conformance/suites/shiftwork.mjs. `.shiftwork/` is gitignored, so this suite could
+ * only ever have run in a checkout that happened to be mid-job, and the live file's
+ * `plan.cursor` moves underneath it while the job advances. `cursorUnit` below already
+ * reads the cursor out of the document rather than hardcoding it, so nothing else changes.
+ */
+const REAL_CHECKPOINT = join(repoRoot, 'tools', 'shiftwork', 'example-codefix-checkpoint.json');
 
 const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');
 const unb64 = (s) => Buffer.from(s, 'base64').toString('utf8');

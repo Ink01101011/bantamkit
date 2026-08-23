@@ -24,10 +24,9 @@
  * the absolute path, so two different directories would compare two different strings and
  * the run would fail for a reason that is not the port's.
  *
- * The real `.shiftwork/job38-npx-public-install/checkpoint.json` is COPIED into scratch and
- * exercised there. It is read, never written — it is the file this job is being run from,
- * and it is also the best test document in the repository: 29 KB with a Thai ruling and 16
- * em dashes in it, every one of them `\uXXXX` on disk.
+ * The checkpoint corpus is `tools/shiftwork/example-codefix-checkpoint.json`, COPIED into
+ * scratch and exercised there — see the note on `REAL_CHECKPOINT` below for why it is the
+ * tracked template and not the live job file it used to be.
  */
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
