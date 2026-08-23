@@ -113,6 +113,16 @@ Python needs `ensure_ascii=False`). No value written today is non-ASCII.
 | `build_identity` | `complete`, `partial` | `unavailable` (a count) |
 | *any* | `raised` | `type` — the exception **class name** |
 
+`type` is the class name **CPython** would print — `type(exc).__name__` — which for an
+`OSError` is the subclass `OSError.__new__` picks off the errno, so an `ENOTDIR` is
+`NotADirectoryError` on both runtimes and never Node's own constructor name `PyOSError`.
+That portability is exactly as wide as `OSERROR_SUBCLASS` in
+`runtime-ts/src/memory/pyfs.ts`, the errnos of CPython's `errnomap`: **an errno outside it
+is recorded as plain `OSError` on both sides — CPython's own default for an unmapped errno
+— so the field stays portable but stops naming which failure it was.** No conformance case
+compares this field; see the named gap in [porting.md](porting.md), and the unit test on
+each side that is the only thing holding it.
+
 `raised` is spelled differently from the shiftwork tools' own `error` on purpose:
 `result: "error"` is a refusal the register composed and returned normally, while `raised`
 is a handler that fell over. Collapsing them would lose the only distinction between a

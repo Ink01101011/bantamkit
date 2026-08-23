@@ -167,6 +167,21 @@ const OSERROR_SUBCLASS: Record<string, string> = {
 };
 
 /**
+ * `type(exc).__name__` for an `OSError` with this errno NAME — the table and its default.
+ *
+ * ONE reader of `OSERROR_SUBCLASS` for two callers, because the default is half the rule:
+ * an unlisted errno is `OSError` in CPython, and a second `?? 'OSError'` written somewhere
+ * else is a second place for the two halves to drift apart. `PyOSError`'s own constructor
+ * takes its `name` from here, and `eventlog.ts` asks the same question of an exception it
+ * is about to record — the port had already decided this question in the constructor and
+ * the event log answered it with the JavaScript constructor name instead, recording
+ * `PyOSError` where CPython records `NotADirectoryError`.
+ */
+export function osErrorClassName(code: string): string {
+  return OSERROR_SUBCLASS[code] ?? 'OSError';
+}
+
+/**
  * An `OSError` as Python prints one.
  *
  * `str(OSError)` is `[Errno {errno}] {strerror}: {filename!r}`, and that text is not
@@ -218,7 +233,7 @@ export class PyOSError extends Error {
     // spelling of `str(OSError)` that shows both.
     const head = winerror === null ? `[Errno ${errno}]` : `[WinError ${winerror}]`;
     super(`${head} ${strerror}${where}`);
-    this.name = OSERROR_SUBCLASS[code] ?? 'OSError';
+    this.name = osErrorClassName(code);
     this.errno = errno;
     this.code = code;
     this.strerror = strerror;

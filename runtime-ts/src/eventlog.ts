@@ -51,7 +51,7 @@
  */
 import { appendFileSync, mkdirSync, renameSync, statSync } from 'node:fs';
 
-import { cmpCodepoint, pyJoin, pyParent } from './memory/pyfs.js';
+import { cmpCodepoint, osErrorClassName, PyOSError, pyJoin, pyParent } from './memory/pyfs.js';
 
 /**
  * Environment switch. Unset or `off`/`0`/`false`/`no`/empty -> disabled. `on`/`1`/`true`/
@@ -264,8 +264,18 @@ export class EventLog {
  * subclass whose constructor was minified away, and the literal `'thrown'` for a value
  * that is not an object at all — `throw 'boom'` carries no type to name, and putting the
  * VALUE there would be exactly the leak this function exists to prevent.
+ *
+ * `PyOSError` IS THE ONE CLASS WHOSE JAVASCRIPT NAME IS NOT THE ANSWER, and it is the
+ * commonest exception a handler here can throw. CPython has no `PyOSError`: `OSError.
+ * __new__` picks a subclass off the errno, so the reference records
+ * `NotADirectoryError` for an `ENOTDIR` where `constructor.name` records `PyOSError` for
+ * every errno there is. That is a difference in a byte-compared field with no reason
+ * behind it — and the port had already decided the question the other way in
+ * `memory/pyfs.ts`, which is why the answer comes from `osErrorClassName` and not from a
+ * second table here. An errno the table does not list is `OSError`, CPython's own default.
  */
 function typeNameOf(error: unknown): string {
+  if (error instanceof PyOSError) return osErrorClassName(error.code);
   if (typeof error === 'object' && error !== null) {
     const ctor = (error as { constructor?: { name?: unknown } }).constructor;
     if (ctor && typeof ctor.name === 'string' && ctor.name !== '') return ctor.name;

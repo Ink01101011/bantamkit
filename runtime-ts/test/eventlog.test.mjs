@@ -61,7 +61,7 @@ import {
 } from '../dist/eventlog.js';
 import { Memory } from '../dist/memory/component.js';
 import { MemoryStore } from '../dist/memory/store.js';
-import { matchesMd } from '../dist/memory/pyfs.js';
+import { matchesMd, PyOSError, pyScandirNames } from '../dist/memory/pyfs.js';
 import { buildServer } from '../dist/mcp/server.js';
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -370,6 +370,64 @@ test('a raising handler names the type and leaks no argument value', async () =>
   const raw = readFileSync(path, 'utf8');
   assert.ok(!raw.includes(sentinel), raw);
   assert.ok(!raw.includes('SECRET'), raw);
+});
+
+test('an OSError is recorded under the class CPython picks off the errno', async () => {
+  /**
+   * `type(exc).__name__` and `constructor.name` ARE NOT THE SAME FUNCTION, and this is the
+   * one class where they disagree. CPython has no `PyOSError` — `OSError.__new__` picks a
+   * subclass off the errno — so the reference records `NotADirectoryError` for an `ENOTDIR`
+   * while `constructor.name` records `PyOSError` for every errno there is. `detail.type` is
+   * a byte-compared field of a cross-runtime contract, so that is a divergence, not a
+   * spelling. Measured before the fix: `{"type":"PyOSError"}` against the reference's
+   * `{"type":"NotADirectoryError"}` for the same syscall.
+   *
+   * THE ERROR COMES OUT OF A REAL SYSCALL, not out of `new PyOSError(...)`: `readdir` on a
+   * plain file. A hand-built exception would keep passing on the day the mapping stopped
+   * being reachable from `asPyOSError`, which is the only way a caller ever gets one.
+   */
+  const dir = room();
+  const file = join(dir, 'not-a-directory');
+  writeFileSync(file, 'a file where a directory is expected');
+  // Both halves of the divergence, proved here rather than assumed: the JavaScript name of
+  // the thing thrown really is `PyOSError`, so the record below is evidence and not a
+  // tautology. `code` is `ENOTDIR` on Windows too — libuv's own answer for `readdir` on a
+  // file, and `scandirShape`'s answer when Windows reports the miss as `ENOENT` instead.
+  assert.throws(
+    () => pyScandirNames(file),
+    (e) => e.constructor.name === 'PyOSError' && e.code === 'ENOTDIR',
+  );
+  const { memory, path, log } = make(dir);
+  memory.recallOutcome = () => pyScandirNames(file);
+  const client = await connect(memory, log);
+  const answer = await client.callTool({ name: 'memory_recall', arguments: { query: 'widget' } });
+  await client.close();
+  assert.equal(answer.isError, true);
+  const [record] = records(path);
+  assert.equal(record.outcome, 'raised');
+  assert.deepEqual(record.detail, { type: 'NotADirectoryError' });
+});
+
+test('an errno outside the table is OSError, which is CPython default too', async () => {
+  /**
+   * The default is a BRANCH, not an `else` nobody runs: `errnomap` covers eleven errnos and
+   * every other one raises a plain `OSError` in CPython. `ENOSPC` is deliberately not in
+   * `OSERROR_SUBCLASS` and cannot be produced by filling a disk from a test, so this one
+   * exception IS constructed — the arm above is the one that has to survive a real syscall,
+   * because it is the one that proves the mapping is reachable from `asPyOSError` at all.
+   */
+  const dir = room();
+  const { memory, path, log } = make(dir);
+  const notInTheTable = new PyOSError(28, 'ENOSPC', 'No space left on device', join(dir, 'x'));
+  assert.equal(notInTheTable.constructor.name, 'PyOSError');
+  memory.recallOutcome = () => {
+    throw notInTheTable;
+  };
+  const client = await connect(memory, log);
+  await client.callTool({ name: 'memory_recall', arguments: { query: 'widget' } });
+  await client.close();
+  const [record] = records(path);
+  assert.deepEqual(record.detail, { type: 'OSError' });
 });
 
 test('no free-text argument reaches the file', async () => {

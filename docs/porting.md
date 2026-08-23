@@ -225,6 +225,37 @@ Surprises worth keeping: `1e+17` is a **`str`**, not a float — PyYAML's float 
 | accounting via `fromJs` | an integral float; the `parseJson` route is byte-identical |
 | on Windows, CRLF | **no longer a difference.** N11 reversed it: the emitter builds LF text, the WRITER translates, and the budget still counts the LF text — which is what CPython does. See [conformance.md](conformance.md). |
 
+## Gaps the differential cannot see, named rather than hidden
+
+A row here is **not** a permitted difference. It is a property the two runtimes are
+supposed to share where `node tools/conformance/run.mjs --all` is structurally unable to
+compare them, so the only thing holding the property is a unit test on each side. Naming
+the gap is the whole point: a green `--all` is not evidence about any of these.
+
+**`detail.type` on a `raised` record.** The event log names an exception by the class
+CPython's `OSError.__new__` picks off the errno — `NotADirectoryError` for `ENOTDIR`, not
+the JavaScript constructor name `PyOSError`, and not the bare `OSError` — via
+`osErrorClassName` in `runtime-ts/src/memory/pyfs.ts`, the single reader of
+`OSERROR_SUBCLASS`. **No `wire` session drives a throwing handler**, and making one drive a
+real `OSError` needs a `chmod 000` that is meaningless on Windows; a POSIX-only case would
+make the matrix compare different case sets on different platforms, which is worse than an
+absence you can read. So this is held by
+`runtime-ts/test/eventlog.test.mjs`'s `an OSError is recorded under the class CPython picks
+off the errno` — a real `readdir` on a plain file, so the mapping has to stay reachable
+from `asPyOSError` — plus `an errno outside the table is OSError, which is CPython default
+too` for the default branch, and by `test_eventlog.py`'s own `raised` nodes on the Python
+side. The differential does not compare this field on any case that exists today.
+
+**`BANTAMKIT_EVENT_LOG`'s whitespace, registered and NOT fixed.** `str.strip()` and
+`String.prototype.trim()` do not strip the same set. Python strips the C0 separators
+`\x1c`–`\x1f` and JavaScript does not; JavaScript strips U+FEFF and Python does not. So
+`"\x1con\x1c"` enables the default log on Python and is taken as a literal *path* on Node,
+and `"\uFEFFon"` (a real BOM, spelled as an escape here) does the same thing in reverse. Both sides then behave correctly for the
+value each one saw — the divergence is entirely in the stripping. Closing it means a
+Python-whitespace `strip` inside `resolvePath`, i.e. a second whitespace table in the port
+and a wider surface than the divergence it removes, for an environment variable nobody sets
+with a file separator in it. Registered here instead.
+
 ## Defects registered against `runtime-py`, not fixed here
 
 `runtime-py/` is the reference and was not modified. Found while porting:
