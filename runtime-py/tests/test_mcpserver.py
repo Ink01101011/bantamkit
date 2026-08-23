@@ -547,3 +547,127 @@ def test_packaging_reads_the_same_declaration_the_server_reads():
     assert "version" not in config["project"], "a static version would shadow the module's"
     declared = PYPROJECT.parent / config["tool"]["hatch"]["version"]["path"]
     assert declared.resolve() == Path(bantamkit.__file__).resolve()
+
+
+# --- `--assets-root`: the flag runtime-ts had and runtime-py did not ---------------------
+#
+# CLAUDE.md, "Two runtimes, one surface". `runtime-ts/src/cli.ts` has carried `--assets-root`
+# since it shipped; nothing here compared the two CLIs, so nothing noticed. These nodes drive
+# the Python half through a real process, because the claim is about a wire -- exit code,
+# which stream, how many lines -- and an in-process `_parse_args([...])` cannot see any of it.
+
+
+def _run_cli(argv, cwd):
+    """`python -m bantamkit.mcpserver ...` against THIS checkout, from an unrelated cwd.
+
+    PYTHONPATH is set explicitly: without it the child imports whatever `bantamkit` the
+    interpreter has installed, which in a worktree is the OTHER checkout's source.
+    """
+    import subprocess
+    import sys
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(SRC)
+    env.pop("BANTAMKIT_ASSETS", None)  # arm 1 of the resolver would make the node vacuous
+    return subprocess.run(
+        [sys.executable, "-m", "bantamkit.mcpserver", *argv],
+        capture_output=True,
+        cwd=str(cwd),
+        env=env,
+    )
+
+
+def test_assets_root_flag_prints_the_root_and_a_file_count_on_stdout(tmp_path):
+    """Two lines, `<root>\\n<count> files\\n`, exit 0, nothing on stderr.
+
+    The count is recomputed here with `os.walk`, not with the `rglob` the implementation
+    uses, so a fix that counted directories as well as files stays red.
+
+    The ROOT is not compared against runtime-ts and never will be: Python resolves the
+    repo-root `assets/`, Node resolves the `runtime-ts/assets/` that `sync-assets.mjs`
+    vendors. Same bytes, different paths, by construction. The COUNT is the comparable half.
+    """
+    from bantamkit.assets import assets_root
+
+    root = assets_root()
+    expected = sum(len(names) for _dirpath, _dirnames, names in os.walk(root))
+    done = _run_cli(["--assets-root"], tmp_path)
+
+    assert done.returncode == 0
+    assert done.stderr == b""
+    assert done.stdout == f"{root}\n{expected} files\n".encode()
+    assert done.stdout.count(b"\n") == 2
+
+
+def test_assets_root_flag_returns_before_a_store_or_a_transport_exists(monkeypatch, capsysbinary):
+    """The Node arm returns ahead of `new RawStdioTransport()`; so does this one.
+
+    Every path that could reach a server is replaced with a detonator. If the flag ever
+    falls through to the server, one of them fires instead of the assertion below.
+    """
+    import sys
+
+    import bantamkit.mcpserver as m
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("--assets-root reached the server path")
+
+    monkeypatch.setattr(sys, "argv", ["bantamkit-mcp", "--assets-root"])
+    monkeypatch.setattr(m, "_build_memory", boom)
+    monkeypatch.setattr(m, "build_server", boom)
+    monkeypatch.setattr(m.asyncio, "run", boom)
+
+    m.main()  # returns; does not raise SystemExit
+
+    captured = capsysbinary.readouterr()
+    assert captured.err == b""
+    assert captured.out.count(b"\n") == 2
+    assert captured.out.endswith(b" files\n")
+
+
+def test_assets_root_appears_in_the_generated_help_in_the_documented_position(tmp_path):
+    """The point of the unit: the flag is IN `-h`, and where it sits is pinned.
+
+    argparse orders optionals by registration, so this string is the contract the Node
+    formatter has to reproduce. `--assets-root` sits beside `-h` because both print and
+    return 0 without starting anything; the flags that configure a running server follow.
+    """
+    done = _run_cli(["-h"], tmp_path)
+
+    assert done.returncode == 0
+    assert done.stderr == b""
+    first = done.stdout.decode().splitlines()[0]
+    assert first == "usage: bantamkit-mcp [-h] [--assets-root] [--k K] [--index-budget BYTES]"
+    assert "--assets-root" in done.stdout.decode()
+
+
+def test_assets_root_defaults_off_so_a_bare_invocation_still_serves():
+    """The production invocation passes no arguments at all. It must not print and exit."""
+    assert _parse_args([]).assets_root is False
+    assert _parse_args(["--assets-root"]).assets_root is True
+
+
+def test_assets_root_writes_lf_even_when_the_text_stream_would_translate(monkeypatch):
+    """LF on every platform, not CRLF -- and made visible on a platform that cannot see it.
+
+    `sys.stdout` is a text stream with newline translation, so on Windows `print` emits
+    CRLF where Node's `process.stdout.write` emits LF; a byte-comparing conformance runner
+    would report a divergence that belongs to the writer, not to the product. That is
+    unobservable on POSIX, where the translation is a no-op, so this node stands in a
+    stream that DOES translate. Mutating `sys.stdout.buffer.write(...)` back to two
+    `print()` calls leaves every other node in this file green and reddens only this one.
+    """
+    import io
+    import sys
+
+    import bantamkit.mcpserver as m
+
+    raw = io.BytesIO()
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(raw, encoding="utf-8", newline="\r\n"))
+    m._print_assets_root()
+    sys.stdout.flush()
+
+    written = raw.getvalue()
+    assert b"\r" not in written
+    assert written.endswith(b" files\n")
+    assert written.count(b"\n") == 2

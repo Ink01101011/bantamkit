@@ -383,6 +383,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         prog="bantamkit-mcp",
         description="bantamkit MCP server (stdio): per-person memory + JSON validation.",
     )
+    # POSITION IS WIRE-VISIBLE. argparse prints optionals in the order they were added, so
+    # this line -- not any format string -- decides where `[--assets-root]` sits in the
+    # generated usage, and the Node formatter has to reproduce that. It goes FIRST, beside
+    # the `-h` argparse adds for us, because those two share a property nothing below them
+    # has: they print and return 0 without a memory store, a transport, or a server. Every
+    # flag after them configures a server that is actually going to run.
+    parser.add_argument(
+        "--assets-root",
+        action="store_true",
+        help="print the resolved asset pack root and its file count, then exit",
+    )
     parser.add_argument("--k", type=int, default=3, help="default recall budget (default: 3)")
     # The index is loaded into every prompt, so its ceiling is a deployment decision.
     # It had no flag: 4096 was reachable only by editing `store.py`, which made
@@ -416,10 +427,39 @@ def _build_memory(args: argparse.Namespace) -> Memory:
     return Memory.layered(start=args.start, k=args.k, index_budget=args.index_budget)
 
 
+def _print_assets_root() -> None:
+    """`--assets-root`: two lines on stdout, then return -- no store, no transport, no server.
+
+    THE TWO RUNTIMES PRINT DIFFERENT PATHS ON PURPOSE. Do not "fix" that. Python resolves
+    the repo-root `assets/` (or the copy packaged inside `bantamkit/`); Node resolves
+    `runtime-ts/assets/`, which `scripts/sync-assets.mjs` vendors at prepack time. The two
+    trees are byte-identical file for file, but they live at different paths by
+    construction and always will, so line 1 is NOT comparable across runtimes. What IS
+    comparable, and what the conformance case pins: exactly two lines, the shape
+    `<root>\\n<count> files\\n`, the same COUNT on both sides, exit 0, stdout not stderr,
+    empty stderr, and no transport started.
+
+    Written through `sys.stdout.buffer` rather than `print`, because `sys.stdout` is a text
+    stream with newline translation: on Windows `print` would emit CRLF where Node's
+    `process.stdout.write` emits LF, and a byte-comparing conformance runner would call
+    that a divergence. UTF-8 is what Node's `Buffer.from(string)` uses, so the encoding
+    matches too.
+    """
+    root = assets_root()
+    files = sum(1 for path in root.rglob("*") if path.is_file())
+    sys.stdout.buffer.write(f"{root}\n{files} files\n".encode())
+    sys.stdout.buffer.flush()
+
+
 def main() -> None:
     if MCPServer is None:
         raise SystemExit(_INSTALL_HINT)
     args = _parse_args()
+    # Before `_build_memory`, which touches the filesystem, and before the server exists at
+    # all -- the Node arm returns from `main` here too, ahead of `new RawStdioTransport()`.
+    if args.assets_root:
+        _print_assets_root()
+        return
     server = build_server(_build_memory(args))
     asyncio.run(server.run_stdio_async())
 
