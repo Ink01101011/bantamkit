@@ -16,10 +16,22 @@
  * that survives the pins is visible without a Python on PATH.
  */
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync, mkdirSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+
+import { Memory } from '../dist/memory/component.js';
+import { MEMORY_DIR_ENV } from '../dist/memory/layers.js';
 
 import { constructPlain, PyScalar, safeDumpMapping, YamlConstructError } from '../dist/memory/pyyaml.js';
 import { parseFrontmatter } from '../dist/memory/factfile.js';
@@ -319,4 +331,60 @@ test('the layered dedupe set is hash/==, not str', () => {
   assert.notEqual(pyHashKey(v('7')), pyHashKey('7'));
   assert.notEqual(pyHashKey(v('2026-08-23')), pyHashKey('2026-08-23'));
   assert.equal(pyHashKey(null), 'None');
+});
+
+test('a numeric name and its string spelling are TWO facts across layers, not one', () => {
+  // `Memory.recall` dedupes across layers with `if fact.name in seen` over a Python `set`,
+  // which is `hash`/`==`. `7` and `'7'` are different keys there and `pyText` would collapse
+  // them into one, dropping a fact the reference reports; `7`, `7.0` and `True` are the SAME
+  // key, and a key built from the JS type would report a fact the reference drops. Both
+  // directions are exercised here, through the real layered surface.
+  const bed = realpathSync(mkdtempSync(join(tmpdir(), 'bk-scalar-layers-')));
+  const home = join(bed, 'home');
+  const project = join(bed, 'p');
+  const grant = join(bed, 'granted');
+  // Every description scores DIFFERENTLY inside its own store, so what this test measures
+  // is the dedupe and not the tie-break (which has its own cases above).
+  const store = (root, files) => {
+    mkdirSync(join(root, 'facts'), { recursive: true });
+    mkdirSync(join(root, 'archive'), { recursive: true });
+    for (const [file, [name, description]] of Object.entries(files)) {
+      writeFileSync(
+        join(root, 'facts', `${file}.md`),
+        `---\nname: ${name}\ndescription: ${description}\ntype: project\n` +
+          `created: '2026-08-01'\nlast_recalled: null\nlinks: []\n---\n\nb\n`,
+      );
+    }
+  };
+  store(join(home, '.bantamkit', 'memory'), {});
+  store(join(project, '.bantamkit', 'memory'), {
+    seven: ['7', 'shared probe token'],
+    trueish: ['true', 'shared probe'],
+  });
+  store(grant, {
+    sevenstr: ["'7'", 'shared probe token'],
+    sevenfloat: ['7.0', 'shared probe'],
+    one: ['1', 'shared'],
+  });
+  writeFileSync(join(project, '.bantamkit', 'config.yaml'), `extra_stores:\n- ${grant}\n`);
+
+  const saved = { [MEMORY_DIR_ENV]: process.env[MEMORY_DIR_ENV], HOME: process.env.HOME };
+  delete process.env[MEMORY_DIR_ENV];
+  process.env.HOME = home;
+  try {
+    const out = Memory.layered(project, { today: () => '2026-08-23', k: 9 }).recall('shared probe token');
+    const lines = out.split('\n\n').map((block) => block.split('\n')[0]);
+    // The project layer contributes `7` and `True`. In the grant, `'7'` is a DIFFERENT key
+    // and survives; `7.0` equals `7` and `1` equals `True`, so both are dropped.
+    assert.deepEqual(lines, [
+      '[project] [7] (project) shared probe token',
+      '[project] [True] (project) shared probe',
+      '[extra:granted] [7] (project) shared probe token',
+    ]);
+  } finally {
+    if (saved[MEMORY_DIR_ENV] === undefined) delete process.env[MEMORY_DIR_ENV];
+    else process.env[MEMORY_DIR_ENV] = saved[MEMORY_DIR_ENV];
+    process.env.HOME = saved.HOME;
+    rmSync(bed, { recursive: true, force: true });
+  }
 });
