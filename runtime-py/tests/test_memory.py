@@ -752,6 +752,57 @@ def test_a_missing_facts_directory_is_a_first_run_and_not_an_error(tmp_path):
     assert not (tmp_path / "never-made").exists()
 
 
+def _write_shapes(directory, names):
+    """Create every name the filesystem will accept, and hand back both lists.
+
+    `*.md` is in the shape list on purpose — it is the name most likely to make two
+    implementations of "which files are facts" disagree — and `*` is reserved in a
+    DOS/Win32 filename, so `open()` refuses it there. Measured 2026-08-23 on this
+    machine against a filesystem that enforces that rule (a FAT32 image: `dd`,
+    `mkfs.vfat`, `mount -o loop`, in a Linux container): `Path("*.md").write_text("x")`
+    raised `OSError [Errno 22] Invalid argument`, while `real.md`, `adir.md`,
+    `spaced name.md` and `UPPER.MD` were all created. `ci.yml` runs this suite on
+    `windows-latest` for py3.11 and py3.12, where that same rule is enforced by the
+    Win32 layer for every filesystem — so a hardcoded population count here is a red
+    matrix, and a shape list built with no record of what was refused is a claim about
+    seventeen shapes silently made about fifteen.
+    """
+    made, refused = [], []
+    for name in names:
+        try:
+            (directory / name).write_text("x", encoding="utf-8")
+        except (OSError, ValueError):
+            refused.append(name)
+        else:
+            made.append(name)
+    return made, refused
+
+
+_GLOB_SHAPES = (
+    "real.md",
+    ".hidden.md",
+    ".md",
+    "UPPER.MD",
+    "*.md",
+    "notes.txt",
+    "no-extension",
+    "spaced name.md",
+    "unicode-ñ.md",
+    "fact-0.md.tmp",
+)
+# Nothing else in the list uses a character Win32 reserves, so `*.md` is the one shape
+# allowed to go missing — and it has to go missing NAMED. A node that quietly tests one
+# shape fewer on half the CI matrix still carries the full claim in its docstring.
+_WIN32_CANNOT_SPELL = {"*.md"}
+
+
+def _assert_only_win32_dropped_a_shape(refused):
+    assert set(refused) <= _WIN32_CANNOT_SPELL, f"a shape went missing unnamed: {refused}"
+    assert refused == [] or os.name == "nt", (
+        f"only a DOS/Win32 name rule refuses these, and this is {os.name}: {refused}"
+    )
+
+
 def test_a_readable_store_lists_exactly_what_glob_listed(tmp_path):
     """The counted set does not change. Seventeen shapes, over the binding layer's sixteen.
 
@@ -762,22 +813,16 @@ def test_a_readable_store_lists_exactly_what_glob_listed(tmp_path):
     `.MD` (pathlib and `fnmatch.fnmatch` are both case-sensitive off Windows and both
     case-insensitive on it), a file literally named `*.md`, a directory named `*.md`,
     and three symlink flavours.
+
+    Sixteen of the seventeen are constructible everywhere. The seventeenth, the file
+    literally named `*.md`, is not: see `_write_shapes`. On Windows this node therefore
+    tests sixteen, and `_assert_only_win32_dropped_a_shape` is what keeps that a
+    measured platform difference rather than a silently weaker test — the equality
+    against `glob("*.md")` is self-adjusting and is asserted unchanged on both.
     """
     facts = tmp_path / "mem" / "facts"
     facts.mkdir(parents=True)
-    for name in (
-        "real.md",
-        ".hidden.md",
-        ".md",
-        "UPPER.MD",
-        "*.md",
-        "notes.txt",
-        "no-extension",
-        "spaced name.md",
-        "unicode-ñ.md",
-        "fact-0.md.tmp",
-    ):
-        (facts / name).write_text("x", encoding="utf-8")
+    made, refused = _write_shapes(facts, _GLOB_SHAPES)
     (facts / "adir.md").mkdir()
     (facts / "sub").mkdir()
     (facts / "sub" / "nested.md").write_text("x", encoding="utf-8")
@@ -798,11 +843,17 @@ def test_a_readable_store_lists_exactly_what_glob_listed(tmp_path):
     store = MemoryStore(tmp_path / "mem", create=False)
     assert store._fact_paths() == sorted(facts.glob("*.md"))
     # The population is pinned so a later edit cannot buy agreement by dropping shapes:
-    # 12 top-level entries plus whatever symlinks this platform allowed, and `sub/nested.md`
-    # under one of them. Measured on macOS/APFS: 11 of the 17 match `*.md`, and `UPPER.MD`
-    # matches under neither implementation — the case rule agrees as well as the name rule.
-    assert len(list(facts.iterdir())) == 12 + symlinks
-    assert len(store._fact_paths()) >= 7, "the shapes did not survive the filesystem"
+    # every name the filesystem accepted, plus `adir.md` and `sub/`, plus whatever
+    # symlinks this platform allowed. Measured on macOS/APFS: nothing refused, so 12
+    # top-level entries and 4 symlinks, of which 11 of the 17 match `*.md` — `UPPER.MD`
+    # matches under neither implementation, so the case rule agrees as well as the name
+    # rule. On Windows the arithmetic drops by one and the named-shape floor below is
+    # what stops that from being a test that quietly checks less.
+    _assert_only_win32_dropped_a_shape(refused)
+    assert len(list(facts.iterdir())) == len(made) + 2 + symlinks
+    assert {"real.md", "spaced name.md", "unicode-ñ.md", "adir.md"} <= {
+        p.name for p in store._fact_paths()
+    }, "the shapes did not survive the filesystem"
     assert symlinks == 4 or os.name == "nt", "symlinks are constructible off Windows"
 
 
@@ -983,30 +1034,25 @@ def test_a_readable_archive_lists_exactly_what_glob_listed(tmp_path):
     STEMS rather than paths and a re-implementation is exactly where an off-by-one in
     the name rule hides. Compared against `glob("*.md")` itself over the shapes that
     make two implementations differ if they are going to.
+
+    Built defensively for the same reason as the `facts/` node above: `*.md` is not a
+    filename Win32 can spell, and this suite runs on `windows-latest`. What the
+    platform refused is named rather than absent.
     """
     root = tmp_path / "mem"
     (root / "facts").mkdir(parents=True)
     archive = root / "archive"
     archive.mkdir()
-    for name in (
-        "real.md",
-        ".hidden.md",
-        ".md",
-        "UPPER.MD",
-        "*.md",
-        "notes.txt",
-        "no-extension",
-        "spaced name.md",
-        "unicode-ñ.md",
-        "fact-0.md.tmp",
-    ):
-        (archive / name).write_text("x", encoding="utf-8")
+    made, refused = _write_shapes(archive, _GLOB_SHAPES)
     (archive / "adir.md").mkdir()
 
     store = MemoryStore(root, create=False)
     assert store.archived() == sorted(p.stem for p in archive.glob("*.md"))
-    assert len(list(archive.iterdir())) == 11, "the shapes did not survive the filesystem"
-    assert len(store.archived()) >= 6
+    _assert_only_win32_dropped_a_shape(refused)
+    assert len(list(archive.iterdir())) == len(made) + 1, (
+        "the shapes did not survive the filesystem"
+    )
+    assert {"real", "spaced name", "unicode-ñ", "adir"} <= set(store.archived())
 
 
 def test_restore_moves_nothing_when_the_store_cannot_be_listed(tmp_path, monkeypatch):
@@ -1051,6 +1097,243 @@ def test_restore_moves_nothing_when_the_store_cannot_be_listed(tmp_path, monkeyp
     store.restore("put-away")
     assert store.archived() == []
     assert "put-away" in store.index_text()
+
+
+# ---------------------------------------------------------------------------
+# J37/W4: the promise `restore` made that its code did not keep, and an OS error
+# escaping a documented op.
+#
+# `restore` is the only op here that can half-complete, and W1 moved a read ahead
+# of its `rename` to stop that. A LISTING is not enough. The read that fails after
+# the move is `_check_index_budget` -> `index_text` -> `_facts`, which PARSES;
+# `_fact_paths` only lists. Measured on throwaway stores, byte-identical at
+# `533229c` and at `b973c32`:
+#
+#   facts/broken.md malformed     -> restore('put-away') took the fact OUT of
+#                                    archive/, left it in facts/, raised, and never
+#                                    rebuilt index.md
+#   archive/put-away.md malformed -> the same, and no pre-read can see this one at
+#                                    all: the file is not in facts/ yet
+#
+# The first is closed by widening the pre-read to `_facts()`. That refuses no
+# restore that would otherwise have succeeded, because every parse the pre-read can
+# fail on is one `_check_index_budget` re-runs three lines later — it converts a
+# half-complete failure into a refusal, it does not create one. The second is
+# reachable only after the move, so the rollback beside it had to widen too.
+#
+# Third: `restore` opens one named path instead of listing, deliberately, so an
+# unlistable-but-traversable `archive/` still restores. But `Path.exists()` does not
+# swallow EACCES, so `archive/` at 0o000 gave a raw `PermissionError` traceback out
+# of `python -m bantamkit.memory restore` — measured, exit 1 with a stack trace where
+# `_cmd_restore` has a sentence ready. The same hole was open on the `facts/` side
+# and nobody had named it: `destination.exists()` runs BEFORE the pre-read, so the
+# error W1 wrote for exactly this case never got a chance to be the one raised.
+# ---------------------------------------------------------------------------
+
+
+_ARCHIVED_FACT = "---\nname: put-away\ndescription: an archived fact\ntype: project\n---\n\nbody\n"
+
+
+def _deny_stat(monkeypatch, path):
+    """Make `os.stat` fail for exactly one path, on every platform.
+
+    Fault injection for the same reason `_deny_scandir` above uses it: `chmod(0o000)`
+    is a no-op on a Windows directory and a no-op for a uid that bypasses it, and these
+    nodes have to RUN on all four CI jobs rather than skip on two. `PermissionError`
+    from `os.stat` is precisely what the kernel raises for the real thing — measured
+    2026-08-23 on a throwaway store with `archive/` at 0o000:
+    `PermissionError: [Errno 13] Permission denied: '.../mem/archive/put-away.md'`,
+    out of `Path.exists()`, three lines before any `rename`.
+    """
+    real_stat = os.stat
+
+    def denied(target, *args, **kwargs):
+        if isinstance(target, (str, os.PathLike)) and Path(target) == Path(path):
+            raise PermissionError(13, "Permission denied")
+        return real_stat(target, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", denied)
+
+
+def test_restore_moves_nothing_when_a_fact_already_in_the_store_is_malformed(tmp_path):
+    """The half-complete restore W1's listing did not close, and the reason it did not.
+
+    `_fact_paths()` lists; it does not parse. One malformed file in `facts/` therefore
+    passed the pre-read, and the raise landed on `_check_index_budget` AFTER the
+    `rename` — a `MemoryValidationError`, which the rollback beside it did not catch.
+
+    This is not a restore that used to work and now refuses: with `broken.md` on disk
+    the restore fails either way, because `_check_index_budget` parses the same file.
+    All that changes is whether it fails before the move or after it.
+    """
+    store = _three_facts(tmp_path)
+    facts, archive = store.root / "facts", store.root / "archive"
+    (archive / "put-away.md").write_text(_ARCHIVED_FACT, encoding="utf-8")
+    (facts / "broken.md").write_text("not frontmatter at all\n", encoding="utf-8")
+    index_before = (store.root / "index.md").read_bytes()
+
+    with pytest.raises(MemoryValidationError) as e:
+        store.restore("put-away")
+
+    assert "broken.md" in str(e.value)
+    assert sorted(p.name for p in archive.iterdir()) == ["put-away.md"], (
+        "the fact left the archive on the strength of a read that had not parsed it"
+    )
+    assert not (facts / "put-away.md").exists()
+    assert (store.root / "index.md").read_bytes() == index_before
+
+    # And the door back still opens once the malformed file is gone: the refusal was
+    # not bought by making `restore` refuse in general.
+    (facts / "broken.md").unlink()
+    store.restore("put-away")
+    assert store.archived() == []
+    assert "put-away" in store.index_text()
+
+
+def test_restore_puts_the_archived_fact_back_when_that_fact_is_itself_malformed(tmp_path):
+    """The half of the class no pre-read can reach, so the rollback has to.
+
+    The file being restored is in `archive/` when the pre-read runs, so widening that
+    read to `_facts()` cannot see it. It becomes a fact only after the `rename`, and
+    the parse that rejects it is the one inside `_check_index_budget`. Measured before
+    this node existed: the malformed file ended up in `facts/`, out of the archive,
+    with `index.md` never rebuilt — the store left in a state the operator did not ask
+    for and the docstring above `restore` said could not happen.
+    """
+    store = _three_facts(tmp_path)
+    facts, archive = store.root / "facts", store.root / "archive"
+    (archive / "put-away.md").write_text("no frontmatter here\n", encoding="utf-8")
+    index_before = (store.root / "index.md").read_bytes()
+
+    with pytest.raises(MemoryValidationError) as e:
+        store.restore("put-away")
+
+    assert "put-away.md" in str(e.value)
+    assert sorted(p.name for p in archive.iterdir()) == ["put-away.md"], (
+        "a restore that failed left the fact somewhere the operator did not put it"
+    )
+    assert sorted(p.name for p in facts.iterdir()) == ["fact-0.md", "fact-1.md", "fact-2.md"]
+    assert (store.root / "index.md").read_bytes() == index_before
+
+    # The rollback rebuilt the index from the store it restored, not from the store it
+    # briefly made: a second attempt behaves identically rather than compounding.
+    with pytest.raises(MemoryValidationError):
+        store.restore("put-away")
+    assert (store.root / "index.md").read_bytes() == index_before
+
+
+def test_restore_puts_back_an_archived_name_that_turns_out_not_to_be_a_readable_file(tmp_path):
+    """The same failure arriving as an OS error instead of a validation error.
+
+    `archive/put-away.md` is a DIRECTORY here. Nothing before the `rename` can tell:
+    `exists()` says yes, and the pre-read parses `facts/`, which this is not part of
+    yet. The parse that rejects it is `_check_index_budget` -> `_facts` ->
+    `Path.read_text`, and that raises `IsADirectoryError` on POSIX and
+    `PermissionError` on Windows — an `OSError`, not a `Memory*` error.
+
+    So the rollback is keyed on "the op after the move failed", not on a list of
+    exception types: a promise that the store is left as it was found is not a promise
+    about which exception was raised. Measured before this node existed, with the
+    rollback catching `(MemoryBudgetExceeded, MemoryValidationError)`: the directory
+    was moved into `facts/` and left there.
+    """
+    store = _three_facts(tmp_path)
+    facts, archive = store.root / "facts", store.root / "archive"
+    (archive / "put-away.md").mkdir()
+    index_before = (store.root / "index.md").read_bytes()
+
+    with pytest.raises(OSError):
+        store.restore("put-away")
+
+    assert sorted(p.name for p in archive.iterdir()) == ["put-away.md"]
+    assert (archive / "put-away.md").is_dir()
+    assert sorted(p.name for p in facts.iterdir()) == ["fact-0.md", "fact-1.md", "fact-2.md"]
+    assert (store.root / "index.md").read_bytes() == index_before
+
+
+def test_restore_names_the_directory_it_could_not_read_rather_than_the_fact_it_could_not_find(
+    tmp_path, monkeypatch
+):
+    """"Not allowed to look" is not "not there" — the same invariant, one stat down.
+
+    Two `exists()` probes run before anything moves, and neither of them swallows
+    EACCES. WAS: a raw `PermissionError` out of both, so `restore` answered an
+    operating-system question with an operating-system traceback. NOW: the module's
+    one sentence, naming the directory and the consequence, which `_cmd_restore`
+    already knows how to print.
+
+    Note which sentence each side gets. Answering "no archived fact 'put-away'" for an
+    archive that could not be read would be the module's own defect in its smallest
+    form: the fact IS there.
+    """
+    store = _three_facts(tmp_path)
+    facts, archive = store.root / "facts", store.root / "archive"
+    (archive / "put-away.md").write_text(_ARCHIVED_FACT, encoding="utf-8")
+    index_before = (store.root / "index.md").read_bytes()
+
+    _deny_stat(monkeypatch, archive / "put-away.md")
+    with pytest.raises(MemoryValidationError) as e:
+        store.restore("put-away")
+    monkeypatch.undo()
+    assert str(archive) in str(e.value)
+    assert "Permission denied" in str(e.value)
+    assert "unreadable" in str(e.value)
+    assert "no archived fact 'put-away'" not in str(e.value), (
+        "the fact is on disk; saying it is not there is the wrong answer for EACCES"
+    )
+
+    # The destination probe is the same hole on the other side, and it runs BEFORE the
+    # pre-read, so W1's raise never got a chance to be the one the operator saw.
+    _deny_stat(monkeypatch, facts / "put-away.md")
+    with pytest.raises(MemoryValidationError) as e:
+        store.restore("put-away")
+    monkeypatch.undo()
+    assert str(facts) in str(e.value)
+    assert "Permission denied" in str(e.value)
+    assert "already live" not in str(e.value), (
+        "a stat that was refused is not a name that is taken"
+    )
+
+    # Neither refusal moved anything, and the door back still opens.
+    assert sorted(p.name for p in archive.iterdir()) == ["put-away.md"]
+    assert (store.root / "index.md").read_bytes() == index_before
+    store.restore("put-away")
+    assert store.archived() == []
+
+
+def test_the_cli_restore_prints_a_sentence_where_it_used_to_print_a_traceback(
+    tmp_path, monkeypatch, capsys
+):
+    """The third unwrapped operator surface, closed at the store rather than at the CLI.
+
+    `_cmd_restore` already catches `MemoryValidationError` and prints "restore failed:
+    ...". It never saw one for this shape, because the error escaping was a
+    `PermissionError` from `Path.exists()`. Measured at HEAD on a throwaway store with
+    `archive/` at 0o000: `python -m bantamkit.memory restore put-away --store ...`
+    exited 1 with a stack trace ending in `PermissionError: [Errno 13] Permission
+    denied`. The exit code was right by accident — Python exits 1 on an unhandled
+    exception — and everything the operator could act on was missing.
+
+    Fixed in `store.py` and not in `__main__.py` on purpose. `_cmd_restore` is the only
+    caller of `restore()` in the tree today (checked, not assumed: nothing else in
+    `runtime-py/src` calls it), but "not allowed to look" versus "not there" is the
+    STORE's invariant — the same one `_listing` holds one syscall up — and a
+    `try/except PermissionError` in one CLI command would hold it for one caller.
+    """
+    store = _three_facts(tmp_path)
+    archive = store.root / "archive"
+    (archive / "put-away.md").write_text(_ARCHIVED_FACT, encoding="utf-8")
+
+    _deny_stat(monkeypatch, archive / "put-away.md")
+    rc = memory_main(["restore", "put-away", "--store", str(store.root)])
+    monkeypatch.undo()
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert err.startswith("restore failed: ")
+    assert "unreadable" in err and str(archive) in err
+    assert "Traceback" not in err
+    assert sorted(p.name for p in archive.iterdir()) == ["put-away.md"]
 
 
 def test_a_recall_pinned_before_the_store_broke_answers_but_never_dates_it(

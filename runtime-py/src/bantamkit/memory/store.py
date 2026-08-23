@@ -47,6 +47,19 @@ _ARCHIVE_UNREADABLE = (
     "'nothing is archived' here is what makes compaction look like deletion — the "
     "facts compact() moved are still on disk under this path"
 )
+# The same distinction one syscall down, for `restore`, which stats one named path
+# instead of listing (see `archived()` for why). A refused stat is not an absent file,
+# and each side of the move needs its own half of the sentence for the same reason the
+# two listings above do.
+_ARCHIVE_UNREACHABLE = (
+    "an archived fact that could not be stat'd is not an archived fact that is not "
+    "there, and answering 'no archived fact' here sends the operator looking for a "
+    "file that is still on disk under this path"
+)
+_FACTS_UNREACHABLE = (
+    "a destination that could not be stat'd is not a name that is already taken, and "
+    "nothing has moved: the fact is still in archive/"
+)
 
 
 class MemoryValidationError(BantamError):
@@ -410,11 +423,17 @@ class MemoryStore:
         deleted; the file was intact the whole time.
 
         `restore()` is the other half and is deliberately NOT routed through here: it
-        opens one named path rather than listing, so an unlistable-but-traversable
-        `archive/` still restores (measured: 0o311 restores fine, 0o000 raises
-        `PermissionError` from `rename` and moves nothing). Making it list first would
-        refuse a recovery the filesystem was still willing to perform, which is the
-        wrong direction for the door back.
+        stats one named path rather than listing, so an unlistable-but-traversable
+        `archive/` still restores (measured 2026-08-23 on a throwaway store: 0o311
+        restores fine). Making it list first would refuse a recovery the filesystem was
+        still willing to perform, which is the wrong direction for the door back.
+
+        At 0o000 nothing moves, but the raise does NOT come from `rename` as this
+        paragraph used to claim — it comes from `Path.exists()` three lines earlier,
+        which does not swallow EACCES: measured, `PermissionError: [Errno 13]
+        Permission denied: '.../archive/put-away.md'` straight out of `os.stat`. That
+        was a raw traceback until W4 gave the stat the same sentence as the listing
+        (`_reachable`, `_ARCHIVE_UNREACHABLE`).
         """
         archive = self.root / "archive"
         return sorted(Path(name).stem for name in self._listing(archive, _ARCHIVE_UNREADABLE))
@@ -422,45 +441,78 @@ class MemoryStore:
     def restore(self, name: str) -> None:
         """Move an archived fact back into `facts/`; refuse if it would blow the budget.
 
-        Compaction is a move, not a delete, and this is the door back. Symmetrical with
-        `save`: an over-budget restore is undone and raises, so a failed restore leaves
-        the store exactly as it found it.
+        Compaction is a move, not a delete, and this is the door back. THE PROMISE IS
+        THAT A FAILED RESTORE LEAVES THE STORE EXACTLY AS IT FOUND IT, and it takes
+        both halves below to keep it: a read that runs before the `rename`, and a
+        rollback for the failures no read before the `rename` can see.
 
-        WAS: nothing read `facts/` until after the rename. NOW: it is read before, and
-        an unreadable store stops the restore with nothing moved.
+        WAS: nothing read `facts/` until after the rename. W1 put a LISTING there,
+        which was not enough, because `_fact_paths` lists and `_check_index_budget`
+        parses. Two failures measured on throwaway stores, byte-identical at `533229c`
+        and after W1:
 
-        That is not decoration. Everything after the rename reaches `_fact_paths`
-        through `_check_index_budget`, whose raise since W1 is a
-        `MemoryValidationError` — which the rollback below does NOT catch, because it
-        catches `MemoryBudgetExceeded` only. Measured 2026-08-23 with `facts/` at
-        0o311: `restore('fact-0')` moved the file out of `archive/`, left it in
-        `facts/`, raised "unreadable", and left `index.md` never rebuilt — while the
-        paragraph above told the caller the store was exactly as it found it. `save` is
-        immune to the same shape only by luck of ordering: its duplicate check lists
-        the store before `_write_fact` runs. This restores that ordering here rather
-        than adding a second rollback clause, because a rollback that has to undo a
-        move is strictly worse than a read that makes the move never happen.
+        - `facts/` unlistable (0o311, or any scan that fails): W1's read stops it.
+        - `facts/broken.md` malformed: the listing passed it, `_check_index_budget`
+          raised `MemoryValidationError` AFTER the rename, the rollback below caught
+          `MemoryBudgetExceeded` only, and the fact ended up out of `archive/`, in
+          `facts/`, with `index.md` never rebuilt.
+
+        NOW the pre-read is `_facts()`, which parses. That refuses no restore that
+        would otherwise have succeeded: every parse it can fail on is one
+        `_check_index_budget` re-runs three lines later, so with a malformed fact on
+        disk the restore fails either way — all that changes is whether it fails before
+        the move or after it. `save` is immune to the same shape only by luck of
+        ordering (its duplicate check lists before `_write_fact`), and a read that
+        makes the move never happen is strictly better than a rollback that has to undo
+        one.
+
+        The rollback still has to widen, for the failure no pre-read can reach: when
+        the ARCHIVED file is the bad one, it is not a fact until after the `rename`.
+        Measured, both shapes: a malformed `archive/put-away.md` raised
+        `MemoryValidationError` and an `archive/put-away.md` that is a DIRECTORY raised
+        `IsADirectoryError` (POSIX) or `PermissionError` (Windows) — an `OSError`, not
+        a `Memory*` error at all. So the clause below is keyed on "the op after the
+        move failed", not on a list of exception types: the promise is about the state
+        of the store, and it is not a promise about which exception was raised.
         """
         source = self.root / "archive" / f"{name}.md"
-        if not source.exists():
+        if not self._reachable(source, self.root / "archive", _ARCHIVE_UNREACHABLE):
             raise MemoryValidationError(
                 f"no archived fact '{name}' under {self.root / 'archive'}"
             )
         destination = self._fact_path(name)
-        if destination.exists():
+        if self._reachable(destination, self.root / "facts", _FACTS_UNREACHABLE):
             raise MemoryValidationError(
                 f"fact '{name}' is already live; refusing to overwrite it from archive"
             )
-        self._fact_paths()  # raise BEFORE the move, not after it — see the docstring
+        self._facts()  # parse BEFORE the move, not after it — see the docstring
         destination.parent.mkdir(parents=True, exist_ok=True)
         source.rename(destination)
         try:
             self._check_index_budget()
-        except MemoryBudgetExceeded:
+        except Exception:
             destination.rename(source)
             self._rebuild_index()
             raise
         self._rebuild_index()
+
+    def _reachable(self, path: Path, directory: Path, consequence: str) -> bool:
+        """`path.exists()`, except that "I was not allowed to look" is never "it is not there".
+
+        The same invariant as `_listing`, one syscall down. `Path.exists()` swallows
+        exactly `pathlib._IGNORED_ERRNOS` — ENOENT, ENOTDIR, EBADF, ELOOP, the answers
+        that really do mean "nothing is there" — and re-raises the rest, so EACCES
+        arrives as a bare `PermissionError`. Measured before this existed, with
+        `archive/` at 0o000: `python -m bantamkit.memory restore` printed a stack trace
+        ending in `PermissionError: [Errno 13] Permission denied`, while `_cmd_restore`
+        had a sentence ready for `MemoryValidationError` and never saw one. Converted
+        here rather than in the CLI because both of `restore`'s probes had it and the
+        distinction is the store's to make, not one command's.
+        """
+        try:
+            return path.exists()
+        except OSError as e:
+            raise self._unreadable(directory, e, consequence, f"stat of {path.name}") from e
 
     def index_text(self) -> str:
         """The index as it should be on disk, derived from `facts/` and nothing else.
@@ -676,9 +728,14 @@ class MemoryStore:
 
         WAS: an unreadable store measured 0 bytes and always fitted. NOW:
         `index_text()` raises `MemoryValidationError` first — a DIFFERENT exception
-        from the one every caller here catches, which is why `restore` had to move its
-        listing ahead of its `rename` (see its docstring) and why `save`'s rollback is
-        unaffected (its listing already ran, and failed, before `_write_fact`).
+        from `MemoryBudgetExceeded`, and every caller that rolls back on the budget has
+        to decide about it too. `restore` reads ahead of its `rename` AND catches both
+        (see its docstring); `save`'s rollback is unaffected, because its listing
+        already ran, and failed, before `_write_fact`.
+
+        Note that this is a PARSE, not a listing: `index_text` -> `_facts` reads every
+        fact file. A caller that pre-reads with `_fact_paths` has not pre-read what
+        this raises on.
         """
         size = len(self.index_text().encode())
         if size > self.index_budget:
