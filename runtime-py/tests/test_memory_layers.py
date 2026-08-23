@@ -569,3 +569,51 @@ def test_the_ambient_pin_guard_puts_back_the_store_a_pin_had_taken(tmp_path, mon
 
     assert MEMORY_DIR_ENV not in os.environ
     assert resolve_project_store(tmp_path / "companyA").path == own
+
+
+# ---------------------------------------------------------------------------
+# J37/W2 DEFERRED: the one shape on which the binding layer and the store layer
+# still give different answers. Marked, not silently skipped.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "DEFERRED to a follow-up on the BINDING layer. `count_facts` maps every "
+        "FileNotFoundError to 0, so a `facts/` that is a dangling symlink counts as an "
+        "empty store, while `MemoryStore._fact_paths` (J37/W1) raises on the same shape "
+        "because it keys 'first run' on os.path.lexists rather than on the errno. J37 "
+        "was chartered on the store layer and this fix belongs in memory/layers.py with "
+        "its own argument for changing count_facts' documented 'absent facts/ is 0 and "
+        "not an error' contract. strict=True so the day it is fixed this node fails as "
+        "XPASS and the mark has to come off, rather than the deferral outliving the defect."
+    ),
+)
+def test_a_dangling_facts_symlink_is_unreadable_to_both_layers(tmp_path):
+    """The two layers must not disagree about whether a store can be read.
+
+    MEASURED 2026-08-23, and it reaches a person: with this shape on a read-only GRANT
+    layer, `Memory.recall` skips the layer and `_nothing_to_report` then says "no
+    memories to search: nothing is saved in any layer bound here." The same grant at
+    0o311 correctly says "... could not be read." One unreadable store, two sentences,
+    and the wrong one is the one that tells the operator to stop looking.
+
+    Not a `windows_cannot_construct` mark: the symlink is attempted and the node reports
+    honestly when the platform declines it, the ruling W1 already made for
+    `test_a_root_that_denies_listing_is_unreadable_not_absent`.
+    """
+    store = _mkstore(tmp_path / "companyA")
+    try:
+        (store / "facts").symlink_to(tmp_path / "nowhere-at-all")
+    except (OSError, NotImplementedError):  # pragma: no cover - Windows without privilege
+        pytest.skip(
+            "this platform cannot create a symlink without privilege (Windows without "
+            "developer mode), so the dangling-`facts/` shape cannot be constructed and "
+            "this run FAILS TO MEASURE whether the binding layer and the store layer "
+            "agree that such a store is unreadable."
+        )
+
+    with pytest.raises(MemoryValidationError) as e:
+        resolve_project_store(tmp_path / "companyA")
+    assert str(store / "facts") in str(e.value)

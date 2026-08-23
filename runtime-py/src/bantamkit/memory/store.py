@@ -33,6 +33,21 @@ DUPLICATE_JACCARD = 0.5
 # ceiling pass `index_budget=4096`; nothing about the budget mechanism changed.
 DEFAULT_INDEX_BUDGET = 24_000
 
+# The second half of the "unreadable" sentence, one per directory this store lists.
+# They are separate strings because the two failures do different damage, and an error
+# that names the wrong damage sends the reader to the wrong place. Both are spelled
+# once, here, so a caller's docstring and the message a caller actually emits cannot
+# drift apart.
+_FACTS_UNREADABLE = (
+    "a store whose facts could not be listed is not a store with no facts, and "
+    "answering 'empty' here is what rewrites index.md from nothing"
+)
+_ARCHIVE_UNREADABLE = (
+    "an archive that could not be listed is not an empty archive, and answering "
+    "'nothing is archived' here is what makes compaction look like deletion — the "
+    "facts compact() moved are still on disk under this path"
+)
+
 
 class MemoryValidationError(BantamError):
     pass
@@ -153,8 +168,27 @@ class MemoryStore:
         the next scope reads the write.
 
         Nesting keeps the outermost pin: a scope entered twice is still one turn.
-        A store that cannot be read is simply not pinned, so an unreadable store
-        still raises out of `recall`, exactly where it always did.
+
+        AN UNREADABLE STORE, at each of the three moments it can become one — the
+        `except` below swallows on purpose, and these are what it buys. WAS: all three
+        answered from an empty listing without a word. NOW, measured 2026-08-23:
+
+        - ALREADY UNREADABLE AT ENTRY. Nothing is pinned (`_snapshot` stays `None`) and
+          `recall` raises out of `_facts` on its own, which is why the raise is
+          swallowed here rather than turned into a scope-entry failure: `batch()` opens
+          this scope around a whole assistant turn, and failing at the boundary would
+          take down a turn whose very first op is going to report the same fault with a
+          better sentence attached to the op that wanted it.
+        - BROKE INSIDE THE SCOPE. The pin holds and it is the point: `recall(...,
+          stamp=False)` still answers from the facts as of entry. `recall()` with the
+          default `stamp=True` raises out of `_stamp`, which lists the live store —
+          AFTER the hits were computed, so the answer is discarded. That is the one
+          non-obvious outcome in this whole scope and it is pinned by
+          `test_a_recall_pinned_before_the_store_broke_answers_but_never_dates_it`; the
+          raise is kept because a store that stops being readable mid-turn is news, and
+          no fact is left half-dated (`_stamp` lists before it writes).
+        - REPAIRED INSIDE THE SCOPE. Entry pinned nothing, so reads go live and see the
+          repair. A scope that pinned nothing has nothing to protect.
         """
         previous = self._snapshot
         if previous is None:
@@ -188,6 +222,13 @@ class MemoryStore:
 
         new_tokens = _tokens(f"{name} {description}")
         existing = None
+        # THE FIRST OF TWO READS, AND THE ONE THAT MAKES THIS OP SAFE. WAS: a blind
+        # listing made this check pass vacuously and the save went on to have
+        # `_rebuild_index` rewrite `index.md` from the same nothing. NOW: an unreadable
+        # store raises `MemoryValidationError` from here, before `_write_fact` — so the
+        # save fails whole instead of half-way, and there is no state to roll back.
+        # Nothing below this line runs. Measured, not assumed:
+        # `test_a_listing_that_fails_stops_save_before_it_writes_anything`.
         for fact in self._facts():
             if fact.name == name:
                 existing = fact
@@ -226,6 +267,36 @@ class MemoryStore:
         return SaveResult(status="saved", name=name)
 
     def recall(self, query: str, k: int | None = None, stamp: bool = True) -> list[Fact]:
+        """Top-`k` facts whose name+description share tokens with `query`.
+
+        WAS: an unreadable store scored zero facts and returned `[]` — the same answer
+        as a real miss, and `component.Memory` turned it into "no memories matched. Try
+        different words", telling a person to rephrase a question at a filing cabinet
+        nobody could open. NOW: `_facts` raises `MemoryValidationError` and this returns
+        nothing at all.
+
+        This is the caller that matters most to a person, so the two halves have to
+        compose into one sentence rather than two. They do, and by two different
+        routes, both measured 2026-08-23:
+
+        - The PROJECT layer is writable, so `Memory.recall` re-raises this deliberately
+          ("the project layer failing is a real error") and the person sees this
+          message, which names the path and the OS reason. `Memory.save` catches the
+          same error and returns it as `error: ...` text. Neither one now reaches
+          `_nothing_to_report`, and neither should: that function's job is to explain an
+          EMPTY answer, and there is no answer here to explain.
+        - A read-only GRANT or PROFILE layer is caught and skipped by `Memory.recall`,
+          and `_nothing_to_report` then names it out loud — "no memories matched, and
+          that is not evidence there are none: <root> could not be read." Verified end
+          to end against a grant at 0o311.
+
+        One shape still composes wrongly and it is not this layer's to fix: a `facts/`
+        that is a DANGLING SYMLINK raises here but counts 0 in `layers.count_facts`, so
+        a grant in that state is skipped by `recall` and then described by
+        `_nothing_to_report` as "nothing is saved in any layer bound here". Deferred to
+        the binding layer with the failing node that proves it —
+        `test_memory_layers.py::test_a_dangling_facts_symlink_is_unreadable_to_both_layers`.
+        """
         k = k if k is not None else self.k
         q = _tokens(query)
         scored = []
@@ -241,7 +312,16 @@ class MemoryStore:
         return hits
 
     def lint(self) -> None:
-        for fact in self._facts():  # raises MemoryValidationError on malformed frontmatter
+        """Every fact parses and carries a valid type, and the index fits its budget.
+
+        WAS: an unreadable store linted CLEAN — zero facts, zero bytes, nothing to
+        object to, and `python -m bantamkit.memory lint` printed `lint: ok — 0 facts`.
+        A checker that passes hardest on the store it could not open is the one caller
+        here whose old answer was actively dangerous. NOW: `MemoryValidationError`, and
+        `_cmd_lint` already routes that to `lint: FAIL — ...` on stderr with exit 1
+        (verified by running it), so the operator surface needed no change.
+        """
+        for fact in self._facts():  # raises MemoryValidationError: unreadable, or malformed
             if fact.type not in VALID_TYPES:
                 raise MemoryValidationError(f"fact '{fact.name}' has invalid type '{fact.type}'")
         self._check_index_budget()
@@ -266,6 +346,14 @@ class MemoryStore:
         is capped at half the budget: no store surrenders more than half its index to
         headroom however long one description grows. `reserve` is recomputed from the
         survivors, so a second call archives nothing and `compact()` is idempotent.
+
+        WAS: an unreadable store compacted to `CompactResult(archived=[])`, and the CLI
+        printed "nothing to archive — the index is already at or below the target"
+        about a store whose size it had failed to measure. NOW: the first statement
+        below raises `MemoryValidationError`, before any `rename`, so no fact is moved
+        on the strength of a listing that failed. The ordering costs nothing here, the
+        same way it costs nothing in `save`: the listing is already the first thing
+        this op does, so there is no half-compacted archive to reason about.
         """
         facts = self._facts()
         sizes = {fact.name: len(self._index_line(fact).encode()) for fact in facts}
@@ -305,8 +393,31 @@ class MemoryStore:
         )
 
     def archived(self) -> list[str]:
-        """Names of the facts sitting in `archive/` — everything `compact` moved out."""
-        return sorted(path.stem for path in (self.root / "archive").glob("*.md"))
+        """Names of the facts sitting in `archive/` — everything `compact` moved out.
+
+        WAS: `glob("*.md")`, which is the same defect W1 removed from the fact read,
+        one directory over. NOW: raises `MemoryValidationError` naming `archive/` when
+        the directory is there but cannot be listed; still `[]` for a store that has
+        never compacted.
+
+        This is the worst place in the module to answer "empty" wrongly, because
+        `compact()` has already MOVED the operator's facts here. Measured 2026-08-23
+        on a store built for the probe: compact archived `fact-0`, `archive/fact-0.md`
+        was on disk, `chmod(archive, 0o311)`, and then `python -m bantamkit.memory
+        status` printed `archived: 0` and `... archived` printed `archived facts: 0`,
+        both exiting 0. The fact had left `facts/`, and the only tool that says where
+        it went said nowhere. An operator reading that has been told their memory was
+        deleted; the file was intact the whole time.
+
+        `restore()` is the other half and is deliberately NOT routed through here: it
+        opens one named path rather than listing, so an unlistable-but-traversable
+        `archive/` still restores (measured: 0o311 restores fine, 0o000 raises
+        `PermissionError` from `rename` and moves nothing). Making it list first would
+        refuse a recovery the filesystem was still willing to perform, which is the
+        wrong direction for the door back.
+        """
+        archive = self.root / "archive"
+        return sorted(Path(name).stem for name in self._listing(archive, _ARCHIVE_UNREADABLE))
 
     def restore(self, name: str) -> None:
         """Move an archived fact back into `facts/`; refuse if it would blow the budget.
@@ -314,6 +425,21 @@ class MemoryStore:
         Compaction is a move, not a delete, and this is the door back. Symmetrical with
         `save`: an over-budget restore is undone and raises, so a failed restore leaves
         the store exactly as it found it.
+
+        WAS: nothing read `facts/` until after the rename. NOW: it is read before, and
+        an unreadable store stops the restore with nothing moved.
+
+        That is not decoration. Everything after the rename reaches `_fact_paths`
+        through `_check_index_budget`, whose raise since W1 is a
+        `MemoryValidationError` — which the rollback below does NOT catch, because it
+        catches `MemoryBudgetExceeded` only. Measured 2026-08-23 with `facts/` at
+        0o311: `restore('fact-0')` moved the file out of `archive/`, left it in
+        `facts/`, raised "unreadable", and left `index.md` never rebuilt — while the
+        paragraph above told the caller the store was exactly as it found it. `save` is
+        immune to the same shape only by luck of ordering: its duplicate check lists
+        the store before `_write_fact` runs. This restores that ordering here rather
+        than adding a second rollback clause, because a rollback that has to undo a
+        move is strictly worse than a read that makes the move never happen.
         """
         source = self.root / "archive" / f"{name}.md"
         if not source.exists():
@@ -325,6 +451,7 @@ class MemoryStore:
             raise MemoryValidationError(
                 f"fact '{name}' is already live; refusing to overwrite it from archive"
             )
+        self._fact_paths()  # raise BEFORE the move, not after it — see the docstring
         destination.parent.mkdir(parents=True, exist_ok=True)
         source.rename(destination)
         try:
@@ -336,6 +463,14 @@ class MemoryStore:
         self._rebuild_index()
 
     def index_text(self) -> str:
+        """The index as it should be on disk, derived from `facts/` and nothing else.
+
+        WAS: `""` for an unreadable store — the input `_rebuild_index` wrote over
+        `index.md` and the number `_check_index_budget` measured. NOW:
+        `MemoryValidationError`. Everything downstream of this inherits it, which is
+        the whole shape of the original defect and is why the raise lives in the read
+        rather than in a guard on the write (see `_rebuild_index`).
+        """
         return "".join(self._index_line(fact) for fact in self._facts())
 
     # ---- internals ----
@@ -359,8 +494,8 @@ class MemoryStore:
         """
         return (fact.last_recalled or fact.created or "", fact.name)
 
-    def _fact_paths(self) -> list[Path]:
-        """Every `facts/*.md`, listed so that "I could not read it" is never "it is empty".
+    def _listing(self, directory: Path, consequence: str) -> list[str]:
+        """The `*.md` names in one of this store's two directories, or a raise. Never a lie.
 
         `Path.glob` is unusable here and that is the whole reason this function exists:
         it suppresses the `OSError` raised by its own directory scan and yields nothing.
@@ -376,18 +511,23 @@ class MemoryStore:
         - THE RAISE IS CONVERTED HERE, not left to callers. This is the one deliberate
           difference from `layers.count_facts`, which propagates the `OSError` for
           `_count_into_binding` to phrase: that function has callers wanting different
-          sentences, whereas this store has a single reader and `save`, `recall`,
-          `lint`, `compact` and `index_text` all reach the disk through it. Converting
-          at the read is what makes "no path out of this module reports an unreadable
-          store as an empty one" a property of one place instead of five.
+          sentences, whereas this store has one reader per directory and `save`,
+          `recall`, `lint`, `compact`, `index_text`, `restore` and `archived` all reach
+          the disk through here. Converting at the read is what makes "no path out of
+          this module reports an unreadable directory as an empty one" a property of
+          one place instead of seven.
         - THE COUNTED SET DOES NOT CHANGE. `fnmatch.fnmatch` is the match `pathlib`
           performs — dotfiles and directories included, case-sensitive off Windows and
-          case-insensitive on it — and the result is sorted as `Path`s exactly as
-          `sorted(glob(...))` was. A raise bought by quietly redefining which files are
-          facts would be a worse defect than the one it fixes
-          (`test_a_readable_store_lists_exactly_what_glob_listed`).
-        - AN ABSENT `facts/` IS `[]`, NOT AN ERROR. That is a first run, and
-          `_ensure_dirs`, `create=False` and the designate path all depend on it.
+          case-insensitive on it — and both callers sort exactly as `sorted(glob(...))`
+          did. A raise bought by quietly redefining which files are facts would be a
+          worse defect than the one it fixes
+          (`test_a_readable_store_lists_exactly_what_glob_listed`,
+          `test_a_readable_archive_lists_exactly_what_glob_listed`).
+        - AN ABSENT DIRECTORY IS `[]`, NOT AN ERROR. That is a first run, and
+          `_ensure_dirs`, `create=False` and the designate path all depend on it — for
+          `archive/` as much as for `facts/`, because a `create=False` store never makes
+          either one and `archived()` has always answered `[]` for a store that has
+          simply never compacted.
 
         The last one is keyed on whether anything is AT the path rather than on the
         errno, and that is the second, smaller difference from `count_facts`. A
@@ -400,27 +540,44 @@ class MemoryStore:
         "unreadable", which is the ruling `test_memory_divergence` already made for a
         file or a dangling symlink where a store belongs, and which makes the answer
         identical on all four CI jobs instead of turning on an errno.
+
+        `consequence` is the caller's half of the sentence, because the two directories
+        fail differently and one wording cannot be true of both: an unlistable `facts/`
+        is what rewrites `index.md` from nothing, while an unlistable `archive/` is what
+        makes a compaction look like a deletion. An error naming the wrong consequence
+        sends the reader to the wrong place, which is this module's defect in a new
+        shape rather than a fix for it.
         """
-        facts = self.root / "facts"
         try:
-            with os.scandir(facts) as entries:
-                names = [e.name for e in entries if fnmatch.fnmatch(e.name, "*.md")]
+            with os.scandir(directory) as entries:
+                return [e.name for e in entries if fnmatch.fnmatch(e.name, "*.md")]
         except FileNotFoundError as e:
-            if os.path.lexists(facts):
-                raise self._unreadable(facts, e, "a path exists there") from e
+            if os.path.lexists(directory):
+                raise self._unreadable(directory, e, consequence, "a path exists there") from e
             return []
         except OSError as e:
-            raise self._unreadable(facts, e) from e
-        return sorted(facts / name for name in names)
+            raise self._unreadable(directory, e, consequence) from e
+
+    def _fact_paths(self) -> list[Path]:
+        """Every `facts/*.md`, listed so that "I could not read it" is never "it is empty".
+
+        The mechanism is `_listing` above, shared with `archived()`; what is local to
+        `facts/` is the consequence the error names. This is the read behind `save`,
+        `recall`, `lint`, `compact`, `index_text`, `restore`, `_stamp` and `snapshot`,
+        and each of those says in its own words what it does when this raises — a
+        reader of any one of them should not have to come here to find out.
+        """
+        facts = self.root / "facts"
+        return sorted(facts / name for name in self._listing(facts, _FACTS_UNREADABLE))
 
     @staticmethod
-    def _unreadable(facts: Path, error: OSError, detail: str = "") -> MemoryValidationError:
-        """One sentence for a store that could not be listed, and it never says "empty"."""
+    def _unreadable(
+        directory: Path, error: OSError, consequence: str, detail: str = ""
+    ) -> MemoryValidationError:
+        """One sentence for a directory that could not be listed, and it never says "empty"."""
         because = f"{error.strerror}{f' ({detail})' if detail else ''}"
         return MemoryValidationError(
-            f"memory store is unreadable: {facts}: {because}; a store whose facts could "
-            f"not be listed is not a store with no facts, and answering 'empty' here is "
-            f"what rewrites index.md from nothing"
+            f"memory store is unreadable: {directory}: {because}; {consequence}"
         )
 
     def _facts(self) -> list[Fact]:
@@ -456,6 +613,18 @@ class MemoryStore:
         verbatim would silently revert a `save` made in the same scope — the same
         poisoning, in reverse. The date therefore lands on whatever is on disk now,
         and a fact that is no longer there is left alone rather than resurrected.
+
+        WAS: an unreadable store made `self._facts()` below return `[]`, so `live` was
+        `None` and every stamp was quietly skipped — a recall inside a scope silently
+        stopped recording that it happened. NOW: `MemoryValidationError` out of the
+        listing. This is the ONLY caller that can raise after `recall` already has its
+        answer, which is why `snapshot()` documents it as its non-obvious case.
+
+        No fact is left half-dated: the listing runs before any `_write_fact`, and it
+        raises on the first hit, so a `recall` that raises here has written nothing.
+        (`fact.last_recalled` is set on the in-memory `Fact` first and that mutation
+        survives on the pinned copy; nothing reads it but `_staleness_key`, and the
+        pinned list dies with the scope.)
         """
         fact.last_recalled = self._today()
         if self._snapshot is None:
@@ -489,9 +658,28 @@ class MemoryStore:
         tmp.replace(path)
 
     def _rebuild_index(self) -> None:
+        """Write `index.md` from the facts on disk. THE OP THE ORIGINAL DEFECT DESTROYED.
+
+        WAS: `index_text()` answered `""` for a store it could not list and this wrote
+        that over a 13,472-byte index. NOW: `index_text()` raises and the `write_text`
+        is never reached, so the file on disk is left exactly as it was.
+
+        Note what is deliberately NOT here: a guard refusing to shrink the index. That
+        would be a heuristic over a symptom — it cannot tell a wipe from a legitimate
+        `compact()`, and it would leave `recall`, `lint` and `archived` still being lied
+        to. The read is what was wrong and the read is where it is fixed.
+        """
         (self.root / "index.md").write_text(self.index_text(), encoding="utf-8")
 
     def _check_index_budget(self) -> None:
+        """Raise `MemoryBudgetExceeded` if the index would not fit.
+
+        WAS: an unreadable store measured 0 bytes and always fitted. NOW:
+        `index_text()` raises `MemoryValidationError` first — a DIFFERENT exception
+        from the one every caller here catches, which is why `restore` had to move its
+        listing ahead of its `rename` (see its docstring) and why `save`'s rollback is
+        unaffected (its listing already ran, and failed, before `_write_fact`).
+        """
         size = len(self.index_text().encode())
         if size > self.index_budget:
             raise MemoryBudgetExceeded(
