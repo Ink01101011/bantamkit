@@ -15,7 +15,7 @@
  * a careless port would rewrite un-escaped on its first successful clock-out.
  */
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -25,7 +25,9 @@ const { clockIn, clockOut, status, HISTORY_RING_SIZE } = await import(new URL('s
 const { dumpJson, fromJs, parseJson, toJs } = await import(new URL('pyjson.js', dist));
 const { pyReplace, pySuffix } = await import(new URL('memory/pyfs.js', dist));
 
-const fresh = () => mkdtempSync(join(tmpdir(), 'bk-shiftwork-'));
+// `realpathSync`: `os.tmpdir()` is not canonical — a `/var` symlink on macOS, the 8.3
+// short name on Windows CI. See the note in test/store.test.mjs.
+const fresh = () => realpathSync(mkdtempSync(join(tmpdir(), 'bk-shiftwork-')));
 const bytes = (p) => readFileSync(p);
 const text = (p) => readFileSync(p, 'utf8');
 const js = (v) => toJs(v);

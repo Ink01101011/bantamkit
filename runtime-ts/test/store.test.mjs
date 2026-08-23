@@ -9,19 +9,7 @@
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import {
-  chmodSync,
-  lstatSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  symlinkSync,
-  utimesSync,
-  writeFileSync,
-} from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -34,7 +22,18 @@ import {
 } from '../dist/memory/store.js';
 
 const TODAY = '2026-08-23';
-const fresh = () => mkdtempSync(join(tmpdir(), 'bk-store-'));
+/**
+ * `realpathSync` around every temp bed, because `os.tmpdir()` is not a canonical path on
+ * two of the three platforms this package claims. On macOS it is `/var/...`, a symlink to
+ * `/private/var`. On Windows CI it is the 8.3 SHORT name — MEASURED, first run:
+ * `C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\...` out of `mkdtempSync`, against
+ * `C:\\Users\\runneradmin\\...` out of the port, which resolves the way `Path.resolve()`
+ * does. Ten tests in this suite failed on that difference alone and none of them is about
+ * short names. Canonicalising the FIXTURE removes the OS artefact without deciding
+ * anything about the port; the port's own resolution is compared against CPython in
+ * tools/conformance/suites/recall-strings.mjs.
+ */
+const fresh = () => realpathSync(mkdtempSync(join(tmpdir(), 'bk-store-')));
 const store = (root, over = {}) => new MemoryStore(root, { today: () => TODAY, ...over });
 const bytes = (p) => readFileSync(p);
 const text = (p) => readFileSync(p, 'utf8');

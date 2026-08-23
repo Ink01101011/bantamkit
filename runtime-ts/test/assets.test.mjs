@@ -10,7 +10,7 @@
  * about.
  */
 import assert from 'node:assert/strict';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
@@ -55,7 +55,9 @@ async function moduleAt(base, distRel) {
 }
 
 function scratch(name) {
-  return mkdtempSync(join(tmpdir(), `bk-${name}-`));
+  // `realpathSync`: `os.tmpdir()` is not canonical — a `/var` symlink on macOS, the 8.3
+  // short name on Windows CI. See the note in test/store.test.mjs.
+  return realpathSync(mkdtempSync(join(tmpdir(), `bk-${name}-`)));
 }
 
 function withoutEnv(fn) {

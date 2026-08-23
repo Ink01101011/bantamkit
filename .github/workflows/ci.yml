@@ -179,6 +179,12 @@ jobs:
         run: npm test
         working-directory: runtime-ts
       - name: Conformance
+        # `!cancelled()` so this runs even when `npm test` went red. The two gates measure
+        # different things -- one is the port against its own written-down expectations,
+        # the other is the port against CPython -- and a run that reports only the first
+        # because the first failed costs a whole CI cycle to learn the second. A red here
+        # still fails the job; `if` changes what gets MEASURED, never what gets required.
+        if: ${{ !cancelled() }}
         # No real fact store exists on a runner, so the corpus-backed suites fall back to
         # their adversarial sets and SAY SO in their notes ("real corpus: NOT FOUND"). Read
         # those notes: this cell measures fewer cases than a laptop does, on purpose, and

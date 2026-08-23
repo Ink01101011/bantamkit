@@ -21,7 +21,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -52,8 +52,17 @@ function sha256(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
+/**
+ * `npm` on Windows is `npm.cmd`, and since the CVE-2024-27980 fix Node refuses to exec a
+ * `.cmd` through `execFile` without `shell`. MEASURED: all four tests in this file failed
+ * `spawnSync npm ENOENT` on both Windows cells, so the packaging gate — the whole RB-P85
+ * bar — had never once run on the platform half of this matrix. Naming the file beats
+ * `shell: true`, which would hand the argv to cmd.exe for re-parsing.
+ */
+const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+
 function packListing(cwd = packageRoot) {
-  const stdout = execFileSync('npm', ['pack', '--dry-run', '--json'], {
+  const stdout = execFileSync(NPM, ['pack', '--dry-run', '--json'], {
     cwd,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'ignore'],
@@ -112,9 +121,15 @@ test('the five .gitkeep placeholders survive packing', () => {
 
 test('a build that cannot locate the asset pack fails instead of succeeding short', () => {
   // A package directory with no `../assets` above it and no vendored `assets/` inside.
-  const tmp = mkdtempSync(join(tmpdir(), 'bk-nopack-'));
+  // `realpathSync`: `os.tmpdir()` is not canonical — a `/var` symlink on macOS, the 8.3
+  // short name on Windows CI. See the note in test/store.test.mjs.
+  const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'bk-nopack-')));
   const pkg = join(tmp, 'runtime-ts');
-  execFileSync('mkdir', ['-p', join(pkg, 'scripts')]);
+  // `mkdirSync`, not `execFileSync('mkdir', ['-p'])`: there is no `mkdir.exe` on Windows,
+  // and this line only ever resolved there because the runner image happens to put
+  // Git-for-Windows' `usr/bin` on PATH. A test that depends on that is a test that fails
+  // on somebody's laptop for a reason with nothing to do with what it measures.
+  mkdirSync(join(pkg, 'scripts'), { recursive: true });
   writeFileSync(
     join(pkg, 'scripts', 'sync-assets.mjs'),
     readFileSync(join(packageRoot, 'scripts', 'sync-assets.mjs')),

@@ -1,0 +1,23 @@
+# Every file in this repository is checked out with the bytes it was committed with.
+#
+# WHY THIS EXISTS, AND WHY IT IS NOT A STYLE PREFERENCE. This repository ships a Python
+# implementation and a Node port whose PRODUCT is that they write the same bytes. Git for
+# Windows defaults to `core.autocrlf=true`, and the GitHub-hosted `windows-latest` image
+# leaves that default in place — MEASURED on the first CI run runtime-ts ever had: three
+# tests failed on both Windows cells because `assets/skills/memory.md` was CRLF ON DISK
+# after checkout, so a loader that correctly translates CRLF to LF (the way Python's text
+# mode does) disagreed with a `readFileSync(p, 'utf8')` of the same file. Nothing was wrong
+# with either side; the checkout had changed the input.
+#
+# The consequence is bigger than three tests. `build_identity` hashes every byte of the
+# asset pack into `assets_digest`, so under autocrlf the SAME COMMIT reports a different
+# digest on Windows than on Linux — a build-identity instrument whose answer depends on
+# which OS cloned the repo cannot detect the version float it exists to detect.
+#
+# `-text` (not `text=auto eol=lf`) because it disables the conversion entirely, in both
+# directions, for every path. That is the property wanted: the working tree is the object
+# store. The DELIBERATE CRLF cases are unaffected — they construct their bytes at runtime
+# (`test/assets.test.mjs` "a CRLF asset reads back LF", the codec suite's on-disk CRLF arm)
+# rather than relying on a file in the checkout being CRLF, which is exactly why they went
+# on passing while the three above did not.
+* -text

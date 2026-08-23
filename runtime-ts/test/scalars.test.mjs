@@ -227,7 +227,9 @@ const factFile = (over = {}) => {
 };
 
 function bed(files, mtime = 1755990000) {
-  const root = mkdtempSync(join(tmpdir(), 'bk-scalars-'));
+  // `realpathSync`: `os.tmpdir()` is not canonical — a `/var` symlink on macOS, the 8.3
+  // short name on Windows CI. See the note in test/store.test.mjs.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'bk-scalars-')));
   mkdirSync(join(root, 'facts'), { recursive: true });
   mkdirSync(join(root, 'archive'), { recursive: true });
   for (const [name, text] of Object.entries(files)) {

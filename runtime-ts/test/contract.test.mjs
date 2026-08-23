@@ -14,9 +14,10 @@
  * several errors, `extract_json`'s two arms, and the reader for `assets/contracts/default.yaml`.
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 const dist = new URL('../dist/', import.meta.url);
@@ -143,7 +144,11 @@ test('every error class the checkpoint schema uses has its own sentence', () => 
 
 test('the real checkpoint schema refuses a real defect with the real sentence', () => {
   const schema = assets.loadSchema('shiftwork-checkpoint');
-  const repoRoot = new URL('../../', import.meta.url).pathname;
+  // `URL.pathname` is NOT a filesystem path. On Windows it is `/D:/a/...`, and joining
+  // that yields `\D:\a\...`, which opens nothing — MEASURED as ENOENT on both Windows
+  // cells while both Ubuntu cells passed, because on POSIX the two spellings coincide.
+  // `fileURLToPath` is the conversion that exists for exactly this.
+  const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
   const doc = JSON.parse(
     readFileSync(join(repoRoot, 'tools', 'shiftwork', 'example-codefix-checkpoint.json'), 'utf8'),
   );
@@ -279,7 +284,9 @@ test('load_contract reads every required key out of the shipped default.yaml', (
 test('load_contract names the missing keys the way Python does', () => {
   const dir = process.env.BANTAMKIT_ASSETS;
   try {
-    const root = mkdtempSync(join(tmpdir(), 'bk-n5-contract-'));
+    // `realpathSync`: `os.tmpdir()` is not canonical — a `/var` symlink on macOS, the 8.3
+    // short name on Windows CI. See the note in test/store.test.mjs.
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'bk-n5-contract-')));
     mkdirSync(join(root, 'contracts'), { recursive: true });
     writeFileSync(join(root, 'contracts', 'thin.yaml'), 'name: thin\nschema_instruction: "x"\n');
     process.env.BANTAMKIT_ASSETS = root;

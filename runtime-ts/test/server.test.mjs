@@ -17,7 +17,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,7 +28,9 @@ const repoRoot = dirname(packageRoot);
 const CLI = join(packageRoot, 'dist', 'cli.js');
 const ASSETS = join(repoRoot, 'assets');
 
-const scratch = mkdtempSync(join(tmpdir(), 'bk-server-test-'));
+// `realpathSync`: `os.tmpdir()` is not canonical — a `/var` symlink on macOS, the 8.3
+// short name on Windows CI. See the note in test/store.test.mjs.
+const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'bk-server-test-')));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
 let seq = 0;
@@ -172,8 +174,23 @@ test('a str tool wraps to structuredContent.result; a dict tool does not', async
 
 test('a float argument reaches the accounting log as 5.0, not 5', async () => {
   const store = freshStore();
+  // THE SOURCE DOCUMENT IS THE TRACKED TEMPLATE, not the live job checkpoint.
+  //
+  // This line used to read `.shiftwork/job38-npx-public-install/checkpoint.json`, and that
+  // is a file `.gitignore` excludes — MEASURED: this test was the ONE failure on both
+  // Ubuntu cells of the first run this job ever had, `ENOENT ... /.shiftwork/...`, on all
+  // four cells. It passed on the laptop for the only reason it ever could: the orchestrator
+  // happened to be mid-job in that very checkout. Worse than unportable, it was
+  // non-deterministic in place — `plan.cursor` moves as the job advances, so the unit this
+  // test clocked out changed between two runs an hour apart, and nobody would have seen it.
+  //
+  // `tools/shiftwork/example-codefix-checkpoint.json` is tracked, is the template CLAUDE.md
+  // names, and is already the fixture `contract.test.mjs` validates the real schema against.
   const checkpoint = join(scratch, 'cp-float.json');
-  writeFileSync(checkpoint, `${readFileSync(join(repoRoot, '.shiftwork', 'job38-npx-public-install', 'checkpoint.json'), 'utf8')}`);
+  writeFileSync(
+    checkpoint,
+    readFileSync(join(repoRoot, 'tools', 'shiftwork', 'example-codefix-checkpoint.json'), 'utf8'),
+  );
   const doc = JSON.parse(readFileSync(checkpoint, 'utf8'));
   const cursor = doc.plan.cursor;
   const unit = doc.plan.units.find((u) => u.id === cursor);
