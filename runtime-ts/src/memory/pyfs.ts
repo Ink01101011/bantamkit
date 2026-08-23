@@ -14,6 +14,28 @@
  * inheriting the store's ruling.
  *
  * Nothing here invents a policy. Every function names the CPython call it stands in for.
+ *
+ * REGISTERED AND NOT DONE — N8's review found five things in this file and N10 fixed two of
+ * them. The two were WRONG ANSWERS: `pyDecodeUtf8` ate a UTF-8 BOM its own validator had
+ * just accepted, and `OSError.__str__`/the symlink-loop `RuntimeError` spelled `%r` as a
+ * hand-written pair of apostrophes. The other three are CONSOLIDATION — one question with
+ * two spellings, both of them right — and they are listed here rather than half-started:
+ *
+ *   - TWO ERRNO TABLES. `STRERROR` (errno name -> the C library's sentence) and
+ *     `OSERROR_SUBCLASS` (errno name -> the exception class CPython picks) are separate
+ *     objects keyed on the same thing, and `STRERROR_NAMES` — which the conformance suite
+ *     reads to check the wordings against the running Python — covers only the first. An
+ *     errno added to one and not the other is silently uncovered. Nothing measured is wrong
+ *     today: the `strerror table` case passes on all 19 entries.
+ *   - FOUR PATH PARSERS. `parsePath`, `lastSeparator`, `suffixDot` and `resolveWindows`
+ *     each re-decide where a separator and a drive letter are. They agree — the `PurePath /
+ *     and with_suffix` case compares 18 shapes against `PurePath` — but they agree by
+ *     coincidence of four correct implementations, not by construction.
+ *   - `normcase` AND `PyRuntimeError` ARE EXPORTED WITH NO CALLER OUTSIDE THIS FILE. Both
+ *     are used inside it; the export is surface nobody asked for.
+ *
+ * Also registered, in `store.ts` rather than here: the `ValueError` arms `_facts` catches
+ * and this port reaches by a different route. Owner: whichever unit consolidates `pyfs`.
  */
 import {
   appendFileSync,

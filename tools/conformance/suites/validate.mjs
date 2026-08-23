@@ -590,6 +590,25 @@ export async function run(ctx) {
         'counter-examples inside it.',
     });
   }
+  // THE RULED CASES ABOVE PIN THE WORDING, NOT THE REFUSAL, and that distinction is the
+  // trap N8 found in this file: a `ruling` case fails only when the two sides MATCH, so a
+  // port that went back to answering `{"valid": true}` would still "differ" from Python's
+  // SchemaError and every one of those 53 would stay green. This case is the other half and
+  // it is NOT ruled: one bit per schema, did you refuse, and the two arrays must be equal.
+  cases.push({
+    name: `check_schema: all ${BAD_SCHEMAS.length} refuse on both sides — the bit, not the words`,
+    kind: 'json',
+    expected: pyBad.map((r) => typeof r === 'object' && r !== null && r.error !== undefined),
+    actual: BAD_SCHEMAS.map(([, schema]) => {
+      try {
+        contract.schemaError(BAD_OUTPUT, pyjson.parseJson(schema));
+        return false;
+      } catch {
+        return true;
+      }
+    }),
+  });
+
   cases.push({
     name: 'ruling: a Python-only regex in a branch that never fires',
     kind: 'string',

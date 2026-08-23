@@ -717,6 +717,43 @@ export async function run(ctx) {
   }
   notes.push(`${list.length} scenarios compared, ${ruled.length} ruled to differ in their answer`);
 
+  // The five tag rulings above pin their WORDING, and a `ruling` case fails only when the
+  // two sides MATCH — so a port that stopped refusing `<<` altogether would still "differ"
+  // from PyYAML's ConstructorError and stay green. This is the other half and it is NOT
+  // ruled: did each side refuse at all, over the four where the answer is that both do. `!`
+  // is left out because its bits genuinely disagree, and the ruled scenario above is already
+  // what fails if this port ever starts answering `None` there.
+  {
+    const shapes = ['<<', '=', '&', '*'];
+    const bed = join(ctx.scratch, 'tagbits');
+    const py = [];
+    const nd = [];
+    shapes.forEach((shape, i) => {
+      const spec = {
+        dirs: ['facts', 'archive'],
+        files: {
+          'facts/tagged.md': `---\nname: tagged\ndescription: ${shape}\ntype: project\nlinks: []\n---\n\nb\n`,
+        },
+        mtimes: { 'facts/tagged.md': 1755990000 },
+      };
+      const roots = {};
+      for (const side of ['py', 'node']) {
+        roots[side] = join(bed, `s${i}`, side);
+        materialise(roots[side], spec);
+      }
+      const request = (root) => ({ op: 'run', root, today: TODAY, index_budget: null, k: null, create: false, calls: [indexText()] });
+      py.push(ctx.runPython(REF, request(roots.py)).results[0].error !== undefined);
+      nd.push(runNode(store, request(roots.node)).results[0].error !== undefined);
+    });
+    cases.push({
+      name: 'the four constructor-less tags that both refuse: WHO refuses, not what they say',
+      kind: 'json',
+      expected: py,
+      actual: nd,
+    });
+    notes.push(`constructor-less tags: python refuses ${py.filter(Boolean).length}/4, node ${nd.filter(Boolean).length}/4 (the fifth, \`!\`, is the ruled one where python answers)`);
+  }
+
   // ---------------------------------------------------- the recall tie-break, 50 000 times
   //
   // `recall` sorts on `(-score, fact.name)`, and once a name can be something other than a
