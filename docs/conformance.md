@@ -129,9 +129,17 @@ construction** and are labelled `NOT MEASURED HERE` in the notes when run on mac
   `_check_index_budget` counts the untranslated text. Measured on the runner as exactly one
   byte per line: `index.md` 42 bytes on disk against 41 counted (1 line), a fact file 134
   against 124 (10 lines), a checkpoint 2609 against 2516 (93 lines). CPython gates the
-  translation on `#ifdef MS_WINDOWS`, so macOS cannot construct the state.
-- **The CRLF ruling**, same cause — and wider than first written: `index.md` and checkpoints
-  translate too, so on Windows the two runtimes do not write byte-identical stores at all.
+  translation on `#ifdef MS_WINDOWS`, so macOS cannot construct the state. **The port now
+  reproduces the arithmetic**, difference included: the budget counts the LF text and the
+  writer translates, so the disk file is one byte per line larger than the number checked —
+  on both runtimes, on both platforms.
+- **The Win32 message table.** `FormatMessage for every winerror the port claims to render`
+  asks `ctypes.FormatError` for all fifteen wordings, and `ctypes.FormatError` exists only on
+  Windows. Off Windows the case does not run and the notes say so.
+
+**The CRLF ruling is gone.** It was the only ruling in the codec suite and it is now two
+ordinary cases: `toCrlf` against CPython's own `newline="\r\n"` translation, and
+`Path.write_text` on whatever platform is running. Both are decidable everywhere.
 
 Set `.gitattributes` to `* -text`. Without it, `core.autocrlf` on the Windows runner image
 changes the working-tree bytes and the same commit produces a different `assets_digest`.

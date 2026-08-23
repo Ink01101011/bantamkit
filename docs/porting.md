@@ -147,7 +147,23 @@ Surprises worth keeping: `1e+17` is a **`str`**, not a float — PyYAML's float 
   FILE reparse point → `NotADirectoryError`, errno 20, winerror 267.
   `symlink_to(t, target_is_directory=True)` makes a DIR reparse point → `FileNotFoundError`,
   errno 2, winerror 3. POSIX collapses both to the second. A test that builds the wrong shape
-  passes for the wrong reason.
+  passes for the wrong reason. **libuv does not reproduce the first shape**: it opens the
+  reparse point itself and reports `ENOENT` where `FindFirstFileW(p + "\\*")` reports
+  `ERROR_DIRECTORY`, so `pyScandirNames` restates the shape before rendering the sentence.
+- **`OSError.__str__` prints `[WinError %d]` when `winerror` is set,** and only calls through
+  the WIN32 API set it. `open()` goes through the C runtime and keeps `[Errno %d]` with the
+  UCRT's own wording — which is not glibc's, and not libuv's errno either: opening a
+  directory is `EACCES` there where libuv says `EISDIR`.
+- **libuv threw the Win32 number away.** `ERROR_FILE_NOT_FOUND` (2), `ERROR_PATH_NOT_FOUND`
+  (3) and `ERROR_INVALID_NAME` (123) all arrive as one `ENOENT`, so which one CPython would
+  have carried has to be RE-DERIVED from which component is missing and whether any
+  component holds a character Win32 forbids. See `winerrorFor` in `pyfs.ts`.
+- **`PureWindowsPath` is not `PurePosixPath` with backslashes.** `//a/b` is a share whose
+  whole text is the drive and which has NO parents, `///a` is relative (pathlib's test is a
+  SUBSTRING test and `'' in '?.'` is True), and `ntpath.isabs` disagrees with
+  `PureWindowsPath.is_absolute` by design. All of it is pure algebra CPython computes
+  identically on every OS, so keep it in flavour-explicit functions and drive them against
+  `ntpath` from a laptop rather than from a runner.
 - **`realpathSync` does not expand 8.3 short names**; only `realpathSync.native` does.
 - One UTF-8 decoder in the package, with `ignoreBOM: true`, in `pyDecodeUtf8`.
 
@@ -159,13 +175,15 @@ Surprises worth keeping: `1e+17` is a **`str`**, not a float — PyYAML's float 
 | the YAML scanner cases | the codec has no scanner; 5 shapes ruled, `!` filed alone |
 | `checkSchema` wording | 53 cases; both sides refuse, the sentences differ |
 | accounting via `fromJs` | an integral float; the `parseJson` route is byte-identical |
-| on Windows, CRLF | `write_text` translates and the port does not — see [conformance.md](conformance.md) |
+| on Windows, CRLF | **no longer a difference.** N11 reversed it: the emitter builds LF text, the WRITER translates, and the budget still counts the LF text — which is what CPython does. See [conformance.md](conformance.md). |
 
 ## Defects registered against `runtime-py`, not fixed here
 
 `runtime-py/` is the reference and was not modified. Found while porting:
 
-1. Windows index-budget arithmetic — 13537 bytes on disk against 13472 checked.
+1. Windows index-budget arithmetic — 13537 bytes on disk against 13472 checked. (The port
+   now reproduces it rather than avoiding it; the reference's arithmetic is still the one
+   that is wrong, and it is still not fixed here.)
 2. `validate_json` lets `SchemaError` / `TypeError` / `_WrappedReferencingError` escape.
 3. `shiftwork._read_valid` does not catch `UnicodeDecodeError`.
 4. `_pinned_store`'s docstring states a false reason.
