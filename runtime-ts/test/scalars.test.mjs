@@ -35,6 +35,7 @@ import { MEMORY_DIR_ENV } from '../dist/memory/layers.js';
 
 import { constructPlain, PyScalar, safeDumpMapping, YamlConstructError } from '../dist/memory/pyyaml.js';
 import { parseFrontmatter } from '../dist/memory/factfile.js';
+import { pyReadText } from '../dist/memory/pyfs.js';
 import {
   MemoryStore,
   MemoryValidationError,
@@ -273,7 +274,10 @@ test('a non-string name reaches the FILE PATH, and _stamp writes there', () => {
     assert.deepEqual(readdirSync(join(root, 'facts')).sort(), ['2026-08-23.md', 'in-name.md']);
     // …and `created` goes back through `safe_dump` as the quoted string it came in as,
     // while a `date` in that field would go back unquoted. Both are pinned below.
-    assert.match(readFileSync(join(root, 'facts', '2026-08-23.md'), 'utf8'), /^name: 2026-08-23\n/m);
+    // `pyReadText`, not `readFileSync`: on Windows the file is CRLF on disk because that is
+    // what `Path.write_text` puts there, and this assertion is about the FIELD, not the
+    // line ending. MEASURED, run 32649940727.
+    assert.match(pyReadText(join(root, 'facts', '2026-08-23.md')), /^name: 2026-08-23\n/m);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

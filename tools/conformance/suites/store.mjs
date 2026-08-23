@@ -55,6 +55,21 @@ const DEFAULT_INDEX_BUDGET = 24_000;
  * difference the harness itself created. The path is not dropped from the check: it is
  * replaced by a marker, so a message that named the WRONG path still differs.
  */
+/**
+ * Replace the bed in one message, in BOTH spellings the message can carry it in.
+ *
+ * `str(OSError)` prints the path through `%r`, which escapes a backslash — so on Windows the
+ * bed appears as `C:\\Users\\...` and a scrubber that only looks for `C:\Users\...` finds
+ * nothing and leaves the harness's own `py/` vs `node/` split in the comparison. MEASURED,
+ * run 32649940727: three cases failed on a difference the harness had created itself, and
+ * the port's sentences were identical. No effect off Windows, where the two spellings are
+ * the same string.
+ */
+function scrubPath(text, root) {
+  const escaped = root.split('\\').join('\\\\');
+  return text.split(root).join('<ROOT>').split(escaped).join('<ROOT>');
+}
+
 function scrub(results, root) {
   const walk = (value) => {
     if (Array.isArray(value)) return value.map(walk);
@@ -63,7 +78,7 @@ function scrub(results, root) {
         return {
           error: {
             type: value.error.type,
-            message: b64(unb64(value.error.message).split(root).join('<ROOT>')),
+            message: b64(scrubPath(unb64(value.error.message), root)),
           },
         };
       }
@@ -1040,6 +1055,8 @@ export async function run(ctx) {
       str: win.str.map(unb64),
       parents: win.parents.map((row) => row.map(unb64)),
       absolute: win.absolute,
+      ntisabs: win.ntisabs,
+      ntsplit: win.ntsplit.map((row) => row.map(unb64)),
       name: win.name.map(unb64),
       suffix: win.suffix.map(unb64),
       ntjoined: win.ntjoined.map(unb64),
@@ -1055,6 +1072,8 @@ export async function run(ctx) {
       str: winRaws.map((r) => pyfs.winStr(r)),
       parents: winRaws.map((r) => pyfs.winParents(r)),
       absolute: winRaws.map((r) => pyfs.winIsAbsolute(r)),
+      ntisabs: winRaws.map((r) => pyfs.ntIsAbs(r)),
+      ntsplit: winRaws.map((r) => [...pyfs.ntSplit(r)]),
       name: winRaws.map((r) => pyfs.winName(r)),
       suffix: winRaws.map((r) => {
         const nm = pyfs.winName(r);

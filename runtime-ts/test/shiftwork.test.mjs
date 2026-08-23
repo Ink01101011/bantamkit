@@ -23,7 +23,8 @@ import { test } from 'node:test';
 const dist = new URL('../dist/', import.meta.url);
 const { clockIn, clockOut, status, HISTORY_RING_SIZE } = await import(new URL('shiftwork.js', dist));
 const { dumpJson, fromJs, parseJson, toJs } = await import(new URL('pyjson.js', dist));
-const { pyReplace, pyRepr, pySuffix } = await import(new URL('memory/pyfs.js', dist));
+const { pyNewlineOut, pyReadText, pyReplace, pyRepr, pySuffix } =
+  await import(new URL('memory/pyfs.js', dist));
 
 /**
  * A path as `str(OSError)` prints it: `%r`, which ESCAPES A BACKSLASH.
@@ -41,6 +42,18 @@ const asRepr = (path) => pyRepr(path);
 const fresh = () => realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-shiftwork-')));
 const bytes = (p) => readFileSync(p);
 const text = (p) => readFileSync(p, 'utf8');
+/**
+ * The same file as `Path.read_text` reads it — universal-newline, so the assertions about
+ * CONTENT are spelled in LF on every platform.
+ *
+ * `Path.write_text` translates `\n` to `os.linesep` on the way out, so on Windows the
+ * checkpoint and the accounting log are CRLF on disk, exactly as the reference writes them.
+ * A test that reads the raw bytes and compares to an LF string is asserting the port
+ * disagrees with CPython there. MEASURED, run 32649940727: four nodes here.
+ */
+const read = (p) => pyReadText(p);
+/** Expected ON-DISK text, where the bytes themselves are the property. */
+const disk = (expected) => pyNewlineOut(expected);
 const js = (v) => toJs(v);
 
 /** A minimal checkpoint that satisfies the shipped schema, written VERBATIM (raw UTF-8). */
@@ -255,7 +268,7 @@ test('clock_out writes the checkpoint ASCII-ONLY, and that is the whole ensure_a
   assert.ok(text(path).includes('\\u2014'), 'the em dash leaves as \\u2014');
   // And it still round-trips to the same STRING, which is why the corruption is silent.
   assert.deepEqual(JSON.parse(text(path)).job.constraints, ['PURE NODE at runtime.', 'เป้าหมาย — no pipe/uv']);
-  assert.equal(text(path).endsWith('\n}\n'), true, 'indent=2 plus a trailing newline');
+  assert.equal(text(path).endsWith(disk('\n}\n')), true, 'indent=2 plus a trailing newline');
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -266,18 +279,18 @@ test('the log line is sort_keys=True, one line, appended, and never read back', 
   const log = text(`${path}.log.jsonl`);
   assert.equal(
     log,
-    '{"duration_ms": 2, "model": "claude-opus-5[1m]", "role": "implementer", "status": "done", ' +
-      '"tokens": 1, "ts": "2025-08-23T06:20:00Z", "unit": "N1"}\n',
+    disk('{"duration_ms": 2, "model": "claude-opus-5[1m]", "role": "implementer", "status": "done", ' +
+      '"tokens": 1, "ts": "2025-08-23T06:20:00Z", "unit": "N1"}\n'),
   );
   clockOut(path, 'N2', 'done', {}, { unit: 'N2', outcome: 'done' }, null, { now: 1755930001 });
-  assert.equal(text(`${path}.log.jsonl`).split('\n').filter(Boolean).length, 2, 'append, not truncate');
+  assert.equal(read(`${path}.log.jsonl`).split('\n').filter(Boolean).length, 2, 'append, not truncate');
 });
 
 test('accounting can OVERRIDE the four keys the record starts with', () => {
   const root = fresh();
   const path = writeCheckpoint(root);
   clockOut(path, 'N1', 'done', {}, OK_ENTRY, { ts: 'whenever', role: 'planner' }, { now: 1755930000 });
-  assert.equal(text(`${path}.log.jsonl`), '{"role": "planner", "status": "done", "ts": "whenever", "unit": "N1"}\n');
+  assert.equal(text(`${path}.log.jsonl`), disk('{"role": "planner", "status": "done", "ts": "whenever", "unit": "N1"}\n'));
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -305,7 +318,7 @@ test('the handoff patch is a SHALLOW merge that keeps each existing key in its s
   const root = fresh();
   const path = writeCheckpoint(root);
   clockOut(path, 'N1', 'done', { next_action: 'next thing', do_not: ['x'] }, OK_ENTRY, null, { now: 1 });
-  const written = text(path);
+  const written = read(path);
   assert.ok(
     written.includes('"handoff": {\n    "next_action": "next thing",\n    "open_questions": [],\n    "do_not": [\n      "x"\n    ]\n  }'),
     `handoff key order changed:\n${written.slice(written.indexOf('"handoff"'))}`,

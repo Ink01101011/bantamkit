@@ -36,6 +36,18 @@ import {
 import { layerLabel, Memory, normalizeName, profileStore } from '../dist/memory/component.js';
 import { MemoryValidationError } from '../dist/memory/store.js';
 
+/**
+ * `os.stat`'s strerror for a path that is not there.
+ *
+ * `os.stat` goes through the WIN32 API, so on Windows CPython carries a `winerror` and the
+ * sentence is the Win32 one; `open()` goes through the C runtime and keeps the POSIX one.
+ * Both are the reference, each on its own platform. MEASURED, run 32646521489.
+ */
+const notFound = () =>
+  (process.platform === 'win32'
+    ? 'The system cannot find the file specified'
+    : 'No such file or directory');
+
 const TODAY = '2026-08-23';
 /**
  * A throwaway bed, REALPATH'd. `/var` is a symlink to `/private/var` on macOS and
@@ -130,7 +142,16 @@ test('a dangling facts/ symlink counts 0 while the store raises — the deferred
   const root = join(bed, 'dangling');
   mkdirSync(root);
   symlinkSync(join(bed, 'nowhere-at-all'), join(root, 'facts'));
-  assert.equal(countFacts(root), 0, 'count_facts catches FileNotFoundError and only that');
+  // NOW MEASURED, and the docstring above was right about the split: `symlinkSync` with no
+  // type makes a FILE reparse point on Windows, `FindFirstFileW` on `facts\*` is
+  // ERROR_DIRECTORY, and `count_facts` RAISES there — so the deferred defect does not
+  // exist on that platform and the two layers agree. Run 32646521489.
+  const windows = process.platform === 'win32';
+  if (windows) {
+    assert.throws(() => countFacts(root), (e) => e.name === 'NotADirectoryError');
+  } else {
+    assert.equal(countFacts(root), 0, 'count_facts catches FileNotFoundError and only that');
+  }
 
   const binding = resolveProjectStore(root);
   assert.equal(binding.state, 'designated', 'the walk does not even see this as a store');
@@ -139,7 +160,11 @@ test('a dangling facts/ symlink counts 0 while the store raises — the deferred
   mkstore(join(parent, '.bantamkit', 'memory'));
   rmSync(join(parent, '.bantamkit', 'memory', 'facts'), { recursive: true });
   symlinkSync(join(bed, 'nowhere-at-all'), join(parent, '.bantamkit', 'memory', 'facts'));
-  assert.equal(resolveProjectStore(parent).state, 'empty', 'the binding layer says empty');
+  if (windows) {
+    assert.throws(() => resolveProjectStore(parent), /memory store is unreadable/);
+  } else {
+    assert.equal(resolveProjectStore(parent).state, 'empty', 'the binding layer says empty');
+  }
 });
 
 // ------------------------------------------------------------------------------- binding
@@ -287,7 +312,7 @@ test('a pin at nothing raises and creates nothing; a pin at a file says it is no
   withEnv({ [MEMORY_DIR_ENV]: missing }, () => {
     assert.throws(() => resolveProjectStore(bed), (e) =>
       e.message ===
-        `pinned memory store is unreachable: ${missing}: No such file or directory ` +
+        `pinned memory store is unreachable: ${missing}: ${notFound()} ` +
           `(BANTAMKIT_MEMORY_DIR=${missing}); nothing was created`);
   });
   assert.equal(readdirSync(bed).length, 0);
@@ -583,15 +608,22 @@ test('an unlistable grant is named as unreadable; a dangling one is not — the 
   }
 
   const dangling = build('dangling', 'dangling');
+  const tail = `The project store ${dangling.store} is empty; it is ${dangling.project}'s ` +
+    'own store, bound without the walk leaving that directory. That is a binding, not a ' +
+    'search result — if your facts are in another store, set BANTAMKIT_MEMORY_DIR to its ' +
+    'absolute path and restart; otherwise save a memory to start this one.';
   sandboxed(home, () => {
     assert.equal(
       Memory.layered(dangling.project, frozen()).recall('anything'),
-      'no memories to search: nothing is saved in any layer bound here. The project store ' +
-        `${dangling.store} is empty; it is ${dangling.project}'s own store, bound without ` +
-        'the walk leaving that directory. That is a binding, not a search result — if your ' +
-        'facts are in another store, set BANTAMKIT_MEMORY_DIR to its absolute path and ' +
-        'restart; otherwise save a memory to start this one.',
-      'count_facts maps the dangling symlink to 0, so the layer is not reported unreadable',
+      // W5's PAIR IS A POSIX PAIR. On Windows the bare symlink is a FILE reparse point,
+      // `count_facts` raises NotADirectoryError, and the grant IS named as unreadable —
+      // so the two sentences converge and the wrong one is not said. Measured against the
+      // reference on run 32646521489; on POSIX the pair still stands.
+      process.platform === 'win32'
+        ? 'no memories matched, and that is not evidence there are none: ' +
+          `${dangling.grant} could not be read. ${tail}`
+        : `no memories to search: nothing is saved in any layer bound here. ${tail}`,
+      'count_facts maps the dangling symlink to 0 on POSIX, so the layer is not unreadable',
     );
   });
 });

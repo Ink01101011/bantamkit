@@ -221,6 +221,11 @@ def main() -> None:
             "str": [b64(str(PureWindowsPath(r))) for r in raws],
             "parents": [[b64(str(x)) for x in PureWindowsPath(r).parents] for r in raws],
             "absolute": [PureWindowsPath(r).is_absolute() for r in raws],
+            # `ntpath.isabs` and `PureWindowsPath.is_absolute` DISAGREE, and CPython's own
+            # source calls the difference a legacy bug. `realpath` is ntpath's caller, so
+            # both readings have to be reproduced and neither may stand in for the other.
+            "ntisabs": [ntpath.isabs(r) for r in raws],
+            "ntsplit": [[b64(x) for x in ntpath.split(r)] for r in raws],
             "name": [b64(PureWindowsPath(r).name) for r in raws],
             "suffix": [b64(PureWindowsPath(r).suffix) for r in raws],
             "joined": [

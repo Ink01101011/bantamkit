@@ -20,6 +20,7 @@ import {
   MemoryValidationError,
   tokens,
 } from '../dist/memory/store.js';
+import * as pyfs from '../dist/memory/pyfs.js';
 
 const TODAY = '2026-08-23';
 /**
@@ -44,6 +45,17 @@ const fresh = () => realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-store-'))
 const store = (root, over = {}) => new MemoryStore(root, { today: () => TODAY, ...over });
 const bytes = (p) => readFileSync(p);
 const text = (p) => readFileSync(p, 'utf8');
+/**
+ * Expected ON-DISK text, with the newline translation `Path.write_text` performs.
+ *
+ * The assertions in this file are on BYTES, so they have to name the bytes THIS PLATFORM's
+ * reference writes. `newline=None` puts CRLF on a Windows disk and LF everywhere else, and
+ * a test that spells LF unconditionally is asserting that the port disagrees with CPython
+ * on one of the two. MEASURED, run 32649940727: eight nodes here.
+ */
+const disk = (expected) => pyfs.pyNewlineOut(expected);
+/** ...and `Path.read_text`, which folds it back, for the assertions about CONTENT. */
+const read = (p) => pyfs.pyReadText(p);
 
 /**
  * Put a directory into a state and MEASURE whether the OS honoured it, the way
@@ -89,10 +101,10 @@ test('save writes the fact, the index, and nothing else', () => {
   assert.deepEqual(readdirSync(join(root, 'facts')), ['a-fact.md']);
   assert.equal(
     text(join(root, 'facts', 'a-fact.md')),
-    '---\nname: a-fact\ndescription: a description\ntype: project\ncreated: ' +
-      `'${TODAY}'\nlast_recalled: null\nlinks: []\n---\n\nthe body\n`,
+    disk('---\nname: a-fact\ndescription: a description\ntype: project\ncreated: ' +
+      `'${TODAY}'\nlast_recalled: null\nlinks: []\n---\n\nthe body\n`),
   );
-  assert.equal(text(join(root, 'index.md')), '- [[a-fact]] (project) — a description\n');
+  assert.equal(text(join(root, 'index.md')), disk('- [[a-fact]] (project) — a description\n'));
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -102,9 +114,9 @@ test('the index line has no header, a raw U+2014, and _factPaths order', () => {
   for (const n of ['zulu', 'alpha', 'mike']) s.save('reference', n, `about ${n}`, 'b');
   assert.equal(
     text(join(root, 'index.md')),
-    '- [[alpha]] (reference) — about alpha\n' +
+    disk('- [[alpha]] (reference) — about alpha\n' +
       '- [[mike]] (reference) — about mike\n' +
-      '- [[zulu]] (reference) — about zulu\n',
+      '- [[zulu]] (reference) — about zulu\n'),
   );
   const line = text(join(root, 'index.md'));
   assert.equal(line.codePointAt(line.indexOf('\u2014')), 0x2014, 'the dash is a raw U+2014');
@@ -112,13 +124,21 @@ test('the index line has no header, a raw U+2014, and _factPaths order', () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-test('the budget is measured on the same bytes the index file carries', () => {
+test('the budget counts the LF text; the disk carries what write_text put there', () => {
+  // THESE ARE THE SAME NUMBER ON POSIX AND THEY ARE NOT ON WINDOWS, and that is the
+  // REFERENCE's arithmetic, not a defect: `_check_index_budget` measures the in-memory LF
+  // string while `write_text` translates on the way out, so a Windows store is one byte per
+  // line larger than the number the budget checked. Asserting equality unconditionally is
+  // asserting the port disagrees with CPython on one of the two platforms.
   const root = fresh();
   const s = store(root);
   s.save('project', 'a-fact', 'a description with an em dash — in it', 'b');
   const onDisk = bytes(join(root, 'index.md'));
-  assert.equal(Buffer.byteLength(s.indexText(), 'utf8'), onDisk.length);
-  assert.equal(onDisk.includes(0x0d), false, 'index.md carries a CR: the budget counts LF');
+  const counted = Buffer.byteLength(s.indexText(), 'utf8');
+  assert.equal(Buffer.byteLength(disk(s.indexText()), 'utf8'), onDisk.length, 'the writer is the disk');
+  const lines = s.indexText().split('\n').length - 1;
+  assert.equal(onDisk.length - counted, process.platform === 'win32' ? lines : 0, 'one byte per line');
+  assert.equal(onDisk.includes(0x0d), process.platform === 'win32');
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -216,7 +236,7 @@ test('the same name is an update and keeps the date the fact first landed', () =
   s.save('project', 'alpha', 'one two three four', 'first');
   const later = new MemoryStore(root, { today: () => '2027-01-01' });
   assert.equal(later.save('feedback', 'alpha', 'one two three four', 'second').status, 'saved');
-  const on = text(join(root, 'facts', 'alpha.md'));
+  const on = read(join(root, 'facts', 'alpha.md'));
   assert.match(on, /created: '2026-08-23'/);
   assert.match(on, /type: feedback/);
   assert.match(on, /\n\nsecond\n$/);
@@ -259,7 +279,9 @@ test('an over-budget update puts the previous bytes back', () => {
 test('an index exactly at the budget fits; one byte more does not', () => {
   const root = fresh();
   store(root).save('project', 'alpha', 'one two three four', 'b');
-  const size = readFileSync(join(root, 'index.md')).length;
+  // The budget is measured on the LF TEXT, so the size that pins the `>` has to be that
+  // text's length and not the file's — they differ by one byte per line on Windows.
+  const size = Buffer.byteLength(store(root).indexText(), 'utf8');
   // The comparison is `>`, not `>=`. Every scenario that is comfortably under or over the
   // budget passes with either, so the equal case is the only one that pins the operator.
   assert.equal(store(root, { indexBudget: size }).save('project', 'alpha', 'one two three four', 'b').status, 'saved');
@@ -276,7 +298,7 @@ test('a budget rollback rebuilds an index that was already stale', () => {
   s.save('project', 'alpha', 'one two three four', 'b');
   writeFileSync(join(root, 'index.md'), 'stale\n', 'utf8');
   assert.throws(() => s.save('project', 'beta', 'five six seven eight nine', 'b'), MemoryBudgetExceeded);
-  assert.equal(text(join(root, 'index.md')), '- [[alpha]] (project) — one two three four\n');
+  assert.equal(text(join(root, 'index.md')), disk('- [[alpha]] (project) — one two three four\n'));
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -286,9 +308,9 @@ test("the description is stripped with str.strip, which is not String.trim", () 
   const root = fresh();
   const s = store(root);
   s.save('project', 'ws', '\u001c a description \u0085', 'b');
-  assert.match(text(join(root, 'facts', 'ws.md')), /\ndescription: a description\n/);
+  assert.match(read(join(root, 'facts', 'ws.md')), /\ndescription: a description\n/);
   s.save('project', 'ws2', '\ufeff another description entirely \ufeff', 'b');
-  assert.match(text(join(root, 'facts', 'ws2.md')), /\ndescription: "\\uFEFF another description entirely \\uFEFF"\n/);
+  assert.match(read(join(root, 'facts', 'ws2.md')), /\ndescription: "\\uFEFF another description entirely \\uFEFF"\n/);
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -376,9 +398,15 @@ test('a facts path that is not a directory is unreadable, not empty', () => {
   for (const call of [() => s.recall('anything'), () => s.indexText()]) {
     assert.throws(call, (e) => {
       assert.ok(e instanceof MemoryValidationError);
+      // `os.scandir(p)` is `FindFirstFileW(p + "\\*")` on Windows, so `p` is a DIRECTORY
+      // COMPONENT and a regular file there is `ERROR_DIRECTORY` — whose Win32 wording is
+      // not the CRT's. Both spellings are the reference's, each on its own platform.
+      const notdir = process.platform === 'win32'
+        ? 'The directory name is invalid'
+        : 'Not a directory';
       assert.equal(
         e.message,
-        `memory store is unreadable: ${join(root, 'facts')}: Not a directory; a store whose ` +
+        `memory store is unreadable: ${join(root, 'facts')}: ${notdir}; a store whose ` +
           "facts could not be listed is not a store with no facts, and answering 'empty' " +
           'here is what rewrites index.md from nothing',
       );
@@ -394,13 +422,22 @@ test('a dangling facts symlink is unreadable, not empty', () => {
   assert.ok(lstatSync(join(root, 'facts')).isSymbolicLink());
   const s = new MemoryStore(root, { today: () => TODAY, create: false });
   assert.throws(() => s.indexText(), (e) => {
-    // ENOENT plus something at the path: the three-way's middle arm, keyed on lexists so
-    // it does not turn on an errno. POSIX reports ENOENT here and so does Windows.
+    // A DANGLING SYMLINK IS ONE SHAPE ON POSIX AND ANOTHER ON WINDOWS, and the port now
+    // reproduces both. On POSIX `scandir` reports ENOENT and the three-way's MIDDLE arm
+    // fires — the one keyed on `lexists`, which is why the sentence names the path as
+    // present. On Windows the call is `FindFirstFileW(p + "\\*")`, the dangling FILE
+    // symlink is a bad directory component, and CPython raises NotADirectoryError with the
+    // Win32 wording — so the generic arm fires and there is no "(a path exists there)".
+    // The claim that "POSIX reports ENOENT here and so does Windows" was written without a
+    // Windows runner and MEASURED FALSE, run 32646521489.
+    const reason = process.platform === 'win32'
+      ? 'The directory name is invalid'
+      : 'No such file or directory (a path exists there)';
     assert.equal(
       e.message,
-      `memory store is unreadable: ${join(root, 'facts')}: No such file or directory ` +
-        "(a path exists there); a store whose facts could not be listed is not a store " +
-        "with no facts, and answering 'empty' here is what rewrites index.md from nothing",
+      `memory store is unreadable: ${join(root, 'facts')}: ${reason}; a store whose facts ` +
+        "could not be listed is not a store with no facts, and answering 'empty' here is " +
+        'what rewrites index.md from nothing',
     );
     return true;
   });

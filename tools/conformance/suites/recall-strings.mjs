@@ -64,7 +64,12 @@ const answer = (value) => {
  * an un-scrubbed comparison would fail on the one difference the harness itself created. The
  * path is not dropped: it becomes a marker, so a message naming the WRONG path still differs.
  */
-const scrub = (text, root) => text.split(root).join('<ROOT>');
+const scrub = (text, root) => {
+  // BOTH spellings: `str(OSError)` prints the path through `%r`, which escapes a backslash,
+  // so on Windows the bed also appears doubled. Off Windows the two are the same string.
+  const escaped = root.split('\\').join('\\\\');
+  return text.split(root).join('<ROOT>').split(escaped).join('<ROOT>');
+};
 
 // -------------------------------------------------------------------------- fixtures
 
