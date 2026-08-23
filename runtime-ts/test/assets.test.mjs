@@ -27,11 +27,30 @@ const dist = join(packageRoot, 'dist');
  * text through `memory/pyfs.js` — one UTF-8 decode for the package, not a second spelling
  * beside it — and a list that has to be edited whenever an import is added is a list that
  * fails as `ERR_MODULE_NOT_FOUND` in a test about directory arms.
+ *
+ * THE `package.json` IS PART OF THE LAYOUT, not a workaround for one interpreter.
+ * `dist/*.js` is ESM and the only thing that says so is `"type": "module"` in the package
+ * root beside `dist/` — which is exactly where the real package keeps it. Omitting it made
+ * this fixture lean on Node's module-syntax DETECTION instead, and that is version-gated.
+ * MEASURED, same tree, four interpreters, `node --test test/assets.test.mjs`:
+ *
+ *   v18.20.8  5 pass / 5 fail   SyntaxError: Cannot use import statement outside a module
+ *   v20.20.2  10 pass / 0 fail
+ *   v22.22.3  10 pass / 0 fail
+ *   v25.2.1   10 pass / 0 fail
+ *
+ * So the thing that did not run on the declared `engines` floor was the FIXTURE, not the
+ * product: the shipped package has carried its own `package.json` all along, and the
+ * conformance suite (4,462 cases) passes unchanged on v18.20.8. Writing the manifest here
+ * makes the fixture resemble the layout it claims to be testing. The arm-3 level count is
+ * untouched — `assetsRoot` counts directories up from `import.meta.url` and never looks
+ * for a manifest, which is why arm 3 still distinguishes `repo/assets` from the decoy.
  */
 async function moduleAt(base, distRel) {
   const target = join(base, distRel);
   mkdirSync(target, { recursive: true });
   cpSync(dist, target, { recursive: true });
+  writeFileSync(join(dirname(target), 'package.json'), '{"type":"module"}\n');
   return import(pathToFileURL(join(target, 'assets.js')).href);
 }
 
