@@ -57,7 +57,7 @@ async function moduleAt(base, distRel) {
 function scratch(name) {
   // `realpathSync`: `os.tmpdir()` is not canonical — a `/var` symlink on macOS, the 8.3
   // short name on Windows CI. See the note in test/store.test.mjs.
-  return realpathSync(mkdtempSync(join(tmpdir(), `bk-${name}-`)));
+  return realpathSync.native(mkdtempSync(join(tmpdir(), `bk-${name}-`)));
 }
 
 function withoutEnv(fn) {

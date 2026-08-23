@@ -39,7 +39,28 @@ export const summary = 'the checkpoint writer: ensure_ascii, sort_keys, separato
 const here = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = dirname(dirname(here));
 const REF = join(here, 'ref', 'shiftwork_ref.py');
-const REAL_CHECKPOINT = join(repoRoot, '.shiftwork', 'job38-npx-public-install', 'checkpoint.json');
+/**
+ * THE CHECKPOINT CORPUS IS THE TRACKED TEMPLATE, and it used to be the live job file.
+ *
+ * `.shiftwork/job38-npx-public-install/checkpoint.json` is excluded by `.gitignore`, so
+ * this module threw at IMPORT time on a runner — MEASURED, run 32643739343: an uncaught
+ * ENOENT that took `store`, `validate` and `wire` down with it, on all four cells, because
+ * `run.mjs` imports the suites in order. Three suites that had never been run anywhere but
+ * one laptop were not even reached.
+ *
+ * Machine-dependence was only half of it. The live file MUTATES while the job runs — its
+ * `plan.cursor` advances, its history grows — so two runs an hour apart compared different
+ * documents under one case name. A conformance corpus whose bytes move on their own cannot
+ * fail honestly and cannot pass honestly either.
+ *
+ * `tools/shiftwork/example-codefix-checkpoint.json` is tracked, is the template CLAUDE.md
+ * points at, and is schema-valid by construction. It is smaller and it carries one em dash
+ * where the live file carried Thai — so the `ensure_ascii` property does NOT rest on it:
+ * the Thai and the `\u2014` that prove that property are written inline into the sessions
+ * below and into the `dumps` corpus, where they are visible in this file instead of
+ * depending on what somebody's working directory happened to contain.
+ */
+const REAL_CHECKPOINT = join(repoRoot, 'tools', 'shiftwork', 'example-codefix-checkpoint.json');
 
 const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');
 const unb64 = (s) => Buffer.from(s, 'base64').toString('utf8');
@@ -95,6 +116,8 @@ const raw = (document) => `${JSON.stringify(document, null, 2)}\n`;
 const realCheckpointText = readFileSync(REAL_CHECKPOINT, 'utf8');
 /** The SAME real document, written back out with its Thai and em dashes un-escaped. */
 const realCheckpointRaw = `${JSON.stringify(JSON.parse(realCheckpointText), null, 2)}\n`;
+/** The unit these sessions clock out. Read from the document, never hardcoded. */
+const CURSOR = JSON.parse(realCheckpointText).plan.cursor;
 
 // ================================================================= the json.dumps corpus
 
@@ -181,19 +204,19 @@ function sessions() {
   const cases = [];
   const add = (name, checkpoint, calls, extra = {}) => cases.push({ name, file: 'checkpoint.json', checkpoint, calls, ...extra });
 
-  add('real-checkpoint-read', b64(realCheckpointText), [IN(), ST()]);
-  add('real-checkpoint-write', b64(realCheckpointText), [
+  add('template-checkpoint-read', b64(realCheckpointText), [IN(), ST()]);
+  add('template-checkpoint-write', b64(realCheckpointText), [
     IN(),
-    OUT('N6', 'done', {
+    OUT(CURSOR, 'done', {
       handoff_patch: b64(JSON.stringify({ next_action: 'clock in N7 — the MCP wiring' })),
-      history_entry: b64(JSON.stringify({ unit: 'N6', outcome: 'done', notes: 'ensure_ascii ruled — เป้าหมาย' })),
+      history_entry: b64(JSON.stringify({ unit: CURSOR, outcome: 'done', notes: 'ensure_ascii ruled — เป้าหมาย' })),
       accounting: b64('{"tokens": 110623, "duration_ms": 745045.0, "model": "claude-opus-5[1m]", "\\u0e01": "\\u2014"}'),
     }),
     ST(),
   ]);
   // The SAME document, written to disk un-escaped. The first clock-out must put every one
   // of those bytes back into `\uXXXX` form, or the two servers stop producing the same file.
-  add('real-checkpoint-raw-utf8', b64(realCheckpointRaw), [IN(), OUT('N6', 'done'), ST()]);
+  add('template-checkpoint-raw-utf8', b64(realCheckpointRaw), [IN(), OUT(CURSOR, 'done'), ST()]);
 
   add('sequence-to-success', b64(raw(baseDocument())), [
     IN(),
@@ -497,9 +520,9 @@ export async function run(ctx) {
       }
     }
   }
-  // The real 29 KB checkpoint and the shipped schema, through the same four settings.
+  // The tracked checkpoint template and the shipped schema, through the same four settings.
   for (const [label, text] of [
-    ['real-checkpoint', realCheckpointText],
+    ['template-checkpoint', realCheckpointText],
     ['real-schema', readFileSync(join(repoRoot, 'assets', 'schemas', 'shiftwork-checkpoint.json'), 'utf8')],
   ]) {
     for (const indent of [null, 2]) {

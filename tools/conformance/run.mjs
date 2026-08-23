@@ -39,7 +39,7 @@
  * ctx = { python, repoRoot, runtimeTs, scratch, runPython(scriptPath, payload) }
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -207,7 +207,16 @@ function clip(s, n = 400) {
 
 // ---------------------------------------------------------------------------- the run
 
-const scratch = mkdtempSync(join(tmpdir(), 'bk-conformance-'));
+/**
+ * `realpathSync.native`, not the bare temp path. `scrub()` removes the fixture root from
+ * every message by STRING replacement, and on Windows CI `os.tmpdir()` is the 8.3 SHORT
+ * name (`C:\\Users\\RUNNER~1\\...`) while CPython's `Path.resolve()` returns the long one
+ * (`C:\\Users\\runneradmin\\...`). MEASURED, run 32643739343: the substitution matched
+ * Node's side and missed Python's, so `recall-strings` reported 30 of 96 differing on a
+ * difference the harness had manufactured. Plain `realpathSync` is not enough -- it
+ * resolves symlinks but PRESERVES the 8.3 name; only the `.native` binding expands it.
+ */
+const scratch = realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-conformance-')));
 const ctx = { python, repoRoot, runtimeTs: join(repoRoot, 'runtime-ts'), scratch, runPython, options };
 
 let totals = { cases: 0, bytes: 0, strings: 0, json: 0, failed: 0, rulings: 0 };

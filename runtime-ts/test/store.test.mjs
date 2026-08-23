@@ -23,7 +23,8 @@ import {
 
 const TODAY = '2026-08-23';
 /**
- * `realpathSync` around every temp bed, because `os.tmpdir()` is not a canonical path on
+ * `realpathSync.native` around every temp bed, because `os.tmpdir()` is not a canonical
+ * path on
  * two of the three platforms this package claims. On macOS it is `/var/...`, a symlink to
  * `/private/var`. On Windows CI it is the 8.3 SHORT name — MEASURED, first run:
  * `C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\...` out of `mkdtempSync`, against
@@ -32,8 +33,14 @@ const TODAY = '2026-08-23';
  * short names. Canonicalising the FIXTURE removes the OS artefact without deciding
  * anything about the port; the port's own resolution is compared against CPython in
  * tools/conformance/suites/recall-strings.mjs.
+ *
+ * `.native` is load-bearing and plain `realpathSync` is NOT enough. `layers.test.mjs` had
+ * been calling the plain form all along for the macOS case, and all ten tests failed on
+ * Windows anyway: the JS implementation resolves symlinks and junctions but PRESERVES the
+ * 8.3 name, while the `.native` binding goes through the OS call that expands it. Two runs
+ * were needed to learn that, and the second is the reason this paragraph exists.
  */
-const fresh = () => realpathSync(mkdtempSync(join(tmpdir(), 'bk-store-')));
+const fresh = () => realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-store-')));
 const store = (root, over = {}) => new MemoryStore(root, { today: () => TODAY, ...over });
 const bytes = (p) => readFileSync(p);
 const text = (p) => readFileSync(p, 'utf8');

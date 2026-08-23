@@ -89,7 +89,22 @@ def parse_text(text: str) -> dict:
 
 
 def main() -> None:
-    request = json.load(sys.stdin)
+    # STDIN IS A BYTE PROTOCOL, SO DECODE IT AS ONE.
+    #
+    # `json.load(sys.stdin)` decodes through the text wrapper, whose encoding is
+    # `locale.getpreferredencoding(False)` -- utf-8 on Linux and macOS, and the ANSI
+    # CODE PAGE on Windows. MEASURED on windows-latest, run 32643739343: 26 of the codec
+    # suite's 206 cases differed, every one of them mojibake, `an em dash \u00e2\u20ac\u201d`
+    # for `an em dash \u2014` and whole Thai descriptions turned into Latin-1 rubble with
+    # lone surrogates in them. Nothing was wrong with either runtime; the HARNESS's own
+    # transport had re-decoded the question before either side saw it.
+    #
+    # This is not the masking that `ci.yml` refuses. `PYTHONUTF8` and `-X utf8` are barred
+    # there because they change how the CODE UNDER TEST opens files, hiding the very
+    # encoding defects the gate exists to find. This line changes nothing about the code
+    # under test: it names the encoding of a pipe this harness owns at both ends, and the
+    # Node side has always written utf-8 into it.
+    request = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     op = request["op"]
     if op == "emit":
         out = [

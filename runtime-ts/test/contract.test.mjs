@@ -286,7 +286,7 @@ test('load_contract names the missing keys the way Python does', () => {
   try {
     // `realpathSync`: `os.tmpdir()` is not canonical — a `/var` symlink on macOS, the 8.3
     // short name on Windows CI. See the note in test/store.test.mjs.
-    const root = realpathSync(mkdtempSync(join(tmpdir(), 'bk-n5-contract-')));
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-n5-contract-')));
     mkdirSync(join(root, 'contracts'), { recursive: true });
     writeFileSync(join(root, 'contracts', 'thin.yaml'), 'name: thin\nschema_instruction: "x"\n');
     process.env.BANTAMKIT_ASSETS = root;

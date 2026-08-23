@@ -27,7 +27,7 @@ const { pyReplace, pySuffix } = await import(new URL('memory/pyfs.js', dist));
 
 // `realpathSync`: `os.tmpdir()` is not canonical — a `/var` symlink on macOS, the 8.3
 // short name on Windows CI. See the note in test/store.test.mjs.
-const fresh = () => realpathSync(mkdtempSync(join(tmpdir(), 'bk-shiftwork-')));
+const fresh = () => realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-shiftwork-')));
 const bytes = (p) => readFileSync(p);
 const text = (p) => readFileSync(p, 'utf8');
 const js = (v) => toJs(v);

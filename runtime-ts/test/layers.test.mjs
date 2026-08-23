@@ -42,7 +42,7 @@ const TODAY = '2026-08-23';
  * `_resolved_base` resolves before it walks, so a bed handed over unresolved would have the
  * test asserting a path the reference never prints.
  */
-const fresh = () => realpathSync(mkdtempSync(join(tmpdir(), 'bk-layers-')));
+const fresh = () => realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-layers-')));
 
 const factFile = (name, description = `about ${name}`, body = 'b') =>
   `---\nname: ${name}\ndescription: ${description}\ntype: project\ncreated: '2026-08-01'\n` +

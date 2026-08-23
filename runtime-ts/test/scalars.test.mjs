@@ -229,7 +229,7 @@ const factFile = (over = {}) => {
 function bed(files, mtime = 1755990000) {
   // `realpathSync`: `os.tmpdir()` is not canonical — a `/var` symlink on macOS, the 8.3
   // short name on Windows CI. See the note in test/store.test.mjs.
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'bk-scalars-')));
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-scalars-')));
   mkdirSync(join(root, 'facts'), { recursive: true });
   mkdirSync(join(root, 'archive'), { recursive: true });
   for (const [name, text] of Object.entries(files)) {
@@ -341,7 +341,7 @@ test('a numeric name and its string spelling are TWO facts across layers, not on
   // them into one, dropping a fact the reference reports; `7`, `7.0` and `True` are the SAME
   // key, and a key built from the JS type would report a fact the reference drops. Both
   // directions are exercised here, through the real layered surface.
-  const bed = realpathSync(mkdtempSync(join(tmpdir(), 'bk-scalar-layers-')));
+  const bed = realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-scalar-layers-')));
   const home = join(bed, 'home');
   const project = join(bed, 'p');
   const grant = join(bed, 'granted');

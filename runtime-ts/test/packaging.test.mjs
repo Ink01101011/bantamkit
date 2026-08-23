@@ -53,11 +53,13 @@ function sha256(path) {
 }
 
 /**
- * `npm` on Windows is `npm.cmd`, and since the CVE-2024-27980 fix Node refuses to exec a
- * `.cmd` through `execFile` without `shell`. MEASURED: all four tests in this file failed
- * `spawnSync npm ENOENT` on both Windows cells, so the packaging gate — the whole RB-P85
- * bar — had never once run on the platform half of this matrix. Naming the file beats
- * `shell: true`, which would hand the argv to cmd.exe for re-parsing.
+ * `npm` on Windows is `npm.cmd`, and it takes BOTH of these to run. MEASURED across two
+ * runs: `execFileSync('npm', ...)` is `spawnSync npm ENOENT` (there is no extensionless
+ * `npm`), and naming the file gets `spawnSync npm.cmd EINVAL` — the CVE-2024-27980
+ * mitigation, which refuses to spawn a `.cmd` or `.bat` unless `shell` is set. So all four
+ * tests in this file failed on both Windows cells and the whole RB-P85 packaging gate had
+ * never once run on the platform half of this matrix. The argv here is three fixed flags
+ * with no metacharacter in them, which is what makes handing it to cmd.exe safe.
  */
 const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
@@ -65,6 +67,7 @@ function packListing(cwd = packageRoot) {
   const stdout = execFileSync(NPM, ['pack', '--dry-run', '--json'], {
     cwd,
     encoding: 'utf8',
+    shell: process.platform === 'win32',
     stdio: ['ignore', 'pipe', 'ignore'],
   });
   return JSON.parse(stdout)[0].files.map((f) => f.path);
@@ -123,7 +126,7 @@ test('a build that cannot locate the asset pack fails instead of succeeding shor
   // A package directory with no `../assets` above it and no vendored `assets/` inside.
   // `realpathSync`: `os.tmpdir()` is not canonical — a `/var` symlink on macOS, the 8.3
   // short name on Windows CI. See the note in test/store.test.mjs.
-  const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'bk-nopack-')));
+  const tmp = realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-nopack-')));
   const pkg = join(tmp, 'runtime-ts');
   // `mkdirSync`, not `execFileSync('mkdir', ['-p'])`: there is no `mkdir.exe` on Windows,
   // and this line only ever resolved there because the runner image happens to put

@@ -30,7 +30,7 @@ const ASSETS = join(repoRoot, 'assets');
 
 // `realpathSync`: `os.tmpdir()` is not canonical — a `/var` symlink on macOS, the 8.3
 // short name on Windows CI. See the note in test/store.test.mjs.
-const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'bk-server-test-')));
+const scratch = realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-server-test-')));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
 let seq = 0;

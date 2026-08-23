@@ -118,7 +118,9 @@ def run_calls(request: dict) -> dict:
 
 
 def main() -> None:
-    request = json.load(sys.stdin)
+    # stdin is a byte protocol: decode it as utf-8, not through the ANSI code page.
+    # See the note in tools/conformance/ref/codec_ref.py.
+    request = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     op = request["op"]
     if op == "run":
         out = run_calls(request)

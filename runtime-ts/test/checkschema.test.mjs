@@ -163,7 +163,7 @@ test('OSError and the symlink-loop RuntimeError print the path with %r', () => {
 test("pathlib's symlink-loop RuntimeError uses %r too", () => {
   // `realpathSync`: `os.tmpdir()` is not canonical — a `/var` symlink on macOS, the 8.3
   // short name on Windows CI. See the note in test/store.test.mjs.
-  const bed = realpathSync(mkdtempSync(join(tmpdir(), 'bk-loop-')));
+  const bed = realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-loop-')));
   try {
     const link = join(bed, "loop's-link");
     symlinkSync(link, link);
@@ -183,7 +183,7 @@ test('an asset that is not UTF-8 raises CPython\'s decode message, not U+FFFD', 
   // U+FFFD for a bad byte and hands a model a description with a replacement character in
   // it. `Path.read_text(encoding="utf-8")` raises. One decoder for the package means this
   // arm inherits `pyDecodeUtf8`'s strictness along with its BOM handling.
-  const bed = realpathSync(mkdtempSync(join(tmpdir(), 'bk-assets-')));
+  const bed = realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-assets-')));
   const saved = process.env.BANTAMKIT_ASSETS;
   try {
     mkdirSync(join(bed, 'skills'), { recursive: true });

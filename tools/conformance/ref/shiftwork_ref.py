@@ -98,7 +98,9 @@ def read_bytes(path: Path) -> str | None:
 
 
 def main() -> None:
-    payload = json.load(sys.stdin)
+    # stdin is a byte protocol: decode it as utf-8, not through the ANSI code page.
+    # See the note in tools/conformance/ref/codec_ref.py.
+    payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     op = payload["op"]
 
     if op == "dumps":

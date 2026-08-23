@@ -167,7 +167,9 @@ def _run_session(spec: dict) -> dict:
 
 
 def main() -> None:
-    payload = json.loads(sys.stdin.read())
+    # stdin is a byte protocol: decode it as utf-8, not through the ANSI code page.
+    # See the note in tools/conformance/ref/codec_ref.py.
+    payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     out = {"sessions": [_run_session(s) for s in payload["sessions"]]}
     json.dump(out, sys.stdout)
 
