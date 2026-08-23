@@ -1100,8 +1100,9 @@ export async function run(ctx) {
   } else {
     notes.push(
       `winerror table: NOT MEASURED HERE — ${pyfs.WINERROR_NUMBERS.length} Win32 wordings are ` +
-      'asked of ctypes.FormatError, which only exists on Windows. Four of them (2, 3, 183, 267) ' +
-      'are pinned by measured diffs; the rest are unmeasured until a Windows cell runs this.',
+      'asked of ctypes.FormatError, which only exists on Windows. All fifteen ARE measured on ' +
+      'the Windows cells of this repository\'s matrix and have passed there since run ' +
+      '32649940727; what this platform cannot tell you is whether one has since drifted.',
     );
   }
 

@@ -383,6 +383,12 @@ test('winerrorFor re-derives the distinction libuv threw away', () => {
   // missing directory component.
   assert.equal(pyfs.winerrorFor('ENOENT', 'scandir', '/a/gone', null, here), 3);
   assert.equal(pyfs.winerrorFor('ENOENT', 'scandir', '/a/there', null, here), 2);
+  assert.equal(pyfs.winerrorFor('ENOENT', 'scandir', '/a/there', null, present(['/a', '/a/there', '/a/th\nere'])), 2);
+  assert.equal(
+    pyfs.winerrorFor('ENOENT', 'scandir', '/a/th\nere', null, present(['/a', '/a/th\nere'])),
+    123,
+    'a listing of a name Win32 forbids is invalid, not absent',
+  );
   // The one-to-one arms.
   assert.equal(pyfs.winerrorFor('ENOTDIR', 'win32', '/a', null, here), 267);
   assert.equal(pyfs.winerrorFor('EEXIST', 'win32', '/a', null, here), 183);
@@ -401,8 +407,18 @@ test('winerrorFor re-derives the distinction libuv threw away', () => {
   assert.equal(pyfs.ntNameIsInvalid('C:\\a\\back\\slash.md'), false);
   assert.equal(pyfs.ntNameIsInvalid('C:\\a\\thai-ความจำ.md'), false);
   assert.equal(pyfs.ntNameIsInvalid(null), false);
-  assert.equal(pyfs.winerrorFor('ENOENT', 'win32', 'C:\\a\\two\nlines.md', null, here), 123);
-  assert.equal(pyfs.winerrorFor('ENOENT', 'win32', 'C:\\a\\ok.md', 'C:\\a\\two\nlines.md', here), 123);
+  assert.equal(pyfs.winerrorFor('ENOENT', 'win32', '/a/two\nlines.md', null, here), 123);
+  assert.equal(pyfs.winerrorFor('ENOENT', 'win32', '/a/there', '/a/two\nlines.md', here), 123);
+  // ...but NOT before path resolution. Win32 walks the directory components first, so the
+  // SAME forbidden name under a MISSING directory is 3 and not 123. Both halves measured:
+  // `unlink` of a forbidden name beside an existing parent is 123 (run 32649940727) and
+  // `mkdir` of it under a missing one is 3 (run 32651670551, which refuted a
+  // validate-the-name-first rule that had got the first one right for the wrong reason).
+  assert.equal(pyfs.winerrorFor('ENOENT', 'win32', '/a/nope/two\nlines.md', null, here), 3);
+  assert.equal(pyfs.winerrorFor('ENOENT', 'win32', '/a/there', '/a/nope/two\nlines.md', here), 3);
+  // And the source is walked to completion first, so a missing SOURCE beside a missing
+  // destination directory is still 2.
+  assert.equal(pyfs.winerrorFor('ENOENT', 'win32', '/a/gone', '/a/nope/b', here), 2);
   // ...and through the other door, `open()` on such a name is EINVAL, not a not-found.
   assert.equal(pyfs.crtCode('ENOENT', 'C:\\a\\two\nlines.md'), 'EINVAL');
   assert.equal(pyfs.crtCode('ENOENT', 'C:\\a\\ok.md'), 'ENOENT');

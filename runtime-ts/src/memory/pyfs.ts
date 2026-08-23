@@ -268,10 +268,12 @@ interface NodeFsError extends Error {
  *
  * `PyErr_SetExcFromWindowsErrWithFilename` strips every trailing character that is `<= ' '`
  * or `'.'`, so `The system cannot find the file specified.\r\n` reaches a reader without the
- * period. Four of these are MEASURED against the reference on windows-latest, run
- * 32646521489 (2, 3, 183, 267); the rest are the table entries the same syscalls can reach,
- * and the `winerror table` case in `tools/conformance/suites/store.mjs` asks the running
- * CPython for every one of them on a Windows runner rather than trusting this list.
+ * period. ALL FIFTEEN ARE MEASURED, not four: the `FormatMessage for every winerror the
+ * port claims to render` case in `tools/conformance/suites/store.mjs` asks the running
+ * CPython — through `ctypes.FormatError`, with CPython's own trim — for every entry, and it
+ * passed on windows-latest from the first run that carried it (32649940727). Off Windows
+ * `ctypes.FormatError` has nothing to answer, so the case does not exist there and the
+ * suite's notes say which wordings are therefore unmeasured on the platform in hand.
  */
 const WINERROR: Record<number, string> = {
   1: 'Incorrect function',
@@ -338,29 +340,8 @@ export function winerrorFor(
   exists: (candidate: string) => boolean,
 ): number | null {
   if (origin === 'crt') return null;
-  // Win32 validates the NAME before it looks at the filesystem, so a component holding a
-  // character the API forbids is `ERROR_INVALID_NAME` and never a not-found. libuv folds
-  // that into ENOENT, which is why `unlink` of `two\nlines.md` printed "The system cannot
-  // find the file specified" where the reference prints "The filename, directory name, or
-  // volume label syntax is incorrect". MEASURED, run 32649940727.
-  if ((code === 'ENOENT' || code === 'EINVAL') && [path, dest].some(ntNameIsInvalid)) return 123;
+  if (code === 'ENOENT' || code === 'EINVAL') return notFoundWinerror(origin, path, dest, exists);
   switch (code) {
-    case 'ENOENT': {
-      // A directory-listing call uses the NAMED path as a directory, so a missing leaf is
-      // already a missing directory component there; every other call needs only its parent.
-      if (origin === 'scandir') return path !== null && exists(path) ? 2 : 3;
-      // A two-name call opens the SOURCE first, so a missing source is 2 even when the
-      // destination's directory is missing too. MEASURED both ways round on run 32646521489:
-      // an existing source into a missing destination directory is 3, a missing source
-      // beside an existing one is 2.
-      if (dest !== null) {
-        if (path !== null && !exists(path)) return 2;
-        if (!exists(pyParent(dest))) return 3;
-        return 2;
-      }
-      if (path !== null && !exists(pyParent(path))) return 3;
-      return 2;
-    }
     case 'ENOTDIR':
       return 267;
     case 'EEXIST':
@@ -426,6 +407,53 @@ export function winerrorToCode(winerror: number): string {
       // SEPARATELY from `errno == ELOOP` is that fact written down in the reference.
       return 'EINVAL';
   }
+}
+
+/**
+ * WHICH not-found, in the ORDER Win32 arrives at one. Three answers, one path walk.
+ *
+ * Win32 resolves the directory components FIRST and only then looks at the final name, so
+ * the three outcomes are ordered and not alternatives:
+ *
+ *   a missing DIRECTORY component  -> ERROR_PATH_NOT_FOUND    (3)
+ *   a final name Win32 forbids     -> ERROR_INVALID_NAME    (123)
+ *   a missing final component      -> ERROR_FILE_NOT_FOUND    (2)
+ *
+ * THE ORDER IS MEASURED AND IT WAS THE OTHER WAY ROUND FIRST. `unlink` of
+ * `<bed>\two\nlines.md` — parent present, name forbidden — is 123, and `mkdir` of
+ * `<bed>\missing\two\nlines.md` — the SAME forbidden name under a missing directory — is 3,
+ * not 123. Run 32649940727 established the first, run 32651670551 the second by refuting a
+ * validate-the-name-first rule that had got the first one right for the wrong reason.
+ *
+ * A two-name call walks the SOURCE to completion before it looks at the destination, which
+ * is why a missing source beside a missing destination DIRECTORY is 2 and not 3 (measured,
+ * run 32646521489, both ways round). A destination that is merely absent is not an error —
+ * that is the success case for `os.replace` — so only the source's absence answers.
+ */
+function notFoundWinerror(
+  origin: OSErrorOrigin,
+  path: string | null,
+  dest: string | null,
+  exists: (candidate: string) => boolean,
+): number {
+  // A directory-listing call uses the NAMED path as a directory, so a missing leaf is
+  // already a missing directory component there.
+  if (origin === 'scandir') {
+    if (path === null || !exists(path)) return 3;
+    return ntNameIsInvalid(path) ? 123 : 2;
+  }
+  for (const candidate of dest === null ? [path] : [path, dest]) {
+    if (candidate === null) continue;
+    if (!exists(pyParent(candidate))) return 3;
+    if (ntNameIsInvalid(candidate)) return 123;
+    // A missing SOURCE ends the walk: `os.replace` never reaches the destination, so a
+    // missing destination DIRECTORY behind it is never the error reported. Deleting this
+    // line turns the measured 2 into a 3. (Replacing its condition with a bare
+    // `!exists(candidate)` is an EQUIVALENT mutation and survives a sweep — the
+    // destination arm would answer 2 as well, which is what the fallthrough already says.)
+    if (candidate === path && !exists(candidate)) return 2;
+  }
+  return 2;
 }
 
 /**
