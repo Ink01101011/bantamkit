@@ -105,6 +105,7 @@ export {
   pyWithSuffix,
   pyWriteText,
   sortedPathNames,
+  sortedPathParts,
   STRERROR_NAMES,
 } from './memory/pyfs.js';
 export {

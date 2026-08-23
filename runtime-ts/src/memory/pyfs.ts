@@ -406,6 +406,37 @@ export function sortedPathNames(names: readonly string[]): string[] {
   return [...names].sort((a, b) => cmpCodepoint(normcase(a), normcase(b)));
 }
 
+/**
+ * `sorted(paths)` when the paths are NESTED — the case `sortedPathNames` above cannot cover.
+ *
+ * `PurePath.__lt__` compares the `_parts_normcase` TUPLE, and a tuple comparison stops at
+ * the first component that differs; it never sees the separator. Sorting the same paths as
+ * STRINGS does see it, and `-` (0x2D) sorts before `/` (0x2F), so the two orders are
+ * opposite for a pair like `a/b` and `a-b`:
+ *
+ *     sorted([Path("assets/a/b"), Path("assets/a-b")]) -> ['assets/a/b', 'assets/a-b']
+ *     sorted(["assets/a/b", "assets/a-b"])             -> ['assets/a-b', 'assets/a/b']
+ *
+ * N3 measured that this does not bite `_fact_paths`, whose paths are all siblings of one
+ * directory. It DOES bite `mcpserver._tree_digest`, which walks a nested tree and folds the
+ * order straight into `assets_digest` — a digest computed in string order over the shipped
+ * pack is a different digest, silently, and `build_identity` exists precisely to be
+ * trustworthy about that. A shorter tuple sorts first when it is a prefix of the longer one,
+ * which is `[] < ['b']` and needs no special case.
+ */
+export function sortedPathParts(paths: readonly (readonly string[])[]): string[][] {
+  return paths
+    .map((p) => [...p])
+    .sort((a, b) => {
+      const n = Math.min(a.length, b.length);
+      for (let i = 0; i < n; i += 1) {
+        const order = cmpCodepoint(normcase(a[i]!), normcase(b[i]!));
+        if (order !== 0) return order;
+      }
+      return a.length - b.length;
+    });
+}
+
 // ----------------------------------------------------------------------- path building
 
 /**
