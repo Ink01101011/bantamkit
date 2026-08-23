@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * The `bantamkit-mcp` entry point: the stdio MCP server, and five flags.
+ * The `bantamkit-mcp` entry point: the stdio MCP server, and six flags.
  *
  * THE COMMAND LINE IS DATA, NOT PRINTED TEXT. `PARSER` below is the whole description of
  * this CLI, and `pyargparse.ts` renders it — the help table, the usage line at whatever
@@ -23,6 +23,11 @@
  * to a recall line; a build validated only against `--store` would ship a recall string the
  * real deployment never produces.
  *
+ * `--mcp-report` is the second flag that prints and returns before a transport is opened. Its
+ * contract is `docs/mcpreport.md` and its implementation is `src/mcpreport.ts`; what belongs
+ * HERE is only that it is registered after `--index-budget` and before the store group, which
+ * is what keeps the wrapped usage line byte-identical to the reference's.
+ *
  * `--assets-root` stays. It is the arm-2 (packaged) resolution running inside a real install,
  * so `npx`/`npm i -g` can be checked end to end without speaking the protocol. It is also the
  * only path in this file that writes to stdout without being a frame, and it exits before a
@@ -36,6 +41,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 
 import { assetsRoot } from './assets.js';
 import { BantamError } from './errors.js';
+import { buildReport, resolveEventLogPath } from './mcpreport.js';
 import { Memory } from './memory/component.js';
 import { DEFAULT_INDEX_BUDGET } from './memory/store.js';
 import { buildServer } from './mcp/server.js';
@@ -103,6 +109,29 @@ const PARSER: ParserSpec = {
       typeName: 'int',
       defaultValue: DEFAULT_INDEX_BUDGET,
     },
+    // WHY THIS IS A FLAG ON THIS PROCESS AND NOT A NEW ENTRY POINT, and why it sits HERE.
+    // The lifecycle argument against printing from this process -- stdout is the JSON-RPC
+    // channel -- is true of a RUNNING server and not of a flag that prints and returns before
+    // a transport exists; `--assets-root` above is the precedent. It is decisive rather than
+    // merely convenient on this side: `package.json` declares exactly one bin, so anything
+    // hung off a second entry point is unreachable in the pure-npx install that is the
+    // shipped product.
+    //
+    // POSITION IS WIRE-VISIBLE AND IT IS MEASURED. `--assets-root` sits first because it
+    // needs NOTHING; this one honours `--store`/`--start` to find the event log, so it is
+    // registered after the flags it consumes and before the store group. At the 80-column
+    // fallback argparse breaks the usage after `[--index-budget BYTES]`, and that first line
+    // is pinned in `test_mcpserver.py` and as a THROWING precondition in
+    // `tools/conformance/suites/cli.mjs`. Registering here leaves it byte-identical;
+    // registering earlier would move it and turn a differential suite into a re-baselining
+    // one. Do not reorder this array to taste.
+    {
+      optionStrings: ['--mcp-report'],
+      dest: 'mcp_report',
+      kind: 'storeTrue',
+      help: "print an analysis of the host MCP log joined with bantamkit's event log, then exit",
+      defaultValue: false,
+    },
     {
       optionStrings: ['--store'],
       dest: 'store',
@@ -118,7 +147,7 @@ const PARSER: ParserSpec = {
       defaultValue: null,
     },
   ],
-  groups: [[4, 5]],
+  groups: [[5, 6]],
 };
 
 /**
@@ -140,6 +169,7 @@ export interface Options {
   store: string | null;
   start: string | null;
   assetsRoot: boolean;
+  mcpReport: boolean;
 }
 
 /** `_parse_args`, arm for arm, including the mutually exclusive group and `-h`. */
@@ -151,6 +181,7 @@ export function parseArgs(argv: readonly string[]): Options {
     store: values['store'] as string | null,
     start: values['start'] as string | null,
     assetsRoot: values['assets_root'] as boolean,
+    mcpReport: values['mcp_report'] as boolean,
   };
 }
 
@@ -185,6 +216,21 @@ async function main(argv: readonly string[]): Promise<number> {
       if (entry.isFile()) files += 1;
     }
     process.stdout.write(`${root}\n${files} files\n`);
+    return 0;
+  }
+  if (options.mcpReport) {
+    // Same discipline as `--assets-root`, and the same place in `main`: BEFORE
+    // `buildMemory`, which touches the filesystem, and before the transport exists at all.
+    // NOTHING HERE IS WRITTEN — `mcpreport` opens the host's log read-only, creates no
+    // directory under its root, and `resolveEventLogPath` DESIGNATES a store path without
+    // bringing a store into existence. The report is an observation, not a session.
+    //
+    // `process.stdout.write` of a UTF-8 string is LF on every platform, which is what the
+    // reference goes through `sys.stdout.buffer` to get: `print` would emit CRLF on Windows
+    // where this emits LF, and the conformance suite compares these bytes.
+    process.stdout.write(
+      buildReport(process.env, resolveEventLogPath(process.env, options.store, options.start)),
+    );
     return 0;
   }
   const memory = buildMemory(options);

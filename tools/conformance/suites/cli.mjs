@@ -210,6 +210,13 @@ function matrix(scratch) {
     { label: 'help-columns-80', argv: ['-h'], env: { COLUMNS: '80' } },
     { label: 'help-columns-105', argv: ['-h'], env: { COLUMNS: '105' } },
     { label: 'help-columns-106', argv: ['-h'], env: { COLUMNS: '106' } },
+    // U8's `[--mcp-report]` MOVED the boundary from 106 to 121, so 105/106 no longer
+    // straddles anything — both of them wrap now. These two are where the wrap decision
+    // actually flips today, and they are kept BESIDE the old pair rather than replacing it:
+    // 105/106 still exercise a width where the option column and the usage indent differ,
+    // and a case is not deleted because the reason it was interesting has changed.
+    { label: 'help-columns-120', argv: ['-h'], env: { COLUMNS: '120' } },
+    { label: 'help-columns-121', argv: ['-h'], env: { COLUMNS: '121' } },
     { label: 'help-columns-200', argv: ['-h'], env: { COLUMNS: '200' } },
   ];
 }
@@ -218,13 +225,19 @@ function matrix(scratch) {
  * Where the usage line stops wrapping, computed rather than pasted.
  *
  * argparse formats usage at `width = shutil.get_terminal_size().columns - 2`, and wraps when
- * the assembled `usage: <prog> <optionals>` line does not fit in `width`. The single-line
- * form is 104 characters after U1 added `[--assets-root]`, so it wraps for every `COLUMNS`
- * below 106. THE BRIEF SAID 90; that was the pre-U1 width (88 characters), and U1's own
- * change moved it. Measured on this checkout: 104 and 105 wrap, 106 and 107 do not.
+ * the assembled `usage: <prog> <optionals>` line does not fit in `width`. THE BRIEF SAID 90;
+ * that was the pre-U1 width (88 characters), and U1's `[--assets-root]` moved it to 104,
+ * wrapping below 106. U8's `[--mcp-report]` moved it again, to 119, wrapping below 121 —
+ * which is why the matrix above grew a 120/121 pair. Measured on this checkout, by running
+ * the reference at each width: 119 and 120 wrap, 121 and 122 do not.
+ *
+ * A FLAG ADDED TO EITHER RUNTIME MOVES THIS STRING. It is not a second copy of the usage
+ * line for its own sake — it is the arithmetic behind the note below, and the pinned first
+ * line further down is the thing that actually stops a silent re-baselining.
  */
 const SINGLE_LINE_USAGE =
-  'usage: bantamkit-mcp [-h] [--assets-root] [--k K] [--index-budget BYTES] [--store STORE | --start START]';
+  'usage: bantamkit-mcp [-h] [--assets-root] [--k K] [--index-budget BYTES] [--mcp-report] ' +
+  '[--store STORE | --start START]';
 const wrapBoundary = SINGLE_LINE_USAGE.length + 2;
 
 // ---------------------------------------------------------------------------------- run
@@ -312,9 +325,10 @@ export async function run(ctx) {
   );
   notes.push(
     `argparse wraps the usage line whenever COLUMNS < ${wrapBoundary} (width = COLUMNS - 2, ` +
-      `single-line usage is ${SINGLE_LINE_USAGE.length} chars after U1 added [--assets-root]); ` +
+      `single-line usage is ${SINGLE_LINE_USAGE.length} chars after U1 added [--assets-root] and ` +
+      'U8 added [--mcp-report]); ' +
       `with no COLUMNS and no tty the fallback is ${DEFAULT_COLUMNS}, so the DEFAULT help is wrapped. ` +
-      'the matrix straddles the boundary at 105/106.',
+      'the matrix straddles the boundary at 120/121, and keeps the old 105/106 pair beside it.',
   );
   notes.push(
     'REGISTERED, NOT FIXED: the two --assets-root counts agree at 83 only because the asset tree ' +

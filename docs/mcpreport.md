@@ -275,15 +275,15 @@ usage: bantamkit-mcp [-h] [--assets-root] [--k K] [--index-budget BYTES]
                      [--mcp-report] [--store STORE | --start START]
 ```
 
-### The `cli` conformance suite is RED until the Node half lands
+### The `cli` conformance suite was RED until the Node half landed
 
 `tools/conformance/suites/cli.mjs` compares the two CLIs **as processes**, byte for byte.
 A flag that exists on one side and not the other is therefore a measured divergence, not
 a missing test — and it is the same shape this branch already used once, where the suite
 landed red at `d20fc69` and was greened by the Node argparse port at `492c63e`.
 
-Measured with the Python half alone: `node tools/conformance/run.mjs --all` reports
-**4514 cases** — the count does **not** move — with **12 failures**, all in `cli`, all one
+Measured with the Python half alone: `node tools/conformance/run.mjs --all` reported
+**4514 cases** — the count did **not** move — with **12 failures**, all in `cli`, all one
 fact:
 
 ```
@@ -294,12 +294,36 @@ cli/k-not-an-int/stderr           cli/store-and-start/stderr
 cli/double-dash-positional/stderr
 ```
 
-Seven are the help body; five are the usage line argparse prints to **stderr** on a parse
-error. Every diff is `python has [--mcp-report], node does not`. Adding the flag to
+Seven were the help body; five were the usage line argparse prints to **stderr** on a
+parse error. Every diff was `python has [--mcp-report], node does not`. Adding the flag to
 `runtime-ts/src/cli.ts` — the spelling is a plain `store_true`, which
-`runtime-ts/src/pyargparse.ts` already produces — returns all twelve to green with no
-change on this side. The reference precondition in `cli.mjs` does **not** throw: the
-pinned wrapped first line is unchanged, which is why the flag is registered where it is.
+`runtime-ts/src/pyargparse.ts` already produces — returned all twelve to green with no
+change on the Python side, and the reference precondition in `cli.mjs` did **not** throw:
+the pinned wrapped first line is unchanged, which is why the flag is registered where it
+is.
+
+Two things the flag moved that were not in that list, both measured after it landed:
+
+* `runtime-ts/test/cli-surface.test.mjs` pins the Node help at four widths and the
+  80-column usage block, and all **19** of its nodes went red until they were
+  **re-measured out of the reference** — which is what those pins are for.
+* the single-line usage grew from 104 to **119** characters, so argparse's wrap boundary
+  moved from `COLUMNS < 106` to `COLUMNS < 121`. The `cli` matrix straddled the old
+  boundary at 105/106 and now straddles the new one at 120/121 as well.
+
+### The suite that compares the two reports
+
+`tools/conformance/suites/mcpreport.mjs` runs `bantamkit-mcp --mcp-report` as a **process**
+on both sides over one synthetic fixture pair and compares the whole of stdout, stderr and
+the exit code — **unmasked**, because the report reads no clock. Eight beds: the
+everything-at-once report, one each for matched / ambiguous / unmatched-both-directions,
+the missing host root, `event-log: off`, `event-log: not found`, and the literal-path arm
+of `BANTAMKIT_EVENT_LOG`, plus a determinism case that runs the same argv twice.
+
+The matched bed carries **three** pairs of one `(tool, outcome)` rather than one, and that
+is the only place `p50` is non-vacuous: with a single duration per bucket the lower median
+and the arithmetic mean are the same number, and a runtime that averaged would compare
+equal to one that did not.
 
 ### Where each source comes from
 
@@ -354,6 +378,19 @@ answering "ambiguous":
 `test_the_same_two_calls_far_apart_in_time_are_two_confident_pairs` and
 `test_the_window_is_a_reported_input_not_a_hidden_constant`, where the *same* two calls
 are two clean pairs at 250 ms and one ambiguous group at 60 s.
+
+### The same list, paid on the Node side
+
+Run against `runtime-ts/test/mcpreport.test.mjs` and, separately, against the conformance
+suite — where the Python half is unmutated, so a mutation shows up as a byte diff.
+
+| mutation | node that goes red | red output | conformance |
+|---|---|---|---|
+| pair each event with its **first** candidate instead of requiring a 1×1 component | `two same-tool calls close together are ambiguous and are not paired one to one`, and `the window is a reported input, not a hidden constant` | `matched-pairs` `actual '2' != expected '0'` | 4 of 25 cases differ |
+| drop the unmatched accumulation in `join` | `a call with no event and an event with no call are both reported unmatched`, plus `a missing host log…` and `event-log: off…` | `unmatched-events` `actual '0' != expected '1'` | 7 of 25 |
+| give the parsed record a `message` field and print it under `[host-errors]` | `a leaked argument value in the host's error text is nowhere in the report` | `AssertionError: the leaked path is in the report` | 5 of 25 |
+| the same field, populated on the `call-fail` arm | `no host message survives parsing at all` | `AssertionError: message is 99 characters long` — the structural guard, no sentinel needed | 0 (nothing prints it) |
+| the arithmetic mean instead of the lower median | `p50 is an element of the input, so no float is ever formatted` | `memory_save saved n=4 min=10 p50=25.25 max=41` | 1 of 25 — and **only** after the matched bed grew from one duration to three |
 
 ## Notes for the Node half
 
