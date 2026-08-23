@@ -1,4 +1,5 @@
 import os
+import sys
 
 import pytest
 
@@ -617,3 +618,40 @@ def test_a_dangling_facts_symlink_is_unreadable_to_both_layers(tmp_path):
     with pytest.raises(MemoryValidationError) as e:
         resolve_project_store(tmp_path / "companyA")
     assert str(store / "facts") in str(e.value)
+
+
+def test_w5_diagnostic_dangling_facts_symlink_observations(tmp_path):
+    """TEMPORARY W5 INSTRUMENT -- deliberately red so CI prints what it observed."""
+    from bantamkit.memory.layers import count_facts
+
+    store = _mkstore(tmp_path / "companyA")
+    obs = {"platform": os.name, "sys": sys.platform}
+    try:
+        (store / "facts").symlink_to(tmp_path / "nowhere-at-all")
+        obs["symlink_to"] = "created"
+    except (OSError, NotImplementedError) as e:
+        obs["symlink_to"] = f"REFUSED {type(e).__name__} {e}"
+    facts = store / "facts"
+    obs["lexists"] = os.path.lexists(facts)
+    obs["exists"] = os.path.exists(facts)
+    obs["islink"] = os.path.islink(facts)
+    obs["is_dir"] = facts.is_dir()
+    try:
+        with os.scandir(facts) as entries:
+            obs["scandir"] = f"OK {len(list(entries))} entries"
+    except OSError as e:
+        obs["scandir"] = (
+            f"{type(e).__name__} errno={e.errno} winerror={getattr(e, 'winerror', None)} "
+            f"strerror={e.strerror}"
+        )
+    try:
+        obs["count_facts"] = count_facts(store)
+    except OSError as e:
+        obs["count_facts"] = (
+            f"raised {type(e).__name__} errno={e.errno} winerror={getattr(e, 'winerror', None)}"
+        )
+    try:
+        obs["resolve"] = repr(resolve_project_store(tmp_path / "companyA"))
+    except Exception as e:  # noqa: BLE001
+        obs["resolve"] = f"raised {type(e).__name__}: {e}"
+    raise AssertionError("W5-DIAGNOSTIC " + repr(obs))
