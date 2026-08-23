@@ -128,43 +128,68 @@ def unencoded_text_opens(tree: ast.AST, lines: list[str] | None = None) -> list[
 
 
 def _python_files() -> list[Path]:
-    """Every Python file this repository ships, committed set first.
+    """Every Python file this repository ships: two git arms unioned, glob as fallback.
 
     `git ls-files` for the same reason `test_field_programs.py` gives: it still lists a
     file whose working copy is gone, so a deletion is a missing path rather than a node
     that quietly stops being collected. The glob is the fallback for an unpacked sdist,
     and that limitation is real -- there, a deleted file is simply not scanned.
 
-    FALLBACK, NOT UNION, and the distinction is the whole point. Taking both arms every
-    time also scans whatever is on disk but outside the index, which is to say build
-    output: `runtime-ts/assets/` is written by `runtime-ts/scripts/sync-assets.mjs`,
-    ignored by `runtime-ts/.gitignore:6`, and is a byte-copy of eleven files already
-    committed at the repository root -- so the union scanned those eleven TWICE, and only
-    on a machine where somebody had run the Node build. A set of test nodes that changes
-    size when you run `npm run sync-assets` is not a gate. Widening `skip` would have
-    hidden this one directory and reopened the hole at the next generated tree, which is
-    why the arm itself goes rather than a name being added to a list.
+    THE UNION IS OF TWO GIT ARMS, NEVER OF A GIT ARM AND A DISK WALK. Unioning the index
+    query with `rglob` also scans whatever is on disk but outside the index, which is to
+    say build output: `runtime-ts/assets/` is written by
+    `runtime-ts/scripts/sync-assets.mjs`, ignored by `runtime-ts/.gitignore:6`, and is a
+    byte-copy of eleven files already committed at the repository root -- so that union
+    scanned those eleven TWICE, and only on a machine where somebody had run the Node
+    build. A set of test nodes that changes size when you run `npm run sync-assets` is not
+    a gate. Widening `skip` would have hidden this one directory and reopened the hole at
+    the next generated tree, which is why the disk arm goes rather than a name being added
+    to a list.
 
-    `test_the_glob_does_not_add_to_an_answered_git_query` pins the property, and
-    `test_the_glob_is_still_the_fallback_when_git_cannot_answer` pins the sdist promise
-    above, so this cannot quietly delete the fallback along with the bug.
+    But `tracked` and `should be scanned` are not the same set, and reading the first arm
+    alone made the gate DEFER rather than gate: a `.py` written and run in the same
+    session was invisible until it was committed, so the suite went green before the
+    commit and red after -- demonstrated once, on a bare `subprocess.run(text=True)`.
+    Hence the second arm, `--others --exclude-standard`. **`--exclude-standard` is the
+    load-bearing flag**: without it that arm hands back exactly the eleven build-artifact
+    files above. Both arms are index/ignore queries, so no `rglob` and no `skip` set is
+    involved on this path and the build-artifact hole cannot reopen through it.
+
+    THE GUARD KEYS ON THE FIRST ARM ONLY, and that is deliberate. `git ls-files` exits 0
+    with no output for an sdist unpacked inside some other repository's work tree, and
+    treating that as an answer would vacate the whole gate -- so empty is not an answer.
+    The tracked arm is the only one that means `git is answering about THIS repository`.
+    Keying the guard on the union instead would trust the untracked arm in exactly that
+    sdist case, where it reports the sdist's files filtered by the OUTER repo's ignore
+    rules: unpack into a directory that repo ignores and the arm returns nothing, unpack
+    into one it does not and it returns a set silently missing anything the outer
+    `.gitignore` happens to match. Dropping files from a gate on a stranger's ignore file
+    is the vacuity the guard exists to prevent, so an empty first arm falls through to the
+    glob no matter what the second arm said.
+
+    Pinned by three nodes: `test_the_glob_does_not_add_to_an_answered_git_query` keeps the
+    disk arm out, `test_work_in_progress_is_scanned_but_an_ignored_file_is_still_not`
+    holds both halves of the second arm, and
+    `test_the_glob_is_still_the_fallback_when_git_cannot_answer` keeps the sdist promise.
     """
-    committed: set[Path] = set()
-    try:
-        out = subprocess.run(
-            ["git", "ls-files", "-z", "--", "*.py"],
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=30,
-            check=True,
-        ).stdout
-        committed = {REPO_ROOT / line for line in out.split("\0") if line}
-    except (OSError, subprocess.SubprocessError):
-        pass
+    def ls(*flags: str) -> set[Path]:
+        try:
+            out = subprocess.run(
+                ["git", "ls-files", "-z", *flags, "--", "*.py"],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=30,
+                check=True,
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            return set()
+        return {REPO_ROOT / line for line in out.split("\0") if line}
+
+    committed = ls()
     if committed:
-        return sorted(committed)
+        return sorted(committed | ls("--others", "--exclude-standard"))
     # Reached only when the query did not answer: git absent, or run outside a work tree,
     # or listing nothing under REPO_ROOT -- the unpacked sdist. `skip` bounds this walk
     # (`.venv` here is a symlink into the main checkout, so dropping it would walk that
@@ -366,6 +391,46 @@ def test_the_glob_does_not_add_to_an_answered_git_query(tmp_path, monkeypatch):
         "glob arm ran when it should not have -- it is a fallback, not a union"
     )
     assert found == [tracked], f"expected exactly the committed set, got {found}"
+
+
+def test_work_in_progress_is_scanned_but_an_ignored_file_is_still_not(tmp_path, monkeypatch):
+    """A `.py` that is untracked but NOT ignored is scanned; an ignored one is not.
+
+    Both halves in one node on purpose, because either alone is passable by a wrong
+    implementation: `--others` without `--exclude-standard` gets the first and fails the
+    second, and that is exactly the eleven-file build-artifact hole
+    `test_the_glob_does_not_add_to_an_answered_git_query` closed.
+
+    The defect this pins was DEMONSTRATED, not predicted. Making the git query a fallback
+    rather than a union stopped the gate scanning `runtime-ts/assets/**`, and also stopped
+    it scanning anything not yet tracked -- so a file written and run in the same session
+    was invisible to the gate until it was committed, and the very next unit shipped a
+    bare `subprocess.run(text=True)` through a green suite because of it. Green before
+    commit and red after is a gate that defers rather than gates.
+
+    A node written against the real `REPO_ROOT` would be vacuous: there are zero untracked
+    `.py` files there right now (MEASURED on 2026-08-24: `git ls-files --others
+    --exclude-standard -- '*.py'` returns 0, while the same query without
+    `--exclude-standard` returns the eleven `runtime-ts/assets` build artifacts). So the
+    subject is planted in `tmp_path` and REPO_ROOT is pointed at it.
+    """
+    tracked, ignored = _repo_with_one_tracked_and_one_ignored_py(tmp_path)
+    untracked = tmp_path / "untracked.py"
+    untracked.write_text("z = 3\n", encoding="utf-8")
+    monkeypatch.setitem(globals(), "REPO_ROOT", tmp_path)
+    found = _python_files()
+    assert untracked.exists() and ignored.exists(), (
+        "neither plant landed; every assertion below would be vacuous"
+    )
+    assert untracked in found, (
+        f"{untracked.name} is on disk, is a .py, and is not ignored -- it is work in "
+        "progress the gate has to see BEFORE it is committed, not after"
+    )
+    assert ignored not in found, (
+        f"{ignored.name} is gitignored, so the untracked arm must be carrying "
+        "--exclude-standard; without it this arm hands back build output"
+    )
+    assert found == [tracked, untracked], f"expected both git arms and nothing else, got {found}"
 
 
 def test_the_glob_is_still_the_fallback_when_git_cannot_answer(tmp_path, monkeypatch):
