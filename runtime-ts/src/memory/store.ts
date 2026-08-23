@@ -130,8 +130,12 @@ export function jaccard(a: Set<string>, b: Set<string>): number {
  * `None` Python writes `None` and JS would write `null` — a different index line and a
  * different file on disk from the same store. Only `null` is reproduced; see the ruling in
  * `tools/conformance/suites/store.mjs` for the sequence case, which is left differing.
+ *
+ * Exported for `component._format`, which interpolates the same three fields into the line a
+ * model reads. Two spellings of one coercion is how the index line and the recall line would
+ * come to print a different name for the same fact.
  */
-function pyText(value: unknown): string {
+export function pyText(value: unknown): string {
   return value === null || value === undefined ? 'None' : String(value);
 }
 

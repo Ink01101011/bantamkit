@@ -20,11 +20,14 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
+  realpathSync,
   renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { homedir, userInfo } from 'node:os';
 
 // ------------------------------------------------------------------------------ errno
 
@@ -390,28 +393,404 @@ export function sortedPathNames(names: readonly string[]): string[] {
  * (`C:foo`) and UNC roots are outside what a store root has ever been and are not modelled.
  */
 export function pyJoin(...parts: string[]): string {
-  const win = process.platform === 'win32';
-  const sep = win ? '\\' : '/';
-  const split = (s: string): string[] => (win ? s.split(/[\\/]/) : s.split('/'));
   let anchor = '';
   const out: string[] = [];
-  for (const [i, part] of parts.entries()) {
-    const pieces = split(part);
-    if (i === 0 && pieces[0] === '') {
-      // A leading separator. Exactly two is a root `PurePosixPath` keeps verbatim; one,
-      // or three or more, collapse to one.
-      let leading = 0;
-      while (pieces[leading] === '') leading += 1;
-      anchor = leading === 2 && pieces.length > 2 ? `${sep}${sep}` : sep;
-      pieces.splice(0, leading);
-    } else if (i === 0 && win && /^[A-Za-z]:$/.test(pieces[0] ?? '')) {
-      anchor = `${pieces.shift()}${sep}`;
-      while (pieces[0] === '') pieces.shift();
+  for (const part of parts) {
+    // A leading separator, or a drive: `parsePath` is that reading, shared with `pyParents`
+    // and `pyExpanduser` so the four cannot disagree about what a path is made of.
+    const parsed = parsePath(part);
+    // An ANCHORED later part replaces everything before it — `PurePath('/a', '/b')` is
+    // `/b`. `load_grants` is where it fires: `config.parent / entry` with an absolute
+    // `entry` is the entry, and joining them instead builds a path under the config that
+    // never existed. The store never passes an absolute second part, so this arm was
+    // unreachable until the binding layer arrived.
+    if (parsed.anchor !== '') {
+      anchor = parsed.anchor;
+      out.length = 0;
     }
-    for (const piece of pieces) if (piece !== '' && piece !== '.') out.push(piece);
+    out.push(...parsed.parts);
   }
-  if (out.length === 0) return anchor === '' ? '.' : anchor;
-  return anchor + out.join(sep);
+  return renderPath(anchor, out);
+}
+
+/**
+ * `PurePath`'s parsing of ONE path string: its anchor and its `_tail` components.
+ *
+ * Empty and `.` components are dropped, `..` is kept, and exactly two leading separators are
+ * a root `PurePosixPath` keeps verbatim while one — or three or more — collapse to one.
+ */
+interface ParsedPath {
+  anchor: string;
+  parts: string[];
+}
+
+function parsePath(path: string): ParsedPath {
+  const win = process.platform === 'win32';
+  const sep = win ? '\\' : '/';
+  const pieces = win ? path.split(/[\\/]/) : path.split('/');
+  let anchor = '';
+  // `''.split('/')` is `['']`, which is not a leading separator: `str(PurePath(''))` is `.`
+  // and has no anchor. Measured against CPython through `Path('').expanduser()`.
+  if (path !== '' && pieces[0] === '') {
+    let leading = 0;
+    while (pieces[leading] === '') leading += 1;
+    anchor = leading === 2 && pieces.length > 2 ? `${sep}${sep}` : sep;
+    pieces.splice(0, leading);
+  } else if (win && /^[A-Za-z]:$/.test(pieces[0] ?? '')) {
+    anchor = `${pieces.shift()}${sep}`;
+    while (pieces[0] === '') pieces.shift();
+  }
+  return { anchor, parts: pieces.filter((piece) => piece !== '' && piece !== '.') };
+}
+
+/** `str(PurePath)` for an already-parsed path: the empty path prints as `.`, as Python's does. */
+function renderPath(anchor: string, parts: readonly string[]): string {
+  const sep = process.platform === 'win32' ? '\\' : '/';
+  if (parts.length === 0) return anchor === '' ? '.' : anchor;
+  return anchor + parts.join(sep);
+}
+
+/**
+ * `PurePath.parents` — `_walk_to_store` iterates `(base, *base.parents)` and stops at `/`.
+ *
+ * The tail is not the anchor: `/a/b` yields `/a` then `/` and stops, while `a/b` yields `a`
+ * then `.` — a relative start walks to the CWD-relative dot and no further, which is why
+ * `_resolved_base` resolves before walking. `/` and `.` have no parents at all.
+ */
+export function pyParents(path: string): string[] {
+  const { anchor, parts } = parsePath(path);
+  const out: string[] = [];
+  for (let n = parts.length - 1; n >= 0; n -= 1) out.push(renderPath(anchor, parts.slice(0, n)));
+  return out;
+}
+
+/** `PurePath.parent`. `/`'s parent is `/` and `.`'s is `.`, as in Python. */
+export function pyParent(path: string): string {
+  const parents = pyParents(path);
+  if (parents.length > 0) return parents[0]!;
+  return renderPath(parsePath(path).anchor, []);
+}
+
+/** `PurePath.name` — the last component, or `''` for a bare anchor. */
+export function pyName(path: string): string {
+  const { parts } = parsePath(path);
+  return parts.length === 0 ? '' : parts[parts.length - 1]!;
+}
+
+/**
+ * `PurePath.is_absolute()`.
+ *
+ * On Windows a root without a drive is NOT absolute (`PureWindowsPath('/a')` is relative to
+ * the current drive), which is why this is not "starts with a separator". `_pinned_store`
+ * raises on a relative pin, so getting this wrong there would accept a pin the reference
+ * refuses, or refuse one it accepts.
+ */
+export function pyIsAbsolute(path: string): boolean {
+  if (process.platform !== 'win32') return parsePath(path).anchor !== '';
+  return /^[A-Za-z]:[\\/]/.test(path) || /^[\\/][\\/][^\\/]/.test(path);
+}
+
+// -------------------------------------------------------------------------- home and ~
+
+/**
+ * `RuntimeError`, which `Path.expanduser()` and `Path.resolve()` raise. NOT an `OSError`, so
+ * nothing that catches `OSError` catches it — `_pinned_store`'s `except OSError` included.
+ */
+export class PyRuntimeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RuntimeError';
+  }
+}
+
+/**
+ * `Path.home()`, which is `os.path.expanduser('~')`.
+ *
+ * `$HOME` FIRST, and only then the passwd database — verified by overriding it. That order
+ * is what lets the tests and the conformance harness point the profile layer somewhere that
+ * is not the operator's own facts; a port that read the uid's home directly would recall
+ * against, and STAMP, the real store on every run.
+ *
+ * An empty `HOME` is still a set `HOME` in Python (the test is `'HOME' not in os.environ`),
+ * and `''.rstrip('/') or '/'` makes it `/`. `os.homedir()` falls back to the passwd entry
+ * there instead, so the rule is spelled out rather than delegated.
+ *
+ * On Windows Python reads `USERPROFILE`, then `HOMEDRIVE`+`HOMEPATH`; `os.homedir()` reads
+ * `USERPROFILE` and then the API. The first arm is the same, and it is the one a host sets.
+ */
+export function pyHome(): string {
+  if (process.platform === 'win32') {
+    const profile = process.env['USERPROFILE'];
+    const drive = process.env['HOMEDRIVE'];
+    const tail = process.env['HOMEPATH'];
+    const raw = profile ?? (drive !== undefined && tail !== undefined ? drive + tail : homedir());
+    return raw.replace(/[\\/]+$/, '') || '\\';
+  }
+  const home = process.env['HOME'];
+  const raw = home !== undefined ? home : homedir();
+  return raw.replace(/\/+$/, '') || '/';
+}
+
+/**
+ * `Path(raw).expanduser()`.
+ *
+ * Only a FIRST component beginning with `~` expands, and only when the path has no anchor;
+ * `/~/x` and `a/~` are left alone. An MCP host passes `env` verbatim with no shell, so the
+ * tilde arrives literal and this is the only thing that expands it — see `_pinned_store`.
+ *
+ * RULING — `~someone-else`. Python asks the passwd database and resolves any account on the
+ * machine (measured: `~root` -> `/var/root`). Node has no `getpwnam`, so this resolves `~`
+ * and `~<the current user>` and raises Python's own `RuntimeError` for anything else, where
+ * Python would have answered a path. Reproducing it means shelling out to `dscl`/`getent` at
+ * runtime — a subprocess, in a pure-Node package, for a spelling of the pin nothing has ever
+ * used. Carried as a must-differ case in `tools/conformance/suites/recall-strings.mjs`, so
+ * it is re-measured on every run rather than remembered.
+ */
+export function pyExpanduser(path: string): string {
+  const { anchor, parts } = parsePath(path);
+  const first = parts[0];
+  if (anchor !== '' || first === undefined || !first.startsWith('~')) {
+    return renderPath(anchor, parts);
+  }
+  let home: string | null = null;
+  const user = first.slice(1);
+  if (user === '') home = pyHome();
+  else {
+    try {
+      const info = userInfo();
+      if (info.username === user) home = info.homedir.replace(/\/+$/, '') || '/';
+    } catch {
+      home = null; // no passwd entry at all; Python raises here too
+    }
+  }
+  if (home === null) throw new PyRuntimeError('Could not determine home directory.');
+  return pyJoin(home, ...parts.slice(1));
+}
+
+/** `Path.cwd()`. */
+export function pyCwd(): string {
+  return process.cwd();
+}
+
+// --------------------------------------------------------------------------- resolution
+
+/**
+ * `Path.resolve()` with `strict=False`: `posixpath.realpath`, then pathlib's ELOOP check.
+ *
+ * WHY NOT `fs.realpathSync`: it is strict. `_resolved_base` resolves a START DIRECTORY that
+ * may not exist, and `load_grants` resolves a granted path precisely in order to then ask
+ * whether it exists. Python resolves as far as the filesystem goes and appends the rest
+ * verbatim — measured, `<bed>/nope/x` resolves to itself, and so does `<0o000-dir>/x/y`.
+ *
+ * `..` is applied to the path resolved SO FAR, not lexically to the input, so through a
+ * symlinked directory it lands in the target's parent. That is what makes a symlinked
+ * worktree bind the store beside its real checkout.
+ *
+ * A symlink LOOP is the one failure that is not swallowed: non-strict `realpath` returns the
+ * unresolved path, `Path.resolve` then stats it, gets ELOOP, and raises
+ * `RuntimeError("Symlink loop from '<path>'")`. Measured against CPython here.
+ *
+ * WINDOWS IS AN APPROXIMATION AND SAYS SO. `ntpath.realpath` goes through
+ * `GetFinalPathNameByHandle` and returns forms this cannot reproduce; there this resolves
+ * what it can natively and falls back to the lexical form. NOT MEASURED — no Windows runner
+ * has run this port.
+ */
+export function pyResolve(path: string): string {
+  if (process.platform === 'win32') return resolveWindows(path);
+  const [resolved] = joinRealpath('', pyJoin(path), new Map<string, string | null>());
+  const absolute = posixAbspath(resolved);
+  try {
+    statSync(absolute);
+  } catch (e) {
+    // pathlib's `check_eloop`: only a symlink loop is promoted; every other error is ignored.
+    if ((e as NodeFsError)?.code === 'ELOOP') {
+      throw new PyRuntimeError(`Symlink loop from '${(e as NodeFsError).path ?? absolute}'`);
+    }
+  }
+  return absolute;
+}
+
+/** `posixpath._joinrealpath`, ported statement for statement including the `seen` protocol. */
+function joinRealpath(
+  path: string,
+  rest: string,
+  seen: Map<string, string | null>,
+): [string, boolean] {
+  let current = path;
+  let remaining = rest;
+  if (remaining.startsWith('/')) {
+    remaining = remaining.slice(1);
+    current = '/';
+  }
+  while (remaining !== '') {
+    const at = remaining.indexOf('/');
+    const name = at === -1 ? remaining : remaining.slice(0, at);
+    remaining = at === -1 ? '' : remaining.slice(at + 1);
+    if (name === '' || name === '.') continue;
+    if (name === '..') {
+      if (current !== '') {
+        const [head, tail] = posixSplit(current);
+        current = head;
+        if (tail === '..') current = posixJoin(posixJoin(current, '..'), '..');
+      } else {
+        current = '..';
+      }
+      continue;
+    }
+    const newpath = posixJoin(current, name);
+    let isLink = false;
+    try {
+      isLink = lstatSync(newpath).isSymbolicLink();
+    } catch {
+      isLink = false; // non-strict: every OSError means "not a link", and the walk goes on
+    }
+    if (!isLink) {
+      current = newpath;
+      continue;
+    }
+    if (seen.has(newpath)) {
+      const cached = seen.get(newpath)!;
+      if (cached !== null) {
+        current = cached;
+        continue;
+      }
+      return [posixJoin(newpath, remaining), false]; // a loop; non-strict leaves it alone
+    }
+    seen.set(newpath, null);
+    const [resolved, ok] = joinRealpath(current, readlinkSync(newpath), seen);
+    if (!ok) return [posixJoin(resolved, remaining), false];
+    current = resolved;
+    seen.set(newpath, current);
+  }
+  return [current, true];
+}
+
+/** `posixpath.split`: the head keeps its trailing separator only when it is the root. */
+function posixSplit(path: string): [string, string] {
+  const cut = path.lastIndexOf('/');
+  if (cut === -1) return ['', path];
+  const head = path.slice(0, cut + 1);
+  return [head === '/' ? head : head.replace(/\/+$/, ''), path.slice(cut + 1)];
+}
+
+/** `posixpath.join` for two components. */
+function posixJoin(a: string, b: string): string {
+  if (b.startsWith('/')) return b;
+  if (a === '' || a.endsWith('/')) return a + b;
+  return `${a}/${b}`;
+}
+
+/** `posixpath.abspath` = `normpath(join(getcwd(), path))`. Two leading slashes survive. */
+function posixAbspath(path: string): string {
+  const joined = path.startsWith('/') ? path : posixJoin(process.cwd(), path);
+  const leading = /^\/\/(?!\/)/.test(joined) ? '//' : joined.startsWith('/') ? '/' : '';
+  const out: string[] = [];
+  for (const piece of joined.split('/')) {
+    if (piece === '' || piece === '.') continue;
+    if (piece === '..' && leading !== '') {
+      if (out.length > 0 && out[out.length - 1] !== '..') out.pop();
+      continue;
+    }
+    if (piece === '..' && out.length > 0 && out[out.length - 1] !== '..') {
+      out.pop();
+      continue;
+    }
+    out.push(piece);
+  }
+  return leading + out.join('/') || '.';
+}
+
+/** The Windows arm of `pyResolve`. See its docstring: this is not measured on Windows. */
+function resolveWindows(path: string): string {
+  const absolute = pyIsAbsolute(path) ? pyJoin(path) : pyJoin(process.cwd(), path);
+  try {
+    return realpathSync.native(absolute);
+  } catch {
+    return absolute;
+  }
+}
+
+// -------------------------------------------------------------------------- stat probes
+
+/**
+ * `Path.is_dir()` — and it RE-RAISES, which is the half that matters.
+ *
+ * `pathlib` swallows only `_IGNORED_ERRNOS`; `EACCES` is not one of them, so a candidate
+ * inside a directory the process cannot traverse raises `PermissionError` out of the WALK
+ * itself. MEASURED against CPython 3.12 here: `_walk_to_store` through a `0o000` ancestor
+ * raises rather than skipping the candidate, which refutes the claim in `_pinned_store`'s
+ * docstring that the walk "lives with" an unreadable candidate. `existsSync` and
+ * `statSync(p, {throwIfNoEntry: false})` both answer `false` there and would bind a
+ * different store in silence.
+ */
+export function pyIsDir(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch (e) {
+    if (IGNORED.has((e as NodeFsError)?.code ?? '')) return false;
+    throw asPyOSError(e, path);
+  }
+}
+
+/** `Path.is_file()`, with the same swallow set as `pyIsDir`. */
+export function pyIsFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch (e) {
+    if (IGNORED.has((e as NodeFsError)?.code ?? '')) return false;
+    throw asPyOSError(e, path);
+  }
+}
+
+/**
+ * `os.stat(p)` reduced to "is it a directory", unguarded.
+ *
+ * `_pinned_store` uses `os.stat` rather than `is_dir()` on purpose: a pin is a single path
+ * the operator named out loud, so an unreadable one gets the accurate reason instead of
+ * being reported as a typo.
+ */
+export function pyStatIsDir(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch (e) {
+    throw asPyOSError(e, path);
+  }
+}
+
+// --------------------------------------------------------------------------------- repr
+
+/**
+ * `repr(str)`, which `_pinned_store` interpolates with `{raw!r}` for a relative pin.
+ *
+ * Python quotes with `'` unless the value contains a `'` and no `"`; it escapes `\\`, the
+ * quote, `\t`, `\n`, `\r`, and every codepoint that is not `str.isprintable()` — that is,
+ * everything in a `C*` category and every separator except the space itself. JS spells the
+ * same predicate `\p{C}` / `\p{Z}` under the `u` flag, so this is the rule rather than a
+ * table. The escapes are `\xNN` below U+0100, `\uNNNN` below U+10000, `\UNNNNNNNN` above.
+ *
+ * The one place it can drift is a codepoint whose category changed between CPython 3.12's
+ * Unicode 15.0 and the ICU this Node was built against: a newly assigned character is `Cn`
+ * (not printable, escaped) for Python and assigned (printable, raw) here. A pin path made of
+ * brand-new codepoints is the only input that reaches it.
+ */
+export function pyRepr(value: string): string {
+  const quote = value.includes("'") && !value.includes('"') ? '"' : "'";
+  let out = quote;
+  for (const ch of value) {
+    if (ch === '\\') out += '\\\\';
+    else if (ch === quote) out += `\\${ch}`;
+    else if (ch === '\t') out += '\\t';
+    else if (ch === '\n') out += '\\n';
+    else if (ch === '\r') out += '\\r';
+    else if (ch === ' ' || !/^(?:\p{C}|\p{Z})$/u.test(ch)) out += ch;
+    else {
+      const cp = ch.codePointAt(0)!;
+      if (cp < 0x100) out += `\\x${cp.toString(16).padStart(2, '0')}`;
+      else if (cp < 0x10000) out += `\\u${cp.toString(16).padStart(4, '0')}`;
+      else out += `\\U${cp.toString(16).padStart(8, '0')}`;
+    }
+  }
+  return out + quote;
 }
 
 /**
