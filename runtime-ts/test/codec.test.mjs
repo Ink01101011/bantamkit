@@ -14,12 +14,15 @@
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const dist = join(dirname(dirname(fileURLToPath(import.meta.url))), 'dist');
 const { formatFact, parseFactText, decodeFactBytes, pyStrip, todayLocal, FactParseError } =
   await import(pathToFileURL(join(dist, 'memory', 'factfile.js')).href);
+const pyfs = await import(pathToFileURL(join(dist, 'memory', 'pyfs.js')).href);
 
 /** A Fact with every field defaulted, so a case names only what it is about. */
 function fact(over = {}) {
@@ -337,16 +340,34 @@ test('CRLF on disk decodes to LF, the way Python text mode does', () => {
   assert.equal(decodeFactBytes(Buffer.from('a\rb\r\nc\n', 'utf8')), 'a\nb\nc\n');
 });
 
-test('the emitter writes LF unconditionally — the ruling on Python os.linesep', () => {
-  // Python opens fact files in text mode with newline=None, so on Windows `\n` is
-  // translated to `\r\n` ON THE WAY OUT and every fact file there is CRLF while every
-  // byte count the store computes is LF. This port does NOT reproduce that: it writes LF
-  // on every platform. Reason: the CRLF is incidental to `newline=None`, it already
-  // disagrees with the store's own arithmetic (the index budget is measured on LF text),
-  // and reproducing it would make the same Fact emit different bytes on two machines,
-  // which is the opposite of what this port is for. Reading stays universal-newline on
-  // both platforms, so a store written by either runtime reads identically in both.
+test('the EMITTER builds LF text; the WRITER is what translates it', () => {
+  // The emitter's half never moves: `index_text`, the index budget and both digests are
+  // computed on this string, exactly as the reference computes them on its own LF string.
   assert.ok(!formatFact(fact({ body: 'a\nb' })).includes('\r'));
+  // The writer's half is where `newline=None` lives, and it is CPython's rule rather than
+  // this port's. N2 ruled the port would write LF everywhere; run 32646521489 measured what
+  // that ruling cost — 83 of 132 Windows conformance failures, one byte per line, in files
+  // the Python server and this one both write into the SAME store on the SAME machine.
+  // Reversed. `toCrlf` is the translation, and it is the platform gate in `pyNewlineOut`
+  // that decides whether it runs, so both halves have a node that can fail here.
+  assert.equal(pyfs.toCrlf('a\nb\n'), 'a\r\nb\r\n');
+  // Including the `\n` of a CRLF that was already in the string: `TextIOWrapper` translates
+  // the LF it finds and does not look at what precedes it, so CPython emits `\r\r\n`.
+  assert.equal(pyfs.toCrlf('a\r\nb'), 'a\r\r\nb');
+  assert.equal(pyfs.toCrlf('a\rb'), 'a\rb');
+  assert.equal(pyfs.PY_LINESEP, process.platform === 'win32' ? '\r\n' : '\n');
+  assert.equal(pyfs.pyNewlineOut('a\nb'), process.platform === 'win32' ? 'a\r\nb' : 'a\nb');
+  // And what actually reaches the disk is the writer's answer, not the emitter's.
+  const bed = mkdtempSync(join(tmpdir(), 'bk-linesep-'));
+  try {
+    const path = join(bed, 'x.md');
+    pyfs.pyWriteText(path, 'a\nb\n');
+    assert.deepEqual([...readFileSync(path)], [...Buffer.from(pyfs.pyNewlineOut('a\nb\n'), 'utf8')]);
+    // Read is universal-newline on both platforms, so the round trip is LF either way.
+    assert.equal(pyfs.pyReadText(path), 'a\nb\n');
+  } finally {
+    rmSync(bed, { recursive: true, force: true });
+  }
 });
 
 // ------------------------------------------------------------------ the clock

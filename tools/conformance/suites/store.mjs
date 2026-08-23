@@ -867,7 +867,7 @@ export async function run(ctx) {
       strerror: Object.fromEntries(
         pyfs.STRERROR_NAMES.filter((k) => !strerror.missing.includes(k)).map((k) => [
           k,
-          pyfs.asPyOSError({ code: k, errno: -1 }).strerror,
+          pyfs.pyStrerror(k),
         ]),
       ),
       missing: strerror.missing,
@@ -1006,6 +1006,85 @@ export async function run(ctx) {
       suffixed: suffixes.map(([p, s]) => pyfs.pyWithSuffix(p, s)),
     },
   });
+
+  // -------------------------------------------------------- the Windows path algebra
+  //
+  // THIS ONE RUNS ON EVERY PLATFORM AND THAT IS THE POINT. `ntpath` and `PureWindowsPath`
+  // compute the same answers on Linux and macOS as they do on Windows, so the port's Windows
+  // parsing can be measured against the reference on the laptop that writes it instead of
+  // costing a CI cycle per correction. The case that made this necessary: `//a/b` is a UNC
+  // share whose whole text is the drive, `PureWindowsPath('//a/b').parents` is `[]`, and this
+  // port answered a two-element walk over directories that cannot exist (run 32646521489).
+  //
+  // The port's own `pyJoin`/`pyParents`/`pyWithSuffix` cannot be called here off Windows —
+  // they read `process.platform` and would answer in POSIX — so what is compared is the
+  // FLAVOUR-EXPLICIT layer underneath them, `ntSplitRoot` / `parseWindowsPath` / `ntJoin`,
+  // which the Windows arms are a two-line wrapper over.
+  const winRaws = ['//a', '///a', '////a/b', '//a/b', '//a/b/c', '//a/', '//', '/a', '/a/b/c',
+    'a', 'a/b', '', '.', '/', '/a/b/../c', 'C:x', 'C:/x', 'C:', '\\\\srv\\share\\x',
+    '//?/C:/x', '//?/UNC/srv/share/x', 'a.md', '/f/.md', '/f/a.', 'x/y.md', '\\\\a/b\\c'];
+  const winJoins = [...joins, [String.raw`C:\a`, 'facts'], ['//srv/share', 'facts'],
+    ['a', 'C:x'], ['C:/a', 'D:/b'], ['C:/a', 'C:b'], ['/a', '/b'], ['a', ''], ['', 'a']];
+  const win = ctx.runPython(REF, {
+    op: 'winpaths',
+    raws: winRaws.map(b64),
+    joins: winJoins.map((parts) => parts.map(b64)),
+    suffixes: suffixes.map(([p, sfx]) => [b64(p), b64(sfx)]),
+  });
+  cases.push({
+    name: 'ntpath.splitroot and PureWindowsPath parsing, on every platform',
+    kind: 'json',
+    expected: {
+      splitroot: win.splitroot.map((row) => row.map(unb64)),
+      parsed: win.parsed.map(([d, r, t]) => [unb64(d), unb64(r), t.map(unb64)]),
+      str: win.str.map(unb64),
+      parents: win.parents.map((row) => row.map(unb64)),
+      absolute: win.absolute,
+      name: win.name.map(unb64),
+      suffix: win.suffix.map(unb64),
+      ntjoined: win.ntjoined.map(unb64),
+      joined: win.joined.map(unb64),
+      suffixed: win.suffixed.map(unb64),
+    },
+    actual: {
+      splitroot: winRaws.map((r) => [...pyfs.ntSplitRoot(r)]),
+      parsed: winRaws.map((r) => {
+        const { drive, root, tail } = pyfs.parseWindowsPath(r);
+        return [drive, root, tail];
+      }),
+      str: winRaws.map((r) => pyfs.winStr(r)),
+      parents: winRaws.map((r) => pyfs.winParents(r)),
+      absolute: winRaws.map((r) => pyfs.winIsAbsolute(r)),
+      name: winRaws.map((r) => pyfs.winName(r)),
+      suffix: winRaws.map((r) => {
+        const nm = pyfs.winName(r);
+        const dot = nm.lastIndexOf('.');
+        return dot > 0 && dot < nm.length - 1 ? nm.slice(dot) : '';
+      }),
+      ntjoined: winJoins.map((parts) => pyfs.ntJoin(...parts)),
+      joined: winJoins.map((parts) => pyfs.winStr(pyfs.ntJoin(...parts))),
+      suffixed: suffixes.map(([pth, sfx]) => pyfs.winWithSuffix(pth, sfx)),
+    },
+  });
+
+  // The Win32 message table, asked of the running Windows. Off Windows `ctypes.FormatError`
+  // has nothing to answer, so the case does not exist there and SAYS SO in a note rather
+  // than reporting a pass it did not earn.
+  if (process.platform === 'win32') {
+    const winmsg = ctx.runPython(REF, { op: 'winerror', numbers: [...pyfs.WINERROR_NUMBERS] });
+    cases.push({
+      name: 'FormatMessage for every winerror the port claims to render',
+      kind: 'json',
+      expected: Object.fromEntries(Object.entries(winmsg.messages).map(([k, v]) => [k, unb64(v)])),
+      actual: Object.fromEntries(pyfs.WINERROR_NUMBERS.map((n) => [String(n), pyfs.pyWinStrerror(n)])),
+    });
+  } else {
+    notes.push(
+      `winerror table: NOT MEASURED HERE — ${pyfs.WINERROR_NUMBERS.length} Win32 wordings are ` +
+      'asked of ctypes.FormatError, which only exists on Windows. Four of them (2, 3, 183, 267) ' +
+      'are pinned by measured diffs; the rest are unmeasured until a Windows cell runs this.',
+    );
+  }
 
   return { cases, notes };
 }

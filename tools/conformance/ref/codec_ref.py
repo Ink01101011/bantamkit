@@ -23,6 +23,9 @@ survive byte-exactly travel as base64, because the point of the exercise is byte
 
     {"op": "windows_write", "facts": [...]}      # the SAME facts, written the way `newline=
       -> {"written_b64": [...]}                  # None` writes them where os.linesep is CRLF
+
+    {"op": "native_write", "facts": [...]}       # Path.write_text with the default newline,
+      -> {"written_b64": [...]}                  # i.e. what THIS platform actually writes
 """
 
 from __future__ import annotations
@@ -139,6 +142,18 @@ def main() -> None:
                 path = Path(tmp) / f"{i}.md"
                 with path.open("w", encoding="utf-8", newline="\r\n") as handle:
                     handle.write(write_fact(fact))
+                written.append(base64.b64encode(path.read_bytes()).decode("ascii"))
+        json.dump({"written_b64": written}, sys.stdout)
+    elif op == "native_write":
+        # `Path.write_text` with the DEFAULT newline, on whatever platform this is. Where
+        # `windows_write` names the target translation explicitly so a POSIX runner can see
+        # it at all, this one asks for no translation in particular and reports what the
+        # running CPython actually put on the disk. That is the byte the port has to match.
+        written = []
+        with tempfile.TemporaryDirectory() as tmp:
+            for i, fact in enumerate(request["facts"]):
+                path = Path(tmp) / f"{i}.md"
+                path.write_text(write_fact(fact), encoding="utf-8")
                 written.append(base64.b64encode(path.read_bytes()).decode("ascii"))
         json.dump({"written_b64": written}, sys.stdout)
     elif op == "today":

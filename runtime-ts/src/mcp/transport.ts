@@ -33,6 +33,8 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 import { JSONRPCMessageSchema } from '@modelcontextprotocol/sdk/types.js';
 
+import { PY_LINESEP } from '../memory/pyfs.js';
+
 type Readable = NodeJS.ReadableStream;
 type Writable = NodeJS.WritableStream;
 
@@ -87,7 +89,13 @@ export class RawStdioTransport implements Transport {
   send(message: JSONRPCMessage): Promise<void> {
     return new Promise((resolve) => {
       const text = this.frame(message);
-      if (this.output.write(`${text}\n`)) resolve();
+      // `os.linesep`, because the reference's stdout is a TEXT stream. The Python SDK writes
+      // its frames through `TextIOWrapper(sys.stdout.buffer)` with the default
+      // `newline=None`, so on Windows every frame CPython emits ends `\r\n`. MEASURED, run
+      // 32646521489: all nine `wire/*: raw frame bytes` cases differed by exactly one byte
+      // per frame and by nothing else. A client is free to strip it; a port that claims to
+      // be byte-compatible on the wire does not get to decide it is decoration.
+      if (this.output.write(`${text}${PY_LINESEP}`)) resolve();
       else this.output.once('drain', () => resolve());
     });
   }

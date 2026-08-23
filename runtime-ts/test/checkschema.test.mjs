@@ -191,9 +191,17 @@ test("pathlib's symlink-loop RuntimeError uses %r too", () => {
     symlinkSync(link, link);
     // The path in the message is the RESOLVED one (`/var` is a symlink to `/private/var`
     // here), so what is pinned is the quoting: `%r` picks `"` because the name holds a `'`.
+    //
+    // THE PREFIX IS PLATFORM-SHAPED AND THE OLD REGEX WAS NOT. `^Symlink loop from "/` can
+    // never match `"D:\\a\\..."`, so on a Windows cell this node could only ever fail —
+    // and it did, run 32646521489, for TWO reasons at once: that, and `resolveWindows`
+    // swallowing the error and raising nothing at all. Both are fixed; the assertion is
+    // written so that the RAISE is required on every platform and only the spelling of the
+    // path is allowed to differ.
+    const anchor = process.platform === 'win32' ? '[A-Za-z]:\\\\\\\\' : '\\/';
     assert.throws(
       () => pyfs.pyResolve(link),
-      (e) => /^Symlink loop from "\/.*\/loop's-link"$/.test(e.message),
+      (e) => new RegExp(`^Symlink loop from "${anchor}.*loop's-link"$`).test(e.message),
     );
   } finally {
     rmSync(bed, { recursive: true, force: true });
@@ -225,4 +233,160 @@ test('an asset that is not UTF-8 raises CPython\'s decode message, not U+FFFD', 
     else process.env.BANTAMKIT_ASSETS = saved;
     rmSync(bed, { recursive: true, force: true });
   }
+});
+
+// ------------------------------------------------------- what Windows answers, from here
+//
+// Every node below runs on EVERY platform, and that is the whole design. The port's Windows
+// arms were previously only reachable on a runner, so the loop for correcting them was
+// commit -> push -> seven minutes -> read a log. `ntpath` and `PureWindowsPath` are pure
+// path algebra that CPython computes identically everywhere, and the errno/winerror question
+// is a decision over an error object that can be built by hand — so both become laptop
+// measurements. The differential half (these same functions against a running CPython) is
+// `tools/conformance/suites/store.mjs`, case `ntpath.splitroot and PureWindowsPath parsing`.
+
+test('ntpath.splitroot: a UNC share is a DRIVE, and three slashes are not two', () => {
+  // `//a/b` is `\\server\share`: the whole text is the drive, the root is a separator that
+  // splitroot itself does not return, and there is nothing left to walk. Reading it as a
+  // POSIX-style double-slash root is what made `pyParents('//a/b')` answer a two-element
+  // walk over directories that cannot exist (run 32646521489).
+  assert.deepEqual(pyfs.ntSplitRoot('//a/b'), ['//a/b', '', '']);
+  assert.deepEqual(pyfs.ntSplitRoot('//a/b/c'), ['//a/b', '/', 'c']);
+  assert.deepEqual(pyfs.ntSplitRoot('//a'), ['//a', '', '']);
+  assert.deepEqual(pyfs.ntSplitRoot('///a'), ['///a', '', '']);
+  assert.deepEqual(pyfs.ntSplitRoot('////a/b'), ['///', '/', 'a/b']);
+  assert.deepEqual(pyfs.ntSplitRoot('/a'), ['', '/', 'a']);
+  assert.deepEqual(pyfs.ntSplitRoot('a'), ['', '', 'a']);
+  assert.deepEqual(pyfs.ntSplitRoot('C:x'), ['C:', '', 'x']);
+  assert.deepEqual(pyfs.ntSplitRoot('C:/x'), ['C:', '/', 'x']);
+  assert.deepEqual(pyfs.ntSplitRoot('//?/C:/x'), ['//?/C:', '/', 'x']);
+  assert.deepEqual(pyfs.ntSplitRoot('//?/UNC/srv/share/x'), ['//?/UNC/srv/share', '/', 'x']);
+  // The slices come back in the CALLER's separators, which is how `ntpath` returns them.
+  assert.deepEqual(pyfs.ntSplitRoot('\\\\srv\\share\\x'), ['\\\\srv\\share', '\\', 'x']);
+});
+
+test("PureWindowsPath: `//a/b` has a root and `///a` does not — the empty-substring rule", () => {
+  // pathlib puts a root back on a bare `\\server\share` when the drive splits into FOUR
+  // pieces whose third is not `?` or `.`. That test is `drv_parts[2] not in '?.'`, a
+  // SUBSTRING test, and `'' in '?.'` is True — so `///a`, whose third piece is empty, keeps
+  // an empty root and stays RELATIVE. Spelled as two character comparisons it came out
+  // absolute, and the conformance case caught it on this laptop before a CI cycle was spent.
+  assert.deepEqual(pyfs.parseWindowsPath('//a/b'), { drive: '\\\\a\\b', root: '\\', tail: [] });
+  assert.deepEqual(pyfs.parseWindowsPath('///a'), { drive: '\\\\\\a', root: '', tail: [] });
+  assert.equal(pyfs.winIsAbsolute('///a'), false);
+  assert.equal(pyfs.winIsAbsolute('//a'), false);
+  assert.equal(pyfs.winIsAbsolute('//a/b'), true);
+  assert.equal(pyfs.winIsAbsolute('/a'), false);
+  assert.equal(pyfs.winIsAbsolute('C:/a'), true);
+  assert.equal(pyfs.winIsAbsolute('C:a'), false);
+  assert.deepEqual(pyfs.winParents('//a/b'), []);
+  assert.deepEqual(pyfs.winParents('/a/b/c'), ['\\a\\b', '\\a', '\\']);
+  assert.deepEqual(pyfs.winParents('a/b'), ['a', '.']);
+  assert.deepEqual(pyfs.winParents('/a/b/../c'), ['\\a\\b\\..', '\\a\\b', '\\a', '\\']);
+  // `_format_parsed_parts`' third arm: an anchorless path whose FIRST component would parse
+  // as a drive gets a `.` in front, so it cannot be re-read as drive-relative.
+  assert.equal(pyfs.winFormat('', '', ['C:x', 'y']), '.\\C:x\\y');
+  assert.equal(pyfs.winFormat('', '', ['a', 'C:x']), 'a\\C:x');
+  assert.equal(pyfs.winStr(''), '.');
+  assert.equal(pyfs.winStr('//a/b'), '\\\\a\\b\\');
+  assert.equal(pyfs.winStr('/a/./b'), '\\a\\b');
+});
+
+test('ntpath.join: a bare UNC share gains a separator the POSIX join never adds', () => {
+  assert.equal(pyfs.ntJoin('//a', 'facts'), '//a\\facts');
+  assert.equal(pyfs.winStr(pyfs.ntJoin('//a', 'facts')), '\\\\a\\facts\\');
+  assert.equal(pyfs.winStr(pyfs.ntJoin('///a', 'facts')), '\\\\\\a\\facts');
+  assert.equal(pyfs.winStr(pyfs.ntJoin('/a/b/..', 'facts')), '\\a\\b\\..\\facts');
+  // A later part with its own root replaces what came before; a DIFFERENT drive replaces
+  // even the drive.
+  assert.equal(pyfs.ntJoin('/a', '/b'), '/b');
+  assert.equal(pyfs.ntJoin('C:/a', 'D:/b'), 'D:/b');
+  assert.equal(pyfs.ntJoin('C:/a', 'C:b'), 'C:/a\\b');
+});
+
+test('with_suffix rebuilds the path in the flavour, so the separators change too', () => {
+  // Slicing the input string kept `/f/a.md.tmp`; `PureWindowsPath` prints `\f\a.md.tmp`.
+  assert.equal(pyfs.winWithSuffix('/f/a.md', '.md.tmp'), '\\f\\a.md.tmp');
+  assert.equal(pyfs.winWithSuffix('/f/.md', '.md.tmp'), '\\f\\.md.md.tmp');
+  assert.equal(pyfs.winWithSuffix('/f/a.', '.md.tmp'), '\\f\\a..md.tmp');
+  assert.equal(pyfs.winName('/f/a.md'), 'a.md');
+  assert.equal(pyfs.winName('//a/b'), '');
+});
+
+test('OSError.__str__ prints the WinError when there is one, and the errno when there is not', () => {
+  // CPython carries BOTH numbers for a Win32 call and `__str__` shows only the Win32 one.
+  // MEASURED, run 32646521489: `[WinError 3] The system cannot find the path specified`
+  // where this port printed `[Errno 2] No such file or directory` for the same `os.replace`.
+  const win = new pyfs.PyOSError(2, 'ENOENT', 'The system cannot find the path specified',
+    'C:\\a\\x.tmp', 'C:\\a\\missing\\y.json', 3);
+  assert.equal(
+    win.message,
+    "[WinError 3] The system cannot find the path specified: 'C:\\\\a\\\\x.tmp' -> 'C:\\\\a\\\\missing\\\\y.json'",
+  );
+  // The errno is still THERE, it is just not what gets printed; `except FileNotFoundError`
+  // still catches, which is why the subclass comes off the code and not off the winerror.
+  assert.equal(win.errno, 2);
+  assert.equal(win.winerror, 3);
+  assert.equal(win.name, 'FileNotFoundError');
+  const posix = new pyfs.PyOSError(2, 'ENOENT', 'No such file or directory', '/a/x.md');
+  assert.equal(posix.message, "[Errno 2] No such file or directory: '/a/x.md'");
+  assert.equal(posix.winerror, null);
+});
+
+test('winerrorFor re-derives the distinction libuv threw away', () => {
+  // ENOENT is the whole problem: `ERROR_FILE_NOT_FOUND` (2) and `ERROR_PATH_NOT_FOUND` (3)
+  // both arrive as one code, so which one Win32 raised has to be worked out from which
+  // component is missing. `exists` is injected, so this is a pure function with a node that
+  // can go red on a laptop instead of only on a runner.
+  const present = (set) => (p) => set.includes(p);
+  const here = present(['/a', '/a/there']);
+  // A one-name call: the leaf is missing beside an existing parent -> 2.
+  assert.equal(pyfs.winerrorFor('ENOENT', 'win32', '/a/gone', null, here), 2);
+  // ...and a missing DIRECTORY component -> 3.
+  assert.equal(pyfs.winerrorFor('ENOENT', 'win32', '/a/nope/gone', null, here), 3);
+  // A two-name call opens the SOURCE first, so a missing source is 2 even when the
+  // destination's directory is missing too. Both arms measured on run 32646521489.
+  assert.equal(pyfs.winerrorFor('ENOENT', 'win32', '/a/there', '/a/nope/b', here), 3);
+  assert.equal(pyfs.winerrorFor('ENOENT', 'win32', '/a/gone', '/a/b', here), 2);
+  assert.equal(pyfs.winerrorFor('ENOENT', 'win32', '/a/gone', '/a/nope/b', here), 2);
+  // A directory listing uses the NAMED path as a directory, so a missing one is already a
+  // missing directory component.
+  assert.equal(pyfs.winerrorFor('ENOENT', 'scandir', '/a/gone', null, here), 3);
+  assert.equal(pyfs.winerrorFor('ENOENT', 'scandir', '/a/there', null, here), 2);
+  // The one-to-one arms.
+  assert.equal(pyfs.winerrorFor('ENOTDIR', 'win32', '/a', null, here), 267);
+  assert.equal(pyfs.winerrorFor('EEXIST', 'win32', '/a', null, here), 183);
+  assert.equal(pyfs.winerrorFor('EACCES', 'win32', '/a', null, here), 5);
+  assert.equal(pyfs.winerrorFor('ELOOP', 'win32', '/a', null, here), 1921);
+  // An unmapped code makes NO claim: a visible `[Errno n]` beats a plausible wrong sentence.
+  assert.equal(pyfs.winerrorFor('EWHAT', 'win32', '/a', null, here), null);
+  // And `open()` never carries one at all, on any code.
+  assert.equal(pyfs.winerrorFor('ENOENT', 'crt', '/a/gone', null, here), null);
+  assert.equal(pyfs.winerrorFor('EISDIR', 'crt', '/a', null, here), null);
+  // Every wording the derivation can name is one this port can print.
+  for (const n of pyfs.WINERROR_NUMBERS) assert.equal(typeof pyfs.pyWinStrerror(n), 'string');
+  for (const code of ['ENOENT', 'ENOTDIR', 'EEXIST', 'EACCES', 'EPERM', 'ENOTEMPTY', 'ELOOP',
+    'EINVAL', 'ENAMETOOLONG', 'EBUSY']) {
+    const n = pyfs.winerrorFor(code, 'win32', '/a/gone', null, here);
+    assert.ok(pyfs.WINERROR_NUMBERS.includes(n), `${code} -> ${n} has no wording`);
+  }
+});
+
+test('the CRT and the Win32 API are two error paths, and open() takes the second one', () => {
+  // `open()` on Windows goes through `_wopen`, which sets errno alone; opening a DIRECTORY
+  // there is EACCES, not EISDIR, so CPython prints `[Errno 13] Permission denied` for the
+  // `.tmp` a clock-out could not write. MEASURED, run 32646521489, six consecutive cases.
+  assert.equal(pyfs.crtCode('EISDIR'), 'EACCES');
+  // Nothing else moves: these already agree with libuv in both number and wording.
+  for (const code of ['ENOENT', 'EACCES', 'EEXIST', 'EINVAL', 'ENOTDIR']) {
+    assert.equal(pyfs.crtCode(code), code);
+  }
+  // And the scandir shape, which is a different syscall rather than a different sentence:
+  // `FindFirstFileW(p + "\\*")` uses `p` as a directory component, so a dangling FILE
+  // symlink there is ERROR_DIRECTORY and CPython raises NotADirectoryError where libuv
+  // reported ENOENT and `count_facts` answered 0.
+  assert.equal(pyfs.scandirIsNotADirectory('ENOENT', () => true), true);
+  assert.equal(pyfs.scandirIsNotADirectory('ENOENT', () => false), false);
+  assert.equal(pyfs.scandirIsNotADirectory('ENOTDIR', () => true), false);
+  assert.equal(pyfs.scandirIsNotADirectory('EACCES', () => true), false);
 });

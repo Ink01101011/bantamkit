@@ -145,13 +145,41 @@ test('save refuses an invalid type, name and description in Python\'s words', ()
   rmSync(root, { recursive: true, force: true });
 });
 
-test("Python's $ matches before a trailing newline, so a name ending in one is valid", () => {
+test("Python's $ matches before a trailing newline, so a name ending in one is valid", (t) => {
   const root = fresh();
   const s = store(root);
   // Not a curiosity: `/^[a-z0-9][a-z0-9-]*$/` in JS rejects this and `re.match` accepts it,
   // so a port that writes the JS regex refuses a save the reference store performs.
-  assert.equal(s.save('project', 'a\n', 'd', 'b').status, 'saved');
-  assert.deepEqual(readdirSync(join(root, 'facts')), ['a\n.md']);
+  //
+  // THE FILE CANNOT EXIST ON WINDOWS AND THE PROBE SAYS SO RATHER THAN THE PLATFORM NAME.
+  // Win32 forbids a control character in a filename outright, so `a\n.md` is not a file the
+  // save could write there under any implementation — MEASURED, run 32646521489, where this
+  // node failed with `[Errno 2] ... 'facts\\a\n.md.tmp'` from the `.tmp` write itself. The
+  // construction is checked instead of assumed, so a platform that CAN hold the name still
+  // measures the whole property. Priced per RB-P51: where the name is unconstructible this
+  // node stops measuring the SAVE arm — that `re.match`'s `$` accepts a trailing newline —
+  // and keeps measuring the REFUSAL arm below, which needs no file. What is thereby not
+  // measured on Windows: that a JS-regex port would refuse a save the reference performs.
+  let constructible = true;
+  try {
+    writeFileSync(join(root, 'probe\n.md'), 'x');
+    rmSync(join(root, 'probe\n.md'), { force: true });
+  } catch {
+    constructible = false;
+  }
+  if (constructible) {
+    assert.equal(s.save('project', 'a\n', 'd', 'b').status, 'saved');
+    assert.deepEqual(readdirSync(join(root, 'facts')), ['a\n.md']);
+  } else {
+    t.diagnostic(
+      'NOT MEASURED: this filesystem refuses a control character in a name, so the fact file ' +
+        '`a\\n.md` cannot be created at all and the SAVE arm of Python\'s `$` rule has no ' +
+        'scenario here. The refusal arm below still runs. Unmeasured on this platform: that a ' +
+        'port written with the JS regex would refuse a save the reference store performs.',
+    );
+  }
+  // Two newlines are refused on EVERY platform: `$` matches before ONE trailing newline and
+  // no more, so this arm needs no file on disk and is measured everywhere.
   assert.throws(() => s.save('project', 'a\n\n', 'd2 unrelated words here', 'b'));
   rmSync(root, { recursive: true, force: true });
 });

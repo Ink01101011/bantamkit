@@ -23,7 +23,18 @@ import { test } from 'node:test';
 const dist = new URL('../dist/', import.meta.url);
 const { clockIn, clockOut, status, HISTORY_RING_SIZE } = await import(new URL('shiftwork.js', dist));
 const { dumpJson, fromJs, parseJson, toJs } = await import(new URL('pyjson.js', dist));
-const { pyReplace, pySuffix } = await import(new URL('memory/pyfs.js', dist));
+const { pyReplace, pyRepr, pySuffix } = await import(new URL('memory/pyfs.js', dist));
+
+/**
+ * A path as `str(OSError)` prints it: `%r`, which ESCAPES A BACKSLASH.
+ *
+ * Interpolating the path raw passes on POSIX and fails on Windows for a reason that has
+ * nothing to do with the port. MEASURED, run 32646521489: three nodes here differed only in
+ * that `C:\Users\...` came back from the port as `C:\\Users\\...`, which is exactly what
+ * CPython's `repr` prints and what the conformance suite's `oserror` case confirms against
+ * the running Python. The expectation was wrong, not the sentence.
+ */
+const asRepr = (path) => pyRepr(path);
 
 // `realpathSync`: `os.tmpdir()` is not canonical — a `/var` symlink on macOS, the 8.3
 // short name on Windows CI. See the note in test/store.test.mjs.
@@ -194,13 +205,13 @@ test("the unreadable refusal embeds Python's OSError.__str__, errno number inclu
   const root = fresh();
   assert.deepEqual(js(clockIn(join(root, 'nope.json'))), {
     result: 'error',
-    reason: `checkpoint unreadable: [Errno 2] No such file or directory: '${join(root, 'nope.json')}'`,
+    reason: `checkpoint unreadable: [Errno 2] No such file or directory: ${asRepr(join(root, 'nope.json'))}`,
   });
   // `Path(checkpoint)` NORMALIZES before the open, so the errno sentence names the
   // normalized path and not the string the caller passed.
   assert.deepEqual(js(clockIn(`${root}//./nope.json`)), {
     result: 'error',
-    reason: `checkpoint unreadable: [Errno 2] No such file or directory: '${join(root, 'nope.json')}'`,
+    reason: `checkpoint unreadable: [Errno 2] No such file or directory: ${asRepr(join(root, 'nope.json'))}`,
   });
   rmSync(root, { recursive: true, force: true });
 });
@@ -491,7 +502,16 @@ test('PurePath.suffix: a leading dot is not a suffix, so the temp file is `.json
   writeFileSync(path, `${JSON.stringify(checkpointDocument(), null, 2)}\n`, 'utf8');
   mkdirSync(`${path}.tmp`);
   const answer = js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, null, { now: 1 }));
-  assert.equal(answer.reason, `checkpoint unwritable, last log line uncommitted: [Errno 21] Is a directory: '${path}.tmp'`);
+  // Opening a directory for WRITE goes through the C runtime, not the Win32 API: CPython
+  // reports `[Errno 13] Permission denied` there where libuv says `EISDIR`. MEASURED,
+  // run 32646521489, over six consecutive conformance cases of this exact shape.
+  const isdir = process.platform === 'win32'
+    ? '[Errno 13] Permission denied'
+    : '[Errno 21] Is a directory';
+  assert.equal(
+    answer.reason,
+    `checkpoint unwritable, last log line uncommitted: ${isdir}: ${asRepr(`${path}.tmp`)}`,
+  );
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -501,7 +521,13 @@ test('os.replace prints BOTH names: OSError.filename2 is not decoration', () => 
   writeFileSync(src, 'x', 'utf8');
   const dst = join(root, 'missing', 'b.json');
   assert.throws(() => pyReplace(src, dst), (e) => {
-    assert.equal(e.message, `[Errno 2] No such file or directory: '${src}' -> '${dst}'`);
+    // `os.replace` is a Win32 call on Windows, so the reference carries a `winerror` and
+    // prints `[WinError 3] The system cannot find the path specified` for a destination
+    // whose DIRECTORY is missing — 2 is the missing-file arm. MEASURED, run 32646521489.
+    const head = process.platform === 'win32'
+      ? '[WinError 3] The system cannot find the path specified'
+      : '[Errno 2] No such file or directory';
+    assert.equal(e.message, `${head}: ${asRepr(src)} -> ${asRepr(dst)}`);
     return true;
   });
   rmSync(root, { recursive: true, force: true });

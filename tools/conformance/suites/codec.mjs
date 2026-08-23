@@ -162,6 +162,7 @@ export async function run(ctx) {
   const factfile = await import(
     pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'factfile.js')).href
   );
+  const pyfs = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'pyfs.js')).href);
   const cases = [];
   const notes = [];
 
@@ -301,7 +302,28 @@ export async function run(ctx) {
     4102444799,
   ];
   const zones = ['Asia/Bangkok', 'UTC', 'America/Los_Angeles', 'Pacific/Kiritimati', 'Pacific/Apia'];
-  for (const tz of zones) {
+  // WINDOWS CANNOT BE PUT IN THESE ZONES AND THE COMPARISON IS THEREFORE NOT ONE.
+  //
+  // `$TZ` reaches CPython through the C runtime's `_tzset`, and the Windows CRT understands
+  // only the POSIX `std offset dst` spelling — never an IANA name. MEASURED, run 32646521489:
+  // under all four non-UTC zones the reference answered the IDENTICAL list, the machine's own
+  // local dates, while Node honoured the zone; four cases "differed" and not one of them was
+  // about `todayLocal`. `time.tzset` does not exist on Windows, so there is no second way to
+  // ask. What this stops measuring, priced per RB-P51: on a Windows cell the local-vs-UTC
+  // clock is checked at the runner's own offset ONLY — UTC on a GitHub runner — so the seven
+  // instants either side of midnight, a new year and a leap day still run, but they run at a
+  // single offset and would not catch a `todayLocal` that silently used UTC. The four
+  // non-UTC zones are the half a Windows cell cannot carry; every other platform carries it.
+  const constructible = process.platform === 'win32' ? zones.filter((z) => z === 'UTC') : zones;
+  if (constructible.length !== zones.length) {
+    notes.push(
+      `windows_cannot_construct: ${zones.length - constructible.length} of ${zones.length} $TZ ` +
+      'zones dropped — the Windows CRT reads only "std offset dst", never an IANA name, so the ' +
+      'reference ignores $TZ and the comparison measures the runner\'s offset twice. What is ' +
+      'thereby not measured: todayLocal at any offset but the runner\'s own.',
+    );
+  }
+  for (const tz of constructible) {
     const py = ctx.runPython(REF, { op: 'today', ts: instants }, { TZ: tz }).dates;
     // A separate Node process: V8 caches the zone, and mutating `process.env.TZ` in-process
     // is not a supported way to ask this question.
@@ -316,62 +338,51 @@ export async function run(ctx) {
     cases.push({ name: `date.today() under TZ=${tz}`, kind: 'json', expected: py, actual: JSON.parse(out) });
   }
 
-  // -------------------------------------------------------------------- the one ruling
+  // ------------------------------------------------------------- os.linesep on the way out
   //
-  // WHAT THIS CASE CAN AND CANNOT DETECT, stated plainly because N8 found the previous
-  // wording overclaiming. On Windows `newline=None` turns every `\n` this codec writes into
-  // `\r\n`, while every byte count the store computes — the index budget, both digests — is
-  // computed on LF text. This port writes LF on every platform. On macOS and Linux
-  // `os.linesep` is `\n`, so the difference cannot be constructed here at all: CPython gates
-  // write-translation on `#ifdef MS_WINDOWS`, a compile-time switch.
+  // THIS WAS THE ONE RULING AND IT IS NOW A PLAIN COMPARISON. N2 ruled that the port would
+  // write LF on every platform, on the grounds that CRLF "already disagrees with the store's
+  // own arithmetic" and that matching it "would make the same Fact emit different bytes on
+  // two machines". Both of those describe the REFERENCE: CPython's `_check_index_budget`
+  // counts LF text while `write_text` puts CRLF on the disk, and CPython already emits
+  // different bytes for one Fact on Windows and on macOS. MEASURED, run 32646521489: the
+  // ruling accounted for 83 of the 132 Windows conformance failures — every fact file, every
+  // checkpoint, every accounting line, one byte per line — in a store the Python server and
+  // this one both read and write on the same machine. The ruling is reversed; what follows
+  // are the two halves of the property, and neither of them is allowed to differ.
   //
-  // So the `expected` side is CPython performing that same translation with the target named
-  // explicitly (`newline="\r\n"`, the `windows_write` arm of `codec_ref.py`), not a JS
-  // `str.replace` standing in for it. That buys one real property: if CPython's newline
-  // translation ever moved, this case moves with it. It does NOT buy the other one — a port
-  // that started emitting CRLF *on Windows* would still emit LF here, so this runner cannot
-  // see that fix. Only a Windows runner can -- and one now has. MEASURED on windows-latest,
-  // GitHub run 32645443625: the store suite ran BOTH runtimes side by side over its synthetic
-  // fixtures and CPython's fact files came back CRLF against this port's LF, base64
-  // `LS0tDQpuYW1l...` (`---\r\nname:`) against `LS0tCm5hbWU6` (`---\nname:`), one extra byte
-  // per line on every file compared. The ruling's premise is confirmed rather than assumed,
-  // and its SCOPE turned out wider than fact files: the shift-work checkpoint (2609 bytes
-  // against 2516) and `index.md` (42 against 41) translate too, so on Windows the two
-  // runtimes do not write byte-identical stores at all. Registered, not resolved here.
+  // Half one, decidable on EVERY platform: the port's translation is CPython's translation.
+  // `newline="\r\n"` asks the same `TextIOWrapper` for the same target explicitly, which is
+  // how a POSIX runner gets to see a translation its own `os.linesep` would make a no-op.
   const sample = factfile.formatFact(corpus[0]);
   const windowsBytes = Buffer.from(
     ctx.runPython(REF, { op: 'windows_write', facts: [corpus[0]] }).written_b64[0],
     'base64',
   );
   cases.push({
-    name: 'ruling: node writes LF where python-on-windows writes CRLF',
+    name: 'toCrlf is CPython\'s newline translation, not a str.replace that resembles it',
     kind: 'bytes',
     expected: [...windowsBytes],
-    actual: sample,
-    ruling:
-      'Python opens fact files with newline=None, so on Windows every one is CRLF while ' +
-      'the index budget and the digests are all computed on LF text. This port writes LF ' +
-      'on every platform: the CRLF is incidental to newline=None, it already disagrees ' +
-      "with the store's own arithmetic, and reproducing it would make the same Fact emit " +
-      'different bytes on two machines. Reads stay universal-newline on both sides. THE ' +
-      'EXPECTED SIDE IS CPYTHON, not a simulation in this file — `codec_ref.py`\'s ' +
-      '`windows_write` arm asks the same TextIOWrapper for the same translation. This ' +
-      'runner still cannot observe the difference being FIXED, because a fix would be ' +
-      'Windows-gated and this is macOS; the Windows one-liner in the notes settles that.',
+    actual: pyfs.toCrlf(sample),
   });
-  // The half that IS decidable here, as a plain non-ruled assertion: the port put no CR in
-  // the bytes at all. Without this, "we write LF" would rest on the ruled case above, and a
-  // case that is required to differ cannot also be the thing that proves what we emit.
+  // Half two, also decidable on every platform: what the port writes is what CPython writes
+  // HERE. `native_write` is `Path.write_text` with the default `newline=None`, so on a POSIX
+  // runner this pins the no-op and on a Windows cell it pins the CRLF — the same case,
+  // measuring the platform it is standing on rather than describing the one it is not.
+  const nativeBytes = Buffer.from(
+    ctx.runPython(REF, { op: 'native_write', facts: [corpus[0]] }).written_b64[0],
+    'base64',
+  );
   cases.push({
-    name: 'the port emits no CR on this platform',
-    kind: 'string',
-    expected: 'carriage returns: 0',
-    actual: `carriage returns: ${(sample.match(/\r/g) ?? []).length}`,
+    name: 'Path.write_text on THIS platform, byte for byte',
+    kind: 'bytes',
+    expected: [...nativeBytes],
+    actual: pyfs.pyNewlineOut(sample),
   });
   notes.push(
-    'the CRLF ruling compares CPython\'s own newline translation against this port; a Windows ' +
-      'runner settles the half this one cannot, with: python -c "import pathlib;p=pathlib.Path(f);' +
-      'p.write_text(t,encoding=\'utf-8\');print(len(t.encode()), p.stat().st_size)"',
+    `os.linesep here is ${JSON.stringify(pyfs.PY_LINESEP)}; the emitter builds LF text and the ` +
+      'writer translates on the way out, which is where CPython does it too. The index budget ' +
+      'and both digests stay on the LF text, as the reference computes them.',
   );
 
   return { cases, notes };

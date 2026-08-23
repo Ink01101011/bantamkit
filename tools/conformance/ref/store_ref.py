@@ -27,6 +27,11 @@ survive byte-exactly travels as base64.
     {"op": "sortpaths","dir": str, "names": [...]}-> {"sorted": [...]}
     {"op": "paths",    "joins": [[part, ...]], "suffixes": [[path, suffix]]}
       -> {"joined": [...], "suffixed": [...]}
+    {"op": "winpaths", "raws": [...], "joins": [[part, ...]], "suffixes": [[path, suffix]]}
+      -> {"splitroot": [...], "parsed": [...], "str": [...], "parents": [...],
+          "absolute": [...], "name": [...], "suffix": [...], "joined": [...],
+          "suffixed": [...]}
+    {"op": "winerror", "numbers": [int, ...]}     -> {"messages": {n: text}}  (Windows only)
 """
 
 from __future__ import annotations
@@ -34,9 +39,10 @@ from __future__ import annotations
 import base64
 import errno as errno_mod
 import json
+import ntpath
 import os
 import sys
-from pathlib import Path, PurePath
+from pathlib import Path, PurePath, PureWindowsPath
 
 import yaml
 
@@ -196,6 +202,50 @@ def main() -> None:
                 b64(str(PurePath(unb64(p)).with_suffix(unb64(s)))) for p, s in request["suffixes"]
             ],
         }
+    elif op == "winpaths":
+        # PURE path algebra under the WINDOWS flavour, which `ntpath` and `PureWindowsPath`
+        # compute identically on every operating system. That is the whole point: the port's
+        # Windows arm is only ever executed on a runner, and without this the only way to
+        # find out that `//a/b` has no parents is to spend a CI cycle. Nothing here touches
+        # the filesystem, so it runs on the laptop that wrote the code.
+        raws = [unb64(r) for r in request["raws"]]
+        out = {
+            "splitroot": [[b64(x) for x in ntpath.splitroot(r)] for r in raws],
+            "parsed": [
+                [b64(PureWindowsPath(r).drive), b64(PureWindowsPath(r).root),
+                 [b64(t) for t in PureWindowsPath(r).parts[1:]]
+                 if (PureWindowsPath(r).drive or PureWindowsPath(r).root)
+                 else [b64(t) for t in PureWindowsPath(r).parts]]
+                for r in raws
+            ],
+            "str": [b64(str(PureWindowsPath(r))) for r in raws],
+            "parents": [[b64(str(x)) for x in PureWindowsPath(r).parents] for r in raws],
+            "absolute": [PureWindowsPath(r).is_absolute() for r in raws],
+            "name": [b64(PureWindowsPath(r).name) for r in raws],
+            "suffix": [b64(PureWindowsPath(r).suffix) for r in raws],
+            "joined": [
+                b64(str(PureWindowsPath(*[unb64(p) for p in parts]))) for parts in request["joins"]
+            ],
+            "ntjoined": [
+                b64(ntpath.join(*[unb64(p) for p in parts])) for parts in request["joins"]
+            ],
+            "suffixed": [
+                b64(str(PureWindowsPath(unb64(p)).with_suffix(unb64(s))))
+                for p, s in request["suffixes"]
+            ],
+        }
+    elif op == "winerror":
+        # The Win32 message table, asked of the running Windows rather than remembered.
+        # `PyErr_SetExcFromWindowsErrWithFilename` strips every trailing character that is
+        # `<= ' '` or `'.'`, so the trim here is CPython's own, not a guess at it.
+        import ctypes
+
+        def _trim(text: str) -> str:
+            while text and (text[-1] <= " " or text[-1] == "."):
+                text = text[:-1]
+            return text
+
+        out = {"messages": {str(n): b64(_trim(ctypes.FormatError(n))) for n in request["numbers"]}}
     else:
         raise SystemExit(f"unknown op {op!r}")
     json.dump(out, sys.stdout)

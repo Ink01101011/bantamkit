@@ -27,12 +27,25 @@
  *     reads to check the wordings against the running Python — covers only the first. An
  *     errno added to one and not the other is silently uncovered. Nothing measured is wrong
  *     today: the `strerror table` case passes on all 19 entries.
- *   - FOUR PATH PARSERS. `parsePath`, `lastSeparator`, `suffixDot` and `resolveWindows`
- *     each re-decide where a separator and a drive letter are. They agree — the `PurePath /
- *     and with_suffix` case compares 18 shapes against `PurePath` — but they agree by
- *     coincidence of four correct implementations, not by construction.
  *   - `normcase` AND `PyRuntimeError` ARE EXPORTED WITH NO CALLER OUTSIDE THIS FILE. Both
  *     are used inside it; the export is surface nobody asked for.
+ *
+ * FOUR PATH PARSERS became one, and N11 closed that one because it had stopped being a
+ * consolidation and started being wrong. `parsePath`, `lastSeparator` and `resolveWindows`
+ * each re-decided where a separator and a drive letter are; the Windows readings they agreed
+ * on were the POSIX ones. There is now a single `ntpath`/`PureWindowsPath` model —
+ * `ntSplitRoot`, `parseWindowsPath`, `ntJoin`, `winFormat` and the `win*` functions over
+ * them — and every Windows arm is a one-line dispatch to it.
+ *
+ * WHY THE WINDOWS ARMS ARE EXPORTED SEPARATELY FROM THE PLATFORM DISPATCH. They are pure
+ * path algebra, and CPython computes it the same way on every operating system, so exporting
+ * the flavour explicitly turns "measurable only on a GitHub runner" into "measurable on the
+ * laptop that wrote it". The `ntpath.splitroot and PureWindowsPath parsing` case in
+ * `tools/conformance/suites/store.mjs` drives them against a running CPython on every
+ * platform, and it caught a wrong answer (`///a` reported absolute) before a CI cycle was
+ * spent on it. What still cannot be measured off Windows is the DISPATCH — the
+ * `process.platform === 'win32'` line itself — and the calls that touch the real filesystem
+ * (`resolveWindows`, `scandirShape`).
  *
  * Also registered, in `store.ts` rather than here: the `ValueError` arms `_facts` catches
  * and this port reaches by a different route. Owner: whichever unit consolidates `pyfs`.
@@ -64,11 +77,12 @@ import { constants as osConstants, homedir, userInfo } from 'node:os';
  * Python for `os.strerror` of each entry. Adding a key without adding it to that case is
  * how this quietly becomes a guess.
  *
- * WINDOWS IS NOT COVERED AND THE PORT SAYS SO. `os.scandir` on Windows raises an `OSError`
- * whose `strerror` comes from the Win32 message table by way of `winerror`, not from the
- * CRT — "Access is denied" where POSIX says "Permission denied" — so on Windows the
- * sentence `_unreadable` builds differs between the runtimes in its middle clause. The path
- * and the consequence, which are what send a reader to the right place, are identical.
+ * WINDOWS IS COVERED BY A SECOND TABLE, NOT BY THIS ONE. `os.scandir` on Windows raises an
+ * `OSError` whose `strerror` comes from the Win32 message table by way of `winerror`, not
+ * from the CRT — "The directory name is invalid" where POSIX says "Not a directory". That
+ * table is `WINERROR` below, and which of the two a given call uses is `OSErrorOrigin`:
+ * anything that goes through the Win32 API reads `WINERROR`, and `open()` — which goes
+ * through the C runtime — reads this one.
  */
 const STRERROR: Record<string, string> = {
   E2BIG: 'Argument list too long',
@@ -94,6 +108,18 @@ const STRERROR: Record<string, string> = {
 
 /** The errno names this port claims to render in CPython's words. The suite reads it. */
 export const STRERROR_NAMES: readonly string[] = Object.keys(STRERROR);
+
+/**
+ * `os.strerror` for one errno NAME — the table alone, with no Windows arm in front of it.
+ *
+ * The conformance case that checks these wordings used to read them back through
+ * `asPyOSError`, which now answers with the WIN32 message on Windows for exactly the codes
+ * the table also carries. Reading the table directly keeps that case measuring the thing its
+ * name says, and leaves the winerror wordings to the `winerror table` case beside it.
+ */
+export function pyStrerror(code: string): string | undefined {
+  return STRERROR[code];
+}
 
 /**
  * CPython's `errnomap`, for the errnos this module can raise.
@@ -133,6 +159,16 @@ export class PyOSError extends Error {
   readonly filename: string | null;
   /** `OSError.filename2` — set by the two-path syscalls, and PRINTED when it is. */
   readonly filename2: string | null;
+  /**
+   * `OSError.winerror`, which exists ONLY on Windows and CHANGES `__str__`.
+   *
+   * CPython carries both numbers for a call that went through the Win32 API: the translated
+   * POSIX `errno` and the raw Win32 code. `OSError.__str__` prefers the latter and prints
+   * `[WinError %d] <the Win32 message>`. `null` here means "this OSError has no winerror",
+   * which is every OSError on POSIX and every OSError CPython raises on Windows out of the
+   * C runtime rather than out of the Win32 API — see `asPyOSError`'s `origin`.
+   */
+  readonly winerror: number | null;
 
   constructor(
     errno: number,
@@ -140,6 +176,7 @@ export class PyOSError extends Error {
     strerror: string,
     filename: string | null,
     filename2: string | null = null,
+    winerror: number | null = null,
   ) {
     // `OSError.__str__` is `"[Errno %S] %S: %R"`, or `"[Errno %S] %S: %R -> %R"` when there
     // are two (`Objects/exceptions.c`). `%R` is `repr`, NOT a hand-written pair of
@@ -153,13 +190,18 @@ export class PyOSError extends Error {
         : filename2 === null
           ? `: ${pyRepr(filename)}`
           : `: ${pyRepr(filename)} -> ${pyRepr(filename2)}`;
-    super(`[Errno ${errno}] ${strerror}${where}`);
+    // `Objects/exceptions.c`, `OSError_str`: the winerror arm comes FIRST, and when it fires
+    // the number printed is the Win32 one and the sentence is the Win32 one. There is no
+    // spelling of `str(OSError)` that shows both.
+    const head = winerror === null ? `[Errno ${errno}]` : `[WinError ${winerror}]`;
+    super(`${head} ${strerror}${where}`);
     this.name = OSERROR_SUBCLASS[code] ?? 'OSError';
     this.errno = errno;
     this.code = code;
     this.strerror = strerror;
     this.filename = filename;
     this.filename2 = filename2;
+    this.winerror = winerror;
   }
 }
 
@@ -181,15 +223,9 @@ export class PyOSError extends Error {
  * for. Cross-checked against the reference by the `oserror` cases in
  * tools/conformance/suites/store.mjs.
  *
- * WHAT THIS DOES NOT FIX, stated so nobody reads a partial fix as a whole one. CPython on
- * Windows raises OSError with `winerror` SET for the calls that go through the Win32 API,
- * and `OSError.__str__` then prints `[WinError %d] <the Win32 message>` instead of
- * `[Errno %d] <the POSIX message>`. MEASURED in the same run: `os.replace` onto a missing
- * directory is `[WinError 3] The system cannot find the path specified`, where this port
- * says `No such file or directory`. That is a second, larger defect in the same area — the
- * whole `STRERROR` table is POSIX wording — and it is registered, not fixed here.
+ * The `winerror` half of the same question is `WINERROR` and `winerrorFor` below.
  */
-function pyErrno(e: NodeFsError | undefined): number {
+function pyErrno(e: { code?: string; errno?: number } | undefined): number {
   const named = e?.code === undefined ? undefined : (osConstants.errno as Record<string, number | undefined>)[e.code];
   return named ?? Math.abs(e?.errno ?? 0);
 }
@@ -202,19 +238,164 @@ interface NodeFsError extends Error {
   syscall?: string;
 }
 
+// ---------------------------------------------------------------------------- winerror
+
+/**
+ * The Win32 message table, as `FormatMessageW` renders it and as CPython then TRIMS it.
+ *
+ * `PyErr_SetExcFromWindowsErrWithFilename` strips every trailing character that is `<= ' '`
+ * or `'.'`, so `The system cannot find the file specified.\r\n` reaches a reader without the
+ * period. Four of these are MEASURED against the reference on windows-latest, run
+ * 32646521489 (2, 3, 183, 267); the rest are the table entries the same syscalls can reach,
+ * and the `winerror table` case in `tools/conformance/suites/store.mjs` asks the running
+ * CPython for every one of them on a Windows runner rather than trusting this list.
+ */
+const WINERROR: Record<number, string> = {
+  1: 'Incorrect function',
+  2: 'The system cannot find the file specified',
+  3: 'The system cannot find the path specified',
+  5: 'Access is denied',
+  15: 'The system cannot find the drive specified',
+  32: 'The process cannot access the file because it is being used by another process',
+  80: 'The file exists',
+  87: 'The parameter is incorrect',
+  123: 'The filename, directory name, or volume label syntax is incorrect',
+  145: 'The directory is not empty',
+  183: 'Cannot create a file when that file already exists',
+  206: 'The filename or extension is too long',
+  267: 'The directory name is invalid',
+  1920: 'The file cannot be accessed by the system',
+  1921: 'The name of the file cannot be resolved by the system',
+};
+
+/** The winerrors this port claims to render in CPython's words. The suite reads it. */
+export const WINERROR_NUMBERS: readonly number[] = Object.keys(WINERROR).map(Number);
+
+/** One Win32 wording, as CPython trims it. The `winerror table` case checks every entry. */
+export function pyWinStrerror(winerror: number): string | undefined {
+  return WINERROR[winerror];
+}
+
+/** `ERROR_CANT_RESOLVE_FILENAME` — pathlib's `_WINERROR_CANT_RESOLVE_FILENAME`. */
+const WINERROR_CANT_RESOLVE_FILENAME = 1921;
+
+/**
+ * Which SHAPE of Windows call produced an error, because CPython's answer depends on it.
+ *
+ * `os.stat`, `os.scandir`, `os.mkdir`, `os.replace` and `os.unlink` go through the Win32 API
+ * and raise an OSError with `winerror` SET. `open()` does NOT: it goes through the C runtime,
+ * which fills in `errno` alone, and `str()` of that error is the ordinary `[Errno %d]` form
+ * with the CRT's own POSIX wording. MEASURED, run 32646521489: opening a directory for write
+ * is `[Errno 13] Permission denied` on CPython-for-Windows — not `[WinError 5]`, and not the
+ * `[Errno 21] Is a directory` libuv reports. Getting this split wrong renders the right
+ * number in the wrong sentence.
+ */
+export type OSErrorOrigin = 'win32' | 'crt' | 'scandir';
+
+/**
+ * libuv's code -> the Win32 error CPython would have carried, or `null` for "no winerror".
+ *
+ * THE MAPPING IS MANY-TO-ONE IN THE DIRECTION THAT LOSES INFORMATION, which is why this
+ * cannot be a plain table. libuv translates every Win32 error into one POSIX-shaped code, so
+ * `ERROR_FILE_NOT_FOUND` (2) and `ERROR_PATH_NOT_FOUND` (3) both arrive as `ENOENT` and the
+ * distinction Windows drew has to be RE-DERIVED. Win32 picks 3 whenever the component that
+ * failed was needed AS A DIRECTORY and 2 when only the final name was missing, so the probe
+ * is exactly that: which of the components is not there.
+ *
+ * Verified against the reference for both arms on run 32646521489 — `os.replace` onto a
+ * missing destination DIRECTORY is 3, `os.replace` of a missing source FILE beside an
+ * existing directory is 2. `exists` is injected so the derivation is a pure function with a
+ * node that goes red on a laptop.
+ */
+export function winerrorFor(
+  code: string,
+  origin: OSErrorOrigin,
+  path: string | null,
+  dest: string | null,
+  exists: (candidate: string) => boolean,
+): number | null {
+  if (origin === 'crt') return null;
+  switch (code) {
+    case 'ENOENT': {
+      // A directory-listing call uses the NAMED path as a directory, so a missing leaf is
+      // already a missing directory component there; every other call needs only its parent.
+      if (origin === 'scandir') return path !== null && exists(path) ? 2 : 3;
+      // A two-name call opens the SOURCE first, so a missing source is 2 even when the
+      // destination's directory is missing too. MEASURED both ways round on run 32646521489:
+      // an existing source into a missing destination directory is 3, a missing source
+      // beside an existing one is 2.
+      if (dest !== null) {
+        if (path !== null && !exists(path)) return 2;
+        if (!exists(pyParent(dest))) return 3;
+        return 2;
+      }
+      if (path !== null && !exists(pyParent(path))) return 3;
+      return 2;
+    }
+    case 'ENOTDIR':
+      return 267;
+    case 'EEXIST':
+      return 183;
+    case 'EACCES':
+    case 'EPERM':
+      return 5;
+    case 'ENOTEMPTY':
+      return 145;
+    case 'ELOOP':
+      return WINERROR_CANT_RESOLVE_FILENAME;
+    case 'EINVAL':
+      return 87;
+    case 'ENAMETOOLONG':
+      return 206;
+    case 'EBUSY':
+      return 32;
+    default:
+      // No claim rather than a fabricated one: an unmapped code keeps the `[Errno %d]` form,
+      // which is visibly a difference instead of a plausible-looking wrong sentence.
+      return null;
+  }
+}
+
+/**
+ * The C runtime's answer where it is NOT libuv's, for the calls `open()` makes.
+ *
+ * One entry, and it is measured: opening a directory for writing is `EISDIR` to libuv and
+ * `EACCES` to the Windows CRT, so CPython prints `[Errno 13] Permission denied` for the
+ * `.tmp` that shiftwork's clock-out could not write. Everything else the CRT can raise here
+ * — ENOENT, EACCES, EEXIST, EINVAL — already agrees with libuv in both number and wording.
+ */
+export function crtCode(code: string): string {
+  return code === 'EISDIR' ? 'EACCES' : code;
+}
+
 /**
  * A Node `fs` rejection, restated as the `OSError` CPython would have raised.
  *
  * An errno outside the table keeps libuv's own lowercase wording rather than a fabricated
  * one — a wrong capital letter in a sentence a model reads is worse than a visibly
  * different one, and the table is the thing the conformance suite can check.
+ *
+ * `origin` says which of CPython's two error paths the call would have taken on Windows;
+ * off Windows it changes nothing, because there is only one path there.
  */
-export function asPyOSError(error: unknown, fallbackPath?: string, fallbackDest?: string): PyOSError {
+export function asPyOSError(
+  error: unknown,
+  fallbackPath?: string,
+  fallbackDest?: string,
+  origin: OSErrorOrigin = 'win32',
+): PyOSError {
   const e = error as NodeFsError;
-  const code = e?.code ?? 'EUNKNOWN';
-  const errno = pyErrno(e);
-  const strerror = STRERROR[code] ?? `${code}: ${e?.message ?? 'unknown error'}`;
-  return new PyOSError(errno, code, strerror, e?.path ?? fallbackPath ?? null, e?.dest ?? fallbackDest ?? null);
+  const windows = process.platform === 'win32';
+  const code = windows && origin === 'crt' ? crtCode(e?.code ?? 'EUNKNOWN') : (e?.code ?? 'EUNKNOWN');
+  const errno = pyErrno({ code, errno: e?.errno });
+  const filename = e?.path ?? fallbackPath ?? null;
+  const filename2 = e?.dest ?? fallbackDest ?? null;
+  const winerror = windows ? winerrorFor(code, origin, filename, filename2, pyLexists) : null;
+  const strerror =
+    (winerror === null ? STRERROR[code] : WINERROR[winerror]) ??
+    STRERROR[code] ??
+    `${code}: ${e?.message ?? 'unknown error'}`;
+  return new PyOSError(errno, code, strerror, filename, filename2, winerror);
 }
 
 // -------------------------------------------------------------------------- utf-8 text
@@ -314,41 +495,64 @@ export function pyReadText(path: string): string {
   try {
     raw = readFileSync(path);
   } catch (e) {
-    throw asPyOSError(e, path);
+    throw asPyOSError(e, path, undefined, 'crt');
   }
   return pyDecodeUtf8(raw).replace(/\r\n?/g, '\n');
 }
 
 /**
- * `Path.write_text(text, encoding="utf-8")`, minus the newline translation.
+ * `io.TextIOWrapper`'s outgoing newline translation, which is `newline=None`'s whole effect.
  *
- * N2's ruling, applied to `index.md` and to every fact file: Python opens with
- * `newline=None`, so on Windows it writes CRLF while `_check_index_budget` counts the LF
- * string it just built. This port writes LF everywhere, which is the only way the budget
- * arithmetic and the bytes on disk can agree on all platforms. See `store.indexText`.
+ * THIS REVERSES N2's RULING, and the reason it was reversed is worth more than the ruling
+ * was. N2 wrote LF on every platform, arguing that CRLF "already disagrees with the store's
+ * own arithmetic" and that reproducing it "would make the same Fact emit different bytes on
+ * two machines". Both halves describe the REFERENCE, not a defect being avoided: CPython's
+ * `_check_index_budget` counts the LF string it just built while `write_text` puts CRLF on
+ * the disk, and CPython already emits different bytes for the same Fact on Windows and on
+ * macOS. A port that "fixes" that is not byte-compatible with the thing it stands beside —
+ * and byte-compatibility is the product, because the Python server and this one read and
+ * write the SAME store on the SAME machine. MEASURED, run 32646521489: 83 conformance cases
+ * differed by exactly this, one byte per line, in files both runtimes had just written.
+ *
+ * The arithmetic does not move. Python counts the in-memory LF text and so does this port;
+ * only the bytes leaving through `write` are translated, which is where CPython does it too.
+ *
+ * The translation is unconditional on `\n`, INCLUDING the `\n` of a `\r\n`: CPython emits
+ * `\r\r\n` for a string that already held a CRLF, and so does this.
  */
+export function toCrlf(text: string): string {
+  return text.replace(/\n/g, '\r\n');
+}
+
+/** The same translation, gated the way CPython gates it: `#ifdef MS_WINDOWS`. */
+export function pyNewlineOut(text: string): string {
+  return process.platform === 'win32' ? toCrlf(text) : text;
+}
+
+/** `os.linesep` as one string — the line terminator a text-mode write actually emits. */
+export const PY_LINESEP: string = process.platform === 'win32' ? '\r\n' : '\n';
+
+/** `Path.write_text(text, encoding="utf-8")`, newline translation included. */
 export function pyWriteText(path: string, text: string): void {
   try {
-    writeFileSync(path, text, 'utf8');
+    writeFileSync(path, pyNewlineOut(text), 'utf8');
   } catch (e) {
-    throw asPyOSError(e, path);
+    throw asPyOSError(e, path, undefined, 'crt');
   }
 }
 
 /**
  * `path.open("a", encoding="utf-8").write(text)` — the accounting log's append.
  *
- * Same newline ruling as `pyWriteText`: Python opens with `newline=None` and would write
- * CRLF on Windows, and this writes LF everywhere so the ledger a Node server appends to is
- * the same file on every platform. One `appendFileSync` is one `open(O_APPEND)/write/close`,
- * which is what CPython's `with` block does, so a line is never interleaved with another
- * process's.
+ * Same newline translation as `pyWriteText`, for the same reason. One `appendFileSync` is
+ * one `open(O_APPEND)/write/close`, which is what CPython's `with` block does, so a line is
+ * never interleaved with another process's.
  */
 export function pyAppendText(path: string, text: string): void {
   try {
-    appendFileSync(path, text, 'utf8');
+    appendFileSync(path, pyNewlineOut(text), 'utf8');
   } catch (e) {
-    throw asPyOSError(e, path);
+    throw asPyOSError(e, path, undefined, 'crt');
   }
 }
 
@@ -419,8 +623,36 @@ export function pyScandirNames(directory: string): string[] {
   try {
     return readdirSync(directory);
   } catch (e) {
-    throw asPyOSError(e, directory);
+    throw asPyOSError(scandirShape(e, directory), directory, undefined, 'scandir');
   }
+}
+
+/**
+ * The one place libuv and CPython make DIFFERENT SYSCALLS, not just different sentences.
+ *
+ * `os.scandir(p)` on Windows is `FindFirstFileW(p + "\\*")`, so `p` is a DIRECTORY COMPONENT
+ * of the name being opened; a dangling FILE symlink there is `ERROR_DIRECTORY` (267) and
+ * CPython raises `NotADirectoryError`. libuv opens a handle on `p` itself instead, follows
+ * the reparse point, finds nothing and reports `ENOENT`. MEASURED, run 32646521489: for the
+ * same dangling `facts` symlink the reference says "The directory name is invalid" and this
+ * port said "No such file or directory (a path exists there)", and `count_facts` answered
+ * `0` where the reference raised. That is not a wording difference — an answer of 0 sends a
+ * caller down the success branch — so the SHAPE is restated here and the sentence follows.
+ *
+ * The probe is `lexists`, not `exists`: the whole point is a name that IS there while what
+ * it names is not. `reference-windows-dangling-symlink-two-shapes` is the same finding from
+ * the other side, and this is the second shape it predicted.
+ */
+function scandirShape(error: unknown, directory: string): unknown {
+  const e = error as NodeFsError;
+  if (process.platform !== 'win32') return error;
+  if (!scandirIsNotADirectory(e?.code ?? '', () => pyLexists(directory))) return error;
+  return { ...e, code: 'ENOTDIR', errno: undefined };
+}
+
+/** The decision inside `scandirShape`, without the platform gate, so a laptop can fail it. */
+export function scandirIsNotADirectory(code: string, lexists: () => boolean): boolean {
+  return code === 'ENOENT' && lexists();
 }
 
 /**
@@ -523,6 +755,7 @@ export function sortedPathParts(paths: readonly (readonly string[])[]): string[]
  * (`C:foo`) and UNC roots are outside what a store root has ever been and are not modelled.
  */
 export function pyJoin(...parts: string[]): string {
+  if (process.platform === 'win32') return winStr(ntJoin(...parts));
   let anchor = '';
   const out: string[] = [];
   for (const part of parts) {
@@ -555,29 +788,176 @@ interface ParsedPath {
 }
 
 function parsePath(path: string): ParsedPath {
-  const win = process.platform === 'win32';
-  const sep = win ? '\\' : '/';
-  const pieces = win ? path.split(/[\\/]/) : path.split('/');
+  if (process.platform === 'win32') {
+    const { drive, root, tail } = parseWindowsPath(path);
+    return { anchor: drive + root, parts: tail };
+  }
+  const pieces = path.split('/');
   let anchor = '';
   // `''.split('/')` is `['']`, which is not a leading separator: `str(PurePath(''))` is `.`
   // and has no anchor. Measured against CPython through `Path('').expanduser()`.
   if (path !== '' && pieces[0] === '') {
     let leading = 0;
     while (pieces[leading] === '') leading += 1;
-    anchor = leading === 2 && pieces.length > 2 ? `${sep}${sep}` : sep;
+    anchor = leading === 2 && pieces.length > 2 ? '//' : '/';
     pieces.splice(0, leading);
-  } else if (win && /^[A-Za-z]:$/.test(pieces[0] ?? '')) {
-    anchor = `${pieces.shift()}${sep}`;
-    while (pieces[0] === '') pieces.shift();
   }
   return { anchor, parts: pieces.filter((piece) => piece !== '' && piece !== '.') };
 }
 
+// --------------------------------------------------------------------- ntpath, on Windows
+
+/**
+ * `ntpath.splitroot` — drive, root, and the rest, ported branch for branch.
+ *
+ * The old spelling of `parsePath` counted leading separators the way `PurePosixPath` does,
+ * and that reading is WRONG ON WINDOWS in the direction that changes an answer: `//a/b` is
+ * not "a root and two components", it is a UNC share whose whole text is the drive, with no
+ * parents at all and nothing for `_walk_to_store` to iterate. MEASURED against CPython 3.12
+ * on run 32646521489 — `PureWindowsPath('//a/b').parents` is `[]` and this port answered
+ * `['\\\\a', '\\\\']`, which is a walk over two directories that do not exist.
+ *
+ * The result is spelled with the CALLER's separators, not normalised ones, exactly as
+ * `ntpath.splitroot` returns slices of its argument.
+ */
+export function ntSplitRoot(path: string): [string, string, string] {
+  const norm = path.replace(/\//g, '\\');
+  if (norm.startsWith('\\')) {
+    if (norm.startsWith('\\\\')) {
+      // `\\?\UNC\` is eight characters of prefix before the server name starts.
+      const start = norm.slice(0, 8).toUpperCase() === '\\\\?\\UNC\\' ? 8 : 2;
+      const index = norm.indexOf('\\', start);
+      if (index === -1) return [path, '', ''];
+      const index2 = norm.indexOf('\\', index + 1);
+      if (index2 === -1) return [path, '', ''];
+      return [path.slice(0, index2), path.slice(index2, index2 + 1), path.slice(index2 + 1)];
+    }
+    return ['', path.slice(0, 1), path.slice(1)];
+  }
+  if (norm.slice(1, 2) === ':') {
+    if (norm.slice(2, 3) === '\\') return [path.slice(0, 2), path.slice(2, 3), path.slice(3)];
+    return [path.slice(0, 2), '', path.slice(2)];
+  }
+  return ['', '', path];
+}
+
+/**
+ * `PurePath._parse_path` under the Windows flavour: drive, root and the `_tail` components.
+ *
+ * The `drv_parts` arm is not decoration. `splitroot` hands back a bare `\\server\share` with
+ * an EMPTY root, and pathlib puts the root back on when the drive names a real share (four
+ * pieces) or a `\\?\UNC\server\share` (six) — which is why `//a/b` prints with a trailing
+ * separator and `//a` does not.
+ */
+export function parseWindowsPath(path: string): { drive: string; root: string; tail: string[] } {
+  if (path === '') return { drive: '', root: '', tail: [] };
+  const normalised = path.replace(/\//g, '\\');
+  const [drive, splitRoot, rest] = ntSplitRoot(normalised);
+  let root = splitRoot;
+  if (root === '' && drive.startsWith('\\') && !drive.endsWith('\\')) {
+    const pieces = drive.split('\\');
+    // `drv_parts[2] not in '?.'` is a SUBSTRING test in Python, and the empty string is a
+    // substring of everything: `///a` splits to a third piece of `''`, the test is therefore
+    // False, and the path keeps its empty root and stays RELATIVE. Spelling it as two
+    // character comparisons made `///a` absolute — caught on a laptop by the case below,
+    // which is the entire reason that case exists.
+    if (pieces.length === 4 && !'?.'.includes(pieces[2]!)) root = '\\';
+    else if (pieces.length === 6) root = '\\';
+  }
+  return { drive, root, tail: rest.split('\\').filter((piece) => piece !== '' && piece !== '.') };
+}
+
+/**
+ * `ntpath.join` — what `PurePath.__truediv__` actually feeds the parser.
+ *
+ * `PurePath('//a') / 'facts'` is `\\a\facts\`, not `\\a\facts`, because the join produces
+ * `//a\facts` and the RE-PARSE reads all of it as a share. Nothing else reproduces that.
+ */
+export function ntJoin(...parts: string[]): string {
+  const separators = '\\/';
+  let [drive, root, tail] = ntSplitRoot(parts[0] ?? '');
+  for (const part of parts.slice(1)) {
+    const [partDrive, partRoot, partTail] = ntSplitRoot(part);
+    if (partRoot !== '') {
+      if (partDrive !== '' || drive === '') drive = partDrive;
+      root = partRoot;
+      tail = partTail;
+      continue;
+    }
+    if (partDrive !== '' && partDrive !== drive) {
+      if (partDrive.toLowerCase() !== drive.toLowerCase()) {
+        drive = partDrive;
+        root = partRoot;
+        tail = partTail;
+        continue;
+      }
+      drive = partDrive;
+    }
+    if (tail !== '' && !separators.includes(tail[tail.length - 1]!)) tail += '\\';
+    tail += partTail;
+  }
+  // A separator has to appear between a bare UNC share and a relative remainder.
+  if (tail !== '' && root === '' && drive !== '' && !`:${separators}`.includes(drive[drive.length - 1]!)) {
+    return `${drive}\\${tail}`;
+  }
+  return drive + root + tail;
+}
+
+/**
+ * `PurePath._format_parsed_parts` under the Windows flavour — `str(PureWindowsPath)`.
+ *
+ * Exported, and every Windows arm below goes through it, so the flavour has exactly ONE
+ * implementation and the conformance suite can drive it against `PureWindowsPath` from a
+ * laptop instead of from a runner.
+ */
+export function winFormat(drive: string, root: string, tail: readonly string[]): string {
+  if (drive !== '' || root !== '') return drive + root + tail.join('\\');
+  // An anchorless path whose FIRST component would itself parse as a drive gets a `.` in
+  // front, so `PureWindowsPath('a', 'C:x')` does not print as a drive-relative path.
+  if (tail.length > 0 && ntSplitRoot(tail[0]!)[0] !== '') return ['.', ...tail].join('\\');
+  return tail.join('\\') || '.';
+}
+
+/** `str(PureWindowsPath(path))`. */
+export function winStr(path: string): string {
+  const { drive, root, tail } = parseWindowsPath(path);
+  return winFormat(drive, root, tail);
+}
+
+/** `PureWindowsPath.parents`. `//a/b` is a share and has NONE. */
+export function winParents(path: string): string[] {
+  const { drive, root, tail } = parseWindowsPath(path);
+  const out: string[] = [];
+  for (let n = tail.length - 1; n >= 0; n -= 1) out.push(winFormat(drive, root, tail.slice(0, n)));
+  return out;
+}
+
+/** `PureWindowsPath.name`. */
+export function winName(path: string): string {
+  const { tail } = parseWindowsPath(path);
+  return tail.length === 0 ? '' : tail[tail.length - 1]!;
+}
+
+/** `PureWindowsPath.is_absolute()` — `bool(drive and root)`, so a bare `//a` is NOT one. */
+export function winIsAbsolute(path: string): boolean {
+  const { drive, root } = parseWindowsPath(path);
+  return drive !== '' && root !== '';
+}
+
+/** `PureWindowsPath.with_suffix`, which rebuilds the path in the flavour's own spelling. */
+export function winWithSuffix(path: string, suffix: string): string {
+  const { drive, root, tail } = parseWindowsPath(path);
+  if (tail.length === 0) return winFormat(drive, root, tail);
+  const name = tail[tail.length - 1]!;
+  const dot = suffixDot(name);
+  const stem = dot === -1 ? name : name.slice(0, dot);
+  return winFormat(drive, root, [...tail.slice(0, -1), `${stem}${suffix}`]);
+}
+
 /** `str(PurePath)` for an already-parsed path: the empty path prints as `.`, as Python's does. */
 function renderPath(anchor: string, parts: readonly string[]): string {
-  const sep = process.platform === 'win32' ? '\\' : '/';
   if (parts.length === 0) return anchor === '' ? '.' : anchor;
-  return anchor + parts.join(sep);
+  return anchor + parts.join('/');
 }
 
 /**
@@ -588,6 +968,7 @@ function renderPath(anchor: string, parts: readonly string[]): string {
  * `_resolved_base` resolves before walking. `/` and `.` have no parents at all.
  */
 export function pyParents(path: string): string[] {
+  if (process.platform === 'win32') return winParents(path);
   const { anchor, parts } = parsePath(path);
   const out: string[] = [];
   for (let n = parts.length - 1; n >= 0; n -= 1) out.push(renderPath(anchor, parts.slice(0, n)));
@@ -598,11 +979,16 @@ export function pyParents(path: string): string[] {
 export function pyParent(path: string): string {
   const parents = pyParents(path);
   if (parents.length > 0) return parents[0]!;
+  if (process.platform === 'win32') {
+    const { drive, root } = parseWindowsPath(path);
+    return winFormat(drive, root, []);
+  }
   return renderPath(parsePath(path).anchor, []);
 }
 
 /** `PurePath.name` — the last component, or `''` for a bare anchor. */
 export function pyName(path: string): string {
+  if (process.platform === 'win32') return winName(path);
   const { parts } = parsePath(path);
   return parts.length === 0 ? '' : parts[parts.length - 1]!;
 }
@@ -617,7 +1003,7 @@ export function pyName(path: string): string {
  */
 export function pyIsAbsolute(path: string): boolean {
   if (process.platform !== 'win32') return parsePath(path).anchor !== '';
-  return /^[A-Za-z]:[\\/]/.test(path) || /^[\\/][\\/][^\\/]/.test(path);
+  return winIsAbsolute(path);
 }
 
 // -------------------------------------------------------------------------- home and ~
@@ -832,14 +1218,96 @@ function posixAbspath(path: string): string {
   return leading + out.join('/') || '.';
 }
 
-/** The Windows arm of `pyResolve`. See its docstring: this is not measured on Windows. */
+/**
+ * The Windows arm of `pyResolve` — `ntpath.realpath(strict=False)` and pathlib's ELOOP check.
+ *
+ * SWALLOWING THE FAILURE WAS THE DEFECT. This used to answer `realpathSync.native` or, on any
+ * error at all, the lexical path — which is neither of the two things CPython does. MEASURED
+ * on run 32646521489, both halves: a DANGLING symlink resolves to its TARGET on the reference
+ * (`<bed>\dang` -> `<bed>\nowhere`) and this port answered `<bed>\dang`; and a self-referential
+ * symlink raises `RuntimeError("Symlink loop from %r")` on the reference while this port
+ * raised nothing and returned a path. A missing raise is worse than a wrong sentence: the
+ * caller takes the success branch.
+ *
+ * Both come out of `ntpath._getfinalpathname_nonstrict`, which is ported below: when the OS
+ * cannot resolve a name it FOLLOWS THE LINK ITSELF with `readlink` before giving up, and only
+ * then walks up a component. The loop survives that walk — `_readlink_deep` stops when it
+ * revisits a name — and is caught afterwards by the `stat` that `Path.resolve` runs precisely
+ * so that non-strict resolution still raises on a cycle.
+ */
 function resolveWindows(path: string): string {
-  const absolute = pyIsAbsolute(path) ? pyJoin(path) : pyJoin(process.cwd(), path);
+  const absolute = pyIsAbsolute(path) ? path : ntJoin(process.cwd(), path);
+  let resolved: string;
   try {
-    return realpathSync.native(absolute);
+    resolved = realpathSync.native(absolute);
   } catch {
-    return absolute;
+    resolved = getFinalPathNameNonStrict(absolute);
   }
+  resolved = pyJoin(resolved);
+  try {
+    statSync(resolved);
+  } catch (e) {
+    // `check_eloop`: `errno == ELOOP or winerror == 1921`. libuv folds
+    // `ERROR_CANT_RESOLVE_FILENAME` into `UV_ELOOP`, so the one code covers both tests.
+    if ((e as NodeFsError)?.code === 'ELOOP') {
+      throw new PyRuntimeError(`Symlink loop from ${pyRepr((e as NodeFsError).path ?? resolved)}`);
+    }
+  }
+  return resolved;
+}
+
+/** `ntpath._readlink_deep` — follow the chain by hand, stopping the first time a name repeats. */
+function readlinkDeep(start: string): string {
+  const seen = new Set<string>();
+  let path = start;
+  while (!seen.has(normcase(path))) {
+    seen.add(normcase(path));
+    let target: string;
+    try {
+      target = readlinkSync(path);
+    } catch {
+      break; // not a link, or unreadable: what we have is the answer
+    }
+    path = pyIsAbsolute(target) ? target : ntJoin(ntDirname(path), target);
+  }
+  return path;
+}
+
+/** `ntpath._getfinalpathname_nonstrict` — as much of the target as the OS will resolve. */
+function getFinalPathNameNonStrict(start: string): string {
+  let path = start;
+  let tail = '';
+  while (path !== '') {
+    try {
+      const got = realpathSync.native(path);
+      return tail === '' ? got : ntJoin(got, tail);
+    } catch {
+      /* every allowed winerror; the walk goes on */
+    }
+    const followed = readlinkDeep(path);
+    if (followed !== path) return tail === '' ? followed : ntJoin(followed, tail);
+    const [head, name] = ntSplit(path);
+    if (head !== '' && name === '') return head + tail;
+    tail = tail === '' ? name : ntJoin(name, tail);
+    path = head;
+  }
+  return tail;
+}
+
+/** `ntpath.split` — the head keeps its trailing separators only where they are the root. */
+function ntSplit(path: string): [string, string] {
+  const [drive, root, rest] = ntSplitRoot(path);
+  let cut = rest.length;
+  while (cut > 0 && !'\\/'.includes(rest[cut - 1]!)) cut -= 1;
+  const name = rest.slice(cut);
+  let head = rest.slice(0, cut);
+  head = head.replace(/[\\/]+$/, '') || head;
+  return [drive + root + head, name];
+}
+
+/** `ntpath.dirname`. */
+function ntDirname(path: string): string {
+  return ntSplit(path)[0];
 }
 
 // -------------------------------------------------------------------------- stat probes
@@ -965,18 +1433,17 @@ export function pyFloatRepr(x: number): string {
  * degenerate `facts/.md` (a fact whose frontmatter name is empty) -> `facts/.md.md.tmp`.
  */
 export function pyWithSuffix(path: string, suffix: string): string {
-  const cut = lastSeparator(path);
-  const head = path.slice(0, cut + 1);
-  const name = path.slice(cut + 1);
+  // `with_suffix` rebuilds a `PurePath`, so the answer comes back in the flavour's own
+  // spelling: `PureWindowsPath('/f/a.md').with_suffix('.md.tmp')` is `\f\a.md.tmp`, with the
+  // separators the CALLER wrote replaced. MEASURED against CPython 3.12; slicing the input
+  // string kept `/f/a.md.tmp`, which is a path the reference never prints.
+  if (process.platform === 'win32') return winWithSuffix(path, suffix);
+  const { anchor, parts } = parsePath(path);
+  if (parts.length === 0) return renderPath(anchor, parts);
+  const name = parts[parts.length - 1]!;
   const dot = suffixDot(name);
   const stem = dot === -1 ? name : name.slice(0, dot);
-  return `${head}${stem}${suffix}`;
-}
-
-function lastSeparator(path: string): number {
-  return process.platform === 'win32'
-    ? Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
-    : path.lastIndexOf('/');
+  return renderPath(anchor, [...parts.slice(0, -1), `${stem}${suffix}`]);
 }
 
 /**
@@ -995,9 +1462,8 @@ function suffixDot(name: string): number {
  * suffix first.
  */
 export function pySuffix(path: string): string {
-  const name = path.slice(lastSeparator(path) + 1);
-  const dot = suffixDot(name);
-  return dot === -1 ? '' : name.slice(dot);
+  const dot = suffixDot(pyName(path));
+  return dot === -1 ? '' : pyName(path).slice(dot);
 }
 
 /** `Path.unlink()` and `Path.replace(target)`, with CPython's error text. */
