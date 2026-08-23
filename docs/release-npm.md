@@ -54,7 +54,7 @@ Everything here is verification, and none of it contacts the registry.
 ```bash
 cd runtime-ts
 npm test                                    # includes the packaging gate
-node ../tools/conformance/run.mjs --all     # both runtimes, all six suites
+node ../tools/conformance/run.mjs --all     # both runtimes, all seven suites
 npm pack --dry-run                          # what the tarball would contain
 ```
 

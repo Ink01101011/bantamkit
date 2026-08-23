@@ -24,16 +24,21 @@ two sources and agreed they match — which is the check that has never once cau
 difference that mattered. Every defect this job found in the port was found by running both
 sides, not by reading either.
 
-## The six suites
+## The seven suites
 
 | suite | what it compares |
 |---|---|
+| `cli` | the `bantamkit-mcp` command line as a process: stdout, stderr, exit code |
 | `codec` | fact-file frontmatter: emit byte-identically, and parse each other |
 | `recall-strings` | the binding layer: every sentence an empty recall can produce |
 | `shiftwork` | the checkpoint writer: `ensure_ascii`, `sort_keys`, separators, `5.0` |
 | `store` | save/recall/index: the directory after the call, byte for byte |
 | `validate` | the validator: every sentence a schema failure can produce |
 | `wire` | the MCP surface: seven tools, two templates, and the frames themselves |
+
+`cli` is the odd one out and deliberately so: every other suite compares two library
+functions, and that comparison cannot see which stream a message lands on or what the
+process exits with. `cli` spawns both CLIs and diffs the three things only a process has.
 
 Suites are discovered by **directory listing**, not by a registry someone has to remember to
 edit. Drop a module in `suites/` and it runs.
