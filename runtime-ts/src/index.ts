@@ -64,7 +64,19 @@ export {
 } from './memory/layers.js';
 export type { StoreBinding } from './memory/layers.js';
 export { layerLabel, Memory, normalizeName, profileStore } from './memory/component.js';
-export type { MemoryOptions } from './memory/component.js';
+export type { MemoryOptions, RecallOutcome, SaveOutcome } from './memory/component.js';
+export {
+  CAP_BYTES,
+  DEFAULT_RELATIVE_PATH,
+  defaultPath,
+  encodeRecord,
+  EVENT_LOG_ENV,
+  EventLog,
+  formatTimestamp,
+  resolvePath,
+  SCHEMA_VERSION,
+} from './eventlog.js';
+export type { DetailValue } from './eventlog.js';
 export {
   DEFAULT_INDEX_BUDGET,
   DUPLICATE_JACCARD,

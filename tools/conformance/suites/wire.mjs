@@ -27,6 +27,15 @@
  * NOTHING TOUCHES A REAL STORE. `HOME` is redirected to a scratch directory for every
  * session, so `Memory.layered`'s profile layer is an empty scratch store and not the
  * operator's; `cwd` is a scratch project. The real checkpoint is COPIED before it is written.
+ *
+ * THE EVENT LOG RIDES ON THESE SESSIONS RATHER THAN ON A SUITE OF ITS OWN (`docs/eventlog.md`).
+ * The log is a SIDE EFFECT of exactly the sessions above, and a second suite would mean a
+ * second copy of the path-identity and `HOME`-redirection machinery — the part most likely to
+ * be got subtly wrong, and getting it wrong means a conformance run writing into the
+ * operator's real memory store. So one extra session sets `BANTAMKIT_EVENT_LOG` for itself,
+ * its `<store>/events/mcp.jsonl` is captured beside the checkpoint, and the two files are
+ * compared with only `ts` masked. Every other session leaves the variable unset and is the
+ * evidence that OFF IS THE DEFAULT in both runtimes.
  */
 import { spawn } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
@@ -49,6 +58,17 @@ const ASSETS = join(repoRoot, 'assets');
  * reads the cursor out of the document rather than hardcoding it, so nothing else changes.
  */
 const REAL_CHECKPOINT = join(repoRoot, 'tools', 'shiftwork', 'example-codefix-checkpoint.json');
+
+/**
+ * `docs/eventlog.md`'s switch and its default location, named here rather than spelled twice.
+ *
+ * OFF IS THE DEFAULT IN BOTH RUNTIMES and this suite is the reason: `run.mjs --all` reads the
+ * operator's LIVE memory store by design and read-only, so a log that were on by default
+ * would turn every conformance run into a write against real user data. Only the `eventlog`
+ * session below sets it, and only for its own scratch store.
+ */
+const EVENT_LOG_ENV = 'BANTAMKIT_EVENT_LOG';
+const EVENT_LOG_RELATIVE = ['events', 'mcp.jsonl'];
 
 const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');
 const unb64 = (s) => Buffer.from(s, 'base64').toString('utf8');
@@ -379,6 +399,81 @@ export async function run(ctx) {
 
   add('identity', [INIT(), INITIALIZED, callTool(2, 'build_identity', {})]);
 
+  /**
+   * THE EVENT LOG: one session, every outcome the host collapses into "completed
+   * successfully", and the file both runtimes write compared byte for byte.
+   *
+   * The variable is set for THIS SESSION ONLY. `--store store` puts the log at the default
+   * `<store>/events/mcp.jsonl`, which `setup()` already deletes and rebuilds between the two
+   * runs, so the two files are written to the identical absolute path — the same reason the
+   * rest of this suite runs both sides over `${scratch}/w<N>`.
+   *
+   * SEQUENTIAL BY CONSTRUCTION, and that is load-bearing for `index_bytes`. U5 measured that
+   * the field is sampled AFTER the decision rather than transactionally: two saves pipelined
+   * without waiting both recorded the same `index_bytes`, and a recall sent last was logged
+   * first. `outcome` stayed faithful in every case. The driver above is lock-step — one
+   * request written, then awaited — so every record here is about the store as it stood when
+   * the decision was made, and `index_bytes` is compared rather than masked.
+   *
+   * The calls are chosen to reach every branch that decides an outcome without matching text:
+   * the three-way empty verdict, all four `save` outcomes, both `validate_json` bools, the
+   * register's own `result` on a good and on a missing checkpoint, and `build_identity`'s
+   * count of underivable fields.
+   */
+  sessions.push({
+    name: 'eventlog',
+    argv: ['--store', store],
+    env: { ...baseEnv, [EVENT_LOG_ENV]: '1' },
+    cwd: project,
+    lines: [
+      INIT(),
+      INITIALIZED,
+      callTool(2, 'memory_recall', { query: 'anything at all' }),
+      callTool(3, 'memory_save', { type: 'project', name: 'wire-event-one', description: 'the event log, byte for byte — ทดสอบ', body: 'a fact with an em dash — and a DEL ' }),
+      callTool(4, 'memory_recall', { query: 'event log byte' }),
+      callTool(5, 'memory_save', { type: 'project', name: 'wire-event-two', description: 'the event log, byte for byte — ทดสอบ', body: 'a near-duplicate of the one above' }),
+      callTool(6, 'memory_save', { type: 'bogus', name: 'x', description: 'd', body: 'b' }),
+      callTool(7, 'memory_recall', { query: 'nothing like this exists' }),
+      callTool(8, 'validate_json', { output: '{"a": 1}', schema: { type: 'object' } }),
+      callTool(9, 'validate_json', { output: 'not json at all', schema: { type: 'object' } }),
+      callTool(10, 'shiftwork_status', { checkpoint: checkpoint }),
+      callTool(11, 'shiftwork_status', { checkpoint: missing }),
+      callTool(12, 'shiftwork_clock_in', { checkpoint: checkpoint }),
+    ],
+  });
+
+  /**
+   * The fourth `save` outcome, which needs a budget too small for its own index to fit.
+   *
+   * `docs/eventlog.md` calls `Memory.save` the sharpest case in the table — four outcomes,
+   * one word to the host — so all four are compared, and this is the only one that cannot
+   * share a process with the other three because the budget is fixed at construction.
+   */
+  add('eventlog-budget', [
+    INIT(),
+    INITIALIZED,
+    callTool(2, 'memory_save', { type: 'project', name: 'wire-event-one', description: 'the event log, byte for byte — ทดสอบ', body: 'body' }),
+  ], { argv: ['--store', store, '--index-budget', '20'], env: { ...baseEnv, [EVENT_LOG_ENV]: '1' } });
+
+  /**
+   * `build_identity` gets a session of its own, and the split is the point being made.
+   *
+   * Its REPLY is not comparable — `runtime`, `code_digest`, `build_id` and the Python-only
+   * environment fields are ruled different in the block below — so this session's frames are
+   * ruled with the rest of `identity`. Its RECORD is comparable, and must be: the record
+   * carries the COUNT of underivable fields and no digest at all, precisely so that a
+   * byte-compared log stays portable across two trees that can never hash alike. A session
+   * whose answer differs and whose record does not is the sharpest available evidence that
+   * the record was designed for this comparison rather than derived from the reply.
+   */
+  sessions.push({
+    name: 'eventlog-identity',
+    argv: ['--store', store],
+    env: { ...baseEnv, [EVENT_LOG_ENV]: '1' },
+    cwd: project,
+    lines: [INIT(), INITIALIZED, callTool(2, 'build_identity', {})],
+  });
+
   for (const version of ['2024-10-07', '2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25', '2026-07-28', '1999-01-01']) {
     add(`negotiate-${version}`, [INIT(version)]);
   }
@@ -388,7 +483,16 @@ export async function run(ctx) {
   const cases = [];
   const notes = [];
   /** Sessions whose frames are compared verbatim; the rest are inspected case by case. */
-  const RULED_SESSIONS = new Set(['identity', 'unknown-methods', 'bad-params', 'negotiate-2024-10-07']);
+  const RULED_SESSIONS = new Set([
+    'identity',
+    // Same reply, same ruling, and the `identity` block below already compares every field
+    // of it that IS comparable. What this session exists for is its event-log record, which
+    // is compared byte for byte in the `eventlog` block.
+    'eventlog-identity',
+    'unknown-methods',
+    'bad-params',
+    'negotiate-2024-10-07',
+  ]);
 
   const results = new Map();
   for (const spec of sessions) {
@@ -405,9 +509,14 @@ export async function run(ctx) {
   }
 
   function captureArtifacts() {
+    const eventlog = join(store, ...EVENT_LOG_RELATIVE);
     return {
       checkpoint: existsSync(checkpoint) ? readFileSync(checkpoint, 'utf8') : null,
       log: existsSync(`${checkpoint}.log.jsonl`) ? readFileSync(`${checkpoint}.log.jsonl`, 'utf8') : null,
+      // Read for EVERY session, not only the one that asked for a log: a session that did
+      // not set the variable and wrote a file anyway is the defect the default exists to
+      // prevent, and it is only visible if the file is looked for unconditionally.
+      eventlog: existsSync(eventlog) ? readFileSync(eventlog, 'utf8') : null,
     };
   }
 
@@ -483,6 +592,114 @@ export async function run(ctx) {
       actual: maskTs(node.log),
     });
     notes.push(`accounting line (node): ${maskTs(node.log).trim()}`);
+  }
+
+  // ------------------------------------------------- the event log both runtimes write
+
+  {
+    const { python, node } = results.get('eventlog');
+    /**
+     * `ts` CANNOT BE COMPARED AS A VALUE — the two runtimes run at different wall-clock
+     * instants — so it is masked, exactly as the accounting line above masks its own. But
+     * masking a field is not the same as not testing it: the FORMAT is the thing the Python
+     * half pinned itself to (`format_timestamp` was checked against a real
+     * `new Date(ms).toISOString()` over seven samples), so the shape is asserted separately
+     * and per side, below.
+     */
+    const maskTs = (text) => (text ?? '').replace(/"ts":"[^"]*"/g, '"ts":"<masked>"');
+    cases.push({
+      name: 'eventlog: the record stream, with only `ts` masked',
+      kind: 'bytes',
+      expected: maskTs(python.eventlog),
+      actual: maskTs(node.eventlog),
+    });
+
+    // Keyed by call, so a failure names the outcome that moved rather than a byte offset in
+    // a file. `detail` rides in the byte comparison above; this is the decision itself.
+    const outcomesOf = (text) =>
+      (text ?? '')
+        .split('\n')
+        .filter((line) => line !== '')
+        .map((line) => {
+          const record = JSON.parse(line);
+          return [record.tool, record.outcome];
+        });
+    cases.push({
+      name: 'eventlog: the (tool, outcome) sequence',
+      kind: 'json',
+      expected: outcomesOf(python.eventlog),
+      actual: outcomesOf(node.eventlog),
+    });
+
+    /**
+     * The one record whose REPLY is ruled un-comparable and whose RECORD is not.
+     *
+     * `build_identity` answers two different trees' digests by construction. The record
+     * carries the COUNT of underivable fields instead, and nothing else, so it is the same
+     * bytes on both sides — which is the whole reason no digest was put in it.
+     */
+    const identityLog = results.get('eventlog-identity');
+    cases.push({
+      name: 'eventlog: build_identity answers differently and records identically',
+      kind: 'bytes',
+      expected: maskTs(identityLog.python.eventlog),
+      actual: maskTs(identityLog.node.eventlog),
+    });
+
+    const budgetLog = results.get('eventlog-budget');
+    cases.push({
+      name: 'eventlog: the fourth save outcome, refused by the budget',
+      kind: 'bytes',
+      expected: maskTs(budgetLog.python.eventlog),
+      actual: maskTs(budgetLog.node.eventlog),
+    });
+
+    /**
+     * The shape of `ts`, asserted PER SIDE against its own record count.
+     *
+     * Not a differential: two runtimes that drifted the same way would agree with each other
+     * and both be wrong, which is precisely the failure mode a hand-built timestamp has. The
+     * contract is 24 characters, a `Z` suffix and three fractional digits, and each side is
+     * required to hit it on every record it wrote.
+     */
+    const SHAPE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+    const stampsOf = (text) => [...(text ?? '').matchAll(/"ts":"([^"]*)"/g)].map((m) => m[1]);
+    for (const [side, text] of [
+      ['the reference', python.eventlog],
+      ['the port', node.eventlog],
+    ]) {
+      const stamps = stampsOf(text);
+      const good = stamps.filter((t) => t.length === 24 && t.endsWith('Z') && SHAPE.test(t));
+      cases.push({
+        name: `eventlog: every \`ts\` ${side} wrote is the 24-char millisecond format`,
+        kind: 'string',
+        expected: `${stamps.length} of ${stamps.length} well-formed`,
+        actual: `${good.length} of ${stamps.length} well-formed`,
+      });
+    }
+
+    /**
+     * OFF IS THE DEFAULT, measured over every other session in this suite.
+     *
+     * Not a differential either, and deliberately: two runtimes that both logged uninvited
+     * would compare equal and pass. `run.mjs --all` reads the operator's live store, so a
+     * default-on log is a write into real user data and the only acceptable count is zero.
+     */
+    const strays = [];
+    for (const spec of sessions) {
+      if ((spec.env ?? {})[EVENT_LOG_ENV] !== undefined) continue;
+      const side = results.get(spec.name);
+      if (side.python.eventlog !== null) strays.push(`python:${spec.name}`);
+      if (side.node.eventlog !== null) strays.push(`node:${spec.name}`);
+    }
+    cases.push({
+      name: 'eventlog: off by default — a session that did not ask for one wrote no log',
+      kind: 'json',
+      expected: [],
+      actual: strays,
+    });
+
+    notes.push(`event log: ${outcomesOf(node.eventlog).length} records, identical but for \`ts\``);
   }
 
   // ----------------------------------------------------------- build_identity, in parts

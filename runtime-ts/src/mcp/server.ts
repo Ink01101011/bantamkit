@@ -40,9 +40,10 @@ import {
 import { AssetNotFound, assetsRoot, loadSkill, loadToolAsset } from '../assets.js';
 import { BantamError } from '../errors.js';
 import { schemaError } from '../contract.js';
+import { EventLog, type DetailValue } from '../eventlog.js';
 import type { Memory } from '../memory/component.js';
 import { pyReadText } from '../memory/pyfs.js';
-import { fromJs, parseJson, toJs, type PyValue } from '../pyjson.js';
+import { fromJs, parseJson, reprValue, toJs, type PyValue } from '../pyjson.js';
 import * as shiftwork from '../shiftwork.js';
 import { buildIdentity, SERVER_NAME } from './identity.js';
 import { ARG_MODELS, PyValidationFailure, validateArguments } from './pyargs.js';
@@ -152,61 +153,147 @@ function asInt(value: PyValue | undefined): number | null {
 }
 
 /**
+ * Run `body` and, if it throws, record the exception's TYPE before letting it fly on.
+ *
+ * The host already logs that a tool failed and how long it took; what it cannot say is which
+ * exception the component threw — and the one place it tried, it leaked an argument value
+ * doing it (`eventlog.ts`'s comment, measured). So the constructor name and nothing else, via
+ * `EventLog.raised`, which has no other input available to it.
+ *
+ * The rethrow is unconditional: nothing here decides whether the tool fails, only whether the
+ * failure was written down. `EventLog.record` swallows its own system errors, so this cannot
+ * mask the original.
+ */
+function recordRaise<T>(log: EventLog, tool: string, body: () => T): T {
+  try {
+    return body();
+  } catch (e) {
+    log.raised(tool, e);
+    throw e;
+  }
+}
+
+/**
+ * Run a shiftwork handler and record its `result` — the register's OWN verdict.
+ *
+ * Every `shiftwork` entry point answers a dict whose `result` key is the decision it made:
+ * `brief`, `escalate`, `success`, `ok`, `status`, `error`. `clockIn` returning `escalate` is
+ * the sharp case — the register's whole stop-and-ask contract, invisible in the host's log
+ * because the tool call succeeded. Reading the key is reading the decision; nothing here
+ * inspects a `reason` string, which is prose and can carry a checkpoint path.
+ *
+ * `raised` is the outcome for an ESCAPING exception and is spelled differently from `error`
+ * on purpose: `result: "error"` is a refusal the register composed and returned normally, and
+ * collapsing the two would lose the only distinction between a checkpoint that was rejected
+ * and a handler that fell over.
+ */
+function recordResult(log: EventLog, tool: string, call: () => PyValue): PyValue {
+  const answer = recordRaise(log, tool, call);
+  const result = asDict(answer).get('result');
+  // `str(answer.get("result", "unknown"))`. `str` of a `str` is the string itself; `str` of
+  // anything else is its `repr`, which is what `reprValue` writes. Every exit answers a
+  // string today, so the second arm is a shape change being recorded rather than hidden.
+  log.record(tool, result === undefined ? 'unknown' : result.t === 'str' ? result.v : reprValue(result));
+  return answer;
+}
+
+/**
  * Run one tool and return its Python-shaped answer.
  *
  * The two return kinds are the SDK's, not this file's: `memory_save` and `memory_recall` are
  * annotated `-> str` in the reference, so `_create_wrapped_model` puts them under a `result`
  * key; the other five are `-> dict[str, Any]` and pass through as themselves. That is why
  * `structuredContent` has a `result` key for exactly two of the seven.
+ *
+ * EVERY RECORD BELOW COMES FROM A DECISION, NEVER FROM A REPLY. `memory_save` reads
+ * `SaveOutcome.status`, `memory_recall` reads `RecallOutcome.status`, the three shiftwork
+ * tools read the register's own `result` key, `validate_json` reads the `valid` bool it is
+ * about to return, and `build_identity` reads the length of the `unavailable` list it
+ * computed. Not one of them looks at the words. Change a reply's wording and the record must
+ * be byte-identical — `test/eventlog.test.mjs` holds exactly that.
+ *
+ * Logging happens HERE and not in the caller's `try`, so that an argument refusal — which
+ * `validateArguments` raises before this function is entered, exactly as pydantic does before
+ * the reference's handler is entered — writes no record on either side.
  */
 function runTool(
   name: string,
   memory: Memory,
   args: Map<string, PyValue>,
   version: string,
+  log: EventLog,
 ): { value: PyValue; wrapped: boolean } {
   switch (name) {
     case 'memory_save': {
       const links = args.get('links');
       const asStrings = links && links.t === 'list' ? links.v.map((v) => asText(v)) : null;
-      return {
-        value: {
-          t: 'str',
-          v: memory.save(asText(args.get('type')), asText(args.get('name')), asText(args.get('description')), asText(args.get('body')), asStrings),
-        },
-        wrapped: true,
-      };
+      const outcome = recordRaise(log, 'memory_save', () =>
+        memory.saveOutcome(asText(args.get('type')), asText(args.get('name')), asText(args.get('description')), asText(args.get('body')), asStrings),
+      );
+      if (log.enabled) {
+        // Only when a log is actually on: `indexAccounting` re-parses `facts/`, and a
+        // diagnostic must not put that on the path of an operator who did not ask for one.
+        // Headroom is left to the reader rather than stored — it is `budget - index_bytes`,
+        // and a derived field is a second thing to keep true.
+        const [indexBytes, budget] = memory.indexAccounting();
+        const detail: Record<string, DetailValue> = { budget };
+        if (indexBytes !== null) detail['index_bytes'] = indexBytes;
+        log.record('memory_save', outcome.status, detail);
+      }
+      return { value: { t: 'str', v: outcome.reply }, wrapped: true };
     }
     case 'memory_recall': {
       let k = asInt(args.get('k'));
       // The advertised schema's bounds; clients may ignore it, so the server does not.
       if (k !== null) k = Math.max(1, Math.min(k, 5));
-      return { value: { t: 'str', v: memory.recall(asText(args.get('query')), k) }, wrapped: true };
+      const outcome = recordRaise(log, 'memory_recall', () => memory.recallOutcome(asText(args.get('query')), k));
+      const detail: Record<string, DetailValue> = {
+        budget: outcome.budget,
+        candidates: outcome.candidates,
+        layers: outcome.layers,
+        reached: outcome.reached,
+        returned: outcome.returned,
+        unreadable: outcome.unreadable,
+      };
+      if (outcome.source !== null) detail['source'] = outcome.source;
+      log.record('memory_recall', outcome.status, detail);
+      return { value: { t: 'str', v: outcome.reply }, wrapped: true };
     }
     case 'validate_json': {
-      const error = schemaError(asText(args.get('output')), args.get('schema')!);
+      const error = recordRaise(log, 'validate_json', () => schemaError(asText(args.get('output')), args.get('schema')!));
       const out = new Map<string, PyValue>([['valid', { t: 'bool', v: error === null }]]);
       out.set('feedback', error === null ? { t: 'null' } : { t: 'str', v: `${error}\nReturn ONLY a JSON object matching the schema.` });
+      log.record('validate_json', error === null ? 'valid' : 'invalid');
       return { value: { t: 'dict', v: out }, wrapped: false };
     }
     case 'shiftwork_clock_in':
-      return { value: shiftwork.clockIn(asText(args.get('checkpoint'))), wrapped: false };
+      return { value: recordResult(log, name, () => shiftwork.clockIn(asText(args.get('checkpoint')))), wrapped: false };
     case 'shiftwork_clock_out':
       return {
-        value: shiftwork.clockOut(
-          asText(args.get('checkpoint')),
-          asText(args.get('unit_id')),
-          asText(args.get('status')),
-          args.get('handoff_patch')!,
-          args.get('history_entry')!,
-          args.get('accounting') ?? { t: 'null' },
+        value: recordResult(log, name, () =>
+          shiftwork.clockOut(
+            asText(args.get('checkpoint')),
+            asText(args.get('unit_id')),
+            asText(args.get('status')),
+            args.get('handoff_patch')!,
+            args.get('history_entry')!,
+            args.get('accounting') ?? { t: 'null' },
+          ),
         ),
         wrapped: false,
       };
     case 'shiftwork_status':
-      return { value: shiftwork.status(asText(args.get('checkpoint'))), wrapped: false };
-    case 'build_identity':
-      return { value: fromJs(buildIdentity(version, sdkVersion())), wrapped: false };
+      return { value: recordResult(log, name, () => shiftwork.status(asText(args.get('checkpoint')))), wrapped: false };
+    case 'build_identity': {
+      const identity = recordRaise(log, 'build_identity', () => buildIdentity(version, sdkVersion()));
+      // The COUNT of underivable fields, not the fields and not the digests. A code digest is
+      // by construction different in the two runtimes — they fingerprint two different trees
+      // — so putting one in a record that a conformance case byte-compares would make the
+      // record unportable to buy nothing the tool's own reply does not already say.
+      const unavailable = identity.get('unavailable') as unknown[];
+      log.record('build_identity', unavailable.length ? 'partial' : 'complete', { unavailable: unavailable.length });
+      return { value: fromJs(identity), wrapped: false };
+    }
     default:
       // `tool_manager.call_tool` raises `ToolError(f"Unknown tool: {name}")`, which the
       // handler turns into an isError result rather than a JSON-RPC error.
@@ -221,8 +308,19 @@ function runTool(
  * because the handlers need it twice: to read the RAW request line (so `5.0` is still a float
  * when it reaches `shiftwork.clockOut`) and to register the EXACT result text (so it is still
  * a float on the way back out).
+ *
+ * `log` is the event-log sink (`docs/eventlog.md`), resolved from `BANTAMKIT_EVENT_LOG` when
+ * the caller does not supply one and DISABLED unless that variable asks for it. It is a
+ * parameter and not only an environment read so that a test can inject a fixed clock and a
+ * scratch path without setting a process-wide variable — the same seam `runtime-py`'s
+ * `build_server(memory, log=None)` offers.
  */
-export function buildServer(memory: Memory, wire: RawStdioTransport, version: string): Server {
+export function buildServer(
+  memory: Memory,
+  wire: RawStdioTransport,
+  version: string,
+  log: EventLog = EventLog.fromEnv(memory.store.root),
+): Server {
   const server = new Server(
     { name: SERVER_NAME, version },
     {
@@ -307,7 +405,7 @@ export function buildServer(memory: Memory, wire: RawStdioTransport, version: st
       const model = ARG_MODELS[name];
       if (model === undefined) throw new BantamError(`Unknown tool: ${name}`);
       const bound = validateArguments(model, args);
-      const { value, wrapped } = runTool(name, memory, bound, version);
+      const { value, wrapped } = runTool(name, memory, bound, version, log);
       // `_convert_to_content` runs BEFORE the `{"result": ...}` wrap, so a str tool's text
       // block is the RAW STRING and a dict tool's is `to_json(..., indent=2)`.
       text = value.t === 'str' ? value.v : sdkJson(value, 2);
