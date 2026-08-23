@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import fnmatch
+import os
 import re
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -357,9 +359,73 @@ class MemoryStore:
         """
         return (fact.last_recalled or fact.created or "", fact.name)
 
+    def _fact_paths(self) -> list[Path]:
+        """Every `facts/*.md`, listed so that "I could not read it" is never "it is empty".
+
+        `Path.glob` is unusable here and that is the whole reason this function exists:
+        it suppresses the `OSError` raised by its own directory scan and yields nothing.
+        `_facts` is read TWICE by `save` — once for the duplicate check and once by
+        `_rebuild_index` — so a blind listing does not merely under-report, it
+        overwrites. Measured 2026-08-23 on a copy of the live 65-fact store with
+        `facts/` at 0o311 (writable and traversable, not listable): `save` returned
+        `status='saved'`, a 66th fact file landed, and `index.md` went from 13,472
+        bytes / 65 lines to 0 / 0 while every fact file sat there unharmed.
+
+        `os.scandir` raises instead. Three decisions, and each one has a reason:
+
+        - THE RAISE IS CONVERTED HERE, not left to callers. This is the one deliberate
+          difference from `layers.count_facts`, which propagates the `OSError` for
+          `_count_into_binding` to phrase: that function has callers wanting different
+          sentences, whereas this store has a single reader and `save`, `recall`,
+          `lint`, `compact` and `index_text` all reach the disk through it. Converting
+          at the read is what makes "no path out of this module reports an unreadable
+          store as an empty one" a property of one place instead of five.
+        - THE COUNTED SET DOES NOT CHANGE. `fnmatch.fnmatch` is the match `pathlib`
+          performs — dotfiles and directories included, case-sensitive off Windows and
+          case-insensitive on it — and the result is sorted as `Path`s exactly as
+          `sorted(glob(...))` was. A raise bought by quietly redefining which files are
+          facts would be a worse defect than the one it fixes
+          (`test_a_readable_store_lists_exactly_what_glob_listed`).
+        - AN ABSENT `facts/` IS `[]`, NOT AN ERROR. That is a first run, and
+          `_ensure_dirs`, `create=False` and the designate path all depend on it.
+
+        The last one is keyed on whether anything is AT the path rather than on the
+        errno, and that is the second, smaller difference from `count_facts`. A
+        `FileNotFoundError` raised while something is still there is a failed listing
+        wearing the absent answer's clothes: POSIX reports ENOTDIR for a scan of a
+        regular file, but a Windows directory scan of a non-directory reports the path
+        as not found, and a dangling symlink reports ENOENT everywhere. `count_facts`
+        answers 0 for a `facts/` that is a regular file — its review measured that as
+        its one genuine disagreement with `glob` — while this layer answers
+        "unreadable", which is the ruling `test_memory_divergence` already made for a
+        file or a dangling symlink where a store belongs, and which makes the answer
+        identical on all four CI jobs instead of turning on an errno.
+        """
+        facts = self.root / "facts"
+        try:
+            with os.scandir(facts) as entries:
+                names = [e.name for e in entries if fnmatch.fnmatch(e.name, "*.md")]
+        except FileNotFoundError as e:
+            if os.path.lexists(facts):
+                raise self._unreadable(facts, e, "a path exists there") from e
+            return []
+        except OSError as e:
+            raise self._unreadable(facts, e) from e
+        return sorted(facts / name for name in names)
+
+    @staticmethod
+    def _unreadable(facts: Path, error: OSError, detail: str = "") -> MemoryValidationError:
+        """One sentence for a store that could not be listed, and it never says "empty"."""
+        because = f"{error.strerror}{f' ({detail})' if detail else ''}"
+        return MemoryValidationError(
+            f"memory store is unreadable: {facts}: {because}; a store whose facts could "
+            f"not be listed is not a store with no facts, and answering 'empty' here is "
+            f"what rewrites index.md from nothing"
+        )
+
     def _facts(self) -> list[Fact]:
         facts = []
-        for path in sorted((self.root / "facts").glob("*.md")):
+        for path in self._fact_paths():
             text = path.read_text(encoding="utf-8")
             try:
                 _, front, body = text.split("---\n", 2)

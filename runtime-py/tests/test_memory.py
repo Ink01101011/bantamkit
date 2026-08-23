@@ -599,6 +599,214 @@ def test_nested_snapshot_keeps_the_outermost_pin(store):
 
 
 # ---------------------------------------------------------------------------
+# J37: a store that cannot be listed is not a store with nothing in it.
+#
+# `Path.glob` swallows the OSError its own directory scan raises and yields
+# nothing, so `MemoryStore._facts` could not tell "empty" from "unreadable" —
+# and `save` writes `index.md` from whatever `_facts` returned. MEASURED
+# 2026-08-23 on a COPY of the live 65-fact project store (never on the store
+# itself; this defect destroys indexes), with `facts/` at 0o311 — writable and
+# traversable, not listable:
+#
+#     glob("*.md") -> []                       PermissionError swallowed
+#     save(...)    -> SaveResult(status='saved')
+#     BEFORE  facts: 65   index.md: 13,472 bytes / 65 lines
+#     AFTER   facts: 66   index.md:      0 bytes /  0 lines
+#
+# The fact files survived. The index every reader loads did not. This is the
+# same conflation `layers.count_facts` removed one layer out, reached from
+# underneath: there, an unreadable store came back `state="empty"`.
+# ---------------------------------------------------------------------------
+
+
+def _three_facts(tmp_path):
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-06")
+    for i in range(3):
+        store.save("project", f"fact-{i}", f"w{i}a w{i}b w{i}c w{i}d", f"body {i}")
+    return store
+
+
+def test_an_unlistable_store_is_never_reported_empty_and_never_rewrites_the_index(tmp_path):
+    """The measured wipe, reproduced on a store built here rather than on anyone's real one.
+
+    NOT a `windows_cannot_construct` skipif, following the ruling already made for
+    `test_a_root_that_denies_listing_is_unreadable_not_absent` in
+    test_memory_store_tripwire.py: the platform question is MEASURED rather than
+    asserted by a mark. The node puts the directory into the state, probes whether the
+    OS actually honoured it, and reports honestly when it did not — which covers
+    Windows (where `chmod` does not restrict a directory listing) and any uid that
+    bypasses the mode bits, in one mechanism, without adding a fifth entry to
+    `_WINDOWS_ONLY_SKIPS` in a module `_windows_only_skip_conditions()` does not scan.
+    What runs on all four CI jobs instead is
+    `test_a_facts_path_that_is_not_a_directory_is_unreadable_not_empty` and
+    `test_a_listing_that_fails_stops_save_before_it_writes_anything` below, which reach
+    the same property through shapes every platform can be put into.
+    """
+    store = _three_facts(tmp_path)
+    index = store.root / "index.md"
+    before = index.read_bytes()
+    assert before.count(b"\n") == 3
+
+    facts = store.root / "facts"
+    os.chmod(facts, 0o311)
+    try:
+        try:
+            list(facts.iterdir())
+        except OSError:
+            constructed = True
+        else:
+            constructed = False
+        if constructed:
+            with pytest.raises(MemoryValidationError) as e:
+                store.save("project", "probe", "an entirely unrelated probe subject", "body")
+            message = str(e.value)
+    finally:
+        os.chmod(facts, 0o755)
+
+    if not constructed:
+        pytest.skip(
+            "this platform lets a 0o311 directory be listed (Windows, where chmod is a "
+            "no-op on a directory, or a uid that bypasses the mode bits), so the "
+            "scenario cannot be constructed and this run FAILS TO MEASURE that a save "
+            "into a writable-but-unlistable store raises instead of rewriting index.md "
+            "from an empty listing. The two nodes below pin the same property through "
+            "shapes that are constructible everywhere."
+        )
+
+    assert str(facts) in message
+    assert "ermission" in message
+    assert index.read_bytes() == before, "index.md was rebuilt from a listing that had failed"
+    assert not (facts / "probe.md").exists(), "save wrote a fact before it could read the store"
+    assert sorted(p.name for p in facts.iterdir()) == ["fact-0.md", "fact-1.md", "fact-2.md"]
+
+
+def test_a_facts_path_that_is_not_a_directory_is_unreadable_not_empty(tmp_path):
+    """The same property through a shape all four CI jobs can construct.
+
+    `save` never reaches the listing here — `_ensure_dirs` raises FileExistsError on
+    the `mkdir` first — so this goes in through the readers, which is where a wrong
+    "empty" is quietest: `recall` answered `[]` and `index_text` answered `""`.
+
+    The errno differs by platform (POSIX reports ENOTDIR; a Windows directory scan of
+    a non-directory reports the path as not found), which is exactly why `_fact_paths`
+    keys "first run" on whether anything is at the path rather than on the errno.
+    """
+    root = tmp_path / "mem"
+    root.mkdir()
+    (root / "facts").write_text("this is not a facts directory\n", encoding="utf-8")
+    store = MemoryStore(root, create=False)
+
+    for call in (lambda: store.recall("anything"), store.index_text, store.lint):
+        with pytest.raises(MemoryValidationError) as e:
+            call()
+        assert str(root / "facts") in str(e.value)
+
+
+def test_a_listing_that_fails_stops_save_before_it_writes_anything(tmp_path, monkeypatch):
+    """The ordering claim, run rather than assumed, and run on every platform.
+
+    `save` reads the store in its duplicate check BEFORE it writes. With the listing
+    blind that check passed vacuously; with the listing honest the whole operation
+    fails before it touches disk, so there is no half-written state to roll back.
+
+    Fault injection stands in for the real 0o311 construction only because that
+    construction is POSIX-only — `PermissionError` from `os.scandir` is precisely what
+    the kernel raises there, and the node above runs the real thing wherever the OS
+    honours the mode bits.
+    """
+    store = _three_facts(tmp_path)
+    facts = store.root / "facts"
+    index = store.root / "index.md"
+    before = index.read_bytes()
+    real_scandir = os.scandir
+
+    def denied(path, *args, **kwargs):
+        if Path(path) == facts:
+            raise PermissionError(13, "Permission denied")
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", denied)
+    with pytest.raises(MemoryValidationError) as e:
+        store.save("project", "fact-0", "w0a w0b w0c w0d", "a rewrite of an existing fact")
+    monkeypatch.undo()
+
+    assert "Permission denied" in str(e.value)
+    assert index.read_bytes() == before
+    assert sorted(p.name for p in facts.iterdir()) == ["fact-0.md", "fact-1.md", "fact-2.md"]
+    assert "a rewrite of an existing fact" not in (facts / "fact-0.md").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_a_missing_facts_directory_is_a_first_run_and_not_an_error(tmp_path):
+    """The other half: "no such file" and "permission denied" are not one sentence.
+
+    `_ensure_dirs`, the designate path and `create=False` all depend on this staying
+    an empty answer, so the raise above must not have been bought by making a first
+    run loud.
+    """
+    store = MemoryStore(tmp_path / "never-made", create=False)
+    assert store._fact_paths() == []
+    assert store.recall("anything") == []
+    assert store.index_text() == ""
+    assert not (tmp_path / "never-made").exists()
+
+
+def test_a_readable_store_lists_exactly_what_glob_listed(tmp_path):
+    """The counted set does not change. Seventeen shapes, over the binding layer's sixteen.
+
+    A raise bought by quietly changing which files count as facts would be a worse
+    defect than the one it fixes, so this compares the new listing against `glob("*.md")`
+    itself rather than against a hand-written expectation — including the shapes that
+    make the two implementations differ if they are going to: a bare `.md`, an uppercase
+    `.MD` (pathlib and `fnmatch.fnmatch` are both case-sensitive off Windows and both
+    case-insensitive on it), a file literally named `*.md`, a directory named `*.md`,
+    and three symlink flavours.
+    """
+    facts = tmp_path / "mem" / "facts"
+    facts.mkdir(parents=True)
+    for name in (
+        "real.md",
+        ".hidden.md",
+        ".md",
+        "UPPER.MD",
+        "*.md",
+        "notes.txt",
+        "no-extension",
+        "spaced name.md",
+        "unicode-ñ.md",
+        "fact-0.md.tmp",
+    ):
+        (facts / name).write_text("x", encoding="utf-8")
+    (facts / "adir.md").mkdir()
+    (facts / "sub").mkdir()
+    (facts / "sub" / "nested.md").write_text("x", encoding="utf-8")
+
+    symlinks = 0
+    for link, target in (
+        ("link-to-file.md", facts / "real.md"),
+        ("link-to-txt.md", facts / "notes.txt"),
+        ("link-to-dir.md", facts / "sub"),
+        ("dangling.md", facts / "gone.md"),
+    ):
+        try:
+            (facts / link).symlink_to(target)
+        except (OSError, NotImplementedError):  # pragma: no cover - Windows without privilege
+            break
+        symlinks += 1
+
+    store = MemoryStore(tmp_path / "mem", create=False)
+    assert store._fact_paths() == sorted(facts.glob("*.md"))
+    # The population is pinned so a later edit cannot buy agreement by dropping shapes:
+    # 12 top-level entries plus whatever symlinks this platform allowed, and `sub/nested.md`
+    # under one of them. Measured on macOS/APFS: 11 of the 17 match `*.md`, and `UPPER.MD`
+    # matches under neither implementation — the case rule agrees as well as the name rule.
+    assert len(list(facts.iterdir())) == 12 + symlinks
+    assert len(store._fact_paths()) >= 7, "the shapes did not survive the filesystem"
+    assert symlinks == 4 or os.name == "nt", "symlinks are constructible off Windows"
+
+
+# ---------------------------------------------------------------------------
 # The operator entry point (`python -m bantamkit.memory`).
 #
 # `docs/memory.md` holds a deliberate position: `lint`, `compact`, `archived`
