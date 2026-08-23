@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from bantamkit.agent import Agent, ToolDef
@@ -24,6 +25,57 @@ from bantamkit.memory.store import (
     MemoryStore,
     MemoryValidationError,
 )
+
+
+@dataclass(frozen=True)
+class SaveOutcome:
+    """What `save` DECIDED, beside the sentence it says about it.
+
+    THE POINT OF THIS TYPE IS THAT `status` IS NOT DERIVED FROM `reply`. `Memory.save`
+    has four outcomes — stored, deduped, refused by validation, refused by the budget —
+    and all four leave the process as one string that the MCP host records as
+    "completed successfully in Nms". Anything downstream that wanted to tell them apart
+    had exactly one route: match the reply text. That route is a re-derivation which
+    breaks silently the day the wording improves, and it is why this field exists.
+
+    `status` is one of `saved`, `duplicate`, `refused-validation`, `refused-budget`, and
+    every one of them is read off a decision the code had already made — `SaveResult`'s
+    own `status`, or which `except` clause caught. `reply` is the unchanged string
+    `save()` has always returned; nothing reads it.
+    """
+
+    reply: str
+    status: str
+
+
+@dataclass(frozen=True)
+class RecallOutcome:
+    """What `recall` DID, beside the facts it formatted.
+
+    `recall` walks the layers in order, stops the moment the budget is spent, dedupes by
+    name, and — when nothing matched — picks one of three different verdicts about WHY
+    (see `_nothing_to_report`). None of that survived into the reply the host times: an
+    empty recall and a three-fact recall are the same log line to it, and the three
+    empties are indistinguishable from each other even to a reader of the reply, because
+    telling them apart means matching prose.
+
+    `status` is `answered` or one of `empty-no-match` / `empty-unreadable-layer` /
+    `empty-nothing-saved`, keyed on the same branch that chooses the verdict sentence
+    rather than on the sentence. `source` is the KIND of the layer that answered first —
+    `project`, `extra` or `profile` — deliberately not the layer's full label, because
+    `extra:<name>` carries a directory name off the operator's disk and the log this
+    feeds is metadata-only.
+    """
+
+    reply: str
+    status: str
+    budget: int
+    layers: int
+    reached: int
+    returned: int
+    candidates: int
+    source: str | None = None
+    unreadable: int = 0
 
 
 def normalize_name(name: str) -> str:
@@ -132,12 +184,26 @@ class Memory:
     def save(
         self, type: str, name: str, description: str, body: str, links: list[str] | None = None
     ) -> str:
+        """The reply the model reads. Unchanged, and still the tool's advertised return."""
+        return self.save_outcome(type, name, description, body, links).reply
+
+    def save_outcome(
+        self, type: str, name: str, description: str, body: str, links: list[str] | None = None
+    ) -> SaveOutcome:
+        """`save`, with the branch it took carried out alongside the sentence it wrote.
+
+        Same body, same order, same four exits: the only change is that each exit now
+        NAMES itself. That is the whole of the narrow seam the MCP server needs to log
+        an outcome without matching text, and it moves no wording and no return type —
+        `save()` above still answers `str`, and `assets/tools/memory_save.json` still
+        advertises `str`.
+        """
         name = normalize_name(name)
         links = [normalize_name(link) for link in links or []]
         try:
             result = self.store.save(type, name, description, body, tuple(links))
         except MemoryValidationError as e:
-            return f"error: {e}"
+            return SaveOutcome(reply=f"error: {e}", status="refused-validation")
         except MemoryBudgetExceeded as e:
             # Not an argument problem: retrying the same call cannot fit the index.
             # Two audiences, two remedies. The store's own text names `compact()`,
@@ -146,18 +212,24 @@ class Memory:
             # MODEL, which by design has no compaction tool — `docs/memory.md` keeps
             # lifecycle an operator decision — so it must name what the model can do
             # instead of a remedy it cannot reach.
-            return (
-                f"error: {e}. Nothing was saved and retrying will not help — shorten "
-                f"the description, or save under the name of an existing memory to "
-                f"replace it. Compacting the index to free room is an operator job, "
-                f"not a tool you have."
+            return SaveOutcome(
+                reply=(
+                    f"error: {e}. Nothing was saved and retrying will not help — shorten "
+                    f"the description, or save under the name of an existing memory to "
+                    f"replace it. Compacting the index to free room is an operator job, "
+                    f"not a tool you have."
+                ),
+                status="refused-budget",
             )
         if result.status == "duplicate":
-            return (
-                f"similar memory '{result.similar}' already exists — save under that SAME "
-                f"name to update it, or skip. Do not rename to force a copy."
+            return SaveOutcome(
+                reply=(
+                    f"similar memory '{result.similar}' already exists — save under that "
+                    f"SAME name to update it, or skip. Do not rename to force a copy."
+                ),
+                status="duplicate",
             )
-        return f"saved '{result.name}'"
+        return SaveOutcome(reply=f"saved '{result.name}'", status="saved")
 
     def recall(self, query: str, k: int | None = None) -> str:
         """`k` is the model asking for *more*, never for less than the store's default.
@@ -173,31 +245,98 @@ class Memory:
         The floor is the operator's configured default, not a constant, so a consumer
         who really wants top-1 says so once at construction (`Memory(store, k=1)`).
         """
+        return self.recall_outcome(query, k).reply
+
+    def recall_outcome(self, query: str, k: int | None = None) -> RecallOutcome:
+        """`recall`, carrying the walk it performed as numbers rather than as prose.
+
+        The reply is byte-for-byte what `recall` has always returned; every field beside
+        it is counted here because it CANNOT be recovered afterwards. How far down the
+        layer list the budget got, how many of the layers reached were readable, how
+        many facts those layers held against how many came back, and which of the three
+        empty verdicts fired — all of it is gone by the time the string exists, and the
+        host's log records only that a `memory_recall` "completed successfully".
+
+        `candidates` counts `facts/*.md` in the layers actually READ, via `count_facts`
+        — the same filter `MemoryStore.recall` scores over, so the ratio to `returned`
+        is between two counts of one population and not between two different ones. A
+        layer whose directory refuses to list contributes nothing and raises the
+        `unreadable` count instead of being scored as empty; that distinction is the
+        whole subject of `_nothing_to_report` below and must not be undone here.
+        """
         budget = self.k if k is None else max(k, self.k)
         picked: list[tuple[str, Fact]] = []
         seen: set[str] = set()
+        reached = 0
+        unreadable = 0
+        candidates = 0
         for label, store, writable in self._layers:
             if len(picked) >= budget:
                 break  # budget spent: later (read-only) layers are never even read
+            reached += 1
             try:
                 facts = store.recall(query, budget, stamp=writable)
             except (BantamError, OSError, UnicodeDecodeError):
                 if writable:
                     raise  # the project layer failing is a real error, as in v1
+                unreadable += 1
                 continue  # a corrupt grant/profile layer must not take down recall
+            try:
+                candidates += count_facts(store.root)
+            except OSError:
+                # It scored a moment ago, so it is readable; a race that unlists it now
+                # must not turn a successful recall into a failed one for a log field.
+                pass
             for fact in facts:
                 if fact.name in seen or len(picked) >= budget:
                     continue
                 seen.add(fact.name)
                 picked.append((label, fact))
+        counts = {
+            "budget": budget,
+            "layers": len(self._layers),
+            "reached": reached,
+            "returned": len(picked),
+            "candidates": candidates,
+            "unreadable": unreadable,
+        }
         if not picked:
-            return self._nothing_to_report()
-        return "\n\n".join(self._format(label, fact) for label, fact in picked)
+            status, reply = self._nothing_to_report()
+            return RecallOutcome(reply=reply, status=status, **counts)
+        return RecallOutcome(
+            reply="\n\n".join(self._format(label, fact) for label, fact in picked),
+            status="answered",
+            source=picked[0][0].split(":", 1)[0],
+            **counts,
+        )
+
+    def index_accounting(self) -> tuple[int | None, int]:
+        """`(index bytes, budget)` for the writable project store; bytes may be `None`.
+
+        Measured exactly the way `MemoryStore._check_index_budget` measures — the UTF-8
+        length of `index_text()` — so the number a log records and the number a refusal
+        was decided against are one number and not two that can drift apart.
+
+        `None` means the store could not be read, and it is never 0: an unreadable store
+        reporting an empty index is the same slander this module spends
+        `_nothing_to_report` refusing to commit, and it would read as infinite headroom
+        at exactly the moment there is none. The cost is a full parse of `facts/`, which
+        is why nothing calls this on the tool path unless a log is actually enabled.
+        """
+        try:
+            return len(self.store.index_text().encode("utf-8")), self.store.index_budget
+        except (BantamError, OSError, UnicodeDecodeError):
+            return None, self.store.index_budget
 
     # ---- the empty answer, split into the answers it was hiding ----------------
 
-    def _nothing_to_report(self) -> str:
+    def _nothing_to_report(self) -> tuple[str, str]:
         """An empty recall is at least three different situations; say which one.
+
+        Answers `(status, text)`. The status is the SAME BRANCH that picks the sentence,
+        handed out rather than re-derived: a caller that needs to tell the three empties
+        apart — the MCP event log does — would otherwise have to match the prose this
+        docstring exists to say is allowed to improve.
 
         Until now all of them returned "no memories matched. Try different words",
         which tells a person to rephrase a question against a filing cabinet that may
@@ -215,20 +354,23 @@ class Memory:
         on disk the moment `MemoryStore` creates the directory.
         """
         if self._searchable_facts():
+            status = "empty-no-match"
             verdict = "no memories matched. Try different words, or proceed without."
         elif unreadable := self._unreadable_layers():
             # A layer nobody could open is not a layer that held nothing. Saying
             # "nothing is saved" here is the same slander as calling an unreadable
             # store empty, one call further out.
+            status = "empty-unreadable-layer"
             verdict = (
                 "no memories matched, and that is not evidence there are none: "
                 + ", ".join(str(root) for root in unreadable)
                 + " could not be read."
             )
         else:
+            status = "empty-nothing-saved"
             verdict = "no memories to search: nothing is saved in any layer bound here."
         diagnosis = self._binding_diagnosis()
-        return f"{verdict} {diagnosis}" if diagnosis else verdict
+        return status, (f"{verdict} {diagnosis}" if diagnosis else verdict)
 
     @staticmethod
     def _fact_count(root: Path) -> int | None:

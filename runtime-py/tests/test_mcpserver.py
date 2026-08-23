@@ -24,7 +24,7 @@ from bantamkit.mcpserver import (  # noqa: E402
     _version,
     build_server,
 )
-from bantamkit.memory import Memory  # noqa: E402
+from bantamkit.memory import Memory, RecallOutcome  # noqa: E402
 
 
 def run(coro):
@@ -351,10 +351,23 @@ def test_missing_extra_yields_install_hint(tmp_path, monkeypatch):
 def test_recall_k_clamped_to_advertised_bounds(tmp_path):
     seen = {}
 
+    # `recall_outcome`, not `recall`: the handler needs the layer walk's counts for the
+    # event log, so that is the method it calls and the one a probe has to intercept. The
+    # clamp under test has not moved — it still happens in the handler, before the
+    # component sees `k` at all.
     class Probe(Memory):
-        def recall(self, query, k=None):
+        def recall_outcome(self, query, k=None):
             seen["k"] = k
-            return "ok"
+            return RecallOutcome(
+                reply="ok",
+                status="answered",
+                budget=self.k,
+                layers=1,
+                reached=1,
+                returned=1,
+                candidates=1,
+                source="project",
+            )
 
     server = build_server(Probe(store=tmp_path / "store"))
 

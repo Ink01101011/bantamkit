@@ -329,6 +329,21 @@ your **configuration**. The diagnosis is dropped the moment the project store
 holds a fact, so a store you have started using never keeps being described as
 empty.
 
+## Recording what this log cannot see
+
+The host's own MCP log already holds every tool call's name, its success bit, its
+duration and the session id. What it cannot hold is the outcome decided inside a
+component: a `memory_save` that deduped, a `memory_save` the budget refused, a
+`shiftwork_clock_in` that answered `escalate` — all of them "completed successfully" as
+far as the host is concerned.
+
+Set `BANTAMKIT_EVENT_LOG=on` and the server appends one JSONL record per call to
+`<store>/events/mcp.jsonl`, carrying that outcome and nothing the host already has. It is
+metadata only, never an argument value; it is capped at 1 MiB with one rotated
+generation; a filesystem failure makes the record disappear rather than the call; and it
+is off unless you ask for it. Full contract, including the record shape both runtimes
+emit: [Event log](eventlog.md).
+
 ## Out of scope, deliberately
 
 No model runs server-side: critique scoring and structured *generation* stay

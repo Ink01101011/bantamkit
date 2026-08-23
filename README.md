@@ -123,6 +123,7 @@ ship as an [MCP server](docs/mcp.md).
 - [File-access graph](docs/filegraph.md) — the read ledger: repeat annotation, verify-on-repeat cache, `file_graph` query tool
 - [Eval](docs/eval.md) — running the suite, the config matrix, reading the report, adding tasks
 - [MCP](docs/mcp.md) — `bantamkit-mcp`: memory + validation for external agents (Claude Code, Codex, any MCP client)
+- [Event log](docs/eventlog.md) — the JSONL record of the outcomes the MCP host cannot see: the shape, the vocabulary, where the file lives and why, the 1 MiB cap
 - [Shift-work](docs/shiftwork.md) — checkpoint contract + driver for clock-in/clock-out session cycling (experimental)
 - [Porting](docs/porting.md) — the Node port: what was hand-ported from CPython and why, `PyScalar`, the syscall seam, where the two runtimes deliberately differ
 - [Conformance](docs/conformance.md) — the two-runtime diff harness: the seven suites, the four kinds of case, and why a `ruling:` pins the wording and not the outcome

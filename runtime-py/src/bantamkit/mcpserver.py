@@ -9,7 +9,8 @@ import json
 import os
 import platform
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from importlib import metadata
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from bantamkit import __version__, shiftwork
 from bantamkit.assets import AssetNotFound, assets_root, load_skill, load_tool_asset
 from bantamkit.client import BantamError
 from bantamkit.contract import schema_error, schema_retry_feedback
+from bantamkit.eventlog import EventLog
 from bantamkit.memory import DEFAULT_INDEX_BUDGET, Memory
 
 try:
@@ -291,32 +293,120 @@ def _from_manifest(fn: Callable[..., Any], name: str) -> Any:
     )
 
 
-def build_server(memory: Memory) -> Any:
-    """Assemble the MCP server around one Memory instance (the per-person state)."""
+@contextmanager
+def _record_raise(log: EventLog, tool: str) -> Iterator[None]:
+    """Record the TYPE of anything that escapes, then let it escape unchanged.
+
+    The host already logs that a tool failed and how long it took; what it cannot say is
+    which exception the component threw — and the one place it tried, it leaked an
+    argument value doing it (`eventlog.py`'s docstring, measured). So: `type(exc).__name__`
+    and nothing else, via `EventLog.raised`, which has no other input available to it.
+
+    `BaseException` rather than `Exception` deliberately. A `KeyboardInterrupt` or a
+    `SystemExit` out of a handler is exactly the shape whose cause is hardest to
+    reconstruct afterwards, the record costs one line, and the `raise` is unconditional
+    — nothing here decides whether the tool fails, only whether the failure was written
+    down. `EventLog.record` swallows its own `OSError`, so this cannot mask the original.
+    """
+    try:
+        yield
+    except BaseException as exc:
+        log.raised(tool, exc)
+        raise
+
+
+def _record_result(log: EventLog, tool: str, call: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    """Run a shiftwork handler and record its `result` — the register's OWN verdict.
+
+    Every `shiftwork` entry point answers a dict whose `result` key is the decision it
+    made: `brief`, `escalate`, `success`, `ok`, `status`, `error`. `clock_in` returning
+    `escalate` is the sharp case — the register's whole stop-and-ask contract, invisible
+    in the host's log because the tool call succeeded. Reading the key is reading the
+    decision; nothing here inspects a `reason` string, which is prose and can carry a
+    checkpoint path.
+
+    `raised` is the outcome for an ESCAPING EXCEPTION and is spelled differently from
+    `error` on purpose: `result: "error"` is a refusal the register composed and returned
+    normally, and collapsing the two would lose the only distinction between a checkpoint
+    that was rejected and a handler that fell over.
+    """
+    with _record_raise(log, tool):
+        answer = call()
+    log.record(tool, str(answer.get("result", "unknown")))
+    return answer
+
+
+def build_server(memory: Memory, log: EventLog | None = None) -> Any:
+    """Assemble the MCP server around one Memory instance (the per-person state).
+
+    `log` is the event-log sink (`docs/eventlog.md`), resolved from `BANTAMKIT_EVENT_LOG`
+    when the caller does not supply one and DISABLED unless that variable asks for it.
+    It is a parameter and not only an environment read so that a test can inject a fixed
+    clock and a scratch path without setting a process-wide variable — the same seam
+    `runtime-ts` needs for its half of the conformance case.
+
+    EVERY HANDLER BELOW RECORDS FROM A DECISION, NEVER FROM ITS REPLY. `memory_save`
+    reads `SaveOutcome.status`, `memory_recall` reads `RecallOutcome.status`, the three
+    shiftwork tools read the register's own `result` key, `validate_json` reads the
+    `valid` bool it is about to return, and `build_identity` reads the length of the
+    `unavailable` list it computed. Not one of them looks at the words. That is the
+    property `test_eventlog.py::test_the_record_does_not_move_when_the_reply_wording_
+    does` holds: change a reply's wording and the record must be byte-identical.
+    """
     if MCPServer is None:
         raise SystemExit(_INSTALL_HINT)
+    if log is None:
+        log = EventLog.from_env(memory.store.root)
 
     def memory_save(
         type: str, name: str, description: str, body: str, links: list[str] | None = None
     ) -> str:
-        return memory.save(type, name, description, body, links)
+        with _record_raise(log, "memory_save"):
+            outcome = memory.save_outcome(type, name, description, body, links)
+        if log.enabled:
+            # Only when a log is actually on: `index_accounting` re-parses `facts/`, and
+            # a diagnostic must not put that on the path of an operator who did not ask
+            # for one. Headroom is left to the reader rather than stored — it is
+            # `budget - index_bytes`, and a derived field is a second thing to keep true.
+            index_bytes, budget = memory.index_accounting()
+            detail: dict[str, Any] = {"budget": budget}
+            if index_bytes is not None:
+                detail["index_bytes"] = index_bytes
+            log.record("memory_save", outcome.status, detail)
+        return outcome.reply
 
     def memory_recall(query: str, k: int | None = None) -> str:
         if k is not None:
             k = max(1, min(k, 5))  # the advertised schema's bounds; clients may ignore it
-        return memory.recall(query, k)
+        with _record_raise(log, "memory_recall"):
+            outcome = memory.recall_outcome(query, k)
+        detail = {
+            "budget": outcome.budget,
+            "candidates": outcome.candidates,
+            "layers": outcome.layers,
+            "reached": outcome.reached,
+            "returned": outcome.returned,
+            "unreadable": outcome.unreadable,
+        }
+        if outcome.source is not None:
+            detail["source"] = outcome.source
+        log.record("memory_recall", outcome.status, detail)
+        return outcome.reply
 
     def validate_json(output: str, schema: dict[str, Any]) -> dict[str, Any]:
-        error = schema_error(output, schema)
+        with _record_raise(log, "validate_json"):
+            error = schema_error(output, schema)
         if error is None:
+            log.record("validate_json", "valid")
             return {"valid": True, "feedback": None}
+        log.record("validate_json", "invalid")
         return {
             "valid": False,
             "feedback": schema_retry_feedback(error),
         }
 
     def shiftwork_clock_in(checkpoint: str) -> dict[str, Any]:
-        return shiftwork.clock_in(checkpoint)
+        return _record_result(log, "shiftwork_clock_in", lambda: shiftwork.clock_in(checkpoint))
 
     def shiftwork_clock_out(
         checkpoint: str,
@@ -326,12 +416,16 @@ def build_server(memory: Memory) -> Any:
         history_entry: dict[str, Any],
         accounting: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return shiftwork.clock_out(
-            checkpoint, unit_id, status, handoff_patch, history_entry, accounting
+        return _record_result(
+            log,
+            "shiftwork_clock_out",
+            lambda: shiftwork.clock_out(
+                checkpoint, unit_id, status, handoff_patch, history_entry, accounting
+            ),
         )
 
     def shiftwork_status(checkpoint: str) -> dict[str, Any]:
-        return shiftwork.status(checkpoint)
+        return _record_result(log, "shiftwork_status", lambda: shiftwork.status(checkpoint))
 
     # A TOOL and not a resource or an `initialize` field, because the gap RB-P84 names is
     # an AGENT MID-CALL: the host reads `serverInfo` once at handshake and the
@@ -339,7 +433,19 @@ def build_server(memory: Memory) -> Any:
     # most clients never expose to the model at all. A tool is in `tools/list`, so the
     # model that just received a `memory_recall` answer can ask who answered it.
     def build_identity_tool() -> dict[str, Any]:
-        return build_identity()
+        with _record_raise(log, "build_identity"):
+            identity = build_identity()
+        # The COUNT of underivable fields, not the fields and not the digests. A code
+        # digest is by construction different in the two runtimes — they fingerprint two
+        # different trees (`docs/porting.md`'s divergence table says so about `build_id`)
+        # — so putting one in a record that a conformance case byte-compares would make
+        # the record unportable to buy nothing the tool's own reply does not already say.
+        log.record(
+            "build_identity",
+            "partial" if identity["unavailable"] else "complete",
+            {"unavailable": len(identity["unavailable"])},
+        )
+        return identity
 
     # The served surface, in one place, read out of the asset pack. Adding a tool here
     # without an asset raises AssetNotFound at startup — the manifest cannot drift behind

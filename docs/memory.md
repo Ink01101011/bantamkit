@@ -46,7 +46,13 @@ print(memory.recall("postgres port"))
     deploy-command.md
   archive/
     old-fact.md     # compacted out; on disk, out of the index, restorable
+  events/
+    mcp.jsonl       # OPTIONAL. The MCP event log; the store never reads it
 ```
+
+`events/` is not part of the store. It appears only when an operator sets
+`BANTAMKIT_EVENT_LOG`, the store reads neither the directory nor anything in it, and
+that is a tested boundary rather than a convention — see [Event log](eventlog.md).
 
 Each fact is Markdown with YAML frontmatter:
 
