@@ -1,4 +1,36 @@
 export { BantamError } from './errors.js';
+export {
+  ContractParseError,
+  extractJson,
+  loadContract,
+  parseContractDocument,
+  parseErrorMessage,
+  REQUIRED_KEYS,
+  schemaError,
+  schemaRetryFeedback,
+  validationErrorMessage,
+} from './contract.js';
+export {
+  fromJs,
+  PY_NONE,
+  parseJson,
+  pyFloatRepr,
+  PyJSONDecodeError,
+  PyValueError,
+  rawDecode,
+  reprValue,
+  toJs,
+} from './pyjson.js';
+export type { PyValue } from './pyjson.js';
+export {
+  absolutePath,
+  bestMatch,
+  iterErrors,
+  PyJsonSchemaUnsupported,
+  pyEqual,
+  validate,
+} from './pyjsonschema.js';
+export type { PyValidationError } from './pyjsonschema.js';
 export { AssetNotFound, assetsRoot, loadSchema, loadSkill, loadTool, loadToolAsset } from './assets.js';
 export type { Tool } from './assets.js';
 export {
