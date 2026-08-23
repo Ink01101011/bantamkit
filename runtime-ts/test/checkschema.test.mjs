@@ -406,6 +406,21 @@ test('winerrorFor re-derives the distinction libuv threw away', () => {
   // ...and through the other door, `open()` on such a name is EINVAL, not a not-found.
   assert.equal(pyfs.crtCode('ENOENT', 'C:\\a\\two\nlines.md'), 'EINVAL');
   assert.equal(pyfs.crtCode('ENOENT', 'C:\\a\\ok.md'), 'ENOENT');
+  // THE CLASS COMES OFF THE WINERROR'S OWN ERRNO, not off libuv's code. `ERROR_INVALID_NAME`
+  // translates to EINVAL, EINVAL is not in `errnomap`, and the exception is therefore a
+  // plain `OSError` — where this port raised `FileNotFoundError` because libuv had folded
+  // the failure into ENOENT. A caller's `except FileNotFoundError` would have swallowed an
+  // error the reference lets past. MEASURED, run 32651049453, the last of the 132.
+  assert.equal(pyfs.winerrorToCode(123), 'EINVAL');
+  assert.equal(pyfs.winerrorToCode(1921), 'EINVAL');
+  assert.equal(pyfs.winerrorToCode(2), 'ENOENT');
+  assert.equal(pyfs.winerrorToCode(3), 'ENOENT');
+  assert.equal(pyfs.winerrorToCode(183), 'EEXIST');
+  assert.equal(pyfs.winerrorToCode(267), 'ENOTDIR');
+  assert.equal(pyfs.winerrorToCode(5), 'EACCES');
+  assert.equal(new pyfs.PyOSError(22, 'EINVAL', 'x', '/a', null, 123).name, 'OSError');
+  assert.equal(new pyfs.PyOSError(2, 'ENOENT', 'x', '/a', null, 2).name, 'FileNotFoundError');
+  assert.equal(new pyfs.PyOSError(20, 'ENOTDIR', 'x', '/a', null, 267).name, 'NotADirectoryError');
   // An unmapped code makes NO claim: a visible `[Errno n]` beats a plausible wrong sentence.
   assert.equal(pyfs.winerrorFor('EWHAT', 'win32', '/a', null, here), null);
   // And `open()` never carries one at all, on any code.

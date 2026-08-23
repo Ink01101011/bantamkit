@@ -386,6 +386,49 @@ export function winerrorFor(
 }
 
 /**
+ * `winerror_to_errno` — CPython's translation, which is NOT the one libuv already applied.
+ *
+ * THE CLASS COMES OFF THE ERRNO, and the errno CPython carries is the one IT derived from
+ * the Win32 code, not the one libuv derived. MEASURED, run 32651049453: `os.unlink` of a
+ * name holding a newline is `ERROR_INVALID_NAME` (123), which CPython translates to EINVAL
+ * — and EINVAL is not in `errnomap`, so the exception is a plain `OSError`. libuv had folded
+ * the same failure into ENOENT, so this port raised `FileNotFoundError` and a caller's
+ * `except FileNotFoundError` would have swallowed an error the reference lets past.
+ *
+ * Every other arm here is an identity on the codes this port can reach (2/3 -> ENOENT,
+ * 183 -> EEXIST, 267 -> ENOTDIR), which is why only the 123 case was visible. The table is
+ * written out in full anyway: an arm that happens to be an identity today is exactly the one
+ * that stops being one without anybody noticing.
+ */
+export function winerrorToCode(winerror: number): string {
+  switch (winerror) {
+    case 2:
+    case 3:
+    case 15:
+      return 'ENOENT';
+    case 5:
+    case 32:
+    case 1920:
+      return 'EACCES';
+    case 80:
+    case 183:
+      return 'EEXIST';
+    case 145:
+      return 'ENOTEMPTY';
+    case 206:
+      return 'ENAMETOOLONG';
+    case 267:
+      return 'ENOTDIR';
+    default:
+      // `ERROR_INVALID_FUNCTION`, `ERROR_INVALID_PARAMETER`, `ERROR_INVALID_NAME` and
+      // `ERROR_CANT_RESOLVE_FILENAME` are all outside CPython's errmap, and an unmapped
+      // Win32 error becomes EINVAL. pathlib's `check_eloop` testing `winerror == 1921`
+      // SEPARATELY from `errno == ELOOP` is that fact written down in the reference.
+      return 'EINVAL';
+  }
+}
+
+/**
  * The C runtime's answer where it is NOT libuv's, for the calls `open()` makes.
  *
  * One entry, and it is measured: opening a directory for writing is `EISDIR` to libuv and
@@ -441,11 +484,16 @@ export function asPyOSError(
   const filename = rawPath;
   const filename2 = e?.dest ?? fallbackDest ?? null;
   const winerror = windows ? winerrorFor(code, origin, filename, filename2, pyLexists) : null;
+  // Once a winerror is known it is the SOURCE of both the number and the class, because it
+  // is CPython's source for them: `PyErr_SetExcFromWindowsErr` translates the Win32 code and
+  // `OSError.__new__` picks the subclass off the result.
+  const finalCode = winerror === null ? code : winerrorToCode(winerror);
+  const finalErrno = winerror === null ? errno : pyErrno({ code: finalCode, errno: e?.errno });
   const strerror =
-    (winerror === null ? pyStrerror(code) : WINERROR[winerror]) ??
-    pyStrerror(code) ??
-    `${code}: ${e?.message ?? 'unknown error'}`;
-  return new PyOSError(errno, code, strerror, filename, filename2, winerror);
+    (winerror === null ? pyStrerror(finalCode) : WINERROR[winerror]) ??
+    pyStrerror(finalCode) ??
+    `${finalCode}: ${e?.message ?? 'unknown error'}`;
+  return new PyOSError(finalErrno, finalCode, strerror, filename, filename2, winerror);
 }
 
 // -------------------------------------------------------------------------- utf-8 text
