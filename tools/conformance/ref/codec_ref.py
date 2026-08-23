@@ -20,6 +20,9 @@ survive byte-exactly travel as base64, because the point of the exercise is byte
 
     {"op": "today", "ts": [unix seconds]}        # date.today() is LOCAL; run me with $TZ
       -> {"dates": ["YYYY-MM-DD", ...]}
+
+    {"op": "windows_write", "facts": [...]}      # the SAME facts, written the way `newline=
+      -> {"written_b64": [...]}                  # None` writes them where os.linesep is CRLF
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ import base64
 import datetime
 import json
 import sys
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -103,6 +107,25 @@ def main() -> None:
             {"parsed": [parse_text(Path(p).read_text(encoding="utf-8")) for p in request["paths"]]},
             sys.stdout,
         )
+    elif op == "windows_write":
+        # THE CRLF RULING'S REFERENCE SIDE, produced by CPython rather than simulated in JS.
+        #
+        # `Path.write_text(..., encoding="utf-8")` passes `newline=None`, which translates
+        # every "\n" to `os.linesep` on the way out — CRLF on Windows, a no-op here. CPython
+        # gates that on `#ifdef MS_WINDOWS`, so this platform cannot construct it directly;
+        # `newline="\r\n"` asks the SAME TextIOWrapper for the SAME translation with the
+        # target explicitly named, which is as close as a macOS runner gets to the Windows
+        # write without pretending. It matters that this goes through the io stack and not
+        # through `str.replace`: if CPython's translation ever changed, this moves and the
+        # ruling that depends on it is re-read instead of trusted.
+        written = []
+        with tempfile.TemporaryDirectory() as tmp:
+            for i, fact in enumerate(request["facts"]):
+                path = Path(tmp) / f"{i}.md"
+                with path.open("w", encoding="utf-8", newline="\r\n") as handle:
+                    handle.write(write_fact(fact))
+                written.append(base64.b64encode(path.read_bytes()).decode("ascii"))
+        json.dump({"written_b64": written}, sys.stdout)
     elif op == "today":
         # `date.today()` is `date.fromtimestamp(time.time())` — LOCAL, honouring $TZ. The
         # caller pins TZ so the two runtimes are asked the same question.

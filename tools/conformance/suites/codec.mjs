@@ -317,25 +317,55 @@ export async function run(ctx) {
   }
 
   // -------------------------------------------------------------------- the one ruling
-  // On Windows Python's `newline=None` turns every `\n` into `\r\n` on the way out, so a
-  // fact file Python writes there is CRLF while every byte count the store computes is LF.
-  // This port writes LF everywhere. On macOS and Linux `os.linesep` is `\n` and there is
-  // nothing to differ, so the ruling is stated as a case that MUST differ from a simulated
-  // Windows write — if it ever stops differing, the simulation has drifted and the ruling
-  // needs re-reading rather than trusting.
+  //
+  // WHAT THIS CASE CAN AND CANNOT DETECT, stated plainly because N8 found the previous
+  // wording overclaiming. On Windows `newline=None` turns every `\n` this codec writes into
+  // `\r\n`, while every byte count the store computes — the index budget, both digests — is
+  // computed on LF text. This port writes LF on every platform. On macOS and Linux
+  // `os.linesep` is `\n`, so the difference cannot be constructed here at all: CPython gates
+  // write-translation on `#ifdef MS_WINDOWS`, a compile-time switch.
+  //
+  // So the `expected` side is CPython performing that same translation with the target named
+  // explicitly (`newline="\r\n"`, the `windows_write` arm of `codec_ref.py`), not a JS
+  // `str.replace` standing in for it. That buys one real property: if CPython's newline
+  // translation ever moved, this case moves with it. It does NOT buy the other one — a port
+  // that started emitting CRLF *on Windows* would still emit LF here, so this runner cannot
+  // see that fix. Only a Windows runner can, and the note below carries the one-liner.
   const sample = factfile.formatFact(corpus[0]);
+  const windowsBytes = Buffer.from(
+    ctx.runPython(REF, { op: 'windows_write', facts: [corpus[0]] }).written_b64[0],
+    'base64',
+  );
   cases.push({
     name: 'ruling: node writes LF where python-on-windows writes CRLF',
     kind: 'bytes',
-    expected: sample.replace(/\n/g, '\r\n'),
+    expected: [...windowsBytes],
     actual: sample,
     ruling:
       'Python opens fact files with newline=None, so on Windows every one is CRLF while ' +
       'the index budget and the digests are all computed on LF text. This port writes LF ' +
       'on every platform: the CRLF is incidental to newline=None, it already disagrees ' +
-      'with the store\'s own arithmetic, and reproducing it would make the same Fact emit ' +
-      'different bytes on two machines. Reads stay universal-newline on both sides.',
+      "with the store's own arithmetic, and reproducing it would make the same Fact emit " +
+      'different bytes on two machines. Reads stay universal-newline on both sides. THE ' +
+      'EXPECTED SIDE IS CPYTHON, not a simulation in this file — `codec_ref.py`\'s ' +
+      '`windows_write` arm asks the same TextIOWrapper for the same translation. This ' +
+      'runner still cannot observe the difference being FIXED, because a fix would be ' +
+      'Windows-gated and this is macOS; the Windows one-liner in the notes settles that.',
   });
+  // The half that IS decidable here, as a plain non-ruled assertion: the port put no CR in
+  // the bytes at all. Without this, "we write LF" would rest on the ruled case above, and a
+  // case that is required to differ cannot also be the thing that proves what we emit.
+  cases.push({
+    name: 'the port emits no CR on this platform',
+    kind: 'string',
+    expected: 'carriage returns: 0',
+    actual: `carriage returns: ${(sample.match(/\r/g) ?? []).length}`,
+  });
+  notes.push(
+    'the CRLF ruling compares CPython\'s own newline translation against this port; a Windows ' +
+      'runner settles the half this one cannot, with: python -c "import pathlib;p=pathlib.Path(f);' +
+      'p.write_text(t,encoding=\'utf-8\');print(len(t.encode()), p.stat().st_size)"',
+  );
 
   return { cases, notes };
 }

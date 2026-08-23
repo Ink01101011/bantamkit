@@ -68,6 +68,62 @@ git tag -a v0.4.0 -m "bantamkit 0.4.0"
 git push origin v0.4.0
 ```
 
+## The MCP server without Python: `npx bantamkit-mcp`
+
+Everything above installs the **library**, and it needs Python. The **MCP server** does
+not, any more. `runtime-ts/` is a pure-Node port of it — the same seven tools, the same
+two resource templates, the same memory store on disk — packaged so a teammate can add
+one line to `.mcp.json` and be done:
+
+```json
+{"mcpServers": {"bantamkit": {"command": "npx", "args": ["-y", "bantamkit-mcp@0.25.0"]}}}
+```
+
+Full install documentation, with every number measured rather than estimated, is
+[`runtime-ts/README.md`](../runtime-ts/README.md); the annotated config with all four
+forms is `runtime-ts/mcp.json.example`.
+
+### Migrating from `tools/bantamkit-mcp`
+
+The sh launcher is **not** deprecated and nothing is being removed. Both endpoints read
+and write the same store, and the Node port is checked against the Python server frame by
+frame — 4300+ conformance cases, every deliberate difference recorded as a ruling. Run
+whichever suits the machine; a team can mix them.
+
+Move to `npx` when the pain is *installation*: a teammate with no clone, no venv and no
+interest in acquiring either. Stay on `tools/bantamkit-mcp` when the pain is
+*determinism* — it is the only one of the two that is guaranteed present in a worktree,
+guaranteed to serve the checkout you are standing in, and guaranteed to start with no
+network.
+
+Three things change, and all three are measured, not predicted:
+
+1. **`npx` must be on the PATH the host process actually has.** A GUI-launched host does
+   not read your shell rc. Measured on this machine:
+   `env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin sh -c 'command -v npx'` exits 1, and
+   `launchctl getenv PATH` is unset. The symptom is `ENOENT` from the host, which names
+   nothing. Fix by giving the config an absolute path.
+2. **A cold cache needs the registry, and failing to reach it is silent.** Measured: with
+   the registry unreachable the client receives **zero** bytes on the JSON-RPC channel for
+   140 s (connection refused) or 590 s (packets dropped), then the process exits. The host
+   reports its own handshake timeout. A warm cache is unaffected.
+3. **`npx` floats the version.** `latest` is resolved once and cached, so two people with
+   the identical config line can run different builds. Pin `@0.25.0`, and use
+   `build_identity` to settle it when in doubt: `runtime` says which lineage answered,
+   `assets_digest` is computed identically in both and must match across machines,
+   `build_id` differing on the same version string *is* the float.
+
+Not carried over: **`--which`**. The sh launcher's flag documents a consumer,
+`tools/mcpreach/mcpreach.py`, that has never existed on any of this repository's 506
+refs — see `runtime-py/tests/test_mcp_endpoint.py:48-72`, which records the three-file
+contradiction, and the `--which` section of `runtime-ts/README.md`. `build_identity`
+answers the question the flag was reaching for, on the wire rather than beside it.
+
+Version numbers are currently pinned together: the npm package is `0.25.0` to match
+`runtime-py.__version__`, because `build_identity` reports the version and a reader
+comparing two servers should not have to hold two numbering schemes in their head.
+Whether npm and PyPI should float independently is an open decision, not a settled one.
+
 ## Point at an endpoint
 
 Every backend is reached through the one adapter, `OpenAICompatible`. Only

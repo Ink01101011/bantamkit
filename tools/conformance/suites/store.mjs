@@ -418,7 +418,17 @@ function scenarios(ctx, real) {
         'hand-edit; a list is not, and reproducing `list.__repr__` means reproducing ' +
         '`str.__repr__`, which means the Unicode printability table. Both runtimes produce ' +
         'garbage for this file — the ruling is about WHICH garbage, and it is written down ' +
-        'here rather than discovered later.',
+        'here rather than discovered later. THE RULING COVERS THE COLLECTION SHAPES ONLY: a ' +
+        'list, and (measured) a MAP, where Python says `{\'a\': 1}` and JS says `{a: 1}`. It ' +
+        'does NOT cover the plain non-string SCALARS, and N8 measured that they are a ' +
+        'different and worse thing: on `name: 7`, `description: 2026`, `type: true`, ' +
+        '`created: 2026-08-23` and eleven more shapes, Python reads the file and produces a ' +
+        'working index line while this port raises `MemoryValidationError` and refuses ' +
+        'RECALL, SAVE and the index rebuild for the WHOLE STORE. That is not two spellings ' +
+        'of garbage, it is one runtime working and the other refusing on a store they share. ' +
+        'It is a defect awaiting its own unit — see `memory/factfile.ts:257` and N8\'s ' +
+        'clock-out — and it is deliberately NOT ruled here, because a ruling would document ' +
+        'as intentional a thing nobody intended.',
     ],
   ];
 

@@ -254,15 +254,37 @@ function scanPlain(front: string, pos: number): [string | null, number] {
 }
 
 /**
- * RULING — what a plain scalar resolves to.
+ * RULING — what a plain scalar resolves to. READ THE SECOND PARAGRAPH BEFORE TRUSTING THIS.
  *
  * PyYAML resolves a plain scalar by pattern, so a hand-edited `created: 2026-08-23` comes
  * back as a `datetime.date` and `links:\n- 12` as an `int`. Node has no `date` to return
- * and every `Fact` field is a string, so a resolved non-string is a defect in either
- * runtime — it just reaches the model as a `TypeError` several frames away in Python. This
- * raises AT the parse, naming the tag, rather than handing the store a value of the wrong
- * type. Null is the one non-string tag that is genuine: `last_recalled` and `created` are
- * `str | None`.
+ * and every `Fact` field is a string, so this raises AT the parse, naming the tag, rather
+ * than handing the store a value of the wrong type. Null is the one non-string tag that is
+ * genuine: `last_recalled` and `created` are `str | None`.
+ *
+ * N8 REFUTED THE REASON THIS RULING WAS WRITTEN ON, and the ruling has not been re-decided.
+ * It claimed a resolved non-string "is a defect in either runtime — it just reaches the
+ * model as a `TypeError` several frames away in Python". It does not. Measured against the
+ * reference over seventeen shapes (`name: 7`, `description: 2026`, `type: true`,
+ * `name: 1.5`, `name: 0x1f`, `created: 2026-08-23`, `last_recalled: 2026-08-23`,
+ * `links:\n- 12`, `name: .inf`, `name: yes` …): CPython raises on ZERO of them. It
+ * interpolates the value, writes a working `index.md` line, answers `memory_recall`, stamps
+ * the file and accepts the next `memory_save`. A bare `created:` date even round-trips
+ * through `_stamp` unquoted.
+ *
+ * What this port does instead is refuse the WHOLE STORE. One such file makes `memory_recall`,
+ * `memory_save` and the index rebuild all raise `MemoryValidationError` naming that one file,
+ * while the Python server bound to the same directory keeps working — measured with three
+ * facts, one of them `description: 2026`. Fact files are Markdown a human is invited to edit,
+ * so the shape is reachable; every fact this codec WRITES is quoted, so it is not reachable
+ * from the tool itself.
+ *
+ * This is left as it is on purpose rather than half-fixed: making it match means deciding
+ * what a `Fact` field holds when PyYAML hands back a `date`, an `int` or a `bool`, and that
+ * decision needs its own conformance corpus and its own mutation sweep. It is registered in
+ * N8's clock-out as work for a following unit, and the conformance suite deliberately does
+ * NOT carry it as a ruling — see `tools/conformance/suites/store.mjs`, the second `ruled`
+ * entry, for why documenting it as intentional would be the worse error.
  */
 function resolvePlain(value: string): string | null {
   // The resolver lives with the emitter: the quoting decision on the way out is the

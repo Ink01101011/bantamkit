@@ -1,0 +1,97 @@
+// bantamkit-mcp — MCP host configuration, three forms.
+//
+// This file is JSONC for the comments. A real `.mcp.json` (project scope) or the
+// `mcpServers` block of a host's user-scope config is plain JSON: copy ONE of the three
+// server entries below, drop the comments, and drop the surrounding `_variants` wrapper.
+//
+// Which one to use is decided by two questions, and both were measured — see
+// runtime-ts/README.md for the numbers behind each:
+//
+//   1. Is `npx` on the PATH the host process actually has?  A GUI-launched host does not
+//      source ~/.zshrc or ~/.bash_profile. On the machine this repo was developed on,
+//      `env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin sh -c 'command -v npx'` exits 1: node
+//      comes from mise, mise is activated from an interactive rc, and `launchctl getenv
+//      PATH` is unset. If that is your machine too, form A will fail with ENOENT and you
+//      want form B or C.
+//
+//   2. Does this machine ever start cold and offline?  A cold `npx` needs the registry.
+//      Measured: with the registry unreachable, the client sees ZERO bytes on the
+//      JSON-RPC channel for 140 s (connection refused) or 590 s (packets dropped) and
+//      then the process exits. The host reports a handshake timeout, not a network
+//      error. If cold-and-offline is real for you, use form C.
+{
+  "_variants": {
+
+    // ---------------------------------------------------------------- A. the short form
+    // What the package exists for: one line, no clone, no venv, no Python.
+    //
+    // Requires `npx` on the host's PATH and a network on first run. `-y` is not optional:
+    // stdin is the JSON-RPC channel, and an install prompt that read one frame would look
+    // like a server that lost a request.
+    //
+    // `@0.25.0` is a deliberate pin. Without it npx resolves the `latest` dist-tag and
+    // caches it, so two machines can run different builds from this identical config and
+    // nothing says so. Call `build_identity` and compare `build_id` if you suspect it.
+    "A-npx-pinned": {
+      "command": "npx",
+      "args": ["-y", "bantamkit-mcp@0.25.0"]
+    },
+
+    // ------------------------------------------------- B. npx, named by absolute path
+    // Same thing, for a host that does not inherit your shell's PATH. Find the path with
+    // `command -v npx` in your terminal and paste it here verbatim.
+    //
+    // This still needs the network on a cold cache. It only fixes question 1.
+    "B-npx-absolute": {
+      "command": "/Users/you/.local/share/mise/installs/node/latest/bin/npx",
+      "args": ["-y", "bantamkit-mcp@0.25.0"]
+    },
+
+    // ------------------------------------------------------- C. installed once, no npx
+    //     npm i -g bantamkit-mcp@0.25.0
+    //     command -v bantamkit-mcp        # paste the result below
+    //
+    // Fixes both questions: no PATH lookup of `npx`, no registry on start, and the
+    // version is whatever you installed rather than whatever `latest` resolved to today.
+    // The cost is that upgrading is now a thing you do on purpose.
+    "C-global-install": {
+      "command": "/usr/local/bin/bantamkit-mcp",
+      "args": []
+    },
+
+    // ------------------------------------------------------ D. a checkout, for developers
+    // `npx` will happily serve the PUBLISHED build while you believe you are testing your
+    // worktree — the sh launcher's "code from this checkout" guarantee has no npx
+    // analogue. Point at the built entry point by absolute path instead.
+    //
+    //     cd <worktree>/runtime-ts && npm run build
+    //
+    // BANTAMKIT_ASSETS is optional: without it the packaged arm finds
+    // <worktree>/assets via the repo-root fallback. Set it when you want to be certain
+    // which pack answered, and confirm with `build_identity`.assets_root.
+    "D-worktree": {
+      "command": "/absolute/path/to/node",
+      "args": ["/absolute/path/to/worktree/runtime-ts/dist/cli.js"],
+      "env": {
+        "BANTAMKIT_ASSETS": "/absolute/path/to/worktree/assets"
+      }
+    }
+  },
+
+  // ------------------------------------------------------------------------- arguments
+  //
+  // PASS NO ARGUMENTS unless you know why. With an empty `args` (beyond the npx spec) the
+  // server binds `Memory.layered` — the project store found from the working directory,
+  // the profile layer, and any `extra_stores` from `.bantamkit/config.yaml` — and every
+  // recall line carries its layer tag, `[project] ` / `[extra:<name>] ` / `[profile] `.
+  //
+  //   --store <path>          bind ONE store; drops the layer tag. A debugging flag.
+  //   --start <path>          where the project-store search begins, instead of cwd.
+  //   --k <n>                 recall budget, default 3, clamped to the advertised 5.
+  //   --index-budget <bytes>  default 24000; the index refuses to grow past it.
+  //   --assets-root           print the resolved asset pack and exit. Never a frame.
+  //
+  // BANTAMKIT_MEMORY_DIR overrides the project store for every layer; it is read by both
+  // runtimes and is the one knob that answers for the whole machine.
+  "_notes": "see runtime-ts/README.md for the measured numbers behind every claim here"
+}

@@ -38,6 +38,17 @@ const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');
 const unb64 = (s) => Buffer.from(s, 'base64').toString('utf8');
 
 /** One Python answer, rendered as the one string a comparison can point at. */
+/**
+ * The NODE side, rendered exactly as `answer` renders Python's.
+ *
+ * N8 found two ruled cases comparing `answer(null)` -> `'(valid)'` against `String(null)` ->
+ * `'null'`: both runtimes agreed the document was VALID and the case "differed" only because
+ * the two sides went through different stringifiers. A ruling whose case can never stop
+ * differing documents nothing. Every ruled case below renders both sides through the same
+ * two functions, so making the port match really does turn the case red.
+ */
+const nodeAnswer = (value) => (value === null ? '(valid)' : String(value));
+
 const answer = (value) => {
   if (value === null) return '(valid)';
   if (typeof value === 'string') return unb64(value);
@@ -498,10 +509,18 @@ export async function run(ctx) {
       'so an invalid caller schema raises `SchemaError` with the METASCHEMA\'s own sentence — ' +
       'and `schema_error` catches only `ValidationError`, so it escapes `validate_json` to the ' +
       'caller. Reproducing that means shipping and running the 2020-12 metaschema. This port ' +
-      'raises `PyJsonSchemaUnsupported` at the construct instead. BOTH RUNTIMES REFUSE and ' +
-      'neither returns a wrong answer; only the words differ. Registered against runtime-py as ' +
-      'a defect in its own right: a tool that takes a schema from the model should not let an ' +
-      'exception out of the tool call.',
+      'raises `PyJsonSchemaUnsupported` at the construct instead. THE RULING IS THIS CASE AND ' +
+      'ONLY THIS CASE — `{"type": "nosuch"}`, where both runtimes refuse and only the words ' +
+      'differ. N8 CORRECTED AN OVERCLAIM HERE: the previous wording said "BOTH RUNTIMES REFUSE ' +
+      'and neither returns a wrong answer" about invalid schemas in general, and that is false. ' +
+      'Measured on the wire, `{"required": "a"}`, `{"required": 3}`, `{"properties": ["a"]}` ' +
+      'and `{"additionalProperties": [1]}` make Python refuse and make this port answer ' +
+      '`{"valid": true}` on a schema it did not understand, and `{"type": 3}` makes it answer ' +
+      '`{"valid": false}` with a sentence it invented. Those four-plus-one are NOT ruled, they ' +
+      'are a defect awaiting its own unit, and they are deliberately absent from this suite ' +
+      'rather than papered over as rulings: see N8\'s clock-out. Registered against runtime-py ' +
+      'separately: a tool that takes a schema from the model should not let an exception out ' +
+      'of the tool call.',
   });
 
   cases.push({
@@ -538,32 +557,41 @@ export async function run(ctx) {
   cases.push({
     name: 'ruling: fromJs cannot tell 1 from 1.0 in a caller schema',
     kind: 'string',
+    // `minimum` constrains NUMBERS. The instance has to BE a number for the keyword to fire:
+    // with `[0]` — an array — jsonschema skips `minimum` entirely and both runtimes answer
+    // "valid", which is what made this case toothless before N8 rewrote it.
     expected: answer(
       ctx.runPython(REF, {
         op: 'schema_error',
-        cases: [{ schema: b64('{"minimum": 1.0}'), output: b64('[0]') }],
+        cases: [{ schema: b64('{"properties": {"n": {"minimum": 1.0}}}'), output: b64('{"n": 0}') }],
       }).results[0],
     ),
-    actual: String(contract.schemaError('[0]', { minimum: 1.0 })),
+    actual: nodeAnswer(contract.schemaError('{"n": 0}', { properties: { n: { minimum: 1.0 } } })),
     ruling:
       'A JS number carries no record of the decimal point its JSON text had, so a schema that ' +
       'has already been through an SDK parser reaches this port with `1.0` indistinguishable ' +
-      'from `1`, and the sentence says `the minimum of 1` where Python says `1.0`. The exact ' +
+      'from `1`, and the sentence says `the minimum of 1` where Python says `1.0` — measured, both sides now report the SAME instance as invalid and disagree only on how they spell the bound. The exact ' +
       'route exists and is used everywhere the raw bytes are still in hand — `pyjson.parseJson`, ' +
       'which is what every non-ruled case above goes through. The loss is confined to ' +
       '`fromJs`, and measured over the whole asset pack it is unreachable there: no shipped ' +
       'schema holds a non-integral number.',
   });
 
+  // `pattern` constrains STRINGS, so the Thai digits have to be a string the keyword applies
+  // to. `["๑๒๓"]` is an array: jsonschema skips `pattern` and BOTH runtimes answer "valid".
+  // Measured over the wire, this schema and instance is one of 11 divergences in 15 regex
+  // shapes; the array form was zero of them.
+  const REGEX_SCHEMA = '{"properties": {"s": {"pattern": "^\\\\d+$"}}}';
+  const REGEX_OUTPUT = '{"s": "\\u0e51\\u0e52\\u0e53"}';
   const pyRegex = ctx.runPython(REF, {
     op: 'schema_error',
-    cases: [{ schema: b64('{"pattern": "^\\\\d+$"}'), output: b64('["\\u0e51\\u0e52\\u0e53"]') }],
+    cases: [{ schema: b64(REGEX_SCHEMA), output: b64(REGEX_OUTPUT) }],
   }).results[0];
   cases.push({
     name: 'ruling: python re and JS RegExp are different languages',
     kind: 'string',
     expected: answer(pyRegex),
-    actual: String(contract.schemaError('["๑๒๓"]', pyjson.parseJson('{"pattern": "^\\\\d+$"}'))),
+    actual: nodeAnswer(contract.schemaError(REGEX_OUTPUT.replace('\\u0e51\\u0e52\\u0e53', '๑๒๓'), pyjson.parseJson(REGEX_SCHEMA))),
     ruling:
       "Python's `\\d` matches every Unicode decimal digit and JS's matches [0-9], so Thai " +
       'digits satisfy the pattern in Python and fail it here. `$` before a trailing newline, ' +
