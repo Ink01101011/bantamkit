@@ -654,4 +654,32 @@ def test_w5_diagnostic_dangling_facts_symlink_observations(tmp_path):
         obs["resolve"] = repr(resolve_project_store(tmp_path / "companyA"))
     except Exception as e:  # noqa: BLE001
         obs["resolve"] = f"raised {type(e).__name__}: {e}"
+
+    # SHAPE 2: the same dangling target, but made as a DIRECTORY symlink. On POSIX
+    # there is only one kind of symlink; on Windows this is a different reparse point.
+    store2 = _mkstore(tmp_path / "companyB")
+    facts2 = store2 / "facts"
+    try:
+        facts2.symlink_to(tmp_path / "nowhere-at-all", target_is_directory=True)
+        obs["dir_symlink_to"] = "created"
+    except (OSError, NotImplementedError) as e:
+        obs["dir_symlink_to"] = f"REFUSED {type(e).__name__} {e}"
+    try:
+        with os.scandir(facts2) as entries:
+            obs["dir_scandir"] = f"OK {len(list(entries))} entries"
+    except OSError as e:
+        obs["dir_scandir"] = (
+            f"{type(e).__name__} errno={e.errno} winerror={getattr(e, 'winerror', None)} "
+            f"strerror={e.strerror}"
+        )
+    try:
+        obs["dir_count_facts"] = count_facts(store2)
+    except OSError as e:
+        obs["dir_count_facts"] = (
+            f"raised {type(e).__name__} errno={e.errno} winerror={getattr(e, 'winerror', None)}"
+        )
+    try:
+        obs["dir_resolve"] = repr(resolve_project_store(tmp_path / "companyB")).split(",")[1:3]
+    except Exception as e:  # noqa: BLE001
+        obs["dir_resolve"] = f"raised {type(e).__name__}"
     raise AssertionError("W5-DIAGNOSTIC " + repr(obs))
