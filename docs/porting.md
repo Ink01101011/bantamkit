@@ -38,7 +38,54 @@ src/contract.ts           contract loading and schema_error
 src/memory/component.ts   Memory
 src/shiftwork.ts          clock_in / clock_out / status
 src/mcp/*                 server, identity, arg coercion, transport, SDK JSON
+src/pyargparse.ts         argparse's help, usage, errors and parse rules; textwrap
 ```
+
+## `argparse` and `textwrap`, ported by hand
+
+`cli.ts` used to carry one hardcoded `USAGE` string and a `switch` over whole argv tokens.
+`tools/conformance/suites/cli.mjs` — the first thing in the repository ever to run the Node
+CLI as a PROCESS — found four defects in it at once: the help went to **stderr** and was one
+line where CPython puts 678 bytes on **stdout**, the constant had already gone stale (no
+`[--assets-root]`), `--store=/path` exited 2 against a reference that accepts it, and
+`--inde` did not abbreviate. `src/pyargparse.ts` replaces all of it: there is no literal
+usage string anywhere in the runtime, only a `ParserSpec` in `cli.ts` that the formatter
+renders at whatever width `shutil.get_terminal_size()` would have reported.
+
+**`textwrap` had to be written.** `grep -rln 'textwrap\|wrap('` over `runtime-ts/src/`
+returned nothing and Node has no stdlib equivalent, so `wrap`/`fill` are a port of
+`TextWrapper`, not a call into one.
+
+**`break_on_hyphens` IS implemented, and the decision was a measurement.** Sweeping every
+width from 5 to 300 against `textwrap.wrap` with the flag on and off: it changes this help
+text at help widths 27–31 and description widths 34–39 (plus everything below 18). Those are
+reachable from an ordinary `COLUMNS` — 53 through 57, and 36 through 41 — not only at the
+absurd widths the 11-column floor allows. The conformance matrix (60/80/105/106/200, and 80
+by no-tty fallback) reaches **none** of them, so `runtime-ts/test/cli-surface.test.mjs` pins
+four extra widths measured out of CPython: 15 and 20 (where the usage line takes the
+long-prog branch and `_handle_long_word` breaks `project-store` at its hyphen), 38 (the
+description splits at `per-`) and 55 (an option's help splits at `project-`).
+
+**A coverage gap in the suite, named rather than hidden.** `_max_help_position` is
+`min(24, max(width - 20, 4))` and it evaluates to 24 at every width the conformance matrix
+uses. Mutating it to a hardcoded `24` leaves `--suite cli` at **0 failures**; only the three
+narrow widths in `cli-surface.test.mjs` catch it. The conformance matrix cannot see that
+constant move.
+
+**NOT PORTED**, because this parser cannot reach them and an unmeasured port is a liability:
+positionals and everything serving them (`consume_positionals`, `_match_arguments_partial`,
+the intermixed arm), `required=`, required groups, `choices`, `nargs` other than `None`
+and `0`, `SUPPRESS`, subparsers, `fromfile_prefix_chars`, and — in `textwrap` —
+`initial_indent`/`subsequent_indent`, `expand_tabs`, `replace_whitespace`,
+`fix_sentence_endings` and `max_lines`. Both `wrap` callers pre-normalise with argparse's
+own `re.compile(r'\s+', re.ASCII)`, so no tab or newline can reach the wrapper.
+
+**Two divergences that are latent, not observable today.** `textwrap.wordsep_re` uses `\w`
+and `[^\d\W]`, which are Unicode in Python and ASCII in JavaScript; every string in this
+help text is ASCII, so nothing differs, and a non-ASCII help string would be a new
+measurement. And **`options:` is interpreter-dependent**: 3.10+ prints `options:`, 3.9 and
+earlier print `optional arguments:`. The port matches the pinned 3.12.13, so a 3.9 CI would
+turn the `cli` suite red on the section heading — that would be a ruling, not a code change.
 
 ## Four libraries rejected, and what replaced them
 

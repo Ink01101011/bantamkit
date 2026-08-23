@@ -1,6 +1,14 @@
 #!/usr/bin/env node
 /**
- * The `bantamkit-mcp` entry point: the stdio MCP server, and four flags.
+ * The `bantamkit-mcp` entry point: the stdio MCP server, and five flags.
+ *
+ * THE COMMAND LINE IS DATA, NOT PRINTED TEXT. `PARSER` below is the whole description of
+ * this CLI, and `pyargparse.ts` renders it — the help table, the usage line at whatever
+ * width the terminal is, and every `bantamkit-mcp: error: …` block — with CPython
+ * `argparse`'s own algorithm. There WAS a hand-written `USAGE` constant here; it printed to
+ * the wrong stream, it had already gone stale (it never grew `[--assets-root]`), and a
+ * second hardcoded copy of a generated string is exactly the defect the `cli` conformance
+ * suite was built to catch. Add a flag to `PARSER` and the help cannot fall behind it.
  *
  * N1 shipped this file as a refusal — exit 69 rather than a stub that pretended to be a
  * server — because stdout is the JSON-RPC channel and anything printed there reaches a host
@@ -32,13 +40,99 @@ import { Memory } from './memory/component.js';
 import { DEFAULT_INDEX_BUDGET } from './memory/store.js';
 import { buildServer } from './mcp/server.js';
 import { RawStdioTransport } from './mcp/transport.js';
+import {
+  ArgvError,
+  formatHelp,
+  formatUsageBlock,
+  HelpRequested,
+  helpWidth,
+  parseArgs as parseWithSpec,
+  type ParserSpec,
+} from './pyargparse.js';
 
-const USAGE = 'usage: bantamkit-mcp [-h] [--k K] [--index-budget BYTES] [--store STORE | --start START]';
-
-/** `argparse.ArgumentParser.error`: usage on stderr, exit 2. Never stdout. */
-class ArgvError extends Error {}
 /** `SystemExit("...")`: the message on stderr, exit 1. */
 class Refusal extends Error {}
+
+/**
+ * `_parse_args`'s parser, as DATA — the one description of this command line in the runtime.
+ *
+ * THERE IS NO SECOND COPY OF THE USAGE LINE. There used to be: a `USAGE` constant here,
+ * written by hand, printed to the wrong stream, and already stale (it never grew
+ * `[--assets-root]`). Every string a user sees — the usage line at whatever width the
+ * terminal is, the option table, and the `bantamkit-mcp: error: …` block — is generated from
+ * this object by `pyargparse.ts`, so a flag added below cannot go missing from the help.
+ *
+ * POSITION IS WIRE-VISIBLE, exactly as it is in the reference: argparse prints optionals in
+ * the order they were added, so this array — not any format string — decides where
+ * `[--assets-root]` sits in the generated usage.
+ */
+const PARSER: ParserSpec = {
+  prog: 'bantamkit-mcp',
+  description: 'bantamkit MCP server (stdio): per-person memory + JSON validation.',
+  actions: [
+    {
+      optionStrings: ['-h', '--help'],
+      dest: 'help',
+      kind: 'help',
+      help: 'show this help message and exit',
+      defaultValue: false,
+    },
+    {
+      optionStrings: ['--assets-root'],
+      dest: 'assets_root',
+      kind: 'storeTrue',
+      help: 'print the resolved asset pack root and its file count, then exit',
+      defaultValue: false,
+    },
+    {
+      optionStrings: ['--k'],
+      dest: 'k',
+      kind: 'store',
+      help: 'default recall budget (default: 3)',
+      convert: pyIntStrict,
+      typeName: 'int',
+      defaultValue: 3,
+    },
+    {
+      optionStrings: ['--index-budget'],
+      dest: 'index_budget',
+      metavar: 'BYTES',
+      kind: 'store',
+      help: `memory index byte budget (default: ${DEFAULT_INDEX_BUDGET})`,
+      convert: pyIntStrict,
+      typeName: 'int',
+      defaultValue: DEFAULT_INDEX_BUDGET,
+    },
+    {
+      optionStrings: ['--store'],
+      dest: 'store',
+      kind: 'store',
+      help: 'single memory store path (disables layering)',
+      defaultValue: null,
+    },
+    {
+      optionStrings: ['--start'],
+      dest: 'start',
+      kind: 'store',
+      help: 'directory to start project-store discovery from (default: cwd)',
+      defaultValue: null,
+    },
+  ],
+  groups: [[4, 5]],
+};
+
+/**
+ * `int(text)`, which is what `type=int` is.
+ *
+ * It rejects everything `int()` rejects and the caller reports it as an ARGUMENT error
+ * (exit 2), which is a different exit from the `--k must be >= 1` refusal below (exit 1):
+ * one is a malformed command line, the other is a command line that parsed and then asked
+ * for something impossible.
+ */
+function pyIntStrict(text: string): number {
+  if (!/^\s*[+-]?\d+(?:_\d+)*\s*$/.test(text)) throw new TypeError('not an int');
+  return Number(text.trim().replace(/_/g, ''));
+}
 
 export interface Options {
   k: number;
@@ -46,66 +140,18 @@ export interface Options {
   store: string | null;
   start: string | null;
   assetsRoot: boolean;
-  help: boolean;
 }
 
-/**
- * `_parse_args`, arm for arm, including the mutually exclusive group.
- *
- * `type=int` in argparse rejects anything `int()` rejects and reports it as an ARGUMENT error
- * (exit 2), which is a different exit from the `--k must be >= 1` refusal below (exit 1):
- * one is a malformed command line, the other is a command line that parsed and then asked
- * for something impossible.
- */
+/** `_parse_args`, arm for arm, including the mutually exclusive group and `-h`. */
 export function parseArgs(argv: readonly string[]): Options {
-  const options: Options = {
-    k: 3,
-    indexBudget: DEFAULT_INDEX_BUDGET,
-    store: null,
-    start: null,
-    assetsRoot: false,
-    help: false,
+  const values = parseWithSpec(PARSER, argv);
+  return {
+    k: values['k'] as number,
+    indexBudget: values['index_budget'] as number,
+    store: values['store'] as string | null,
+    start: values['start'] as string | null,
+    assetsRoot: values['assets_root'] as boolean,
   };
-  const asInt = (flag: string, text: string | undefined): number => {
-    if (text === undefined) throw new ArgvError(`argument ${flag}: expected one argument`);
-    if (!/^\s*[+-]?\d+(?:_\d+)*\s*$/.test(text)) {
-      throw new ArgvError(`argument ${flag}: invalid int value: '${text}'`);
-    }
-    return Number(text.trim().replace(/_/g, ''));
-  };
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i]!;
-    switch (arg) {
-      case '-h':
-      case '--help':
-        options.help = true;
-        break;
-      case '--assets-root':
-        options.assetsRoot = true;
-        break;
-      case '--k':
-        options.k = asInt('--k', argv[(i += 1)]);
-        break;
-      case '--index-budget':
-        options.indexBudget = asInt('--index-budget', argv[(i += 1)]);
-        break;
-      case '--store':
-      case '--start': {
-        const value = argv[(i += 1)];
-        if (value === undefined) throw new ArgvError(`argument ${arg}: expected one argument`);
-        if (options.store !== null || options.start !== null) {
-          const held = options.store !== null ? '--store' : '--start';
-          throw new ArgvError(`argument ${arg}: not allowed with argument ${held}`);
-        }
-        if (arg === '--store') options.store = value;
-        else options.start = value;
-        break;
-      }
-      default:
-        throw new ArgvError(`unrecognized arguments: ${argv.slice(i).join(' ')}`);
-    }
-  }
-  return options;
 }
 
 /** `_build_memory`, including the two refusals argparse cannot express. */
@@ -132,10 +178,6 @@ function version(): string {
 
 async function main(argv: readonly string[]): Promise<number> {
   const options = parseArgs(argv);
-  if (options.help) {
-    process.stderr.write(`${USAGE}\n`);
-    return 0;
-  }
   if (options.assetsRoot) {
     const root = assetsRoot();
     let files = 0;
@@ -162,8 +204,15 @@ async function main(argv: readonly string[]): Promise<number> {
 try {
   process.exitCode = await main(process.argv.slice(2));
 } catch (error) {
-  if (error instanceof ArgvError) {
-    process.stderr.write(`${USAGE}\nbantamkit-mcp: error: ${error.message}\n`);
+  if (error instanceof HelpRequested) {
+    // `-h` is an ACTION, not a flag read after parsing: argparse prints and exits 0 the
+    // moment it is taken, which is why `-h --nope` is help-and-0 and not an argv error. It
+    // goes to STDOUT — the one place in this file besides `--assets-root` that writes there
+    // without being a JSON-RPC frame, and it exits before a transport is ever started.
+    process.stdout.write(formatHelp(PARSER, helpWidth()));
+    process.exitCode = 0;
+  } else if (error instanceof ArgvError) {
+    process.stderr.write(`${formatUsageBlock(PARSER, helpWidth())}bantamkit-mcp: error: ${error.message}\n`);
     process.exitCode = 2;
   } else if (error instanceof Refusal) {
     process.stderr.write(`${error.message}\n`);
