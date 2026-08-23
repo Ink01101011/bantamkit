@@ -842,10 +842,15 @@ export async function run(ctx) {
         `on every platform. runtime-py agrees here (os.linesep=${JSON.stringify(EOL)}) ` +
         `but on Windows write_text turns each of the ${lines} lines into CRLF while ` +
         `_check_index_budget still counts this LF text — ${Buffer.byteLength(rebuilt, 'utf8') + lines} ` +
-        `bytes on disk against ${Buffer.byteLength(rebuilt, 'utf8')} checked. NOT MEASURED HERE: ` +
-        'CPython gates write-translation on #ifdef MS_WINDOWS, so this platform cannot ' +
-        'construct it. A Windows runner settles it with ' +
-        'python -c "import pathlib,os;p=pathlib.Path(r);print(len(s.index_text().encode()), p.joinpath(\'index.md\').stat().st_size)".',
+        `bytes on disk against ${Buffer.byteLength(rebuilt, 'utf8')} checked. NO LONGER A ` +
+        'PREDICTION: measured on windows-latest, GitHub run 32645443625, by this same suite ' +
+        'over its SYNTHETIC fixtures, where the two runtimes write the same store side by ' +
+        'side and the tree manifest carries the byte counts. Every pair came out at exactly ' +
+        'one byte per line — a 1-line index.md is 42 bytes for CPython against 41 for the ' +
+        'port, a 10-line fact file 134 against 124, a 93-line checkpoint 2609 against 2516. ' +
+        'So the rule "on-disk = counted + lines" is measured; applying it to the 65-line ' +
+        `live index is arithmetic on a measured rule, not a second measurement — the live ` +
+        'store is not on a runner and must never be put on one.',
     );
   }
 

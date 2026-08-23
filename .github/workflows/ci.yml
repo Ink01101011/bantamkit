@@ -139,6 +139,41 @@ jobs:
     # `# pass <n>` the line to look for, on every cell, for as long as the matrix lives.
     # Read it, and read the Conformance step's `PASS: <n> cases` line: BOTH numbers must be
     # nonzero on all four cells. A step that never ran prints no summary at all.
+    #
+    # THE WINDOWS CELLS ARE RED, AND THE NUMBER IS PINNED HERE ON PURPOSE.
+    #
+    #   ubuntu 18 / ubuntu 22   201/201 tests, conformance PASS 4229 cases / 0 failures
+    #   windows 18 / windows 22 196/201 tests, conformance FAIL 4229 cases / 132 failures
+    #
+    # Both Node versions give the IDENTICAL number on each OS, which is the finding about
+    # Node: nothing here is version-dependent, and `engines.node: ">=18"` survived contact
+    # with 18 (see the fixture note in runtime-ts/test/assets.test.mjs for the one thing
+    # that did not, and it was the fixture).
+    #
+    # Everything still red is ONE defect family, measured for the first time by this job:
+    # CPython on Windows raises OSError with `winerror` SET for the calls that go through
+    # the Win32 API, and `OSError.__str__` then prints `[WinError 3] The system cannot find
+    # the path specified` where this port prints `[Errno 2] No such file or directory`. The
+    # port's whole `STRERROR` table is POSIX wording. Alongside it, in the same family:
+    # `count_facts` raises NotADirectoryError on Windows where the port answers 0, CPython
+    # raises the symlink-loop RuntimeError where the port raises nothing, and `write_text`
+    # translates every `\n` to `\r\n` so the two runtimes do not write byte-identical
+    # stores there at all -- measured at exactly one byte per line, 42 against 41 for a
+    # one-line index.md, 2609 against 2516 for a 93-line checkpoint.
+    #
+    # THIS IS NOT MADE GREEN AND IT IS NOT NARROWED. No `continue-on-error`, no
+    # `os != windows` condition, no marker on the five test nodes. A cell that reports
+    # success while 132 conformance cases differ is worse than no cell, and the five nodes
+    # are not platform differences to be deferred -- they are places where the port does not
+    # reproduce what CPython on Windows actually does, and one of them (the symlink loop) is
+    # the port failing to raise at all. The one node that WAS a genuine
+    # cannot-construct-it-here -- the 0o555 checkpoint directory, where chmod is inert on a
+    # Windows directory -- is the only one that got a marker, and it prices what it stops
+    # measuring in the diagnostic it prints.
+    #
+    # So this job is honest and currently red on half its cells. Making it green is a
+    # follow-up unit against `runtime-ts/src/memory/pyfs.ts`, and the acceptance test for
+    # that unit is this comment block being deleted rather than edited.
     runs-on: ${{ matrix.os }}
     strategy:
       # Load-bearing for the same reason as the job above: the Windows readings ARE the

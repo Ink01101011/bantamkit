@@ -330,7 +330,14 @@ export async function run(ctx) {
   // `str.replace` standing in for it. That buys one real property: if CPython's newline
   // translation ever moved, this case moves with it. It does NOT buy the other one — a port
   // that started emitting CRLF *on Windows* would still emit LF here, so this runner cannot
-  // see that fix. Only a Windows runner can, and the note below carries the one-liner.
+  // see that fix. Only a Windows runner can -- and one now has. MEASURED on windows-latest,
+  // GitHub run 32645443625: the store suite ran BOTH runtimes side by side over its synthetic
+  // fixtures and CPython's fact files came back CRLF against this port's LF, base64
+  // `LS0tDQpuYW1l...` (`---\r\nname:`) against `LS0tCm5hbWU6` (`---\nname:`), one extra byte
+  // per line on every file compared. The ruling's premise is confirmed rather than assumed,
+  // and its SCOPE turned out wider than fact files: the shift-work checkpoint (2609 bytes
+  // against 2516) and `index.md` (42 against 41) translate too, so on Windows the two
+  // runtimes do not write byte-identical stores at all. Registered, not resolved here.
   const sample = factfile.formatFact(corpus[0]);
   const windowsBytes = Buffer.from(
     ctx.runPython(REF, { op: 'windows_write', facts: [corpus[0]] }).written_b64[0],
