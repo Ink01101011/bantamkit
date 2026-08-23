@@ -21,12 +21,15 @@
  * hand-written pair of apostrophes. The other three are CONSOLIDATION — one question with
  * two spellings, both of them right — and they are listed here rather than half-started:
  *
- *   - TWO ERRNO TABLES. `STRERROR` (errno name -> the C library's sentence) and
- *     `OSERROR_SUBCLASS` (errno name -> the exception class CPython picks) are separate
- *     objects keyed on the same thing, and `STRERROR_NAMES` — which the conformance suite
- *     reads to check the wordings against the running Python — covers only the first. An
- *     errno added to one and not the other is silently uncovered. Nothing measured is wrong
- *     today: the `strerror table` case passes on all 19 entries.
+ *   - FOUR TABLES KEYED ON THE SAME THING, now, not two: `STRERROR` (errno name -> the C
+ *     library's sentence), `STRERROR_WINDOWS` (the four the UCRT spells differently),
+ *     `OSERROR_SUBCLASS` (errno name -> the exception class CPython picks) and `WINERROR`
+ *     (Win32 number -> the Win32 sentence). Three of the four are read back against the
+ *     running Python — `os.strerror for every errno` covers the first two and
+ *     `FormatMessage for every winerror` the fourth, both in
+ *     `tools/conformance/suites/store.mjs` — and `OSERROR_SUBCLASS` is the one still
+ *     uncovered: an errno added to `STRERROR` and not to it silently loses its exception
+ *     class. Nothing measured is wrong today.
  *   - `normcase` AND `PyRuntimeError` ARE EXPORTED WITH NO CALLER OUTSIDE THIS FILE. Both
  *     are used inside it; the export is surface nobody asked for.
  *
