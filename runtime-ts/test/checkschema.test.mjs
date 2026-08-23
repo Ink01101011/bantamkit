@@ -15,7 +15,7 @@
  * silently dropped them, so the module checked one string and returned another.
  */
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -172,6 +172,33 @@ test("pathlib's symlink-loop RuntimeError uses %r too", () => {
       (e) => /^Symlink loop from "\/.*\/loop's-link"$/.test(e.message),
     );
   } finally {
+    rmSync(bed, { recursive: true, force: true });
+  }
+});
+
+test('an asset that is not UTF-8 raises CPython\'s decode message, not U+FFFD', () => {
+  // `assets.ts` used to carry its OWN decoder — `readFileSync(p, "utf8")`, which substitutes
+  // U+FFFD for a bad byte and hands a model a description with a replacement character in
+  // it. `Path.read_text(encoding="utf-8")` raises. One decoder for the package means this
+  // arm inherits `pyDecodeUtf8`'s strictness along with its BOM handling.
+  const bed = mkdtempSync(join(tmpdir(), 'bk-assets-'));
+  const saved = process.env.BANTAMKIT_ASSETS;
+  try {
+    mkdirSync(join(bed, 'skills'), { recursive: true });
+    writeFileSync(join(bed, 'skills', 'broken.md'), Buffer.from([0x61, 0xff, 0x62]));
+    writeFileSync(join(bed, 'skills', 'bommed.md'), Buffer.from([0xef, 0xbb, 0xbf, 0x61]));
+    process.env.BANTAMKIT_ASSETS = bed;
+    assert.throws(
+      () => assets.loadSkill('broken'),
+      (e) =>
+        e.name === 'UnicodeDecodeError' &&
+        e.message === "'utf-8' codec can't decode byte 0xff in position 1: invalid start byte",
+    );
+    // …and the BOM is content, here as everywhere else.
+    assert.equal(assets.loadSkill('bommed'), '\ufeffa');
+  } finally {
+    if (saved === undefined) delete process.env.BANTAMKIT_ASSETS;
+    else process.env.BANTAMKIT_ASSETS = saved;
     rmSync(bed, { recursive: true, force: true });
   }
 });
