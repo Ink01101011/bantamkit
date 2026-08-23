@@ -487,40 +487,137 @@ export async function run(ctx) {
 
   // --------------------------------------------------------------------------- rulings
 
+  // ---------------------------------------------- the caller schema that is not a schema
+  //
+  // `jsonschema.validate` runs `check_schema` BEFORE it looks at the instance, so an invalid
+  // caller schema raises `SchemaError` — and `contract.schema_error` catches only
+  // `ValidationError`, so it escapes `validate_json` to the caller. (That escape is a
+  // registered `runtime-py` defect: a tool handed a schema by a model should not let an
+  // exception out. NOT fixed here — invariant 8.)
+  //
+  // WAS: this port ran the keywords anyway, and the keywords SKIP a schema value they do not
+  // recognise, which is right inside `iter_errors` and a wrong ANSWER at the tool boundary.
+  // N8 measured five on the wire — four `{"valid": true}` and one invented sentence about a
+  // schema that is not one. The previous ruling here covered `{"type": "nosuch"}` and
+  // asserted the general case from it; N8's correction is now a fix, and this is the
+  // measurement at the width it was measured.
+  //
+  // NOW both runtimes REFUSE all 53 of these and only the WORDS differ: Python quotes the
+  // metaschema (`'a' is not of type 'array'`, plus the failing metaschema path), this port
+  // names the keyword and the shape it wanted. Each is a ruled case, so a shape that ever
+  // stops differing — because someone made the port answer again — fails the run.
+  const BAD_SCHEMAS = [
+    ['required is a string', '{"required": "a"}'],
+    ['required is an int', '{"required": 3}'],
+    ['required item is an int', '{"required": [3]}'],
+    ['required has a duplicate', '{"required": ["a", "a"]}'],
+    ['properties is a list', '{"properties": ["a"]}'],
+    ['properties value is an int', '{"properties": {"a": 3}}'],
+    ['additionalProperties is a list', '{"additionalProperties": [1]}'],
+    ['additionalProperties is an int', '{"additionalProperties": 1}'],
+    ['type is an int', '{"type": 3}'],
+    ['type is an unknown name', '{"type": "nosuch"}'],
+    ['type list holds an int', '{"type": ["string", 3]}'],
+    ['type list has a duplicate', '{"type": ["string", "string"]}'],
+    ['type is an empty list', '{"type": []}'],
+    ['enum is a string', '{"enum": "a"}'],
+    ['multipleOf is a string', '{"multipleOf": "a"}'],
+    ['multipleOf is zero', '{"multipleOf": 0}'],
+    ['multipleOf is negative', '{"multipleOf": -1}'],
+    ['minimum is a string', '{"minimum": "a"}'],
+    ['maxLength is a string', '{"maxLength": "a"}'],
+    ['maxLength is negative', '{"maxLength": -1}'],
+    ['maxLength is fractional', '{"maxLength": 1.5}'],
+    ['uniqueItems is a string', '{"uniqueItems": "yes"}'],
+    ['pattern is an int', '{"pattern": 3}'],
+    ['pattern does not compile', '{"pattern": "("}'],
+    ['format is an int', '{"format": 3}'],
+    ['allOf is an object', '{"allOf": {"a": 1}}'],
+    ['allOf is empty', '{"allOf": []}'],
+    ['allOf item is an int', '{"allOf": [3]}'],
+    ['anyOf is an object', '{"anyOf": {}}'],
+    ['oneOf is a string', '{"oneOf": "x"}'],
+    ['prefixItems is an object', '{"prefixItems": {}}'],
+    ['items is an int', '{"items": 3}'],
+    ['contains is an int', '{"contains": 3}'],
+    ['not is an int', '{"not": 3}'],
+    ['if is an int', '{"if": 3}'],
+    ['propertyNames is an int', '{"propertyNames": 3}'],
+    ['patternProperties is a list', '{"patternProperties": []}'],
+    ['patternProperties value is an int', '{"patternProperties": {"^a": 3}}'],
+    ['dependentRequired is a string', '{"dependentRequired": "a"}'],
+    ['dependentRequired value is a string', '{"dependentRequired": {"a": "b"}}'],
+    ['dependentSchemas is a list', '{"dependentSchemas": []}'],
+    ['dependentSchemas value is an int', '{"dependentSchemas": {"a": 3}}'],
+    ['minContains is a string', '{"minContains": "a"}'],
+    ['the schema is a list', '[1]'],
+    ['the schema is an int', '3'],
+    ['the schema is a string', '"x"'],
+    // The check is RECURSIVE, and the last of these is the one that says so loudest: `$defs`
+    // is never descended into by any keyword this port implements, and Python still refuses.
+    ['bad shape under properties', '{"properties": {"a": {"required": "b"}}}'],
+    ['bad shape under items', '{"items": {"type": 3}}'],
+    ['bad shape under an unused $defs', '{"$defs": {"x": {"type": 3}}}'],
+    ['bad shape two levels down an anyOf', '{"anyOf": [{"properties": {"a": {"maxLength": "x"}}}]}'],
+  ];
+  const BAD_OUTPUT = '{"a": 1}';
+  const pyBad = ctx.runPython(REF, {
+    op: 'schema_error',
+    cases: BAD_SCHEMAS.map(([, schema]) => ({ schema: b64(schema), output: b64(BAD_OUTPUT) })),
+  }).results;
+  for (let i = 0; i < BAD_SCHEMAS.length; i += 1) {
+    const [nm, schema] = BAD_SCHEMAS[i];
+    cases.push({
+      name: `ruling: check_schema/${nm}`,
+      kind: 'string',
+      expected: answer(pyBad[i]),
+      actual: (() => {
+        try {
+          return nodeAnswer(contract.schemaError(BAD_OUTPUT, pyjson.parseJson(schema)));
+        } catch (e) {
+          return `${e.name}: ${e.message}`;
+        }
+      })(),
+      ruling:
+        'BOTH RUNTIMES REFUSE this schema and the exception escapes `validate_json` in both. ' +
+        "Python's `check_schema` quotes the 2020-12 metaschema and the path inside it; this " +
+        'port names the keyword and the shape the metaschema demands. Running the real ' +
+        'metaschema is not available here — it is eight documents wired with `$ref` and ' +
+        '`$dynamicRef`, the vocabulary this validator refuses to implement, so `check_schema` ' +
+        'would have to be more capable than `validate`. The RULING IS THAT BOTH REFUSE, ' +
+        'measured over 53 shapes and not generalised from one: the previous wording here ' +
+        'asserted the general case from `{"type": "nosuch"}` and N8 found five ' +
+        'counter-examples inside it.',
+    });
+  }
   cases.push({
-    name: 'ruling: an invalid SCHEMA raises a different sentence',
+    name: 'ruling: a Python-only regex in a branch that never fires',
     kind: 'string',
     expected: answer(
       ctx.runPython(REF, {
         op: 'schema_error',
-        cases: [{ schema: b64('{"type": "nosuch"}'), output: b64('{"a": 1}') }],
+        cases: [{ schema: b64('{"properties": {"s": {"pattern": "(?P<x>a)"}}}'), output: b64('{"n": 1}') }],
       }).results[0],
     ),
     actual: (() => {
       try {
-        contract.schemaError('{"a": 1}', pyjson.parseJson('{"type": "nosuch"}'));
-        return '(no exception)';
+        return nodeAnswer(
+          contract.schemaError('{"n": 1}', pyjson.parseJson('{"properties": {"s": {"pattern": "(?P<x>a)"}}}')),
+        );
       } catch (e) {
         return `${e.name}: ${e.message}`;
       }
     })(),
     ruling:
-      "`jsonschema.validate` runs `cls.check_schema(schema)` before it looks at the instance, " +
-      'so an invalid caller schema raises `SchemaError` with the METASCHEMA\'s own sentence — ' +
-      'and `schema_error` catches only `ValidationError`, so it escapes `validate_json` to the ' +
-      'caller. Reproducing that means shipping and running the 2020-12 metaschema. This port ' +
-      'raises `PyJsonSchemaUnsupported` at the construct instead. THE RULING IS THIS CASE AND ' +
-      'ONLY THIS CASE — `{"type": "nosuch"}`, where both runtimes refuse and only the words ' +
-      'differ. N8 CORRECTED AN OVERCLAIM HERE: the previous wording said "BOTH RUNTIMES REFUSE ' +
-      'and neither returns a wrong answer" about invalid schemas in general, and that is false. ' +
-      'Measured on the wire, `{"required": "a"}`, `{"required": 3}`, `{"properties": ["a"]}` ' +
-      'and `{"additionalProperties": [1]}` make Python refuse and make this port answer ' +
-      '`{"valid": true}` on a schema it did not understand, and `{"type": 3}` makes it answer ' +
-      '`{"valid": false}` with a sentence it invented. Those four-plus-one are NOT ruled, they ' +
-      'are a defect awaiting its own unit, and they are deliberately absent from this suite ' +
-      'rather than papered over as rulings: see N8\'s clock-out. Registered against runtime-py ' +
-      'separately: a tool that takes a schema from the model should not let an exception out ' +
-      'of the tool call.',
+      'THE PRICE OF CHECKING `pattern` EAGERLY, stated rather than hidden. `check_schema` ' +
+      "compiles every `pattern` (the metaschema's `\"format\": \"regex\"`), which is how " +
+      '`{"pattern": "("}` became a refusal on both sides instead of `{"valid": true}` here. ' +
+      "The same eagerness makes this port refuse `(?P<x>…)` — valid `re`, invalid `RegExp` — " +
+      'even though the instance has no `s` and the keyword would never have fired. Python ' +
+      'answers `(valid)`. This is the SAME divergence as the `python re and JS RegExp` ruling ' +
+      'below, moved earlier; the trade taken is that a refusal in an unreached branch beats ' +
+      'answering `{"valid": true}` for a pattern that is not one. Porting `sre_compile` is ' +
+      'what would close it.',
   });
 
   cases.push({

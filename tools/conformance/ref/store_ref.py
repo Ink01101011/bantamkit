@@ -38,6 +38,8 @@ import os
 import sys
 from pathlib import Path, PurePath
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "runtime-py" / "src"))
 
 from bantamkit.memory.store import MemoryStore, _jaccard, _tokens
@@ -97,8 +99,11 @@ def run_calls(request: dict) -> dict:
                     unb64(type_), unb64(name), unb64(description), unb64(body),
                     tuple(unb64(x) for x in links),
                 )
+                # `similar` is the OTHER fact's `name` field verbatim, and `_facts` puts
+                # whatever the YAML resolved to in there — an `int` for `name: 7`. `str()`
+                # for the same reason `fact_json` uses it.
                 results.append({"status": r.status, "name": b64(r.name),
-                                "similar": None if r.similar is None else b64(r.similar)})
+                                "similar": None if r.similar is None else b64(str(r.similar))})
             elif op == "recall":
                 query, k, stamp = call["args"]
                 hits = store.recall(unb64(query), k, stamp)
@@ -131,11 +136,50 @@ def main() -> None:
         for seq in request["seqs"]:
             raw = bytes(seq)
             try:
-                raw.decode("utf-8")
-                decoded.append({"ok": True})
+                # The TEXT, not just ok/not-ok: `TextDecoder` defaults to eating a leading
+                # UTF-8 BOM and CPython's codec keeps it, and an ok/not-ok comparison cannot
+                # see the difference.
+                decoded.append({"ok": True, "text": b64(raw.decode("utf-8"))})
             except UnicodeDecodeError as e:
                 decoded.append({"ok": False, "message": str(e)})
         out = {"decoded": decoded}
+    elif op == "oserror":
+        # `str(OSError)` and pathlib's symlink-loop `RuntimeError`, both of which use `%r`
+        # for the path. Real syscalls on real paths, because the point is the path a failing
+        # call actually reports and not one hand-assembled here.
+        messages = []
+        for kind, a, b in request["cases"]:
+            a, b = unb64(a), unb64(b)
+            try:
+                if kind == "unlink":
+                    os.unlink(a)
+                elif kind == "replace":
+                    os.replace(a, b)
+                elif kind == "mkdir":
+                    os.mkdir(a)
+                elif kind == "read":
+                    Path(a).read_text(encoding="utf-8")
+                elif kind == "resolve":
+                    Path(a).resolve()
+                else:
+                    raise SystemExit(f"unknown oserror kind {kind!r}")
+                messages.append({"ok": True})
+            except (OSError, RuntimeError) as e:
+                messages.append({"type": type(e).__name__, "message": b64(str(e))})
+        out = {"messages": messages}
+    elif op == "sortnames":
+        # `recall`'s tie-break, isolated. Each list is [[score, "<yaml scalar text>"], ...];
+        # both runtimes CONSTRUCT the name from the same frontmatter spelling, so what is
+        # compared is `sorted(key=(-score, name))` itself — the order when it succeeds and
+        # the TypeError text when it does not.
+        out = {"lists": []}
+        for spec in request["lists"]:
+            pairs = [(score, yaml.safe_load("k: " + text)["k"]) for score, text in spec]
+            try:
+                order = sorted(range(len(pairs)), key=lambda i: (-pairs[i][0], pairs[i][1]))
+                out["lists"].append({"order": order})
+            except TypeError as e:
+                out["lists"].append({"error": str(e)})
     elif op == "jaccard":
         out = {"jaccard": [_jaccard(set(a), set(b)) for a, b in request["pairs"]]}
     elif op == "tokens":

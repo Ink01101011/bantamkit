@@ -27,7 +27,13 @@
  * `.length`. Parsing runs on the JS string with UTF-16 indices — that is what the regexes
  * and `slice` want — and every index that reaches a MESSAGE is converted on the way out.
  */
-import { cmpCodepoint, pyRepr as pyReprString } from './memory/pyfs.js';
+import { cmpCodepoint, pyFloatRepr, pyRepr as pyReprString } from './memory/pyfs.js';
+
+// `pyFloatRepr` lives beside `pyRepr` in `pyfs.ts` — the two are one question (how does
+// CPython spell a value in a sentence) and `memory/pyyaml.ts` needs the float half to
+// re-emit a frontmatter scalar PyYAML resolved to a float. Re-exported here because this
+// is where the rest of the package has always imported it from.
+export { pyFloatRepr } from './memory/pyfs.js';
 
 // ------------------------------------------------------------------------- the value
 
@@ -109,37 +115,6 @@ export function toJs(value: PyValue): unknown {
 }
 
 // -------------------------------------------------------------------------------- repr
-
-/**
- * `repr(float)`.
- *
- * CPython formats with `PyOS_double_to_string(v, 'r', 0, Py_DTSF_ADD_DOT_0)`: the shortest
- * decimal that round-trips, rendered in scientific notation when the decimal point falls at
- * or left of position -4 or right of position 16, and with a forced `.0` otherwise. JS
- * agrees on the DIGITS (`toExponential()` with no argument is also shortest-round-trip) and
- * on nothing else: it switches to scientific at 1e21 and 1e-7, writes `10000000000000000`
- * where Python writes `1e+16`, and never pads the exponent to two digits.
- */
-export function pyFloatRepr(x: number): string {
-  if (Number.isNaN(x)) return 'nan';
-  if (x === Infinity) return 'inf';
-  if (x === -Infinity) return '-inf';
-  const negative = x < 0 || Object.is(x, -0);
-  const [mantissa, exponent] = Math.abs(x).toExponential().split('e') as [string, string];
-  const digits = mantissa.replace('.', '');
-  const decpt = Number(exponent) + 1; // digits[0] sits just left of position `decpt`
-  const sign = negative ? '-' : '';
-  if (decpt <= -4 || decpt > 16) {
-    const head = digits.slice(0, 1);
-    const tail = digits.slice(1).replace(/0+$/, '');
-    const e = decpt - 1;
-    const eSign = e < 0 ? '-' : '+';
-    return `${sign}${head}${tail ? `.${tail}` : ''}e${eSign}${String(Math.abs(e)).padStart(2, '0')}`;
-  }
-  if (decpt <= 0) return `${sign}0.${'0'.repeat(-decpt)}${digits}`;
-  if (decpt >= digits.length) return `${sign}${digits}${'0'.repeat(decpt - digits.length)}.0`;
-  return `${sign}${digits.slice(0, decpt)}.${digits.slice(decpt)}`;
-}
 
 /** `repr()` of a decoded JSON document, exactly as an error sentence interpolates it. */
 export function reprValue(value: PyValue): string {
@@ -557,8 +532,22 @@ export function rawDecode(s: string, idx = 0): [PyValue, number] {
   }
 }
 
-/** `json.loads`, for the places that want the whole document and nothing after it. */
+/**
+ * `json.loads`, for the places that want the whole document and nothing after it.
+ *
+ * THE BOM CHECK IS `loads`'s OWN, and it is not in `raw_decode`. `json/__init__.py` tests
+ * `s.startswith('\ufeff')` before it hands anything to a decoder and refuses with its own
+ * sentence; `JSONDecoder().raw_decode` — which is what `contract.extract_json` calls — has
+ * no such test and would report `Expecting value` instead. The two are kept apart here for
+ * the same reason. Reachable: `shiftwork._read_checkpoint` is `json.loads(read_text(...))`,
+ * and `read_text` KEEPS the U+FEFF (`utf-8-sig` is the codec that strips it), so a
+ * BOM-prefixed checkpoint is refused by the reference and must be refused here. N8 measured
+ * this port parsing one and then WRITING to it.
+ */
 export function parseJson(s: string): PyValue {
+  if (s.startsWith('\ufeff')) {
+    throw new PyJSONDecodeError('Unexpected UTF-8 BOM (decode using utf-8-sig)', s, 0);
+  }
   const start = skipWs(s, 0);
   const [value, end] = scanValueTop(s, start);
   const rest = skipWs(s, end);

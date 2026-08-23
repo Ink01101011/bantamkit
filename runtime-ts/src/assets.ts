@@ -4,11 +4,12 @@
  * A port of `runtime-py/src/bantamkit/assets.py`, arm for arm. The Python module is the
  * reference; where this file deviates the deviation is a comment, not an accident.
  */
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { BantamError } from './errors.js';
+import { pyReadText } from './memory/pyfs.js';
 
 export class AssetNotFound extends BantamError {}
 
@@ -20,15 +21,21 @@ export interface Tool {
 }
 
 /**
- * `Path.read_text(encoding="utf-8")` in Python opens in TEXT mode, which applies
- * universal-newline translation: `\r\n` and a lone `\r` both become `\n`. Node's
- * `readFileSync(p, 'utf8')` returns the bytes as they are. A CRLF asset therefore
- * reaches the model with different bytes from the two runtimes unless this is done
- * explicitly — the same class of defect the prep probe measured on fact files, where a
- * CRLF file parses into 3 frontmatter parts in Python and 1 in Node.
+ * `Path.read_text(encoding="utf-8")`, which is `memory/pyfs.pyReadText` and NOT a second
+ * spelling of it.
+ *
+ * It WAS a second spelling — `readFileSync(p, 'utf8').replace(/\r\n?/g, '\n')` — and N8
+ * measured the two decoders disagreeing: `pyReadText` dropped a leading UTF-8 BOM (its
+ * `TextDecoder` defaults `ignoreBOM` to false) while this one kept it, so one package held
+ * two UTF-8 decodes with opposite answers on the same three bytes. This one happened to be
+ * the one that matched CPython; the fix is not to keep the right copy but to keep ONE, so
+ * the next divergence has nowhere to hide. What this arm gains in the trade: `pyReadText`
+ * decodes STRICTLY, so a tool asset that is not valid UTF-8 now raises CPython's
+ * `UnicodeDecodeError` here instead of reaching a model with U+FFFD substituted into the
+ * description it reads. Universal-newline translation is unchanged and lives there too.
  */
 function readTextUniversal(path: string): string {
-  return readFileSync(path, 'utf8').replace(/\r\n?/g, '\n');
+  return pyReadText(path);
 }
 
 /**

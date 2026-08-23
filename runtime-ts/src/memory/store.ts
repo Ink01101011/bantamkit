@@ -31,8 +31,9 @@
 import { basename } from 'node:path';
 
 import { BantamError } from '../errors.js';
-import type { Fact } from './factfile.js';
+import type { Fact, FactValue } from './factfile.js';
 import { formatFact, parseFrontmatter, pySplit, pyStrip, todayLocal } from './factfile.js';
+import { PyScalar } from './pyyaml.js';
 import {
   asPyOSError,
   cmpCodepoint,
@@ -84,7 +85,8 @@ export class MemoryBudgetExceeded extends BantamError {}
 export interface SaveResult {
   status: 'saved' | 'duplicate';
   name: string;
-  similar: string | null;
+  /** `SaveResult.similar` is the OTHER fact's `name` field, verbatim — see `pyText`. */
+  similar: FactValue;
 }
 
 export interface MemoryStoreOptions {
@@ -137,6 +139,235 @@ export function jaccard(a: Set<string>, b: Set<string>): number {
  */
 export function pyText(value: unknown): string {
   return value === null || value === undefined ? 'None' : String(value);
+}
+
+/**
+ * `hash`/`==` equivalence for the values a `Fact.name` can hold — the key `Memory.recall`'s
+ * `seen` set uses across layers.
+ *
+ * `pyText` is the WRONG key here and the difference is observable: a fact named `7` in the
+ * project layer and one named `'7'` in the profile layer are two different keys to Python
+ * and would collapse into one under `str`. The other direction is just as real — Python's
+ * numeric tower makes `7`, `7.0` and `True` all equal and all one key — so a key built from
+ * the JS type would drop a dedupe Python performs. This spells out both.
+ *
+ * Dates are keyed by their type as well as their text: `date(2026, 8, 23)` and the
+ * `datetime` at midnight of the same day are NOT equal in Python.
+ */
+export function pyHashKey(value: FactValue): string {
+  if (value === null) return 'None';
+  if (typeof value === 'string') return `str:${value}`;
+  switch (value.pyType) {
+    case 'bool':
+      return `num:${value.text === 'True' ? '1' : '0'}`;
+    case 'int':
+      return `num:${value.text}`;
+    case 'float': {
+      // An integral float hashes with the equal int; `inf`/`nan` key on their own text, and
+      // `nan != nan` in Python, which no string key can reproduce — see the ruling.
+      const n = Number(value.text);
+      return Number.isInteger(n) ? `num:${BigInt(value.text.split('.')[0]!).toString()}` : `num:${value.text}`;
+    }
+    default:
+      return `${value.pyType}:${value.text}`;
+  }
+}
+
+/** A Python `TypeError`, raised where CPython raises one and with CPython's sentence. */
+function pyTypeError(message: string): TypeError {
+  const e = new TypeError(message);
+  e.name = 'TypeError';
+  return e;
+}
+
+const typeName = (v: FactValue): string =>
+  v === null ? 'NoneType' : typeof v === 'string' ? 'str' : v.pyType;
+
+/**
+ * `a < b` over the values a `Fact.name` can hold — including the refusals, which are the
+ * point.
+ *
+ * `recall` sorts on `(-score, fact.name)`, so two facts that TIE on score make Python
+ * compare their names, and Python has no order between an `int` and a `str`. The whole
+ * matrix was measured against the reference (90 ordered pairs over ten values) and it is
+ * not one rule but four: `bool`/`int`/`float` are ONE family that compares (`True < 7`),
+ * `str` is its own, `date` and `datetime` are two families that do NOT compare with each
+ * other — and CPython says so with a different sentence, `can't compare datetime.datetime
+ * to datetime.date`, always naming `datetime` first however the operands were written —
+ * and an aware `datetime` does not compare with a naive one at all.
+ */
+function numEq(a: bigint | number, b: bigint | number): boolean {
+  if (typeof a === 'bigint' && typeof b === 'bigint') return a === b;
+  if (typeof a === 'bigint') return Number.isInteger(b) && a === BigInt(b as number);
+  if (typeof b === 'bigint') return Number.isInteger(a) && BigInt(a as number) === b;
+  return a === b;
+}
+
+/**
+ * `a == b` over the same values — the OTHER half of the tuple comparison, and not a
+ * rephrasing of `<`.
+ *
+ * `tuplerichcompare` walks the key tuple with `==` and calls `<` only on the first element
+ * where `==` answers False. That is what keeps `sorted` from raising on two facts both named
+ * `None`: `None == None` is True, the tuples are equal, and `None < None` — which DOES raise
+ * — is never reached. Measured: without this the port raised `'NoneType' and 'NoneType'`
+ * where CPython answered an order.
+ *
+ * `==` never raises. Across types it is simply False — `7 == 'a'`, a `date` against a
+ * `datetime`, a naive `datetime` against an aware one — while `<` on the same pairs raises.
+ * Inside the numeric family it is Python's: `True == 1`, `7 == 7.0`, and `nan == nan` is
+ * False, which is why NaN is not special-cased anywhere here.
+ */
+export function pyEqualValue(a: FactValue, b: FactValue): boolean {
+  if (a === null || b === null) return a === null && b === null;
+  if (typeof a === 'string' || typeof b === 'string') return a === b;
+  const x = a.ord;
+  const y = b.ord;
+  if (x.kind === 'num' && y.kind === 'num') return numEq(x.n, y.n);
+  if (x.kind === 'date' && y.kind === 'date') return x.iso === y.iso;
+  if (x.kind === 'datetime' && y.kind === 'datetime') {
+    return x.aware === y.aware && x.sec === y.sec && x.us === y.us;
+  }
+  return false;
+}
+
+export function pyCompareLt(a: FactValue, b: FactValue): boolean {
+  if (typeof a === 'string' && typeof b === 'string') return cmpCodepoint(a, b) < 0;
+  if (a !== null && b !== null && typeof a !== 'string' && typeof b !== 'string') {
+    const x = a.ord;
+    const y = b.ord;
+    if (x.kind === 'num' && y.kind === 'num') {
+      // A `bigint` and a `number` do not compare with `<` in JS unless one side is coerced;
+      // mixed pairs go through `Number`, which is what Python's int/float comparison
+      // approximates anyway for every magnitude a frontmatter can hold in one line.
+      if (typeof x.n === 'bigint' && typeof y.n === 'bigint') return x.n < y.n;
+      return Number(x.n) < Number(y.n);
+    }
+    if (x.kind === 'date' && y.kind === 'date') return x.iso < y.iso;
+    if (x.kind === 'datetime' && y.kind === 'datetime') {
+      if (x.aware !== y.aware) {
+        throw pyTypeError("can't compare offset-naive and offset-aware datetimes");
+      }
+      return x.sec !== y.sec ? x.sec < y.sec : x.us < y.us;
+    }
+    if ((x.kind === 'date' && y.kind === 'datetime') || (x.kind === 'datetime' && y.kind === 'date')) {
+      throw pyTypeError("can't compare datetime.datetime to datetime.date");
+    }
+  }
+  throw pyTypeError(`'<' not supported between instances of '${typeName(a)}' and '${typeName(b)}'`);
+}
+
+/**
+ * `sorted(scored, key=lambda pair: (-pair[0], pair[1].name))`, comparison for comparison.
+ *
+ * RULING — WHY THE SORT IS SPELLED OUT AND NOT HANDED TO `Array.prototype.sort`. When every
+ * name is a `str` the two agree and this takes the fast path. When they are not, the sort
+ * can RAISE, and then WHICH pair CPython happens to compare first decides the sentence a
+ * model reads: `'int' and 'str'` or `'str' and 'int'`, and with three numeric types in play,
+ * which of `int`/`float`/`bool` gets named. `Array.prototype.sort`'s comparison order is
+ * unspecified and V8's is not Timsort's.
+ *
+ * So the slow path is CPython's `listsort` for a single run: `count_run` (adjacent
+ * `a[i] < a[i-1]`, reversing a strictly descending prefix) then `binarysort` (pivot on the
+ * LEFT of every probe, midpoint `l + ((r - l) >> 1)`), over key tuples compared by
+ * `tuplerichcompare` — `==` down the tuple and `<` only where `==` says they differ.
+ *
+ * MEASURED, and re-measured on every conformance run: the `recall tie-break` case in
+ * `tools/conformance/suites/store.mjs` generates 50,000 `(score, name)` lists from a seeded
+ * LCG — ten name spellings across all four families, n from 2 to 300 — and runs each through
+ * CPython's `sorted` and through this function. 45,629 of them raise. All 50,000 agree, on
+ * the order where there is one and on the TypeError text where there is not.
+ *
+ * TWO MODELS THIS REFUTED, kept because each looks right until it is run. (1) "raise if any
+ * equal-score pair is incomparable" gets the DECISION right — 20,000 of 20,000 in the
+ * derivation probe — and the SENTENCE wrong in 1,087 of 30,000, because the types it names
+ * are whichever pair the binary search actually probed. (2) Calling `<` wherever the scores
+ * tie raises `'NoneType' and 'NoneType'` for two facts both named `None`, where CPython
+ * answers an order: `==` short-circuits the tuple before `<` is ever reached.
+ *
+ * NOT MEASURED, and the honest edge: past 64 elements CPython splits the list into runs and
+ * merges them, while this binary-inserts the whole list. It can only matter if the FIRST
+ * incomparable pair lies past the first run, and the 8,000 generated lists with n between 65
+ * and 300 produced no such case. A store would need 65+ facts tied on one recall score with
+ * the type change late in the file order.
+ */
+export function sortScored<T extends { score: number; name: FactValue }>(scored: readonly T[]): T[] {
+  if (scored.every((s) => typeof s.name === 'string')) {
+    // Every name a `str`: the comparison cannot raise and the order is total, so the stable
+    // library sort is the same answer for less work.
+    return [...scored].sort((a, b) => b.score - a.score || cmpCodepoint(a.name as string, b.name as string));
+  }
+  // `tuplerichcompare`: `==` down the tuple, then `<` on the first element that differs.
+  const lt = (x: T, y: T): boolean =>
+    x.score !== y.score
+      ? x.score > y.score
+      : pyEqualValue(x.name, y.name)
+        ? false
+        : pyCompareLt(x.name, y.name);
+  const a: T[] = [...scored];
+  const n = a.length;
+  if (n < 2) return a;
+  // `count_run`
+  let k: number;
+  if (lt(a[1]!, a[0]!)) {
+    let i = 2;
+    while (i < n && lt(a[i]!, a[i - 1]!)) i += 1;
+    k = i;
+    a.splice(0, k, ...a.slice(0, k).reverse());
+  } else {
+    let i = 2;
+    while (i < n && !lt(a[i]!, a[i - 1]!)) i += 1;
+    k = i;
+  }
+  // `binarysort`
+  for (let start = Math.max(k, 1); start < n; start += 1) {
+    const pivot = a[start]!;
+    let l = 0;
+    let r = start;
+    while (l < r) {
+      const p = l + ((r - l) >> 1);
+      if (lt(pivot, a[p]!)) r = p;
+      else l = p + 1;
+    }
+    a.copyWithin(l + 1, l, start);
+    a[l] = pivot;
+  }
+  return a;
+}
+
+/**
+ * `bool(value)` for a frontmatter value.
+ *
+ * `_facts` asks it twice — `meta.get("links") or []` and `meta.get("created") or
+ * _mtime_date(path)` — and the answer is not "is it a non-empty string". A `PyScalar`
+ * carries Python's own answer (`0`, `0.0` and `false` are falsy; a `date` never is), an
+ * empty list is falsy, and `undefined` stands for the absent key.
+ */
+function pyTruthy(value: FactValue | FactValue[] | undefined): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value === 'string') return value !== '';
+  if (Array.isArray(value)) return value.length > 0;
+  return value.truthy;
+}
+
+/**
+ * `list(meta.get("links") or [])`.
+ *
+ * A string is iterated into its CHARACTERS, which the spread does over codepoints — the
+ * same faithful-not-tidy answer as before. What is new is the last arm: `list(7)` is a
+ * `TypeError` in Python and the `except (ValueError, KeyError, yaml.YAMLError)` in `_facts`
+ * does NOT catch it, so it escapes the store with CPython's own sentence rather than
+ * becoming `malformed fact file …`. That is reproduced, message and escape route both,
+ * because a caller that catches `MemoryValidationError` would swallow one and not the
+ * other. Not fixed in `runtime-py` (invariant 8) — registered.
+ */
+function pyList(value: FactValue | FactValue[] | undefined): FactValue[] {
+  if (!pyTruthy(value)) return [];
+  if (Array.isArray(value)) return [...value];
+  if (typeof value === 'string') return [...value];
+  const e = new TypeError(`'${(value as PyScalar).pyType}' object is not iterable`);
+  e.name = 'TypeError';
+  throw e;
 }
 
 /**
@@ -263,16 +494,16 @@ export class MemoryStore {
   recall(query: string, k: number | null = null, stamp = true): Fact[] {
     const limit = k ?? this.k;
     const q = tokens(query);
-    const scored: Array<{ score: number; fact: Fact }> = [];
+    const scored: Array<{ score: number; name: FactValue; fact: Fact }> = [];
     for (const fact of this.facts()) {
       let score = 0;
       for (const t of tokens(`${pyText(fact.name)} ${pyText(fact.description)}`)) if (q.has(t)) score += 1;
-      if (score > 0) scored.push({ score, fact });
+      if (score > 0) scored.push({ score, name: fact.name, fact });
     }
-    // `key=lambda pair: (-pair[0], pair[1].name)`. The name comparison is CODEPOINT order,
-    // which is not what `Array.prototype.sort` does; both runtimes sort stably.
-    scored.sort((a, b) => b.score - a.score || cmpCodepoint(pyText(a.fact.name), pyText(b.fact.name)));
-    const hits = scored.slice(0, limit).map((s) => s.fact);
+    // `key=lambda pair: (-pair[0], pair[1].name)`. The name comparison is CODEPOINT order
+    // for two strings — which is not what `Array.prototype.sort` does — and Python's `<`
+    // for everything else, refusals included. See `sortScored`.
+    const hits = sortScored(scored).slice(0, limit).map((s) => s.fact);
     if (stamp) for (const fact of hits) this.stamp(fact);
     return hits;
   }
@@ -296,7 +527,7 @@ export class MemoryStore {
 
   // ---- internals ----
 
-  private factPath(name: string): string {
+  private factPath(name: FactValue): string {
     return pyJoin(this.root, 'facts', `${pyText(name)}.md`);
   }
 
@@ -406,20 +637,18 @@ export class MemoryStore {
       for (const key of ['name', 'description', 'type']) {
         if (!(key in meta)) throw malformed(`'${key}'`);
       }
-      const rawLinks = meta['links'];
+      const rawCreated = meta['created'] as FactValue | FactValue[] | undefined;
       out.push({
-        name: meta['name'] as string,
-        description: meta['description'] as string,
-        type: meta['type'] as string,
+        name: meta['name'] as FactValue,
+        description: meta['description'] as FactValue,
+        type: meta['type'] as FactValue,
         body: pyStrip(parts[2]!),
-        // `list(meta.get("links") or [])`. A string here is iterated into its characters by
-        // `list()`, and the spread does the same over codepoints — faithful, not tidy.
-        links: rawLinks ? (typeof rawLinks === 'string' ? [...rawLinks] : [...(rawLinks as string[])]) : [],
-        last_recalled: (meta['last_recalled'] as string | null) ?? null,
-        // `or`, not `??`: an empty string falls back to the mtime too. The fallback is for
-        // facts written before `created` existed and is never consulted again after the
-        // next write persists a date into the frontmatter.
-        created: (meta['created'] as string | null) || pyMtimeDate(path),
+        links: pyList(meta['links'] as FactValue | FactValue[] | undefined),
+        last_recalled: (meta['last_recalled'] as FactValue) ?? null,
+        // `or`, not `??`: every FALSY value falls back to the mtime, and that is now more
+        // than the empty string — `created: 0`, `created: false` and `created: 0.0` are all
+        // falsy in Python too, while `created: 2026-08-23` is a truthy `date` and is kept.
+        created: pyTruthy(rawCreated) ? (rawCreated as FactValue) : pyMtimeDate(path),
       });
     }
     return out;

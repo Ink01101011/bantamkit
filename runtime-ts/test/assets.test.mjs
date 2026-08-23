@@ -20,13 +20,18 @@ const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoPack = join(dirname(packageRoot), 'assets');
 const dist = join(packageRoot, 'dist');
 
-/** Plant `dist/assets.js` at `<base>/<distRel>` and import it from there. */
+/**
+ * Plant `dist/assets.js` at `<base>/<distRel>` and import it from there.
+ *
+ * The whole of `dist/` is copied rather than a hand-listed two files. `assets.js` reads
+ * text through `memory/pyfs.js` — one UTF-8 decode for the package, not a second spelling
+ * beside it — and a list that has to be edited whenever an import is added is a list that
+ * fails as `ERR_MODULE_NOT_FOUND` in a test about directory arms.
+ */
 async function moduleAt(base, distRel) {
   const target = join(base, distRel);
   mkdirSync(target, { recursive: true });
-  for (const f of ['assets.js', 'errors.js']) {
-    cpSync(join(dist, f), join(target, f));
-  }
+  cpSync(dist, target, { recursive: true });
   return import(pathToFileURL(join(target, 'assets.js')).href);
 }
 

@@ -13,23 +13,34 @@
  * Node server re-emits Python's files constantly. The differential that proves it runs in
  * `tools/conformance/suites/codec.mjs`; the shapes are pinned in `test/codec.test.mjs`.
  */
-import { resolveImplicitTag, safeDumpMapping } from './pyyaml.js';
+import { constructPlain, PyScalar, safeDumpMapping } from './pyyaml.js';
 
 export class FactParseError extends Error {}
 
+/**
+ * What one frontmatter value can be.
+ *
+ * `PyScalar` is not a widening for its own sake: `_facts` in the reference puts
+ * `yaml.safe_load`'s answer into the dataclass with no type check, so a hand-edited
+ * `description: 2026` really does give the Python store an `int` in a `str` field and the
+ * store really does keep working. The three-way is the whole ruling — see `constructPlain`
+ * in `pyyaml.ts` for what lands in which arm, and `store.pyText` for how it is rendered.
+ */
+export type FactValue = string | PyScalar | null;
+
 /** `store.Fact`. `created` is `null` only before a Fact's first write. */
 export interface Fact {
-  name: string;
-  description: string;
-  type: string;
+  name: FactValue;
+  description: FactValue;
+  type: FactValue;
   body: string;
-  links: string[];
-  last_recalled: string | null;
-  created?: string | null;
+  links: FactValue[];
+  last_recalled: FactValue;
+  created?: FactValue;
 }
 
 /** The frontmatter as it comes off disk — exactly the keys the file carries. */
-export type FactMeta = Record<string, string | null | string[]>;
+export type FactMeta = Record<string, FactValue | FactValue[]>;
 
 // ------------------------------------------------------------------------ whitespace
 
@@ -164,7 +175,7 @@ export function parseFrontmatter(front: string): FactMeta {
       throw new FactParseError(`frontmatter line is not a plain "key:" mapping entry: ${line(front, pos)}`);
     }
     pos += key[0].length;
-    let value: string | null | string[];
+    let value: FactValue | FactValue[];
     if (front[pos] === '\n') {
       pos += 1;
       if (/^-(?: |\n|$)/.test(front.slice(pos))) {
@@ -193,7 +204,7 @@ function line(text: string, pos: number): string {
 }
 
 /** A single-line-or-wrapped scalar starting at `pos`. Returns the value and the index after it. */
-function scanNode(front: string, pos: number): [string | null | string[], number] {
+function scanNode(front: string, pos: number): [FactValue | FactValue[], number] {
   const ch = front[pos];
   if (ch === "'") return scanQuoted(front, pos, "'");
   if (ch === '"') return scanQuoted(front, pos, '"');
@@ -216,7 +227,7 @@ function scanNode(front: string, pos: number): [string | null | string[], number
  * dash both sit at column 0, so nothing else is needed to find the end. Line breaks fold
  * to a single space, which is the inverse of the emitter dropping the space it broke at.
  */
-function scanPlain(front: string, pos: number): [string | null, number] {
+function scanPlain(front: string, pos: number): [FactValue, number] {
   const pieces: string[] = [];
   let i = pos;
   for (;;) {
@@ -254,48 +265,36 @@ function scanPlain(front: string, pos: number): [string | null, number] {
 }
 
 /**
- * RULING — what a plain scalar resolves to. READ THE SECOND PARAGRAPH BEFORE TRUSTING THIS.
+ * RULING — WHAT A PLAIN SCALAR RESOLVES TO. Decided by N10; the reason the old ruling stood
+ * on was measured false by N8 and is deleted with the behaviour it justified.
  *
  * PyYAML resolves a plain scalar by pattern, so a hand-edited `created: 2026-08-23` comes
- * back as a `datetime.date` and `links:\n- 12` as an `int`. Node has no `date` to return
- * and every `Fact` field is a string, so this raises AT the parse, naming the tag, rather
- * than handing the store a value of the wrong type. Null is the one non-string tag that is
- * genuine: `last_recalled` and `created` are `str | None`.
- *
- * N8 REFUTED THE REASON THIS RULING WAS WRITTEN ON, and the ruling has not been re-decided.
- * It claimed a resolved non-string "is a defect in either runtime — it just reaches the
- * model as a `TypeError` several frames away in Python". It does not. Measured against the
- * reference over seventeen shapes (`name: 7`, `description: 2026`, `type: true`,
- * `name: 1.5`, `name: 0x1f`, `created: 2026-08-23`, `last_recalled: 2026-08-23`,
- * `links:\n- 12`, `name: .inf`, `name: yes` …): CPython raises on ZERO of them. It
+ * back as a `datetime.date` and `links:\n- 12` as an `int`. This function used to RAISE for
+ * every tag but `str` and `null`, on the belief — written into the comment as if it were a
+ * ruling — that Python "reaches the model as a `TypeError` several frames away". It does
+ * not. Measured against the reference over 26 shapes, CPython raises on FOUR (three
+ * out-of-range timestamps and the two constructor-less tags) and answers on the rest: it
  * interpolates the value, writes a working `index.md` line, answers `memory_recall`, stamps
- * the file and accepts the next `memory_save`. A bare `created:` date even round-trips
+ * the file and accepts the next `memory_save`. A bare `created: 2026-08-23` round-trips
  * through `_stamp` unquoted.
  *
- * What this port does instead is refuse the WHOLE STORE. One such file makes `memory_recall`,
- * `memory_save` and the index rebuild all raise `MemoryValidationError` naming that one file,
- * while the Python server bound to the same directory keeps working — measured with three
- * facts, one of them `description: 2026`. Fact files are Markdown a human is invited to edit,
- * so the shape is reachable; every fact this codec WRITES is quoted, so it is not reachable
- * from the tool itself.
+ * What the raise COST was not a wrong sentence, it was the store: one such file made
+ * `memory_recall`, `memory_save` and the index rebuild all raise `MemoryValidationError`
+ * naming that one file, while a Python server bound to the same directory kept working.
+ * Fact files are Markdown a human is invited to edit, so the shape is reachable — 13 of 17
+ * scalar shapes N8 tried did it. Nothing this codec WRITES is affected: every value it
+ * emits is quoted when quoting is what keeps the tag.
  *
- * This is left as it is on purpose rather than half-fixed: making it match means deciding
- * what a `Fact` field holds when PyYAML hands back a `date`, an `int` or a `bool`, and that
- * decision needs its own conformance corpus and its own mutation sweep. It is registered in
- * N8's clock-out as work for a following unit, and the conformance suite deliberately does
- * NOT carry it as a ruling — see `tools/conformance/suites/store.mjs`, the second `ruled`
- * entry, for why documenting it as intentional would be the worse error.
+ * So: `constructPlain` builds what `SafeConstructor` builds, and the store renders it with
+ * `pyText`. The full width — which tags are constructed, which raise, and the three shapes
+ * where CPython and this codec genuinely disagree because this codec has no SCANNER — is
+ * written at `constructPlain` in `pyyaml.ts` and re-measured by the `frontmatter scalar`
+ * scenarios in `tools/conformance/suites/store.mjs` on every run.
  */
-function resolvePlain(value: string): string | null {
-  // The resolver lives with the emitter: the quoting decision on the way out is the
-  // same question this asks on the way in.
-  const tag = resolveImplicitTag(value);
-  if (tag === 'tag:yaml.org,2002:null') return null;
-  if (tag === 'tag:yaml.org,2002:str') return value;
-  throw new FactParseError(
-    `the plain scalar ${JSON.stringify(value)} resolves to ${tag}, not a string; ` +
-      'quote it in the file if it is meant to be text',
-  );
+function resolvePlain(value: string): FactValue {
+  // The constructor lives with the emitter and the resolver: the quoting decision on the
+  // way out is the same question this asks on the way in.
+  return constructPlain(value);
 }
 
 /**
@@ -388,20 +387,31 @@ function unescape(front: string, at: number): [string, number] {
   return [String.fromCodePoint(parseInt(digits, 16)), 2 + width];
 }
 
-/** A block sequence whose dashes are at column 0 — the only shape PyYAML emits here. */
-function scanBlockSequence(front: string, pos: number): [string[], number] {
-  const items: string[] = [];
+/**
+ * A block sequence whose dashes are at column 0 — the only shape PyYAML emits here.
+ *
+ * An item resolves exactly as a mapping value does, so `links:\n- 12` is a one-element list
+ * holding an `int` in both runtimes. It used to raise `a sequence item must be a string`,
+ * which took the whole store down for a file Python read.
+ */
+function scanBlockSequence(front: string, pos: number): [FactValue[], number] {
+  const items: FactValue[] = [];
   let i = pos;
   while (i < front.length && front[i] === '-') {
     if (front[i + 1] === '\n' || i + 1 === front.length) {
-      throw new FactParseError('a null item in links is not in this codec\'s language');
+      // `- ` with nothing after it is a null item, which `list()` keeps and `represent_none`
+      // writes back as `- null`. Python has no complaint about it, so neither does this.
+      items.push(null);
+      i += 2;
+      continue;
     }
     if (front[i + 1] !== ' ') {
       throw new FactParseError(`expected "- " at the start of a sequence item: ${line(front, i)}`);
     }
     const [value, next] = scanNode(front, i + 2);
-    if (typeof value !== 'string') {
-      throw new FactParseError('a sequence item must be a string');
+    if (Array.isArray(value)) {
+      // A nested block sequence is outside the emitter's language and outside this codec's.
+      throw new FactParseError('a nested sequence item is not in this codec\'s language');
     }
     items.push(value);
     if (next < front.length && front[next] !== '\n') {

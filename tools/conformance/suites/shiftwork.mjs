@@ -296,6 +296,17 @@ function sessions() {
   add('schema-invalid-deep', b64(raw(invalidDeep)), [IN()]);
   add('checkpoint-is-a-list', b64('[1, 2, 3]\n'), [IN()]);
 
+  // ---- a UTF-8 BOM in front of the document. `read_text(encoding="utf-8")` KEEPS the
+  // U+FEFF (`utf-8-sig` is the codec that strips it) and `json.loads` then refuses with
+  // `Unexpected UTF-8 BOM (decode using utf-8-sig)`. This port's `pyDecodeUtf8` used to drop
+  // it — `TextDecoder` defaults `ignoreBOM` to false — so a BOM'd checkpoint PARSED here and
+  // a clock-out WROTE to it, while the reference server refused the same file. The second
+  // case puts the BOM on an otherwise-broken document, so the offsets in the decoder's
+  // message are counted over a string that still holds the BOM character.
+  add('bom-checkpoint', b64(`\ufeff${raw(baseDocument())}`), [IN(), ST(), OUT('N1', 'done')]);
+  add('bom-then-unparseable', b64('\ufeff{"version": 1,}\n'), [IN()]);
+  add('bom-mid-document', b64(raw(baseDocument()).replace('"version"', '"\ufeffversion"')), [IN()]);
+
   // ---- CRLF: `read_text` translates, so a CRLF checkpoint must behave like an LF one.
   // A CRLF document that FAILS to parse on a later line. `read_text` folds `\r\n` to `\n`
   // before `json.loads` sees it, so the decoder's `line N column M (char P)` counts one

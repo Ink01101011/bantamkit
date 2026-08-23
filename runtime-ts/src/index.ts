@@ -44,9 +44,16 @@ export {
   pyStrip,
   todayLocal,
 } from './memory/factfile.js';
-export type { Fact, FactMeta } from './memory/factfile.js';
-export { resolveImplicitTag, safeDumpMapping, YamlEmitError } from './memory/pyyaml.js';
-export type { YamlValue } from './memory/pyyaml.js';
+export type { Fact, FactMeta, FactValue } from './memory/factfile.js';
+export {
+  constructPlain,
+  PyScalar,
+  resolveImplicitTag,
+  safeDumpMapping,
+  YamlConstructError,
+  YamlEmitError,
+} from './memory/pyyaml.js';
+export type { PyOrder, YamlScalar, YamlValue } from './memory/pyyaml.js';
 export {
   countFacts,
   discoverProjectStore,
@@ -65,7 +72,11 @@ export {
   MemoryBudgetExceeded,
   MemoryStore,
   MemoryValidationError,
+  pyCompareLt,
+  pyEqualValue,
+  pyHashKey,
   pyText,
+  sortScored,
   tokens,
   VALID_TYPES,
 } from './memory/store.js';

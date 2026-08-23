@@ -23,14 +23,23 @@
  * no-op it is — `jsonschema.validate` passes no `format_checker`, so the keyword can never
  * produce an error on this path.
  *
- * WHAT IS NOT IMPLEMENTED, AND WHY THAT IS A RULING AND NOT A GAP.
- * `jsonschema.validate` calls `cls.check_schema(schema)` FIRST, so an invalid schema raises
- * `SchemaError` before any instance is looked at — and `contract.schema_error` catches only
- * `ValidationError`, so that exception escapes `validate_json` to the caller. Reproducing it
- * means shipping the 2020-12 metaschema and validating against it. This port instead raises
- * `PyJsonSchemaUnsupported` at the point it meets a construct it cannot honour. Both
- * runtimes refuse; the sentence differs. Registered as a ruled case, and registered as a
- * runtime-py defect: `validate_json` lets an exception out on caller input.
+ * THE CALLER SCHEMA IS CHECKED FIRST, as it is in the reference. `jsonschema.validate` calls
+ * `cls.check_schema(schema)` before it looks at the instance, so an invalid schema raises
+ * `SchemaError` — and `contract.schema_error` catches only `ValidationError`, so that
+ * exception escapes `validate_json` to the caller. This port used NOT to run it, and the
+ * consequence was not a different sentence but a WRONG ANSWER: the keywords below are
+ * written to skip a schema value they do not recognise, which is correct inside
+ * `iter_errors` and is `{"valid": true}` at a tool boundary. Measured by N8 on the wire,
+ * `{"required": "a"}`, `{"required": 3}`, `{"properties": ["a"]}` and
+ * `{"additionalProperties": [1]}` all answered `{"valid": true}`, and `{"type": 3}` answered
+ * `{"valid": false}` with a sentence about a schema that is not a schema.
+ *
+ * `checkSchema` below is the fix and it is NOT the metaschema — running that would need
+ * `$ref` and `$dynamicRef`, which is the vocabulary this file refuses to implement. It is
+ * the keyword SHAPE table, applied recursively. Measured over 53 malformed schemas: 53 of 53
+ * now refuse on both sides, and only the WORDS differ. Each is a ruled case in
+ * `tools/conformance/suites/validate.mjs`. Registered and NOT fixed here: `validate_json`
+ * letting an exception out on caller input is a `runtime-py` defect (invariant 8).
  */
 import { cmpCodepoint } from './memory/pyfs.js';
 import { reprValue, type PyValue } from './pyjson.js';
@@ -759,13 +768,196 @@ export function bestMatch(errors: PyValidationError[]): PyValidationError | null
   return best;
 }
 
+// ------------------------------------------------------------------ the schema, checked
+
+/**
+ * `cls.check_schema(schema)`, reduced to the SHAPE of each keyword's value.
+ *
+ * WHY THIS EXISTS, and why it is not the metaschema. `jsonschema.validate` runs
+ * `check_schema` BEFORE it looks at the instance, so a caller schema the 2020-12 metaschema
+ * refuses never reaches a keyword. Without it, this port ran the keywords anyway and the
+ * keywords are written to SKIP a value they do not recognise — which is correct behaviour
+ * inside `iter_errors` and a wrong ANSWER at the tool boundary. N8 measured it on the wire:
+ *
+ *     {"required": "a"}              python: SchemaError   port: {"valid": true}
+ *     {"required": 3}                python: SchemaError   port: {"valid": true}
+ *     {"properties": ["a"]}          python: SchemaError   port: {"valid": true}
+ *     {"additionalProperties": [1]}  python: SchemaError   port: {"valid": true}
+ *     {"type": 3}                    python: SchemaError   port: {"valid": false, …}
+ *
+ * The last one is the worst of the five: a sentence about a schema that is not a schema.
+ *
+ * WHAT IS CHECKED, AND THE RULING ON WHAT IS NOT. Running the real metaschema is not
+ * available to this port — the 2020-12 metaschema is eight documents wired together with
+ * `$ref` and `$dynamicRef`, which is exactly the vocabulary this file refuses to implement,
+ * so `check_schema` would have to be more capable than `validate`. What is here instead is
+ * the SHAPE TABLE: for every keyword this port implements, the type the metaschema demands
+ * of its value, applied recursively through the keywords whose values hold subschemas. That
+ * is narrower than the metaschema — it does not enforce `uniqueItems` on `required`, the
+ * `minLength: 1` on `allOf`, or that a `pattern` compiles — and every gap is a schema Python
+ * refuses and this port answers on. Each keyword listed below is MEASURED against the
+ * reference in `tools/conformance/suites/validate.mjs`; the gaps are listed there too, as
+ * cases that are deliberately absent rather than quietly ruled.
+ *
+ * BOTH RUNTIMES NOW REFUSE, AND THE SENTENCE DIFFERS. Python raises `SchemaError` with the
+ * metaschema's own wording and it ESCAPES `validate_json` to the caller (a registered
+ * `runtime-py` defect — a tool should not let an exception out on caller input; not fixed
+ * here, invariant 8). This raises `PyJsonSchemaUnsupported`, which escapes the same way,
+ * because agreeing that the tool raises is the behaviour and inventing an answer is not.
+ */
+const SIMPLE_TYPES = new Set(['array', 'boolean', 'integer', 'null', 'number', 'object', 'string']);
+
+/** Keywords whose value is itself a schema. */
+const SUBSCHEMA = [
+  'additionalProperties',
+  'contains',
+  'else',
+  'if',
+  'items',
+  'not',
+  'propertyNames',
+  'then',
+  'unevaluatedItems',
+  'unevaluatedProperties',
+];
+/** Keywords whose value is an object whose VALUES are schemas. */
+const SUBSCHEMA_MAP = ['$defs', 'definitions', 'dependentSchemas', 'patternProperties', 'properties'];
+/** Keywords whose value is an array of schemas. */
+const SUBSCHEMA_LIST = ['allOf', 'anyOf', 'oneOf', 'prefixItems'];
+/** Keywords whose value is any JSON number. */
+const NUMBER_KEYWORDS = ['exclusiveMaximum', 'exclusiveMinimum', 'maximum', 'minimum'];
+/** Keywords whose value is a non-negative integer. */
+const COUNT_KEYWORDS = [
+  'maxContains',
+  'maxItems',
+  'maxLength',
+  'maxProperties',
+  'minContains',
+  'minItems',
+  'minLength',
+  'minProperties',
+];
+
+function refuse(where: string, expected: string, got: PyValue | boolean): never {
+  const kind = typeof got === 'boolean' ? 'boolean' : got.t;
+  throw new PyJsonSchemaUnsupported(`${where} must be ${expected}, got ${kind}`);
+}
+
+const isSchemaValue = (v: PyValue): boolean => v.t === 'dict' || v.t === 'bool';
+
+export function checkSchema(schema: PyValue | boolean, where = 'the schema'): void {
+  if (typeof schema === 'boolean' || schema.t === 'bool') return;
+  if (schema.t !== 'dict') refuse(where, 'an object or a boolean', schema);
+  for (const [keyword, value] of schema.v) {
+    const at = `${where}: ${keyword}`;
+    if (SUBSCHEMA_LIST.includes(keyword) && keyword !== 'prefixItems') {
+      // `allOf`/`anyOf`/`oneOf` carry `"minItems": 1` in the applicator vocabulary.
+      if (value.t === 'list' && value.v.length === 0) {
+        throw new PyJsonSchemaUnsupported(`${at} must be a non-empty array`);
+      }
+    }
+    if (SUBSCHEMA.includes(keyword)) {
+      if (!isSchemaValue(value)) refuse(at, 'an object or a boolean', value);
+      checkSchema(value, at);
+    } else if (SUBSCHEMA_MAP.includes(keyword)) {
+      if (value.t !== 'dict') refuse(at, 'an object', value);
+      for (const [k, v] of value.v) {
+        if (!isSchemaValue(v)) refuse(`${at}/${k}`, 'an object or a boolean', v);
+        checkSchema(v, `${at}/${k}`);
+      }
+    } else if (SUBSCHEMA_LIST.includes(keyword)) {
+      if (value.t !== 'list') refuse(at, 'an array', value);
+      value.v.forEach((v, i) => {
+        if (!isSchemaValue(v)) refuse(`${at}/${i}`, 'an object or a boolean', v);
+        checkSchema(v, `${at}/${i}`);
+      });
+    } else if (keyword === 'type') {
+      const each = (v: PyValue, place: string): void => {
+        if (v.t !== 'str') refuse(place, 'a simple type name', v);
+        if (!SIMPLE_TYPES.has(v.v)) {
+          throw new PyJsonSchemaUnsupported(`${place} must be a simple type name, got ${reprValue(v)}`);
+        }
+      };
+      if (value.t === 'list') {
+        // `{"type": [...]}` is `"minItems": 1, "uniqueItems": true` in the validation
+        // vocabulary, and both are reachable: `{"type": []}` and `{"type": ["string",
+        // "string"]}` are schemas the reference refuses and this port used to answer on.
+        if (value.v.length === 0) throw new PyJsonSchemaUnsupported(`${at} must be a non-empty array`);
+        const seen = new Set<string>();
+        value.v.forEach((v, i) => {
+          each(v, `${at}/${i}`);
+          const name = (v as { v: string }).v;
+          if (seen.has(name)) {
+            throw new PyJsonSchemaUnsupported(`${at} must have unique items, got ${reprValue(v)} twice`);
+          }
+          seen.add(name);
+        });
+      } else each(value, at);
+    } else if (keyword === 'required') {
+      if (value.t !== 'list') refuse(at, 'an array', value);
+      const seen = new Set<string>();
+      value.v.forEach((v, i) => {
+        if (v.t !== 'str') refuse(`${at}/${i}`, 'a string', v);
+        if (seen.has(v.v)) {
+          throw new PyJsonSchemaUnsupported(`${at} must have unique items, got ${reprValue(v)} twice`);
+        }
+        seen.add(v.v);
+      });
+    } else if (keyword === 'dependentRequired') {
+      if (value.t !== 'dict') refuse(at, 'an object', value);
+      for (const [k, v] of value.v) {
+        if (v.t !== 'list') refuse(`${at}/${k}`, 'an array', v);
+        v.v.forEach((x, i) => {
+          if (x.t !== 'str') refuse(`${at}/${k}/${i}`, 'a string', x);
+        });
+      }
+    } else if (keyword === 'enum') {
+      if (value.t !== 'list') refuse(at, 'an array', value);
+    } else if (keyword === 'uniqueItems') {
+      if (value.t !== 'bool') refuse(at, 'a boolean', value);
+    } else if (keyword === 'pattern' || keyword === 'format') {
+      if (value.t !== 'str') refuse(at, 'a string', value);
+      // `"format": "regex"` on `pattern` in the metaschema, and jsonschema's own format
+      // checker compiles it — `{"pattern": "("}` is a SchemaError there, and was
+      // `{"valid": true}` here. `reSearch` already refuses a pattern it cannot compile;
+      // this only moves the refusal to where Python's is, which is before the instance.
+      //
+      // THE PRICE, measured and accepted: `re` accepts patterns `RegExp` does not
+      // (`(?P<x>…)`, `\A`, `\Z`), so a schema carrying one now refuses HERE even when the
+      // keyword would never have fired. Before, it refused only when it fired, and answered
+      // otherwise. Both are the same ruled divergence — see the `python re and JS RegExp`
+      // ruling — and a refusal in an unreached branch is a smaller error than `{"valid":
+      // true}` for a pattern that is not a pattern. Both directions are pinned as ruled
+      // cases in `tools/conformance/suites/validate.mjs`.
+      if (keyword === 'pattern') reSearch(value.v, '');
+    } else if (keyword === 'multipleOf') {
+      if (value.t !== 'int' && value.t !== 'float') refuse(at, 'a number', value);
+      if (value.t === 'int' ? value.v <= 0n : value.v <= 0) {
+        throw new PyJsonSchemaUnsupported(`${at} must be a number greater than 0, got ${reprValue(value)}`);
+      }
+    } else if (NUMBER_KEYWORDS.includes(keyword)) {
+      if (value.t !== 'int' && value.t !== 'float') refuse(at, 'a number', value);
+    } else if (COUNT_KEYWORDS.includes(keyword)) {
+      const integral = value.t === 'int' || (value.t === 'float' && Number.isInteger(value.v));
+      if (!integral) refuse(at, 'a non-negative integer', value);
+      if (value.t === 'int' ? value.v < 0n : (value as { v: number }).v < 0) {
+        throw new PyJsonSchemaUnsupported(
+          `${at} must be a non-negative integer, got ${reprValue(value)}`,
+        );
+      }
+    }
+  }
+}
+
 /**
  * `jsonschema.validate(instance, schema)` reduced to what `contract.schema_error` needs:
  * the single error `best_match` chooses, or `null`.
  *
- * `check_schema` is NOT run — see the module header for the ruling.
+ * `check_schema` runs FIRST, as it does in the reference. See `checkSchema` for what that
+ * means here and for the five wrong answers it replaced.
  */
 export function validate(instance: PyValue, schema: PyValue): PyValidationError | null {
+  checkSchema(schema);
   return bestMatch(iterErrors(instance, schema));
 }
 

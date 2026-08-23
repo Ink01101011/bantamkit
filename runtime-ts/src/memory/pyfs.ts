@@ -98,7 +98,7 @@ const OSERROR_SUBCLASS: Record<string, string> = {
 /**
  * An `OSError` as Python prints one.
  *
- * `str(OSError)` is `[Errno {errno}] {strerror}: '{filename}'`, and that text is not
+ * `str(OSError)` is `[Errno {errno}] {strerror}: {filename!r}`, and that text is not
  * decoration: `_ensure_dirs` lets a `FileExistsError` out of `save` unconverted, and
  * `component.Memory.save` turns whatever comes out into the sentence a model reads.
  * `errno` is the platform number, which is what Python prints and what libuv already
@@ -119,11 +119,18 @@ export class PyOSError extends Error {
     filename: string | null,
     filename2: string | null = null,
   ) {
-    // `OSError.__str__`: `[Errno n] msg`, then `: 'a'`, then ` -> 'b'` when there are two.
-    // `os.replace` is the one that reaches here with two, and shiftwork's clock-out quotes
-    // that string into the refusal a model reads.
+    // `OSError.__str__` is `"[Errno %S] %S: %R"`, or `"[Errno %S] %S: %R -> %R"` when there
+    // are two (`Objects/exceptions.c`). `%R` is `repr`, NOT a hand-written pair of
+    // apostrophes. WAS the latter, and N8 measured the difference: a path holding a `'`, a
+    // newline or a tab produced a sentence CPython does not print — `pyRepr` switches to
+    // double quotes for the first and escapes the other two. That sentence is quoted
+    // verbatim into what `component.Memory` and shiftwork's clock-out put before a model.
     const where =
-      filename === null ? '' : filename2 === null ? `: '${filename}'` : `: '${filename}' -> '${filename2}'`;
+      filename === null
+        ? ''
+        : filename2 === null
+          ? `: ${pyRepr(filename)}`
+          : `: ${pyRepr(filename)} -> ${pyRepr(filename2)}`;
     super(`[Errno ${errno}] ${strerror}${where}`);
     this.name = OSERROR_SUBCLASS[code] ?? 'OSError';
     this.errno = errno;
@@ -204,6 +211,16 @@ function leadInfo(b: number): { length: number; lo: number; hi: number } | null 
  * The three reasons and the reported span are CPython's, derived by running its decoder
  * over 220 sequences and matched against all of them (the `utf-8 decode` cases in the
  * conformance suite re-run that comparison).
+ *
+ * `ignoreBOM: true` IS THE DEFAULT SPELLING BACKWARDS, and it is the point. `TextDecoder`
+ * defaults `ignoreBOM` to FALSE, which means "treat a leading EF BB BF as a byte-order mark
+ * and DROP it". CPython's utf-8 codec has no such rule — `b'\xef\xbb\xbf'.decode('utf-8')`
+ * is `'\ufeff'`, one character, and `utf-8-sig` is the codec that strips it. The validator
+ * above already accepted EF BB BF as an ordinary three-byte sequence, so this module was
+ * checking one thing and returning another: N8 measured a BOM'd checkpoint that CPython
+ * REFUSES (`json.loads` answers `Unexpected UTF-8 BOM (decode using utf-8-sig)`) and that
+ * this port parsed and then WROTE. Every text read in the package now comes through here,
+ * `assets.ts` included, so there is one UTF-8 decode and not two with opposite answers.
  */
 export function pyDecodeUtf8(bytes: Uint8Array): string {
   let i = 0;
@@ -229,7 +246,7 @@ export function pyDecodeUtf8(bytes: Uint8Array): string {
     }
     i += info.length;
   }
-  return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
 }
 
 /**
@@ -648,7 +665,9 @@ export function pyCwd(): string {
  *
  * A symlink LOOP is the one failure that is not swallowed: non-strict `realpath` returns the
  * unresolved path, `Path.resolve` then stats it, gets ELOOP, and raises
- * `RuntimeError("Symlink loop from '<path>'")`. Measured against CPython here.
+ * `RuntimeError("Symlink loop from %r" % e.filename)`. The `%r` is `repr`, not a pair of
+ * apostrophes — the second spelling of the `OSError.__str__` bug N8 found, and fixed the
+ * same way. Measured against CPython here.
  *
  * WINDOWS IS AN APPROXIMATION AND SAYS SO. `ntpath.realpath` goes through
  * `GetFinalPathNameByHandle` and returns forms this cannot reproduce; there this resolves
@@ -664,7 +683,7 @@ export function pyResolve(path: string): string {
   } catch (e) {
     // pathlib's `check_eloop`: only a symlink loop is promoted; every other error is ignored.
     if ((e as NodeFsError)?.code === 'ELOOP') {
-      throw new PyRuntimeError(`Symlink loop from '${(e as NodeFsError).path ?? absolute}'`);
+      throw new PyRuntimeError(`Symlink loop from ${pyRepr((e as NodeFsError).path ?? absolute)}`);
     }
   }
   return absolute;
@@ -851,6 +870,37 @@ export function pyRepr(value: string): string {
     }
   }
   return out + quote;
+}
+
+/**
+ * `repr(float)`.
+ *
+ * CPython formats with `PyOS_double_to_string(v, 'r', 0, Py_DTSF_ADD_DOT_0)`: the shortest
+ * decimal that round-trips, rendered in scientific notation when the decimal point falls at
+ * or left of position -4 or right of position 16, and with a forced `.0` otherwise. JS
+ * agrees on the DIGITS (`toExponential()` with no argument is also shortest-round-trip) and
+ * on nothing else: it switches to scientific at 1e21 and 1e-7, writes `10000000000000000`
+ * where Python writes `1e+16`, and never pads the exponent to two digits.
+ */
+export function pyFloatRepr(x: number): string {
+  if (Number.isNaN(x)) return 'nan';
+  if (x === Infinity) return 'inf';
+  if (x === -Infinity) return '-inf';
+  const negative = x < 0 || Object.is(x, -0);
+  const [mantissa, exponent] = Math.abs(x).toExponential().split('e') as [string, string];
+  const digits = mantissa.replace('.', '');
+  const decpt = Number(exponent) + 1; // digits[0] sits just left of position `decpt`
+  const sign = negative ? '-' : '';
+  if (decpt <= -4 || decpt > 16) {
+    const head = digits.slice(0, 1);
+    const tail = digits.slice(1).replace(/0+$/, '');
+    const e = decpt - 1;
+    const eSign = e < 0 ? '-' : '+';
+    return `${sign}${head}${tail ? `.${tail}` : ''}e${eSign}${String(Math.abs(e)).padStart(2, '0')}`;
+  }
+  if (decpt <= 0) return `${sign}0.${'0'.repeat(-decpt)}${digits}`;
+  if (decpt >= digits.length) return `${sign}${digits}${'0'.repeat(decpt - digits.length)}.0`;
+  return `${sign}${digits.slice(0, decpt)}.${digits.slice(decpt)}`;
 }
 
 /**

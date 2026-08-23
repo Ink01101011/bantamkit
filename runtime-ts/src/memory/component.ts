@@ -35,6 +35,7 @@ import {
   MemoryBudgetExceeded,
   MemoryStore,
   MemoryValidationError,
+  pyHashKey,
   pyText,
 } from './store.js';
 
@@ -208,8 +209,11 @@ export class Memory {
         continue; // a corrupt grant/profile layer must not take down recall
       }
       for (const fact of facts) {
-        if (seen.has(fact.name) || picked.length >= budget) continue;
-        seen.add(fact.name);
+        // `if fact.name in seen` over a Python `set`, which is `hash`/`==` and not `str` —
+        // see `store.pyHashKey` for why a hand-edited numeric name makes the two differ.
+        const key = pyHashKey(fact.name);
+        if (seen.has(key) || picked.length >= budget) continue;
+        seen.add(key);
         picked.push([label, fact]);
       }
     }

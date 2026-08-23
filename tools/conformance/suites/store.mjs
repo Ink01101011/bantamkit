@@ -47,9 +47,6 @@ const unb64 = (s) => Buffer.from(s, 'base64').toString('utf8');
 const TODAY = '2026-08-23';
 const DEFAULT_INDEX_BUDGET = 24_000;
 
-/** Null on both sides stays JSON null; see the same note in `store_ref.py`. */
-const nullable = (v) => (v === null || v === undefined ? null : b64(String(v)));
-
 /**
  * Take the fixture's own root out of every message before comparing.
  *
@@ -170,6 +167,8 @@ const indexText = () => ({ op: 'index_text' });
 
 /** The Node side of one scenario, shaped exactly like `store_ref.py`'s answer. */
 function runNode(store, request) {
+  /** `str(value)` as the PORT spells it — the same function the index line goes through. */
+  const nullable = (v) => (v === null || v === undefined ? null : b64(store.pyText(v)));
   const results = [];
   const encode = (e) => ({ error: { type: e?.name ?? 'Error', message: b64(String(e?.message ?? e)) } });
   let s;
@@ -188,7 +187,7 @@ function runNode(store, request) {
       if (call.op === 'save') {
         const [type, name, description, body, links] = call.args;
         const r = s.save(unb64(type), unb64(name), unb64(description), unb64(body), links.map(unb64));
-        results.push({ status: r.status, name: b64(r.name), similar: r.similar === null ? null : b64(r.similar) });
+        results.push({ status: r.status, name: b64(r.name), similar: nullable(r.similar) });
       } else if (call.op === 'recall') {
         const [query, k, stamp] = call.args;
         results.push(
@@ -197,7 +196,9 @@ function runNode(store, request) {
             description: nullable(f.description),
             type: nullable(f.type),
             body: b64(f.body),
-            links: f.links.map((l) => b64(String(l))),
+            // `str(link)`, not `String(link)`: a null item spells `None` in Python and
+            // `null` in JS, and the port's `pyText` is the one place that decision lives.
+            links: f.links.map((l) => b64(store.pyText(l))),
             last_recalled: nullable(f.last_recalled),
             created: nullable(f.created),
           })),
@@ -213,6 +214,107 @@ function runNode(store, request) {
   }
   return { results };
 }
+
+// ---------------------------------------------------------- frontmatter scalar corpus
+
+/**
+ * THE SHAPES A HAND-EDITED FRONTMATTER CAN RESOLVE TO, and the nine places the store
+ * renders one.
+ *
+ * WHY THIS CORPUS EXISTS. `_facts` puts `yaml.safe_load`'s answer into the `Fact` dataclass
+ * with no type check, so `description: 2026` gives the reference an `int` in a `str` field
+ * — and the reference then keeps working, while this port used to raise
+ * `MemoryValidationError` and refuse `recall`, `save` AND the index rebuild for the whole
+ * store. N8 measured that on 13 of 17 shapes; N10 fixed it, and this is the measurement
+ * that says the fix is Python's answer and not a second guess.
+ *
+ * EACH SCENARIO PUTS ONE SHAPE IN THREE PLACES AT ONCE and then makes the store do
+ * everything it can do with them:
+ *
+ *   `in-name.md`  — the shape is the fact's NAME. Reaches the index line, the token text,
+ *                   the recall tie-break, `SaveResult.similar`, and the FILE PATH: `_stamp`
+ *                   writes to `facts/{name}.md`, so a `name: 7` grows a `facts/7.md` and
+ *                   the tree diff is what proves the two runtimes spell it the same.
+ *   `in-desc.md`  — the shape is the DESCRIPTION. Index line and token text again, plus the
+ *                   duplicate gate, which is scored on `f"{name} {description}"`.
+ *   `in-meta.md`  — the shape is `type`, `created`, `last_recalled` AND the single `links`
+ *                   item. Reaches the index line's `({type})`, both TRUTHINESS tests
+ *                   (`created or _mtime_date(path)`, `links or []`), and `list()` over the
+ *                   links value.
+ *
+ * The call list then reads the index (before any write), recalls with `stamp=true` (which
+ * sends every one of those values back through `yaml.safe_dump` into a file on disk), reads
+ * the index again, and saves over `in-desc` (an UPDATE, so `existing.created` — possibly a
+ * `datetime.date` — is carried into the new Fact and re-emitted). Answers are compared as
+ * JSON and the whole tree byte for byte, so a shape that renders right in the index and
+ * wrong in the file is still a failure.
+ */
+const SCALAR_SHAPES = [
+  // int: every base the constructor branches on, plus the two falsy ones and a value no
+  // JS number can hold.
+  ['int decimal', '7'],
+  ['int four digits', '2026'],
+  ['int hex', '0x1f'],
+  ['int binary', '0b101'],
+  ['int octal by leading zero', '017'],
+  ['int with underscores', '1_000'],
+  ['int sexagesimal', '1:30'],
+  ['int negative zero', '-0'],
+  ['int zero is falsy', '0'],
+  ['int past 2^53', '999999999999999999999999'],
+  // float: `str()` and `safe_dump` DISAGREE on three of these, which is why a Fact field
+  // carries both spellings instead of one number.
+  ['float', '1.5'],
+  ['float integral', '1.0'],
+  ['float exponent', '1.0e+50'],
+  ['float inf', '.inf'],
+  ['float -inf', '-.inf'],
+  ['float nan', '.nan'],
+  ['float sexagesimal', '1:30.5'],
+  ['float zero is falsy', '0.0'],
+  // bool: `True` in a sentence, `true` on disk.
+  ['bool true', 'true'],
+  ['bool no is falsy', 'no'],
+  ['bool off is falsy', 'off'],
+  // timestamp: the shape that made this a job — `created:` unquoted is a `datetime.date`
+  // and it round-trips through `_stamp`.
+  ['date', '2026-08-23'],
+  ['datetime', '2026-08-23 10:00:00'],
+  ['datetime Z', '2026-08-23T10:00:00Z'],
+  ['datetime offset', '2026-08-23T10:00:00-05:30'],
+  ['datetime single-digit fields', '2026-1-2 3:04:05'],
+  ['datetime fraction past microseconds', '2026-08-23 10:00:00.1234567'],
+  ['null tilde', '~'],
+  // A timestamp the RESOLVER accepts and the `datetime` CONSTRUCTOR refuses. CPython raises
+  // `ValueError`, `_facts` catches it, and the text reaches a model inside
+  // `malformed fact file <name>: <text>`. Matched exactly, not ruled.
+  ['date month out of range', '2026-13-45'],
+  ['date day out of range', '2026-02-30'],
+  ['date year zero', '0000-01-01'],
+  ['datetime hour out of range', '2026-08-23 25:00:00'],
+  ['datetime minute out of range', '2026-08-23 10:99:00'],
+  ['datetime tz past 24 hours', '2026-08-23T10:00:00+24:00'],
+];
+
+const scalarFixture = (shape) => ({
+  dirs: ['facts', 'archive'],
+  files: {
+    'facts/in-name.md':
+      `---\nname: ${shape}\ndescription: shared probe token\ntype: project\n` +
+      `created: '2026-08-01'\nlast_recalled: null\nlinks: []\n---\n\nb\n`,
+    'facts/in-desc.md':
+      `---\nname: in-desc\ndescription: ${shape}\ntype: project\n` +
+      `created: '2026-08-01'\nlast_recalled: null\nlinks: []\n---\n\nb\n`,
+    'facts/in-meta.md':
+      `---\nname: in-meta\ndescription: shared probe token\ntype: ${shape}\n` +
+      `created: ${shape}\nlast_recalled: ${shape}\nlinks:\n- ${shape}\n---\n\nb\n`,
+  },
+  mtimes: {
+    'facts/in-name.md': 1755990000,
+    'facts/in-desc.md': 1755990000,
+    'facts/in-meta.md': 1755990000,
+  },
+});
 
 // -------------------------------------------------------------------------- scenarios
 
@@ -378,6 +480,75 @@ function scenarios(ctx, real) {
     ]],
   ];
 
+  for (const [label, shape] of SCALAR_SHAPES) {
+    list.push([
+      `frontmatter scalar: ${label} (${shape})`,
+      scalarFixture(shape),
+      { create: false },
+      [
+        indexText(),
+        recall('shared probe token', 5, true),
+        indexText(),
+        save('project', 'in-desc', 'shared probe token', 'rewritten'),
+      ],
+    ]);
+  }
+
+  // `links` holding a SCALAR rather than a sequence. `list(12)` is a `TypeError` and the
+  // `except (ValueError, KeyError, yaml.YAMLError)` in `_facts` does not catch it, so it
+  // escapes the store as a bare `TypeError` instead of a `malformed fact file` sentence.
+  // The escape route is half the case: a caller catching `MemoryValidationError` sees one
+  // and not the other.
+  list.push([
+    'frontmatter scalar: links is an int, and list() refuses it',
+    {
+      dirs: ['facts', 'archive'],
+      files: {
+        'facts/scalarlinks.md':
+          '---\nname: scalarlinks\ndescription: d\ntype: project\nlinks: 12\n---\n\nb\n',
+      },
+      mtimes: { 'facts/scalarlinks.md': 1755990000 },
+    },
+    { create: false },
+    [indexText()],
+  ]);
+
+  // A null item in `links`: `- ` with nothing after it. `list()` keeps the `None` and
+  // `represent_none` writes it back as `- null`, so the STAMP is where this shows.
+  list.push([
+    'frontmatter scalar: a null links item survives the round trip',
+    {
+      dirs: ['facts', 'archive'],
+      files: {
+        'facts/nulllink.md':
+          '---\nname: nulllink\ndescription: shared probe token\ntype: project\nlinks:\n-\n- a\n---\n\nb\n',
+      },
+      mtimes: { 'facts/nulllink.md': 1755990000 },
+    },
+    { create: false },
+    [recall('shared probe token', 5, true)],
+  ]);
+
+  // THE TIE-BREAK. `sorted(key=lambda p: (-p[0], p[1].name))` compares the NAMES only when
+  // the scores are equal, and Python has no order between an `int` and a `str`. Two facts,
+  // one token each, identical score: whatever Python does here — answer or raise — is what
+  // this port has to do.
+  list.push([
+    'frontmatter scalar: an int name and a str name tie on score',
+    {
+      dirs: ['facts', 'archive'],
+      files: {
+        'facts/num.md':
+          "---\nname: 7\ndescription: shared probe token\ntype: project\ncreated: '2026-08-01'\nlinks: []\n---\n\nb\n",
+        'facts/str.md':
+          "---\nname: seven\ndescription: shared probe token\ntype: project\ncreated: '2026-08-01'\nlinks: []\n---\n\nb\n",
+      },
+      mtimes: { 'facts/num.md': 1755990000, 'facts/str.md': 1755990000 },
+    },
+    { create: false },
+    [recall('shared probe token', 5, false)],
+  ]);
+
   if (real) {
     list.push(
       ['the real store: index_text and the budget', { copyFrom: real }, { create: false }, [indexText()]],
@@ -419,18 +590,77 @@ function scenarios(ctx, real) {
         '`str.__repr__`, which means the Unicode printability table. Both runtimes produce ' +
         'garbage for this file — the ruling is about WHICH garbage, and it is written down ' +
         'here rather than discovered later. THE RULING COVERS THE COLLECTION SHAPES ONLY: a ' +
-        'list, and (measured) a MAP, where Python says `{\'a\': 1}` and JS says `{a: 1}`. It ' +
-        'does NOT cover the plain non-string SCALARS, and N8 measured that they are a ' +
-        'different and worse thing: on `name: 7`, `description: 2026`, `type: true`, ' +
-        '`created: 2026-08-23` and eleven more shapes, Python reads the file and produces a ' +
-        'working index line while this port raises `MemoryValidationError` and refuses ' +
-        'RECALL, SAVE and the index rebuild for the WHOLE STORE. That is not two spellings ' +
-        'of garbage, it is one runtime working and the other refusing on a store they share. ' +
-        'It is a defect awaiting its own unit — see `memory/factfile.ts:257` and N8\'s ' +
-        'clock-out — and it is deliberately NOT ruled here, because a ruling would document ' +
-        'as intentional a thing nobody intended.',
+        'list, and (measured) a MAP, where Python says `{\'a\': 1}` and JS says `{a: 1}`. ' +
+        'The plain non-string SCALARS were once here too, as a defect awaiting a unit; they ' +
+        'are NOT a divergence any more. N10 ported `SafeConstructor`, and the 37 ' +
+        '`frontmatter scalar:` scenarios above compare `name: 7`, `description: 2026`, ' +
+        '`type: true`, `created: 2026-08-23` and 33 more at every place the store renders ' +
+        'one — index line, file path, token text, tie-break, both truthiness tests, and the ' +
+        'bytes `_stamp` writes back — with the whole tree diffed and nothing ruled.',
     ],
   ];
+
+  // The three tags whose ANSWER differs, at the width it was measured and no wider. Each is
+  // one fact file holding one plain scalar; the tree still has to match, so none of these
+  // can hide a byte moving on disk.
+  for (const [label, shape, why] of [
+    [
+      'the merge tag',
+      '<<',
+      'PyYAML has no constructor for `tag:yaml.org,2002:merge` outside a mapping key, and ' +
+        'says so with a `ConstructorError` carrying the source marks and a rendered snippet ' +
+        '— `in "<unicode string>", line 1, column 4:` and a caret under the scalar. Both ' +
+        'runtimes REFUSE and the prefix `malformed fact file <name>: ` is identical; only ' +
+        'the marks differ, and reproducing them is the PyYAML-diagnostics surface this ' +
+        'module already declined for `ScannerError`.',
+    ],
+    [
+      'the value tag',
+      '=',
+      'Same shape as `<<` for `tag:yaml.org,2002:value`, and measured separately rather ' +
+        'than assumed from it — the previous ruling in this file asserted a general case ' +
+        'from one example and N8 found four counter-examples inside it.',
+    ],
+    [
+      'a bare tag indicator, where CPython ANSWERS and this port refuses',
+      '!',
+      'THE ONE WHERE THE ANSWERS GENUINELY PART. `k: !` is not a plain scalar to PyYAML: ' +
+        'the SCANNER reads `!` as a tag property on an empty node, and the empty node ' +
+        'resolves to null — CPython returns `None` and the store keeps working. This codec ' +
+        'has no scanner; `parseFrontmatter` accepts the emitter\'s language and sees a plain ' +
+        'scalar that resolves to `tag:yaml.org,2002:yaml`, so it refuses. Filed on its own ' +
+        'rather than with `&` and `*` because those two also refuse in CPython (an anchor ' +
+        'and an alias, both `ScannerError`) and this one does not. Fixing it means a YAML ' +
+        'SCANNER, which is the surface this module exists to avoid; the cost of the ' +
+        'divergence is one hand-edited file refused where Python read it as an empty value.',
+    ],
+    [
+      'an anchor indicator',
+      '&',
+      '`&` starts an anchor name to PyYAML\'s scanner and the scanner fails on the empty ' +
+        'one: `while scanning an anchor … expected alphabetic or numeric character`. Both ' +
+        'runtimes refuse; only the words differ.',
+    ],
+    [
+      'an alias indicator',
+      '*',
+      '`*` starts an alias, and the same scanner failure. Measured, not inferred from `&`.',
+    ],
+  ]) {
+    ruled.push([
+      `frontmatter scalar: ${label} (${shape})`,
+      {
+        dirs: ['facts', 'archive'],
+        files: {
+          'facts/tagged.md': `---\nname: tagged\ndescription: ${shape}\ntype: project\nlinks: []\n---\n\nb\n`,
+        },
+        mtimes: { 'facts/tagged.md': 1755990000 },
+      },
+      { create: false },
+      [indexText()],
+      why,
+    ]);
+  }
 
   return { list, ruled };
 }
@@ -440,6 +670,7 @@ function scenarios(ctx, real) {
 export async function run(ctx) {
   const store = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'store.js')).href);
   const pyfs = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'pyfs.js')).href);
+  const pyyaml = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'pyyaml.js')).href);
   const cases = [];
   const notes = [];
 
@@ -485,6 +716,61 @@ export async function run(ctx) {
     });
   }
   notes.push(`${list.length} scenarios compared, ${ruled.length} ruled to differ in their answer`);
+
+  // ---------------------------------------------------- the recall tie-break, 50 000 times
+  //
+  // `recall` sorts on `(-score, fact.name)`, and once a name can be something other than a
+  // `str` that sort can RAISE — with a sentence whose two type names depend on which pair
+  // CPython's `listsort` happened to compare first. `Array.prototype.sort`'s comparison
+  // order is unspecified, so the port spells out `count_run` + `binarysort` instead; this is
+  // the case that says the spelling is CPython's and not a plausible-looking one.
+  //
+  // The lists are generated by a seeded LCG so both runtimes see the SAME 50,000 inputs, and
+  // the names travel as frontmatter TEXT so each side constructs its own value the way it
+  // constructs one off disk. Two earlier models are in the ruling at `store.sortScored`;
+  // this case is what refuted them and it re-runs on every conformance run.
+  {
+    const NAMES = [
+      '1', '2', '7.0', 'true', 'a', 'zz', '~', '2026-08-23',
+      '2026-08-23 10:00:00', '2026-08-23T10:00:00Z',
+    ];
+    let seed = 20260823;
+    const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648);
+    const pick = (n) => next() % n;
+    const lists = [];
+    // 30,000 short lists, then 20,000 across the length bands the ruling names — 64 is where
+    // CPython stops sorting one run and starts merging them.
+    const bands = [[2, 14, 30000], [2, 14, 4000], [15, 63, 4000], [64, 64, 4000], [65, 120, 4000], [121, 300, 4000]];
+    for (const [lo, hi, count] of bands) {
+      for (let i = 0; i < count; i += 1) {
+        const n = lo + pick(hi - lo + 1);
+        const spec = [];
+        for (let j = 0; j < n; j += 1) spec.push([pick(3), NAMES[pick(NAMES.length)]]);
+        lists.push(spec);
+      }
+    }
+    const py = ctx.runPython(REF, { op: 'sortnames', lists });
+    const nodeAnswers = lists.map((spec) => {
+      const scored = spec.map(([score, text], i) => ({ score, name: pyyaml.constructPlain(text), i }));
+      try {
+        return { order: store.sortScored(scored).map((x) => x.i) };
+      } catch (e) {
+        return { error: String(e.message) };
+      }
+    });
+    const raised = py.lists.filter((r) => r.error !== undefined).length;
+    cases.push({
+      name: `the recall tie-break over ${lists.length} generated lists (${raised} of them raise)`,
+      kind: 'json',
+      expected: py.lists,
+      actual: nodeAnswers,
+    });
+    notes.push(
+      `tie-break: ${lists.length} generated (score, name) lists, n from 2 to 300; ` +
+        `CPython's sorted raises TypeError on ${raised} of them and the port reproduces the ` +
+        'order or the sentence for every one',
+    );
+  }
 
   // ------------------------------------------------ the live index, rebuilt from scratch
   // The strongest single statement this suite can make: take the index.md that the PYTHON
@@ -549,20 +835,78 @@ export async function run(ctx) {
   let seed = 7;
   const rnd = (n) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
   for (let i = 0; i < 200; i += 1) seqs.push(Array.from({ length: 1 + rnd(8) }, () => rnd(256)));
+  // THE BOM. `EF BB BF` is a well-formed three-byte sequence and CPython's utf-8 codec
+  // decodes it to one U+FEFF — `utf-8-sig` is the codec that strips it. `TextDecoder`
+  // defaults `ignoreBOM` to FALSE, meaning it DROPS it, so this port's own hand-rolled
+  // validator accepted the bytes while the decoder behind it returned a different string.
+  // Measured end to end by N8: CPython REFUSES a BOM'd checkpoint (`json.loads` answers
+  // `Unexpected UTF-8 BOM (decode using utf-8-sig)`) and this port parsed it and WROTE.
+  // An ok/not-ok comparison could never see it, which is why this case compares the TEXT.
+  for (const s of [[0xef, 0xbb, 0xbf], [0xef, 0xbb, 0xbf, 0x61], [0x61, 0xef, 0xbb, 0xbf],
+    [0xef, 0xbb, 0xbf, 0xef, 0xbb, 0xbf], [0xef, 0xbb, 0xbf, 0x7b, 0x7d]]) seqs.push(s);
   const pyDecoded = ctx.runPython(REF, { op: 'decode', seqs }).decoded;
   cases.push({
-    name: `utf-8 strict decode over ${seqs.length} sequences`,
+    name: `utf-8 strict decode over ${seqs.length} sequences, the decoded text included`,
     kind: 'json',
     expected: pyDecoded,
     actual: seqs.map((s) => {
       try {
-        pyfs.pyDecodeUtf8(Uint8Array.from(s));
-        return { ok: true };
+        return { ok: true, text: b64(pyfs.pyDecodeUtf8(Uint8Array.from(s))) };
       } catch (e) {
         return { ok: false, message: e.message };
       }
     }),
   });
+
+  // `%r` IN THE TWO SENTENCES THAT CARRY A PATH. `OSError.__str__` is `[Errno %S] %S: %R`
+  // and pathlib's symlink-loop check is `RuntimeError("Symlink loop from %r")`. Both were
+  // spelled with a hand-written pair of apostrophes, which is the same text for an ordinary
+  // path and a DIFFERENT one for a path holding `'`, a newline or a tab — `pyRepr` switches
+  // to double quotes for the first and escapes the other two. `component.Memory` and
+  // shiftwork's clock-out quote that sentence straight into what a model reads, and `pyRepr`
+  // was already in `pyfs.ts` with no caller. Both sides run real syscalls over the SAME
+  // directory, so the path inside the message is NOT scrubbed here: a message that named the
+  // wrong path would still fail.
+  {
+    const bed = join(ctx.scratch, 'oserror');
+    mkdirSync(bed, { recursive: true });
+    const nasty = ["it's-here.md", 'two\nlines.md', 'a\tb.md', 'plain.md', 'quote"and\'both.md',
+      'back\\slash.md', 'ret\rurn.md', 'thai-ความจำ.md'];
+    const loop = join(bed, "loop's-link");
+    symlinkSync(loop, loop);
+    const specs = [];
+    for (const n of nasty) {
+      specs.push(['unlink', join(bed, n), '']);
+      specs.push(['read', join(bed, n), '']);
+      specs.push(['mkdir', join(bed, 'missing', n), '']);
+      specs.push(['replace', join(bed, n), join(bed, 'missing', n)]);
+    }
+    specs.push(['resolve', loop, '']);
+    const pyMessages = ctx.runPython(REF, {
+      op: 'oserror',
+      cases: specs.map(([k, a, b]) => [k, b64(a), b64(b)]),
+    }).messages;
+    cases.push({
+      name: `str(OSError) and the symlink-loop RuntimeError use %r, over ${specs.length} awkward paths`,
+      kind: 'json',
+      expected: pyMessages,
+      actual: specs.map(([kind, a, b]) => {
+        try {
+          if (kind === 'unlink') pyfs.pyUnlink(a);
+          else if (kind === 'read') pyfs.pyReadText(a);
+          // `os.mkdir`, not `pyMkdirParents`: the reference's is non-recursive and this
+          // case is about `str(OSError)`, so it goes through `asPyOSError` directly.
+          else if (kind === 'mkdir') mkdirSync(a);
+          else if (kind === 'replace') pyfs.pyReplace(a, b);
+          else if (kind === 'resolve') pyfs.pyResolve(a);
+          return { ok: true };
+        } catch (e) {
+          const err = e instanceof pyfs.PyOSError || e.name === 'RuntimeError' ? e : pyfs.asPyOSError(e, a);
+          return { type: err.name, message: b64(err.message) };
+        }
+      }),
+    });
+  }
 
   const texts = ['ABC def 123', 'İstanbul', 'ẞ straße', 'K elvin', 'ΣοφοΣ', 'ı dotless', 'ＡＢＣ',
     'Ångström A123', 'ǅ titlecase', 'ᾼ iota', '🐔 emoji A1', 'АБВ abc', 'tab\tsep', '--- dashes ---',
