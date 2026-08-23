@@ -56,11 +56,32 @@ const INITIALIZED = { jsonrpc: '2.0', method: 'notifications/initialized' };
  * the handlers — measured against the Python server, which answered 8 of 13 requests
  * before the stream ended.
  */
-function session(requests, { args = [], env = {}, cwd = repoRoot } = {}) {
+/**
+ * NO SESSION RUNS IN THE REPOSITORY, AND NO SESSION SEES THE OPERATOR'S HOME.
+ *
+ * `cwd` used to default to `repoRoot` and `HOME` was inherited. With no `--store`, that is
+ * `Memory.layered`, which WALKS UP from the cwd and CREATES a store when the walk finds
+ * none — so these tests were writing a `.bantamkit/memory` somewhere above the checkout and
+ * recalling against whatever they found on the way. MEASURED, run 32644269451: on a runner
+ * with a clean HOME the walk found nothing and left `<repoRoot>/.bantamkit/memory` behind,
+ * with a `facts/` and no `index.md`; the conformance store suite then picked that up as
+ * "the real corpus" and died reading an `index.md` that was never written. On this laptop
+ * the same code binds `~/.bantamkit/memory` instead — the operator's own — and `_stamp`
+ * rewrites a fact file on every recall HIT, so an empty home store is the only reason
+ * nothing was damaged. That is luck, not a boundary.
+ *
+ * Both are now per-session and under the scratch bed. A test that wants the walk to reach
+ * something puts it there itself, the way the layered test below does.
+ */
+function session(requests, { args = [], env = {}, cwd = null } = {}) {
+  const isolated = cwd ?? join(scratch, `cwd${(seq += 1)}`);
+  mkdirSync(isolated, { recursive: true });
+  const fakeHome = join(scratch, 'fakehome');
+  mkdirSync(fakeHome, { recursive: true });
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [CLI, ...args], {
-      cwd,
-      env: { ...process.env, BANTAMKIT_ASSETS: ASSETS, ...env },
+      cwd: isolated,
+      env: { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome, BANTAMKIT_ASSETS: ASSETS, ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     const want = new Set(requests.filter((r) => r.id !== undefined).map((r) => r.id));

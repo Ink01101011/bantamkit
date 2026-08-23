@@ -374,12 +374,44 @@ test('a status outside the unit enum is refused, and the unit status is not left
   rmSync(root, { recursive: true, force: true });
 });
 
-test('an unwritable checkpoint directory refuses AFTER the log line, and says so', () => {
+/**
+ * Put a directory into a state and MEASURE whether the OS honoured it, the way
+ * `withUnlistable` does in test/store.test.mjs. `chmod` is inert on a directory on Windows
+ * and a root uid bypasses the mode bits, so the scenario silently does not exist there —
+ * MEASURED on windows-latest, run 32644269451: the clock-out answered `ok` where this test
+ * wanted `error`, because the write it was supposed to be refused had simply succeeded.
+ * A bare `skipif` would have hidden that; saying it out loud prices what stops being
+ * measured, per RB-P51.
+ */
+function withUnwritable(dir, t) {
+  chmodSync(dir, 0o555);
+  const probe = join(dir, '.probe');
+  try {
+    writeFileSync(probe, 'x');
+    rmSync(probe, { force: true });
+  } catch {
+    return true;
+  }
+  chmodSync(dir, 0o755);
+  t.diagnostic(
+    `NOT MEASURED: this platform wrote into ${dir} at mode 0o555 anyway (Windows, where ` +
+      'chmod is inert on a directory, or a uid that bypasses the mode bits). What goes ' +
+      'unchecked here is the ORDER of the two writes — that the accounting log line is ' +
+      'committed before the checkpoint is attempted, and that the refusal names which of ' +
+      'the two got out. Nothing else in this file reaches that ordering.',
+  );
+  return false;
+}
+
+test('an unwritable checkpoint directory refuses AFTER the log line, and says so', (t) => {
   const root = fresh();
   const inner = join(root, 'ro');
   mkdirSync(inner);
   const path = writeCheckpoint(inner);
-  chmodSync(inner, 0o555);
+  if (!withUnwritable(inner, t)) {
+    rmSync(root, { recursive: true, force: true });
+    return;
+  }
   try {
     const answer = js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, null, { now: 1 }));
     assert.equal(answer.result, 'error');

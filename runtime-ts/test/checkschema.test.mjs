@@ -145,6 +145,28 @@ test('json.loads refuses a BOM and raw_decode does not — the check lives in lo
   );
 });
 
+test('asPyOSError prints CPython\'s errno, not libuv\'s status number', () => {
+  // CONSTRUCTIBLE ON EVERY PLATFORM, which is the point. libuv reuses the platform errno on
+  // POSIX and has its own space on Windows — ENOENT arrives as -4058 there, EISDIR as -4068
+  // — so `Math.abs(err.errno)` is right by accident here and wrong where it matters.
+  // MEASURED on windows-latest, run 32644269451: five nodes reported
+  // `[Errno 4058] No such file or directory` for what CPython prints as `[Errno 2]`.
+  // Feeding the Windows-shaped error object in by hand means the fix has a node that goes
+  // red on this laptop, instead of one only a Windows runner could ever have failed.
+  const win = (code, errno, path) => Object.assign(new Error('x'), { code, errno, path, syscall: 'open' });
+  assert.equal(
+    pyfs.asPyOSError(win('ENOENT', -4058, '/a/x.md')).message,
+    "[Errno 2] No such file or directory: '/a/x.md'",
+  );
+  assert.equal(pyfs.asPyOSError(win('ENOENT', -4058, '/a/x.md')).errno, 2);
+  assert.equal(pyfs.asPyOSError(win('EISDIR', -4068, '/a/d')).errno, 21);
+  assert.equal(pyfs.asPyOSError(win('EACCES', -4092, '/a/d')).errno, 13);
+  // The POSIX shape keeps answering the same, so the fix is not a platform switch.
+  assert.equal(pyfs.asPyOSError(win('ENOENT', -2, '/a/x.md')).errno, 2);
+  // A code the table does not carry keeps the magnitude rather than losing the number.
+  assert.equal(pyfs.asPyOSError(win('EWHAT', -4321, '/a/x.md')).errno, 4321);
+});
+
 test('OSError and the symlink-loop RuntimeError print the path with %r', () => {
   const err = (filename, filename2 = null) =>
     new pyfs.PyOSError(2, 'ENOENT', 'No such file or directory', filename, filename2).message;

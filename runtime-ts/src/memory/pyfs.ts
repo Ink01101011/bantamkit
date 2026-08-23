@@ -50,7 +50,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir, userInfo } from 'node:os';
+import { constants as osConstants, homedir, userInfo } from 'node:os';
 
 // ------------------------------------------------------------------------------ errno
 
@@ -163,6 +163,37 @@ export class PyOSError extends Error {
   }
 }
 
+/**
+ * The number CPython would print, which is NOT the number libuv hands over.
+ *
+ * `err.errno` is a libuv status, and on POSIX libuv reuses the platform's own errno so the
+ * magnitude is right by accident. On Windows it does not: libuv has its own space starting
+ * at -4096, so `ENOENT` arrives as **-4058** and `EISDIR` as **-4068** where CPython prints
+ * `[Errno 2]` and `[Errno 21]`. MEASURED on windows-latest, run 32644269451: five test
+ * nodes reported `[Errno 4058] No such file or directory` for a sentence the reference
+ * renders `[Errno 2] ...`, and that sentence is quoted verbatim into what shiftwork's
+ * clock-out and `component.Memory` put in front of a model.
+ *
+ * `os.constants.errno` is the platform's own `errno.h` table — 2/21/13 on Windows exactly
+ * as on POSIX — so keying on the CODE NAME gives CPython's number on every platform. The
+ * libuv magnitude stays as the fallback for a code the table does not carry, because a
+ * number that is merely wrong beats no number at all in a message a human has to search
+ * for. Cross-checked against the reference by the `oserror` cases in
+ * tools/conformance/suites/store.mjs.
+ *
+ * WHAT THIS DOES NOT FIX, stated so nobody reads a partial fix as a whole one. CPython on
+ * Windows raises OSError with `winerror` SET for the calls that go through the Win32 API,
+ * and `OSError.__str__` then prints `[WinError %d] <the Win32 message>` instead of
+ * `[Errno %d] <the POSIX message>`. MEASURED in the same run: `os.replace` onto a missing
+ * directory is `[WinError 3] The system cannot find the path specified`, where this port
+ * says `No such file or directory`. That is a second, larger defect in the same area — the
+ * whole `STRERROR` table is POSIX wording — and it is registered, not fixed here.
+ */
+function pyErrno(e: NodeFsError | undefined): number {
+  const named = e?.code === undefined ? undefined : (osConstants.errno as Record<string, number | undefined>)[e.code];
+  return named ?? Math.abs(e?.errno ?? 0);
+}
+
 interface NodeFsError extends Error {
   errno?: number;
   code?: string;
@@ -181,7 +212,7 @@ interface NodeFsError extends Error {
 export function asPyOSError(error: unknown, fallbackPath?: string, fallbackDest?: string): PyOSError {
   const e = error as NodeFsError;
   const code = e?.code ?? 'EUNKNOWN';
-  const errno = Math.abs(e?.errno ?? 0);
+  const errno = pyErrno(e);
   const strerror = STRERROR[code] ?? `${code}: ${e?.message ?? 'unknown error'}`;
   return new PyOSError(errno, code, strerror, e?.path ?? fallbackPath ?? null, e?.dest ?? fallbackDest ?? null);
 }

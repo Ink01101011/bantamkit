@@ -99,7 +99,13 @@ function realStore(ctx) {
   } catch {
     /* not a checkout; the other candidates still apply */
   }
-  return candidates.find((c) => existsSync(join(c, 'facts'))) ?? null;
+  // BOTH, not just `facts/`. A store that has a `facts/` and no `index.md` is not a real
+  // corpus, it is a store something created and never wrote — MEASURED, run 32644269451:
+  // the server tests left exactly that at the repository root on a runner (they have since
+  // been isolated), this finder accepted it, and the live-index block below died on an
+  // uncaught ENOENT reading the `index.md` that was never there, taking the whole suite
+  // with it. The fixture this block needs is the pair; asking for the pair is the check.
+  return candidates.find((c) => existsSync(join(c, 'facts')) && existsSync(join(c, 'index.md'))) ?? null;
 }
 
 /** Materialise one fixture spec at `root`. Modes are applied last and by the caller. */
