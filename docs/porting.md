@@ -189,6 +189,10 @@ Surprises worth keeping: `1e+17` is a **`str`**, not a float — PyYAML's float 
 4. `_pinned_store`'s docstring states a false reason.
 5. A `pattern` regex divergence.
 
+**Unmeasured, registered rather than guessed:** `cli.ts`'s `--assets-root` output writes `\n`
+where the reference's text-mode stdout would write `\r\n` on Windows. No case compares the
+two, so this is a suspicion with a location, not a measurement.
+
 ## Concurrency
 
 Measured, not assumed: 12 pipelined saves all land in order; a recall behind a save **sees**

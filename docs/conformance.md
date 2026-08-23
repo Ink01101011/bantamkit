@@ -92,13 +92,13 @@ that may not resolve. CI has no `.venv` at all, so the workflow writes
 ✔ store: 184 cases (96 json, 88 bytes), 0 differed
   note: [store] live index: 13472 bytes on disk, 13472 bytes rebuilt, 65 lines
   ...
-PASS: 4462 cases, 803 byte-identical, 3163 exact-string, 496 structural, 74 ruled-different, 0 failures
+PASS: 4463 cases, 804 byte-identical, 3162 exact-string, 497 structural, 73 ruled-different, 0 failures
 ```
 
 **The notes are part of the result, not decoration.** Several measurements this project
 depends on exist only there — the live index byte count, the corpus SHA on both sides, how
-many emitted files carry PyYAML's 80-column wrap, and the two `NOT MEASURED HERE` items that
-only a Windows runner can settle.
+many emitted files carry PyYAML's 80-column wrap, and the one remaining `NOT MEASURED HERE`
+item that only a Windows runner can settle.
 
 A failure prints both sides in full:
 
@@ -123,7 +123,9 @@ Never point a suite at a store it does not own. A defect in exactly this area de
 ## Platform
 
 The harness runs on ubuntu and Windows in CI. Two results are **Windows-only by
-construction** and are labelled `NOT MEASURED HERE` in the notes when run on macOS or Linux:
+construction**. The first has since been read off a runner, so its note now carries the
+measurement and cites the run; only the second still prints `NOT MEASURED HERE` on macOS or
+Linux:
 
 - **The index-budget arithmetic.** `write_text` translates `\n` to `\r\n` on Windows while
   `_check_index_budget` counts the untranslated text. Measured on the runner as exactly one
