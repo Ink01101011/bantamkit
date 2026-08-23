@@ -569,3 +569,116 @@ def test_the_ambient_pin_guard_puts_back_the_store_a_pin_had_taken(tmp_path, mon
 
     assert MEMORY_DIR_ENV not in os.environ
     assert resolve_project_store(tmp_path / "companyA").path == own
+
+
+# ---------------------------------------------------------------------------
+# J37/W2 DEFERRED: the one shape on which the binding layer and the store layer
+# still give different answers. Marked, not silently skipped.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "DEFERRED to a follow-up on the BINDING layer. `count_facts` maps every "
+        "FileNotFoundError to 0, so a `facts/` that is a dangling symlink counts as an "
+        "empty store, while `MemoryStore._fact_paths` (J37/W1) raises on the same shape "
+        "because it keys 'first run' on os.path.lexists rather than on the errno. J37 "
+        "was chartered on the store layer and this fix belongs in memory/layers.py with "
+        "its own argument for changing count_facts' documented 'absent facts/ is 0 and "
+        "not an error' contract. strict=True so the day it is fixed this node fails as "
+        "XPASS and the mark has to come off, rather than the deferral outliving the defect. "
+        "The mark is UNCONDITIONAL and that is a measurement, not an assumption: this node "
+        "XPASSed on both Windows jobs of run 32619753332 and the reading was NOT that "
+        "Windows is free of the defect. It was that the node was building a different "
+        "shape there -- see `target_is_directory=True` in the body."
+    ),
+)
+def test_a_dangling_facts_symlink_is_unreadable_to_both_layers(tmp_path):
+    """The two layers must not disagree about whether a store can be read.
+
+    MEASURED 2026-08-23, and it reaches a person: with this shape on a read-only GRANT
+    layer, `Memory.recall` skips the layer and `_nothing_to_report` then says "no
+    memories to search: nothing is saved in any layer bound here." The same grant at
+    0o311 correctly says "... could not be read." One unreadable store, two sentences,
+    and the wrong one is the one that tells the operator to stop looking.
+
+    Not a `windows_cannot_construct` mark: the symlink is attempted and the node reports
+    honestly when the platform declines it, the ruling W1 already made for
+    `test_a_root_that_denies_listing_is_unreadable_not_absent`.
+
+    `target_is_directory=True` IS LOAD-BEARING, and it is the only reason this node
+    means the same thing on all four matrix jobs. MEASURED on CI, run 32620573229,
+    because macOS cannot observe it: POSIX symlinks have no type and the flag is
+    ignored, but on Windows the default `Path.symlink_to` builds a FILE reparse point,
+    and `os.scandir` through a dangling one raises NotADirectoryError (errno 20,
+    winerror 267 "The directory name is invalid"). `count_facts` catches only
+    FileNotFoundError, so that shape RAISES, the two layers agree, and this node
+    XPASSed on both Windows jobs of run 32619753332 -- reporting the deferred defect as
+    absent on a platform where it was live the whole time. With the flag Windows builds
+    a DIRECTORY reparse point and scandir raises FileNotFoundError (errno 2, winerror 3
+    ERROR_PATH_NOT_FOUND), `count_facts` returns 0, the binding answers state="empty",
+    and the disagreement this node defers reproduces there exactly as it does here.
+    The shape the flag steers away from is not thereby unmeasured: it is asserted by
+    `test_a_facts_that_is_not_a_directory_is_unreadable_to_both_layers` below.
+    """
+    store = _mkstore(tmp_path / "companyA")
+    try:
+        (store / "facts").symlink_to(tmp_path / "nowhere-at-all", target_is_directory=True)
+    except (OSError, NotImplementedError):  # pragma: no cover - Windows without privilege
+        pytest.skip(
+            "this platform cannot create a symlink without privilege (Windows without "
+            "developer mode), so the dangling-`facts/` shape cannot be constructed and "
+            "this run FAILS TO MEASURE whether the binding layer and the store layer "
+            "agree that such a store is unreadable."
+        )
+
+    with pytest.raises(MemoryValidationError) as e:
+        resolve_project_store(tmp_path / "companyA")
+    assert str(store / "facts") in str(e.value)
+
+
+def test_a_facts_that_is_not_a_directory_is_unreadable_to_both_layers(tmp_path):
+    """The shape where the two layers ALREADY agree -- asserted here, not skipped past.
+
+    An agreement nobody checks is how the defect comes back, and this one came back
+    once already by accident: the deferral above was silently building THIS shape on
+    Windows instead of the one it defers, and the only thing that caught it was
+    `strict=True`.
+
+    A plain file named `facts` is the portable form. `os.scandir` raises
+    NotADirectoryError on both platforms, `count_facts` catches only FileNotFoundError
+    so the raise escapes, and `_count_into_binding` turns it into the
+    MemoryValidationError this node pins -- the same "unreadable is never empty"
+    invariant J37 landed one layer out, arrived at through the errno rather than
+    through a permission bit, which is what makes it reachable on Windows at all.
+    The two POSIX-only `chmod(0o000)` nodes above cannot be.
+
+    The Windows leg asserts STRICTLY MORE, never less: there a *dangling symlink* made
+    the ordinary portable way -- `Path.symlink_to(target)` with no flag, which is what
+    any cross-platform caller writes -- is a FILE reparse point and lands in this same
+    shape (errno 20, winerror 267; MEASURED, run 32620573229). Nothing about that is
+    reachable from POSIX, where a symlink has no type at all.
+    """
+    store = _mkstore(tmp_path / "companyA")
+    (store / "facts").write_text("this is a file, not a directory", encoding="utf-8")
+    with pytest.raises(MemoryValidationError) as e:
+        resolve_project_store(tmp_path / "companyA")
+    assert str(store / "facts") in str(e.value)
+
+    if os.name != "nt":
+        return
+
+    linked = _mkstore(tmp_path / "companyB")  # pragma: no cover - Windows only
+    try:
+        (linked / "facts").symlink_to(tmp_path / "nowhere-at-all")
+    except (OSError, NotImplementedError):
+        pytest.skip(
+            "this platform cannot create a symlink without privilege (Windows without "
+            "developer mode), so the Windows-only route into this shape cannot be built "
+            "and this run does not measure that a dangling FILE symlink is refused by "
+            "the same NotADirectoryError a plain file is."
+        )
+    with pytest.raises(MemoryValidationError) as linked_error:
+        resolve_project_store(tmp_path / "companyB")
+    assert str(linked / "facts") in str(linked_error.value)
