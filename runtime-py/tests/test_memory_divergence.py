@@ -8,6 +8,7 @@ answer is a measurement the operator takes with `compare_stores()`, not a gate.
 from __future__ import annotations
 
 import os
+import re
 import string
 from pathlib import Path
 
@@ -248,7 +249,12 @@ def test_body_comparison_ignores_only_surrounding_whitespace(tmp_path):
     write(b / "w.md", NATIVE_SHAPE, "w", "line one\nline  two")
     diff = compare_stores(a, b).body_differs
     assert [d.name for d in diff] == ["w"]
-    assert diff[0].a_path.endswith("a/facts/w.md") and diff[0].b_path.endswith("b/w.md")
+    # Compared as path COMPONENTS, not as a string suffix. `a_path` is whatever
+    # `str(Path)` gives on this platform, so `endswith("a/facts/w.md")` is a POSIX
+    # assumption -- measured on windows-latest, it is `a\facts\w.md` and the node
+    # failed for a reason that had nothing to do with body comparison.
+    assert Path(diff[0].a_path).parts[-3:] == ("a", "facts", "w.md")
+    assert Path(diff[0].b_path).parts[-2:] == ("b", "w.md")
 
 
 # ---- where the two real roots come from ----
@@ -314,7 +320,11 @@ def test_native_root_slug_replaces_every_non_alphanumeric_character(tmp_path, mo
     slugs contains a character outside `[A-Za-z0-9-]`.
     """
     home = tmp_path / "home"
+    # BOTH, because `Path.home()` reads `USERPROFILE` on Windows and `HOME` elsewhere.
+    # Setting only `HOME` left windows-latest resolving the runner's real home, and the
+    # node failed on a path it never meant to test.
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.delenv("BANTAMKIT_NATIVE_MEMORY", raising=False)
     repo = tmp_path / "a.b" / "c_d"
     (repo / ".git").mkdir(parents=True)
@@ -322,9 +332,16 @@ def test_native_root_slug_replaces_every_non_alphanumeric_character(tmp_path, mo
 
     root = native_store_root(repo)
 
-    slug = str(repo.resolve()).replace("/", "-").replace(".", "-").replace("_", "-")
-    assert root == home / ".claude" / "projects" / slug / "memory"
+    assert root.parent.parent == home / ".claude" / "projects"
+    assert root.name == "memory"
     assert not set(root.parent.name) - set(string.ascii_letters + string.digits + "-")
+    # The property, stated independently of how it is implemented: every run of
+    # alphanumerics in the resolved path survives, in order, and everything between
+    # runs became a separator. Restating the substitution here instead -- three
+    # `.replace` calls over `/`, `.` and `_` -- is what made this node POSIX-only,
+    # because a Windows path also carries `\` and `:`.
+    runs = [r for r in re.split(r"[^A-Za-z0-9]+", str(repo.resolve())) if r]
+    assert [r for r in root.parent.name.split("-") if r] == runs
 
 
 def test_native_root_env_override_wins(tmp_path, monkeypatch):
