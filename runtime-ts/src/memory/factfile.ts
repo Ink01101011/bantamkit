@@ -108,15 +108,21 @@ export function formatFact(fact: Fact): string {
  * sentence the model finally sees is the store's to phrase, not this module's.
  */
 export function parseFactText(text: string): { meta: FactMeta; body: string } {
-  const parts = splitMax(text, '---\n', 2);
+  const parts = pySplit(text, '---\n', 2);
   if (parts.length !== 3) {
     throw new FactParseError(`expected 3 parts from split('---\\n', 2), got ${parts.length}`);
   }
   return { meta: parseFrontmatter(parts[1]!), body: pyStrip(parts[2]!) };
 }
 
-/** `str.split(sep, maxsplit)` — JS's `String.split` has no maxsplit and would over-split. */
-function splitMax(text: string, sep: string, maxsplit: number): string[] {
+/**
+ * `str.split(sep, maxsplit)` — JS's `String.split` has no maxsplit and would over-split.
+ *
+ * Exported because `store._facts` does this split ITSELF in the reference, and needs the
+ * part count to build Python's own `ValueError` text for a truncated file. Two spellings of
+ * one split is how the two would drift.
+ */
+export function pySplit(text: string, sep: string, maxsplit: number): string[] {
   const out: string[] = [];
   let from = 0;
   while (out.length < maxsplit) {
