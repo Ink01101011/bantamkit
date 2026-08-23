@@ -21,6 +21,8 @@ from bantamkit.assets import AssetNotFound, assets_root, load_skill, load_tool_a
 from bantamkit.client import BantamError
 from bantamkit.contract import schema_error, schema_retry_feedback
 from bantamkit.eventlog import EventLog
+from bantamkit.mcpreport import build_report as build_mcp_report
+from bantamkit.mcpreport import resolve_event_log_path
 from bantamkit.memory import DEFAULT_INDEX_BUDGET, Memory
 
 try:
@@ -513,6 +515,27 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="BYTES",
         help=f"memory index byte budget (default: {DEFAULT_INDEX_BUDGET})",
     )
+    # WHY THIS IS A FLAG ON THIS PROCESS AND NOT A NEW ENTRY POINT.
+    # `memory/__main__.py` argues lifecycle needs a stream it owns, because this process
+    # speaks MCP over stdout. True of a RUNNING server; not true of a flag that prints and
+    # returns before any transport exists -- `--assets-root` above is the precedent. And it
+    # is decisive here rather than merely convenient: `runtime-ts/package.json` declares
+    # exactly one bin, `bantamkit-mcp`, so anything hung off `python -m ...` is unreachable
+    # in a pure-npx install, which is the shipped product.
+    #
+    # POSITION IS DELIBERATE AND IT IS NOT BESIDE `-h`. `--assets-root` sits first because
+    # it needs NOTHING; this one honours `--store`/`--start` to find the event log, so it
+    # reads after the flags it consumes. The second reason is measured: the first line of
+    # the wrapped usage is pinned in two places -- this repo's
+    # `test_assets_root_appears_in_the_generated_help_in_the_documented_position` and the
+    # `cli` conformance suite's reference precondition -- and at the 80-column fallback the
+    # line breaks after `[--index-budget BYTES]`. Adding here leaves that line byte-identical;
+    # adding before it would move it and turn a differential suite into a re-baselining one.
+    parser.add_argument(
+        "--mcp-report",
+        action="store_true",
+        help="print an analysis of the host MCP log joined with bantamkit's event log, then exit",
+    )
     stores = parser.add_mutually_exclusive_group()
     stores.add_argument("--store", help="single memory store path (disables layering)")
     stores.add_argument(
@@ -531,6 +554,25 @@ def _build_memory(args: argparse.Namespace) -> Memory:
             raise SystemExit("--store requires a non-empty path")
         return Memory(store=args.store, k=args.k, index_budget=args.index_budget)
     return Memory.layered(start=args.start, k=args.k, index_budget=args.index_budget)
+
+
+def _print_mcp_report(args: argparse.Namespace) -> None:
+    """`--mcp-report`: the joined report on stdout, then return. No transport, no server.
+
+    Same discipline as `_print_assets_root`: written through `sys.stdout.buffer`, because
+    `sys.stdout` is a text stream with newline translation and on Windows `print` would
+    emit CRLF where Node's `process.stdout.write` emits LF.
+
+    NOTHING HERE IS WRITTEN. `mcpreport` opens the host's log read-only, creates no
+    directory under its root, and `resolve_event_log_path` designates a store path without
+    bringing a store into existence. The report is an observation, not a session.
+    """
+    text = build_mcp_report(
+        dict(os.environ),
+        resolve_event_log_path(dict(os.environ), store=args.store, start=args.start),
+    )
+    sys.stdout.buffer.write(text.encode("utf-8"))
+    sys.stdout.buffer.flush()
 
 
 def _print_assets_root() -> None:
@@ -565,6 +607,9 @@ def main() -> None:
     # all -- the Node arm returns from `main` here too, ahead of `new RawStdioTransport()`.
     if args.assets_root:
         _print_assets_root()
+        return
+    if args.mcp_report:
+        _print_mcp_report(args)
         return
     server = build_server(_build_memory(args))
     asyncio.run(server.run_stdio_async())

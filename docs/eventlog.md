@@ -143,7 +143,9 @@ derived field is a second thing to keep true.
   log; see above. `sessionId` would have been the join key, but the server process cannot
   observe it — it is a Claude Code concept and is never sent over the wire. The join is
   `(ts, tool)`: a record's `ts` falls between the host's `Calling MCP tool: <tool>` line
-  and its `completed successfully` line.
+  and its `completed successfully` line. That join is APPROXIMATE and is performed
+  — with its own uncertainty printed — by `bantamkit-mcp --mcp-report`; see
+  [mcpreport.md](mcpreport.md).
 * **any build identity.** `build_id` and `code_digest` fingerprint the executing tree, and
   the two runtimes are two trees — `docs/porting.md`'s divergence table already says so
   about `build_identity`. A digest in a byte-compared record would make the record

@@ -22,7 +22,7 @@ transferred fine. The layer split makes that seam physical
 | **2 — Contract** | everything the model reads or writes: instruction/feedback/evidence wording (data) + outbound parsing (code) | `contract.py` + `assets/contracts/`; rubrics, skills, tool schemas in `assets/` |
 | **3 — Transport** | wire protocol, retries, timeouts, (future) server capability detection | `client.py` |
 | **4 — Policy/Profile** | tunables as named data: turn budgets, retry caps, evidence budgets | `profile.py` + `assets/profiles/` |
-| **5 — Composition** | user-owned recipes: `Agent.use(...)`, eval configs (`lean`/`full` are named compositions), the MCP server | `mcpserver.py`, `eventlog.py` (the MCP event log — a deployment diagnostic, off unless an operator asks for it: [eventlog.md](eventlog.md)), `shiftwork.py` (the shift-work adapter surface — its logic imports no `mcp`, only `mcpserver.py` does), `examples/`, eval config wiring |
+| **5 — Composition** | user-owned recipes: `Agent.use(...)`, eval configs (`lean`/`full` are named compositions), the MCP server | `mcpserver.py`, `eventlog.py` (the MCP event log — a deployment diagnostic, off unless an operator asks for it: [eventlog.md](eventlog.md)), `mcpreport.py` (the read-only analyst over that log and the host's: [mcpreport.md](mcpreport.md)), `shiftwork.py` (the shift-work adapter surface — its logic imports no `mcp`, only `mcpserver.py` does), `examples/`, eval config wiring |
 
 **Measurement** is not a product layer — it is the boundary keeper:
 `evalrun.py` produces the evidence, the claims-transfer table in the eval
