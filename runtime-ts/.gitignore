@@ -4,4 +4,8 @@ dist/
 # pack. Tracking it would be a second copy of 83 files that can silently drift
 # from the one `runtime-py` publishes.
 assets/
+# Vendored by the same script from the repository-root LICENSE. npm cannot reach
+# above the package root, so the file has to be here at pack time; tracking it
+# would be a second copy of the licence that can drift from the real one.
+LICENSE
 *.tgz

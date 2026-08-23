@@ -155,6 +155,38 @@ def test_wheel_from_sdist_carries_the_whole_asset_pack(wheel_from_sdist):
     assert "bantamkit/assets.py" in names
 
 
+# U9. The licence declaration, asserted where it is READ rather than where it is
+# written. `runtime-ts/package.json` declared `"license": "MIT"` against a LICENSE file
+# that did not exist and a `pyproject.toml` that declared nothing; the repository root
+# now carries the text and `pyproject.toml` carries the SPDX expression. Asserting the
+# line in `pyproject.toml` would restate the checkout — the same mistake the module
+# docstring above is about. So both nodes read a real artifact's metadata, which is the
+# only place a consumer or an index ever looks. See the comment on `license` in
+# `runtime-py/pyproject.toml` for why the spelling is the expression and not the old
+# free-text table, and why there is no `license-files`.
+LICENSE_FIELD = "License-Expression: MIT"
+
+
+def test_the_wheel_metadata_declares_the_licence(wheel_from_sdist):
+    assert wheel_from_sdist.artifact is not None, "no wheel was built"
+    with zipfile.ZipFile(wheel_from_sdist.artifact) as zf:
+        name = next(n for n in zf.namelist() if n.endswith(".dist-info/METADATA"))
+        metadata = zf.read(name).decode("utf-8")
+    assert LICENSE_FIELD in metadata.splitlines(), (
+        "the wheel's METADATA does not declare the licence; its License lines are "
+        f"{[ln for ln in metadata.splitlines() if ln.startswith('License')]}"
+    )
+
+
+def test_the_sdist_metadata_declares_the_licence(sdist):
+    """The sdist half. An index reads PKG-INFO, not the wheel, when only an sdist is up."""
+    pkg_info = (sdist["root"] / "PKG-INFO").read_text(encoding="utf-8")
+    assert LICENSE_FIELD in pkg_info.splitlines(), (
+        "the sdist's PKG-INFO does not declare the licence; its License lines are "
+        f"{[ln for ln in pkg_info.splitlines() if ln.startswith('License')]}"
+    )
+
+
 def test_a_build_without_the_pack_fails_rather_than_shipping_short(tmp_path):
     """The other half of the property, and the half the old mechanism got wrong.
 

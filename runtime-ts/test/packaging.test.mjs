@@ -143,3 +143,61 @@ test('a build that cannot locate the asset pack fails instead of succeeding shor
   assert.notEqual(run.status, 0, 'sync-assets exited 0 with no pack to vendor');
   assert.match(run.stderr, /asset pack not found or empty; refusing to build an artifact/);
 });
+
+/**
+ * U9. `package.json` has declared `"license": "MIT"` since it existed, and there was no
+ * LICENSE file anywhere in the repository to back it. There is one now, at the
+ * REPOSITORY root — and npm's documented rule that it always includes `LICENSE`
+ * regardless of `files` does not reach it.
+ *
+ * MEASURED with the file at the repo root and no vendoring step: `npm pack --dry-run
+ * --json` listed 129 files, and the only two outside `dist/` and `assets/` were
+ * `README.md` and `package.json`. npm's rule is about the PACKAGE root, exactly like
+ * hatchling's inability to see `../assets`. `scripts/sync-assets.mjs` vendors it in the
+ * same pass and by the same two rules, which takes the listing to 130.
+ *
+ * This node reads the pack listing rather than the file on disk, because the vendored
+ * copy is gitignored and a test that asserted it exists would be asserting the last
+ * `npm pack` ran, not that the next one ships it.
+ */
+test('the tarball carries the licence text package.json declares', () => {
+  const paths = packListing();
+  assert.ok(
+    paths.includes('LICENSE'),
+    `package.json declares "license": "${JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).license}" ` +
+      'but the tarball carries no LICENSE; a declaration with no text grants nothing',
+  );
+  assert.equal(
+    sha256(join(packageRoot, 'LICENSE')),
+    sha256(join(dirname(packageRoot), 'LICENSE')),
+    'the vendored LICENSE is not byte-identical to the repository-root one',
+  );
+});
+
+/**
+ * U9. The Node half of the version-agreement gate. Its Python twin is
+ * `runtime-py/tests/test_version_agreement.py`, and both exist on purpose: whoever bumps
+ * `package.json` runs `npm test`, whoever bumps `__version__` runs pytest, and a gate
+ * that lives only in the other side's suite is a gate the person making the mistake
+ * never runs.
+ *
+ * `__version__` is authoritative and `package.json` follows — the ruling is in
+ * `docs/release-npm.md` under "Version agreement". Nothing compared these two strings
+ * before this node; the only cross-reference in the repository was prose, and that prose
+ * named a symbol (`runtime_py.__version__`) that does not exist.
+ */
+test('the two version declarations agree', () => {
+  const nodeVersion = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version;
+  const pySource = readFileSync(
+    join(dirname(packageRoot), 'runtime-py', 'src', 'bantamkit', '__init__.py'),
+    'utf8',
+  );
+  const match = /^__version__ = "([^"]+)"$/m.exec(pySource);
+  assert.ok(match, 'no `__version__ = "..."` line in runtime-py/src/bantamkit/__init__.py');
+  assert.equal(
+    nodeVersion,
+    match[1],
+    'the two runtimes declare different versions, so a client reading one cannot tell ' +
+      'which half answered it. `__version__` is authoritative — see docs/release-npm.md.',
+  );
+});

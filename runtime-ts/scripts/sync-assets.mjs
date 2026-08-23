@@ -20,8 +20,17 @@
  * The vendored copy is byte-for-byte (`copyFileSync`), and stale files are deleted
  * first, because `build_identity` hashes every byte of the whole tree — an extra file
  * moves `assets_digest` exactly as surely as a missing one.
+ *
+ * U9, 2026-08-24. THE LICENCE IS THE SAME PROBLEM AND IT IS NOT SOLVED BY npm's RULE.
+ * npm is documented to include `LICENSE` in every tarball regardless of `files`, and
+ * that documentation is true of a `LICENSE` sitting in the PACKAGE root. This repo's
+ * licence sits at the REPOSITORY root, one level up, and MEASURED with the file in
+ * place and no vendoring step: `npm pack --dry-run --json` listed 129 files and the
+ * only two outside `dist/` and `assets/` were `README.md` and `package.json`. npm
+ * cannot reach above the package directory any more than hatchling can. So the licence
+ * is vendored here, by the same two rules and in the same pass.
  */
-import { cpSync, existsSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -55,5 +64,30 @@ if (populated(checkout)) {
   throw new Error(
     'bantamkit asset pack not found or empty; refusing to build an artifact ' +
       `without it. Looked in: ${checkout}, ${vendored}`,
+  );
+}
+
+/**
+ * The licence, by the same two rules. `../LICENSE` is the checkout; a local `LICENSE`
+ * is the already-vendored layout (`npm pack` inside an extracted tarball). Neither
+ * found -> throw, because `package.json` DECLARES `"license": "MIT"` and a tarball that
+ * carries the declaration without the text states a licence it does not grant.
+ */
+const vendoredLicense = join(packageRoot, 'LICENSE');
+const checkoutLicense = join(dirname(packageRoot), 'LICENSE');
+
+function isFile(path) {
+  return existsSync(path) && statSync(path).isFile();
+}
+
+if (isFile(checkoutLicense)) {
+  copyFileSync(checkoutLicense, vendoredLicense);
+  process.stderr.write(`sync-assets: vendored LICENSE from ${checkoutLicense}\n`);
+} else if (isFile(vendoredLicense)) {
+  process.stderr.write(`sync-assets: reusing already-vendored LICENSE at ${vendoredLicense}\n`);
+} else {
+  throw new Error(
+    'bantamkit LICENSE not found; refusing to build a tarball that declares MIT ' +
+      `without carrying its text. Looked in: ${checkoutLicense}, ${vendoredLicense}`,
   );
 }

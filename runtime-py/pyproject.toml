@@ -7,6 +7,31 @@ name = "bantamkit"
 dynamic = ["version"]
 description = "bantamweight tooling — harness primitives that lift small-model agents"
 requires-python = ">=3.11"
+# U9, 2026-08-24. THE SPELLING IS MEASURED, not copied from a changelog. `runtime-ts/
+# package.json` has declared `"license": "MIT"` since it existed, against a `LICENSE`
+# file that did not exist and a Python half that declared nothing at all. This line is
+# the Python half of that declaration; the text now sits at the REPOSITORY root.
+#
+# Two spellings are ACCEPTED by hatchling 1.31.0 and they do not mean the same thing —
+# built and read back out of `bantamkit-0.25.0-py3-none-any.whl`:
+#
+#   license = "MIT"          ->  Metadata-Version: 2.4, `License-Expression: MIT`
+#   license = {text = "MIT"} ->  Metadata-Version: 2.4, `License: MIT`
+#
+# The second is the pre-PEP-639 free-text field, deprecated by that PEP in favour of the
+# SPDX expression. Both build clean, so the build cannot tell you which you meant; only
+# reading the metadata can. The SPDX form is the one kept.
+#
+# NO `license-files` HERE, and this is the trap worth naming: the licence lives one
+# level ABOVE this project root, so the obvious `license-files = ["../LICENSE"]` is what
+# a reader reaches for. hatchling ACCEPTS IT AND BUILDS 0 — and MEASURED, the wheel it
+# produces carries `License-File: ../LICENSE` and a zip member literally named
+# `bantamkit-0.25.0.dist-info/licenses/../LICENSE`, a traversal path that escapes
+# dist-info on unpack. A wrong spelling accepted by the build is exactly the failure
+# mode this comment exists to stop. The expression alone is the declaration; the text is
+# at the repository root, and `tests/test_packaging.py` asserts the expression in both
+# the wheel's METADATA and the sdist's PKG-INFO.
+license = "MIT"
 dependencies = ["httpx>=0.27", "jsonschema>=4.21", "pyyaml>=6.0"]
 
 [project.optional-dependencies]

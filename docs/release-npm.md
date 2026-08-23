@@ -13,10 +13,10 @@ what the package *is*, see [`runtime-ts/README.md`](../runtime-ts/README.md).
 name      bantamkit-mcp
 version   0.25.0
 type      module            (ESM)
-license   MIT
+license   MIT               LICENSE vendored from the repository root at prepack
 engines   node >= 18        measured on 18.20.8, not assumed
 bin       bantamkit-mcp -> dist/cli.js
-files     dist, assets
+files     dist, assets      plus README.md and LICENSE, which npm packs unconditionally
 deps      @modelcontextprotocol/sdk  pinned exactly 1.30.0
 ```
 
@@ -47,6 +47,12 @@ The copy is byte-for-byte and stale files are deleted first, because `build_iden
 every byte of the tree — an extra file moves `assets_digest` exactly as surely as a missing
 one.
 
+The **`LICENSE` has the same problem and the same fix**, in the same script and by the same
+two rules. It is easy to assume otherwise, because npm really does pack `LICENSE`
+unconditionally — but only from the *package* root, and this repository's licence is one
+level above it. Both vendored copies are gitignored: a tracked second copy is a copy that
+drifts.
+
 ## Before you publish
 
 Everything here is verification, and none of it contacts the registry.
@@ -64,8 +70,12 @@ Then check, in order:
       colour: each cell must print a non-zero test count. A step that never ran prints no
       summary at all, and that is what to look for.
 - [ ] **The PR is merged**, so the published version corresponds to a commit on `main`.
-- [ ] **A `LICENSE` file exists.** `package.json` declares MIT; as of this writing the file
-      does not exist, so npm would show a licence with no text in the tarball.
+- [ ] **`LICENSE` is in the tarball.** `package.json` declares MIT and the text now exists,
+      at the **repository** root. npm's documented rule that `LICENSE` is always packed
+      regardless of `files` is about the *package* root and does not reach it — measured:
+      with the file at the repo root and no vendoring step the listing was 129 files and
+      carried no LICENSE. `scripts/sync-assets.mjs` vendors it at `prepack`, which takes the
+      listing to 130, and `test/packaging.test.mjs` asserts it byte-for-byte.
 - [ ] **`version` is the one you mean.** See the version-float question below.
 - [ ] **`npm whoami`** is the account you intend to publish from.
 - [ ] **The name resolves as expected.** `npm view bantamkit-mcp version` — an `E404` means
@@ -87,14 +97,52 @@ cd "$(mktemp -d)"
 npx -y bantamkit-mcp@<version> --help
 ```
 
-## Version float: an open policy question
+## Version agreement
 
-`0.25.0` is currently pinned to match `runtime_py.__version__`, because `build_identity`
-reports that string and a drift would make the instrument lie.
+This was an open question and it is now decided. Read this before you bump anything.
 
-The consequence is that **every Python release forces an npm release**, including ones that
-change no TypeScript. The alternative is independent versioning, which costs the identity of
-that single number. This has not been decided.
+**`runtime-py/src/bantamkit/__init__.py`'s `__version__` is authoritative.
+`runtime-ts/package.json`'s `version` follows it.** They are one number with two
+declarations, never two numbers that happen to match.
+
+*(The paragraph replaced here named the Python declaration `runtime_py.__version__`. There
+is no such symbol and there never was — the module is `bantamkit`, the file is
+`runtime-py/src/bantamkit/__init__.py`. That is the calibre of check prose gets, and the
+reason the rest of this section is a gate rather than a paragraph.)*
+
+**Why one number.** `build_identity` reports a version alongside a digest of the code
+answering, and the whole instrument is worth nothing if that version does not describe that
+code. It has already lied once here: `RB-P45`, an editable `v0.25.0` checkout advertising
+`0.3.0`, because the string was read from the last *install* instead of the checkout. Two
+runtimes sharing one memory store and reporting two different versions is the same defect in
+the other runtime's clothes — a client cannot tell which half it is talking to, and the field
+that was supposed to disambiguate is the one that differs.
+
+**Why Python is the authoritative half.** It is the declaration `pyproject.toml` names as
+its `dynamic` version source, so it is already the single source for the wheel's metadata and
+for what the running MCP server advertises. `package.json`'s copy is a second statement of
+it, and the second statement is the one that follows.
+
+**What it costs.** Every Python release forces an npm release, including ones that change no
+TypeScript. That is the price of the identity, and it is now paid deliberately. Independent
+versioning was the alternative; it was rejected because it buys a few skipped publishes at
+the cost of the one number that says which build you are running.
+
+**When they disagree.** The suite goes red before anything is published — no judgement call,
+no "which one did we mean". Bring `package.json` to `__version__`, not the reverse.
+
+**Who notices.** Two nodes, one in each suite, because whoever bumps `package.json` runs
+`npm test` and whoever bumps `__version__` runs pytest — a gate living only in the other
+side's suite is a gate the person making the mistake never runs:
+
+| runs under | node |
+|---|---|
+| `pytest runtime-py/tests` | `runtime-py/tests/test_version_agreement.py::test_the_two_version_declarations_agree` |
+| `npm test --prefix runtime-ts` | `runtime-ts/test/packaging.test.mjs` → `the two version declarations agree` |
+
+A third node, `test_the_ruling_is_still_written_down`, reads **this section** and fails if it
+stops naming both declarations and the nodes above — so the ruling cannot rot into a comment
+nobody re-derives while the gate it explains stays behind.
 
 ## Things that are not release steps
 
