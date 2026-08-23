@@ -134,6 +134,20 @@ def _python_files() -> list[Path]:
     file whose working copy is gone, so a deletion is a missing path rather than a node
     that quietly stops being collected. The glob is the fallback for an unpacked sdist,
     and that limitation is real -- there, a deleted file is simply not scanned.
+
+    FALLBACK, NOT UNION, and the distinction is the whole point. Taking both arms every
+    time also scans whatever is on disk but outside the index, which is to say build
+    output: `runtime-ts/assets/` is written by `runtime-ts/scripts/sync-assets.mjs`,
+    ignored by `runtime-ts/.gitignore:6`, and is a byte-copy of eleven files already
+    committed at the repository root -- so the union scanned those eleven TWICE, and only
+    on a machine where somebody had run the Node build. A set of test nodes that changes
+    size when you run `npm run sync-assets` is not a gate. Widening `skip` would have
+    hidden this one directory and reopened the hole at the next generated tree, which is
+    why the arm itself goes rather than a name being added to a list.
+
+    `test_the_glob_does_not_add_to_an_answered_git_query` pins the property, and
+    `test_the_glob_is_still_the_fallback_when_git_cannot_answer` pins the sdist promise
+    above, so this cannot quietly delete the fallback along with the bug.
     """
     committed: set[Path] = set()
     try:
@@ -149,13 +163,18 @@ def _python_files() -> list[Path]:
         committed = {REPO_ROOT / line for line in out.split("\0") if line}
     except (OSError, subprocess.SubprocessError):
         pass
+    if committed:
+        return sorted(committed)
+    # Reached only when the query did not answer: git absent, or run outside a work tree,
+    # or listing nothing under REPO_ROOT -- the unpacked sdist. `skip` bounds this walk
+    # (`.venv` here is a symlink into the main checkout, so dropping it would walk that
+    # entire tree); it is a guard on the fallback, never a correctness filter on the gate.
     skip = {".venv", "venv", ".git", "node_modules", "__pycache__", "build", "dist"}
-    on_disk = {
+    return sorted(
         p
         for p in REPO_ROOT.rglob("*.py")
         if not any(part in skip for part in p.relative_to(REPO_ROOT).parts)
-    }
-    return sorted(committed | on_disk)
+    )
 
 
 PYTHON_FILES = _python_files()
@@ -302,3 +321,63 @@ def test_the_pragma_is_used_exactly_once():
         if line.startswith("def test_the_failing_half_actually_bites")
     ]
     assert owner and owner[0] < number, "the pragma is no longer inside the node that needs it"
+
+
+def _repo_with_one_tracked_and_one_ignored_py(root: Path) -> tuple[Path, Path]:
+    """A real git repo at `root`: one tracked `.py`, one `.gitignore`d `.py` beside it.
+
+    `git ls-files` reads the INDEX, not `HEAD`, so `git add` is enough and no commit is
+    made -- this therefore needs no `user.email` on the machine running it.
+    """
+    (root / ".gitignore").write_text("generated/\n", encoding="utf-8")
+    tracked = root / "tracked.py"
+    tracked.write_text("x = 1\n", encoding="utf-8")
+    (root / "generated").mkdir()
+    planted = root / "generated" / "planted.py"
+    planted.write_text("y = 2\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "add", ".gitignore", "tracked.py"], cwd=root, check=True, capture_output=True
+    )
+    return tracked, planted
+
+
+def test_the_glob_does_not_add_to_an_answered_git_query(tmp_path, monkeypatch):
+    """When the git query answers, the scanned set is EXACTLY the committed set.
+
+    The defect this pins was a union rather than a fallback, so `rglob` ran even on the
+    normal invocation where `git ls-files` had already answered completely. What it
+    dragged in was `runtime-ts/assets/`, which `runtime-ts/.gitignore:6` ignores and
+    `runtime-ts/scripts/sync-assets.mjs` writes: eleven files that are byte-copies of
+    committed originals at the repository root, scanned a second time under a second
+    path. The count of collected nodes therefore MOVED depending on whether somebody had
+    run `npm run sync-assets`, and those files are eval fixtures -- a deliberately flawed
+    ledger corpus -- never subjects of this repository's own encoding rule.
+
+    This asserts the property and not the eleven: a node count is a function of repo
+    content, so pinning the number would re-freeze the same brittleness one layer up.
+    """
+    tracked, planted = _repo_with_one_tracked_and_one_ignored_py(tmp_path)
+    monkeypatch.setitem(globals(), "REPO_ROOT", tmp_path)
+    found = _python_files()
+    assert planted.exists(), "the plant did not land; the assertions below would be vacuous"
+    assert planted not in found, (
+        f"{planted.name} is on disk and gitignored, and git answered without it, so the "
+        "glob arm ran when it should not have -- it is a fallback, not a union"
+    )
+    assert found == [tracked], f"expected exactly the committed set, got {found}"
+
+
+def test_the_glob_is_still_the_fallback_when_git_cannot_answer(tmp_path, monkeypatch):
+    """The unpacked-sdist promise the docstring makes, kept.
+
+    No `git init` here, so `git ls-files` exits non-zero and the committed set is empty --
+    exactly the condition of a source tarball with no `.git`. The glob has to answer there
+    or the fix for the union would have quietly deleted the fallback along with the bug.
+    """
+    root = tmp_path / "sdist"
+    root.mkdir()
+    shipped = root / "shipped.py"
+    shipped.write_text("x = 1\n", encoding="utf-8")
+    monkeypatch.setitem(globals(), "REPO_ROOT", root)
+    assert _python_files() == [shipped]
