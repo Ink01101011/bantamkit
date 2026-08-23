@@ -253,7 +253,81 @@ command = "/path/to/.venv/bin/bantamkit-mcp"
 
 Point `command` at the venv where you installed the `[mcp]` extra. The server
 resolves its project store from the client's working directory — run your
-client from the project root, or pass `--start /path/to/project`.
+client from the project root, pass `--start /path/to/project`, or pin the store
+outright as below.
+
+## Which memory store the server binds
+
+This server does not choose its own working directory: the **host** does, and it
+is normally wherever your client session happens to sit. Every rule derived from
+cwd is therefore a rule you do not control, so it is worth saying which store you
+mean.
+
+### What to set
+
+`BANTAMKIT_MEMORY_DIR`, in the launch environment, absolute:
+
+```json
+{
+  "mcpServers": {
+    "bantamkit": {
+      "command": "/path/to/.venv/bin/bantamkit-mcp",
+      "env": { "BANTAMKIT_MEMORY_DIR": "/abs/path/to/project/.bantamkit/memory" }
+    }
+  }
+}
+```
+
+```bash
+claude mcp add bantamkit -e BANTAMKIT_MEMORY_DIR=/abs/path/to/project/.bantamkit/memory \
+  -- /path/to/.venv/bin/bantamkit-mcp
+```
+
+A pin that names nothing, names a file, or is relative **raises at startup**
+rather than quietly binding something else, and the directory is never created
+for you. Full precedence table and failure modes: [Memory](memory.md#pinning-the-store-bantamkit_memory_dir).
+`--store PATH` still outranks it — that flag bypasses store resolution entirely.
+
+### What happens if you set nothing
+
+The server walks up from cwd (or `--start`) and binds the **nearest existing**
+`.bantamkit/memory`. If nothing up the tree has one, it creates
+`<start>/.bantamkit/memory` and that store is empty. Both outcomes are silent,
+and for a project with no store of its own the nearest existing one is very often
+`~/.bantamkit/memory` — a store you may never have put anything in.
+
+### The three states, and what `memory_recall` tells the model
+
+A recall that returns nothing used to say the same sentence in all three cases,
+which asks a person to rephrase a question against a filing cabinet that may not
+exist. The reply now names the situation:
+
+| State | How it arises | A recall with no hits replies |
+|---|---|---|
+| **populated** | the bound store holds facts | `no memories matched. Try different words, or proceed without.` |
+| **empty** | the bound store exists and holds nothing — the walk climbed past your project, the walk stopped in your project's own empty store, or the pin points at a fresh store | `no memories to search: nothing is saved in any layer bound here.` then the store's path, how it was bound (**pinned**, **bound by walking up from** `<start>` — only when the walk really climbed — or `<start>`'s **own** store), and the remedy |
+| **designated** | no `.bantamkit/memory` existed at or above `<start>`, so an empty one was created for this session | `no memories to search: …` then `No memory store existed at or above <start>, so the empty <path> was created for this session.` and the remedy |
+
+The remedy sentence is the same in the last two: *set `BANTAMKIT_MEMORY_DIR` to
+the absolute path of the store your facts are in and restart; otherwise save a
+memory to start this one.*
+
+With one exception, and it is the topology this whole section is about: when the
+store that got bound **is** `~/.bantamkit/memory`, that directory is also the
+**profile layer**, which every project with no store of its own binds as well. A
+memory saved there answers for all of them, so the reply drops the "start this
+one" advice and says to give the project a store of its own instead.
+
+A fourth reply exists for the case where a layer could not be opened at all
+(`facts/` unreadable): *no memories matched, and that is not evidence there are
+none: `<path>` could not be read.* An unreadable store is never reported as an
+empty one — `resolve_project_store` raises on it rather than answering
+`fact_count=0`.
+
+The first state is a fact about your **question**; the other two are facts about
+your **configuration**. The diagnosis is dropped the moment the project store
+holds a fact, so a store you have started using never keeps being described as
+empty.
 
 ## Out of scope, deliberately
 

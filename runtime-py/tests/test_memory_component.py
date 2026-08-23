@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ from bantamkit.agent import Agent
 from bantamkit.assets import assets_root, load_skill, load_tool
 from bantamkit.memory import Memory
 from bantamkit.memory.component import normalize_name
+from bantamkit.memory.layers import MEMORY_DIR_ENV
 from bantamkit.memory.store import MemoryStore, MemoryValidationError
 
 
@@ -614,3 +616,265 @@ def test_batch_isolation_does_not_snapshot_read_only_layers(tmp_path, fake_home)
     )
     Agent(client=client).use(Memory.layered(start=project)).run("t")
     assert "[project] [deploy]" in client.calls[1]["messages"][-1].content
+
+
+# ---- N3: the live topology, rebuilt, and the answer it used to give ------------
+#
+# Read off this machine 2026-08-22 rather than assumed -- three commands, all
+# rerunnable:
+#
+#     lsof -a -p 34377 -d cwd -Fn                     -> .../Projects/trader-platform
+#     ls ~/.bantamkit/memory/facts/ | wc -l           -> 0
+#     ls .../bantamkit/.bantamkit/memory/facts/*.md | wc -l   -> 65
+#
+# A project with no store of its own; an ancestor — the home directory — carrying
+# a store that exists and holds nothing; the operator's actual facts in a SIBLING
+# project the walk never visits. The walk binds the empty ancestor, and until this
+# unit a recall against it returned the same sentence a populated store returns for
+# a question that matches nothing.
+#
+# Nothing below touches any of those real paths. The shape is rebuilt under
+# `tmp_path` with `fake_home`, and every count is read back off the fixture rather
+# than written down: a node whose result depends on the operator's own
+# `~/.bantamkit` means something different on CI, which is the exact way this repo
+# has been burned before.
+
+
+def _trader_platform_shape(fake_home):
+    """project (no store) under a home carrying an EMPTY store, facts in a sibling."""
+    ancestor = fake_home / ".bantamkit" / "memory"
+    (ancestor / "facts").mkdir(parents=True)
+    project = fake_home / "Projects" / "trader-platform"
+    project.mkdir(parents=True)
+    sibling = fake_home / "Projects" / "bantamkit" / ".bantamkit" / "memory"
+    _seed(sibling, "deploy-command", "make ship-prod", description="how we deploy to prod")
+    return project, ancestor, sibling
+
+
+def test_an_empty_ancestor_store_no_longer_answers_like_a_query_that_missed(
+    tmp_path, fake_home
+):
+    project, ancestor, sibling = _trader_platform_shape(fake_home)
+    assert list((ancestor / "facts").glob("*.md")) == []
+    assert len(list((sibling / "facts").glob("*.md"))) == 1
+
+    out = Memory.layered(start=project)._recall("deploy prod")
+
+    # The pre-N1 answer, in full: "no memories matched. Try different words, or
+    # proceed without." Every clause of it was wrong here.
+    assert "Try different words" not in out
+    assert str(ancestor) in out, "the answer must name the cabinet it opened"
+    assert str(project) in out, "and why that cabinet and not another"
+    assert MEMORY_DIR_ENV in out, "and the one lever the operator actually holds"
+
+
+def test_the_pin_the_message_names_is_the_one_that_reaches_the_facts(
+    tmp_path, fake_home, monkeypatch
+):
+    """The remedy in the message is not advice; this runs it."""
+    project, _ancestor, sibling = _trader_platform_shape(fake_home)
+    assert MEMORY_DIR_ENV in Memory.layered(start=project)._recall("deploy prod")
+
+    monkeypatch.setenv(MEMORY_DIR_ENV, str(sibling))
+    assert "make ship-prod" in Memory.layered(start=project)._recall("deploy prod")
+
+
+def test_a_populated_store_that_genuinely_misses_keeps_its_exact_wording(tmp_path, fake_home):
+    """The case that already worked, pinned byte for byte."""
+    project = tmp_path / "companyA"
+    project.mkdir()
+    _seed(project / ".bantamkit" / "memory", "deploy", "make ship-prod")
+
+    out = Memory.layered(start=project)._recall("zzz nothing like this")
+    assert out == "no memories matched. Try different words, or proceed without."
+
+
+def test_a_designated_store_says_none_existed_rather_than_none_matched(tmp_path, fake_home):
+    """Third state: the walk found no store anywhere, so one was created empty."""
+    project = tmp_path / "fresh"
+    project.mkdir()
+
+    out = Memory.layered(start=project)._recall("deploy prod")
+    assert "No memory store existed at or above" in out
+    assert str(project.resolve()) in out
+    assert "walking up from" not in out  # that is the OTHER state's sentence
+
+
+def test_a_pinned_empty_store_blames_the_pin_and_not_the_query(tmp_path, fake_home, monkeypatch):
+    pinned = tmp_path / "elsewhere" / ".bantamkit" / "memory"
+    (pinned / "facts").mkdir(parents=True)
+    monkeypatch.setenv(MEMORY_DIR_ENV, str(pinned))
+
+    out = Memory.layered(start=tmp_path)._recall("deploy prod")
+    assert f"{MEMORY_DIR_ENV} pinned it" in out
+    assert "walking up from" not in out  # no walk ran, so none may be claimed
+
+
+def test_the_three_states_are_three_different_sentences(tmp_path, fake_home):
+    """N1 named three states; a message that collapses two of them is the defect."""
+    populated = tmp_path / "full"
+    populated.mkdir()
+    _seed(populated / ".bantamkit" / "memory", "deploy", "make ship-prod")
+    hollow = tmp_path / "hollow"
+    (hollow / ".bantamkit" / "memory" / "facts").mkdir(parents=True)
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+
+    answers = {
+        Memory.layered(start=start)._recall("zzz nothing like this")
+        for start in (populated, hollow, fresh)
+    }
+    assert len(answers) == 3
+
+
+def test_the_diagnosis_stops_once_the_store_it_named_holds_a_fact(tmp_path, fake_home):
+    """A store that was empty at construction and has been saved to since can answer,
+    and must not keep being described from a binding taken before the save."""
+    project, _ancestor, _sibling = _trader_platform_shape(fake_home)
+    mem = Memory.layered(start=project)
+    assert MEMORY_DIR_ENV in mem._recall("deploy prod")
+
+    mem.save("project", "deploy-command", "how we deploy to prod", "make ship-prod")
+
+    assert (
+        mem._recall("zzz nothing like this")
+        == "no memories matched. Try different words, or proceed without."
+    )
+
+
+def test_a_populated_profile_layer_still_names_the_empty_project_binding(tmp_path, fake_home):
+    """Something really was searched, so the verdict is a true miss — but the store
+    that saves land in is still the wrong one, and the miss must not hide that."""
+    project = tmp_path / "companyA"
+    (project / ".bantamkit" / "memory" / "facts").mkdir(parents=True)
+    _seed(
+        fake_home / ".bantamkit" / "memory",
+        "profile-note",
+        "a profile body",
+        description="an unrelated topic",
+    )
+
+    out = Memory.layered(start=project)._recall("deploy prod")
+    assert out.startswith("no memories matched.")
+    assert str(project / ".bantamkit" / "memory") in out
+    assert MEMORY_DIR_ENV in out
+    # This node was emitting the F2 sentence and asserting nothing about it: the
+    # walk here terminates at step zero, so `no store of its own` was false.
+    assert "which has no store of its own" not in out
+
+
+def test_a_caller_named_store_reports_no_walk_it_never_ran(tmp_path):
+    """`Memory(store=...)` resolved nothing, so it may not narrate a resolution."""
+    out = Memory(store=tmp_path / "mem")._recall("deploy prod")
+    assert str(tmp_path / "mem") in out
+    assert "walking up from" not in out
+    assert "No memory store existed" not in out
+
+
+# ---- N5: the three sentences the message was getting wrong ---------------------
+
+
+def test_a_project_whose_own_store_is_merely_empty_is_not_told_it_has_none(
+    tmp_path, fake_home
+):
+    """F2: the walk clause described an ascent that did not happen.
+
+    The walk terminates at step zero here -- the project's OWN `.bantamkit/memory`
+    is the store it binds -- and the message still said `which has no store of its
+    own`. That sentence sends an operator hunting a binding bug that is not there.
+    """
+    project = tmp_path / "companyA"
+    (project / ".bantamkit" / "memory" / "facts").mkdir(parents=True)
+
+    out = Memory.layered(start=project)._recall("deploy prod")
+
+    assert "which has no store of its own" not in out
+    assert "walking up from" not in out
+    assert str(project / ".bantamkit" / "memory") in out
+    assert MEMORY_DIR_ENV in out
+
+
+def test_a_walk_that_really_ascended_still_narrates_the_ascent(tmp_path, fake_home):
+    """The other half of F2: the clause is not deleted, it is made conditional."""
+    project, ancestor, _sibling = _trader_platform_shape(fake_home)
+
+    out = Memory.layered(start=project)._recall("deploy prod")
+
+    assert "walking up from" in out
+    assert "which has no store of its own" in out
+    assert str(project) in out and str(ancestor) in out
+
+
+def test_the_remedy_never_tells_you_to_seed_the_shared_profile_store(tmp_path, fake_home):
+    """F3: `save a memory to start this one` is harmful when `this one` is shared.
+
+    `Memory.layered` locates the profile layer at `~/.bantamkit/memory`, and the
+    project walk binds that SAME directory whenever a project has no store of its
+    own. Following the old advice there writes a fact that then answers for every
+    unrelated project on the machine.
+    """
+    project, ancestor, _sibling = _trader_platform_shape(fake_home)
+    assert ancestor == fake_home / ".bantamkit" / "memory", "the bound store IS the profile layer"
+
+    out = Memory.layered(start=project)._recall("deploy prod")
+
+    assert "save a memory to start this one" not in out
+    assert "profile layer" in out
+    assert "every project" in out
+
+
+def test_a_store_that_is_this_project_s_alone_still_says_to_start_it(tmp_path, fake_home):
+    """The advice is withdrawn only where it is harmful, never everywhere."""
+    project = tmp_path / "companyA"
+    (project / ".bantamkit" / "memory" / "facts").mkdir(parents=True)
+
+    out = Memory.layered(start=project)._recall("deploy prod")
+
+    assert "save a memory to start this one" in out
+    assert "profile layer" not in out
+
+
+def test_a_save_into_the_bound_store_answers_for_an_unrelated_project(tmp_path, fake_home):
+    """Why F3 is a defect and not a wording quibble: the leak, run rather than argued.
+
+    This is also the tripwire on the deeper defect N4 named and this job does not
+    fix -- the project walk and the profile layer can bind the SAME directory. The
+    day they cannot, this node fails, and the advice withdrawn above can come back.
+    """
+    project_a, ancestor, _sibling = _trader_platform_shape(fake_home)
+    project_b = fake_home / "Projects" / "unrelated"
+    project_b.mkdir(parents=True)
+
+    Memory.layered(start=project_a).save(
+        "project", "leaked-fact", "how we deploy to prod", "make ship-prod"
+    )
+
+    assert (ancestor / "facts" / "leaked-fact.md").exists(), "project A's save landed in $HOME"
+    assert "make ship-prod" in Memory.layered(start=project_b)._recall("deploy prod")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory permissions")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores mode bits")
+def test_a_layer_that_could_not_be_read_is_not_evidence_that_nothing_is_saved(
+    tmp_path, fake_home
+):
+    """F1 at the message: `_fact_count`'s `except OSError` was unreachable.
+
+    `Path.glob` swallowed the error, so an unreadable profile layer counted as zero
+    facts and the recall announced that nothing is saved in any layer bound here --
+    while a fact sat in the layer it could not open.
+    """
+    project = tmp_path / "companyA"
+    (project / ".bantamkit" / "memory" / "facts").mkdir(parents=True)
+    profile_facts = fake_home / ".bantamkit" / "memory" / "facts"
+    profile_facts.mkdir(parents=True)
+    (profile_facts / "a-fact.md").write_text("x", encoding="utf-8")
+    profile_facts.chmod(0o000)
+    try:
+        out = Memory.layered(start=project)._recall("deploy prod")
+    finally:
+        profile_facts.chmod(0o755)
+
+    assert "nothing is saved in any layer bound here" not in out
+    assert "could not be read" in out
+    assert str(profile_facts.parent) in out

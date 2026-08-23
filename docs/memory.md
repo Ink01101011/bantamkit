@@ -316,6 +316,91 @@ The ancestor chain is resolved, but the returned store path is **not** resolved
 further: a symlinked store keeps its config beside the symlink, not beside the
 symlink's target. Grant paths, by contrast, are fully resolved.
 
+### Pinning the store: `BANTAMKIT_MEMORY_DIR`
+
+Discovery starts from cwd, and under an MCP host cwd is chosen by the **host**,
+not by you: the server is spawned from whatever directory the session happens to
+sit in. So every rule derived from cwd is a rule you cannot control, and the walk
+can silently climb past a project with no store of its own and bind to an empty
+`~/.bantamkit/memory` — a recall against which returns the same nothing a
+populated store returns for a question that matches nothing.
+
+Set `BANTAMKIT_MEMORY_DIR` in the launch environment to name the store outright:
+
+```json
+{
+  "command": "bantamkit-mcp",
+  "env": { "BANTAMKIT_MEMORY_DIR": "/abs/path/to/project/.bantamkit/memory" }
+}
+```
+
+Precedence, highest first:
+
+1. `BANTAMKIT_MEMORY_DIR`, when set to a non-blank value.
+2. The nearest existing `.bantamkit/memory` at or above `start`.
+3. The designated (uncreated) `<start>/.bantamkit/memory`.
+
+A pin is only ever the store it names. It is never combined with the walk, and
+the walk can never override it. Failure modes, all raised as
+`MemoryValidationError` at **construction** — `Memory.layered()` — rather than at
+the first recall that mysteriously returns nothing:
+
+| pin value | result |
+|---|---|
+| unset, `""`, or whitespace | not a pin; the walk runs exactly as before |
+| an existing directory holding facts | bound, `state="populated"` |
+| an existing directory holding none | bound, `state="empty"` — a legitimate first run, not an error |
+| a path that does not exist | **raises**; the directory is *not* created |
+| a path that exists but is not a directory | **raises** |
+| a path you lack permission to stat | **raises**, and says so — it does not report your store as a typo |
+| a relative path | **raises**; a pin resolved against cwd depends on the thing the pin exists to override |
+
+`~` is expanded, because MCP hosts pass `env` verbatim with no shell to expand it.
+The pinned path is **not** symlink-resolved, matching the walk: a pinned symlink
+keeps its `config.yaml` beside the symlink.
+
+`resolve_project_store()` reports which route was taken: `origin` is `"pin"` or
+`"walk"`, and `searched_from` is `None` under a pin, because no walk ran.
+
+### What an empty recall says
+
+`Memory.recall` used to answer every empty result with `no memories matched. Try
+different words, or proceed without.` — true of a populated store that missed,
+and misleading in the two cases where nothing was searched at all. It now splits:
+
+| Situation | Reply |
+|---|---|
+| some layer holds facts, none matched | `no memories matched. Try different words, or proceed without.` — unchanged, byte for byte |
+| every layer bound here is empty | `no memories to search: nothing is saved in any layer bound here.` |
+| every layer is empty or unopenable, and at least one was unopenable | `no memories matched, and that is not evidence there are none: <path> could not be read.` |
+
+and, whenever the **project** layer itself holds nothing, the reply also names
+that store, how it came to be bound (`BANTAMKIT_MEMORY_DIR pinned it`; `bound by
+walking up from <start>, which has no store of its own`; `it is <start>'s own
+store, bound without the walk leaving that directory`; or `No memory store
+existed at or above <start>, so the empty <path> was created for this session`),
+and the remedy. That last one is the `designated` state, and it is reported from
+the binding rather than from disk because constructing the store creates the
+directory — a designated store and a store found empty are indistinguishable a
+moment later.
+
+The walk clause and the own-store clause are two sentences because the walk can
+terminate at step zero: a project whose own `.bantamkit/memory` merely holds
+nothing must not be told it has no store of its own, which is the sentence that
+sends someone hunting a binding bug that is not there.
+
+The remedy normally ends `otherwise save a memory to start this one`. It does not
+when the bound store is `~/.bantamkit/memory`, because `Memory.layered` also
+appends that directory as the **profile** layer: a memory saved there answers for
+every project on the machine with no store of its own. The reply then says to give
+the project a store of its own instead. The underlying defect — that the project
+walk and the profile layer can bind the same directory — is not fixed here, and
+`test_a_save_into_the_bound_store_answers_for_an_unrelated_project` is the
+tripwire that fails on the day it is.
+
+The diagnosis stops as soon as the project store holds a fact, so a store you
+have started using is never described as empty from a stale binding.
+
 ### Grants
 
 Extra stores are opt-in per project and declared in a `config.yaml` sitting
