@@ -125,6 +125,7 @@ ship as an [MCP server](docs/mcp.md).
 - [MCP](docs/mcp.md) — `bantamkit-mcp`: memory + validation for external agents (Claude Code, Codex, any MCP client)
 - [Event log](docs/eventlog.md) — the JSONL record of the outcomes the MCP host cannot see: the shape, the vocabulary, where the file lives and why, the 1 MiB cap
 - [MCP report](docs/mcpreport.md) — `bantamkit-mcp --mcp-report`: the host's MCP log joined with the event log, and why the join reports its own uncertainty instead of guessing a session
+- [Status line](docs/statusline.md) — `bantamkit-mcp --statusline` and the Claude Code `statusLine` adapter: the one surface that renders without anyone asking, its three states, and why it reads the event log rather than the host's
 - [Shift-work](docs/shiftwork.md) — checkpoint contract + driver for clock-in/clock-out session cycling (experimental)
 - [Porting](docs/porting.md) — the Node port: what was hand-ported from CPython and why, `PyScalar`, the syscall seam, where the two runtimes deliberately differ
 - [Conformance](docs/conformance.md) — the two-runtime diff harness: the seven suites, the four kinds of case, and why a `ruling:` pins the wording and not the outcome

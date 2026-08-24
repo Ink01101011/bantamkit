@@ -55,6 +55,7 @@ import {
   parseArgs as parseWithSpec,
   type ParserSpec,
 } from './pyargparse.js';
+import { statusLine } from './statusline.js';
 
 /** `SystemExit("...")`: the message on stderr, exit 1. */
 class Refusal extends Error {}
@@ -132,6 +133,19 @@ const PARSER: ParserSpec = {
       help: "print an analysis of the host MCP log joined with bantamkit's event log, then exit",
       defaultValue: false,
     },
+    // THE SAME THREE ARGUMENTS AS `--mcp-report`, and the same place for the same reason:
+    // it prints and returns before a transport exists; the single bin this package declares
+    // makes a flag the ONLY reachable surface in the shipped npx install, which is what a
+    // Claude Code `statusLine` registration has to name; and it honours `--store`/`--start`
+    // to find the event log, so it belongs after the flags it consumes. Registering it here
+    // leaves the FIRST line of the 80-column usage -- the pinned one -- byte-identical.
+    {
+      optionStrings: ['--statusline'],
+      dest: 'statusline',
+      kind: 'storeTrue',
+      help: 'print one status line for a host status bar, then exit',
+      defaultValue: false,
+    },
     {
       optionStrings: ['--store'],
       dest: 'store',
@@ -147,7 +161,7 @@ const PARSER: ParserSpec = {
       defaultValue: null,
     },
   ],
-  groups: [[5, 6]],
+  groups: [[6, 7]],
 };
 
 /**
@@ -170,6 +184,7 @@ export interface Options {
   start: string | null;
   assetsRoot: boolean;
   mcpReport: boolean;
+  statusline: boolean;
 }
 
 /** `_parse_args`, arm for arm, including the mutually exclusive group and `-h`. */
@@ -182,6 +197,7 @@ export function parseArgs(argv: readonly string[]): Options {
     start: values['start'] as string | null,
     assetsRoot: values['assets_root'] as boolean,
     mcpReport: values['mcp_report'] as boolean,
+    statusline: values['statusline'] as boolean,
   };
 }
 
@@ -231,6 +247,15 @@ async function main(argv: readonly string[]): Promise<number> {
     process.stdout.write(
       buildReport(process.env, resolveEventLogPath(process.env, options.store, options.start)),
     );
+    return 0;
+  }
+  if (options.statusline) {
+    // Same discipline and the same place as `--mcp-report`: before `buildMemory`, before a
+    // transport exists, and nothing is written anywhere. `statusLine` is TOTAL -- there is
+    // no failure arm to print here, which is the whole property this surface exists to
+    // hold. `process.stdout.write` of a UTF-8 string is LF on every platform, which is
+    // what the reference goes through `sys.stdout.buffer` to get.
+    process.stdout.write(`${statusLine(process.env, options.store, options.start)}\n`);
     return 0;
   }
   const memory = buildMemory(options);

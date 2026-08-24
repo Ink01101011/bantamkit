@@ -25,6 +25,7 @@ from bantamkit.eventlog import EventLog
 from bantamkit.mcpreport import build_report as build_mcp_report
 from bantamkit.mcpreport import resolve_event_log_path
 from bantamkit.memory import DEFAULT_INDEX_BUDGET, Memory
+from bantamkit.statusline import status_line
 
 try:
     from mcp.server import MCPServer
@@ -952,6 +953,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="print an analysis of the host MCP log joined with bantamkit's event log, then exit",
     )
+    # THE SAME THREE ARGUMENTS AS `--mcp-report`, and the same place for the same reason.
+    # It prints and returns before a transport exists; the single Node bin makes a flag the
+    # only reachable surface in the shipped npx install, which is what a `statusLine`
+    # registration has to name; and it honours `--store`/`--start` to find the event log, so
+    # it belongs after the flags it consumes and before the store group. Registering it here
+    # leaves the FIRST line of the 80-column usage -- the pinned one -- byte-identical and
+    # grows only the second.
+    parser.add_argument(
+        "--statusline",
+        action="store_true",
+        help="print one status line for a host status bar, then exit",
+    )
     stores = parser.add_mutually_exclusive_group()
     stores.add_argument("--store", help="single memory store path (disables layering)")
     stores.add_argument(
@@ -991,6 +1004,24 @@ def _print_mcp_report(args: argparse.Namespace) -> None:
     sys.stdout.buffer.flush()
 
 
+def _print_status_line(args: argparse.Namespace) -> None:
+    """`--statusline`: exactly one line on stdout, then return. Never stderr, never a raise.
+
+    Written through `sys.stdout.buffer` for the same two reasons `_print_mcp_report` is:
+    `print` would emit CRLF on Windows where Node emits LF and the conformance suite
+    compares these bytes, and the line carries U+1F7E2 / U+1F7E0 / U+26AA, which a Windows
+    console's default code page cannot encode -- `sys.stdout` would raise
+    `UnicodeEncodeError` where this writes UTF-8.
+
+    `status_line` is total, so there is no failure arm here to write. That is the point of
+    the surface: this runs on a host's redraw path with nobody watching, and a traceback
+    where a status bar should be is the one output it may not produce.
+    """
+    text = status_line(dict(os.environ), store=args.store, start=args.start)
+    sys.stdout.buffer.write(f"{text}\n".encode())
+    sys.stdout.buffer.flush()
+
+
 def _print_assets_root() -> None:
     """`--assets-root`: two lines on stdout, then return -- no store, no transport, no server.
 
@@ -1026,6 +1057,9 @@ def main() -> None:
         return
     if args.mcp_report:
         _print_mcp_report(args)
+        return
+    if args.statusline:
+        _print_status_line(args)
         return
     server = build_server(_build_memory(args))
     asyncio.run(server.run_stdio_async())

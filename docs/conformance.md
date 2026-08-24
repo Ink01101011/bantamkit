@@ -24,21 +24,26 @@ two sources and agreed they match — which is the check that has never once cau
 difference that mattered. Every defect this job found in the port was found by running both
 sides, not by reading either.
 
-## The seven suites
+## The nine suites
 
 | suite | what it compares |
 |---|---|
 | `cli` | the `bantamkit-mcp` command line as a process: stdout, stderr, exit code |
 | `codec` | fact-file frontmatter: emit byte-identically, and parse each other |
+| `mcpreport` | `--mcp-report` as a process, over one synthetic host-log/event-log pair |
 | `recall-strings` | the binding layer: every sentence an empty recall can produce |
 | `shiftwork` | the checkpoint writer: `ensure_ascii`, `sort_keys`, separators, `5.0` |
+| `statusline` | `--statusline` as a process, over synthetic event logs ([statusline.md](statusline.md)) |
 | `store` | save/recall/index: the directory after the call, byte for byte |
 | `validate` | the validator: every sentence a schema failure can produce |
 | `wire` | the MCP surface: eight tools, one prompt, two templates, and the frames themselves |
 
-`cli` is the odd one out and deliberately so: every other suite compares two library
-functions, and that comparison cannot see which stream a message lands on or what the
-process exits with. `cli` spawns both CLIs and diffs the three things only a process has.
+`cli`, `mcpreport` and `statusline` are the odd ones out and deliberately so: every other
+suite compares two library functions, and that comparison cannot see which stream a message
+lands on or what the process exits with. Those three spawn both CLIs and diff the three
+things only a process has. `mcpreport` and `statusline` reuse `ref/cli_ref.py` rather than
+adding a second reference script — it already is "spawn the CLI with this argv and hand back
+both streams", which is their question with a different argv.
 
 Suites are discovered by **directory listing**, not by a registry someone has to remember to
 edit. Drop a module in `suites/` and it runs.

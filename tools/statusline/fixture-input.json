@@ -1,0 +1,8 @@
+{
+  "hook_event_name": "Status",
+  "session_id": "00000000-0000-4000-8000-000000000000",
+  "cwd": "/Users/x/proj",
+  "model": { "id": "claude-opus-5", "display_name": "Opus" },
+  "workspace": { "current_dir": "/Users/x/proj", "project_dir": "/Users/x/proj" },
+  "leaked_sentinel": "/Users/x/secret/PLEASE-DO-NOT-RENDER-THIS.json"
+}

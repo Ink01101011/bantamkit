@@ -47,69 +47,227 @@ function run(argv, columns) {
 
 /** `parser.print_usage(sys.stderr)` at the no-tty fallback width of 80. Measured. */
 const USAGE_80 =
-  'usage: bantamkit-mcp [-h] [--assets-root] [--k K] [--index-budget BYTES]\n' +
-  '                     [--mcp-report] [--store STORE | --start START]\n';
+  "usage: bantamkit-mcp [-h] [--assets-root] [--k K] [--index-budget BYTES]\n" +
+  "                     [--mcp-report] [--statusline]\n" +
+  "                     [--store STORE | --start START]\n";
 
 const HELP = new Map([
   [
     15,
-    'usage: bantamkit-mcp\n       [-h]\n       [--assets-root]\n       [--k K]\n' +
-      '       [--index-budget BYTES]\n       [--mcp-report]\n       [--store STORE | --start START]\n\n' +
-      'bantamkit MCP\nserver\n(stdio): per-\nperson memory\n' +
-      '+ JSON\nvalidation.\n\noptions:\n' +
-      '  -h, --help\n    show this\n    help\n    message and\n' +
-      '    exit\n  --assets-root\n    print the\n    resolved\n' +
-      '    asset pack\n    root and\n    its file\n    count, then\n' +
-      '    exit\n  --k K\n    default\n    recall\n' +
-      '    budget\n    (default:\n    3)\n  --index-budget BYTES\n' +
-      '    memory\n    index byte\n    budget\n    (default:\n' +
-      '    24000)\n  --mcp-report\n    print an\n    analysis of\n' +
-      "    the host\n    MCP log\n    joined with\n    bantamkit's\n" +
-      '    event log,\n    then exit\n  --store STORE\n    single\n' +
-      '    memory\n    store path\n    (disables\n    layering)\n' +
-      '  --start START\n    directory\n    to start\n    project-\n' +
-      '    store\n    discovery\n    from\n    (default:\n' +
-      '    cwd)\n',
+    "usage: bantamkit-mcp\n" +
+    "       [-h]\n" +
+    "       [--assets-root]\n" +
+    "       [--k K]\n" +
+    "       [--index-budget BYTES]\n" +
+    "       [--mcp-report]\n" +
+    "       [--statusline]\n" +
+    "       [--store STORE | --start START]\n" +
+    "\n" +
+    "bantamkit MCP\n" +
+    "server\n" +
+    "(stdio): per-\n" +
+    "person memory\n" +
+    "+ JSON\n" +
+    "validation.\n" +
+    "\n" +
+    "options:\n" +
+    "  -h, --help\n" +
+    "    show this\n" +
+    "    help\n" +
+    "    message and\n" +
+    "    exit\n" +
+    "  --assets-root\n" +
+    "    print the\n" +
+    "    resolved\n" +
+    "    asset pack\n" +
+    "    root and\n" +
+    "    its file\n" +
+    "    count, then\n" +
+    "    exit\n" +
+    "  --k K\n" +
+    "    default\n" +
+    "    recall\n" +
+    "    budget\n" +
+    "    (default:\n" +
+    "    3)\n" +
+    "  --index-budget BYTES\n" +
+    "    memory\n" +
+    "    index byte\n" +
+    "    budget\n" +
+    "    (default:\n" +
+    "    24000)\n" +
+    "  --mcp-report\n" +
+    "    print an\n" +
+    "    analysis of\n" +
+    "    the host\n" +
+    "    MCP log\n" +
+    "    joined with\n" +
+    "    bantamkit's\n" +
+    "    event log,\n" +
+    "    then exit\n" +
+    "  --statusline\n" +
+    "    print one\n" +
+    "    status line\n" +
+    "    for a host\n" +
+    "    status bar,\n" +
+    "    then exit\n" +
+    "  --store STORE\n" +
+    "    single\n" +
+    "    memory\n" +
+    "    store path\n" +
+    "    (disables\n" +
+    "    layering)\n" +
+    "  --start START\n" +
+    "    directory\n" +
+    "    to start\n" +
+    "    project-\n" +
+    "    store\n" +
+    "    discovery\n" +
+    "    from\n" +
+    "    (default:\n" +
+    "    cwd)\n",
   ],
   [
     20,
-    'usage: bantamkit-mcp\n       [-h]\n       [--assets-root]\n       [--k K]\n' +
-      '       [--index-budget BYTES]\n       [--mcp-report]\n       [--store STORE | --start START]\n\n' +
-      'bantamkit MCP\nserver (stdio):\nper-person memory\n+ JSON validation.\n' +
-      '\noptions:\n  -h, --help\n    show this help\n' +
-      '    message and\n    exit\n  --assets-root\n    print the\n' +
-      '    resolved asset\n    pack root and\n    its file\n    count, then\n' +
-      '    exit\n  --k K\n    default recall\n    budget\n' +
-      '    (default: 3)\n  --index-budget BYTES\n    memory index\n    byte budget\n' +
-      '    (default:\n    24000)\n  --mcp-report\n    print an\n' +
-      '    analysis of\n    the host MCP\n    log joined\n    with\n' +
-      "    bantamkit's\n    event log,\n    then exit\n  --store STORE\n" +
-      '    single memory\n    store path\n    (disables\n    layering)\n' +
-      '  --start START\n    directory to\n    start project-\n    store\n' +
-      '    discovery from\n    (default: cwd)\n',
+    "usage: bantamkit-mcp\n" +
+    "       [-h]\n" +
+    "       [--assets-root]\n" +
+    "       [--k K]\n" +
+    "       [--index-budget BYTES]\n" +
+    "       [--mcp-report]\n" +
+    "       [--statusline]\n" +
+    "       [--store STORE | --start START]\n" +
+    "\n" +
+    "bantamkit MCP\n" +
+    "server (stdio):\n" +
+    "per-person memory\n" +
+    "+ JSON validation.\n" +
+    "\n" +
+    "options:\n" +
+    "  -h, --help\n" +
+    "    show this help\n" +
+    "    message and\n" +
+    "    exit\n" +
+    "  --assets-root\n" +
+    "    print the\n" +
+    "    resolved asset\n" +
+    "    pack root and\n" +
+    "    its file\n" +
+    "    count, then\n" +
+    "    exit\n" +
+    "  --k K\n" +
+    "    default recall\n" +
+    "    budget\n" +
+    "    (default: 3)\n" +
+    "  --index-budget BYTES\n" +
+    "    memory index\n" +
+    "    byte budget\n" +
+    "    (default:\n" +
+    "    24000)\n" +
+    "  --mcp-report\n" +
+    "    print an\n" +
+    "    analysis of\n" +
+    "    the host MCP\n" +
+    "    log joined\n" +
+    "    with\n" +
+    "    bantamkit's\n" +
+    "    event log,\n" +
+    "    then exit\n" +
+    "  --statusline\n" +
+    "    print one\n" +
+    "    status line\n" +
+    "    for a host\n" +
+    "    status bar,\n" +
+    "    then exit\n" +
+    "  --store STORE\n" +
+    "    single memory\n" +
+    "    store path\n" +
+    "    (disables\n" +
+    "    layering)\n" +
+    "  --start START\n" +
+    "    directory to\n" +
+    "    start project-\n" +
+    "    store\n" +
+    "    discovery from\n" +
+    "    (default: cwd)\n",
   ],
   [
     38,
-    'usage: bantamkit-mcp [-h]\n                     [--assets-root]\n                     [--k K]\n                     [--index-budget BYTES]\n' +
-      '                     [--mcp-report]\n                     [--store STORE | --start START]\n\nbantamkit MCP server (stdio): per-\n' +
-      'person memory + JSON validation.\n\noptions:\n  -h, --help    show this help\n' +
-      '                message and exit\n  --assets-root\n                print the resolved\n                asset pack root and\n' +
-      '                its file count, then\n                exit\n  --k K         default recall\n                budget (default: 3)\n' +
-      '  --index-budget BYTES\n                memory index byte\n                budget (default:\n                24000)\n' +
-      "  --mcp-report  print an analysis of\n                the host MCP log\n                joined with\n                bantamkit's event\n" +
-      '                log, then exit\n  --store STORE\n                single memory store\n                path (disables\n' +
-      '                layering)\n  --start START\n                directory to start\n                project-store\n' +
-      '                discovery from\n                (default: cwd)\n',
+    "usage: bantamkit-mcp [-h]\n" +
+    "                     [--assets-root]\n" +
+    "                     [--k K]\n" +
+    "                     [--index-budget BYTES]\n" +
+    "                     [--mcp-report]\n" +
+    "                     [--statusline]\n" +
+    "                     [--store STORE | --start START]\n" +
+    "\n" +
+    "bantamkit MCP server (stdio): per-\n" +
+    "person memory + JSON validation.\n" +
+    "\n" +
+    "options:\n" +
+    "  -h, --help    show this help\n" +
+    "                message and exit\n" +
+    "  --assets-root\n" +
+    "                print the resolved\n" +
+    "                asset pack root and\n" +
+    "                its file count, then\n" +
+    "                exit\n" +
+    "  --k K         default recall\n" +
+    "                budget (default: 3)\n" +
+    "  --index-budget BYTES\n" +
+    "                memory index byte\n" +
+    "                budget (default:\n" +
+    "                24000)\n" +
+    "  --mcp-report  print an analysis of\n" +
+    "                the host MCP log\n" +
+    "                joined with\n" +
+    "                bantamkit's event\n" +
+    "                log, then exit\n" +
+    "  --statusline  print one status\n" +
+    "                line for a host\n" +
+    "                status bar, then\n" +
+    "                exit\n" +
+    "  --store STORE\n" +
+    "                single memory store\n" +
+    "                path (disables\n" +
+    "                layering)\n" +
+    "  --start START\n" +
+    "                directory to start\n" +
+    "                project-store\n" +
+    "                discovery from\n" +
+    "                (default: cwd)\n",
   ],
   [
     55,
-    'usage: bantamkit-mcp [-h] [--assets-root] [--k K]\n                     [--index-budget BYTES]\n                     [--mcp-report]\n                     [--store STORE | --start START]\n' +
-      '\nbantamkit MCP server (stdio): per-person memory +\nJSON validation.\n\n' +
-      'options:\n  -h, --help            show this help message and\n                        exit\n  --assets-root         print the resolved asset pack\n' +
-      '                        root and its file count, then\n                        exit\n  --k K                 default recall budget\n                        (default: 3)\n' +
-      '  --index-budget BYTES  memory index byte budget\n                        (default: 24000)\n  --mcp-report          print an analysis of the host\n                        MCP log joined with\n' +
-      "                        bantamkit's event log, then\n                        exit\n  --store STORE         single memory store path\n                        (disables layering)\n" +
-      '  --start START         directory to start project-\n                        store discovery from\n                        (default: cwd)\n',
+    "usage: bantamkit-mcp [-h] [--assets-root] [--k K]\n" +
+    "                     [--index-budget BYTES]\n" +
+    "                     [--mcp-report] [--statusline]\n" +
+    "                     [--store STORE | --start START]\n" +
+    "\n" +
+    "bantamkit MCP server (stdio): per-person memory +\n" +
+    "JSON validation.\n" +
+    "\n" +
+    "options:\n" +
+    "  -h, --help            show this help message and\n" +
+    "                        exit\n" +
+    "  --assets-root         print the resolved asset pack\n" +
+    "                        root and its file count, then\n" +
+    "                        exit\n" +
+    "  --k K                 default recall budget\n" +
+    "                        (default: 3)\n" +
+    "  --index-budget BYTES  memory index byte budget\n" +
+    "                        (default: 24000)\n" +
+    "  --mcp-report          print an analysis of the host\n" +
+    "                        MCP log joined with\n" +
+    "                        bantamkit's event log, then\n" +
+    "                        exit\n" +
+    "  --statusline          print one status line for a\n" +
+    "                        host status bar, then exit\n" +
+    "  --store STORE         single memory store path\n" +
+    "                        (disables layering)\n" +
+    "  --start START         directory to start project-\n" +
+    "                        store discovery from\n" +
+    "                        (default: cwd)\n",
   ],
 ]);
 
@@ -133,7 +291,14 @@ test('the hyphen splits are not decoration — they are what break_on_hyphens bu
 });
 
 const ERRORS = [
-  { argv: ['--st', '/a'], message: 'ambiguous option: --st could match --store, --start' },
+  // U13's `[--statusline]` is the THIRD prefix under `--st`, and argparse lists candidates in
+  // REGISTRATION order, not alphabetically — which is why `--statusline` comes first here. The
+  // reference was re-run to get this line; it was not edited by hand. `--sto=/a` further down
+  // still resolves uniquely, so the pair is now one ambiguous prefix and one that is not.
+  {
+    argv: ['--st', '/a'],
+    message: 'ambiguous option: --st could match --statusline, --store, --start',
+  },
   { argv: ['-h=x'], message: "argument -h/--help: ignored explicit argument 'x'" },
   { argv: ['--assets-root=x'], message: "argument --assets-root: ignored explicit argument 'x'" },
   { argv: ['--k', '--', '5'], message: 'argument --k: expected one argument' },

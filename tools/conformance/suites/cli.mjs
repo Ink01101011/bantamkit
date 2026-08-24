@@ -217,6 +217,14 @@ function matrix(scratch) {
     // and a case is not deleted because the reason it was interesting has changed.
     { label: 'help-columns-120', argv: ['-h'], env: { COLUMNS: '120' } },
     { label: 'help-columns-121', argv: ['-h'], env: { COLUMNS: '121' } },
+    // U13's `[--statusline]` moved it again, from 121 to 136, so 120/121 no longer straddles
+    // anything either — both wrap now. Measured on this checkout by running the reference at
+    // each width: 134 and 135 wrap, 136 and 137 do not. Kept beside the two older pairs for
+    // the same reason those were kept: a case is not deleted because the reason it was
+    // interesting has changed, and three widths that all wrap still differ in where the
+    // option column lands.
+    { label: 'help-columns-135', argv: ['-h'], env: { COLUMNS: '135' } },
+    { label: 'help-columns-136', argv: ['-h'], env: { COLUMNS: '136' } },
     { label: 'help-columns-200', argv: ['-h'], env: { COLUMNS: '200' } },
   ];
 }
@@ -228,8 +236,9 @@ function matrix(scratch) {
  * the assembled `usage: <prog> <optionals>` line does not fit in `width`. THE BRIEF SAID 90;
  * that was the pre-U1 width (88 characters), and U1's `[--assets-root]` moved it to 104,
  * wrapping below 106. U8's `[--mcp-report]` moved it again, to 119, wrapping below 121 —
- * which is why the matrix above grew a 120/121 pair. Measured on this checkout, by running
- * the reference at each width: 119 and 120 wrap, 121 and 122 do not.
+ * which is why the matrix above grew a 120/121 pair. U13's `[--statusline]` moved it a third
+ * time, to 134, wrapping below 136, which is why it grew a 135/136 pair. Measured on this
+ * checkout, by running the reference at each width: 134 and 135 wrap, 136 and 137 do not.
  *
  * A FLAG ADDED TO EITHER RUNTIME MOVES THIS STRING. It is not a second copy of the usage
  * line for its own sake — it is the arithmetic behind the note below, and the pinned first
@@ -237,7 +246,7 @@ function matrix(scratch) {
  */
 const SINGLE_LINE_USAGE =
   'usage: bantamkit-mcp [-h] [--assets-root] [--k K] [--index-budget BYTES] [--mcp-report] ' +
-  '[--store STORE | --start START]';
+  '[--statusline] [--store STORE | --start START]';
 const wrapBoundary = SINGLE_LINE_USAGE.length + 2;
 
 // ---------------------------------------------------------------------------------- run
@@ -325,10 +334,11 @@ export async function run(ctx) {
   );
   notes.push(
     `argparse wraps the usage line whenever COLUMNS < ${wrapBoundary} (width = COLUMNS - 2, ` +
-      `single-line usage is ${SINGLE_LINE_USAGE.length} chars after U1 added [--assets-root] and ` +
-      'U8 added [--mcp-report]); ' +
+      `single-line usage is ${SINGLE_LINE_USAGE.length} chars after U1 added [--assets-root], ` +
+      'U8 added [--mcp-report] and U13 added [--statusline]); ' +
       `with no COLUMNS and no tty the fallback is ${DEFAULT_COLUMNS}, so the DEFAULT help is wrapped. ` +
-      'the matrix straddles the boundary at 120/121, and keeps the old 105/106 pair beside it.',
+      'the matrix straddles the boundary at 135/136, and keeps the old 105/106 and 120/121 pairs ' +
+      'beside it.',
   );
   notes.push(
     'REGISTERED, NOT FIXED: the two --assets-root counts agree at 84 only because the asset tree ' +
