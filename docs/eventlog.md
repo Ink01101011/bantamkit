@@ -85,7 +85,7 @@ One JSON object per line, UTF-8, terminated by a single `\n`.
 |---|---|---|
 | `v` | int | record schema version, currently `1`. Bump only when a key is added, removed or renamed; both runtimes move together. |
 | `ts` | string | UTC, `YYYY-MM-DDTHH:MM:SS.mmmZ`. Byte-identical to JavaScript's `new Date(ms).toISOString()`. |
-| `tool` | string | one of the seven served tools. The **join key** to the host's log, not the payload. |
+| `tool` | string | one of the eight served tools. The **join key** to the host's log, not the payload. |
 | `outcome` | string | the decision. Closed vocabulary, below. |
 | `detail` | object | metadata numbers. Always present; `{}` when empty. |
 
@@ -159,7 +159,7 @@ derived field is a second thing to keep true.
 ## Metadata only
 
 Never a tool argument's value, never a memory body, never a validated output, never a
-query string. Four of the seven tools take unbounded free text and three take absolute
+query string. Four of the eight tools take unbounded free text and three take absolute
 paths. Every value written is an ASCII token from the closed vocabulary above, an `int`,
 or a `bool` —
 `test_eventlog.py::test_the_only_values_written_are_from_a_closed_set` enforces exactly

@@ -107,7 +107,7 @@ That position only holds if the operator has a lever, and until 2026-08-21 there
 was none: `index_budget` was on no argument parser, and the four ops above were
 reachable only by importing `MemoryStore` from Python. Both halves now exist —
 see [The operator CLI](#the-operator-cli) below and `--index-budget` on
-`bantamkit-mcp`. The agent surface is unchanged and still exactly seven tools.
+`bantamkit-mcp`. The agent surface is unchanged and still exactly eight tools.
 
 ```python
 from bantamkit.memory import MemoryBudgetExceeded, MemoryStore, MemoryValidationError
