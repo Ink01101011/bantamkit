@@ -103,26 +103,39 @@
  *    on every one of those, which is a failure reporting a platform rather than a drift.
  *    The prog is already pinned raw by `…/prog-line-raw` and `…/remediation-line-raw`.
  *
- * 2. CRLF. `bantamkit/memory/__main__.py` prints through plain `print()`, so on Windows every
- *    line it emits is CRLF while the port writes LF. NOT NORMALISED, and that is deliberate:
- *    `ref/cli_ref.py` states the rule for this directory — "NO NEWLINE NORMALISATION, and no
- *    text mode … a reference that decoded with universal newlines would erase the evidence
- *    either way it went" — and `mcpreport` already writes through `sys.stdout.buffer` for
- *    exactly this reason. A second CLI suite that quietly normalised would contradict its
- *    sibling and hide a difference the operator can see.
+ * 2. CRLF — HANDED BACK, FIXED AT THE STREAM, AND WHAT REMAINS IS A DIFFERENT LAYER.
+ *    `bantamkit/memory/__main__.py` used to print through plain `print()` onto streams opened
+ *    with `newline=None`, so on Windows every line it emitted was CRLF while the port wrote
+ *    LF. `fbcf7c8` fixed it, and NOT with the `sys.stdout.buffer` idiom `mcpreport` uses:
+ *    `argparse` writes 19 of the 27 measured CRLFs into `sys.stdout`/`sys.stderr` BY NAME,
+ *    from frames no call site in that module owns, so a sweep of the `print()` calls would
+ *    have fixed 8 and left 19. `main()` reconfigures both streams to `newline="\n"` and
+ *    `encoding="utf-8"` before `_parse_args` runs. The STREAMS now agree on every platform.
  *
- *    So this suite is RED ON WINDOWS until `runtime-py` gives this CLI the same
- *    `sys.stdout.buffer` treatment `mcpreport` has. That is the correct state of a gate over
- *    an unfixed difference, and it is HANDED BACK as a `runtime-py` defect, not ruled.
+ *    What is NOT fixed is the store's DISK writes, one layer down: `store.py`'s
+ *    `_rebuild_index` and `_write_fact` still call `write_text` with `newline=None`, so on
+ *    Windows `index.md` and every fact file the reference writes is CRLF where the port's is
+ *    LF. Here that is carried by the `…/tree` cases, since `manifest` compares each file's
+ *    BYTES rather than a digest — not by the transcripts any more. Still NOT NORMALISED, and
+ *    that is still deliberate: `ref/cli_ref.py` states the rule for this directory — "NO
+ *    NEWLINE NORMALISATION, and no text mode … a reference that decoded with universal
+ *    newlines would erase the evidence either way it went". A second CLI suite that quietly
+ *    normalised would contradict its sibling and hide a difference the operator can see.
+ *    HANDED BACK as a `runtime-py` defect, not ruled. The sibling `store` suite measures the
+ *    same class on a real Windows cell; see the note this suite prints for the run.
  *
- * 3. `os.rename` vs `pyReplace` IN `compact`. The reference moves an archived fact with
- *    `os.rename`, which raises `FileExistsError` on Windows when `archive/<name>.md` already
- *    exists and replaces silently on POSIX; the port replaces on both. `restore` cannot reach
- *    that state — it needs a hand-placed file — so `compact` is where it is reachable, and
- *    `compact re-archives over an existing archive entry` below is the fixture that reaches
- *    it. On this platform both replace and the case is unruled and green; on Windows the
- *    reference raises and the case reports it. Also HANDED BACK: `os.replace` is the call
- *    that means on both operating systems what `os.rename` means on one.
+ * 3. `os.rename` vs `pyReplace` IN `compact` — HANDED BACK, FIXED, NOW A WINDOWS-ONLY GUARD.
+ *    The reference used to move an archived fact with `os.rename`, which raises
+ *    `FileExistsError` on Windows when `archive/<name>.md` already exists and replaces
+ *    silently on POSIX; the port replaced on both. `d239480` moved the reference onto
+ *    `path.replace`, so the two now agree on both operating systems.
+ *
+ *    `compact re-archives over an existing archive entry` below STAYS, because it is the only
+ *    fixture here that reaches an occupied `archive/<name>.md` during compaction — `restore`
+ *    moves the archived copy OUT and so cannot build that state. But note what it can and
+ *    cannot see: on POSIX `rename` and `replace` are indistinguishable over an occupied
+ *    destination, so a regression back to `rename` would leave this case GREEN on this
+ *    platform and redden only on a Windows cell. It is a Windows-only regression guard.
  *
  *
  * NOTHING TOUCHES A REAL STORE. `BANTAMKIT_MEMORY_DIR` outranks `--start` and the cwd walk in
@@ -448,9 +461,10 @@ function scenarios() {
     ['compact-archives-the-stalest', FOUR_FACTS, [['compact', '--store', '{BED}', '--budget', '200']],
       { remediation: 'restore one with: ' }],
     ['compact-with-reserve', FOUR_FACTS, [['compact', '--store', '{BED}', '--budget', '300', '--reserve', '150']]],
-    // The `os.rename` / `pyReplace` reach: `archive/alpha.md` is already there when `compact`
-    // moves `facts/alpha.md` on top of it. POSIX replaces on both sides; Windows raises on
-    // the reference. See the header — handed back, not ruled.
+    // The occupied-destination reach: `archive/alpha.md` is already there when `compact` moves
+    // `facts/alpha.md` on top of it, and nothing else here builds that state. Both sides now
+    // `replace`, so this is a REGRESSION GUARD rather than a live difference — and only on
+    // Windows, where `rename` and `replace` part company. See the header.
     ['compact-re-archives-over-an-existing-entry',
       { ...FOUR_FACTS, files: { ...FOUR_FACTS.files, 'archive/alpha.md': factFile('alpha', { description: 'a STALE archived copy' }) } },
       [['compact', '--store', '{BED}', '--budget', '200']]],
@@ -784,19 +798,41 @@ export async function run(ctx) {
       'archived lists archive/ rather than facts/ anywhere.',
   );
   notes.push(
-    'HANDED BACK, NOT RULED (2/3): __main__.py prints through plain print(), so on Windows ' +
-      'every line it emits is CRLF while the port writes LF. this suite does NOT normalise ' +
-      'newlines — ref/cli_ref.py states the rule for this directory and mcpreport already ' +
-      'writes through sys.stdout.buffer for exactly this reason — so it is RED ON WINDOWS ' +
-      'until runtime-py gives this CLI the same treatment. that is the correct state of a ' +
-      'gate over an unfixed difference.',
+    'HANDED BACK, FIXED AT THE STREAM — AND WHAT IS LEFT IS THE DISK (2/3): this CLI\'s ' +
+      'STREAMS no longer differ. fbcf7c8 has main() reconfigure sys.stdout and sys.stderr to ' +
+      'newline="\\n", encoding="utf-8" before _parse_args runs, and NOT through ' +
+      'sys.stdout.buffer the way mcpreport does: argparse writes 19 of the 27 measured CRLFs ' +
+      'into those two streams BY NAME, from frames no call site in __main__.py owns, so a ' +
+      'sweep of the print() calls would have fixed 8 and left 19. the stream translates, so ' +
+      'the stream was fixed. the transcript cases here are no longer the ones at risk. WHAT ' +
+      'STILL IS: the store\'s DISK writes, which are a different layer and are NOT fixed. ' +
+      'store.py\'s _rebuild_index and _write_fact both go through write_text with ' +
+      'newline=None, so on Windows every line of index.md and of every fact file the ' +
+      'reference writes lands as CRLF while the port writes LF. in THIS suite that difference ' +
+      'is carried by the /tree cases — manifest() compares each file\'s bytes, base64, not a ' +
+      'digest — in every scenario whose steps make the reference write at all. this suite ' +
+      'still does NOT normalise newlines: ref/cli_ref.py states that rule for this directory. ' +
+      'MEASURED, by performing what newline=None does on Windows: a 1-line index.md goes ' +
+      '49 -> 50 bytes and a 10-line fact file 137 -> 147, one byte per line. on REAL Windows ' +
+      'the sibling store suite\'s tree cases fail for exactly this — GitHub run 32645443625, ' +
+      'job 97208893561, 132 failures, the `store/... — tree` family. this suite has never ' +
+      'itself run on a Windows cell: that run predates it (4229 cases against this branch\'s ' +
+      '4831), so what is named here is the mechanism and the sibling\'s measurement, not a ' +
+      'memorycli observation. still handed back, still not ruled.',
   );
   notes.push(
-    'HANDED BACK, NOT RULED (3/3): compact moves an archived fact with os.rename, which ' +
-      'raises FileExistsError on Windows over an existing archive/<name>.md and replaces ' +
-      'silently on POSIX; the port replaces on both. os.replace is the call that means the ' +
-      'same thing on both operating systems. the fixture that reaches it is ' +
-      '`compact-re-archives-over-an-existing-entry`, unruled, green here and reporting there.',
+    'HANDED BACK, FIXED, AND NOW A WINDOWS-ONLY GUARD (3/3): compact no longer moves an ' +
+      'archived fact with os.rename. d239480 moved it onto path.replace — the call ' +
+      'runtime-ts already made as pyReplace — so both runtimes now replace on both operating ' +
+      'systems and the difference is closed. `compact-re-archives-over-an-existing-entry` ' +
+      'STAYS, and this is what it still distinguishes: it is the only fixture in this ' +
+      'repository that reaches an occupied archive/<name>.md during compaction, because ' +
+      'restore moves the archived copy OUT and so cannot build that state. but it ' +
+      'distinguishes it ONLY ON WINDOWS. measured on this platform: Path.rename and ' +
+      'Path.replace over an occupied destination both replace silently and both leave no ' +
+      'source, so a regression from replace back to rename would keep this case GREEN here ' +
+      'and redden only on a Windows cell. it is a Windows-only regression guard, and the ' +
+      'suite says so rather than going quiet about it.',
   );
   notes.push(
     `${list.length} store scenarios, each materialised twice and compared on three things: the ` +
