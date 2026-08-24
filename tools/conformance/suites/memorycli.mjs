@@ -77,20 +77,31 @@
  *
  * THREE DIFFERENCES C4 FOUND, AND WHAT THIS SUITE DOES WITH EACH
  * -------------------------------------------------------------
- * 1. A TRACEBACK IS NOT A PORTABLE ARTIFACT. `_cmd_status`, `_cmd_compact` and `_cmd_archived`
- *    catch nothing, so an unreadable `facts/` escapes `main` and CPython prints a traceback —
- *    carrying interpreter paths and line numbers — where the port prints
- *    `bantamkit-memory: <message>`. Both exit 1.
+ * 1. A TRACEBACK IS NOT A PORTABLE ARTIFACT — HANDED BACK, FIXED, AND NOW COMPARED.
+ *    `_cmd_status`, `_cmd_compact` and `_cmd_archived` used to catch nothing, so an
+ *    unreadable `facts/` escaped `main` and CPython printed a traceback — carrying
+ *    interpreter paths and line numbers — where the port printed `bantamkit-memory:
+ *    <message>`. Both exited 1.
  *
- *    NOT RULED. A ruling is the price of a DELIBERATE difference, and this one is a defect in
- *    `runtime-py`: an operator CLI that answers a permission error with a stack trace is not
- *    a design decision anybody made. Ruling it would enshrine it in `docs/porting.md` as
- *    intended behaviour and make the port's better answer the deviation. It is HANDED BACK.
+ *    It was NOT RULED, because a ruling is the price of a DELIBERATE difference and this one
+ *    was a defect in `runtime-py`: an operator CLI that answers a permission error with a
+ *    stack trace is not a design decision anybody made. Ruling it would have enshrined it in
+ *    `docs/porting.md` as intended behaviour and made the port's better answer the deviation.
+ *    It was handed back, and `main` now catches `BantamError` — and nothing wider, so a bug
+ *    in bantamkit is still a traceback — and prints `f"{_PROG}: {e}"` at exit 1.
  *
- *    Its stderr TEXT is the only thing excluded from the matrix. Everything else about those
- *    three scenarios is compared unruled — the exit code (the refusal bit: 1 on both), stdout
- *    (empty on both), whether stderr said anything at all, and the tree, which is what proves
- *    neither side wrote to a store it could not read.
+ *    So the exclusion is GONE with the reason for it. `…/stderr` below is UNRULED and
+ *    compares the whole of stderr after the one substitution and the bed scrub, beside the
+ *    exit code (the refusal bit: 1 on both), stdout (empty on both), the older
+ *    `…/stderr-said-something`, and the tree, which is what proves neither side wrote to a
+ *    store it could not read.
+ *
+ *    NO `stderr-raw` RULING SITS BESIDE IT, unlike the prog-bearing argv shapes. A ruling
+ *    asserts the two sides DIFFER, and here they only differ where the platform actually
+ *    refuses: `archived` reads `archive/`, never `facts/`, so it succeeds with empty stderr
+ *    on both sides even on this one — and on Windows all three do. A ruling would be stale
+ *    on every one of those, which is a failure reporting a platform rather than a drift.
+ *    The prog is already pinned raw by `…/prog-line-raw` and `…/remediation-line-raw`.
  *
  * 2. CRLF. `bantamkit/memory/__main__.py` prints through plain `print()`, so on Windows every
  *    line it emits is CRLF while the port writes LF. NOT NORMALISED, and that is deliberate:
@@ -500,16 +511,21 @@ function scenarios() {
 }
 
 /**
- * The three commands that let a store error escape `main`.
+ * The three commands that used to let a store error escape `main`.
  *
  * `facts/` at 0o000, and each of `status`, `compact`, `archived` run over it. The reference
- * prints a traceback and the port prints one line; both exit 1. Only the stderr TEXT is out
- * of the matrix — see the header for why it is handed back rather than ruled.
+ * printed a traceback where the port printed one line; both exited 1. That defect was handed
+ * back and fixed, so NOTHING here is out of the matrix any more — stdout, stderr, the exit
+ * code and the tree are all compared, and all of them unruled.
  *
- * On Windows `chmod 0o000` does not make a directory unreadable, so both sides simply
- * succeed there and the same four cases compare a success. That is not a hole this suite can
- * close; it is what the platform makes reachable. `store.mjs` runs its own 0o000 fixtures on
- * the same terms.
+ * Only `status` and `compact` actually reach the refusal: `archived` lists `archive/`, which
+ * the fixture leaves readable, so it exits 0 with empty stderr on both sides. Its four cases
+ * still compare a success on both, which is worth having and is not a refusal.
+ *
+ * On Windows `chmod 0o000` does not make a directory unreadable, so all three simply succeed
+ * there and every case compares a success. That is not a hole this suite can close; it is
+ * what the platform makes reachable, which is why the note records what was reached rather
+ * than assuming. `store.mjs` runs its own 0o000 fixtures on the same terms.
  */
 const UNREADABLE_COMMANDS = ['status', 'compact', 'archived'];
 
@@ -687,7 +703,7 @@ export async function run(ctx) {
   // ------------------------------------------------ the three commands that let an error escape
 
   const unreadable = { dirs: ['facts', 'archive'], files: { 'facts/a.md': factFile('a') }, modes: { facts: 0o000 } };
-  let unreadableReached = null;
+  const unreadableReached = [];
   for (const command of UNREADABLE_COMMANDS) {
     const label = `unreadable-facts-${command}`;
     const bed = join(root, label);
@@ -700,7 +716,11 @@ export async function run(ctx) {
     const [py] = runPy(ctx, stepFor('py'));
     const [node] = runNode(stepFor('node'));
     for (const side of ['py', 'node']) applyModes(beds[side], unreadable, false);
-    if (unreadableReached === null) unreadableReached = py.exit === 1;
+    // Recorded per command, not once: `archived` never touches `facts/`, so "the platform
+    // refused" is true of `status` and `compact` here and false of the third — and on
+    // Windows it is false of all three. A note that generalised from the first command would
+    // claim a refusal two of these scenarios did not earn.
+    unreadableReached.push(`${command}: ${py.exit === 1 && node.exit === 1 ? 'refused, exit 1 on both' : `exit ${py.exit}/${node.exit} — compared a success`}`);
 
     cases.push({
       name: `${label}/stdout`,
@@ -708,8 +728,18 @@ export async function run(ctx) {
       expected: substitute(scrubBed(dec(py.stdout), beds.py)),
       actual: scrubBed(dec(node.stdout), beds.node),
     });
-    // The REFUSAL BIT, which is the portable half of the difference: both runtimes fail, and
-    // both fail with 1. A ruling on the stderr text would only prove they still differ.
+    // The SENTENCE ITSELF, unruled, on the same terms as every other stream in this suite:
+    // the reference after the one prog substitution, both sides after the bed scrub. This
+    // case did not exist while `runtime-py` answered with a traceback; it is the exclusion
+    // being lifted now that the traceback is gone. See the header for why no `stderr-raw`
+    // ruling sits beside it.
+    cases.push({
+      name: `${label}/stderr`,
+      kind: 'bytes',
+      expected: substitute(scrubBed(dec(py.stderr), beds.py)),
+      actual: scrubBed(dec(node.stderr), beds.node),
+    });
+    // The REFUSAL BIT, which is the portable half: both runtimes fail, and both fail with 1.
     cases.push({
       name: `${label}/exit`,
       kind: 'json',
@@ -742,13 +772,16 @@ export async function run(ctx) {
       'on prog. what is unwatched: the widths between 40, 80 and 200.',
   );
   notes.push(
-    'HANDED BACK, NOT RULED (1/3): _cmd_status, _cmd_compact and _cmd_archived in ' +
-      'runtime-py/src/bantamkit/memory/__main__.py catch nothing, so an unreadable facts/ ' +
-      'escapes main and CPython prints a TRACEBACK carrying interpreter paths and line ' +
-      'numbers, where the port prints one line. both exit 1. the stderr TEXT of the three ' +
-      'unreadable-facts scenarios is the only thing this suite excludes from its matrix; the ' +
-      'exit code, stdout, whether stderr spoke at all, and the tree are all compared unruled. ' +
-      `reached on this platform: ${unreadableReached ? 'yes, exit 1 on both' : 'NO — chmod 0o000 did not refuse here, so these three scenarios compared a success'}.`,
+    'HANDED BACK, FIXED, AND NO LONGER EXCLUDED (1/3): _cmd_status, _cmd_compact and ' +
+      '_cmd_archived in runtime-py/src/bantamkit/memory/__main__.py used to catch nothing, so ' +
+      'an unreadable facts/ escaped main and CPython printed a TRACEBACK carrying interpreter ' +
+      'paths and line numbers, where the port printed one line. it was never ruled, it was ' +
+      'handed back, and main now catches BantamError — and nothing wider — and prints ' +
+      '"<prog>: <message>" at exit 1. so the stderr TEXT of the three unreadable-facts ' +
+      'scenarios is now COMPARED, unruled, after the one substitution: this suite excludes ' +
+      'nothing from its matrix. what each scenario reached on this platform — ' +
+      `${unreadableReached.join('; ')} — because chmod 0o000 does not refuse everywhere, and ` +
+      'archived lists archive/ rather than facts/ anywhere.',
   );
   notes.push(
     'HANDED BACK, NOT RULED (2/3): __main__.py prints through plain print(), so on Windows ' +
