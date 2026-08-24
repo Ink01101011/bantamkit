@@ -331,7 +331,7 @@ export async function run(ctx) {
       'the matrix straddles the boundary at 120/121, and keeps the old 105/106 pair beside it.',
   );
   notes.push(
-    'REGISTERED, NOT FIXED: the two --assets-root counts agree at 83 only because the asset tree ' +
+    'REGISTERED, NOT FIXED: the two --assets-root counts agree at 84 only because the asset tree ' +
       'has zero symlinks. Node counts with readdirSync(recursive).isFile(), where a dirent for a ' +
       'symlink-to-file is NOT a file; Python counts with rglob + is_file(), which FOLLOWS symlinks. ' +
       'Add one symlink to the pack and the two counts diverge with neither side changing.',

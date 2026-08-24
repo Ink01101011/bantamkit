@@ -409,7 +409,21 @@ async def test_the_only_values_written_are_from_a_closed_set(tmp_path):
 
 @synchronous
 async def test_a_disabled_log_leaves_every_reply_byte_identical(tmp_path):
-    """Three configurations, one set of replies: on, off, and unwritable."""
+    """Three configurations, one set of replies: on, off, and unwritable.
+
+    THE UNWRITABLE ARM STOPPED BEING BYTE-IDENTICAL IN U11, AND THAT IS THE POINT OF U11.
+    The property here has always been "failing to log never fails the TOOL", and it still
+    holds exactly: the call succeeds and the answer is the same answer. What changed is
+    that a lost record is no longer INVISIBLE — `docs/status.md`'s degraded footer says so
+    on the next rendered result, because the log is the one channel that cannot report its
+    own silence.
+
+    So the node is split rather than relaxed, and it is stronger than it was: `on` and
+    `off` are still compared byte for byte, the unwritable arm is compared byte for byte
+    with the footer removed, AND the footer is asserted PRESENT on every one of its
+    replies. A footer that stopped appearing would now fail here, which the old single
+    equality could not have noticed.
+    """
     replies = {}
     for arm in ("on", "off", "unwritable"):
         room = tmp_path / arm
@@ -435,8 +449,13 @@ async def test_a_disabled_log_leaves_every_reply_byte_identical(tmp_path):
         if arm == "unwritable":
             assert not (room / "blocker").is_dir()
 
-    assert replies["on"] == replies["off"] == replies["unwritable"]
+    assert replies["on"] == replies["off"]
     assert (tmp_path / "on" / "log.jsonl").exists()
+
+    footer = "\n\n\u26a0\ufe0f bantamkit degraded (1): the event log is switched on"
+    for reply in replies["unwritable"]:
+        assert footer in reply, reply
+    assert [reply.split("\n\n\u26a0\ufe0f")[0] for reply in replies["unwritable"]] == replies["on"]
 
 
 def test_an_unwritable_directory_swallows_the_write_and_returns(tmp_path):

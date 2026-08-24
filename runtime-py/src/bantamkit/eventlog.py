@@ -188,6 +188,22 @@ class EventLog:
         self.path = path
         self.cap_bytes = cap_bytes
         self._clock = clock
+        #: Set the first time `record` swallows an `OSError`, and never cleared.
+        #:
+        #: FAILING TO LOG STILL NEVER FAILS THE TOOL — that contract is unchanged and
+        #: nothing here raises. What the flag buys is that the failure stops being
+        #: INVISIBLE. An operator who turned the log on and is getting nothing is the one
+        #: person who cannot tell "no records because nothing happened" from "no records
+        #: because the path is unwritable", and the log is the one channel that cannot
+        #: report its own silence. `mcpserver.degraded_conditions` reads this and says so
+        #: on the tool surface instead.
+        #:
+        #: NOT CLEARED BY A LATER SUCCESS, deliberately: a log with a hole in it is not a
+        #: log to read as complete, and the next write succeeding does not put the missing
+        #: records back. It is a bool and not a count for the metadata rule's sake — a
+        #: count would still be metadata, but nothing reads one, and an unused number is a
+        #: second thing to keep true in two runtimes.
+        self.write_failed = False
 
     @classmethod
     def from_env(
@@ -211,6 +227,11 @@ class EventLog:
         deliberately OUTSIDE it — a `TypeError` there is a bug in a caller's `detail`,
         not a disk that said no, and swallowing it would leave the log empty forever
         with nothing to notice.
+
+        `write_failed` is set inside that `except` and nowhere else, so it means exactly
+        "a record was composed, offered to the filesystem, and lost" — never "the log is
+        off" (which returns above, before any I/O) and never "nothing has been logged
+        yet".
         """
         if self.path is None:
             return
@@ -218,6 +239,7 @@ class EventLog:
         try:
             self._append(payload)
         except OSError:
+            self.write_failed = True
             return
 
     def raised(self, tool: str, exc: BaseException) -> None:

@@ -6,9 +6,31 @@
     "shiftwork_clock_in",
     "shiftwork_clock_out",
     "shiftwork_status",
-    "build_identity"
+    "build_identity",
+    "bantamkit_status"
   ],
   "tools": {
+    "bantamkit_status": {
+      "description": "Is bantamkit working, and which bantamkit? Returns a short report a person can read in the transcript: `bantamkit Active 🟢` or `bantamkit Degraded 🟠` on the first line, then the version and `build_id` of the code answering, the surfaces it serves, the memory store it is bound to with its index size against its budget, whether the event log is on, and — when degraded — every condition in full with what to do about it. Call it when the user asks whether the server is alive or working, when a bantamkit tool answered oddly and you need to know whether the server is the reason, or when a reply arrived carrying a `bantamkit degraded` footer and you want the rest of it. Every fact is observed at call time from the server's own state; nothing is a heartbeat or a cached verdict. Takes no arguments, writes nothing, and never echoes another call's arguments.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object",
+        "title": "bantamkit_statusArguments"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object",
+        "title": "bantamkit_statusOutput"
+      }
+    },
     "build_identity": {
       "description": "Which bantamkit build is answering you, readable mid-call. Returns `build_id` — a content fingerprint of the running source and the asset pack it loads — plus the paths it was computed over. Call it when one MCP server name may resolve to more than one install: two endpoints reporting the same `version` are the SAME build only if their `build_id` matches, because a version string moves on release bumps and not on builds. Any fact that cannot be derived comes back as {\"unavailable\": \"<reason>\"} and is named in the `unavailable` list — never omitted, never a placeholder that reads as a value. Takes no arguments and reads no state.",
       "inputSchema": {

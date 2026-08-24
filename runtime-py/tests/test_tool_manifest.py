@@ -109,6 +109,7 @@ def test_every_served_tool_has_an_asset(tmp_path):
     served = _served_tools(tmp_path)
     have = {f.stem for f in (assets_root() / "tools").glob("*.json")}
     assert sorted(served) == [
+        "bantamkit_status",
         "build_identity",
         "memory_recall",
         "memory_save",

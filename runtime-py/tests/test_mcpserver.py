@@ -42,18 +42,20 @@ VALID_SCHEMA = {
 }
 
 
-def test_lists_exactly_the_seven_tools(tmp_path):
+def test_lists_exactly_the_eight_tools(tmp_path):
     """One server, one entry point: memory and shiftwork ride the same instance.
 
-    Seven since `build_identity` (RB-P84's second half): the list is EXACT, so a tool
-    added to the server is a deliberate edit here. The assertion is not relaxed to a
-    membership check — an exact list is the only form that notices a tool arriving.
+    Seven since `build_identity` (RB-P84's second half) and EIGHT since
+    `bantamkit_status` (`docs/status.md`): the list is EXACT, so a tool added to the
+    server is a deliberate edit here. The assertion is not relaxed to a membership check —
+    an exact list is the only form that notices a tool arriving.
     """
 
     async def scenario():
         async with Client(make_server(tmp_path)) as c:
             names = sorted(t.name for t in (await c.list_tools()).tools)
             assert names == [
+                "bantamkit_status",
                 "build_identity",
                 "memory_recall",
                 "memory_save",
@@ -424,6 +426,7 @@ def test_stdio_subprocess_initializes(tmp_path):
                 # An EXACT list, not a count, for the reason the sibling node states: a
                 # count says "not six" and an exact list says WHICH tool arrived.
                 assert sorted(t.name for t in tools.tools) == [
+                    "bantamkit_status",
                     "build_identity",
                     "memory_recall",
                     "memory_save",
@@ -477,6 +480,7 @@ def test_module_entrypoint_serves_over_stdio(tmp_path):
                 # An EXACT list, matching both siblings: a count says "not seven" and a
                 # list names WHICH tool the module entry point is or is not serving.
                 assert sorted(t.name for t in tools.tools) == [
+                    "bantamkit_status",
                     "build_identity",
                     "memory_recall",
                     "memory_save",

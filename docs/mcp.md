@@ -28,6 +28,7 @@ pip install "bantamkit[mcp] @ git+https://github.com/Ink01101011/bantamkit.git@v
 | `shiftwork_clock_in` | Validate a shift-work checkpoint and return the cursor unit's brief — see [Shift-work tools](#shift-work-tools) |
 | `shiftwork_clock_out` | Record a finished unit: validate-whole, atomic write, append an accounting line |
 | `shiftwork_status` | Read-only progress summary of a checkpoint |
+| `bantamkit_status` | Is bantamkit working, and which bantamkit — one short report a person can read in the transcript. Also a **prompt** of the same name, so an operator can invoke it themselves. See [Status](status.md) |
 
 The `memory_save`/`memory_recall` input schemas are the asset pack's
 `assets/tools/*.json` verbatim — the same contract agents see in-process.
@@ -343,6 +344,15 @@ metadata only, never an argument value; it is capped at 1 MiB with one rotated
 generation; a filesystem failure makes the record disappear rather than the call; and it
 is off unless you ask for it. Full contract, including the record shape both runtimes
 emit: [Event log](eventlog.md).
+
+## Saying so when something is wrong
+
+`bantamkit_status` answers "is this thing working, and which one" as a tool a model can call
+and as a prompt **a person** can invoke from the host's own menu. When something is wrong —
+the asset pack gone, a memory layer that cannot be listed, an index nearly at its budget, an
+event log whose writes are failing — every *other* tool's result also carries one line
+saying so, and never otherwise. Contract, conditions and the exact bytes both runtimes emit:
+[Status](status.md).
 
 ## Out of scope, deliberately
 

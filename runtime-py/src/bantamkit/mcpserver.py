@@ -11,6 +11,7 @@ import platform
 import sys
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
 from typing import Any
@@ -251,6 +252,318 @@ def build_identity() -> dict[str, Any]:
     return identity
 
 
+# ---------------------------------------------------------------------------------------
+# `bantamkit_status`, the degraded footer, and the conditions both are built from.
+#
+# WHY A TOOL RESULT AND NOT A NOTIFICATION, MEASURED BEFORE ANY OF THIS WAS WRITTEN.
+# The request this answers is "let me SEE that the server is alive", and the obvious
+# implementation — push a line at the host — does not exist. Claude Code's own binary
+# carries the sentence `modern protocol revision with no unsolicited notification path`,
+# and its proprietary `claude/channel` capability is gated six ways, one of which is
+# `provider !== "firstParty"` — which rules out Copilot on its own. bantamkit's host log
+# says the same thing from the running side: `"protocolEra":"modern"` in every
+# `Connection established` record and ten `Channel notifications skipped: server did not
+# declare claude/channel capability`. So the only surface every host is guaranteed to
+# render is a TOOL RESULT, and that is what all three pieces here are.
+#
+# THE THREE PIECES AND WHO EACH ONE IS FOR:
+#   * `bantamkit_status` — a tool. The MODEL can call it, so an agent mid-conversation can
+#     answer "is this thing working" without the operator leaving the transcript.
+#   * a same-named PROMPT — `prompts/list` was empty on both runtimes. A prompt is what a
+#     PERSON invokes. The operator asking whether their server is alive is the person.
+#   * the FOOTER — one line appended to the OTHER tools' results, and only when something
+#     is wrong. Never on a healthy call: a footer on every result is noise, noise trains
+#     the reader to stop reading, and the one time it matters it is then invisible.
+#
+# `docs/status.md` is the contract. Both runtimes emit these bytes.
+# ---------------------------------------------------------------------------------------
+
+#: The tool AND the prompt answer to this one name. Deliberately the same word: the
+#: operator who read `bantamkit_status` in a footer must find it in their prompt menu
+#: without translating, and a model that read it in a prompt must find the tool.
+STATUS_NAME = "bantamkit_status"
+
+#: What the prompt says after the report. The report is the payload; this is the one line
+#: that tells the model what the person wanted with it, and it asks for a RELAY rather
+#: than an interpretation — the operator invoked this to read the server's own words.
+STATUS_PROMPT_TAIL = (
+    "Show me that report as it stands. If it says Degraded, tell me which of the problems "
+    "above you would deal with first and why; if it says Active, say so in one line and "
+    "stop."
+)
+
+#: The prompt and resource-template counts `status_report` prints, named here because the
+#: SDK offers no public count of either and reaching into its managers is exactly the
+#: private-attribute habit `_from_manifest` exists to have ended. They are PINNED AGAINST
+#: THE WIRE by `test_status_surface.py`, which drives a real `prompts/list` and
+#: `resources/templates/list` and fails if a registration is added or removed without
+#: moving these — so they are a declaration, not a guess.
+SERVED_PROMPTS = 1
+SERVED_RESOURCE_TEMPLATES = 2
+
+#: Percent of the index budget that has to be SPENT before the store is called degraded.
+#:
+#: 90 and not 100 because the useful moment is before the refusal, not after it: at 100%
+#: the next `memory_save` has already failed and the operator has already seen the error.
+#: An INTEGER percent, compared by cross-multiplication below, so the two runtimes cannot
+#: land on opposite sides of the line through a float they rounded differently.
+INDEX_PRESSURE_PERCENT = 90
+
+
+@dataclass(frozen=True)
+class Condition:
+    """One thing that is wrong, carried in the two forms the two surfaces need.
+
+    `key` is an ASCII token from a closed set, which is the ONLY form that may reach the
+    event log (`docs/eventlog.md`'s metadata-only rule); nothing here writes one today,
+    and the field exists so that a future record cannot be tempted to log the prose.
+    `sentence` is what a person reads. It never carries a tool argument, a memory body, a
+    validated output, or a grant NAME — a layer's KIND is reportable, its name is not.
+    """
+
+    key: str
+    sentence: str
+
+
+def _plural(count: int, word: str) -> str:
+    """`1 prompt` / `2 prompts`. Spelled once so the two runtimes cannot disagree twice."""
+    return f"{count} {word}" if count == 1 else f"{count} {word}s"
+
+
+def _index_bytes(memory: Memory) -> int | None:
+    """The size of the writable store's `index.md` on disk, or `None` if it has none.
+
+    THE STAT, NOT THE PARSE, and the difference is the reason this can run on every tool
+    call. `Memory.index_accounting()` re-derives the index by reading every fact file —
+    the docstring there says so, and the event log only calls it when a log is actually
+    enabled. A footer that has to decide on EVERY call cannot pay that, so this reads the
+    rendered artefact the store itself keeps up to date (`MemoryStore._rebuild_index`
+    writes it on every save) with one `stat`.
+
+    What that trade costs, said plainly: a store whose facts were edited on disk behind
+    the server's back has a stale `index.md`, and this reports the stale size. The
+    condition is a WARNING that the budget is nearly spent, not the budget check itself —
+    `MemoryStore._check_index_budget` is still the thing that refuses a save, and it still
+    measures the parse. The two cannot disagree about a store only bantamkit has written.
+
+    ABSENT IS 0 AND UNREADABLE IS `None`, and the two are split on the errno rather than
+    collapsed. A store that has never been saved to has no `index.md` and really does
+    spend nothing of its budget; a store whose directory refuses a `stat` has an unknown
+    index, and reporting that as 0 would claim infinite headroom at exactly the moment
+    there may be none — the same slander `Memory.index_accounting` refuses to commit.
+    """
+    try:
+        return (memory.store.root / "index.md").stat().st_size
+    except FileNotFoundError:
+        return 0
+    except OSError:
+        return None
+
+
+def _asset_pack_condition() -> Condition | None:
+    """Is the pack this build loads still there?
+
+    `build_server` raises `AssetNotFound` at startup for a tool without a manifest, so a
+    server that is RUNNING resolved its pack once. It can still lose it afterwards — an
+    upgrade that replaces the directory, a `BANTAMKIT_ASSETS` pointed at a scratch tree
+    that gets cleaned up — and the failure is quiet: the tool descriptions were read at
+    startup and keep being served, while `resources/read` and every later `load_skill`
+    have nothing behind them.
+
+    Deliberately no path in the sentence. `assets_root()` resolves to DIFFERENT paths in
+    the two runtimes by construction (`_print_assets_root` says why at length), so a path
+    here would make the one line of this surface that cannot be compared across them, to
+    buy what `--assets-root` prints on demand.
+    """
+    try:
+        root = assets_root()
+    except AssetNotFound:
+        return Condition(
+            "asset-pack-missing",
+            "the asset pack cannot be resolved at all, so skills, rubrics and tool "
+            "descriptions have nothing behind them — reinstall the package, or point "
+            "BANTAMKIT_ASSETS at a real pack and restart the server.",
+        )
+    if not root.is_dir():
+        return Condition(
+            "asset-pack-missing",
+            "the asset pack is gone from where this server resolved it, so skills, "
+            "rubrics and tool descriptions can no longer be re-read — run "
+            "`bantamkit-mcp --assets-root` to see where it is looking, then restart.",
+        )
+    return None
+
+
+def _unreadable_layer_condition(memory: Memory) -> Condition | None:
+    """A memory layer that could not be LISTED — which is not a layer that held nothing.
+
+    This is the sharpest of the four, because it is the one whose damage is a wrong ANSWER
+    rather than a missing one: `Memory._nothing_to_report` already refuses to say "nothing
+    is saved" when a layer is unreadable, but that sentence only reaches a person who
+    happened to run an empty recall. The footer says it on every call.
+
+    KIND, NEVER NAME. A layer's label is `project`, `extra:<grant name>` or `profile`, and
+    the grant name is the operator's own words for somebody's directory. The kind is the
+    part that is reportable; the split is here rather than at the call site so there is
+    exactly one place it can be got wrong.
+
+    It reads `Memory._layers` and `Memory._fact_count` through their private names on
+    purpose. A public accessor would be the right shape and would be a change to the
+    MEMORY layer, which this unit is not authorised to make (job39 invariant 4). Nothing
+    is re-implemented: `_fact_count` is the same counter `_unreadable_layers` uses, so
+    "unreadable" means here exactly what it means to recall.
+    """
+    unreadable = [
+        label
+        for label, store, _writable in memory._layers
+        if memory._fact_count(store.root) is None
+    ]
+    if not unreadable:
+        return None
+    kinds = sorted({label.split(":", 1)[0] for label in unreadable})
+    return Condition(
+        "memory-layer-unreadable",
+        f"{_plural(len(unreadable), 'memory layer')} could not be read "
+        f"({_plural(len(kinds), 'kind')}: {', '.join(kinds)}), so an empty recall is not "
+        "evidence that nothing is saved — check that those store directories exist and "
+        "are readable.",
+    )
+
+
+def _index_pressure_condition(memory: Memory) -> Condition | None:
+    """The index is nearly as big as the budget that has to hold it."""
+    size = _index_bytes(memory)
+    budget = memory.store.index_budget
+    if size is None or size * 100 < INDEX_PRESSURE_PERCENT * budget:
+        return None
+    return Condition(
+        "index-budget-low",
+        f"the memory index is {size} bytes of a {budget}-byte budget, so the next save "
+        "is close to being refused — archive or shorten facts with "
+        "`python -m bantamkit.memory compact`.",
+    )
+
+
+def _event_log_condition(log: EventLog) -> Condition | None:
+    """The log was asked for and a record has already been lost.
+
+    Only reachable when the operator turned it on: `write_failed` is set inside `record`'s
+    `except OSError` and a disabled log returns before any I/O. So this never fires for
+    the default configuration, which is off.
+    """
+    if not (log.enabled and log.write_failed):
+        return None
+    return Condition(
+        "event-log-unwritable",
+        "the event log is switched on but a write to it has already failed, so tool "
+        "outcomes are going unrecorded — check the path in BANTAMKIT_EVENT_LOG and "
+        "whether its directory is writable.",
+    )
+
+
+def degraded_conditions(memory: Memory, log: EventLog) -> list[Condition]:
+    """Everything wrong right now, worst first. Empty list means healthy.
+
+    ORDER IS SEVERITY AND IT IS LOAD-BEARING, because the footer shows the first one: a
+    pack that vanished breaks every asset-backed surface; an unreadable layer makes recall
+    ANSWER WRONGLY rather than fail; a full index refuses the next save; a broken event log
+    costs diagnostics only.
+
+    EVERY CONDITION IS OBSERVED, NOT INFERRED — no heartbeat, no timer, no last-seen
+    timestamp. Each one is a state a test can construct and then watch this report: delete
+    the pack, make a layer's `facts/` a file, build a store whose index already exceeds
+    nine tenths of its budget, point the log at an unwritable path. A condition that
+    cannot be constructed is not claimed.
+
+    THE COST, because this runs on every tool call: one `stat` for the index, one `is_dir`
+    for the pack, one `scandir` per memory layer (two to four), and a field read for the
+    log. No fact file is opened and no index is parsed.
+    """
+    found = (
+        _asset_pack_condition(),
+        _unreadable_layer_condition(memory),
+        _index_pressure_condition(memory),
+        _event_log_condition(log),
+    )
+    return [condition for condition in found if condition is not None]
+
+
+def degraded_notice(conditions: list[Condition]) -> str:
+    """The one line other tools' results carry when something is wrong. `""` when nothing is.
+
+    THE EMPTY STRING FOR A HEALTHY SERVER IS THE WHOLE POINT, and it is checked in a pair:
+    `test_status_surface.py` asserts the notice is present on a degraded call AND absent on
+    a healthy one, because only the pair proves it is conditional. A footer on every result
+    is noise, and noise trains a reader to skip it — at which point the one time it matters
+    it is invisible. That is what the operator asked for in their own words
+    ("ร่วม footer เฉพาะตอนผิดปกติ ด้วย") and it is the property to protect.
+
+    ONE SHAPE, ALWAYS, including for a single condition — a count of 1 reads fine, and a
+    second shape is a second thing for the port to get right. The worst condition is spelt
+    out because a bare count is not actionable; the rest are a number and a pointer,
+    because this is a FOOTER on somebody else's answer and has no licence to become the
+    answer.
+    """
+    if not conditions:
+        return ""
+    return (
+        f"⚠️ bantamkit degraded ({len(conditions)}): {conditions[0].sentence} "
+        "Call `bantamkit_status` for the full report."
+    )
+
+
+def status_report(
+    memory: Memory,
+    log: EventLog,
+    conditions: list[Condition],
+    tools: int,
+    prompts: int,
+    templates: int,
+) -> str:
+    """The whole answer `bantamkit_status` returns — prose, for a person, in a transcript.
+
+    THE FIRST LINE IS THE ANSWER and it is the line the operator asked for by name:
+    `bantamkit Active 🟢`, or `bantamkit Degraded 🟠` when `conditions` is non-empty. A
+    reader who stops after eight characters has still learned the thing they came for.
+
+    THE ONE FIELD THAT IS NOT COMPARABLE ACROSS RUNTIMES is `build`. It is `build_id`,
+    which is a fingerprint of the running source, and the two runtimes fingerprint two
+    different trees by construction — `docs/porting.md`'s divergence table already rules
+    exactly this for `build_identity`. It is here anyway because "which bantamkit" is half
+    the question this tool exists to answer: two endpoints registered under one name is
+    the situation RB-P84 filed, and a version string cannot tell them apart.
+
+    NO ARGUMENT VALUE CAN REACH THIS. It takes none, and every input above is server
+    state; `test_status_surface.py` asserts the absence positively with a sentinel.
+    """
+    identity = build_identity()
+    build = identity["build_id"]
+    facts = memory._fact_count(memory.store.root)
+    size = _index_bytes(memory)
+    budget = memory.store.index_budget
+    lines = [
+        f"bantamkit {'Degraded 🟠' if conditions else 'Active 🟢'}",
+        f"version {identity['version']}, build "
+        + (build if isinstance(build, str) else "unavailable"),
+        f"serving {_plural(tools, 'tool')}, {_plural(prompts, 'prompt')}, "
+        f"{_plural(templates, 'resource template')}",
+        "memory: "
+        + (
+            "the project store could not be read"
+            if facts is None
+            else f"{_plural(facts, 'fact')} in the project store"
+        )
+        + ", index "
+        + ("unreadable" if size is None else str(size))
+        + f" of {budget} bytes",
+        f"event log: {'on' if log.enabled else 'off'}",
+    ]
+    if conditions:
+        lines.append(f"{_plural(len(conditions), 'problem')}:")
+        lines.extend(f"- {condition.sentence}" for condition in conditions)
+    return "\n".join(lines)
+
+
 def _from_manifest(fn: Callable[..., Any], name: str) -> Any:
     """Bind one handler to its manifest entry — description, BOTH schemas, and the surface.
 
@@ -354,11 +667,46 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
     `unavailable` list it computed. Not one of them looks at the words. That is the
     property `test_eventlog.py::test_the_record_does_not_move_when_the_reply_wording_
     does` holds: change a reply's wording and the record must be byte-identical.
+
+    THE DEGRADED FOOTER IS APPLIED AFTER THE RECORD, EVERY TIME. A footer is a rendering
+    decision about somebody else's answer; the record is the decision the component made.
+    Folding one into the other would put a filesystem observation into a line a
+    conformance case byte-compares, and would make the log move when nothing the tool did
+    moved. `_noted` and `_noted_dict` below therefore run last, on the way out.
     """
     if MCPServer is None:
         raise SystemExit(_INSTALL_HINT)
     if log is None:
         log = EventLog.from_env(memory.store.root)
+
+    def _notice() -> str:
+        """The footer for right now — recomputed per call, never cached.
+
+        A cache would be the one thing that could make this lie: a condition that cleared
+        (or arrived) between two calls has to be visible on the next one, and the whole
+        probe is a handful of `stat`s. It is also what keeps two servers over one store
+        from disagreeing about the state of it.
+        """
+        return degraded_notice(degraded_conditions(memory, log))
+
+    def _noted(reply: str) -> str:
+        """A prose reply, plus the footer if there is one. Byte-identical when healthy."""
+        notice = _notice()
+        return f"{reply}\n\n{notice}" if notice else reply
+
+    def _noted_dict(answer: dict[str, Any]) -> dict[str, Any]:
+        """A structured reply, plus the footer if there is one, under one reserved key.
+
+        A JSON result has no margin to write in: the rendered text of these tools IS the
+        serialised object, so a sentence appended to it would stop being parseable. The
+        footer therefore arrives as `bantamkit_degraded`, LAST in the key order and only
+        when it exists — every one of these tools advertises
+        `additionalProperties: true`, so a key that comes and goes is inside the contract
+        it already declares. A healthy call is byte-identical to what it was before this
+        surface existed, which is the same guarantee `_noted` gives for prose.
+        """
+        notice = _notice()
+        return {**answer, "bantamkit_degraded": notice} if notice else answer
 
     def memory_save(
         type: str, name: str, description: str, body: str, links: list[str] | None = None
@@ -375,7 +723,7 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
             if index_bytes is not None:
                 detail["index_bytes"] = index_bytes
             log.record("memory_save", outcome.status, detail)
-        return outcome.reply
+        return _noted(outcome.reply)
 
     def memory_recall(query: str, k: int | None = None) -> str:
         if k is not None:
@@ -393,22 +741,26 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         if outcome.source is not None:
             detail["source"] = outcome.source
         log.record("memory_recall", outcome.status, detail)
-        return outcome.reply
+        return _noted(outcome.reply)
 
     def validate_json(output: str, schema: dict[str, Any]) -> dict[str, Any]:
         with _record_raise(log, "validate_json"):
             error = schema_error(output, schema)
         if error is None:
             log.record("validate_json", "valid")
-            return {"valid": True, "feedback": None}
+            return _noted_dict({"valid": True, "feedback": None})
         log.record("validate_json", "invalid")
-        return {
-            "valid": False,
-            "feedback": schema_retry_feedback(error),
-        }
+        return _noted_dict(
+            {
+                "valid": False,
+                "feedback": schema_retry_feedback(error),
+            }
+        )
 
     def shiftwork_clock_in(checkpoint: str) -> dict[str, Any]:
-        return _record_result(log, "shiftwork_clock_in", lambda: shiftwork.clock_in(checkpoint))
+        return _noted_dict(
+            _record_result(log, "shiftwork_clock_in", lambda: shiftwork.clock_in(checkpoint))
+        )
 
     def shiftwork_clock_out(
         checkpoint: str,
@@ -418,16 +770,20 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         history_entry: dict[str, Any],
         accounting: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return _record_result(
-            log,
-            "shiftwork_clock_out",
-            lambda: shiftwork.clock_out(
-                checkpoint, unit_id, status, handoff_patch, history_entry, accounting
-            ),
+        return _noted_dict(
+            _record_result(
+                log,
+                "shiftwork_clock_out",
+                lambda: shiftwork.clock_out(
+                    checkpoint, unit_id, status, handoff_patch, history_entry, accounting
+                ),
+            )
         )
 
     def shiftwork_status(checkpoint: str) -> dict[str, Any]:
-        return _record_result(log, "shiftwork_status", lambda: shiftwork.status(checkpoint))
+        return _noted_dict(
+            _record_result(log, "shiftwork_status", lambda: shiftwork.status(checkpoint))
+        )
 
     # A TOOL and not a resource or an `initialize` field, because the gap RB-P84 names is
     # an AGENT MID-CALL: the host reads `serverInfo` once at handshake and the
@@ -447,11 +803,40 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
             "partial" if identity["unavailable"] else "complete",
             {"unavailable": len(identity["unavailable"])},
         )
-        return identity
+        return _noted_dict(identity)
+
+    def bantamkit_status() -> str:
+        """The one surface every host renders, answering "is this thing working".
+
+        NO FOOTER ON THIS ONE, and the omission is the design rather than an oversight:
+        the report already carries every condition in full, and a footer would repeat the
+        worst of them three lines below itself.
+
+        NOTHING IS RECORDED IN THE EVENT LOG EITHER. Every other handler records the
+        decision its component made; this one makes no decision — it observes. A record
+        would be a second, worse copy of a state the log's own reader can see, and its
+        `outcome` would have to be the health verdict, which moves with the filesystem
+        rather than with anything the call did. `_record_raise` still wraps the body, so
+        a handler that FALLS OVER is still written down.
+        """
+        with _record_raise(log, "bantamkit_status"):
+            return status_report(
+                memory,
+                log,
+                degraded_conditions(memory, log),
+                len(tools),
+                SERVED_PROMPTS,
+                SERVED_RESOURCE_TEMPLATES,
+            )
 
     # The served surface, in one place, read out of the asset pack. Adding a tool here
     # without an asset raises AssetNotFound at startup — the manifest cannot drift behind
     # the server, because the server cannot start without it.
+    #
+    # `bantamkit_status` goes LAST rather than first. Registration order IS the served
+    # order (`test_tool_manifest.py::test_the_golden_records_the_order_the_wire_actually_
+    # serves`), and appending is the only edit that leaves the other seven where every
+    # existing declaration says they are.
     tools = [
         _from_manifest(memory_save, "memory_save"),
         _from_manifest(memory_recall, "memory_recall"),
@@ -460,6 +845,7 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         _from_manifest(shiftwork_clock_out, "shiftwork_clock_out"),
         _from_manifest(shiftwork_status, "shiftwork_status"),
         _from_manifest(build_identity_tool, "build_identity"),
+        _from_manifest(bantamkit_status, "bantamkit_status"),
     ]
 
     server = MCPServer(
@@ -468,6 +854,36 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         version=_version(),
         tools=tools,
     )
+
+    # THE PROMPT, AND WHY IT IS NOT A DUPLICATE OF THE TOOL ABOVE.
+    #
+    # `prompts/list` was EMPTY on both runtimes while both advertised `hasPrompts: true`,
+    # so this is a new surface rather than an addition to one. A tool is what the MODEL
+    # can call; a prompt is what a PERSON can invoke — in Claude Code it is a slash
+    # command in the operator's own menu. The person wanting to know whether their server
+    # is alive is the operator, and until now the only way for them to ask was to talk a
+    # model into asking for them.
+    #
+    # IT CARRIES THE ANSWER, not an instruction to go and get it. `prompts/get` runs
+    # server-side, so the report is already in the message the host inserts: the operator
+    # sees it with no tool round trip, and it is true as of the moment they asked.
+    @server.prompt(
+        name=STATUS_NAME,
+        title="bantamkit status",
+        description=(
+            "Is bantamkit actually working? Inserts the running server's own status "
+            "report — active or degraded, its version and build fingerprint, the memory "
+            "store it is bound to, whether the event log is on, and every degraded "
+            "condition in full. Invoke it when you want the server to answer for itself "
+            "rather than ask a model to go and check."
+        ),
+    )
+    def bantamkit_status_prompt() -> str:
+        conditions = degraded_conditions(memory, log)
+        report = status_report(
+            memory, log, conditions, len(tools), SERVED_PROMPTS, SERVED_RESOURCE_TEMPLATES
+        )
+        return f"{report}\n\n{STATUS_PROMPT_TAIL}"
 
     @server.resource("bantamkit://skills/{name}")
     def skill_resource(name: str) -> str:
