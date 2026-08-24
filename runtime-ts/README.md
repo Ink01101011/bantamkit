@@ -61,7 +61,7 @@ The warm figure is the one that is a property of this package, and it is stable.
   `body-parser`, `ajv`, `eventsource`, `hono` and `express-rate-limit` — the SDK's HTTP
   transport, none of which this stdio server uses. That is the SDK's shape, not a choice
   this package makes; it declares exactly one runtime dependency.
-- The tarball is **~160 KB**, 123 files: 38 in `dist/`, 83 in `assets/`, plus
+- The tarball is **~266 KB**, 137 files: 50 in `dist/`, 84 in `assets/`, plus `LICENSE`,
   `package.json` and this README. (The exact byte count moves whenever this file does;
   the gate prints it, and `test/packaging.test.mjs` pins the file list.)
 
