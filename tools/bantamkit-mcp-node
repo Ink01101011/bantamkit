@@ -1,0 +1,214 @@
+#!/bin/sh
+# The NODE MCP endpoint. TRACKED, therefore present in every checkout AND in every
+# `git worktree` — the same reason `tools/bantamkit-mcp` beside it is tracked (`RB-P96`).
+#
+# WHY THERE ARE TWO LAUNCHERS. `tools/bantamkit-mcp` starts the PYTHON build. The shipping
+# product is `runtime-ts`, pure Node, runnable with `npx`; the endpoint registered on a
+# developer machine was still the Python one, so what runs here was not what ships. This is
+# the Node half of that endpoint, written to the same shape on purpose: read them side by
+# side and the only differences are the ones the two runtimes actually force.
+#
+# THE HAZARD IS DIFFERENT ON THIS SIDE, AND SHARPER. The Python launcher's failure mode is a
+# missing INTERPRETER or a missing DEPENDENCY; the checkout always carries the source,
+# because `runtime-py/src` is tracked. Here the code itself is BUILD OUTPUT:
+# `runtime-ts/dist/` is gitignored (`<repo>/.gitignore`, line `dist/`). So a fresh clone, a
+# fresh `git worktree`, and one `rm -rf runtime-ts/dist` all produce a registration that
+# points at a file which is not there. Node's own answer to that is
+# `ERR_MODULE_NOT_FOUND` with a stack trace on stderr and a closed stdout, which reaches an
+# MCP client as `CONNECTION_CLOSED` — the exact symptom-not-cause failure the Python
+# launcher's header records having measured twice. Every exit below therefore names the
+# cause and the fix in a sentence, and every one of them names
+# `npm run build --prefix runtime-ts`.
+#
+# THE TWO HALVES, AND WHY THEY DO NOT SPLIT THE WAY THE PYTHON ONES DO.
+#
+#   CODE comes from the checkout this launcher was spawned out of — `$0`'s grandparent —
+#     exactly as it does on the Python side, and for the same `RB-P55`/`RB-P70` reason: a
+#     unit editing `runtime-ts/src` in a worktree must not be answered by somebody else's
+#     build. There is NO fallback to the main checkout's `dist/`. That fallback is
+#     available and is deliberately refused: it would turn "you have not built" — which is
+#     loud, and fixable in one command — into "you are running a stale build of a different
+#     tree", which is silent and plausible, and is strictly the worse of the two.
+#   DEPENDENCIES cannot be borrowed at all. `PYTHONPATH` lets the Python launcher take
+#     source from the worktree and `site-packages` from wherever someone ran `pip install`.
+#     Node has no such seam for ESM: the resolver walks `node_modules` upward from the
+#     IMPORTING FILE and does not read `NODE_PATH`. So `<checkout>/runtime-ts/node_modules`
+#     is the only place the SDK can come from, `--which` reports which one was found, and
+#     the failure text says this rather than leaving an operator to discover it.
+#
+# `--which` prints where this launcher resolved every part and exits, and it answers on a
+# checkout that has never been built — it stats paths and imports nothing.
+#
+# POSIX `sh` only, and no heredoc: stdin is the JSON-RPC channel and anything this script
+# reads from it is a message the server will never see.
+
+set -u
+
+here=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd) || exit 127
+
+root=$here
+common=
+
+# A worktree's `.git` is a FILE holding `gitdir: <main>/.git/worktrees/<name>`, and that
+# directory holds `commondir` pointing back at the main `.git`. Reading the two costs no
+# subprocess and no external command — `read` is a shell builtin — so this still answers
+# when `git` is not on `PATH`. Node needs the dependency root for nothing today; it is
+# resolved anyway because `--which` reports it, and because an operator reading two
+# launchers side by side should not have to work out which one lost a step.
+gitdir=
+if [ -f "$here/.git" ]; then
+    label=
+    read -r label gitdir < "$here/.git" || :
+    [ "$label" = "gitdir:" ] || gitdir=
+fi
+case ${gitdir:-} in
+    "") ;;
+    /*) ;;
+    *) gitdir=$here/$gitdir ;;
+esac
+if [ -n "${gitdir:-}" ] && [ -f "$gitdir/commondir" ]; then
+    relative=
+    read -r relative < "$gitdir/commondir" || :
+    case ${relative:-} in
+        "") ;;
+        /*) common=$relative ;;
+        *) common=$gitdir/$relative ;;
+    esac
+fi
+
+# Fallback for layouts the two files do not describe. With `-C`, `--git-common-dir` answers
+# ABSOLUTE from a worktree and RELATIVE (".git") from the canonical checkout; the relative
+# case means "already at the root", so it is the answer, not a failure.
+if [ -z "$common" ] && common_out=$(git -C "$here" rev-parse --git-common-dir 2>/dev/null); then
+    case $common_out in
+        /*) common=$common_out ;;
+    esac
+fi
+
+if [ -n "$common" ] && [ -d "$common" ]; then
+    root=$(CDPATH= cd -- "$common/.." && pwd) || root=$here
+fi
+
+# `BANTAMKIT_NODE` first, then `PATH`, then the two locations the official macOS and Linux
+# installers use. A version manager's shim directory is NOT hardcoded here: it is per-user,
+# and a tracked file that names one machine's layout is a lie on every other machine.
+# `BANTAMKIT_NODE` is the seam for that case, and the failure text names it.
+node=
+if [ -n "${BANTAMKIT_NODE:-}" ] && [ -x "${BANTAMKIT_NODE}" ]; then
+    node=$BANTAMKIT_NODE
+fi
+if [ -z "$node" ]; then
+    node=$(command -v node 2>/dev/null) || node=
+fi
+if [ -z "$node" ]; then
+    for candidate in /opt/homebrew/bin/node /usr/local/bin/node; do
+        if [ -x "$candidate" ]; then
+            node=$candidate
+            break
+        fi
+    done
+fi
+if [ -z "$node" ]; then
+    echo "bantamkit-mcp-node: no Node interpreter found." >&2
+    echo "  looked in : \$BANTAMKIT_NODE (${BANTAMKIT_NODE:-unset})" >&2
+    echo "              node on PATH" >&2
+    echo "              /opt/homebrew/bin/node" >&2
+    echo "              /usr/local/bin/node" >&2
+    echo "The build needs Node >=18. If Node is installed under a version manager whose" >&2
+    echo "shims are not on this process's PATH, set BANTAMKIT_NODE to the interpreter in" >&2
+    echo "the MCP registration's env." >&2
+    exit 127
+fi
+
+BANTAMKIT_LAUNCH_CHECKOUT=$here
+BANTAMKIT_LAUNCH_DEPSROOT=$root
+export BANTAMKIT_LAUNCH_CHECKOUT BANTAMKIT_LAUNCH_DEPSROOT
+
+exec "$node" --input-type=module -e '
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
+
+const checkout = process.env.BANTAMKIT_LAUNCH_CHECKOUT ?? "?";
+const depsRoot = process.env.BANTAMKIT_LAUNCH_DEPSROOT ?? "?";
+delete process.env.BANTAMKIT_LAUNCH_CHECKOUT;
+delete process.env.BANTAMKIT_LAUNCH_DEPSROOT;
+
+const entry = join(checkout, "runtime-ts", "dist", "cli.js");
+
+// Node ESM resolution for a bare specifier, as far as it is observable without importing:
+// walk `node_modules` upward from the importing file. `NODE_PATH` is not consulted and is
+// not checked here either, because checking it would report a lookup Node will not do.
+const findSdk = (start) => {
+  let dir = start;
+  for (;;) {
+    const found = join(dir, "node_modules", "@modelcontextprotocol", "sdk");
+    if (existsSync(found)) return found;
+    const up = dirname(dir);
+    if (up === dir) return null;
+    dir = up;
+  }
+};
+
+// `-e` gives `process.argv` as [node, ...args] with no script slot, and `dist/cli.js`
+// reads `process.argv.slice(2)`. Without this splice the FIRST flag a host passes is
+// eaten silently, which is the class of bug this launcher exists to not have.
+const args = process.argv.slice(1);
+
+if (args.includes("--which")) {
+  const sdk = findSdk(join(checkout, "runtime-ts", "dist"));
+  process.stdout.write(
+    "checkout=" + checkout + "\n" +
+    "deps_root=" + depsRoot + "\n" +
+    "runtime=node\n" +
+    "node=" + process.execPath + "\n" +
+    "entry=" + entry + (existsSync(entry) ? "" : " (missing)") + "\n" +
+    "sdk=" + (sdk ?? "-") + "\n",
+  );
+  process.exit(0);
+}
+
+const buildFix =
+  "Fix, in " + checkout + ":\n" +
+  "  npm ci --prefix runtime-ts && npm run build --prefix runtime-ts\n";
+
+if (!existsSync(entry)) {
+  process.stderr.write(
+    "bantamkit-mcp-node: cannot load the Node build.\n" +
+    "  checkout    : " + checkout + "\n" +
+    "  entry       : " + entry + "\n" +
+    "  interpreter : " + process.execPath + "\n" +
+    "  error       : the build output does not exist\n" +
+    "runtime-ts/dist/ is BUILD OUTPUT and is gitignored, so a fresh clone, a fresh\n" +
+    "git worktree, and rm -rf runtime-ts/dist all leave it absent. This launcher does\n" +
+    "not fall back to another checkout dist/: running a stale build of a different\n" +
+    "tree is worse than not starting.\n" +
+    buildFix,
+  );
+  process.exit(1);
+}
+
+process.argv.splice(1, 0, entry);
+
+try {
+  await import(pathToFileURL(entry).href);
+} catch (error) {
+  if (error?.code !== "ERR_MODULE_NOT_FOUND") throw error;
+  const sdk = findSdk(join(checkout, "runtime-ts", "dist"));
+  process.stderr.write(
+    "bantamkit-mcp-node: cannot load the Node build.\n" +
+    "  checkout    : " + checkout + "\n" +
+    "  entry       : " + entry + "\n" +
+    "  interpreter : " + process.execPath + "\n" +
+    "  deps        : " + (sdk ?? "no node_modules/@modelcontextprotocol/sdk above the entry") + "\n" +
+    "  error       : " + String(error.message).split("\n")[0] + "\n" +
+    "A module the build imports did not resolve: either the dependencies are not\n" +
+    "installed or the build output is incomplete. Node walks node_modules upward from\n" +
+    "the importing file and does NOT read NODE_PATH, so the dependencies cannot be\n" +
+    "borrowed from " + depsRoot + "/runtime-ts/node_modules the way PYTHONPATH borrows\n" +
+    "the Python ones.\n" +
+    buildFix,
+  );
+  process.exit(1);
+}
+' -- "$@"
