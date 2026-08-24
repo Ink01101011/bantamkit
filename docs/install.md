@@ -71,9 +71,9 @@ git push origin v0.4.0
 ## The MCP server without Python: `npx bantamkit-mcp`
 
 Everything above installs the **library**, and it needs Python. The **MCP server** does
-not, any more. `runtime-ts/` is a pure-Node port of it — the same seven tools, the same
-two resource templates, the same memory store on disk — packaged so a teammate can add
-one line to `.mcp.json` and be done:
+not, any more. `runtime-ts/` is a pure-Node port of it — the same eight tools, the same
+prompt, the same two resource templates, the same memory store on disk — packaged so a
+teammate can add one line to `.mcp.json` and be done:
 
 ```json
 {"mcpServers": {"bantamkit": {"command": "npx", "args": ["-y", "bantamkit-mcp@0.25.0"]}}}

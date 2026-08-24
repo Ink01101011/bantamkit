@@ -30,6 +30,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import {
   CallToolRequestSchema,
   ErrorCode,
+  GetPromptRequestSchema,
   ListPromptsRequestSchema,
   ListResourceTemplatesRequestSchema,
   ListResourcesRequestSchema,
@@ -48,9 +49,26 @@ import * as shiftwork from '../shiftwork.js';
 import { buildIdentity, SERVER_NAME } from './identity.js';
 import { ARG_MODELS, PyValidationFailure, validateArguments } from './pyargs.js';
 import { sdkJson } from './sdkjson.js';
+import {
+  degradedConditions,
+  degradedNotice,
+  SERVED_PROMPTS,
+  SERVED_RESOURCE_TEMPLATES,
+  statusReport,
+  STATUS_NAME,
+  STATUS_PROMPT_DESCRIPTION,
+  STATUS_PROMPT_TAIL,
+  STATUS_PROMPT_TITLE,
+} from './status.js';
 import type { RawStdioTransport } from './transport.js';
 
-/** The seven, in the order `build_server` lists them — which is the order `tools/list` emits. */
+/**
+ * The eight, in the order `build_server` lists them — which is the order `tools/list` emits.
+ *
+ * `bantamkit_status` is LAST rather than first, for the same reason the reference appends it:
+ * registration order IS the served order, and appending is the only edit that leaves the other
+ * seven where every existing declaration says they are.
+ */
 export const MCP_TOOLS = [
   'memory_save',
   'memory_recall',
@@ -59,6 +77,7 @@ export const MCP_TOOLS = [
   'shiftwork_clock_out',
   'shiftwork_status',
   'build_identity',
+  'bantamkit_status',
 ] as const;
 
 
@@ -215,6 +234,12 @@ function recordResult(log: EventLog, tool: string, call: () => PyValue): PyValue
  * Logging happens HERE and not in the caller's `try`, so that an argument refusal — which
  * `validateArguments` raises before this function is entered, exactly as pydantic does before
  * the reference's handler is entered — writes no record on either side.
+ *
+ * THE DEGRADED FOOTER IS APPLIED AFTER THE RECORD, EVERY TIME. A footer is a rendering
+ * decision about somebody else's answer; the record is the decision the component made.
+ * Folding one into the other would put a filesystem observation into a line a conformance case
+ * byte-compares, and would make the log move when nothing the tool did moved. `noted` and
+ * `notedDict` below therefore run last, on the way out.
  */
 function runTool(
   name: string,
@@ -223,6 +248,42 @@ function runTool(
   version: string,
   log: EventLog,
 ): { value: PyValue; wrapped: boolean } {
+  /**
+   * The footer for right now — recomputed per call, never cached.
+   *
+   * A cache would be the one thing that could make this lie: a condition that cleared (or
+   * arrived) between two calls has to be visible on the next one, and the whole probe is a
+   * handful of `stat`s. It is also what keeps two servers over one store from disagreeing
+   * about the state of it.
+   */
+  const notice = (): string => degradedNotice(degradedConditions(memory, log));
+
+  /** A prose reply, plus the footer if there is one. Byte-identical when healthy. */
+  const noted = (reply: string): string => {
+    const line = notice();
+    return line === '' ? reply : `${reply}\n\n${line}`;
+  };
+
+  /**
+   * A structured reply, plus the footer if there is one, under one reserved key.
+   *
+   * A JSON result has no margin to write in: the rendered text of these tools IS the
+   * serialised object, so a sentence appended to it would stop being parseable. The footer
+   * therefore arrives as `bantamkit_degraded`, LAST in the key order and only when it exists —
+   * every one of these tools advertises `additionalProperties: true`, so a key that comes and
+   * goes is inside the contract it already declares. A healthy call is byte-identical to what
+   * it was before this surface existed, which is the same guarantee `noted` gives for prose.
+   */
+  const notedDict = (answer: PyValue): PyValue => {
+    const line = notice();
+    if (line === '' || answer.t !== 'dict') return answer;
+    // A fresh Map preserves the answer's own key order and appends: the reserved key is not
+    // one of these tools' fields, so `set` puts it at the end and nothing else moves.
+    const out = new Map(answer.v);
+    out.set('bantamkit_degraded', { t: 'str', v: line });
+    return { t: 'dict', v: out };
+  };
+
   switch (name) {
     case 'memory_save': {
       const links = args.get('links');
@@ -240,7 +301,7 @@ function runTool(
         if (indexBytes !== null) detail['index_bytes'] = indexBytes;
         log.record('memory_save', outcome.status, detail);
       }
-      return { value: { t: 'str', v: outcome.reply }, wrapped: true };
+      return { value: { t: 'str', v: noted(outcome.reply) }, wrapped: true };
     }
     case 'memory_recall': {
       let k = asInt(args.get('k'));
@@ -257,33 +318,41 @@ function runTool(
       };
       if (outcome.source !== null) detail['source'] = outcome.source;
       log.record('memory_recall', outcome.status, detail);
-      return { value: { t: 'str', v: outcome.reply }, wrapped: true };
+      return { value: { t: 'str', v: noted(outcome.reply) }, wrapped: true };
     }
     case 'validate_json': {
       const error = recordRaise(log, 'validate_json', () => schemaError(asText(args.get('output')), args.get('schema')!));
       const out = new Map<string, PyValue>([['valid', { t: 'bool', v: error === null }]]);
       out.set('feedback', error === null ? { t: 'null' } : { t: 'str', v: `${error}\nReturn ONLY a JSON object matching the schema.` });
       log.record('validate_json', error === null ? 'valid' : 'invalid');
-      return { value: { t: 'dict', v: out }, wrapped: false };
+      return { value: notedDict({ t: 'dict', v: out }), wrapped: false };
     }
     case 'shiftwork_clock_in':
-      return { value: recordResult(log, name, () => shiftwork.clockIn(asText(args.get('checkpoint')))), wrapped: false };
+      return {
+        value: notedDict(recordResult(log, name, () => shiftwork.clockIn(asText(args.get('checkpoint'))))),
+        wrapped: false,
+      };
     case 'shiftwork_clock_out':
       return {
-        value: recordResult(log, name, () =>
-          shiftwork.clockOut(
-            asText(args.get('checkpoint')),
-            asText(args.get('unit_id')),
-            asText(args.get('status')),
-            args.get('handoff_patch')!,
-            args.get('history_entry')!,
-            args.get('accounting') ?? { t: 'null' },
+        value: notedDict(
+          recordResult(log, name, () =>
+            shiftwork.clockOut(
+              asText(args.get('checkpoint')),
+              asText(args.get('unit_id')),
+              asText(args.get('status')),
+              args.get('handoff_patch')!,
+              args.get('history_entry')!,
+              args.get('accounting') ?? { t: 'null' },
+            ),
           ),
         ),
         wrapped: false,
       };
     case 'shiftwork_status':
-      return { value: recordResult(log, name, () => shiftwork.status(asText(args.get('checkpoint')))), wrapped: false };
+      return {
+        value: notedDict(recordResult(log, name, () => shiftwork.status(asText(args.get('checkpoint'))))),
+        wrapped: false,
+      };
     case 'build_identity': {
       const identity = recordRaise(log, 'build_identity', () => buildIdentity(version, sdkVersion()));
       // The COUNT of underivable fields, not the fields and not the digests. A code digest is
@@ -292,7 +361,31 @@ function runTool(
       // record unportable to buy nothing the tool's own reply does not already say.
       const unavailable = identity.get('unavailable') as unknown[];
       log.record('build_identity', unavailable.length ? 'partial' : 'complete', { unavailable: unavailable.length });
-      return { value: fromJs(identity), wrapped: false };
+      return { value: notedDict(fromJs(identity)), wrapped: false };
+    }
+    case 'bantamkit_status': {
+      // NO FOOTER ON THIS ONE, and the omission is the design rather than an oversight: the
+      // report already carries every condition in full, and a footer would repeat the worst of
+      // them three lines below itself.
+      //
+      // NOTHING IS RECORDED IN THE EVENT LOG EITHER. Every other handler records the decision
+      // its component made; this one makes no decision — it observes. A record would be a
+      // second, worse copy of a state the log's own reader can see, and its `outcome` would
+      // have to be the health verdict, which moves with the filesystem rather than with
+      // anything the call did. `recordRaise` still wraps the body, so a handler that FALLS
+      // OVER is still written down.
+      const report = recordRaise(log, 'bantamkit_status', () =>
+        statusReport(
+          memory,
+          log,
+          degradedConditions(memory, log),
+          buildIdentity(version, sdkVersion()),
+          MCP_TOOLS.length,
+          SERVED_PROMPTS,
+          SERVED_RESOURCE_TEMPLATES,
+        ),
+      );
+      return { value: { t: 'str', v: report }, wrapped: true };
     }
     default:
       // `tool_manager.call_tool` raises `ToolError(f"Unknown tool: {name}")`, which the
@@ -345,7 +438,59 @@ export function buildServer(
 
   server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: advertised }));
   server.setRequestHandler(ListResourcesRequestSchema, () => ({ resources: [] }));
-  server.setRequestHandler(ListPromptsRequestSchema, () => ({ prompts: [] }));
+
+  // THE PROMPT, AND WHY IT IS NOT A DUPLICATE OF THE TOOL ABOVE.
+  //
+  // `prompts/list` was EMPTY on both runtimes while both advertised `prompts: {listChanged:
+  // false}`, so this is a new surface rather than an addition to one. A tool is what the MODEL
+  // can call; a prompt is what a PERSON invokes — in Claude Code it is a slash command in the
+  // operator's own menu. The person wanting to know whether their server is alive is the
+  // operator, and until now the only way for them to ask was to talk a model into asking.
+  //
+  // Key order is `arguments, description, name, title` and `description, messages` because
+  // that is the order `mcp` 2.0.0's pydantic `Prompt` and `GetPromptResult` models dump in —
+  // measured against the running reference, not guessed. Both are compared as RAW BYTES by
+  // `wire`, so the order is part of the answer.
+  server.setRequestHandler(ListPromptsRequestSchema, () => ({
+    prompts: [
+      {
+        // `arguments: []` is emitted, not omitted: the reference's model has a default of
+        // `[]` for a prompt function with no parameters, and a client comparing two
+        // advertisements would see a key appear and disappear.
+        arguments: [],
+        description: STATUS_PROMPT_DESCRIPTION,
+        name: STATUS_NAME,
+        title: STATUS_PROMPT_TITLE,
+      },
+    ],
+  }));
+
+  // IT CARRIES THE ANSWER, not an instruction to go and get it. `prompts/get` runs
+  // server-side, so the report is already in the message the host inserts: the operator sees
+  // it with no tool round trip, and it is true as of the moment they asked.
+  server.setRequestHandler(GetPromptRequestSchema, (request) => {
+    // The reference's `PromptManager` raises for an unregistered name, which the SDK turns
+    // into a JSON-RPC error; the TS SDK does the same for a handler that throws. One name is
+    // registered, so anything else is unknown.
+    if (request.params.name !== STATUS_NAME) {
+      throw rpcError(ErrorCode.InvalidParams, `Unknown prompt: ${request.params.name}`, null);
+    }
+    const conditions = degradedConditions(memory, log);
+    const report = statusReport(
+      memory,
+      log,
+      conditions,
+      buildIdentity(version, sdkVersion()),
+      MCP_TOOLS.length,
+      SERVED_PROMPTS,
+      SERVED_RESOURCE_TEMPLATES,
+    );
+    return {
+      description: STATUS_PROMPT_DESCRIPTION,
+      messages: [{ content: { text: `${report}\n\n${STATUS_PROMPT_TAIL}`, type: 'text' as const }, role: 'user' as const }],
+    };
+  });
+
   server.setRequestHandler(ListResourceTemplatesRequestSchema, () => ({
     // `description: ""` is emitted, not omitted: the reference's pydantic model has a
     // default of `""` for a resource function with no docstring, and a client that compared

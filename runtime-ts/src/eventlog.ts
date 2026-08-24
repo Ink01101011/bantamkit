@@ -175,6 +175,23 @@ export class EventLog {
   readonly path: string | null;
   readonly capBytes: number;
   private readonly clock: () => number;
+  /**
+   * Set the first time `record` swallows a system error, and never cleared.
+   *
+   * FAILING TO LOG STILL NEVER FAILS THE TOOL — that contract is unchanged and nothing here
+   * throws. What the flag buys is that the failure stops being INVISIBLE. An operator who
+   * turned the log on and is getting nothing is the one person who cannot tell "no records
+   * because nothing happened" from "no records because the path is unwritable", and the log
+   * is the one channel that cannot report its own silence. `mcp/status.ts`'s
+   * `eventLogCondition` reads this and says so on the tool surface instead.
+   *
+   * NOT CLEARED BY A LATER SUCCESS, deliberately: a log with a hole in it is not a log to
+   * read as complete, and the next write succeeding does not put the missing records back.
+   * It is a bool and not a count for the metadata rule's sake — a count would still be
+   * metadata, but nothing reads one, and an unused number is a second thing to keep true in
+   * two runtimes.
+   */
+  writeFailed = false;
 
   constructor(path: string | null, capBytes: number = CAP_BYTES, clock: () => number = defaultClock) {
     this.path = path;
@@ -208,6 +225,10 @@ export class EventLog {
       this.append(this.path, payload);
     } catch (e) {
       if (!isSystemError(e)) throw e;
+      // Set HERE and nowhere else, so the flag means exactly "a record was composed, offered
+      // to the filesystem, and lost" — never "the log is off" (which returns above, before
+      // any I/O) and never "nothing has been logged yet".
+      this.writeFailed = true;
     }
   }
 

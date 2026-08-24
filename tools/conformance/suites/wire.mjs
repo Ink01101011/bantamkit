@@ -43,7 +43,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const name = 'wire';
-export const summary = 'the MCP surface: seven tools, two templates, and the frames themselves';
+export const summary = 'the MCP surface: eight tools, one prompt, two templates, and the frames themselves';
 
 const here = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = dirname(dirname(here));
@@ -400,6 +400,50 @@ export async function run(ctx) {
   add('identity', [INIT(), INITIALIZED, callTool(2, 'build_identity', {})]);
 
   /**
+   * `bantamkit_status`, its prompt, and the degraded footer — in the TWO STATES that are the
+   * only proof the footer is conditional (`docs/status.md`).
+   *
+   * ONE MASK AND ONE ONLY. Line 2 of the report carries `build_id`, which fingerprints the
+   * executing tree, and these are two trees — `docs/porting.md`'s divergence table already
+   * rules exactly that, and `assets_digest` is the field that IS identical. So the digest is
+   * masked and every other byte of both reports is compared. A SECOND mask would not be a
+   * fix: it would mean something is diverging that the contract says should not.
+   *
+   * THE STRADDLE IS ONE BYTE OF BUDGET WIDE, and both sides of it are driven. One
+   * `memory_save` writes a 46-byte `index.md`; 46 * 100 = 4600, so at a 51-byte budget
+   * 90 * 51 = 4590 <= 4600 and the store is degraded, while at 52 it is 4680 > 4600 and it is
+   * not. The comparison is integer cross-multiplication in both runtimes precisely so that
+   * one byte either way lands on the same side in both — a float each had rounded its own way
+   * is the defect this shape exists to make impossible, and a threshold asserted from one side
+   * only is a threshold that could be anywhere below it.
+   *
+   * The tool calls that follow are the two RESULT KINDS the footer reaches differently: prose
+   * (`memory_save`, `memory_recall`) takes `reply + "\n\n" + notice`, and structured
+   * (`validate_json`, `shiftwork_status`) takes a `bantamkit_degraded` key, last. `build_identity`
+   * is the third structured tool and is deliberately NOT here — its reply is ruled
+   * un-comparable, so the footer on it is pinned by `runtime-ts/test/server.test.mjs` instead.
+   */
+  const STATUS_LINES = [
+    INIT(),
+    INITIALIZED,
+    callTool(2, 'memory_save', { type: 'project', name: 'status-probe', description: 'a probe fact', body: 'body' }),
+    callTool(3, 'bantamkit_status', {}),
+    rpc(4, 'prompts/get', { name: 'bantamkit_status' }),
+    callTool(5, 'memory_recall', { query: 'probe' }),
+    callTool(6, 'validate_json', { output: '{}', schema: { type: 'object' } }),
+    callTool(7, 'shiftwork_status', { checkpoint: checkpoint }),
+  ];
+  const maskBuild = (text) => text.replace(/build sha256:[0-9a-f]{64}/g, 'build sha256:<masked>');
+  add('status-active', STATUS_LINES, {
+    argv: ['--store', store, '--index-budget', '52'],
+    mask: maskBuild,
+  });
+  add('status-degraded', STATUS_LINES, {
+    argv: ['--store', store, '--index-budget', '51'],
+    mask: maskBuild,
+  });
+
+  /**
    * THE EVENT LOG: one session, every outcome the host collapses into "completed
    * successfully", and the file both runtimes write compared byte for byte.
    *
@@ -544,6 +588,15 @@ export async function run(ctx) {
     if (RULED_SESSIONS.has(spec.name)) continue;
     const left = byId(python.frames);
     const right = byId(node.frames);
+    /**
+     * A session's own mask, applied to BOTH sides of every comparison below, or identity.
+     *
+     * Only `status-active` and `status-degraded` set one, and it covers exactly one value:
+     * the report's `build sha256:<64 hex>`, which is a fingerprint of the executing tree and
+     * cannot agree across two trees. Every other byte of those frames — including the whole
+     * of the fifth line, the problem list and the footer — is compared as it left the process.
+     */
+    const mask = spec.mask ?? ((text) => text);
     cases.push({
       name: `${spec.name}: the answered ids`,
       kind: 'json',
@@ -554,8 +607,8 @@ export async function run(ctx) {
       cases.push({
         name: `${spec.name}: id ${id}`,
         kind: 'string',
-        expected: canonical(left.get(id) ?? '{"missing":true}'),
-        actual: canonical(right.get(id) ?? '{"missing":true}'),
+        expected: mask(canonical(left.get(id) ?? '{"missing":true}')),
+        actual: mask(canonical(right.get(id) ?? '{"missing":true}')),
       });
     }
     // AND THE RAW LINE, for every frame the port builds itself. The canonicaliser above
@@ -569,7 +622,12 @@ export async function run(ctx) {
         .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
         .map(([, line]) => line)
         .join('\n');
-    cases.push({ name: `${spec.name}: raw frame bytes`, kind: 'bytes', expected: rawOf(left), actual: rawOf(right) });
+    cases.push({
+      name: `${spec.name}: raw frame bytes`,
+      kind: 'bytes',
+      expected: mask(rawOf(left)),
+      actual: mask(rawOf(right)),
+    });
   }
 
   // -------------------------------------------------------- the files clock_out writes
@@ -712,7 +770,7 @@ export async function run(ctx) {
     };
     const py = identityOf(python);
     const nd = identityOf(node);
-    // THE ONE FIELD THAT IS COMPARABLE, and the reason all 83 asset files ship.
+    // THE ONE FIELD THAT IS COMPARABLE, and the reason all 84 asset files ship.
     cases.push({
       name: 'build_identity: assets_digest agrees across the two runtimes',
       kind: 'string',
@@ -787,6 +845,95 @@ export async function run(ctx) {
         'about wheels.',
     });
     notes.push(`python build_id ${py.build_id} / node build_id ${nd.build_id} — not comparable, by construction`);
+  }
+
+  // ------------------------------------------ the status surface, and the footer's PAIR
+
+  /**
+   * PER SIDE, NOT DIFFERENTIAL, and that is the point of this block.
+   *
+   * The frame comparisons above already prove the two runtimes agree. They cannot prove the
+   * two are RIGHT: a footer emitted on every result, and a footer emitted on none, would each
+   * make both sides agree with each other and fail nothing. So each side is separately held to
+   * the pair — present on every one of the degraded session's other-tool replies, absent from
+   * every one of the healthy session's — and to the key ORDER a structured reply puts it in.
+   */
+  {
+    const FOOTER = '⚠️ bantamkit degraded (';
+    /** The parsed frame for one id, or `null` if the session never answered it. */
+    const frameOf = (side, id) =>
+      side.frames
+        .map((line) => {
+          try {
+            return JSON.parse(line);
+          } catch {
+            return null;
+          }
+        })
+        .find((frame) => frame !== null && frame.id === id) ?? null;
+    /** The rendered text of a tool result — the half a person actually reads. */
+    const toolTextOf = (side, id) => frameOf(side, id)?.result?.content?.[0]?.text ?? null;
+    /** The four OTHER tools in `STATUS_LINES`: two prose replies and two structured ones. */
+    const OTHER_TOOLS = [2, 5, 6, 7];
+
+    for (const [label, key] of [
+      ['the reference', 'python'],
+      ['the port', 'node'],
+    ]) {
+      const hot = results.get('status-degraded')[key];
+      const cool = results.get('status-active')[key];
+      const carrying = (side) => OTHER_TOOLS.filter((id) => (toolTextOf(side, id) ?? '').includes(FOOTER)).length;
+      cases.push({
+        name: `status: ${label} puts the footer on every degraded reply and no healthy one`,
+        kind: 'string',
+        expected: `degraded 4 of 4, healthy 0 of 4, and bantamkit_status itself never`,
+        actual:
+          `degraded ${carrying(hot)} of 4, healthy ${carrying(cool)} of 4, and bantamkit_status ` +
+          `itself ${[hot, cool].some((side) => (toolTextOf(side, 3) ?? '').includes(FOOTER)) ? 'sometimes' : 'never'}`,
+      });
+      cases.push({
+        name: `status: ${label} answers Active on one budget and Degraded one byte tighter`,
+        kind: 'string',
+        expected: 'bantamkit Active 🟢 then bantamkit Degraded 🟠',
+        actual: `${(toolTextOf(cool, 3) ?? '').split('\n')[0]} then ${(toolTextOf(hot, 3) ?? '').split('\n')[0]}`,
+      });
+      cases.push({
+        name: `status: ${label} puts \`bantamkit_degraded\` LAST in a structured reply, and omits it when healthy`,
+        kind: 'json',
+        expected: [
+          ['valid', 'feedback', 'bantamkit_degraded'],
+          ['valid', 'feedback'],
+        ],
+        actual: [
+          Object.keys(frameOf(hot, 6)?.result?.structuredContent ?? {}),
+          Object.keys(frameOf(cool, 6)?.result?.structuredContent ?? {}),
+        ],
+      });
+      cases.push({
+        name: `status: ${label}'s prompt carries the report itself, not an instruction to fetch it`,
+        kind: 'string',
+        expected: 'user text, first line bantamkit Degraded 🟠, report then 1 instruction line',
+        actual: (() => {
+          const message = frameOf(hot, 4)?.result?.messages?.[0];
+          const text = message?.content?.text ?? '';
+          const [report, ...rest] = text.split('\n\n');
+          return (
+            `${message?.role} ${message?.content?.type}, first line ${report.split('\n')[0]}, ` +
+            `report then ${rest.length} instruction line${rest.length === 1 ? '' : 's'}`
+          );
+        })(),
+      });
+    }
+    notes.push(
+      'status: the index straddle is one byte of budget wide — a 46-byte index.md is Active at ' +
+        'a 52-byte budget (90*52 = 4680 > 4600) and Degraded at 51 (90*51 = 4590 <= 4600), on ' +
+        'both sides, by integer cross-multiplication.',
+    );
+    notes.push(
+      'status: ONE mask over both reports — `build sha256:<64 hex>`, the value docs/porting.md ' +
+        'already rules divergent. Every other byte of the report, the prompt and the footer is ' +
+        'compared as it left the process.',
+    );
   }
 
   // --------------------------------------------------- the SDK-lineage rulings, in full

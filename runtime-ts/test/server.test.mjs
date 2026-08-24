@@ -17,7 +17,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -148,6 +148,8 @@ test('the agent-only tools are absent from tools/list and unknown to tools/call'
     { args: ['--store', freshStore()] },
   );
   const names = byId(lines, 2).result.tools.map((t) => t.name);
+  // Registration order IS served order, so `bantamkit_status` is appended and the other seven
+  // stay exactly where they were. A list that reordered would be a wire change nobody asked for.
   assert.deepEqual(names, [
     'memory_save',
     'memory_recall',
@@ -156,6 +158,7 @@ test('the agent-only tools are absent from tools/list and unknown to tools/call'
     'shiftwork_clock_out',
     'shiftwork_status',
     'build_identity',
+    'bantamkit_status',
   ]);
   const refused = byId(lines, 3).result;
   assert.equal(refused.isError, true);
@@ -286,7 +289,7 @@ test('build_identity names its runtime and refuses to be compared across lineage
   const id = byId(lines, 2).result.structuredContent;
   assert.equal(id.runtime, 'node');
   assert.equal(id.server_name, 'bantamkit');
-  assert.equal(id.assets_files, 83);
+  assert.equal(id.assets_files, 84);
   assert.match(id.assets_digest, /^sha256:[0-9a-f]{64}$/);
   assert.match(id.code_digest, /^sha256:[0-9a-f]{64}$/);
   assert.match(id.build_id, /^sha256:[0-9a-f]{64}$/);
@@ -389,7 +392,7 @@ test('--assets-root still answers, and it is the only thing that prints outside 
   const { lines, code } = await session([], { args: ['--assets-root'] });
   assert.equal(code, 0);
   assert.equal(lines[0], ASSETS);
-  assert.equal(lines[1], '83 files');
+  assert.equal(lines[1], '84 files');
 });
 
 // ================================================= the pydantic-shaped argument refusals
@@ -485,7 +488,11 @@ test('the two templates advertise an empty description, as the reference does', 
     data: { uri: 'bantamkit://other/x' },
   });
   assert.deepEqual(byId(lines, 6).result, { resources: [] });
-  assert.deepEqual(byId(lines, 7).result, { prompts: [] });
+  // `prompts/list` was EMPTY here until U12. It is the one advertisement whose content is
+  // pinned in the status section below rather than in this one; what stays here is that the
+  // list is served at all and carries exactly the one registration `SERVED_PROMPTS` counts.
+  assert.equal(byId(lines, 7).result.prompts.length, 1);
+  assert.equal(byId(lines, 7).result.prompts[0].name, 'bantamkit_status');
 });
 
 test('the advertised capabilities are the reference set, not the SDK default', async () => {
@@ -516,4 +523,264 @@ test('no shipped tool manifest carries a number JSON.parse cannot round-trip', a
     );
     assert.ok(!/[-0-9]\d*\.\d|[eE][-+]?\d/.test(text.replace(/"(?:[^"\\]|\\.)*"/g, '""')), `${file} holds a float literal`);
   }
+});
+
+// ==================================== bantamkit_status, its prompt, and the degraded footer
+//
+// The differential against the running Python server is `tools/conformance/suites/wire.mjs`,
+// which compares both reports with only line 2's build digest masked. What is here is the
+// half a differential cannot see: the two conditions that suite cannot construct without
+// mutating a live process, and the PAIR that proves the footer is conditional — present when
+// degraded, absent when healthy. Either half alone proves nothing: a footer that is always
+// on and a footer that is never on each satisfy exactly one of them.
+
+/** One fact, saved into a fresh store, so `index.md` exists and is a known size. */
+const SAVE_PROBE = (id) =>
+  call(id, 'memory_save', { type: 'project', name: 'status-probe', description: 'a probe fact', body: 'body' });
+const INDEX_BYTES = 46; // `- [[status-probe]] (project) — a probe fact\n`, measured
+
+/**
+ * The line the report renders, and the two budgets that straddle the 90% line around it.
+ *
+ * 46 * 100 = 4600. At a 51-byte budget 90 * 51 = 4590 <= 4600, so the store is degraded; at
+ * 52, 90 * 52 = 4680 > 4600 and it is not. Both sides are driven below, because a threshold
+ * asserted from one side is a threshold that could be anywhere below it.
+ */
+const DEGRADED_BUDGET = 51;
+const HEALTHY_BUDGET = 52;
+
+const REPORT_LINE_1_ACTIVE = 'bantamkit Active 🟢';
+const REPORT_LINE_1_DEGRADED = 'bantamkit Degraded 🟠';
+const FOOTER_HEAD = '⚠️ bantamkit degraded (';
+
+/** Run one store-scoped session and hand back its frames plus the store it used. */
+async function statusSession(requests, budget) {
+  const store = freshStore();
+  const args = ['--store', store, ...(budget === undefined ? [] : ['--index-budget', String(budget)])];
+  const { lines, stderr, code } = await session(requests, { args });
+  return { lines, stderr, code, store };
+}
+
+test('a healthy server reports Active, and the report is the five lines docs/status.md fixes', async () => {
+  const { lines, stderr, store } = await statusSession(
+    [INIT, INITIALIZED, SAVE_PROBE(2), call(3, 'bantamkit_status', {})],
+    HEALTHY_BUDGET,
+  );
+  assert.equal(statSync(join(store, 'index.md')).size, INDEX_BYTES, 'the index format moved; the budgets below are stale');
+  const report = byId(lines, 3).result.structuredContent.result;
+  const rows = report.split('\n');
+  assert.equal(rows.length, 5, report);
+  assert.equal(rows[0], REPORT_LINE_1_ACTIVE);
+  assert.match(rows[1], /^version \d+\.\d+\.\d+, build sha256:[0-9a-f]{64}$/);
+  assert.equal(rows[2], 'serving 8 tools, 1 prompt, 2 resource templates');
+  assert.equal(rows[3], `memory: 1 fact in the project store, index ${INDEX_BYTES} of ${HEALTHY_BUDGET} bytes`);
+  assert.equal(rows[4], 'event log: off');
+  // The unstructured half is the RAW string, not the JSON — `bantamkit_status` is a `-> str`
+  // tool, so it wraps to `structuredContent.result` exactly as `memory_save` does.
+  assert.equal(byId(lines, 3).result.content[0].text, report);
+  assert.equal(stderr, '');
+});
+
+test('the same store one byte of budget tighter reports Degraded, and names the condition', async () => {
+  const { lines, stderr } = await statusSession(
+    [INIT, INITIALIZED, SAVE_PROBE(2), call(3, 'bantamkit_status', {})],
+    DEGRADED_BUDGET,
+  );
+  const rows = byId(lines, 3).result.structuredContent.result.split('\n');
+  assert.equal(rows[0], REPORT_LINE_1_DEGRADED);
+  assert.equal(rows[3], `memory: 1 fact in the project store, index ${INDEX_BYTES} of ${DEGRADED_BUDGET} bytes`);
+  assert.equal(rows[5], '1 problem:');
+  assert.equal(
+    rows[6],
+    `- the memory index is ${INDEX_BYTES} bytes of a ${DEGRADED_BUDGET}-byte budget, so the next save is close to ` +
+      'being refused — archive or shorten facts with `python -m bantamkit.memory compact`.',
+  );
+  assert.equal(rows.length, 7);
+  // THE REPORT ITSELF NEVER CARRIES THE FOOTER: it already lists every condition in full.
+  assert.ok(!byId(lines, 3).result.structuredContent.result.includes(FOOTER_HEAD));
+  assert.equal(stderr, '');
+});
+
+test('the footer rides on other tools only when degraded, in the shape each result kind allows', async () => {
+  const requests = (id0) => [
+    INIT,
+    INITIALIZED,
+    SAVE_PROBE(2),
+    call(3, 'memory_recall', { query: 'probe' }),
+    call(4, 'validate_json', { output: '{}', schema: { type: 'object' } }),
+    call(5, 'build_identity', {}),
+    call(6, 'bantamkit_status', {}),
+  ];
+  const degraded = await statusSession(requests(), DEGRADED_BUDGET);
+  const healthy = await statusSession(requests(), HEALTHY_BUDGET);
+
+  // --- prose: `reply + "\n\n" + notice`, and the reply itself is untouched -------------
+  for (const [id, reply] of [
+    [2, "saved 'status-probe'"],
+    [3, '[status-probe] (project) a probe fact\nbody'],
+  ]) {
+    const hot = byId(degraded.lines, id).result.structuredContent.result;
+    assert.ok(hot.startsWith(`${reply}\n\n${FOOTER_HEAD}`), hot);
+    assert.ok(
+      hot.endsWith('Call `bantamkit_status` for the full report.'),
+      'the footer ends with the pointer, in one shape, even for a single condition',
+    );
+    // THE OTHER HALF OF THE PAIR. A healthy call is byte-identical to what it was before
+    // this surface existed — same bytes, no blank line, no notice.
+    assert.equal(byId(healthy.lines, id).result.structuredContent.result, reply);
+  }
+
+  // --- structured: one reserved key, LAST, and only when it exists ---------------------
+  for (const id of [4, 5]) {
+    const hot = byId(degraded.lines, id).result.structuredContent;
+    const keys = Object.keys(hot);
+    assert.equal(keys[keys.length - 1], 'bantamkit_degraded', `${id}: the key is last, not first: ${keys}`);
+    assert.ok(hot.bantamkit_degraded.startsWith(FOOTER_HEAD));
+    // The rendered text is the SAME object at indent 2, so the key is last there too.
+    assert.deepEqual(Object.keys(JSON.parse(byId(degraded.lines, id).result.content[0].text)), keys);
+    const cool = byId(healthy.lines, id).result.structuredContent;
+    assert.ok(!('bantamkit_degraded' in cool), `${id}: a healthy structured reply carries no key at all`);
+  }
+
+  // --- and never on `bantamkit_status`, in either state ---------------------------------
+  assert.ok(!byId(degraded.lines, 6).result.structuredContent.result.includes(FOOTER_HEAD));
+  assert.ok(!byId(healthy.lines, 6).result.structuredContent.result.includes(FOOTER_HEAD));
+  assert.equal(degraded.stderr, '');
+  assert.equal(healthy.stderr, '');
+});
+
+test('the prompt a PERSON invokes carries the report itself, plus one instruction line', async () => {
+  const { lines, stderr } = await statusSession(
+    [
+      INIT,
+      INITIALIZED,
+      { jsonrpc: '2.0', id: 2, method: 'prompts/list' },
+      { jsonrpc: '2.0', id: 3, method: 'prompts/get', params: { name: 'bantamkit_status' } },
+      { jsonrpc: '2.0', id: 4, method: 'prompts/get', params: { name: 'nosuch' } },
+    ],
+    undefined,
+  );
+  const advertised = byId(lines, 2).result.prompts;
+  assert.equal(advertised.length, 1, 'SERVED_PROMPTS says 1 and the wire must agree');
+  assert.equal(advertised[0].name, 'bantamkit_status');
+  assert.equal(advertised[0].title, 'bantamkit status');
+  assert.deepEqual(advertised[0].arguments, []);
+
+  const got = byId(lines, 3).result;
+  assert.equal(got.description, advertised[0].description);
+  assert.equal(got.messages.length, 1);
+  assert.equal(got.messages[0].role, 'user');
+  assert.equal(got.messages[0].content.type, 'text');
+  const [report, tail] = splitOnce(got.messages[0].content.text, '\n\n');
+  assert.equal(report.split('\n')[0], REPORT_LINE_1_ACTIVE);
+  assert.equal(
+    tail,
+    'Show me that report as it stands. If it says Degraded, tell me which of the problems above you ' +
+      'would deal with first and why; if it says Active, say so in one line and stop.',
+  );
+  assert.equal(byId(lines, 4).error.code, -32602);
+  assert.equal(byId(lines, 4).error.message, 'Unknown prompt: nosuch');
+  assert.equal(stderr, '');
+});
+
+const splitOnce = (text, sep) => [text.slice(0, text.indexOf(sep)), text.slice(text.indexOf(sep) + sep.length)];
+
+test('bantamkit_status writes no event-log record, because it decides nothing', async () => {
+  const store = freshStore();
+  const { lines, stderr } = await session(
+    [INIT, INITIALIZED, call(2, 'memory_recall', { query: 'anything' }), call(3, 'bantamkit_status', {})],
+    { args: ['--store', store], env: { BANTAMKIT_EVENT_LOG: '1' } },
+  );
+  assert.equal(byId(lines, 3).result.isError, false);
+  const records = readFileSync(join(store, 'events', 'mcp.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(records.map((r) => r.tool), ['memory_recall']);
+  assert.equal(stderr, '');
+});
+
+test('a memory layer that cannot be listed is reported by KIND — never by the grant name', async () => {
+  // `extra:<name>` is the operator's own word for somebody's directory. It is the one part
+  // of a layer label that must not reach either surface, so the name here is chosen to be
+  // unmistakable if it ever leaks.
+  const bed = join(scratch, 'grant-bed');
+  mkdirSync(join(bed, '.bantamkit', 'memory', 'facts'), { recursive: true });
+  mkdirSync(join(bed, 'somebodys-private-notes'), { recursive: true });
+  writeFileSync(join(bed, 'somebodys-private-notes', 'facts'), 'a regular file where a directory belongs\n');
+  writeFileSync(join(bed, '.bantamkit', 'config.yaml'), 'extra_stores:\n- ../somebodys-private-notes\n');
+  // No `--store`: this is the layered path production runs, and the only one with an `extra`.
+  const { lines, stderr } = await session([INIT, INITIALIZED, call(2, 'bantamkit_status', {})], { cwd: bed });
+  const report = byId(lines, 2).result.structuredContent.result;
+  const rows = report.split('\n');
+  assert.equal(rows[0], REPORT_LINE_1_DEGRADED);
+  assert.equal(rows[5], '1 problem:');
+  assert.equal(
+    rows[6],
+    '- 1 memory layer could not be read (1 kind: extra), so an empty recall is not evidence that ' +
+      'nothing is saved — check that those store directories exist and are readable.',
+  );
+  assert.ok(!report.includes('somebodys-private-notes'), `the grant NAME leaked into the report:\n${report}`);
+  assert.ok(!report.includes(bed), `a path leaked into the report:\n${report}`);
+  assert.equal(stderr, '');
+});
+
+test('the asset pack condition fires on a root that is no longer a directory, and names no path', async () => {
+  const { assetPackCondition } = await import('../dist/mcp/status.js');
+  const before = process.env.BANTAMKIT_ASSETS;
+  try {
+    // The override arm returns the value verbatim with no existence check, which is exactly
+    // the state `docs/status.md` describes: a pack resolved once at startup and gone since.
+    const gone = join(scratch, 'pack-that-was-deleted');
+    process.env.BANTAMKIT_ASSETS = gone;
+    const condition = assetPackCondition();
+    assert.equal(condition.key, 'asset-pack-missing');
+    assert.ok(condition.sentence.startsWith('the asset pack is gone from where this server resolved it'));
+    assert.ok(!condition.sentence.includes(gone), 'no path: assetsRoot() resolves differently in the two runtimes');
+    // And a real pack is not a condition.
+    process.env.BANTAMKIT_ASSETS = ASSETS;
+    assert.equal(assetPackCondition(), null);
+  } finally {
+    if (before === undefined) delete process.env.BANTAMKIT_ASSETS;
+    else process.env.BANTAMKIT_ASSETS = before;
+  }
+});
+
+test('the event-log condition needs BOTH a log that is on and a write that was lost', async () => {
+  const { eventLogCondition } = await import('../dist/mcp/status.js');
+  const { EventLog } = await import('../dist/eventlog.js');
+
+  // A log that is on and healthy: nothing to say.
+  const good = new EventLog(join(freshStore(), 'events', 'mcp.jsonl'));
+  good.record('memory_recall', 'answered');
+  assert.equal(good.writeFailed, false);
+  assert.equal(eventLogCondition(good), null);
+
+  // A log whose parent is a regular file: `record` swallows the error and sets the flag.
+  const blocker = join(scratch, 'a-file-not-a-directory');
+  writeFileSync(blocker, 'x');
+  const broken = new EventLog(join(blocker, 'events', 'mcp.jsonl'));
+  broken.record('memory_recall', 'answered');
+  assert.equal(broken.writeFailed, true, 'a lost record must be remembered');
+  assert.equal(eventLogCondition(broken).key, 'event-log-unwritable');
+
+  // THE `enabled` GUARD, which is the whole of this case. The flag is never cleared, so a
+  // disabled log carrying a stale one must NOT degrade the server: nobody asked for a log,
+  // and there is nothing for an operator to act on.
+  const off = new EventLog(null);
+  assert.equal(off.enabled, false);
+  off.record('memory_recall', 'answered');
+  assert.equal(off.writeFailed, false, 'a disabled log does no I/O and cannot fail');
+  off.writeFailed = true;
+  assert.equal(eventLogCondition(off), null, 'a stale flag on a log nobody turned on is not a condition');
+});
+
+test('the index condition is integer cross-multiplication, on both sides of the line', async () => {
+  const { indexPressureCondition } = await import('../dist/mcp/status.js');
+  const { Memory } = await import('../dist/memory/component.js');
+  const root = freshStore();
+  const at = (budget) => indexPressureCondition(new Memory(root, { indexBudget: budget }));
+  assert.equal(at(24000), null, 'a store with no index.md spends nothing of its budget');
+  writeFileSync(join(root, 'index.md'), 'x'.repeat(INDEX_BYTES));
+  // 46 * 100 = 4600 against 90 * budget. The equality case is ON the degraded side.
+  assert.equal(at(HEALTHY_BUDGET), null, `${INDEX_BYTES} bytes of ${HEALTHY_BUDGET} is under nine tenths`);
+  assert.equal(at(DEGRADED_BUDGET).key, 'index-budget-low');
+  assert.equal(at(Math.floor((INDEX_BYTES * 100) / 90)).key, 'index-budget-low');
 });

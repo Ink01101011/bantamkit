@@ -83,6 +83,11 @@ export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
   },
   shiftwork_status: { model: 'shiftwork_statusArguments', fields: [req('checkpoint', 'str')] },
   build_identity: { model: 'build_identity_toolArguments', fields: [] },
+  // `bantamkit_statusArguments`, not `bantamkit_status_toolArguments`: the model name is
+  // pydantic's, derived from the reference's CLOSURE name, and the status handler is called
+  // `bantamkit_status` there where the identity one is called `build_identity_tool`. It is
+  // the title `assets/tools/bantamkit_status.json` already advertises.
+  bantamkit_status: { model: 'bantamkit_statusArguments', fields: [] },
 };
 
 /** `type(value).__name__`, for the `input_type=` half of the sentence. */

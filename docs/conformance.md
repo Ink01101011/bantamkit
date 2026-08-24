@@ -34,7 +34,7 @@ sides, not by reading either.
 | `shiftwork` | the checkpoint writer: `ensure_ascii`, `sort_keys`, separators, `5.0` |
 | `store` | save/recall/index: the directory after the call, byte for byte |
 | `validate` | the validator: every sentence a schema failure can produce |
-| `wire` | the MCP surface: seven tools, two templates, and the frames themselves |
+| `wire` | the MCP surface: eight tools, one prompt, two templates, and the frames themselves |
 
 `cli` is the odd one out and deliberately so: every other suite compares two library
 functions, and that comparison cannot see which stream a message lands on or what the

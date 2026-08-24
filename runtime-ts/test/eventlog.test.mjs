@@ -491,6 +491,21 @@ test('the only values written are from a closed set', async () => {
 
 // ============================ failing to log never fails the tool ======================
 
+/**
+ * Three configurations, one set of replies: on, off, and unwritable.
+ *
+ * THE UNWRITABLE ARM STOPPED BEING BYTE-IDENTICAL IN U11, AND THAT IS THE POINT OF U11. The
+ * property here has always been "failing to log never fails the TOOL", and it still holds
+ * exactly: the call succeeds and the answer is the same answer. What changed is that a lost
+ * record is no longer INVISIBLE — `docs/status.md`'s degraded footer says so on the next
+ * rendered result, because the log is the one channel that cannot report its own silence.
+ *
+ * So the node is split rather than relaxed, and it is stronger than it was: `on` and `off`
+ * are still compared byte for byte, the unwritable arm is compared byte for byte with the
+ * footer removed, AND the footer is asserted PRESENT on every one of its replies. A footer
+ * that stopped appearing would now fail here, which the old single equality could not have
+ * noticed.
+ */
 test('three configurations, one set of replies: on, off, and unwritable', async () => {
   const replies = {};
   for (const arm of ['on', 'off', 'unwritable']) {
@@ -518,7 +533,10 @@ test('three configurations, one set of replies: on, off, and unwritable', async 
     await client.close();
   }
   assert.deepEqual(replies.on, replies.off);
-  assert.deepEqual(replies.on, replies.unwritable);
+
+  const footer = '\n\n\u26a0\ufe0f bantamkit degraded (1): the event log is switched on';
+  for (const reply of replies.unwritable) assert.ok(reply.includes(footer), reply);
+  assert.deepEqual(replies.unwritable.map((reply) => reply.split('\n\n\u26a0\ufe0f')[0]), replies.on);
 });
 
 test('a detail that cannot be encoded is NOT swallowed', () => {

@@ -30,7 +30,7 @@
  *      person reading this file.
  *
  * WHAT IS UNCHANGED, AND IS THE POINT. `assets_digest` / `assets_files` / `assets_root` are
- * computed exactly as Python computes them, over the same 83 files and 212,480 bytes, in
+ * computed exactly as Python computes them, over the same 84 files and 213,773 bytes, in
  * `sorted(Path)` order, with the same per-file feed. The asset pack is language-agnostic and
  * is the one thing the two runtimes genuinely share, so it is the one field that IS
  * comparable across them — and `tools/conformance/suites/wire.mjs` compares the two live
@@ -166,7 +166,7 @@ function codeFingerprint(): { digest: string; files: number; root: string } {
  *
  * `contracts/default.yaml` is the reason: `RB-P84` measured it as the one asset that differed
  * between two live builds while no resource template exposed it, so it was invisible on every
- * probed surface. It is also why N1 ships all 83 files rather than the 20 that are read.
+ * probed surface. It is also why N1 ships all 84 files rather than the 20 that are read.
  */
 function assetsFingerprint(): { digest: string; files: number; root: string } {
   let root: string;
