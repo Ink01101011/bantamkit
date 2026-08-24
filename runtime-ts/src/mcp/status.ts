@@ -223,7 +223,31 @@ export function unreadableLayerCondition(memory: Memory): Condition | null {
   };
 }
 
-/** The index is nearly as big as the budget that has to hold it. */
+/**
+ * The index is nearly as big as the budget that has to hold it.
+ *
+ * THE REMEDY NAMES THE COMMAND *THIS* INSTALL PROVIDES, and that is the one place this
+ * sentence is allowed to differ from `mcpserver.py`'s. The reference spells
+ * `python -m bantamkit.memory compact`; a pure-npm install has no `bantamkit.memory` module
+ * and no interpreter to run it with, so printing that here would hand the operator a command
+ * that cannot run. `runtime-ts` ships the same lifecycle as the `bantamkit-memory` bin
+ * (`src/memory/cli.ts`), so that is what is named. Ruled in `docs/porting.md`'s divergence
+ * table and pinned on both sides by `tools/conformance/suites/wire.mjs`.
+ *
+ * IT IS A LITERAL AND NOT AN IMPORT, exactly as the reference's is. `memory/cli.ts`'s `PROG`
+ * is the CLI's own name for itself and the MCP server does not import that module — the
+ * coupling is held from the OUTSIDE instead, by `runtime-ts/test/server.test.mjs` here and by
+ * `tests/test_status_surface.py`'s
+ * `test_the_index_remedy_names_the_command_this_install_actually_provides` there.
+ *
+ * WHAT THE REMEDY DOES NOT PROMISE. `index-budget-low` fires at >= 90% of budget, while
+ * `compact` archives only while the index is above `budget - reserve` and `reserve` defaults
+ * to the largest surviving index line. So across most of the band that prints this sentence
+ * the command exits 0 having archived nothing. That is the SAME arithmetic in both runtimes
+ * (`INDEX_PRESSURE_PERCENT` here, `MemoryStore.compact`'s default `reserve` there), so it is
+ * not a divergence and is not fixed here; it is registered in `docs/porting.md`. The sentence
+ * says "archive or shorten facts", which is what the operator has to do either way.
+ */
 export function indexPressureCondition(memory: Memory): Condition | null {
   const size = indexBytes(memory);
   const budget = memory.store.indexBudget;
@@ -236,7 +260,7 @@ export function indexPressureCondition(memory: Memory): Condition | null {
     sentence:
       `the memory index is ${size} bytes of a ${budget}-byte budget, so the next save ` +
       'is close to being refused — archive or shorten facts with ' +
-      '`python -m bantamkit.memory compact`.',
+      '`bantamkit-memory compact`.',
   };
 }
 
