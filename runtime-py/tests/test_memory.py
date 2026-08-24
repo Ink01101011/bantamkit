@@ -1839,3 +1839,77 @@ def test_the_em_dash_this_cli_prints_is_three_bytes_and_not_one(tmp_path, monkey
     assert code == 1
     assert b"lint: FAIL \xe2\x80\x94 index is " in err
     assert b"\x97" not in err
+
+
+# ---------------------------------------------------------------------------
+# W-RENAME: `compact` moved a fact with a call that means two different things.
+#
+# `Path.rename` is `os.rename`: on POSIX it silently replaces an existing
+# destination, on Windows it raises `FileExistsError`. `os.replace` is the call
+# that means on both operating systems what `os.rename` means on one, and it is
+# what `runtime-ts` uses (`pyReplace` in `src/memory/store.ts`). So before this
+# fix Node-on-Windows matched Python-on-POSIX and Python-on-Windows matched
+# neither, on the one state that reaches it: an `archive/<name>.md` that ALREADY
+# exists when compaction moves the live fact over it.
+#
+# NEVER MEASURED ON WINDOWS. The refusal is PERFORMED here -- `Path.rename` is
+# replaced with one that raises exactly where Windows' does -- rather than
+# claimed, for the same reason `_deny_scandir` injects a `PermissionError`
+# instead of trusting mode bits.
+# ---------------------------------------------------------------------------
+
+
+def _rename_that_refuses_an_existing_destination(monkeypatch):
+    """`Path.rename` with Windows' semantics: `FileExistsError` over a destination that is there."""
+    real_rename = Path.rename
+
+    def refusing(self, target):
+        if Path(target).exists():
+            raise FileExistsError(17, "Cannot create a file when that file already exists")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", refusing)
+
+
+def test_the_injected_rename_really_does_refuse(tmp_path, monkeypatch):
+    """The control: without it the node below could pass on an injection that does nothing."""
+    source, occupied, free = tmp_path / "a", tmp_path / "b", tmp_path / "c"
+    source.write_text("x", encoding="utf-8")
+    occupied.write_text("y", encoding="utf-8")
+    _rename_that_refuses_an_existing_destination(monkeypatch)
+
+    with pytest.raises(FileExistsError):
+        source.rename(occupied)
+    assert source.read_text(encoding="utf-8") == "x", "the refused move left the source alone"
+    source.rename(free)  # and the injection is not a blanket refusal
+    assert free.read_text(encoding="utf-8") == "x"
+
+
+def test_compact_re_archives_over_an_existing_entry_on_every_platform(tmp_path, monkeypatch):
+    """The state the fix is about, and nothing in this repository had ever reached it.
+
+    `restore` cannot produce it -- it moves the archived copy OUT -- so `compact` over a
+    hand-placed `archive/<name>.md` is the only route in. On POSIX both calls replace and
+    this node is green either way; under the injected Windows semantics `os.rename` refuses
+    and `os.replace` does not, which is the whole of the difference.
+    """
+    store = MemoryStore(tmp_path / "mem", index_budget=100_000, today=lambda: "2026-01-05")
+    store.save("project", "gone-fact", "an alpha subject nobody wants", "body one")
+    store.save("user", "kept-fact", "a beta topic still in use", "body two")
+    store._today = lambda: "2026-08-21"
+    store.recall("beta topic still in use")
+    kept, lost = _line_size(store, "kept-fact"), _line_size(store, "gone-fact")
+    store.index_budget = kept + lost + max(kept, lost) - 1
+
+    # An earlier compaction's copy, already sitting where this one has to write.
+    stale = store.root / "archive" / "gone-fact.md"
+    stale.write_text("an older archived copy of gone-fact", encoding="utf-8")
+    live = (store.root / "facts" / "gone-fact.md").read_text(encoding="utf-8")
+
+    _rename_that_refuses_an_existing_destination(monkeypatch)
+    result = store.compact(reserve=max(kept, lost))
+
+    assert result.names == ["gone-fact"]
+    assert not (store.root / "facts" / "gone-fact.md").exists()
+    assert stale.read_text(encoding="utf-8") == live, "the live fact is what is in archive/ now"
+    assert store.archived() == ["gone-fact"]
