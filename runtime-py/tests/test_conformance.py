@@ -25,9 +25,9 @@ def test_tool_assets_are_valid():
     """The tool-asset shape, pinned at FIVE keys (it pinned three until 2026-08-23).
 
     The contract grew because three keys could not express a registration. `surfaces`
-    says which of the two tool surfaces sharing this directory a tool belongs to — ten
+    says which of the two tool surfaces sharing this directory a tool belongs to — eleven
     files serve two surfaces, and without it a runtime that reads the directory serves
-    all ten. `output_schema` says what the tool returns — every MCP tool advertises one
+    all eleven. `output_schema` says what the tool returns — every MCP tool advertises one
     over the wire, so a manifest without it describes a surface the server does not have.
 
     The assertion is EXACT (`==`, not `>=`) for the same reason it always was: a manifest

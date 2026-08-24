@@ -103,7 +103,7 @@ def _manifest() -> dict[str, dict]:
 def test_every_served_tool_has_an_asset(tmp_path):
     """No tool reaches a host without a manifest entry — named, not counted.
 
-    A count would say "not seven". This says WHICH tool a second runtime would have to
+    A count would say "not eight". This says WHICH tool a second runtime would have to
     read Python to discover.
     """
     served = _served_tools(tmp_path)
@@ -365,7 +365,7 @@ def _mutant_schemas(name: str) -> tuple[str, dict, dict]:
 def test_the_advertised_surface_is_read_from_the_asset_pack_at_startup(tmp_path):
     """Mutate the pack the server loads; every advertised field must move with it.
 
-    THIS IS THE NODE THAT MAKES `surfaces` AND `output_schema` LOAD-BEARING FOR ALL SEVEN
+    THIS IS THE NODE THAT MAKES `surfaces` AND `output_schema` LOAD-BEARING FOR ALL EIGHT
     TOOLS, and it exists because the previous evidence was the wrong instrument. T3 called
     both fields "load-bearing, measured by mutation" — but that mutation was performed BY
     HAND on a copy, which proves the asset REACHES the wire and proves nothing about
@@ -377,10 +377,10 @@ def test_the_advertised_surface_is_read_from_the_asset_pack_at_startup(tmp_path)
     from what pydantic derives.
 
     The mutation is committed here instead. `BANTAMKIT_ASSETS` points a real server at a
-    copied pack whose seven served entries carry a description and two schemas pydantic
+    copied pack whose eight served entries carry a description and two schemas pydantic
     could not produce from a zero-argument or six-argument Python function, and the wire
     is required to carry them verbatim. A runtime that derived any of the three from the
-    signature reddens on all seven.
+    signature reddens on all eight.
 
     It says nothing about WHICH schema is right — that is the golden's job. It says the
     JSON is what is being served, which is the premise the whole Node port rests on.
@@ -403,7 +403,7 @@ def test_the_advertised_surface_is_read_from_the_asset_pack_at_startup(tmp_path)
             "outputSchema": output_schema,
         }
 
-    assert sorted(expected) == sorted(_golden()["tools"])  # the mutation covered all seven
+    assert sorted(expected) == sorted(_golden()["tools"])  # the mutation covered all eight
 
     run = tmp_path / "run"
     run.mkdir()
