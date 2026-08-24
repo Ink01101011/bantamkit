@@ -1,3 +1,4 @@
+import io
 import itertools
 import os
 import subprocess
@@ -1632,3 +1633,108 @@ def test_the_entry_point_runs_as_a_real_subprocess(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert f"facts: {len(store._facts())}" in proc.stdout
     assert f"budget: {DEFAULT_INDEX_BUDGET}" in proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# W-CRLF: what this CLI puts on the wire is BYTES, and they were platform-shaped.
+#
+# `runtime-ts`' `bantamkit-memory` writes LF and UTF-8 on every operating system,
+# and `tools/conformance/suites/memorycli.mjs` compares the two streams byte for
+# byte with no newline normalisation anywhere (`ref/cli_ref.py` states that rule
+# for that directory). `sys.stdout`/`sys.stderr` are text streams with
+# `newline=None` and a locale encoding, so on Windows this CLI emitted CRLF and a
+# code page where the port emitted LF and UTF-8 -- and the suite would have been
+# red on `windows-latest` for a difference the operator can see.
+#
+# NEVER MEASURED ON WINDOWS. Every number below is taken on macOS, where Windows'
+# stream defaults are PERFORMED rather than observed, the way
+# `test_docread.py::test_a_text_mode_write_is_what_breaks_the_boundary` performs
+# the same translation for a file on disk.
+# ---------------------------------------------------------------------------
+
+
+def _windows_default_stream():
+    """A text stream shaped like Windows' `sys.stdout`: a code page, and `\n` -> `\r\n`.
+
+    `newline="\r\n"` is what `newline=None` DOES there, spelled explicitly so it happens
+    here too; `cp1252` is the other half of the same platform default, and it is the half
+    that turns this CLI's em dashes into one byte instead of three.
+    """
+    return io.TextIOWrapper(io.BytesIO(), encoding="cp1252", newline="\r\n")
+
+
+def _run_on_windows_defaults(argv, monkeypatch):
+    """Run the CLI with both streams replaced, and hand back the raw BYTES it wrote."""
+    out, err = _windows_default_stream(), _windows_default_stream()
+    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setattr(sys, "stderr", err)
+    try:
+        code = memory_main(argv)
+    except SystemExit as exit_:  # `-h` and every usage error leave this way
+        code = exit_.code
+    out.flush()
+    err.flush()
+    return code, out.buffer.getvalue(), err.buffer.getvalue()
+
+
+def test_the_windows_default_stream_really_does_translate_and_re_encode():
+    """The control. Without this, the node below could pass on a fixture that does nothing.
+
+    MEASURED here: one `\n` becomes `\r\n`, and U+2014 becomes the single byte 0x97
+    rather than the three bytes UTF-8 spells it with.
+    """
+    stream = _windows_default_stream()
+    stream.write("lint: ok — 1 fact\n")
+    stream.flush()
+    assert stream.buffer.getvalue() == b"lint: ok \x97 1 fact\r\n"
+
+
+@pytest.mark.parametrize(
+    ("argv", "stream"),
+    [
+        (["status"], "stdout"),  # this module's own `print`
+        (["lint", "--budget", "1"], "stderr"),  # ... on the other stream, and an em dash
+        (["-h"], "stdout"),  # argparse's, into `sys.stdout` by name
+        (["status", "--nope"], "stderr"),  # argparse's usage error
+    ],
+)
+def test_the_operator_cli_writes_lf_and_utf8_whatever_the_platform_defaults_are(
+    tmp_path, monkeypatch, argv, stream
+):
+    """Both writers, both streams. The two `argparse` rows are why the fix is not a `print` sweep.
+
+    `mcpserver.py` solves this three times by writing through `sys.stdout.buffer`, and that
+    idiom cannot reach the bottom two rows: at COLUMNS=80 on the pre-fix source, `-h` wrote
+    16 CRLFs and `status --nope` wrote 3, every one of them from inside `argparse`, into
+    `sys.stdout`/`sys.stderr` by name. `status` wrote 6 and `lint` 2, which a sweep would
+    have fixed -- and the suite compares all four.
+    """
+    store = MemoryStore(tmp_path / "mem")
+    _fill(store, 2)
+    monkeypatch.setenv("COLUMNS", "80")
+    argv = [argv[0], "--store", str(store.root), *argv[1:]] if argv[0] != "-h" else argv
+
+    _code, out, err = _run_on_windows_defaults(argv, monkeypatch)
+    written = {"stdout": out, "stderr": err}[stream]
+    silent = {"stdout": err, "stderr": out}[stream]
+
+    assert written, f"{argv} was supposed to write to {stream}"
+    assert silent == b"", f"{argv} wrote to the wrong stream"
+    assert b"\r" not in written, "a carriage return is a byte the port never writes"
+    assert written.decode("utf-8"), "the bytes must be UTF-8, not a code page"
+
+
+def test_the_em_dash_this_cli_prints_is_three_bytes_and_not_one(tmp_path, monkeypatch):
+    """The encoding half, pinned on the one sentence that carries a non-ASCII character.
+
+    `lint`'s remediation line is `lint: FAIL — ...`. Under the platform default it is
+    `\x97`, which is not what `process.stdout.write` puts on the wire for the same string.
+    """
+    store = MemoryStore(tmp_path / "mem")
+    _fill(store, 2)
+    code, _out, err = _run_on_windows_defaults(
+        ["lint", "--store", str(store.root), "--budget", "1"], monkeypatch
+    )
+    assert code == 1
+    assert b"lint: FAIL \xe2\x80\x94 index is " in err
+    assert b"\x97" not in err

@@ -40,6 +40,36 @@ from bantamkit.memory.store import (
 )
 
 
+def _lf_utf8(stream: object) -> None:
+    """Make one of this process's text streams write LF and UTF-8 on every platform.
+
+    `sys.stdout` and `sys.stderr` are text streams opened with `newline=None`, which
+    translates every `\n` to `os.linesep` on the way out: a no-op on macOS and Linux, and
+    CRLF on Windows. Their encoding is the locale's, which on Windows is a code page, not
+    UTF-8. So the same command run on the same store printed different BYTES on Windows than
+    it did here, and the port -- whose `process.stdout.write` emits LF and UTF-8 everywhere
+    -- was byte-identical to this CLI on one operating system and not on the other.
+
+    `mcpserver.py`'s `_print_assets_root`, `_print_mcp_report` and `_print_status_line` each
+    solve their own half of this by writing through `sys.stdout.buffer`, and that is the
+    established idiom in this repository. It CANNOT be the idiom here, and the reason is
+    measured rather than assumed: on Windows' defaults, reproduced on macOS with
+    `TextIOWrapper(..., encoding="cp1252", newline="\r\n")`, `-h` emits 16 CRLFs and
+    `status --nope` emits 3 -- and every one of them is written by `argparse`, into
+    `sys.stdout`/`sys.stderr` by name, from a frame no call site in this module owns. A sweep
+    of the `print()` calls below would have fixed the 6 CRLFs of `status` and left the 16 of
+    `-h`. The stream is the thing that translates, so the stream is the thing to fix.
+
+    Guarded on `reconfigure` rather than on a type, because `sys.stdout` is not always a
+    `TextIOWrapper`: `pytest`'s capture, a `StringIO` and a closed-stdout `pythonw` all reach
+    this line, and a stream that cannot be reconfigured is one that was never doing platform
+    translation in the first place.
+    """
+    reconfigure = getattr(stream, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(encoding="utf-8", newline="\n")
+
+
 def _positive(text: str) -> int:
     """A budget of 0 or less silently makes every save fail; refuse it at the edge."""
     value = int(text)
@@ -192,6 +222,10 @@ _COMMANDS = {
 
 
 def main(argv: list[str] | None = None) -> int:
+    # BEFORE `_parse_args`, because `-h` and every usage error are written by argparse
+    # straight into these two streams and never come back through this frame.
+    _lf_utf8(sys.stdout)
+    _lf_utf8(sys.stderr)
     args = _parse_args(argv)
     return _COMMANDS[args.command](_open(args), args)
 
