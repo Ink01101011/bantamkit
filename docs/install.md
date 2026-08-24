@@ -83,6 +83,15 @@ Full install documentation, with every number measured rather than estimated, is
 [`runtime-ts/README.md`](../runtime-ts/README.md); the annotated config with all four
 forms is `runtime-ts/mcp.json.example`.
 
+**The package declares two bins.** `bantamkit-mcp` is the server the config line above
+launches. `bantamkit-memory` is the operator CLI for memory lifecycle — `status`,
+`lint`, `compact`, `archived`, `restore` — and it is this install's spelling of the
+Python distribution's `python -m bantamkit.memory`, which the Python distribution has
+no console script for. Both spellings are documented together in
+[memory.md](memory.md#the-operator-cli) and the divergence is ruled in
+[porting.md](porting.md#where-the-two-runtimes-deliberately-differ). It is deliberately
+not an MCP surface: lifecycle prints reports, and this server's stdout is the wire.
+
 ### Migrating from `tools/bantamkit-mcp`
 
 The sh launcher is **not** deprecated and nothing is being removed. Both endpoints read
