@@ -53,6 +53,7 @@ import {
   HelpRequested,
   helpWidth,
   parseArgs as parseWithSpec,
+  pyIntStrict,
   type ParserSpec,
 } from './pyargparse.js';
 import { statusLine } from './statusline.js';
@@ -164,18 +165,16 @@ const PARSER: ParserSpec = {
   groups: [[6, 7]],
 };
 
-/**
- * `int(text)`, which is what `type=int` is.
+/*
+ * `pyIntStrict` — `int(text)`, which is what `type=int` is — MOVED to `pyargparse.ts`.
  *
- * It rejects everything `int()` rejects and the caller reports it as an ARGUMENT error
- * (exit 2), which is a different exit from the `--k must be >= 1` refusal below (exit 1):
- * one is a malformed command line, the other is a command line that parsed and then asked
- * for something impossible.
+ * It is imported above rather than written here because the memory CLI's `type=_positive`
+ * needs the same conversion, and two hand-written copies of one conversion rule is the
+ * defect that produced `pyargparse.ts` in the first place. Its failure is still an ARGUMENT
+ * error (exit 2), a different exit from the `--k must be >= 1` refusal below (exit 1): one
+ * is a malformed command line, the other is a command line that parsed and then asked for
+ * something impossible.
  */
-function pyIntStrict(text: string): number {
-  if (!/^\s*[+-]?\d+(?:_\d+)*\s*$/.test(text)) throw new TypeError('not an int');
-  return Number(text.trim().replace(/_/g, ''));
-}
 
 export interface Options {
   k: number;

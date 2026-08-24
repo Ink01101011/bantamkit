@@ -14,15 +14,24 @@
  * `tools/conformance/suites/store.mjs`, which runs each op against two copies of one store
  * and diffs the whole tree.
  *
- * WHAT IS DELIBERATELY MISSING
- * ----------------------------
- * `compact`, `restore`, `archived`, `lint`, `snapshot` and `_staleness_key`. The prep probe
- * traced a real stdio server through all seven tools, both resource templates and every
- * error arm, and none of them is reachable; `snapshot` is only entered by
- * `component.batch`, which is not on the surface either. They are absent rather than
- * stubbed so that nobody reads a stub and believes the archive door exists here. If a tool
- * ever calls one, that is a refutation of the trace and wants reporting, not a quiet
- * addition.
+ * THE LIFECYCLE OPS ARE HERE NOW, AND WHY THEY WERE NOT
+ * -----------------------------------------------------
+ * `compact`, `restore`, `archived`, `lint` and `_staleness_key` used to be listed here as
+ * DELIBERATELY MISSING, on a prep probe that traced a real stdio server through all seven
+ * tools, both resource templates and every error arm and found none of them reachable. That
+ * trace was true and it is still true: no MCP tool calls any of them, because
+ * `docs/memory.md` rules that lifecycle is an operator decision, not a model decision.
+ *
+ * What the trace could not see is the OTHER surface. `runtime-py` gives the operator that
+ * decision at `python -m bantamkit.memory`; `runtime-ts` gave them nothing, so an operator
+ * who ran `npx bantamkit-mcp` and nothing else could not compact, could not lint, and could
+ * not restore an archived fact. A position that hands lifecycle to an operator and ships
+ * half its runtimes without a lever is not a position. `memory/cli.ts` is that lever and
+ * these four ops are what it calls; nothing on the MCP surface reaches them.
+ *
+ * `snapshot` IS still missing, and the trace still covers it: it is only entered by
+ * `component.batch`, which is not on the surface either. It is absent rather than stubbed so
+ * that nobody reads a stub and believes the scope exists here.
  *
  * Because `snapshot` is absent, `recall` reads live and `_stamp` writes the fact it was
  * handed — the two branches Python takes when `_snapshot` is pinned have no reachable
@@ -43,9 +52,11 @@ import {
   pyLexists,
   pyMkdirParents,
   pyMtimeDate,
+  pyName,
   pyReadText,
   pyReplace,
   pyScandirNames,
+  pySuffix,
   pyUnlink,
   pyWithSuffix,
   pyWriteText,
@@ -75,9 +86,24 @@ export const DUPLICATE_JACCARD = 0.5;
 /** See the reference's comment: measured against a real store, not chosen. */
 export const DEFAULT_INDEX_BUDGET = 24_000;
 
+// The second half of the "unreadable" sentence, one per directory this store lists — and
+// then the same distinction one syscall down, for the stats `restore` does instead of a
+// listing. They are separate strings because the failures do different damage, and an error
+// that names the wrong damage sends the reader to the wrong place.
 const FACTS_UNREADABLE =
   'a store whose facts could not be listed is not a store with no facts, and ' +
   "answering 'empty' here is what rewrites index.md from nothing";
+const ARCHIVE_UNREADABLE =
+  'an archive that could not be listed is not an empty archive, and answering ' +
+  "'nothing is archived' here is what makes compaction look like deletion — the " +
+  'facts compact() moved are still on disk under this path';
+const ARCHIVE_UNREACHABLE =
+  "an archived fact that could not be stat'd is not an archived fact that is not " +
+  "there, and answering 'no archived fact' here sends the operator looking for a " +
+  'file that is still on disk under this path';
+const FACTS_UNREACHABLE =
+  "a destination that could not be stat'd is not a name that is already taken, and " +
+  'nothing has moved: the fact is still in archive/';
 
 export class MemoryValidationError extends BantamError {}
 export class MemoryBudgetExceeded extends BantamError {}
@@ -87,6 +113,36 @@ export interface SaveResult {
   name: string;
   /** `SaveResult.similar` is the OTHER fact's `name` field, verbatim — see `pyText`. */
   similar: FactValue;
+}
+
+/** What one archived fact WAS, kept after its file has left `facts/`. */
+export interface ArchivedFact {
+  name: FactValue;
+  type: FactValue;
+  description: FactValue;
+  indexBytes: number;
+  lastRecalled: FactValue | null;
+  created: FactValue | null;
+}
+
+/**
+ * Everything the caller needs to understand what compaction cost.
+ *
+ * Archiving is a one-way MOVE, not a delete: the file is still readable under `archive/` and
+ * `restore()` brings it back. This carries the description of each fact that left, so a
+ * caller that never looks in `archive/` can still say what it lost, and the byte arithmetic
+ * so it can see the headroom it bought. `headroom` is a `@property` in the reference and a
+ * plain field here — the value is the same and nothing mutates the result.
+ */
+export interface CompactResult {
+  archived: ArchivedFact[];
+  indexBefore: number;
+  indexAfter: number;
+  budget: number;
+  target: number;
+  reserve: number;
+  headroom: number;
+  archiveDir: string;
 }
 
 export interface MemoryStoreOptions {
@@ -509,6 +565,159 @@ export class MemoryStore {
   }
 
   /**
+   * `len(store._facts())` at the operator CLI, which is the only caller.
+   *
+   * `facts()` stays private: this hands out a COUNT, not the parsed list, so no caller
+   * outside this file can hold a fact array and drift from what is on disk. It is a full
+   * parse — an unreadable or malformed store raises here rather than counting 0, which is
+   * the same rule `indexText` holds and for the same reason.
+   */
+  factCount(): number {
+    return this.facts().length;
+  }
+
+  /**
+   * Every fact parses and carries a valid type, and the index fits its budget.
+   *
+   * The raise on an unreadable store is the reference's and it is load-bearing: a checker
+   * that passes hardest on the store it could not open is worse than no checker. `_facts()`
+   * raises before the type sweep starts, and `_cmd_lint` in `memory/cli.ts` routes both that
+   * and the budget error to `lint: FAIL — …` on stderr with exit 1.
+   */
+  lint(): void {
+    for (const fact of this.facts()) {
+      if (!(VALID_TYPES as readonly string[]).includes(pyText(fact.type))) {
+        throw new MemoryValidationError(
+          `fact '${pyText(fact.name)}' has invalid type '${pyText(fact.type)}'`,
+        );
+      }
+    }
+    this.checkIndexBudget();
+  }
+
+  /**
+   * Archive the stalest facts until the index sits at `budget - reserve` or below.
+   *
+   * THE TARGET IS BELOW THE BUDGET ON PURPOSE, and the reference's docstring records why:
+   * `save` rolls its fact back before raising, so by the time anyone is told to compact, the
+   * index already fits — a loop that stopped at "fits" would archive nothing at the only
+   * moment the remedy is ever named. The default `reserve` is the largest index line the
+   * store currently holds (capped at half the budget), so the headroom bought is "a fact as
+   * big as your biggest one will fit", measured from this store's own data.
+   *
+   * `facts()` runs FIRST, before any rename, so an unreadable store moves nothing.
+   *
+   * ONE PLATFORM DIFFERENCE IS INHERITED, NOT INTRODUCED. The reference uses `Path.rename`,
+   * which is `os.rename`: on POSIX it silently replaces an existing destination and on
+   * Windows it raises `FileExistsError`. `pyReplace` is `os.replace`, which replaces on both.
+   * The two agree everywhere except a `archive/<name>.md` that ALREADY exists when compaction
+   * moves the live fact over it — a state `restore` cannot produce, since it moves the
+   * archived copy out. Reported rather than papered over; runtime-py is not this unit's layer.
+   */
+  compact(reserve: number | null = null): CompactResult {
+    const facts = this.facts();
+    const sizes = new Map<string, number>();
+    for (const fact of facts) {
+      sizes.set(pyHashKey(fact.name), Buffer.byteLength(this.indexLine(fact), 'utf8'));
+    }
+    const all = [...sizes.values()];
+    if (reserve === null) reserve = all.length === 0 ? 0 : Math.max(...all);
+    // `min(reserve, self.index_budget // 2)`: floor division, and the budget is >= 1 here
+    // because both CLIs refuse a smaller one at the edge.
+    reserve = Math.max(0, Math.min(reserve, Math.floor(this.indexBudget / 2)));
+    const target = this.indexBudget - reserve;
+
+    let size = all.reduce((total, bytes) => total + bytes, 0);
+    const before = size;
+    const archived: ArchivedFact[] = [];
+    for (const fact of this.byStaleness(facts)) {
+      if (size <= target) break;
+      const path = this.factPath(fact.name);
+      pyReplace(path, pyJoin(this.root, 'archive', pyName(path)));
+      const bytes = sizes.get(pyHashKey(fact.name))!;
+      size -= bytes;
+      archived.push({
+        name: fact.name,
+        type: fact.type,
+        description: fact.description,
+        indexBytes: bytes,
+        lastRecalled: fact.last_recalled ?? null,
+        created: fact.created ?? null,
+      });
+    }
+    this.rebuildIndex();
+    return {
+      archived,
+      indexBefore: before,
+      indexAfter: size,
+      budget: this.indexBudget,
+      target,
+      reserve,
+      headroom: this.indexBudget - size,
+      archiveDir: pyJoin(this.root, 'archive'),
+    };
+  }
+
+  /**
+   * Names of the facts sitting in `archive/` — everything `compact` moved out.
+   *
+   * This is the worst place in the module to answer "empty" wrongly, because `compact()` has
+   * already MOVED the operator's facts here; an archive that cannot be listed is not an empty
+   * archive, and saying so makes compaction look like deletion. Hence `listing`, not a glob.
+   *
+   * The sort is over the STEMS and it is a plain string sort — `sorted(Path(name).stem …)` —
+   * not `sortedPathNames`, whose Windows case fold belongs to comparing `Path`s.
+   */
+  archived(): string[] {
+    const archive = pyJoin(this.root, 'archive');
+    return this.listing(archive, ARCHIVE_UNREADABLE)
+      .map((name) => {
+        const suffix = pySuffix(name);
+        return suffix === '' ? name : name.slice(0, name.length - suffix.length);
+      })
+      .sort(cmpCodepoint);
+  }
+
+  /**
+   * Move an archived fact back into `facts/`; refuse if it would blow the budget.
+   *
+   * THE PROMISE IS THAT A FAILED RESTORE LEAVES THE STORE EXACTLY AS IT FOUND IT, and it
+   * takes both halves the reference has: a `facts()` PARSE before the move (a listing is not
+   * enough — a malformed fact passes a listing and fails the budget check afterwards), and a
+   * rollback keyed on "the op after the move failed" rather than on a list of error types,
+   * because when the ARCHIVED file is the bad one it is not a fact until after the rename.
+   *
+   * `restore` is deliberately NOT routed through `archived()`: it stats one named path
+   * instead of listing, so an unlistable-but-traversable `archive/` still restores. Refusing
+   * a recovery the filesystem was still willing to perform is the wrong direction for the
+   * door back.
+   */
+  restore(name: string): void {
+    const archive = pyJoin(this.root, 'archive');
+    const source = pyJoin(archive, `${name}.md`);
+    if (!this.reachable(source, archive, ARCHIVE_UNREACHABLE)) {
+      throw new MemoryValidationError(`no archived fact '${name}' under ${archive}`);
+    }
+    const destination = this.factPath(name);
+    if (this.reachable(destination, pyJoin(this.root, 'facts'), FACTS_UNREACHABLE)) {
+      throw new MemoryValidationError(
+        `fact '${name}' is already live; refusing to overwrite it from archive`,
+      );
+    }
+    this.facts(); // parse BEFORE the move, not after it
+    pyMkdirParents(pyJoin(this.root, 'facts'));
+    pyReplace(source, destination);
+    try {
+      this.checkIndexBudget();
+    } catch (error) {
+      pyReplace(destination, source);
+      this.rebuildIndex();
+      throw error;
+    }
+    this.rebuildIndex();
+  }
+
+  /**
    * The index as it should be on disk, derived from `facts/` and nothing else.
    *
    * An unreadable store raises here rather than answering `""` — that empty string was both
@@ -534,6 +743,54 @@ export class MemoryStore {
   private indexLine(fact: Fact): string {
     // The em dash is a raw U+2014 and there is no header line. Both are budget inputs.
     return `- [[${pyText(fact.name)}]] (${pyText(fact.type)}) — ${pyText(fact.description)}\n`;
+  }
+
+  /**
+   * `sorted(facts, key=self._staleness_key)` — the eviction order `compact` archives in.
+   *
+   * `last_recalled` ALONE conflated two opposite facts: one written seconds ago and one
+   * nobody has asked for in a year both read as absent, and the empty string sorts before
+   * every real ISO date, so the NEWEST fact was the first evicted. Falling back to `created`
+   * makes absence of evidence mean "as stale as it is old". Ties break on name only after
+   * the dates are equal, so the alphabet can no longer decide a live question.
+   *
+   * `or`, not `??`: every FALSY value falls through, which is what Python's `or` does — a
+   * `last_recalled: ''` or a `created: 0` is not evidence of a recall. The comparison is
+   * `pyCompareLt`, Python's `<`, because these fields come out of YAML and a `date` beside a
+   * `str` raises there instead of sorting; both runtimes must fail the same way. Both sorts
+   * are STABLE, so equal keys keep listing order on either side.
+   */
+  private byStaleness(facts: readonly Fact[]): Fact[] {
+    const key = (fact: Fact): [FactValue, FactValue] => [
+      pyTruthy(fact.last_recalled) ? fact.last_recalled! : pyTruthy(fact.created) ? fact.created! : '',
+      fact.name,
+    ];
+    return [...facts].sort((a, b) => {
+      const left = key(a);
+      const right = key(b);
+      for (let slot = 0; slot < 2; slot += 1) {
+        if (pyCompareLt(left[slot]!, right[slot]!)) return -1;
+        if (pyCompareLt(right[slot]!, left[slot]!)) return 1;
+      }
+      return 0;
+    });
+  }
+
+  /**
+   * `path.exists()`, except that "I was not allowed to look" is never "it is not there".
+   *
+   * The same invariant as `listing`, one syscall down: `pyExists` swallows exactly
+   * `pathlib._IGNORED_ERRNOS` and re-raises the rest, so EACCES arrives as an OS error and is
+   * converted HERE — in the store, which owns the distinction — rather than in whichever
+   * command happened to call `restore`.
+   */
+  private reachable(path: string, directory: string, consequence: string): boolean {
+    try {
+      return pyExists(path);
+    } catch (e) {
+      const error = e instanceof PyOSError ? e : asPyOSError(e, path);
+      throw this.unreadable(directory, error, consequence, `stat of ${pyName(path)}`);
+    }
   }
 
   /**
