@@ -26,13 +26,35 @@
  * is an instruction they cannot follow.
  *
  * A `ruling:` case proves the two sides DIFFER. It never proves either is right, and on its
- * own it is a licence for anything else in the same bytes to drift with it. So every ruled
- * case here is PAIRED with an unruled one over the same text:
+ * own it is a licence for anything else in the same bytes to drift with it. So a ruling here
+ * is meant to sit beside an unruled case that holds the rest of those bytes still. This suite
+ * emits 24 rulings; 23 have such a companion and ONE DOES NOT. All 24, by family:
  *
- *   - `…/prog-line-raw` and `…/remediation-line-raw` are RULED: the raw line must differ,
- *     and a runtime that stopped spelling its own prog would fail as a stale ruling.
- *   - every `…/stdout`, `…/stderr`, `…/transcript` and `…/remediation-line` case is UNRULED
- *     and compares the SAME bytes after the substitution. Those are what stop the drift.
+ *   - 13 `…/stderr-raw`, one per prog-bearing shape in `ARGV_SHAPES`. Companion: that
+ *     shape's `…/stderr`, the same stream compared after the substitution.
+ *   - 4 `…/w200/prog-line-raw`, one per help form — line 1 alone, where the usage line fits.
+ *     Companion: the unruled `…/w200/usage-block`, which CONTAINS that line substituted.
+ *   - 4 `…/w80/usage-block`, one per help form, carrying `HANGING_INDENT_RULING`. Companion:
+ *     `…/w80/usage-block-compensated`, the reference re-run `DELTA` columns wider and
+ *     dedented, which must match exactly and is what actually watches the wrap.
+ *   - 2 `…/remediation-line-raw`, on `lint`'s `try: …` and `compact`'s `restore one with: …`.
+ *     Companion: `…/remediation-line`, the same line substituted — and the whole sentence
+ *     rides again inside the unruled `…/transcript` of every scenario that prints it.
+ *   - 1 `help-top/w40/usage-block`, carrying `BRANCH_SPLIT_RULING`. NO COMPANION: nothing
+ *     here compares those bytes unruled. `usage-block-compensated` is emitted only in the
+ *     `width === 80` branch, and `…/w40/body` begins at the first blank line, so it excludes
+ *     the usage block by construction. MEASURED over a run of this suite — every ruled case's
+ *     node-side bytes against the union of every unruled case's — the other 23 are covered
+ *     whole and of this one's 120 bytes ZERO are covered by any unruled case here. What
+ *     stands in its place is weaker, and is the pair `BRANCH_SPLIT_RULING` already argues
+ *     from: at this same width the three SUB-PARSER forms are unruled and byte-identical,
+ *     their longer progs putting both runtimes in argparse's flat branch. That says the
+ *     split is a BAND the top parser alone falls out of rather than a second rendering
+ *     algorithm — it does not pin the top parser's own 40-column bytes, and nothing does.
+ *
+ * Everything else is UNRULED and compares the SAME bytes after the substitution — every
+ * `…/stdout`, `…/stderr`, `…/body`, `…/transcript`, `…/tree`, `…/remediation-line` and
+ * exit-code case. Those are what stop the drift.
  *
  * The substitution is applied to the reference side only, is a plain string replacement of
  * one literal, and is spelled once in `PY_PROG`/`NODE_PROG` below.
