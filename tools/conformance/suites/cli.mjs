@@ -205,6 +205,14 @@ function matrix(scratch) {
     { label: 'k-equals-then-assets-root', argv: ['--k=7', '--assets-root'], shape: 'assets' },
     { label: 'double-dash-positional', argv: ['--', 'positional'] },
     { label: 'prefix-abbreviation', argv: ['--inde', '5'], serves: true, ...sandbox },
+    // `--inde` above is the ACCEPTING half of prefix abbreviation: it matches exactly one
+    // option, so both runtimes go on and serve. Nothing exercised the REFUSING half until
+    // this line. `--st` matches three (`--statusline`, `--store`, `--start`), and the refusal
+    // is compared like every other argv line here — the message on the stream that carried
+    // it, the stream that did NOT (stdout, empty on both, compared as bytes), and the exit
+    // code. Two runtimes can both fail and fail differently; a boolean would not say so.
+    // See the ambiguity precondition below for why the literal `--st` cannot go quietly stale.
+    { label: 'ambiguous-abbreviation', argv: ['--st'] },
     // The wrap boundary, straddled. See `wrapBoundary` below for where 106 comes from.
     { label: 'help-columns-60', argv: ['-h'], env: { COLUMNS: '60' } },
     { label: 'help-columns-80', argv: ['-h'], env: { COLUMNS: '80' } },
@@ -259,9 +267,13 @@ export async function run(ctx) {
   const notes = [];
   const specs = matrix(ctx.scratch);
 
+  /** The reference's own answer for the argv line whose ambiguity is asserted below. */
+  let ambiguousPy = null;
+
   for (const spec of specs) {
     const py = runPy(ctx, spec);
     const node = runNode(spec);
+    if (spec.label === 'ambiguous-abbreviation') ambiguousPy = py;
     if (spec.shape === 'assets') cases.push(...assetsRootCases(spec.label, py, node, ASSETS_ROOT_RULING));
     else cases.push(...streamCases(spec.label, py, node));
   }
@@ -325,6 +337,35 @@ export async function run(ctx) {
     );
   }
 
+  /**
+   * THE SECOND PRECONDITION, for the one argv line that can go stale without going red.
+   *
+   * `--st` is ambiguous only because `--statusline`, `--store` and `--start` happen to share
+   * three letters TODAY. Rename two of the three and `--st` stops being an ambiguity: it
+   * becomes an ordinary unrecognized option, or — worse — an accepted abbreviation of the one
+   * survivor. Either way `ambiguous-abbreviation` keeps PASSING while testing nothing of the
+   * kind, and the differential itself cannot notice, because a flag rename lands in BOTH
+   * runtimes by the two-runtimes rule and the two answers move together.
+   *
+   * So the ambiguity is anchored against a string typed into this file, exactly as the usage
+   * line above is. The candidate LIST is deliberately not pinned — a fourth `--st*` flag
+   * lengthens it on both sides at once and the case remains a real ambiguity test, and the
+   * list is compared byte for byte by `ambiguous-abbreviation/stderr` regardless. What is
+   * pinned is the only thing a rename can silently take away: that argparse still REFUSED
+   * this argv line for being ambiguous.
+   */
+  const AMBIGUOUS_PREFIX = 'bantamkit-mcp: error: ambiguous option: --st could match ';
+  const ambiguousStderr = dec(ambiguousPy?.stderr ?? Buffer.alloc(0));
+  if (!ambiguousStderr.includes(AMBIGUOUS_PREFIX)) {
+    throw new Error(
+      `cli: --st is no longer an ambiguous abbreviation.\n  expected stderr to contain : ${JSON.stringify(AMBIGUOUS_PREFIX)}\n` +
+        `  argparse printed           : ${JSON.stringify(ambiguousStderr)}\n` +
+        '  a long option was renamed and the ambiguous-abbreviation case now tests something\n' +
+        '  else. Repoint it at a prefix that STILL matches two or more options — do not delete\n' +
+        '  it, and do not let it pass as an unrecognized-option case.',
+    );
+  }
+
   // ------------------------------------------------------------------------------- notes
 
   notes.push(
@@ -345,6 +386,14 @@ export async function run(ctx) {
       'has zero symlinks. Node counts with readdirSync(recursive).isFile(), where a dirent for a ' +
       'symlink-to-file is NOT a file; Python counts with rglob + is_file(), which FOLLOWS symlinks. ' +
       'Add one symlink to the pack and the two counts diverge with neither side changing.',
+  );
+  notes.push(
+    'prefix abbreviation is covered on BOTH branches: --inde accepts (one match, both runtimes ' +
+      'serve) and --st refuses (three matches — --statusline, --store, --start). the refusal is ' +
+      `compared as it left each process: ${ambiguousPy.stderr.length} stderr bytes, ` +
+      `${ambiguousPy.stdout.length} on stdout, exit ${ambiguousPy.exit}. a precondition in this ` +
+      'file stops the suite if a flag rename ever makes --st unambiguous, because that would ' +
+      'leave the case green and pointed at nothing.',
   );
   notes.push(
     'every process here runs with COLUMNS, LINES and BANTAMKIT_ASSETS deleted, and every argv line ' +
