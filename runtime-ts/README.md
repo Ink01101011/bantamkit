@@ -54,9 +54,9 @@ trip, so a cold start is worth about **4-7 s** here and will be worse on a slowe
 The warm figure is the one that is a property of this package, and it is stable.
 
 - **92 packages** installed (top-level, scope-aware); **111** `package.json` in the tree.
-- **15.4 MB** of files under `$npm_config_cache/_npx/<hash>` (25 MB of allocated blocks by
-  `du`), **37.3 MB** for the whole cache including npm's content-addressable store.
-- `bantamkit-mcp` itself is **0.6 MB** of that. The rest is
+- **15.7 MB** of files under `$npm_config_cache/_npx/<hash>` (26 MB of allocated blocks by
+  `du`), **37.7 MB** for the whole cache including npm's content-addressable store.
+- `bantamkit-mcp` itself is **0.9 MB** of that (1.2 MB allocated). The rest is
   `@modelcontextprotocol/sdk@1.30.0`'s dependency tree, which pulls in `express`, `cors`,
   `body-parser`, `ajv`, `eventsource`, `hono` and `express-rate-limit` — the SDK's HTTP
   transport, none of which this stdio server uses. That is the SDK's shape, not a choice
