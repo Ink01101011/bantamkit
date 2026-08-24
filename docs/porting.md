@@ -142,8 +142,8 @@ wrong one.
 
 `checkSchema` runs **before** validation, as `jsonschema.validate` does. It is the keyword
 *shape table* applied recursively — deliberately not the metaschema, which would need
-`$ref` / `$dynamicRef` support this validator does not implement. Measured over 53 malformed
-schemas: 53/53 refuse on both sides.
+`$ref` / `$dynamicRef` support this validator does not implement. Measured over 50 malformed
+schemas: 50/50 refuse on both sides.
 
 One trade taken deliberately: `{"pattern": "("}` compiles eagerly, which closes the wrong
 answer at the cost of refusing Python-only regex syntax in branches that are never reached.
@@ -241,7 +241,7 @@ Surprises worth keeping: `1e+17` is a **`str`**, not a float — PyYAML's float 
 | `build_id` | hashes the executing tree; two runtimes, two trees. `assets_digest` **is** identical (`sha256:b03141bf…`) and that is the one that matters. |
 | the event log's build identity | **not a difference — an omission, for this reason.** A `build_id` hashes the executing tree and the two runtimes are two trees (row above), so no build identity is a field in an event-log record at all; the `build_identity` record carries the COUNT of underivable fields instead. Same for `sessionId` (the server cannot observe it), pids and absolute paths. See [eventlog.md](eventlog.md). |
 | the YAML scanner cases | the codec has no scanner; 5 shapes ruled, `!` filed alone |
-| `checkSchema` wording | 53 cases; both sides refuse, the sentences differ |
+| `checkSchema` wording | 50 cases; both sides refuse, the sentences differ |
 | accounting via `fromJs` | an integral float; the `parseJson` route is byte-identical |
 | on Windows, CRLF | **no longer a difference.** N11 reversed it: the emitter builds LF text, the WRITER translates, and the budget still counts the LF text — which is what CPython does. See [conformance.md](conformance.md). |
 | the memory CLI's `prog` | `python -m bantamkit.memory` against `bantamkit-memory`. There is no third spelling: the reference's prog is a Python `-m` invocation and a pure-npm install has no Python in it, while `bantamkit-memory` names a console script CPython does not install. It moves the usage line, every `…: error:` prefix, and the two remediation sentences that name a command the reader must type — `lint`'s `try: … compact …` and `compact`'s `restore one with: …`. It also moves the WRAP, because argparse's hanging indent is `len(prefix) + len(prog) + 1`: 10 columns apart at COLUMNS=80, and at COLUMNS=40 the two runtimes take different `_format_usage` branches outright. 24 ruled cases in `tools/conformance/suites/memorycli.mjs`, each PAIRED with an unruled case over the same bytes after the substitution, plus an unruled `usage-block-compensated` case that re-runs the reference 10 columns wider and requires the wrapped blocks to match exactly. |

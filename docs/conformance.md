@@ -69,7 +69,7 @@ This distinction cost a defect once and is the harness's sharpest edge, so read 
 
 A `ruling:` case fails when the two sides **match**. That means a ruling can only ever prove
 "these two sentences still differ" — it cannot prove "both sides still refuse". If the Node
-side silently went back to *answering* where Python refuses, all 53 `checkSchema` rulings
+side silently went back to *answering* where Python refuses, all 50 `checkSchema` rulings
 would have stayed green, because an answer and a refusal are also different strings.
 
 So wherever the *refusal itself* is the property, it gets **its own non-ruled case comparing
