@@ -607,12 +607,28 @@ export class MemoryStore {
    *
    * `facts()` runs FIRST, before any rename, so an unreadable store moves nothing.
    *
-   * ONE PLATFORM DIFFERENCE IS INHERITED, NOT INTRODUCED. The reference uses `Path.rename`,
-   * which is `os.rename`: on POSIX it silently replaces an existing destination and on
-   * Windows it raises `FileExistsError`. `pyReplace` is `os.replace`, which replaces on both.
-   * The two agree everywhere except a `archive/<name>.md` that ALREADY exists when compaction
-   * moves the live fact over it — a state `restore` cannot produce, since it moves the
-   * archived copy out. Reported rather than papered over; runtime-py is not this unit's layer.
+   * THE MOVE IS `os.replace`, AND THE REFERENCE'S IS NOW TOO — the difference this comment
+   * used to report is CLOSED. `pyReplace` is `os.replace`, which replaces an existing
+   * destination on every platform. `Path.rename` is `os.rename`, which replaces silently on
+   * POSIX and raises `FileExistsError` on Windows; the reference called it here until
+   * `d239480` moved it onto `Path.replace`, so Node-on-Windows used to match Python-on-POSIX
+   * and Python-on-Windows matched neither. Nothing about the port changed: this line has
+   * always been `pyReplace`.
+   *
+   * WHAT IS STILL TRUE is the reachability argument, which is why the fix needed a fixture
+   * built for it. The only state that tells `rename` and `replace` apart is an
+   * `archive/<name>.md` that ALREADY exists when this loop moves the live fact over it — an
+   * earlier compaction's copy of a fact that was restored and then went stale again.
+   * `restore` cannot produce it, because it moves the archived copy OUT. On POSIX the two
+   * calls are indistinguishable even in that state, so `memorycli`'s
+   * `compact re-archives over an existing archive entry` is a WINDOWS-ONLY regression guard:
+   * a revert to `rename` on either side stays green on this machine.
+   *
+   * `restore` below still calls `pyReplace` against a reference that still calls `rename`,
+   * and that one is unobservable by construction rather than by fixture: its forward move is
+   * guarded by a `reachable` check that refuses when `facts/<name>.md` is live, and its
+   * rollback moves back onto a path it has just emptied. Neither can meet an occupied
+   * destination, so there is no state in which the two calls could answer differently.
    */
   compact(reserve: number | null = null): CompactResult {
     const facts = this.facts();
