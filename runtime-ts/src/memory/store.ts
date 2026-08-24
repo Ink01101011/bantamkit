@@ -17,7 +17,7 @@
  * THE LIFECYCLE OPS ARE HERE NOW, AND WHY THEY WERE NOT
  * -----------------------------------------------------
  * `compact`, `restore`, `archived`, `lint` and `_staleness_key` used to be listed here as
- * DELIBERATELY MISSING, on a prep probe that traced a real stdio server through all seven
+ * DELIBERATELY MISSING, on a prep probe that traced a real stdio server through all eight
  * tools, both resource templates and every error arm and found none of them reachable. That
  * trace was true and it is still true: no MCP tool calls any of them, because
  * `docs/memory.md` rules that lifecycle is an operator decision, not a model decision.

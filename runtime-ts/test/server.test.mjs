@@ -1,5 +1,5 @@
 /**
- * The MCP surface: the seven tools, the two resource templates, and the wire.
+ * The MCP surface: the eight tools, the two resource templates, and the wire.
  *
  * WHY MOST OF THIS DRIVES A REAL PROCESS RATHER THAN CALLING A HANDLER. Everything this
  * unit adds lives in the gap between a handler's return value and the bytes on stdout —

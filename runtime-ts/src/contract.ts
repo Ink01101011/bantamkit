@@ -3,7 +3,7 @@
  *
  * A port of the 44 lines of `runtime-py/src/bantamkit/contract.py` that the MCP surface
  * reaches (measured by `sys.settrace` over a real stdio server; the `document_*` renderers
- * are 461 lines of the same file and NONE of them is reachable from the seven tools, so they
+ * are 461 lines of the same file and NONE of them is reachable from the eight tools, so they
  * are not here). The layer rule (`docs/architecture.md`) puts the WORDING in
  * `assets/contracts/default.yaml` and the PARSE in this file, and neither half is duplicated
  * here: the sentences are read from the asset at call time, exactly as Python reads them.
