@@ -5,7 +5,8 @@ The bantamkit MCP server as a pure-Node package: `npx bantamkit-mcp`, no Python,
 `bantamkit_status` prompt and the same two resource templates as `runtime-py`'s server,
 reads and writes the same memory store, and is checked against the Python server frame by
 frame — 4500+ conformance cases, with every intentional difference written down as a
-ruling.
+ruling. It installs **two** commands, not one — the server and `bantamkit-memory`, the
+operator CLI for memory-store lifecycle; see *The second bin* below.
 
 Every number on this page was measured on the machine that wrote it, with a command you
 can rerun. Where something was not measured, it says so.
@@ -191,6 +192,113 @@ that were imported (RB-P84).
 
 **Pin the version in the config** if you want this to be a non-issue:
 `"args": ["-y", "bantamkit-mcp@0.25.0"]`.
+
+## The second bin: `bantamkit-memory`
+
+`package.json` declares **two** bins, so an install puts two commands on the path. Packed
+and installed into an empty scratch directory, that is what arrives:
+
+```console
+$ npm install ./bantamkit-mcp-0.25.0.tgz
+added 95 packages in 5s
+$ ls -l node_modules/.bin/
+bantamkit-mcp    -> ../bantamkit-mcp/dist/cli.js
+bantamkit-memory -> ../bantamkit-mcp/dist/memory/cli.js
+```
+
+`bantamkit-mcp` is the server the `.mcp.json` line at the top launches, and its stdout is
+the JSON-RPC wire — not a thing you run by hand. `bantamkit-memory` is the operator CLI
+for memory-store lifecycle, and it prints reports. That is the whole reason it is a
+second bin instead of a subcommand: lifecycle output on the server's stdout would corrupt
+the transport, and `bantamkit-mcp`'s help is a byte-compared artifact against
+`python -m bantamkit.mcpserver -h`, which a subparsers action would move.
+
+Five subcommands, scoped to the writable **project** layer only — read-only grants and the
+profile store are out of its reach by the code path, not by convention:
+
+| subcommand | what it does |
+|---|---|
+| `status` | index size, budget, headroom, archive count |
+| `lint` | exit 1 if the store is malformed or over budget |
+| `compact` | archive the stalest facts until the index fits |
+| `archived` | list what compaction has moved out |
+| `restore NAME` | move an archived fact back |
+
+Each takes `--store PATH` or `--start DIR`; with neither, it resolves the project store
+the way `Memory.layered()` does. Exit codes are `0` success, `1` a failure the operator
+must act on (over budget, a malformed fact, a refused restore), `2` a usage error — so
+`lint` drops into a pre-commit hook or a CI job unchanged.
+
+Driven off `node_modules/.bin/` from the install above, against a scratch five-fact store:
+
+```console
+$ bantamkit-memory status --store store
+store: store
+facts: 5
+index: 576 bytes
+budget: 24000
+headroom: 23424
+archived: 0
+$ bantamkit-memory lint --store store --budget 400
+lint: FAIL — index is 576 bytes, budget is 400
+  try: bantamkit-memory compact --store store --budget 400
+$ echo $?
+1
+$ bantamkit-memory compact --store store --budget 400
+compacted 3 fact(s)
+index: 576 -> 236 bytes (budget 400, target 267, reserve 133, headroom 164)
+archived -> store/archive
+  assets-pack-has-eighty-four-files (project, 133 bytes)
+  ci-runner-is-macos-only (project, 97 bytes)
+  conformance-runner-entrypoint (reference, 110 bytes)
+restore one with: bantamkit-memory restore <name> --store store
+$ bantamkit-memory archived --store store
+archived facts: 3 (store/archive)
+  assets-pack-has-eighty-four-files
+  ci-runner-is-macos-only
+  conformance-runner-entrypoint
+$ bantamkit-memory restore ci-runner-is-macos-only --store store
+restored 'ci-runner-is-macos-only' — index now 333/24000 bytes
+```
+
+`compact` printing every name that left is the point: `archive/` is a directory nothing
+reads back on its own, so a compaction whose output is not shown is a silent deletion as
+far as the operator is concerned.
+
+Without installing, `npx -p bantamkit-mcp bantamkit-memory status` runs it out of the
+registry. `-p` is not optional — the package name and this bin's name differ, and plain
+`npx bantamkit-memory` would go looking for a package called `bantamkit-memory`. Measured
+here against the local tarball rather than the registry, since this version is not
+published:
+
+```console
+$ npx -y -p ./bantamkit-mcp-0.25.0.tgz bantamkit-memory status --store npxstore
+store: npxstore
+facts: 0
+index: 0 bytes
+budget: 24000
+headroom: 24000
+archived: 0
+```
+
+**The Python install does not provide this command**, which is why the two spellings
+exist. Measured against the distribution in this repository's venv:
+
+```console
+$ .venv/bin/python -c "from importlib.metadata import distribution; d=distribution('bantamkit'); print(sorted(e.name for e in d.entry_points if e.group=='console_scripts'))"
+['bantamkit-mcp']
+$ env PATH="$PWD/.venv/bin:/usr/bin:/bin" sh -c 'command -v bantamkit-memory'
+$ echo $?
+1
+```
+
+One console script, and it is the server. The Python operator therefore types
+`python -m bantamkit.memory`, and the two CLIs are identical bytes after substituting one
+for the other — except the wrap, because argparse's hanging indent is
+`len(prefix) + len(prog) + 1`. The reason there is no third spelling both installs could
+use lives in one place, the `prog` row of `docs/porting.md`'s divergence table, and this
+page does not restate it. `docs/memory.md`'s *The operator CLI* is the full reference;
+`tools/conformance/suites/memorycli.mjs` is the gate that compares the two.
 
 ## The default is layered — do not add `--store` by reflex
 
