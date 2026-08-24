@@ -24,13 +24,14 @@ two sources and agreed they match — which is the check that has never once cau
 difference that mattered. Every defect this job found in the port was found by running both
 sides, not by reading either.
 
-## The nine suites
+## The ten suites
 
 | suite | what it compares |
 |---|---|
 | `cli` | the `bantamkit-mcp` command line as a process: stdout, stderr, exit code |
 | `codec` | fact-file frontmatter: emit byte-identically, and parse each other |
 | `mcpreport` | `--mcp-report` as a process, over one synthetic host-log/event-log pair |
+| `memorycli` | `bantamkit-memory` against `python -m bantamkit.memory` as processes: the transcript of every step, the exit codes, and the store afterwards |
 | `recall-strings` | the binding layer: every sentence an empty recall can produce |
 | `shiftwork` | the checkpoint writer: `ensure_ascii`, `sort_keys`, separators, `5.0` |
 | `statusline` | `--statusline` as a process, over synthetic event logs ([statusline.md](statusline.md)) |
@@ -38,12 +39,14 @@ sides, not by reading either.
 | `validate` | the validator: every sentence a schema failure can produce |
 | `wire` | the MCP surface: eight tools, one prompt, two templates, and the frames themselves |
 
-`cli`, `mcpreport` and `statusline` are the odd ones out and deliberately so: every other
-suite compares two library functions, and that comparison cannot see which stream a message
-lands on or what the process exits with. Those three spawn both CLIs and diff the three
-things only a process has. `mcpreport` and `statusline` reuse `ref/cli_ref.py` rather than
-adding a second reference script — it already is "spawn the CLI with this argv and hand back
-both streams", which is their question with a different argv.
+`cli`, `mcpreport`, `memorycli` and `statusline` are the odd ones out and deliberately so:
+every other suite compares two library functions, and that comparison cannot see which stream
+a message lands on or what the process exits with. Those four spawn both CLIs and diff the
+three things only a process has. `mcpreport` and `statusline` reuse `ref/cli_ref.py` rather
+than adding a second reference script — it already is "spawn the CLI with this argv and hand
+back both streams", which is their question with a different argv. `memorycli` carries its
+own `ref/memorycli_ref.py` because it compares a fourth thing those three do not: the store
+on disk after every step.
 
 Suites are discovered by **directory listing**, not by a registry someone has to remember to
 edit. Drop a module in `suites/` and it runs.
@@ -99,10 +102,10 @@ that may not resolve. CI has no `.venv` at all, so the workflow writes
 ## Reading the output
 
 ```
-✔ store: 184 cases (96 json, 88 bytes), 0 differed
-  note: [store] live index: 13472 bytes on disk, 13472 bytes rebuilt, 65 lines
+✔ store: 185 cases (97 json, 88 bytes), 0 differed
+  note: [store] live index: 13472 bytes on disk, 13472 bytes rebuilt, 65 lines, 10528 bytes of headroom under the 24000 default
   ...
-PASS: 4463 cases, 804 byte-identical, 3162 exact-string, 497 structural, 73 ruled-different, 0 failures
+PASS: 4834 cases, 1041 byte-identical, 3180 exact-string, 613 structural, 100 ruled-different, 0 failures
 ```
 
 **The notes are part of the result, not decoration.** Several measurements this project
