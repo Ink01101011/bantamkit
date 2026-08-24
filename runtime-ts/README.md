@@ -131,27 +131,35 @@ prep probe's, unsoftened.
 | stdin is the JSON-RPC channel | yes | yes, with `-y` |
 | names the cause when dependencies are missing | yes | the analogous failure is *no network*, and it has no message at all — see the table above |
 | starts without a network | yes | **no**, on a cold cache |
-| `--which`, for diagnosing which endpoint answered | the flag exists | not ported — see below |
+| `--which`, for diagnosing which endpoint answered | the flag exists | **not in the npx CLI** — but `tools/bantamkit-mcp-node --which` has it, see below |
 | one config line, no clone, no venv | no | **yes.** This is the whole reason the package exists |
 
-### `--which` is deleted, not ported
+### `--which` is a launcher flag, not a package flag
 
-`tools/bantamkit-mcp:47` says `--which` is read by `tools/mcpreach/mcpreach.py`, and
-`docs/mcp.md:154` documents a five-value exit-code interface for that program
-(`0` REACHABLE, `1` UNREACHABLE, `2` FOREIGN, `3` UNDECLARED, `4` NO_ENV).
+This section previously read "`--which` is deleted, not ported" and said "there is no
+Node `--which`, and none is planned". Both are now false, and the second was made false
+inside this repository: `tools/bantamkit-mcp-node` ships `--which`, and
+`runtime-ts/test/launcher.test.mjs` runs it — including on a checkout that has never been
+built, which is the case the Python flag's `find_spec` was chosen for. It prints
+`checkout=`, `deps_root=`, `runtime=node`, `node=`, `entry=` (suffixed `(missing)` when
+`dist/` is absent) and `sdk=`.
 
-**That program has never existed.** `git log --all --diff-filter=A -- '*mcpreach*'` is
-empty across all 506 refs in this repository. `docs/eval.md` records the decision in
-writing — the half-built checker "had never been seen to fire" and was deliberately not
-merged — while two other files went on citing it as the runnable answer.
-`runtime-py/tests/test_mcp_endpoint.py:48-72` documents the three-file contradiction at
-length.
+What is genuinely not ported is `--which` **on the published package**, and the reason is
+the line above it in the table: `npx bantamkit-mcp` does not run a checkout, so
+`checkout=` and `source=` have nothing to report. The question a reader has about an npx
+endpoint is not *where did this resolve* but *which build answered*, and that is
+`build_identity` — a tool on the wire rather than a flag on a launcher, and what the next
+section is about.
 
-So there is no Node `--which`, and none is planned. The flag had exactly one documented
-consumer and that consumer is vaporware; porting an interface to nothing is not a budget
-worth spending. What the flag was reaching for — *which build is actually answering* — is
-served properly by `build_identity`, which is a tool on the wire rather than a flag on a
-launcher, and which the next section is about.
+The old wording came from a real defect, which is now closed. `tools/bantamkit-mcp:47`
+used to name `tools/mcpreach/mcpreach.py` as `--which`'s consumer and `docs/mcp.md` used
+to document a five-value exit-code interface for that program (`0` REACHABLE, `1`
+UNREACHABLE, `2` FOREIGN, `3` UNDECLARED, `4` NO_ENV). **That program has never existed** —
+`git log --all --diff-filter=A -- '*mcpreach*'` is empty across every ref in this
+repository, and `docs/eval.md` records the decision not to ship it, the half-built checker
+having "never been seen to fire". Both citations were rewritten on 2026-08-24 to name what
+actually runs, and `runtime-py/tests/test_doc_commands_gate.py` is now red if any fenced
+shell block in the repository names a `tools/` program that is not in the tree.
 
 ## Silent version float, and the instrument for it
 

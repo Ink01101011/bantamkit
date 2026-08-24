@@ -149,18 +149,54 @@ interpreter, the missing module and the `pip install` that fixes it — not as
 is no `.venv` anywhere.
 
 Whether the declared endpoint actually reaches, and whether it serves *this*
-checkout's source, is not a thing to reason about:
+checkout's source, is not a thing to reason about. Two things answer it and both
+are in the tree. The first is the launcher itself:
 
 ```bash
-python tools/mcpreach/mcpreach.py check          # from any checkout or worktree
+tools/bantamkit-mcp --which             # from any checkout or worktree
+tools/bantamkit-mcp-node --which        # the Node endpoint, same question
 ```
 
-Exit codes are the interface: `0` REACHABLE, `1` UNREACHABLE (the `RB-P96`
-defect), `2` FOREIGN (it launched, but it is serving a *different* checkout's
-source — the worktree trap, which is the failure worth more than the one it
-replaces because it is silent), `3` UNDECLARED (no project-scope entry), `4`
-NO_ENV (nothing on this machine carries the dependencies — a fresh clone, which
-is deliberately not `0`).
+`--which` resolves both halves and prints them without importing the package or
+starting a server — it uses `find_spec`, so it still answers on a checkout whose
+dependencies are missing. Read two lines against each other: `checkout=` is the
+tree the code is supposed to come from, `source=` is the file `bantamkit`
+actually resolves to. **`source=` outside `checkout=` is the worktree trap**, in
+one line, before anything has started. The Node launcher answers the same shape
+with `entry=` and `sdk=`, and marks `entry=` `(missing)` on a checkout that has
+never been built.
+
+What `--which` cannot do is ask the endpoint a question, and a process that
+starts, prints a traceback to stderr and closes stdout is indistinguishable from
+a healthy one until somebody does. That part is a gate rather than a command to
+remember:
+
+```bash
+.venv/bin/python -m pytest runtime-py/tests/test_mcp_endpoint.py -q
+```
+
+Two nodes, and they are the two failures. `..._names_a_file_present_in_every_checkout`
+reads the command string out of the tracked `.mcp.json` rather than restating it,
+and is red when that path is absent from the checkout — the `RB-P96` defect, and
+the reason a restated path would be worthless. `..._serves_and_names_this_checkout_as_its_source`
+executes exactly that string, completes a real stdio handshake against it, and
+checks `build_identity` against the **tree** — the directory the launcher must
+have imported, the number of `.py` files on disk in it, and a content digest —
+never against a version string, which has already lied here (`RB-P45`). An
+endpoint answering from a *different* checkout's source is red there.
+
+> **Deleted 2026-08-24.** This section used to read `python
+> tools/mcpreach/mcpreach.py check`, with a five-value exit-code interface under
+> it (`0` REACHABLE, `1` UNREACHABLE, `2` FOREIGN, `3` UNDECLARED, `4` NO_ENV).
+> That program has never been added on any ref of this repository —
+> `git log --all --diff-filter=A -- '*mcpreach*'` is empty — and `docs/eval.md`
+> records the decision not to ship it with `RB-P96`, because the half-built
+> checker "had never been seen to fire". The pointer was not inert: running the
+> documented command exited `2`, which this page documented as `FOREIGN`, so a
+> missing file and a silent wrong-checkout server were the same number to
+> anything scripting the interface. `runtime-py/tests/test_doc_commands_gate.py`
+> is now red if any fenced shell block in this repository names a `tools/`
+> program that is not in the tree.
 
 ### One name, two endpoints
 
