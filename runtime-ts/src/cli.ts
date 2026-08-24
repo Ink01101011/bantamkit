@@ -33,9 +33,23 @@
  * only path in this file that writes to stdout without being a frame, and it exits before a
  * transport is ever started.
  *
- * The prep probe refuted the sh launcher's `--which`: it has no consumer anywhere in the
- * repository or its history (`tools/mcpreach/mcpreach.py` has never existed on any ref), so
- * no Node `--which` is budgeted here.
+ * THERE IS NO `--which` HERE, AND THE REASON IS NOT THE ONE THIS COMMENT USED TO GIVE.
+ * It said the flag "has no consumer anywhere in the repository or its history" and that
+ * therefore "no Node `--which` is budgeted here". Both halves are false as of `3dbedd3` on
+ * this branch: `tools/bantamkit-mcp-node` ships `--which`, and
+ * `runtime-ts/test/launcher.test.mjs` exercises it in two nodes — one over a checkout that
+ * has never been built, one over a worktree, where the flag is the only place `deps_root`
+ * diverging from `checkout` is observable at all. It is budgeted, it exists, and it is
+ * tested. (The narrow fact that comment was built on does survive: no `mcpreach` program has
+ * ever been added on any ref — `git log --all --diff-filter=A -- '*mcpreach*'` is empty,
+ * measured again 2026-08-24. A missing consumer was never the same claim as a missing flag.)
+ *
+ * WHAT IS ACTUALLY TRUE OF THIS FILE. `--which` reports where a CHECKOUT resolved its halves
+ * — the source tree, the dependency root, the entry point, the SDK — and a published `npx`
+ * package does not run from a checkout. There is no second half to report and no ambiguity
+ * about which one answered, so the flag has nothing to say at package level. The question it
+ * reaches for is answered on the wire instead, by `build_identity`. `runtime-ts/README.md`
+ * and `docs/install.md` carry the same correction in their own words.
  */
 import { readFileSync, readdirSync } from 'node:fs';
 
