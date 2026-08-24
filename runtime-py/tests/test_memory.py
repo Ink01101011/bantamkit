@@ -948,7 +948,7 @@ def test_every_op_that_reads_the_store_refuses_to_answer_a_listing_that_failed(
     assert sorted(p.name for p in (store.root / "archive").iterdir()) == ["put-away.md"]
 
 
-def test_an_unlistable_archive_is_not_an_empty_archive(tmp_path, monkeypatch):
+def test_an_unlistable_archive_is_not_an_empty_archive(tmp_path, monkeypatch, capsys):
     """(a) from W1's handoff: the same defect one directory over, and the worse of the two.
 
     `compact()` MOVES the operator's facts into `archive/`, so `archived()` is the only
@@ -963,12 +963,12 @@ def test_an_unlistable_archive_is_not_an_empty_archive(tmp_path, monkeypatch):
     An operator reading that has been told their memory was deleted. NOW: a raise that
     names `archive/` and says the facts are still under it.
 
-    The CLI half is asserted here too and it is NOT yet pretty: `_cmd_archived` and
-    `_cmd_status` do not wrap `MemoryValidationError` the way `_cmd_lint` and
-    `_cmd_restore` do, so the operator gets a traceback where they used to get a lie.
-    That is the same state `status` and `compact` have been in since W1 and it is
-    registered as a follow-up on the operator entry point; it is pinned here so the
-    trade is visible rather than discovered.
+    The CLI half is asserted here too. It used to be a traceback -- `_cmd_archived` and
+    `_cmd_status` wrap nothing the way `_cmd_lint` and `_cmd_restore` do -- and this
+    docstring registered that as a follow-up on the operator entry point. The follow-up
+    landed: `main` catches `BantamError` and prints the store's own sentence behind this
+    CLI's `prog`, so what is pinned below is the exit code AND the one line, and the
+    absence of the word `Traceback`.
     """
     store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-06")
     store.save("project", "put-away", "a fact that was compacted out", "body")
@@ -988,8 +988,11 @@ def test_an_unlistable_archive_is_not_an_empty_archive(tmp_path, monkeypatch):
         "the reader to the wrong file"
     )
 
-    with pytest.raises(MemoryValidationError):
-        memory_main(["archived", "--store", str(store.root)])
+    assert memory_main(["archived", "--store", str(store.root)]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == f"python -m bantamkit.memory: {e.value}\n"
+    assert "Traceback" not in captured.err
 
     # Breaking `archive/` must not break the store: a recall is still answerable.
     assert store.recall("compacted", stamp=False) == []
@@ -1634,6 +1637,104 @@ def test_the_entry_point_runs_as_a_real_subprocess(tmp_path):
     assert f"facts: {len(store._facts())}" in proc.stdout
     assert f"budget: {DEFAULT_INDEX_BUDGET}" in proc.stdout
 
+
+# ---------------------------------------------------------------------------
+# W-TRACEBACK: what an operator is handed when they cannot read their own store.
+#
+# `_cmd_status`, `_cmd_compact` and `_cmd_archived` catch nothing -- there is no
+# remediation to offer for an unreadable directory, only a report -- so the
+# `MemoryValidationError` `_listing` raises unwound through `main` and CPython
+# printed a two-stage traceback carrying interpreter absolute paths and line
+# numbers out of `store.py`. The port prints one sentence. Both exit 1, so the
+# refusal was never in doubt; what was wrong is the answer.
+#
+# The sentence is NOT hand-typed here. Every node below derives it from the
+# exception the store itself raises, so a change to the store's wording moves the
+# expectation with it and cannot silently stop being compared.
+# ---------------------------------------------------------------------------
+
+
+def _archived_store(tmp_path):
+    """A store with one live fact and one already in `archive/`, so all three ops have work."""
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-06")
+    store.save("project", "put-away", "a fact that was compacted out", "body")
+    store.save("project", "kept", "a fact that stays live in facts", "body")
+    (store.root / "facts" / "put-away.md").rename(store.root / "archive" / "put-away.md")
+    store._rebuild_index()
+    return store
+
+
+@pytest.mark.parametrize(
+    ("command", "directory", "op"),
+    [
+        ("status", "facts", lambda store: store._facts()),
+        ("compact", "facts", lambda store: store.compact()),
+        ("archived", "archive", lambda store: store.archived()),
+    ],
+)
+def test_a_store_that_cannot_be_read_is_a_sentence_not_a_stack_trace(
+    tmp_path, monkeypatch, capsys, command, directory, op
+):
+    """The three subcommands that wrap nothing, each on the directory it actually reads.
+
+    `status` and `compact` read `facts/`; `archived` reads `archive/`, which is why the
+    rows carry their own directory rather than one shared fixture -- denying `facts/`
+    leaves `archived` exiting 0 with a correct answer, so a single-directory sweep would
+    have tested two of the three.
+    """
+    store = _archived_store(tmp_path)
+    denied = store.root / directory
+    _deny_scandir(monkeypatch, denied)
+
+    with pytest.raises(MemoryValidationError) as e:
+        op(store)
+    capsys.readouterr()  # the store raised; nothing was printed, and nothing carries over
+
+    assert memory_main([command, "--store", str(store.root)]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == f"python -m bantamkit.memory: {e.value}\n"
+    assert captured.err.count("\n") == 1, "one line, whatever the sentence grows into"
+    assert str(denied) in captured.err, "the operator is told WHICH directory"
+    assert "Traceback" not in captured.err and "store.py" not in captured.err
+
+
+def test_the_unreadable_store_sentence_is_what_a_real_process_prints(tmp_path):
+    """A traceback is a PROCESS-level artifact, so this one is measured on a real process.
+
+    In-process, a pre-fix `main` raises and pytest reports the exception -- which looks
+    like a red for the right reason but never observes what CPython would have written to
+    the operator's terminal. This node runs the CLI in its own interpreter with the same
+    fault injection `_deny_scandir` performs, and asserts on the whole of stderr: one
+    line, no `Traceback (most recent call last)`, no `store.py`, no interpreter path.
+    """
+    store = _archived_store(tmp_path)
+    denied = store.root / "facts"
+    src = Path(bantamkit.__file__).resolve().parent.parent
+    child = (
+        "import os, sys\n"
+        "real = os.scandir\n"
+        "def denied(path, *args, **kwargs):\n"
+        "    if os.fspath(path) == sys.argv[1]:\n"
+        "        raise PermissionError(13, 'Permission denied')\n"
+        "    return real(path, *args, **kwargs)\n"
+        "os.scandir = denied\n"
+        "from bantamkit.memory.__main__ import main\n"
+        "raise SystemExit(main(['status', '--store', sys.argv[2]]))\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", child, str(denied), str(store.root)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, "PYTHONPATH": str(src)},
+    )
+    assert proc.returncode == 1
+    assert proc.stdout == ""
+    assert proc.stderr.startswith("python -m bantamkit.memory: memory store is unreadable: ")
+    assert proc.stderr.endswith("\n") and proc.stderr.count("\n") == 1
+    assert "Traceback" not in proc.stderr
+    assert "store.py" not in proc.stderr and str(src) not in proc.stderr
 
 # ---------------------------------------------------------------------------
 # W-CRLF: what this CLI puts on the wire is BYTES, and they were platform-shaped.

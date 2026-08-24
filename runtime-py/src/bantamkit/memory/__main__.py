@@ -31,6 +31,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from bantamkit.client import BantamError
 from bantamkit.memory.layers import discover_project_store
 from bantamkit.memory.store import (
     DEFAULT_INDEX_BUDGET,
@@ -38,6 +39,15 @@ from bantamkit.memory.store import (
     MemoryStore,
     MemoryValidationError,
 )
+
+#: The one place this CLI's own name is spelled, and `runtime-ts` has the same constant
+#: under the same name (`PROG` in `src/memory/cli.ts`) holding `bantamkit-memory`. The
+#: `memorycli` conformance suite compares the two CLIs after substituting one for the
+#: other, so everything downstream of it -- the usage line, every `...: error:` prefix,
+#: the sentence `main` prints for a store it could not read, and the two remediation
+#: lines that name a command for the operator to RUN -- has to move with it or the two
+#: halves drift apart one string at a time.
+_PROG = "python -m bantamkit.memory"
 
 
 def _lf_utf8(stream: object) -> None:
@@ -80,7 +90,7 @@ def _positive(text: str) -> int:
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="python -m bantamkit.memory",
+        prog=_PROG,
         description=(
             "Operator lifecycle for a bantamkit memory store: inspect, lint, "
             "compact and restore. Not an agent surface."
@@ -154,7 +164,7 @@ def _cmd_lint(store: MemoryStore, args: argparse.Namespace) -> int:
         where = f"--store {store.root}"
         print(
             f"lint: FAIL — index is {_size(store)} bytes, budget is {store.index_budget}\n"
-            f"  try: python -m bantamkit.memory compact {where} "
+            f"  try: {_PROG} compact {where} "
             f"--budget {store.index_budget}",
             file=sys.stderr,
         )
@@ -183,7 +193,7 @@ def _cmd_compact(store: MemoryStore, args: argparse.Namespace) -> int:
     print(f"archived -> {result.archive_dir}")
     for fact in result.archived:
         print(f"  {fact.name} ({fact.type}, {fact.index_bytes} bytes)")
-    print(f"restore one with: python -m bantamkit.memory restore <name> --store {store.root}")
+    print(f"restore one with: {_PROG} restore <name> --store {store.root}")
     return 0
 
 
@@ -222,12 +232,38 @@ _COMMANDS = {
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run one subcommand and return its exit code. The exit code is the ONLY channel.
+
+    `status`, `compact` and `archived` catch nothing of their own -- there is no
+    remediation to offer for a store that cannot be read, only a report -- so before
+    this clause a `MemoryValidationError` out of `_listing` unwound all the way through
+    CPython, which printed a two-stage traceback carrying interpreter absolute paths and
+    line numbers from inside `store.py`. Exit 1 either way; the difference is entirely in
+    what the operator is handed, and a stack trace names this repository's files rather
+    than the store the operator asked about.
+
+    `BantamError` and nothing wider, exactly as `runtime-ts/src/memory/cli.ts` has it: a
+    bug in bantamkit is still a traceback, because that one IS a report for a maintainer.
+    What is caught here is the class of failures that are ABOUT the operator's store --
+    unreadable, unlistable, malformed -- and every one of them already carries a sentence
+    that names the directory and says what the consequence would have been. The prefix is
+    this CLI's own `prog`, so the line reads as the program speaking rather than as an
+    error string from nowhere, and it is byte-identical to the port's after the one
+    substitution the conformance suite makes.
+
+    `SystemExit` is deliberately not caught: argparse's usage errors are exit 2 and
+    `_open`'s empty-`--store` refusal is its own sentence already on stderr.
+    """
     # BEFORE `_parse_args`, because `-h` and every usage error are written by argparse
     # straight into these two streams and never come back through this frame.
     _lf_utf8(sys.stdout)
     _lf_utf8(sys.stderr)
     args = _parse_args(argv)
-    return _COMMANDS[args.command](_open(args), args)
+    try:
+        return _COMMANDS[args.command](_open(args), args)
+    except BantamError as e:
+        print(f"{_PROG}: {e}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
