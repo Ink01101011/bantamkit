@@ -72,13 +72,33 @@ uses. Mutating it to a hardcoded `24` leaves `--suite cli` at **0 failures**; on
 narrow widths in `cli-surface.test.mjs` catch it. The conformance matrix cannot see that
 constant move.
 
-**NOT PORTED**, because this parser cannot reach them and an unmeasured port is a liability:
-positionals and everything serving them (`consume_positionals`, `_match_arguments_partial`,
-the intermixed arm), `required=`, required groups, `choices`, `nargs` other than `None`
-and `0`, `SUPPRESS`, subparsers, `fromfile_prefix_chars`, and — in `textwrap` —
-`initial_indent`/`subsequent_indent`, `expand_tabs`, `replace_whitespace`,
-`fix_sentence_endings` and `max_lines`. Both `wrap` callers pre-normalise with argparse's
-own `re.compile(r'\s+', re.ASCII)`, so no tab or newline can reach the wrapper.
+**NOT PORTED**, because these parsers cannot reach them and an unmeasured port is a
+liability. This list is **shorter than it used to be**, and the reason is the second CLI:
+`bantamkit-memory` is a subparsers tree with five commands, a required subcommand, a `type=`
+that raises `ArgumentTypeError` and a positional under `restore`, so `consume_positionals`,
+`_match_arguments_partial`, `_get_nargs_pattern`, `_check_value` and the `required_actions`
+sweep were all written against the running CPython and ARE here now — this paragraph named
+every one of them as absent. Re-derived against the `NOT PORTED` markers in
+`src/pyargparse.ts`, what is still out is:
+
+- every `nargs` outside the three `_getNargsPattern` names. `None` (a `store` or a
+  positional), `0` (`store_true` and `help`) and `PARSER` are declared; `?`, `*`, `+`,
+  `REMAINDER`, `SUPPRESS` and an integer count are not.
+- `choices` on anything but a subparsers action — `_check_value` exists only on the arm that
+  turns a bad subcommand into `invalid choice: …`.
+- `required=` as a DECLARED field. Required-ness is a predicate here: every positional is
+  required (`nargs=None`, and the one subparsers action is `add_subparsers(required=True)`)
+  and no optional is. A future `required=True` on an optional, or a subparsers action
+  without it, wants a field rather than the predicate.
+- required mutually exclusive groups (`one of the arguments … is required`), and in
+  `_format_actions_usage` the arm that strips the outer `[]` off a positional INSIDE a group.
+- the `SUPPRESS` arm of `_format_actions_usage` (drop the action and the `|` beside it).
+- `fromfile_prefix_chars`.
+- `parse_intermixed_args`.
+- in `textwrap`: `initial_indent`/`subsequent_indent` (argparse's only `fill` call sits at
+  indent 0), `expand_tabs` and `replace_whitespace`, `fix_sentence_endings`, and
+  `max_lines`/`placeholder`. Both `wrap` callers pre-normalise with argparse's own
+  `re.compile(r'\s+', re.ASCII)`, so no tab or newline can reach the wrapper.
 
 **Two divergences that are latent, not observable today.** `textwrap.wordsep_re` uses `\w`
 and `[^\d\W]`, which are Unicode in Python and ASCII in JavaScript; every string in this
