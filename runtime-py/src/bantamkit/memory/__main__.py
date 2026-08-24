@@ -47,6 +47,12 @@ from bantamkit.memory.store import (
 #: the sentence `main` prints for a store it could not read, and the two remediation
 #: lines that name a command for the operator to RUN -- has to move with it or the two
 #: halves drift apart one string at a time.
+#:
+#: One remediation line in this runtime is NOT downstream of this constant and cannot be
+#: without the MCP server importing this module: the `index-budget-low` sentence in
+#: `mcpserver.py` spells the same command as a literal. It is held to this value from the
+#: outside instead, by `tests/test_status_surface.py`'s
+#: `test_the_index_remedy_names_the_command_this_install_actually_provides`.
 _PROG = "python -m bantamkit.memory"
 
 

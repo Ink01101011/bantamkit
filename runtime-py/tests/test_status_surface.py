@@ -37,6 +37,7 @@ from bantamkit.mcpserver import (  # noqa: E402
     degraded_conditions,
 )
 from bantamkit.memory import Memory  # noqa: E402
+from bantamkit.memory.__main__ import _PROG  # noqa: E402
 
 FOOTER_MARK = "⚠️ bantamkit degraded"
 HEALTHY_LINE = "bantamkit Active 🟢"
@@ -348,6 +349,33 @@ def test_the_ninety_percent_line_is_where_the_index_condition_turns_on(tmp_path)
     assert degraded_conditions(memory, EventLog(None)) == []
     memory.store.index_budget = (size * 100) // 90
     assert [c.key for c in degraded_conditions(memory, EventLog(None))] == ["index-budget-low"]
+
+
+def test_the_index_remedy_names_the_command_this_install_actually_provides(tmp_path):
+    """The remedy is a command the person reading the report can run, spelled THEIR way.
+
+    Two spellings of one command already exist inside `runtime-py`: `_PROG` in
+    `bantamkit/memory/__main__.py`, whose comment calls itself "the one place this CLI's
+    own name is spelled", and a literal in `mcpserver.py`'s `index-budget-low` sentence,
+    which that comment does not cover. They agree today. Nothing made them agree, so this
+    is the thing that does — and it does it WITHOUT the server importing the CLI: a
+    production import would pull argparse into the server's graph, reach through a private
+    name across a layer boundary, and load `__main__` a second time under a second name.
+    The link belongs in a test because the risk is drift, not coupling.
+
+    `bantamkit-memory` is asserted ABSENT on purpose. That is `runtime-ts`'s spelling (its
+    second `bin`), and `runtime-py` ships no console script by that name — `pyproject.toml`
+    declares only `bantamkit-mcp`. Pasting the Node remedy into the Python report would
+    hand a Python operator a command that is not on their PATH, and this is what notices.
+    """
+    memory = make_memory(tmp_path)
+    server = build_server(memory)
+    _shrink_the_budget_under_the_index(memory)
+
+    report = status_of(server)
+    assert report.startswith(DEGRADED_LINE)
+    assert f"`{_PROG} compact`" in report
+    assert "bantamkit-memory" not in report
 
 
 def test_an_event_log_whose_writes_fail_is_observed_from_the_lost_record_onward(tmp_path):
