@@ -36,7 +36,7 @@
  *
  * `checkSchema` below is the fix and it is NOT the metaschema — running that would need
  * `$ref` and `$dynamicRef`, which is the vocabulary this file refuses to implement. It is
- * the keyword SHAPE table, applied recursively. Measured over 53 malformed schemas: 53 of 53
+ * the keyword SHAPE table, applied recursively. Measured over 50 malformed schemas: 50 of 50
  * now refuse on both sides, and only the WORDS differ. Each is a ruled case in
  * `tools/conformance/suites/validate.mjs`. Registered and NOT fixed here: `validate_json`
  * letting an exception out on caller input is a `runtime-py` defect (invariant 8).
