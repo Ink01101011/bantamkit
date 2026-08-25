@@ -5,7 +5,8 @@ The bantamkit MCP server as a pure-Node package: `npx bantamkit-mcp`, no Python,
 `bantamkit_status` prompt and the same two resource templates as `runtime-py`'s server,
 reads and writes the same memory store, and is checked against the Python server frame by
 frame — 4500+ conformance cases, with every intentional difference written down as a
-ruling.
+ruling. It installs **two** commands, not one — the server and `bantamkit-memory`, the
+operator CLI for memory-store lifecycle; see *The second bin* below.
 
 Every number on this page was measured on the machine that wrote it, with a command you
 can rerun. Where something was not measured, it says so.
@@ -53,14 +54,14 @@ trip, so a cold start is worth about **4-7 s** here and will be worse on a slowe
 The warm figure is the one that is a property of this package, and it is stable.
 
 - **92 packages** installed (top-level, scope-aware); **111** `package.json` in the tree.
-- **15.4 MB** of files under `$npm_config_cache/_npx/<hash>` (25 MB of allocated blocks by
-  `du`), **37.3 MB** for the whole cache including npm's content-addressable store.
-- `bantamkit-mcp` itself is **0.6 MB** of that. The rest is
+- **15.7 MB** of files under `$npm_config_cache/_npx/<hash>` (26 MB of allocated blocks by
+  `du`), **37.7 MB** for the whole cache including npm's content-addressable store.
+- `bantamkit-mcp` itself is **0.9 MB** of that (1.2 MB allocated). The rest is
   `@modelcontextprotocol/sdk@1.30.0`'s dependency tree, which pulls in `express`, `cors`,
   `body-parser`, `ajv`, `eventsource`, `hono` and `express-rate-limit` — the SDK's HTTP
   transport, none of which this stdio server uses. That is the SDK's shape, not a choice
   this package makes; it declares exactly one runtime dependency.
-- The tarball is **~160 KB**, 123 files: 38 in `dist/`, 83 in `assets/`, plus
+- The tarball is **~266 KB**, 137 files: 50 in `dist/`, 84 in `assets/`, plus `LICENSE`,
   `package.json` and this README. (The exact byte count moves whenever this file does;
   the gate prints it, and `test/packaging.test.mjs` pins the file list.)
 
@@ -131,27 +132,35 @@ prep probe's, unsoftened.
 | stdin is the JSON-RPC channel | yes | yes, with `-y` |
 | names the cause when dependencies are missing | yes | the analogous failure is *no network*, and it has no message at all — see the table above |
 | starts without a network | yes | **no**, on a cold cache |
-| `--which`, for diagnosing which endpoint answered | the flag exists | not ported — see below |
+| `--which`, for diagnosing which endpoint answered | the flag exists | **not in the npx CLI** — but `tools/bantamkit-mcp-node --which` has it, see below |
 | one config line, no clone, no venv | no | **yes.** This is the whole reason the package exists |
 
-### `--which` is deleted, not ported
+### `--which` is a launcher flag, not a package flag
 
-`tools/bantamkit-mcp:47` says `--which` is read by `tools/mcpreach/mcpreach.py`, and
-`docs/mcp.md:154` documents a five-value exit-code interface for that program
-(`0` REACHABLE, `1` UNREACHABLE, `2` FOREIGN, `3` UNDECLARED, `4` NO_ENV).
+This section previously read "`--which` is deleted, not ported" and said "there is no
+Node `--which`, and none is planned". Both are now false, and the second was made false
+inside this repository: `tools/bantamkit-mcp-node` ships `--which`, and
+`runtime-ts/test/launcher.test.mjs` runs it — including on a checkout that has never been
+built, which is the case the Python flag's `find_spec` was chosen for. It prints
+`checkout=`, `deps_root=`, `runtime=node`, `node=`, `entry=` (suffixed `(missing)` when
+`dist/` is absent) and `sdk=`.
 
-**That program has never existed.** `git log --all --diff-filter=A -- '*mcpreach*'` is
-empty across all 506 refs in this repository. `docs/eval.md` records the decision in
-writing — the half-built checker "had never been seen to fire" and was deliberately not
-merged — while two other files went on citing it as the runnable answer.
-`runtime-py/tests/test_mcp_endpoint.py:48-72` documents the three-file contradiction at
-length.
+What is genuinely not ported is `--which` **on the published package**, and the reason is
+the line above it in the table: `npx bantamkit-mcp` does not run a checkout, so
+`checkout=` and `source=` have nothing to report. The question a reader has about an npx
+endpoint is not *where did this resolve* but *which build answered*, and that is
+`build_identity` — a tool on the wire rather than a flag on a launcher, and what the next
+section is about.
 
-So there is no Node `--which`, and none is planned. The flag had exactly one documented
-consumer and that consumer is vaporware; porting an interface to nothing is not a budget
-worth spending. What the flag was reaching for — *which build is actually answering* — is
-served properly by `build_identity`, which is a tool on the wire rather than a flag on a
-launcher, and which the next section is about.
+The old wording came from a real defect, which is now closed. `tools/bantamkit-mcp:47`
+used to name `tools/mcpreach/mcpreach.py` as `--which`'s consumer and `docs/mcp.md` used
+to document a five-value exit-code interface for that program (`0` REACHABLE, `1`
+UNREACHABLE, `2` FOREIGN, `3` UNDECLARED, `4` NO_ENV). **That program has never existed** —
+`git log --all --diff-filter=A -- '*mcpreach*'` is empty across every ref in this
+repository, and `docs/eval.md` records the decision not to ship it, the half-built checker
+having "never been seen to fire". Both citations were rewritten on 2026-08-24 to name what
+actually runs, and `runtime-py/tests/test_doc_commands_gate.py` is now red if any fenced
+shell block in the repository names a `tools/` program that is not in the tree.
 
 ## Silent version float, and the instrument for it
 
@@ -183,6 +192,113 @@ that were imported (RB-P84).
 
 **Pin the version in the config** if you want this to be a non-issue:
 `"args": ["-y", "bantamkit-mcp@0.25.0"]`.
+
+## The second bin: `bantamkit-memory`
+
+`package.json` declares **two** bins, so an install puts two commands on the path. Packed
+and installed into an empty scratch directory, that is what arrives:
+
+```console
+$ npm install ./bantamkit-mcp-0.25.0.tgz
+added 95 packages in 5s
+$ ls -l node_modules/.bin/
+bantamkit-mcp    -> ../bantamkit-mcp/dist/cli.js
+bantamkit-memory -> ../bantamkit-mcp/dist/memory/cli.js
+```
+
+`bantamkit-mcp` is the server the `.mcp.json` line at the top launches, and its stdout is
+the JSON-RPC wire — not a thing you run by hand. `bantamkit-memory` is the operator CLI
+for memory-store lifecycle, and it prints reports. That is the whole reason it is a
+second bin instead of a subcommand: lifecycle output on the server's stdout would corrupt
+the transport, and `bantamkit-mcp`'s help is a byte-compared artifact against
+`python -m bantamkit.mcpserver -h`, which a subparsers action would move.
+
+Five subcommands, scoped to the writable **project** layer only — read-only grants and the
+profile store are out of its reach by the code path, not by convention:
+
+| subcommand | what it does |
+|---|---|
+| `status` | index size, budget, headroom, archive count |
+| `lint` | exit 1 if the store is malformed or over budget |
+| `compact` | archive the stalest facts until the index fits |
+| `archived` | list what compaction has moved out |
+| `restore NAME` | move an archived fact back |
+
+Each takes `--store PATH` or `--start DIR`; with neither, it resolves the project store
+the way `Memory.layered()` does. Exit codes are `0` success, `1` a failure the operator
+must act on (over budget, a malformed fact, a refused restore), `2` a usage error — so
+`lint` drops into a pre-commit hook or a CI job unchanged.
+
+Driven off `node_modules/.bin/` from the install above, against a scratch five-fact store:
+
+```console
+$ bantamkit-memory status --store store
+store: store
+facts: 5
+index: 576 bytes
+budget: 24000
+headroom: 23424
+archived: 0
+$ bantamkit-memory lint --store store --budget 400
+lint: FAIL — index is 576 bytes, budget is 400
+  try: bantamkit-memory compact --store store --budget 400
+$ echo $?
+1
+$ bantamkit-memory compact --store store --budget 400
+compacted 3 fact(s)
+index: 576 -> 236 bytes (budget 400, target 267, reserve 133, headroom 164)
+archived -> store/archive
+  assets-pack-has-eighty-four-files (project, 133 bytes)
+  ci-runner-is-macos-only (project, 97 bytes)
+  conformance-runner-entrypoint (reference, 110 bytes)
+restore one with: bantamkit-memory restore <name> --store store
+$ bantamkit-memory archived --store store
+archived facts: 3 (store/archive)
+  assets-pack-has-eighty-four-files
+  ci-runner-is-macos-only
+  conformance-runner-entrypoint
+$ bantamkit-memory restore ci-runner-is-macos-only --store store
+restored 'ci-runner-is-macos-only' — index now 333/24000 bytes
+```
+
+`compact` printing every name that left is the point: `archive/` is a directory nothing
+reads back on its own, so a compaction whose output is not shown is a silent deletion as
+far as the operator is concerned.
+
+Without installing, `npx -p bantamkit-mcp bantamkit-memory status` runs it out of the
+registry. `-p` is not optional — the package name and this bin's name differ, and plain
+`npx bantamkit-memory` would go looking for a package called `bantamkit-memory`. Measured
+here against the local tarball rather than the registry, since this version is not
+published:
+
+```console
+$ npx -y -p ./bantamkit-mcp-0.25.0.tgz bantamkit-memory status --store npxstore
+store: npxstore
+facts: 0
+index: 0 bytes
+budget: 24000
+headroom: 24000
+archived: 0
+```
+
+**The Python install does not provide this command**, which is why the two spellings
+exist. Measured against the distribution in this repository's venv:
+
+```console
+$ .venv/bin/python -c "from importlib.metadata import distribution; d=distribution('bantamkit'); print(sorted(e.name for e in d.entry_points if e.group=='console_scripts'))"
+['bantamkit-mcp']
+$ env PATH="$PWD/.venv/bin:/usr/bin:/bin" sh -c 'command -v bantamkit-memory'
+$ echo $?
+1
+```
+
+One console script, and it is the server. The Python operator therefore types
+`python -m bantamkit.memory`, and the two CLIs are identical bytes after substituting one
+for the other — except the wrap, because argparse's hanging indent is
+`len(prefix) + len(prog) + 1`. The reason there is no third spelling both installs could
+use lives in one place, the `prog` row of `docs/porting.md`'s divergence table, and this
+page does not restate it. `docs/memory.md`'s *The operator CLI* is the full reference;
+`tools/conformance/suites/memorycli.mjs` is the gate that compares the two.
 
 ## The default is layered — do not add `--store` by reflex
 

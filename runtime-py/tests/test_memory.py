@@ -1,3 +1,4 @@
+import io
 import itertools
 import os
 import subprocess
@@ -947,7 +948,7 @@ def test_every_op_that_reads_the_store_refuses_to_answer_a_listing_that_failed(
     assert sorted(p.name for p in (store.root / "archive").iterdir()) == ["put-away.md"]
 
 
-def test_an_unlistable_archive_is_not_an_empty_archive(tmp_path, monkeypatch):
+def test_an_unlistable_archive_is_not_an_empty_archive(tmp_path, monkeypatch, capsys):
     """(a) from W1's handoff: the same defect one directory over, and the worse of the two.
 
     `compact()` MOVES the operator's facts into `archive/`, so `archived()` is the only
@@ -962,12 +963,12 @@ def test_an_unlistable_archive_is_not_an_empty_archive(tmp_path, monkeypatch):
     An operator reading that has been told their memory was deleted. NOW: a raise that
     names `archive/` and says the facts are still under it.
 
-    The CLI half is asserted here too and it is NOT yet pretty: `_cmd_archived` and
-    `_cmd_status` do not wrap `MemoryValidationError` the way `_cmd_lint` and
-    `_cmd_restore` do, so the operator gets a traceback where they used to get a lie.
-    That is the same state `status` and `compact` have been in since W1 and it is
-    registered as a follow-up on the operator entry point; it is pinned here so the
-    trade is visible rather than discovered.
+    The CLI half is asserted here too. It used to be a traceback -- `_cmd_archived` and
+    `_cmd_status` wrap nothing the way `_cmd_lint` and `_cmd_restore` do -- and this
+    docstring registered that as a follow-up on the operator entry point. The follow-up
+    landed: `main` catches `BantamError` and prints the store's own sentence behind this
+    CLI's `prog`, so what is pinned below is the exit code AND the one line, and the
+    absence of the word `Traceback`.
     """
     store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-06")
     store.save("project", "put-away", "a fact that was compacted out", "body")
@@ -987,8 +988,11 @@ def test_an_unlistable_archive_is_not_an_empty_archive(tmp_path, monkeypatch):
         "the reader to the wrong file"
     )
 
-    with pytest.raises(MemoryValidationError):
-        memory_main(["archived", "--store", str(store.root)])
+    assert memory_main(["archived", "--store", str(store.root)]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == f"python -m bantamkit.memory: {e.value}\n"
+    assert "Traceback" not in captured.err
 
     # Breaking `archive/` must not break the store: a recall is still answerable.
     assert store.recall("compacted", stamp=False) == []
@@ -1632,3 +1636,280 @@ def test_the_entry_point_runs_as_a_real_subprocess(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert f"facts: {len(store._facts())}" in proc.stdout
     assert f"budget: {DEFAULT_INDEX_BUDGET}" in proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# W-TRACEBACK: what an operator is handed when they cannot read their own store.
+#
+# `_cmd_status`, `_cmd_compact` and `_cmd_archived` catch nothing -- there is no
+# remediation to offer for an unreadable directory, only a report -- so the
+# `MemoryValidationError` `_listing` raises unwound through `main` and CPython
+# printed a two-stage traceback carrying interpreter absolute paths and line
+# numbers out of `store.py`. The port prints one sentence. Both exit 1, so the
+# refusal was never in doubt; what was wrong is the answer.
+#
+# The sentence is NOT hand-typed here. Every node below derives it from the
+# exception the store itself raises, so a change to the store's wording moves the
+# expectation with it and cannot silently stop being compared.
+# ---------------------------------------------------------------------------
+
+
+def _archived_store(tmp_path):
+    """A store with one live fact and one already in `archive/`, so all three ops have work."""
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-06")
+    store.save("project", "put-away", "a fact that was compacted out", "body")
+    store.save("project", "kept", "a fact that stays live in facts", "body")
+    (store.root / "facts" / "put-away.md").rename(store.root / "archive" / "put-away.md")
+    store._rebuild_index()
+    return store
+
+
+@pytest.mark.parametrize(
+    ("command", "directory", "op"),
+    [
+        ("status", "facts", lambda store: store._facts()),
+        ("compact", "facts", lambda store: store.compact()),
+        ("archived", "archive", lambda store: store.archived()),
+    ],
+)
+def test_a_store_that_cannot_be_read_is_a_sentence_not_a_stack_trace(
+    tmp_path, monkeypatch, capsys, command, directory, op
+):
+    """The three subcommands that wrap nothing, each on the directory it actually reads.
+
+    `status` and `compact` read `facts/`; `archived` reads `archive/`, which is why the
+    rows carry their own directory rather than one shared fixture -- denying `facts/`
+    leaves `archived` exiting 0 with a correct answer, so a single-directory sweep would
+    have tested two of the three.
+    """
+    store = _archived_store(tmp_path)
+    denied = store.root / directory
+    _deny_scandir(monkeypatch, denied)
+
+    with pytest.raises(MemoryValidationError) as e:
+        op(store)
+    capsys.readouterr()  # the store raised; nothing was printed, and nothing carries over
+
+    assert memory_main([command, "--store", str(store.root)]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == f"python -m bantamkit.memory: {e.value}\n"
+    assert captured.err.count("\n") == 1, "one line, whatever the sentence grows into"
+    assert str(denied) in captured.err, "the operator is told WHICH directory"
+    assert "Traceback" not in captured.err and "store.py" not in captured.err
+
+
+def test_the_unreadable_store_sentence_is_what_a_real_process_prints(tmp_path):
+    """A traceback is a PROCESS-level artifact, so this one is measured on a real process.
+
+    In-process, a pre-fix `main` raises and pytest reports the exception -- which looks
+    like a red for the right reason but never observes what CPython would have written to
+    the operator's terminal. This node runs the CLI in its own interpreter with the same
+    fault injection `_deny_scandir` performs, and asserts on the whole of stderr: one
+    line, no `Traceback (most recent call last)`, no `store.py`, no interpreter path.
+    """
+    store = _archived_store(tmp_path)
+    denied = store.root / "facts"
+    src = Path(bantamkit.__file__).resolve().parent.parent
+    child = (
+        "import os, sys\n"
+        "real = os.scandir\n"
+        "def denied(path, *args, **kwargs):\n"
+        "    if os.fspath(path) == sys.argv[1]:\n"
+        "        raise PermissionError(13, 'Permission denied')\n"
+        "    return real(path, *args, **kwargs)\n"
+        "os.scandir = denied\n"
+        "from bantamkit.memory.__main__ import main\n"
+        "raise SystemExit(main(['status', '--store', sys.argv[2]]))\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", child, str(denied), str(store.root)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, "PYTHONPATH": str(src)},
+    )
+    assert proc.returncode == 1
+    assert proc.stdout == ""
+    assert proc.stderr.startswith("python -m bantamkit.memory: memory store is unreadable: ")
+    assert proc.stderr.endswith("\n") and proc.stderr.count("\n") == 1
+    assert "Traceback" not in proc.stderr
+    assert "store.py" not in proc.stderr and str(src) not in proc.stderr
+
+# ---------------------------------------------------------------------------
+# W-CRLF: what this CLI puts on the wire is BYTES, and they were platform-shaped.
+#
+# `runtime-ts`' `bantamkit-memory` writes LF and UTF-8 on every operating system,
+# and `tools/conformance/suites/memorycli.mjs` compares the two streams byte for
+# byte with no newline normalisation anywhere (`ref/cli_ref.py` states that rule
+# for that directory). `sys.stdout`/`sys.stderr` are text streams with
+# `newline=None` and a locale encoding, so on Windows this CLI emitted CRLF and a
+# code page where the port emitted LF and UTF-8 -- and the suite would have been
+# red on `windows-latest` for a difference the operator can see.
+#
+# NEVER MEASURED ON WINDOWS. Every number below is taken on macOS, where Windows'
+# stream defaults are PERFORMED rather than observed, the way
+# `test_docread.py::test_a_text_mode_write_is_what_breaks_the_boundary` performs
+# the same translation for a file on disk.
+# ---------------------------------------------------------------------------
+
+
+def _windows_default_stream():
+    """A text stream shaped like Windows' `sys.stdout`: a code page, and `\n` -> `\r\n`.
+
+    `newline="\r\n"` is what `newline=None` DOES there, spelled explicitly so it happens
+    here too; `cp1252` is the other half of the same platform default, and it is the half
+    that turns this CLI's em dashes into one byte instead of three.
+    """
+    return io.TextIOWrapper(io.BytesIO(), encoding="cp1252", newline="\r\n")
+
+
+def _run_on_windows_defaults(argv, monkeypatch):
+    """Run the CLI with both streams replaced, and hand back the raw BYTES it wrote."""
+    out, err = _windows_default_stream(), _windows_default_stream()
+    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setattr(sys, "stderr", err)
+    try:
+        code = memory_main(argv)
+    except SystemExit as exit_:  # `-h` and every usage error leave this way
+        code = exit_.code
+    out.flush()
+    err.flush()
+    return code, out.buffer.getvalue(), err.buffer.getvalue()
+
+
+def test_the_windows_default_stream_really_does_translate_and_re_encode():
+    """The control. Without this, the node below could pass on a fixture that does nothing.
+
+    MEASURED here: one `\n` becomes `\r\n`, and U+2014 becomes the single byte 0x97
+    rather than the three bytes UTF-8 spells it with.
+    """
+    stream = _windows_default_stream()
+    stream.write("lint: ok — 1 fact\n")
+    stream.flush()
+    assert stream.buffer.getvalue() == b"lint: ok \x97 1 fact\r\n"
+
+
+@pytest.mark.parametrize(
+    ("argv", "stream"),
+    [
+        (["status"], "stdout"),  # this module's own `print`
+        (["lint", "--budget", "1"], "stderr"),  # ... on the other stream, and an em dash
+        (["-h"], "stdout"),  # argparse's, into `sys.stdout` by name
+        (["status", "--nope"], "stderr"),  # argparse's usage error
+    ],
+)
+def test_the_operator_cli_writes_lf_and_utf8_whatever_the_platform_defaults_are(
+    tmp_path, monkeypatch, argv, stream
+):
+    """Both writers, both streams. The two `argparse` rows are why the fix is not a `print` sweep.
+
+    `mcpserver.py` solves this three times by writing through `sys.stdout.buffer`, and that
+    idiom cannot reach the bottom two rows: at COLUMNS=80 on the pre-fix source, `-h` wrote
+    16 CRLFs and `status --nope` wrote 3, every one of them from inside `argparse`, into
+    `sys.stdout`/`sys.stderr` by name. `status` wrote 6 and `lint` 2, which a sweep would
+    have fixed -- and the suite compares all four.
+    """
+    store = MemoryStore(tmp_path / "mem")
+    _fill(store, 2)
+    monkeypatch.setenv("COLUMNS", "80")
+    argv = [argv[0], "--store", str(store.root), *argv[1:]] if argv[0] != "-h" else argv
+
+    _code, out, err = _run_on_windows_defaults(argv, monkeypatch)
+    written = {"stdout": out, "stderr": err}[stream]
+    silent = {"stdout": err, "stderr": out}[stream]
+
+    assert written, f"{argv} was supposed to write to {stream}"
+    assert silent == b"", f"{argv} wrote to the wrong stream"
+    assert b"\r" not in written, "a carriage return is a byte the port never writes"
+    assert written.decode("utf-8"), "the bytes must be UTF-8, not a code page"
+
+
+def test_the_em_dash_this_cli_prints_is_three_bytes_and_not_one(tmp_path, monkeypatch):
+    """The encoding half, pinned on the one sentence that carries a non-ASCII character.
+
+    `lint`'s remediation line is `lint: FAIL — ...`. Under the platform default it is
+    `\x97`, which is not what `process.stdout.write` puts on the wire for the same string.
+    """
+    store = MemoryStore(tmp_path / "mem")
+    _fill(store, 2)
+    code, _out, err = _run_on_windows_defaults(
+        ["lint", "--store", str(store.root), "--budget", "1"], monkeypatch
+    )
+    assert code == 1
+    assert b"lint: FAIL \xe2\x80\x94 index is " in err
+    assert b"\x97" not in err
+
+
+# ---------------------------------------------------------------------------
+# W-RENAME: `compact` moved a fact with a call that means two different things.
+#
+# `Path.rename` is `os.rename`: on POSIX it silently replaces an existing
+# destination, on Windows it raises `FileExistsError`. `os.replace` is the call
+# that means on both operating systems what `os.rename` means on one, and it is
+# what `runtime-ts` uses (`pyReplace` in `src/memory/store.ts`). So before this
+# fix Node-on-Windows matched Python-on-POSIX and Python-on-Windows matched
+# neither, on the one state that reaches it: an `archive/<name>.md` that ALREADY
+# exists when compaction moves the live fact over it.
+#
+# NEVER MEASURED ON WINDOWS. The refusal is PERFORMED here -- `Path.rename` is
+# replaced with one that raises exactly where Windows' does -- rather than
+# claimed, for the same reason `_deny_scandir` injects a `PermissionError`
+# instead of trusting mode bits.
+# ---------------------------------------------------------------------------
+
+
+def _rename_that_refuses_an_existing_destination(monkeypatch):
+    """`Path.rename` with Windows' semantics: `FileExistsError` over a destination that is there."""
+    real_rename = Path.rename
+
+    def refusing(self, target):
+        if Path(target).exists():
+            raise FileExistsError(17, "Cannot create a file when that file already exists")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", refusing)
+
+
+def test_the_injected_rename_really_does_refuse(tmp_path, monkeypatch):
+    """The control: without it the node below could pass on an injection that does nothing."""
+    source, occupied, free = tmp_path / "a", tmp_path / "b", tmp_path / "c"
+    source.write_text("x", encoding="utf-8")
+    occupied.write_text("y", encoding="utf-8")
+    _rename_that_refuses_an_existing_destination(monkeypatch)
+
+    with pytest.raises(FileExistsError):
+        source.rename(occupied)
+    assert source.read_text(encoding="utf-8") == "x", "the refused move left the source alone"
+    source.rename(free)  # and the injection is not a blanket refusal
+    assert free.read_text(encoding="utf-8") == "x"
+
+
+def test_compact_re_archives_over_an_existing_entry_on_every_platform(tmp_path, monkeypatch):
+    """The state the fix is about, and nothing in this repository had ever reached it.
+
+    `restore` cannot produce it -- it moves the archived copy OUT -- so `compact` over a
+    hand-placed `archive/<name>.md` is the only route in. On POSIX both calls replace and
+    this node is green either way; under the injected Windows semantics `os.rename` refuses
+    and `os.replace` does not, which is the whole of the difference.
+    """
+    store = MemoryStore(tmp_path / "mem", index_budget=100_000, today=lambda: "2026-01-05")
+    store.save("project", "gone-fact", "an alpha subject nobody wants", "body one")
+    store.save("user", "kept-fact", "a beta topic still in use", "body two")
+    store._today = lambda: "2026-08-21"
+    store.recall("beta topic still in use")
+    kept, lost = _line_size(store, "kept-fact"), _line_size(store, "gone-fact")
+    store.index_budget = kept + lost + max(kept, lost) - 1
+
+    # An earlier compaction's copy, already sitting where this one has to write.
+    stale = store.root / "archive" / "gone-fact.md"
+    stale.write_text("an older archived copy of gone-fact", encoding="utf-8")
+    live = (store.root / "facts" / "gone-fact.md").read_text(encoding="utf-8")
+
+    _rename_that_refuses_an_existing_destination(monkeypatch)
+    result = store.compact(reserve=max(kept, lost))
+
+    assert result.names == ["gone-fact"]
+    assert not (store.root / "facts" / "gone-fact.md").exists()
+    assert stale.read_text(encoding="utf-8") == live, "the live fact is what is in archive/ now"
+    assert store.archived() == ["gone-fact"]

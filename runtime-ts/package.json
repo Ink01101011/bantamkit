@@ -4,7 +4,8 @@
   "description": "bantamkit MCP server — pure Node, runnable with npx",
   "type": "module",
   "bin": {
-    "bantamkit-mcp": "dist/cli.js"
+    "bantamkit-mcp": "dist/cli.js",
+    "bantamkit-memory": "dist/memory/cli.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

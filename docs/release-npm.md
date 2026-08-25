@@ -15,8 +15,10 @@ version   0.25.0
 type      module            (ESM)
 license   MIT               LICENSE vendored from the repository root at prepack
 engines   node >= 18        measured on 18.20.8, not assumed
-bin       bantamkit-mcp -> dist/cli.js
-files     dist, assets      plus README.md and LICENSE, which npm packs unconditionally
+bin       bantamkit-mcp     -> dist/cli.js        the MCP server, what a host launches
+          bantamkit-memory  -> dist/memory/cli.js the memory lifecycle CLI
+files     dist, assets      plus README.md, LICENSE and package.json, which npm packs
+                            unconditionally
 deps      @modelcontextprotocol/sdk  pinned exactly 1.30.0
 ```
 

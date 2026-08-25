@@ -30,7 +30,7 @@ THREE HARD RULES, each with the failure it prevents:
   byte-compares both runtimes' streams; one stray write breaks the wire suite. Nothing
   in this module touches `sys.stderr` or `sys.stdout`.
 * **Metadata only.** Never a tool argument's value, never a memory body, never a
-  validated output, never a query. Four of the seven tools take unbounded free text and
+  validated output, never a query. Four of the eight tools take unbounded free text and
   three take absolute paths. Every value written here is an ASCII token from a closed
   set, an `int`, or a `bool`.
 * **Never `str(exception)`.** Only `type(exc).__name__`. This is not hypothetical: the

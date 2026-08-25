@@ -119,7 +119,7 @@ ship as an [MCP server](docs/mcp.md).
 - [Install](docs/install.md) — requirements, editable install, pointing at an endpoint, `BANTAMKIT_ASSETS`
 - [Architecture](docs/architecture.md) — the 5-layer model: what lives where, the no-mixing rule, what the TS port shares
 - [Usage](docs/usage.md) — the runbook: client, agent, tools, components, `structured()`, error types
-- [Memory](docs/memory.md) — on-disk layout, the four ops, dedupe and budget, compact/archive
+- [Memory](docs/memory.md) — on-disk layout, the four ops, dedupe and budget, compact/archive, and the operator CLI for lifecycle: `python -m bantamkit.memory` on a Python install, `bantamkit-memory` on an npm one
 - [File-access graph](docs/filegraph.md) — the read ledger: repeat annotation, verify-on-repeat cache, `file_graph` query tool
 - [Eval](docs/eval.md) — running the suite, the config matrix, reading the report, adding tasks
 - [MCP](docs/mcp.md) — `bantamkit-mcp`: memory + validation for external agents (Claude Code, Codex, any MCP client)

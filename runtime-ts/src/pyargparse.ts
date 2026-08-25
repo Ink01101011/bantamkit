@@ -12,12 +12,17 @@
  * is NO literal usage string here: everything is computed from `ParserSpec`, at the width
  * argparse would have used, by the algorithm argparse uses.
  *
- * WHAT IS PORTED, AND WHAT IS DELIBERATELY NOT. The reference parser (`_parse_args` in
- * `runtime-py/src/bantamkit/mcpserver.py`) has no positionals, no subparsers, no `choices`,
- * no `nargs`, no `SUPPRESS`, and no required arguments. Every argparse branch that only such
- * a parser can reach is LEFT OUT rather than written blind — an untested port of
- * `consume_positionals` would be a liability, not coverage. Each omission is marked
- * `NOT PORTED` at the place it would have gone, and `docs/porting.md` lists them.
+ * WHAT IS PORTED, AND WHAT IS DELIBERATELY NOT. This module serves TWO reference parsers,
+ * and the second one is why it grew. `_parse_args` in
+ * `runtime-py/src/bantamkit/mcpserver.py` is optionals only; `_parse_args` in
+ * `runtime-py/src/bantamkit/memory/__main__.py` is a subparsers tree with five commands, a
+ * required subcommand, a `type=` that raises `ArgumentTypeError`, and a positional under
+ * `restore`. So `consume_positionals`, `_match_arguments_partial`, `_get_nargs_pattern`,
+ * `_check_value` and the `required=` sweep ARE here now — each written against the running
+ * reference and not from memory. What is still left out is every branch NEITHER parser can
+ * reach: the other `nargs` spellings, `fromfile_prefix_chars`, required mutually exclusive
+ * groups, `SUPPRESS`, and `parse_intermixed_args`. Each omission is marked `NOT PORTED` at
+ * the place it would have gone, and `docs/porting.md` lists them.
  *
  * MEASURED, NOT TRANSCRIBED. Every rule below was read out of
  * `python3.12/argparse.py` on this machine (3.12.13) AND checked against the running
@@ -33,29 +38,51 @@ import { pyRepr } from './memory/pyfs.js';
 
 // --------------------------------------------------------------------------- the spec
 
+/** One `subs.add_parser(name, help=...)` under an `add_subparsers()` action. */
+export interface Subcommand {
+  /** The word the operator types, and the `dest=` of the pseudo-action in the help table. */
+  readonly name: string;
+  /** `help=`, which is what the PARENT prints beside the name. The sub-parser never shows it. */
+  readonly help: string;
+  /** The parser this name dispatches to. Its `prog` is `'<parent prog> <name>'`. */
+  readonly parser: ParserSpec;
+}
+
 /** One `parser.add_argument(...)`. */
 export interface ActionSpec {
-  /** `-h`, `--help`, … in the order they were given. `option_strings[0]` leads the usage. */
+  /** `-h`, `--help`, … in the order they were given. `option_strings[0]` leads the usage.
+   *  EMPTY for a positional — that emptiness is what argparse itself keys every branch on. */
   readonly optionStrings: readonly string[];
-  /** argparse's `dest`; also the default metavar, upper-cased. */
+  /** argparse's `dest`; the default metavar for an OPTIONAL upper-cases it, a positional does not. */
   readonly dest: string;
-  /** `metavar=`, when the default (`dest.upper()`) is not what the reference prints. */
+  /** `metavar=`, when the default is not what the reference prints. */
   readonly metavar?: string;
   /**
-   * `store_true` and `help` take no value (`nargs == 0`); everything else here takes one
-   * (`nargs is None`). NOT PORTED: every other `nargs`.
+   * `store_true` and `help` take no value (`nargs == 0`); `store` and `positional` take one
+   * (`nargs is None`); `subparsers` is `nargs == PARSER`. NOT PORTED: every other `nargs`
+   * (`?`, `*`, `+`, `REMAINDER`, `SUPPRESS`, an integer count) — no parser in this runtime
+   * declares one, and `_get_nargs_pattern` is where they would go.
    */
-  readonly kind: 'help' | 'storeTrue' | 'store';
+  readonly kind: 'help' | 'storeTrue' | 'store' | 'positional' | 'subparsers';
+  /**
+   * `help=`. THE EMPTY STRING IS argparse's `help=None`, not a blank help line: both are
+   * falsy, and `_format_action` branches on the truth of `action.help` — the header gets a
+   * line to itself and no help text follows. `add_subparsers()` takes no `help=` in the
+   * reference, so the choices row prints bare above its indented children.
+   */
   readonly help: string;
   /** `type=`. Throws on a value `int()` would reject; the caller renders the sentence. */
   readonly convert?: (raw: string) => unknown;
   /** `__name__` of `type=`, for `invalid %(type)s value: %(value)r`. */
   readonly typeName?: string;
   readonly defaultValue: unknown;
+  /** `add_subparsers()`'s parsers, in `add_parser` order. Only ever set on `kind: 'subparsers'`. */
+  readonly subcommands?: readonly Subcommand[];
 }
 
 export interface ParserSpec {
   readonly prog: string;
+  /** `description=`. EMPTY means the reference passed none — `add_text(None)` adds nothing. */
   readonly description: string;
   readonly actions: readonly ActionSpec[];
   /**
@@ -66,17 +93,66 @@ export interface ParserSpec {
   readonly groups: readonly (readonly number[])[];
 }
 
-/** `argparse.ArgumentParser.error`: the usage block, one sentence, stderr, exit 2. */
-export class ArgvError extends Error {}
+/**
+ * `argparse.ArgumentParser.error`: the usage block, one sentence, stderr, exit 2.
+ *
+ * `spec` is WHOSE usage block, and it is not decoration. A sub-parser reports its own prog
+ * and its own usage (`python -m bantamkit.memory status: error: …`) while an unrecognized
+ * argument that a sub-parser handed back reports the TOP parser's — measured, both.
+ */
+export class ArgvError extends Error {
+  constructor(
+    readonly spec: ParserSpec | null,
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
-/** A `-h`/`--help` action fired mid-parse. argparse prints and exits 0 THERE, not after. */
-export class HelpRequested extends Error {}
+/**
+ * A `-h`/`--help` action fired mid-parse. argparse prints and exits 0 THERE, not after.
+ *
+ * `spec` is whose help: `restore -h` prints the sub-parser's, not the top parser's.
+ */
+export class HelpRequested extends Error {
+  constructor(readonly spec: ParserSpec | null = null) {
+    super();
+  }
+}
 
-/** `_get_action_name`: the name argparse puts after `argument ` — every spelling, joined. */
-const actionName = (action: ActionSpec): string => action.optionStrings.join('/');
+/**
+ * `argparse.ArgumentTypeError`: a `type=` callable's own sentence, printed VERBATIM.
+ *
+ * The distinction is wire-visible and it is the whole reason this class exists:
+ * `--budget 0` is `argument --budget: must be >= 1` (the callable's message) while
+ * `--budget x` is `argument --budget: invalid _positive value: 'x'` (argparse's, because
+ * `int()` raised `ValueError`). One `catch` for both would print the wrong one half the time.
+ */
+export class ArgumentTypeError extends Error {}
 
-const argumentError = (action: ActionSpec | null, message: string): ArgvError =>
-  new ArgvError(action === null ? message : `argument ${actionName(action)}: ${message}`);
+/**
+ * `int(text)`, which is what `type=int` is — and the first half of `type=_positive`.
+ *
+ * It rejects everything `int()` rejects, and the caller reports that as an ARGUMENT error
+ * (exit 2). It lives here rather than beside one parser because two parsers now need it and
+ * a second hand-written copy of a conversion rule is the defect this module was built from.
+ */
+export function pyIntStrict(text: string): number {
+  if (!/^\s*[+-]?\d+(?:_\d+)*\s*$/.test(text)) throw new TypeError('not an int');
+  return Number(text.trim().replace(/_/g, ''));
+}
+
+/** `_get_action_name`: the name argparse puts after `argument `. */
+const actionName = (action: ActionSpec): string =>
+  action.optionStrings.length > 0
+    ? action.optionStrings.join('/')
+    : (action.metavar ?? action.dest);
+
+const argumentError = (
+  spec: ParserSpec,
+  action: ActionSpec | null,
+  message: string,
+): ArgvError => new ArgvError(spec, action === null ? message : `argument ${actionName(action)}: ${message}`);
 
 // ------------------------------------------------------------------------- textwrap
 
@@ -227,34 +303,74 @@ export const helpWidth = (): number => terminalColumns() - 2;
 
 // ------------------------------------------------------------------- the formatter
 
-/** `_get_default_metavar_for_optional`, or the explicit `metavar=`. */
-const metavarOf = (action: ActionSpec): string => action.metavar ?? action.dest.toUpperCase();
-
-/** `_format_action_invocation` for an optional. */
-const invocationOf = (action: ActionSpec): string =>
-  action.kind === 'store'
-    ? `${action.optionStrings.join(', ')} ${metavarOf(action)}`
-    : action.optionStrings.join(', ');
+/** An action with no option strings is a POSITIONAL, and argparse branches on exactly that. */
+const isPositional = (action: ActionSpec): boolean => action.optionStrings.length === 0;
 
 /**
- * `_format_actions_usage` for a parser of optionals only.
+ * `_metavar_formatter`: an explicit `metavar=`, else the CHOICES, else the default.
  *
- * NOT PORTED: the positional arm (strip the outer `[]` inside a group), the `SUPPRESS` arm
- * (drop the action and the `|` beside it), and the `required` group arm (`(a | b)`).
+ * The choices arm is what prints `{status,lint,compact,archived,restore}` — the subparsers
+ * action carries no `metavar=` in the reference, so the brace list is generated, and adding
+ * a sixth subcommand widens the usage line without anyone editing a string.
  */
-function formatActionsUsage(spec: ParserSpec): string {
+const metavarOf = (action: ActionSpec): string => {
+  if (action.metavar !== undefined) return action.metavar;
+  if (action.subcommands !== undefined) return `{${action.subcommands.map((sub) => sub.name).join(',')}}`;
+  // `_get_default_metavar_for_positional` is the bare `dest`; the optional one upper-cases it.
+  return isPositional(action) ? action.dest : action.dest.toUpperCase();
+};
+
+/** `_format_args`: the slot(s) an action occupies in the USAGE line. `PARSER` trails ` ...`. */
+const formatArgs = (action: ActionSpec): string =>
+  action.kind === 'subparsers' ? `${metavarOf(action)} ...` : metavarOf(action);
+
+/**
+ * `_format_action_invocation` — the left column of the help table.
+ *
+ * A positional prints its metavar and NOT `_format_args`: the ` ...` that `PARSER` adds to
+ * the usage line is absent from the table, which is why `{status,…}` appears there bare.
+ */
+const invocationOf = (action: ActionSpec): string => {
+  if (isPositional(action)) return metavarOf(action);
+  return action.kind === 'store'
+    ? `${action.optionStrings.join(', ')} ${metavarOf(action)}`
+    : action.optionStrings.join(', ');
+};
+
+/**
+ * `_format_actions_usage`, over whichever slice of the parser's actions it is handed.
+ *
+ * The SLICE matters: `_format_usage` calls this three times — optionals, positionals, and
+ * the two concatenated — because the wrapping algorithm below breaks the two lists
+ * independently. Group membership is resolved by IDENTITY rather than by index, so a group
+ * whose members are absent from the slice (every group is optionals-only) drops out instead
+ * of bracketing the wrong action.
+ *
+ * A POSITIONAL IS NEVER BRACKETED. `[]` in a usage line means "may be omitted", and both
+ * positionals in this runtime are required — the subcommand by `required=True`, `name` by
+ * `nargs=None`. NOT PORTED: the arm that strips the outer `[]` off a positional INSIDE a
+ * mutually exclusive group, the `SUPPRESS` arm (drop the action and the `|` beside it), and
+ * the `required` group arm (`(a | b)`).
+ */
+function formatActionsUsage(
+  actions: readonly ActionSpec[],
+  groups: readonly (readonly ActionSpec[])[],
+): string {
   const inserts = new Map<number, string>();
   const grouped = new Set<number>();
-  for (const group of spec.groups) {
-    const start = group[0]!;
-    const end = start + group.length;
-    if (!group.every((index, offset) => index === start + offset)) continue;
-    for (const index of group) grouped.add(index);
+  for (const group of groups) {
+    const indices = group.map((action) => actions.indexOf(action));
+    if (indices.some((index) => index === -1)) continue;
+    const start = indices[0]!;
+    const end = start + indices.length;
+    if (!indices.every((index, offset) => index === start + offset)) continue;
+    for (const index of indices) grouped.add(index);
     inserts.set(start, inserts.has(start) ? `${inserts.get(start)!} [` : '[');
     inserts.set(end, inserts.has(end) ? `${inserts.get(end)!}]` : ']');
     for (let index = start + 1; index < end; index += 1) inserts.set(index, '|');
   }
-  const parts: string[] = spec.actions.map((action, index) => {
+  const parts: string[] = actions.map((action, index) => {
+    if (isPositional(action)) return formatArgs(action);
     const body =
       action.kind === 'store'
         ? `${action.optionStrings[0]!} ${metavarOf(action)}`
@@ -272,14 +388,22 @@ function formatActionsUsage(spec: ParserSpec): string {
 /** `HelpFormatter._format_usage`, which ends in a BLANK line (`'\n\n'`). */
 export function formatUsage(spec: ParserSpec, width: number, prefix = 'usage: '): string {
   const prog = spec.prog;
-  const actionUsage = formatActionsUsage(spec);
+  // `_format_usage` splits the actions in two and formats the halves SEPARATELY, then joins
+  // `optionals + positionals` for the single-line attempt. The order is argparse's, not the
+  // declaration order: a positional declared before an option still prints last.
+  const groups = spec.groups.map((group) => group.map((index) => spec.actions[index]!));
+  const optionals = spec.actions.filter((action) => !isPositional(action));
+  const positionals = spec.actions.filter(isPositional);
+  const actionUsage = formatActionsUsage([...optionals, ...positionals], groups);
   let usage = [prog, actionUsage].filter((part) => part !== '').join(' ');
   // `text_width = self._width - self._current_indent`, and the usage sits at indent 0.
   const textWidth = width;
   if (prefix.length + usage.length > textWidth) {
     // argparse's `part_regexp`, verbatim. Bracketed groups stay whole, so
     // `[--store STORE | --start START]` never breaks across two lines.
-    const parts = actionUsage.match(/\(.*?\)+(?=\s|$)|\[.*?\]+(?=\s|$)|\S+/g) ?? [];
+    const split = (text: string): string[] => text.match(/\(.*?\)+(?=\s|$)|\[.*?\]+(?=\s|$)|\S+/g) ?? [];
+    const optParts = split(formatActionsUsage(optionals, groups));
+    const posParts = split(formatActionsUsage(positionals, groups));
     const getLines = (chunks: readonly string[], indent: string, first?: string): string[] => {
       const lines: string[] = [];
       let line: string[] = [];
@@ -300,13 +424,29 @@ export function formatUsage(spec: ParserSpec, width: number, prefix = 'usage: ')
     let lines: string[];
     if (prefix.length + prog.length <= 0.75 * textWidth) {
       // Short prog: the first optional follows it, and every continuation lines up under it.
+      // The positionals then start their OWN run at the same indent — which is why
+      // `{status,…} ...` lands on a line of its own under `python -m bantamkit.memory [-h]`
+      // instead of being packed onto it.
       const indent = ' '.repeat(prefix.length + prog.length + 1);
-      lines = parts.length > 0 ? getLines([prog, ...parts], indent, prefix) : [prog];
+      if (optParts.length > 0) {
+        lines = getLines([prog, ...optParts], indent, prefix);
+        lines.push(...getLines(posParts, indent));
+      } else if (posParts.length > 0) {
+        lines = getLines([prog, ...posParts], indent, prefix);
+      } else {
+        lines = [prog];
+      }
     } else {
-      // Long prog: it gets a line of its own and the optionals hang at `len(prefix)`.
-      // argparse re-splits here when the first attempt took more than one line; with no
-      // positionals the two attempts are the same list, so the re-split is a no-op.
-      lines = [prog, ...getLines(parts, ' '.repeat(prefix.length))];
+      // Long prog: it gets a line of its own and the arguments hang at `len(prefix)`.
+      // argparse packs both lists together FIRST and only re-splits them when that took more
+      // than one line. With no positionals the two attempts are the same list and the
+      // re-split is a no-op, which is why this branch used to be one line.
+      const indent = ' '.repeat(prefix.length);
+      lines = getLines([...optParts, ...posParts], indent);
+      if (lines.length > 1) {
+        lines = [...getLines(optParts, indent), ...getLines(posParts, indent)];
+      }
+      lines = [prog, ...lines];
     }
     usage = lines.join('\n');
   }
@@ -320,44 +460,93 @@ const finish = (text: string): string =>
 /** `ArgumentParser.format_usage` — the usage block alone, one trailing newline. */
 export const formatUsageBlock = (spec: ParserSpec, width: number): string => finish(formatUsage(spec, width));
 
+/** The `_ChoicesPseudoAction` argparse synthesises for one `add_parser(name, help=...)`. */
+const pseudoAction = (sub: Subcommand): ActionSpec => ({
+  optionStrings: [],
+  dest: sub.name,
+  metavar: sub.name,
+  kind: 'positional',
+  help: sub.help,
+  defaultValue: null,
+});
+
+/**
+ * `HelpFormatter._format_action`, including the indented children a subparsers action owns.
+ *
+ * `indent` is `_current_indent`: 2 inside a section, 4 for a subcommand row. It is an
+ * argument rather than a constant because `action_width` is measured from it, which is what
+ * puts `status`'s help in the same column as `-h, --help`'s despite the deeper indent.
+ */
+function formatAction(action: ActionSpec, indent: number, helpPosition: number, width: number): string {
+  const helpTextWidth = Math.max(width - helpPosition, 11);
+  const actionWidth = helpPosition - indent - 2;
+  const invocation = invocationOf(action);
+  const pad = ' '.repeat(indent);
+  let body = '';
+  let indentFirst = 0;
+  if (action.help === '') {
+    // `if not action.help`: the header takes a line of its own and nothing follows it. This
+    // is the subparsers row — `{status,lint,…}` above its children.
+    body += `${pad}${invocation}\n`;
+  } else if (invocation.length <= actionWidth) {
+    // Short header: the help starts on the same line, padded to the help column.
+    body += `${pad}${invocation.padEnd(actionWidth)}  `;
+  } else {
+    // Long header: its own line, and the help hangs at the help column.
+    body += `${pad}${invocation}\n`;
+    indentFirst = helpPosition;
+  }
+  if (action.help.trim() !== '') {
+    const lines = wrap(collapseWhitespace(action.help), helpTextWidth);
+    body += `${' '.repeat(indentFirst)}${lines[0]!}\n`;
+    for (const line of lines.slice(1)) body += `${' '.repeat(helpPosition)}${line}\n`;
+  } else if (!body.endsWith('\n')) {
+    body += '\n';
+  }
+  for (const sub of action.subcommands ?? []) {
+    body += formatAction(pseudoAction(sub), indent + 2, helpPosition, width);
+  }
+  return body;
+}
+
 /** `ArgumentParser.format_help`. */
 export function formatHelp(spec: ParserSpec, width: number): string {
   // `_max_help_position = min(24, max(width - 20, indent_increment * 2))`. It is 24 across
   // the conformance matrix and it is NOT a constant: a longer flag or a narrow terminal
   // moves it, and hardcoding 24 would be a latent bug the day either happens.
   const maxHelpPosition = Math.min(24, Math.max(width - 20, 4));
-  const invocations = spec.actions.map(invocationOf);
-  // `add_arguments` measures every invocation at the section's indent, which is 2.
-  const actionMaxLength = Math.max(...invocations.map((text) => text.length)) + 2;
+  // `add_argument` measures the action's invocation AND every subaction's, all at the
+  // section indent of 2 — `_iter_indented_subactions` restores `_current_indent` before the
+  // max is taken, so a subcommand name is NOT measured at its deeper printing indent.
+  const actionMaxLength = Math.max(
+    ...spec.actions.map((action) =>
+      Math.max(invocationOf(action).length, ...(action.subcommands ?? []).map((sub) => sub.name.length)),
+    ),
+  ) + 2;
   const helpPosition = Math.min(actionMaxLength + 2, maxHelpPosition);
-  const helpTextWidth = Math.max(width - helpPosition, 11);
-  const actionWidth = helpPosition - 2 - 2;
 
+  // `_action_groups` in the order argparse creates them, and a section with no items formats
+  // to nothing — which is what keeps `positional arguments:` off a parser that has none.
+  const sections: readonly (readonly [string, readonly ActionSpec[]])[] = [
+    ['positional arguments', spec.actions.filter(isPositional)],
+    ['options', spec.actions.filter((action) => !isPositional(action))],
+  ];
   let body = '';
-  spec.actions.forEach((action, index) => {
-    const invocation = invocations[index]!;
-    let indentFirst: number;
-    if (invocation.length <= actionWidth) {
-      // Short header: the help starts on the same line, padded to the help column.
-      body += `  ${invocation.padEnd(actionWidth)}  `;
-      indentFirst = 0;
-    } else {
-      // Long header: its own line, and the help hangs at the help column.
-      body += `  ${invocation}\n`;
-      indentFirst = helpPosition;
-    }
-    // Every action in this parser has help text; NOT PORTED: argparse's `help=None` arm.
-    const lines = wrap(collapseWhitespace(action.help), helpTextWidth);
-    body += `${' '.repeat(indentFirst)}${lines[0]!}\n`;
-    for (const line of lines.slice(1)) body += `${' '.repeat(helpPosition)}${line}\n`;
-  });
+  for (const [title, actions] of sections) {
+    if (actions.length === 0) continue;
+    let items = '';
+    for (const action of actions) items += formatAction(action, 2, helpPosition, width);
+    body += `\n${title}:\n${items}\n`;
+  }
 
   return finish(
     formatUsage(spec, width) +
-      `${fill(collapseWhitespace(spec.description), Math.max(width, 11))}\n\n` +
-      // The empty `positional arguments` section formats to nothing and is skipped, as
-      // argparse skips any section with no items.
-      `\noptions:\n${body}\n`,
+      // `add_text(None)` adds NOTHING, which is not the same as adding an empty paragraph:
+      // the sub-parsers below carry no `description=` and must not print a blank line for it.
+      (spec.description === ''
+        ? ''
+        : `${fill(collapseWhitespace(spec.description), Math.max(width, 11))}\n\n`) +
+      body,
   );
 }
 
@@ -374,17 +563,27 @@ type OptionTuple = {
 };
 
 /**
- * `ArgumentParser.parse_args`, for a parser of optionals only.
+ * `ArgumentParser.parse_known_args`: the namespace keyed by `dest`, plus what it could not
+ * place.
  *
- * Returns the namespace as a plain record keyed by `dest`. Throws `HelpRequested` where
- * argparse would `parser.exit(0)` mid-parse — which is DURING the scan, not after it, so
- * `-h --nope` prints help and exits 0 exactly as the reference does.
+ * Throws `HelpRequested` where argparse would `parser.exit(0)` mid-parse — which is DURING
+ * the scan, not after it, so `-h --nope` prints help and exits 0 exactly as the reference
+ * does, and `restore -h --nope` prints the SUB-parser's help for the same reason.
  *
- * NOT PORTED: positionals and everything that serves them (`consume_positionals`,
- * `_match_arguments_partial`, the intermixed arm), `required=`, required groups, `choices`,
- * `fromfile_prefix_chars`, and subparsers.
+ * EXTRAS ARE RETURNED RATHER THAN RAISED, and that is the whole reason this function is
+ * separate from `parseArgs`. A subparser hands its leftovers BACK to the parser that
+ * dispatched to it (`_UNRECOGNIZED_ARGS_ATTR`), so `... status extra` reports
+ * `unrecognized arguments: extra` under the TOP parser's prog and usage, not under
+ * `status`'s — measured against the reference, both ways round.
+ *
+ * NOT PORTED: `parse_intermixed_args`, `fromfile_prefix_chars`, `choices` on anything but a
+ * subparsers action, required mutually exclusive groups (`one of the arguments … is
+ * required`), and every `nargs` outside the three `_getNargsPattern` names.
  */
-export function parseArgs(spec: ParserSpec, argv: readonly string[]): Record<string, unknown> {
+export function parseKnownArgs(
+  spec: ParserSpec,
+  argv: readonly string[],
+): { values: Record<string, unknown>; extras: string[] } {
   const byOptionString = new Map<string, ActionSpec>();
   for (const action of spec.actions) for (const option of action.optionStrings) byOptionString.set(option, action);
 
@@ -402,6 +601,10 @@ export function parseArgs(spec: ParserSpec, argv: readonly string[]): Record<str
   const values: Record<string, unknown> = {};
   for (const action of spec.actions) values[action.dest] = action.defaultValue;
   const seenNonDefault = new Set<ActionSpec>();
+  /** `seen_actions`, which is what the `required=` check at the bottom reads. */
+  const seenActions = new Set<ActionSpec>();
+  /** argparse mutates its `positionals` list as they are consumed; so does this. */
+  const remainingPositionals = spec.actions.filter(isPositional);
 
   /** `_get_option_tuples`, both prefix arms. */
   function optionTuplesFor(argString: string): OptionTuple[] {
@@ -475,29 +678,60 @@ export function parseArgs(spec: ParserSpec, argv: readonly string[]): Record<str
 
   const extras: string[] = [];
 
+  /** `_get_value`: `type=` applied, with argparse's two DIFFERENT failure sentences. */
+  function convert(action: ActionSpec, raw: string): unknown {
+    if (action.convert === undefined) return raw;
+    try {
+      return action.convert(raw);
+    } catch (error) {
+      // `ArgumentTypeError` carries the callable's OWN sentence and argparse prints it
+      // verbatim; a `ValueError`/`TypeError` gets argparse's `invalid <type> value:` instead.
+      if (error instanceof ArgumentTypeError) throw argumentError(spec, action, error.message);
+      throw argumentError(spec, action, `invalid ${action.typeName ?? '?'} value: ${pyRepr(raw)}`);
+    }
+  }
+
   /** `_get_value` + `_check_value` + the conflict check + the action itself. */
   function takeAction(action: ActionSpec, args: readonly string[]): void {
+    // `seen_actions.add` happens BEFORE the value is built, so an action that fails its own
+    // conversion is still "seen" and never also reported as missing.
+    seenActions.add(action);
     let value: unknown;
-    if (action.kind === 'store') {
-      const raw = args[0]!;
-      if (action.convert === undefined) value = raw;
-      else {
-        try {
-          value = action.convert(raw);
-        } catch {
-          throw argumentError(action, `invalid ${action.typeName ?? '?'} value: ${pyRepr(raw)}`);
-        }
+    if (action.kind === 'subparsers') {
+      // `_get_values`, PARSER arm: convert every token, CHECK ONLY THE FIRST. The check is
+      // `_check_value` against `choices`, so a bad subcommand is an error of the parser that
+      // OWNS the subparsers action — top-level prog, top-level usage.
+      const subcommands = action.subcommands ?? [];
+      const name = args[0]!;
+      const chosen = subcommands.find((sub) => sub.name === name);
+      if (chosen === undefined) {
+        throw argumentError(
+          spec,
+          action,
+          `invalid choice: ${pyRepr(name)} (choose from ${subcommands.map((sub) => sub.name).join(', ')})`,
+        );
       }
+      seenNonDefault.add(action);
+      values[action.dest] = name;
+      // `_SubParsersAction.__call__`: parse the tail with the chosen parser into a FRESH
+      // namespace, copy every key over this one, and hand the leftovers back up.
+      const nested = parseKnownArgs(chosen.parser, args.slice(1));
+      for (const [key, nestedValue] of Object.entries(nested.values)) values[key] = nestedValue;
+      extras.push(...nested.extras);
+      return;
+    }
+    if (action.kind === 'store' || action.kind === 'positional') {
+      value = convert(action, args[0]!);
     } else {
       value = true;
     }
     seenNonDefault.add(action);
     for (const conflict of conflicts.get(action) ?? []) {
       if (seenNonDefault.has(conflict)) {
-        throw argumentError(action, `not allowed with argument ${actionName(conflict)}`);
+        throw argumentError(spec, action, `not allowed with argument ${actionName(conflict)}`);
       }
     }
-    if (action.kind === 'help') throw new HelpRequested();
+    if (action.kind === 'help') throw new HelpRequested(spec);
     values[action.dest] = value;
   }
 
@@ -506,7 +740,7 @@ export function parseArgs(spec: ParserSpec, argv: readonly string[]): Record<str
     const tuples = optionTuples.get(startIndex)!;
     if (tuples.length > 1) {
       const matches = tuples.map((tuple) => tuple.optionString).join(', ');
-      throw new ArgvError(`ambiguous option: ${argv[startIndex]!} could match ${matches}`);
+      throw new ArgvError(spec, `ambiguous option: ${argv[startIndex]!} could match ${matches}`);
     }
     let { action, optionString, sep, explicit } = tuples[0]!;
     const taken: { action: ActionSpec; args: string[] }[] = [];
@@ -522,7 +756,7 @@ export function parseArgs(spec: ParserSpec, argv: readonly string[]): Record<str
           // A glued single-dash tail: `-hx` is `-h` followed by `-x`. An `=` here, or a
           // tail that is itself an option string, is a value nobody asked for.
           if ((sep !== null && sep !== '') || explicit.startsWith('-')) {
-            throw argumentError(action, `ignored explicit argument ${pyRepr(explicit)}`);
+            throw argumentError(spec, action, `ignored explicit argument ${pyRepr(explicit)}`);
           }
           taken.push({ action, args: [] });
           const next = optionString[0]! + explicit[0]!;
@@ -545,7 +779,7 @@ export function parseArgs(spec: ParserSpec, argv: readonly string[]): Record<str
           stop = startIndex + 1;
           break;
         }
-        throw argumentError(action, `ignored explicit argument ${pyRepr(explicit)}`);
+        throw argumentError(spec, action, `ignored explicit argument ${pyRepr(explicit)}`);
       }
       if (action.kind !== 'store') {
         taken.push({ action, args: [] });
@@ -555,7 +789,7 @@ export function parseArgs(spec: ParserSpec, argv: readonly string[]): Record<str
       // `_get_nargs_pattern` strips every `-` for an OPTIONAL, so the pattern is `(A)`:
       // the very next token must be a value, and `--k --store x` is "expected one argument"
       // rather than a store named `--store`.
-      if (pattern[startIndex + 1] !== 'A') throw argumentError(action, 'expected one argument');
+      if (pattern[startIndex + 1] !== 'A') throw argumentError(spec, action, 'expected one argument');
       taken.push({ action, args: [argv[startIndex + 1]!] });
       stop = startIndex + 2;
       break;
@@ -564,21 +798,103 @@ export function parseArgs(spec: ParserSpec, argv: readonly string[]): Record<str
     return stop;
   }
 
+  /**
+   * `_get_nargs_pattern`, the three arms this runtime declares.
+   *
+   * `-` is the `--` separator and `O` an option string, so `PARSER`'s `(-*A[-AO]*)` is what
+   * lets `status --store /tmp/x` reach the sub-parser: everything after the subcommand word
+   * belongs to it, options included. NOT PORTED: `?`, `*`, `+`, `REMAINDER`, `SUPPRESS`, an
+   * integer count, and the option-side patterns — an optional's value is taken by
+   * `consumeOptional`, which never builds a regex.
+   */
+  const nargsPattern = (action: ActionSpec): string =>
+    action.kind === 'subparsers' ? '(-*A[-AO]*)' : '(-*A-*)';
+
+  /** `_match_arguments_partial`: the longest PREFIX of the positionals this argv can feed. */
+  function matchArgumentsPartial(actions: readonly ActionSpec[], text: string): number[] {
+    for (let count = actions.length; count > 0; count -= 1) {
+      // `re.match` anchors at the start and NOT at the end, which is the `^` here.
+      const match = new RegExp(`^${actions.slice(0, count).map(nargsPattern).join('')}`).exec(text);
+      if (match !== null) return match.slice(1).map((group) => group.length);
+    }
+    return [];
+  }
+
+  const patternText = pattern.join('');
+
+  /** `consume_positionals`, including the `--` strip each `nargs` does differently. */
+  function consumePositionals(start: number): number {
+    const counts = matchArgumentsPartial(remainingPositionals, patternText.slice(start));
+    let index = start;
+    for (let slot = 0; slot < counts.length; slot += 1) {
+      const action = remainingPositionals[slot]!;
+      const count = counts[slot]!;
+      const args = argv.slice(index, index + count);
+      if (action.kind === 'subparsers') {
+        // PARSER keeps every inner `--` (the sub-parser is entitled to see it) and drops
+        // only a leading one. `... -- status` therefore dispatches; `status -- x` does not
+        // lose the separator on its way down.
+        if (pattern[index] === '-') args.splice(args.indexOf('--'), 1);
+      } else if (patternText.slice(index, index + count).includes('-')) {
+        args.splice(args.indexOf('--'), 1);
+      }
+      index += count;
+      takeAction(action, args);
+    }
+    remainingPositionals.splice(0, counts.length);
+    return index;
+  }
+
   let startIndex = 0;
   const optionIndices = [...optionTuples.keys()];
   const maxOptionIndex = optionIndices.length > 0 ? Math.max(...optionIndices) : -1;
   while (startIndex <= maxOptionIndex) {
-    // With no positionals `consume_positionals` consumes nothing, so anything standing
-    // between here and the next option string is an extra.
     const nextOptionIndex = Math.min(...optionIndices.filter((index) => index >= startIndex));
+    if (startIndex !== nextOptionIndex) {
+      // Positionals standing before the next option string. A parser with none consumes
+      // nothing here and falls straight through to the extras arm below, which is exactly
+      // what this loop did before positionals existed.
+      const end = consumePositionals(startIndex);
+      if (end > startIndex) {
+        startIndex = end;
+        continue;
+      }
+      startIndex = end;
+    }
     if (!optionTuples.has(startIndex)) {
       extras.push(...argv.slice(startIndex, nextOptionIndex));
       startIndex = nextOptionIndex;
     }
     startIndex = consumeOptional(startIndex);
   }
-  extras.push(...argv.slice(startIndex));
+  const stopIndex = consumePositionals(startIndex);
+  extras.push(...argv.slice(stopIndex));
 
-  if (extras.length > 0) throw new ArgvError(`unrecognized arguments: ${extras.join(' ')}`);
+  // `required_actions`, and it is raised HERE rather than by `parseArgs` — which is why
+  // `--nope` alone reports the missing subcommand and not the unrecognized flag.
+  //
+  // `action.required` is EVERY positional in this runtime and no optional: `nargs=None`
+  // makes a positional required by construction, and the reference's one subparsers action
+  // is declared `add_subparsers(dest="command", required=True)`. A future optional
+  // `required=True`, or a subparsers action without it, wants a field here rather than this
+  // shorthand.
+  const missing = spec.actions
+    .filter((action) => !seenActions.has(action) && isPositional(action))
+    .map(actionName);
+  if (missing.length > 0) {
+    throw argumentError(spec, null, `the following arguments are required: ${missing.join(', ')}`);
+  }
+
+  return { values, extras };
+}
+
+/**
+ * `ArgumentParser.parse_args`: `parse_known_args`, and an error for anything left over.
+ *
+ * Returns the namespace as a plain record keyed by `dest`.
+ */
+export function parseArgs(spec: ParserSpec, argv: readonly string[]): Record<string, unknown> {
+  const { values, extras } = parseKnownArgs(spec, argv);
+  if (extras.length > 0) throw new ArgvError(spec, `unrecognized arguments: ${extras.join(' ')}`);
   return values;
 }

@@ -8,7 +8,7 @@
  *
  * WHAT IS DELIBERATELY MISSING. `setup()` and `batch()`, the only two consumers of `Agent`,
  * and `compact()`, whose store half is not ported either. The prep probe traced a real stdio
- * server through all seven tools and both resource templates: none of the three is reachable
+ * server through all eight tools and both resource templates: none of the three is reachable
  * from the MCP surface. They are absent rather than stubbed so that nobody reads a stub and
  * believes the batch scope exists here. If a tool ever calls one, that is a refutation of the
  * trace and wants reporting, not a quiet addition.

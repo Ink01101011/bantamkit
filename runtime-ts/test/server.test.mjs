@@ -1,5 +1,5 @@
 /**
- * The MCP surface: the seven tools, the two resource templates, and the wire.
+ * The MCP surface: the eight tools, the two resource templates, and the wire.
  *
  * WHY MOST OF THIS DRIVES A REAL PROCESS RATHER THAN CALLING A HANDLER. Everything this
  * unit adds lives in the gap between a handler's return value and the bytes on stdout —
@@ -586,18 +586,39 @@ test('the same store one byte of budget tighter reports Degraded, and names the 
     [INIT, INITIALIZED, SAVE_PROBE(2), call(3, 'bantamkit_status', {})],
     DEGRADED_BUDGET,
   );
-  const rows = byId(lines, 3).result.structuredContent.result.split('\n');
+  const report = byId(lines, 3).result.structuredContent.result;
+  const rows = report.split('\n');
   assert.equal(rows[0], REPORT_LINE_1_DEGRADED);
   assert.equal(rows[3], `memory: 1 fact in the project store, index ${INDEX_BYTES} of ${DEGRADED_BUDGET} bytes`);
   assert.equal(rows[5], '1 problem:');
   assert.equal(
     rows[6],
     `- the memory index is ${INDEX_BYTES} bytes of a ${DEGRADED_BUDGET}-byte budget, so the next save is close to ` +
-      'being refused — archive or shorten facts with `python -m bantamkit.memory compact`.',
+      'being refused — archive or shorten facts with `bantamkit-memory compact`.',
   );
   assert.equal(rows.length, 7);
+  /**
+   * THE REMEDY NAMES A COMMAND THIS INSTALL ACTUALLY PROVIDES, from outside the server.
+   *
+   * The mirror of `tests/test_status_surface.py`'s
+   * `test_the_index_remedy_names_the_command_this_install_actually_provides`, which pins the
+   * reference to `python -m bantamkit.memory` and requires `bantamkit-memory` to be absent.
+   * Here it is the other way round, and both halves are needed: the equality above would
+   * still pass if `package.json` stopped shipping the bin, and the ABSENCE is what catches a
+   * report that named both spellings or reverted one of two occurrences.
+   *
+   * `bin` is read rather than spelled, so a renamed console script fails here rather than
+   * shipping a report that names a command npm no longer installs.
+   */
+  const bins = Object.keys(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).bin);
+  assert.ok(bins.includes('bantamkit-memory'), `package.json ships no bantamkit-memory bin: ${bins}`);
+  assert.match(rows[6], /`bantamkit-memory compact`/);
+  assert.ok(
+    !report.includes('python -m bantamkit.memory'),
+    `the degraded report names a command a pure-npm install cannot run:\n${report}`,
+  );
   // THE REPORT ITSELF NEVER CARRIES THE FOOTER: it already lists every condition in full.
-  assert.ok(!byId(lines, 3).result.structuredContent.result.includes(FOOTER_HEAD));
+  assert.ok(!report.includes(FOOTER_HEAD));
   assert.equal(stderr, '');
 });
 

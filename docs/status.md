@@ -78,8 +78,20 @@ Field by field:
 **`build` is ruled divergent.** It is a fingerprint of the executing tree and the two
 runtimes are two trees — [porting.md](porting.md)'s divergence table already says exactly
 this about `build_id`, and `assets_digest` is the field that is identical. Every other line
-of the report is byte-identical across the runtimes, so a conformance case compares the
-report with line 2's digest masked, the same way the `identity` wire session is ruled.
+of the **healthy** report is byte-identical across the runtimes, so `status-active` compares
+it with line 2's digest masked, the same way the `identity` wire session is ruled.
+
+**The degraded report carries a second ruled difference, and it is not a second mask.** The
+`index-budget-low` sentence — in the problem list, and in the footer when it is the worst
+condition present — ends by naming a command for the operator to run, and the two installs
+provide different ones; [porting.md](porting.md#where-the-two-runtimes-deliberately-differ)'s
+`index-budget-low` row is the reason, and this page does not restate it. So `status-degraded`
+adds a **one-way** substitution on the reference side (`refMask`, applied after the digest
+mask and to the Python side only). Everything around those two spellings — the two byte
+counts, the wording, the footer it rides in, and how many places it appears in — is still a
+byte comparison, and a Node report that regressed into the Python spelling goes red rather
+than being normalised into agreement. `status-active` deliberately carries no substitution:
+a remedy that leaked into a healthy report is a failure, not something to rewrite.
 
 It is in the report anyway because *which* bantamkit is half the question the tool exists to
 answer: two endpoints registered under one name is the situation RB-P84 filed, and a version

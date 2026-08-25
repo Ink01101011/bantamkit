@@ -72,13 +72,33 @@ uses. Mutating it to a hardcoded `24` leaves `--suite cli` at **0 failures**; on
 narrow widths in `cli-surface.test.mjs` catch it. The conformance matrix cannot see that
 constant move.
 
-**NOT PORTED**, because this parser cannot reach them and an unmeasured port is a liability:
-positionals and everything serving them (`consume_positionals`, `_match_arguments_partial`,
-the intermixed arm), `required=`, required groups, `choices`, `nargs` other than `None`
-and `0`, `SUPPRESS`, subparsers, `fromfile_prefix_chars`, and — in `textwrap` —
-`initial_indent`/`subsequent_indent`, `expand_tabs`, `replace_whitespace`,
-`fix_sentence_endings` and `max_lines`. Both `wrap` callers pre-normalise with argparse's
-own `re.compile(r'\s+', re.ASCII)`, so no tab or newline can reach the wrapper.
+**NOT PORTED**, because these parsers cannot reach them and an unmeasured port is a
+liability. This list is **shorter than it used to be**, and the reason is the second CLI:
+`bantamkit-memory` is a subparsers tree with five commands, a required subcommand, a `type=`
+that raises `ArgumentTypeError` and a positional under `restore`, so `consume_positionals`,
+`_match_arguments_partial`, `_get_nargs_pattern`, `_check_value` and the `required_actions`
+sweep were all written against the running CPython and ARE here now — this paragraph named
+every one of them as absent. Re-derived against the `NOT PORTED` markers in
+`src/pyargparse.ts`, what is still out is:
+
+- every `nargs` outside the three `_getNargsPattern` names. `None` (a `store` or a
+  positional), `0` (`store_true` and `help`) and `PARSER` are declared; `?`, `*`, `+`,
+  `REMAINDER`, `SUPPRESS` and an integer count are not.
+- `choices` on anything but a subparsers action — `_check_value` exists only on the arm that
+  turns a bad subcommand into `invalid choice: …`.
+- `required=` as a DECLARED field. Required-ness is a predicate here: every positional is
+  required (`nargs=None`, and the one subparsers action is `add_subparsers(required=True)`)
+  and no optional is. A future `required=True` on an optional, or a subparsers action
+  without it, wants a field rather than the predicate.
+- required mutually exclusive groups (`one of the arguments … is required`), and in
+  `_format_actions_usage` the arm that strips the outer `[]` off a positional INSIDE a group.
+- the `SUPPRESS` arm of `_format_actions_usage` (drop the action and the `|` beside it).
+- `fromfile_prefix_chars`.
+- `parse_intermixed_args`.
+- in `textwrap`: `initial_indent`/`subsequent_indent` (argparse's only `fill` call sits at
+  indent 0), `expand_tabs` and `replace_whitespace`, `fix_sentence_endings`, and
+  `max_lines`/`placeholder`. Both `wrap` callers pre-normalise with argparse's own
+  `re.compile(r'\s+', re.ASCII)`, so no tab or newline can reach the wrapper.
 
 **Two divergences that are latent, not observable today.** `textwrap.wordsep_re` uses `\w`
 and `[^\d\W]`, which are Unicode in Python and ASCII in JavaScript; every string in this
@@ -122,8 +142,8 @@ wrong one.
 
 `checkSchema` runs **before** validation, as `jsonschema.validate` does. It is the keyword
 *shape table* applied recursively — deliberately not the metaschema, which would need
-`$ref` / `$dynamicRef` support this validator does not implement. Measured over 53 malformed
-schemas: 53/53 refuse on both sides.
+`$ref` / `$dynamicRef` support this validator does not implement. Measured over 50 malformed
+schemas: 50/50 refuse on both sides.
 
 One trade taken deliberately: `{"pattern": "("}` compiles eagerly, which closes the wrong
 answer at the cost of refusing Python-only regex syntax in branches that are never reached.
@@ -221,9 +241,11 @@ Surprises worth keeping: `1e+17` is a **`str`**, not a float — PyYAML's float 
 | `build_id` | hashes the executing tree; two runtimes, two trees. `assets_digest` **is** identical (`sha256:b03141bf…`) and that is the one that matters. |
 | the event log's build identity | **not a difference — an omission, for this reason.** A `build_id` hashes the executing tree and the two runtimes are two trees (row above), so no build identity is a field in an event-log record at all; the `build_identity` record carries the COUNT of underivable fields instead. Same for `sessionId` (the server cannot observe it), pids and absolute paths. See [eventlog.md](eventlog.md). |
 | the YAML scanner cases | the codec has no scanner; 5 shapes ruled, `!` filed alone |
-| `checkSchema` wording | 53 cases; both sides refuse, the sentences differ |
+| `checkSchema` wording | 50 cases; both sides refuse, the sentences differ |
 | accounting via `fromJs` | an integral float; the `parseJson` route is byte-identical |
 | on Windows, CRLF | **no longer a difference.** N11 reversed it: the emitter builds LF text, the WRITER translates, and the budget still counts the LF text — which is what CPython does. See [conformance.md](conformance.md). |
+| the memory CLI's `prog` | `python -m bantamkit.memory` against `bantamkit-memory`. There is no third spelling: the reference's prog is a Python `-m` invocation and a pure-npm install has no Python in it, while `bantamkit-memory` names a console script CPython does not install. It moves the usage line, every `…: error:` prefix, and the two remediation sentences that name a command the reader must type — `lint`'s `try: … compact …` and `compact`'s `restore one with: …`. It also moves the WRAP, because argparse's hanging indent is `len(prefix) + len(prog) + 1`: 10 columns apart at COLUMNS=80, and at COLUMNS=40 the two runtimes take different `_format_usage` branches outright. 24 ruled cases in `tools/conformance/suites/memorycli.mjs`, of which **23 are PAIRED with an unruled case over the same bytes after the substitution** — 19 against an unruled case over exactly the same region (13 `…/stderr-raw` against `…/stderr`, 2 `…/remediation-line-raw` against `…/remediation-line`, and each of the 4 `w80/usage-block` rulings against its `usage-block-compensated`, which re-runs the reference 10 columns wider and requires the wrapped blocks to match exactly), and 4 `w200/prog-line-raw` against the unruled `w200/usage-block` that covers that same line 1 with the substitution applied. **The 24th, `help-top/w40/usage-block`, has no companion over its bytes at all**, and the row does not claim one: `usage-block-compensated` is emitted only inside the `width === 80` branch, and the `w40/body` case beside it excludes the usage block by construction. What stands in its place is weaker and is what `BRANCH_SPLIT_RULING` itself argues — a SIBLING pair: at COLUMNS=40 the three sub-parser forms are unruled and byte-identical, their longer progs putting both runtimes in argparse's flat branch, which says the split is a BAND the top parser alone falls out of rather than a second rendering algorithm. It does not pin the top parser's own w40 bytes, and nothing else does either. |
+| the `index-budget-low` remedy | **the same substitution, one surface further out.** The degraded status report ends `archive or shorten facts with \`…\``, and `mcpserver.py` names `python -m bantamkit.memory compact` where `runtime-ts/src/mcp/status.ts` names `bantamkit-memory compact` — for the reason in the row above, and with no third spelling for the same reason. Printing the reference's command to someone holding an npx install is an instruction that cannot be followed. It is a LITERAL on both sides and not an import: neither MCP server imports its CLI module, so the coupling is held from OUTSIDE, by `runtime-py/tests/test_status_surface.py::test_the_index_remedy_names_the_command_this_install_actually_provides` and by `runtime-ts/test/server.test.mjs`'s degraded-report test, which reads `package.json`'s `bin` rather than spelling the name. Ruled in `tools/conformance/suites/wire.mjs`: `status-degraded: the remedy lines, raw` is the ruling, and it is a LIST, so a runtime that moved the report's copy and left the footer's alone fails it; beside it `…, after the one substitution` is unruled over the same sentences, and `…: the command each side tells the operator to type` pins the two literals. Changing either sentence alone reddens the run; making them equal fails as a stale ruling. |
 
 ## Gaps the differential cannot see, named rather than hidden
 
@@ -258,7 +280,9 @@ with a file separator in it. Registered here instead.
 
 ## Defects registered against `runtime-py`, not fixed here
 
-`runtime-py/` is the reference and was not modified. Found while porting:
+A row here is a defect the reference has and the port does not get to fix — either because
+closing it is out of the porting unit's layer, or because the port's job is to REPRODUCE the
+reference and the disagreement is with CPython rather than with Node. Found while porting:
 
 1. Windows index-budget arithmetic — 13537 bytes on disk against 13472 checked. (The port
    now reproduces it rather than avoiding it; the reference's arithmetic is still the one
@@ -267,10 +291,56 @@ with a file separator in it. Registered here instead.
 3. `shiftwork._read_valid` does not catch `UnicodeDecodeError`.
 4. `_pinned_store`'s docstring states a false reason.
 5. A `pattern` regex divergence.
+6. `memory/store.py`'s `_rebuild_index` and `_write_fact` call `write_text` with
+   `newline=None`, so on Windows the reference writes CRLF into `index.md` and into every
+   fact file while the port writes LF. One layer BELOW the operator CLI's streams, which had
+   the same defect and were fixed (`fbcf7c8`, see the note under the list). Measured by
+   `memorycli`'s `…/tree` cases, which compare each file's bytes rather than a digest, and by
+   the `store` suite on a real Windows cell; **not** normalised anywhere in
+   `tools/conformance/`, deliberately — `ref/cli_ref.py` sets that rule for the whole
+   directory, and a suite that decoded with universal newlines would erase the evidence.
+7. `mcpserver.py`'s `index-budget-low` fires at `INDEX_PRESSURE_PERCENT` (90) percent of the
+   budget, while the `compact` it names archives only while the index is above
+   `budget - reserve`, and `reserve` defaults to the largest surviving index line (capped at
+   half the budget). The two thresholds are not the same number, so there is a band in which
+   the remedy is a **no-op**: it exits 0 having archived nothing. Measured on a real store —
+   largest index line 186 bytes against the default 24000-byte budget — `compact` begins
+   archiving only above `(24000 - 186) / 24000` = 99.2%, so the whole 90.0%–99.2% band prints
+   a command that does nothing. The port carries the SAME two constants
+   (`INDEX_PRESSURE_PERCENT` in `mcp/status.ts`, the same default `reserve` in
+   `memory/store.ts`), which is why this is a register entry and **not** a divergence row:
+   the two runtimes agree to the byte, and a row above would be false. Not fixed here for the
+   same reason as 1 — moving either constant is a product decision in both runtimes at once,
+   which is not a porting unit's to make. The sentence deliberately says "archive or shorten
+   facts **with** `…`" rather than promising the command is sufficient.
+
+**Three that were registered here and are now CLOSED**, by the job that built
+`tools/conformance/suites/memorycli.mjs`: `memory/__main__.py`'s `_cmd_status`, `_cmd_compact`
+and `_cmd_archived` let an unreadable `facts/` escape `main` as a CPython traceback
+(`a2c6e20`); the same module printed through `print()` onto `newline=None` streams, so every
+line it emitted was CRLF on Windows (`fbcf7c8`); and `MemoryStore.compact` moved an archived
+fact with `os.rename`, which raises `FileExistsError` on Windows over an existing
+`archive/<name>.md` and replaces silently on POSIX (`d239480`, now `os.replace`, which is
+what the port always called). They are named here rather than listed above because this list
+is for what is **not** fixed, and a closed item left in it is a stale record. None of the
+three was ruled: a ruling is the price of a DELIBERATE difference, and an operator CLI that
+answers a permission error with a stack trace is not a decision anybody made. The measurement
+and the reasoning for each live in `memorycli.mjs`'s header, beside the cases that now
+compare the fixed behaviour.
+
+So the sentence this section used to open with — "`runtime-py/` is the reference and was not
+modified" — is no longer true, and is removed rather than qualified. What is still true is
+narrower and is the rule above: the port does not get to change the reference to make its own
+comparison easier. It may hand a defect BACK, and three were.
 
 **Unmeasured, registered rather than guessed:** `cli.ts`'s `--assets-root` output writes `\n`
 where the reference's text-mode stdout would write `\r\n` on Windows. No case compares the
-two, so this is a suspicion with a location, not a measurement.
+two, so this is a suspicion with a location, not a measurement. It is now the only unmeasured
+member of its class: the same defect on the memory CLI's streams **was** measured — 27 CRLFs,
+19 of them written into `sys.stdout`/`sys.stderr` by `argparse` itself from frames no call
+site owns, which is why the fix reconfigures the streams rather than sweeping the `print()`
+calls — and item 6 above is what that measurement left open one layer down. `--assets-root`
+is the same shape and has simply never been run on Windows by anything that compared it.
 
 ## Concurrency
 

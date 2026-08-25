@@ -509,7 +509,7 @@ export async function run(ctx) {
   // asserted the general case from it; N8's correction is now a fix, and this is the
   // measurement at the width it was measured.
   //
-  // NOW both runtimes REFUSE all 53 of these and only the WORDS differ: Python quotes the
+  // NOW both runtimes REFUSE all 50 of these and only the WORDS differ: Python quotes the
   // metaschema (`'a' is not of type 'array'`, plus the failing metaschema path), this port
   // names the keyword and the shape it wanted. Each is a ruled case, so a shape that ever
   // stops differing — because someone made the port answer again — fails the run.
@@ -592,7 +592,7 @@ export async function run(ctx) {
         'metaschema is not available here — it is eight documents wired with `$ref` and ' +
         '`$dynamicRef`, the vocabulary this validator refuses to implement, so `check_schema` ' +
         'would have to be more capable than `validate`. The RULING IS THAT BOTH REFUSE, ' +
-        'measured over 53 shapes and not generalised from one: the previous wording here ' +
+        'measured over 50 shapes and not generalised from one: the previous wording here ' +
         'asserted the general case from `{"type": "nosuch"}` and N8 found five ' +
         'counter-examples inside it.',
     });
@@ -600,7 +600,7 @@ export async function run(ctx) {
   // THE RULED CASES ABOVE PIN THE WORDING, NOT THE REFUSAL, and that distinction is the
   // trap N8 found in this file: a `ruling` case fails only when the two sides MATCH, so a
   // port that went back to answering `{"valid": true}` would still "differ" from Python's
-  // SchemaError and every one of those 53 would stay green. This case is the other half and
+  // SchemaError and every one of those 50 would stay green. This case is the other half and
   // it is NOT ruled: one bit per schema, did you refuse, and the two arrays must be equal.
   cases.push({
     name: `check_schema: all ${BAD_SCHEMAS.length} refuse on both sides — the bit, not the words`,

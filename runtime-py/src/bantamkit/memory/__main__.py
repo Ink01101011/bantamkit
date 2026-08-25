@@ -31,6 +31,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from bantamkit.client import BantamError
 from bantamkit.memory.layers import discover_project_store
 from bantamkit.memory.store import (
     DEFAULT_INDEX_BUDGET,
@@ -38,6 +39,51 @@ from bantamkit.memory.store import (
     MemoryStore,
     MemoryValidationError,
 )
+
+#: The one place this CLI's own name is spelled, and `runtime-ts` has the same constant
+#: under the same name (`PROG` in `src/memory/cli.ts`) holding `bantamkit-memory`. The
+#: `memorycli` conformance suite compares the two CLIs after substituting one for the
+#: other, so everything downstream of it -- the usage line, every `...: error:` prefix,
+#: the sentence `main` prints for a store it could not read, and the two remediation
+#: lines that name a command for the operator to RUN -- has to move with it or the two
+#: halves drift apart one string at a time.
+#:
+#: One remediation line in this runtime is NOT downstream of this constant and cannot be
+#: without the MCP server importing this module: the `index-budget-low` sentence in
+#: `mcpserver.py` spells the same command as a literal. It is held to this value from the
+#: outside instead, by `tests/test_status_surface.py`'s
+#: `test_the_index_remedy_names_the_command_this_install_actually_provides`.
+_PROG = "python -m bantamkit.memory"
+
+
+def _lf_utf8(stream: object) -> None:
+    """Make one of this process's text streams write LF and UTF-8 on every platform.
+
+    `sys.stdout` and `sys.stderr` are text streams opened with `newline=None`, which
+    translates every `\n` to `os.linesep` on the way out: a no-op on macOS and Linux, and
+    CRLF on Windows. Their encoding is the locale's, which on Windows is a code page, not
+    UTF-8. So the same command run on the same store printed different BYTES on Windows than
+    it did here, and the port -- whose `process.stdout.write` emits LF and UTF-8 everywhere
+    -- was byte-identical to this CLI on one operating system and not on the other.
+
+    `mcpserver.py`'s `_print_assets_root`, `_print_mcp_report` and `_print_status_line` each
+    solve their own half of this by writing through `sys.stdout.buffer`, and that is the
+    established idiom in this repository. It CANNOT be the idiom here, and the reason is
+    measured rather than assumed: on Windows' defaults, reproduced on macOS with
+    `TextIOWrapper(..., encoding="cp1252", newline="\r\n")`, `-h` emits 16 CRLFs and
+    `status --nope` emits 3 -- and every one of them is written by `argparse`, into
+    `sys.stdout`/`sys.stderr` by name, from a frame no call site in this module owns. A sweep
+    of the `print()` calls below would have fixed the 6 CRLFs of `status` and left the 16 of
+    `-h`. The stream is the thing that translates, so the stream is the thing to fix.
+
+    Guarded on `reconfigure` rather than on a type, because `sys.stdout` is not always a
+    `TextIOWrapper`: `pytest`'s capture, a `StringIO` and a closed-stdout `pythonw` all reach
+    this line, and a stream that cannot be reconfigured is one that was never doing platform
+    translation in the first place.
+    """
+    reconfigure = getattr(stream, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(encoding="utf-8", newline="\n")
 
 
 def _positive(text: str) -> int:
@@ -50,7 +96,7 @@ def _positive(text: str) -> int:
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="python -m bantamkit.memory",
+        prog=_PROG,
         description=(
             "Operator lifecycle for a bantamkit memory store: inspect, lint, "
             "compact and restore. Not an agent surface."
@@ -124,7 +170,7 @@ def _cmd_lint(store: MemoryStore, args: argparse.Namespace) -> int:
         where = f"--store {store.root}"
         print(
             f"lint: FAIL — index is {_size(store)} bytes, budget is {store.index_budget}\n"
-            f"  try: python -m bantamkit.memory compact {where} "
+            f"  try: {_PROG} compact {where} "
             f"--budget {store.index_budget}",
             file=sys.stderr,
         )
@@ -153,7 +199,7 @@ def _cmd_compact(store: MemoryStore, args: argparse.Namespace) -> int:
     print(f"archived -> {result.archive_dir}")
     for fact in result.archived:
         print(f"  {fact.name} ({fact.type}, {fact.index_bytes} bytes)")
-    print(f"restore one with: python -m bantamkit.memory restore <name> --store {store.root}")
+    print(f"restore one with: {_PROG} restore <name> --store {store.root}")
     return 0
 
 
@@ -192,8 +238,38 @@ _COMMANDS = {
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run one subcommand and return its exit code. The exit code is the ONLY channel.
+
+    `status`, `compact` and `archived` catch nothing of their own -- there is no
+    remediation to offer for a store that cannot be read, only a report -- so before
+    this clause a `MemoryValidationError` out of `_listing` unwound all the way through
+    CPython, which printed a two-stage traceback carrying interpreter absolute paths and
+    line numbers from inside `store.py`. Exit 1 either way; the difference is entirely in
+    what the operator is handed, and a stack trace names this repository's files rather
+    than the store the operator asked about.
+
+    `BantamError` and nothing wider, exactly as `runtime-ts/src/memory/cli.ts` has it: a
+    bug in bantamkit is still a traceback, because that one IS a report for a maintainer.
+    What is caught here is the class of failures that are ABOUT the operator's store --
+    unreadable, unlistable, malformed -- and every one of them already carries a sentence
+    that names the directory and says what the consequence would have been. The prefix is
+    this CLI's own `prog`, so the line reads as the program speaking rather than as an
+    error string from nowhere, and it is byte-identical to the port's after the one
+    substitution the conformance suite makes.
+
+    `SystemExit` is deliberately not caught: argparse's usage errors are exit 2 and
+    `_open`'s empty-`--store` refusal is its own sentence already on stderr.
+    """
+    # BEFORE `_parse_args`, because `-h` and every usage error are written by argparse
+    # straight into these two streams and never come back through this frame.
+    _lf_utf8(sys.stdout)
+    _lf_utf8(sys.stderr)
     args = _parse_args(argv)
-    return _COMMANDS[args.command](_open(args), args)
+    try:
+        return _COMMANDS[args.command](_open(args), args)
+    except BantamError as e:
+        print(f"{_PROG}: {e}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

@@ -367,6 +367,17 @@ class MemoryStore:
         on the strength of a listing that failed. The ordering costs nothing here, the
         same way it costs nothing in `save`: the listing is already the first thing
         this op does, so there is no half-compacted archive to reason about.
+
+        THE MOVE IS `os.replace` AND NOT `os.rename`, and the difference is a platform.
+        `Path.rename` silently replaces an existing destination on POSIX and raises
+        `FileExistsError` on Windows; `Path.replace` replaces on both. The only state
+        that tells them apart is an `archive/<name>.md` that already exists when this
+        loop moves the live fact over it -- an earlier compaction's copy of a fact that
+        was restored and then went stale again. `restore` cannot produce it, because it
+        moves the archived copy OUT, which is why nothing in this repository had reached
+        the state until a test went looking for it. `runtime-ts` has always used
+        `os.replace` here (`pyReplace` in `src/memory/store.ts`), so before this the two
+        runtimes agreed on POSIX and disagreed on Windows.
         """
         facts = self._facts()
         sizes = {fact.name: len(self._index_line(fact).encode()) for fact in facts}
@@ -382,7 +393,10 @@ class MemoryStore:
             if size <= target:
                 break
             path = self._fact_path(fact.name)
-            path.rename(self.root / "archive" / path.name)
+            # `os.replace`, not `os.rename`: the two agree on POSIX and differ on Windows,
+            # where `rename` raises `FileExistsError` over an `archive/<name>.md` that is
+            # already there. `runtime-ts` uses `pyReplace` here; this is the same call.
+            path.replace(self.root / "archive" / path.name)
             size -= sizes[fact.name]
             archived.append(
                 ArchivedFact(

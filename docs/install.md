@@ -83,6 +83,15 @@ Full install documentation, with every number measured rather than estimated, is
 [`runtime-ts/README.md`](../runtime-ts/README.md); the annotated config with all four
 forms is `runtime-ts/mcp.json.example`.
 
+**The package declares two bins.** `bantamkit-mcp` is the server the config line above
+launches. `bantamkit-memory` is the operator CLI for memory lifecycle — `status`,
+`lint`, `compact`, `archived`, `restore` — and it is this install's spelling of the
+Python distribution's `python -m bantamkit.memory`, which the Python distribution has
+no console script for. Both spellings are documented together in
+[memory.md](memory.md#the-operator-cli) and the divergence is ruled in
+[porting.md](porting.md#where-the-two-runtimes-deliberately-differ). It is deliberately
+not an MCP surface: lifecycle prints reports, and this server's stdout is the wire.
+
 ### Migrating from `tools/bantamkit-mcp`
 
 The sh launcher is **not** deprecated and nothing is being removed. Both endpoints read
@@ -113,11 +122,14 @@ Three things change, and all three are measured, not predicted:
    `assets_digest` is computed identically in both and must match across machines,
    `build_id` differing on the same version string *is* the float.
 
-Not carried over: **`--which`**. The sh launcher's flag documents a consumer,
-`tools/mcpreach/mcpreach.py`, that has never existed on any of this repository's 506
-refs — see `runtime-py/tests/test_mcp_endpoint.py:48-72`, which records the three-file
-contradiction, and the `--which` section of `runtime-ts/README.md`. `build_identity`
-answers the question the flag was reaching for, on the wire rather than beside it.
+Not carried over: **`--which`**. Not because the flag is bad — `tools/bantamkit-mcp` and
+`tools/bantamkit-mcp-node` both have it, and both are tested — but because it reports
+where a *checkout* resolved its halves, and `npx` does not run a checkout. On the wire,
+`build_identity` answers the question the flag is reaching for. (Until 2026-08-24 the sh
+launcher's comment named a consumer for the flag, `tools/mcpreach/mcpreach.py`, that has
+never been added on any ref of this repository — `git log --all --diff-filter=A --
+'*mcpreach*'` is empty, and it stays rerunnable in a way a ref count would not. See the
+`--which` section of `runtime-ts/README.md`.)
 
 Version numbers are currently pinned together: the npm package is `0.25.0` to match
 `runtime-py.__version__`, because `build_identity` reports the version and a reader

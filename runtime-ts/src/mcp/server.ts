@@ -219,10 +219,16 @@ function recordResult(log: EventLog, tool: string, call: () => PyValue): PyValue
 /**
  * Run one tool and return its Python-shaped answer.
  *
- * The two return kinds are the SDK's, not this file's: `memory_save` and `memory_recall` are
- * annotated `-> str` in the reference, so `_create_wrapped_model` puts them under a `result`
- * key; the other five are `-> dict[str, Any]` and pass through as themselves. That is why
- * `structuredContent` has a `result` key for exactly two of the seven.
+ * The two return kinds are the SDK's, not this file's: `memory_save`, `memory_recall` and
+ * `bantamkit_status` are annotated `-> str` in the reference, so `_create_wrapped_model` puts
+ * them under a `result` key; the other five are `-> dict[str, Any]` and pass through as
+ * themselves. That is why `structuredContent` is exactly `{ result }` for those three of the
+ * eight, and carries the handler's own keys for the other five.
+ *
+ * DO NOT READ THAT AS "THREE TOOLS HAVE A `result` KEY". Driven over stdio, six of the eight
+ * answer with a `result` somewhere in `structuredContent`: the three shiftwork tools carry
+ * one of their own, and it is the register's verdict, not this wrapper. `wrapped` below is
+ * the bit that actually decides, and it is `true` exactly three times.
  *
  * EVERY RECORD BELOW COMES FROM A DECISION, NEVER FROM A REPLY. `memory_save` reads
  * `SaveOutcome.status`, `memory_recall` reads `RecallOutcome.status`, the three shiftwork

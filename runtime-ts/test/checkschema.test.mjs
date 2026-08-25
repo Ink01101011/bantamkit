@@ -6,7 +6,7 @@
  * looks at the instance. This port did not, and the consequence was not a different sentence
  * but a WRONG ANSWER: the keywords in `pyjsonschema.ts` are written to SKIP a schema value
  * they do not recognise, which is correct inside `iter_errors` and is `{"valid": true}` at a
- * tool boundary. N8 measured five on the wire; the fix is `checkSchema`, and 53 shapes are
+ * tool boundary. N8 measured five on the wire; the fix is `checkSchema`, and 50 shapes are
  * compared against the reference in `tools/conformance/suites/validate.mjs`. This file is
  * the in-runtime half — it says WHICH ANSWER changed, without a Python on PATH.
  *

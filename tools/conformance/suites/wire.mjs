@@ -70,6 +70,65 @@ const REAL_CHECKPOINT = join(repoRoot, 'tools', 'shiftwork', 'example-codefix-ch
 const EVENT_LOG_ENV = 'BANTAMKIT_EVENT_LOG';
 const EVENT_LOG_RELATIVE = ['events', 'mcp.jsonl'];
 
+/**
+ * The one sentence on this wire that names a command for the OPERATOR to run, and the two
+ * spellings of it.
+ *
+ * `index-budget-low` tells whoever is reading the degraded report how to get the index back
+ * under its budget. `mcpserver.py` spells that `python -m bantamkit.memory compact`;
+ * `runtime-ts/src/mcp/status.ts` spells it `bantamkit-memory compact`, because a pure-npm
+ * install has neither the interpreter nor the `bantamkit.memory` module, and an npm install
+ * of `bantamkit-mcp` DOES put `bantamkit-memory` on PATH. There is no third spelling either
+ * side could print and mean, which is why this is ruled rather than fixed. Same reasoning,
+ * same two literals and the same substitution direction as
+ * `tools/conformance/suites/memorycli.mjs`, which compares the CLIs those names invoke.
+ *
+ * A ruling proves the two sides DIFFER and nothing else. So the substitution below is what
+ * keeps every other byte of the sentence compared, and the three cases at the bottom of this
+ * file pin the sentences themselves: RULED raw, UNRULED after the substitution, and the
+ * backticked command on each side against the literal that install actually provides.
+ */
+const PY_MEMORY_PROG = 'python -m bantamkit.memory';
+const NODE_MEMORY_PROG = 'bantamkit-memory';
+const substituteMemoryProg = (text) => text.split(PY_MEMORY_PROG).join(NODE_MEMORY_PROG);
+
+/** The `index-budget-low` sentence's opening words, which no other sentence on the wire uses. */
+const REMEDY_HEAD = 'the memory index is ';
+
+/**
+ * Every `index-budget-low` sentence a session's frames carry, in the order they appear.
+ *
+ * The frames are walked as PARSED JSON rather than scanned as text, so the copy in the
+ * report, the copy in `structuredContent`, the copy in the prompt's message and the copies
+ * inside every footer are all found by one rule, none of them through a hand-written escape.
+ * The LIST is what the cases compare, not one element of it: a runtime that moved the
+ * sentence in the report and left the footer alone changes the list's length, and a runtime
+ * that stopped printing it at all produces an empty list, which no other list matches.
+ */
+function remedySentences(frames) {
+  const found = [];
+  const walk = (value) => {
+    if (typeof value === 'string') {
+      for (const part of value.split('\n')) {
+        const at = part.indexOf(REMEDY_HEAD);
+        if (at !== -1) found.push(part.slice(at));
+      }
+    } else if (Array.isArray(value)) value.forEach(walk);
+    else if (value !== null && typeof value === 'object') Object.values(value).forEach(walk);
+  };
+  for (const line of frames) {
+    try {
+      walk(JSON.parse(line));
+    } catch {
+      /* a line that is not a frame is another case's failure, not this helper's */
+    }
+  }
+  return found;
+}
+
+/** The backticked command inside a remedy sentence: the text the operator is told to type. */
+const remedyCommands = (sentences) => [...new Set(sentences.map((s) => (/`([^`]*)`/.exec(s) ?? [, null])[1]))];
+
 const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');
 const unb64 = (s) => Buffer.from(s, 'base64').toString('utf8');
 
@@ -409,6 +468,18 @@ export async function run(ctx) {
    * masked and every other byte of both reports is compared. A SECOND mask would not be a
    * fix: it would mean something is diverging that the contract says should not.
    *
+   * AND ONE SUBSTITUTION, ON THE REFERENCE SIDE OF `status-degraded` ONLY. The
+   * `index-budget-low` remedy names a command for the operator to RUN, and the two installs
+   * provide different ones: `python -m bantamkit.memory compact` where there is an
+   * interpreter and a `bantamkit.memory` module, `bantamkit-memory compact` where there is
+   * an npm `bin`. Ruled in `docs/porting.md`; `substituteMemoryProg` below is what lets the
+   * rest of the sentence — the two byte counts, the wording, the footer it rides in and the
+   * count of places it appears — still be compared as bytes. It is a `refMask` and NOT a
+   * `mask`: applied to the reference only, so a Node report that regressed to spelling
+   * `python -m …` would go red on these frames rather than be normalised into agreement.
+   * `status-active` deliberately does NOT carry it — a remedy that leaked into a HEALTHY
+   * report should fail this suite, not be substituted inside it.
+   *
    * THE STRADDLE IS ONE BYTE OF BUDGET WIDE, and both sides of it are driven. One
    * `memory_save` writes a 46-byte `index.md`; 46 * 100 = 4600, so at a 51-byte budget
    * 90 * 51 = 4590 <= 4600 and the store is degraded, while at 52 it is 4680 > 4600 and it is
@@ -441,6 +512,7 @@ export async function run(ctx) {
   add('status-degraded', STATUS_LINES, {
     argv: ['--store', store, '--index-budget', '51'],
     mask: maskBuild,
+    refMask: substituteMemoryProg,
   });
 
   /**
@@ -597,6 +669,17 @@ export async function run(ctx) {
      * of the fifth line, the problem list and the footer — is compared as it left the process.
      */
     const mask = spec.mask ?? ((text) => text);
+    /**
+     * The reference side's EXTRA transform, applied after `mask` and to the left side only.
+     *
+     * A `mask` hides a value neither side can be held to. A `refMask` rewrites the reference
+     * into the port's spelling of a RULED difference, so that everything around it stays a
+     * byte comparison — and, because it runs on one side only, so that the port drifting INTO
+     * the reference's spelling still fails. Only `status-degraded` sets one today: the
+     * `index-budget-low` remedy names a command, and the two installs provide different ones.
+     */
+    const refMask = spec.refMask ?? ((text) => text);
+    const maskRef = (text) => refMask(mask(text));
     cases.push({
       name: `${spec.name}: the answered ids`,
       kind: 'json',
@@ -607,7 +690,7 @@ export async function run(ctx) {
       cases.push({
         name: `${spec.name}: id ${id}`,
         kind: 'string',
-        expected: mask(canonical(left.get(id) ?? '{"missing":true}')),
+        expected: maskRef(canonical(left.get(id) ?? '{"missing":true}')),
         actual: mask(canonical(right.get(id) ?? '{"missing":true}')),
       });
     }
@@ -625,9 +708,68 @@ export async function run(ctx) {
     cases.push({
       name: `${spec.name}: raw frame bytes`,
       kind: 'bytes',
-      expected: mask(rawOf(left)),
+      expected: maskRef(rawOf(left)),
       actual: mask(rawOf(right)),
     });
+  }
+
+  // ------------------------------------------- the one remedy the two installs spell apart
+
+  /**
+   * The `index-budget-low` sentence, pinned three ways so the ruling cannot become a licence.
+   *
+   * A `ruling:` case asserts the two sides DIFFER and stops there. On its own it would let
+   * either half of this sentence drift to anything at all, as long as the other half stayed
+   * different — and the drifting half is the one an operator is told to TYPE. So:
+   *
+   *   `remedy-lines-raw`  RULED. The sentences as they left the two processes, as a LIST, so
+   *                       a runtime that moved the report's copy and forgot the footer's is a
+   *                       different list. It goes red as a STALE RULING the moment the two
+   *                       sides agree — which is what makes "the port copied the reference's
+   *                       command back" a failure rather than a silent regression.
+   *   `remedy-lines`      UNRULED, the same two lists after `substituteMemoryProg`. Everything
+   *                       that is NOT the prog — the byte counts, the wording, the footer's
+   *                       own tail, the number of places the sentence appears — must match.
+   *                       Changing EITHER side's sentence alone reddens here.
+   *   `remedy-commands`   UNRULED, the backticked command each side prints against the literal
+   *                       that install provides. This is the case that says which spelling is
+   *                       RIGHT: the two above would both stay green if the two runtimes swapped
+   *                       their sentences, and a Node report naming `python -m …` is precisely
+   *                       the defect this whole row exists to close.
+   *
+   * `runtime-ts/test/server.test.mjs` holds the other half of `remedy-commands` — that
+   * `bantamkit-memory` is a `bin` `package.json` actually ships — and
+   * `runtime-py/tests/test_status_surface.py` holds the reference's. A conformance suite can
+   * say the two sentences name different commands; only those two can say the commands exist.
+   */
+  {
+    const { python, node } = results.get('status-degraded');
+    const pySentences = remedySentences(python.frames);
+    const nodeSentences = remedySentences(node.frames);
+    cases.push({
+      name: 'status-degraded: the remedy lines, raw',
+      kind: 'json',
+      expected: pySentences,
+      actual: nodeSentences,
+      ruling:
+        'the index remedy names a command for the operator to RUN, and the two installs ' +
+        'provide different ones: `python -m bantamkit.memory compact` needs an interpreter ' +
+        'and the `bantamkit.memory` module, `bantamkit-memory compact` is the npm bin. ' +
+        'docs/porting.md, "the index-budget-low remedy".',
+    });
+    cases.push({
+      name: 'status-degraded: the remedy lines, after the one substitution',
+      kind: 'json',
+      expected: pySentences.map(substituteMemoryProg),
+      actual: nodeSentences,
+    });
+    cases.push({
+      name: 'status-degraded: the command each side tells the operator to type',
+      kind: 'json',
+      expected: { python: [`${PY_MEMORY_PROG} compact`], node: [`${NODE_MEMORY_PROG} compact`] },
+      actual: { python: remedyCommands(pySentences), node: remedyCommands(nodeSentences) },
+    });
+    notes.push(`the Node index remedy: ${JSON.stringify(remedyCommands(nodeSentences))}`);
   }
 
   // -------------------------------------------------------- the files clock_out writes
@@ -931,8 +1073,10 @@ export async function run(ctx) {
     );
     notes.push(
       'status: ONE mask over both reports — `build sha256:<64 hex>`, the value docs/porting.md ' +
-        'already rules divergent. Every other byte of the report, the prompt and the footer is ' +
-        'compared as it left the process.',
+        'already rules divergent — and, on `status-degraded` only, ONE substitution on the ' +
+        'REFERENCE side: `python -m bantamkit.memory` -> `bantamkit-memory` in the ' +
+        'index-budget-low remedy, also ruled. Every other byte of the report, the prompt and ' +
+        'the footer is compared as it left the process.',
     );
   }
 

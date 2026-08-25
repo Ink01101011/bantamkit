@@ -51,11 +51,13 @@ An earlier revision of this docstring deferred that gap to `mcpreach`. It does n
     $ git ls-tree -r --name-only origin/main | grep -i mcpreach
 
 both empty -- the path has never been added on any ref in this repository's history. It
-is cited as a real command anyway, by `tools/bantamkit-mcp:47` ("`--which` ...
-`tools/mcpreach/mcpreach.py` reads it") and by `docs/mcp.md:154`, which documents a
+WAS cited as a real command anyway, by `tools/bantamkit-mcp:47` ("`--which` ...
+`tools/mcpreach/mcpreach.py` reads it") and by `docs/mcp.md:154`, which documented a
 five-value exit-code interface for it -- `2 FOREIGN` being precisely the silent
 wrong-checkout failure this file exists to catch. So the endpoint's own documentation
-points an operator at vaporware for the one check it calls "not a thing to reason about".
+pointed an operator at vaporware for the one check it called "not a thing to reason
+about". Both citations are gone as of 2026-08-24; the paragraphs below are the record of
+why, and the closing note at the end says what replaced them.
 
 IT IS NOT AN UNOWNED GAP, WHICH IS WHAT AN EARLIER REVISION OF THIS PARAGRAPH CALLED IT.
 `docs/eval.md:10949` -- in `AD.1 RB-P96 -- FIXED (2026-08-21, PR #58, 927b2a8)`, the very
@@ -78,11 +80,20 @@ shipped, and the contradiction is not inert. Measured 2026-08-23, running the co
     $ echo $?
     2
 
-and `2` is the value that same page documents as `FOREIGN`, "it launched, but it is
+and `2` is the value that same page documented as `FOREIGN`, "it launched, but it is
 serving a DIFFERENT checkout's source". A missing file and the silent wrong-checkout
-failure are the same exit code to anything scripting the documented interface. Naming
-that is this file's obligation; closing it means editing `tools/` and `docs/`, which this
-file's layer does not.
+failure are the same exit code to anything scripting the documented interface.
+
+CLOSED 2026-08-24, and this file is half of what closed it. `docs/mcp.md` no longer
+documents `mcpreach`; it now points an operator at `--which` on either launcher for the
+resolution half and at THIS FILE, by name and by node, for the half that requires asking
+the endpoint a question -- which is the half `--which` cannot do and the half `2 FOREIGN`
+was reaching for. `tools/bantamkit-mcp:47` no longer claims a program consumer for
+`--which`. The three files agree, and `runtime-py/tests/test_doc_commands_gate.py` is
+what keeps them agreeing: it is red if any fenced shell block in a tracked `.md` names a
+`tools/` program that is not in the tree. It deliberately does NOT key on the mention, so
+the four prose citations of `tools/mcpreach/mcpreach.py` that exist to record its absence
+-- including the ones above -- stay writable.
 """
 
 from __future__ import annotations

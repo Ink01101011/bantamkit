@@ -23,7 +23,9 @@
  * WHAT IS ASSERTED (the gate) vs WHAT IS REPORTED (the numbers)
  * -------------------------------------------------------------
  * Asserted, and a failure exits 1:
- *   1. the cold run answers `initialize`, and advertises 7 tools and 2 resource templates;
+ *   1. the cold run answers `initialize`, advertises exactly the tools the shipped surface
+ *      declares -- NAMES, in order, derived from `runtime-ts/src/mcp/server.ts`'s `MCP_TOOLS`
+ *      and never typed here -- and 2 resource templates;
  *   2. every stdout line is a JSON-RPC frame and stdout does not end mid-line — stdout is
  *      the protocol channel, so a stray `console.log` in a dependency is a protocol error;
  *   3. `build_identity` from the tarball reports `runtime: "node"`, the package.json version,
@@ -63,6 +65,49 @@ const check = (ok, what, detail = '') => {
   if (!ok) failures.push(detail ? `${what} — ${detail}` : what);
   console.log(`  ${ok ? '✔' : '✖'} ${what}${ok || !detail ? '' : `\n      ${detail}`}`);
 };
+
+/**
+ * THE EXPECTED ADVERTISEMENT IS DERIVED, NOT TYPED.
+ *
+ * This check once read `tools.length === 7`. Job 39 added an eighth tool to both runtimes and
+ * the literal stayed at seven, so the gate went red for a package that was correct — and, had
+ * the drift run the other way, would have gone green for a package that was not. A number
+ * somebody types is a second declaration of the served surface, and a second declaration is a
+ * thing that can disagree with the first.
+ *
+ * So the expectation comes from the one place the Node package declares what it serves:
+ * `MCP_TOOLS` in `runtime-ts/src/mcp/server.ts`, which `build_server` maps straight onto
+ * `tools/list` (server.ts: `const advertised = MCP_TOOLS.map(...)`). Names and order, not a
+ * count — a count cannot tell a rename from a swap.
+ *
+ * It is read from `src/`, deliberately, and not from `dist/` or from the tarball. `npm pack`
+ * runs `prepack` (asset sync) and NOT `build`, so a stale `dist/` really does ship; comparing
+ * the tarball's advertisement against the compiled copy it was cut from could only ever agree
+ * with itself. Against the source, a `dist/` that predates a tool is a red line here.
+ *
+ * A parse that finds nothing is a hard stop (exit 2), not a silent pass: an empty expectation
+ * would make this check vacuous rather than failing, which is the defect it exists to prevent.
+ */
+const servedDecl = join(runtimeTs, 'src', 'mcp', 'server.ts');
+const EXPECTED_TOOLS = (() => {
+  const src = readFileSync(servedDecl, 'utf8');
+  const block = /export const MCP_TOOLS = \[([\s\S]*?)\] as const;/.exec(src);
+  if (!block) {
+    console.error(
+      'npx-cold-start: cannot find `export const MCP_TOOLS = [...] as const;` in\n' +
+        `  ${servedDecl}\n` +
+        'The gate derives its expected advertisement from that declaration and will not fall\n' +
+        'back to a typed list. If the declaration moved, point this at where it went.',
+    );
+    process.exit(2);
+  }
+  const names = [...block[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  if (names.length === 0) {
+    console.error(`npx-cold-start: MCP_TOOLS in ${servedDecl} parsed to an empty list.`);
+    process.exit(2);
+  }
+  return names;
+})();
 
 const bed = mkdtempSync(join(tmpdir(), 'bk-npx-'));
 const bytesOf = (dir) => {
@@ -310,7 +355,12 @@ console.log(`  exit code           : ${coldRun.exit}${coldRun.timedOut ? ' (KILL
 check(coldById.get(1)?.result?.serverInfo?.name === 'bantamkit', 'initialize answered by the tarball',
   JSON.stringify(coldById.get(1) ?? null).slice(0, 300));
 const tools = coldById.get(2)?.result?.tools ?? [];
-check(tools.length === 7, `tools/list advertises 7 tools (saw ${tools.length})`, tools.map((t) => t.name).join(', '));
+const coldToolNames = tools.map((t) => t.name);
+check(
+  coldToolNames.join(',') === EXPECTED_TOOLS.join(','),
+  `tools/list advertises the ${EXPECTED_TOOLS.length} tools MCP_TOOLS declares, in that order (saw ${coldToolNames.length})`,
+  `expected ${EXPECTED_TOOLS.join(', ')}\n      served   ${coldToolNames.join(', ')}`,
+);
 const templates = coldById.get(3)?.result?.resourceTemplates ?? [];
 check(templates.length === 2, `resources/templates/list advertises 2 templates (saw ${templates.length})`);
 check((coldById.get(4)?.result?.contents ?? []).length === 1, 'a packaged skill asset is readable from the install');
@@ -402,9 +452,11 @@ if (coldRun.msToFirstFrame !== null && warmRun.msToFirstFrame !== null) {
     `  cold pays ${((coldRun.msToFirstFrame - warmRun.msToFirstFrame) / 1000).toFixed(2)} s more than warm before a host can list tools`,
   );
 }
+const warmToolNames = (parsedById(warmRun).get(2)?.result?.tools ?? []).map((t) => t.name);
 check(
-  parsedById(warmRun).get(2)?.result?.tools?.length === 7,
-  'the warm run serves the same 7 tools from the cached install',
+  warmToolNames.join(',') === coldToolNames.join(',') && warmToolNames.join(',') === EXPECTED_TOOLS.join(','),
+  `the warm run serves the same ${EXPECTED_TOOLS.length} tools from the cached install`,
+  `expected ${EXPECTED_TOOLS.join(', ')}\n      served   ${warmToolNames.join(', ')}`,
 );
 
 // -------------------------------------------------------------- 6. the login-less PATH

@@ -107,7 +107,7 @@ That position only holds if the operator has a lever, and until 2026-08-21 there
 was none: `index_budget` was on no argument parser, and the four ops above were
 reachable only by importing `MemoryStore` from Python. Both halves now exist —
 see [The operator CLI](#the-operator-cli) below and `--index-budget` on
-`bantamkit-mcp`. The agent surface is unchanged and still exactly seven tools.
+`bantamkit-mcp`. The agent surface is unchanged and still exactly eight tools.
 
 ```python
 from bantamkit.memory import MemoryBudgetExceeded, MemoryStore, MemoryValidationError
@@ -231,7 +231,20 @@ lifecycle action, and you trigger it.
 
 ## The operator CLI
 
-`python -m bantamkit.memory` is how you trigger it without writing Python.
+There is a command line for triggering it without writing Python, and **which
+one you type depends on which install you have.** The Python distribution
+declares one console script, `bantamkit-mcp`, so its operator CLI is `python -m
+bantamkit.memory`; the npm package declares a second bin and its operator CLI is
+`bantamkit-memory`. Same subcommands, same flags, same exit codes, same bytes —
+except for the lines in which the program names itself. There is no third
+spelling, and the reason there is not is the `prog` row of
+[porting.md](porting.md#where-the-two-runtimes-deliberately-differ)'s divergence
+table; that row is where the reason lives and this page does not restate it.
+
+The synopsis below is written in the Python spelling. On an npm install,
+substitute `bantamkit-memory` for `python -m bantamkit.memory` in every line —
+which is the same substitution `tools/conformance/suites/memorycli.mjs` applies
+before comparing the two CLIs byte for byte.
 
 ```
 python -m bantamkit.memory status   [--store PATH | --start DIR] [--budget BYTES]
@@ -249,12 +262,15 @@ convention.
 
 Exit codes are `0` success, `1` a failure you must act on (over budget, a
 malformed fact, a refused restore), `2` a usage error — so `lint` drops into a
-pre-commit hook or CI job unchanged:
+pre-commit hook or CI job unchanged.
+
+The next two transcripts were run against a seeded 12-fact store, **from the
+Python install** — the repo venv activated, so `python` is `.venv/bin/python`:
 
 ```console
-$ python -m bantamkit.memory lint --budget 3000
-lint: FAIL — index is 3943 bytes, budget is 3000
-  try: python -m bantamkit.memory compact --store /repo/.bantamkit/memory --budget 3000
+$ python -m bantamkit.memory lint --store .bantamkit/memory --budget 900
+lint: FAIL — index is 1189 bytes, budget is 900
+  try: python -m bantamkit.memory compact --store .bantamkit/memory --budget 900
 $ echo $?
 1
 ```
@@ -263,18 +279,38 @@ $ echo $?
 byte arithmetic and the command that brings one back:
 
 ```console
-$ python -m bantamkit.memory compact --budget 3000
-compacted 7 fact(s)
-index: 3943 -> 2639 bytes (budget 3000, target 2712, reserve 288, headroom 361)
-archived -> /repo/.bantamkit/memory/archive
-  some-stale-fact (project, 178 bytes)
-  ...
-restore one with: python -m bantamkit.memory restore <name> --store /repo/.bantamkit/memory
+$ python -m bantamkit.memory compact --store .bantamkit/memory --budget 900
+compacted 4 fact(s)
+index: 1189 -> 775 bytes (budget 900, target 783, reserve 117, headroom 125)
+archived -> .bantamkit/memory/archive
+  assets-pack-has-eleven-files (project, 104 bytes)
+  ci-runner-is-macos-only (project, 99 bytes)
+  conformance-runner-entrypoint (reference, 101 bytes)
+  event-log-is-off-by-default (project, 110 bytes)
+restore one with: python -m bantamkit.memory restore <name> --store .bantamkit/memory
 ```
 
 That report is the point. `archive/` is a directory nothing reads back on its own,
 so a compaction whose output is not printed is a silent deletion as far as the
 operator is concerned.
+
+The same two commands, **from the npm install** (`npm pack` from `runtime-ts/`,
+installed into a scratch directory, run off `node_modules/.bin/`) against an
+identical copy of that store, differ on exactly two of the ten output lines —
+the two that name a command for the operator to run:
+
+```console
+$ bantamkit-memory lint --store .bantamkit/memory --budget 900
+...
+  try: bantamkit-memory compact --store .bantamkit/memory --budget 900
+$ bantamkit-memory compact --store .bantamkit/memory --budget 900
+...
+restore one with: bantamkit-memory restore <name> --store .bantamkit/memory
+```
+
+Every other byte was identical, and the whole of it is identical after the one
+substitution — which is why the doubled remedy is a spelling and not a second
+behaviour, and why it is a ruling rather than a bug.
 
 Lifecycle **actions** stay off `bantamkit-mcp`, which speaks MCP over stdout and
 cannot also print reports there. What the server does take is `--index-budget

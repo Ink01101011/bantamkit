@@ -44,7 +44,13 @@
 #
 # `--which` prints where this launcher resolved both halves and exits. It uses
 # `find_spec`, which does not execute the package, so it still answers on a checkout
-# whose dependencies are missing. `tools/mcpreach/mcpreach.py` reads it.
+# whose dependencies are missing. It is read by an OPERATOR, not by a program: `source=`
+# outside `checkout=` is the worktree trap, visible before anything starts. An earlier
+# revision of this line named `tools/mcpreach/mcpreach.py` as its consumer; that program
+# has never been added on any ref (`git log --all --diff-filter=A -- '*mcpreach*'` is
+# empty) and `docs/eval.md` records the decision not to ship it. What asks the endpoint a
+# real question is `runtime-py/tests/test_mcp_endpoint.py`, which executes the string in
+# `.mcp.json` and handshakes it; `docs/mcp.md` documents both.
 #
 # POSIX `sh` only, and no heredoc: stdin is the JSON-RPC channel and anything this
 # script reads from it is a message the server will never see.
