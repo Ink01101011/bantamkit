@@ -13245,3 +13245,83 @@ corrected its brief on at least one thing, and the closing unit refuted the unit
    `_run_content` at `pdfread.py:1040`. The mechanism described by that name is exactly right and
    was verified line by line at `AI.3`; the qualified name is not addressable. The same name
    appears in `df188ff`'s comment and commit message. Recorded, not edited, for the reason in 5.
+
+---
+
+#### §AJ Amendments to §AG.9 and to `2026-08-23-job38-npx-port.md`, filed 2026-08-25 by job41
+
+Both files below are `amend_only` in `tools/amendguard/ledger.json`
+(`['docs/eval-data/*.md', 'docs/eval.md']`), so neither sentence can be corrected where it
+stands. Each is corrected here instead, with what was run to decide it.
+
+##### AJ.1 §AG.9's "There is no console script" — two clauses still true, the third now false
+
+The bullet reads, in full:
+
+> **There is no console script.** `runtime-py/pyproject.toml` declares `bantamkit-mcp` and
+> nothing else; the operator CLI is `python -m bantamkit.memory` only. Deliberate, and it means
+> an operator without the venv's `python` on the path has no entry point — which is `RB-P98`'s
+> territory standing beside a surface that just acquired five subcommands.
+
+**The first two clauses are still exactly true, and they are true of the PYTHON distribution.**
+Measured 2026-08-25:
+
+```
+$ python -c "import importlib.metadata as m; print([e.name for e in
+             m.distribution('bantamkit').entry_points if e.group=='console_scripts'])"
+['bantamkit-mcp']
+```
+
+and `runtime-py/pyproject.toml:46-47` declares `[project.scripts] bantamkit-mcp` and nothing
+else. Neither has moved.
+
+**The third clause — "an operator without the venv's `python` on the path has no entry point" —
+is now FALSE OF THE REPOSITORY**, and job40 is what made it false. `runtime-ts/package.json`
+declares two bins:
+
+```
+$ node -e "console.log(JSON.stringify(require('./runtime-ts/package.json').bin))"
+{"bantamkit-mcp":"dist/cli.js","bantamkit-memory":"dist/memory/cli.js"}
+```
+
+So that operator does have an entry point for the memory lifecycle. It is simply not a Python
+one: `bantamkit-memory status|lint|compact|archived|restore` off a pure-npm install, which is
+the whole point of job40 and is why `docs/porting.md` carries the `index-budget-low` remedy as
+a RULED divergence — Node says `bantamkit-memory compact` where Python says
+`python -m bantamkit.memory compact`.
+
+**What this does NOT say.** It does not say `RB-P98` is closed. The Python distribution still
+ships one console script, and an operator who has only the Python half is exactly where §AG.9
+left them. What changed is that "the repository has no answer for this person" stopped being
+true, and a record that still says so would send the next reader to build a thing that exists.
+
+##### AJ.2 `2026-08-23-job38-npx-port.md:104`'s "53 malformed schemas" is a MIS-TRANSCRIPTION, not a stale figure
+
+The line reads *"`checkSchema` now runs first: **53 malformed schemas, 53/53 refuse on both
+sides.**"* The array it describes has **50** entries and has never held any other number.
+
+Measured 2026-08-25, entries counted by bracket-matching the literal rather than by eye:
+
+```
+$ node -e "const s=require('fs').readFileSync('tools/conformance/suites/validate.mjs','utf8');
+  const i=s.indexOf('BAD_SCHEMAS = [');let d=0,j=s.indexOf('[',i),k=j;
+  for(;k<s.length;k++){if(s[k]==='[')d++;else if(s[k]===']'){d--;if(d===0)break;}}
+  console.log((s.slice(j+1,k).match(/^\s{4}\[/gm)||[]).length);"
+50
+```
+
+and at `fbb6f3d`, the commit that ADDED the array, the same count over that blob is also **50**.
+
+**Why the verdict matters and is not a pedantry.** A figure that was right for its date and has
+since drifted is closed by re-measuring and dating the new number. A figure that was never right
+is closed by saying so — because re-measuring would produce 50 and quietly imply the array
+shrank by three, inviting the next reader to go looking for the commit that removed them. There
+is no such commit. `git log --all -S'BAD_SCHEMAS'` finds the count at 50 at every commit it
+returns, and `fbb6f3d` introduced the "53" comment in the SAME diff that introduced the 50
+entries. C8D established this by archaeology during job40 and corrected the other eight sites
+that carried 53; `git grep "53 malformed"` returns exactly this one hit, left deliberately for
+this amendment.
+
+**What is NOT amended:** the sentence's actual claim — that `checkSchema` runs first and that
+every malformed schema in the array refuses on both sides — is correct and is gated. It is only the count in
+front of it that was never true.
