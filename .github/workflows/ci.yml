@@ -122,9 +122,25 @@ jobs:
     #     on every push.
     #   * A separate packaging step. There is no need for one: `test/packaging.test.mjs` is
     #     inside `npm test` and it shells `npm pack --dry-run --json`, which RUNS `prepack`
-    #     and therefore `scripts/sync-assets.mjs`. The 83-file / 212,480-byte pack gate is
-    #     already in this job, offline, and it is asserted against what npm would publish
-    #     rather than against the checkout.
+    #     and therefore `scripts/sync-assets.mjs`. That pack gate is already in this job,
+    #     offline, and it is asserted against what npm would publish rather than against
+    #     the checkout.
+    #
+    #     AMENDED 2026-08-25. This sentence used to call it "the 83-file / 212,480-byte
+    #     pack gate", in the present tense, and BOTH halves misdescribed it. What
+    #     `test/packaging.test.mjs` actually pins is `EXPECTED_ASSET_FILES = 84`, and it
+    #     asserts NO byte total at all. The 83/212,480 pair is real but PAST: it is the
+    #     pack as it stood before U11 added `assets/tools/bantamkit_status.json`, and
+    #     `packaging.test.mjs:35` states it that way ("83 files / 212,480 bytes BEFORE
+    #     it"), which is correct where this was not.
+    #
+    #     MEASURED at this commit, `npm pack --dry-run --json` in `runtime-ts/`:
+    #     entryCount 137, size 272,928, unpackedSize 929,070, 84 files under `assets/`.
+    #     The TARBALL SIZE is deliberately not written into the gate and should not be
+    #     written into a record either: 272,922 was measured at 21ed692 and 272,928 at
+    #     59a0b75 with no source change between them, so it moves on its own. The asset
+    #     COUNT is the number that must not move silently — it is what `build_identity`
+    #     hashes into `assets_digest` and therefore into `build_id`.
     #
     # WHAT IS DELIBERATELY ABSENT. No PYTHONWARNDEFAULTENCODING here: that variable is the
     # emitting half of the PYTHON encoding gate and belongs to the `test` job that owns it.
