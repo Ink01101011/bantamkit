@@ -406,7 +406,9 @@ def test_stdio_subprocess_initializes(tmp_path):
     # installs the branch, was the only place it could fail. That is `RB-P55`/`RB-P70`
     # reaching through a subprocess.
     #
-    # AMENDED 2026-08-25. This paragraph used to end "it is measured: with the default
+    # AMENDED 2026-08-25 (served-tools: dated — the 6 and 7 below are a quotation of a
+    # measurement this machine can no longer reproduce, not a claim about the surface).
+    # This paragraph used to end "it is measured: with the default
     # environment this server answers with 6 tools, and with the line below it answers
     # with 7." That delta was real when it was written and THIS MACHINE CAN NO LONGER
     # PRODUCE IT. Driving both environments over stdio (`initialize` ->
