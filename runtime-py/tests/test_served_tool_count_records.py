@@ -17,7 +17,10 @@ THE TWO THINGS C8B'S DESIGN INSISTS ON, and why each is here.
 
 2. **Dated and hypothetical records are exempt BY AN EXPLICIT MARKER, never by
    tense.** C8B's recommendation, quoted: tense-sniffing English "is the part
-   that will be wrong". A sentence like "would have served ten tools instead of
+   that will be wrong". This gate scans its own source, so the examples below
+   carry the marker they document — it caught itself the moment it became a
+   tracked file, which is the shortest demonstration of it there is.
+   (served-tools: dated) A sentence like "would have served ten tools instead of
    seven" is not a claim about today and must not be forced to say eight, while
    "the agent surface is still exactly eight tools" is a claim about today and
    must break the day it stops being one. No regex can tell those apart. A
@@ -37,10 +40,12 @@ WHAT THIS DELIBERATELY DOES NOT DO. It does not try to find every sentence about
 tools. The pattern is narrow on purpose — a count immediately preceded by a
 serving verb — because a gate that fires on "the two tools said" would be turned
 off within a week. Measured at the commit that added it, by the gate's own
-census: **16 hits** across the tracked tree — **9 live claims** (all saying 8,
+census over the tracked tree: **19 hits** — **10 live claims** (every one saying 8,
 which is what both launchers answer), **4 inside `amend_only` files**, and
-**3 carrying the marker**. A claim phrased outside the pattern is not caught,
-and that is a known hole rather than a hidden one.
+**5 carrying the marker**. Five of those nineteen are in THIS FILE, which the
+census counts like any other: a gate exempt from itself is a gate with a hole
+shaped like its own documentation. A claim phrased outside the pattern is not
+caught, and that is a known hole rather than a hidden one.
 
 NON-VACUITY, measured 2026-08-25 by mutating BOTH OPERANDS in turn and reverting:
 
