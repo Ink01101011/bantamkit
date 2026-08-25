@@ -132,8 +132,15 @@ test('a worktree takes its CODE from itself and its DEPS ROOT from commondir', {
   const facts = which(wt);
   // The two halves come from different places, and `--which` is where that is observable.
   // Inverting the launcher's `[ "$label" = "gitdir:" ]` test collapses `deps_root` onto the
-  // worktree — the mutation `test_mcp_endpoint.py` reports NOTHING catching on the Python
-  // side. Here it is red.
+  // worktree. Here it is red.
+  //
+  // AMENDED 2026-08-25: this comment used to end "the mutation `test_mcp_endpoint.py`
+  // reports NOTHING catching on the Python side", and that stopped being true the day
+  // `runtime-py/tests/test_launcher_which.py` was added. The Python launcher's `--which`
+  // is now executed by three nodes built the same way as these, and the same inversion
+  // reddens its worktree node and its decoy node. The gap this sentence recorded was real
+  // and is closed; the sentence is left standing, corrected, because it is the reason the
+  // other side exists.
   assert.equal(facts.checkout, wt);
   assert.equal(facts.deps_root, main);
   assert.notEqual(facts.deps_root, facts.checkout);

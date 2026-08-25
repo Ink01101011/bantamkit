@@ -853,19 +853,41 @@ export async function run(ctx) {
         'bytes of headroom under the 24000 default',
     );
     notes.push(
-      `budget vs disk: the port writes LF, so the two agree at ${Buffer.byteLength(rebuilt, 'utf8')} ` +
-        `on every platform. runtime-py agrees here (os.linesep=${JSON.stringify(EOL)}) ` +
-        `but on Windows write_text turns each of the ${lines} lines into CRLF while ` +
-        `_check_index_budget still counts this LF text — ${Buffer.byteLength(rebuilt, 'utf8') + lines} ` +
-        `bytes on disk against ${Buffer.byteLength(rebuilt, 'utf8')} checked. NO LONGER A ` +
-        'PREDICTION: measured on windows-latest, GitHub run 32645443625, by this same suite ' +
-        'over its SYNTHETIC fixtures, where the two runtimes write the same store side by ' +
-        'side and the tree manifest carries the byte counts. Every pair came out at exactly ' +
-        'one byte per line — a 1-line index.md is 42 bytes for CPython against 41 for the ' +
-        'port, a 10-line fact file 134 against 124, a 93-line checkpoint 2609 against 2516. ' +
-        'So the rule "on-disk = counted + lines" is measured; applying it to the 65-line ' +
-        `live index is arithmetic on a measured rule, not a second measurement — the live ` +
-        'store is not on a runner and must never be put on one.',
+      `budget vs disk: this note said "the port writes LF, so the two agree on every ` +
+        'platform" and THAT PREMISE IS DEAD. It described N2\'s original ruling, which ' +
+        'codec.mjs REVERSED after run 32646521489 measured it as 83 of the 132 Windows ' +
+        'conformance failures. What the port does today is `pyfs.pyWriteText` -> ' +
+        '`pyNewlineOut`, which is CRLF on win32 and a no-op elsewhere — CPython\'s ' +
+        '`write_text(newline=None)` translation, deliberately reproduced. So the two ' +
+        'runtimes agree byte for byte on disk on EVERY platform, and they agree for the ' +
+        'opposite reason to the one this note used to give. codec.mjs pins both halves ' +
+        'unruled and decidably here: `toCrlf` against CPython\'s own translation, and ' +
+        '`Path.write_text` on whatever platform the run is standing on.',
+    );
+    notes.push(
+      `budget vs disk, the part that IS still true and is NOT a defect: both runtimes ` +
+        `measure the budget on the LF text — CPython ` +
+        '`len(index_text().encode())`, the port ' +
+        `\`Buffer.byteLength(indexText(), 'utf8')\` — and neither ever stats index.md. ` +
+        `Here that is ${Buffer.byteLength(rebuilt, 'utf8')} bytes counted against ` +
+        `${live.length} on disk (os.linesep=${JSON.stringify(EOL)}); on Windows the same ` +
+        `${lines}-line index would sit at ${Buffer.byteLength(rebuilt, 'utf8') + lines} ` +
+        'bytes on disk and still be counted at ' +
+        `${Buffer.byteLength(rebuilt, 'utf8')}. That is the DESIGN, not drift: the budget ` +
+        'governs how much index a model has to read, and both digests stay on the LF text ' +
+        'for the same reason, so one store is judged the same number on every machine that ' +
+        'opens it. Counting the disk instead would make a store over budget on Windows and ' +
+        'under it on macOS with not one byte of content changed. Every budget case in this ' +
+        'suite compares computed sizes and none reads the file, which is what holds it.',
+    );
+    notes.push(
+      'the one-byte-per-line rule itself stays measured, from the same run 32645443625 over ' +
+        'the SYNTHETIC fixtures where both runtimes write side by side and the tree manifest ' +
+        'carries the counts: a 1-line index.md 42 bytes against 41, a 10-line fact file 134 ' +
+        'against 124, a 93-line checkpoint 2609 against 2516. Those pairs were CPython ' +
+        'against the port BEFORE the reversal; today both sides would write the CRLF number. ' +
+        'The live 65-line store is arithmetic on that rule, never a second measurement — it ' +
+        'is not on a runner and must never be put on one.',
     );
   }
 

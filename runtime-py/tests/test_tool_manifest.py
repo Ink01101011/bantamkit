@@ -153,7 +153,9 @@ def test_the_manifest_names_the_surface_each_tool_serves(tmp_path):
     """Gap 1, executable: `tools/list` is reproducible from the JSON alone.
 
     Before this field existed, `assets/tools/` was ten files serving two surfaces with
-    nothing in them saying which. A second runtime that registered the directory would
+    nothing in them saying which. (served-tools: dated — both numbers below describe a
+    hypothetical at a past commit, not the surface today.) A second runtime that
+    registered the directory would
     have served ten tools instead of seven and grown the surface by three, and no test
     would have noticed, because the only machine-readable statement of the split was a
     Python set inside this file.

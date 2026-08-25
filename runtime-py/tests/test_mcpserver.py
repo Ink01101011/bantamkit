@@ -404,8 +404,27 @@ def test_stdio_subprocess_initializes(tmp_path):
     # install that is a different build from the one being reviewed, and the node passed
     # while asserting a tool count that the checkout had already moved past; CI, which
     # installs the branch, was the only place it could fail. That is `RB-P55`/`RB-P70`
-    # reaching through a subprocess, and it is measured: with the default environment this
-    # server answers with 6 tools, and with the line below it answers with 7.
+    # reaching through a subprocess.
+    #
+    # AMENDED 2026-08-25 (served-tools: dated — the 6 and 7 below are a quotation of a
+    # measurement this machine can no longer reproduce, not a claim about the surface).
+    # This paragraph used to end "it is measured: with the default
+    # environment this server answers with 6 tools, and with the line below it answers
+    # with 7." That delta was real when it was written and THIS MACHINE CAN NO LONGER
+    # PRODUCE IT. Driving both environments over stdio (`initialize` ->
+    # `notifications/initialized` -> `tools/list`, `cwd` and `HOME` in a fresh temp dir)
+    # measures 8 AND 8. The reason is structural, not drift: this venv holds an EDITABLE
+    # install — `.venv/lib/python3.*/site-packages/_editable_impl_bantamkit.pth`, and
+    # `import bantamkit` resolves to `runtime-py/src/bantamkit/__init__.py` — so the
+    # stripped-`PYTHONPATH` arm reaches the same checkout as the pinned arm and the two
+    # arms cannot differ. The 6/7 reading needed a STALE NON-EDITABLE install, and that
+    # environment is gone from this machine.
+    #
+    # 8 and 8 is therefore NOT restated here as a live property: it would assert that
+    # this node still discriminates, when what it currently shows is that it cannot. The
+    # `env=` line below stays exactly as it is — it is correct, and it is the only thing
+    # standing between this node and the stale-install failure mode above on any machine
+    # that does have one.
     env = dict(os.environ)
     env["PYTHONPATH"] = str(SRC) + os.pathsep + env.get("PYTHONPATH", "")
     params = StdioServerParameters(

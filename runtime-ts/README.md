@@ -46,16 +46,39 @@ node v25.2.1 / npm 11.6.2, macOS (darwin 25.5.0), Apple silicon:
 
 | | cold cache | warm cache |
 |---|---|---|
-| wall to the first JSON-RPC frame | **4.13 s** and **7.36 s**, two runs | **1.07 s** and **1.13 s** |
+| wall to the first JSON-RPC frame | **3.90 s** and **5.09 s**, two runs | **1.14 s** and **1.11 s** |
 | npm/npx bytes on stderr | 211 (an `npm notice` about npm itself) | 0 |
 
-Both cold figures are reported rather than averaged: the spread is the registry round
-trip, so a cold start is worth about **4-7 s** here and will be worse on a slower link.
-The warm figure is the one that is a property of this package, and it is stable.
+Both cold figures are reported rather than averaged, and the two in that column are two
+runs from **one sitting on 2026-08-25** — the column is labelled "two runs" and one
+execution cannot honestly fill it.
 
-- **92 packages** installed (top-level, scope-aware); **111** `package.json` in the tree.
+**The spread is bigger than a range would suggest, and it is the network.** Five cold
+runs on that same day, same machine, same commit, measured **3.68 / 3.90 / 4.66 / 5.09 /
+9.66 s**. An earlier revision of this table read "4.13 s and 7.36 s" and called a cold
+start "worth about 4-7 s here"; three of those five runs fall outside that range, so the
+range is dropped rather than re-fitted. What a reader should take from the cold column is
+an ORDER OF MAGNITUDE — seconds, dominated by the registry round trip, worse on a slower
+link — and not a number to compare a future run against. The warm figure is the one that
+is a property of this package, and it is stable across every run above.
+
+- **92 packages** installed (top-level under `node_modules`, scope-aware); **111**
+  `package.json` **under `node_modules`**, which is the count of packages actually
+  installed:
+
+  ```
+  find "$BED/cold/cache/_npx/<hash>/node_modules" -type f -name package.json | wc -l   # 111
+  ```
+
+  Counting from the `_npx/<hash>` directory instead gives **112**, and the extra file is
+  not a package: npx synthesises a `package.json` at that root holding the `file:` spec
+  and an `_npx.packages` array. The method is written down here because the 112 was read
+  once as a drift of one and it is not one — it is a different denominator. Reproduce
+  either with `node tools/conformance/npx-cold-start.mjs --keep`, which prints the scratch
+  path it leaves behind.
 - **15.7 MB** of files under `$npm_config_cache/_npx/<hash>` (26 MB of allocated blocks by
-  `du`), **37.7 MB** for the whole cache including npm's content-addressable store.
+  `du`), **37.8 MB** for the whole cache including npm's content-addressable store (this
+  read 37.7 until 2026-08-25; all four cold runs that day printed 37.8).
 - `bantamkit-mcp` itself is **0.9 MB** of that (1.2 MB allocated). The rest is
   `@modelcontextprotocol/sdk@1.30.0`'s dependency tree, which pulls in `express`, `cors`,
   `body-parser`, `ajv`, `eventsource`, `hono` and `express-rate-limit` — the SDK's HTTP

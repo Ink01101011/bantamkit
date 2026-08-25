@@ -14,7 +14,8 @@ vacuous":
   POSITIVELY, against a sentinel that provably went into three different tools.
 * `test_the_server_refuses_to_start_without_the_status_manifest_entry` — the registration
   is read out of `assets/tools/`, so deleting the entry must stop the process rather than
-  quietly serve seven tools.
+  quietly serve seven tools. (served-tools: dated — "seven" is the surface as it stood
+  when this node was written; the node asserts a refusal, not a count.)
 """
 
 import asyncio
