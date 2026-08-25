@@ -28,7 +28,9 @@
  * A `ruling:` case proves the two sides DIFFER. It never proves either is right, and on its
  * own it is a licence for anything else in the same bytes to drift with it. So a ruling here
  * is meant to sit beside an unruled case that holds the rest of those bytes still. This suite
- * emits 24 rulings; 23 have such a companion and ONE DOES NOT. All 24, by family:
+ * emits 24 rulings and ALL 24 NOW HAVE ONE — the twenty-fourth got its companion on
+ * 2026-08-25; see the `help-top/w40` entry below for what it took and what was wrong before.
+ * All 24, by family:
  *
  *   - 13 `…/stderr-raw`, one per prog-bearing shape in `ARGV_SHAPES`. Companion: that
  *     shape's `…/stderr`, the same stream compared after the substitution.
@@ -40,17 +42,35 @@
  *   - 2 `…/remediation-line-raw`, on `lint`'s `try: …` and `compact`'s `restore one with: …`.
  *     Companion: `…/remediation-line`, the same line substituted — and the whole sentence
  *     rides again inside the unruled `…/transcript` of every scenario that prints it.
- *   - 1 `help-top/w40/usage-block`, carrying `BRANCH_SPLIT_RULING`. NO COMPANION: nothing
- *     here compares those bytes unruled. `usage-block-compensated` is emitted only in the
- *     `width === 80` branch, and `…/w40/body` begins at the first blank line, so it excludes
- *     the usage block by construction. MEASURED over a run of this suite — every ruled case's
- *     node-side bytes against the union of every unruled case's — the other 23 are covered
- *     whole and of this one's 120 bytes ZERO are covered by any unruled case here. What
- *     stands in its place is weaker, and is the pair `BRANCH_SPLIT_RULING` already argues
- *     from: at this same width the three SUB-PARSER forms are unruled and byte-identical,
- *     their longer progs putting both runtimes in argparse's flat branch. That says the
- *     split is a BAND the top parser alone falls out of rather than a second rendering
- *     algorithm — it does not pin the top parser's own 40-column bytes, and nothing does.
+ *   - 1 `help-top/w40/usage-block`, carrying `BRANCH_SPLIT_RULING`. Companion:
+ *     `help-top/w40/usage-block-compensated`, added 2026-08-25 and built the same way as the
+ *     w80 ones.
+ *
+ *     THIS ENTRY USED TO READ "NO COMPANION", and the reason given for that was wrong. It
+ *     said no compensation could exist at 40 because the reference sits in argparse's FLAT
+ *     branch there, where the indent no longer depends on prog, so widening the reference
+ *     would over-correct. What that overlooks is that widening is what MOVES THE REFERENCE
+ *     OUT OF THE FLAT BRANCH. The branch test is
+ *     `len(prefix) + len(prog) <= 0.75 * (COLUMNS - 2)`, and COLUMNS is the term the
+ *     compensation changes: at 40 the reference needs 33 columns against an allowance of
+ *     0.75 * 38 = 28.5 and goes flat, and at 40 + DELTA = 50 it needs 33 against
+ *     0.75 * 48 = 36 and hangs. So at the compensated width both sides are in the hanging
+ *     branch — the branch where the compensation is EXACT — and the blocks match byte for
+ *     byte. Verified by hand before the case was written, `COLUMNS=40` on the port against
+ *     `COLUMNS=50` on the reference, substituted and dedented by DELTA.
+ *
+ *     The emission condition is now `ruling` rather than `width === 80`, which is the
+ *     property that was actually wanted all along: a companion belongs wherever a ruling is.
+ *     Before it, MEASURED over a run of this suite — every ruled case's node-side bytes
+ *     against the union of every unruled case's — 23 rulings were covered whole and this
+ *     one's 120 bytes were covered by NOTHING. `…/w40/body` begins at the first blank line
+ *     and excludes the usage block by construction, so it never stood in.
+ *
+ *     `BRANCH_SPLIT_RULING`'s sibling argument still holds and is still worth keeping: at
+ *     this same width the three SUB-PARSER forms are unruled and byte-identical, their
+ *     longer progs putting both runtimes in the flat branch. That says the split is a BAND
+ *     the top parser alone falls out of rather than a second rendering algorithm. It is now
+ *     an argument standing beside a gate rather than in place of one.
  *
  * Everything else is UNRULED and compares the SAME bytes after the substitution — every
  * `…/stdout`, `…/stderr`, `…/body`, `…/transcript`, `…/tree`, `…/remediation-line` and
@@ -611,10 +631,31 @@ export async function run(ctx) {
         actual: { exit: node.exit, timedOut: node.timedOut },
       });
 
-      if (width === 80) {
+      if (ruling) {
         // The wrap, compared rather than ruled. See the header: widening the reference by
         // DELTA equalises the room left for the wrapped parts, and dedenting its
         // continuations by DELTA removes the one thing prog is allowed to move.
+        //
+        // THE CONDITION IS `ruling`, NOT `width === 80`, and that is the fix for the one
+        // hole this suite used to ship with. A ruling says "these bytes are allowed to
+        // differ"; the companion is what keeps them from differing in some OTHER way, so
+        // the companion belongs wherever the ruling is — which is the four forms at 80 AND
+        // `help-top` at 40. Under `width === 80` the w40 ruling had no companion at all
+        // and 120 of its 120 bytes were compared by nothing.
+        //
+        // The header used to argue no compensation could exist at 40, on the grounds that
+        // the reference is in argparse's FLAT branch there and widening over-corrects an
+        // indent that no longer depends on prog. MEASURED 2026-08-25, and the premise is
+        // wrong: widening by DELTA moves the reference OUT of the flat branch and back
+        // into the hanging one, because the branch test is
+        // `len(prefix) + len(prog) <= 0.75 * (COLUMNS - 2)` and COLUMNS is what changed.
+        // At 40 the reference needs 33 against a 0.75 * 38 = 28.5 allowance and goes flat;
+        // at 50 it needs 33 against 0.75 * 48 = 36 and hangs. So the compensated case is
+        // in exactly the branch where the compensation is exact, and it matches.
+        //
+        // Note this deliberately does NOT emit at `help-status|compact|restore` @40: those
+        // are unruled there, both sides sit in the flat branch, and their plain
+        // `usage-block` case already compares the bytes with no compensation at all.
         const [wide] = runPy(ctx, [{ argv, cwd, env: envFor(width + DELTA) }]);
         cases.push({
           name: `${label}/w${width}/usage-block-compensated`,
@@ -826,21 +867,25 @@ export async function run(ctx) {
       'sys.stdout.buffer the way mcpreport does: argparse writes 19 of the 27 measured CRLFs ' +
       'into those two streams BY NAME, from frames no call site in __main__.py owns, so a ' +
       'sweep of the print() calls would have fixed 8 and left 19. the stream translates, so ' +
-      'the stream was fixed. the transcript cases here are no longer the ones at risk. WHAT ' +
-      'STILL IS: the store\'s DISK writes, which are a different layer and are NOT fixed. ' +
-      'store.py\'s _rebuild_index and _write_fact both go through write_text with ' +
-      'newline=None, so on Windows every line of index.md and of every fact file the ' +
-      'reference writes lands as CRLF while the port writes LF. in THIS suite that difference ' +
-      'is carried by the /tree cases — manifest() compares each file\'s bytes, base64, not a ' +
-      'digest — in every scenario whose steps make the reference write at all. this suite ' +
-      'still does NOT normalise newlines: ref/cli_ref.py states that rule for this directory. ' +
-      'MEASURED, by performing what newline=None does on Windows: a 1-line index.md goes ' +
-      '49 -> 50 bytes and a 10-line fact file 137 -> 147, one byte per line. on REAL Windows ' +
-      'the sibling store suite\'s tree cases fail for exactly this — GitHub run 32645443625, ' +
-      'job 97208893561, 132 failures, the `store/... — tree` family. this suite has never ' +
-      'itself run on a Windows cell: that run predates it (4229 cases against this branch\'s ' +
-      '4831), so what is named here is the mechanism and the sibling\'s measurement, not a ' +
-      'memorycli observation. still handed back, still not ruled.',
+      'the stream was fixed. the transcript cases here are no longer the ones at risk. ' +
+      'AMENDED 2026-08-25 — THE REST OF THIS NOTE WAS OUT OF DATE AND IS CORRECTED HERE. it ' +
+      'said "WHAT STILL IS: the store\'s DISK writes ... on Windows every line ... the ' +
+      'reference writes lands as CRLF while the port writes LF", and the second half of that ' +
+      'has not been true since the CRLF ruling was REVERSED. runtime-ts writes through ' +
+      'pyfs.pyWriteText -> pyNewlineOut, which is CRLF on win32 and a no-op elsewhere: ' +
+      'CPython\'s newline=None translation, deliberately reproduced. BOTH runtimes translate, ' +
+      'so the /tree cases here compare equal bytes on Windows too and there is no divergence ' +
+      'left for them to carry. the 132 failures at GitHub run 32645443625, job 97208893561, ' +
+      'the `store/... — tree` family, are REAL and are HISTORY: that run predates the ' +
+      'reversal, which codec.mjs made off run 32646521489 where the LF ruling measured out at ' +
+      '83 of 132. this suite has never itself run on a Windows cell (that run is 4229 cases ' +
+      'against this branch\'s 4831), so it has no Windows observation of its own either way. ' +
+      'WHAT IS ACTUALLY LEFT is not a divergence at all: both sides count the index budget on ' +
+      'the LF text and neither stats index.md, so on Windows the file on disk is one byte per ' +
+      'line longer than the number either runtime checks — identically, on both. that is the ' +
+      'design (a store is judged the same number on every machine that opens it) and the ' +
+      'sibling store suite\'s notes carry the full argument. this suite still does NOT ' +
+      'normalise newlines: ref/cli_ref.py states that rule for this directory.',
   );
   notes.push(
     'HANDED BACK, FIXED, AND NOW A WINDOWS-ONLY GUARD (3/3): compact no longer moves an ' +
