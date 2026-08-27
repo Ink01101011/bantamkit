@@ -404,9 +404,9 @@ function runTool(
       // and never a grant or the profile layer. The status is the store's own decision
       // (`archived` when the archive list is non-empty, `nothing-archived` otherwise), never
       // a match on the reply.
-      let reserve = asInt(args.get('reserve'));
-      // The advertised schema's floor; clients may ignore it, so the server does not.
-      if (reserve !== null) reserve = Math.max(0, reserve);
+      const reserve = asInt(args.get('reserve'));
+      // No floor here: `MemoryStore.compact` clamps `reserve` to `[0, budget/2]` itself, as
+      // the reference's does, so a negative value is handled where the arithmetic lives.
       const outcome = recordRaise(log, 'memory_compact', () => memory.compactOutcome(reserve));
       log.record('memory_compact', outcome.status, {
         archived: outcome.archived,

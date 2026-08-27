@@ -17,10 +17,11 @@
  * THE LIFECYCLE OPS ARE HERE NOW, AND WHY THEY WERE NOT
  * -----------------------------------------------------
  * `compact`, `restore`, `archived`, `lint` and `_staleness_key` used to be listed here as
- * DELIBERATELY MISSING, on a prep probe that traced a real stdio server through all eight
- * tools, both resource templates and every error arm and found none of them reachable. That
- * trace was true and it is still true: no MCP tool calls any of them, because
- * `docs/memory.md` rules that lifecycle is an operator decision, not a model decision.
+ * DELIBERATELY MISSING, on a prep probe that traced a real stdio server through the tools
+ * it served at the time (served-tools: dated), both resource templates and every error arm
+ * and found none of them reachable. That trace was true when taken. Since job42, `compact`
+ * IS reachable from the wire — `memory_compact` is the ninth tool — while `restore`,
+ * `archived` and `lint` remain operator-only, as `docs/memory.md` rules.
  *
  * What the trace could not see is the OTHER surface. `runtime-py` gives the operator that
  * decision at `python -m bantamkit.memory`; `runtime-ts` gave them nothing, so an operator

@@ -753,8 +753,10 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         the store's own decision (`archived` when the archive list is non-empty,
         `nothing-archived` otherwise), never a match on the reply.
         """
-        if reserve is not None:
-            reserve = max(0, reserve)  # the advertised schema's floor; clients may ignore it
+        # No floor here: `MemoryStore.compact` clamps `reserve` to `[0, budget // 2]`
+        # itself, so a negative value from a client that ignored the schema is already
+        # handled where the arithmetic lives, and a second clamp would be a second thing
+        # to keep equal across the two runtimes.
         with _record_raise(log, "memory_compact"):
             outcome = memory.compact_outcome(reserve)
         log.record(
