@@ -601,7 +601,7 @@ export async function run(ctx) {
    * the budget itself), `9999` (capped at half the budget, 160, which the three survivors'
    * lines reach by equality, so two more leave — `compact-b` and `-c`, the first two names
    * among five equally-stale facts — and the archive holds `-a`, `-b`, `-c`), a negative
-   * (floored to 0 by the handler — the manifest's `minimum: 0` is advisory to the client),
+   * (clamped to 0 by `MemoryStore.compact` on both sides — the manifest's `minimum: 0` is advisory to the client),
    * `2.5` (`int_from_float`), `'notanint'` (`int_parsing`), `true` (lax `int`, so 1),
    * `null` (the default), `'3.0'` (lax again), no `arguments` at all, and an extra key.
    *
