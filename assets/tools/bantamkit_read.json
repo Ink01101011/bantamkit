@@ -1,0 +1,47 @@
+{
+  "name": "bantamkit_read",
+  "description": "Read a document through a program, never its raw bytes. Call with `path` alone for the manifest: the file's kind, every part (sheet, body, page) with its row count and byte size, and every omission the reader had to make (embedded images, blank rows, unmapped glyphs, unread pages). Then call with `part` (and `offset`) to page rows; row 0 is the header and each page ends with a continuation line naming the next offset or the end of the part. Do not page through a part to find a row: estimate its offset from the row count and jump. Supported kinds: text/markdown/code, docx, xlsx, html, mhtml; pdf on the Python server only. The Node server refuses pdf, doc and rtf until its reader is ported. A refusal names what the reader actually saw in the file rather than the format's error.",
+  "surfaces": [
+    "mcp"
+  ],
+  "parameters": {
+    "type": "object",
+    "required": [
+      "path"
+    ],
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Path to the document, absolute or relative to the server's working directory"
+      },
+      "part": {
+        "type": "string",
+        "description": "Part name as the manifest reports it (a sheet name, \"body\", a page); omit to get the manifest"
+      },
+      "offset": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "Row number of the first row to return; default 0"
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200,
+        "description": "How many rows; default 50, a 3072-byte page ceiling may return fewer"
+      }
+    }
+  },
+  "output_schema": {
+    "properties": {
+      "result": {
+        "title": "Result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "result"
+    ],
+    "type": "object",
+    "title": "bantamkit_readOutput"
+  }
+}

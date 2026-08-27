@@ -37,7 +37,7 @@ sides, not by reading either.
 | `statusline` | `--statusline` as a process, over synthetic event logs ([statusline.md](statusline.md)) |
 | `store` | save/recall/index: the directory after the call, byte for byte |
 | `validate` | the validator: every sentence a schema failure can produce |
-| `wire` | the MCP surface: nine tools, one prompt, two templates, and the frames themselves |
+| `wire` | the MCP surface: ten tools, one prompt, two templates, and the frames themselves |
 
 `cli`, `mcpreport`, `memorycli` and `statusline` are the odd ones out and deliberately so:
 every other suite compares two library functions, and that comparison cannot see which stream
