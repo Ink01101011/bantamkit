@@ -1,5 +1,5 @@
 /**
- * The MCP surface: the nine tools, the two resource templates, and the wire.
+ * The MCP surface: the ten tools, the two resource templates, and the wire.
  *
  * WHY MOST OF THIS DRIVES A REAL PROCESS RATHER THAN CALLING A HANDLER. Everything this
  * unit adds lives in the gap between a handler's return value and the bytes on stdout —
@@ -17,11 +17,13 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
+
+import { docxBytes, inlineCell, para, row, xlsxBytes } from './docread-fixtures.mjs';
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = dirname(packageRoot);
@@ -148,9 +150,9 @@ test('the agent-only tools are absent from tools/list and unknown to tools/call'
     { args: ['--store', freshStore()] },
   );
   const names = byId(lines, 2).result.tools.map((t) => t.name);
-  // Registration order IS served order, so `bantamkit_status` was appended and `memory_compact`
-  // after it, and the other eight stay exactly where they were. A list that reordered would be
-  // a wire change nobody asked for.
+  // Registration order IS served order, so `bantamkit_status` was appended, `memory_compact`
+  // after it and `bantamkit_read` after that, and the other nine stay exactly where they
+  // were. A list that reordered would be a wire change nobody asked for.
   assert.deepEqual(names, [
     'memory_save',
     'memory_recall',
@@ -161,6 +163,7 @@ test('the agent-only tools are absent from tools/list and unknown to tools/call'
     'build_identity',
     'bantamkit_status',
     'memory_compact',
+    'bantamkit_read',
   ]);
   const refused = byId(lines, 3).result;
   assert.equal(refused.isError, true);
@@ -249,6 +252,232 @@ test('memory_compact refuses a non-integer reserve in pydantic\'s words', async 
     refused.content[0].text,
     'Error executing tool memory_compact: 1 validation error for memory_compactArguments\n' +
       'reserve\n' +
+      "  Input should be a valid integer, unable to parse string as an integer [type=int_parsing, input_value='2.5', input_type=str]\n" +
+      '    For further information visit https://errors.pydantic.dev/2.13/v/int_parsing',
+  );
+});
+
+// ================================================== bantamkit_read over the wire
+
+/**
+ * The reader on the MCP surface (job43), off the wire, through the tool. Every expected
+ * string below is one `runtime-py/tests/test_bantamkit_read_tool.py` asserts against the
+ * Python server over the same fixture bytes, so a node that goes red here is a byte the two
+ * servers disagree on. The fixtures are built by `docread-fixtures.mjs` the way the Python
+ * ones are built by `zipfile`; no binary is committed.
+ */
+const readCall = (id, args) => call(id, 'bantamkit_read', args);
+
+/** `notes.md`: a title, a blank, two lines and 80 wide rows — 84 rows, the Python fixture. */
+function markdownFixture(dir, rows = 80) {
+  const path = join(dir, 'notes.md');
+  const body = Array.from({ length: rows }, (_, i) => `row ${i} ${'x'.repeat(60)}`).join('\n');
+  writeFileSync(path, `# Title\n\nline one\nline two\n${body}\n`);
+  return path;
+}
+
+/** `book.xlsx`: a `Sales` sheet of three rows and an `Empty` one — the Python fixture. */
+function workbookFixture(dir) {
+  const path = join(dir, 'book.xlsx');
+  const sales =
+    row([inlineCell('A1', 'name'), inlineCell('B1', 'qty')]) +
+    row([inlineCell('A2', 'apple'), inlineCell('B2', '3')], 2) +
+    row([inlineCell('A3', 'pear'), inlineCell('B3', '5')], 3);
+  writeFileSync(path, xlsxBytes([['Sales', 'worksheets/sheet1.xml', sales], ['Empty', 'worksheets/sheet2.xml', '']]));
+  return path;
+}
+
+async function readOne(args, opts = {}) {
+  const { lines, stderr } = await session([INIT, INITIALIZED, readCall(2, args)], {
+    args: ['--store', freshStore()],
+    ...opts,
+  });
+  assert.equal(stderr, '');
+  const answer = byId(lines, 2).result;
+  assert.equal(answer.isError, false, answer.content[0].text);
+  // A `-> str` tool: the raw string is the unstructured half and `{ result }` the structured.
+  assert.equal(answer.content[0].text, answer.structuredContent.result);
+  return answer.content[0].text;
+}
+
+test('bantamkit_read: the manifest over a markdown file is the eval pair\'s manifest with the path', async () => {
+  const dir = freshStore();
+  const path = markdownFixture(dir);
+  assert.equal(
+    await readOne({ path }),
+    [
+      `${path} (text) part 0 "document": 84 rows, numbered 0 to 83`,
+      '  row 0 is the header: # Title',
+      '  row 1 is the first data row: ',
+      `  row 83 is the last data row: row 79 ${'x'.repeat(60)}`,
+    ].join('\n'),
+  );
+});
+
+test('bantamkit_read: the manifest over a docx names its one part', async () => {
+  const dir = freshStore();
+  const path = join(dir, 'memo.docx');
+  writeFileSync(path, docxBytes(para('Hello') + para('World')));
+  assert.equal(
+    await readOne({ path }),
+    [
+      `${path} (docx) part 0 "document": 2 rows, numbered 0 to 1`,
+      '  row 0 is the header: Hello',
+      '  row 1 is the first data row: World',
+    ].join('\n'),
+  );
+});
+
+test('bantamkit_read: the manifest over an xlsx lists every sheet including an empty one', async () => {
+  const dir = freshStore();
+  const path = workbookFixture(dir);
+  assert.equal(
+    await readOne({ path }),
+    [
+      `${path} (xlsx) part 0 "Sales": 3 rows, numbered 0 to 2`,
+      '  row 0 is the header: name\tqty',
+      '  row 1 is the first data row: apple\t3',
+      '  row 2 is the last data row: pear\t5',
+      `${path} (xlsx) part 1 "Empty": 0 rows, numbered 0 to -1`,
+    ].join('\n'),
+  );
+});
+
+test('bantamkit_read: a relative path resolves against the server cwd and is echoed as given', async () => {
+  const dir = freshStore();
+  markdownFixture(dir);
+  const reply = await readOne({ path: 'notes.md' }, { cwd: dir });
+  assert.ok(reply.startsWith('notes.md (text) part 0 "document": 84 rows, numbered 0 to 83\n'), reply);
+});
+
+test('bantamkit_read: a page carries its rows numbered and the continuation line names this tool', async () => {
+  const path = markdownFixture(freshStore());
+  assert.equal(
+    await readOne({ path, part: 'document', limit: 3 }),
+    [
+      `${path} "document" rows 0-2 of 84; each line below begins with its own row number`,
+      '0\t# Title',
+      '1\t',
+      '2\tline one',
+      'more rows follow: call bantamkit_read again with offset=3',
+    ].join('\n'),
+  );
+});
+
+test('bantamkit_read: the last page ends with the last-row sentence', async () => {
+  const path = markdownFixture(freshStore());
+  assert.equal(
+    await readOne({ path, part: 'document', offset: 82 }),
+    [
+      `${path} "document" rows 82-83 of 84; each line below begins with its own row number`,
+      `82\trow 78 ${'x'.repeat(60)}`,
+      `83\trow 79 ${'x'.repeat(60)}`,
+      'that was the last row of "document"',
+    ].join('\n'),
+  );
+});
+
+test('bantamkit_read: a part may be named by its index and the page reports its name', async () => {
+  const path = workbookFixture(freshStore());
+  const reply = await readOne({ path, part: '0', offset: 2 });
+  assert.equal(reply.split('\n')[0], `${path} "Sales" rows 2-2 of 3; each line below begins with its own row number`);
+  assert.ok(reply.endsWith('\nthat was the last row of "Sales"'), reply);
+});
+
+test('bantamkit_read: the page ceiling is 3072 bytes and a cut row is reported out of band', async () => {
+  const dir = freshStore();
+  const path = join(dir, 'wide.txt');
+  writeFileSync(path, `h\n${'y'.repeat(5000)}\nz\n`);
+  const lines = (await readOne({ path, part: 'document', offset: 1, limit: 2 })).split('\n');
+  assert.equal(lines[1], `1\t${'y'.repeat(3072)}`);
+  assert.equal(lines[2], 'row 1 was too long for one page and was cut: 1928 bytes dropped');
+  assert.equal(lines[3], 'more rows follow: call bantamkit_read again with offset=2');
+});
+
+test('bantamkit_read: limit is clamped to 200 and offset to zero the way memory_recall clamps k', async () => {
+  const dir = freshStore();
+  const path = join(dir, 'short.txt');
+  writeFileSync(path, `${Array.from({ length: 400 }, (_, i) => `r${i}`).join('\n')}\n`);
+  const lines = (await readOne({ path, part: 'document', offset: -4, limit: 900 })).split('\n');
+  assert.ok(lines[0].startsWith(`${path} "document" rows 0-199 of 400;`), lines[0]);
+  assert.equal(lines.length, 202); // header, 200 rows, continuation
+  assert.equal(lines[lines.length - 1], 'more rows follow: call bantamkit_read again with offset=200');
+});
+
+test('bantamkit_read: an offset past the end is refused with the eval pair\'s sentence', async () => {
+  const path = markdownFixture(freshStore());
+  assert.equal(
+    await readOne({ path, part: 'document', offset: 84 }),
+    'error: offset 84 is past the end of "document", which has 84 rows numbered 0 to 83',
+  );
+});
+
+test('bantamkit_read: an unknown part is refused by naming the file and what it has', async () => {
+  const path = workbookFixture(freshStore());
+  assert.equal(await readOne({ path, part: 'Nope' }), `error: no part named "Nope" in ${path}; it has: Sales, Empty`);
+});
+
+test('bantamkit_read: a missing path is a document_error, not an exception on the wire', async () => {
+  const path = join(freshStore(), 'missing.txt');
+  assert.equal(await readOne({ path }), `error: no such file: ${path}`);
+});
+
+test('bantamkit_read: a directory is refused in the reader\'s words', async () => {
+  const dir = freshStore();
+  assert.equal(await readOne({ path: dir }), `error: ${dir} is a directory, not a document`);
+});
+
+test('bantamkit_read: a binary file is refused by naming what the reader saw', async () => {
+  const path = join(freshStore(), 'blob.bin');
+  writeFileSync(path, Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n', 'latin1'), Buffer.alloc(200)]));
+  assert.equal(
+    await readOne({ path }),
+    'error: cannot read blob.bin: it is a png file, 208 bytes on disk. this reader reads ' +
+      'text, xlsx, docx, pdf, html and mhtml directly, and doc and rtf through /usr/bin/textutil',
+  );
+});
+
+test('bantamkit_read: a pdf is refused with the Node server\'s own sentence, which is a ruling', async () => {
+  // `docs/porting.md`: the Python server reads pdf; this one names the port that is missing.
+  // The sentence is compared to the reference's by `tools/conformance/suites/wire.mjs` as a
+  // `ruling:` case, which is required to keep DIFFERING.
+  const path = join(freshStore(), 'paper.pdf');
+  const bytes = Buffer.from('%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<<>>\nendobj\n%%EOF\n', 'latin1');
+  writeFileSync(path, bytes);
+  assert.equal(
+    await readOne({ path }),
+    `error: cannot read paper.pdf: it is a PDF document (PDF-1.7), ${bytes.length} bytes on disk. pdf is not ` +
+      'readable by the Node server yet (the Python server reads it); see docs/porting.md',
+  );
+});
+
+test('bantamkit_read: a permission error is a document_error carrying the OS text', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async () => {
+  const path = markdownFixture(freshStore());
+  chmodSync(path, 0);
+  let reply;
+  try {
+    reply = await readOne({ path });
+  } finally {
+    chmodSync(path, 0o600);
+  }
+  // CPython's `str(PermissionError)` out of `open()`: `[Errno 13] Permission denied: '<path>'`,
+  // rebuilt by `asPyOSError` off libuv's EACCES.
+  assert.equal(reply, `error: [Errno 13] Permission denied: '${path}'`);
+});
+
+test('bantamkit_read refuses a non-string path and a non-integer limit in pydantic\'s words', async () => {
+  const { lines } = await session([INIT, INITIALIZED, readCall(2, { path: 123, limit: '2.5' })], {
+    args: ['--store', freshStore()],
+  });
+  const refused = byId(lines, 2).result;
+  assert.equal(refused.isError, true);
+  assert.equal(
+    refused.content[0].text,
+    'Error executing tool bantamkit_read: 2 validation errors for bantamkit_readArguments\n' +
+      'path\n' +
+      '  Input should be a valid string [type=string_type, input_value=123, input_type=int]\n' +
+      '    For further information visit https://errors.pydantic.dev/2.13/v/string_type\n' +
+      'limit\n' +
       "  Input should be a valid integer, unable to parse string as an integer [type=int_parsing, input_value='2.5', input_type=str]\n" +
       '    For further information visit https://errors.pydantic.dev/2.13/v/int_parsing',
   );
@@ -378,7 +607,7 @@ test('build_identity names its runtime and refuses to be compared across lineage
   const id = byId(lines, 2).result.structuredContent;
   assert.equal(id.runtime, 'node');
   assert.equal(id.server_name, 'bantamkit');
-  assert.equal(id.assets_files, 85);
+  assert.equal(id.assets_files, 86);
   assert.match(id.assets_digest, /^sha256:[0-9a-f]{64}$/);
   assert.match(id.code_digest, /^sha256:[0-9a-f]{64}$/);
   assert.match(id.build_id, /^sha256:[0-9a-f]{64}$/);
@@ -481,7 +710,7 @@ test('--assets-root still answers, and it is the only thing that prints outside 
   const { lines, code } = await session([], { args: ['--assets-root'] });
   assert.equal(code, 0);
   assert.equal(lines[0], ASSETS);
-  assert.equal(lines[1], '85 files');
+  assert.equal(lines[1], '86 files');
 });
 
 // ================================================= the pydantic-shaped argument refusals
@@ -661,7 +890,7 @@ test('a healthy server reports Active, and the report is the five lines docs/sta
   assert.equal(rows.length, 5, report);
   assert.equal(rows[0], REPORT_LINE_1_ACTIVE);
   assert.match(rows[1], /^version \d+\.\d+\.\d+, build sha256:[0-9a-f]{64}$/);
-  assert.equal(rows[2], 'serving 9 tools, 1 prompt, 2 resource templates');
+  assert.equal(rows[2], 'serving 10 tools, 1 prompt, 2 resource templates');
   assert.equal(rows[3], `memory: 1 fact in the project store, index ${INDEX_BYTES} of ${HEALTHY_BUDGET} bytes`);
   assert.equal(rows[4], 'event log: off');
   // The unstructured half is the RAW string, not the JSON — `bantamkit_status` is a `-> str`

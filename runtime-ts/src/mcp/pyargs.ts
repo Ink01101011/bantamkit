@@ -94,6 +94,18 @@ export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
   // client; nothing here floors it — a negative value reaches `MemoryStore.compact`, whose
   // `max(0, min(reserve, budget // 2))` is the only clamp on either side (6b966e5).
   memory_compact: { model: 'memory_compactArguments', fields: [opt('reserve', 'int')] },
+  // `bantamkit_read(path: str, part: str | None = None, offset: int | None = None,
+  // limit: int | None = None)` on the reference (job43). `path` and `part` are the strict
+  // `str` every other string field is — `123` is `string_type`, measured for `memory_save`
+  // and the same validator. `offset` and `limit` are the lax `int` that `k` and `reserve`
+  // are: `'2'`, `True` and `3.0` validate, `'2.5'` is `int_parsing`, `2.5` is
+  // `int_from_float`, and an explicit `null` is the default. The manifest's `minimum` and
+  // `maximum` are advisory to the client; the handler clamps `limit` to `[1, 200]` and
+  // `offset` to `>= 0` itself, the way `memory_recall` clamps `k`.
+  bantamkit_read: {
+    model: 'bantamkit_readArguments',
+    fields: [req('path', 'str'), opt('part', 'str'), opt('offset', 'int'), opt('limit', 'int')],
+  },
 };
 
 /** `type(value).__name__`, for the `input_type=` half of the sentence. */
