@@ -33,6 +33,18 @@ Idea 1 (compaction-aware read gate), 2 (Stop-hook reflection into the validated 
 (precision-capped SessionStart/UserPromptSubmit injection) from the ranked list below landed
 as `tools/hooks/bantamkit-hook.mjs`. Profile layer seeded with 20 feedback/user facts.
 
+## Built 2026-08-27 — `memory_compact` (#7), branch `feat/memory-compact-tool`
+
+`memory_compact` is served ninth by both runtimes (9fc8607 runtime-py, 2c208f4 runtime-ts),
+and `memory_save`'s refused-budget reply now ends by naming it. Measured: both launchers
+answer `tools/list` with nine tools (`test_served_tool_count_records.py`), and
+`node tools/conformance/run.mjs --all` compares the story end to end — refusal, compaction,
+retry, every shape of `reserve`, the event-log records — in 33 new `wire` cases
+(195 -> 228 in the suite, 4841 -> 4874 overall, 0 failures). The hook still compacts at 90 %
+of budget on its own; the tool is the on-refusal path the model reaches itself. The
+"refused-budget saves per week" number is not measured yet — it needs the event log on in a
+real session, which is #4's territory.
+
 ## Ranked backlog — (gain) / (build cost)
 
 | # | Idea | Mechanism | Measure it by |
@@ -40,7 +52,7 @@ as `tools/hooks/bantamkit-hook.mjs`. Profile layer seeded with 20 feedback/user 
 | 4 | **Real token ledger from transcripts** | Parse `usage.input_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens` per turn from `~/.claude/projects/*/*.jsonl`, attribute to tool calls; surface in `bantamkit_status` and the statusline. | It *is* the measurement — retires every char/4 estimate in this repo. |
 | 5 | **Bounded consolidation ("dream") for the store** | Merge duplicates, absolutise dates, newer-wins on contradiction, emit a diff, hard cap on index bytes; run from a `SessionEnd`/cron, never a full rewrite (ACE). | Duplicate count and index bytes over time; recall top-1 identical before/after on a fixed query set. |
 | 6 | **Precision gate on injection** | Only inject a recall hit whose score clears a threshold; log hit → "was the name later passed to `memory_recall` or quoted?" | Hit rate per 100 injections; SWE-ContextBench says a low rate is a loss, so cut the threshold until it rises. |
-| 7 | **`memory_compact` as an MCP tool (both runtimes + conformance case)** | `Memory.compact()` exists at `component.py:486` and is written for a model; only registration is missing. The hook compacts today; the tool lets the model do it on refusal. | Refused-budget saves per week → 0. |
+| ~~7~~ | ~~**`memory_compact` as an MCP tool (both runtimes + conformance case)**~~ — built, see above | ~~`Memory.compact()` exists at `component.py:486` and is written for a model; only registration is missing.~~ The hook compacts at 90 %; the tool is the model's path on refusal. | Refused-budget saves per week → 0 (unmeasured until #4). |
 | 8 | **docread / filegraph as MCP tools** | The reader that clears 80 % on binary docs is reachable only from the Python `Agent`; expose `bantamkit_read(path, range)` returning head + skeleton + "expand" handle. Both runtimes, same schema. | Mean `tool_result` tokens per read of a pdf/docx. |
 | 9 | **PreCompact steering from the ledger** | Emit "preserve: files X, Y; open shiftwork unit Z" from the read ledger + checkpoint. | Post-compaction re-reads of files already read pre-compaction. |
 | 10 | **Repo map on demand (aider-style)** | tree-sitter defs → PageRank biased to the current unit's files → 1 K-token budget. Vendor "70×" graph numbers are [K]; build only after #4 shows discovery tokens dominate. | Discovery-phase tokens per unit. |

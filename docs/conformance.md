@@ -37,7 +37,7 @@ sides, not by reading either.
 | `statusline` | `--statusline` as a process, over synthetic event logs ([statusline.md](statusline.md)) |
 | `store` | save/recall/index: the directory after the call, byte for byte |
 | `validate` | the validator: every sentence a schema failure can produce |
-| `wire` | the MCP surface: eight tools, one prompt, two templates, and the frames themselves |
+| `wire` | the MCP surface: nine tools, one prompt, two templates, and the frames themselves |
 
 `cli`, `mcpreport`, `memorycli` and `statusline` are the odd ones out and deliberately so:
 every other suite compares two library functions, and that comparison cannot see which stream
@@ -105,8 +105,11 @@ that may not resolve. CI has no `.venv` at all, so the workflow writes
 ✔ store: 185 cases (97 json, 88 bytes), 0 differed
   note: [store] live index: 13472 bytes on disk, 13472 bytes rebuilt, 65 lines, 10528 bytes of headroom under the 24000 default
   ...
-PASS: 4834 cases, 1041 byte-identical, 3180 exact-string, 613 structural, 100 ruled-different, 0 failures
+PASS: 4874 cases, 1046 byte-identical, 3205 exact-string, 623 structural, 100 ruled-different, 0 failures
 ```
+
+(The totals are a sample from one run and move with the suites: `memory_compact` added 33 wire
+cases on 2026-08-27, 4841 -> 4874.)
 
 **The notes are part of the result, not decoration.** Several measurements this project
 depends on exist only there — the live index byte count, the corpus SHA on both sides, how

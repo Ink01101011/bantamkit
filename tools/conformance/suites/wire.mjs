@@ -38,12 +38,12 @@
  * evidence that OFF IS THE DEFAULT in both runtimes.
  */
 import { spawn } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const name = 'wire';
-export const summary = 'the MCP surface: eight tools, one prompt, two templates, and the frames themselves';
+export const summary = 'the MCP surface: nine tools, one prompt, two templates, and the frames themselves';
 
 const here = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = dirname(dirname(here));
@@ -345,6 +345,11 @@ export async function run(ctx) {
       callTool(2, 'memory_recall', { query: 'anything at all' }),
       callTool(3, 'memory_save', { type: 'feedback', name: 'layered', description: 'the layered path', body: 'body' }),
       callTool(4, 'memory_recall', { query: 'layered path' }),
+      // PRODUCTION SHAPE for `memory_compact` too: `Memory.layered` binds the profile layer
+      // (an empty scratch store under the redirected `HOME`) and the tool reaches only the
+      // writable project store. The `memory-compact` session below is where the store is
+      // actually driven over its budget; this call is the layered path answering at all.
+      callTool(5, 'memory_compact', {}),
     ],
   });
 
@@ -572,6 +577,57 @@ export async function run(ctx) {
   ], { argv: ['--store', store, '--index-budget', '20'], env: { ...baseEnv, [EVENT_LOG_ENV]: '1' } });
 
   /**
+   * `memory_compact`, the ninth tool, driven through the one story it exists for
+   * (`docs/memory.md`): a save is refused for budget, the refusal names the tool, the tool
+   * archives, the retry lands. Then every shape of `reserve`.
+   *
+   * THE BUDGET IS 320 BYTES AND THE LINES ARE ~53, measured on the reference before the
+   * session was written: five `compaction probe <word>` saves put `index.md` at 266 bytes;
+   * the sixth would make it 321 and is refused; the default `reserve` is the largest line
+   * the store holds (55), so the target is 265 and the 266-byte index is one byte over it —
+   * `memory_compact` archives exactly ONE fact, the stalest, and the retry fits. One byte
+   * either way on either side is a different reply and a different event-log record. The
+   * reply embeds `archive_dir`, an absolute path, which is why this suite runs both sides
+   * over the identical `${scratch}/store`.
+   *
+   * `reserve` then takes every shape `k` does in `argument-refusals`: `0` (the target is
+   * the budget itself), `9999` (capped at half the budget, 160, so two more leave and the
+   * archive holds `compact-a`, `-b`, `-c` — the three stalest, in save order), a negative
+   * (floored to 0 by the handler — the manifest's `minimum: 0` is advisory to the client),
+   * `2.5` (`int_from_float`), `'notanint'` (`int_parsing`), `true` (lax `int`, so 1),
+   * `null` (the default), `'3.0'` (lax again), no `arguments` at all, and an extra key.
+   *
+   * THE EVENT LOG IS ON for this session so the `archived` / `nothing-archived` records —
+   * the outcome the host collapses into "completed successfully" — are compared byte for
+   * byte below, `ts` masked, beside the fourth `save` outcome they answer.
+   */
+  add('memory-compact', [
+    INIT(),
+    INITIALIZED,
+    callTool(2, 'memory_compact', {}),
+    callTool(3, 'memory_save', { type: 'project', name: 'compact-a', description: 'compaction probe alpha', body: 'alpha' }),
+    callTool(4, 'memory_save', { type: 'project', name: 'compact-b', description: 'compaction probe bravo', body: 'bravo' }),
+    callTool(5, 'memory_save', { type: 'project', name: 'compact-c', description: 'compaction probe charlie', body: 'charlie' }),
+    callTool(6, 'memory_save', { type: 'project', name: 'compact-d', description: 'compaction probe delta', body: 'delta' }),
+    callTool(7, 'memory_save', { type: 'project', name: 'compact-e', description: 'compaction probe echo', body: 'echo' }),
+    callTool(8, 'memory_save', { type: 'project', name: 'compact-f', description: 'compaction probe foxtrot', body: 'foxtrot' }),
+    callTool(9, 'memory_compact', {}),
+    callTool(10, 'memory_save', { type: 'project', name: 'compact-f', description: 'compaction probe foxtrot', body: 'foxtrot' }),
+    callTool(11, 'memory_recall', { query: 'compaction probe alpha' }),
+    callTool(12, 'memory_compact', { reserve: 0 }),
+    callTool(13, 'memory_compact', { reserve: 9999 }),
+    callTool(14, 'memory_compact', { reserve: -5 }),
+    callTool(15, 'memory_compact', { reserve: 2.5 }),
+    callTool(16, 'memory_compact', { reserve: 'notanint' }),
+    callTool(17, 'memory_compact', { reserve: true }),
+    callTool(18, 'memory_compact', { reserve: null }),
+    callTool(19, 'memory_compact', { reserve: '3.0' }),
+    rpc(20, 'tools/call', { name: 'memory_compact' }),
+    callTool(21, 'memory_compact', { extra: 1 }),
+    callTool(22, 'memory_compact', { reserve: [1] }),
+  ], { argv: ['--store', store, '--index-budget', '320'], env: { ...baseEnv, [EVENT_LOG_ENV]: '1' } });
+
+  /**
    * `build_identity` gets a session of its own, and the split is the point being made.
    *
    * Its REPLY is not comparable — `runtime`, `code_digest`, `build_id` and the Python-only
@@ -633,6 +689,9 @@ export async function run(ctx) {
       // not set the variable and wrote a file anyway is the defect the default exists to
       // prevent, and it is only visible if the file is looked for unconditionally.
       eventlog: existsSync(eventlog) ? readFileSync(eventlog, 'utf8') : null,
+      // The fact files `memory_compact` moved: still on disk, out of the index. Listed for
+      // every session so a compaction that ran where none was asked for is visible too.
+      archive: existsSync(join(store, 'archive')) ? readdirSync(join(store, 'archive')).sort() : null,
     };
   }
 
@@ -852,6 +911,27 @@ export async function run(ctx) {
       kind: 'bytes',
       expected: maskTs(budgetLog.python.eventlog),
       actual: maskTs(budgetLog.node.eventlog),
+    });
+
+    /**
+     * `memory_compact`'s two outcomes, and the `detail` that carries the count as a number.
+     *
+     * The frames of the `memory-compact` session are compared above like any other; this is
+     * the RECORD, which `docs/eventlog.md` says is read off `CompactResult.archived` being
+     * empty or not and never off the reply. The sequence case names the call that moved.
+     */
+    const compactLog = results.get('memory-compact');
+    cases.push({
+      name: 'eventlog: memory_compact records archived / nothing-archived, with only `ts` masked',
+      kind: 'bytes',
+      expected: maskTs(compactLog.python.eventlog),
+      actual: maskTs(compactLog.node.eventlog),
+    });
+    cases.push({
+      name: 'eventlog: the (tool, outcome) sequence of the memory-compact session',
+      kind: 'json',
+      expected: outcomesOf(compactLog.python.eventlog),
+      actual: outcomesOf(compactLog.node.eventlog),
     });
 
     /**
@@ -1080,6 +1160,74 @@ export async function run(ctx) {
     );
   }
 
+  // ------------------------------------------------ memory_compact, held to its own story
+
+  /**
+   * PER SIDE, NOT DIFFERENTIAL, like the status block above: the frame comparisons prove the
+   * two runtimes agree, and these prove each is RIGHT about the four things the tool is for.
+   * Two runtimes that both archived nothing, or both refused nothing, would agree and fail
+   * nothing above.
+   *
+   *   - the sixth save is refused for budget and the refusal NAMES the tool (`docs/memory.md`:
+   *     the last sentence is the model's remedy, everything before it the operator's);
+   *   - the compaction after it archives exactly one fact, the stalest, and says which;
+   *   - the retry of the refused save then lands;
+   *   - what the reply says moved is what is on disk under `archive/`, and NOTHING else in
+   *     this suite wrote there — archived is not deleted, and a compaction nobody asked for
+   *     is the defect that would show up as a listing from a session not named here.
+   */
+  {
+    const frameOf = (side, id) =>
+      side.frames
+        .map((line) => {
+          try {
+            return JSON.parse(line);
+          } catch {
+            return null;
+          }
+        })
+        .find((frame) => frame !== null && frame.id === id) ?? null;
+    const textOf = (side, id) => frameOf(side, id)?.result?.content?.[0]?.text ?? '';
+    for (const [label, key] of [
+      ['the reference', 'python'],
+      ['the port', 'node'],
+    ]) {
+      const side = results.get('memory-compact')[key];
+      const refused = textOf(side, 8);
+      const compacted = textOf(side, 9);
+      const retried = textOf(side, 10);
+      cases.push({
+        name: `memory_compact: ${label} refuses the sixth save for budget and the refusal names the tool`,
+        kind: 'string',
+        expected: 'refused for budget, names `memory_compact`, then archived 1, then saved',
+        actual:
+          `${refused.startsWith('error: memory index is ') ? 'refused for budget' : 'not refused'}, ` +
+          `${refused.includes('call `memory_compact`') ? 'names `memory_compact`' : 'does not name the tool'}, ` +
+          `then ${compacted.startsWith('archived 1 memories;') ? 'archived 1' : compacted.split(':')[0]}, ` +
+          `then ${retried === "saved 'compact-f'" ? 'saved' : retried.split(' ')[0]}`,
+      });
+      const named = [...compacted.matchAll(/^- (\S+) \(/gm)].map((m) => m[1]);
+      cases.push({
+        name: `memory_compact: ${label} archived the stalest fact and it is on disk, out of the index`,
+        kind: 'json',
+        expected: { archived: ['compact-a'], recall_finds_it: false },
+        actual: { archived: named, recall_finds_it: textOf(side, 11).includes('compact-a') },
+      });
+      // The store creates an empty `archive/` when it opens, on both sides; a LISTING is
+      // what compaction leaves, so an empty directory is "did not compact".
+      const wroteArchive = sessions
+        .filter((spec) => (results.get(spec.name)[key].archive ?? []).length > 0)
+        .map((spec) => `${spec.name}: ${results.get(spec.name)[key].archive.join(',')}`);
+      cases.push({
+        name: `memory_compact: ${label} wrote \`archive/\` in the sessions that compacted and no other`,
+        kind: 'json',
+        expected: ['memory-compact: compact-a.md,compact-b.md,compact-c.md'],
+        actual: wroteArchive,
+      });
+    }
+    notes.push(`memory_compact (node): ${textOf(results.get('memory-compact').node, 9).split('\n')[0]}`);
+  }
+
   // --------------------------------------------------- the SDK-lineage rulings, in full
 
   {
@@ -1165,8 +1313,9 @@ export async function run(ctx) {
         'inputSchema, name, outputSchema` where the pydantic model dumps `name, title, ' +
         'description, inputSchema, ...`; `memory_save` and `memory_recall` arrive with ' +
         '`inputSchema` as `properties, required, type` where their manifests say `type, ' +
-        'required, properties`; and the other five, whose manifests already read `properties, ' +
-        'required, type[, title]`, arrive unchanged. `Tool.input_schema` is a plain ' +
+        'required, properties`; `memory_compact` arrives as `properties, type` where its ' +
+        'manifest says `type, properties`; and the other six, whose manifests already read ' +
+        '`properties, required, type[, title]`, arrive unchanged. `Tool.input_schema` is a plain ' +
         '`dict[str, Any]` and `ListToolsResult(...).model_dump_json(by_alias=True, ' +
         'exclude_unset=True)` was measured to PRESERVE manifest order, so the reordering is ' +
         'downstream of the model and has no seam this package can reach. The port serves the ' +
