@@ -93,7 +93,7 @@ def test_the_status_tool_is_served_and_answers_active_on_a_healthy_server(tmp_pa
     assert lines[0] == HEALTHY_LINE
     assert len(lines) == 5, report
     assert lines[1].startswith("version ") and ", build sha256:" in lines[1]
-    assert lines[2] == "serving 8 tools, 1 prompt, 2 resource templates"
+    assert lines[2] == "serving 9 tools, 1 prompt, 2 resource templates"
     assert lines[3] == "memory: 0 facts in the project store, index 0 of 24000 bytes"
     assert lines[4] == "event log: off"
 
@@ -146,7 +146,8 @@ def test_the_advertised_counts_the_report_prints_are_the_counts_on_the_wire(tmp_
 def test_the_server_refuses_to_start_without_the_status_manifest_entry(tmp_path, monkeypatch):
     """NON-VACUITY 4: the tool comes from the asset pack, not from a Python constant.
 
-    RED FIRST, by mutation: with `_from_manifest(bantamkit_status, "bantamkit_status")`
+    RED FIRST, by mutation (served-tools: dated — measured at eight tools): with
+    `_from_manifest(bantamkit_status, "bantamkit_status")`
     replaced by a decorator-style registration, this node passed the pack ALREADY MUTATED —
     the server started, served eight tools, and no manifest was read. As written, deleting
     one file stops the process.

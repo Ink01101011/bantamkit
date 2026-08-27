@@ -47,7 +47,8 @@ census counts like any other: a gate exempt from itself is a gate with a hole
 shaped like its own documentation. A claim phrased outside the pattern is not
 caught, and that is a known hole rather than a hidden one.
 
-NON-VACUITY, measured 2026-08-25 by mutating BOTH OPERANDS in turn and reverting:
+NON-VACUITY, measured 2026-08-25 by mutating BOTH OPERANDS in turn and reverting
+(served-tools: dated — the surface was eight then; `memory_compact` made it nine):
 
   * the RECORD side — `serving 8 tools` -> `serving 7 tools` in `docs/status.md`:
     RED, naming `docs/status.md:46` and `:56`, "says 7, served is 8".

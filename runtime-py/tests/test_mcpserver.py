@@ -57,6 +57,7 @@ def test_lists_exactly_the_eight_tools(tmp_path):
             assert names == [
                 "bantamkit_status",
                 "build_identity",
+                "memory_compact",
                 "memory_recall",
                 "memory_save",
                 "shiftwork_clock_in",
@@ -447,6 +448,7 @@ def test_stdio_subprocess_initializes(tmp_path):
                 assert sorted(t.name for t in tools.tools) == [
                     "bantamkit_status",
                     "build_identity",
+                    "memory_compact",
                     "memory_recall",
                     "memory_save",
                     "shiftwork_clock_in",
@@ -501,6 +503,7 @@ def test_module_entrypoint_serves_over_stdio(tmp_path):
                 assert sorted(t.name for t in tools.tools) == [
                     "bantamkit_status",
                     "build_identity",
+                    "memory_compact",
                     "memory_recall",
                     "memory_save",
                     "shiftwork_clock_in",

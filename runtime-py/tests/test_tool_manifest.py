@@ -111,6 +111,7 @@ def test_every_served_tool_has_an_asset(tmp_path):
     assert sorted(served) == [
         "bantamkit_status",
         "build_identity",
+        "memory_compact",
         "memory_recall",
         "memory_save",
         "shiftwork_clock_in",

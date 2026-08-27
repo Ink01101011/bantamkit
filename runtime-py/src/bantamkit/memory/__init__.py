@@ -1,4 +1,4 @@
-from bantamkit.memory.component import Memory, RecallOutcome, SaveOutcome
+from bantamkit.memory.component import CompactOutcome, Memory, RecallOutcome, SaveOutcome
 from bantamkit.memory.divergence import (
     BodyDiff,
     DivergenceReport,

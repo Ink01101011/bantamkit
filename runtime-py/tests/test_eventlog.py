@@ -366,6 +366,7 @@ async def test_the_only_values_written_are_from_a_closed_set(tmp_path):
     vocabulary = {
         "memory_save",
         "memory_recall",
+        "memory_compact",
         "validate_json",
         "build_identity",
         "shiftwork_clock_in",
@@ -375,6 +376,8 @@ async def test_the_only_values_written_are_from_a_closed_set(tmp_path):
         "duplicate",
         "refused-validation",
         "refused-budget",
+        "archived",
+        "nothing-archived",
         "answered",
         "empty-no-match",
         "empty-unreadable-layer",

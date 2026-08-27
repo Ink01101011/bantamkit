@@ -24,6 +24,7 @@ pip install "bantamkit[mcp] @ git+https://github.com/Ink01101011/bantamkit.git@v
 |---|---|
 | `memory_save` | Save one durable fact to the writable project store — identical semantics to the library component, including the duplicate nudge and budget errors |
 | `memory_recall` | Search across layers: project store (writable), configured read-only grants, read-only `~/.bantamkit/memory` profile |
+| `memory_compact` | Archive the stalest facts of the writable project store to free index room after a budget refusal — nothing is deleted, the reply names every fact that moved, and the operator can `restore` any by name. Grants and the profile layer are never touched. See [Memory → Lifecycle](memory.md#the-ops) |
 | `validate_json` | Validate output text against a JSON Schema; returns `{valid, feedback}` where `feedback` is the same pointed revision message the eval's `SchemaGate` issues — feed it back to your model and retry |
 | `shiftwork_clock_in` | Validate a shift-work checkpoint and return the cursor unit's brief — see [Shift-work tools](#shift-work-tools) |
 | `shiftwork_clock_out` | Record a finished unit: validate-whole, atomic write, append an accounting line |

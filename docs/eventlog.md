@@ -106,6 +106,7 @@ Python needs `ensure_ascii=False`). No value written today is non-ASCII.
 |---|---|---|
 | `memory_save` | `saved`, `duplicate`, `refused-validation`, `refused-budget` | `budget`; `index_bytes` when the index could be read |
 | `memory_recall` | `answered`, `empty-no-match`, `empty-unreadable-layer`, `empty-nothing-saved` | `budget`, `candidates`, `layers`, `reached`, `returned`, `unreadable`; `source` when something was returned |
+| `memory_compact` | `archived`, `nothing-archived` | `archived` (count), `budget`, `index_after`, `index_before` |
 | `validate_json` | `valid`, `invalid` | — |
 | `shiftwork_clock_in` | `brief`, `escalate`, `success`, `error` | — |
 | `shiftwork_clock_out` | `ok`, `error` | — |

@@ -92,6 +92,28 @@ def normalize_name(name: str) -> str:
     return name.strip().lower().replace("_", "-").replace(" ", "-")
 
 
+@dataclass(frozen=True)
+class CompactOutcome:
+    """What `compact` DID, beside the sentence it says about it.
+
+    Same seam as `SaveOutcome` and `RecallOutcome`: `status` is read off a decision the
+    store already made — whether `CompactResult.archived` is empty — and never off the
+    reply. `archived` (**not** deleted, see `MemoryStore.compact`) is the ONLY place the
+    count survives as a number, because the reply spells it out in prose and the host
+    records only that a `memory_compact` "completed successfully".
+
+    `status` is `archived` or `nothing-archived`. `reply` is the unchanged string
+    `compact()` has always returned; nothing reads it.
+    """
+
+    reply: str
+    status: str
+    archived: int
+    index_before: int
+    index_after: int
+    budget: int
+
+
 def _profile_store() -> Path:
     """The last layer `layered` appends, named once so other code can recognise it.
 
@@ -209,15 +231,17 @@ class Memory:
             # Two audiences, two remedies. The store's own text names `compact()`,
             # which is now true for host code (it was a guaranteed no-op in exactly
             # this state until it grew a headroom target). This reply goes to the
-            # MODEL, which by design has no compaction tool — `docs/memory.md` keeps
-            # lifecycle an operator decision — so it must name what the model can do
-            # instead of a remedy it cannot reach.
+            # MODEL, and since job42 the model HAS a compaction tool — `memory_compact`
+            # (`docs/memory.md`: the user ruled compaction automatic on 2026-08-24; the
+            # hook covers the 90 % band, the tool covers this refusal) — so the last
+            # sentence names it. Everything before that sentence is byte-identical to
+            # what it was when compaction was operator-only.
             return SaveOutcome(
                 reply=(
                     f"error: {e}. Nothing was saved and retrying will not help — shorten "
                     f"the description, or save under the name of an existing memory to "
-                    f"replace it. Compacting the index to free room is an operator job, "
-                    f"not a tool you have."
+                    f"replace it. Or call `memory_compact` to archive the stalest facts "
+                    f"and free room — nothing is deleted."
                 ),
                 status="refused-budget",
             )
@@ -493,22 +517,43 @@ class Memory:
         is a directory the model calling this will never look in — if the return value
         does not carry what was lost, nothing does.
         """
+        return self.compact_outcome(reserve).reply
+
+    def compact_outcome(self, reserve: int | None = None) -> CompactOutcome:
+        """`compact`, with the decision it took carried beside the sentence it wrote.
+
+        `self.store` is the writable project layer and nothing else: `layered` appends
+        grants and the profile store to `_layers` only, never to `self.store`, so this
+        cannot reach either (`test_memory_compact_tool.py` pins a profile fact through
+        a compaction). The reply is byte-for-byte what `compact` has always returned.
+        """
         result = self.store.compact(reserve)
         if not result.archived:
-            return (
+            reply = (
                 f"nothing archived: the index is {result.index_after} bytes against a "
                 f"{result.budget}-byte budget, already at or under the "
                 f"{result.target}-byte compaction target."
             )
-        lost = "\n".join(
-            f"- {fact.name} ({fact.type}) — {fact.description}" for fact in result.archived
-        )
-        return (
-            f"archived {len(result.archived)} memories; the index went from "
-            f"{result.index_before} to {result.index_after} bytes against a "
-            f"{result.budget}-byte budget, leaving {result.headroom} bytes of headroom. "
-            f"These moved to {result.archive_dir} and are NOT deleted — they can be "
-            f"restored by name:\n{lost}"
+            status = "nothing-archived"
+        else:
+            lost = "\n".join(
+                f"- {fact.name} ({fact.type}) — {fact.description}" for fact in result.archived
+            )
+            reply = (
+                f"archived {len(result.archived)} memories; the index went from "
+                f"{result.index_before} to {result.index_after} bytes against a "
+                f"{result.budget}-byte budget, leaving {result.headroom} bytes of headroom. "
+                f"These moved to {result.archive_dir} and are NOT deleted — they can be "
+                f"restored by name:\n{lost}"
+            )
+            status = "archived"
+        return CompactOutcome(
+            reply=reply,
+            status=status,
+            archived=len(result.archived),
+            index_before=result.index_before,
+            index_after=result.index_after,
+            budget=result.budget,
         )
 
     # Back-compat aliases: the component's API predates the public names.
