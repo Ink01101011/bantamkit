@@ -42,7 +42,7 @@ VALID_SCHEMA = {
 }
 
 
-def test_lists_exactly_the_eight_tools(tmp_path):
+def test_lists_exactly_the_nine_tools(tmp_path):
     """One server, one entry point: memory and shiftwork ride the same instance.
 
     Seven since `build_identity` (RB-P84's second half) and EIGHT since
