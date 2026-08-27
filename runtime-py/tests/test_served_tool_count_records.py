@@ -87,8 +87,14 @@ WORDS = {
 #: what a server answers. Deliberately narrow — see the module docstring.
 CLAIM = re.compile(
     r"(?:serves?|serving|served|answers? with|answered with|registers?|registered"
-    r"|exactly|surface[^.\n]{0,20})\s+"
-    r"(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)\s+tools\b",
+    r"|exactly|surface[^.\n]{0,20}"
+    # "the same N tools" / "of the N [served] tools": a count that names the whole served
+    # surface by reference to it rather than with a verb. Widened 2026-08-27 after two
+    # records outlived the ninth tool unseen (served-tools: dated — the surface was nine):
+    # `serves the same eight tools` and `one of the eight served tools`; the widened form
+    # went red on six lines, this comment's included, before any of them was fixed.
+    r"|the same|of the)\s+"
+    r"(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)\s+(?:served\s+)?tools\b",
     re.IGNORECASE,
 )
 

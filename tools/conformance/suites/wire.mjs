@@ -590,9 +590,17 @@ export async function run(ctx) {
    * reply embeds `archive_dir`, an absolute path, which is why this suite runs both sides
    * over the identical `${scratch}/store`.
    *
+   * THE EVICTION ORDER MUST NOT DEPEND ON THE WALL-CLOCK DATE OF THE RUN. The staleness key
+   * is `(last_recalled or created, name)`, and every date in this session is "today" — so a
+   * midnight between the saves and a recall that stamped SOME survivors would make the
+   * unstamped ones the stalest and move the archive listing. The recall at id 11 therefore
+   * asks for `k: 5`, every fact left in the index, and stamps all five in ONE call: after it
+   * the five share a date whatever the calendar did, and the name alone decides.
+   *
    * `reserve` then takes every shape `k` does in `argument-refusals`: `0` (the target is
-   * the budget itself), `9999` (capped at half the budget, 160, so two more leave and the
-   * archive holds `compact-a`, `-b`, `-c` — the three stalest, in save order), a negative
+   * the budget itself), `9999` (capped at half the budget, 160, which the three survivors'
+   * lines reach by equality, so two more leave — `compact-b` and `-c`, the first two names
+   * among five equally-stale facts — and the archive holds `-a`, `-b`, `-c`), a negative
    * (floored to 0 by the handler — the manifest's `minimum: 0` is advisory to the client),
    * `2.5` (`int_from_float`), `'notanint'` (`int_parsing`), `true` (lax `int`, so 1),
    * `null` (the default), `'3.0'` (lax again), no `arguments` at all, and an extra key.
@@ -613,7 +621,7 @@ export async function run(ctx) {
     callTool(8, 'memory_save', { type: 'project', name: 'compact-f', description: 'compaction probe foxtrot', body: 'foxtrot' }),
     callTool(9, 'memory_compact', {}),
     callTool(10, 'memory_save', { type: 'project', name: 'compact-f', description: 'compaction probe foxtrot', body: 'foxtrot' }),
-    callTool(11, 'memory_recall', { query: 'compaction probe alpha' }),
+    callTool(11, 'memory_recall', { query: 'compaction probe alpha', k: 5 }),
     callTool(12, 'memory_compact', { reserve: 0 }),
     callTool(13, 'memory_compact', { reserve: 9999 }),
     callTool(14, 'memory_compact', { reserve: -5 }),
@@ -690,9 +698,34 @@ export async function run(ctx) {
       // prevent, and it is only visible if the file is looked for unconditionally.
       eventlog: existsSync(eventlog) ? readFileSync(eventlog, 'utf8') : null,
       // The fact files `memory_compact` moved: still on disk, out of the index. Listed for
-      // every session so a compaction that ran where none was asked for is visible too.
-      archive: existsSync(join(store, 'archive')) ? readdirSync(join(store, 'archive')).sort() : null,
+      // every session so a compaction that ran where none was asked for is visible too —
+      // and listed for EVERY store a session can reach, not only `--store`: the layered
+      // session writes the project store under `cwd` and binds the profile store under the
+      // redirected `HOME`, and a compaction that archived in either would otherwise pass
+      // unseen. `Memory.compact` must reach the writable project layer and never the profile.
+      archive: listingOf(join(store, 'archive')),
+      archiveProject: listingOf(join(project, '.bantamkit', 'memory', 'archive')),
+      archiveProfile: listingOf(join(home, '.bantamkit', 'memory', 'archive')),
+      // `index.md` as the session left it: its byte size and its longest line, the two
+      // numbers the `memory-compact` session's budget arithmetic stands on.
+      index: indexOf(join(store, 'index.md')),
     };
+  }
+  /** The sorted names in a directory, or `null` if there is no such directory. */
+  function listingOf(dir) {
+    return existsSync(dir) ? readdirSync(dir).sort() : null;
+  }
+  /**
+   * `{ bytes, largestLine }` of an index file in UTF-8 bytes, or `null`. A line is measured
+   * WITH its terminator, as `Memory.compact` measures `_index_line(fact)` for the default
+   * `reserve` — a bare `split('\\n')` reads one byte short and pins the wrong number.
+   */
+  function indexOf(path) {
+    if (!existsSync(path)) return null;
+    const text = readFileSync(path, 'utf8');
+    const bytes = Buffer.byteLength(text, 'utf8');
+    const largestLine = Math.max(0, ...(text.match(/[^\n]*\n?/g) ?? []).map((line) => Buffer.byteLength(line, 'utf8')));
+    return { bytes, largestLine };
   }
 
   /**
@@ -701,6 +734,21 @@ export async function run(ctx) {
    * Comparing a whole session as one blob would report "these 34 KB differ at byte 25827",
    * which names a session and not a defect. Keyed by id, a failure names the request.
    */
+  /** Every frame of a side that parses, in arrival order; an unparseable line is dropped. */
+  const framesOf = (side) =>
+    side.frames
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .filter((frame) => frame !== null);
+  /** The parsed frame for one id, or `null` if the session never answered it. */
+  const frameOf = (side, id) => framesOf(side).find((frame) => frame.id === id) ?? null;
+  /** The rendered text of a tool result — the half a person actually reads — or `null`. */
+  const toolTextOf = (side, id) => frameOf(side, id)?.result?.content?.[0]?.text ?? null;
   const byId = (frames) => {
     const map = new Map();
     for (const line of frames) {
@@ -987,8 +1035,7 @@ export async function run(ctx) {
   {
     const { python, node } = results.get('identity');
     const identityOf = (side) => {
-      const frame = side.frames.map((f) => JSON.parse(f)).find((f) => f.id === 2);
-      return frame.result.structuredContent;
+      return frameOf(side, 2).result.structuredContent;
     };
     const py = identityOf(python);
     const nd = identityOf(node);
@@ -1082,19 +1129,6 @@ export async function run(ctx) {
    */
   {
     const FOOTER = '⚠️ bantamkit degraded (';
-    /** The parsed frame for one id, or `null` if the session never answered it. */
-    const frameOf = (side, id) =>
-      side.frames
-        .map((line) => {
-          try {
-            return JSON.parse(line);
-          } catch {
-            return null;
-          }
-        })
-        .find((frame) => frame !== null && frame.id === id) ?? null;
-    /** The rendered text of a tool result — the half a person actually reads. */
-    const toolTextOf = (side, id) => frameOf(side, id)?.result?.content?.[0]?.text ?? null;
     /** The four OTHER tools in `STATUS_LINES`: two prose replies and two structured ones. */
     const OTHER_TOOLS = [2, 5, 6, 7];
 
@@ -1177,17 +1211,7 @@ export async function run(ctx) {
    *     is the defect that would show up as a listing from a session not named here.
    */
   {
-    const frameOf = (side, id) =>
-      side.frames
-        .map((line) => {
-          try {
-            return JSON.parse(line);
-          } catch {
-            return null;
-          }
-        })
-        .find((frame) => frame !== null && frame.id === id) ?? null;
-    const textOf = (side, id) => frameOf(side, id)?.result?.content?.[0]?.text ?? '';
+    const textOf = (side, id) => toolTextOf(side, id) ?? '';
     for (const [label, key] of [
       ['the reference', 'python'],
       ['the port', 'node'],
@@ -1196,33 +1220,72 @@ export async function run(ctx) {
       const refused = textOf(side, 8);
       const compacted = textOf(side, 9);
       const retried = textOf(side, 10);
+      // Four facts, four keys, so the clause that failed is the one the diff names.
       cases.push({
         name: `memory_compact: ${label} refuses the sixth save for budget and the refusal names the tool`,
-        kind: 'string',
-        expected: 'refused for budget, names `memory_compact`, then archived 1, then saved',
-        actual:
-          `${refused.startsWith('error: memory index is ') ? 'refused for budget' : 'not refused'}, ` +
-          `${refused.includes('call `memory_compact`') ? 'names `memory_compact`' : 'does not name the tool'}, ` +
-          `then ${compacted.startsWith('archived 1 memories;') ? 'archived 1' : compacted.split(':')[0]}, ` +
-          `then ${retried === "saved 'compact-f'" ? 'saved' : retried.split(' ')[0]}`,
+        kind: 'json',
+        expected: { refused_for_budget: true, names_the_tool: true, then_archived: 'archived 1 memories;', then_retried: "saved 'compact-f'" },
+        actual: {
+          refused_for_budget: refused.startsWith('error: memory index is '),
+          names_the_tool: refused.includes('call `memory_compact`'),
+          then_archived: compacted.split(' the index went from ')[0],
+          then_retried: retried,
+        },
       });
-      const named = [...compacted.matchAll(/^- (\S+) \(/gm)].map((m) => m[1]);
+      /** The names a compaction reply says it moved — one bullet each, `- <name> (<type>) — …`. */
+      const namedBy = (id) => [...textOf(side, id).matchAll(/^- (\S+) \(/gm)].map((m) => m[1]);
+      const recalled = textOf(side, 11);
       cases.push({
         name: `memory_compact: ${label} archived the stalest fact and it is on disk, out of the index`,
         kind: 'json',
-        expected: { archived: ['compact-a'], recall_finds_it: false },
-        actual: { archived: named, recall_finds_it: textOf(side, 11).includes('compact-a') },
+        expected: { archived: ['compact-a'], recall_names_a_survivor: true, recall_names_the_archived: false },
+        // Positive on the survivor: a missing frame or an error reply says nothing about
+        // `compact-a` either, and must not pass as "not found".
+        actual: { archived: namedBy(9), recall_names_a_survivor: recalled.includes('compact-b'), recall_names_the_archived: recalled.includes('compact-a') },
+      });
+      cases.push({
+        name: `memory_compact: ${label} at reserve 9999 archived the two first-named of five equally-stale facts`,
+        kind: 'json',
+        expected: ['compact-b', 'compact-c'],
+        actual: namedBy(13),
       });
       // The store creates an empty `archive/` when it opens, on both sides; a LISTING is
-      // what compaction leaves, so an empty directory is "did not compact".
-      const wroteArchive = sessions
-        .filter((spec) => (results.get(spec.name)[key].archive ?? []).length > 0)
-        .map((spec) => `${spec.name}: ${results.get(spec.name)[key].archive.join(',')}`);
+      // what compaction leaves, so an empty directory is "did not compact". Every store a
+      // session could reach is listed — `--store`, the layered session's project store and
+      // its profile store under `HOME` — and the one listing expected is what the two
+      // archiving replies (ids 9 and 13) SAID moved, so disk and reply are held to each other.
+      const wroteArchive = [];
+      for (const spec of sessions) {
+        const extra = results.get(spec.name)[key];
+        for (const [where, listing] of [['store', extra.archive], ['project', extra.archiveProject], ['profile', extra.archiveProfile]]) {
+          if ((listing ?? []).length > 0) wroteArchive.push(`${spec.name} (${where}): ${listing.join(',')}`);
+        }
+      }
+      const saidMoved = [...namedBy(9), ...namedBy(13)].map((name) => `${name}.md`).sort();
       cases.push({
-        name: `memory_compact: ${label} wrote \`archive/\` in the sessions that compacted and no other`,
+        name: `memory_compact: ${label} wrote \`archive/\` in the session that compacted, in no other store, and only what the replies named`,
         kind: 'json',
-        expected: ['memory-compact: compact-a.md,compact-b.md,compact-c.md'],
+        expected: [`memory-compact (store): ${saidMoved.join(',')}`],
         actual: wroteArchive,
+      });
+      // The arithmetic the whole session stands on, pinned on disk rather than in prose:
+      // five ~53-byte lines make 266 against a 320 budget, one over the 265 default target
+      // (the largest line is 55), and the three survivors' lines reach 160 by equality.
+      const savedRecords = (side.eventlog ?? '')
+        .split('\n')
+        .filter((line) => line !== '')
+        .map((line) => JSON.parse(line))
+        .filter((record) => record.tool === 'memory_save' && record.outcome === 'saved');
+      cases.push({
+        name: `memory_compact: ${label} index arithmetic — 266 after five saves, 320 budget, largest line 55, 160 left`,
+        kind: 'json',
+        expected: { afterFive: 266, budget: 320, largestLine: 55, atEnd: 160 },
+        actual: {
+          afterFive: savedRecords[4]?.detail?.index_bytes ?? null,
+          budget: savedRecords[4]?.detail?.budget ?? null,
+          largestLine: side.index?.largestLine ?? null,
+          atEnd: side.index?.bytes ?? null,
+        },
       });
     }
     notes.push(`memory_compact (node): ${textOf(results.get('memory-compact').node, 9).split('\n')[0]}`);
@@ -1233,8 +1296,7 @@ export async function run(ctx) {
   {
     const { python, node } = results.get('unknown-methods');
     const errorsOf = (side) =>
-      side.frames
-        .map((f) => JSON.parse(f))
+      framesOf(side)
         .filter((f) => f.error)
         .sort((a, b) => a.id - b.id)
         .map((f) => f.error);
@@ -1254,7 +1316,7 @@ export async function run(ctx) {
 
   {
     const { python, node } = results.get('bad-params');
-    const errorOf = (side) => side.frames.map((f) => JSON.parse(f)).find((f) => f.id === 2)?.error ?? null;
+    const errorOf = (side) => frameOf(side, 2)?.error ?? null;
     cases.push({
       name: 'tools/call with a non-object `arguments`: pydantic vs zod, on the ERROR channel',
       kind: 'json',
@@ -1272,7 +1334,7 @@ export async function run(ctx) {
 
   {
     const { python, node } = results.get('negotiate-2024-10-07');
-    const versionOf = (side) => side.frames.map((f) => JSON.parse(f)).find((f) => f.id === 1)?.result?.protocolVersion;
+    const versionOf = (side) => frameOf(side, 1)?.result?.protocolVersion;
     cases.push({
       name: 'protocol negotiation: 2024-10-07 is supported by the TS SDK and not by the Python one',
       kind: 'string',
@@ -1315,7 +1377,8 @@ export async function run(ctx) {
         '`inputSchema` as `properties, required, type` where their manifests say `type, ' +
         'required, properties`; `memory_compact` arrives as `properties, type` where its ' +
         'manifest says `type, properties`; and the other six, whose manifests already read ' +
-        '`properties, required, type[, title]`, arrive unchanged. `Tool.input_schema` is a plain ' +
+        '`properties, [required,] type[, title]` (`bantamkit_status` and `build_identity` take ' +
+        'no argument and have no `required`), arrive unchanged. `Tool.input_schema` is a plain ' +
         '`dict[str, Any]` and `ListToolsResult(...).model_dump_json(by_alias=True, ' +
         'exclude_unset=True)` was measured to PRESERVE manifest order, so the reordering is ' +
         'downstream of the model and has no seam this package can reach. The port serves the ' +

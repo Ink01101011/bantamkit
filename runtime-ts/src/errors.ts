@@ -4,7 +4,7 @@
  * It lives in its own module here rather than in a port of `client.py`, because the
  * prep probe measured that `client.py` contributes exactly two things to the MCP
  * surface — this base class and the `Tool` dataclass — and nothing else in that file
- * is reachable from the eight tools.
+ * is reachable from the nine tools.
  */
 export class BantamError extends Error {
   constructor(message: string) {
