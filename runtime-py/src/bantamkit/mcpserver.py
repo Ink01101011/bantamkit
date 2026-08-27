@@ -17,10 +17,18 @@ from pathlib import Path
 from typing import Any
 
 import bantamkit
-from bantamkit import __version__, shiftwork
+from bantamkit import __version__, docread, shiftwork
 from bantamkit.assets import AssetNotFound, assets_root, load_skill, load_tool_asset
 from bantamkit.client import BantamError
-from bantamkit.contract import schema_error, schema_retry_feedback
+from bantamkit.contract import (
+    bantamkit_read_unknown_part,
+    document_error,
+    document_manifest,
+    document_offset_past_end,
+    document_page,
+    schema_error,
+    schema_retry_feedback,
+)
 from bantamkit.eventlog import EventLog
 from bantamkit.mcpreport import build_report as build_mcp_report
 from bantamkit.mcpreport import resolve_event_log_path
@@ -857,15 +865,94 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
                 SERVED_RESOURCE_TEMPLATES,
             )
 
+    def bantamkit_read(
+        path: str, part: str | None = None, offset: int | None = None, limit: int | None = None
+    ) -> str:
+        """The reader on the MCP surface (job43): `docread` digests, `contract` words it.
+
+        The eval pair (`evalrun._document_tools`) already renders a manifest, a page and
+        every refusal from these two modules, and this handler makes the SAME calls with
+        the path standing in for the document name, so the two surfaces print the same
+        bytes for the same file. Two sentences are this tool's own — the continuation
+        line names `bantamkit_read`, and an unknown part is a fact about the file.
+
+        THE RECORD IS A DECISION, NEVER A REPLY. `manifest` and `page` are the branch
+        taken; `refused-unreadable` is `extract` raising (a missing file, a directory, a
+        container this reader has no extractor for, an `OSError` the filesystem threw —
+        all of them reach the model as a `document_error` sentence in the reader's own
+        words, never as an exception on the wire); `refused-unknown-part` and
+        `refused-offset` are the two argument refusals. `detail` carries the container
+        kind (a token from `docread`'s closed set), the part count, and the rows and
+        UTF-8 bytes the reply carries — never the path, never a part name, never a row.
+
+        `limit` is clamped to the advertised `[1, 200]` and `offset` to `>= 0` the way
+        `memory_recall` clamps `k`: the schema says so, and a client may ignore it.
+        """
+        start = 0 if offset is None else max(0, offset)
+        rows = docread.DEFAULT_ROW_LIMIT
+        if limit is not None:
+            rows = max(1, min(limit, docread.PAGE_MAX_ROWS))
+        with _record_raise(log, "bantamkit_read"):
+            try:
+                doc = docread.extract(path)
+            except (docread.DocumentReadError, OSError) as exc:
+                log.record("bantamkit_read", "refused-unreadable")
+                return _noted(document_error(exc))
+            detail: dict[str, Any] = {"kind": doc.kind, "parts": len(doc.parts)}
+            if part is None:
+                reply = document_manifest(
+                    [
+                        {
+                            "document": path,
+                            "kind": doc.kind,
+                            "index": p.index,
+                            "part": p.name,
+                            "row_count": p.row_count,
+                            "rows": p.rows,
+                            "omissions": [o.as_dict() for o in p.omissions],
+                        }
+                        for p in doc.parts
+                    ],
+                    [{"document": path, "omissions": [o.as_dict() for o in doc.omissions]}]
+                    if doc.omissions
+                    else [],
+                )
+                detail.update(rows=sum(p.row_count for p in doc.parts), bytes=doc.text_bytes)
+                log.record("bantamkit_read", "manifest", detail)
+                return _noted(reply)
+            try:
+                target = doc.part(part)
+            except docread.DocumentReadError:
+                log.record("bantamkit_read", "refused-unknown-part", detail)
+                return _noted(bantamkit_read_unknown_part(part, path, [p.name for p in doc.parts]))
+            if start >= target.row_count:
+                log.record("bantamkit_read", "refused-offset", detail)
+                return _noted(document_offset_past_end(target.name, start, target.row_count))
+            got = docread.page(doc, part, start, rows, docread.PAGE_MAX_BYTES)
+            detail.update(rows=len(got.rows), bytes=len(got.text.encode()))
+            log.record("bantamkit_read", "page", detail)
+            return _noted(
+                document_page(
+                    document=path,
+                    part=got.part,
+                    offset=got.offset,
+                    rows=list(got.rows),
+                    row_count=got.total_rows,
+                    next_offset=got.next_offset,
+                    truncated_bytes=got.truncated_bytes,
+                    next_key="bantamkit_read_page_next",
+                )
+            )
+
     # The served surface, in one place, read out of the asset pack. Adding a tool here
     # without an asset raises AssetNotFound at startup — the manifest cannot drift behind
     # the server, because the server cannot start without it.
     #
-    # `bantamkit_status` went LAST rather than first, and `memory_compact` after it,
-    # rather than beside `memory_save` where a reader would look for it. Registration
-    # order IS the served order (`test_tool_manifest.py::test_the_golden_records_the_
-    # order_the_wire_actually_serves`), and appending is the only edit that leaves the
-    # other eight where every existing declaration says they are.
+    # `bantamkit_status` went LAST rather than first, `memory_compact` after it rather
+    # than beside `memory_save` where a reader would look for it, and `bantamkit_read`
+    # after that. Registration order IS the served order (`test_tool_manifest.py::test_
+    # the_golden_records_the_order_the_wire_actually_serves`), and appending is the only
+    # edit that leaves the other nine where every existing declaration says they are.
     tools = [
         _from_manifest(memory_save, "memory_save"),
         _from_manifest(memory_recall, "memory_recall"),
@@ -876,6 +963,7 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         _from_manifest(build_identity_tool, "build_identity"),
         _from_manifest(bantamkit_status, "bantamkit_status"),
         _from_manifest(memory_compact, "memory_compact"),
+        _from_manifest(bantamkit_read, "bantamkit_read"),
     ]
 
     server = MCPServer(

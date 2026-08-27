@@ -321,7 +321,12 @@ async def test_a_raising_handler_names_the_type_and_leaks_no_argument_value(tmp_
 
 @synchronous
 async def test_no_free_text_argument_reaches_the_file(tmp_path):
-    """Four of the nine tools take unbounded free text. None of it is on disk."""
+    """Five of the ten tools take unbounded free text. None of it is on disk.
+
+    `bantamkit_read`'s `path` and `part` are covered by `test_bantamkit_read_tool.py`,
+    which asserts the same property over a file whose path, part name and rows are all
+    sentinels.
+    """
     _, path, server = make(tmp_path)
     secrets = {
         "name": "quarterly-forecast",
@@ -712,3 +717,33 @@ def test_the_module_never_names_a_standard_stream():
     body = body.split('"""', 2)[-1]  # past the module docstring, which discusses them
     for forbidden in ("sys.stderr", "sys.stdout", "print(", "warnings.warn"):
         assert forbidden not in body, forbidden
+
+
+@synchronous
+async def test_bantamkit_read_records_its_decision_and_the_reply_wording_says_more(tmp_path):
+    """The reader's record is the branch it took; the words it hands back are the file's.
+
+    The second source for `bantamkit_read`'s two own sentences (`test_contract_fanout.py`):
+    a page's continuation line names THIS tool, so the model calling it again calls the
+    right one, and a missing part is stated as a fact about the file. The record beside
+    each carries neither the path nor the part name — a token and two counts.
+    """
+    _, path, server = make(tmp_path)
+    doc = tmp_path / "SECRET-DOC-31be.txt"
+    doc.write_text("a\nb\nc\n", encoding="utf-8")
+    async with Client(server) as client:
+        page = (
+            await client.call_tool(
+                "bantamkit_read", {"path": str(doc), "part": "document", "limit": 2}
+            )
+        ).content[0].text
+        unknown = (
+            await client.call_tool("bantamkit_read", {"path": str(doc), "part": "SECRET-PART"})
+        ).content[0].text
+    assert page.endswith("\nmore rows follow: call bantamkit_read again with offset=2")
+    assert unknown == f'error: no part named "SECRET-PART" in {doc}; it has: document'
+    assert b"SECRET" not in path.read_bytes()
+    assert [(r["outcome"], r["detail"]) for r in records(path)] == [
+        ("page", {"bytes": 3, "kind": "text", "parts": 1, "rows": 2}),
+        ("refused-unknown-part", {"kind": "text", "parts": 1}),
+    ]

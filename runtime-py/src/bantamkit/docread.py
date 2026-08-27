@@ -164,6 +164,14 @@ TEXTUTIL_SUPPORTED = ("doc", "rtf")
 TEXTUTIL = "/usr/bin/textutil"
 TEXTUTIL_TIMEOUT = 60
 DEFAULT_ROW_LIMIT = 50
+# The page ceilings every pager over this module shares: `evalrun`'s `document_read` and
+# `mcpserver`'s `bantamkit_read` (job43) slice with the same three numbers, and they live here
+# so that neither has to import the other to agree. The byte ceiling is the READER's, not the
+# loop's: `page()` stops on a row boundary and reports the shortfall out of band, whereas a
+# loop that cut an over-budget observation in band would hand the model a page that lies
+# about where it stopped.
+PAGE_MAX_ROWS = 200
+PAGE_MAX_BYTES = 3072
 # The most of ONE plain-text file this reader will materialise. Plain text is the only
 # container here whose size no structure bounds, and it is now the majority of what `extract`
 # is handed, so "read the whole thing" needs a stated ceiling rather than a hope.

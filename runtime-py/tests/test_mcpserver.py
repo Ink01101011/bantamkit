@@ -42,7 +42,7 @@ VALID_SCHEMA = {
 }
 
 
-def test_lists_exactly_the_nine_tools(tmp_path):
+def test_lists_exactly_the_ten_tools(tmp_path):
     """One server, one entry point: memory and shiftwork ride the same instance.
 
     Seven since `build_identity` (RB-P84's second half) and EIGHT since
@@ -55,6 +55,7 @@ def test_lists_exactly_the_nine_tools(tmp_path):
         async with Client(make_server(tmp_path)) as c:
             names = sorted(t.name for t in (await c.list_tools()).tools)
             assert names == [
+                "bantamkit_read",
                 "bantamkit_status",
                 "build_identity",
                 "memory_compact",
@@ -446,6 +447,7 @@ def test_stdio_subprocess_initializes(tmp_path):
                 # An EXACT list, not a count, for the reason the sibling node states: a
                 # count says "not six" and an exact list says WHICH tool arrived.
                 assert sorted(t.name for t in tools.tools) == [
+                    "bantamkit_read",
                     "bantamkit_status",
                     "build_identity",
                     "memory_compact",
@@ -501,6 +503,7 @@ def test_module_entrypoint_serves_over_stdio(tmp_path):
                 # An EXACT list, matching both siblings: a count says "not seven" and a
                 # list names WHICH tool the module entry point is or is not serving.
                 assert sorted(t.name for t in tools.tools) == [
+                    "bantamkit_read",
                     "bantamkit_status",
                     "build_identity",
                     "memory_compact",

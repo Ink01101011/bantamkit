@@ -33,7 +33,15 @@ from bantamkit.contract import (
     schema_retry_feedback,
 )
 from bantamkit.critique import CritiqueExhausted, CritiqueGate, GroundedCritiqueGate
-from bantamkit.docread import Document, DocumentReadError, extract, page
+from bantamkit.docread import (
+    DEFAULT_ROW_LIMIT,
+    PAGE_MAX_BYTES,
+    PAGE_MAX_ROWS,
+    Document,
+    DocumentReadError,
+    extract,
+    page,
+)
 from bantamkit.filegraph import FileAccessGraph, ReadAccounting
 from bantamkit.loopguard import LoopGuard
 from bantamkit.memory import Memory, MemoryStore
@@ -1237,14 +1245,16 @@ def _check_question_floor(
 # reader bought anything. See `contract.document_manifest` for why the three sample rows are
 # the load-bearing part.
 
-DOCUMENT_PAGE_ROW_LIMIT = 50
-DOCUMENT_PAGE_MAX_ROWS = 200
+DOCUMENT_PAGE_ROW_LIMIT = DEFAULT_ROW_LIMIT
+DOCUMENT_PAGE_MAX_ROWS = PAGE_MAX_ROWS
 # Under `Agent.observation_budget` (4096 by default) with room for the header line, the
 # continuation line and the per-row number prefixes this module adds after `page()` has
 # sliced. The ceiling has to be the READER's, not the loop's: the loop cuts an over-budget
 # observation IN BAND and the model then reads a page that lies about where it stopped,
-# whereas `page()` stops on a row boundary and reports the shortfall out of band.
-DOCUMENT_PAGE_MAX_BYTES = 3072
+# whereas `page()` stops on a row boundary and reports the shortfall out of band. The
+# three numbers are `docread`'s since job43, so that `bantamkit_read` pages with the same
+# ceilings without importing this module.
+DOCUMENT_PAGE_MAX_BYTES = PAGE_MAX_BYTES
 
 
 def _document_int(value: object, fallback: int) -> int:
