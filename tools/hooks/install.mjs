@@ -24,6 +24,7 @@ const ENTRIES = [
   ['UserPromptSubmit', null],
   ['PreToolUse', 'Read'],
   ['PostToolUse', 'mcp__bantamkit__memory_save'],
+  ['PreCompact', null],
   ['PostCompact', null],
   ['Stop', null],
 ];

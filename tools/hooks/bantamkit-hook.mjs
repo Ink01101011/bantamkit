@@ -208,6 +208,29 @@ async function postSave(input) {
   emit({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: `[bantamkit] memory index was ${bytes}/${budget} B; auto-compacted to ≤${target} B. ${out.slice(0, 600)}` } });
 }
 
+// -------------------------------------------------------------------- PreCompact
+// Steering for the summariser, derived from state the hook already holds: which files this
+// context read (from the read ledger) and which shiftwork unit is open. The ledger measured
+// 160k cache-read tokens per request; a summary that keeps the file list means the rebuilt
+// context does not re-read them, and the PostCompact reset lets the gate allow the ones it
+// genuinely needs.
+function preCompact(input) {
+  const ledger = readLedger(input.session_id);
+  const files = [...new Set(Object.keys(ledger.reads || {}).map((k) => k.split('|')[1]).filter(Boolean))].slice(0, 40);
+  const parts = [];
+  if (files.length) parts.push(`Files already read in this context (keep the list; do not re-read unchanged ones after compaction):\n${files.map((f) => `- ${f}`).join('\n')}`);
+  try {
+    const cp = path.join(input.cwd || process.cwd(), '.shiftwork', 'checkpoint.json');
+    const c = JSON.parse(fs.readFileSync(cp, 'utf8'));
+    const cur = c.cursor ?? c.current_unit ?? null;
+    if (cur != null) parts.push(`Open shiftwork checkpoint: ${cp}, cursor ${JSON.stringify(cur)} — preserve unit status and the next unit to clock in.`);
+  } catch { /* no checkpoint */ }
+  parts.push('Preserve verbatim: every number the user was shown, every decision the user made, and any pending operator step.');
+  const ctx = parts.join('\n\n');
+  log({ event: 'PreCompact', trigger: input.trigger, files: files.length, bytes: Buffer.byteLength(ctx) });
+  emit({ hookSpecificOutput: { hookEventName: 'PreCompact', additionalContext: ctx } });
+}
+
 // ------------------------------------------------------------------- PostCompact
 function postCompact(input) {
   try { fs.unlinkSync(ledgerPath(input.session_id)); } catch { /* none */ }
@@ -251,6 +274,7 @@ async function main() {
     case 'UserPromptSubmit': return userPromptSubmit(input);
     case 'PreToolUse': return input.tool_name === 'Read' ? preToolUseRead(input) : undefined;
     case 'PostToolUse': return input.tool_name === 'mcp__bantamkit__memory_save' ? postSave(input) : undefined;
+    case 'PreCompact': return preCompact(input);
     case 'PostCompact': return postCompact(input);
     case 'Stop': return stop(input);
     default: log({ event: ev, action: 'ignored' });
