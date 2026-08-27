@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -653,9 +654,85 @@ test('a budget refusal names a remedy the model actually has', () => {
     mem.save('project', 'a', 'a long description', 'b'),
     'error: memory index is 41 bytes, budget is 10: run compact() or tersen descriptions. ' +
       'Nothing was saved and retrying will not help — shorten the description, or save ' +
-      'under the name of an existing memory to replace it. Compacting the index to free ' +
-      'room is an operator job, not a tool you have.',
+      'under the name of an existing memory to replace it. Or call `memory_compact` to ' +
+      'archive the stalest facts and free room — nothing is deleted.',
   );
+});
+
+/** Six descriptions far enough apart that the dedupe nudge does not swallow them. */
+const DISTINCT = [
+  'how the widget cache is invalidated on deploy',
+  'which team owns the payments api and where its runbook lives',
+  'the staging database credentials rotate every friday at noon',
+  'why the nightly build skips the integration suite on windows',
+  'the customer prefers tabs over spaces in every generated file',
+  'where the grafana dashboard for queue depth is bookmarked',
+];
+
+test('compact archives the stalest facts and the reply is the only place the model learns which', () => {
+  const root = join(fresh(), 'store');
+  const roomy = new Memory(root, frozen({ indexBudget: 1000 }));
+  for (const [i, description] of DISTINCT.entries()) {
+    assert.ok(roomy.save('project', `fact-${i}`, description, 'b').startsWith('saved '));
+  }
+  // The same store reopened at a budget it is already over — the state a refusal finds it in.
+  const mem = new Memory(root, frozen({ indexBudget: 300 }));
+  const first = mem.compactOutcome();
+  assert.equal(first.status, 'archived');
+  assert.ok(first.archived >= 1);
+  assert.ok(first.indexBefore > first.indexAfter);
+  assert.equal(first.budget, 300);
+  assert.equal(
+    first.reply.split('\n')[0],
+    `archived ${first.archived} memories; the index went from ${first.indexBefore} to ${first.indexAfter} ` +
+      `bytes against a 300-byte budget, leaving ${300 - first.indexAfter} bytes of headroom. These moved to ` +
+      `${join(root, 'archive')} and are NOT deleted — they can be restored by name:`,
+  );
+  const moved = readdirSync(join(root, 'archive')).filter((n) => n.endsWith('.md')).sort();
+  assert.equal(moved.length, first.archived);
+  assert.deepEqual(
+    first.reply.split('\n').slice(1),
+    moved.map((n) => `- ${n.slice(0, -3)} (project) — ${DISTINCT[Number(n.slice(5, -3))]}`),
+  );
+  const second = mem.compactOutcome();
+  assert.equal(second.status, 'nothing-archived');
+  assert.equal(second.archived, 0);
+  assert.equal(second.reply, mem.compact(), 'a third call answers the same prose');
+  assert.match(second.reply, /^nothing archived: the index is \d+ bytes against a 300-byte budget, already at or under the \d+-byte compaction target\.$/);
+});
+
+test('a profile-layer fact survives a compaction of the project store', () => {
+  /**
+   * Only the writable project layer is compacted. `Memory.layered` wires grants and the
+   * profile store into `_layers` and leaves `store` as the project store alone, so
+   * `compactOutcome` — which reaches `store` and nothing else — cannot see them. A fact in a
+   * profile store with a budget it is already over stays put while the project store, over
+   * its own budget, is compacted.
+   */
+  const bed = fresh();
+  const home = join(bed, 'home');
+  const profile = join(home, '.bantamkit', 'memory');
+  mkstore(profile, { 'profile-fact': 'a lesson that belongs to every project on this machine' });
+  const project = join(bed, 'repo');
+  mkdirSync(join(project, '.bantamkit', 'memory'), { recursive: true });
+  sandboxed(home, () => {
+    const roomy = Memory.layered(project, frozen({ indexBudget: 1000 }));
+    assert.notEqual(roomy.store.root, profile);
+    assert.deepEqual(roomy.layerLabels(), ['project', 'profile']);
+    for (const [i, description] of DISTINCT.entries()) {
+      assert.ok(roomy.save('project', `fact-${i}`, description, 'b').startsWith('saved '));
+    }
+    // Reopened over its budget. (The reference test also drops the profile store's budget to
+    // 1; `layered` gives the profile store the default budget here and `indexBudget` is
+    // readonly, so this pins the layer boundary, not a second over-budget store.)
+    const mem = Memory.layered(project, frozen({ indexBudget: 300 }));
+    const outcome = mem.compactOutcome();
+    assert.equal(outcome.status, 'archived');
+    assert.ok(existsSync(join(profile, 'facts', 'profile-fact.md')));
+    assert.equal(readdirSync(join(profile, 'archive')).filter((n) => n.endsWith('.md')).length, 0);
+    assert.ok(!outcome.reply.includes('profile-fact'));
+    assert.match(mem.recall('lesson every project machine'), /\[profile\] \[profile-fact\]/);
+  });
 });
 
 test('k is the model asking for more, never for less than the store default', () => {

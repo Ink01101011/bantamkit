@@ -6,12 +6,19 @@
  * these are what an agent acts on when its memory appears empty, and job37 exists because
  * "empty" and "unreadable" were once the same answer. A one-word difference is a defect.
  *
- * WHAT IS DELIBERATELY MISSING. `setup()` and `batch()`, the only two consumers of `Agent`,
- * and `compact()`, whose store half is not ported either. The prep probe traced a real stdio
- * server through all eight tools and both resource templates: none of the three is reachable
- * from the MCP surface. They are absent rather than stubbed so that nobody reads a stub and
- * believes the batch scope exists here. If a tool ever calls one, that is a refutation of the
- * trace and wants reporting, not a quiet addition.
+ * WHAT IS DELIBERATELY MISSING. `setup()` and `batch()`, the only two consumers of `Agent`.
+ * The prep probe traced a real stdio server through the tools and both resource templates:
+ * neither is reachable from the MCP surface. They are absent rather than stubbed so that
+ * nobody reads a stub and believes the batch scope exists here. If a tool ever calls one,
+ * that is a refutation of the trace and wants reporting, not a quiet addition.
+ *
+ * WHAT USED TO BE MISSING AND NO LONGER IS. `compact()` was on that list, with the note that
+ * its store half was not ported either. The store half landed first (`MemoryStore.compact`,
+ * the operator CLI's `compact` verb), and job42 registered `memory_compact` as the ninth MCP
+ * tool on the reference — the model's half of compaction, the remedy the refused-budget
+ * reply now names. So `compact()` / `compactOutcome()` are ported below, sentence for
+ * sentence, and reach ONLY `this.store` (the writable project layer): `layered` puts grants
+ * and the profile store in `_layers`, never in `this.store`, so a compaction cannot see them.
  *
  * BOTH REGISTRATIONS ARE REAL AND BOTH ARE PORTED. `.mcp.json` and the user-scope config
  * invoke the server with no `--store`, so PRODUCTION RUNS `Memory.layered` and its recall
@@ -107,6 +114,27 @@ type Layer = [label: string, store: MemoryStore, writable: boolean];
 export interface SaveOutcome {
   readonly reply: string;
   readonly status: string;
+}
+
+/**
+ * What `compact` DID, beside the sentence it says about it.
+ *
+ * Same seam as `SaveOutcome` and `RecallOutcome`: `status` is read off a decision the store
+ * already made — whether `CompactResult.archived` is empty — and never off the reply.
+ * `archived` (**not** deleted, see `MemoryStore.compact`) is the ONLY place the count
+ * survives as a number, because the reply spells it out in prose and the host records only
+ * that a `memory_compact` "completed successfully".
+ *
+ * `status` is `archived` or `nothing-archived`. `reply` is the unchanged string `compact()`
+ * has always returned; nothing reads it.
+ */
+export interface CompactOutcome {
+  readonly reply: string;
+  readonly status: string;
+  readonly archived: number;
+  readonly indexBefore: number;
+  readonly indexAfter: number;
+  readonly budget: number;
 }
 
 /**
@@ -235,13 +263,16 @@ export class Memory {
       if (e instanceof MemoryBudgetExceeded) {
         // Not an argument problem: retrying the same call cannot fit the index. Two
         // audiences, two remedies. The store's own text names `compact()`; this reply goes
-        // to the MODEL, which by design has no compaction tool, so it must name what the
-        // model can do instead of a remedy it cannot reach.
+        // to the MODEL, and since job42 the model HAS a compaction tool — `memory_compact`
+        // (`docs/memory.md`: the user ruled compaction automatic on 2026-08-24; the hook
+        // covers the 90 % band, the tool covers this refusal) — so the last sentence names
+        // it. Everything before that sentence is byte-identical to what it was when
+        // compaction was operator-only.
         return {
           reply:
             `error: ${e.message}. Nothing was saved and retrying will not help — shorten ` +
             'the description, or save under the name of an existing memory to replace it. ' +
-            'Compacting the index to free room is an operator job, not a tool you have.',
+            'Or call `memory_compact` to archive the stalest facts and free room — nothing is deleted.',
           status: 'refused-budget',
         };
       }
@@ -341,6 +372,60 @@ export class Memory {
       status: 'answered',
       source: picked[0]![0].split(':', 1)[0]!,
       ...counts,
+    };
+  }
+
+  /**
+   * Archive the stalest facts until a fact as large as the biggest one kept will fit.
+   *
+   * The reply is the ONLY place the model learns what left the index: `archive/` is a
+   * directory the model calling this will never look in — if the return value does not carry
+   * what was lost, nothing does. Ported from `Memory.compact` in `component.py`, which is
+   * written for a model; the tool's advertised return is this string, unchanged.
+   */
+  compact(reserve: number | null = null): string {
+    return this.compactOutcome(reserve).reply;
+  }
+
+  /**
+   * `compact`, with the decision it took carried beside the sentence it wrote.
+   *
+   * `this.store` is the writable project layer and nothing else: `layered` appends grants
+   * and the profile store to `_layers` only, never to `this.store`, so this cannot reach
+   * either (`test/layers.test.mjs` pins a profile fact through a compaction). The reply is
+   * byte-for-byte what `compact` has always returned on the reference: Python `f"{int}"`
+   * is a plain decimal, and `result.archive_dir` is `str(Path)`, which `archiveDir` already
+   * is — `MemoryStore.compact` builds it with `pyJoin`.
+   */
+  compactOutcome(reserve: number | null = null): CompactOutcome {
+    const result = this.store.compact(reserve);
+    let reply: string;
+    let status: string;
+    if (result.archived.length === 0) {
+      reply =
+        `nothing archived: the index is ${result.indexAfter} bytes against a ` +
+        `${result.budget}-byte budget, already at or under the ` +
+        `${result.target}-byte compaction target.`;
+      status = 'nothing-archived';
+    } else {
+      const lost = result.archived
+        .map((fact) => `- ${fact.name} (${fact.type}) — ${fact.description}`)
+        .join('\n');
+      reply =
+        `archived ${result.archived.length} memories; the index went from ` +
+        `${result.indexBefore} to ${result.indexAfter} bytes against a ` +
+        `${result.budget}-byte budget, leaving ${result.headroom} bytes of headroom. ` +
+        `These moved to ${result.archiveDir} and are NOT deleted — they can be ` +
+        `restored by name:\n${lost}`;
+      status = 'archived';
+    }
+    return {
+      reply,
+      status,
+      archived: result.archived.length,
+      indexBefore: result.indexBefore,
+      indexAfter: result.indexAfter,
+      budget: result.budget,
     };
   }
 

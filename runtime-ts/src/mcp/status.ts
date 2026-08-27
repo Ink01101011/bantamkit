@@ -247,6 +247,12 @@ export function unreadableLayerCondition(memory: Memory): Condition | null {
  * (`INDEX_PRESSURE_PERCENT` here, `MemoryStore.compact`'s default `reserve` there), so it is
  * not a divergence and is not fixed here; it is registered in `docs/porting.md`. The sentence
  * says "archive or shorten facts", which is what the operator has to do either way.
+ *
+ * THIS SENTENCE IS FOR THE OPERATOR; THE MODEL HAS ITS OWN REMEDY. Since job42 the model
+ * can call `memory_compact` (the ninth served tool) when a save is actually refused, and
+ * the refused-budget reply in `memory/component.ts` names it. That does not change this
+ * line: it is read in a status report, by a person, and the command it names is the one
+ * this install provides. The two remedies run the same `MemoryStore.compact`.
  */
 export function indexPressureCondition(memory: Memory): Condition | null {
   const size = indexBytes(memory);

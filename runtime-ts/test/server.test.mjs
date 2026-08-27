@@ -1,5 +1,5 @@
 /**
- * The MCP surface: the eight tools, the two resource templates, and the wire.
+ * The MCP surface: the nine tools, the two resource templates, and the wire.
  *
  * WHY MOST OF THIS DRIVES A REAL PROCESS RATHER THAN CALLING A HANDLER. Everything this
  * unit adds lives in the gap between a handler's return value and the bytes on stdout —
@@ -17,7 +17,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -148,8 +148,9 @@ test('the agent-only tools are absent from tools/list and unknown to tools/call'
     { args: ['--store', freshStore()] },
   );
   const names = byId(lines, 2).result.tools.map((t) => t.name);
-  // Registration order IS served order, so `bantamkit_status` is appended and the other seven
-  // stay exactly where they were. A list that reordered would be a wire change nobody asked for.
+  // Registration order IS served order, so `bantamkit_status` was appended and `memory_compact`
+  // after it, and the other eight stay exactly where they were. A list that reordered would be
+  // a wire change nobody asked for.
   assert.deepEqual(names, [
     'memory_save',
     'memory_recall',
@@ -159,10 +160,98 @@ test('the agent-only tools are absent from tools/list and unknown to tools/call'
     'shiftwork_status',
     'build_identity',
     'bantamkit_status',
+    'memory_compact',
   ]);
   const refused = byId(lines, 3).result;
   assert.equal(refused.isError, true);
   assert.equal(refused.content[0].text, 'Unknown tool: document_read');
+});
+
+// ================================================== memory_compact over the wire
+
+/**
+ * Six facts whose descriptions are far enough apart that the dedupe nudge does not swallow
+ * them — the same six `runtime-py/tests/test_memory_compact_tool.py` fills with.
+ */
+const COMPACT_TOPICS = [
+  'how the widget cache is invalidated on deploy',
+  'which team owns the payments api and where its runbook lives',
+  'the staging database credentials rotate every friday at noon',
+  'why the nightly build skips the integration suite on windows',
+  'the customer prefers tabs over spaces in every generated file',
+  'where the grafana dashboard for queue depth is bookmarked',
+];
+const compactSave = (id, i) =>
+  call(id, 'memory_save', { type: 'project', name: `fact-${i}`, description: COMPACT_TOPICS[i], body: 'b' });
+
+test('memory_compact over an over-budget store archives and the reply names each moved fact', async () => {
+  const store = freshStore();
+  // Fill at a budget that admits all six, then reopen one byte-for-byte the same store at a
+  // budget it is already over — the state a refused save leaves it in. `indexBudget` is
+  // readonly here where the reference test mutates it; two sessions are the same store.
+  const fill = await session(
+    [INIT, INITIALIZED, ...COMPACT_TOPICS.map((_, i) => compactSave(2 + i, i))],
+    { args: ['--store', store, '--index-budget', '1000'] },
+  );
+  for (let i = 0; i < COMPACT_TOPICS.length; i += 1) {
+    assert.equal(byId(fill.lines, 2 + i).result.structuredContent.result, `saved 'fact-${i}'`);
+  }
+  const { lines, stderr } = await session(
+    [INIT, INITIALIZED, call(2, 'memory_compact', {}), call(3, 'memory_compact', { reserve: 0 })],
+    { args: ['--store', store, '--index-budget', '300'] },
+  );
+  assert.equal(stderr, '');
+  const first = byId(lines, 2).result;
+  assert.equal(first.isError, false);
+  const reply = first.structuredContent.result;
+  // A `-> str` tool: the raw string is the unstructured half and `{ result }` the structured.
+  assert.equal(first.content[0].text, reply);
+  assert.ok(reply.startsWith('archived '), reply);
+  assert.match(reply, /are NOT deleted — they can be restored by name:\n- fact-0 \(project\) — /);
+  const archived = readdirSync(join(store, 'archive')).filter((n) => n.endsWith('.md')).sort();
+  assert.ok(archived.length > 0, 'nothing reached archive/');
+  for (const file of archived) {
+    assert.ok(reply.includes(`- ${file.slice(0, -3)} (project) — `), `${file} left the index unnamed: ${reply}`);
+  }
+  assert.equal(archived.length, reply.split('\n- ').length - 1);
+  // Nothing was deleted: every saved fact is in facts/ or archive/.
+  const facts = readdirSync(join(store, 'facts')).filter((n) => n.endsWith('.md'));
+  assert.deepEqual(
+    [...facts, ...archived].map((n) => n.slice(0, -3)).sort(),
+    COMPACT_TOPICS.map((_, i) => `fact-${i}`),
+  );
+  // Idempotent: the second call, with an explicit reserve, has nothing left over the target.
+  const second = byId(lines, 3).result.structuredContent.result;
+  assert.ok(second.startsWith('nothing archived: the index is '), second);
+  assert.ok(second.endsWith('-byte compaction target.'), second);
+});
+
+test('memory_compact under budget archives nothing and says so', async () => {
+  const store = freshStore();
+  const { lines, stderr } = await session(
+    [INIT, INITIALIZED, compactSave(2, 0), compactSave(3, 1), call(4, 'memory_compact', {})],
+    { args: ['--store', store] },
+  );
+  assert.equal(stderr, '');
+  const reply = byId(lines, 4).result.structuredContent.result;
+  assert.ok(reply.startsWith('nothing archived: the index is '), reply);
+  assert.match(reply, /^nothing archived: the index is \d+ bytes against a \d+-byte budget, already at or under the \d+-byte compaction target\.$/);
+  assert.equal(readdirSync(join(store, 'archive')).filter((n) => n.endsWith('.md')).length, 0);
+});
+
+test('memory_compact refuses a non-integer reserve in pydantic\'s words', async () => {
+  const { lines } = await session([INIT, INITIALIZED, call(2, 'memory_compact', { reserve: '2.5' })], {
+    args: ['--store', freshStore()],
+  });
+  const refused = byId(lines, 2).result;
+  assert.equal(refused.isError, true);
+  assert.equal(
+    refused.content[0].text,
+    'Error executing tool memory_compact: 1 validation error for memory_compactArguments\n' +
+      'reserve\n' +
+      "  Input should be a valid integer, unable to parse string as an integer [type=int_parsing, input_value='2.5', input_type=str]\n" +
+      '    For further information visit https://errors.pydantic.dev/2.13/v/int_parsing',
+  );
 });
 
 // ================================================== the wire: str vs dict tools
@@ -289,7 +378,7 @@ test('build_identity names its runtime and refuses to be compared across lineage
   const id = byId(lines, 2).result.structuredContent;
   assert.equal(id.runtime, 'node');
   assert.equal(id.server_name, 'bantamkit');
-  assert.equal(id.assets_files, 84);
+  assert.equal(id.assets_files, 85);
   assert.match(id.assets_digest, /^sha256:[0-9a-f]{64}$/);
   assert.match(id.code_digest, /^sha256:[0-9a-f]{64}$/);
   assert.match(id.build_id, /^sha256:[0-9a-f]{64}$/);
@@ -392,7 +481,7 @@ test('--assets-root still answers, and it is the only thing that prints outside 
   const { lines, code } = await session([], { args: ['--assets-root'] });
   assert.equal(code, 0);
   assert.equal(lines[0], ASSETS);
-  assert.equal(lines[1], '84 files');
+  assert.equal(lines[1], '85 files');
 });
 
 // ================================================= the pydantic-shaped argument refusals
@@ -572,7 +661,7 @@ test('a healthy server reports Active, and the report is the five lines docs/sta
   assert.equal(rows.length, 5, report);
   assert.equal(rows[0], REPORT_LINE_1_ACTIVE);
   assert.match(rows[1], /^version \d+\.\d+\.\d+, build sha256:[0-9a-f]{64}$/);
-  assert.equal(rows[2], 'serving 8 tools, 1 prompt, 2 resource templates');
+  assert.equal(rows[2], 'serving 9 tools, 1 prompt, 2 resource templates');
   assert.equal(rows[3], `memory: 1 fact in the project store, index ${INDEX_BYTES} of ${HEALTHY_BUDGET} bytes`);
   assert.equal(rows[4], 'event log: off');
   // The unstructured half is the RAW string, not the JSON — `bantamkit_status` is a `-> str`

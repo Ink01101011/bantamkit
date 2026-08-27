@@ -272,6 +272,45 @@ test('the two refusals are told apart and from each other', async () => {
   );
 });
 
+test('a compaction records the decision, and only numbers beside it', async () => {
+  /**
+   * `archived` / `nothing-archived` come off `CompactResult.archived` being empty or not —
+   * the same seam `test_memory_compact_tool.py::test_the_event_log_records_the_decision`
+   * pins on the reference — and the detail carries the same four keys and never a name, a
+   * path or a description.
+   */
+  const dir = room();
+  const topics = [
+    'how the widget cache is invalidated on deploy',
+    'which team owns the payments api and where its runbook lives',
+    'the staging database credentials rotate every friday at noon',
+    'why the nightly build skips the integration suite on windows',
+    'the customer prefers tabs over spaces in every generated file',
+    'where the grafana dashboard for queue depth is bookmarked',
+  ];
+  const { memory: roomy } = make(dir, { indexBudget: 1000 });
+  for (const [i, description] of topics.entries()) {
+    assert.ok(roomy.save('project', `fact-${i}`, description, 'b').startsWith('saved '));
+  }
+  // The same store, reopened at a budget it is already over: `indexBudget` is readonly here.
+  const { memory, path, log } = make(dir, { indexBudget: 300 });
+  const client = await connect(memory, log);
+  await client.callTool({ name: 'memory_compact', arguments: {} });
+  await client.callTool({ name: 'memory_compact', arguments: { reserve: 0 } });
+  await client.close();
+  const written = records(path).filter((r) => r.tool === 'memory_compact');
+  assert.deepEqual(written.map((r) => r.outcome), ['archived', 'nothing-archived']);
+  assert.deepEqual(Object.keys(written[0]), ['v', 'ts', 'tool', 'outcome', 'detail']);
+  assert.deepEqual(Object.keys(written[0].detail), ['archived', 'budget', 'index_after', 'index_before']);
+  assert.ok(written[0].detail.archived >= 1);
+  assert.equal(written[0].detail.budget, 300);
+  assert.ok(written[0].detail.index_before > written[0].detail.index_after);
+  assert.equal(written[1].detail.archived, 0);
+  for (const record of written) {
+    for (const value of Object.values(record.detail)) assert.equal(typeof value, 'number', JSON.stringify(record));
+  }
+});
+
 test('an empty recall says which of the three empties it was', async () => {
   const { memory, path, log } = make(room());
   const client = await connect(memory, log);
@@ -468,9 +507,10 @@ test('the only values written are from a closed set', async () => {
   await client.callTool({ name: 'build_identity', arguments: {} });
   await client.close();
   const vocabulary = new Set([
-    'memory_save', 'memory_recall', 'validate_json', 'build_identity',
+    'memory_save', 'memory_recall', 'memory_compact', 'validate_json', 'build_identity',
     'shiftwork_clock_in', 'shiftwork_clock_out', 'shiftwork_status',
     'saved', 'duplicate', 'refused-validation', 'refused-budget',
+    'archived', 'nothing-archived',
     'answered', 'empty-no-match', 'empty-unreadable-layer', 'empty-nothing-saved',
     'valid', 'invalid', 'brief', 'escalate', 'success', 'ok', 'status', 'error',
     'raised', 'complete', 'partial', 'project', 'extra', 'profile',

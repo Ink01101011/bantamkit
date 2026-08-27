@@ -63,11 +63,12 @@ import {
 import type { RawStdioTransport } from './transport.js';
 
 /**
- * The eight, in the order `build_server` lists them — which is the order `tools/list` emits.
+ * The nine, in the order `build_server` lists them — which is the order `tools/list` emits.
  *
- * `bantamkit_status` is LAST rather than first, for the same reason the reference appends it:
- * registration order IS the served order, and appending is the only edit that leaves the other
- * seven where every existing declaration says they are.
+ * `bantamkit_status` went LAST rather than first, and `memory_compact` after it rather than
+ * beside `memory_save` where a reader would look for it, for the same reason the reference
+ * appends both: registration order IS the served order, and appending is the only edit that
+ * leaves the other eight where every existing declaration says they are.
  */
 export const MCP_TOOLS = [
   'memory_save',
@@ -78,6 +79,7 @@ export const MCP_TOOLS = [
   'shiftwork_status',
   'build_identity',
   'bantamkit_status',
+  'memory_compact',
 ] as const;
 
 
@@ -219,19 +221,21 @@ function recordResult(log: EventLog, tool: string, call: () => PyValue): PyValue
 /**
  * Run one tool and return its Python-shaped answer.
  *
- * The two return kinds are the SDK's, not this file's: `memory_save`, `memory_recall` and
- * `bantamkit_status` are annotated `-> str` in the reference, so `_create_wrapped_model` puts
- * them under a `result` key; the other five are `-> dict[str, Any]` and pass through as
- * themselves. That is why `structuredContent` is exactly `{ result }` for those three of the
- * eight, and carries the handler's own keys for the other five.
+ * The two return kinds are the SDK's, not this file's: `memory_save`, `memory_recall`,
+ * `bantamkit_status` and `memory_compact` are annotated `-> str` in the reference, so
+ * `_create_wrapped_model` puts them under a `result` key; the other five are
+ * `-> dict[str, Any]` and pass through as themselves. That is why `structuredContent` is
+ * exactly `{ result }` for those four of the nine, and carries the handler's own keys for
+ * the other five.
  *
- * DO NOT READ THAT AS "THREE TOOLS HAVE A `result` KEY". Driven over stdio, six of the eight
+ * DO NOT READ THAT AS "FOUR TOOLS HAVE A `result` KEY". Driven over stdio, seven of the nine
  * answer with a `result` somewhere in `structuredContent`: the three shiftwork tools carry
  * one of their own, and it is the register's verdict, not this wrapper. `wrapped` below is
- * the bit that actually decides, and it is `true` exactly three times.
+ * the bit that actually decides, and it is `true` exactly four times.
  *
  * EVERY RECORD BELOW COMES FROM A DECISION, NEVER FROM A REPLY. `memory_save` reads
- * `SaveOutcome.status`, `memory_recall` reads `RecallOutcome.status`, the three shiftwork
+ * `SaveOutcome.status`, `memory_recall` reads `RecallOutcome.status`, `memory_compact`
+ * reads `CompactOutcome.status` (the store's own `archived` list, empty or not), the three shiftwork
  * tools read the register's own `result` key, `validate_json` reads the `valid` bool it is
  * about to return, and `build_identity` reads the length of the `unavailable` list it
  * computed. Not one of them looks at the words. Change a reply's wording and the record must
@@ -392,6 +396,25 @@ function runTool(
         ),
       );
       return { value: { t: 'str', v: report }, wrapped: true };
+    }
+    case 'memory_compact': {
+      // The model's half of compaction; the hook (`docs/hooks.md`) is the automatic half.
+      // `memory_save`'s refused-budget reply names this tool, so it acts on exactly the store
+      // that refused: `compactOutcome` reaches `memory.store` — the writable project layer —
+      // and never a grant or the profile layer. The status is the store's own decision
+      // (`archived` when the archive list is non-empty, `nothing-archived` otherwise), never
+      // a match on the reply.
+      let reserve = asInt(args.get('reserve'));
+      // The advertised schema's floor; clients may ignore it, so the server does not.
+      if (reserve !== null) reserve = Math.max(0, reserve);
+      const outcome = recordRaise(log, 'memory_compact', () => memory.compactOutcome(reserve));
+      log.record('memory_compact', outcome.status, {
+        archived: outcome.archived,
+        budget: outcome.budget,
+        index_after: outcome.indexAfter,
+        index_before: outcome.indexBefore,
+      });
+      return { value: { t: 'str', v: noted(outcome.reply) }, wrapped: true };
     }
     default:
       // `tool_manager.call_tool` raises `ToolError(f"Unknown tool: {name}")`, which the
