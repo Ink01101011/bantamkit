@@ -418,6 +418,22 @@ def test_compact_never_surrenders_more_than_half_the_budget_to_headroom(tmp_path
     assert result.target == store.index_budget - store.index_budget // 2 > 0
 
 
+def test_a_negative_reserve_is_floored_to_zero_in_the_store(tmp_path):
+    """The manifest's `minimum: 0` is advisory; the ONLY clamp is `MemoryStore.compact`'s
+    `max(0, min(reserve, budget // 2))` (the handler's second floor was dropped in
+    6b966e5). `-5` therefore answers exactly what `0` answers: a target AT the budget,
+    and nothing archived from a store that is under it."""
+    store = MemoryStore(tmp_path / "mem", index_budget=1000, today=lambda: "2026-08-21")
+    store.save("project", "fact-a", "alpha topic here", "a")
+    store.save("project", "fact-b", "beta topic there", "b")
+    negative = store.compact(reserve=-5)
+    zero = store.compact(reserve=0)
+    assert negative == zero
+    assert negative.reserve == 0
+    assert negative.target == store.index_budget
+    assert negative.names == []
+
+
 def test_memory_component_compact_reports_the_names_and_the_arithmetic(tmp_path):
     """P3 at the surface a caller actually holds: `Memory`, not `Memory.store`."""
     memory = Memory(store=tmp_path, index_budget=100_000)

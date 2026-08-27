@@ -701,18 +701,47 @@ test('compact archives the stalest facts and the reply is the only place the mod
   assert.match(second.reply, /^nothing archived: the index is \d+ bytes against a 300-byte budget, already at or under the \d+-byte compaction target\.$/);
 });
 
+test('a negative reserve is floored to zero in the store, not the handler', () => {
+  // The manifest's `minimum: 0` is advisory; the ONLY clamp is `MemoryStore.compact`'s
+  // `max(0, min(reserve, budget // 2))` (the handler's second floor was dropped in 6b966e5).
+  // `-5` therefore answers exactly what `0` answers: a target AT the budget, nothing archived.
+  const mem = new Memory(join(fresh(), 'store'), frozen({ indexBudget: 1000 }));
+  assert.ok(mem.save('project', 'fact-a', 'alpha topic here', 'a').startsWith('saved '));
+  assert.ok(mem.save('project', 'fact-b', 'beta topic there', 'b').startsWith('saved '));
+  const negative = mem.store.compact(-5);
+  const zero = mem.store.compact(0);
+  assert.deepEqual(negative, zero);
+  assert.equal(negative.reserve, 0);
+  assert.equal(negative.target, 1000);
+  assert.deepEqual(negative.archived, []);
+  assert.equal(mem.compact(-5), mem.compact(0));
+});
+
 test('a profile-layer fact survives a compaction of the project store', () => {
   /**
    * Only the writable project layer is compacted. `Memory.layered` wires grants and the
    * profile store into `_layers` and leaves `store` as the project store alone, so
-   * `compactOutcome` — which reaches `store` and nothing else — cannot see them. A fact in a
-   * profile store with a budget it is already over stays put while the project store, over
-   * its own budget, is compacted.
+   * `compactOutcome` — which reaches `store` and nothing else — cannot see them.
+   *
+   * NON-VACUOUS BY CONSTRUCTION. `layered` opens the profile store at the default budget
+   * and `indexBudget` is readonly, so the reference's move (drop the profile budget to 1)
+   * is not available here; instead the profile store is built OVER the default 24000-byte
+   * budget on disk before `layered` opens it — 400 facts whose index lines run past 60
+   * bytes each. A compaction that reached the profile layer WOULD archive there. Proved
+   * 2026-08-28 by making `compactOutcome` also call `compact` on every read-only layer
+   * (in `dist/`, then reverted): this test went red at the `facts/` count — `223 !== 401`,
+   * 178 profile facts archived — and green again once the loop was gone.
    */
   const bed = fresh();
   const home = join(bed, 'home');
   const profile = join(home, '.bantamkit', 'memory');
-  mkstore(profile, { 'profile-fact': 'a lesson that belongs to every project on this machine' });
+  const crowd = Object.fromEntries(
+    Array.from({ length: 400 }, (_, i) => [
+      `crowd-fact-${String(i).padStart(3, '0')}`,
+      `crowd lesson number ${i} about a wholly distinct subject on this machine`,
+    ]),
+  );
+  mkstore(profile, { 'profile-fact': 'a lesson that belongs to every project on this machine', ...crowd });
   const project = join(bed, 'repo');
   mkdirSync(join(project, '.bantamkit', 'memory'), { recursive: true });
   sandboxed(home, () => {
@@ -722,13 +751,16 @@ test('a profile-layer fact survives a compaction of the project store', () => {
     for (const [i, description] of DISTINCT.entries()) {
       assert.ok(roomy.save('project', `fact-${i}`, description, 'b').startsWith('saved '));
     }
-    // Reopened over its budget. (The reference test also drops the profile store's budget to
-    // 1; `layered` gives the profile store the default budget here and `indexBudget` is
-    // readonly, so this pins the layer boundary, not a second over-budget store.)
+    // Reopened over its budget, beside a profile store over ITS budget.
     const mem = Memory.layered(project, frozen({ indexBudget: 300 }));
+    const profileStore = mem.layers[mem.layers.length - 1][1];
+    assert.equal(profileStore.root, profile);
+    const profileIndex = Buffer.byteLength(profileStore.indexText(), 'utf8');
+    assert.ok(profileIndex > profileStore.indexBudget, `profile index ${profileIndex} must exceed its ${profileStore.indexBudget}-byte budget for this test to mean anything`);
     const outcome = mem.compactOutcome();
     assert.equal(outcome.status, 'archived');
     assert.ok(existsSync(join(profile, 'facts', 'profile-fact.md')));
+    assert.equal(readdirSync(join(profile, 'facts')).filter((n) => n.endsWith('.md')).length, 401);
     assert.equal(readdirSync(join(profile, 'archive')).filter((n) => n.endsWith('.md')).length, 0);
     assert.ok(!outcome.reply.includes('profile-fact'));
     assert.match(mem.recall('lesson every project machine'), /\[profile\] \[profile-fact\]/);

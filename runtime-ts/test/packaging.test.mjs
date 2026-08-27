@@ -99,7 +99,7 @@ test('every packed asset is byte-identical to the repository pack', () => {
     assert.equal(sha256(mirror), sha256(abs), `vendored copy of ${rel} differs`);
     bytes += readFileSync(abs).length;
   }
-  assert.equal(bytes, 214956);
+  assert.equal(bytes, 214969); // +13 on 2026-08-28: `"agent",` joined memory_compact.json's surfaces
 });
 
 test('the tarball carries the executable entry point and its module', () => {

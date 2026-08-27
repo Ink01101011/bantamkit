@@ -178,6 +178,10 @@ class Memory:
     def setup(self, agent: Agent) -> None:
         agent.register_tool(ToolDef(tool=load_tool("memory_save"), handler=self.save))
         agent.register_tool(ToolDef(tool=load_tool("memory_recall"), handler=self.recall))
+        # Bound here so the refused-budget reply below is TRUE on this surface too: it
+        # tells the model to call `memory_compact`, and until 2026-08-28 the eval agent
+        # had no such tool (`memory_compact.json` claimed `mcp` alone).
+        agent.register_tool(ToolDef(tool=load_tool("memory_compact"), handler=self.compact))
         agent.add_batch_scope(self.batch)
         agent.add_system(load_skill("memory"))
 

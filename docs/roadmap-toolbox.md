@@ -39,11 +39,19 @@ as `tools/hooks/bantamkit-hook.mjs`. Profile layer seeded with 20 feedback/user 
 and `memory_save`'s refused-budget reply now ends by naming it. Measured: both launchers
 answer `tools/list` with nine tools (`test_served_tool_count_records.py`), and
 `node tools/conformance/run.mjs --all` compares the story end to end — refusal, compaction,
-retry, every shape of `reserve`, the event-log records — in 33 new `wire` cases
-(195 -> 228 in the suite, 4841 -> 4874 overall, 0 failures). The hook still compacts at 90 %
+retry, every shape of `reserve`, the event-log records — in 33 new `wire` cases, four of
+them hardened by review (195 -> 232 in the suite, 4841 -> 4878 overall, 0 failures;
+`docs/conformance.md`). The hook still compacts at 90 %
 of budget on its own; the tool is the on-refusal path the model reaches itself. The
 "refused-budget saves per week" number is not measured yet — it needs the event log on in a
 real session, which is #4's territory.
+
+Follow-up, registered 2026-08-28 (not fixed here): the `PostToolUse` hook opens
+`Memory.layered(cwd)` at the DEFAULT 24000-byte budget while the server honours
+`--index-budget N`, so under a non-default budget the 90 % band is measured against the
+wrong denominator and only the tool's half applies. The hook should read the flag (or the
+server should publish its budget somewhere the hook can read) before the two halves are
+one mechanism at every budget.
 
 ## Ranked backlog — (gain) / (build cost)
 

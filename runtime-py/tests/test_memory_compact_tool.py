@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 
 import pytest
 
@@ -20,6 +19,7 @@ pytest.importorskip("mcp")
 
 from mcp import Client  # noqa: E402
 
+from bantamkit.assets import load_tool_asset  # noqa: E402
 from bantamkit.eventlog import EventLog  # noqa: E402
 from bantamkit.mcpserver import build_server  # noqa: E402
 from bantamkit.memory import CompactOutcome, Memory  # noqa: E402
@@ -214,12 +214,14 @@ def test_a_profile_layer_fact_survives_a_compaction(tmp_path, monkeypatch):
     assert "[profile] [profile-fact]" in memory.recall("lesson every project machine")
 
 
-def test_the_asset_is_mcp_only_and_shaped_like_memory_recall():
-    """`agent` would mean `Memory.setup` binds it on the eval Agent; it does not."""
-    root = Path(__file__).resolve().parents[2] / "assets" / "tools"
-    asset = json.loads((root / "memory_compact.json").read_text(encoding="utf-8"))
-    recall = json.loads((root / "memory_recall.json").read_text(encoding="utf-8"))
-    assert asset["surfaces"] == ["mcp"]
+def test_the_asset_serves_both_surfaces_and_is_shaped_like_memory_recall():
+    """`agent` means `Memory.setup` binds it on the eval Agent — and it must, because the
+    refused-budget reply names `memory_compact` on that surface too (the sentence would
+    otherwise recommend a tool the eval agent does not have). Resolved through
+    `assets_root()` so `BANTAMKIT_ASSETS` is honoured, as `test_tool_manifest.py` does."""
+    asset = load_tool_asset("memory_compact")
+    recall = load_tool_asset("memory_recall")
+    assert asset["surfaces"] == ["agent", "mcp"]
     assert asset["parameters"]["type"] == "object"
     assert "required" not in asset["parameters"]
     assert asset["parameters"]["properties"]["reserve"]["type"] == "integer"
@@ -227,3 +229,37 @@ def test_the_asset_is_mcp_only_and_shaped_like_memory_recall():
     assert asset["output_schema"] == {**recall["output_schema"], "title": "memory_compactOutput"}
     assert "memory_save" in asset["description"]
     assert "never" in asset["description"] or "Nothing is deleted" in asset["description"]
+
+
+def test_setup_binds_memory_compact_on_the_eval_agent(tmp_path):
+    """The refused-budget reply says "call `memory_compact`" and it must be true HERE.
+
+    `Memory.setup` is the eval agent's binding, and until 2026-08-28 it registered only
+    save and recall — so a model that took the reply at its word on that surface would
+    have been calling a tool that did not exist.
+    """
+
+    class FakeAgent:
+        def __init__(self):
+            self.tools = []
+
+        def register_tool(self, tooldef):
+            self.tools.append(tooldef)
+
+        def add_batch_scope(self, scope):
+            pass
+
+        def add_system(self, text):
+            pass
+
+    memory = Memory(tmp_path / "store", index_budget=10)
+    agent = FakeAgent()
+    memory.setup(agent)
+    assert [t.tool.name for t in agent.tools] == ["memory_save", "memory_recall", "memory_compact"]
+    save = next(t.handler for t in agent.tools if t.tool.name == "memory_save")
+    compact = next(t.handler for t in agent.tools if t.tool.name == "memory_compact")
+    assert save("project", "a", "a long description", "b").endswith(
+        "Or call `memory_compact` to archive the stalest facts and free room — nothing is deleted."
+    )
+    assert compact() == memory.compact()
+    assert compact(reserve=0) == memory.compact(reserve=0)

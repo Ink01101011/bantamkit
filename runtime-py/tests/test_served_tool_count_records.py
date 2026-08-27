@@ -94,7 +94,14 @@ CLAIM = re.compile(
     # `serves the same eight tools` and `one of the eight served tools`; the widened form
     # went red on six lines, this comment's included, before any of them was fixed.
     r"|the same|of the)\s+"
-    r"(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)\s+(?:served\s+)?tools\b",
+    # `-tool` (hyphenated singular) OR `tools`. Widened again 2026-08-28 after the two
+    # memory-CLI module headers outlived the ninth tool (served-tools: dated — they said
+    # "the seven-tool surface", which is as much a count of the served surface as "seven
+    # tools" is; the widened form went red on both before either was fixed). Bare
+    # singular `tool` stays OUT: "17 of the 18 tool-argument failures" is not a count.
+    r"(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)(?:-tool|[-\s]+(?:served[-\s]+)?tools)\b"
+    # And the noun-first form with no verb at all: "the N-tool surface".
+    r"|\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)-tool\s+surface\b",
     re.IGNORECASE,
 )
 
@@ -197,7 +204,7 @@ def test_every_stated_tool_count_matches_what_is_served() -> None:
                 exempt_by_marker += 1
                 continue
             checked += 1
-            token = match.group(1).lower()
+            token = (match.group(1) or match.group(2)).lower()
             stated = WORDS.get(token, None)
             if stated is None:
                 stated = int(token)
