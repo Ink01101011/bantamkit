@@ -64,7 +64,7 @@ export {
 } from './memory/layers.js';
 export type { StoreBinding } from './memory/layers.js';
 export { layerLabel, Memory, normalizeName, profileStore } from './memory/component.js';
-export type { MemoryOptions, RecallOutcome, SaveOutcome } from './memory/component.js';
+export type { CompactOutcome, MemoryOptions, RecallOutcome, SaveOutcome } from './memory/component.js';
 export {
   CAP_BYTES,
   DEFAULT_RELATIVE_PATH,

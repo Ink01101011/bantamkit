@@ -1,9 +1,11 @@
 """The operator's half of the lifecycle position: `python -m bantamkit.memory`.
 
-`docs/memory.md` states, as a design decision, that `lint`, `compact`, `archived`
-and `restore` are **not** agent tools — "lifecycle is an operator decision, not a
-model decision" — and two nodes hold the seven-tool surface to it. That position
-is only coherent if the operator can actually make the decision. Measured
+`docs/memory.md` states, as a design decision, that `lint`, `archived` and
+`restore` are **not** agent tools — "lifecycle is an operator decision, not a
+model decision" — and the nine-tool surface holds to it; `compact` is the one
+exception since job42 (`memory_compact`, the on-refusal path the model reaches
+itself). That position is only coherent if the operator can actually make the
+decision. Measured
 2026-08-21, they could not: `index_budget` appeared on no argument parser, and
 the four lifecycle ops were reachable only by importing `MemoryStore` and calling
 them from Python. A design that hands lifecycle to an operator and gives the

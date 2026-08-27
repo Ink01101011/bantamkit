@@ -31,13 +31,14 @@ const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoPack = join(dirname(packageRoot), 'assets');
 
 /**
- * The size of the pack, measured: 84 files / 213,773 bytes at 8634632, where U11 added
- * `assets/tools/bantamkit_status.json` (83 files / 212,480 bytes before it). Pinned as a
+ * The size of the pack, measured: 85 files / 214,956 bytes at 9fc8607, where job42's MC1
+ * added `assets/tools/memory_compact.json` (84 files / 213,773 bytes at 8634632, where U11
+ * added `assets/tools/bantamkit_status.json`; 83 / 212,480 before that). Pinned as a
  * NUMBER and not derived, because the number is the thing `build_identity` hashes — a
  * pack that grows or shrinks moves `assets_digest` and therefore `build_id`, and that
  * must be a deliberate edit here rather than a silent one.
  */
-const EXPECTED_ASSET_FILES = 84;
+const EXPECTED_ASSET_FILES = 85;
 
 function walk(dir) {
   const out = new Map();
@@ -98,7 +99,7 @@ test('every packed asset is byte-identical to the repository pack', () => {
     assert.equal(sha256(mirror), sha256(abs), `vendored copy of ${rel} differs`);
     bytes += readFileSync(abs).length;
   }
-  assert.equal(bytes, 213773);
+  assert.equal(bytes, 214969); // +13 on 2026-08-28: `"agent",` joined memory_compact.json's surfaces
 });
 
 test('the tarball carries the executable entry point and its module', () => {

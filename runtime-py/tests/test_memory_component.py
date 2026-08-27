@@ -32,7 +32,7 @@ def test_load_tool_and_skill():
 def test_setup_registers_tools_and_skill(tmp_path):
     agent = Agent(client=FakeClient([]), system="base")
     agent.use(Memory(store=tmp_path / "mem"))
-    assert [t.tool.name for t in agent.tools] == ["memory_save", "memory_recall"]
+    assert [t.tool.name for t in agent.tools] == ["memory_save", "memory_recall", "memory_compact"]
     assert "Recall first" in agent.system and agent.system.startswith("base")
 
 

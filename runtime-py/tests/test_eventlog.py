@@ -321,7 +321,7 @@ async def test_a_raising_handler_names_the_type_and_leaks_no_argument_value(tmp_
 
 @synchronous
 async def test_no_free_text_argument_reaches_the_file(tmp_path):
-    """Four of the eight tools take unbounded free text. None of it is on disk."""
+    """Four of the nine tools take unbounded free text. None of it is on disk."""
     _, path, server = make(tmp_path)
     secrets = {
         "name": "quarterly-forecast",
@@ -366,6 +366,7 @@ async def test_the_only_values_written_are_from_a_closed_set(tmp_path):
     vocabulary = {
         "memory_save",
         "memory_recall",
+        "memory_compact",
         "validate_json",
         "build_identity",
         "shiftwork_clock_in",
@@ -375,6 +376,8 @@ async def test_the_only_values_written_are_from_a_closed_set(tmp_path):
         "duplicate",
         "refused-validation",
         "refused-budget",
+        "archived",
+        "nothing-archived",
         "answered",
         "empty-no-match",
         "empty-unreadable-layer",

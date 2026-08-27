@@ -744,6 +744,33 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         log.record("memory_recall", outcome.status, detail)
         return _noted(outcome.reply)
 
+    def memory_compact(reserve: int | None = None) -> str:
+        """The model's half of compaction; the hook (`docs/hooks.md`) is the automatic half.
+
+        `memory_save`'s refused-budget reply names this tool, so it acts on exactly the
+        store that refused: `Memory.compact_outcome` reaches `memory.store` — the
+        writable project layer — and never a grant or the profile layer. The status is
+        the store's own decision (`archived` when the archive list is non-empty,
+        `nothing-archived` otherwise), never a match on the reply.
+        """
+        # No floor here: `MemoryStore.compact` clamps `reserve` to `[0, budget // 2]`
+        # itself, so a negative value from a client that ignored the schema is already
+        # handled where the arithmetic lives, and a second clamp would be a second thing
+        # to keep equal across the two runtimes.
+        with _record_raise(log, "memory_compact"):
+            outcome = memory.compact_outcome(reserve)
+        log.record(
+            "memory_compact",
+            outcome.status,
+            {
+                "archived": outcome.archived,
+                "budget": outcome.budget,
+                "index_after": outcome.index_after,
+                "index_before": outcome.index_before,
+            },
+        )
+        return _noted(outcome.reply)
+
     def validate_json(output: str, schema: dict[str, Any]) -> dict[str, Any]:
         with _record_raise(log, "validate_json"):
             error = schema_error(output, schema)
@@ -834,10 +861,11 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
     # without an asset raises AssetNotFound at startup — the manifest cannot drift behind
     # the server, because the server cannot start without it.
     #
-    # `bantamkit_status` goes LAST rather than first. Registration order IS the served
-    # order (`test_tool_manifest.py::test_the_golden_records_the_order_the_wire_actually_
-    # serves`), and appending is the only edit that leaves the other seven where every
-    # existing declaration says they are.
+    # `bantamkit_status` went LAST rather than first, and `memory_compact` after it,
+    # rather than beside `memory_save` where a reader would look for it. Registration
+    # order IS the served order (`test_tool_manifest.py::test_the_golden_records_the_
+    # order_the_wire_actually_serves`), and appending is the only edit that leaves the
+    # other eight where every existing declaration says they are.
     tools = [
         _from_manifest(memory_save, "memory_save"),
         _from_manifest(memory_recall, "memory_recall"),
@@ -847,6 +875,7 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         _from_manifest(shiftwork_status, "shiftwork_status"),
         _from_manifest(build_identity_tool, "build_identity"),
         _from_manifest(bantamkit_status, "bantamkit_status"),
+        _from_manifest(memory_compact, "memory_compact"),
     ]
 
     server = MCPServer(

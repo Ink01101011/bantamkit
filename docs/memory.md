@@ -97,17 +97,26 @@ index is rewritten in place, and is always derivable from the fact files.
 | `archived()` | you | to list what compaction has moved out |
 | `restore(name)` | you | to bring an archived fact back into the index |
 
-`lint`, `compact`, `archived` and `restore` are deliberately **not** exposed as
-agent tools — lifecycle is an operator decision, not a model decision. The
-budget error the *model* sees therefore names what the model can do (shorten the
-description, or save under an existing name); the `MemoryBudgetExceeded` text
-names `compact()`, and that one is for host code.
+`lint`, `archived` and `restore` are deliberately **not** exposed as agent
+tools — lifecycle is an operator decision, not a model decision. `compact` is the
+one exception, since job42: the user ruled compaction automatic on 2026-08-24, the
+`PostToolUse` hook ([hooks](hooks.md)) handles the 90 % band, and the
+`memory_compact` MCP tool handles the refusal — the budget error the *model* sees
+names what the model can do (shorten the description, save under an existing
+name, or call `memory_compact`, which archives and never deletes). The tool acts
+on the writable project store only; grants and the profile layer are never
+compacted. One caveat: the hook's half assumes the default 24000-byte budget
+(it opens `Memory.layered(cwd)` without reading the server's flag), so under
+`--index-budget N` only the tool's half applies. The `MemoryBudgetExceeded` text names `compact()`, and that one is for
+host code.
 
 That position only holds if the operator has a lever, and until 2026-08-21 there
 was none: `index_budget` was on no argument parser, and the four ops above were
 reachable only by importing `MemoryStore` from Python. Both halves now exist —
 see [The operator CLI](#the-operator-cli) below and `--index-budget` on
-`bantamkit-mcp`. The agent surface is unchanged and still exactly eight tools.
+`bantamkit-mcp`. The MCP surface is now exactly nine tools, `memory_compact`
+being the ninth; the in-process eval agent still binds only `memory_save` and
+`memory_recall`.
 
 ```python
 from bantamkit.memory import MemoryBudgetExceeded, MemoryStore, MemoryValidationError
@@ -227,7 +236,9 @@ frontmatter or an invalid `type`, then re-checks the budget. Run it in CI over a
 committed store, or on startup.
 
 There is no automatic compression or summarization in v1 — archiving is the only
-lifecycle action, and you trigger it.
+lifecycle action. You trigger it from the CLI or host code; the model triggers it
+through `memory_compact` after a budget refusal; the `PostToolUse` hook triggers
+it at 90 % of budget.
 
 ## The operator CLI
 

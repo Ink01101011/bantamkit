@@ -88,6 +88,12 @@ export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
   // `bantamkit_status` there where the identity one is called `build_identity_tool`. It is
   // the title `assets/tools/bantamkit_status.json` already advertises.
   bantamkit_status: { model: 'bantamkit_statusArguments', fields: [] },
+  // `reserve: int | None = None` on the reference, so it is the same lax `int` as `k`:
+  // `'2'`, `True` and `3.0` validate, `'2.5'` is `int_parsing`, `2.5` is `int_from_float`,
+  // and an explicit `null` is the default. The manifest's `minimum: 0` is advisory to the
+  // client; nothing here floors it — a negative value reaches `MemoryStore.compact`, whose
+  // `max(0, min(reserve, budget // 2))` is the only clamp on either side (6b966e5).
+  memory_compact: { model: 'memory_compactArguments', fields: [opt('reserve', 'int')] },
 };
 
 /** `type(value).__name__`, for the `input_type=` half of the sentence. */

@@ -32,7 +32,7 @@
  *   one stray write breaks the wire suite. Nothing in this module names `process.stdout`,
  *   `process.stderr` or `console`.
  * * **Metadata only.** Never a tool argument's value, never a memory body, never a
- *   validated output, never a query. Four of the eight tools take unbounded free text and
+ *   validated output, never a query. Four of the nine tools take unbounded free text and
  *   three take absolute paths. Every value written here is an ASCII token from a closed
  *   set, a number, or a boolean.
  * * **Never `String(err)`.** Only the constructor name. This is not hypothetical: the host

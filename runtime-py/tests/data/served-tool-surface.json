@@ -7,7 +7,8 @@
     "shiftwork_clock_out",
     "shiftwork_status",
     "build_identity",
-    "bantamkit_status"
+    "bantamkit_status",
+    "memory_compact"
   ],
   "tools": {
     "bantamkit_status": {
@@ -42,6 +43,32 @@
         "type": "object",
         "additionalProperties": true,
         "title": "build_identity_toolDictOutput"
+      }
+    },
+    "memory_compact": {
+      "description": "Free room in persistent memory when `memory_save` was refused for budget. Archives the stalest facts of the writable project store until a fact as large as the biggest one kept will fit, and returns what moved — every archived name with its type and description. Nothing is deleted: archived facts leave the index but stay on disk, and the operator can restore any of them by name. Read-only grants and the profile layer are never touched. Call it after a budget refusal, then retry the save; calling it under budget archives nothing and says so.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "reserve": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Bytes of index headroom to free below the budget. Omit for the default: the size of the largest index line the store holds, capped at half the budget."
+          }
+        }
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object",
+        "title": "memory_compactOutput"
       }
     },
     "memory_recall": {

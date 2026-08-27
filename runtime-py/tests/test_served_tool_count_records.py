@@ -47,7 +47,8 @@ census counts like any other: a gate exempt from itself is a gate with a hole
 shaped like its own documentation. A claim phrased outside the pattern is not
 caught, and that is a known hole rather than a hidden one.
 
-NON-VACUITY, measured 2026-08-25 by mutating BOTH OPERANDS in turn and reverting:
+NON-VACUITY, measured 2026-08-25 by mutating BOTH OPERANDS in turn and reverting
+(served-tools: dated — the surface was eight then; `memory_compact` made it nine):
 
   * the RECORD side — `serving 8 tools` -> `serving 7 tools` in `docs/status.md`:
     RED, naming `docs/status.md:46` and `:56`, "says 7, served is 8".
@@ -86,8 +87,21 @@ WORDS = {
 #: what a server answers. Deliberately narrow — see the module docstring.
 CLAIM = re.compile(
     r"(?:serves?|serving|served|answers? with|answered with|registers?|registered"
-    r"|exactly|surface[^.\n]{0,20})\s+"
-    r"(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)\s+tools\b",
+    r"|exactly|surface[^.\n]{0,20}"
+    # "the same N tools" / "of the N [served] tools": a count that names the whole served
+    # surface by reference to it rather than with a verb. Widened 2026-08-27 after two
+    # records outlived the ninth tool unseen (served-tools: dated — the surface was nine):
+    # `serves the same eight tools` and `one of the eight served tools`; the widened form
+    # went red on six lines, this comment's included, before any of them was fixed.
+    r"|the same|of the)\s+"
+    # `-tool` (hyphenated singular) OR `tools`. Widened again 2026-08-28 after the two
+    # memory-CLI module headers outlived the ninth tool (served-tools: dated — they said
+    # "the seven-tool surface", which is as much a count of the served surface as "seven
+    # tools" is; the widened form went red on both before either was fixed). Bare
+    # singular `tool` stays OUT: "17 of the 18 tool-argument failures" is not a count.
+    r"(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)(?:-tool|[-\s]+(?:served[-\s]+)?tools)\b"
+    # And the noun-first form with no verb at all: "the N-tool surface".
+    r"|\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)-tool\s+surface\b",
     re.IGNORECASE,
 )
 
@@ -190,7 +204,7 @@ def test_every_stated_tool_count_matches_what_is_served() -> None:
                 exempt_by_marker += 1
                 continue
             checked += 1
-            token = match.group(1).lower()
+            token = (match.group(1) or match.group(2)).lower()
             stated = WORDS.get(token, None)
             if stated is None:
                 stated = int(token)
