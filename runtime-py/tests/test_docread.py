@@ -909,6 +909,60 @@ def test_an_index_shaped_key_that_is_not_an_index_is_an_unknown_part(paged, key)
         page(paged, key)
 
 
+def test_a_key_of_4301_digits_is_an_unknown_part_not_a_value_error(paged):
+    """`_INDEX_KEY` admits any run of digits; `int()` refuses one past 4300 of them.
+
+    MEASURED on the wire (job43 F2): `part="1" * 4301` reached the model as `isError:
+    Exceeds the limit (4300 digits) for integer string conversion`. Node answers the
+    unknown-part sentence, and so must this side: a key `int()` rejects is not an index.
+    """
+    with pytest.raises(DocumentReadError, match="no part .*this document has 2: 'data', 'other'"):
+        page(paged, "1" * 4301)
+
+
+def test_a_bare_ampersand_in_a_sheet_is_refused_in_the_readers_words(tmp_path):
+    """expat raises `ET.ParseError` on `<t>a & b</t>`; the reader must not let it out.
+
+    MEASURED on the wire (job43 F2): the frame was `isError: not well-formed (invalid
+    token): line 1, column ...` — expat's own diagnostic, which the Node port's hand-written
+    XML walk could never print byte for byte. The sentence names the file and the part and
+    nothing the parser said.
+    """
+    path = write_xlsx(
+        tmp_path / "amp.xlsx",
+        [("Sales", "worksheets/sheet1.xml", row(inline_cell("A1", "a & b")))],
+    )
+    with pytest.raises(DocumentReadError) as excinfo:
+        extract_xlsx(path)
+    assert str(excinfo.value) == (
+        "amp.xlsx is a zip but its xl/worksheets/sheet1.xml is not well-formed XML, "
+        "so this reader cannot parse it"
+    )
+
+
+def test_a_bare_ampersand_in_the_shared_strings_or_the_workbook_names_that_part(tmp_path):
+    path = write_xlsx(
+        tmp_path / "sst.xlsx",
+        [("Sales", "worksheets/sheet1.xml", row(cell("A1", "0", "s")))],
+        shared=["a & b"],
+    )
+    with pytest.raises(DocumentReadError, match=r"^sst.xlsx is a zip but its xl/sharedStrings.xml"):
+        extract_xlsx(path)
+    path = write_xlsx(tmp_path / "wb.xlsx", [("a & b", "worksheets/sheet1.xml", "")])
+    with pytest.raises(DocumentReadError, match=r"^wb.xlsx is a zip but its xl/workbook.xml is"):
+        extract_xlsx(path)
+
+
+def test_a_bare_ampersand_in_a_docx_body_is_refused_the_same_way(tmp_path):
+    path = write_docx(tmp_path / "amp.docx", "<w:p><w:r><w:t>a & b</w:t></w:r></w:p>")
+    with pytest.raises(DocumentReadError) as excinfo:
+        extract_docx(path)
+    assert str(excinfo.value) == (
+        "amp.docx is a zip but its word/document.xml is not well-formed XML, "
+        "so this reader cannot parse it"
+    )
+
+
 @pytest.mark.parametrize("offset,limit", [(-1, 10), (0, 0), (0, -3)])
 def test_page_rejects_impossible_windows(paged, offset, limit):
     with pytest.raises(DocumentReadError, match="offset must be"):

@@ -309,8 +309,16 @@ class Document:
         # `isError: invalid literal for int() with base 10: '--1'` instead of the unknown-part
         # sentence. An index is an optionally-negative run of ASCII digits — the same rule the
         # Node port applies — and anything else is a NAME this document does not have.
+        # ... and `int()` refuses one more shape the regex admits: CPython caps a decimal
+        # string at 4300 digits (`sys.int_info.str_digits_check_threshold`) and raises
+        # `ValueError` past it. Measured (job43 F2): a 4301-digit key reached the wire as
+        # `isError: Exceeds the limit (4300 digits) for integer string conversion`. No
+        # document has that many parts, so a key `int()` rejects is simply not an index.
         if isinstance(key, int) or (isinstance(key, str) and _INDEX_KEY.fullmatch(key)):
-            index = int(key)
+            try:
+                index = int(key)
+            except ValueError:
+                index = -1
             if 0 <= index < len(self.parts):
                 return self.parts[index]
         names = ", ".join(repr(p.name) for p in self.parts)
@@ -604,6 +612,26 @@ def _read(zf: zipfile.ZipFile, name: str, path: Path) -> bytes:
         ) from None
 
 
+def _parse(data: bytes, member: str, path: Path) -> ET.Element:
+    """Parse one part this reader cannot do without, or refuse in the reader's own words.
+
+    A bare `&` in a `<t>` run is enough to make expat raise `ET.ParseError`, and until
+    job43 F2 that exception crossed the MCP wire as an `isError` frame carrying expat's
+    text (measured). The sentence deliberately carries NO line, column or parser phrase:
+    the Node port walks the XML with its own hand-written scanner, and a sentence built
+    from expat's diagnostics is one the two runtimes could never print identically.
+    `_rel_targets` and `_date_formats` are not routed through here on purpose — a broken
+    rels or styles part costs an omission or a date format, never the rows.
+    """
+    try:
+        return ET.fromstring(data)
+    except ET.ParseError:
+        raise DocumentReadError(
+            f"{path.name} is a zip but its {member} is not well-formed XML, "
+            "so this reader cannot parse it"
+        ) from None
+
+
 # ------------------------------------------- what an OOXML package holds that no row carries
 
 # Any member under a directory named `media` or `embeddings`: pictures, OLE objects, fonts
@@ -779,12 +807,12 @@ def _column(ref: str | None, fallback: int) -> int:
     return index - 1 if index else fallback
 
 
-def _shared_strings(zf: zipfile.ZipFile) -> list[str]:
+def _shared_strings(zf: zipfile.ZipFile, path: Path) -> list[str]:
     """TRAP 1. A cell with `t="s"` holds an INDEX here, not a literal."""
     if "xl/sharedStrings.xml" not in zf.namelist():
         return []
     out = []
-    for si in ET.fromstring(zf.read("xl/sharedStrings.xml")):
+    for si in _parse(zf.read("xl/sharedStrings.xml"), "xl/sharedStrings.xml", path):
         runs = []
         for child in si:  # direct <t>, or <r><t> runs. <rPh> phonetics are skipped.
             if child.tag == NS_S + "t":
@@ -816,7 +844,7 @@ def _cell_text(cell: ET.Element, shared: list[str]) -> str:
 
 
 def _sheet_rows(
-    data: bytes, shared: list[str], date_styles: tuple[str, ...] = ()
+    root: ET.Element, shared: list[str], date_styles: tuple[str, ...] = ()
 ) -> tuple[tuple[str, ...], tuple[Omission, ...]]:
     """The rendered rows of one sheet, and a count of what the rendering did not carry.
 
@@ -827,7 +855,7 @@ def _sheet_rows(
     rows = []
     blank = 0
     dated: dict[str, dict[int, int]] = {}
-    for row in ET.fromstring(data).iter(NS_S + "row"):
+    for row in root.iter(NS_S + "row"):
         cells: dict[int, str] = {}
         for position, cell in enumerate(row.iter(NS_S + "c")):
             text = _clean(_cell_text(cell, shared))
@@ -870,9 +898,10 @@ def _worksheet_targets(zf: zipfile.ZipFile, path: Path) -> list[tuple[str, str |
     Guessing `sheet1.xml` from the first `<sheet>` element is wrong on real workbooks: the
     declaration order and the part numbering are independent.
     """
-    workbook = ET.fromstring(_read(zf, "xl/workbook.xml", path))
+    workbook = _parse(_read(zf, "xl/workbook.xml", path), "xl/workbook.xml", path)
     rels = {}
-    for rel in ET.fromstring(_read(zf, "xl/_rels/workbook.xml.rels", path)):
+    member = "xl/_rels/workbook.xml.rels"
+    for rel in _parse(_read(zf, member, path), member, path):
         target = rel.get("Target") or ""
         if target.startswith("/"):
             rels[rel.get("Id")] = target.lstrip("/")
@@ -901,14 +930,15 @@ def _media_omission(media: dict[str, int]) -> tuple[Omission, ...]:
 def extract_xlsx(path: str | Path) -> Document:
     path = Path(path)
     with _open(path) as zf:
-        shared = _shared_strings(zf)
+        shared = _shared_strings(zf, path)
         date_styles = _date_formats(zf)
         media = _media_index(zf)
         parts = []
         for index, (name, target) in enumerate(_worksheet_targets(zf, path)):
             if target is None:
                 raise DocumentReadError(f"sheet {name!r} has no resolvable worksheet part")
-            rows, omissions = _sheet_rows(_read(zf, target, path), shared, date_styles)
+            sheet = _parse(_read(zf, target, path), target, path)
+            rows, omissions = _sheet_rows(sheet, shared, date_styles)
             omissions = _media_omission(_anchored_media(zf, target, media)) + omissions
             parts.append(Part(name=name, index=index, rows=rows, omissions=omissions))
     return Document(kind="xlsx", parts=tuple(parts), omissions=_media_omission(media))
@@ -917,7 +947,7 @@ def extract_xlsx(path: str | Path) -> Document:
 def extract_docx(path: str | Path) -> Document:
     path = Path(path)
     with _open(path) as zf:
-        root = ET.fromstring(_read(zf, "word/document.xml", path))
+        root = _parse(_read(zf, "word/document.xml", path), "word/document.xml", path)
         media = _media_index(zf)
         anchored = _media_omission(_anchored_media(zf, "word/document.xml", media))
     rows = []

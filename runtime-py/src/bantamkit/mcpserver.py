@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import bantamkit
 from bantamkit import __version__, docread, shiftwork
@@ -39,8 +39,12 @@ try:
     from mcp.server import MCPServer
     from mcp.server.mcpserver.exceptions import ResourceError
     from mcp.server.mcpserver.tools import Tool as SDKTool
+    from mcp.server.mcpserver.utilities.func_metadata import FuncMetadata
+    from pydantic import Field
 except ImportError:  # surfaced as a clear SystemExit in main()
     MCPServer = None  # type: ignore[assignment]
+    Field = None  # type: ignore[assignment]
+    FuncMetadata = object  # type: ignore[assignment,misc]
     ResourceError = None  # type: ignore[assignment]
     SDKTool = None  # type: ignore[assignment]
 
@@ -573,6 +577,40 @@ def status_report(
     return "\n".join(lines)
 
 
+class _ArgMetadata(FuncMetadata):  # type: ignore[misc,valid-type]
+    """The SDK's argument metadata, minus one way for a string argument to raise.
+
+    Before validating, `FuncMetadata.pre_parse_json` runs `json.loads` over every string
+    argument whose annotation is not exactly `str` (so `str | None` qualifies) to unwrap
+    a JSON-encoded list or object some hosts send. It expects `JSONDecodeError` and lets
+    everything else escape — and `json.loads("1" * 4301)` raises a plain `ValueError`
+    from CPython's 4300-digit integer-string cap. Measured on the wire (job43 F2): a
+    4301-digit `part` reached the model as `isError: Exceeds the limit (4300 digits) for
+    integer string conversion`, before `bantamkit_read` had run at all, so no handler
+    could have turned it into the unknown-part sentence. The Node SDK does no such
+    pre-parse and answers `error: no part named …`.
+
+    A value the pre-parse cannot read is left as the string it was — exactly what the
+    SDK already does for a string that is not JSON — and the per-key loop keeps every
+    other argument's unwrapping intact. Applied to all ten tools by `_from_manifest`,
+    because every `str | None` argument on this surface has the same hole.
+    """
+
+    def pre_parse_json(self, data: dict[str, Any]) -> dict[str, Any]:
+        out = data.copy()
+        for key, value in data.items():
+            try:
+                out[key] = super().pre_parse_json({key: value})[key]
+            except ValueError:
+                out[key] = value
+        return out
+
+
+# `assets/tools/bantamkit_read.json` `offset.maximum` — Number.MAX_SAFE_INTEGER, the largest
+# integer a JSON parser on the Node side reads back unchanged.
+OFFSET_MAXIMUM = 9007199254740991
+
+
 def _from_manifest(fn: Callable[..., Any], name: str) -> Any:
     """Bind one handler to its manifest entry — description, BOTH schemas, and the surface.
 
@@ -613,7 +651,11 @@ def _from_manifest(fn: Callable[..., Any], name: str) -> Any:
         )
     tool = SDKTool.from_function(fn, name=asset["name"], description=asset["description"])
     return tool.model_copy(
-        update={"parameters": asset["parameters"], "output_schema": asset["output_schema"]}
+        update={
+            "parameters": asset["parameters"],
+            "output_schema": asset["output_schema"],
+            "fn_metadata": _ArgMetadata(**dict(tool.fn_metadata)),
+        }
     )
 
 
@@ -866,7 +908,10 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
             )
 
     def bantamkit_read(
-        path: str, part: str | None = None, offset: int | None = None, limit: int | None = None
+        path: str,
+        part: str | None = None,
+        offset: Annotated[int, Field(le=OFFSET_MAXIMUM)] | None = None,
+        limit: int | None = None,
     ) -> str:
         """The reader on the MCP surface (job43): `docread` digests, `contract` words it.
 
@@ -886,7 +931,13 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         UTF-8 bytes the reply carries — never the path, never a part name, never a row.
 
         `limit` is clamped to the advertised `[1, 200]` and `offset` to `>= 0` the way
-        `memory_recall` clamps `k`: the schema says so, and a client may ignore it.
+        `memory_recall` clamps `k`: the schema says so, and a client may ignore it. The
+        one bound NOT clamped is `offset`'s `maximum` (`OFFSET_MAXIMUM`, 2**53 - 1): a
+        clamp would silently read a different row than the one asked for, and the Node
+        port cannot even carry the number — `JSON.parse` has already rounded it — so both
+        sides refuse it with the schema refusal they already share. It is bound in the
+        SIGNATURE (`Field(le=...)`), which is what `from_function` validates at call time;
+        the advertised schema still comes from the manifest alone (`_from_manifest`).
         """
         start = 0 if offset is None else max(0, offset)
         rows = docread.DEFAULT_ROW_LIMIT

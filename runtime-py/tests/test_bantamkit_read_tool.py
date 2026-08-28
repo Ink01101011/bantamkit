@@ -275,6 +275,66 @@ def test_a_permission_error_is_a_document_error_carrying_the_os_text(tmp_path):
     assert records(log)[-1]["outcome"] == "refused-unreadable"
 
 
+def test_a_sheet_with_a_bare_ampersand_is_a_document_error_not_an_expat_frame(tmp_path):
+    """Property (job43 F2): every reply is a manifest, a page or a `document_error` sentence."""
+    path = write_xlsx(
+        tmp_path / "amp.xlsx",
+        [("Sales", "worksheets/sheet1.xml", row(inline_cell("A1", "a & b")))],
+    )
+    server, log = make(tmp_path)
+    assert read(server, path=str(path)) == (
+        "error: amp.xlsx is a zip but its xl/worksheets/sheet1.xml is not well-formed XML, "
+        "so this reader cannot parse it"
+    )
+    assert records(log)[-1]["outcome"] == "refused-unreadable"
+
+
+def test_a_part_key_of_4301_digits_is_the_unknown_part_sentence_not_a_value_error(tmp_path):
+    """Two leaks, one key. `int()` refuses 4301 digits in `Document.part`, and the SDK's
+    `pre_parse_json` runs `json.loads` on every `str | None` argument first and hits the same
+    cap BEFORE the handler runs (`_ArgMetadata`). Either one alone put `isError: Exceeds the
+    limit (4300 digits) …` on the wire; Node prints the unknown-part sentence.
+    """
+    path = workbook(tmp_path)
+    key = "1" * 4301
+    server, log = make(tmp_path)
+    assert read(server, path=str(path), part=key) == (
+        f'error: no part named "{key}" in {path}; it has: Sales, Empty'
+    )
+    assert records(log)[-1]["outcome"] == "refused-unknown-part"
+
+
+def test_an_offset_past_2_pow_53_is_refused_by_the_schema_and_the_boundary_is_not(tmp_path):
+    """`offset.maximum` (F1) is bound in the signature as `Field(le=9007199254740991)`.
+
+    Above it the refusal is the SDK's validation frame — the one refusal both runtimes
+    already share for an argument the schema forbids — and the handler never runs, so no
+    record is written. AT the maximum the argument is legal and is answered like any offset.
+    """
+    path = workbook(tmp_path)
+    server, log = make(tmp_path)
+
+    async def scenario():
+        async with Client(server) as c:
+            answer = await c.call_tool(
+                "bantamkit_read", {"path": str(path), "part": "Sales", "offset": 2**53 + 1}
+            )
+            return answer.is_error, answer.content[0].text
+
+    is_error, text = asyncio.run(scenario())
+    assert is_error
+    assert text.startswith(
+        "Error executing tool bantamkit_read: 1 validation error for bantamkit_readArguments\n"
+        "offset\n  Input should be less than or equal to 9007199254740991 "
+        "[type=less_than_equal, input_value=9007199254740993, input_type=int]"
+    )
+    assert records(log) == []
+    assert read(server, path=str(path), part="Sales", offset=2**53 - 1) == (
+        'error: offset 9007199254740991 is past the end of "Sales", which has 3 rows '
+        "numbered 0 to 2"
+    )
+
+
 # ------------------------------------------------------------------------ the record
 
 
