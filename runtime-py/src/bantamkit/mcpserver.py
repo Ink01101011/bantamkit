@@ -578,25 +578,34 @@ def status_report(
 
 
 class _ArgMetadata(FuncMetadata):  # type: ignore[misc,valid-type]
-    """The SDK's argument metadata, minus one way for a string argument to raise.
+    """The SDK's argument metadata, with the JSON pre-parse switched off where Node has none.
 
     Before validating, `FuncMetadata.pre_parse_json` runs `json.loads` over every string
-    argument whose annotation is not exactly `str` (so `str | None` qualifies) to unwrap
-    a JSON-encoded list or object some hosts send. It expects `JSONDecodeError` and lets
-    everything else escape — and `json.loads("1" * 4301)` raises a plain `ValueError`
-    from CPython's 4300-digit integer-string cap. Measured on the wire (job43 F2): a
-    4301-digit `part` reached the model as `isError: Exceeds the limit (4300 digits) for
-    integer string conversion`, before `bantamkit_read` had run at all, so no handler
-    could have turned it into the unknown-part sentence. The Node SDK does no such
-    pre-parse and answers `error: no part named …`.
+    argument whose annotation is not exactly `str` (so `str | None` and `int | None`
+    qualify) to unwrap a JSON-encoded list or object some hosts send. The Node SDK does no
+    such thing, and `bantamkit_read` is the one tool on this surface whose arguments are
+    not plain `str`, so it was the one tool whose two halves could read the same call
+    differently. Measured on the wire (job43 F2, then review round 2): a 4301-digit `part`
+    reached the model as `isError: Exceeds the limit (4300 digits) for integer string
+    conversion` — `json.loads` hit CPython's integer-string cap before the handler ran;
+    `part="null"` was unwrapped to `None` and served the MANIFEST where Node refuses an
+    unknown part named `null`; `part="[1]"` became a list and a pydantic `string_type`
+    error where Node says `no part named [1]`; `offset="null"` paged from row 0 where
+    Node's `pyargs` refuses it as `int_parsing`.
 
-    A value the pre-parse cannot read is left as the string it was — exactly what the
-    SDK already does for a string that is not JSON — and the per-key loop keeps every
-    other argument's unwrapping intact. Applied to all ten tools by `_from_manifest`,
-    because every `str | None` argument on this surface has the same hole.
+    THE PROPERTY: for `bantamkit_read`, no argument is JSON-unwrapped — a string is the
+    string that was sent. Pydantic's own lax coercion stays (`offset="5"` → 5), because
+    Node's `pyargs` does the same. `unwrap_json` is `False` for that tool alone: the other
+    nine take plain `str` (plus `list`/`dict` fields the SDK unwraps by design, e.g.
+    `memory_save.links`), and their behaviour is unchanged by this class. For them the
+    per-key loop still stops a `ValueError` the SDK does not expect from escaping.
     """
 
+    unwrap_json: bool = True
+
     def pre_parse_json(self, data: dict[str, Any]) -> dict[str, Any]:
+        if not self.unwrap_json:
+            return data
         out = data.copy()
         for key, value in data.items():
             try:
@@ -604,6 +613,10 @@ class _ArgMetadata(FuncMetadata):  # type: ignore[misc,valid-type]
             except ValueError:
                 out[key] = value
         return out
+
+
+# Tools whose arguments reach the handler exactly as sent — see `_ArgMetadata`.
+_NO_JSON_UNWRAP = frozenset({"bantamkit_read"})
 
 
 # `assets/tools/bantamkit_read.json` `offset.maximum` — Number.MAX_SAFE_INTEGER, the largest
@@ -654,7 +667,9 @@ def _from_manifest(fn: Callable[..., Any], name: str) -> Any:
         update={
             "parameters": asset["parameters"],
             "output_schema": asset["output_schema"],
-            "fn_metadata": _ArgMetadata(**dict(tool.fn_metadata)),
+            "fn_metadata": _ArgMetadata(
+                **dict(tool.fn_metadata), unwrap_json=name not in _NO_JSON_UNWRAP
+            ),
         }
     )
 

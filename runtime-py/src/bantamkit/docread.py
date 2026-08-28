@@ -474,7 +474,7 @@ def _zip_kind(path: Path, head: bytes) -> Container:
             names = zf.namelist()
             members = set(names)
             mimetype = zf.read("mimetype").decode(errors="replace") if "mimetype" in members else ""
-    except (zipfile.BadZipFile, OSError, KeyError):
+    except (zipfile.BadZipFile, OSError, KeyError, RuntimeError):  # RuntimeError: encrypted
         return Container(
             "zip", f"a truncated or damaged zip archive (it starts with {head[:8]!r})", named
         )
@@ -603,12 +603,27 @@ def _open(path: Path) -> zipfile.ZipFile:
 
 
 def _read(zf: zipfile.ZipFile, name: str, path: Path) -> bytes:
+    """One member this reader cannot do without, or a refusal in the reader's own words.
+
+    Two ways `ZipFile.read` refuses. A name that is not in the archive is a `KeyError`. A
+    member whose general-purpose flag bit 0 is set is `RuntimeError("File 'word/document.xml'
+    is encrypted, password required for extraction")` — and until job43 G1 that one crossed
+    the MCP wire as an `isError` frame carrying zipfile's text, on BOTH runtimes (measured on
+    `tests/data/docread/encrypted-member.docx`). The sentence names the member and the fact,
+    and nothing zipfile said: the Node `ZipReader` reads the same flag and must print the
+    same words.
+    """
     try:
         return zf.read(name)
     except KeyError:
         sample = ", ".join(sorted(zf.namelist())[:8]) or "(empty archive)"
         raise DocumentReadError(
             f"{path.name} is a zip but has no {name}; it contains: {sample}"
+        ) from None
+    except RuntimeError:
+        raise DocumentReadError(
+            f"{path.name} is a zip but its {name} is encrypted, "
+            "so this reader cannot read it without a password"
         ) from None
 
 
@@ -663,7 +678,7 @@ def _rel_targets(zf: zipfile.ZipFile, member: str, members: set[str]) -> list[st
         return []
     try:
         tree = ET.fromstring(zf.read(rels))
-    except (ET.ParseError, KeyError, OSError):
+    except (ET.ParseError, KeyError, OSError, RuntimeError):  # RuntimeError: encrypted
         return []
     out = []
     for rel in tree:
@@ -757,7 +772,7 @@ def _date_formats(zf: zipfile.ZipFile) -> tuple[str, ...]:
         return ()
     try:
         root = ET.fromstring(zf.read("xl/styles.xml"))
-    except (ET.ParseError, KeyError, OSError):
+    except (ET.ParseError, KeyError, OSError, RuntimeError):  # RuntimeError: encrypted
         return ()
     custom = {}
     for node in root.iter(NS_S + "numFmt"):
@@ -812,7 +827,8 @@ def _shared_strings(zf: zipfile.ZipFile, path: Path) -> list[str]:
     if "xl/sharedStrings.xml" not in zf.namelist():
         return []
     out = []
-    for si in _parse(zf.read("xl/sharedStrings.xml"), "xl/sharedStrings.xml", path):
+    member = "xl/sharedStrings.xml"
+    for si in _parse(_read(zf, member, path), member, path):
         runs = []
         for child in si:  # direct <t>, or <r><t> runs. <rPh> phonetics are skipped.
             if child.tag == NS_S + "t":
@@ -1028,10 +1044,42 @@ class _HtmlText(html.parser.HTMLParser):
         self._flush()
 
 
+# A decimal numeric character reference `html.unescape` would hand to `int()` as MORE than
+# 4300 digits. Greedy over the digits and the optional `;` exactly as `html._charref` is, so
+# the span replaced is the span `unescape` would have consumed.
+_LONG_DECIMAL_CHARREF = re.compile(r"&#([0-9]{4301,})(;?)")
+
+
+def _cap_charrefs(markup: str) -> str:
+    """Rewrite every decimal character reference `int()` would refuse, before the parser sees it.
+
+    `HTMLParser(convert_charrefs=True)` calls `html.unescape`, which does `int(digits)` on a
+    decimal reference, and CPython refuses a decimal string over 4300 digits with a
+    `ValueError` — the same cap `mcpserver._ArgMetadata` documents for a `part` key. Measured
+    (job43 G1, `tests/data/docread/charref-4301-digits.html`): `&#` + 4301 × `1` + `;` raised
+    out of `extract_html` and reached the model as an `isError` frame; the Node port, whose
+    `parseInt` overflows to `Infinity`, rendered U+FFFD and read the page.
+
+    The rewrite reproduces what `unescape` computes for a number it CAN parse. Leading zeros
+    are stripped first, because `&#0…065;` is `A` to both `unescape` and `parseInt` however
+    many zeros precede it; what is left is either short enough to hand back to `unescape`
+    unchanged, or a number past U+10FFFF, for which `unescape` — and `parseInt`'s `Infinity`
+    — is U+FFFD. Hexadecimal references are not capped: `int(s, 16)` has no digit limit.
+    """
+
+    def cap(match: re.Match[str]) -> str:
+        digits = match.group(1).lstrip("0") or "0"
+        if len(digits) <= 4300:
+            return f"&#{digits}{match.group(2)}"
+        return "\ufffd"
+
+    return _LONG_DECIMAL_CHARREF.sub(cap, markup)
+
+
 def html_rows(markup: str) -> tuple[str, ...]:
     """Rendered rows of one HTML fragment. A pure function of the string: no I/O, no host."""
     parser = _HtmlText()
-    parser.feed(markup)
+    parser.feed(_cap_charrefs(markup))
     parser.close()
     return tuple(parser.rows)
 

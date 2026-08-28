@@ -18,6 +18,7 @@ import pytest
 
 pytest.importorskip("mcp")
 
+from docread_fixtures import DATA  # noqa: E402
 from mcp import Client  # noqa: E402
 from test_docread import inline_cell, row, write_docx, write_xlsx  # noqa: E402
 
@@ -47,6 +48,14 @@ def make(tmp_path):
     log = tmp_path / "log.jsonl"
     server = build_server(Memory(store=tmp_path / "store"), EventLog(log, clock=lambda: FIXED_MS))
     return server, log
+
+
+def make_scratch():
+    """A server whose store lives in a fresh temporary directory, for a checked-in fixture."""
+    import tempfile
+    from pathlib import Path
+
+    return make(Path(tempfile.mkdtemp(prefix="bantamkit-read-")))
 
 
 def records(path):
@@ -364,3 +373,91 @@ def test_the_record_is_the_branch_taken_with_kind_and_counts_and_never_the_path(
         {**base, "outcome": "refused-unknown-part", "detail": {"kind": "xlsx", "parts": 1}},
         {**base, "outcome": "refused-unreadable", "detail": {}},
     ]
+
+
+# ------------------------------------------------ review round 2 (G1): no JSON pre-parse
+
+
+def _call(server, tool="bantamkit_read", **args):
+    async def scenario():
+        async with Client(server) as c:
+            answer = await c.call_tool(tool, args)
+            return answer.is_error, answer.content[0].text
+
+    return asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("key", ["null", "[1]", "{}"])
+def test_a_json_looking_part_is_the_string_that_was_sent_and_an_unknown_part(tmp_path, key):
+    """`part="null"` served the MANIFEST and `"[1]"` was a pydantic `string_type` error
+    (measured, review round 2): the SDK's pre-parse had `json.loads`-unwrapped the string
+    before validation. Node never unwraps, so on this tool neither does Python."""
+    path = markdown(tmp_path)
+    server, _ = make(tmp_path)
+    assert read(server, path=str(path), part=key) == (
+        f'error: no part named "{key}" in {path}; it has: document'
+    )
+
+
+def test_a_json_null_offset_is_a_schema_refusal_not_page_zero(tmp_path):
+    """`offset="null"` paged from row 0 (measured). Node's `pyargs` refuses it as
+    `int_parsing`; so does pydantic once the string reaches it un-unwrapped."""
+    path = markdown(tmp_path)
+    server, _ = make(tmp_path)
+    is_error, text = _call(server, path=str(path), part="document", offset="null")
+    assert is_error
+    assert "type=int_parsing" in text and "input_value='null'" in text
+
+
+def test_a_numeric_string_offset_is_still_coerced_the_way_nodes_pyargs_coerces_it(tmp_path):
+    path = markdown(tmp_path)
+    server, _ = make(tmp_path)
+    reply = read(server, path=str(path), part="document", offset="82", limit="1")
+    assert reply.split("\n")[0] == (
+        f'{path} "document" rows 82-82 of 84; each line below begins with its own row number'
+    )
+
+
+def test_the_other_nine_tools_still_unwrap_a_json_encoded_list(tmp_path):
+    """`memory_save.links` sent as the STRING `'["a-b"]'` is still unwrapped to a list —
+    the pre-parse is switched off for `bantamkit_read` alone, not for the surface."""
+    server, _ = make(tmp_path)
+    is_error, text = _call(
+        server,
+        "memory_save",
+        type="project",
+        name="links-unwrap",
+        description="a probe of the links unwrap",
+        body="body text here",
+        links='["a-b"]',
+    )
+    assert (is_error, text) == (False, "saved 'links-unwrap'")
+
+
+# ------------------------------------- review round 2 (G1): two escapes, off the wire
+
+
+def test_a_4301_digit_charref_is_read_as_fffd_not_a_value_error_frame():
+    """`&#` + 4301 digits + `;` raised `ValueError` out of `html.unescape` and crossed the
+    wire as `isError` (measured). Node renders U+FFFD and reads the page; so does this."""
+    path = DATA / "charref-4301-digits.html"
+    server, _ = make_scratch()
+    assert read(server, path=str(path), part="document") == "\n".join(
+        [
+            f'{path} "document" rows 0-0 of 1; each line below begins with its own row number',
+            "0\ta � b",
+            'that was the last row of "document"',
+        ]
+    )
+
+
+def test_an_encrypted_member_is_a_document_error_not_a_runtime_error_frame():
+    """`zipfile` raised `RuntimeError("File 'word/document.xml' is encrypted, password
+    required for extraction")` out of `_read`, and both runtimes put it on the wire as
+    `isError` (measured). It is a fact about the file, so it is a `document_error`."""
+    path = DATA / "encrypted-member.docx"
+    server, _ = make_scratch()
+    assert read(server, path=str(path)) == (
+        "error: encrypted-member.docx is a zip but its word/document.xml is encrypted, "
+        "so this reader cannot read it without a password"
+    )
