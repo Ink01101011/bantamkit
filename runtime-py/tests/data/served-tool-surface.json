@@ -305,6 +305,7 @@
           "offset": {
             "type": "integer",
             "minimum": 0,
+            "maximum": 9007199254740991,
             "description": "Row number of the first row to return; default 0"
           },
           "limit": {

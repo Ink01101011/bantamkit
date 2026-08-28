@@ -101,7 +101,7 @@ test('every packed asset is byte-identical to the repository pack', () => {
     assert.equal(sha256(mirror), sha256(abs), `vendored copy of ${rel} differs`);
     bytes += readFileSync(abs).length;
   }
-  assert.equal(bytes, 217318); // +2341 at 92661f7: bantamkit_read.json and its two contract sentences; +8 when its part example became "document"
+  assert.equal(bytes, 217355); // +2341 at 92661f7: bantamkit_read.json and its two contract sentences; +8 when its part example became "document"; +37 when offset gained maximum 2^53-1 (F1)
 });
 
 test('the tarball carries the executable entry point and its module', () => {
