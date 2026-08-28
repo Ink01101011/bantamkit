@@ -284,6 +284,10 @@ class Part:
         return len("\n".join(self.rows).encode())
 
 
+# An index-shaped part key: what `Document.part` hands to `int()`. ASCII on purpose.
+_INDEX_KEY = re.compile(r"-?[0-9]+")
+
+
 @dataclass(frozen=True)
 class Document:
     kind: str
@@ -299,7 +303,13 @@ class Document:
         for p in self.parts:
             if p.name == key:
                 return p
-        if isinstance(key, int) or (isinstance(key, str) and key.lstrip("-").isdigit()):
+        # The guard has to be EXACTLY what `int()` below accepts, or the ValueError leaks:
+        # `"--1".lstrip("-").isdigit()` was True and `int("--1")` raised, and `"²".isdigit()`
+        # is True while `int("²")` raises too. Measured on the wire (job43 R4): the model saw
+        # `isError: invalid literal for int() with base 10: '--1'` instead of the unknown-part
+        # sentence. An index is an optionally-negative run of ASCII digits — the same rule the
+        # Node port applies — and anything else is a NAME this document does not have.
+        if isinstance(key, int) or (isinstance(key, str) and _INDEX_KEY.fullmatch(key)):
             index = int(key)
             if 0 <= index < len(self.parts):
                 return self.parts[index]

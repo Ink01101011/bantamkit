@@ -38,7 +38,7 @@
  * evidence that OFF IS THE DEFAULT in both runtimes.
  */
 import { spawn } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -261,6 +261,44 @@ export async function run(ctx) {
   const checkpoint = join(scratch, 'cp.json');
   const missing = join(scratch, 'nope', 'gone.json');
 
+  /**
+   * THE READER'S FILES, written ONCE outside `setup()` because nothing reads them for writing:
+   * both servers are handed the same absolute paths, and the manifest reply embeds the path as
+   * given. R3's fixture builders lay down the docx/xlsx bytes the Python tests build with
+   * `zipfile`; `tinyPdf` is the docread suite's one-page PDF the reference reads and the port
+   * refuses. `relative.md` alone is written inside `setup()`, into the scratch PROJECT that is
+   * each session's `cwd`, so the one relative-path call resolves against the same directory on
+   * both sides and is rebuilt with it.
+   */
+  const fixtures = await import(pathToFileURL(join(repoRoot, 'runtime-ts', 'test', 'docread-fixtures.mjs')).href);
+  const { tinyPdf } = await import(pathToFileURL(join(here, 'suites', 'docread.mjs')).href);
+  const docs = join(scratch, 'docs');
+  mkdirSync(docs, { recursive: true });
+  const doc = (file, bytes) => {
+    writeFileSync(join(docs, file), bytes);
+    return join(docs, file);
+  };
+  const notesMd = doc('notes.md', `# Title\n\nline one\nline two — ทดสอบ\n${Array.from({ length: 80 }, (_, i) => `row ${i} ${'x'.repeat(60)}`).join('\n')}\n`);
+  const memoDocx = doc('memo.docx', fixtures.docxBytes(fixtures.para('Hello') + fixtures.para('World')));
+  const bookXlsx = doc(
+    'book.xlsx',
+    fixtures.xlsxBytes([
+      ['Sales', 'worksheets/sheet1.xml', fixtures.row([fixtures.inlineCell('A1', 'name'), fixtures.inlineCell('B1', 'qty')]) + fixtures.row([fixtures.inlineCell('A2', 'apple'), fixtures.inlineCell('B2', '3')], 2) + fixtures.row([fixtures.inlineCell('A3', 'pear'), fixtures.inlineCell('B3', '5')], 3)],
+      ['Empty', 'worksheets/sheet2.xml', ''],
+    ]),
+  );
+  const pageHtml = doc('page.html', '<html><body><h1>Hi</h1><p>one</p><table><tr><td>a</td><td>b</td></tr></table></body></html>\n');
+  const apiMht = doc('api.mht', fixtures.MHTML_DOC);
+  const blobPng = doc('blob.png', Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n', 'latin1'), Buffer.alloc(200)]));
+  const wideTxt = doc('wide.txt', `h\n${'y'.repeat(5000)}\nz\n`);
+  const shortTxt = doc('short.txt', `${Array.from({ length: 400 }, (_, i) => `r${i}`).join('\n')}\n`);
+  const emptyTxt = doc('empty.txt', Buffer.alloc(0));
+  const tinyPdfPath = doc('tiny.pdf', tinyPdf('Hello wire'));
+  const headerPdf = doc('header.pdf', Buffer.from('%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<<>>\nendobj\n%%EOF\n', 'latin1'));
+  const noteRtf = doc('note.rtf', Buffer.from('{\\rtf1\\ansi hello}', 'latin1'));
+  const realDoc = doc('real.doc', Buffer.concat([Buffer.from('\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1', 'latin1'), Buffer.alloc(512)]));
+  const badRtf = doc('bad.rtf', Buffer.from('{\\rtf1\x00\x00\xff\xfe garbage', 'latin1'));
+
   const baseEnv = { HOME: home, USERPROFILE: home, BANTAMKIT_MEMORY_DIR: null, BANTAMKIT_ASSETS: ASSETS };
 
   /** Rebuild the on-disk world both runtimes are pointed at, from nothing. */
@@ -272,6 +310,7 @@ export async function run(ctx) {
     rmSync(checkpoint, { force: true });
     rmSync(`${checkpoint}.log.jsonl`, { force: true });
     cpSync(REAL_CHECKPOINT, checkpoint);
+    writeFileSync(join(project, 'relative.md'), 'relative\nto the project\n');
   };
 
   const cursorUnit = JSON.parse(readFileSync(REAL_CHECKPOINT, 'utf8')).plan.cursor;
@@ -636,6 +675,82 @@ export async function run(ctx) {
   ], { argv: ['--store', store, '--index-budget', '320'], env: { ...baseEnv, [EVENT_LOG_ENV]: '1' } });
 
   /**
+   * `bantamkit_read`, the tenth tool, over the reader's files: every branch the handler has.
+   *
+   *   2-6   manifests: markdown, docx, xlsx (two sheets, one empty), html, mhtml (with a media
+   *         omission) — the rows, the omission lines, the kind and the byte counts;
+   *   7     a RELATIVE path, resolved against the session's `cwd` and echoed as given;
+   *   8-9   a page and its CONTINUATION at the offset the first reply named;
+   *   10-12 a sheet by name, by index string, and the empty sheet (0 rows, so offset 0 is
+   *         already past the end — the offset refusal, not an empty page);
+   *   13    offset past the end of a part that has rows; 14-16 the unknown-part sentence for
+   *         a name, for `--1` (which the reference once answered with `int()`'s ValueError
+   *         as an `isError` frame — the R5 fix, and this case is UNRULED on purpose), and for
+   *         an index past the last part;
+   *   17-20 refused unreadable: a missing file, a directory, a PNG, an empty file;
+   *   21    one row over the 3072-byte ceiling, cut to fit and the shortfall reported;
+   *   22-24 the clamps: limit 0 -> 1, offset -4 -> 0, limit 900 -> 200 (400 short rows, so
+   *         the row ceiling and not the byte ceiling is what stops the page);
+   *   25-31 the argument shapes: five refusals in pydantic's words, and two that are NOT
+ *         refused (`limit: '3'` is lax int, an extra key is ignored) — 25 records for 30 calls.
+   *
+   * THE EVENT LOG IS ON so the five outcomes — `manifest`, `page`, `refused-unreadable`,
+   * `refused-unknown-part`, `refused-offset` — are compared as records, `ts` masked, below.
+   */
+  add('read', [
+    INIT(),
+    INITIALIZED,
+    callTool(2, 'bantamkit_read', { path: notesMd }),
+    callTool(3, 'bantamkit_read', { path: memoDocx }),
+    callTool(4, 'bantamkit_read', { path: bookXlsx }),
+    callTool(5, 'bantamkit_read', { path: pageHtml }),
+    callTool(6, 'bantamkit_read', { path: apiMht }),
+    callTool(7, 'bantamkit_read', { path: 'relative.md' }),
+    callTool(8, 'bantamkit_read', { path: notesMd, part: 'document', limit: 3 }),
+    callTool(9, 'bantamkit_read', { path: notesMd, part: 'document', offset: 3, limit: 3 }),
+    callTool(10, 'bantamkit_read', { path: bookXlsx, part: 'Sales' }),
+    callTool(11, 'bantamkit_read', { path: bookXlsx, part: '0', offset: 2 }),
+    callTool(12, 'bantamkit_read', { path: bookXlsx, part: 'Empty' }),
+    callTool(13, 'bantamkit_read', { path: notesMd, part: 'document', offset: 999 }),
+    callTool(14, 'bantamkit_read', { path: bookXlsx, part: 'Nope' }),
+    callTool(15, 'bantamkit_read', { path: bookXlsx, part: '--1' }),
+    callTool(16, 'bantamkit_read', { path: bookXlsx, part: '5' }),
+    callTool(17, 'bantamkit_read', { path: join(docs, 'missing.txt') }),
+    callTool(18, 'bantamkit_read', { path: docs }),
+    callTool(19, 'bantamkit_read', { path: blobPng }),
+    callTool(20, 'bantamkit_read', { path: emptyTxt }),
+    callTool(21, 'bantamkit_read', { path: wideTxt, part: 'document', offset: 1, limit: 2 }),
+    callTool(22, 'bantamkit_read', { path: notesMd, part: 'document', limit: 0 }),
+    callTool(23, 'bantamkit_read', { path: shortTxt, part: 'document', offset: -4, limit: 900 }),
+    callTool(24, 'bantamkit_read', { path: shortTxt, part: 'document', offset: 200, limit: 900 }),
+    callTool(25, 'bantamkit_read', { path: 123 }),
+    callTool(26, 'bantamkit_read', {}),
+    callTool(27, 'bantamkit_read', { path: notesMd, part: 5 }),
+    callTool(28, 'bantamkit_read', { path: notesMd, part: 'document', limit: '3' }),
+    callTool(29, 'bantamkit_read', { path: notesMd, limit: 2.5 }),
+    callTool(30, 'bantamkit_read', { path: notesMd, offset: 'x' }),
+    callTool(31, 'bantamkit_read', { path: notesMd, extra: 1 }),
+  ], { env: { ...baseEnv, [EVENT_LOG_ENV]: '1' } });
+
+  /**
+   * The three kinds the port refuses by name — pdf, doc, rtf — in a session of their own, so
+   * that the `read` session above stays a verbatim frame comparison and this one is inspected
+   * case by case: RULED where the sentences must differ, UNRULED where the refusal bit is the
+   * property. `docs/porting.md`, "pdf, doc and rtf on Node"; the library-level twin is
+   * `tools/conformance/suites/docread.mjs`.
+   */
+  add('read-ruled', [
+    INIT(),
+    INITIALIZED,
+    callTool(2, 'bantamkit_read', { path: tinyPdfPath }),
+    callTool(3, 'bantamkit_read', { path: headerPdf }),
+    callTool(4, 'bantamkit_read', { path: noteRtf }),
+    callTool(5, 'bantamkit_read', { path: realDoc }),
+    callTool(6, 'bantamkit_read', { path: badRtf }),
+    callTool(7, 'bantamkit_read', { path: tinyPdfPath, part: 'page 1' }),
+  ], { env: { ...baseEnv, [EVENT_LOG_ENV]: '1' } });
+
+  /**
    * `build_identity` gets a session of its own, and the split is the point being made.
    *
    * Its REPLY is not comparable — `runtime`, `code_digest`, `build_id` and the Python-only
@@ -672,6 +787,8 @@ export async function run(ctx) {
     'unknown-methods',
     'bad-params',
     'negotiate-2024-10-07',
+    // Inspected in the `read-ruled` block below: two of its six replies are ruled to differ.
+    'read-ruled',
   ]);
 
   const results = new Map();
@@ -983,6 +1100,37 @@ export async function run(ctx) {
     });
 
     /**
+     * `bantamkit_read`'s records: all five outcomes and the `detail` (kind, parts, rows,
+     * bytes) the reply never carries, compared byte for byte with only `ts` masked. The
+     * argument refusals record nothing — pydantic refuses before the handler runs — so the
+     * record COUNT is part of what is compared: 25 for 30 calls, MEASURED, because two of the
+     * seven argument-shaped calls are not refusals at all: `limit: '3'` is lax `int` and
+     * pages, and an extra key is ignored and the manifest is served.
+     */
+    const readLog = results.get('read');
+    cases.push({
+      name: 'eventlog: bantamkit_read records manifest / page / refused-unreadable / refused-unknown-part / refused-offset, with only `ts` masked',
+      kind: 'bytes',
+      expected: maskTs(readLog.python.eventlog),
+      actual: maskTs(readLog.node.eventlog),
+    });
+    cases.push({
+      name: 'eventlog: the (tool, outcome) sequence of the read session',
+      kind: 'json',
+      expected: outcomesOf(readLog.python.eventlog),
+      actual: outcomesOf(readLog.node.eventlog),
+    });
+    cases.push({
+      name: 'eventlog: the read session reached all five bantamkit_read outcomes, 25 records for 30 calls',
+      kind: 'json',
+      expected: { outcomes: ['manifest', 'page', 'refused-offset', 'refused-unknown-part', 'refused-unreadable'], records: 25 },
+      actual: {
+        outcomes: [...new Set(outcomesOf(readLog.node.eventlog).map(([, outcome]) => outcome))].sort(),
+        records: outcomesOf(readLog.node.eventlog).length,
+      },
+    });
+
+    /**
      * The shape of `ts`, asserted PER SIDE against its own record count.
      *
      * Not a differential: two runtimes that drifted the same way would agree with each other
@@ -1028,6 +1176,116 @@ export async function run(ctx) {
     });
 
     notes.push(`event log: ${outcomesOf(node.eventlog).length} records, identical but for \`ts\``);
+  }
+
+  // ------------------------------------------------- bantamkit_read: the tenth tool, served
+
+  /**
+   * The advertisement session's `tools/list` is compared canonically above (`advertisement:
+   * id 2`) and its raw order is ruled. This pins the two facts the golden entry was added
+   * for: TEN tools, and `bantamkit_read` served LAST, on both sides.
+   */
+  {
+    const toolNames = (side) => frameOf(side, 2).result.tools.map((t) => t.name);
+    const { python, node } = results.get('advertisement');
+    cases.push({ name: 'advertisement: the ten tool names, in order', kind: 'json', expected: toolNames(python), actual: toolNames(node) });
+    cases.push({
+      name: 'advertisement: ten tools and bantamkit_read served tenth',
+      kind: 'json',
+      expected: { count: 10, last: 'bantamkit_read' },
+      actual: { count: toolNames(node).length, last: toolNames(node).at(-1) },
+    });
+  }
+
+  /**
+   * The pdf / doc / rtf rulings ON THE WIRE, each with the companion a ruling needs.
+   *
+   * A `ruling:` proves two frames differ and nothing else, so beside each one the refusal
+   * BIT is pinned as a literal — the reference reads `tiny.pdf` (a manifest, `page 1`, one
+   * row) and the port refuses it; both refuse the header-only PDF, the OLE2-over-zeros
+   * `.doc` and the RTF `textutil` cannot convert; `note.rtf` is read by the reference exactly
+   * where `/usr/bin/textutil` exists and refused by the port everywhere. Where both refuse,
+   * the bit is ALSO compared side to side, unruled — the case CLAUDE.md requires so that a
+   * port that quietly started answering where the reference refuses would go red here and
+   * not stay green behind a ruling that only ever asked "do they still differ".
+   */
+  {
+    const { python, node } = results.get('read-ruled');
+    const textutil = existsSync('/usr/bin/textutil');
+    const refusedAt = (side, id) => (toolTextOf(side, id) ?? '').startsWith('error: ');
+    cases.push({
+      name: 'read-ruled: the answered ids',
+      kind: 'json',
+      expected: [...byId(python.frames).keys()].sort(),
+      actual: [...byId(node.frames).keys()].sort(),
+    });
+    const table = [
+      [2, 'pdf', 'tiny.pdf, the reference reads it', false],
+      [3, 'pdf', 'header.pdf, both refuse', true],
+      [4, 'rtf', `note.rtf, read where textutil is (${textutil ? 'here' : 'not here'})`, !textutil],
+      [5, 'doc', 'real.doc, both refuse', true],
+      [6, 'rtf', 'bad.rtf, both refuse', true],
+      [7, 'pdf', 'tiny.pdf page 1, the reference pages it', false],
+    ];
+    for (const [id, kind, label, pythonRefuses] of table) {
+      cases.push({
+        name: `read-ruled: id ${id}: ${label}`,
+        kind: 'string',
+        expected: canonical(byId(python.frames).get(String(id)) ?? '{"missing":true}'),
+        actual: canonical(byId(node.frames).get(String(id)) ?? '{"missing":true}'),
+        ruling:
+          `${kind} is read by the reference (pdf through \`bantamkit.pdfread\`, doc and rtf through ` +
+          '`/usr/bin/textutil` where the host has it) and refused by name by the port, whose `docread.ts` ' +
+          'has no reader for the kind yet — job44 ports `pdfread`. docs/porting.md, "pdf, doc and rtf on Node"; ' +
+          'the library-level ruling is in tools/conformance/suites/docread.mjs.',
+      });
+      cases.push({
+        name: `read-ruled: id ${id}: the refusal bit each side is required to carry`,
+        kind: 'json',
+        expected: { python: pythonRefuses, node: true },
+        actual: { python: refusedAt(python, id), node: refusedAt(node, id) },
+      });
+      if (pythonRefuses) {
+        cases.push({
+          name: `read-ruled: id ${id}: both refuse (the refusal bit, side to side)`,
+          kind: 'json',
+          expected: refusedAt(python, id),
+          actual: refusedAt(node, id),
+        });
+      }
+    }
+    // Neither side lets a refusal reach the wire as `isError`: it is a normal reply in the
+    // reader's words on both — the same property the `read` session's `--1` case holds.
+    cases.push({
+      name: 'read-ruled: no reply on either side is an isError frame',
+      kind: 'json',
+      expected: { python: [], node: [] },
+      actual: {
+        python: table.map(([id]) => id).filter((id) => frameOf(python, id)?.result?.isError === true),
+        node: table.map(([id]) => id).filter((id) => frameOf(node, id)?.result?.isError === true),
+      },
+    });
+    // The records: the reference logs `manifest` where the port logs `refused-unreadable`
+    // for ids 2 and 7, so the sequence is ruled; the three both-refuse records are compared
+    // unruled, `ts` masked, as the bytes the two servers wrote.
+    const maskTs = (text) => (text ?? '').replace(/"ts":"[^"]*"/g, '"ts":"<masked>"');
+    const records = (side) => maskTs(side.eventlog).split('\n').filter((line) => line !== '');
+    const outcomes = (side) => records(side).map((line) => JSON.parse(line).outcome);
+    cases.push({
+      name: 'read-ruled: the outcome sequence (manifest on the reference, refused on the port)',
+      kind: 'json',
+      expected: outcomes(python),
+      actual: outcomes(node),
+      ruling: 'ids 2 and 7 are `manifest` / `page` on the reference and `refused-unreadable` on the port, for the reason the frame rulings give.',
+    });
+    const bothRefuse = table.map(([id, , , py], i) => (py ? i : -1)).filter((i) => i !== -1);
+    cases.push({
+      name: 'read-ruled: the three both-refuse records, byte for byte with only `ts` masked',
+      kind: 'bytes',
+      expected: bothRefuse.map((i) => records(python)[i]).join('\n'),
+      actual: bothRefuse.map((i) => records(node)[i]).join('\n'),
+    });
+    notes.push(`read-ruled: /usr/bin/textutil ${textutil ? 'present' : 'absent'}; the port's pdf sentence: ${JSON.stringify((toolTextOf(node, 2) ?? '').split('. ').slice(1).join('. '))}`);
   }
 
   // ----------------------------------------------------------- build_identity, in parts

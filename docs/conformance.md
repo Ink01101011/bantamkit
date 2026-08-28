@@ -24,12 +24,13 @@ two sources and agreed they match — which is the check that has never once cau
 difference that mattered. Every defect this job found in the port was found by running both
 sides, not by reading either.
 
-## The ten suites
+## The eleven suites
 
 | suite | what it compares |
 |---|---|
 | `cli` | the `bantamkit-mcp` command line as a process: stdout, stderr, exit code |
 | `codec` | fact-file frontmatter: emit byte-identically, and parse each other |
+| `docread` | the reader as a library: `sniff`, the rows per part, the omission dicts, every `DocumentReadError` sentence and the `page()` window over the same 82 files, plus the pdf/doc/rtf rulings with their refusal-bit companions |
 | `mcpreport` | `--mcp-report` as a process, over one synthetic host-log/event-log pair |
 | `memorycli` | `bantamkit-memory` against `python -m bantamkit.memory` as processes: the transcript of every step, the exit codes, and the store afterwards |
 | `recall-strings` | the binding layer: every sentence an empty recall can produce |
@@ -37,7 +38,7 @@ sides, not by reading either.
 | `statusline` | `--statusline` as a process, over synthetic event logs ([statusline.md](statusline.md)) |
 | `store` | save/recall/index: the directory after the call, byte for byte |
 | `validate` | the validator: every sentence a schema failure can produce |
-| `wire` | the MCP surface: ten tools, one prompt, two templates, and the frames themselves |
+| `wire` | the MCP surface: ten tools, one prompt, two templates, and the frames themselves — including a `bantamkit_read` session over the reader's files and its event-log records |
 
 `cli`, `mcpreport`, `memorycli` and `statusline` are the odd ones out and deliberately so:
 every other suite compares two library functions, and that comparison cannot see which stream
@@ -74,7 +75,10 @@ would have stayed green, because an answer and a refusal are also different stri
 
 So wherever the *refusal itself* is the property, it gets **its own non-ruled case comparing
 the refusal bit** alongside the ruling that compares the words. Both exist today for
-`checkSchema` and for the constructor-less YAML tags.
+`checkSchema`, for the constructor-less YAML tags, and for the reader's pdf/doc/rtf rulings
+in `docread` and `wire` — where each ruled fixture also carries a literal saying which side
+is *required* to refuse it, so a port that quietly started reading a PDF fails as loudly as
+a reference that stopped.
 
 ### Rulings have to be shown to have teeth
 
@@ -110,7 +114,9 @@ PASS: 4878 cases, 1046 byte-identical, 3203 exact-string, 629 structural, 100 ru
 
 (The totals are a sample from one run and move with the suites: measured 4841 at `2c208f4`,
 4874 once the `memory-compact` wire session landed — 33 cases — and 4878 after its review
-hardened four of them, all on 2026-08-27.)
+hardened four of them, all on 2026-08-27; 4880 at `ce46fc3`, then 5512 on 2026-08-28 when
+the `docread` suite landed — 575 cases, 8 ruled — and the `wire` suite grew from 232 to 289
+with the `bantamkit_read` sessions, 7 of them ruled.)
 
 **The notes are part of the result, not decoration.** Several measurements this project
 depends on exist only there — the live index byte count, the corpus SHA on both sides, how

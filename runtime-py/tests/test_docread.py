@@ -894,6 +894,21 @@ def test_unknown_part_lists_the_real_ones(paged):
         page(paged, 9)
 
 
+@pytest.mark.parametrize("key", ["--1", "\u00b2", "\u0661", "+1", " 1 ", "1_0", "-1", "2"])
+def test_an_index_shaped_key_that_is_not_an_index_is_an_unknown_part(paged, key):
+    """The guard in `Document.part` is exactly what `int()` accepts, or its ValueError leaks.
+
+    MEASURED on the wire (job43 R4, 28-call differential): `part="--1"` reached the model as
+    `isError: invalid literal for int() with base 10: '--1'`, because `"--1".lstrip("-")`
+    is a digit string and `int("--1")` is not an int. `"\u00b2".isdigit()` is True for the
+    same reason and `int("\u00b2")` raises too. A part key is a name or an ASCII integer —
+    the rule the Node port already applied — and every other shape is a name this document
+    does not have, answered with the unknown-part sentence like any other.
+    """
+    with pytest.raises(DocumentReadError, match="no part .*this document has 2: 'data', 'other'"):
+        page(paged, key)
+
+
 @pytest.mark.parametrize("offset,limit", [(-1, 10), (0, 0), (0, -3)])
 def test_page_rejects_impossible_windows(paged, offset, limit):
     with pytest.raises(DocumentReadError, match="offset must be"):
