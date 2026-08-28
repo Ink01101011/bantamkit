@@ -459,8 +459,10 @@ function runTool(
         // `except (docread.DocumentReadError, OSError)`. A Node fs error is CPython's
         // `OSError` with the sentence rebuilt by `asPyOSError` — `[Errno 13] Permission
         // denied: '<path>'` for a file this process may not open — through the CRT arm,
-        // because `open()` is the call the reference makes. `BadZipFile` is neither and
-        // flies on, as it does there.
+        // because `open()` is the call the reference makes. A `BadZipFile` never reaches
+        // this arm on either side: `docread.ts`'s `zipKind`/`openZip` catch it exactly
+        // where `docread.py`'s `_zip_kind`/`_open` do, and what leaves them is the
+        // sentence naming what the reader saw, never the zip module's.
         const refusal =
           e instanceof docread.DocumentReadError
             ? e
