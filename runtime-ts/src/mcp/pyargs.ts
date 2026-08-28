@@ -34,6 +34,8 @@ export interface FieldSpec {
   readonly name: string;
   readonly kind: 'str' | 'int' | 'dict' | 'listStr';
   readonly optional: boolean;
+  /** `Field(le=...)`: an inclusive ceiling, checked AFTER the lax int parse succeeds. */
+  readonly le?: bigint;
 }
 
 export interface ArgModel {
@@ -43,7 +45,21 @@ export interface ArgModel {
 }
 
 const req = (name: string, kind: FieldSpec['kind']): FieldSpec => ({ name, kind, optional: false });
-const opt = (name: string, kind: FieldSpec['kind']): FieldSpec => ({ name, kind, optional: true });
+const opt = (name: string, kind: FieldSpec['kind'], bound: { le?: bigint } = {}): FieldSpec => ({
+  name,
+  kind,
+  optional: true,
+  ...bound,
+});
+
+/**
+ * `assets/tools/bantamkit_read.json` `offset.maximum` — `Number.MAX_SAFE_INTEGER`, the
+ * largest integer `JSON.parse` reads back unchanged (F1). The reference binds it as
+ * `Annotated[int, Field(le=OFFSET_MAXIMUM)]`, so above it the refusal is pydantic's
+ * `less_than_equal` frame and the handler never runs; this side reads the JSON with its
+ * own decoder, so `9007199254740993` arrives exact and is refused with the same text.
+ */
+const OFFSET_MAXIMUM = 9007199254740991n;
 
 /**
  * One model per handler, mirroring `build_server`'s closures signature for signature.
@@ -100,11 +116,12 @@ export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
   // and the same validator. `offset` and `limit` are the lax `int` that `k` and `reserve`
   // are: `'2'`, `True` and `3.0` validate, `'2.5'` is `int_parsing`, `2.5` is
   // `int_from_float`, and an explicit `null` is the default. The manifest's `minimum` and
-  // `maximum` are advisory to the client; the handler clamps `limit` to `[1, 200]` and
-  // `offset` to `>= 0` itself, the way `memory_recall` clamps `k`.
+  // `maximum` are advisory to the client for `limit` and for `offset`'s floor; the handler
+  // clamps `limit` to `[1, 200]` and `offset` to `>= 0` itself, the way `memory_recall`
+  // clamps `k`. `offset`'s CEILING is bound in the model, as it is on the reference (F2).
   bantamkit_read: {
     model: 'bantamkit_readArguments',
-    fields: [req('path', 'str'), opt('part', 'str'), opt('offset', 'int'), opt('limit', 'int')],
+    fields: [req('path', 'str'), opt('part', 'str'), opt('offset', 'int', { le: OFFSET_MAXIMUM }), opt('limit', 'int')],
   },
 };
 
@@ -197,7 +214,19 @@ function checkField(spec: FieldSpec, value: PyValue): { value: PyValue } | RawEr
     }
     case 'int': {
       const checked = checkInt(spec.name, value);
-      return 'value' in checked ? checked : [checked];
+      if (!('value' in checked)) return [checked];
+      // `less_than_equal` names the ORIGINAL input, as every constraint error does.
+      if (spec.le !== undefined && checked.value.t === 'int' && checked.value.v > spec.le) {
+        return [
+          {
+            loc: spec.name,
+            type: 'less_than_equal',
+            msg: `Input should be less than or equal to ${spec.le}`,
+            input: value,
+          },
+        ];
+      }
+      return checked;
     }
   }
 }

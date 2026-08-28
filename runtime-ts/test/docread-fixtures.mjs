@@ -418,7 +418,40 @@ export function fixtures() {
     'blob.bin': lat('\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d'),
     'nosuffix': lat('just words\n'),
     'zstd.txt': lat('\x28\xb5\x2f\xfdxxxx'),
+    // F3 (job43): what expat refuses and this walk once accepted — a bare `&`, a reference
+    // with no semicolon, `&#0;`, a surrogate, a code point past Unicode — in a cell, in the
+    // shared strings, in a sheet name (so in workbook.xml), in an attribute, in a docx body.
+    // `rels-amp.xlsx` is the part that is NOT routed through `_parse`: an omission, never a
+    // refusal. `tab.xlsx` and `refs.xlsx` are the legal references, so the strictness cannot
+    // overshoot. `badcd.xlsx` is a valid archive whose EOCD central-directory offset is
+    // 0x7FFFFFF0, so every member's header offset goes negative: `[Errno 22]` there.
+    'amp.xlsx': xlsxBytes([['Sales', 'worksheets/sheet1.xml', row([inlineCell('A1', 'a & b')])]]),
+    'sst.xlsx': xlsxBytes([['Sales', 'worksheets/sheet1.xml', row([cell('A1', '0', 's')])]], { shared: ['a & b'] }),
+    'wb.xlsx': xlsxBytes([['a & b', 'worksheets/sheet1.xml', '']]),
+    'amp.docx': docxBytes('<w:p><w:r><w:t>a & b</w:t></w:r></w:p>'),
+    'nosemi.xlsx': xlsxBytes([['Sales', 'worksheets/sheet1.xml', row([inlineCell('A1', 'a &amp b')])]]),
+    'nul.xlsx': xlsxBytes([['Sales', 'worksheets/sheet1.xml', row([inlineCell('A1', 'a &#0; b')])]]),
+    'surrogate.xlsx': xlsxBytes([['Sales', 'worksheets/sheet1.xml', row([inlineCell('A1', 'a &#xD800; b')])]]),
+    'past-unicode.xlsx': xlsxBytes([['Sales', 'worksheets/sheet1.xml', row([inlineCell('A1', 'a &#x110000; b')])]]),
+    'attr-amp.xlsx': xlsxBytes([
+      ['Sales', 'worksheets/sheet1.xml', '<row r="1" x="a & b"><c r="A1" t="inlineStr"><is><t>ok</t></is></c></row>'],
+    ]),
+    'rels-amp.xlsx': xlsxBytes([['Sales', 'worksheets/sheet1.xml', row([inlineCell('A1', 'ok')])]], {
+      extra: { 'xl/worksheets/_rels/sheet1.xml.rels': '<Relationships><Relationship Id="x" Target="a & b"/></Relationships>' },
+    }),
+    'tab.xlsx': xlsxBytes([['Sales', 'worksheets/sheet1.xml', row([inlineCell('A1', 'a &#9; b &#xA; c')])]]),
+    'refs.xlsx': xlsxBytes([['Sales', 'worksheets/sheet1.xml', row([inlineCell('A1', 'a &amp; b &#38; &#x26; &lt;')])]]),
+    'badcd.xlsx': badCentralDirectoryOffset(
+      xlsxBytes([['Sales', 'worksheets/sheet1.xml', row([inlineCell('A1', 'ok')])]]),
+    ),
   };
+}
+
+/** The archive with its EOCD's central-directory offset overwritten as 0x7FFFFFF0. */
+export function badCentralDirectoryOffset(bytes) {
+  const out = Buffer.from(bytes);
+  out.writeUInt32LE(0x7ffffff0, out.length - 22 + 16);
+  return out;
 }
 
 /** Lay every fixture down under `dir`; returns `{name: absolute path}`. */

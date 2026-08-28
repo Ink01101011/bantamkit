@@ -35,11 +35,12 @@
  */
 
 import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
-import { basename, posix } from 'node:path';
+import { posix } from 'node:path';
 import { inflateRawSync } from 'node:zlib';
 
 import { BantamError } from './errors.js';
 import { HTML5_ENTITIES } from './htmlentities.js';
+import { PyOSError } from './memory/pyfs.js';
 
 export const NS_S = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}';
 export const NS_W = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}';
@@ -207,13 +208,28 @@ export function bytesRepr(buf: Uint8Array): string {
   return out + quote;
 }
 
-/** `str(Path(p))`: `//` and `.` segments collapsed, a trailing slash dropped, nothing resolved. */
+/**
+ * `str(Path(p))`: `//` and `.` segments collapsed, a trailing slash dropped, nothing resolved.
+ *
+ * This is ALSO the string every `fs` call in this module receives, because it is the string
+ * the reference hands the kernel: `Path('')` is `.` (the cwd — a directory, on the
+ * reference), and `Path('a/b/.')` is `a/b`, so `stat('README.md/.')` on the reference is a
+ * stat of the FILE, where a raw `statSync('README.md/.')` is ENOTDIR. Measured (job43 F3):
+ * `''` read as `no such file: .` here and `. is a directory, not a document` there.
+ */
 function pyPathStr(path: string): string {
   const absolute = path.startsWith('/');
   const parts = path.split('/').filter((seg) => seg !== '' && seg !== '.');
   const joined = parts.join('/');
   if (absolute) return '/' + joined;
   return joined || '.';
+}
+
+/** `Path(p).name`: the last component of the collapsed path — `''` for `''`, `.` and `/`. */
+function pyPathName(path: string): string {
+  const text = pyPathStr(path);
+  if (text === '.' || text === '/') return '';
+  return text.slice(text.lastIndexOf('/') + 1);
 }
 
 /** `pathlib.PurePath.suffix`: the last `.`-part of the name, none for `.bashrc` or `x.`. */
@@ -537,7 +553,7 @@ function startsWith(head: Uint8Array, magic: Uint8Array): boolean {
 }
 
 function zipKind(path: string, head: Uint8Array): Container {
-  const named = pySuffix(basename(path)).toLowerCase().replace(/^\.+/, '');
+  const named = pySuffix(pyPathName(path)).toLowerCase().replace(/^\.+/, '');
   let names: string[];
   let mimetype = '';
   try {
@@ -629,7 +645,7 @@ interface Stat {
 /** `Path.is_dir()`/`exists()`/`stat().st_size`, with pathlib's tolerance for a dead link. */
 function statPath(path: string): Stat {
   try {
-    const st = statSync(path);
+    const st = statSync(pyPathStr(path));
     return { exists: true, isDir: st.isDirectory(), size: st.size };
   } catch (err) {
     if (isOsError(err) && ['ENOENT', 'ENOTDIR', 'EBADF', 'ELOOP'].includes(err.code ?? '')) {
@@ -639,19 +655,28 @@ function statPath(path: string): Stat {
   }
 }
 
-/** `handle.read(n)`: at most `n` bytes from the front of the file, never the whole file. */
+/**
+ * `handle.read(n)`: at most `n` bytes from the front of the file, never the whole file.
+ *
+ * The count is what `read(2)` RETURNS, never `st_size`: a device or procfs file reports
+ * 0 bytes and still answers a read. Measured (job43 F3): `/dev/zero` was `an empty file
+ * (0 bytes)` here while the reference read 4096 zero bytes and named `not a recognised
+ * container`. The buffer grows a chunk at a time so a 12-byte file does not allocate the
+ * 16 MiB `extract_text` may ask for.
+ */
 function readPrefix(path: string, n: number): Buffer {
-  const fd = openSync(path, 'r');
+  const fd = openSync(pyPathStr(path), 'r');
   try {
-    const want = Math.min(n, statSync(path).size);
-    const buf = Buffer.allocUnsafe(want);
+    const chunks: Buffer[] = [];
     let total = 0;
-    while (total < want) {
-      const got = readSync(fd, buf, total, want - total, total);
+    while (total < n) {
+      const chunk = Buffer.allocUnsafe(Math.min(n - total, 1 << 20));
+      const got = readSync(fd, chunk, 0, chunk.length, total);
       if (got === 0) break;
+      chunks.push(chunk.subarray(0, got));
       total += got;
     }
-    return buf.subarray(0, total);
+    return chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, total);
   } finally {
     closeSync(fd);
   }
@@ -662,7 +687,7 @@ export function sniff(path: string): Container {
   const st = statPath(path);
   if (st.isDir) throw new DocumentReadError(`${pyPathStr(path)} is a directory, not a document`);
   if (!st.exists) throw new DocumentReadError(`no such file: ${pyPathStr(path)}`);
-  const named = pySuffix(basename(path)).toLowerCase().replace(/^\.+/, '');
+  const named = pySuffix(pyPathName(path)).toLowerCase().replace(/^\.+/, '');
   const head = readPrefix(path, HEAD_BYTES);
   if (head.length === 0) return new Container('empty', 'an empty file (0 bytes)', named);
   if (head[0] === 0x50 && head[1] === 0x4b) return zipKind(path, head);
@@ -694,11 +719,11 @@ export function sniff(path: string): Container {
 
 /** The one refusal sentence, and it names the CONTENT before it names anything else. */
 function refuse(path: string, container: Container, remedy: string): DocumentReadError {
-  const size = statSync(path).size;
+  const size = statSync(pyPathStr(path)).size;
   let lie = '';
   if (container.suffixLies) lie = `; its name says .${container.named}, which its bytes do not`;
   return new DocumentReadError(
-    `cannot read ${basename(path)}: it is ${container.what}, ${size} bytes on disk${lie}. ${remedy}`,
+    `cannot read ${pyPathName(path)}: it is ${container.what}, ${size} bytes on disk${lie}. ${remedy}`,
   );
 }
 
@@ -770,7 +795,7 @@ export class ZipReader {
   }
 
   static open(path: string): ZipReader {
-    return ZipReader.from(readFileSync(path));
+    return ZipReader.from(readFileSync(pyPathStr(path)));
   }
 
   static from(data: Buffer): ZipReader {
@@ -806,6 +831,9 @@ export class ZipReader {
     const concat = location - sizeCd - offsetCd;
     const entries: ZipEntry[] = [];
     let pos = offsetCd + concat;
+    // `_RealGetContents`: `if self.start_dir < 0: raise BadZipFile(...)`. Without it the
+    // first `readUInt32LE` below throws a `RangeError` carrying `ERR_OUT_OF_RANGE`.
+    if (pos < 0) throw new BadZipFile('Bad offset for central directory');
     for (let k = 0; k < count; k += 1) {
       if (pos + 46 > n || data.readUInt32LE(pos) !== 0x02014b50) {
         throw new BadZipFile('Bad magic number for central directory');
@@ -871,6 +899,14 @@ export class ZipReader {
     if (entry === undefined) throw new RangeError(`There is no item named ${pyRepr(name)} in the archive`);
     const at = entry.headerOffset + this.concat;
     const data = this.data;
+    // `ZipFile.open` seeks to `header_offset`, and a NEGATIVE offset — an EOCD whose
+    // central-directory offset overshoots, so `concat` is a large negative number — is
+    // `fp.seek(-n)`, which the C library refuses as `OSError(EINVAL)`. The reference lets
+    // that reach the model as `[Errno 22] Invalid argument`, no filename (measured, job43
+    // F3, EOCD offset 0x7FFFFFF0). This port read from a `Buffer`, so the same archive
+    // threw `RangeError: The value of "offset" is out of range ...` and the handler printed
+    // `[Errno 0] ERR_OUT_OF_RANGE`.
+    if (at < 0) throw new PyOSError(22, 'EINVAL', 'Invalid argument', null);
     if (at + 30 > data.length || data.readUInt32LE(at) !== 0x04034b50) {
       throw new BadZipFile('Bad magic number for file header');
     }
@@ -896,8 +932,28 @@ function openZip(path: string): ZipReader {
     if (!(err instanceof BadZipFile)) throw err;
     const head = readPrefix(path, 8);
     throw new DocumentReadError(
-      `${basename(path)} is not a zip archive, so it is not an OOXML document; ` +
-        `it starts with ${bytesRepr(head)} (${statSync(path).size} bytes on disk)`,
+      `${pyPathName(path)} is not a zip archive, so it is not an OOXML document; ` +
+        `it starts with ${bytesRepr(head)} (${statSync(pyPathStr(path)).size} bytes on disk)`,
+    );
+  }
+}
+
+/**
+ * `_parse`: one part this reader cannot do without, or the refusal in the reader's words.
+ *
+ * The sentence carries NO line, column or parser phrase, on purpose: the reference's expat
+ * and this hand-written walk would never agree on one, and the sentence is what the model
+ * reads. `relTargets` and `dateFormats` are not routed through here, as `_rel_targets` and
+ * `_date_formats` are not: a broken rels or styles part costs an omission or a date format,
+ * never the rows.
+ */
+function parsePart(data: Uint8Array, member: string, path: string): XmlElement {
+  try {
+    return parseXml(data);
+  } catch (err) {
+    if (!(err instanceof XmlParseError)) throw err;
+    throw new DocumentReadError(
+      `${pyPathName(path)} is a zip but its ${member} is not well-formed XML, so this reader cannot parse it`,
     );
   }
 }
@@ -905,7 +961,7 @@ function openZip(path: string): ZipReader {
 function readMember(zf: ZipReader, name: string, path: string): Buffer {
   if (!zf.has(name)) {
     const sample = pySorted(zf.namelist()).slice(0, 8).join(', ') || '(empty archive)';
-    throw new DocumentReadError(`${basename(path)} is a zip but has no ${name}; it contains: ${sample}`);
+    throw new DocumentReadError(`${pyPathName(path)} is a zip but has no ${name}; it contains: ${sample}`);
   }
   return zf.read(name);
 }
@@ -956,15 +1012,57 @@ const XML_ENTITIES = new Map([
   ['apos', "'"],
 ]);
 
+/** XML 1.0 `Char`: what a character reference may name. `&#0;` and a surrogate may not. */
+function isXmlChar(cp: number): boolean {
+  return (
+    cp === 0x9 ||
+    cp === 0xa ||
+    cp === 0xd ||
+    (cp >= 0x20 && cp <= 0xd7ff) ||
+    (cp >= 0xe000 && cp <= 0xfffd) ||
+    (cp >= 0x10000 && cp <= 0x10ffff)
+  );
+}
+
+/**
+ * Text and attribute values with their references expanded, or `XmlParseError`.
+ *
+ * Every `&` MUST begin a well-formed reference — expat says `not well-formed (invalid
+ * token)` for a bare one, `&amp b` without its semicolon, `&#0;`, `&#xD800;` (a surrogate)
+ * and `&#x110000;` (past Unicode). Until job43 F3 this port accepted all of them: `a & b`
+ * came back as a row where the reference refused the whole part, and `&#x110000;` threw a
+ * `RangeError` out of `String.fromCodePoint`. The five predefined names are the only named
+ * entities an OOXML part may use without a DTD, which this reader does not read.
+ */
 function xmlUnescape(text: string): string {
   if (!text.includes('&')) return text;
-  return text.replace(/&(#x[0-9a-fA-F]+|#[0-9]+|[A-Za-z_][A-Za-z0-9_.-]*);/g, (whole, body: string) => {
-    if (body.startsWith('#x')) return String.fromCodePoint(parseInt(body.slice(2), 16));
-    if (body.startsWith('#')) return String.fromCodePoint(parseInt(body.slice(1), 10));
-    const known = XML_ENTITIES.get(body);
-    if (known === undefined) throw new XmlParseError(`undefined entity: ${whole}`);
-    return known;
-  });
+  let out = '';
+  let i = 0;
+  for (;;) {
+    const amp = text.indexOf('&', i);
+    if (amp < 0) return out + text.slice(i);
+    out += text.slice(i, amp);
+    const semi = text.indexOf(';', amp + 1);
+    if (semi < 0) throw new XmlParseError('not well-formed (invalid token)');
+    const body = text.slice(amp + 1, semi);
+    let cp: number;
+    if (/^#x[0-9a-fA-F]+$/.test(body)) cp = parseInt(body.slice(2), 16);
+    else if (/^#[0-9]+$/.test(body)) cp = parseInt(body.slice(1), 10);
+    else {
+      const known = XML_ENTITIES.get(body);
+      if (known === undefined) {
+        throw new XmlParseError(
+          /^[A-Za-z_:][-.:A-Za-z0-9_]*$/.test(body) ? `undefined entity: &${body};` : 'not well-formed (invalid token)',
+        );
+      }
+      out += known;
+      i = semi + 1;
+      continue;
+    }
+    if (!isXmlChar(cp)) throw new XmlParseError('reference to invalid character number');
+    out += String.fromCodePoint(cp);
+    i = semi + 1;
+  }
 }
 
 /**
@@ -1262,10 +1360,10 @@ export function columnIndex(ref: string | undefined, fallback: number): number {
   return index ? index - 1 : fallback;
 }
 
-function sharedStrings(zf: ZipReader): string[] {
+function sharedStrings(zf: ZipReader, path: string): string[] {
   if (!zf.has('xl/sharedStrings.xml')) return [];
   const out: string[] = [];
-  for (const si of parseXml(zf.read('xl/sharedStrings.xml')).children) {
+  for (const si of parsePart(zf.read('xl/sharedStrings.xml'), 'xl/sharedStrings.xml', path).children) {
     const runs: string[] = [];
     for (const child of si.children) {
       if (child.tag === NS_S + 't') runs.push(child.text);
@@ -1305,14 +1403,14 @@ function cellText(cell: XmlElement, shared: readonly string[]): string {
 }
 
 function sheetRows(
-  data: Uint8Array,
+  root: XmlElement,
   shared: readonly string[],
   dateStyles: readonly string[] = [],
 ): [string[], Omission[]] {
   const rows: string[] = [];
   let blank = 0;
   const dated = new Map<string, Map<number, number>>();
-  for (const row of parseXml(data).iter(NS_S + 'row')) {
+  for (const row of root.iter(NS_S + 'row')) {
     const cells = new Map<number, string>();
     let position = 0;
     for (const cell of row.iter(NS_S + 'c')) {
@@ -1362,9 +1460,10 @@ function sheetRows(
 }
 
 function worksheetTargets(zf: ZipReader, path: string): [string, string | undefined][] {
-  const workbook = parseXml(readMember(zf, 'xl/workbook.xml', path));
+  const workbook = parsePart(readMember(zf, 'xl/workbook.xml', path), 'xl/workbook.xml', path);
   const rels = new Map<string | undefined, string>();
-  for (const rel of parseXml(readMember(zf, 'xl/_rels/workbook.xml.rels', path)).children) {
+  const member = 'xl/_rels/workbook.xml.rels';
+  for (const rel of parsePart(readMember(zf, member, path), member, path).children) {
     const target = rel.get('Target') ?? '';
     if (target.startsWith('/')) rels.set(rel.get('Id'), target.replace(/^\/+/, ''));
     else rels.set(rel.get('Id'), posix.normalize(posix.join('xl', target)));
@@ -1393,7 +1492,7 @@ function mediaOmission(media: Map<string, number>): Omission[] {
 
 export function extractXlsx(path: string): Document {
   const zf = openZip(path);
-  const shared = sharedStrings(zf);
+  const shared = sharedStrings(zf, path);
   const dateStyles = dateFormats(zf);
   const media = mediaIndex(zf);
   const parts: Part[] = [];
@@ -1402,7 +1501,8 @@ export function extractXlsx(path: string): Document {
     if (target === undefined) {
       throw new DocumentReadError(`sheet ${pyRepr(name)} has no resolvable worksheet part`);
     }
-    const [rows, sheetOmissions] = sheetRows(readMember(zf, target, path), shared, dateStyles);
+    const sheet = parsePart(readMember(zf, target, path), target, path);
+    const [rows, sheetOmissions] = sheetRows(sheet, shared, dateStyles);
     const omissions = [...mediaOmission(anchoredMedia(zf, target, media)), ...sheetOmissions];
     parts.push(new Part(name, index, rows, omissions));
     index += 1;
@@ -1412,7 +1512,7 @@ export function extractXlsx(path: string): Document {
 
 export function extractDocx(path: string): Document {
   const zf = openZip(path);
-  const root = parseXml(readMember(zf, 'word/document.xml', path));
+  const root = parsePart(readMember(zf, 'word/document.xml', path), 'word/document.xml', path);
   const media = mediaIndex(zf);
   const anchored = mediaOmission(anchoredMedia(zf, 'word/document.xml', media));
   const rows: string[] = [];
@@ -2042,7 +2142,7 @@ function decodedBody(part: MimePart): string {
 }
 
 export function extractMhtml(path: string): Document {
-  const message = parseMessage(splitLines(readFileSync(path).toString('latin1')), 'text/plain');
+  const message = parseMessage(splitLines(readFileSync(pyPathStr(path)).toString('latin1')), 'text/plain');
   const bodies: [string, string][] = [];
   const skipped = new Map<string, number>();
   let skippedBytes = 0;
@@ -2075,7 +2175,7 @@ export function extractMhtml(path: string): Document {
 }
 
 export function extractHtml(path: string): Document {
-  const raw = readFileSync(path);
+  const raw = readFileSync(pyPathStr(path));
   const markup = new TextDecoder('utf-8', { fatal: false, ignoreBOM: true }).decode(raw);
   const doc = new Document('html', [new Part('document', 0, htmlRows(markup))]);
   return nonempty(doc, path, 'its markup carried no text outside script and style');
@@ -2090,7 +2190,7 @@ function plainRows(text: string): string[] {
 function nonempty(doc: Document, path: string, why: string): Document {
   if (doc.parts.some((part) => part.rows.length)) return doc;
   throw new DocumentReadError(
-    `cannot read ${basename(path)}: it is a ${doc.kind} container but ${why}, so this reader has ` +
+    `cannot read ${pyPathName(path)}: it is a ${doc.kind} container but ${why}, so this reader has ` +
       'no text for it — it is not an empty document',
   );
 }
@@ -2104,7 +2204,7 @@ function textRows(text: string): string[] {
 }
 
 export function extractText(path: string): Document {
-  const size = statSync(path).size;
+  const size = statSync(pyPathStr(path)).size;
   let raw = readPrefix(path, TEXT_MAX_BYTES + 1);
   const capped = raw.length > TEXT_MAX_BYTES;
   if (capped) raw = raw.subarray(0, TEXT_MAX_BYTES);

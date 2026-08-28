@@ -21,7 +21,7 @@
  * UTF-8 scanner's `reason` strings, quoted-printable's soft breaks, `repr()`.
  */
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -42,6 +42,7 @@ const {
   decodeQuotedPrintable,
   extract,
   page,
+  parseXml,
   pyRepr,
   sniff,
   unescape,
@@ -69,6 +70,9 @@ function dump(path) {
     doc = extract(path);
   } catch (err) {
     if (err instanceof DocumentReadError) return { error: 'DocumentReadError', message: err.message };
+    // `except (DocumentReadError, OSError)` in the reference's handler: `badcd.xlsx` is the
+    // `OSError` arm, `[Errno 22] Invalid argument`, and `dump_py.py` prints it the same way.
+    if (err.name === 'OSError') return { error: 'OSError', message: err.message };
     throw err;
   }
   return {
@@ -225,6 +229,59 @@ test('the zip reader inflates a deflated member and checks its CRC', () => {
   bytes[30 + 1] ^= 0xff; // one byte of the stored data
   assert.throws(() => ZipReader.from(bytes).read('x'), /Bad CRC-32/);
   assert.throws(() => ZipReader.from(Buffer.from('PK\x03\x04 nothing')), /not a zip file/);
+});
+
+test('the zip reader refuses a negative member offset the way a seek(-n) does, with no filename', () => {
+  // The fixture with the EOCD central-directory offset overwritten as 0x7FFFFFF0: the central
+  // directory itself is still found (`start_dir = location - size_cd`), but every header offset
+  // is `header_offset + concat` with `concat` hugely negative. The reference: `[Errno 22]
+  // Invalid argument` (measured, the F3 commit message); before F3 this port threw
+  // `RangeError [ERR_OUT_OF_RANGE]` out of `readUInt32LE`.
+  const zf = ZipReader.open(paths['badcd.xlsx']);
+  assert.deepEqual(zf.namelist().slice(0, 2), ['[Content_Types].xml', '_rels/.rels']);
+  assert.throws(
+    () => zf.read('xl/workbook.xml'),
+    (err) => err.name === 'OSError' && err.errno === 22 && err.message === '[Errno 22] Invalid argument',
+  );
+  // A central directory that starts before byte 0 is `BadZipFile`, which `openZip` turns
+  // into the not-a-zip sentence — the reference's `_RealGetContents` check, not a `RangeError`.
+  const bytes = zipBytes([['x', 'payload']]);
+  bytes.writeUInt32LE(0xffffffff, bytes.length - 22 + 12); // size_cd > location
+  assert.throws(() => ZipReader.from(bytes), /Bad offset for central directory/);
+});
+
+test('the XML walk refuses every reference expat refuses, and expands every one it accepts', () => {
+  const doc = (text) => parseXml(Buffer.from(`<a>${text}</a>`)).text;
+  assert.equal(doc('a &amp; b &#38; &#x26; &lt; &gt; &quot; &apos; &#9;'), 'a & b & & < > " \' \t');
+  assert.equal(doc('&#x1F600;'), '\u{1F600}');
+  for (const bad of ['a & b', 'a &amp b', '&#0;', '&#xD800;', '&#xDFFF;', '&#x110000;', '&#xFFFE;', '&nbsp;', '&;', '& amp;']) {
+    assert.throws(() => doc(bad), (err) => err.name === 'XmlParseError', bad);
+  }
+  // In an attribute value too, which is where expat found `attr-amp.xlsx`'s.
+  assert.throws(() => parseXml(Buffer.from('<a x="1 & 2"/>')), (err) => err.name === 'XmlParseError');
+  assert.equal(parseXml(Buffer.from('<a x="1 &amp; 2"/>')).get('x'), '1 & 2');
+});
+
+test('the stat target and the displayed name are Path(p) and Path(p).name', () => {
+  // `Path('')` is `.`, the cwd — a directory; `statSync('')` is ENOENT. Measured (F3):
+  // `. is a directory, not a document` there, `no such file: .` here.
+  assert.throws(() => extract(''), { message: '. is a directory, not a document' });
+  // A trailing `.` component is dropped by pathlib, so `nosuffix/.` is the FILE; a raw stat
+  // of `file/.` is ENOTDIR. `a/b/.` names `b`, not `.`.
+  assert.deepEqual(dump(paths['nosuffix'] + '/.'), dump(paths['nosuffix']));
+  assert.throws(() => extract(join(dir, 'missing', 'b', '.')), { message: `no such file: ${join(dir, 'missing', 'b')}` });
+  assert.throws(() => extract(paths['sheet.xls'] + '/.'), {
+    message: /^cannot read sheet\.xls: it is an OLE2 compound file/,
+  });
+});
+
+test('a device file is sniffed by what read() returns, not by st_size', { skip: !existsSync('/dev/zero') }, () => {
+  // The reference reads 4096 zero bytes off `/dev/zero`; `st_size` is 0. Measured (F3): the
+  // port said `an empty file (0 bytes)` and the reference said what follows.
+  assert.throws(() => extract('/dev/zero'), {
+    message:
+      "cannot read zero: it is not a recognised container; it starts with b'\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00', 0 bytes on disk. this reader reads text, xlsx, docx, pdf, html and mhtml directly, and doc and rtf through /usr/bin/textutil",
+  });
 });
 
 test('unescape follows html.unescape, legacy names and invalid code points included', () => {

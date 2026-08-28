@@ -51,7 +51,7 @@ import {
 import * as docread from '../docread.js';
 import { EventLog, type DetailValue } from '../eventlog.js';
 import type { Memory } from '../memory/component.js';
-import { asPyOSError, pyReadText } from '../memory/pyfs.js';
+import { PyOSError, asPyOSError, pyReadText } from '../memory/pyfs.js';
 import { fromJs, parseJson, reprValue, toJs, type PyValue } from '../pyjson.js';
 import * as shiftwork from '../shiftwork.js';
 import { buildIdentity, SERVER_NAME } from './identity.js';
@@ -463,8 +463,12 @@ function runTool(
         // this arm on either side: `docread.ts`'s `zipKind`/`openZip` catch it exactly
         // where `docread.py`'s `_zip_kind`/`_open` do, and what leaves them is the
         // sentence naming what the reader saw, never the zip module's.
+        // A `PyOSError` the reader raised itself is already the reference's sentence —
+        // `[Errno 22] Invalid argument` from a zip whose member offset is negative, with
+        // NO filename, because the `seek` that fails there has none. Re-wrapping it would
+        // append `: '<path>'`.
         const refusal =
-          e instanceof docread.DocumentReadError
+          e instanceof docread.DocumentReadError || e instanceof PyOSError
             ? e
             : e instanceof Error && typeof (e as NodeJS.ErrnoException).code === 'string'
               ? asPyOSError(e, path, undefined, 'crt')

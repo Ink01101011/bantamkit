@@ -23,7 +23,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
 
-import { docxBytes, inlineCell, para, row, xlsxBytes } from './docread-fixtures.mjs';
+import { badCentralDirectoryOffset, docxBytes, inlineCell, para, row, xlsxBytes } from './docread-fixtures.mjs';
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = dirname(packageRoot);
@@ -480,6 +480,54 @@ test('bantamkit_read refuses a non-string path and a non-integer limit in pydant
       'limit\n' +
       "  Input should be a valid integer, unable to parse string as an integer [type=int_parsing, input_value='2.5', input_type=str]\n" +
       '    For further information visit https://errors.pydantic.dev/2.13/v/int_parsing',
+  );
+});
+
+test('bantamkit_read: a sheet with a bare ampersand is a document_error, not an expat frame', async () => {
+  // `runtime-py/tests/test_bantamkit_read_tool.py::test_a_sheet_with_a_bare_ampersand_...`
+  const dir = freshStore();
+  const path = join(dir, 'amp.xlsx');
+  writeFileSync(path, xlsxBytes([['Sales', 'worksheets/sheet1.xml', row([inlineCell('A1', 'a & b')])]]));
+  assert.equal(
+    await readOne({ path }),
+    'error: amp.xlsx is a zip but its xl/worksheets/sheet1.xml is not well-formed XML, so this reader cannot parse it',
+  );
+});
+
+test('bantamkit_read: a zip whose member offsets are negative is the OSError sentence with no filename', async () => {
+  const dir = freshStore();
+  const path = join(dir, 'badcd.xlsx');
+  writeFileSync(path, badCentralDirectoryOffset(xlsxBytes([['Sales', 'worksheets/sheet1.xml', row([inlineCell('A1', 'ok')])]])));
+  assert.equal(await readOne({ path }), 'error: [Errno 22] Invalid argument');
+});
+
+test('bantamkit_read: a part key of 4301 digits is the unknown-part sentence, not a ValueError', async () => {
+  // `test_a_part_key_of_4301_digits_is_the_unknown_part_sentence_not_a_value_error`
+  const path = workbookFixture(freshStore());
+  const key = '1'.repeat(4301);
+  assert.equal(await readOne({ path, part: key }), `error: no part named "${key}" in ${path}; it has: Sales, Empty`);
+});
+
+test('bantamkit_read: an offset past 2^53 is refused by the schema and the boundary is not', async () => {
+  // `test_an_offset_past_2_pow_53_is_refused_by_the_schema_and_the_boundary_is_not`. The
+  // request is framed by hand so the integer reaches the wire EXACT — `JSON.stringify` would
+  // round 9007199254740993 to ...992 before the server's own decoder ever saw it.
+  const path = workbookFixture(freshStore());
+  const args = `{"path":${JSON.stringify(path)},"part":"Sales","offset":9007199254740993}`;
+  const frame = `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"bantamkit_read","arguments":${args}}}`;
+  const { lines } = await session([INIT, INITIALIZED, { id: 2, __raw: frame }], { args: ['--store', freshStore()] });
+  const refused = byId(lines, 2).result;
+  assert.equal(refused.isError, true);
+  assert.equal(
+    refused.content[0].text,
+    'Error executing tool bantamkit_read: 1 validation error for bantamkit_readArguments\n' +
+      'offset\n' +
+      '  Input should be less than or equal to 9007199254740991 [type=less_than_equal, input_value=9007199254740993, input_type=int]\n' +
+      '    For further information visit https://errors.pydantic.dev/2.13/v/less_than_equal',
+  );
+  assert.equal(
+    await readOne({ path, part: 'Sales', offset: 9007199254740991 }),
+    'error: offset 9007199254740991 is past the end of "Sales", which has 3 rows numbered 0 to 2',
   );
 });
 

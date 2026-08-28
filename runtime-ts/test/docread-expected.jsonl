@@ -75,3 +75,16 @@
 {"fixture": "wof2note.md", "kind": "text", "text_bytes": 31, "parts": [{"name": "document", "index": 0, "row_count": 1, "text_bytes": 31, "rows": ["wOF2 is a font container format"], "omissions": []}], "omissions": []}
 {"fixture": "zstd.txt", "error": "DocumentReadError", "message": "cannot read zstd.txt: it is a zstd-compressed stream, 8 bytes on disk. this reader reads text, xlsx, docx, pdf, html and mhtml directly, and doc and rtf through /usr/bin/textutil"}
 {"fixture": "missing.txt", "error": "DocumentReadError", "message": "no such file: {dir}/missing.txt"}
+{"fixture": "amp.xlsx", "error": "DocumentReadError", "message": "amp.xlsx is a zip but its xl/worksheets/sheet1.xml is not well-formed XML, so this reader cannot parse it"}
+{"fixture": "sst.xlsx", "error": "DocumentReadError", "message": "sst.xlsx is a zip but its xl/sharedStrings.xml is not well-formed XML, so this reader cannot parse it"}
+{"fixture": "wb.xlsx", "error": "DocumentReadError", "message": "wb.xlsx is a zip but its xl/workbook.xml is not well-formed XML, so this reader cannot parse it"}
+{"fixture": "amp.docx", "error": "DocumentReadError", "message": "amp.docx is a zip but its word/document.xml is not well-formed XML, so this reader cannot parse it"}
+{"fixture": "nosemi.xlsx", "error": "DocumentReadError", "message": "nosemi.xlsx is a zip but its xl/worksheets/sheet1.xml is not well-formed XML, so this reader cannot parse it"}
+{"fixture": "nul.xlsx", "error": "DocumentReadError", "message": "nul.xlsx is a zip but its xl/worksheets/sheet1.xml is not well-formed XML, so this reader cannot parse it"}
+{"fixture": "surrogate.xlsx", "error": "DocumentReadError", "message": "surrogate.xlsx is a zip but its xl/worksheets/sheet1.xml is not well-formed XML, so this reader cannot parse it"}
+{"fixture": "past-unicode.xlsx", "error": "DocumentReadError", "message": "past-unicode.xlsx is a zip but its xl/worksheets/sheet1.xml is not well-formed XML, so this reader cannot parse it"}
+{"fixture": "attr-amp.xlsx", "error": "DocumentReadError", "message": "attr-amp.xlsx is a zip but its xl/worksheets/sheet1.xml is not well-formed XML, so this reader cannot parse it"}
+{"fixture": "rels-amp.xlsx", "kind": "xlsx", "text_bytes": 2, "parts": [{"name": "Sales", "index": 0, "row_count": 1, "text_bytes": 2, "rows": ["ok"], "omissions": []}], "omissions": []}
+{"fixture": "tab.xlsx", "kind": "xlsx", "text_bytes": 9, "parts": [{"name": "Sales", "index": 0, "row_count": 1, "text_bytes": 9, "rows": ["a   b   c"], "omissions": []}], "omissions": []}
+{"fixture": "refs.xlsx", "kind": "xlsx", "text_bytes": 11, "parts": [{"name": "Sales", "index": 0, "row_count": 1, "text_bytes": 11, "rows": ["a & b & & <"], "omissions": []}], "omissions": []}
+{"fixture": "badcd.xlsx", "error": "OSError", "message": "[Errno 22] Invalid argument"}
