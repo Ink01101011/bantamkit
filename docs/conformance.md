@@ -30,7 +30,7 @@ sides, not by reading either.
 |---|---|
 | `cli` | the `bantamkit-mcp` command line as a process: stdout, stderr, exit code |
 | `codec` | fact-file frontmatter: emit byte-identically, and parse each other |
-| `docread` | the reader as a library: `sniff`, the rows per part, the omission dicts, every `DocumentReadError` sentence and the `page()` window over the same 82 files, plus the pdf/doc/rtf rulings with their refusal-bit companions |
+| `docread` | the reader as a library: `sniff`, the rows per part, the omission dicts, every `DocumentReadError` sentence and the `page()` window over the same 99 paths (96 files, plus `''`, `a/b/.` and `/dev/zero`, which are not), plus the pdf/doc/rtf rulings and the utf-7 ruling with their refusal-bit companions |
 | `mcpreport` | `--mcp-report` as a process, over one synthetic host-log/event-log pair |
 | `memorycli` | `bantamkit-memory` against `python -m bantamkit.memory` as processes: the transcript of every step, the exit codes, and the store afterwards |
 | `recall-strings` | the binding layer: every sentence an empty recall can produce |
@@ -38,7 +38,7 @@ sides, not by reading either.
 | `statusline` | `--statusline` as a process, over synthetic event logs ([statusline.md](statusline.md)) |
 | `store` | save/recall/index: the directory after the call, byte for byte |
 | `validate` | the validator: every sentence a schema failure can produce |
-| `wire` | the MCP surface: ten tools, one prompt, two templates, and the frames themselves — including a `bantamkit_read` session over the reader's files and its event-log records |
+| `wire` | the MCP surface: ten tools, one prompt, two templates, and the frames themselves — including a `bantamkit_read` session over the reader's files and its event-log records, and a `read-edges` session over the inputs F2/F3 fixed (bare `&`, a bad EOCD offset, a 4301-digit key, `''`, `a/b/.`, offset 2**53+1 sent raw, `/dev/zero`) |
 
 `cli`, `mcpreport`, `memorycli` and `statusline` are the odd ones out and deliberately so:
 every other suite compares two library functions, and that comparison cannot see which stream
@@ -78,7 +78,10 @@ the refusal bit** alongside the ruling that compares the words. Both exist today
 `checkSchema`, for the constructor-less YAML tags, and for the reader's pdf/doc/rtf rulings
 in `docread` and `wire` — where each ruled fixture also carries a literal saying which side
 is *required* to refuse it, so a port that quietly started reading a PDF fails as loudly as
-a reference that stopped.
+a reference that stopped. The utf-7 ruling in `docread` is the inverse shape: both sides
+*read* the file and the row differs by one codepoint, so its companion pins that neither
+side refuses and that everything around the ruled row (kind, part count, row count,
+omissions) still matches.
 
 ### Rulings have to be shown to have teeth
 
@@ -116,7 +119,7 @@ PASS: 4878 cases, 1046 byte-identical, 3203 exact-string, 629 structural, 100 ru
 4874 once the `memory-compact` wire session landed — 33 cases — and 4878 after its review
 hardened four of them, all on 2026-08-27; 4880 at `ce46fc3`, then 5512 on 2026-08-28 when
 the `docread` suite landed — 575 cases, 8 ruled — and the `wire` suite grew from 232 to 289
-with the `bantamkit_read` sessions, 7 of them ruled.)
+with the `bantamkit_read` sessions, 7 of them ruled; 5600 at c8a62aa with 2 failures — the `badcd.xlsx` constructor-name artefact in the docread suite's `errorOf`, fixed in F4 — and 5760 after F4 on 2026-08-28: `docread` 633 -> 774 (9 ruled, the utf-7 ruling added), `wire` 289 -> 308 with the `read-edges` session; 116 ruled-different, 0 failures.)
 
 **The notes are part of the result, not decoration.** Several measurements this project
 depends on exist only there — the live index byte count, the corpus SHA on both sides, how

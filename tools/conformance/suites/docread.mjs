@@ -6,7 +6,8 @@
  * sentence — except for the three kinds the Node half cannot read (`pdf`, `doc`, `rtf`),
  * each of which is a `ruling` below with its reason and a companion that pins the refusal
  * bit rather than the words (docs/conformance.md, "a ruling pins the wording, not the
- * outcome").
+ * outcome") — and except one codec, utf-7, which CPython has and WHATWG does not: that
+ * ruling is over two READS, and its companion pins that neither side refuses.
  *
  * THE FIXTURES ARE R3's. `runtime-ts/test/docread-fixtures.mjs` lays down the 77 files
  * `runtime-py/tests/test_docread.py` builds with `zipfile` — the xlsx traps (shared strings,
@@ -86,6 +87,9 @@ const RULED = {
   'sheet.xls': { kind: 'doc', python: () => true },
   'bad.rtf': { kind: 'rtf', python: () => true },
   'note.rtf': { kind: 'rtf', python: (textutil) => !textutil },
+  // The one ruling where NEITHER side refuses: both read the file to one row, and the row
+  // differs by one codepoint. `node: false` is what makes the companion below "both read".
+  'utf7.eml': { kind: 'utf7', python: () => false, node: false },
 };
 
 const RULING_REASON = {
@@ -105,6 +109,14 @@ const RULING_REASON = {
     'name where it does not; the port always refuses with "rtf is read through /usr/bin/textutil ' +
     'by the Python server and not by the Node server; see docs/porting.md". ' +
     'docs/porting.md, "pdf, doc and rtf on Node".',
+  utf7:
+    'a MIME text part declaring `charset=utf-7` is decoded by the reference through CPython\'s ' +
+    'codec registry, which has utf-7, so `+AOk-` becomes `é`; the port decodes through the WHATWG ' +
+    'Encoding Standard\'s `TextDecoder`, whose registry deliberately has no utf-7, so the label ' +
+    'is not recognised and the bytes are read as UTF-8: `+AOk-` stays `+AOk-`. Both sides READ ' +
+    'the file to one row; the row differs by that one token. Porting CPython\'s codec set into ' +
+    'runtime-ts is not a fix — it is a second codec registry to keep in step with the first. ' +
+    'docs/porting.md, "utf-7 on Node".',
 };
 
 export async function run(ctx) {
@@ -121,12 +133,28 @@ export async function run(ctx) {
     'tiny.pdf': tinyPdf('Hello conformance'),
     'bad.rtf': Buffer.from('{\\rtf1\x00\x00\xff\xfe garbage', 'latin1'),
     'boundary.txt': fixtures.straddling(2),
+    // A MIME text part that names a codec CPython has and WHATWG does not — the utf-7 ruling.
+    'utf7.eml': Buffer.from('MIME-Version: 1.0\nContent-Type: text/plain; charset="utf-7"\nContent-Transfer-Encoding: 7bit\n\ncaf+AOk- done\n', 'latin1'),
   };
   for (const [file, bytes] of Object.entries(extra)) {
     writeFileSync(join(bed, file), bytes);
     paths[file] = join(bed, file);
   }
   const notes = [];
+  // THE PATHS THAT ARE NOT FILES, handed to both readers as the caller typed them. `''` is
+  // `Path('')`, which is `.`, the harness's cwd, a directory; `a/b/.` is `Path('a/b/.')`, which
+  // `pathlib` collapses to `a/b` BEFORE the file is looked for, so the sentence names `a/b`
+  // and not what was typed — both resolve against the same cwd because `run.mjs` spawns the
+  // reference in its own. `/dev/zero` is a character device that reads as endless NULs and
+  // stats as 0 bytes: the sniff must name the first twelve bytes and stop there rather than
+  // read to an end that never comes. It has no Windows counterpart, so it is skipped there.
+  paths['empty-path'] = '';
+  paths['dot-tail'] = 'a/b/.';
+  if (process.platform === 'win32') {
+    notes.push('/dev/zero has no Windows counterpart; the character-device sniff is NOT MEASURED HERE');
+  } else {
+    paths['dev-zero'] = '/dev/zero';
+  }
   // The host's own `ls`: a Mach-O on macOS, an ELF on Linux, a PE on Windows CI where it
   // is `C:\Program Files\Git\usr\bin\ls.exe` or absent. Whatever it is, it is a real binary
   // neither side should mistake for text, and both must name the same first twelve bytes.
@@ -172,6 +200,15 @@ export async function run(ctx) {
     { name: 'a docx body', path: paths['d.docx'], part: 'document', offset: 1, limit: 1 },
     { name: 'an unreadable file has no page', path: paths['pic.png'], part: 'document' },
     { name: 'a missing file has no page', path: paths['missing.txt'], part: 'document' },
+    // 4301 digits is one over CPython's default `int()` conversion limit (sys.int_info.
+    // str_digits_check_threshold, 4300): the reference once let that `ValueError` escape as
+    // a different sentence from `--1`'s. Now it is a name that is not a part, on both sides.
+    { name: 'a 4301-digit key is a name that is not a part, not an int() limit error', path: p, part: '1'.repeat(4301) },
+    // 2**53 is the largest offset the wire schema admits (`maximum: 9007199254740991` is
+    // 2**53 - 1; the value here is one past it, so the LIBRARY is what is being asked). The
+    // library answers an empty window and `next_offset: null` on both sides; the schema
+    // refusal for the same number on the wire is the `read-edges` session in wire.mjs.
+    { name: 'offset 2**53 at the library is an empty window on both sides, not a refusal', path: p, part: 'data', offset: 2 ** 53, limit: 50 },
   ];
 
   // ------------------------------------------------------------------- the two sides
@@ -181,7 +218,11 @@ export async function run(ctx) {
     pages: pages.map(({ name: _n, ...spec }) => spec),
   });
 
-  const errorOf = (e) => ({ error: { type: e?.constructor?.name ?? 'Error', message: String(e?.message ?? e) } });
+  // `e.name` before the constructor: the port's `PyOSError` carries CPython's class name
+  // (`OSError`, `NotADirectoryError`, …) in `name`, and `badcd.xlsx` — an EOCD whose central
+  // directory offset points past the file — is refused as `OSError` on both sides. Measured
+  // before this line: 2 of 633 differed on the constructor's name alone.
+  const errorOf = (e) => ({ error: { type: e?.name ?? e?.constructor?.name ?? 'Error', message: String(e?.message ?? e) } });
   const container = (c) => ({ kind: c.kind, what: c.what, named: c.named, suffix_lies: c.suffixLies });
   const document = (doc) => ({
     kind: doc.kind,
@@ -262,14 +303,14 @@ export async function run(ctx) {
       // above — the case that says which side is RIGHT and would fail if the port started
       // reading a PDF by accident or the reference stopped. Then, where both refuse, the
       // bare bit compared side to side, the non-ruled companion CLAUDE.md requires.
-      const expectedBits = { python: rule.python(python.textutil), node: true };
+      const expectedBits = { python: rule.python(python.textutil), node: rule.node ?? true };
       cases.push({
         name: `extract: ${n}: the refusal bit each side is required to carry`,
         kind: 'json',
         expected: expectedBits,
         actual: { python: refused(py.extract), node: refused(nd.extract) },
       });
-      if (expectedBits.python) {
+      if (expectedBits.python && expectedBits.node) {
         cases.push({
           name: `extract: ${n}: both refuse (the refusal bit, side to side)`,
           kind: 'json',
@@ -277,6 +318,24 @@ export async function run(ctx) {
           actual: refused(nd.extract),
         });
         refusedBoth += 1;
+      } else if (!expectedBits.python && !expectedBits.node) {
+        // The utf-7 shape: a ruling over two READS. The companion pins that neither side
+        // refuses, side to side, and that they agree on everything but the decoded row —
+        // the part count, the row count, the kind — so a port that started refusing the
+        // label, or reading a second part, fails here and not behind the ruling.
+        cases.push({
+          name: `extract: ${n}: both read (the refusal bit, side to side)`,
+          kind: 'json',
+          expected: refused(py.extract),
+          actual: refused(nd.extract),
+        });
+        cases.push({
+          name: `extract: ${n}: the same shape around the ruled row (kind, parts, row counts, omissions)`,
+          kind: 'json',
+          expected: { kind: py.extract.kind, parts: (py.extract.parts ?? []).map((x) => [x.name, x.index, x.row_count, x.rows?.length]), omissions: py.extract.omissions },
+          actual: { kind: nd.extract.kind, parts: (nd.extract.parts ?? []).map((x) => [x.name, x.index, x.row_count, x.rows?.length]), omissions: nd.extract.omissions },
+        });
+        readBoth += 1;
       }
       // The port's refusal still names the container, the size and the suffix disagreement
       // the way `_refuse` does: everything before the remedy is the reference's sentence.
@@ -293,6 +352,10 @@ export async function run(ctx) {
     }
 
     cases.push({ name: `extract: ${n}`, kind: 'json', expected: py.extract, actual: nd.extract });
+    // The refusal BIT, on its own, beside the bytes: the whole-answer case above fails on a
+    // word, this one fails only when one side reads what the other refuses — the difference
+    // that matters to a caller, kept visible as its own line in the report.
+    cases.push({ name: `extract: ${n}: the refusal bit (side to side)`, kind: 'json', expected: refused(py.extract), actual: refused(nd.extract) });
     if (refused(py.extract) || refused(nd.extract)) {
       cases.push({
         name: `extract: ${n}: the refusal sentence`,
@@ -331,6 +394,7 @@ export async function run(ctx) {
     const py = python.pages[i];
     const nd = node.pages[i];
     cases.push({ name: `page: ${spec.name}`, kind: 'json', expected: py, actual: nd });
+    cases.push({ name: `page: ${spec.name}: the refusal bit (side to side)`, kind: 'json', expected: Boolean(py.error), actual: Boolean(nd.error) });
     if (py.error || nd.error) {
       cases.push({
         name: `page: ${spec.name}: the refusal sentence`,
@@ -345,7 +409,7 @@ export async function run(ctx) {
 
   notes.push(
     `${names.length} files: ${readBoth} read on both sides, ${refusedBoth} refused on both, ${ruled} ruled ` +
-      `(pdf/doc/rtf); /usr/bin/textutil ${python.textutil ? 'present' : 'absent'} on this host, so the reference ` +
+      `(pdf/doc/rtf, and utf-7 where both READ); /usr/bin/textutil ${python.textutil ? 'present' : 'absent'} on this host, so the reference ` +
       `${python.textutil ? 'reads note.rtf and refuses real.doc as "plain text"' : 'refuses note.rtf and real.doc by name'}`,
   );
   const pdfRows = python.files[names.indexOf('tiny.pdf')].extract.parts?.map((x) => x.rows) ?? null;

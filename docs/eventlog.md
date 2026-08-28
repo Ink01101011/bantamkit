@@ -87,7 +87,7 @@ One JSON object per line, UTF-8, terminated by a single `\n`.
 | `ts` | string | UTC, `YYYY-MM-DDTHH:MM:SS.mmmZ`. Byte-identical to JavaScript's `new Date(ms).toISOString()`. |
 | `tool` | string | one of the ten served tools. The **join key** to the host's log, not the payload. |
 | `outcome` | string | the decision. Closed vocabulary, below. |
-| `detail` | object | metadata numbers. Always present; `{}` when empty. |
+| `detail` | object | metadata: counts, and one string — `bantamkit_read`'s `kind`, a container name from `docread`'s closed set. Always present; `{}` when empty. |
 
 **Key order is part of the contract**: `v`, `ts`, `tool`, `outcome`, `detail`, in that
 order. Inside `detail` the keys are **sorted lexicographically**, so neither runtime needs
@@ -108,6 +108,7 @@ Python needs `ensure_ascii=False`). No value written today is non-ASCII.
 | `memory_recall` | `answered`, `empty-no-match`, `empty-unreadable-layer`, `empty-nothing-saved` | `budget`, `candidates`, `layers`, `reached`, `returned`, `unreadable`; `source` when something was returned |
 | `memory_compact` | `archived`, `nothing-archived` | `archived` (count), `budget`, `index_after`, `index_before` |
 | `validate_json` | `valid`, `invalid` | — |
+| `bantamkit_read` | `manifest`, `page`, `refused-unreadable`, `refused-unknown-part`, `refused-offset` | `kind` (a string: the container kind `extract` identified), `parts` (count); on `manifest` also `rows` (all parts) and `bytes` (`text_bytes`); on `page` also `rows` and `bytes` OF THE PAGE; nothing on `refused-unreadable`, where `extract` raised before a kind was known. Never the path, never a part name |
 | `shiftwork_clock_in` | `brief`, `escalate`, `success`, `error` | — |
 | `shiftwork_clock_out` | `ok`, `error` | — |
 | `shiftwork_status` | `status`, `error` | — |
@@ -160,9 +161,11 @@ derived field is a second thing to keep true.
 ## Metadata only
 
 Never a tool argument's value, never a memory body, never a validated output, never a
-query string. Four of the ten tools take unbounded free text and three take absolute
-paths. Every value written is an ASCII token from the closed vocabulary above, an `int`,
-or a `bool` —
+query string, never a document row. Five of the ten tools take unbounded free text and
+four take absolute paths (`bantamkit_read`'s `path` is one, and its record carries the
+container kind and counts, never the path or a part name — `eventlog.py:33`,
+`eventlog.ts:35`). Every value written is an ASCII token from the closed vocabulary
+above, an `int`, or a `bool` —
 `test_eventlog.py::test_the_only_values_written_are_from_a_closed_set` enforces exactly
 that, so a future field carrying borrowed text fails without anyone having to think of a
 sentinel for it.

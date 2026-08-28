@@ -298,6 +298,11 @@ export async function run(ctx) {
   const noteRtf = doc('note.rtf', Buffer.from('{\\rtf1\\ansi hello}', 'latin1'));
   const realDoc = doc('real.doc', Buffer.concat([Buffer.from('\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1', 'latin1'), Buffer.alloc(512)]));
   const badRtf = doc('bad.rtf', Buffer.from('{\\rtf1\x00\x00\xff\xfe garbage', 'latin1'));
+  // F3's two zip-level traps, on the wire: a bare `&` in sheet XML (expat and the port's XML
+  // walk both refuse it) and an EOCD whose central-directory offset (0x7FFFFFF0) points
+  // past the file (`zipfile` seeks there and `read(2)` answers `[Errno 22] Invalid argument`).
+  const ampXlsx = doc('amp.xlsx', fixtures.xlsxBytes([['Sales', 'worksheets/sheet1.xml', fixtures.row([fixtures.inlineCell('A1', 'a & b')])]]));
+  const badcdXlsx = doc('badcd.xlsx', fixtures.badCentralDirectoryOffset(fixtures.xlsxBytes([['Sales', 'worksheets/sheet1.xml', fixtures.row([fixtures.inlineCell('A1', 'x')])]])));
 
   const baseEnv = { HOME: home, USERPROFILE: home, BANTAMKIT_MEMORY_DIR: null, BANTAMKIT_ASSETS: ASSETS };
 
@@ -749,6 +754,39 @@ export async function run(ctx) {
     callTool(6, 'bantamkit_read', { path: badRtf }),
     callTool(7, 'bantamkit_read', { path: tinyPdfPath, part: 'page 1' }),
   ], { env: { ...baseEnv, [EVENT_LOG_ENV]: '1' } });
+
+  /**
+   * THE EDGES F2/F3 FIXED, on the wire, UNRULED: every reply here is compared verbatim by the
+   * generic loop (id set, canonical frame, raw bytes) AND its refusal bit is pinned side to
+   * side in the `read-edges` block below, so a port that read where the reference refuses
+   * fails on its own line and not inside a 1 KB frame diff.
+   *
+   *   2  a bare `&` in sheet XML — expat refuses, so the reference refuses, so the port must;
+   *   3  an EOCD whose central-directory offset is 0x7FFFFFF0 — `[Errno 22] Invalid argument`
+   *      from `read(2)` on the reference, reproduced by the port's seek;
+   *   4  a 4301-digit part key — one over CPython's `int()` digit limit, which once escaped
+   *      as a ValueError; now the unknown-part sentence on both;
+   *   5  `path: ""` — `Path('')` is `.`, the session's cwd, a directory;
+   *   6  `path: "a/b/."` — pathlib collapses the `.` before looking, so the sentence names `a/b`;
+   *   7  `offset: 9007199254740993` — 2**53 + 1, past the schema's `maximum`, written RAW so
+   *      the integer reaches the wire exact (`JSON.stringify` would round it to 2**53) and
+   *      refused by both validators in pydantic's words, as an `isError` frame — the one
+   *      reply in this session that is allowed to be one;
+   *   8  `/dev/zero` — a character device, 0 bytes by stat and endless by read; the sniff must
+   *      name twelve NULs and refuse rather than read on. No Windows counterpart: skipped there.
+   */
+  const devZero = process.platform === 'win32' ? null : '/dev/zero';
+  add('read-edges', [
+    INIT(),
+    INITIALIZED,
+    callTool(2, 'bantamkit_read', { path: ampXlsx }),
+    callTool(3, 'bantamkit_read', { path: badcdXlsx }),
+    callTool(4, 'bantamkit_read', { path: bookXlsx, part: '1'.repeat(4301) }),
+    callTool(5, 'bantamkit_read', { path: '' }),
+    callTool(6, 'bantamkit_read', { path: 'a/b/.' }),
+    `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"bantamkit_read","arguments":{"path":${JSON.stringify(bookXlsx)},"part":"Sales","offset":9007199254740993}}}`,
+    ...(devZero === null ? [] : [callTool(8, 'bantamkit_read', { path: devZero })]),
+  ]);
 
   /**
    * `build_identity` gets a session of its own, and the split is the point being made.
@@ -1286,6 +1324,56 @@ export async function run(ctx) {
       actual: bothRefuse.map((i) => records(node)[i]).join('\n'),
     });
     notes.push(`read-ruled: /usr/bin/textutil ${textutil ? 'present' : 'absent'}; the port's pdf sentence: ${JSON.stringify((toolTextOf(node, 2) ?? '').split('. ').slice(1).join('. '))}`);
+  }
+
+  // ------------------------------------------------------ bantamkit_read: the edges, unruled
+
+  /**
+   * The refusal BIT of every `read-edges` reply, side to side and against a literal. The
+   * generic loop already compares the frames byte for byte; this is the case that stays
+   * readable when one of them moves — "the port READ amp.xlsx" is one line here and a hex
+   * window there. Ids 2–6 and 8 must refuse in the reader's words (a normal reply starting
+   * `error: `); id 7 must be refused by the VALIDATOR, before the handler runs, which is the
+   * `isError` frame — and it must be the only one.
+   */
+  {
+    const { python, node } = results.get('read-edges');
+    const refusedAt = (side, id) => (toolTextOf(side, id) ?? '').startsWith('error: ');
+    const ids = [2, 3, 4, 5, 6, 7, ...(devZero === null ? [] : [8])];
+    const reader = ids.filter((id) => id !== 7);
+    for (const id of reader) {
+      cases.push({
+        name: `read-edges: id ${id}: both refuse in the reader's words (the refusal bit, side to side)`,
+        kind: 'json',
+        expected: refusedAt(python, id),
+        actual: refusedAt(node, id),
+      });
+    }
+    cases.push({
+      name: 'read-edges: the ids the reader refuses, on each side, as a literal',
+      kind: 'json',
+      expected: { python: reader, node: reader },
+      actual: { python: reader.filter((id) => refusedAt(python, id)), node: reader.filter((id) => refusedAt(node, id)) },
+    });
+    cases.push({
+      name: 'read-edges: id 7 (offset 2**53 + 1) is the only isError frame, on both sides',
+      kind: 'json',
+      expected: { python: [7], node: [7] },
+      actual: {
+        python: ids.filter((id) => frameOf(python, id)?.result?.isError === true),
+        node: ids.filter((id) => frameOf(node, id)?.result?.isError === true),
+      },
+    });
+    cases.push({
+      name: 'read-edges: id 7 carries the integer exact — 9007199254740993 in the validator\'s sentence',
+      kind: 'json',
+      expected: true,
+      actual: (toolTextOf(python, 7) ?? '').includes('input_value=9007199254740993') && (toolTextOf(node, 7) ?? '').includes('input_value=9007199254740993'),
+    });
+    notes.push(
+      `read-edges: ${devZero === null ? '/dev/zero has no Windows counterpart and is NOT MEASURED HERE; ' : ''}` +
+        `the sentences: ${reader.map((id) => `id ${id} ${JSON.stringify((toolTextOf(node, id) ?? '').split('\n')[0].slice(0, 96))}`).join('; ')}`,
+    );
   }
 
   // ----------------------------------------------------------- build_identity, in parts

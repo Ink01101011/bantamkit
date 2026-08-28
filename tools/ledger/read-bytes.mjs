@@ -98,20 +98,37 @@ function session(cmd, argv, env, cwd) {
   return { ask, notify, close };
 }
 
-/** The bytes the model sees: `content[0].text`, UTF-8; and the whole frame for the record. */
+/**
+ * The bytes the model sees: `content[0].text`, UTF-8; and the whole frame for the record.
+ *
+ * TWO KINDS OF REFUSAL, and only one of them is `isError`. A validator refusal (pydantic's
+ * words, before the handler runs) is an `isError` frame on both servers. A READER refusal —
+ * the file is not a document, the part is not there, the offset is past the end — is a
+ * normal reply whose text starts `error: ` on both servers (`docs/eventlog.md`'s three
+ * `refused-*` outcomes), and `isError` is never true for it. The first version of this
+ * script tested `isError` alone, so every reader refusal was tallied as a manifest and its
+ * sentence's byte length went into the "manifest bytes" mean. `refused` is the prefix test.
+ */
 function measure(line) {
   const frame = JSON.parse(line);
   const text = frame.result?.content?.map((c) => c.text ?? '').join('') ?? JSON.stringify(frame.error);
-  return { text, textBytes: Buffer.byteLength(text, 'utf8'), frameBytes: Buffer.byteLength(line, 'utf8'), isError: Boolean(frame.result?.isError || frame.error) };
+  const isError = Boolean(frame.result?.isError || frame.error);
+  return { text, textBytes: Buffer.byteLength(text, 'utf8'), frameBytes: Buffer.byteLength(line, 'utf8'), isError, refused: isError || text.startsWith('error: ') };
 }
 
-/** `... part 0 "<name>": N rows ...` — the first part as the manifest names it. */
-const firstPart = (manifest) => /^.* part 0 "((?:[^"\\]|\\.)*)": /m.exec(manifest)?.[1] ?? null;
+/**
+ * `... part 0 "<name>": N rows, numbered ...` — the first part as the manifest names it.
+ * The name is NOT escaped in the manifest (`document_manifest_part` in
+ * `assets/contracts/default.yaml` interpolates it raw), so a `"` inside a sheet name would end
+ * a `[^"]*` match early; the match is anchored on the `": N rows` that follows instead, and
+ * the name is whatever lies between `part 0 "` and the LAST such tail on that line.
+ */
+const firstPart = (manifest) => /^.* part 0 "(.*)": \d+ rows(?:, numbered| )/m.exec(manifest)?.[1] ?? null;
 
 async function readWith(s, path) {
   const manifest = measure(await s.ask('tools/call', { name: 'bantamkit_read', arguments: { path } }));
-  const row = { manifestBytes: manifest.textBytes, manifestFrameBytes: manifest.frameBytes, refused: manifest.isError, pageBytes: null, pageFrameBytes: null, part: null };
-  if (manifest.isError) {
+  const row = { manifestBytes: manifest.textBytes, manifestFrameBytes: manifest.frameBytes, refused: manifest.refused, pageBytes: null, pageFrameBytes: null, pageRefused: null, part: null };
+  if (manifest.refused) {
     row.refusal = manifest.text.split('\n')[0];
     return row;
   }
@@ -121,6 +138,10 @@ async function readWith(s, path) {
   const page = measure(await s.ask('tools/call', { name: 'bantamkit_read', arguments: { path, part, offset: 0 } }));
   row.pageBytes = page.textBytes;
   row.pageFrameBytes = page.frameBytes;
+  // A part with 0 rows refuses offset 0 (`refused-offset`): that is a page-level refusal,
+  // tallied on its own and never averaged in as a page.
+  row.pageRefused = page.refused;
+  if (page.refused) row.pageRefusal = page.text.split('\n')[0];
   return row;
 }
 
@@ -155,11 +176,23 @@ for (const path of files) {
   const row = { path, ext: extname(path).toLowerCase().slice(1), rawBytes: raw, python, pyMs, node: nodeRow, nodeMs };
   rows.push(row);
   if (!JSON_OUT) {
-    const cell = (r) => (r === null ? '-' : r.refused ? `refused(${r.manifestBytes})` : `${r.manifestBytes} + ${r.pageBytes ?? '-'}`);
+    const cell = (r) => (r === null ? '-' : r.refused ? `refused(${r.manifestBytes})` : `${r.manifestBytes} + ${r.pageRefused ? `refused(${r.pageBytes})` : (r.pageBytes ?? '-')}`);
     console.log(`${row.ext}\t${raw}\tpy ${cell(python)}\t${pyMs} ms\tnode ${cell(nodeRow)}\t${nodeMs ?? '-'} ms\t${path}`);
   }
 }
 await py.close();
 await node.close();
 rmSync(scratch, { recursive: true, force: true });
+// THE TALLY, per server: how many reads were refused at the manifest, how many at the page,
+// and how many were read to a page. Printed to stderr so `--json` stdout stays one document.
+const tally = (side) => {
+  const seen = rows.map((r) => r[side]).filter((r) => r !== null);
+  return {
+    files: seen.length,
+    refusedManifest: seen.filter((r) => r.refused).length,
+    refusedPage: seen.filter((r) => !r.refused && r.pageRefused).length,
+    read: seen.filter((r) => !r.refused && r.pageRefused === false).length,
+  };
+};
+console.error(`refusals: python ${JSON.stringify(tally('python'))}; node ${JSON.stringify(tally('node'))}`);
 if (JSON_OUT) console.log(JSON.stringify(rows, null, 2));
