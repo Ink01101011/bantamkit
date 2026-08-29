@@ -437,15 +437,18 @@ function runTool(
       // The reader on the MCP surface (job43): `docread` digests, `contract` words it. The
       // handler makes the SAME `contract` calls the reference's `bantamkit_read` makes,
       // with the path standing in for the document name, so the two servers print the
-      // same bytes for the same file. Two sentences are this tool's own — the continuation
-      // line names `bantamkit_read`, and an unknown part is a fact about the file.
+      // same bytes for the same file. Three sentences are this tool's own — the continuation
+      // line names `bantamkit_read`, an unknown part is a fact about the file, and so is a
+      // part with no rows (`document_error` over `"{part}" in {path} has no rows`).
       //
       // THE RECORD IS A DECISION, NEVER A REPLY. `manifest` and `page` are the branch
       // taken; `refused-unreadable` is `extract` raising (a missing file, a directory, a
       // container this reader has no extractor for, an `OSError` the filesystem threw —
       // all of them reach the model as a `document_error` sentence in the reader's own
       // words, never as an exception on the wire); `refused-unknown-part` and
-      // `refused-offset` are the two argument refusals. `detail` carries the container
+      // `refused-offset` are the two argument refusals — the latter also when the part has
+      // no rows at all, where NO offset can be in range and the sentence says so instead of
+      // "numbered 0 to -1" (review round 3). `detail` carries the container
       // kind (a token from `docread`'s closed set), the part count, and the rows and UTF-8
       // bytes the reply carries — never the path, never a part name, never a row.
       //
@@ -459,10 +462,12 @@ function runTool(
       const limitArg = asInt(args.get('limit'));
       const rows = limitArg === null ? docread.DEFAULT_ROW_LIMIT : Math.max(1, Math.min(limitArg, docread.PAGE_MAX_ROWS));
       // `with _record_raise(log, "bantamkit_read")` wraps the reference's WHOLE handler, the
-      // `extract` call included, so an exception the reader lets escape (`zlib.error` from a
-      // corrupt deflate stream, `LookupError` from an XML declaration naming no codec) is
-      // recorded `raised` and then reaches the wire as an `isError` frame. Until job43 G2
-      // this arm ran `extract` outside `recordRaise` with a hand-copied catch.
+      // `extract` call included, so an exception the reader lets escape (`LookupError` from
+      // an XML declaration naming no codec) is recorded `raised` and then reaches the wire
+      // as an `isError` frame. A corrupt deflate stream or a lying CRC no longer does: since
+      // review round 3 `_read`/`readMember` word both as the damaged-member sentence, a
+      // `document_error` like the encrypted one. Until job43 G2 this arm ran `extract`
+      // outside `recordRaise` with a hand-copied catch.
       return recordRaise(log, 'bantamkit_read', () => {
         let doc: docread.Document;
         try {
@@ -521,6 +526,11 @@ function runTool(
           if (!(e instanceof docread.DocumentReadError)) throw e;
           log.record('bantamkit_read', 'refused-unknown-part', detail);
           const reply = bantamkitReadUnknownPart(part, path, doc.parts.map((p) => p.name));
+          return { value: { t: 'str', v: noted(reply) }, wrapped: true };
+        }
+        if (target.rowCount === 0) {
+          log.record('bantamkit_read', 'refused-offset', detail);
+          const reply = documentError(`"${target.name}" in ${path} has no rows`);
           return { value: { t: 'str', v: noted(reply) }, wrapped: true };
         }
         if (start >= target.rowCount) {

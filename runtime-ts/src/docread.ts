@@ -39,6 +39,7 @@ import { posix } from 'node:path';
 import { constants as zlibConstants, inflateRawSync } from 'node:zlib';
 
 import { BantamError } from './errors.js';
+import { CODEC_ALIASES, CODEC_MODULES, MULTI_BYTE_SINGLES, SINGLE_BYTE_TABLES } from './charsets.js';
 import { HTML5_ENTITIES } from './htmlentities.js';
 import { PyOSError, pyJoin, pyName, pySuffix as pyPathSuffix } from './memory/pyfs.js';
 
@@ -350,22 +351,232 @@ function decodeUtf8(buf: Uint8Array): string {
   return Buffer.from(buf.buffer, buf.byteOffset, buf.length).toString('utf8');
 }
 
-/** `bytes.decode(charset, errors="replace")`, falling back to UTF-8 on `LookupError`. */
-function decodeCharset(buf: Uint8Array, charset: string): string {
-  const name = charset.toLowerCase().replace(/_/g, '-');
-  if (['ascii', 'us-ascii', '646', 'us', 'ansi-x3.4-1968'].includes(name)) {
-    let out = '';
-    for (const b of buf) out += b < 0x80 ? String.fromCharCode(b) : '�';
-    return out;
+/**
+ * `encodings.normalize_encoding` after `codecs.lookup`'s own lower-casing: runs of anything
+ * that is not an ASCII letter, digit or `.` collapse to one `_`, and none leads or trails.
+ * `ISO 8859-1`, `ISO--8859--1` and `iso-8859-1;` are all `iso_8859_1`.
+ */
+export function pyNormalizeEncoding(encoding: string): string {
+  let out = '';
+  let punct = false;
+  for (const c of encoding.toLowerCase()) {
+    if (/[a-z0-9.]/.test(c)) {
+      if (punct && out) out += '_';
+      out += c;
+      punct = false;
+    } else punct = true;
   }
-  if (['latin-1', 'latin1', 'iso-8859-1', 'iso8859-1', 'l1', '8859', 'cp819'].includes(name)) {
-    return Buffer.from(buf).toString('latin1');
+  return out;
+}
+
+/**
+ * `encodings.search_function`: the module `codecs.lookup(name)` would import, or `null`
+ * where it raises `LookupError`. The alias table is consulted on the normalized name and on
+ * the name with `.` as `_`; the module name itself is the fallback, and a name that is not
+ * a module — `cp-437` (`cp_437`), `x-mac-roman`, `latin.1` — is the `LookupError`.
+ */
+export function pyCodecModule(name: string): string | null {
+  const norm = pyNormalizeEncoding(name);
+  const aliased = lookup(CODEC_ALIASES, norm) ?? lookup(CODEC_ALIASES, norm.replaceAll('.', '_'));
+  for (const modname of [aliased, norm]) {
+    if (modname !== undefined && CODEC_MODULES.has(modname)) return modname;
   }
-  try {
-    return new TextDecoder(name, { fatal: false, ignoreBOM: true }).decode(buf);
-  } catch {
-    return new TextDecoder('utf-8', { fatal: false, ignoreBOM: true }).decode(buf);
+  return null;
+}
+
+/**
+ * The multi-byte codecs this port decodes through `TextDecoder`, module -> WHATWG label.
+ * The label's table is not the codec's in every cell (WHATWG `shift_jis` is cp932,
+ * `gb2312` is gbk, `big5` carries HKSCS, `euc-kr` is cp949), so a byte pair only one of the
+ * two knows differs; the ERROR policy is CPython's, see `decodeMultiByte`.
+ */
+const MULTI_BYTE_LABELS: Readonly<Record<string, string>> = {
+  shift_jis: 'shift_jis',
+  cp932: 'shift_jis',
+  euc_jp: 'euc-jp',
+  gb2312: 'gb2312',
+  gbk: 'gbk',
+  gb18030: 'gb18030',
+  big5: 'big5',
+  big5hkscs: 'big5',
+  euc_kr: 'euc-kr',
+  cp949: 'euc-kr',
+};
+
+/**
+ * `bytes.decode(charset, errors="replace")`, falling back to UTF-8 on `LookupError`
+ * (`docread.py`, `_decoded_body`).
+ *
+ * Until H2 this was `TextDecoder(charset)` with the WHATWG label table, and review round 3
+ * measured that table against the codec registry on bytes `80 D0 E9 A4 FF`
+ * (`runtime-py/tests/data/docread/charset-table.json`): cp437, mac_roman and iso-8859-16
+ * are labels WHATWG does not have; iso-8859-9's 0x80–0x9F are C1 controls to Python and
+ * windows-1254's punctuation to WHATWG; Node 25.2.1's ICU decoder maps windows-1252's
+ * 0x80 to U+0080 and prints nothing for a trailing 0xFF under latin-1; us-ascii is
+ * windows-1252 there. The single-byte codecs are now `charsets.ts`, 256 characters per
+ * module written by the registry itself (79 codecs, 20 of them measured over all 256 bytes
+ * against the old path: 13 differed); the CJK codecs go through `TextDecoder` with
+ * CPython's replacement policy (`decodeMultiByte`, where the residual is quantified); a
+ * module this port has no decoder for (`utf_7`, `hz`, `iso2022_*`, `johab`, the JIS X
+ * 0213 variants) decodes as UTF-8, which is the other remaining divergence.
+ */
+export function decodeCharset(buf: Uint8Array, charset: string): string {
+  const module = pyCodecModule(charset);
+  if (module === null) return decodeUtf8(buf);
+  const table = lookup(SINGLE_BYTE_TABLES, module);
+  if (table !== undefined) return decodeSingleByte(buf, table);
+  if (module === 'utf_8') return decodeUtf8(buf);
+  if (module === 'utf_8_sig') {
+    const bom = buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf;
+    return decodeUtf8(bom ? buf.subarray(3) : buf);
   }
+  if (module === 'utf_16' || module === 'utf_16_le' || module === 'utf_16_be') return decodeUtf16(buf, module);
+  if (module === 'utf_32' || module === 'utf_32_le' || module === 'utf_32_be') return decodeUtf32(buf, module);
+  if (lookup(MULTI_BYTE_LABELS, module) !== undefined) return decodeMultiByte(buf, module);
+  return decodeUtf8(buf);
+}
+
+const ICU_ALONE = new Map<string, Uint8Array>();
+
+/** Which of bytes 0x80..0xFF ICU's decoder for `label` accepts on their own, computed once. */
+function acceptedAlone(label: string, fatal: { decode(input: Uint8Array): string }): Uint8Array {
+  let mask = ICU_ALONE.get(label);
+  if (mask === undefined) {
+    mask = new Uint8Array(128);
+    for (let b = 0x80; b <= 0xff; b += 1) {
+      try {
+        fatal.decode(new Uint8Array([b]));
+        mask[b - 0x80] = 1;
+      } catch {
+        // a lead byte, or a byte the codec has no character for
+      }
+    }
+    ICU_ALONE.set(label, mask);
+  }
+  return mask;
+}
+
+function decodeSingleByte(buf: Uint8Array, table: { high: string; low?: string }): string {
+  const low = table.low;
+  let out = '';
+  for (const b of buf) {
+    if (b < 0x80) out += low === undefined ? String.fromCharCode(b) : (low[b] as string);
+    else out += table.high[b - 0x80] as string;
+  }
+  return out;
+}
+
+/**
+ * `utf_16` consumes a BOM of either order and defaults to little-endian without one;
+ * `utf_16_le`/`utf_16_be` keep a BOM as U+FEFF. A lone surrogate is one U+FFFD per unit and
+ * an odd trailing byte one U+FFFD, which is the WHATWG policy too (measured on the table).
+ */
+function decodeUtf16(buf: Uint8Array, module: string): string {
+  let label = module === 'utf_16_be' ? 'utf-16be' : 'utf-16le';
+  if (module === 'utf_16' && buf.length >= 2) {
+    if (buf[0] === 0xff && buf[1] === 0xfe) buf = buf.subarray(2);
+    else if (buf[0] === 0xfe && buf[1] === 0xff) {
+      label = 'utf-16be';
+      buf = buf.subarray(2);
+    }
+  }
+  return new TextDecoder(label, { fatal: false, ignoreBOM: true }).decode(buf);
+}
+
+/** `utf_32` as CPython decodes it: BOM as for utf_16, a bad unit or a short tail one U+FFFD. */
+function decodeUtf32(buf: Uint8Array, module: string): string {
+  let big = module === 'utf_32_be';
+  if (module === 'utf_32' && buf.length >= 4) {
+    if (buf[0] === 0xff && buf[1] === 0xfe && buf[2] === 0 && buf[3] === 0) buf = buf.subarray(4);
+    else if (buf[0] === 0 && buf[1] === 0 && buf[2] === 0xfe && buf[3] === 0xff) {
+      big = true;
+      buf = buf.subarray(4);
+    }
+  }
+  let out = '';
+  let i = 0;
+  for (; i + 4 <= buf.length; i += 4) {
+    const cp = big
+      ? ((buf[i] as number) << 24) + ((buf[i + 1] as number) << 16) + ((buf[i + 2] as number) << 8) + (buf[i + 3] as number)
+      : ((buf[i + 3] as number) << 24) + ((buf[i + 2] as number) << 16) + ((buf[i + 1] as number) << 8) + (buf[i] as number);
+    out += cp > 0x10ffff || cp < 0 || (cp >= 0xd800 && cp <= 0xdfff) ? '�' : String.fromCodePoint(cp);
+  }
+  if (i < buf.length) out += '�';
+  return out;
+}
+
+/**
+ * A CJK codec with CPython's `errors="replace"`: a byte that starts no character the codec
+ * knows is ONE U+FFFD and decoding resumes at the next byte, so `A4 FF` in euc-jp is two
+ * replacement characters where ICU's own lenient mode prints one. The whole buffer is tried
+ * fatally first — the common case decodes in one call — and only a buffer that fails is
+ * walked byte by byte, each position taking the shortest slice the codec accepts.
+ *
+ * What this does NOT make identical is the two tables: 300 random 0–9 byte strings per
+ * codec against `bytes.decode(codec, "replace")` (H2, seed 7) agree 297/300 for euc_jp,
+ * 296 euc_kr, 295 cp932, 292 gb18030, 278 gbk, 268 shift_jis, 208 big5, 205 big5hkscs,
+ * 192 cp949, 141 gb2312 — every remaining case a pair one table knows and the other does
+ * not (gb2312 is decoded by ICU's gbk, big5 by its HKSCS table). The utf_16/utf_32 family
+ * and utf_8_sig are 300/300.
+ */
+function decodeMultiByte(buf: Uint8Array, module: string): string {
+  const label = MULTI_BYTE_LABELS[module] as string;
+  const fatal = new TextDecoder(label, { fatal: true, ignoreBOM: true });
+  const singles = lookup(MULTI_BYTE_SINGLES, module) as string;
+  const icuAlone = acceptedAlone(label, fatal);
+  // A byte ICU decodes on its own that CPython does not (0x80 is U+0080 to ICU's euc-jp and
+  // U+20AC to its gbk, U+FFFD to both of CPython's) is the one case the fast path cannot
+  // take: ICU would print the byte, and in a longer slice would consume it as a prefix.
+  const suspect = (b: number): boolean => b >= 0x80 && singles[b - 0x80] === '\ufffd' && icuAlone[b - 0x80] === 1;
+  if (!buf.some(suspect)) {
+    try {
+      return fatal.decode(buf);
+    } catch {
+      // fall through to the walk
+    }
+  }
+  let out = '';
+  let i = 0;
+  const n = buf.length;
+  while (i < n) {
+    let j = i;
+    while (j < n && (buf[j] as number) < 0x80) j += 1;
+    if (j > i) {
+      out += fatal.decode(buf.subarray(i, j));
+      i = j;
+      continue;
+    }
+    // A byte that is a character on its own to CPython (`MULTI_BYTE_SINGLES`, written by the
+    // registry) is that character; one that is not is never a one-byte slice here, whatever
+    // ICU would make of it alone — it accepts 0x80 as U+0080 where CPython refuses it.
+    const single = singles[(buf[i] as number) - 0x80] as string;
+    let taken = 0;
+    if (single !== '\ufffd') {
+      out += single;
+      i += 1;
+      continue;
+    }
+    if (icuAlone[(buf[i] as number) - 0x80] === 1) {
+      out += '\ufffd';
+      i += 1;
+      continue;
+    }
+    for (let len = 2; len <= 4 && i + len <= n; len += 1) {
+      try {
+        out += fatal.decode(buf.subarray(i, i + len));
+        taken = len;
+        break;
+      } catch {
+        // a longer slice may be the character
+      }
+    }
+    if (taken === 0) {
+      out += '�';
+      taken = 1;
+    }
+    i += taken;
+  }
+  return out;
 }
 
 // ------------------------------------------------------------------------ the data model
@@ -592,11 +803,12 @@ function zipKind(path: string, head: Uint8Array): Container {
   try {
     const zf = ZipReader.open(path);
     names = zf.namelist();
-    if (names.includes('mimetype')) {
-      mimetype = new TextDecoder('utf-8', { ignoreBOM: true }).decode(zf.read('mimetype'));
-    }
+    // `readMember`, not `zf.read`: an encrypted `mimetype` is the encrypted sentence naming
+    // that member, never "damaged" (review round 3 measured the latter on an .odt), and a
+    // `DocumentReadError` it raises leaves this function the way `_zip_kind` lets `_read`'s.
+    if (names.includes('mimetype')) mimetype = decodeUtf8(readMember(zf, 'mimetype', path));
   } catch (err) {
-    if (err instanceof BadZipFile || isOsError(err) || err instanceof ZipMemberUnreadable) {
+    if (err instanceof BadZipFile || isOsError(err)) {
       return new Container(
         'zip',
         `a truncated or damaged zip archive (it starts with ${bytesRepr(head.subarray(0, 8))})`,
@@ -984,12 +1196,10 @@ export class ZipReader {
           '(the Python server reads it); see docs/porting.md',
       );
     } else {
-      // `NotImplementedError("That compression method is not supported")` — which IS a
-      // `RuntimeError` on the reference, so `_read`'s `except RuntimeError` turns it into the
-      // ENCRYPTED sentence (measured, job43 G2: a stored member relabelled method 9 reads
-      // `... is encrypted, so this reader cannot read it without a password` there). Same
-      // class here, so the same words.
-      throw new ZipMemberUnreadable(name);
+      // `NotImplementedError("That compression method is not supported")` — a
+      // `RuntimeError` subclass on the reference, which until review round 3 made it the
+      // ENCRYPTED sentence there; `_read` now catches it first and names the method number.
+      throw new ZipMemberUnreadable(name, entry.method);
     }
     if (crc32(out) !== entry.crc) throw new BadZipFile(`Bad CRC-32 for file ${pyRepr(name)}`);
     return out;
@@ -997,14 +1207,22 @@ export class ZipReader {
 }
 
 /**
- * `ZipFile.read`'s `RuntimeError` family: the member is encrypted, or (its subclass
- * `NotImplementedError`) compressed by a method zipfile has no decompressor for. Not a
- * `DocumentReadError` itself, because the reference's `_read` is what words it, and the
- * parts `_rel_targets`/`_date_formats`/`_zip_kind` read swallow it silently instead.
+ * `ZipFile.read`'s `RuntimeError` family: the member is encrypted (`method` undefined), or
+ * (its subclass `NotImplementedError`) compressed by a method zipfile has no decompressor
+ * for (`method` is the number). Not a `DocumentReadError` itself, because the reference's
+ * `_read` is what words it, and the parts `_rel_targets`/`_date_formats` read swallow it
+ * silently instead.
  */
 export class ZipMemberUnreadable extends Error {
-  constructor(readonly member: string) {
-    super(`File ${pyRepr(member)} is encrypted, password required for extraction`);
+  constructor(
+    readonly member: string,
+    readonly method?: number,
+  ) {
+    super(
+      method === undefined
+        ? `File ${pyRepr(member)} is encrypted, password required for extraction`
+        : 'That compression method is not supported',
+    );
     this.name = 'ZipMemberUnreadable';
   }
 }
@@ -1076,13 +1294,50 @@ function readMember(zf: ZipReader, name: string, path: string): Buffer {
   try {
     return zf.read(name);
   } catch (err) {
-    if (!(err instanceof ZipMemberUnreadable)) throw err;
-    // `_read`'s `except RuntimeError`: the member and the fact, nothing zipfile said. Until
-    // job43 G1/G2 zipfile's own sentence crossed the wire as an `isError` frame on both sides.
-    throw new DocumentReadError(
-      `${pyPathName(path)} is a zip but its ${name} is encrypted, so this reader cannot read it without a password`,
-    );
+    // `_read`'s four arms, each the member and the fact. Encrypted and unsupported-method
+    // say nothing zipfile said; damaged carries zipfile's/zlib's phrase in parentheses
+    // (`Bad CRC-32 for file 'word/document.xml'`, `Error -3 while decompressing data:
+    // invalid block type`) because a lying checksum and a broken stream are different facts
+    // about the file, and `ZipReader`/`inflateRaw` rebuild both phrases from the same words.
+    // Until review round 3 the method arm printed the encrypted sentence and the damaged
+    // pair crossed the wire as `isError` frames, on both sides.
+    if (err instanceof ZipMemberUnreadable) {
+      if (err.method !== undefined) {
+        throw new DocumentReadError(
+          `${pyPathName(path)} is a zip but its ${name} uses compression method ${err.method}, which this reader cannot decompress`,
+        );
+      }
+      throw new DocumentReadError(
+        `${pyPathName(path)} is a zip but its ${name} is encrypted, so this reader cannot read it without a password`,
+      );
+    }
+    if (isDamagedMember(err)) {
+      throw new DocumentReadError(
+        `${pyPathName(path)} is a zip but its ${name} is damaged (${err.message}), so this reader cannot read it`,
+      );
+    }
+    throw err;
   }
+}
+
+/** `zipfile.BadZipFile` off the CRC, or `zlib.error` off the deflate stream. */
+function isDamagedMember(err: unknown): err is Error {
+  return err instanceof BadZipFile || (err instanceof Error && err.name === 'error');
+}
+
+/**
+ * `_UNREADABLE_OPTIONAL`: why a tolerant read of `.rels` or `styles.xml` yields nothing
+ * rather than raising — malformed, absent, unreadable, encrypted or unsupported-method
+ * (`RuntimeError`), a lying checksum (`BadZipFile`) or a broken deflate stream (`zlib.error`).
+ */
+function isUnreadableOptional(err: unknown): boolean {
+  return (
+    err instanceof XmlParseError ||
+    err instanceof RangeError ||
+    isOsError(err) ||
+    err instanceof ZipMemberUnreadable ||
+    isDamagedMember(err)
+  );
 }
 
 // -------------------------------------------------------------------------------- xml
@@ -1676,9 +1931,7 @@ function relTargets(zf: ZipReader, member: string, members: Set<string>): string
   try {
     tree = parseXml(zf.read(rels));
   } catch (err) {
-    if (err instanceof XmlParseError || err instanceof RangeError || isOsError(err) || err instanceof ZipMemberUnreadable) {
-      return [];
-    }
+    if (isUnreadableOptional(err)) return [];
     throw err;
   }
   const out: string[] = [];
@@ -1740,9 +1993,7 @@ function dateFormats(zf: ZipReader): string[] {
   try {
     root = parseXml(zf.read('xl/styles.xml'));
   } catch (err) {
-    if (err instanceof XmlParseError || err instanceof RangeError || isOsError(err) || err instanceof ZipMemberUnreadable) {
-      return [];
-    }
+    if (isUnreadableOptional(err)) return [];
     throw err;
   }
   const custom = new Map<number, string>();
@@ -1780,15 +2031,27 @@ export function columnLetter(index: number): string {
   return letters;
 }
 
-/** `B7` -> 1. The cell's own reference decides its column; XML order is only a fallback. */
+/**
+ * `B7` -> 1. The cell's own reference decides its column; XML order is only a fallback.
+ *
+ * A reference is ASCII letters then ASCII digits, AS WRITTEN, or it is refused in the
+ * reference's words (`_column`, review round 3): `r="ß1"` was a `TypeError` on the Python
+ * side and column 486 (`SS1`, after `toUpperCase`) here, and a column number that depends
+ * on a Unicode case table is not a fact about the workbook. `ß1`, `É1`, `A`, `1` and
+ * `A1B` are all refused; the sentence names the reference and no file, like the
+ * shared-string-index one.
+ */
 export function columnIndex(ref: string | undefined, fallback: number): number {
   if (!ref) return fallback;
-  let index = 0;
-  for (const ch of ref) {
-    if (!/\p{L}/u.test(ch)) break;
-    index = index * 26 + ((ch.toUpperCase().codePointAt(0) as number) - 64);
+  const match = /^([A-Za-z]+)[0-9]+$/.exec(ref);
+  if (match === null) {
+    throw new DocumentReadError(
+      `cell reference ${pyRepr(ref)} is not a column-and-row reference like B7, so this reader cannot place it`,
+    );
   }
-  return index ? index - 1 : fallback;
+  let index = 0;
+  for (const ch of (match[1] as string).toUpperCase()) index = index * 26 + (ch.charCodeAt(0) - 64);
+  return index - 1;
 }
 
 function sharedStrings(zf: ZipReader, path: string): string[] {
@@ -1865,7 +2128,10 @@ function sheetRows(
         }
       }
     }
-    const width = cells.size ? Math.max(...cells.keys()) + 1 : 0;
+    // A loop, not `Math.max(...cells.keys())`: spreading 300k keys into one call is a
+    // `RangeError: Maximum call stack size exceeded` (measured, review round 3).
+    let width = 0;
+    for (const column of cells.keys()) if (column + 1 > width) width = column + 1;
     const fields: string[] = [];
     for (let k = 0; k < width; k += 1) fields.push(cells.get(k) ?? '');
     const line = fields.join('\t');

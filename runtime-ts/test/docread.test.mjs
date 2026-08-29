@@ -26,7 +26,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 
-import { checkedInFixtures, writeFixtures, zipBytes } from './docread-fixtures.mjs';
+import { checkedInFixtures, writeFixtures, xlsxBytes, zipBytes } from './docread-fixtures.mjs';
 
 const dist = new URL('../dist/', import.meta.url);
 const docread = await import(new URL('docread.js', dist));
@@ -40,11 +40,16 @@ const {
   ZipReader,
   a2bUu,
   bytesRepr,
+  columnIndex,
+  columnLetter,
+  decodeCharset,
   decodeQuotedPrintable,
   decodeUu,
   extract,
+  htmlRows,
   page,
   parseXml,
+  pyCodecModule,
   pyRepr,
   sniff,
   unescape,
@@ -147,13 +152,10 @@ const DIVERGENT = new Map([
 ]);
 
 // Both sides RAISE, in the same words: the reference's `_read`/`_parse` catch only what they
-// word, and a corrupt deflate stream (`zlib.error`), a stream that ends early (`BadZipFile`
-// off the CRC) and an XML declaration naming no codec (`LookupError`) escape on both.
-const RAISED = new Map([
-  ['corrupt-deflate.docx', 'error'], // `zlib.error`: the class's `__name__` is `error`
-  ['truncated-deflate.docx', 'BadZipFile'],
-  ['bogus-encoding.docx', 'LookupError'],
-]);
+// word, and an XML declaration naming no codec (`LookupError`) escapes on both. A corrupt
+// deflate stream (`zlib.error`) and a stream that ends early (`BadZipFile` off the CRC) were
+// here until review round 3; `_read` now words both as the damaged-member sentence.
+const RAISED = new Map([['bogus-encoding.docx', 'LookupError']]);
 
 test('every fixture the reference reads or refuses gets the same bytes from the port', () => {
   assert.equal(expected.size, Object.keys(paths).length, 'one Python line per fixture');
@@ -199,8 +201,14 @@ test('the rulings: sniff agrees on the kind, the port answers its own sentence, 
 test('the checked-in G1 fixtures are read from runtime-py/tests/data/docread, not rebuilt', () => {
   const names = Object.keys(checkedInFixtures());
   assert.deepEqual(names, [
+    'bad-crc.docx',
     'charref-4301-digits.html',
+    'charset-table.json',
+    'compression-method-9.docx',
+    'corrupt-deflate.docx',
     'encrypted-member.docx',
+    'encrypted-mimetype.odt',
+    'eszett-cell-ref.xlsx',
     'internal-dtd-entity.docx',
     'rfc2231-charset.eml',
     'rfc822-nested-twice.eml',
@@ -215,6 +223,95 @@ test('the checked-in G1 fixtures are read from runtime-py/tests/data/docread, no
     dump(paths['encrypted-member.docx']).message,
     'encrypted-member.docx is a zip but its word/document.xml is encrypted, so this reader cannot read it without a password',
   );
+});
+
+test('review round 3 (H2): the five checked-in reproducers answer the reference\'s own sentences', () => {
+  // Each sentence is the `docread-expected.jsonl` line the Python reference wrote for the
+  // same bytes (`dump_py.py`, commit message); named here so a regression is named too.
+  const sentences = {
+    'eszett-cell-ref.xlsx': "cell reference 'ß1' is not a column-and-row reference like B7, so this reader cannot place it",
+    'compression-method-9.docx':
+      'compression-method-9.docx is a zip but its word/document.xml uses compression method 9, which this reader cannot decompress',
+    'encrypted-mimetype.odt':
+      'encrypted-mimetype.odt is a zip but its mimetype is encrypted, so this reader cannot read it without a password',
+    'bad-crc.docx':
+      "bad-crc.docx is a zip but its word/document.xml is damaged (Bad CRC-32 for file 'word/document.xml'), so this reader cannot read it",
+    'corrupt-deflate.docx':
+      'corrupt-deflate.docx is a zip but its word/document.xml is damaged (Error -3 while decompressing data: invalid block type), so this reader cannot read it',
+  };
+  for (const [name, message] of Object.entries(sentences)) {
+    assert.deepEqual(dump(paths[name]), { error: 'DocumentReadError', message }, name);
+    assert.equal(expected.get(name).message, message, `${name}: the reference's line`);
+  }
+  // The encrypted `mimetype` is a refusal from `sniff` itself, not "truncated or damaged".
+  assert.throws(() => sniff(paths['encrypted-mimetype.odt']), { message: sentences['encrypted-mimetype.odt'] });
+});
+
+test('a cell reference is ASCII letters then ASCII digits as written, or it is refused (H2)', () => {
+  // Python `_column`: `ß1`, `É1`, `A`, `1`, `A1B` refused; `B7` -> 1, `b7` -> 1, `AA1` -> 26.
+  assert.equal(columnIndex('B7', 9), 1);
+  assert.equal(columnIndex('b7', 9), 1);
+  assert.equal(columnIndex('AA1', 9), 26);
+  assert.equal(columnIndex(undefined, 9), 9);
+  assert.equal(columnIndex('', 9), 9);
+  for (const ref of ['ß1', 'É1', 'A', '1', 'A1B', 'A 1']) {
+    assert.throws(
+      () => columnIndex(ref, 0),
+      { message: `cell reference ${pyRepr(ref)} is not a column-and-row reference like B7, so this reader cannot place it` },
+      ref,
+    );
+  }
+});
+
+test('a row of 300,000 cells is one line of 300,000 fields, not a call-stack overflow (H2)', () => {
+  // `Math.max(...cells.keys())` over 300k keys is `RangeError: Maximum call stack size
+  // exceeded` (measured); the reference answers 1 row, 300000 fields, text_bytes 2288889.
+  let cells = '';
+  for (let i = 0; i < 300000; i += 1) cells += `<c r="${columnLetter(i)}1" t="inlineStr"><is><t>v${i}</t></is></c>`;
+  const path = join(dir, 'wide.xlsx');
+  writeFileSync(path, xlsxBytes([['Wide', 'worksheets/sheet1.xml', `<row r="1">${cells}</row>`]], { deflate: true }));
+  const doc = extract(path);
+  assert.equal(doc.parts[0].rowCount, 1);
+  assert.equal(doc.parts[0].rows[0].split('\t').length, 300000);
+  assert.equal(doc.textBytes, 2288889);
+});
+
+test('html_rows: the 4301-digit cap applies to text and attribute values, never to CDATA content (H2)', () => {
+  // Every expected value: `docread.html_rows(markup)` on the reference, H1's parser.
+  const big = '&#' + '1'.repeat(4301) + ';';
+  assert.deepEqual(htmlRows(`<p>x</p><xmp>${big}</xmp><p>y</p>`), ['x', big, 'y']);
+  assert.deepEqual(htmlRows(`<textarea>${big}</textarea>`), ['\ufffd']);
+  assert.deepEqual(htmlRows(`<script>${big}</script>q`), ['q']);
+  assert.deepEqual(htmlRows(`a ${big} b`), ['a \ufffd b']);
+  assert.deepEqual(htmlRows(`a ${big.slice(0, -1)}b`), ['a \ufffdb']);
+  assert.deepEqual(htmlRows(`<p>${big.slice(0, -1)}`), ['\ufffd']);
+  assert.deepEqual(htmlRows(`x &#65; y ${big} z &#${'0'.repeat(4301)}65; w`), ['x A y \ufffd z A w']);
+  assert.deepEqual(htmlRows(`<p title="${big}">t</p>`), ['t']);
+  assert.deepEqual(htmlRows('&#0000000065; &#x41; &amp;'), ['A A &']);
+});
+
+test('decodeCharset answers the codec registry\'s bytes, row for row of charset-table.json (H2)', () => {
+  // 40 labels x bytes `80 D0 E9 A4 FF`, `errors="replace"`, written by the registry itself
+  // (`docread_fixtures.charset_table`); `LookupError` is the `_decoded_body` fallback, UTF-8.
+  const table = JSON.parse(readFileSync(paths['charset-table.json'], 'utf8'));
+  const bytes = new Uint8Array([0x80, 0xd0, 0xe9, 0xa4, 0xff]);
+  assert.equal(Object.keys(table).length, 40);
+  for (const [label, want] of Object.entries(table)) {
+    const expect = want === 'LookupError' ? Buffer.from(bytes).toString('utf8') : want;
+    assert.equal(decodeCharset(bytes, label), expect, label);
+    assert.equal(pyCodecModule(label) === null, want === 'LookupError', `${label}: LookupError`);
+  }
+});
+
+test('pyCodecModule resolves a charset the way codecs.lookup does, LookupError included (H2)', () => {
+  // `codecs.lookup(name).name` on CPython 3.12.13, or `LookupError`; only the verdict is
+  // pinned here, the module name is the port's own key.
+  const resolves = ['ISO 8859-1', 'ISO_8859-1', 'iso8859_1', ' latin1 ', 'Latin-1', 'utf8', 'UTF-8', 'utf_8', 'macroman', '437', 'ibm437', 'windows_1252', 'cp1252', 'ansi_x3.4-1968', 'iso_8859_1:1987', 'csISOLatin1', 'l1', '8859', 'utf16', 'utf-16-le', 'utf_16be', 'sjis', 'ms932', 'euc_jp', 'ks_c_5601-1987', 'tis620', 'ISO--8859--1', 'iso-8859-1;', 'u8', 'cp65001', 'utf-32', 'latin_1', 'iso8859-1'];
+  const refused = ['latin.1', 'x-mac-roman', 'cp-437', 'iso-8859-12', 'gb-2312', 'x-gbk', 'big-5', 'koi8r', '', '-'];
+  for (const name of resolves) assert.notEqual(pyCodecModule(name), null, name);
+  for (const name of refused) assert.equal(pyCodecModule(name), null, name);
+  assert.equal(pyCodecModule('ISO 8859-1'), 'latin_1');
+  assert.equal(pyCodecModule('windows-1252'), 'cp1252');
 });
 
 test('under win32 every sentence names the path the way pathlib spells it there', () => {

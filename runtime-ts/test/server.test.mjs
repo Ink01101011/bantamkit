@@ -425,14 +425,53 @@ test('bantamkit_read: a NUL byte in the path is `no such file`, as pathlib answe
   assert.equal(await readOne({ path }), `error: no such file: ${path}`);
 });
 
-test('bantamkit_read: a corrupt deflate stream is the exception the reference raises, an isError frame in zlib\'s words', async () => {
+test('bantamkit_read: a corrupt deflate stream is the damaged-member sentence, zlib\'s words in parentheses', async () => {
+  // Until review round 3 this was an `isError` frame, `Error executing tool bantamkit_read:
+  // Error -3 while decompressing data: invalid block type`, on both sides; `_read` now words
+  // it, and the checked-in `corrupt-deflate.docx` (a hand-written `07 00 00 00 00` stream)
+  // is the same sentence from the same bytes the Python suite reads.
   const path = join(freshStore(), 'corrupt.docx');
   writeFileSync(path, corruptStream(docxBytes(para('hello'), { deflate: true }), 'word/document.xml'));
-  const { lines, stderr } = await session([INIT, INITIALIZED, readCall(2, { path })], { args: ['--store', freshStore()] });
-  assert.equal(stderr, '');
-  const answer = byId(lines, 2).result;
-  assert.equal(answer.isError, true);
-  assert.equal(answer.content[0].text, 'Error executing tool bantamkit_read: Error -3 while decompressing data: invalid block type');
+  assert.equal(
+    await readOne({ path }),
+    'error: corrupt.docx is a zip but its word/document.xml is damaged (Error -3 while decompressing data: invalid block type), so this reader cannot read it',
+  );
+  const fixtures = checkedInFixtures();
+  assert.equal(
+    await readOne({ path: fixtures['corrupt-deflate.docx'] }),
+    'error: corrupt-deflate.docx is a zip but its word/document.xml is damaged (Error -3 while decompressing data: invalid block type), so this reader cannot read it',
+  );
+  assert.equal(
+    await readOne({ path: fixtures['bad-crc.docx'] }),
+    "error: bad-crc.docx is a zip but its word/document.xml is damaged (Bad CRC-32 for file 'word/document.xml'), so this reader cannot read it",
+  );
+  assert.equal(
+    await readOne({ path: fixtures['compression-method-9.docx'] }),
+    'error: compression-method-9.docx is a zip but its word/document.xml uses compression method 9, which this reader cannot decompress',
+  );
+  assert.equal(
+    await readOne({ path: fixtures['encrypted-mimetype.odt'] }),
+    'error: encrypted-mimetype.odt is a zip but its mimetype is encrypted, so this reader cannot read it without a password',
+  );
+  assert.equal(
+    await readOne({ path: fixtures['eszett-cell-ref.xlsx'] }),
+    "error: cell reference 'ß1' is not a column-and-row reference like B7, so this reader cannot place it",
+  );
+});
+
+test('bantamkit_read: a part with no rows is refused as such, not as "numbered 0 to -1", and recorded refused-offset', async () => {
+  // MEASURED before the fix (review round 3): `offset 0 is past the end of "Empty", which
+  // has 0 rows numbered 0 to -1`, on both runtimes. The Python test is
+  // test_a_part_with_no_rows_is_refused_as_such_not_as_numbered_0_to_minus_1.
+  const store = freshStore();
+  const path = workbookFixture(store);
+  for (const offset of [undefined, 0, 7]) {
+    const args = offset === undefined ? { path, part: 'Empty' } : { path, part: 'Empty', offset };
+    assert.equal(await readOne(args, { args: ['--store', store], env: { BANTAMKIT_EVENT_LOG: '1' } }), `error: "Empty" in ${path} has no rows`);
+  }
+  const records = readFileSync(join(store, 'events', 'mcp.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(records.at(-1).outcome, 'refused-offset');
+  assert.deepEqual(records.at(-1).detail, { kind: 'xlsx', parts: 2 });
 });
 
 test('bantamkit_read: an encrypted member is refused in the reader\'s words, on the checked-in G1 fixture', async () => {
