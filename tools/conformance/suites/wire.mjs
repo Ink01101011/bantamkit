@@ -823,6 +823,48 @@ export async function run(ctx) {
   ]);
 
   /**
+   * ROUND 3 (H1/H2), on the wire, UNRULED — every reply here is byte-identical on both
+   * servers now, and the generic loop compares each frame canonically and raw. The
+   * `read-round3` block below pins the refusal bit of each one and the two literals the
+   * round changed, so the six sentences H1 wrote and H2 mirrored are held as sentences and
+   * not only as a frame diff. The fixtures are the checked-in ones under
+   * `runtime-py/tests/data/docread/`:
+   *
+   *   2   eszett-cell-ref.xlsx — a cell ref `ß1`, which `str.upper()` once turned into `SS1`
+   *       and a TypeError; now `cell reference 'ß1' is not a column-and-row reference like
+   *       B7, so this reader cannot place it`;
+   *   3   compression-method-9.docx — method 9 (deflate64) has its OWN sentence now, `uses
+   *       compression method 9, which this reader cannot decompress` (it used to print the
+   *       encrypted sentence, docs/porting.md);
+   *   4   encrypted-mimetype.odt — the ODF `mimetype` member with the encrypted flag set;
+   *   5   bad-crc.docx, 6 corrupt-deflate.docx — the damaged-member sentence with the
+   *       parenthesised cause (`Bad CRC-32 for file 'word/document.xml'` / `Error -3 while
+   *       decompressing data: invalid block type`), CPython's words on both sides;
+   *   7   charref-4301-digits.html — a `<p>` holding `&#<4301 digits>;`: read on both, the
+   *       manifest; 8 the page, one row `a \ufffd b` — a 4301-digit number is over CPython's
+   *       `int()` digit limit, which once escaped as a ValueError; now capped to U+FFFD on
+   *       both (the `<xmp>` shape, kept raw, is a built fixture in the `docread` suite);
+   *   9   memory_save with `links` as a STRING of 4303 characters (`[` + 4301 ones + `]`) —
+   *       nine tools take their arguments as sent since G1, so this is refused by the
+   *       validator as `list_type` in pydantic's words on both, the one `isError` frame, and
+   *       never parsed as JSON into a 4301-digit integer;
+   *   10  charset-table.json — the checked-in table itself, read as text on both.
+   */
+  add('read-round3', [
+    INIT(),
+    INITIALIZED,
+    callTool(2, 'bantamkit_read', { path: checkedIn['eszett-cell-ref.xlsx'] }),
+    callTool(3, 'bantamkit_read', { path: checkedIn['compression-method-9.docx'] }),
+    callTool(4, 'bantamkit_read', { path: checkedIn['encrypted-mimetype.odt'] }),
+    callTool(5, 'bantamkit_read', { path: checkedIn['bad-crc.docx'] }),
+    callTool(6, 'bantamkit_read', { path: checkedIn['corrupt-deflate.docx'] }),
+    callTool(7, 'bantamkit_read', { path: checkedIn['charref-4301-digits.html'] }),
+    callTool(8, 'bantamkit_read', { path: checkedIn['charref-4301-digits.html'], part: 'document' }),
+    callTool(9, 'memory_save', { type: 'project', name: 'n', description: 'd', body: 'b', links: `[${'1'.repeat(4301)}]` }),
+    callTool(10, 'bantamkit_read', { path: checkedIn['charset-table.json'] }),
+  ]);
+
+  /**
    * `build_identity` gets a session of its own, and the split is the point being made.
    *
    * Its REPLY is not comparable — `runtime`, `code_digest`, `build_id` and the Python-only
@@ -1410,6 +1452,101 @@ export async function run(ctx) {
       `read-edges: ${devZero === null ? '/dev/zero has no Windows counterpart and is NOT MEASURED HERE; ' : ''}` +
         `the sentences: ${reader.map((id) => `id ${id} ${JSON.stringify((toolTextOf(node, id) ?? '').split('\n')[0].slice(0, 96))}`).join('; ')}`,
     );
+  }
+
+  // ------------------------------------------------ bantamkit_read: round 3, on the wire
+
+  /**
+   * The refusal BIT of every `read-round3` reply, side to side and against a literal, plus
+   * the two sentences the round changed, pinned as literals so a runtime that drifted back
+   * to the old wording fails on a line that names the sentence. The generic loop already
+   * compares every frame; these are the cases that stay readable when one moves.
+   */
+  {
+    const { python, node } = results.get('read-round3');
+    const refusedAt = (side, id) => (toolTextOf(side, id) ?? '').startsWith('error: ');
+    const firstLine = (side, id) => (toolTextOf(side, id) ?? '').split('\n')[0];
+    // A page's rows each begin with their own row number; row 0's text is what follows it.
+    const rowZero = (side, id) => {
+      const line = (toolTextOf(side, id) ?? '').split('\n').find((l) => /^0[\t ]/.test(l));
+      return line === undefined ? null : line.replace(/^0[\t ]/, '');
+    };
+    const ids = [2, 3, 4, 5, 6, 7, 8, 9, 10];
+    const reader = [2, 3, 4, 5, 6];
+    const reads = [7, 8, 10];
+    for (const id of [...reader, ...reads]) {
+      cases.push({
+        name: `read-round3: id ${id}: the refusal bit, side to side`,
+        kind: 'json',
+        expected: refusedAt(python, id),
+        actual: refusedAt(node, id),
+      });
+    }
+    cases.push({
+      name: 'read-round3: the ids the reader refuses (2-6) and reads (7, 8, 10), on each side, as a literal',
+      kind: 'json',
+      expected: { python: reader, node: reader },
+      actual: { python: [...reader, ...reads].filter((id) => refusedAt(python, id)), node: [...reader, ...reads].filter((id) => refusedAt(node, id)) },
+    });
+    cases.push({
+      name: 'read-round3: id 9 (memory_save links as a 4303-character string) is the only isError frame, on both sides',
+      kind: 'json',
+      expected: { python: [9], node: [9] },
+      actual: {
+        python: ids.filter((id) => frameOf(python, id)?.result?.isError === true),
+        node: ids.filter((id) => frameOf(node, id)?.result?.isError === true),
+      },
+    });
+    cases.push({
+      name: 'read-round3: id 9 is refused by the validator as list_type on both sides — the string was never parsed as JSON',
+      kind: 'json',
+      expected: { python: true, node: true },
+      actual: { python: (toolTextOf(python, 9) ?? '').includes('list_type'), node: (toolTextOf(node, 9) ?? '').includes('list_type') },
+    });
+    // THE SENTENCES, as literals on each side — the reference's own first line is what the
+    // literal was generated from (`.venv/bin/python -m bantamkit.mcpserver` over the fixture,
+    // H1), never typed; the case fails if EITHER side drifts, not only if they part.
+    const sentences = {
+      2: `error: cell reference 'ß1' is not a column-and-row reference like B7, so this reader cannot place it`,
+      3: 'error: compression-method-9.docx is a zip but its word/document.xml uses compression method 9, which this reader cannot decompress',
+      4: 'error: encrypted-mimetype.odt is a zip but its mimetype is encrypted, so this reader cannot read it without a password',
+      5: `error: bad-crc.docx is a zip but its word/document.xml is damaged (Bad CRC-32 for file 'word/document.xml'), so this reader cannot read it`,
+      6: 'error: corrupt-deflate.docx is a zip but its word/document.xml is damaged (Error -3 while decompressing data: invalid block type), so this reader cannot read it',
+    };
+    for (const [id, sentence] of Object.entries(sentences)) {
+      cases.push({
+        name: `read-round3: id ${id}: the sentence, as a literal on each side`,
+        kind: 'json',
+        expected: { python: sentence, node: sentence },
+        actual: { python: firstLine(python, Number(id)), node: firstLine(node, Number(id)) },
+      });
+    }
+    // The 4301-digit character reference in a `<p>` is CAPPED to one replacement character on
+    // both sides (the reference's `html.unescape` answers U+FFFD for a number past the
+    // codepoint range, and the port caps the digits before it converts): the page's one row
+    // is `a \ufffd b`, generated from the reference's own `extract` over the fixture. (The
+    // `<xmp>` shape, where the reference keeps the text raw, is the built fixture the
+    // `docread` suite compares.)
+    cases.push({
+      name: 'read-round3: id 8: the page row is `a \ufffd b` on both sides — the 4301-digit reference capped, not raised',
+      kind: 'json',
+      expected: { python: 'a \ufffd b', node: 'a \ufffd b' },
+      actual: { python: rowZero(python, 8), node: rowZero(node, 8) },
+    });
+    // The zero-row part in the `read` session (id 12, `part: 'Empty'`) answers the sentence
+    // H1 introduced — `"Empty" in <path> has no rows`, a `refused-offset` record — and NOT
+    // the `document_offset_past_end` sentence it printed before (`numbered 0 to -1`). Pinned
+    // here as a literal on each side, because the generic loop's byte comparison of that
+    // frame would stay green if both sides went back to the old sentence together.
+    const read = results.get('read');
+    const zeroRow = `error: "Empty" in ${bookXlsx} has no rows`;
+    cases.push({
+      name: 'read: id 12: a part with no rows answers the has-no-rows sentence on both sides, not "numbered 0 to -1"',
+      kind: 'json',
+      expected: { python: zeroRow, node: zeroRow },
+      actual: { python: (toolTextOf(read.python, 12) ?? '').split('\n')[0], node: (toolTextOf(read.node, 12) ?? '').split('\n')[0] },
+    });
+    notes.push(`read-round3: the sentences: ${reader.map((id) => `id ${id} ${JSON.stringify(firstLine(node, id).slice(0, 96))}`).join('; ')}; id 9 ${JSON.stringify((toolTextOf(node, 9) ?? '').split('\n')[0].slice(0, 120))}`);
   }
 
   // ------------------------------------------------ bantamkit_read: round 2, on the wire
