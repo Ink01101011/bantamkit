@@ -14,13 +14,21 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import bantamkit
-from bantamkit import __version__, shiftwork
+from bantamkit import __version__, docread, shiftwork
 from bantamkit.assets import AssetNotFound, assets_root, load_skill, load_tool_asset
 from bantamkit.client import BantamError
-from bantamkit.contract import schema_error, schema_retry_feedback
+from bantamkit.contract import (
+    bantamkit_read_unknown_part,
+    document_error,
+    document_manifest,
+    document_offset_past_end,
+    document_page,
+    schema_error,
+    schema_retry_feedback,
+)
 from bantamkit.eventlog import EventLog
 from bantamkit.mcpreport import build_report as build_mcp_report
 from bantamkit.mcpreport import resolve_event_log_path
@@ -31,8 +39,12 @@ try:
     from mcp.server import MCPServer
     from mcp.server.mcpserver.exceptions import ResourceError
     from mcp.server.mcpserver.tools import Tool as SDKTool
+    from mcp.server.mcpserver.utilities.func_metadata import FuncMetadata
+    from pydantic import Field
 except ImportError:  # surfaced as a clear SystemExit in main()
     MCPServer = None  # type: ignore[assignment]
+    Field = None  # type: ignore[assignment]
+    FuncMetadata = object  # type: ignore[assignment,misc]
     ResourceError = None  # type: ignore[assignment]
     SDKTool = None  # type: ignore[assignment]
 
@@ -565,6 +577,58 @@ def status_report(
     return "\n".join(lines)
 
 
+class _ArgMetadata(FuncMetadata):  # type: ignore[misc,valid-type]
+    """The SDK's argument metadata, with the JSON pre-parse switched off where Node has none.
+
+    Before validating, `FuncMetadata.pre_parse_json` runs `json.loads` over every string
+    argument whose annotation is not exactly `str` (so `str | None` and `int | None`
+    qualify) to unwrap a JSON-encoded list or object some hosts send. The Node SDK does no
+    such thing, and `bantamkit_read` is the one tool on this surface whose arguments are
+    not plain `str`, so it was the one tool whose two halves could read the same call
+    differently. Measured on the wire (job43 F2, then review round 2): a 4301-digit `part`
+    reached the model as `isError: Exceeds the limit (4300 digits) for integer string
+    conversion` — `json.loads` hit CPython's integer-string cap before the handler ran;
+    `part="null"` was unwrapped to `None` and served the MANIFEST where Node refuses an
+    unknown part named `null`; `part="[1]"` became a list and a pydantic `string_type`
+    error where Node says `no part named [1]`; `offset="null"` paged from row 0 where
+    Node's `pyargs` refuses it as `int_parsing`.
+
+    THE PROPERTY: for `bantamkit_read`, no argument is JSON-unwrapped — a string is the
+    string that was sent. Pydantic's own lax coercion stays (`offset="5"` → 5), because
+    Node's `pyargs` does the same. `unwrap_json` is `False` for that tool alone: the other
+    nine take plain `str` (plus `list`/`dict` fields the SDK unwraps by design, e.g.
+    `memory_save.links`), and for them the per-key loop below is the one change: a
+    `ValueError` the SDK's own loop would have let escape — `json.loads` on a 4301-digit
+    integer string hits CPython's digit cap — now leaves that key as the string it was, so
+    `memory_save(links="[" + "1"*4301 + "]")` is pydantic's `list_type` validation frame
+    instead of an `isError` carrying `Exceeds the limit (4300 digits)` (measured, review
+    round 3). That is the frame Node already printed, so it is a parity gain, not a
+    behaviour the nine keep.
+    """
+
+    unwrap_json: bool = True
+
+    def pre_parse_json(self, data: dict[str, Any]) -> dict[str, Any]:
+        if not self.unwrap_json:
+            return data
+        out = data.copy()
+        for key, value in data.items():
+            try:
+                out[key] = super().pre_parse_json({key: value})[key]
+            except ValueError:
+                out[key] = value
+        return out
+
+
+# Tools whose arguments reach the handler exactly as sent — see `_ArgMetadata`.
+_NO_JSON_UNWRAP = frozenset({"bantamkit_read"})
+
+
+# `assets/tools/bantamkit_read.json` `offset.maximum` — Number.MAX_SAFE_INTEGER, the largest
+# integer a JSON parser on the Node side reads back unchanged.
+OFFSET_MAXIMUM = 9007199254740991
+
+
 def _from_manifest(fn: Callable[..., Any], name: str) -> Any:
     """Bind one handler to its manifest entry — description, BOTH schemas, and the surface.
 
@@ -605,7 +669,13 @@ def _from_manifest(fn: Callable[..., Any], name: str) -> Any:
         )
     tool = SDKTool.from_function(fn, name=asset["name"], description=asset["description"])
     return tool.model_copy(
-        update={"parameters": asset["parameters"], "output_schema": asset["output_schema"]}
+        update={
+            "parameters": asset["parameters"],
+            "output_schema": asset["output_schema"],
+            "fn_metadata": _ArgMetadata(
+                **dict(tool.fn_metadata), unwrap_json=name not in _NO_JSON_UNWRAP
+            ),
+        }
     )
 
 
@@ -857,15 +927,109 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
                 SERVED_RESOURCE_TEMPLATES,
             )
 
+    def bantamkit_read(
+        path: str,
+        part: str | None = None,
+        offset: Annotated[int, Field(le=OFFSET_MAXIMUM)] | None = None,
+        limit: int | None = None,
+    ) -> str:
+        """The reader on the MCP surface (job43): `docread` digests, `contract` words it.
+
+        The eval pair (`evalrun._document_tools`) already renders a manifest, a page and
+        every refusal from these two modules, and this handler makes the SAME calls with
+        the path standing in for the document name, so the two surfaces print the same
+        bytes for the same file. Three sentences are this tool's own — the continuation
+        line names `bantamkit_read`, an unknown part is a fact about the file, and so is
+        a part with no rows (`document_error` over `"{part}" in {path} has no rows`).
+
+        THE RECORD IS A DECISION, NEVER A REPLY. `manifest` and `page` are the branch
+        taken; `refused-unreadable` is `extract` raising (a missing file, a directory, a
+        container this reader has no extractor for, an `OSError` the filesystem threw —
+        all of them reach the model as a `document_error` sentence in the reader's own
+        words, never as an exception on the wire); `refused-unknown-part` and
+        `refused-offset` are the two argument refusals — the latter also when the part has
+        no rows at all, where NO offset can be in range and the sentence says so instead of
+        "numbered 0 to -1" (review round 3). `detail` carries the container
+        kind (a token from `docread`'s closed set), the part count, and the rows and
+        UTF-8 bytes the reply carries — never the path, never a part name, never a row.
+
+        `limit` is clamped to the advertised `[1, 200]` and `offset` to `>= 0` the way
+        `memory_recall` clamps `k`: the schema says so, and a client may ignore it. The
+        one bound NOT clamped is `offset`'s `maximum` (`OFFSET_MAXIMUM`, 2**53 - 1): a
+        clamp would silently read a different row than the one asked for, and the Node
+        port cannot even carry the number — `JSON.parse` has already rounded it — so both
+        sides refuse it with the schema refusal they already share. It is bound in the
+        SIGNATURE (`Field(le=...)`), which is what `from_function` validates at call time;
+        the advertised schema still comes from the manifest alone (`_from_manifest`).
+        """
+        start = 0 if offset is None else max(0, offset)
+        rows = docread.DEFAULT_ROW_LIMIT
+        if limit is not None:
+            rows = max(1, min(limit, docread.PAGE_MAX_ROWS))
+        with _record_raise(log, "bantamkit_read"):
+            try:
+                doc = docread.extract(path)
+            except (docread.DocumentReadError, OSError) as exc:
+                log.record("bantamkit_read", "refused-unreadable")
+                return _noted(document_error(exc))
+            detail: dict[str, Any] = {"kind": doc.kind, "parts": len(doc.parts)}
+            if part is None:
+                reply = document_manifest(
+                    [
+                        {
+                            "document": path,
+                            "kind": doc.kind,
+                            "index": p.index,
+                            "part": p.name,
+                            "row_count": p.row_count,
+                            "rows": p.rows,
+                            "omissions": [o.as_dict() for o in p.omissions],
+                        }
+                        for p in doc.parts
+                    ],
+                    [{"document": path, "omissions": [o.as_dict() for o in doc.omissions]}]
+                    if doc.omissions
+                    else [],
+                )
+                detail.update(rows=sum(p.row_count for p in doc.parts), bytes=doc.text_bytes)
+                log.record("bantamkit_read", "manifest", detail)
+                return _noted(reply)
+            try:
+                target = doc.part(part)
+            except docread.DocumentReadError:
+                log.record("bantamkit_read", "refused-unknown-part", detail)
+                return _noted(bantamkit_read_unknown_part(part, path, [p.name for p in doc.parts]))
+            if target.row_count == 0:
+                log.record("bantamkit_read", "refused-offset", detail)
+                return _noted(document_error(f'"{target.name}" in {path} has no rows'))
+            if start >= target.row_count:
+                log.record("bantamkit_read", "refused-offset", detail)
+                return _noted(document_offset_past_end(target.name, start, target.row_count))
+            got = docread.page(doc, part, start, rows, docread.PAGE_MAX_BYTES)
+            detail.update(rows=len(got.rows), bytes=len(got.text.encode()))
+            log.record("bantamkit_read", "page", detail)
+            return _noted(
+                document_page(
+                    document=path,
+                    part=got.part,
+                    offset=got.offset,
+                    rows=list(got.rows),
+                    row_count=got.total_rows,
+                    next_offset=got.next_offset,
+                    truncated_bytes=got.truncated_bytes,
+                    next_key="bantamkit_read_page_next",
+                )
+            )
+
     # The served surface, in one place, read out of the asset pack. Adding a tool here
     # without an asset raises AssetNotFound at startup — the manifest cannot drift behind
     # the server, because the server cannot start without it.
     #
-    # `bantamkit_status` went LAST rather than first, and `memory_compact` after it,
-    # rather than beside `memory_save` where a reader would look for it. Registration
-    # order IS the served order (`test_tool_manifest.py::test_the_golden_records_the_
-    # order_the_wire_actually_serves`), and appending is the only edit that leaves the
-    # other eight where every existing declaration says they are.
+    # `bantamkit_status` went LAST rather than first, `memory_compact` after it rather
+    # than beside `memory_save` where a reader would look for it, and `bantamkit_read`
+    # after that. Registration order IS the served order (`test_tool_manifest.py::test_
+    # the_golden_records_the_order_the_wire_actually_serves`), and appending is the only
+    # edit that leaves the other nine where every existing declaration says they are.
     tools = [
         _from_manifest(memory_save, "memory_save"),
         _from_manifest(memory_recall, "memory_recall"),
@@ -876,6 +1040,7 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         _from_manifest(build_identity_tool, "build_identity"),
         _from_manifest(bantamkit_status, "bantamkit_status"),
         _from_manifest(memory_compact, "memory_compact"),
+        _from_manifest(bantamkit_read, "bantamkit_read"),
     ]
 
     server = MCPServer(

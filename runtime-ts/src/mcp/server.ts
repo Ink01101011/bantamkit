@@ -17,7 +17,7 @@
  * framing, request routing, the initialize handshake, cancellation, error codes.
  *
  * THE `surfaces` GATE IS LOAD-BEARING. `assets/tools/` serves the eval agent too, and three
- * of the ten manifests (`document_list`, `document_read`, `file_graph`) claim only `agent`.
+ * of the thirteen manifests (`document_list`, `document_read`, `file_graph`) claim only `agent`.
  * `fromManifest` REFUSES those by name rather than filtering them out, because a filter is
  * indistinguishable from a typo: a manifest renamed or a surface dropped would silently
  * shrink the served set, and the field would be a comment.
@@ -40,10 +40,18 @@ import {
 
 import { AssetNotFound, assetsRoot, loadSkill, loadToolAsset } from '../assets.js';
 import { BantamError } from '../errors.js';
-import { schemaError } from '../contract.js';
+import {
+  bantamkitReadUnknownPart,
+  documentError,
+  documentManifest,
+  documentOffsetPastEnd,
+  documentPage,
+  schemaError,
+} from '../contract.js';
+import * as docread from '../docread.js';
 import { EventLog, type DetailValue } from '../eventlog.js';
 import type { Memory } from '../memory/component.js';
-import { pyReadText } from '../memory/pyfs.js';
+import { PyOSError, asPyOSError, pyReadText } from '../memory/pyfs.js';
 import { fromJs, parseJson, reprValue, toJs, type PyValue } from '../pyjson.js';
 import * as shiftwork from '../shiftwork.js';
 import { buildIdentity, SERVER_NAME } from './identity.js';
@@ -63,12 +71,13 @@ import {
 import type { RawStdioTransport } from './transport.js';
 
 /**
- * The nine, in the order `build_server` lists them — which is the order `tools/list` emits.
+ * The ten, in the order `build_server` lists them — which is the order `tools/list` emits.
  *
- * `bantamkit_status` went LAST rather than first, and `memory_compact` after it rather than
- * beside `memory_save` where a reader would look for it, for the same reason the reference
- * appends both: registration order IS the served order, and appending is the only edit that
- * leaves the other eight where every existing declaration says they are.
+ * `bantamkit_status` went LAST rather than first, `memory_compact` after it rather than
+ * beside `memory_save` where a reader would look for it, and `bantamkit_read` after that,
+ * for the same reason the reference appends all three: registration order IS the served
+ * order, and appending is the only edit that leaves the other nine where every existing
+ * declaration says they are.
  */
 export const MCP_TOOLS = [
   'memory_save',
@@ -80,6 +89,7 @@ export const MCP_TOOLS = [
   'build_identity',
   'bantamkit_status',
   'memory_compact',
+  'bantamkit_read',
 ] as const;
 
 
@@ -185,6 +195,12 @@ function asInt(value: PyValue | undefined): number | null {
  * failure was written down. `EventLog.record` swallows its own system errors, so this cannot
  * mask the original.
  */
+/** A rejection the filesystem produced: libuv's numeric `errno` and the `syscall` it names. */
+function isFsError(e: unknown): e is NodeJS.ErrnoException {
+  const err = e as NodeJS.ErrnoException;
+  return e instanceof Error && typeof err.errno === 'number' && typeof err.syscall === 'string';
+}
+
 function recordRaise<T>(log: EventLog, tool: string, body: () => T): T {
   try {
     return body();
@@ -222,24 +238,25 @@ function recordResult(log: EventLog, tool: string, call: () => PyValue): PyValue
  * Run one tool and return its Python-shaped answer.
  *
  * The two return kinds are the SDK's, not this file's: `memory_save`, `memory_recall`,
- * `bantamkit_status` and `memory_compact` are annotated `-> str` in the reference, so
- * `_create_wrapped_model` puts them under a `result` key; the other five are
+ * `bantamkit_status`, `memory_compact` and `bantamkit_read` are annotated `-> str` in the
+ * reference, so `_create_wrapped_model` puts them under a `result` key; the other five are
  * `-> dict[str, Any]` and pass through as themselves. That is why `structuredContent` is
- * exactly `{ result }` for those four of the nine, and carries the handler's own keys for
+ * exactly `{ result }` for those five of the ten, and carries the handler's own keys for
  * the other five.
  *
- * DO NOT READ THAT AS "FOUR TOOLS HAVE A `result` KEY". Driven over stdio, seven of the nine
+ * DO NOT READ THAT AS "FIVE TOOLS HAVE A `result` KEY". Driven over stdio, eight of the ten
  * answer with a `result` somewhere in `structuredContent`: the three shiftwork tools carry
  * one of their own, and it is the register's verdict, not this wrapper. `wrapped` below is
- * the bit that actually decides, and it is `true` exactly four times.
+ * the bit that actually decides, and it is `true` exactly five times.
  *
  * EVERY RECORD BELOW COMES FROM A DECISION, NEVER FROM A REPLY. `memory_save` reads
  * `SaveOutcome.status`, `memory_recall` reads `RecallOutcome.status`, `memory_compact`
  * reads `CompactOutcome.status` (the store's own `archived` list, empty or not), the three shiftwork
  * tools read the register's own `result` key, `validate_json` reads the `valid` bool it is
- * about to return, and `build_identity` reads the length of the `unavailable` list it
- * computed. Not one of them looks at the words. Change a reply's wording and the record must
- * be byte-identical — `test/eventlog.test.mjs` holds exactly that.
+ * about to return, `build_identity` reads the length of the `unavailable` list it
+ * computed, and `bantamkit_read` records the BRANCH it took. Not one of them looks at the
+ * words. Change a reply's wording and the record must be byte-identical —
+ * `test/eventlog.test.mjs` holds exactly that.
  *
  * Logging happens HERE and not in the caller's `try`, so that an argument refusal — which
  * `validateArguments` raises before this function is entered, exactly as pydantic does before
@@ -415,6 +432,128 @@ function runTool(
         index_before: outcome.indexBefore,
       });
       return { value: { t: 'str', v: noted(outcome.reply) }, wrapped: true };
+    }
+    case 'bantamkit_read': {
+      // The reader on the MCP surface (job43): `docread` digests, `contract` words it. The
+      // handler makes the SAME `contract` calls the reference's `bantamkit_read` makes,
+      // with the path standing in for the document name, so the two servers print the
+      // same bytes for the same file. Three sentences are this tool's own — the continuation
+      // line names `bantamkit_read`, an unknown part is a fact about the file, and so is a
+      // part with no rows (`document_error` over `"{part}" in {path} has no rows`).
+      //
+      // THE RECORD IS A DECISION, NEVER A REPLY. `manifest` and `page` are the branch
+      // taken; `refused-unreadable` is `extract` raising (a missing file, a directory, a
+      // container this reader has no extractor for, an `OSError` the filesystem threw —
+      // all of them reach the model as a `document_error` sentence in the reader's own
+      // words, never as an exception on the wire); `refused-unknown-part` and
+      // `refused-offset` are the two argument refusals — the latter also when the part has
+      // no rows at all, where NO offset can be in range and the sentence says so instead of
+      // "numbered 0 to -1" (review round 3). `detail` carries the container
+      // kind (a token from `docread`'s closed set), the part count, and the rows and UTF-8
+      // bytes the reply carries — never the path, never a part name, never a row.
+      //
+      // `limit` is clamped to the advertised `[1, 200]` and `offset` to `>= 0` the way
+      // `memory_recall` clamps `k`: the schema says so, and a client may ignore it.
+      const path = asText(args.get('path'));
+      const partArg = args.get('part');
+      const part = partArg !== undefined && partArg.t === 'str' ? partArg.v : null;
+      const offsetArg = asInt(args.get('offset'));
+      const start = offsetArg === null ? 0 : Math.max(0, offsetArg);
+      const limitArg = asInt(args.get('limit'));
+      const rows = limitArg === null ? docread.DEFAULT_ROW_LIMIT : Math.max(1, Math.min(limitArg, docread.PAGE_MAX_ROWS));
+      // `with _record_raise(log, "bantamkit_read")` wraps the reference's WHOLE handler, the
+      // `extract` call included, so an exception the reader lets escape (`LookupError` from
+      // an XML declaration naming no codec) is recorded `raised` and then reaches the wire
+      // as an `isError` frame. A corrupt deflate stream or a lying CRC no longer does: since
+      // review round 3 `_read`/`readMember` word both as the damaged-member sentence, a
+      // `document_error` like the encrypted one. Until job43 G2 this arm ran `extract`
+      // outside `recordRaise` with a hand-copied catch.
+      return recordRaise(log, 'bantamkit_read', () => {
+        let doc: docread.Document;
+        try {
+          doc = docread.extract(path);
+        } catch (e) {
+          // `except (docread.DocumentReadError, OSError)`. A Node fs error is CPython's
+          // `OSError` with the sentence rebuilt by `asPyOSError` — `[Errno 13] Permission
+          // denied: '<path>'` for a file this process may not open — through the CRT arm,
+          // because `open()` is the call the reference makes. A `BadZipFile` never reaches
+          // this arm on either side: `docread.ts`'s `zipKind`/`openZip` catch it exactly
+          // where `docread.py`'s `_zip_kind`/`_open` do, and what leaves them is the
+          // sentence naming what the reader saw, never the zip module's.
+          // A `PyOSError` the reader raised itself is already the reference's sentence —
+          // `[Errno 22] Invalid argument` from a zip whose member offset is negative, with
+          // NO filename, because the `seek` that fails there has none. Re-wrapping it would
+          // append `: '<path>'`.
+          // ONLY a filesystem rejection is an `OSError`: numeric `errno` AND the `syscall`
+          // it came from. A string `code` alone is not one — `Z_DATA_ERROR`,
+          // `ERR_INVALID_ARG_VALUE` and `ERR_STRING_TOO_LONG` all carry one, and until job43
+          // G2 each was printed as a fabricated `[Errno 0] …` sentence where the reference
+          // raises (the corrupt stream) or says `no such file` (the NUL byte, which
+          // `docread.statPath` now answers before this arm is reached).
+          const refusal =
+            e instanceof docread.DocumentReadError || e instanceof PyOSError
+              ? e
+              : isFsError(e)
+                ? asPyOSError(e, path, undefined, 'crt')
+                : null;
+          if (refusal === null) throw e;
+          log.record('bantamkit_read', 'refused-unreadable');
+          return { value: { t: 'str', v: noted(documentError(refusal)) }, wrapped: true };
+        }
+        const detail: Record<string, DetailValue> = { kind: doc.kind, parts: doc.parts.length };
+        if (part === null) {
+          const reply = documentManifest(
+            doc.parts.map((p) => ({
+              document: path,
+              kind: doc.kind,
+              index: p.index,
+              part: p.name,
+              row_count: p.rowCount,
+              rows: p.rows,
+              omissions: p.omissions.map((o) => o.asDict()),
+            })),
+            doc.omissions.length ? [{ document: path, omissions: doc.omissions.map((o) => o.asDict()) }] : [],
+          );
+          detail['rows'] = doc.parts.reduce((sum, p) => sum + p.rowCount, 0);
+          detail['bytes'] = doc.textBytes;
+          log.record('bantamkit_read', 'manifest', detail);
+          return { value: { t: 'str', v: noted(reply) }, wrapped: true };
+        }
+        let target: docread.Part;
+        try {
+          target = doc.part(part);
+        } catch (e) {
+          if (!(e instanceof docread.DocumentReadError)) throw e;
+          log.record('bantamkit_read', 'refused-unknown-part', detail);
+          const reply = bantamkitReadUnknownPart(part, path, doc.parts.map((p) => p.name));
+          return { value: { t: 'str', v: noted(reply) }, wrapped: true };
+        }
+        if (target.rowCount === 0) {
+          log.record('bantamkit_read', 'refused-offset', detail);
+          const reply = documentError(`"${target.name}" in ${path} has no rows`);
+          return { value: { t: 'str', v: noted(reply) }, wrapped: true };
+        }
+        if (start >= target.rowCount) {
+          log.record('bantamkit_read', 'refused-offset', detail);
+          const reply = documentOffsetPastEnd(target.name, start, target.rowCount);
+          return { value: { t: 'str', v: noted(reply) }, wrapped: true };
+        }
+        const got = docread.page(doc, part, start, rows, docread.PAGE_MAX_BYTES);
+        detail['rows'] = got.rows.length;
+        detail['bytes'] = Buffer.byteLength(got.text, 'utf8');
+        log.record('bantamkit_read', 'page', detail);
+        const reply = documentPage(
+          path,
+          got.part,
+          got.offset,
+          got.rows,
+          got.totalRows,
+          got.nextOffset,
+          got.truncatedBytes,
+          'bantamkit_read_page_next',
+        );
+        return { value: { t: 'str', v: noted(reply) }, wrapped: true };
+      });
     }
     default:
       // `tool_manager.call_tool` raises `ToolError(f"Unknown tool: {name}")`, which the

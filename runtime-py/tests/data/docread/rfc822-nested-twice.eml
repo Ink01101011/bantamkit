@@ -1,0 +1,30 @@
+MIME-Version: 1.0
+From: outer@example.test
+Subject: outer
+Content-Type: multipart/mixed; boundary="outer"
+
+--outer
+Content-Type: text/plain; charset=us-ascii
+
+outer body
+--outer
+Content-Type: message/rfc822
+
+From: middle@example.test
+Subject: middle
+Content-Type: multipart/mixed; boundary="middle"
+
+--middle
+Content-Type: text/plain; charset=us-ascii
+
+middle body
+--middle
+Content-Type: message/rfc822
+
+From: inner@example.test
+Subject: inner
+Content-Type: text/plain; charset=us-ascii
+
+inner body
+--middle--
+--outer--

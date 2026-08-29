@@ -333,12 +333,17 @@ def document_page(
     row_count: int,
     next_offset: int | None,
     truncated_bytes: int = 0,
+    next_key: str = "document_page_next",
 ) -> str:
     """One page, with its own coordinates and its continuation, both in band.
 
     Each line is prefixed with its own row number. `next_offset` is a number the caller has
     to be able to act on, so it is spelled as the call to make and not left as a field: a
     page that ends without saying how to get the next one is a page the model re-reads.
+
+    `next_key` names the contract sentence for that continuation, because the sentence
+    names the TOOL to call again: `document_read` for the eval pair, `bantamkit_read` for
+    the MCP reader (job43). Every other line of a page is the same bytes on both.
     """
     contract = load_contract()
     end = offset + len(rows) - 1 if rows else offset
@@ -355,7 +360,7 @@ def document_page(
     if next_offset is None:
         lines.append(contract["document_page_end"].format(part=part))
     else:
-        lines.append(contract["document_page_next"].format(next_offset=next_offset))
+        lines.append(contract[next_key].format(next_offset=next_offset))
     return "\n".join(lines)
 
 
@@ -366,6 +371,18 @@ def document_unknown(name: str, available: list[str]) -> str:
 def document_offset_past_end(part: str, offset: int, row_count: int) -> str:
     return load_contract()["document_offset_past_end"].format(
         part=part, offset=offset, rows=row_count, last=row_count - 1
+    )
+
+
+def bantamkit_read_unknown_part(part: str, path: str, available: list[str]) -> str:
+    """`bantamkit_read` was asked for a part the file does not have.
+
+    Its own sentence rather than `document_unknown`'s, because a missing part is a fact
+    about the FILE ("in {path}; it has: ...") and not about "this task". The available
+    names are joined the way `document_unknown` joins its documents.
+    """
+    return load_contract()["bantamkit_read_unknown_part"].format(
+        part=part, path=path, available=", ".join(available)
     )
 
 

@@ -1,0 +1,7 @@
+MIME-Version: 1.0
+From: sender@example.test
+Subject: rfc2231
+Content-Type: text/plain; charset*0="iso-8859"; charset*1="-1"
+Content-Transfer-Encoding: quoted-printable
+
+caf=E9 au lait

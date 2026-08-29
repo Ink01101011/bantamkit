@@ -313,12 +313,134 @@ test('the contract reader refuses a document outside the language it reads', () 
 test('the shipped default.yaml is inside the language, every line of it', () => {
   const text = readFileSync(join(assets.assetsRoot(), 'contracts', 'default.yaml'), 'utf8');
   const parsed = contract.parseContractDocument(text);
-  assert.equal(parsed.size, 45);
+  assert.equal(parsed.size, 47); // 45 + `bantamkit_read_page_next` + `bantamkit_read_unknown_part` (job43 R1)
   assert.equal(
     parsed.get('schema_instruction'),
     'Return ONLY a JSON object matching this JSON Schema. No prose.\n',
   );
   assert.ok(parsed.get('document_manifest_part').includes('part {index} "{part}"'));
+});
+
+// ------------------------------------------------------- the document reader's sentences
+
+/**
+ * The renderers `bantamkit_read` reaches, over primitives, against the bytes `contract.py`
+ * prints for the same input. The omission switch is exercised on every subject it names AND
+ * on one it does not, because the printed fallback is the whole point of the mechanism.
+ */
+const part = (over = {}) => ({
+  document: 'a.xlsx',
+  kind: 'xlsx',
+  index: 0,
+  part: 'Sales',
+  row_count: 3,
+  rows: ['name\tqty', 'apple\t3', 'pear\t5'],
+  ...over,
+});
+const omit = (subject, count, over = {}) => ({ subject, count, size: 0, where: [], what: '', facts: {}, ...over });
+
+test('document_manifest prints the count, the numbering and three rows per part', () => {
+  assert.equal(contract.documentManifest([]), contract.loadContract()['document_manifest_empty']);
+  assert.equal(
+    contract.documentManifest([part(), part({ index: 1, part: 'Empty', row_count: 0, rows: [] })]),
+    [
+      'a.xlsx (xlsx) part 0 "Sales": 3 rows, numbered 0 to 2',
+      '  row 0 is the header: name\tqty',
+      '  row 1 is the first data row: apple\t3',
+      '  row 2 is the last data row: pear\t5',
+      'a.xlsx (xlsx) part 1 "Empty": 0 rows, numbered 0 to -1',
+    ].join('\n'),
+  );
+  // One row prints only the header; two print no "last".
+  assert.equal(
+    contract.documentManifest([part({ row_count: 2, rows: ['h', 'x'] })]).split('\n').length,
+    3,
+  );
+});
+
+test('document_manifest says every omission, including a subject it has no sentence for', () => {
+  const data = contract.loadContract();
+  const entry = part({
+    omissions: [
+      omit('media', 2, { size: 4096 }),
+      omit('blank-rows', 5),
+      omit('number-format', 1, { where: ['B2', 'C3'], what: 'dates' }),
+      omit('unmapped-text', 7, { what: 'Symbol' }),
+      omit('unread-page', 1, { facts: { show_ops: 0, images: 1, image_bytes: 99 } }),
+      omit('unread-page', 1, { facts: { show_ops: 4, unmapped: 2 } }),
+      omit('unread-page', 1, { facts: { show_ops: 4, vouched: 3 } }),
+      omit('unread-page', 1, { facts: { show_ops: 4 } }),
+      omit('from-the-future', 3, { what: 'a subject contract.ts has never heard of' }),
+    ],
+  });
+  const lines = contract.documentManifest([entry]).split('\n');
+  assert.equal(lines.length, 4 + 9);
+  const sentence = (key, fields) =>
+    Object.entries(fields).reduce((s, [k, v]) => s.split(`{${k}}`).join(String(v)), data[key]);
+  assert.equal(lines[4], sentence('document_manifest_omitted_media', { count: 2, bytes: 4096 }));
+  assert.equal(lines[5], sentence('document_manifest_omitted_blank', { count: 5, rows: 3 }));
+  assert.equal(lines[6], sentence('document_manifest_omitted_format', { where: 'B2, C3', count: 1, what: 'dates' }));
+  assert.equal(lines[7], sentence('document_manifest_omitted_unmapped', { count: 7, what: 'Symbol' }));
+  const unread = (why, count, bytes) => sentence('document_manifest_omitted_unread_page', { why, count, bytes });
+  assert.equal(lines[8], unread(data['document_manifest_unread_no_operator'], 1, 99));
+  assert.equal(lines[9], unread(sentence('document_manifest_unread_unmapped', { show_ops: 4, unmapped: 2 }), 0, 0));
+  assert.equal(lines[10], unread(sentence('document_manifest_unread_whitespace', { show_ops: 4, vouched: 3 }), 0, 0));
+  assert.equal(lines[11], unread(sentence('document_manifest_unread_no_character', { show_ops: 4 }), 0, 0));
+  assert.equal(lines[12], '  NOT in those rows: 3 from-the-future (a subject contract.ts has never heard of)');
+});
+
+test('document_manifest prints a package omission before its parts, and an orphan after them', () => {
+  const data = contract.loadContract();
+  const media = omit('media', 3, { size: 1234, what: 'png' });
+  const lines = contract
+    .documentManifest([part()], [{ document: 'a.xlsx', omissions: [media] }, { document: 'b.xlsx', omissions: [media, omit('blank-rows', 1)] }])
+    .split('\n');
+  const pkg = (document) =>
+    ['document', 'count', 'what', 'bytes'].reduce(
+      (s, k) => s.split(`{${k}}`).join(String({ document, count: 3, what: 'png', bytes: 1234 }[k])),
+      data['document_manifest_package_media'],
+    );
+  assert.equal(lines[0], pkg('a.xlsx'));
+  assert.equal(lines[1], 'a.xlsx (xlsx) part 0 "Sales": 3 rows, numbered 0 to 2');
+  assert.equal(lines[5], pkg('b.xlsx'));
+  // The orphan's non-media omission is rendered against `row_count: 0`.
+  assert.equal(lines[6], data['document_manifest_omitted_blank'].replace('{count}', '1').replace('{rows}', '0'));
+  assert.equal(lines.length, 7);
+});
+
+test('document_page numbers its rows and spells the continuation as the call to make', () => {
+  assert.equal(
+    contract.documentPage('n.md', 'document', 0, ['# T', ''], 84, 2),
+    'n.md "document" rows 0-1 of 84; each line below begins with its own row number\n0\t# T\n1\t\nmore rows follow: call document_read again with offset=2',
+  );
+  assert.equal(
+    contract.documentPage('n.md', 'document', 0, ['# T', ''], 84, 2, 0, 'bantamkit_read_page_next'),
+    'n.md "document" rows 0-1 of 84; each line below begins with its own row number\n0\t# T\n1\t\nmore rows follow: call bantamkit_read again with offset=2',
+  );
+  assert.equal(
+    contract.documentPage('n.md', 'document', 82, ['a', 'b'], 84, null),
+    'n.md "document" rows 82-83 of 84; each line below begins with its own row number\n82\ta\n83\tb\nthat was the last row of "document"',
+  );
+  assert.equal(
+    contract.documentPage('w.txt', 'document', 1, ['yyy'], 3, 2, 1928),
+    'w.txt "document" rows 1-1 of 3; each line below begins with its own row number\n1\tyyy\nrow 1 was too long for one page and was cut: 1928 bytes dropped\nmore rows follow: call document_read again with offset=2',
+  );
+  // No rows: `end` is `offset`, as the reference computes it.
+  assert.ok(contract.documentPage('n.md', 'document', 5, [], 5, null).startsWith('n.md "document" rows 5-5 of 5;'));
+});
+
+test('the refusals and the error keep the reference\'s words, with `$` in a row left alone', () => {
+  assert.equal(
+    contract.documentOffsetPastEnd('document', 84, 84),
+    'error: offset 84 is past the end of "document", which has 84 rows numbered 0 to 83',
+  );
+  assert.equal(
+    contract.bantamkitReadUnknownPart('Nope', '/tmp/book.xlsx', ['Sales', 'Empty']),
+    'error: no part named "Nope" in /tmp/book.xlsx; it has: Sales, Empty',
+  );
+  assert.equal(contract.documentError(new Error('no such file: /x')), 'error: no such file: /x');
+  assert.equal(contract.documentError("cost $' and $1"), "error: cost $' and $1");
+  assert.equal(contract.documentPage('d', 'p', 0, ["$'"], 1, null).split('\n')[1], "0\t$'");
 });
 
 // -------------------------------------------------------------------- python value repr

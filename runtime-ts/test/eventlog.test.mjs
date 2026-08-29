@@ -63,6 +63,7 @@ import { Memory } from '../dist/memory/component.js';
 import { MemoryStore } from '../dist/memory/store.js';
 import { matchesMd, PyOSError, pyScandirNames } from '../dist/memory/pyfs.js';
 import { buildServer } from '../dist/mcp/server.js';
+import { inlineCell, row, xlsxBytes } from './docread-fixtures.mjs';
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = dirname(packageRoot);
@@ -492,6 +493,67 @@ test('no free-text argument reaches the file', async () => {
   );
 });
 
+test('bantamkit_read records the branch taken, with kind and counts, and never the path', async () => {
+  /**
+   * Five decisions, five outcomes — the mirror of `test_bantamkit_read_tool.py::test_the_
+   * record_is_the_branch_taken_with_kind_and_counts_and_never_the_path`, over a sentinel-
+   * named directory, file, sheet and cell. `detail` never carries the path, a part name or a
+   * row; the two served shapes carry `rows` and `bytes` beside `kind` and `parts`.
+   */
+  const { memory, path, log } = make(room());
+  const sentinelDir = join(room(), 'SENTINEL-DIR-7f3a');
+  mkdirSync(sentinelDir);
+  const book = join(sentinelDir, 'SENTINEL-FILE-c41d.xlsx');
+  writeFileSync(
+    book,
+    xlsxBytes([['SENTINEL-SHEET-5e08', 'worksheets/sheet1.xml', row([inlineCell('A1', 'SENTINEL-CELL-2b9e')])]]),
+  );
+  const client = await connect(memory, log);
+  const read = (args) => client.callTool({ name: 'bantamkit_read', arguments: args });
+  await read({ path: book });
+  await read({ path: book, part: 'SENTINEL-SHEET-5e08' });
+  await read({ path: book, part: 'SENTINEL-SHEET-5e08', offset: 9 });
+  await read({ path: book, part: 'SENTINEL-PART-d0a1' });
+  await read({ path: join(sentinelDir, 'SENTINEL-MISSING-88c2.xlsx') });
+  await client.close();
+  assert.ok(!readFileSync(path, 'utf8').includes('SENTINEL'));
+  const base = { v: SCHEMA_VERSION, ts: FIXED_TS, tool: 'bantamkit_read' };
+  const one = { bytes: 18, kind: 'xlsx', parts: 1, rows: 1 };
+  assert.deepEqual(records(path), [
+    { ...base, outcome: 'manifest', detail: one },
+    { ...base, outcome: 'page', detail: one },
+    { ...base, outcome: 'refused-offset', detail: { kind: 'xlsx', parts: 1 } },
+    { ...base, outcome: 'refused-unknown-part', detail: { kind: 'xlsx', parts: 1 } },
+    { ...base, outcome: 'refused-unreadable', detail: {} },
+  ]);
+});
+
+test('bantamkit_read records its decision and the reply wording says more', async () => {
+  /**
+   * The second source for the tool's two own sentences: a page's continuation line names
+   * THIS tool, and a missing part is stated as a fact about the file. The record beside each
+   * carries neither the path nor the part name — a token and two counts. The mirror of
+   * `test_eventlog.py::test_bantamkit_read_records_its_decision_and_the_reply_wording_says_more`.
+   */
+  const { memory, path, log } = make(room());
+  const doc = join(room(), 'SECRET-DOC-31be.txt');
+  writeFileSync(doc, 'a\nb\nc\n');
+  const client = await connect(memory, log);
+  const page = await client.callTool({ name: 'bantamkit_read', arguments: { path: doc, part: 'document', limit: 2 } });
+  const unknown = await client.callTool({ name: 'bantamkit_read', arguments: { path: doc, part: 'SECRET-PART' } });
+  await client.close();
+  assert.ok(page.content[0].text.endsWith('\nmore rows follow: call bantamkit_read again with offset=2'));
+  assert.equal(unknown.content[0].text, `error: no part named "SECRET-PART" in ${doc}; it has: document`);
+  assert.ok(!readFileSync(path, 'utf8').includes('SECRET'));
+  assert.deepEqual(
+    records(path).map((r) => [r.outcome, r.detail]),
+    [
+      ['page', { bytes: 3, kind: 'text', parts: 1, rows: 2 }],
+      ['refused-unknown-part', { kind: 'text', parts: 1 }],
+    ],
+  );
+});
+
 test('the only values written are from a closed set', async () => {
   /**
    * A shape gate rather than a spot check: a future field carrying a path, a name or a query
@@ -505,10 +567,16 @@ test('the only values written are from a closed set', async () => {
   await client.callTool({ name: 'memory_recall', arguments: { query: 'widget cache' } });
   await client.callTool({ name: 'validate_json', arguments: { output: '{}', schema: { type: 'object' } } });
   await client.callTool({ name: 'build_identity', arguments: {} });
+  const doc = join(room(), 'SECRET-DOC-31be.txt');
+  writeFileSync(doc, 'a\nb\nc\n');
+  await client.callTool({ name: 'bantamkit_read', arguments: { path: doc } });
+  await client.callTool({ name: 'bantamkit_read', arguments: { path: doc, part: 'document', limit: 2 } });
   await client.close();
   const vocabulary = new Set([
     'memory_save', 'memory_recall', 'memory_compact', 'validate_json', 'build_identity',
-    'shiftwork_clock_in', 'shiftwork_clock_out', 'shiftwork_status',
+    'shiftwork_clock_in', 'shiftwork_clock_out', 'shiftwork_status', 'bantamkit_read',
+    'manifest', 'page', 'refused-unreadable', 'refused-unknown-part', 'refused-offset',
+    'text', 'xlsx', 'docx', 'html', 'mhtml',
     'saved', 'duplicate', 'refused-validation', 'refused-budget',
     'archived', 'nothing-archived',
     'answered', 'empty-no-match', 'empty-unreadable-layer', 'empty-nothing-saved',

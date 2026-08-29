@@ -46,6 +46,11 @@ document_page_truncated: "row {index} was too long for one page and was cut: {dr
 document_unknown: "error: no document named {name}; this task has: {available}"
 document_offset_past_end: "error: offset {offset} is past the end of \"{part}\", which has {rows} rows numbered 0 to {last}"
 document_error: "error: {detail}"
+# `bantamkit_read` (the MCP reader, job43) reuses every `document_*` sentence above with the
+# path standing in for `{document}`. Two sentences are genuinely its own: its continuation
+# line names ITS tool, and a part it does not have is a fact about the file, not the task.
+bantamkit_read_page_next: "more rows follow: call bantamkit_read again with offset={next_offset}"
+bantamkit_read_unknown_part: "error: no part named \"{part}\" in {path}; it has: {available}"
 # The `paste` arm's system message (`docs/eval-data/2026-08-20-document-read-bar.md` §10.2,
 # PASTE_MAX_BYTES = 8621 under Amendment 1, 2026-08-20). The arm registers NO tools, so these four lines are the whole of
 # what the model is told ABOUT the corpus; the rows themselves are docread's own rendering,

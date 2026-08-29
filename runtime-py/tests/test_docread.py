@@ -73,14 +73,13 @@ def write_xlsx(path, sheets, shared=None, extra=None, rid_attr=True):
         z.writestr(
             "xl/_rels/workbook.xml.rels",
             '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/'
-            f"relationships\">{''.join(rels)}</Relationships>",
+            f'relationships">{"".join(rels)}</Relationships>',
         )
         if shared is not None:
             items = "".join(f"<si><t>{s}</t></si>" for s in shared)
             z.writestr(
                 "xl/sharedStrings.xml",
-                f'<sst {SHEET_NS} count="{len(shared)}" uniqueCount="{len(shared)}">'
-                f"{items}</sst>",
+                f'<sst {SHEET_NS} count="{len(shared)}" uniqueCount="{len(shared)}">{items}</sst>',
             )
         for name, payload in (extra or {}).items():
             z.writestr(name, payload)
@@ -129,7 +128,7 @@ def test_trap_shared_string_index_resolves_to_the_word(tmp_path):
 def test_trap_shared_string_runs_are_joined_and_phonetics_skipped(tmp_path):
     """Real `<si>` nodes split text across `<r>` runs and may carry `<rPh>` phonetic runs."""
     sst = (
-        f'<sst {SHEET_NS}><si><r><t>uni</t></r><r><t>corn</t></r>'
+        f"<sst {SHEET_NS}><si><r><t>uni</t></r><r><t>corn</t></r>"
         "<rPh><t>PHONETIC</t></rPh></si></sst>"
     )
     path = write_xlsx(
@@ -244,10 +243,7 @@ def test_trap_extracted_size_is_not_file_size(tmp_path):
             (
                 "s",
                 "worksheets/sheet1.xml",
-                "".join(
-                    row(inline_cell("A1", f"payload-{i:04d}"), index=i)
-                    for i in range(1, 900)
-                ),
+                "".join(row(inline_cell("A1", f"payload-{i:04d}"), index=i) for i in range(1, 900)),
             )
         ],
     )
@@ -318,7 +314,9 @@ def test_numbers_are_emitted_verbatim_with_no_float_round_trip(tmp_path):
 
 def test_booleans_and_errors_and_cached_formula_strings(tmp_path):
     body = row(
-        cell("A1", "1", "b"), cell("B1", "0", "b"), cell("C1", "#DIV/0!", "e"),
+        cell("A1", "1", "b"),
+        cell("B1", "0", "b"),
+        cell("C1", "#DIV/0!", "e"),
         cell("D1", "computed", "str"),
     )
     doc = extract_xlsx(write_xlsx(tmp_path / "t.xlsx", [("s", "worksheets/sheet1.xml", body)]))
@@ -770,9 +768,7 @@ def test_a_real_ole2_doc_is_read_through_textutil(tmp_path):
     source = tmp_path / "seed.txt"
     source.write_text("Hello legacy world.\nSecond paragraph here.\n", encoding="utf-8")
     target = tmp_path / "legacy.pdf"
-    subprocess.run(
-        [TEXTUTIL, "-convert", "doc", "-output", str(target), str(source)], check=True
-    )
+    subprocess.run([TEXTUTIL, "-convert", "doc", "-output", str(target), str(source)], check=True)
     assert target.read_bytes()[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
     container = sniff(target)
     assert container.kind == "doc" and container.suffix_lies
@@ -824,10 +820,7 @@ def test_textutil_refusing_a_file_is_reported_not_swallowed(tmp_path):
 
 @pytest.fixture
 def paged(tmp_path):
-    body = "".join(
-        row(inline_cell(f"A{i}", f"row-{i:03d}"), index=i)
-        for i in range(1, 121)
-    )
+    body = "".join(row(inline_cell(f"A{i}", f"row-{i:03d}"), index=i) for i in range(1, 121))
     return extract_xlsx(
         write_xlsx(
             tmp_path / "p.xlsx",
@@ -894,6 +887,75 @@ def test_unknown_part_lists_the_real_ones(paged):
         page(paged, 9)
 
 
+@pytest.mark.parametrize("key", ["--1", "\u00b2", "\u0661", "+1", " 1 ", "1_0", "-1", "2"])
+def test_an_index_shaped_key_that_is_not_an_index_is_an_unknown_part(paged, key):
+    """The guard in `Document.part` is exactly what `int()` accepts, or its ValueError leaks.
+
+    MEASURED on the wire (job43 R4, 28-call differential): `part="--1"` reached the model as
+    `isError: invalid literal for int() with base 10: '--1'`, because `"--1".lstrip("-")`
+    is a digit string and `int("--1")` is not an int. `"\u00b2".isdigit()` is True for the
+    same reason and `int("\u00b2")` raises too. A part key is a name or an ASCII integer —
+    the rule the Node port already applied — and every other shape is a name this document
+    does not have, answered with the unknown-part sentence like any other.
+    """
+    with pytest.raises(DocumentReadError, match="no part .*this document has 2: 'data', 'other'"):
+        page(paged, key)
+
+
+def test_a_key_of_4301_digits_is_an_unknown_part_not_a_value_error(paged):
+    """`_INDEX_KEY` admits any run of digits; `int()` refuses one past 4300 of them.
+
+    MEASURED on the wire (job43 F2): `part="1" * 4301` reached the model as `isError:
+    Exceeds the limit (4300 digits) for integer string conversion`. Node answers the
+    unknown-part sentence, and so must this side: a key `int()` rejects is not an index.
+    """
+    with pytest.raises(DocumentReadError, match="no part .*this document has 2: 'data', 'other'"):
+        page(paged, "1" * 4301)
+
+
+def test_a_bare_ampersand_in_a_sheet_is_refused_in_the_readers_words(tmp_path):
+    """expat raises `ET.ParseError` on `<t>a & b</t>`; the reader must not let it out.
+
+    MEASURED on the wire (job43 F2): the frame was `isError: not well-formed (invalid
+    token): line 1, column ...` — expat's own diagnostic, which the Node port's hand-written
+    XML walk could never print byte for byte. The sentence names the file and the part and
+    nothing the parser said.
+    """
+    path = write_xlsx(
+        tmp_path / "amp.xlsx",
+        [("Sales", "worksheets/sheet1.xml", row(inline_cell("A1", "a & b")))],
+    )
+    with pytest.raises(DocumentReadError) as excinfo:
+        extract_xlsx(path)
+    assert str(excinfo.value) == (
+        "amp.xlsx is a zip but its xl/worksheets/sheet1.xml is not well-formed XML, "
+        "so this reader cannot parse it"
+    )
+
+
+def test_a_bare_ampersand_in_the_shared_strings_or_the_workbook_names_that_part(tmp_path):
+    path = write_xlsx(
+        tmp_path / "sst.xlsx",
+        [("Sales", "worksheets/sheet1.xml", row(cell("A1", "0", "s")))],
+        shared=["a & b"],
+    )
+    with pytest.raises(DocumentReadError, match=r"^sst.xlsx is a zip but its xl/sharedStrings.xml"):
+        extract_xlsx(path)
+    path = write_xlsx(tmp_path / "wb.xlsx", [("a & b", "worksheets/sheet1.xml", "")])
+    with pytest.raises(DocumentReadError, match=r"^wb.xlsx is a zip but its xl/workbook.xml is"):
+        extract_xlsx(path)
+
+
+def test_a_bare_ampersand_in_a_docx_body_is_refused_the_same_way(tmp_path):
+    path = write_docx(tmp_path / "amp.docx", "<w:p><w:r><w:t>a & b</w:t></w:r></w:p>")
+    with pytest.raises(DocumentReadError) as excinfo:
+        extract_docx(path)
+    assert str(excinfo.value) == (
+        "amp.docx is a zip but its word/document.xml is not well-formed XML, "
+        "so this reader cannot parse it"
+    )
+
+
 @pytest.mark.parametrize("offset,limit", [(-1, 10), (0, 0), (0, -3)])
 def test_page_rejects_impossible_windows(paged, offset, limit):
     with pytest.raises(DocumentReadError, match="offset must be"):
@@ -915,7 +977,7 @@ def test_offset_past_the_end_is_empty_and_final(paged):
 
 DRAWING_RELS = (
     '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/'
-    "2006/relationships\">{}</Relationships>"
+    '2006/relationships">{}</Relationships>'
 )
 
 
@@ -962,8 +1024,7 @@ def styles(codes, xfs):
     for the wrong reason until a mutation run caught it (J25-D2).
     """
     fmts = "".join(
-        f'<numFmt numFmtId="{164 + i}" formatCode="{escape_attr(c)}"/>'
-        for i, c in enumerate(codes)
+        f'<numFmt numFmtId="{164 + i}" formatCode="{escape_attr(c)}"/>' for i, c in enumerate(codes)
     )
     cell_xfs = "".join(f'<xf numFmtId="{i}"/>' for i in xfs)
     return (
@@ -1459,6 +1520,7 @@ def test_the_default_cap_covers_the_measured_corpus():
 # feature: "it is a WOFF2 web font" ends an investigation that "it starts with b'wOF2'"
 # only begins.
 
+
 @pytest.mark.parametrize(
     ("name", "head", "kind", "what"),
     [
@@ -1490,10 +1552,12 @@ def test_the_new_signatures_do_not_swallow_text_that_starts_the_same_way(tmp_pat
     keeps that claim honest — every one of them is checked against prose that opens with
     the same letters.
     """
-    for opener in ("wOF2 is a font container format, described here.\n",
-                   "OTTOman history, chapter one.\n",
-                   "MZ is the DOS executable magic, and this sentence is not one.\n",
-                   "SQLite format 3 is the header string, quoted in this note.\n"):
+    for opener in (
+        "wOF2 is a font container format, described here.\n",
+        "OTTOman history, chapter one.\n",
+        "MZ is the DOS executable magic, and this sentence is not one.\n",
+        "SQLite format 3 is the header string, quoted in this note.\n",
+    ):
         path = tmp_path / "note.txt"
         path.write_text(opener + "More prose follows.\n", encoding="utf-8")
         container = sniff(path)
@@ -1515,3 +1579,276 @@ def test_a_named_signature_still_refuses_rather_than_returning_nothing(tmp_path)
     with pytest.raises(DocumentReadError) as caught:
         extract(path)
     assert "4100 bytes on disk" in str(caught.value)
+
+
+# ------------------------------------------------------------ review round 2 (job43 G1)
+#
+# Seven checked-in fixtures under `tests/data/docread/` (`docread_fixtures.py` wrote them).
+# Two are escapes this reader must not raise for; five are behaviours the reference has and
+# the Node port had not been measured against. The rows below are what Python prints; G2
+# ports to them or G3 rules them, and either way the number is pinned HERE first.
+
+from docread_fixtures import DATA, FIXTURES, set_encrypted_flag, write_all  # noqa: E402
+
+
+def test_the_checked_in_fixtures_are_the_builders_bytes(tmp_path):
+    """The committed files and the code that describes them cannot drift apart silently."""
+    for path in write_all(tmp_path / "regen"):
+        assert path.read_bytes() == (DATA / path.name).read_bytes(), path.name
+    assert sorted(p.name for p in DATA.iterdir()) == sorted(FIXTURES)
+
+
+def test_a_4301_digit_decimal_charref_renders_fffd_like_the_node_port_instead_of_raising():
+    """MEASURED before the fix: `ValueError: Exceeds the limit (4300 digits) for integer
+    string conversion` out of `html_rows`; Node's `parseInt` overflows to `Infinity` and
+    prints U+FFFD. 4300 digits already printed U+FFFD on both."""
+    doc = extract(DATA / "charref-4301-digits.html")
+    assert doc.kind == "html" and doc.parts[0].rows == ("a � b",)
+    assert docread.html_rows("<p>a &#" + "1" * 4300 + "; b</p>") == ("a � b",)
+
+
+def test_the_charref_cap_strips_leading_zeros_first_and_keeps_the_no_semicolon_span():
+    """`&#0…065;` is `A` however many zeros precede it, on both runtimes (Node measured:
+    `["x A y � z � w"]`); all zeros is `&#0`, which is U+FFFD; and a reference
+    without its `;` consumes exactly the digits, as `html._charref` does."""
+    markup = "<p>x &#" + "0" * 4300 + "65; y &#" + "0" * 4301 + " z &#" + "9" * 4301 + " w</p>"
+    assert docread.html_rows(markup) == ("x A y � z � w",)
+    assert docread.html_rows("<p>a &#" + "1" * 4301 + "b</p>") == ("a �b",)
+    assert docread.html_rows("<p>&#x" + "1" * 4301 + ";</p>") == ("�",)  # hex has no cap to hit
+
+
+def test_an_encrypted_required_member_is_refused_naming_the_member_and_the_password(tmp_path):
+    """MEASURED before the fix: `RuntimeError: File 'word/document.xml' is encrypted,
+    password required for extraction` out of `_read`, on both runtimes."""
+    with pytest.raises(DocumentReadError) as info:
+        extract(DATA / "encrypted-member.docx")
+    assert str(info.value) == (
+        "encrypted-member.docx is a zip but its word/document.xml is encrypted, "
+        "so this reader cannot read it without a password"
+    )
+    book = write_xlsx(
+        tmp_path / "s.xlsx",
+        [("s", "worksheets/sheet1.xml", row(cell("A1", "0", "s")))],
+        shared=["word"],
+    )
+    set_encrypted_flag(book, b"xl/sharedStrings.xml")
+    with pytest.raises(DocumentReadError) as info:
+        extract(book)
+    assert str(info.value) == (
+        "s.xlsx is a zip but its xl/sharedStrings.xml is encrypted, "
+        "so this reader cannot read it without a password"
+    )
+
+
+def test_an_encrypted_optional_member_costs_what_a_missing_one_costs_and_never_raises(tmp_path):
+    """`.rels` and `styles.xml` are read tolerantly: unreadable means no relationships and no
+    date formats, the way a malformed one already did — never an exception."""
+    book = write_xlsx(
+        tmp_path / "opt.xlsx",
+        [("s", "worksheets/sheet1.xml", row(cell("A1", "46235")))],
+        extra={
+            "xl/styles.xml": (
+                f'<styleSheet {SHEET_NS}><cellXfs><xf numFmtId="14"/></cellXfs></styleSheet>'
+            ),
+            "xl/worksheets/_rels/sheet1.xml.rels": (
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/'
+                'relationships"><Relationship Id="rId1" Type="x" Target="../media/i.png"/>'
+                "</Relationships>"
+            ),
+            "xl/media/i.png": "\x89PNG",
+        },
+    )
+    set_encrypted_flag(book, b"xl/styles.xml")
+    set_encrypted_flag(book, b"xl/worksheets/_rels/sheet1.xml.rels")
+    doc = extract(book)
+    assert doc.parts[0].rows == ("46235",)
+    assert doc.parts[0].omissions == ()  # no date disclosure: the styles are unreadable
+    assert [o.subject for o in doc.omissions] == [docread.OMIT_MEDIA]  # package count still stands
+
+
+# The five reference reads. Each is what Python prints for the fixture, nothing more.
+
+
+def test_reference_a_unicode_digit_shared_string_index_resolves_through_int():
+    """`int("١٢")` is 12 in CPython. Node measured: `DocumentReadError: cell A1 indexes
+    shared string '١٢', but the table has 14 entries`."""
+    doc = extract(DATA / "unicode-digit-shared-string.xlsx")
+    assert (doc.kind, doc.omissions) == ("xlsx", ())
+    assert [(p.name, p.rows, p.omissions) for p in doc.parts] == [("Digits", ("str12\tstr0",), ())]
+
+
+def test_reference_an_x_uuencode_body_is_decoded():
+    """`email` decodes `x-uuencode` through `binascii.a2b_uu`. Node measured: the four raw
+    lines `begin 644 body.txt`, the uu line, a backtick, and `end`."""
+    doc = extract(DATA / "x-uuencode.eml")
+    assert (doc.kind, doc.omissions) == ("mhtml", ())
+    assert [(p.name, p.rows, p.omissions) for p in doc.parts] == [
+        ("document", ("hello uuencoded world",), ())
+    ]
+
+
+def test_reference_an_rfc2231_charset_continuation_is_joined():
+    """`charset*0="iso-8859"; charset*1="-1"` names Latin-1, so `=E9` is `é`. Node measured:
+    `caf� au lait` — the parameter is ignored and the byte is not UTF-8."""
+    doc = extract(DATA / "rfc2231-charset.eml")
+    assert (doc.kind, doc.omissions) == ("mhtml", ())
+    assert [(p.name, p.rows, p.omissions) for p in doc.parts] == [
+        ("document", ("café au lait",), ())
+    ]
+
+
+def test_reference_message_rfc822_nested_twice_yields_every_text_part_and_counts_the_wrappers():
+    """`walk()` descends through both wrappers; each `message/rfc822` is also counted as a
+    part not rendered. Node measured: identical rows AND identical omission."""
+    doc = extract(DATA / "rfc822-nested-twice.eml")
+    assert doc.kind == "mhtml"
+    assert [o.as_dict() for o in doc.omissions] == [
+        {
+            "subject": docread.OMIT_MEDIA,
+            "count": 2,
+            "size": 0,
+            "where": [],
+            "what": "message/rfc822",
+            "facts": {},
+        }
+    ]
+    assert [(p.name, p.rows, p.omissions) for p in doc.parts] == [
+        ("part0", ("outer body",), ()),
+        ("part1", ("middle body",), ()),
+        ("part2", ("inner body",), ()),
+    ]
+
+
+def test_reference_an_internal_dtd_entity_is_expanded_by_expat():
+    """Node measured: `DocumentReadError: internal-dtd-entity.docx is a zip but its
+    word/document.xml is not well-formed XML, so this reader cannot parse it`."""
+    doc = extract(DATA / "internal-dtd-entity.docx")
+    assert (doc.kind, doc.omissions) == ("docx", ())
+    assert [(p.name, p.rows, p.omissions) for p in doc.parts] == [("document", ("a ENT b",), ())]
+
+
+# Review round 3 (H1): four escapes the reviewer measured, each on a checked-in fixture.
+
+
+def test_a_cell_reference_that_is_not_letters_then_digits_is_refused_not_a_type_error():
+    """MEASURED before the fix: `TypeError: ord() expected a character, but string of length
+    2 found` — `"ß".upper()` is `"SS"` — across the wire as `isError`; Node read column 18.
+    The match is on the reference as written, not on its uppercase, so `ß1` is refused
+    rather than read as `SS1` (column 486)."""
+    with pytest.raises(DocumentReadError) as info:
+        extract(DATA / "eszett-cell-ref.xlsx")
+    assert str(info.value) == (
+        "cell reference 'ß1' is not a column-and-row reference like B7, "
+        "so this reader cannot place it"
+    )
+    assert docread._column("ab7", 0) == docread._column("AB7", 0) == 27
+    assert docread._column(None, 3) == docread._column("", 3) == 3
+    for ref in ("A", "1", "A1B", "É1", "a-1", "A 1"):
+        with pytest.raises(DocumentReadError):
+            docread._column(ref, 0)
+
+
+def test_an_unsupported_compression_method_names_the_method_not_a_password():
+    """MEASURED before the fix: `NotImplementedError` is a `RuntimeError`, so method 9 printed
+    `… is encrypted, so this reader cannot read it without a password` on both runtimes."""
+    with pytest.raises(DocumentReadError) as info:
+        extract(DATA / "compression-method-9.docx")
+    assert str(info.value) == (
+        "compression-method-9.docx is a zip but its word/document.xml uses compression "
+        "method 9, which this reader cannot decompress"
+    )
+
+
+def test_a_damaged_member_is_refused_in_the_readers_words_with_the_librarys_phrase():
+    """MEASURED before the fix: `BadZipFile("Bad CRC-32 for file 'word/document.xml'")` and
+    `zlib.error("Error -3 while decompressing data: invalid block type")` both reached the
+    wire as `isError`, on both runtimes."""
+    with pytest.raises(DocumentReadError) as info:
+        extract(DATA / "bad-crc.docx")
+    assert str(info.value) == (
+        "bad-crc.docx is a zip but its word/document.xml is damaged "
+        "(Bad CRC-32 for file 'word/document.xml'), so this reader cannot read it"
+    )
+    with pytest.raises(DocumentReadError) as info:
+        extract(DATA / "corrupt-deflate.docx")
+    assert str(info.value) == (
+        "corrupt-deflate.docx is a zip but its word/document.xml is damaged "
+        "(Error -3 while decompressing data: invalid block type), so this reader cannot read it"
+    )
+
+
+def test_a_damaged_optional_member_costs_what_a_missing_one_costs(tmp_path):
+    """The tolerant reads (`styles.xml`, `.rels`) swallow a lying CRC the way they swallow an
+    encrypted flag: no date disclosure, no relationship graph, never an exception."""
+    from docread_fixtures import set_crc
+
+    book = write_xlsx(
+        tmp_path / "opt.xlsx",
+        [("s", "worksheets/sheet1.xml", row(cell("A1", "46235")))],
+        extra={
+            "xl/styles.xml": (
+                f'<styleSheet {SHEET_NS}><cellXfs><xf numFmtId="14"/></cellXfs></styleSheet>'
+            ),
+            "xl/worksheets/_rels/sheet1.xml.rels": (
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/'
+                'relationships"><Relationship Id="rId1" Type="x" Target="../media/i.png"/>'
+                "</Relationships>"
+            ),
+            "xl/media/i.png": "\x89PNG",
+        },
+    )
+    set_crc(book, b"xl/styles.xml", 0)
+    set_crc(book, b"xl/worksheets/_rels/sheet1.xml.rels", 0)
+    doc = extract(book)
+    assert doc.parts[0].rows == ("46235",)
+    assert doc.parts[0].omissions == ()
+    assert [o.subject for o in doc.omissions] == [docread.OMIT_MEDIA]
+
+
+def test_an_encrypted_mimetype_is_the_encrypted_sentence_not_a_damaged_archive():
+    """MEASURED before the fix: `cannot read c4.odt: it is a truncated or damaged zip archive
+    (it starts with b'PK\\x03\\x04\\x14\\x00\\x01\\x00'), 255 bytes on disk. …` — `_zip_kind`
+    swallowed the `RuntimeError` its `mimetype` read raised."""
+    with pytest.raises(DocumentReadError) as info:
+        extract(DATA / "encrypted-mimetype.odt")
+    assert str(info.value) == (
+        "encrypted-mimetype.odt is a zip but its mimetype is encrypted, "
+        "so this reader cannot read it without a password"
+    )
+    with pytest.raises(DocumentReadError, match="mimetype is encrypted"):
+        docread.sniff(DATA / "encrypted-mimetype.odt")
+
+
+def test_a_long_charref_inside_cdata_content_stays_raw_as_the_parser_keeps_it():
+    """MEASURED before the fix: the cap rewrote the whole markup, so `<xmp>&#<4301 digits>;
+    </xmp>` rendered U+FFFD where the parser (and Node) keep the digits — `xmp`, `iframe`,
+    `noembed` and `noframes` are CDATA content, never unescaped. Text and attribute
+    values are still capped, and nothing else in the process is touched."""
+    import html.parser
+
+    digits = "1" * 4301
+    xmp = f"<p>x</p><xmp>&#{digits};</xmp><p>y</p>"
+    assert docread.html_rows(xmp) == ("x", f"&#{digits};", "y")
+    assert docread.html_rows(f"<iframe>&#{digits};</iframe>") == (f"&#{digits};",)
+    assert docread.html_rows(f'<p title="&#{digits};">attr &#{digits};</p>') == ("attr �",)
+    assert docread.html_rows("<p>a &#65b &#T tail</p>") == ("a Ab &#T tail",)  # unescape's rules
+    assert html.parser.unescape is html.unescape
+    assert html.parser.HTMLParser.goahead is not docread._HtmlText.goahead
+
+
+def test_the_charset_table_is_the_codec_registrys_answer():
+    """`charset-table.json` is Python's codec registry decoding `80 D0 E9 A4 FF` under every
+    label the port's `decodeCharset` must agree with; a label the registry has no codec for
+    is the string `LookupError`. The bytes test proves the file is the builder's output; this
+    one proves the builder reads the registry rather than a table someone typed."""
+    import json
+
+    from docread_fixtures import CHARSET_LABELS, CHARSET_PROBE
+
+    table = json.loads((DATA / "charset-table.json").read_text(encoding="ascii"))
+    assert list(table) == CHARSET_LABELS and len(table) == 40
+    assert table["iso-8859-12"] == "LookupError" and table["latin1"] == "\x80Ðé¤ÿ"
+    assert table["windows-1252"] == "€Ðé¤ÿ" and table["us-ascii"] == "�" * 5
+    for label, decoded in table.items():
+        if decoded != "LookupError":
+            assert decoded == CHARSET_PROBE.decode(label, errors="replace"), label

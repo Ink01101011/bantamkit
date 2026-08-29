@@ -1,12 +1,21 @@
 /**
  * Layer 2 — the model contract: every string the model reads, every parse of what it writes.
  *
- * A port of the 44 lines of `runtime-py/src/bantamkit/contract.py` that the MCP surface
- * reaches (measured by `sys.settrace` over a real stdio server; the `document_*` renderers
- * are 461 lines of the same file and NONE of them is reachable from the nine tools, so they
- * are not here). The layer rule (`docs/architecture.md`) puts the WORDING in
+ * A port of the lines of `runtime-py/src/bantamkit/contract.py` that the MCP surface
+ * reaches. Measured by `sys.settrace` over a real stdio server, that was 44 lines while the
+ * surface was nine tools (served-tools: dated) and none of the `document_*` renderers —
+ * before `bantamkit_read` (job43)
+ * put the reader on the wire, so `document_manifest`, `document_page`, `document_error`,
+ * `document_offset_past_end` and the two sentences that are that tool's own are here now,
+ * mirrored from `contract.py` line for line — including `_omission_line`'s subject switch
+ * and its printed fallback. The layer rule (`docs/architecture.md`) puts the WORDING in
  * `assets/contracts/default.yaml` and the PARSE in this file, and neither half is duplicated
  * here: the sentences are read from the asset at call time, exactly as Python reads them.
+ *
+ * THE RENDERERS TAKE PRIMITIVES, as the reference's do: `contract.py` may not import
+ * `docread` (`test_layers.py::test_import_direction`) and this file does not import
+ * `docread.ts`. A rendered row is already a string by the time a reader has one, and an
+ * omission arrives as `Omission.asDict()`'s plain object.
  *
  * THE PROPERTY THIS FILE EXISTS FOR: for every validation failure bantamkit can produce,
  * Node emits the byte-identical string Python emits. Two of these are pinned in the Python
@@ -30,7 +39,16 @@ import { resolveImplicitTag } from './memory/pyyaml.js';
 import { fromJs, PyValueError, rawDecode, type PyValue } from './pyjson.js';
 import { absolutePath, validate } from './pyjsonschema.js';
 
-/** `contract.REQUIRED_KEYS`, in Python's order — the order the error message lists them. */
+/**
+ * `contract.REQUIRED_KEYS`, in Python's order — the order the error message lists them.
+ *
+ * `bantamkit_read_page_next` and `bantamkit_read_unknown_part` are deliberately NOT here:
+ * the reference's tuple does not carry them (R1 added the sentences to the asset and not to
+ * the tuple), and `missing key(s): ...` lists this tuple verbatim, so a Node list that was
+ * two keys longer would refuse a thin contract with a sentence Python does not print. The
+ * two renderers below fetch their key at call time and raise by name if it is absent, which
+ * is the `KeyError` the reference would raise at the same moment.
+ */
 export const REQUIRED_KEYS = [
   'schema_instruction',
   'schema_retry',
@@ -309,6 +327,280 @@ export function parseErrorMessage(detail: unknown): string {
 
 export function validationErrorMessage(where: string, detail: string): string {
   return pyFormat(loadContract()['validation_error']!, { where, detail });
+}
+
+// ---------------------------------------------------- the document reader's sentences
+
+/**
+ * The primitive shape of one omission, as `docread.Omission.asDict()` hands it over. The
+ * reference reads `dict` keys with `[]` and `.get`; the optional ones are optional here too.
+ */
+export interface OmissionRecord {
+  readonly subject: string;
+  readonly count: number;
+  readonly size?: number;
+  readonly where?: readonly string[];
+  readonly what?: string;
+  readonly facts?: Readonly<Record<string, number>>;
+}
+
+/** One part of a manifest, as `evalrun._document_tools` and `bantamkit_read` build it. */
+export interface ManifestPart {
+  readonly document: string;
+  readonly kind: string;
+  readonly index: number;
+  readonly part: string;
+  readonly row_count: number;
+  readonly rows: readonly string[];
+  readonly omissions?: readonly OmissionRecord[];
+}
+
+/** A document's own omissions, which the manifest prints before that document's parts. */
+export interface ManifestDocument {
+  readonly document: string;
+  readonly omissions?: readonly OmissionRecord[];
+}
+
+/** `str(int)` for a template field — every number in these sentences is an `int`. */
+const num = (n: number): string => String(n);
+
+/** A contract key the reference reads with `contract[key]`: a `KeyError` there, a raise here. */
+function sentence(contract: Record<string, string>, key: string): string {
+  const template = contract[key];
+  if (template === undefined) throw new BantamError(`contract missing key: ${key}`);
+  return template;
+}
+
+/**
+ * `_omission_line`: one omission, as one line. An unknown subject is PRINTED, never dropped.
+ *
+ * The branch order is `contract.py`'s, and the `unread-page` arm chooses between the four
+ * reasons in the order `docread._pdf_refusal` chooses, so the page-grain sentence and the
+ * document-grain refusal cannot disagree about a file.
+ */
+function omissionLine(
+  contract: Record<string, string>,
+  entry: { readonly row_count: number },
+  omission: OmissionRecord,
+): string {
+  const subject = omission.subject;
+  if (subject === 'media') {
+    return pyFormat(sentence(contract, 'document_manifest_omitted_media'), {
+      count: num(omission.count),
+      bytes: num(omission.size ?? 0),
+    });
+  }
+  if (subject === 'blank-rows') {
+    return pyFormat(sentence(contract, 'document_manifest_omitted_blank'), {
+      count: num(omission.count),
+      rows: num(entry.row_count),
+    });
+  }
+  if (subject === 'number-format') {
+    return pyFormat(sentence(contract, 'document_manifest_omitted_format'), {
+      where: (omission.where ?? []).join(', '),
+      count: num(omission.count),
+      what: omission.what ?? '',
+    });
+  }
+  if (subject === 'unread-page') {
+    const facts = omission.facts ?? {};
+    const showOps = Math.trunc(facts['show_ops'] ?? 0);
+    const vouched = Math.trunc(facts['vouched'] ?? 0);
+    const unmapped = Math.trunc(facts['unmapped'] ?? 0);
+    let why: string;
+    if (showOps === 0) {
+      why = sentence(contract, 'document_manifest_unread_no_operator');
+    } else if (vouched === 0 && unmapped) {
+      why = pyFormat(sentence(contract, 'document_manifest_unread_unmapped'), {
+        show_ops: num(showOps),
+        unmapped: num(unmapped),
+      });
+    } else if (vouched) {
+      why = pyFormat(sentence(contract, 'document_manifest_unread_whitespace'), {
+        show_ops: num(showOps),
+        vouched: num(vouched),
+      });
+    } else {
+      why = pyFormat(sentence(contract, 'document_manifest_unread_no_character'), {
+        show_ops: num(showOps),
+      });
+    }
+    return pyFormat(sentence(contract, 'document_manifest_omitted_unread_page'), {
+      why,
+      count: num(Math.trunc(facts['images'] ?? 0)),
+      bytes: num(Math.trunc(facts['image_bytes'] ?? 0)),
+    });
+  }
+  if (subject === 'unmapped-text') {
+    return pyFormat(sentence(contract, 'document_manifest_omitted_unmapped'), {
+      count: num(omission.count),
+      what: omission.what ?? '',
+    });
+  }
+  return pyFormat(sentence(contract, 'document_manifest_omitted_other'), {
+    count: num(omission.count),
+    subject,
+    what: omission.what ?? '',
+  });
+}
+
+function packageMediaLine(
+  contract: Record<string, string>,
+  document: string,
+  omission: OmissionRecord,
+): string {
+  return pyFormat(sentence(contract, 'document_manifest_package_media'), {
+    document,
+    count: num(omission.count),
+    what: omission.what ?? '',
+    bytes: num(omission.size ?? 0),
+  });
+}
+
+/**
+ * `document_manifest`: the answer to "what exists", as one observation — per part, the row
+ * count, the numbering, the header, the first and the last data row, and every omission the
+ * rendering made. A document's own omissions print before its first part; one whose
+ * omissions matched no part is still said, after every part, because `pop` makes that
+ * reachable on the reference and dropping the line would put the silence back one level up.
+ */
+export function documentManifest(
+  parts: readonly ManifestPart[],
+  documents: readonly ManifestDocument[] | null = null,
+): string {
+  const contract = loadContract();
+  if (parts.length === 0) return sentence(contract, 'document_manifest_empty');
+  // `{entry["document"]: entry.get("omissions") or []}` — a later duplicate wins, as in a dict.
+  const pkg = new Map<string, readonly OmissionRecord[]>();
+  for (const entry of documents ?? []) pkg.set(entry.document, entry.omissions ?? []);
+  const lines: string[] = [];
+  for (const entry of parts) {
+    const rows = entry.rows;
+    const last = entry.row_count - 1;
+    const pending = pkg.get(entry.document) ?? [];
+    pkg.delete(entry.document);
+    for (const omission of pending) {
+      lines.push(
+        omission.subject === 'media'
+          ? packageMediaLine(contract, entry.document, omission)
+          : omissionLine(contract, entry, omission),
+      );
+    }
+    lines.push(
+      pyFormat(sentence(contract, 'document_manifest_part'), {
+        document: entry.document,
+        kind: entry.kind,
+        index: num(entry.index),
+        part: entry.part,
+        rows: num(entry.row_count),
+        last: num(last),
+      }),
+    );
+    if (rows.length > 0) {
+      lines.push(pyFormat(sentence(contract, 'document_manifest_header_row'), { row: rows[0]! }));
+    }
+    if (rows.length > 1) {
+      lines.push(pyFormat(sentence(contract, 'document_manifest_first_row'), { row: rows[1]! }));
+    }
+    if (rows.length > 2) {
+      lines.push(
+        pyFormat(sentence(contract, 'document_manifest_last_row'), {
+          index: num(last),
+          row: rows[rows.length - 1]!,
+        }),
+      );
+    }
+    for (const omission of entry.omissions ?? []) lines.push(omissionLine(contract, entry, omission));
+  }
+  for (const [document, omissions] of pkg) {
+    for (const omission of omissions) {
+      lines.push(
+        omission.subject === 'media'
+          ? packageMediaLine(contract, document, omission)
+          : omissionLine(contract, { row_count: 0 }, omission),
+      );
+    }
+  }
+  return lines.join('\n');
+}
+
+/**
+ * `document_page`: one page, with its own coordinates and its continuation, both in band.
+ *
+ * `nextKey` names the contract sentence for the continuation, because that sentence names
+ * the TOOL to call again: `document_read` for the eval pair, `bantamkit_read` for the MCP
+ * reader. Every other line of a page is the same bytes on both.
+ */
+export function documentPage(
+  document: string,
+  part: string,
+  offset: number,
+  rows: readonly string[],
+  rowCount: number,
+  nextOffset: number | null,
+  truncatedBytes = 0,
+  nextKey = 'document_page_next',
+): string {
+  const contract = loadContract();
+  const end = rows.length > 0 ? offset + rows.length - 1 : offset;
+  const lines = [
+    pyFormat(sentence(contract, 'document_page_header'), {
+      document,
+      part,
+      start: num(offset),
+      end: num(end),
+      rows: num(rowCount),
+    }),
+  ];
+  rows.forEach((row, i) => lines.push(`${offset + i}\t${row}`));
+  if (truncatedBytes) {
+    lines.push(
+      pyFormat(sentence(contract, 'document_page_truncated'), {
+        index: num(end),
+        dropped: num(truncatedBytes),
+      }),
+    );
+  }
+  if (nextOffset === null) {
+    lines.push(pyFormat(sentence(contract, 'document_page_end'), { part }));
+  } else {
+    lines.push(pyFormat(sentence(contract, nextKey), { next_offset: num(nextOffset) }));
+  }
+  return lines.join('\n');
+}
+
+export function documentOffsetPastEnd(part: string, offset: number, rowCount: number): string {
+  return pyFormat(sentence(loadContract(), 'document_offset_past_end'), {
+    part,
+    offset: num(offset),
+    rows: num(rowCount),
+    last: num(rowCount - 1),
+  });
+}
+
+/**
+ * `bantamkit_read_unknown_part`: a part the file does not have — a fact about the FILE
+ * ("in {path}; it has: ...") and not about "this task", which is why it is not
+ * `document_unknown`'s sentence.
+ */
+export function bantamkitReadUnknownPart(part: string, path: string, available: readonly string[]): string {
+  return pyFormat(sentence(loadContract(), 'bantamkit_read_unknown_part'), {
+    part,
+    path,
+    available: available.join(', '),
+  });
+}
+
+/**
+ * `document_error`: a reader failure, kept in the reader's own words, with the `error:`
+ * prefix every other tool observation in the harness uses. `str(detail)` on the reference;
+ * an `Error`'s `message` is that string here (`DocumentReadError` and `PyOSError` both put
+ * the whole sentence there).
+ */
+export function documentError(detail: unknown): string {
+  const text = detail instanceof Error ? detail.message : String(detail);
+  return pyFormat(sentence(loadContract(), 'document_error'), { detail: text });
 }
 
 // ------------------------------------------------------------------------- extract_json

@@ -1,0 +1,10 @@
+MIME-Version: 1.0
+From: sender@example.test
+Subject: uuencode
+Content-Type: text/plain; charset=us-ascii
+Content-Transfer-Encoding: x-uuencode
+
+begin 644 body.txt
+5:&5L;&\@=75E;F-O9&5D('=O<FQD
+`
+end
