@@ -1725,3 +1725,130 @@ def test_reference_an_internal_dtd_entity_is_expanded_by_expat():
     doc = extract(DATA / "internal-dtd-entity.docx")
     assert (doc.kind, doc.omissions) == ("docx", ())
     assert [(p.name, p.rows, p.omissions) for p in doc.parts] == [("document", ("a ENT b",), ())]
+
+
+# Review round 3 (H1): four escapes the reviewer measured, each on a checked-in fixture.
+
+
+def test_a_cell_reference_that_is_not_letters_then_digits_is_refused_not_a_type_error():
+    """MEASURED before the fix: `TypeError: ord() expected a character, but string of length
+    2 found` — `"ß".upper()` is `"SS"` — across the wire as `isError`; Node read column 18.
+    The match is on the reference as written, not on its uppercase, so `ß1` is refused
+    rather than read as `SS1` (column 486)."""
+    with pytest.raises(DocumentReadError) as info:
+        extract(DATA / "eszett-cell-ref.xlsx")
+    assert str(info.value) == (
+        "cell reference 'ß1' is not a column-and-row reference like B7, "
+        "so this reader cannot place it"
+    )
+    assert docread._column("ab7", 0) == docread._column("AB7", 0) == 27
+    assert docread._column(None, 3) == docread._column("", 3) == 3
+    for ref in ("A", "1", "A1B", "É1", "a-1", "A 1"):
+        with pytest.raises(DocumentReadError):
+            docread._column(ref, 0)
+
+
+def test_an_unsupported_compression_method_names_the_method_not_a_password():
+    """MEASURED before the fix: `NotImplementedError` is a `RuntimeError`, so method 9 printed
+    `… is encrypted, so this reader cannot read it without a password` on both runtimes."""
+    with pytest.raises(DocumentReadError) as info:
+        extract(DATA / "compression-method-9.docx")
+    assert str(info.value) == (
+        "compression-method-9.docx is a zip but its word/document.xml uses compression "
+        "method 9, which this reader cannot decompress"
+    )
+
+
+def test_a_damaged_member_is_refused_in_the_readers_words_with_the_librarys_phrase():
+    """MEASURED before the fix: `BadZipFile("Bad CRC-32 for file 'word/document.xml'")` and
+    `zlib.error("Error -3 while decompressing data: invalid block type")` both reached the
+    wire as `isError`, on both runtimes."""
+    with pytest.raises(DocumentReadError) as info:
+        extract(DATA / "bad-crc.docx")
+    assert str(info.value) == (
+        "bad-crc.docx is a zip but its word/document.xml is damaged "
+        "(Bad CRC-32 for file 'word/document.xml'), so this reader cannot read it"
+    )
+    with pytest.raises(DocumentReadError) as info:
+        extract(DATA / "corrupt-deflate.docx")
+    assert str(info.value) == (
+        "corrupt-deflate.docx is a zip but its word/document.xml is damaged "
+        "(Error -3 while decompressing data: invalid block type), so this reader cannot read it"
+    )
+
+
+def test_a_damaged_optional_member_costs_what_a_missing_one_costs(tmp_path):
+    """The tolerant reads (`styles.xml`, `.rels`) swallow a lying CRC the way they swallow an
+    encrypted flag: no date disclosure, no relationship graph, never an exception."""
+    from docread_fixtures import set_crc
+
+    book = write_xlsx(
+        tmp_path / "opt.xlsx",
+        [("s", "worksheets/sheet1.xml", row(cell("A1", "46235")))],
+        extra={
+            "xl/styles.xml": (
+                f'<styleSheet {SHEET_NS}><cellXfs><xf numFmtId="14"/></cellXfs></styleSheet>'
+            ),
+            "xl/worksheets/_rels/sheet1.xml.rels": (
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/'
+                'relationships"><Relationship Id="rId1" Type="x" Target="../media/i.png"/>'
+                "</Relationships>"
+            ),
+            "xl/media/i.png": "\x89PNG",
+        },
+    )
+    set_crc(book, b"xl/styles.xml", 0)
+    set_crc(book, b"xl/worksheets/_rels/sheet1.xml.rels", 0)
+    doc = extract(book)
+    assert doc.parts[0].rows == ("46235",)
+    assert doc.parts[0].omissions == ()
+    assert [o.subject for o in doc.omissions] == [docread.OMIT_MEDIA]
+
+
+def test_an_encrypted_mimetype_is_the_encrypted_sentence_not_a_damaged_archive():
+    """MEASURED before the fix: `cannot read c4.odt: it is a truncated or damaged zip archive
+    (it starts with b'PK\\x03\\x04\\x14\\x00\\x01\\x00'), 255 bytes on disk. …` — `_zip_kind`
+    swallowed the `RuntimeError` its `mimetype` read raised."""
+    with pytest.raises(DocumentReadError) as info:
+        extract(DATA / "encrypted-mimetype.odt")
+    assert str(info.value) == (
+        "encrypted-mimetype.odt is a zip but its mimetype is encrypted, "
+        "so this reader cannot read it without a password"
+    )
+    with pytest.raises(DocumentReadError, match="mimetype is encrypted"):
+        docread.sniff(DATA / "encrypted-mimetype.odt")
+
+
+def test_a_long_charref_inside_cdata_content_stays_raw_as_the_parser_keeps_it():
+    """MEASURED before the fix: the cap rewrote the whole markup, so `<xmp>&#<4301 digits>;
+    </xmp>` rendered U+FFFD where the parser (and Node) keep the digits — `xmp`, `iframe`,
+    `noembed` and `noframes` are CDATA content, never unescaped. Text and attribute
+    values are still capped, and nothing else in the process is touched."""
+    import html.parser
+
+    digits = "1" * 4301
+    xmp = f"<p>x</p><xmp>&#{digits};</xmp><p>y</p>"
+    assert docread.html_rows(xmp) == ("x", f"&#{digits};", "y")
+    assert docread.html_rows(f"<iframe>&#{digits};</iframe>") == (f"&#{digits};",)
+    assert docread.html_rows(f'<p title="&#{digits};">attr &#{digits};</p>') == ("attr �",)
+    assert docread.html_rows("<p>a &#65b &#T tail</p>") == ("a Ab &#T tail",)  # unescape's rules
+    assert html.parser.unescape is html.unescape
+    assert html.parser.HTMLParser.goahead is not docread._HtmlText.goahead
+
+
+def test_the_charset_table_is_the_codec_registrys_answer():
+    """`charset-table.json` is Python's codec registry decoding `80 D0 E9 A4 FF` under every
+    label the port's `decodeCharset` must agree with; a label the registry has no codec for
+    is the string `LookupError`. The bytes test proves the file is the builder's output; this
+    one proves the builder reads the registry rather than a table someone typed."""
+    import json
+
+    from docread_fixtures import CHARSET_LABELS, CHARSET_PROBE
+
+    table = json.loads((DATA / "charset-table.json").read_text(encoding="ascii"))
+    assert list(table) == CHARSET_LABELS and len(table) == 40
+    assert table["iso-8859-12"] == "LookupError" and table["latin1"] == "\x80Ðé¤ÿ"
+    assert table["windows-1252"] == "€Ðé¤ÿ" and table["us-ascii"] == "�" * 5
+    for label, decoded in table.items():
+        if decoded != "LookupError":
+            assert decoded == CHARSET_PROBE.decode(label, errors="replace"), label

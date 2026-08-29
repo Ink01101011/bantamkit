@@ -597,8 +597,13 @@ class _ArgMetadata(FuncMetadata):  # type: ignore[misc,valid-type]
     string that was sent. Pydantic's own lax coercion stays (`offset="5"` → 5), because
     Node's `pyargs` does the same. `unwrap_json` is `False` for that tool alone: the other
     nine take plain `str` (plus `list`/`dict` fields the SDK unwraps by design, e.g.
-    `memory_save.links`), and their behaviour is unchanged by this class. For them the
-    per-key loop still stops a `ValueError` the SDK does not expect from escaping.
+    `memory_save.links`), and for them the per-key loop below is the one change: a
+    `ValueError` the SDK's own loop would have let escape — `json.loads` on a 4301-digit
+    integer string hits CPython's digit cap — now leaves that key as the string it was, so
+    `memory_save(links="[" + "1"*4301 + "]")` is pydantic's `list_type` validation frame
+    instead of an `isError` carrying `Exceeds the limit (4300 digits)` (measured, review
+    round 3). That is the frame Node already printed, so it is a parity gain, not a
+    behaviour the nine keep.
     """
 
     unwrap_json: bool = True
@@ -933,15 +938,18 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         The eval pair (`evalrun._document_tools`) already renders a manifest, a page and
         every refusal from these two modules, and this handler makes the SAME calls with
         the path standing in for the document name, so the two surfaces print the same
-        bytes for the same file. Two sentences are this tool's own — the continuation
-        line names `bantamkit_read`, and an unknown part is a fact about the file.
+        bytes for the same file. Three sentences are this tool's own — the continuation
+        line names `bantamkit_read`, an unknown part is a fact about the file, and so is
+        a part with no rows (`document_error` over `"{part}" in {path} has no rows`).
 
         THE RECORD IS A DECISION, NEVER A REPLY. `manifest` and `page` are the branch
         taken; `refused-unreadable` is `extract` raising (a missing file, a directory, a
         container this reader has no extractor for, an `OSError` the filesystem threw —
         all of them reach the model as a `document_error` sentence in the reader's own
         words, never as an exception on the wire); `refused-unknown-part` and
-        `refused-offset` are the two argument refusals. `detail` carries the container
+        `refused-offset` are the two argument refusals — the latter also when the part has
+        no rows at all, where NO offset can be in range and the sentence says so instead of
+        "numbered 0 to -1" (review round 3). `detail` carries the container
         kind (a token from `docread`'s closed set), the part count, and the rows and
         UTF-8 bytes the reply carries — never the path, never a part name, never a row.
 
@@ -991,6 +999,9 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
             except docread.DocumentReadError:
                 log.record("bantamkit_read", "refused-unknown-part", detail)
                 return _noted(bantamkit_read_unknown_part(part, path, [p.name for p in doc.parts]))
+            if target.row_count == 0:
+                log.record("bantamkit_read", "refused-offset", detail)
+                return _noted(document_error(f'"{target.name}" in {path} has no rows'))
             if start >= target.row_count:
                 log.record("bantamkit_read", "refused-offset", detail)
                 return _noted(document_offset_past_end(target.name, start, target.row_count))

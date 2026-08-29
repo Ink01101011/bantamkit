@@ -241,6 +241,19 @@ def test_an_offset_past_the_end_is_refused_with_the_eval_pairs_sentence(tmp_path
     )
 
 
+def test_a_part_with_no_rows_is_refused_as_such_not_as_numbered_0_to_minus_1(tmp_path):
+    """MEASURED before the fix (review round 3): `offset 0 is past the end of "Empty", which
+    has 0 rows numbered 0 to -1`, on both runtimes. No offset can be in range, so the reply
+    names the fact; the record is still `refused-offset`."""
+    path = workbook(tmp_path)
+    server, log = make(tmp_path)
+    for offset in (None, 0, 7):
+        args = {"part": "Empty"} if offset is None else {"part": "Empty", "offset": offset}
+        assert read(server, path=str(path), **args) == f'error: "Empty" in {path} has no rows'
+    assert records(log)[-1]["outcome"] == "refused-offset"
+    assert records(log)[-1]["detail"] == {"kind": "xlsx", "parts": 2}
+
+
 def test_an_unknown_part_is_refused_by_naming_the_file_and_what_it_has(tmp_path):
     path = workbook(tmp_path)
     server, _ = make(tmp_path)

@@ -145,7 +145,9 @@ import os
 import posixpath
 import re
 import subprocess
+import types
 import zipfile
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -473,8 +475,12 @@ def _zip_kind(path: Path, head: bytes) -> Container:
         with zipfile.ZipFile(path) as zf:
             names = zf.namelist()
             members = set(names)
-            mimetype = zf.read("mimetype").decode(errors="replace") if "mimetype" in members else ""
-    except (zipfile.BadZipFile, OSError, KeyError, RuntimeError):  # RuntimeError: encrypted
+            # `_read`, not `zf.read`: an encrypted `mimetype` is the encrypted sentence naming
+            # that member, never "damaged" (review round 3 measured the latter on an .odt).
+            mimetype = ""
+            if "mimetype" in members:
+                mimetype = _read(zf, "mimetype", path).decode(errors="replace")
+    except (zipfile.BadZipFile, OSError, KeyError):
         return Container(
             "zip", f"a truncated or damaged zip archive (it starts with {head[:8]!r})", named
         )
@@ -602,6 +608,14 @@ def _open(path: Path) -> zipfile.ZipFile:
         ) from None
 
 
+# Why a tolerant read of an optional member (`.rels`, `styles.xml`) yields nothing rather
+# than raising: malformed, absent, unreadable, encrypted (`RuntimeError`), unsupported method
+# (`NotImplementedError`, a `RuntimeError`), a lying checksum or a broken deflate stream.
+_UNREADABLE_OPTIONAL = (
+    ET.ParseError, KeyError, OSError, RuntimeError, zipfile.BadZipFile, zlib.error,
+)  # fmt: skip
+
+
 def _read(zf: zipfile.ZipFile, name: str, path: Path) -> bytes:
     """One member this reader cannot do without, or a refusal in the reader's own words.
 
@@ -612,6 +626,17 @@ def _read(zf: zipfile.ZipFile, name: str, path: Path) -> bytes:
     `tests/data/docread/encrypted-member.docx`). The sentence names the member and the fact,
     and nothing zipfile said: the Node `ZipReader` reads the same flag and must print the
     same words.
+
+    Two more, found by review round 3 and measured on the reviewer's own files. A member whose
+    compression method `zipfile` has no decoder for (9, deflate64) is a `NotImplementedError`
+    — a `RuntimeError` subclass, so until H1 it printed the ENCRYPTED sentence; it is caught
+    first and names the method number instead. A member whose bytes do not check out is a
+    `BadZipFile` (`Bad CRC-32 for file 'word/document.xml'`) or a `zlib.error` (`Error -3
+    while decompressing data: invalid block type`), and both reached the wire as `isError`;
+    the damaged sentence carries the library's phrase in parentheses because the two are
+    different facts about the file (a stored checksum that lies, a deflate stream that is
+    not one), and it is the only part of the sentence the Node port cannot print from the
+    same words — the ruling in docs/porting.md quotes it.
     """
     try:
         return zf.read(name)
@@ -620,10 +645,21 @@ def _read(zf: zipfile.ZipFile, name: str, path: Path) -> bytes:
         raise DocumentReadError(
             f"{path.name} is a zip but has no {name}; it contains: {sample}"
         ) from None
+    except NotImplementedError:
+        method = zf.getinfo(name).compress_type
+        raise DocumentReadError(
+            f"{path.name} is a zip but its {name} uses compression method {method}, "
+            "which this reader cannot decompress"
+        ) from None
     except RuntimeError:
         raise DocumentReadError(
             f"{path.name} is a zip but its {name} is encrypted, "
             "so this reader cannot read it without a password"
+        ) from None
+    except (zipfile.BadZipFile, zlib.error) as exc:
+        raise DocumentReadError(
+            f"{path.name} is a zip but its {name} is damaged ({exc}), "
+            "so this reader cannot read it"
         ) from None
 
 
@@ -678,7 +714,7 @@ def _rel_targets(zf: zipfile.ZipFile, member: str, members: set[str]) -> list[st
         return []
     try:
         tree = ET.fromstring(zf.read(rels))
-    except (ET.ParseError, KeyError, OSError, RuntimeError):  # RuntimeError: encrypted
+    except _UNREADABLE_OPTIONAL:
         return []
     out = []
     for rel in tree:
@@ -772,7 +808,7 @@ def _date_formats(zf: zipfile.ZipFile) -> tuple[str, ...]:
         return ()
     try:
         root = ET.fromstring(zf.read("xl/styles.xml"))
-    except (ET.ParseError, KeyError, OSError, RuntimeError):  # RuntimeError: encrypted
+    except _UNREADABLE_OPTIONAL:
         return ()
     custom = {}
     for node in root.iter(NS_S + "numFmt"):
@@ -810,16 +846,32 @@ def _letter(index: int) -> str:
     return letters
 
 
+_CELL_REF = re.compile(r"([A-Za-z]+)[0-9]+")
+
+
 def _column(ref: str | None, fallback: int) -> int:
-    """`B7` -> 1. The cell's own reference decides its column; XML order is only a fallback."""
+    """`B7` -> 1. The cell's own reference decides its column; XML order is only a fallback.
+
+    A reference is ASCII letters then ASCII digits, or it is refused. Review round 3 measured
+    `r="ß1"`: `str.isalpha` accepted the ß, `ord("ß".upper())` — `"SS"`, two code points —
+    raised `TypeError`, and the frame crossed the MCP wire as `isError` while the Node port
+    read the sheet. The match is on the reference AS WRITTEN, not on its uppercase: `"ß1"`
+    uppercases to `"SS1"`, which would be column 486 on one runtime and something else on
+    every other, and a column number that depends on a Unicode case table is not a fact
+    about the workbook.
+    """
     if not ref:
         return fallback
+    match = _CELL_REF.fullmatch(ref)
+    if match is None:
+        raise DocumentReadError(
+            f"cell reference {ref!r} is not a column-and-row reference like B7, "
+            "so this reader cannot place it"
+        )
     index = 0
-    for char in ref:
-        if not char.isalpha():
-            break
-        index = index * 26 + (ord(char.upper()) - 64)
-    return index - 1 if index else fallback
+    for char in match.group(1).upper():
+        index = index * 26 + (ord(char) - 64)
+    return index - 1
 
 
 def _shared_strings(zf: zipfile.ZipFile, path: Path) -> list[str]:
@@ -992,6 +1044,59 @@ _FIELD_TAGS = frozenset({"td", "th"})
 _SILENT_TAGS = frozenset({"script", "style", "template", "noscript"})
 
 
+# A decimal numeric character reference `html.unescape` would hand to `int()` as MORE than
+# 4300 digits. Greedy over the digits and the optional `;` exactly as `html._charref` is, so
+# the span replaced is the span `unescape` would have consumed.
+_LONG_DECIMAL_CHARREF = re.compile(r"&#([0-9]{4301,})(;?)")
+
+
+def _cap_charrefs(text: str) -> str:
+    """Rewrite every decimal character reference `int()` would refuse in one TEXT chunk.
+
+    `HTMLParser(convert_charrefs=True)` calls `html.unescape` on each run of text between
+    tags, and `unescape` does `int(digits)` on a decimal reference; CPython refuses a decimal
+    string over 4300 digits with a `ValueError` — the same cap `mcpserver._ArgMetadata`
+    documents for a `part` key. Measured (job43 G1, `tests/data/docread/charref-4301-
+    digits.html`): `&#` + 4301 × `1` + `;` raised out of `extract_html` and reached the
+    model as an `isError` frame; the Node port, whose `parseInt` overflows to `Infinity`,
+    rendered U+FFFD and read the page.
+
+    The rewrite reproduces what `unescape` computes for a number it CAN parse. Leading zeros
+    are stripped first, because `&#0…065;` is `A` to both `unescape` and `parseInt` however
+    many zeros precede it; what is left is either short enough to hand back to `unescape`
+    unchanged, or a number past U+10FFFF, for which `unescape` — and `parseInt`'s `Infinity`
+    — is U+FFFD. Hexadecimal references are not capped: `int(s, 16)` has no digit limit.
+    It runs on the chunk the parser is about to unescape and on nothing else — see
+    `_HtmlText.goahead` — so a tag, an attribute or the content of a CDATA element never
+    sees it.
+    """
+
+    def cap(match: re.Match[str]) -> str:
+        digits = match.group(1).lstrip("0") or "0"
+        if len(digits) <= 4300:
+            return f"&#{digits}{match.group(2)}"
+        return "\ufffd"
+
+    return _LONG_DECIMAL_CHARREF.sub(cap, text)
+
+
+def _with_bounded_unescape(name: str):
+    """`HTMLParser.<name>`, as the library wrote it, with `unescape` bound to the capped one.
+
+    The two methods that call `unescape` (`goahead` on text, `parse_starttag` on attribute
+    values) look it up in `html.parser`'s globals; a copy of the code object with one entry
+    of that namespace replaced is the same loop calling the same helpers, and nothing else
+    in the process — no other parser, not `html.unescape` itself — sees the change.
+    """
+    method = getattr(html.parser.HTMLParser, name)
+    return types.FunctionType(
+        method.__code__,
+        {**vars(html.parser), "unescape": lambda text: html.unescape(_cap_charrefs(text))},
+        name,
+        method.__defaults__,
+    )
+
+
 class _HtmlText(html.parser.HTMLParser):
     """HTML to rows. Block markup ends a row, `<td>`/`<th>` separate fields with a tab.
 
@@ -999,6 +1104,20 @@ class _HtmlText(html.parser.HTMLParser):
     an HTML table arrives in the same shape a worksheet row does and a caller does not need
     to know which container a row came from.
     """
+
+    # The parser's own `goahead` loop with ONE name rebound: the `unescape` it calls on each
+    # text chunk (and `parse_starttag` on each attribute value) is bounded. Everything
+    # else — which chunks are text, that the content of `xmp`/`iframe`/`noembed`/
+    # `noframes`/`script`/`style` is CDATA and never unescaped, how a tag is delimited —
+    # stays the library's. Two alternatives were
+    # measured and refused (H1): rewriting long references over the whole markup before
+    # parsing turned `&#<4301 digits>;` inside `<xmp>` into U+FFFD where the parser keeps
+    # the digits (review round 3); `convert_charrefs=False` with bounded `handle_charref`/
+    # `handle_entityref` changes the library's chunking — `&#65b` is handed over as `&#`
+    # and `65b`, and an `&#` with no `;` anywhere after it makes the parser emit the rest
+    # of the document, tags included, as data at `close()`.
+    goahead = _with_bounded_unescape("goahead")
+    parse_starttag = _with_bounded_unescape("parse_starttag")  # attribute values, likewise
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -1044,42 +1163,10 @@ class _HtmlText(html.parser.HTMLParser):
         self._flush()
 
 
-# A decimal numeric character reference `html.unescape` would hand to `int()` as MORE than
-# 4300 digits. Greedy over the digits and the optional `;` exactly as `html._charref` is, so
-# the span replaced is the span `unescape` would have consumed.
-_LONG_DECIMAL_CHARREF = re.compile(r"&#([0-9]{4301,})(;?)")
-
-
-def _cap_charrefs(markup: str) -> str:
-    """Rewrite every decimal character reference `int()` would refuse, before the parser sees it.
-
-    `HTMLParser(convert_charrefs=True)` calls `html.unescape`, which does `int(digits)` on a
-    decimal reference, and CPython refuses a decimal string over 4300 digits with a
-    `ValueError` — the same cap `mcpserver._ArgMetadata` documents for a `part` key. Measured
-    (job43 G1, `tests/data/docread/charref-4301-digits.html`): `&#` + 4301 × `1` + `;` raised
-    out of `extract_html` and reached the model as an `isError` frame; the Node port, whose
-    `parseInt` overflows to `Infinity`, rendered U+FFFD and read the page.
-
-    The rewrite reproduces what `unescape` computes for a number it CAN parse. Leading zeros
-    are stripped first, because `&#0…065;` is `A` to both `unescape` and `parseInt` however
-    many zeros precede it; what is left is either short enough to hand back to `unescape`
-    unchanged, or a number past U+10FFFF, for which `unescape` — and `parseInt`'s `Infinity`
-    — is U+FFFD. Hexadecimal references are not capped: `int(s, 16)` has no digit limit.
-    """
-
-    def cap(match: re.Match[str]) -> str:
-        digits = match.group(1).lstrip("0") or "0"
-        if len(digits) <= 4300:
-            return f"&#{digits}{match.group(2)}"
-        return "\ufffd"
-
-    return _LONG_DECIMAL_CHARREF.sub(cap, markup)
-
-
 def html_rows(markup: str) -> tuple[str, ...]:
     """Rendered rows of one HTML fragment. A pure function of the string: no I/O, no host."""
     parser = _HtmlText()
-    parser.feed(_cap_charrefs(markup))
+    parser.feed(markup)
     parser.close()
     return tuple(parser.rows)
 

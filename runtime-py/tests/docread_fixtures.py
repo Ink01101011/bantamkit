@@ -21,6 +21,7 @@ Run as a script to (re)write them: `.venv/bin/python runtime-py/tests/docread_fi
 from __future__ import annotations
 
 import binascii
+import json
 import struct
 import zipfile
 from pathlib import Path
@@ -250,6 +251,157 @@ def internal_dtd_entity(path: Path) -> Path:
     )
 
 
+# ------------------------------------------------- (d) review round 3 (H1): four escapes
+
+
+def _patch_headers(
+    path: Path, name: bytes, local_offset: int, central_offset: int, packed: bytes
+) -> Path:
+    """Overwrite `packed` at `local_offset` into member `name`'s local header and at
+    `central_offset` into its central-directory entry, in place."""
+    data = bytearray(path.read_bytes())
+    local = data.index(b"PK\x03\x04")
+    while True:
+        name_len = struct.unpack_from("<H", data, local + 26)[0]
+        if data[local + 30 : local + 30 + name_len] == name:
+            data[local + local_offset : local + local_offset + len(packed)] = packed
+            break
+        local = data.index(b"PK\x03\x04", local + 4)
+    central = data.index(b"PK\x01\x02")
+    while True:
+        name_len = struct.unpack_from("<H", data, central + 28)[0]
+        if data[central + 46 : central + 46 + name_len] == name:
+            data[central + central_offset : central + central_offset + len(packed)] = packed
+            break
+        central = data.index(b"PK\x01\x02", central + 4)
+    path.write_bytes(bytes(data))
+    return path
+
+
+def set_compress_method(path: Path, name: bytes, method: int) -> Path:
+    """Relabel member `name`'s compression method (local +8, central +10) without touching
+    its bytes: the member stays STORED on disk and the reader is told it is something else."""
+    return _patch_headers(path, name, 8, 10, struct.pack("<H", method))
+
+
+def set_crc(path: Path, name: bytes, crc: int) -> Path:
+    """Overwrite member `name`'s stored CRC-32 (local +14, central +16)."""
+    return _patch_headers(path, name, 14, 16, struct.pack("<I", crc))
+
+
+def eszett_cell_ref(path: Path) -> Path:
+    """`<c r="ß1">`. MEASURED (review round 3): `_column` did `ord("ß".upper())`, and
+    `"ß".upper()` is `"SS"` — `TypeError: ord() expected a character, but string of length
+    2 found`, across the MCP wire as `isError`; the Node port read the sheet (column 18)."""
+    sheet = (
+        f'<worksheet {SHEET_NS}><sheetData><row r="1"><c r="ß1" t="inlineStr"><is><t>x</t>'
+        "</is></c></row></sheetData></worksheet>"
+    )
+    return _zip(
+        path,
+        [
+            ("[Content_Types].xml", CONTENT_TYPES),
+            ("_rels/.rels", ROOT_RELS),
+            ("xl/worksheets/sheet1.xml", sheet),
+            (
+                "xl/workbook.xml",
+                f'<workbook {SHEET_NS} {REL_NS}><sheets><sheet name="Sharp" sheetId="1" '
+                'r:id="rId0"/></sheets></workbook>',
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/'
+                'relationships"><Relationship Id="rId0" Type="http://schemas.openxmlformats.org/'
+                'officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+                "</Relationships>",
+            ),
+        ],
+    )
+
+
+HELLO_DOCUMENT = (
+    f"<w:document {WORD_NS}><w:body><w:p><w:r><w:t>hello</w:t></w:r></w:p></w:body></w:document>"
+)
+
+
+def compression_method_9(path: Path) -> Path:
+    """A STORED `word/document.xml` relabelled method 9 (deflate64). `zipfile.read` raises
+    `NotImplementedError("That compression method is not supported")` — a `RuntimeError`,
+    so until H1 the reader printed the ENCRYPTED sentence for it (review round 3)."""
+    _docx(path, HELLO_DOCUMENT)
+    return set_compress_method(path, b"word/document.xml", 9)
+
+
+def bad_crc(path: Path) -> Path:
+    """A STORED `word/document.xml` whose stored CRC-32 is 0. `zipfile.read` raises
+    `BadZipFile("Bad CRC-32 for file 'word/document.xml'")` after reading the bytes."""
+    _docx(path, HELLO_DOCUMENT)
+    return set_crc(path, b"word/document.xml", 0)
+
+
+# One deflate block header byte 0x07: BFINAL=1, BTYPE=11 (reserved). `zlib.decompressobj`
+# refuses it as `Error -3 while decompressing data: invalid block type` before any CRC is
+# checked, so the member's CRC can be the STORED bytes' own. The stream is hand-written
+# rather than produced by `zlib.compress` and corrupted, because a deflate stream is a
+# property of the zlib that wrote it and a committed fixture must not depend on which one.
+CORRUPT_DEFLATE = b"\x07\x00\x00\x00\x00"
+
+
+def corrupt_deflate(path: Path) -> Path:
+    """A `word/document.xml` labelled method 8 whose bytes are not a deflate stream."""
+    _zip(
+        path,
+        [
+            ("[Content_Types].xml", CONTENT_TYPES),
+            ("_rels/.rels", ROOT_RELS),
+            ("word/document.xml", CORRUPT_DEFLATE.decode("latin-1")),
+        ],
+    )
+    return set_compress_method(path, b"word/document.xml", 8)
+
+
+def encrypted_mimetype(path: Path) -> Path:
+    """An OpenDocument-shaped zip whose `mimetype` carries the encryption flag. `sniff`
+    reads that member to name the container, and until H1 swallowed the `RuntimeError`
+    into "a truncated or damaged zip archive" (review round 3, measured on an .odt)."""
+    _zip(path, [("mimetype", "application/vnd.oasis.opendocument.text"), ("content.xml", "<x/>")])
+    return set_encrypted_flag(path, b"mimetype")
+
+
+# ----------------------------------------------------- (e) the charset reference table
+
+# The labels a MIME part may declare, decoded by Python's codec registry — the reference
+# the Node port's `decodeCharset` has to agree with. The five bytes cover an undefined
+# position in several single-byte tables (0x80), a lead byte (0xD0/0xE9), a currency sign
+# in Latin-1 that moves in Latin-9 (0xA4) and a byte no UTF-8 sequence starts with (0xFF).
+CHARSET_PROBE = bytes.fromhex("80D0E9A4FF")
+# `iso-8859-9` is named twice in the brief (on its own and in 1..16); it is one label here.
+CHARSET_LABELS = list(dict.fromkeys(
+    ["cp437", "mac_roman", "iso-8859-9"]
+    + [f"iso-8859-{n}" for n in range(1, 17)]
+    + [f"windows-125{n}" for n in range(0, 9)]
+    + [
+        "koi8-r", "koi8-u", "shift_jis", "euc-jp", "gb2312", "gbk", "big5", "euc-kr",
+        "utf-16", "utf-16le", "utf-16be", "latin1", "us-ascii",
+    ]
+))  # fmt: skip
+
+
+def charset_table(path: Path) -> Path:
+    """`{label: decoded-or-"LookupError"}` for `CHARSET_PROBE`, `errors="replace"` as
+    `docread._decoded_body` decodes (a label the registry has no codec for is the string
+    `LookupError`, which is what that function falls back from). ASCII-escaped JSON, one
+    key per line, so the bytes are the same on every platform and Node can read them."""
+    table = {}
+    for label in CHARSET_LABELS:
+        try:
+            table[label] = CHARSET_PROBE.decode(label, errors="replace")
+        except LookupError:
+            table[label] = "LookupError"
+    path.write_bytes((json.dumps(table, indent=1, ensure_ascii=True) + "\n").encode("ascii"))
+    return path
+
+
 # Name -> builder. The name is the committed file name; G2/G3 address fixtures by it.
 FIXTURES = {
     "charref-4301-digits.html": charref_4301_digits,
@@ -259,6 +411,12 @@ FIXTURES = {
     "rfc2231-charset.eml": rfc2231_charset,
     "rfc822-nested-twice.eml": rfc822_nested_twice,
     "internal-dtd-entity.docx": internal_dtd_entity,
+    "eszett-cell-ref.xlsx": eszett_cell_ref,
+    "compression-method-9.docx": compression_method_9,
+    "bad-crc.docx": bad_crc,
+    "corrupt-deflate.docx": corrupt_deflate,
+    "encrypted-mimetype.odt": encrypted_mimetype,
+    "charset-table.json": charset_table,
 }
 
 
