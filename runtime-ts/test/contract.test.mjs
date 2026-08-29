@@ -430,7 +430,6 @@ test('document_page numbers its rows and spells the continuation as the call to 
 });
 
 test('the refusals and the error keep the reference\'s words, with `$` in a row left alone', () => {
-  assert.equal(contract.documentUnknown('x', ['a', 'b']), 'error: no document named x; this task has: a, b');
   assert.equal(
     contract.documentOffsetPastEnd('document', 84, 84),
     'error: offset 84 is past the end of "document", which has 84 rows numbered 0 to 83',

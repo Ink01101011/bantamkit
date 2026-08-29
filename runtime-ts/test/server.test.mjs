@@ -23,7 +23,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
 
-import { badCentralDirectoryOffset, docxBytes, inlineCell, para, row, xlsxBytes } from './docread-fixtures.mjs';
+import { badCentralDirectoryOffset, checkedInFixtures, corruptStream, docxBytes, inlineCell, para, row, xlsxBytes } from './docread-fixtures.mjs';
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = dirname(packageRoot);
@@ -415,6 +415,47 @@ test('bantamkit_read: an offset past the end is refused with the eval pair\'s se
 test('bantamkit_read: an unknown part is refused by naming the file and what it has', async () => {
   const path = workbookFixture(freshStore());
   assert.equal(await readOne({ path, part: 'Nope' }), `error: no part named "Nope" in ${path}; it has: Sales, Empty`);
+});
+
+test('bantamkit_read: a NUL byte in the path is `no such file`, as pathlib answers it', async () => {
+  // `Path('a\x00b').exists()` is False (`os.stat` raises ValueError, pathlib swallows it);
+  // Node refuses the string with `ERR_INVALID_ARG_VALUE`, which until job43 G2 was printed as
+  // a fabricated `[Errno 0] ERR_INVALID_ARG_VALUE` OSError sentence.
+  const path = join(freshStore(), 'a\x00b.txt');
+  assert.equal(await readOne({ path }), `error: no such file: ${path}`);
+});
+
+test('bantamkit_read: a corrupt deflate stream is the exception the reference raises, an isError frame in zlib\'s words', async () => {
+  const path = join(freshStore(), 'corrupt.docx');
+  writeFileSync(path, corruptStream(docxBytes(para('hello'), { deflate: true }), 'word/document.xml'));
+  const { lines, stderr } = await session([INIT, INITIALIZED, readCall(2, { path })], { args: ['--store', freshStore()] });
+  assert.equal(stderr, '');
+  const answer = byId(lines, 2).result;
+  assert.equal(answer.isError, true);
+  assert.equal(answer.content[0].text, 'Error executing tool bantamkit_read: Error -3 while decompressing data: invalid block type');
+});
+
+test('bantamkit_read: an encrypted member is refused in the reader\'s words, on the checked-in G1 fixture', async () => {
+  const path = checkedInFixtures()['encrypted-member.docx'];
+  assert.equal(
+    await readOne({ path }),
+    'error: encrypted-member.docx is a zip but its word/document.xml is encrypted, so this reader cannot read it without a password',
+  );
+});
+
+test('bantamkit_read: a string argument is never JSON-unwrapped — part "null" is a part name, offset "null" is not an int', async () => {
+  const path = join(freshStore(), 'w.docx');
+  writeFileSync(path, docxBytes(para('one') + para('two') + para('three')));
+  for (const part of ['null', '[1]', '{}']) {
+    assert.equal(await readOne({ path, part }), `error: no part named "${part}" in ${path}; it has: document`);
+  }
+  // Lax coercion of a numeric string still holds: `offset="1", limit="1"` is a one-row page.
+  const page = await readOne({ path, part: 'document', offset: '1', limit: '1' });
+  assert.ok(page.split('\n').includes('1\ttwo') && !page.includes('\n2\tthree'), page);
+  const { lines } = await session([INIT, INITIALIZED, readCall(2, { path, offset: 'null' })], { args: ['--store', freshStore()] });
+  const refused = byId(lines, 2).result;
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /int_parsing/);
 });
 
 test('bantamkit_read: a missing path is a document_error, not an exception on the wire', async () => {

@@ -21,12 +21,12 @@
  * UTF-8 scanner's `reason` strings, quoted-printable's soft breaks, `repr()`.
  */
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 
-import { writeFixtures, zipBytes } from './docread-fixtures.mjs';
+import { checkedInFixtures, writeFixtures, zipBytes } from './docread-fixtures.mjs';
 
 const dist = new URL('../dist/', import.meta.url);
 const docread = await import(new URL('docread.js', dist));
@@ -38,8 +38,10 @@ const {
   PAGE_MAX_ROWS,
   TEXT_MAX_BYTES,
   ZipReader,
+  a2bUu,
   bytesRepr,
   decodeQuotedPrintable,
+  decodeUu,
   extract,
   page,
   parseXml,
@@ -51,7 +53,9 @@ const {
 
 const dir = mkdtempSync(join(tmpdir(), 'docread-'));
 after(() => rmSync(dir, { recursive: true, force: true }));
-const paths = writeFixtures(dir);
+// The 77 built fixtures plus the checked-in ones `runtime-py/tests/docread_fixtures.py`
+// wrote (job43 G1): the SAME bytes the Python suite reads, addressed by file name.
+const paths = { ...writeFixtures(dir), ...checkedInFixtures() };
 
 const expected = new Map(
   readFileSync(new URL('docread-expected.jsonl', import.meta.url), 'utf8')
@@ -73,7 +77,9 @@ function dump(path) {
     // `except (DocumentReadError, OSError)` in the reference's handler: `badcd.xlsx` is the
     // `OSError` arm, `[Errno 22] Invalid argument`, and `dump_py.py` prints it the same way.
     if (err.name === 'OSError') return { error: 'OSError', message: err.message };
-    throw err;
+    // What the reference lets ESCAPE — `zlib.error`, `BadZipFile`, `LookupError` — the port
+    // lets escape too, with the same class name and the same words (`RAISED` below).
+    return { error: `raised:${err.name}`, message: err.message };
   }
   return {
     kind: doc.kind,
@@ -90,8 +96,30 @@ function dump(path) {
   };
 }
 
-// The kinds this half identifies and refuses where the reference reads them.
+// The rulings: what the port answers where the reference answers something else. pdf, doc
+// and rtf are kinds this half identifies and refuses where the reference reads them; bzip2
+// and lzma are zip members the reference decompresses through stdlib modules Node core does
+// not have (job43 G2); rfc2231 is a `charset*0=`/`charset*1=` continuation the reference's
+// `policy.default` header parser joins and this port's `getParam` does not (G2, left to G3
+// to rule) — BOTH read the file, and the row differs by the one byte the charset decides.
 const DIVERGENT = new Map([
+  [
+    'bzip2.docx',
+    'bzip2.docx is a zip but its word/document.xml uses compression method 12 (bzip2), which the Node server cannot decompress (the Python server reads it); see docs/porting.md',
+  ],
+  [
+    'lzma.docx',
+    'lzma.docx is a zip but its word/document.xml uses compression method 14 (lzma), which the Node server cannot decompress (the Python server reads it); see docs/porting.md',
+  ],
+  [
+    'rfc2231-charset.eml',
+    {
+      kind: 'mhtml',
+      text_bytes: 14,
+      parts: [{ name: 'document', index: 0, row_count: 1, text_bytes: 14, rows: ['caf\ufffd au lait'], omissions: [] }],
+      omissions: [],
+    },
+  ],
   [
     'doc.pdf',
     'cannot read doc.pdf: it is a PDF document (PDF-1.7), 15 bytes on disk. pdf is not readable by the Node server yet (the Python server reads it); see docs/porting.md',
@@ -118,33 +146,127 @@ const DIVERGENT = new Map([
   ],
 ]);
 
+// Both sides RAISE, in the same words: the reference's `_read`/`_parse` catch only what they
+// word, and a corrupt deflate stream (`zlib.error`), a stream that ends early (`BadZipFile`
+// off the CRC) and an XML declaration naming no codec (`LookupError`) escape on both.
+const RAISED = new Map([
+  ['corrupt-deflate.docx', 'error'], // `zlib.error`: the class's `__name__` is `error`
+  ['truncated-deflate.docx', 'BadZipFile'],
+  ['bogus-encoding.docx', 'LookupError'],
+]);
+
 test('every fixture the reference reads or refuses gets the same bytes from the port', () => {
   assert.equal(expected.size, Object.keys(paths).length, 'one Python line per fixture');
   let compared = 0;
   for (const [name, path] of Object.entries(paths)) {
-    if (DIVERGENT.has(name)) continue;
+    if (DIVERGENT.has(name) || RAISED.has(name)) continue;
     const want = { ...expected.get(name) };
     delete want.fixture;
     if (want.message) want.message = want.message.replaceAll('{dir}', dir);
     assert.deepEqual(dump(path), want, name);
     compared += 1;
   }
-  assert.equal(compared, expected.size - DIVERGENT.size);
+  assert.equal(compared, expected.size - DIVERGENT.size - RAISED.size);
 });
 
-test('pdf, doc and rtf are identified by sniff and refused by the Node sentence, which differs from the reference', () => {
-  for (const [name, sentence] of DIVERGENT) {
-    const kind = sniff(paths[name]).kind;
-    assert.ok(['pdf', 'doc', 'rtf'].includes(kind), `${name} sniffs as ${kind}`);
-    const got = dump(paths[name]);
-    assert.deepEqual(got, { error: 'DocumentReadError', message: sentence }, name);
+test('what the reference lets escape, the port lets escape: the same class name and the same words', () => {
+  for (const [name, cls] of RAISED) {
     const python = expected.get(name);
-    assert.notDeepEqual(
-      { error: python.error, message: python.message },
-      got,
-      `${name}: the reference answers something else, which is what the ruling records`,
-    );
+    assert.ok(python.error === cls || python.error.endsWith(`.${cls}`), `${name}: the reference raised ${python.error}`);
+    assert.deepEqual(dump(paths[name]), { error: `raised:${cls}`, message: python.message }, name);
   }
+});
+
+test('the rulings: sniff agrees on the kind, the port answers its own sentence, and the reference answers something else', () => {
+  for (const [name, want] of DIVERGENT) {
+    const kind = sniff(paths[name]).kind;
+    const python = expected.get(name);
+    const got = dump(paths[name]);
+    if (typeof want === 'string') {
+      assert.ok(['pdf', 'doc', 'rtf', 'docx'].includes(kind), `${name} sniffs as ${kind}`);
+      assert.deepEqual(got, { error: 'DocumentReadError', message: want }, name);
+    } else {
+      // The read-both ruling: the same shape around the one row that differs.
+      assert.deepEqual(got, want, name);
+      assert.equal(python.kind, got.kind);
+      assert.equal(python.parts.length, got.parts.length);
+    }
+    const { fixture: _, ...reference } = python;
+    assert.notDeepEqual(reference, got, `${name}: the reference answers something else, which is what the ruling records`);
+  }
+});
+
+test('the checked-in G1 fixtures are read from runtime-py/tests/data/docread, not rebuilt', () => {
+  const names = Object.keys(checkedInFixtures());
+  assert.deepEqual(names, [
+    'charref-4301-digits.html',
+    'encrypted-member.docx',
+    'internal-dtd-entity.docx',
+    'rfc2231-charset.eml',
+    'rfc822-nested-twice.eml',
+    'unicode-digit-shared-string.xlsx',
+    'x-uuencode.eml',
+  ]);
+  // Three of them are the G2 ports, asserted here by name so a regression is named too.
+  assert.deepEqual(dump(paths['unicode-digit-shared-string.xlsx']).parts[0].rows, ['str12\tstr0']);
+  assert.deepEqual(dump(paths['x-uuencode.eml']).parts[0].rows, ['hello uuencoded world']);
+  assert.deepEqual(dump(paths['internal-dtd-entity.docx']).parts[0].rows, ['a ENT b']);
+  assert.equal(
+    dump(paths['encrypted-member.docx']).message,
+    'encrypted-member.docx is a zip but its word/document.xml is encrypted, so this reader cannot read it without a password',
+  );
+});
+
+test('under win32 every sentence names the path the way pathlib spells it there', () => {
+  // `Path('C:/docs/missing.docx')` prints `C:\docs\missing.docx` on Windows; the sentence
+  // is built from `str(Path(p))`. The platform is faked, the filesystem is this one: the
+  // stat of `C:\docs\missing.docx` fails here as it would there.
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  try {
+    assert.throws(() => sniff('C:/docs/missing.docx'), { message: 'no such file: C:\\docs\\missing.docx' });
+    assert.throws(() => extract('C:/docs/missing.docx'), { message: 'no such file: C:\\docs\\missing.docx' });
+    // `Path(p).name`: a file that is literally called `docs\junk.docx` on this filesystem is
+    // `junk.docx` to `PureWindowsPath`, and the refusal names it so. (`docs` is a directory
+    // component there, so the path is written with no separator this platform would split.)
+    const literal = join(dir, 'docs\\junk.docx');
+    writeFileSync(literal, 'PK\x03\x04 not a zip at all');
+    const cwd = process.cwd();
+    process.chdir(dir);
+    try {
+      assert.throws(() => extract('docs\\junk.docx'), {
+        message: /^cannot read junk\.docx: it is a truncated or damaged zip archive/,
+      });
+    } finally {
+      process.chdir(cwd);
+    }
+  } finally {
+    Object.defineProperty(process, 'platform', platform);
+  }
+  // And back on this platform the same literal name is one component.
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    assert.throws(() => extract('docs\\junk.docx'), { message: /^cannot read docs\\junk\.docx: / });
+  } finally {
+    process.chdir(cwd);
+  }
+});
+
+test('uuencode decodes like binascii.a2b_uu and email._decode_uu', () => {
+  // Every literal is `binascii.a2b_uu(...)` / `Message.get_payload(decode=True)` on CPython 3.12.
+  assert.equal(a2bUu(Buffer.from('#0V%T')).toString('latin1'), 'Cat');
+  assert.equal(a2bUu(Buffer.from('#0V%')).toString('latin1'), 'Ca@');
+  assert.deepEqual([...a2bUu(Buffer.from(''))], new Array(32).fill(0));
+  assert.deepEqual([...a2bUu(Buffer.from(' '))], []);
+  assert.throws(() => a2bUu(Buffer.from('#0V%Tzz')), { message: 'Trailing garbage' });
+  assert.throws(() => a2bUu(Buffer.from('!A\x7f')), { message: 'Illegal char' });
+  assert.equal(decodeUu(Buffer.from('begin 644 f\n#0V%T\n`\nend\n')).toString('latin1'), 'Cat');
+  assert.equal(decodeUu(Buffer.from('begin 644 f\r\n#0V%Tzz\r\nend\r\n')).toString('latin1'), 'Cat');
+  assert.equal(decodeUu(Buffer.from('begin 644 f\n#0V%T\nEND\n')).length, 3 + 37); // `END` is data: 'E' - 32 = 37 bytes
+  assert.throws(() => decodeUu(Buffer.from('begin 644 f\n#0V%T\n\nend\n')), { message: 'Truncated input' });
+  assert.throws(() => decodeUu(Buffer.from('begin xyz f\n#0V%T\nend\n')), { message: '`begin` line not found' });
+  assert.throws(() => decodeUu(Buffer.from('  begin 644 f\n#0V%T\nend\n')), { message: '`begin` line not found' });
 });
 
 test('the page ceilings are the numbers the reference hoisted', () => {

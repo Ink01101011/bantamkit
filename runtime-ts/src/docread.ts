@@ -36,11 +36,11 @@
 
 import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import { posix } from 'node:path';
-import { inflateRawSync } from 'node:zlib';
+import { constants as zlibConstants, inflateRawSync } from 'node:zlib';
 
 import { BantamError } from './errors.js';
 import { HTML5_ENTITIES } from './htmlentities.js';
-import { PyOSError } from './memory/pyfs.js';
+import { PyOSError, pyJoin, pyName, pySuffix as pyPathSuffix } from './memory/pyfs.js';
 
 export const NS_S = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}';
 export const NS_W = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}';
@@ -132,10 +132,49 @@ export function pySplitlines(s: string): string[] {
 }
 
 /** `int(text)` for a base-10 literal; `null` where Python raises `ValueError`. */
+// `int()` strips `Py_UNICODE_ISSPACE` characters, which is neither JavaScript's `\s` (that
+// has U+FEFF, this does not) nor `str.isspace()` (U+001C–U+001F are ASCII-whitespace to
+// `isspace` and refused by `int()`). Measured on CPython 3.12 (job43 G2), one character at a
+// time: accepted U+0085, U+00A0, U+1680, U+2000–U+200A, U+2028, U+2029, U+202F, U+205F,
+// U+3000; refused U+001C–U+001F, U+180E, U+200B, U+FEFF.
+const PY_INT_SPACE = '[\\t\\n\\x0b\\x0c\\r \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]*';
+const PY_INT = new RegExp(`^${PY_INT_SPACE}([+-]?)(\\p{Nd}+(?:_\\p{Nd}+)*)${PY_INT_SPACE}$`, 'u');
+const IS_ND = /\p{Nd}/u;
+
+/**
+ * The value of one `Nd` character. Unicode encodes every decimal-digit set as a contiguous
+ * run 0..9, so the value is the distance to the run's start — walked, because the runs abut
+ * (the five mathematical sets U+1D7CE.. are fifty consecutive code points) and the walk is
+ * taken modulo ten.
+ */
+function digitValue(ch: string): number {
+  let cp = ch.codePointAt(0) as number;
+  let steps = 0;
+  while (IS_ND.test(String.fromCodePoint(cp - 1))) {
+    cp -= 1;
+    steps += 1;
+  }
+  return steps % 10;
+}
+
+/**
+ * `int(text)`, or `null` where it raises `ValueError`.
+ *
+ * `int()` accepts ANY Unicode decimal digit — `<v>١٢</v>` (Arabic-Indic) indexes shared
+ * string 12 on the reference (measured, job43 G1: `tests/data/docread/unicode-digit-shared-
+ * string.xlsx` reads `str12`), and until G2 this port refused the cell as "indexes shared
+ * string '١٢'". `_` between digit groups, a sign, and Unicode whitespace around are `int()`'s
+ * too. A decimal string past 4300 digits is `ValueError` since CPython 3.11 (the cap
+ * `mcpserver._ArgMetadata` documents), and is `null` here rather than `Infinity`.
+ */
 function pyInt(text: string): number | null {
-  const m = /^[\t\n\x0b\x0c\r ]*([+-]?)([0-9]+(?:_[0-9]+)*)[\t\n\x0b\x0c\r ]*$/.exec(text);
+  const m = PY_INT.exec(text);
   if (!m) return null;
-  const n = Number((m[2] as string).replace(/_/g, ''));
+  const digits = (m[2] as string).replace(/_/g, '');
+  if (digits.length > 4300) return null;
+  let ascii = '';
+  for (const ch of digits) ascii += digitValue(ch);
+  const n = Number(ascii);
   return m[1] === '-' ? -n : n;
 }
 
@@ -216,26 +255,20 @@ export function bytesRepr(buf: Uint8Array): string {
  * reference), and `Path('a/b/.')` is `a/b`, so `stat('README.md/.')` on the reference is a
  * stat of the FILE, where a raw `statSync('README.md/.')` is ENOTDIR. Measured (job43 F3):
  * `''` read as `no such file: .` here and `. is a directory, not a document` there.
+ *
+ * The parsing is `pyfs`'s — `PurePath`'s own, with the Windows flavour on Windows — so a
+ * sentence printed under `win32` carries `C:\\docs\\a.docx` where the reference prints it,
+ * and `Path('C:/docs/a.docx').name` is `a.docx` on both. Until job43 G2 this module had its
+ * own POSIX-only copy of the three helpers, and every sentence on Windows would have named
+ * the path with the separators the CALLER wrote.
  */
 function pyPathStr(path: string): string {
-  const absolute = path.startsWith('/');
-  const parts = path.split('/').filter((seg) => seg !== '' && seg !== '.');
-  const joined = parts.join('/');
-  if (absolute) return '/' + joined;
-  return joined || '.';
+  return pyJoin(path);
 }
 
 /** `Path(p).name`: the last component of the collapsed path — `''` for `''`, `.` and `/`. */
 function pyPathName(path: string): string {
-  const text = pyPathStr(path);
-  if (text === '.' || text === '/') return '';
-  return text.slice(text.lastIndexOf('/') + 1);
-}
-
-/** `pathlib.PurePath.suffix`: the last `.`-part of the name, none for `.bashrc` or `x.`. */
-function pySuffix(name: string): string {
-  const i = name.lastIndexOf('.');
-  return i > 0 && i < name.length - 1 ? name.slice(i) : '';
+  return pyName(path);
 }
 
 /** `posixpath.splitext(name)[1]`. Leading dots of the basename never begin an extension. */
@@ -553,7 +586,7 @@ function startsWith(head: Uint8Array, magic: Uint8Array): boolean {
 }
 
 function zipKind(path: string, head: Uint8Array): Container {
-  const named = pySuffix(pyPathName(path)).toLowerCase().replace(/^\.+/, '');
+  const named = pyPathSuffix(path).toLowerCase().replace(/^\.+/, '');
   let names: string[];
   let mimetype = '';
   try {
@@ -563,7 +596,7 @@ function zipKind(path: string, head: Uint8Array): Container {
       mimetype = new TextDecoder('utf-8', { ignoreBOM: true }).decode(zf.read('mimetype'));
     }
   } catch (err) {
-    if (err instanceof BadZipFile || isOsError(err)) {
+    if (err instanceof BadZipFile || isOsError(err) || err instanceof ZipMemberUnreadable) {
       return new Container(
         'zip',
         `a truncated or damaged zip archive (it starts with ${bytesRepr(head.subarray(0, 8))})`,
@@ -588,8 +621,18 @@ function lookup<T>(rec: Readonly<Record<string, T>>, key: string): T | undefined
   return Object.hasOwn(rec, key) ? rec[key] : undefined;
 }
 
+/**
+ * `except OSError`: a rejection the FILESYSTEM produced, or the `OSError` this reader raised
+ * itself. A Node `fs` error carries a numeric `errno` and the `syscall` it came from; a
+ * `zlib` error carries an `errno` (-3, `Z_DATA_ERROR`) but no syscall, and Node's own
+ * `ERR_INVALID_ARG_VALUE` / `ERR_STRING_TOO_LONG` carry a string `code` and nothing else.
+ * Until job43 G2 any Error with a string `code` passed here, so a corrupt deflate stream in a
+ * rels part was swallowed as "no relationships" where the reference lets `zlib.error` escape.
+ */
 function isOsError(err: unknown): err is NodeJS.ErrnoException {
-  return err instanceof Error && typeof (err as NodeJS.ErrnoException).code === 'string';
+  if (err instanceof PyOSError) return true;
+  const e = err as NodeJS.ErrnoException;
+  return err instanceof Error && typeof e.errno === 'number' && typeof e.syscall === 'string';
 }
 
 /** Decode a TRUNCATED sample, tolerating a character the sample cut in half. */
@@ -651,6 +694,13 @@ function statPath(path: string): Stat {
     if (isOsError(err) && ['ENOENT', 'ENOTDIR', 'EBADF', 'ELOOP'].includes(err.code ?? '')) {
       return { exists: false, isDir: false, size: 0 };
     }
+    // `Path('a\x00b').exists()` is False: `os.stat` raises `ValueError("embedded null
+    // byte")` and pathlib's `exists`/`is_dir` catch it. Node refuses the same string with
+    // `ERR_INVALID_ARG_VALUE` before any syscall, and until job43 G2 that reached the wire as
+    // a fabricated `[Errno 0] ERR_INVALID_ARG_VALUE` where the reference says `no such file`.
+    if (err instanceof Error && (err as NodeJS.ErrnoException).code === 'ERR_INVALID_ARG_VALUE') {
+      return { exists: false, isDir: false, size: 0 };
+    }
     throw err;
   }
 }
@@ -687,7 +737,7 @@ export function sniff(path: string): Container {
   const st = statPath(path);
   if (st.isDir) throw new DocumentReadError(`${pyPathStr(path)} is a directory, not a document`);
   if (!st.exists) throw new DocumentReadError(`no such file: ${pyPathStr(path)}`);
-  const named = pySuffix(pyPathName(path)).toLowerCase().replace(/^\.+/, '');
+  const named = pyPathSuffix(path).toLowerCase().replace(/^\.+/, '');
   const head = readPrefix(path, HEAD_BYTES);
   if (head.length === 0) return new Container('empty', 'an empty file (0 bytes)', named);
   if (head[0] === 0x50 && head[1] === 0x4b) return zipKind(path, head);
@@ -790,15 +840,17 @@ export class ZipReader {
     private readonly data: Buffer,
     private readonly entries: readonly ZipEntry[],
     private readonly concat: number,
+    /** `Path(p).name`, for the one sentence `read` composes itself (the bzip2/lzma ruling). */
+    private readonly pathName: string,
   ) {
     for (const entry of entries) this.byName.set(entry.filename, entry);
   }
 
   static open(path: string): ZipReader {
-    return ZipReader.from(readFileSync(pyPathStr(path)));
+    return ZipReader.from(readFileSync(pyPathStr(path)), pyPathName(path));
   }
 
-  static from(data: Buffer): ZipReader {
+  static from(data: Buffer, pathName = ''): ZipReader {
     // `_EndRecData`: the last 22 bytes are an EOCD with no comment, or the record is
     // searched for in the last 64 KiB + 22.
     const n = data.length;
@@ -873,7 +925,7 @@ export class ZipReader {
       entries.push({ filename, method, flags, crc, compressedSize, fileSize, headerOffset });
       pos += 46 + nameLen + extraLen + commentLen;
     }
-    return new ZipReader(data, entries, concat);
+    return new ZipReader(data, entries, concat, pathName);
   }
 
   namelist(): string[] {
@@ -910,17 +962,75 @@ export class ZipReader {
     if (at + 30 > data.length || data.readUInt32LE(at) !== 0x04034b50) {
       throw new BadZipFile('Bad magic number for file header');
     }
-    if (entry.flags & 0x1) throw new Error(`File ${pyRepr(name)} is encrypted, password required for extraction`);
+    // `RuntimeError("File 'x' is encrypted, password required for extraction")`, raised
+    // off the central directory's flag before the data is touched. `readMember` words it.
+    if (entry.flags & 0x1) throw new ZipMemberUnreadable(name);
     const nameLen = data.readUInt16LE(at + 26);
     const extraLen = data.readUInt16LE(at + 28);
     const start = at + 30 + nameLen + extraLen;
     const raw = data.subarray(start, start + entry.compressedSize);
     let out: Buffer;
     if (entry.method === 0) out = Buffer.from(raw);
-    else if (entry.method === 8) out = inflateRawSync(raw);
-    else throw new Error('That compression method is not supported');
+    else if (entry.method === 8) out = inflateRaw(raw);
+    else if (entry.method === 12 || entry.method === 14) {
+      // DELIBERATE DIVERGENCE (docs/porting.md, "bzip2 and lzma zip members on Node"): the
+      // reference's `zipfile` decompresses methods 12 and 14 through the stdlib `bz2` and
+      // `lzma` modules; Node core has neither, and a decompressor is not a dependency this
+      // package takes. The sentence is in the pdf/doc/rtf ruling family: what the member is,
+      // which server reads it, where the ruling is written down.
+      throw new DocumentReadError(
+        `${this.pathName} is a zip but its ${name} uses compression method ${entry.method} ` +
+          `(${entry.method === 12 ? 'bzip2' : 'lzma'}), which the Node server cannot decompress ` +
+          '(the Python server reads it); see docs/porting.md',
+      );
+    } else {
+      // `NotImplementedError("That compression method is not supported")` — which IS a
+      // `RuntimeError` on the reference, so `_read`'s `except RuntimeError` turns it into the
+      // ENCRYPTED sentence (measured, job43 G2: a stored member relabelled method 9 reads
+      // `... is encrypted, so this reader cannot read it without a password` there). Same
+      // class here, so the same words.
+      throw new ZipMemberUnreadable(name);
+    }
     if (crc32(out) !== entry.crc) throw new BadZipFile(`Bad CRC-32 for file ${pyRepr(name)}`);
     return out;
+  }
+}
+
+/**
+ * `ZipFile.read`'s `RuntimeError` family: the member is encrypted, or (its subclass
+ * `NotImplementedError`) compressed by a method zipfile has no decompressor for. Not a
+ * `DocumentReadError` itself, because the reference's `_read` is what words it, and the
+ * parts `_rel_targets`/`_date_formats`/`_zip_kind` read swallow it silently instead.
+ */
+export class ZipMemberUnreadable extends Error {
+  constructor(readonly member: string) {
+    super(`File ${pyRepr(member)} is encrypted, password required for extraction`);
+    this.name = 'ZipMemberUnreadable';
+  }
+}
+
+/**
+ * `zlib.decompressobj(-15).decompress(raw)` as `zipfile` calls it, with CPython's errors.
+ *
+ * A stream zlib rejects is `zlib.error("Error -3 while decompressing data: invalid block
+ * type")` — the number is zlib's return code and the phrase is zlib's own `msg`, which Node
+ * exposes as `errno` and `message`, so the sentence is rebuilt rather than translated. A
+ * stream that merely ENDS early is not an error to `decompressobj` — it hands back what it
+ * has, and `ZipExtFile` then fails the CRC — so `Z_BUF_ERROR` is retried with a sync flush
+ * for the same partial bytes, and the CRC check in `read` refuses them the way it does there.
+ */
+function inflateRaw(raw: Buffer): Buffer {
+  try {
+    return inflateRawSync(raw);
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    if (!(err instanceof Error) || typeof e.errno !== 'number') throw err;
+    if (e.code === 'Z_BUF_ERROR') return inflateRawSync(raw, { finishFlush: zlibConstants.Z_SYNC_FLUSH });
+    const out = new Error(`Error ${e.errno} while decompressing data: ${e.message}`);
+    // `type(zlib.error).__name__` is `error` — the class is `zlib.error`, and `error` is what
+    // the reference records for it (`tools/conformance/ref/docread_ref.py`, `_error`).
+    out.name = 'error';
+    throw out;
   }
 }
 
@@ -963,7 +1073,16 @@ function readMember(zf: ZipReader, name: string, path: string): Buffer {
     const sample = pySorted(zf.namelist()).slice(0, 8).join(', ') || '(empty archive)';
     throw new DocumentReadError(`${pyPathName(path)} is a zip but has no ${name}; it contains: ${sample}`);
   }
-  return zf.read(name);
+  try {
+    return zf.read(name);
+  } catch (err) {
+    if (!(err instanceof ZipMemberUnreadable)) throw err;
+    // `_read`'s `except RuntimeError`: the member and the fact, nothing zipfile said. Until
+    // job43 G1/G2 zipfile's own sentence crossed the wire as an `isError` frame on both sides.
+    throw new DocumentReadError(
+      `${pyPathName(path)} is a zip but its ${name} is encrypted, so this reader cannot read it without a password`,
+    );
+  }
 }
 
 // -------------------------------------------------------------------------------- xml
@@ -1025,6 +1144,140 @@ function isXmlChar(cp: number): boolean {
 }
 
 /**
+ * A declared encoding expat has no decoder for. `LookupError("unknown encoding: x")` on the
+ * reference — NOT an `ET.ParseError`, so `_parse` does not word it and it escapes to the
+ * wire as a raised exception; the same class of thing here, deliberately not `XmlParseError`.
+ */
+export class XmlEncodingError extends Error {
+  constructor(encoding: string) {
+    super(`unknown encoding: ${encoding}`);
+    this.name = 'LookupError';
+  }
+}
+
+// `cp1252` bytes 0x80–0x9F, 0 where the codec has no character (0x81, 0x8D, 0x8F, 0x90, 0x9D).
+const CP1252_HIGH = [
+  0x20ac, 0, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021, 0x02c6, 0x2030, 0x0160, 0x2039, 0x0152, 0, 0x017d, 0,
+  0, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x02dc, 0x2122, 0x0161, 0x203a, 0x0153, 0, 0x017e, 0x0178,
+];
+
+// `<?xml version="1.0" encoding="..." standalone="..."?>` — the three in that order, or
+// expat's "XML declaration not well-formed".
+const XML_DECL =
+  /^<\?xml[ \t\r\n]+version[ \t\r\n]*=[ \t\r\n]*(["'])1\.[0-9]+\1(?:[ \t\r\n]+encoding[ \t\r\n]*=[ \t\r\n]*(["'])([A-Za-z][A-Za-z0-9._-]*)\2)?(?:[ \t\r\n]+standalone[ \t\r\n]*=[ \t\r\n]*(["'])(?:yes|no)\4)?[ \t\r\n]*\?>/;
+
+/**
+ * The bytes of an XML part as the characters expat hands ET.
+ *
+ * A byte-order mark decides first (UTF-8's is dropped, UTF-16's picks the byte order); then
+ * the declaration's `encoding`; then UTF-8. The property, measured against `ET.fromstring`
+ * (job43 G2): UTF-8 is STRICT — `<a>caf\xe9</a>` with no declaration is "not well-formed
+ * (invalid token)", where until G2 this port decoded it lossily to `caf�` and read a
+ * row the reference refuses; `encoding="ISO-8859-1"` over the same byte reads `café`, and
+ * over `\xc3\xa9` reads `Ã©`, because a declaration is obeyed and not sniffed past;
+ * `US-ASCII` refuses any byte over 0x7f; a name no codec answers to is `LookupError`.
+ * Every other name goes to `TextDecoder`, which has the single-byte codecs CPython has
+ * (windows-125x, iso-8859-x, koi8) but not utf-7 — the docs/porting.md utf-7 row.
+ */
+function decodeXmlSource(data: Uint8Array): string {
+  let bytes = data;
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) bytes = bytes.subarray(3);
+  // A UTF-16 byte-order mark, or expat's BOM-less detection off the first `<`: `3C 00` is
+  // little-endian, `00 3C` big-endian.
+  const bom = (bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff);
+  const bare16 = (bytes[0] === 0x3c && bytes[1] === 0x00) || (bytes[0] === 0x00 && bytes[1] === 0x3c);
+  if (bom || bare16) {
+    const order = bytes[0] === 0xff || bytes[0] === 0x3c ? 'utf-16le' : 'utf-16be';
+    try {
+      return new TextDecoder(order, { fatal: true, ignoreBOM: !bom }).decode(bytes);
+    } catch {
+      throw new XmlParseError('not well-formed (invalid token)');
+    }
+  }
+  const head = Buffer.from(bytes.buffer, bytes.byteOffset, Math.min(bytes.length, 1024)).toString('latin1');
+  let encoding: string | null = null;
+  if (/^<\?xml[ \t\r\n?]/.test(head)) {
+    const m = XML_DECL.exec(head);
+    if (!m) throw new XmlParseError('XML declaration not well-formed');
+    encoding = m[3] === undefined ? null : m[3].toLowerCase();
+  }
+  const name = (encoding ?? 'utf-8').replace(/_/g, '-');
+  if (['utf-8', 'utf8'].includes(name)) {
+    const scan = utf8Scan(bytes, true);
+    if (scan.invalidAt >= 0) throw new XmlParseError('not well-formed (invalid token)');
+    return decodeUtf8(bytes);
+  }
+  if (['iso-8859-1', 'iso8859-1', 'latin-1', 'latin1', 'l1', '8859', 'cp819'].includes(name)) {
+    return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.length).toString('latin1');
+  }
+  if (['us-ascii', 'ascii', 'us', '646', 'ansi-x3.4-1968'].includes(name)) {
+    for (const b of bytes) if (b >= 0x80) throw new XmlParseError('not well-formed (invalid token)');
+    return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.length).toString('latin1');
+  }
+  if (['utf-16', 'utf16'].includes(name)) {
+    // No BOM: expat assumes the little-endian order (measured on the reference).
+    return new TextDecoder('utf-16le', { fatal: true, ignoreBOM: true }).decode(bytes);
+  }
+  if (['windows-1252', 'cp1252', '1252'].includes(name)) {
+    // Node's `TextDecoder('windows-1252')` takes a latin1 fast path and answers U+0093 for
+    // 0x93 (measured, job43 G2); CPython's `cp1252` answers U+201C, and expat sees the codec's
+    // answer. The 0x80–0x9F row is spelled out; a byte the codec has no character for is
+    // what expat refuses (measured: 0x81, 0x8D, 0x8F, 0x90, 0x9D are "not well-formed").
+    let out = '';
+    for (const b of bytes) {
+      if (b < 0x80 || b >= 0xa0) out += String.fromCharCode(b);
+      else {
+        const ch = CP1252_HIGH[b - 0x80] as number;
+        if (ch === 0) throw new XmlParseError('not well-formed (invalid token)');
+        out += String.fromCharCode(ch);
+      }
+    }
+    return out;
+  }
+  let decoder: { decode(input: Uint8Array): string };
+  try {
+    decoder = new TextDecoder(name, { fatal: true, ignoreBOM: true });
+  } catch {
+    throw new XmlEncodingError(encoding as string);
+  }
+  try {
+    return decoder.decode(bytes);
+  } catch {
+    throw new XmlParseError('not well-formed (invalid token)');
+  }
+}
+
+// Every character of the decoded document must be an XML 1.0 `Char`: `\x01`, `\x0c` and
+// NUL in text, in an attribute, anywhere, are "not well-formed (invalid token)" to expat
+// (measured, job43 G2); `\x7f` and the C1 range are allowed. A lone surrogate cannot come
+// out of the decoders above, so the class is the BMP's non-characters and C0.
+// eslint-disable-next-line no-control-regex
+const NOT_XML_CHAR = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/;
+
+/** The `<!ENTITY name "replacement">` declarations of a document's internal subset. */
+type EntityMap = Map<string, string>;
+
+/**
+ * A reference's body — `#123`, `#x1F`, `lt`, or a declared name — resolved through the
+ * predefined five and `entities`, or `XmlParseError`; `resolve` is how the caller expands a
+ * declared entity in ITS context (an attribute value cannot hold markup, a text run can).
+ */
+function refValue(body: string, entities: EntityMap, resolve: (name: string) => string): string {
+  let cp: number;
+  if (/^#x[0-9a-fA-F]+$/.test(body)) cp = parseInt(body.slice(2), 16);
+  else if (/^#[0-9]+$/.test(body)) cp = parseInt(body.slice(1), 10);
+  else {
+    const known = XML_ENTITIES.get(body);
+    if (known !== undefined) return known;
+    if (!/^[A-Za-z_:][-.:A-Za-z0-9_]*$/.test(body)) throw new XmlParseError('not well-formed (invalid token)');
+    if (!entities.has(body)) throw new XmlParseError(`undefined entity: &${body};`);
+    return resolve(body);
+  }
+  if (!isXmlChar(cp)) throw new XmlParseError('reference to invalid character number');
+  return String.fromCodePoint(cp);
+}
+
+/**
  * Text and attribute values with their references expanded, or `XmlParseError`.
  *
  * Every `&` MUST begin a well-formed reference — expat says `not well-formed (invalid
@@ -1032,9 +1285,10 @@ function isXmlChar(cp: number): boolean {
  * and `&#x110000;` (past Unicode). Until job43 F3 this port accepted all of them: `a & b`
  * came back as a row where the reference refused the whole part, and `&#x110000;` threw a
  * `RangeError` out of `String.fromCodePoint`. The five predefined names are the only named
- * entities an OOXML part may use without a DTD, which this reader does not read.
+ * entities an OOXML part may use without a DTD; a name the internal subset declared is
+ * expanded through `resolve` (job43 G2), and any other name is "undefined entity".
  */
-function xmlUnescape(text: string): string {
+function xmlUnescape(text: string, entities: EntityMap = NO_ENTITIES, resolve: (name: string) => string = undefinedEntity): string {
   if (!text.includes('&')) return text;
   let out = '';
   let i = 0;
@@ -1044,185 +1298,362 @@ function xmlUnescape(text: string): string {
     out += text.slice(i, amp);
     const semi = text.indexOf(';', amp + 1);
     if (semi < 0) throw new XmlParseError('not well-formed (invalid token)');
-    const body = text.slice(amp + 1, semi);
-    let cp: number;
-    if (/^#x[0-9a-fA-F]+$/.test(body)) cp = parseInt(body.slice(2), 16);
-    else if (/^#[0-9]+$/.test(body)) cp = parseInt(body.slice(1), 10);
-    else {
-      const known = XML_ENTITIES.get(body);
-      if (known === undefined) {
-        throw new XmlParseError(
-          /^[A-Za-z_:][-.:A-Za-z0-9_]*$/.test(body) ? `undefined entity: &${body};` : 'not well-formed (invalid token)',
-        );
-      }
-      out += known;
-      i = semi + 1;
-      continue;
-    }
-    if (!isXmlChar(cp)) throw new XmlParseError('reference to invalid character number');
-    out += String.fromCodePoint(cp);
+    out += refValue(text.slice(amp + 1, semi), entities, resolve);
     i = semi + 1;
   }
 }
 
+const NO_ENTITIES: EntityMap = new Map();
+function undefinedEntity(name: string): string {
+  throw new XmlParseError(`undefined entity: &${name};`);
+}
+
 /**
- * A strict-enough XML reader: one root, matched tags, declared prefixes, the five
- * predefined entities, comments and PIs dropped, CDATA kept, line ends normalised, and
- * attribute values whitespace-normalised — what expat gives ET for an OOXML part.
+ * The internal subset of a `<!DOCTYPE ... [ ... ]>`: its `<!ENTITY name "value">`
+ * declarations, and where the declaration ends.
+ *
+ * What expat does with the subset, reduced to what an OOXML part could carry: a general
+ * entity with a literal value is declared (the first declaration of a name wins; a
+ * character reference in the value is expanded at declaration time, a general-entity
+ * reference is kept for use time, a bare `&` is refused); a parameter entity (`%`), an
+ * external entity (`SYSTEM`/`PUBLIC`) and every other declaration (`ELEMENT`, `ATTLIST`,
+ * `NOTATION`) are skipped over their quoted strings; comments and processing instructions
+ * inside the subset are skipped, so an `<!ENTITY>` inside a comment declares nothing.
+ * Measured against `ET.fromstring` on fourteen subset shapes (job43 G2).
  */
-export function parseXml(data: Uint8Array): XmlElement {
-  let src = decodeUtf8(data);
-  if (src.startsWith('﻿')) src = src.slice(1);
-  src = src.replace(/\r\n?/g, '\n');
-  const stack: { el: XmlElement; ns: Map<string, string> }[] = [];
-  let root: XmlElement | undefined;
-  let i = 0;
+function parseDoctype(src: string, at: number): { end: number; entities: EntityMap } {
+  const entities: EntityMap = new Map();
   const n = src.length;
-  const fail: (what: string) => never = (what) => {
-    throw new XmlParseError(`${what} at offset ${i}`);
+  let i = at + 2;
+  const skipQuoted = (): void => {
+    const q = src[i] as string;
+    const close = src.indexOf(q, i + 1);
+    if (close < 0) throw new XmlParseError('unterminated declaration');
+    i = close + 1;
   };
-  const expand = (qname: string, ns: Map<string, string>, isAttr: boolean): string => {
-    const colon = qname.indexOf(':');
-    if (colon < 0) {
-      if (isAttr) return qname;
-      const def = ns.get('');
-      return def ? `{${def}}${qname}` : qname;
-    }
-    const prefix = qname.slice(0, colon);
-    const local = qname.slice(colon + 1);
-    if (prefix === 'xml') return `{${XML_NS}}${local}`;
-    const uri = ns.get(prefix);
-    if (uri === undefined) return fail(`unbound prefix ${prefix}`);
-    return `{${uri}}${local}`;
-  };
-  const appendText = (text: string) => {
-    const top = stack[stack.length - 1];
-    if (top === undefined) {
-      if (pyStrip(text)) fail('text outside the root element');
-      return;
-    }
-    if (top.el.children.length === 0) top.el.text += text;
-  };
-  while (i < n) {
-    if (src[i] !== '<') {
-      const j = src.indexOf('<', i);
-      const end = j < 0 ? n : j;
-      appendText(xmlUnescape(src.slice(i, end)));
-      i = end;
-      continue;
-    }
+  // The prolog of the declaration: up to `[` or `>`, honouring quoted external identifiers.
+  for (; i < n; i += 1) {
+    const ch = src[i];
+    if (ch === '"' || ch === "'") {
+      skipQuoted();
+      i -= 1;
+    } else if (ch === '[' || ch === '>') break;
+  }
+  if (i >= n) throw new XmlParseError('unterminated declaration');
+  if (src[i] === '>') return { end: i + 1, entities };
+  i += 1;
+  for (;;) {
+    while (i < n && ' \t\n'.includes(src[i] as string)) i += 1;
+    if (i >= n) throw new XmlParseError('unterminated declaration');
+    if (src[i] === ']') break;
     if (src.startsWith('<!--', i)) {
       const j = src.indexOf('-->', i + 4);
-      if (j < 0) fail('unterminated comment');
-      i = j + 3;
-      continue;
-    }
-    if (src.startsWith('<![CDATA[', i)) {
-      const j = src.indexOf(']]>', i + 9);
-      if (j < 0) fail('unterminated CDATA section');
-      appendText(src.slice(i + 9, j));
+      if (j < 0) throw new XmlParseError('unterminated comment');
       i = j + 3;
       continue;
     }
     if (src.startsWith('<?', i)) {
       const j = src.indexOf('?>', i + 2);
-      if (j < 0) fail('unterminated processing instruction');
+      if (j < 0) throw new XmlParseError('unterminated processing instruction');
       i = j + 2;
       continue;
     }
-    if (src.startsWith('<!', i)) {
-      // DOCTYPE, possibly with an internal subset in brackets.
-      let depth = 0;
-      let j = i + 2;
-      for (; j < n; j += 1) {
-        const ch = src[j];
-        if (ch === '[') depth += 1;
-        else if (ch === ']') depth -= 1;
-        else if (ch === '>' && depth <= 0) break;
-      }
-      if (j >= n) fail('unterminated declaration');
+    if (src[i] === '%') {
+      // A parameter-entity reference in the subset: `%name;` — nothing to expand here.
+      const j = src.indexOf(';', i + 1);
+      if (j < 0) throw new XmlParseError('not well-formed (invalid token)');
       i = j + 1;
       continue;
     }
-    if (src.startsWith('</', i)) {
-      XML_NAME.lastIndex = i + 2;
+    if (!src.startsWith('<!', i)) throw new XmlParseError('not well-formed (invalid token)');
+    const isEntity = src.startsWith('<!ENTITY', i) && ' \t\n'.includes(src[i + 8] ?? '');
+    i += 2;
+    let name: string | null = null;
+    let value: string | null = null;
+    if (isEntity) {
+      i += 6;
+      while (i < n && ' \t\n'.includes(src[i] as string)) i += 1;
+      let parameter = false;
+      if (src[i] === '%') {
+        parameter = true;
+        i += 1;
+        while (i < n && ' \t\n'.includes(src[i] as string)) i += 1;
+      }
+      XML_NAME.lastIndex = i;
       const m = XML_NAME.exec(src);
-      if (!m) return fail('malformed end tag');
-      let j = i + 2 + m[0].length;
-      while (j < n && ' \t\n'.includes(src[j] as string)) j += 1;
-      if (src[j] !== '>') return fail('malformed end tag');
-      const top = stack.pop();
-      if (top === undefined) return fail('end tag with no open element');
-      const expected = expand(m[0], top.ns, false);
-      if (expected !== top.el.tag) fail('mismatched tag');
-      i = j + 1;
-      continue;
-    }
-    // A start tag.
-    XML_NAME.lastIndex = i + 1;
-    const m = XML_NAME.exec(src);
-    if (!m) return fail('not well-formed');
-    const qname = m[0];
-    let j = i + 1 + qname.length;
-    const rawAttrs: [string, string][] = [];
-    let selfClosing = false;
-    for (;;) {
-      while (j < n && ' \t\n'.includes(src[j] as string)) j += 1;
-      if (j >= n) fail('unterminated start tag');
-      if (src[j] === '>') {
-        j += 1;
-        break;
-      }
-      if (src[j] === '/' && src[j + 1] === '>') {
-        selfClosing = true;
-        j += 2;
-        break;
-      }
-      XML_NAME.lastIndex = j;
-      const am = XML_NAME.exec(src);
-      if (!am) return fail('malformed attribute');
-      j += am[0].length;
-      while (j < n && ' \t\n'.includes(src[j] as string)) j += 1;
-      if (src[j] !== '=') fail('attribute without value');
-      j += 1;
-      while (j < n && ' \t\n'.includes(src[j] as string)) j += 1;
-      const quote = src[j];
-      if (quote !== '"' && quote !== "'") return fail('unquoted attribute value');
-      const close = src.indexOf(quote, j + 1);
-      if (close < 0) fail('unterminated attribute value');
-      const value = src.slice(j + 1, close);
-      if (value.includes('<')) fail("'<' in attribute value");
-      rawAttrs.push([am[0], xmlUnescape(value.replace(/[\t\n]/g, ' '))]);
-      j = close + 1;
-    }
-    const parentNs = stack[stack.length - 1]?.ns ?? new Map<string, string>();
-    let ns = parentNs;
-    for (const [name, value] of rawAttrs) {
-      if (name === 'xmlns' || name.startsWith('xmlns:')) {
-        if (ns === parentNs) ns = new Map(parentNs);
-        ns.set(name === 'xmlns' ? '' : name.slice(6), value);
+      if (!m || m.index !== i) throw new XmlParseError('not well-formed (invalid token)');
+      i += m[0].length;
+      while (i < n && ' \t\n'.includes(src[i] as string)) i += 1;
+      if (src[i] === '"' || src[i] === "'") {
+        const q = src[i] as string;
+        const close = src.indexOf(q, i + 1);
+        if (close < 0) throw new XmlParseError('unterminated declaration');
+        if (!parameter) {
+          name = m[0];
+          value = src.slice(i + 1, close);
+        }
+        i = close + 1;
       }
     }
-    const attrs = new Map<string, string>();
-    for (const [name, value] of rawAttrs) {
-      if (name === 'xmlns' || name.startsWith('xmlns:')) continue;
-      const key = expand(name, ns, true);
-      if (attrs.has(key)) fail('duplicate attribute');
-      attrs.set(key, value);
+    // The rest of this declaration, to its `>`, over any quoted string.
+    for (; i < n; i += 1) {
+      const ch = src[i];
+      if (ch === '"' || ch === "'") {
+        skipQuoted();
+        i -= 1;
+      } else if (ch === '>') break;
     }
-    const el = new XmlElement(expand(qname, ns, false), attrs);
-    const parent = stack[stack.length - 1];
-    if (parent === undefined) {
-      if (root !== undefined) fail('junk after document element');
-      root = el;
-    } else {
-      parent.el.children.push(el);
+    if (i >= n) throw new XmlParseError('unterminated declaration');
+    i += 1;
+    if (name !== null && value !== null && !entities.has(name)) {
+      // Character references are expanded now; `&name;` stays for use time; `&` bare or
+      // `%` in a literal are refused as expat refuses them.
+      let text = '';
+      let k = 0;
+      for (;;) {
+        const amp = value.indexOf('&', k);
+        if (amp < 0) {
+          text += value.slice(k);
+          break;
+        }
+        text += value.slice(k, amp);
+        const semi = value.indexOf(';', amp + 1);
+        if (semi < 0) throw new XmlParseError('not well-formed (invalid token)');
+        const body = value.slice(amp + 1, semi);
+        if (body.startsWith('#')) text += refValue(body, NO_ENTITIES, undefinedEntity);
+        else if (/^[A-Za-z_:][-.:A-Za-z0-9_]*$/.test(body)) text += `&${body};`;
+        else throw new XmlParseError('not well-formed (invalid token)');
+        k = semi + 1;
+      }
+      if (text.includes('%')) throw new XmlParseError('not well-formed (invalid token)');
+      entities.set(name, text);
     }
-    if (!selfClosing) stack.push({ el, ns });
-    i = j;
   }
-  if (stack.length) return fail('unclosed element');
-  if (root === undefined) return fail('no element found');
+  i += 1;
+  while (i < n && ' \t\n'.includes(src[i] as string)) i += 1;
+  if (src[i] !== '>') throw new XmlParseError('not well-formed (invalid token)');
+  return { end: i + 1, entities };
+}
+
+/**
+ * A strict-enough XML reader: one root, matched tags, declared prefixes, the five
+ * predefined entities and the internal subset's own, comments and PIs dropped, CDATA kept,
+ * line ends normalised, and attribute values whitespace-normalised — what expat gives ET
+ * for an OOXML part.
+ *
+ * A declared entity is expanded the way expat expands it: in a text run its replacement
+ * text is PARSED in place, so `<!ENTITY e "<x>in</x>y">` yields an element, and a
+ * replacement that opens what it does not close is "asynchronous entity"; in an attribute
+ * value it is expanded as text and may not contain `<`; a reference to the entity being
+ * expanded is "recursive entity reference". Measured against `ET.fromstring` (job43 G2).
+ */
+export function parseXml(data: Uint8Array): XmlElement {
+  const src = decodeXmlSource(data).replace(/\r\n?/g, '\n');
+  if (NOT_XML_CHAR.test(src)) throw new XmlParseError('not well-formed (invalid token)');
+  const stack: { el: XmlElement; ns: Map<string, string> }[] = [];
+  let root: XmlElement | undefined;
+  let entities: EntityMap = NO_ENTITIES;
+  let doctypeSeen = false;
+  const expanding = new Set<string>();
+  const appendText = (text: string): void => {
+    const top = stack[stack.length - 1];
+    if (top === undefined) {
+      if (pyStrip(text)) throw new XmlParseError('text outside the root element');
+      return;
+    }
+    if (top.el.children.length === 0) top.el.text += text;
+  };
+  /** A declared entity in an attribute value: text only, no markup, no cycles. */
+  const attrEntity = (name: string): string => {
+    if (expanding.has(name)) throw new XmlParseError('recursive entity reference');
+    const replacement = entities.get(name) as string;
+    if (replacement.includes('<')) throw new XmlParseError('not well-formed (invalid token)');
+    expanding.add(name);
+    try {
+      // Attribute-value normalisation reaches into the replacement text: a literal tab or
+      // newline there (a character reference's included) becomes a space.
+      return xmlUnescape(replacement.replace(/[\t\n]/g, ' '), entities, attrEntity);
+    } finally {
+      expanding.delete(name);
+    }
+  };
+  /** A declared entity in a text run: its replacement text parsed here, at this depth. */
+  const textEntity = (name: string): void => {
+    if (expanding.has(name)) throw new XmlParseError('recursive entity reference');
+    const depth = stack.length;
+    expanding.add(name);
+    try {
+      scan(entities.get(name) as string, true);
+    } finally {
+      expanding.delete(name);
+    }
+    if (stack.length !== depth) throw new XmlParseError('asynchronous entity');
+  };
+  /** A run of character data: references expanded, declared entities parsed in place. */
+  const emitText = (run: string): void => {
+    if (run.includes(']]>')) throw new XmlParseError('not well-formed (invalid token)');
+    let i = 0;
+    for (;;) {
+      const amp = run.indexOf('&', i);
+      if (amp < 0) {
+        appendText(xmlUnescape(run.slice(i)));
+        return;
+      }
+      const semi = run.indexOf(';', amp + 1);
+      if (semi < 0) throw new XmlParseError('not well-formed (invalid token)');
+      const body = run.slice(amp + 1, semi);
+      if (body.startsWith('#') || !entities.has(body)) {
+        appendText(xmlUnescape(run.slice(i, semi + 1), entities, undefinedEntity));
+      } else {
+        appendText(xmlUnescape(run.slice(i, amp)));
+        textEntity(body);
+      }
+      i = semi + 1;
+    }
+  };
+  const scan = (text: string, inEntity: boolean): void => {
+    let i = 0;
+    const n = text.length;
+    const fail: (what: string) => never = (what) => {
+      throw new XmlParseError(`${what} at offset ${i}`);
+    };
+    const expand = (qname: string, ns: Map<string, string>, isAttr: boolean): string => {
+      const colon = qname.indexOf(':');
+      if (colon < 0) {
+        if (isAttr) return qname;
+        const def = ns.get('');
+        return def ? `{${def}}${qname}` : qname;
+      }
+      const prefix = qname.slice(0, colon);
+      const local = qname.slice(colon + 1);
+      if (prefix === 'xml') return `{${XML_NS}}${local}`;
+      const uri = ns.get(prefix);
+      if (uri === undefined) return fail(`unbound prefix ${prefix}`);
+      return `{${uri}}${local}`;
+    };
+    while (i < n) {
+      if (text[i] !== '<') {
+        const j = text.indexOf('<', i);
+        const end = j < 0 ? n : j;
+        emitText(text.slice(i, end));
+        i = end;
+        continue;
+      }
+      if (text.startsWith('<!--', i)) {
+        const j = text.indexOf('-->', i + 4);
+        if (j < 0) fail('unterminated comment');
+        i = j + 3;
+        continue;
+      }
+      if (text.startsWith('<![CDATA[', i)) {
+        const j = text.indexOf(']]>', i + 9);
+        if (j < 0) fail('unterminated CDATA section');
+        appendText(text.slice(i + 9, j));
+        i = j + 3;
+        continue;
+      }
+      if (text.startsWith('<?', i)) {
+        const j = text.indexOf('?>', i + 2);
+        if (j < 0) fail('unterminated processing instruction');
+        // `<?xml ...?>` anywhere but the very start is "XML or text declaration not at
+        // start of entity"; at the start it was read by `decodeXmlSource` already.
+        if (i !== 0 && /^<\?xml(?![-.:A-Za-z0-9_])/i.test(text.slice(i, i + 6))) {
+          fail('XML or text declaration not at start of entity');
+        }
+        i = j + 2;
+        continue;
+      }
+      if (text.startsWith('<!', i)) {
+        if (!text.startsWith('<!DOCTYPE', i) || inEntity || root !== undefined || stack.length || doctypeSeen) {
+          fail('not well-formed (invalid token)');
+        }
+        doctypeSeen = true;
+        const doctype = parseDoctype(text, i);
+        entities = doctype.entities;
+        i = doctype.end;
+        continue;
+      }
+      if (text.startsWith('</', i)) {
+        XML_NAME.lastIndex = i + 2;
+        const m = XML_NAME.exec(text);
+        if (!m) return fail('malformed end tag');
+        let j = i + 2 + m[0].length;
+        while (j < n && ' \t\n'.includes(text[j] as string)) j += 1;
+        if (text[j] !== '>') return fail('malformed end tag');
+        const top = stack.pop();
+        if (top === undefined) return fail('end tag with no open element');
+        const expected = expand(m[0], top.ns, false);
+        if (expected !== top.el.tag) fail('mismatched tag');
+        i = j + 1;
+        continue;
+      }
+      // A start tag.
+      XML_NAME.lastIndex = i + 1;
+      const m = XML_NAME.exec(text);
+      if (!m) return fail('not well-formed');
+      const qname = m[0];
+      let j = i + 1 + qname.length;
+      const rawAttrs: [string, string][] = [];
+      let selfClosing = false;
+      for (;;) {
+        while (j < n && ' \t\n'.includes(text[j] as string)) j += 1;
+        if (j >= n) fail('unterminated start tag');
+        if (text[j] === '>') {
+          j += 1;
+          break;
+        }
+        if (text[j] === '/' && text[j + 1] === '>') {
+          selfClosing = true;
+          j += 2;
+          break;
+        }
+        XML_NAME.lastIndex = j;
+        const am = XML_NAME.exec(text);
+        if (!am) return fail('malformed attribute');
+        j += am[0].length;
+        while (j < n && ' \t\n'.includes(text[j] as string)) j += 1;
+        if (text[j] !== '=') fail('attribute without value');
+        j += 1;
+        while (j < n && ' \t\n'.includes(text[j] as string)) j += 1;
+        const quote = text[j];
+        if (quote !== '"' && quote !== "'") return fail('unquoted attribute value');
+        const close = text.indexOf(quote, j + 1);
+        if (close < 0) fail('unterminated attribute value');
+        const value = text.slice(j + 1, close);
+        if (value.includes('<')) fail("'<' in attribute value");
+        rawAttrs.push([am[0], xmlUnescape(value.replace(/[\t\n]/g, ' '), entities, attrEntity)]);
+        j = close + 1;
+      }
+      const parentNs = stack[stack.length - 1]?.ns ?? new Map<string, string>();
+      let ns = parentNs;
+      for (const [name, value] of rawAttrs) {
+        if (name === 'xmlns' || name.startsWith('xmlns:')) {
+          if (ns === parentNs) ns = new Map(parentNs);
+          ns.set(name === 'xmlns' ? '' : name.slice(6), value);
+        }
+      }
+      const attrs = new Map<string, string>();
+      for (const [name, value] of rawAttrs) {
+        if (name === 'xmlns' || name.startsWith('xmlns:')) continue;
+        const key = expand(name, ns, true);
+        if (attrs.has(key)) fail('duplicate attribute');
+        attrs.set(key, value);
+      }
+      const el = new XmlElement(expand(qname, ns, false), attrs);
+      const parent = stack[stack.length - 1];
+      if (parent === undefined) {
+        if (root !== undefined) fail('junk after document element');
+        root = el;
+      } else {
+        parent.el.children.push(el);
+      }
+      if (!selfClosing) stack.push({ el, ns });
+      i = j;
+    }
+  };
+  scan(src, false);
+  if (stack.length) throw new XmlParseError('unclosed element');
+  if (root === undefined) throw new XmlParseError('no element found');
   return root;
 }
 
@@ -1245,7 +1676,7 @@ function relTargets(zf: ZipReader, member: string, members: Set<string>): string
   try {
     tree = parseXml(zf.read(rels));
   } catch (err) {
-    if (err instanceof XmlParseError || err instanceof RangeError || isOsError(err)) {
+    if (err instanceof XmlParseError || err instanceof RangeError || isOsError(err) || err instanceof ZipMemberUnreadable) {
       return [];
     }
     throw err;
@@ -1309,7 +1740,7 @@ function dateFormats(zf: ZipReader): string[] {
   try {
     root = parseXml(zf.read('xl/styles.xml'));
   } catch (err) {
-    if (err instanceof XmlParseError || err instanceof RangeError || isOsError(err)) {
+    if (err instanceof XmlParseError || err instanceof RangeError || isOsError(err) || err instanceof ZipMemberUnreadable) {
       return [];
     }
     throw err;
@@ -2018,12 +2449,123 @@ export function decodeQuotedPrintable(data: Uint8Array): Buffer {
   return Buffer.from(out);
 }
 
+/** `binascii.Error`, which is a `ValueError`. */
+class BinasciiError extends Error {}
+
+/**
+ * `binascii.a2b_uu(line)`: one uuencoded line to its bytes, in the C module's own steps.
+ *
+ * The first character is the byte count; each following character carries six bits, a line
+ * end or a line that ran out counts as zero ("some spaces got eaten at end-of-line"); a
+ * character outside `' '..'\x60'` is "Illegal char"; and whatever is left after the count
+ * is satisfied must be space, backtick or a line end, or it is "Trailing garbage".
+ */
+export function a2bUu(line: Uint8Array): Buffer {
+  // An empty line is 32 zero bytes on the reference (measured: `a2b_uu(b'')`), the count a
+  // missing first character implies — the same answer as a NUL first character.
+  let binLen = line.length === 0 ? 32 : ((line[0] as number) - 0x20) & 0x3f;
+  const out: number[] = [];
+  let i = 1;
+  let leftchar = 0;
+  let leftbits = 0;
+  for (; binLen > 0; i += 1) {
+    let ch: number;
+    if (i >= line.length) ch = 0;
+    else {
+      ch = line[i] as number;
+      if (ch === 0x0a || ch === 0x0d) ch = 0;
+      else {
+        if (ch < 0x20 || ch > 0x20 + 64) throw new BinasciiError('Illegal char');
+        ch = (ch - 0x20) & 0x3f;
+      }
+    }
+    leftchar = (leftchar << 6) | ch;
+    leftbits += 6;
+    if (leftbits >= 8) {
+      leftbits -= 8;
+      out.push((leftchar >> leftbits) & 0xff);
+      leftchar &= (1 << leftbits) - 1;
+      binLen -= 1;
+    }
+  }
+  for (; i < line.length; i += 1) {
+    const ch = line[i] as number;
+    if (ch !== 0x20 && ch !== 0x20 + 64 && ch !== 0x0a && ch !== 0x0d) throw new BinasciiError('Trailing garbage');
+  }
+  return Buffer.from(out);
+}
+
+/** `bytes.splitlines()`: `\n`, `\r` and `\r\n` split, no trailing empty line. */
+function bytesSplitlines(data: Buffer): Buffer[] {
+  const out: Buffer[] = [];
+  let start = 0;
+  for (let i = 0; i < data.length; i += 1) {
+    const b = data[i];
+    if (b === 0x0a || b === 0x0d) {
+      out.push(data.subarray(start, i));
+      if (b === 0x0d && data[i + 1] === 0x0a) i += 1;
+      start = i + 1;
+    }
+  }
+  if (start < data.length) out.push(data.subarray(start));
+  return out;
+}
+
+/**
+ * `email.message._decode_uu`: the lines between `begin <octal mode> ...` and `end`, or
+ * `ValueError` — which `get_payload` answers with the payload UNDECODED.
+ *
+ * `begin` must start the line and its mode must parse in base 8; a blank line before `end`
+ * is "Truncated input"; `end` is recognised stripped of ` \t\r\n\f`; and a line
+ * `a2b_uu` rejects is retried cut to the length its count character implies (the workaround
+ * for broken encoders that the stdlib carries by name). Measured against the reference
+ * (job43 G2) on seventeen payload shapes, including the Truncated and no-`begin` ones.
+ */
+export function decodeUu(encoded: Buffer): Buffer {
+  const lines = bytesSplitlines(encoded);
+  let at = 0;
+  for (;;) {
+    if (at >= lines.length) throw new BinasciiError('`begin` line not found');
+    const line = lines[at] as Buffer;
+    at += 1;
+    if (line.subarray(0, 6).toString('latin1') === 'begin ') {
+      const mode = line.subarray(6).toString('latin1').split(' ')[0] as string;
+      // `int(mode, base=8)`: a sign, optional `0o`, octal digits with single underscores.
+      if (/^[ \t\n\x0b\x0c\r]*[+-]?(?:0[oO]_?)?[0-7]+(?:_[0-7]+)*[ \t\n\x0b\x0c\r]*$/.test(mode)) break;
+    }
+  }
+  const out: Buffer[] = [];
+  for (; at < lines.length; at += 1) {
+    const line = lines[at] as Buffer;
+    if (line.length === 0) throw new BinasciiError('Truncated input');
+    if (line.toString('latin1').replace(/^[ \t\r\n\f]+|[ \t\r\n\f]+$/g, '') === 'end') break;
+    try {
+      out.push(a2bUu(line));
+    } catch (err) {
+      if (!(err instanceof BinasciiError)) throw err;
+      const nbytes = Math.floor(((((line[0] as number) - 32) & 63) * 4 + 5) / 3);
+      out.push(a2bUu(line.subarray(0, nbytes)));
+    }
+  }
+  return Buffer.concat(out);
+}
+
 /** `Message.get_payload(decode=True)` for a leaf; `null` for a multipart the way it is there. */
 function decodedPayload(part: MimePart): Buffer | null {
   if (part.body === null) return null;
   const raw = Buffer.from(part.body, 'latin1');
   const cte = (header(part, 'content-transfer-encoding') ?? '').toLowerCase();
   if (cte === 'quoted-printable') return decodeQuotedPrintable(raw);
+  if (['x-uuencode', 'uuencode', 'uue', 'x-uue'].includes(cte)) {
+    // `except ValueError: return bpayload` — a payload that will not decode is handed back
+    // as it is, `begin` line and all, and read as text.
+    try {
+      return decodeUu(raw);
+    } catch (err) {
+      if (err instanceof BinasciiError) return raw;
+      throw err;
+    }
+  }
   if (cte === 'base64') {
     const joined = part.body.replace(/\r\n|\r|\n/g, '');
     const pad = joined.length % 4;

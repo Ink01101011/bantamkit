@@ -570,10 +570,6 @@ export function documentPage(
   return lines.join('\n');
 }
 
-export function documentUnknown(name: string, available: readonly string[]): string {
-  return pyFormat(sentence(loadContract(), 'document_unknown'), { name, available: available.join(', ') });
-}
-
 export function documentOffsetPastEnd(part: string, offset: number, rowCount: number): string {
   return pyFormat(sentence(loadContract(), 'document_offset_past_end'), {
     part,

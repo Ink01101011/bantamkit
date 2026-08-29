@@ -10,8 +10,9 @@
  * default, which is what the Python fixtures are; `deflate: true` exercises the other
  * branch of `ZipReader.read`.
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { deflateRawSync } from 'node:zlib';
 
 const CRC_TABLE = (() => {
@@ -30,17 +31,24 @@ function crc32(buf) {
   return (crc ^ -1) >>> 0;
 }
 
-/** `entries` is `[[name, string | Buffer], ...]` in write order. */
+/**
+ * `entries` is `[[name, string | Buffer], ...]` in write order. A payload may also be a
+ * PRE-COMPRESSED member, `{ method, raw, crc, size }` — how the bzip2 and lzma rulings get
+ * their bytes: Node has no compressor for either, so the member is the one CPython's
+ * `zipfile` wrote (`ZipFile.writestr(..., compress_type=ZIP_BZIP2|ZIP_LZMA)`, job43 G2),
+ * carried here as hex and laid into this writer's own container.
+ */
 export function zipBytes(entries, { deflate = false } = {}) {
   const locals = [];
   const centrals = [];
   let offset = 0;
   for (const [name, payload] of entries) {
     const nameBytes = Buffer.from(name, 'utf8');
-    const data = Buffer.isBuffer(payload) ? payload : Buffer.from(payload, 'utf8');
-    const stored = deflate ? deflateRawSync(data) : data;
-    const method = deflate ? 8 : 0;
-    const crc = crc32(data);
+    const pre = payload !== null && typeof payload === 'object' && !Buffer.isBuffer(payload);
+    const data = pre ? Buffer.alloc(payload.size) : Buffer.isBuffer(payload) ? payload : Buffer.from(payload, 'utf8');
+    const stored = pre ? payload.raw : deflate ? deflateRawSync(data) : data;
+    const method = pre ? payload.method : deflate ? 8 : 0;
+    const crc = pre ? payload.crc : crc32(data);
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4);
@@ -444,8 +452,159 @@ export function fixtures() {
     'badcd.xlsx': badCentralDirectoryOffset(
       xlsxBytes([['Sales', 'worksheets/sheet1.xml', row([inlineCell('A1', 'ok')])]]),
     ),
+    // ---- job43 G2: the zip member arms
+    // bzip2 / lzma: the reference reads both; the port refuses by method — the ruling.
+    'bzip2.docx': docxRaw(HELLO_BZIP2),
+    'lzma.docx': docxRaw(HELLO_LZMA),
+    // A stored member relabelled method 9 (deflate64): `NotImplementedError` is a
+    // `RuntimeError` on the reference, so BOTH sides print the encrypted sentence.
+    'method9.docx': relabelMethod(docxRaw(HELLO_DOCUMENT_XML), 'word/document.xml', 9),
+    'encrypted-rels.xlsx': setEncryptedFlag(
+      xlsxBytes([['Sales', 'worksheets/sheet1.xml', row([inlineCell('A1', 'ok')])]], {
+        extra: { 'xl/worksheets/_rels/sheet1.xml.rels': DRAWING_RELS('<Relationship Id="x" Target="../media/image1.png"/>'), 'xl/media/image1.png': 'PNG' },
+      }),
+      'xl/worksheets/_rels/sheet1.xml.rels',
+    ),
+    // Both RAISE: `zlib.error` on the reference, `Error` named `zlib.error` here.
+    'corrupt-deflate.docx': corruptStream(docxRaw(HELLO_DOCUMENT_XML, { deflate: true }), 'word/document.xml'),
+    // A stream that ends early is a CRC failure, `BadZipFile`, on both — raised, not worded.
+    'truncated-deflate.docx': truncateStream(docxRaw(HELLO_DOCUMENT_XML, { deflate: true }), 'word/document.xml', 20),
+    // ---- job43 G2: what expat refuses and accepts
+    'invalid-utf8.docx': docxRaw(Buffer.from(`<w:document ${WORD_NS}><w:body>${hello('caf\xe9')}</w:body></w:document>`, 'latin1')),
+    'latin1-decl.docx': docxRaw(
+      Buffer.from(`<?xml version="1.0" encoding="ISO-8859-1"?><w:document ${WORD_NS}><w:body>${hello('caf\xe9')}</w:body></w:document>`, 'latin1'),
+    ),
+    'cp1252-decl.docx': docxRaw(
+      Buffer.from(`<?xml version="1.0" encoding="windows-1252"?><w:document ${WORD_NS}><w:body>${hello('\x93quoted\x94 \x80')}</w:body></w:document>`, 'latin1'),
+    ),
+    'bogus-encoding.docx': docxRaw(`<?xml version="1.0" encoding="x-nope"?><w:document ${WORD_NS}><w:body>${hello('x')}</w:body></w:document>`),
+    'cdata-end-in-text.docx': docxBytes(hello('x ]]> y')),
+    'control-char.docx': docxBytes(hello('x \x01 y')),
+    'dtd-entity-nested.docx': docxRaw(
+      `<?xml version="1.0"?><!DOCTYPE w:document [<!ENTITY f "F&#38;"><!ENTITY e "x&f;y<w:t>in</w:t>"><!ENTITY % p "no">]>` +
+        `<w:document ${WORD_NS}><w:body><w:p><w:r><w:t>a &e; b</w:t><w:t xml:space="&f;">z</w:t></w:r></w:p></w:body></w:document>`,
+    ),
+    'dtd-entity-undefined.docx': docxRaw(`<!DOCTYPE w:document [<!ENTITY e "E">]><w:document ${WORD_NS}><w:body>${hello('a &f; b')}</w:body></w:document>`),
+    // ---- job43 G2: `int()` over a shared-string index
+    'unicode-digit-styles.xlsx': xlsxBytes([['S', 'worksheets/sheet1.xml', row([cell('A1', '𝟙', 's'), cell('B1', ' +٠ ', 's'), cell('C1', '1_2', 's'), cell('D1', '²', 's')])]], {
+      shared: ['zero', 'one', ...Array.from({ length: 11 }, (_, i) => `s${i + 2}`)],
+    }),
+    // ---- job43 G2: uuencode's fallback — a blank line before `end` is "Truncated input", and
+    // the payload comes back undecoded.
+    'uu-truncated.eml': Buffer.from('MIME-Version: 1.0\r\nContent-Type: text/plain; charset=us-ascii\r\nContent-Transfer-Encoding: x-uuencode\r\n\r\nbegin 644 f\r\n#0V%T\r\n\r\nend\r\n', 'latin1'),
+    'uu-broken-line.eml': Buffer.from('MIME-Version: 1.0\r\nContent-Type: text/plain\r\nContent-Transfer-Encoding: uue\r\n\r\nbegin 644 f\r\n#0V%Tzz\r\n`\r\nend\r\n', 'latin1'),
   };
 }
+
+/**
+ * The checked-in fixtures `runtime-py/tests/docread_fixtures.py` wrote (job43 G1) —
+ * `{name: absolute path}` under `runtime-py/tests/data/docread/`. The SAME bytes both
+ * suites read, by that module's own rule, so nothing here rebuilds them.
+ */
+export function checkedInFixtures() {
+  const dir = fileURLToPath(new URL('../../runtime-py/tests/data/docread/', import.meta.url));
+  const out = {};
+  for (const name of readdirSync(dir).sort()) out[name] = join(dir, name);
+  return out;
+}
+
+/**
+ * Patch one member's headers in place — the local file header (`PK\x03\x04`) and the
+ * central directory entry (`PK\x01\x02`) — the way `runtime-py/tests/docread_fixtures.py`'s
+ * `set_encrypted_flag` does. `patch(buf, localAt, centralAt)` edits both.
+ */
+function patchMember(bytes, name, patch) {
+  const out = Buffer.from(bytes);
+  const want = Buffer.from(name, 'utf8');
+  const find = (sig, nameAt, nameLenAt) => {
+    let at = out.indexOf(sig);
+    while (at >= 0) {
+      const len = out.readUInt16LE(at + nameLenAt);
+      if (out.subarray(at + nameAt, at + nameAt + len).equals(want)) return at;
+      at = out.indexOf(sig, at + 4);
+    }
+    throw new Error(`no member ${name}`);
+  };
+  patch(out, find(Buffer.from('PK\x03\x04', 'latin1'), 30, 26), find(Buffer.from('PK\x01\x02', 'latin1'), 46, 28));
+  return out;
+}
+
+/** General-purpose flag bit 0 (encrypted) set on `name`, in both headers. */
+export function setEncryptedFlag(bytes, name) {
+  return patchMember(bytes, name, (out, local, central) => {
+    out.writeUInt16LE(out.readUInt16LE(local + 6) | 1, local + 6);
+    out.writeUInt16LE(out.readUInt16LE(central + 8) | 1, central + 8);
+  });
+}
+
+/** The compression method field of `name` overwritten as `method`, in both headers. */
+export function relabelMethod(bytes, name, method) {
+  return patchMember(bytes, name, (out, local, central) => {
+    out.writeUInt16LE(method, local + 8);
+    out.writeUInt16LE(method, central + 10);
+  });
+}
+
+/** The first eight bytes of `name`'s (deflated) stream overwritten with 0xFF. */
+export function corruptStream(bytes, name) {
+  return patchMember(bytes, name, (out, local) => {
+    const start = local + 30 + out.readUInt16LE(local + 26) + out.readUInt16LE(local + 28);
+    out.fill(0xff, start, start + 8);
+  });
+}
+
+/**
+ * `name`'s deflated stream cut to its first `keep` bytes IN PLACE (the compressed size in
+ * both headers lowered to match; the rest of the stream zeroed, not removed, so every
+ * later offset still holds): an incomplete stream, not a corrupt one.
+ */
+export function truncateStream(bytes, name, keep) {
+  return patchMember(bytes, name, (out, local, central) => {
+    const size = out.readUInt32LE(local + 18);
+    const start = local + 30 + out.readUInt16LE(local + 26) + out.readUInt16LE(local + 28);
+    out.fill(0, start + keep, start + size);
+    out.writeUInt32LE(keep, local + 18);
+    out.writeUInt32LE(keep, central + 20);
+  });
+}
+
+// `word/document.xml` of `<w:document ...><w:body><w:p><w:r><w:t>hello</w:t></w:r></w:p></w:body></w:document>`
+// as CPython's `zipfile` compressed it (job43 G2; the bytes and CRC read back off the
+// local header of the zip `ZipFile.writestr(info, xml, compress_type=ZIP_BZIP2 | ZIP_LZMA)` wrote).
+const HELLO_DOCUMENT_XML =
+  '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>hello</w:t></w:r></w:p></w:body></w:document>';
+const HELLO_BZIP2 = {
+  method: 12,
+  crc: 0x7a6d9799,
+  size: 151,
+  raw: Buffer.from(
+    '425a68393141592653599f7be89700001299805001d1173fe7dee0200064254d4c9a4f21a8f43537aa3d4f141aa7e94c1190321e90057bd6a6bded1dd85252727db0c2330aa306bb169f28d739b664c8450c8cf23f199a7ce5f493b75da05521c36372983068f623ee5cbaa615457a04b168d59eb95b025aeaa8876082492e47fd80fc5dc914e142427defa25c',
+    'hex',
+  ),
+};
+const HELLO_LZMA = {
+  method: 14,
+  crc: 0x7a6d9799,
+  size: 151,
+  raw: Buffer.from(
+    '090405005d00008000001e1dc346566be5546829ba715d85cc79bb6cc86644d3a8233305d232bd42b359ed37b27b21d4f593615f2f1651d86ac7374fe7fba3b3d4a21909728426921d921cd3149c3c870d435eaae16a0b0f2ad5257d90a26f60b26fb06824bb9efb8a7e7e1179178d448f407106c0829fa3e4a769c81ffddeed20',
+    'hex',
+  ),
+};
+
+/** A docx whose `word/document.xml` is the given bytes or pre-compressed member, verbatim. */
+function docxRaw(member, { deflate = false } = {}) {
+  return zipBytes(
+    [
+      ['[Content_Types].xml', CONTENT_TYPES],
+      ['_rels/.rels', ROOT_RELS],
+      ['word/document.xml', member],
+    ],
+    { deflate },
+  );
+}
+
+const hello = (t) => `<w:p><w:r><w:t>${t}</w:t></w:r></w:p>`;
 
 /** The archive with its EOCD's central-directory offset overwritten as 0x7FFFFFF0. */
 export function badCentralDirectoryOffset(bytes) {

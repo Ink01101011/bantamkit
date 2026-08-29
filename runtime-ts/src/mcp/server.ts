@@ -195,6 +195,12 @@ function asInt(value: PyValue | undefined): number | null {
  * failure was written down. `EventLog.record` swallows its own system errors, so this cannot
  * mask the original.
  */
+/** A rejection the filesystem produced: libuv's numeric `errno` and the `syscall` it names. */
+function isFsError(e: unknown): e is NodeJS.ErrnoException {
+  const err = e as NodeJS.ErrnoException;
+  return e instanceof Error && typeof err.errno === 'number' && typeof err.syscall === 'string';
+}
+
 function recordRaise<T>(log: EventLog, tool: string, body: () => T): T {
   try {
     return body();
@@ -452,35 +458,43 @@ function runTool(
       const start = offsetArg === null ? 0 : Math.max(0, offsetArg);
       const limitArg = asInt(args.get('limit'));
       const rows = limitArg === null ? docread.DEFAULT_ROW_LIMIT : Math.max(1, Math.min(limitArg, docread.PAGE_MAX_ROWS));
-      let doc: docread.Document;
-      try {
-        doc = docread.extract(path);
-      } catch (e) {
-        // `except (docread.DocumentReadError, OSError)`. A Node fs error is CPython's
-        // `OSError` with the sentence rebuilt by `asPyOSError` — `[Errno 13] Permission
-        // denied: '<path>'` for a file this process may not open — through the CRT arm,
-        // because `open()` is the call the reference makes. A `BadZipFile` never reaches
-        // this arm on either side: `docread.ts`'s `zipKind`/`openZip` catch it exactly
-        // where `docread.py`'s `_zip_kind`/`_open` do, and what leaves them is the
-        // sentence naming what the reader saw, never the zip module's.
-        // A `PyOSError` the reader raised itself is already the reference's sentence —
-        // `[Errno 22] Invalid argument` from a zip whose member offset is negative, with
-        // NO filename, because the `seek` that fails there has none. Re-wrapping it would
-        // append `: '<path>'`.
-        const refusal =
-          e instanceof docread.DocumentReadError || e instanceof PyOSError
-            ? e
-            : e instanceof Error && typeof (e as NodeJS.ErrnoException).code === 'string'
-              ? asPyOSError(e, path, undefined, 'crt')
-              : null;
-        if (refusal === null) {
-          log.raised('bantamkit_read', e);
-          throw e;
-        }
-        log.record('bantamkit_read', 'refused-unreadable');
-        return { value: { t: 'str', v: noted(documentError(refusal)) }, wrapped: true };
-      }
+      // `with _record_raise(log, "bantamkit_read")` wraps the reference's WHOLE handler, the
+      // `extract` call included, so an exception the reader lets escape (`zlib.error` from a
+      // corrupt deflate stream, `LookupError` from an XML declaration naming no codec) is
+      // recorded `raised` and then reaches the wire as an `isError` frame. Until job43 G2
+      // this arm ran `extract` outside `recordRaise` with a hand-copied catch.
       return recordRaise(log, 'bantamkit_read', () => {
+        let doc: docread.Document;
+        try {
+          doc = docread.extract(path);
+        } catch (e) {
+          // `except (docread.DocumentReadError, OSError)`. A Node fs error is CPython's
+          // `OSError` with the sentence rebuilt by `asPyOSError` — `[Errno 13] Permission
+          // denied: '<path>'` for a file this process may not open — through the CRT arm,
+          // because `open()` is the call the reference makes. A `BadZipFile` never reaches
+          // this arm on either side: `docread.ts`'s `zipKind`/`openZip` catch it exactly
+          // where `docread.py`'s `_zip_kind`/`_open` do, and what leaves them is the
+          // sentence naming what the reader saw, never the zip module's.
+          // A `PyOSError` the reader raised itself is already the reference's sentence —
+          // `[Errno 22] Invalid argument` from a zip whose member offset is negative, with
+          // NO filename, because the `seek` that fails there has none. Re-wrapping it would
+          // append `: '<path>'`.
+          // ONLY a filesystem rejection is an `OSError`: numeric `errno` AND the `syscall`
+          // it came from. A string `code` alone is not one — `Z_DATA_ERROR`,
+          // `ERR_INVALID_ARG_VALUE` and `ERR_STRING_TOO_LONG` all carry one, and until job43
+          // G2 each was printed as a fabricated `[Errno 0] …` sentence where the reference
+          // raises (the corrupt stream) or says `no such file` (the NUL byte, which
+          // `docread.statPath` now answers before this arm is reached).
+          const refusal =
+            e instanceof docread.DocumentReadError || e instanceof PyOSError
+              ? e
+              : isFsError(e)
+                ? asPyOSError(e, path, undefined, 'crt')
+                : null;
+          if (refusal === null) throw e;
+          log.record('bantamkit_read', 'refused-unreadable');
+          return { value: { t: 'str', v: noted(documentError(refusal)) }, wrapped: true };
+        }
         const detail: Record<string, DetailValue> = { kind: doc.kind, parts: doc.parts.length };
         if (part === null) {
           const reply = documentManifest(
