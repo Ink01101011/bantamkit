@@ -789,6 +789,40 @@ export async function run(ctx) {
   ]);
 
   /**
+   * ROUND 2 (job43 G1/G2), on the wire. Inspected case by case in the `read-round2` block
+   * below, because three of its replies are RULED and one is an `isError` frame:
+   *
+   *   2, 3, 4  `part: "null"`, `"[1]"`, `"{}"` — JSON spellings sent as part NAMES. Neither
+   *            server unwraps them (G1 made `bantamkit_read` take its arguments as sent):
+   *            the unknown-part sentence, unruled, verbatim;
+   *   5        `offset: "null"` — a string where the schema wants an integer: refused by the
+   *            VALIDATOR in pydantic's `int_parsing` words on both, the one `isError` frame;
+   *   6        `path: "a\u0000b"` — a NUL inside the name; `no such file: a\x00b` on both;
+   *   7, 8     bzip2.docx, lzma.docx — RULED: the reference reads `hello`, the port refuses
+   *            by method number and name (docs/porting.md, "bzip2 and lzma zip members on Node");
+   *   9        encrypted-member.docx — both refuse in the same sentence (also method 9), unruled;
+   *   10       rfc2231-charset.eml — RULED, both READ, one row apart (docs/porting.md,
+   *            "RFC 2231 charset continuations on Node").
+   */
+  const built = fixtures.fixtures();
+  const checkedIn = fixtures.checkedInFixtures();
+  const bzip2Docx = doc('bzip2.docx', built['bzip2.docx']);
+  const lzmaDocx = doc('lzma.docx', built['lzma.docx']);
+  add('read-round2', [
+    INIT(),
+    INITIALIZED,
+    callTool(2, 'bantamkit_read', { path: bookXlsx, part: 'null' }),
+    callTool(3, 'bantamkit_read', { path: bookXlsx, part: '[1]' }),
+    callTool(4, 'bantamkit_read', { path: bookXlsx, part: '{}' }),
+    callTool(5, 'bantamkit_read', { path: bookXlsx, part: 'Sales', offset: 'null' }),
+    callTool(6, 'bantamkit_read', { path: 'a\u0000b' }),
+    callTool(7, 'bantamkit_read', { path: bzip2Docx }),
+    callTool(8, 'bantamkit_read', { path: lzmaDocx }),
+    callTool(9, 'bantamkit_read', { path: checkedIn['encrypted-member.docx'] }),
+    callTool(10, 'bantamkit_read', { path: checkedIn['rfc2231-charset.eml'] }),
+  ]);
+
+  /**
    * `build_identity` gets a session of its own, and the split is the point being made.
    *
    * Its REPLY is not comparable — `runtime`, `code_digest`, `build_id` and the Python-only
@@ -827,6 +861,8 @@ export async function run(ctx) {
     'negotiate-2024-10-07',
     // Inspected in the `read-ruled` block below: two of its six replies are ruled to differ.
     'read-ruled',
+    // Inspected in the `read-round2` block below: three of its nine replies are ruled to differ.
+    'read-round2',
   ]);
 
   const results = new Map();
@@ -1374,6 +1410,143 @@ export async function run(ctx) {
       `read-edges: ${devZero === null ? '/dev/zero has no Windows counterpart and is NOT MEASURED HERE; ' : ''}` +
         `the sentences: ${reader.map((id) => `id ${id} ${JSON.stringify((toolTextOf(node, id) ?? '').split('\n')[0].slice(0, 96))}`).join('; ')}`,
     );
+  }
+
+  // ------------------------------------------------ bantamkit_read: round 2, on the wire
+
+  /**
+   * The `read-round2` session, frame by frame. Ids 2, 3, 4, 6 and 9 are compared as the
+   * generic loop would (canonical AND raw bytes), unruled; id 5 is the validator's `isError`
+   * frame, pinned as the only one; ids 7, 8 and 10 are RULED, each with the literal that
+   * says which side reads, the unruled companion CLAUDE.md requires, and — for the two zip
+   * methods — the reference's row and the port's sentence pinned as literals, so a port that
+   * lost the method number or a reference that stopped reading `hello` fails on its own line.
+   */
+  {
+    const { python, node } = results.get('read-round2');
+    const left = byId(python.frames);
+    const right = byId(node.frames);
+    const refusedAt = (side, id) => (toolTextOf(side, id) ?? '').startsWith('error: ');
+    const ids = [2, 3, 4, 5, 6, 7, 8, 9, 10];
+    cases.push({
+      name: 'read-round2: the answered ids',
+      kind: 'json',
+      expected: [...left.keys()].sort(),
+      actual: [...right.keys()].sort(),
+    });
+    for (const id of [2, 3, 4, 5, 6, 9]) {
+      cases.push({
+        name: `read-round2: id ${id}`,
+        kind: 'string',
+        expected: canonical(left.get(String(id)) ?? '{"missing":true}'),
+        actual: canonical(right.get(String(id)) ?? '{"missing":true}'),
+      });
+      cases.push({
+        name: `read-round2: id ${id}: raw frame bytes`,
+        kind: 'bytes',
+        expected: left.get(String(id)) ?? '{"missing":true}',
+        actual: right.get(String(id)) ?? '{"missing":true}',
+      });
+    }
+    for (const id of [2, 3, 4, 6, 9]) {
+      cases.push({
+        name: `read-round2: id ${id}: both refuse in the reader's words (the refusal bit, side to side)`,
+        kind: 'json',
+        expected: refusedAt(python, id),
+        actual: refusedAt(node, id),
+      });
+    }
+    cases.push({
+      name: 'read-round2: the ids the reader refuses, on each side, as the literal each side is required to answer',
+      kind: 'json',
+      expected: { python: [2, 3, 4, 6, 9], node: [2, 3, 4, 6, 7, 8, 9] },
+      actual: { python: ids.filter((id) => refusedAt(python, id)), node: ids.filter((id) => refusedAt(node, id)) },
+    });
+    cases.push({
+      name: 'read-round2: id 5 (offset "null") is the only isError frame, on both sides',
+      kind: 'json',
+      expected: { python: [5], node: [5] },
+      actual: {
+        python: ids.filter((id) => frameOf(python, id)?.result?.isError === true),
+        node: ids.filter((id) => frameOf(node, id)?.result?.isError === true),
+      },
+    });
+    cases.push({
+      name: 'read-round2: id 5 is refused by the validator as int_parsing on both sides',
+      kind: 'json',
+      expected: { python: true, node: true },
+      actual: { python: (toolTextOf(python, 5) ?? '').includes('int_parsing'), node: (toolTextOf(node, 5) ?? '').includes('int_parsing') },
+    });
+    const table = [
+      [7, 'bzip2', 12, 'bzip2.docx', 'word/document.xml'],
+      [8, 'lzma', 14, 'lzma.docx', 'word/document.xml'],
+    ];
+    for (const [id, method, number, file, member] of table) {
+      cases.push({
+        name: `read-round2: id ${id}: ${file}, the reference reads it and the port refuses by method`,
+        kind: 'string',
+        expected: canonical(left.get(String(id)) ?? '{"missing":true}'),
+        actual: canonical(right.get(String(id)) ?? '{"missing":true}'),
+        ruling:
+          `compression method ${number} (${method}) is read by the reference (\`zipfile\` through \`${method === 'bzip2' ? 'bz2' : 'lzma'}\`) and refused ` +
+          'by the port, which decompresses through `node:zlib` alone and may add no runtime dependency. ' +
+          'docs/porting.md, "bzip2 and lzma zip members on Node"; the library-level ruling is in tools/conformance/suites/docread.mjs.',
+      });
+      cases.push({
+        name: `read-round2: id ${id}: the refusal bit each side is required to carry`,
+        kind: 'json',
+        expected: { python: false, node: true },
+        actual: { python: refusedAt(python, id), node: refusedAt(node, id) },
+      });
+      cases.push({
+        name: `read-round2: id ${id}: the port's first line is the sentence the ruling quotes`,
+        kind: 'bytes',
+        expected: `error: ${file} is a zip but its ${member} uses compression method ${number} (${method}), which the Node server cannot decompress (the Python server reads it); see docs/porting.md`,
+        actual: (toolTextOf(node, id) ?? '').split('\n')[0],
+      });
+      cases.push({
+        name: `read-round2: id ${id}: the reference's manifest names one part of one row`,
+        kind: 'json',
+        expected: true,
+        actual: /part 0 "document": 1 rows?/.test(toolTextOf(python, id) ?? ''),
+      });
+    }
+    cases.push({
+      name: 'read-round2: id 10: rfc2231-charset.eml, both read, one row apart',
+      kind: 'string',
+      expected: canonical(left.get('10') ?? '{"missing":true}'),
+      actual: canonical(right.get('10') ?? '{"missing":true}'),
+      ruling:
+        'the reference reassembles RFC 2231 charset continuations through `email.policy.default` and ' +
+        'reads `café au lait`; the port reads the plain `charset=` parameter only and decodes the same ' +
+        'bytes as `caf� au lait`. Both read; the row differs. docs/porting.md, "RFC 2231 charset ' +
+        'continuations on Node"; the library-level ruling is in tools/conformance/suites/docread.mjs.',
+    });
+    cases.push({
+      name: 'read-round2: id 10: the refusal bit each side is required to carry',
+      kind: 'json',
+      expected: { python: false, node: false },
+      actual: { python: refusedAt(python, 10), node: refusedAt(node, 10) },
+    });
+    cases.push({
+      name: 'read-round2: id 10: both read (the refusal bit, side to side)',
+      kind: 'json',
+      expected: refusedAt(python, 10),
+      actual: refusedAt(node, 10),
+    });
+    // Everything around the ruled row — the manifest with the row itself blanked — must
+    // match, so the ruling cannot hide a second difference in the part count or the byte count.
+    // The reference's row is 12 UTF-8 bytes and the port's 14 (U+FFFD is three bytes where
+    // `é` is two, and there are two of them); the `text_bytes` figure moves with the row and
+    // is blanked with it.
+    const aroundRow = (text) => (text ?? '').replace(/caf.*? au lait/g, '<row>').replace(/\b1[24] bytes\b/g, '<n> bytes');
+    cases.push({
+      name: 'read-round2: id 10: the same manifest around the ruled row',
+      kind: 'bytes',
+      expected: aroundRow(toolTextOf(python, 10)),
+      actual: aroundRow(toolTextOf(node, 10)),
+    });
+    notes.push(`read-round2: id 6 sentence ${JSON.stringify((toolTextOf(node, 6) ?? '').split('\n')[0])}; id 10 reference ${JSON.stringify((toolTextOf(python, 10) ?? '').split('\n').find((l) => l.includes('au lait')) ?? null)}, port ${JSON.stringify((toolTextOf(node, 10) ?? '').split('\n').find((l) => l.includes('au lait')) ?? null)}`);
   }
 
   // ----------------------------------------------------------- build_identity, in parts

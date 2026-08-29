@@ -7,7 +7,17 @@
  * each of which is a `ruling` below with its reason and a companion that pins the refusal
  * bit rather than the words (docs/conformance.md, "a ruling pins the wording, not the
  * outcome") — and except one codec, utf-7, which CPython has and WHATWG does not: that
- * ruling is over two READS, and its companion pins that neither side refuses.
+ * ruling is over two READS, and its companion pins that neither side refuses. Job43 G3
+ * added three more: two zip compression methods `node:zlib` has not got (bzip2, lzma —
+ * the reference reads both, the port refuses by method and number, and the companions pin
+ * the reference's row and the port's sentence as literals), and RFC 2231 charset
+ * continuations, a second both-READ ruling over the one decoded row.
+ *
+ * THE SEVEN CHECKED-IN FIXTURES under `runtime-py/tests/data/docread/` (job43 G1) are read
+ * from where they lie, unruled but for `rfc2231-charset.eml`; and the path `a\x00b` — a NUL
+ * inside a file name — is handed to both as typed. Both sides answer `no such file: a\x00b`
+ * on macOS, where this job measured it; the case is not skipped on win32, so a Windows run
+ * measures it itself — and the note says which platform the numbers in hand came from.
  *
  * THE FIXTURES ARE R3's. `runtime-ts/test/docread-fixtures.mjs` lays down the 77 files
  * `runtime-py/tests/test_docread.py` builds with `zipfile` — the xlsx traps (shared strings,
@@ -80,6 +90,25 @@ export function tinyPdf(text) {
  */
 const RULED = {
   'tiny.pdf': { kind: 'pdf', python: () => false },
+  // Two compression methods `node:zlib` has not got. The reference reads both to one row
+  // (`zipfile` links bz2 and lzma); the port names the member, the method NUMBER and its
+  // name in the refusal. `reads` and `sentence` are the two literals the companions pin —
+  // both were generated from a measured run (`.venv/bin/python` over the fixture, and the
+  // port's `extract` over the same bytes), never written by hand.
+  'bzip2.docx': {
+    kind: 'bzip2',
+    python: () => false,
+    reads: ['hello'],
+    sentence: 'DocumentReadError: bzip2.docx is a zip but its word/document.xml uses compression method 12 (bzip2), which the Node server cannot decompress (the Python server reads it); see docs/porting.md',
+  },
+  'lzma.docx': {
+    kind: 'lzma',
+    python: () => false,
+    reads: ['hello'],
+    sentence: 'DocumentReadError: lzma.docx is a zip but its word/document.xml uses compression method 14 (lzma), which the Node server cannot decompress (the Python server reads it); see docs/porting.md',
+  },
+  // RFC 2231: both READ, one row apart — the utf-7 shape (`node: false` below).
+  'rfc2231-charset.eml': { kind: 'rfc2231', python: () => false, node: false },
   'doc.pdf': { kind: 'pdf', python: () => true },
   'sheet.xlsx.pdf': { kind: 'pdf', python: () => true },
   'named.xlsx': { kind: 'pdf', python: () => true },
@@ -117,6 +146,32 @@ const RULING_REASON = {
     'the file to one row; the row differs by that one token. Porting CPython\'s codec set into ' +
     'runtime-ts is not a fix — it is a second codec registry to keep in step with the first. ' +
     'docs/porting.md, "utf-7 on Node".',
+  bzip2:
+    'a zip member stored with compression method 12 (bzip2) is read by the reference because ' +
+    'CPython\'s `zipfile` decompresses it through the `bz2` module; the port decompresses ' +
+    'through `node:zlib`, which has deflate and nothing else the zip format names, and no ' +
+    'third-party dependency is allowed into runtime-ts (package.json has one runtime dep). The ' +
+    'port names the member, the method number and its name: "<name> is a zip but its <member> ' +
+    'uses compression method 12 (bzip2), which the Node server cannot decompress (the Python ' +
+    'server reads it); see docs/porting.md". docs/porting.md, "bzip2 and lzma zip members on Node".',
+  lzma:
+    'a zip member stored with compression method 14 (lzma) is read by the reference because ' +
+    'CPython\'s `zipfile` decompresses it through the `lzma` module; the port decompresses ' +
+    'through `node:zlib`, which has no lzma, and no third-party dependency is allowed into ' +
+    'runtime-ts. The port names the member, the method number and its name: "<name> is a zip ' +
+    'but its <member> uses compression method 14 (lzma), which the Node server cannot decompress ' +
+    '(the Python server reads it); see docs/porting.md". docs/porting.md, "bzip2 and lzma zip ' +
+    'members on Node".',
+  rfc2231:
+    'a MIME text part whose charset arrives as RFC 2231 continuations (`charset*0=utf-8; ' +
+    'charset*1=…`, or a `charset*=utf-8\'\'…` encoded value) is reassembled by the reference ' +
+    'through `email.policy.default`\'s header parser, whose semantics are its own — `charset*1=x; ' +
+    'charset*0=y` joins to `yx`, and a plain duplicate `charset=utf-8` LOSES to the continuation — ' +
+    'so the part decodes as UTF-8 and reads `café au lait`; the port reads the plain `charset=` ' +
+    'parameter only, sees no usable label, and decodes the same bytes as latin-1-through-UTF-8: ' +
+    '`caf� au lait`. Both sides READ the file to one row. Porting `email`\'s parameter ' +
+    'reassembly — with its ordering, its duplicate rule and its language tag — is far over the ' +
+    'port budget for one row on one shape. docs/porting.md, "RFC 2231 charset continuations on Node".',
 };
 
 export async function run(ctx) {
@@ -140,7 +195,23 @@ export async function run(ctx) {
     writeFileSync(join(bed, file), bytes);
     paths[file] = join(bed, file);
   }
+  // The checked-in fixtures, read from where `runtime-py/tests/data/docread/` keeps them —
+  // the same bytes both unit suites read, so nothing is rebuilt: `unicode-digit-shared-
+  // string.xlsx` (an index `str.isdigit()` accepts and `int()` does not), `x-uuencode.eml`,
+  // `rfc2231-charset.eml` (RULED), `rfc822-nested-twice.eml`, `internal-dtd-entity.docx`,
+  // `charref-4301-digits.html`, `encrypted-member.docx`.
+  for (const [file, path] of Object.entries(fixtures.checkedInFixtures())) {
+    if (paths[file] !== undefined) throw new Error(`checked-in fixture ${file} shadows a built one`);
+    paths[file] = path;
+  }
   const notes = [];
+  // A NUL inside the file name: `a\x00b`. The reference's `Path.stat` raises `ValueError`
+  // ("embedded null byte"), which `docread` answers as `no such file: a\x00b`; the port's
+  // `fs.statSync` raises `ERR_INVALID_ARG_VALUE`, answered with the same sentence. Job43 G3
+  // measured it on macOS only; the case is NOT skipped on win32 (where CPython raises the
+  // same `ValueError`), so a Windows run measures it itself, and the note names the platform.
+  paths['nul-in-name'] = 'a\x00b';
+  notes.push(`a NUL inside a file name (a\\x00b) measured on ${process.platform}; win32 name functions cannot run on a POSIX host, so a Windows answer is only known from a Windows run`);
   // THE PATHS THAT ARE NOT FILES, handed to both readers as the caller typed them. `''` is
   // `Path('')`, which is `.`, the harness's cwd, a directory; `a/b/.` is `Path('a/b/.')`, which
   // `pathlib` collapses to `a/b` BEFORE the file is looked for, so the sentence names `a/b`
@@ -191,6 +262,12 @@ export async function run(ctx) {
     { name: 'an index with an underscore', path: p, part: '1_0' },
     { name: 'a non-ASCII digit is a name, not an index', path: p, part: '\u0661' },
     { name: 'a superscript digit — isdigit() said yes and int() said no', path: p, part: '\u00b2' },
+    // JSON spellings handed as part NAMES: the library sees the string, never unwraps it,
+    // and answers the unknown-part sentence on both sides. The same three on the wire are
+    // the `read-round2` session in wire.mjs.
+    { name: 'the string "null" is a name that is not a part', path: p, part: 'null' },
+    { name: 'the string "[1]" is a name that is not a part, not an index', path: p, part: '[1]' },
+    { name: 'the string "{}" is a name that is not a part', path: p, part: '{}' },
     { name: 'offset below zero', path: p, part: 'data', offset: -1, limit: 5 },
     { name: 'limit zero', path: p, part: 'data', offset: 0, limit: 0 },
     { name: 'one row over the byte ceiling is cut to fit', path: paths['long.xlsx'], part: 'data', offset: 0, limit: 50, max_bytes: 3072 },
@@ -318,6 +395,23 @@ export async function run(ctx) {
           actual: refused(nd.extract),
         });
         refusedBoth += 1;
+      } else if (!expectedBits.python && expectedBits.node && rule.reads !== undefined) {
+        // The bzip2/lzma shape: the reference READS, the port refuses. The literal above
+        // says which side must do which; these two say WHAT each side must answer, so a
+        // reference that stopped reading to `hello` or a port whose sentence lost the
+        // method number would fail on its own line rather than behind "they still differ".
+        cases.push({
+          name: `extract: ${n}: the reference reads the row as measured (\`${rule.reads.join('\\n')}\`)`,
+          kind: 'bytes',
+          expected: rule.reads.join('\n'),
+          actual: (py.extract.parts ?? []).flatMap((x) => x.rows).join('\n'),
+        });
+        cases.push({
+          name: `extract: ${n}: the port refuses in the sentence the ruling quotes`,
+          kind: 'bytes',
+          expected: rule.sentence,
+          actual: `${nd.extract.error?.type}: ${nd.extract.error?.message}`,
+        });
       } else if (!expectedBits.python && !expectedBits.node) {
         // The utf-7 shape: a ruling over two READS. The companion pins that neither side
         // refuses, side to side, and that they agree on everything but the decoded row —
@@ -409,7 +503,7 @@ export async function run(ctx) {
 
   notes.push(
     `${names.length} files: ${readBoth} read on both sides, ${refusedBoth} refused on both, ${ruled} ruled ` +
-      `(pdf/doc/rtf, and utf-7 where both READ); /usr/bin/textutil ${python.textutil ? 'present' : 'absent'} on this host, so the reference ` +
+      `(pdf/doc/rtf; bzip2/lzma where the reference READS; utf-7 and rfc2231 where both READ); /usr/bin/textutil ${python.textutil ? 'present' : 'absent'} on this host, so the reference ` +
       `${python.textutil ? 'reads note.rtf and refuses real.doc as "plain text"' : 'refuses note.rtf and real.doc by name'}`,
   );
   const pdfRows = python.files[names.indexOf('tiny.pdf')].extract.parts?.map((x) => x.rows) ?? null;

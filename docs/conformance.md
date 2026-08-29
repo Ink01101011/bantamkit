@@ -30,7 +30,7 @@ sides, not by reading either.
 |---|---|
 | `cli` | the `bantamkit-mcp` command line as a process: stdout, stderr, exit code |
 | `codec` | fact-file frontmatter: emit byte-identically, and parse each other |
-| `docread` | the reader as a library: `sniff`, the rows per part, the omission dicts, every `DocumentReadError` sentence and the `page()` window over the same 99 paths (96 files, plus `''`, `a/b/.` and `/dev/zero`, which are not), plus the pdf/doc/rtf rulings and the utf-7 ruling with their refusal-bit companions |
+| `docread` | the reader as a library: `sniff`, the rows per part, the omission dicts, every `DocumentReadError` sentence and the `page()` window over the same 99 paths (96 files, plus `''`, `a/b/.` and `/dev/zero`, which are not), plus the seven checked-in fixtures under `runtime-py/tests/data/docread/` and `a\x00b`, and the rulings — pdf/doc/rtf (refused on Node), bzip2/lzma (read by the reference, refused on Node by method number), utf-7 and RFC 2231 (both read, one row apart) — each with its refusal-bit companions |
 | `mcpreport` | `--mcp-report` as a process, over one synthetic host-log/event-log pair |
 | `memorycli` | `bantamkit-memory` against `python -m bantamkit.memory` as processes: the transcript of every step, the exit codes, and the store afterwards |
 | `recall-strings` | the binding layer: every sentence an empty recall can produce |
@@ -38,7 +38,7 @@ sides, not by reading either.
 | `statusline` | `--statusline` as a process, over synthetic event logs ([statusline.md](statusline.md)) |
 | `store` | save/recall/index: the directory after the call, byte for byte |
 | `validate` | the validator: every sentence a schema failure can produce |
-| `wire` | the MCP surface: ten tools, one prompt, two templates, and the frames themselves — including a `bantamkit_read` session over the reader's files and its event-log records, and a `read-edges` session over the inputs F2/F3 fixed (bare `&`, a bad EOCD offset, a 4301-digit key, `''`, `a/b/.`, offset 2**53+1 sent raw, `/dev/zero`) |
+| `wire` | the MCP surface: ten tools, one prompt, two templates, and the frames themselves — including a `bantamkit_read` session over the reader's files and its event-log records, and a `read-edges` session over the inputs F2/F3 fixed (bare `&`, a bad EOCD offset, a 4301-digit key, `''`, `a/b/.`, offset 2**53+1 sent raw, `/dev/zero`), and a `read-round2` session over round 2's (part `"null"`/`"[1]"`/`"{}"` as sent, offset `"null"` as the one `isError`, a NUL in the path, the encrypted member, and the bzip2/lzma and RFC 2231 rulings with companions) |
 
 `cli`, `mcpreport`, `memorycli` and `statusline` are the odd ones out and deliberately so:
 every other suite compares two library functions, and that comparison cannot see which stream
@@ -112,14 +112,14 @@ that may not resolve. CI has no `.venv` at all, so the workflow writes
 ✔ store: 185 cases (97 json, 88 bytes), 0 differed
   note: [store] live index: 13472 bytes on disk, 13472 bytes rebuilt, 65 lines, 10528 bytes of headroom under the 24000 default
   ...
-PASS: 4878 cases, 1046 byte-identical, 3203 exact-string, 629 structural, 100 ruled-different, 0 failures
+PASS: 5954 cases, 1390 byte-identical, 3257 exact-string, 1307 structural, 122 ruled-different, 0 failures
 ```
 
 (The totals are a sample from one run and move with the suites: measured 4841 at `2c208f4`,
 4874 once the `memory-compact` wire session landed — 33 cases — and 4878 after its review
 hardened four of them, all on 2026-08-27; 4880 at `ce46fc3`, then 5512 on 2026-08-28 when
 the `docread` suite landed — 575 cases, 8 ruled — and the `wire` suite grew from 232 to 289
-with the `bantamkit_read` sessions, 7 of them ruled; 5600 at c8a62aa with 2 failures — the `badcd.xlsx` constructor-name artefact in the docread suite's `errorOf`, fixed in F4 — and 5760 after F4 on 2026-08-28: `docread` 633 -> 774 (9 ruled, the utf-7 ruling added), `wire` 289 -> 308 with the `read-edges` session; 116 ruled-different, 0 failures.)
+with the `bantamkit_read` sessions, 7 of them ruled; 5600 at c8a62aa with 2 failures — the `badcd.xlsx` constructor-name artefact in the docread suite's `errorOf`, fixed in F4 — and 5760 after F4 on 2026-08-28: `docread` 633 -> 774 (9 ruled, the utf-7 ruling added), `wire` 289 -> 308 with the `read-edges` session; 116 ruled-different, 0 failures; 5855 at 905965a (job43 G2) with 6 failures — bzip2.docx and lzma.docx pending their ruling — and 5954 after G3 on 2026-08-29: `docread` 869 -> 935 (12 ruled: bzip2, lzma and RFC 2231 added, the seven checked-in fixtures and `a\x00b` read), `wire` 308 -> 341 with the `read-round2` session (20 ruled); 122 ruled-different, 0 failures.)
 
 **The notes are part of the result, not decoration.** Several measurements this project
 depends on exist only there — the live index byte count, the corpus SHA on both sides, how

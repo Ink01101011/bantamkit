@@ -155,8 +155,16 @@ delete baseEnv.BANTAMKIT_MEMORY_DIR;
 
 const py = session(PY, ['-m', 'bantamkit.mcpserver', '--store', store], { ...baseEnv, PYTHONPATH: join(repoRoot, 'runtime-py', 'src'), PYTHONSAFEPATH: '1' }, project);
 const node = session(process.execPath, [CLI, '--store', store], baseEnv, project);
-for (const s of [py, node]) {
-  await s.ask('initialize', JSON.parse(INIT).params);
+for (const [label, s] of [['python', py], ['node', node]]) {
+  // The handshake reply is CHECKED, not discarded: a server that answers `initialize` with
+  // a JSON-RPC error (a protocol version it refuses, a store it cannot open) would otherwise
+  // go on to time out on the first `tools/call` 300 s later, and the number that fell out
+  // would be a timeout's, not the reader's. Fail here, loudly, with the frame.
+  const reply = JSON.parse(await s.ask('initialize', JSON.parse(INIT).params));
+  if (reply.error !== undefined || reply.result?.protocolVersion === undefined || reply.result?.serverInfo === undefined) {
+    console.error(`read-bytes: the ${label} server's initialize reply is not a handshake: ${JSON.stringify(reply)}`);
+    process.exit(3);
+  }
   s.notify(INITIALIZED);
 }
 
