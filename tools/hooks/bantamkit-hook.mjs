@@ -56,6 +56,17 @@ function emit(obj) {
   process.stdout.write(JSON.stringify(obj));
 }
 
+/**
+ * PLAIN stdout, for the events whose steering the host reads as text rather than as the
+ * `hookSpecificOutput` envelope. See `preCompact` for why that distinction is not cosmetic.
+ * Leading `{` would make the host attempt a JSON parse, so it is refused here.
+ */
+function emitText(text) {
+  const out = String(text).trim();
+  if (!out || out.startsWith('{')) return;
+  process.stdout.write(out);
+}
+
 function capLines(text, max) {
   if (Buffer.byteLength(text) <= max) return text;
   const out = [];
@@ -214,21 +225,99 @@ async function postSave(input) {
 // 160k cache-read tokens per request; a summary that keeps the file list means the rebuilt
 // context does not re-read them, and the PostCompact reset lets the gate allow the ones it
 // genuinely needs.
+//
+// THE CHANNEL IS PLAIN STDOUT, NOT `hookSpecificOutput`. Verified against the host binary
+// (`2.1.259`, the PreCompact dispatcher `fK`): the summariser's instructions are
+//
+//     newCustomInstructions: C.length > 0 ? C.join("\n\n") : undefined
+//     C = results.filter(r => r.succeeded && !r.blocked && r.output.trim().length > 0)
+//                .map(r => r.output.trim())
+//
+// — the hook's own trimmed stdout, verbatim. The `hookSpecificOutput` discriminated union
+// in that build has NO `"PreCompact"` member (its arms are PreToolUse, PostToolUse,
+// PostToolUseFailure, PostToolBatch, PermissionRequest, PermissionDenied, UserPromptSubmit,
+// UserPromptExpansion, SessionStart, Setup, Stop, SubagentStart, SubagentStop,
+// PreModelSwitch, PostModelSwitch, Notification, MessageDisplay, FileChanged, CwdChanged,
+// Elicitation, ElicitationResult, WorktreeCreate), so emitting that envelope here made the
+// host reject the output with "Hook JSON output validation failed", set `succeeded` false,
+// and DROP the text. Between b3625d9 and this change every compaction was unsteered.
+// Non-JSON stdout is accepted as-is ("Hook output does not start with {, treating as plain
+// text"), which is why `emitText` refuses a leading brace.
+//
+// The cost of the working channel is that the host also echoes the text back to the user as
+// `PreCompact [<command>] completed successfully: <output>`. There is no quieter variant —
+// the same string is both the steering and the display — so the arm stays short on purpose.
+const CHECKPOINT_MAX_BYTES = 4_000_000;
+
+/**
+ * The structure `assets/schemas/shiftwork-checkpoint.json` requires of the parts this arm
+ * reads: `plan.cursor` is a non-empty string and `plan.units` is a non-empty array of units
+ * carrying `id` and `status`. Deliberately NOT a full schema validation — a hook that loads
+ * a JSON-Schema validator stops being cheap, and a checkpoint that satisfies this shape but
+ * fails the full schema still yields a true steering line.
+ */
+function checkpointShape(doc) {
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return null;
+  const plan = doc.plan;
+  if (!plan || typeof plan !== 'object' || Array.isArray(plan)) return null;
+  const { cursor, units } = plan;
+  if (typeof cursor !== 'string' || cursor.length === 0) return null;
+  if (!Array.isArray(units) || units.length === 0) return null;
+  const ok = units.every((u) => u && typeof u === 'object' && typeof u.id === 'string' && typeof u.status === 'string');
+  return ok ? { cursor, units } : null;
+}
+
+/**
+ * The OPEN checkpoint under `<cwd>/.shiftwork`, whatever it is called. Real jobs write named
+ * checkpoints (`checkpoint-readlever.json`, `checkpoint-job41.json`, …), so the old hardcoded
+ * `checkpoint.json` read whichever stale job happened to own that name. Open means: at least
+ * one unit is neither `done` nor `dropped`. Most recently written wins, filename breaks the
+ * tie, so the choice is deterministic. Every failure — no directory, unreadable file,
+ * malformed JSON, wrong shape — is a SKIP, never a throw.
+ */
+function openCheckpoint(cwd) {
+  const dir = path.join(cwd, '.shiftwork');
+  let names;
+  try { names = fs.readdirSync(dir).filter((n) => n.endsWith('.json')); } catch { return null; }
+  const open = [];
+  for (const name of names) {
+    const file = path.join(dir, name);
+    let st;
+    let doc;
+    try {
+      st = fs.statSync(file);
+      if (!st.isFile() || st.size > CHECKPOINT_MAX_BYTES) continue;
+      doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch { continue; }
+    const shape = checkpointShape(doc);
+    if (!shape) continue;
+    if (!shape.units.some((u) => u.status !== 'done' && u.status !== 'dropped')) continue;
+    open.push({ file, mtimeMs: st.mtimeMs, ...shape });
+  }
+  if (open.length === 0) return null;
+  open.sort((a, b) => b.mtimeMs - a.mtimeMs || a.file.localeCompare(b.file));
+  return open[0];
+}
+
 function preCompact(input) {
   const ledger = readLedger(input.session_id);
   const files = [...new Set(Object.keys(ledger.reads || {}).map((k) => k.split('|')[1]).filter(Boolean))].slice(0, 40);
   const parts = [];
   if (files.length) parts.push(`Files already read in this context (keep the list; do not re-read unchanged ones after compaction):\n${files.map((f) => `- ${f}`).join('\n')}`);
-  try {
-    const cp = path.join(input.cwd || process.cwd(), '.shiftwork', 'checkpoint.json');
-    const c = JSON.parse(fs.readFileSync(cp, 'utf8'));
-    const cur = c.cursor ?? c.current_unit ?? null;
-    if (cur != null) parts.push(`Open shiftwork checkpoint: ${cp}, cursor ${JSON.stringify(cur)} — preserve unit status and the next unit to clock in.`);
-  } catch { /* no checkpoint */ }
+  let cp = null;
+  try { cp = openCheckpoint(input.cwd || process.cwd()); } catch { cp = null; }
+  if (cp) {
+    // The cursor names THE next unit; the schema keeps it at `plan.cursor`, never top level.
+    const unit = cp.units.find((u) => u.id === cp.cursor);
+    const at = unit
+      ? `unit ${unit.id} (${unit.status})${unit.title ? ` — ${unit.title}` : ''}`
+      : `unit ${cp.cursor}, which is not present in plan.units`;
+    parts.push(`Open shiftwork checkpoint: ${cp.file}, cursor ${JSON.stringify(cp.cursor)} → ${at}. Preserve unit status and the next unit to clock in.`);
+  }
   parts.push('Preserve verbatim: every number the user was shown, every decision the user made, and any pending operator step.');
   const ctx = parts.join('\n\n');
-  log({ event: 'PreCompact', trigger: input.trigger, files: files.length, bytes: Buffer.byteLength(ctx) });
-  emit({ hookSpecificOutput: { hookEventName: 'PreCompact', additionalContext: ctx } });
+  log({ event: 'PreCompact', trigger: input.trigger, files: files.length, checkpoint: cp ? cp.file : null, cursor: cp ? cp.cursor : null, bytes: Buffer.byteLength(ctx) });
+  emitText(ctx);
 }
 
 // ------------------------------------------------------------------- PostCompact
