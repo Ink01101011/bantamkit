@@ -630,6 +630,12 @@ export class MemoryStore {
    * guarded by a `reachable` check that refuses when `facts/<name>.md` is live, and its
    * rollback moves back onto a path it has just emptied. Neither can meet an occupied
    * destination, so there is no state in which the two calls could answer differently.
+   *
+   * THE ORDER IS `byEviction`, NOT `byStaleness` — `sorted(facts, key=self._eviction_key)`.
+   * `feedback` is the user's standing instruction; it holds until revoked and its worth does
+   * not decay with time-since-last-recall, so a purely temporal key ranks that class exactly
+   * backwards. Measured on the real project store (index 21698 of a 24000-byte budget): one
+   * auto-compaction archived 15 facts and 6 of them were `feedback`. See `byEviction`.
    */
   compact(reserve: number | null = null): CompactResult {
     const facts = this.facts();
@@ -647,7 +653,7 @@ export class MemoryStore {
     let size = all.reduce((total, bytes) => total + bytes, 0);
     const before = size;
     const archived: ArchivedFact[] = [];
-    for (const fact of this.byStaleness(facts)) {
+    for (const fact of this.byEviction(facts)) {
       if (size <= target) break;
       const path = this.factPath(fact.name);
       pyReplace(path, pyJoin(this.root, 'archive', pyName(path)));
@@ -763,7 +769,16 @@ export class MemoryStore {
   }
 
   /**
-   * `sorted(facts, key=self._staleness_key)` — the eviction order `compact` archives in.
+   * `sorted(facts, key=self._eviction_key)` — the eviction order `compact` archives in.
+   *
+   * CLASS FIRST, THEN STALENESS. A `feedback` fact is a standing instruction from the user:
+   * it holds until revoked, and its worth does not decay with time-since-last-recall, so the
+   * temporal key below is INVERTED for that one class — the better an instruction has been
+   * internalised the less anything recalls it, the staler it looks, and the sooner it leaves
+   * the index that is loaded at session start. `feedback` therefore ranks LAST and every
+   * other class is exhausted before any of it is archived. A priority and never a veto: the
+   * budget still wins, and with nothing else left feedback goes by staleness. Both sorts are
+   * STABLE, so a tied rank leaves the staleness answer below exactly as it was.
    *
    * `last_recalled` ALONE conflated two opposite facts: one written seconds ago and one
    * nobody has asked for in a year both read as absent, and the empty string sorts before
@@ -777,12 +792,23 @@ export class MemoryStore {
    * `str` raises there instead of sorting; both runtimes must fail the same way. Both sorts
    * are STABLE, so equal keys keep listing order on either side.
    */
-  private byStaleness(facts: readonly Fact[]): Fact[] {
+  private byEviction(facts: readonly Fact[]): Fact[] {
+    // `1 if fact.type == "feedback" else 0`. `pyEqualValue` and not `===`, because `type`
+    // comes out of YAML uncast: a hand-edited `type: 2026` puts a `date` in that field, and
+    // Python's `==` answers False across types rather than raising the way `<` would.
+    const rank = (fact: Fact): number => (pyEqualValue(fact.type, 'feedback') ? 1 : 0);
     const key = (fact: Fact): [FactValue, FactValue] => [
       pyTruthy(fact.last_recalled) ? fact.last_recalled! : pyTruthy(fact.created) ? fact.created! : '',
       fact.name,
     ];
     return [...facts].sort((a, b) => {
+      // The rank is an `int` on both sides, so it is compared as one and never handed to
+      // `pyCompareLt` — a `number` is not a `FactValue`, and the tuple below stays the
+      // two-slot staleness key it has always been. It is only reached on a TIED rank,
+      // exactly as `tuplerichcompare` reaches slot 1 in the reference.
+      const leftRank = rank(a);
+      const rightRank = rank(b);
+      if (leftRank !== rightRank) return leftRank < rightRank ? -1 : 1;
       const left = key(a);
       const right = key(b);
       for (let slot = 0; slot < 2; slot += 1) {
