@@ -348,6 +348,28 @@ const factFile = (n, { description = `about ${n}`, type = 'project', created = '
   `---\nname: ${n}\ndescription: ${description}\ntype: ${type}\n` +
   `created: '${created}'\nlast_recalled: null\nlinks: []\n---\n\nbody of ${n}\n`;
 
+/**
+ * Four facts in which the two STALEST are `feedback`, so a purely temporal eviction order
+ * archives the user's standing instructions first and the class-aware one cannot.
+ *
+ * The dates make the temporal answer unambiguous: nothing is ever recalled, so both sides
+ * fall back to `created`, and `afb`/`bfb` (January) are older than `cpj`/`dpj` (August). Every
+ * description is the same byte length; only the name and the type word vary, so each feedback
+ * line is 62 bytes, each project line 61, and the index is 246.
+ *
+ * This fixture is what makes the two compaction scenarios below FAIL against a temporal-only
+ * key on BOTH runtimes rather than merely differ — the eviction order is the whole datum.
+ */
+const FEEDBACK_STALEST = {
+  dirs: ['facts', 'archive'],
+  files: {
+    'facts/afb.md': factFile('afb', { description: 'a reasonably long description of afb', type: 'feedback', created: '2026-01-01' }),
+    'facts/bfb.md': factFile('bfb', { description: 'a reasonably long description of bfb', type: 'feedback', created: '2026-01-02' }),
+    'facts/cpj.md': factFile('cpj', { description: 'a reasonably long description of cpj', created: '2026-08-01' }),
+    'facts/dpj.md': factFile('dpj', { description: 'a reasonably long description of dpj', created: '2026-08-02' }),
+  },
+};
+
 /** Four facts with enough weight in the index that a budget can be set below it. */
 const FOUR_FACTS = {
   dirs: ['facts', 'archive'],
@@ -510,6 +532,32 @@ function scenarios() {
     ['compact-re-archives-over-an-existing-entry',
       { ...FOUR_FACTS, files: { ...FOUR_FACTS.files, 'archive/alpha.md': factFile('alpha', { description: 'a STALE archived copy' }) } },
       [['compact', '--store', '{BED}', '--budget', '200']]],
+    // A `feedback` fact is a standing instruction from the user: it holds until revoked and its
+    // worth does not decay with time-since-last-recall, so the temporal key ranks that class
+    // exactly backwards — the better an instruction is internalised, the less anything recalls
+    // it, the staler it looks, and the sooner it is archived out of the index that is loaded at
+    // session start. MEASURED on the real project store (index 21698 of a 24000-byte budget):
+    // ONE auto-compaction archived 15 facts and 6 of them were `feedback`, three of those
+    // loaded into that same session's profile. Both runtimes now exhaust every non-feedback
+    // candidate first, and these two cases are the only thing in the repository that compares
+    // the two eviction orders on a store where the feedback facts are the STALEST.
+    //
+    // Budget 200 over a 246-byte index: the default reserve is the largest line (62), so the
+    // target is 138 and two lines must go. The temporal answer is [afb, bfb]; the answer that
+    // holds the property is [cpj, dpj] — the project facts, in their own unchanged staleness
+    // order, even though both are NEWER than either feedback fact.
+    ['compact-spares-feedback-until-the-other-classes-are-gone', FEEDBACK_STALEST,
+      [['compact', '--store', '{BED}', '--budget', '200'], ['status', '--store', '{BED}', '--budget', '200']],
+      { remediation: 'restore one with: ' }],
+    // The other side of the same rule: a PRIORITY is not a veto. `--budget 100 --reserve 1`
+    // sets a target of 99, and archiving BOTH project facts only gets the index to 124, so
+    // `afb` — the stalest feedback fact — goes too and compaction still lands at or below the
+    // target. A rule that let the index sit over budget forever would be a worse defect than
+    // the one being fixed. (`--reserve 0` is refused by both parsers, which `reserve-zero`
+    // above already pins; 1 is the smallest reserve this scenario can ask for.)
+    ['compact-archives-feedback-once-nothing-else-is-left', FEEDBACK_STALEST,
+      [['compact', '--store', '{BED}', '--budget', '100', '--reserve', '1'], ['archived', '--store', '{BED}']],
+      { remediation: 'restore one with: ' }],
 
     // ---- archived
     ['archived-empty', FOUR_FACTS, [['archived', '--store', '{BED}']]],

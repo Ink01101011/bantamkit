@@ -177,6 +177,106 @@ def test_compact_takes_the_brand_new_fact_last_of_all_three(tmp_path, names):
     assert [f.name for f in store._facts()] == [roles["new"]]
 
 
+# ---- compaction: a standing instruction is not stale merely because nobody re-read it ----
+#
+# MEASURED DEFECT. On the real project store (`.bantamkit/memory`, index 21698 of a 24000
+# budget) an auto-compaction fired by `memory_save` archived 15 facts, and SIX of them were
+# type `feedback` — feedback-real-probe-only, feedback-ship-it-working-and-measured,
+# feedback-verify-against-the-run-not-the-source, feedback-orchestrator-numbers-from-recall,
+# feedback-prep-probe-before-planning, feedback-cycle-memory-clear-resume. Three had been
+# loaded into that same session's startup profile, so they were demonstrably live.
+#
+# A `feedback` fact is a standing instruction from the user: it holds until revoked, and its
+# value does not decay with time-since-last-recall. The temporal key is INVERTED for that
+# class — the better an instruction is internalised, the less anything recalls it, the staler
+# it looks, and the sooner it goes. Archiving drops it from the index loaded at session start,
+# so the user's own corrections silently stop being surfaced.
+#
+# The property, and it is a total order not a veto: compaction must exhaust every
+# non-`feedback` candidate before it archives any `feedback` fact. Within each class the
+# staleness order above is unchanged, and the budget still wins — if archiving every
+# non-feedback fact leaves the index over target, feedback is archived by staleness.
+
+FEEDBACK_ROLES = (
+    ("afb", "feedback", "2026-01-01"),
+    ("bfb", "feedback", "2026-01-02"),
+    ("cpj", "project", "2026-08-01"),
+    ("dpj", "project", "2026-08-02"),
+)
+
+
+def _seed_feedback_is_stalest(root):
+    """Four facts where the two `feedback` ones are the STALEST things in the store.
+
+    Nothing is ever recalled, so `_staleness_key` falls back to `created` for all four and
+    the purely temporal order is afb, bfb, cpj, dpj — feedback first out. That is the order
+    the fix has to break.
+    """
+    store = MemoryStore(root, index_budget=100_000, today=lambda: "2026-01-01")
+    for name, type_, created in FEEDBACK_ROLES:
+        store._today = lambda created=created: created
+        store.save(type_, name, _describe(name), f"body of {name}")
+    store._today = lambda: "2026-08-21"
+    return store
+
+
+def test_compact_archives_a_project_fact_before_any_feedback_fact(tmp_path):
+    """One slot to free, and the two stalest facts in the store are both `feedback`.
+
+    The temporal key alone answers `afb`. The answer that holds the property is `cpj` — the
+    stalest NON-feedback fact — because no feedback fact may go while any other class still
+    has a candidate.
+    """
+    store = _seed_feedback_is_stalest(tmp_path / "mem")
+    sizes = {f.name: len(store._index_line(f).encode()) for f in store._facts()}
+    total = sum(sizes.values())
+
+    # reserve=0 so the target is the budget exactly: this node fails only on the ORDER.
+    store.index_budget = total - 1
+    result = store.compact(reserve=0)
+
+    assert result.names == ["cpj"]
+    assert [f.type for f in result.archived] == ["project"]
+    assert sorted(f.name for f in store._facts()) == ["afb", "bfb", "dpj"]
+    assert result.index_after <= result.target
+    store.lint()
+
+
+def test_compact_orders_every_non_feedback_fact_ahead_of_every_feedback_fact(tmp_path):
+    """Two slots to free orders the whole non-feedback class before the feedback class.
+
+    Within `project` the existing staleness order is untouched: `cpj` (2026-08-01) then
+    `dpj` (2026-08-02), even though both are NEWER than either feedback fact.
+    """
+    store = _seed_feedback_is_stalest(tmp_path / "mem")
+    sizes = {f.name: len(store._index_line(f).encode()) for f in store._facts()}
+    total = sum(sizes.values())
+
+    store.index_budget = total - sizes["cpj"] - 1
+    result = store.compact(reserve=0)
+
+    assert result.names == ["cpj", "dpj"]
+    assert sorted(f.name for f in store._facts()) == ["afb", "bfb"]
+
+
+def test_the_budget_still_wins_once_nothing_but_feedback_is_left(tmp_path):
+    """The class order is a PRIORITY, never a veto. When archiving every non-feedback fact
+    still leaves the index over target, feedback is archived — by staleness, stalest first —
+    and `compact` still lands at or below the target. A rule that let the store sit over
+    budget forever would be a worse defect than the one being fixed."""
+    store = _seed_feedback_is_stalest(tmp_path / "mem")
+    sizes = {f.name: len(store._index_line(f).encode()) for f in store._facts()}
+
+    store.index_budget = sizes["bfb"]  # only the newest feedback fact can survive
+    result = store.compact(reserve=0)
+
+    assert result.names == ["cpj", "dpj", "afb"]
+    assert [f.name for f in store._facts()] == ["bfb"]
+    assert result.index_after <= result.target
+    assert store.compact(reserve=0).archived == [], "still idempotent at the floor"
+    store.lint()
+
+
 @pytest.mark.parametrize("budget", [512, 1024, 2048, 4096])
 @pytest.mark.parametrize("desc_len", [10, 40, 120])
 def test_compact_frees_room_in_the_state_the_budget_error_leaves_behind(

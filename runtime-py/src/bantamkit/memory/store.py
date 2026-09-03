@@ -378,6 +378,18 @@ class MemoryStore:
         the state until a test went looking for it. `runtime-ts` has always used
         `os.replace` here (`pyReplace` in `src/memory/store.ts`), so before this the two
         runtimes agreed on POSIX and disagreed on Windows.
+
+        THE ORDER IS `_eviction_key`, NOT `_staleness_key`, and the difference is a whole
+        class of fact. `feedback` is a standing instruction from the user: it holds until
+        revoked, and its worth does not decay with time-since-last-recall, so a purely
+        temporal key ranks that class exactly backwards -- the better an instruction is
+        internalised the less anything recalls it, the staler it looks, and the sooner it is
+        archived out of the index that is loaded at session start. Measured on the real
+        project store (index 21698 of a 24000-byte budget): ONE auto-compaction archived 15
+        facts and 6 of them were `feedback`, three of those loaded into that same session's
+        profile. Every non-feedback candidate is now exhausted first. It is a PRIORITY and
+        not a veto -- the budget still wins, so once nothing else is left, feedback is
+        archived by staleness and this loop still lands at or below `target`.
         """
         facts = self._facts()
         sizes = {fact.name: len(self._index_line(fact).encode()) for fact in facts}
@@ -389,7 +401,7 @@ class MemoryStore:
         size = sum(sizes.values())
         before = size
         archived: list[ArchivedFact] = []
-        for fact in sorted(facts, key=self._staleness_key):
+        for fact in sorted(facts, key=self._eviction_key):
             if size <= target:
                 break
             path = self._fact_path(fact.name)
@@ -560,6 +572,28 @@ class MemoryStore:
         """
         return (fact.last_recalled or fact.created or "", fact.name)
 
+    def _eviction_key(self, fact: Fact) -> tuple[int, str, str]:
+        """`compact`'s order: class first, then staleness. Nothing else reads it.
+
+        A `feedback` fact is the user's own correction, and it is the one class whose value
+        does NOT decay with time-since-last-recall -- it holds until the user revokes it. The
+        temporal key is inverted for exactly that class, which is why this rank exists and
+        why `feedback` sorts LAST: an instruction internalised well enough that nothing needs
+        to look it up again reads as maximally stale, and archiving moves it out of the index
+        loaded at session start, so the user's own correction silently stops being surfaced.
+        That is the failure this store exists to prevent, and it was measured happening -- on
+        the real project store one auto-compaction archived 15 facts, 6 of them `feedback`.
+
+        Within a class the order is `_staleness_key` unchanged, and `sorted` is stable, so a
+        tied rank leaves the staleness answer exactly as it was.
+
+        `fact.type == "feedback"` and never `is` or `in`: `type` comes out of YAML with no
+        cast, so a hand-edited `type: 2026` really does put a `date` in that field. `==` is
+        False across types and never raises, where `<` on the same pair would;
+        `runtime-ts` spells the identical comparison `pyEqualValue`.
+        """
+        return (1 if fact.type == "feedback" else 0, *self._staleness_key(fact))
+
     def _listing(self, directory: Path, consequence: str) -> list[str]:
         """The `*.md` names in one of this store's two directories, or a raise. Never a lie.
 
@@ -689,7 +723,8 @@ class MemoryStore:
         No fact is left half-dated: the listing runs before any `_write_fact`, and it
         raises on the first hit, so a `recall` that raises here has written nothing.
         (`fact.last_recalled` is set on the in-memory `Fact` first and that mutation
-        survives on the pinned copy; nothing reads it but `_staleness_key`, and the
+        survives on the pinned copy; nothing reads it but `_staleness_key` (through
+        `_eviction_key`), and the
         pinned list dies with the scope.)
         """
         fact.last_recalled = self._today()

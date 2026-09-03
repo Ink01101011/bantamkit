@@ -201,7 +201,8 @@ content), the index is rebuilt, and `MemoryBudgetExceeded` is raised. Via the
 agent tool it lands as an `error: memory_save failed: ...` observation, so the
 model is told and the store stays consistent.
 
-`compact(reserve=None)` archives the stalest facts until the index sits at
+`compact(reserve=None)` archives the stalest facts — see the eviction order
+below, which puts a whole class last — until the index sits at
 `index_budget - reserve` or below, and returns a `CompactResult`.
 
 Two things about that target matter, and both were measured defects:
@@ -218,10 +219,26 @@ Two things about that target matter, and both were measured defects:
   constant, and it is recomputed from the survivors, so calling `compact()` twice
   archives nothing the second time.
 
-It sorts by `(last_recalled or created, name)`. A fact written seconds ago and
-one nobody has wanted in a year are no longer the same value: under the old key
-both were `None`, `None or ""` sorted before every real date, and the **newest**
-fact was the first evicted.
+**The eviction order is class first, then staleness:**
+`(0 if type != "feedback" else 1, last_recalled or created, name)`.
+
+- **Every non-`feedback` fact is exhausted before any `feedback` fact is
+  archived.** A `feedback` fact is a standing instruction from the user — it
+  holds until revoked, and its worth does not decay with time-since-last-recall,
+  so a purely temporal key ranks that class exactly backwards: the better an
+  instruction has been internalised, the less anything recalls it, the staler it
+  looks, and the sooner it leaves the index that is loaded at session start.
+  Measured on a real project store (index 21698 of a 24000-byte budget): one
+  auto-compaction archived 15 facts and **6 of them were `feedback`**, three of
+  those loaded into that same session's startup profile.
+- **It is a priority, not a veto.** The budget still wins. If archiving every
+  non-`feedback` fact leaves the index above the target, `feedback` facts are
+  then archived by staleness, stalest first, and `compact()` still lands at or
+  below the target.
+- **Within a class the staleness order is unchanged**, and the sort is stable. A
+  fact written seconds ago and one nobody has wanted in a year are not the same
+  value: under the pre-`created` key both were `None`, `None or ""` sorted before
+  every real date, and the **newest** fact was the first evicted.
 
 Archiving is a `facts/` → `archive/` move, never a delete. `CompactResult`
 carries the name, type, description and index size of everything that left plus
