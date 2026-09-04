@@ -121,6 +121,13 @@ const RULED = {
   // The one ruling where NEITHER side refuses: both read the file to one row, and the row
   // differs by one codepoint. `node: false` is what makes the companion below "both read".
   'utf7.eml': { kind: 'utf7', python: () => false, node: false },
+  // Review round 4 (H1's residual): the same divergence as `utf7.eml` under two more names.
+  // `decodeCharset`'s docstring already said so; it had no ruling row and no case, and per
+  // CLAUDE.md a deliberate difference costs three things. Both READ, so `node: false` again
+  // and the two non-ruled companions come with it — and it is the COMPANION, not the ruling,
+  // that catches one of these sides starting to refuse.
+  'hz.eml': { kind: 'statefulCjk', python: () => false, node: false },
+  'iso2022kr.eml': { kind: 'statefulCjk', python: () => false, node: false },
   // `<!ATTLIST>` defaults (H3): both READ, the row differs by one cell (`SHARED` / `0`).
   'attlist.xlsx': { kind: 'attlist', python: () => false, node: false },
 };
@@ -153,6 +160,24 @@ const RULING_REASON = {
     '`charsets` suite), but utf-7 is a stateful modified-base64 transform, not a byte table, ' +
     'and no decoder for it is written; the label still falls to UTF-8. ' +
     'docs/porting.md, "utf-7 on Node".',
+  statefulCjk:
+    'a MIME text part declaring `charset=hz` or `charset=iso-2022-kr` is decoded by the ' +
+    'reference through CPython\'s codec registry, which has both; the port decodes through ' +
+    'the WHATWG Encoding Standard\'s `TextDecoder`, whose registry has neither label, so the ' +
+    'bytes are read as UTF-8 and the escape machinery comes back as literal text. MEASURED ' +
+    'on these two fixtures: `~{:O::~}` reads `合汉` on the reference and `~{:O::~}` here; ' +
+    '`ESC $ ) C SO = " SI` reads `숱` there and `\\x1b$)C\\x0e="\\x0f` here. These are the ' +
+    'same divergence as "utf-7 on Node" under two more names, and the same cause as the ' +
+    'third: each is a STATEFUL escape transform, not a byte table, so ' +
+    '`runtime-ts/src/charsets.ts` cannot carry it — H1 (`666f14f`) removed the seven tables ' +
+    'the generator had written for exactly these codecs, when its statelessness probe was six ' +
+    'hand-picked lead bytes containing neither ESC nor `~`. The decoder was chosen by ' +
+    'measurement over 8,829 inputs against CPython (ICU 5,664 correct, byte table 5,021, ' +
+    'utf-8 4,339); `hz`, `iso2022_kr` and `utf_7` score 0% through WHATWG, which is why six ' +
+    'labels route to ICU and not nine. Writing three modified-escape decoders by hand is over ' +
+    'the port budget, and no third-party dependency is allowed into runtime-ts. Both sides ' +
+    'READ the file to one row; the row is the divergence. ' +
+    'docs/porting.md, "hz and iso-2022-kr on Node".',
   attlist:
     'an internal DTD that declares a DEFAULT attribute value — `<!ATTLIST c t CDATA "s">` — ' +
     'is applied by the reference\'s expat, so a `<c>` written without `t` is a shared-string ' +
@@ -248,6 +273,68 @@ export async function run(ctx) {
         ]),
       ]),
     ),
+    // ---- review round 4, the fixes this round landed in BOTH runtimes, each pinned here
+    //
+    // M2 + M5 (`a1acfa7` Python, `4e56836` Node), one fixture because one answer. `ZZZZZ1`
+    // is a syntactically valid cell reference whose column is 12,356,630 — over ECMA-376's
+    // XFD (16,384). Before the round it materialised a 12,356,631-byte row from 1,393 bytes
+    // of zip, an 8,870x amplification with no ceiling; before THAT it refused the whole
+    // workbook. Now the clean cell keeps its column, the unplaceable one keeps its text and
+    // loses only its column, and the loss is an OMISSION. Everything about that is compared
+    // side to side by the generic loop below — the row, the row count, the omission list.
+    'max-column.xlsx': fixtures.xlsxBytes([
+      ['Sheet', 'worksheets/sheet1.xml', fixtures.row([fixtures.inlineCell('A1', 'ok'), fixtures.inlineCell('ZZZZZ1', 'over')])],
+    ]),
+    // The other side of the same ceiling: XFD is column 16,384 exactly, the last one the
+    // format has, and it must still READ. A ceiling case without this one pins a refusal and
+    // not a boundary.
+    'xfd-column.xlsx': fixtures.xlsxBytes([
+      ['Sheet', 'worksheets/sheet1.xml', fixtures.row([fixtures.inlineCell('A1', 'ok'), fixtures.inlineCell('XFD1', 'last')])],
+    ]),
+    // M4 (`15c7e04`): three charset labels whose CPython codec EXISTS and RAISES. `idna` and
+    // `punycode` raise `UnicodeError` on these bytes and `undefined` raises on everything —
+    // `_decoded_body` caught `LookupError` only, so the exception escaped the reader. Swept
+    // over all 357 aliases in `encodings.aliases`: 22 raise `LookupError`, 3 raise
+    // `UnicodeError`, the rest decode, so `UnicodeError` is the CLASS and not three names.
+    // The port has no decoder for any of them and falls to UTF-8; the reference now answers
+    // the same replacement characters, so this is PARITY and not a ruling — which is exactly
+    // why it needs a case: nothing else would notice one side starting to raise again.
+    ...Object.fromEntries(
+      ['idna', 'punycode', 'undefined'].map((label) => [
+        `charset-raises-${label}.eml`,
+        Buffer.concat([
+          Buffer.from(`MIME-Version: 1.0\nContent-Type: text/plain; charset="${label}"\nContent-Transfer-Encoding: 8bit\n\nx `, 'latin1'),
+          Buffer.from([0x80, 0xd0, 0xe9, 0xa4, 0xff]),
+          Buffer.from(' y\n', 'latin1'),
+        ]),
+      ]),
+    ),
+    // H1 (`666f14f`): `iso-2022-jp` is a STATEFUL codec, and the generator used to hand the
+    // port a 256-character byte table for it because its statelessness probe was six
+    // hand-picked lead bytes containing neither ESC (0x1B) nor `~`. The port then decoded
+    // one byte at a time and answered `�$B$3$s$K$A$O�(B` where the reference
+    // answers こんにちは. The generator now sweeps all 65,536 ordered pairs, the table is
+    // gone, and the label reaches ICU's decoder. Both sides must read the same row.
+    'iso2022jp.eml': Buffer.concat([
+      Buffer.from('MIME-Version: 1.0\nContent-Type: text/plain; charset="iso-2022-jp"\nContent-Transfer-Encoding: 8bit\n\n', 'latin1'),
+      Buffer.from([0x1b, 0x24, 0x42, 0x24, 0x33, 0x24, 0x73, 0x24, 0x4b, 0x24, 0x41, 0x24, 0x4f, 0x1b, 0x28, 0x42]),
+      Buffer.from('\n', 'latin1'),
+    ]),
+    // The three labels H1 measured at 0% through the WHATWG registry, so the port reads them
+    // as UTF-8 where the reference has a real codec. `utf_7` is already ruled on its own
+    // fixture (`utf7.eml`); these two are the same divergence under different names and are
+    // ruled below. `hz` marks its GB2312 run with `~{`…`~}`; `iso2022_kr` announces its
+    // charset once with ESC $ ) C and then shifts in with SO (0x0E).
+    'hz.eml': Buffer.concat([
+      Buffer.from('MIME-Version: 1.0\nContent-Type: text/plain; charset="hz"\nContent-Transfer-Encoding: 8bit\n\n', 'latin1'),
+      Buffer.from([0x7e, 0x7b, 0x3a, 0x4f, 0x3a, 0x3a, 0x7e, 0x7d]),
+      Buffer.from('\n', 'latin1'),
+    ]),
+    'iso2022kr.eml': Buffer.concat([
+      Buffer.from('MIME-Version: 1.0\nContent-Type: text/plain; charset="iso-2022-kr"\nContent-Transfer-Encoding: 8bit\n\n', 'latin1'),
+      Buffer.from([0x1b, 0x24, 0x29, 0x43, 0x0e, 0x3d, 0x22, 0x0f]),
+      Buffer.from('\n', 'latin1'),
+    ]),
   };
   for (const [file, bytes] of Object.entries(extra)) {
     writeFileSync(join(bed, file), bytes);
