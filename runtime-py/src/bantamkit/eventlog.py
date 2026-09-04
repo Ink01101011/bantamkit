@@ -30,7 +30,7 @@ THREE HARD RULES, each with the failure it prevents:
   byte-compares both runtimes' streams; one stray write breaks the wire suite. Nothing
   in this module touches `sys.stderr` or `sys.stdout`.
 * **Metadata only.** Never a tool argument's value, never a memory body, never a
-  validated output, never a query, never a document row. Five of the ten tools take
+  validated output, never a query, never a document row. Six of the eleven tools take
   unbounded free text and four take absolute paths (`bantamkit_read`'s `path` is one,
   and its record carries the container kind and counts, never the path or a part name).
   Every value written here is an ASCII token from a closed

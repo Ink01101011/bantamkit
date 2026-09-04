@@ -210,6 +210,7 @@ CORE_MODULES = (
     "budget.py",
     "docread.py",
     "pdfread.py",
+    "skillaudit.py",
     "loopguard.py",
     "structured.py",
     "critique.py",

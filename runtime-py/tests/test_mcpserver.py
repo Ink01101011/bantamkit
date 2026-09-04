@@ -42,13 +42,14 @@ VALID_SCHEMA = {
 }
 
 
-def test_lists_exactly_the_ten_tools(tmp_path):
+def test_lists_exactly_the_eleven_tools(tmp_path):
     """One server, one entry point: memory and shiftwork ride the same instance.
 
-    Seven since `build_identity` (RB-P84's second half) and EIGHT since
-    `bantamkit_status` (`docs/status.md`): the list is EXACT, so a tool added to the
-    server is a deliberate edit here. The assertion is not relaxed to a membership check —
-    an exact list is the only form that notices a tool arriving.
+    Seven since `build_identity` (RB-P84's second half), EIGHT since
+    `bantamkit_status` (`docs/status.md`), and ELEVEN since `skill_audit`: the list is
+    EXACT, so a tool added to the server is a deliberate edit here. The assertion is not
+    relaxed to a membership check — an exact list is the only form that notices a tool
+    arriving.
     """
 
     async def scenario():
@@ -64,6 +65,7 @@ def test_lists_exactly_the_ten_tools(tmp_path):
                 "shiftwork_clock_in",
                 "shiftwork_clock_out",
                 "shiftwork_status",
+                "skill_audit",
                 "validate_json",
             ]
 
@@ -456,6 +458,7 @@ def test_stdio_subprocess_initializes(tmp_path):
                     "shiftwork_clock_in",
                     "shiftwork_clock_out",
                     "shiftwork_status",
+                    "skill_audit",
                     "validate_json",
                 ]
 
@@ -512,6 +515,7 @@ def test_module_entrypoint_serves_over_stdio(tmp_path):
                     "shiftwork_clock_in",
                     "shiftwork_clock_out",
                     "shiftwork_status",
+                    "skill_audit",
                     "validate_json",
                 ]
 

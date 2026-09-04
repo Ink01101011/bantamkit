@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import bantamkit
-from bantamkit import __version__, docread, shiftwork
+from bantamkit import __version__, docread, shiftwork, skillaudit
 from bantamkit.assets import AssetNotFound, assets_root, load_skill, load_tool_asset
 from bantamkit.client import BantamError
 from bantamkit.contract import (
@@ -28,6 +28,7 @@ from bantamkit.contract import (
     document_page,
     schema_error,
     schema_retry_feedback,
+    tool_failed,
 )
 from bantamkit.eventlog import EventLog
 from bantamkit.mcpreport import build_report as build_mcp_report
@@ -1021,15 +1022,73 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
                 )
             )
 
+    def skill_audit(
+        root: str,
+        enabled: list[str] | None = None,
+        usage: dict[str, int] | None = None,
+        check: str | None = None,
+        budget: int | None = None,
+    ) -> str:
+        """The catalogue auditor on the MCP surface: `skillaudit` measures, this serves it.
+
+        THE REPLY IS A JSON DOCUMENT AND NOT PROSE, which is the one thing that makes this
+        handler shaped differently from `bantamkit_read` next door. The reader answers a
+        person reading a transcript, so `contract` words it; this answers a caller that has
+        to compare `catalogue_bytes` against a budget it set and act on the ids in
+        `findings[].skills`. A sentence would have to be parsed back. So `Audit.as_json` is
+        the reply verbatim, and the only strings this layer authors are the refusals.
+
+        THE REFUSALS ARE ARGUMENT FAILURES, ALL THREE OF THEM, so they go through
+        `tool_failed` — an unknown `check`, a negative `budget`, a `root` that is not a
+        directory. Nothing about the CONTENT of the tree refuses: a file that will not
+        decode, a block that will not parse and a plugin that is switched off are recorded
+        as omissions and counted. An audit that refused because one of sixteen files is
+        malformed would have said nothing about the other fifteen.
+
+        `check` defaults HERE rather than in the signature's default so that the one
+        spelling of the default lives in `skillaudit.audit`, and `None` and an absent
+        argument reach it as the same thing.
+
+        THE RECORD IS A DECISION, NEVER A REPLY, and it holds no free text: `audited`
+        carries the four counts the host cannot see (skills, catalogue bytes, findings,
+        omissions) and `refused` carries nothing at all. `root` is a path the operator
+        typed and `findings[].skills` are the names of their skills; neither is a decision
+        this handler made, so neither is written down.
+        """
+        with _record_raise(log, "skill_audit"):
+            try:
+                result = skillaudit.audit(
+                    root,
+                    enabled=enabled,
+                    usage=usage,
+                    check="all" if check is None else check,
+                    budget=budget,
+                )
+            except (skillaudit.SkillAuditError, OSError) as exc:
+                log.record("skill_audit", "refused")
+                return _noted(tool_failed("skill_audit", exc))
+            log.record(
+                "skill_audit",
+                "audited",
+                {
+                    "skills": result.skills,
+                    "bytes": result.catalogue_bytes,
+                    "findings": len(result.findings),
+                    "omissions": len(result.omissions),
+                },
+            )
+            return _noted(result.as_json())
+
     # The served surface, in one place, read out of the asset pack. Adding a tool here
     # without an asset raises AssetNotFound at startup — the manifest cannot drift behind
     # the server, because the server cannot start without it.
     #
     # `bantamkit_status` went LAST rather than first, `memory_compact` after it rather
-    # than beside `memory_save` where a reader would look for it, and `bantamkit_read`
-    # after that. Registration order IS the served order (`test_tool_manifest.py::test_
-    # the_golden_records_the_order_the_wire_actually_serves`), and appending is the only
-    # edit that leaves the other nine where every existing declaration says they are.
+    # than beside `memory_save` where a reader would look for it, `bantamkit_read`
+    # after that and `skill_audit` after that. Registration order IS the served order
+    # (`test_tool_manifest.py::test_the_golden_records_the_order_the_wire_actually_
+    # serves`), and appending is the only edit that leaves the others where every
+    # existing declaration says they are.
     tools = [
         _from_manifest(memory_save, "memory_save"),
         _from_manifest(memory_recall, "memory_recall"),
@@ -1041,6 +1100,7 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         _from_manifest(bantamkit_status, "bantamkit_status"),
         _from_manifest(memory_compact, "memory_compact"),
         _from_manifest(bantamkit_read, "bantamkit_read"),
+        _from_manifest(skill_audit, "skill_audit"),
     ]
 
     server = MCPServer(

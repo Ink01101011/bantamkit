@@ -40,6 +40,7 @@ SERVED_ORDER = [
     "bantamkit_status",
     "memory_compact",
     "bantamkit_read",
+    "skill_audit",
 ]
 
 
@@ -96,7 +97,7 @@ def workbook(tmp_path):
 # ------------------------------------------------------------------------ the surface
 
 
-def test_bantamkit_read_is_served_tenth_after_memory_compact(tmp_path):
+def test_bantamkit_read_is_served_tenth_and_skill_audit_eleventh(tmp_path):
     server, _ = make(tmp_path)
 
     async def scenario():
