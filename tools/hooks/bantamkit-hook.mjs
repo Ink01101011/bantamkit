@@ -234,6 +234,40 @@ function preToolUseRead(input) {
   log({ event: 'PreToolUse', action: prev ? 'allow-after-refuse-or-change' : 'record', file, size: st.size });
 }
 
+// ---------------------------------------------- PostToolUse → the usage events log
+// One line per tool call, for `tools/ledger/tool-usage.mjs` to read when a transcript is gone.
+// The transcript is authoritative while it exists; this is the durable copy behind it, and it
+// is the ONLY record of a session whose transcript the host has since deleted (4 of 110 logged
+// sessions, measured 2026-09-04).
+//
+// `appendFileSync` and not the read-modify-write `writeLedger` above: the host fires one hook
+// PROCESS per tool call and a parallel tool block fires them concurrently, which loses 40–50 %
+// of a read-modify-write's records (roadmap-toolbox row 8, follow-up (q)). An append of a line
+// this size is atomic on both platforms, so this half has no such race.
+//
+// Folded in from tool-metrics' `hooks/scripts/log_event.py`; the field names are that file's,
+// so an events.jsonl written by either program reads in either.
+function appendUsageEvent(input) {
+  const tool = input.tool_name || '?';
+  const ti = input.tool_input && typeof input.tool_input === 'object' ? input.tool_input : {};
+  const record = {
+    ts: new Date().toISOString(),
+    session: input.session_id || '',
+    project: String(input.cwd || '').replace(/[/.]/g, '-'),
+    tool,
+    server: tool.startsWith('mcp__') && tool.split('__').length >= 3 ? tool.split('__')[1] : 'builtin',
+    detail: tool === 'Skill' ? String(ti.skill ?? '')
+      : tool === 'Agent' ? String(ti.subagent_type || 'general-purpose')
+        : '',
+  };
+  const dir = process.env.TOOL_METRICS_DIR
+    || path.join(os.homedir(), '.claude', 'tool-metrics');
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(path.join(dir, 'events.jsonl'), `${JSON.stringify(record)}\n`);
+  } catch { /* the log is a convenience; never fail a tool call over it */ }
+}
+
 // ---------------------------------------------- PostToolUse memory_save → compact
 async function postSave(input) {
   const ledger = readLedger(input.session_id);
@@ -476,7 +510,9 @@ async function main() {
     case 'SessionStart': return sessionStart(input);
     case 'UserPromptSubmit': return userPromptSubmit(input);
     case 'PreToolUse': return input.tool_name === 'Read' ? preToolUseRead(input) : undefined;
-    case 'PostToolUse': return input.tool_name === 'mcp__bantamkit__memory_save' ? postSave(input) : undefined;
+    case 'PostToolUse':
+      appendUsageEvent(input); // every tool, not just bantamkit's — it is a usage denominator
+      return input.tool_name === 'mcp__bantamkit__memory_save' ? postSave(input) : undefined;
     case 'PreCompact': return preCompact(input);
     case 'PostCompact': return postCompact(input);
     case 'Stop': return stop(input);
