@@ -255,7 +255,12 @@ test('an unknown event and unparseable stdin are both silent and exit 0', () => 
   assert.equal(r.status, 0);
   assert.equal(r.stdout, '');
   assert.equal(r.stderr, '');
-  const bad = spawnSync(process.execPath, [HOOK], { input: 'not json', encoding: 'utf8', env: { ...process.env, HOME: newHome() } });
+  // Both variables, always: `os.homedir()` reads $HOME on POSIX and %USERPROFILE% on
+  // Windows, and this payload reaches `main()`'s catch, which APPENDS a parse-error line to
+  // `<home>/.bantamkit/hooks/hook-log.jsonl`. With HOME alone that append lands in the
+  // operator's real home on every Windows run, against this file's own header claim.
+  const badHome = newHome();
+  const bad = spawnSync(process.execPath, [HOOK], { input: 'not json', encoding: 'utf8', env: { ...process.env, HOME: badHome, USERPROFILE: badHome } });
   assert.equal(bad.status, 0);
   assert.equal(bad.stdout, '');
   assert.equal(bad.stderr, '');
