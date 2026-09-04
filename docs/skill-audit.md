@@ -1,6 +1,6 @@
 # skill_audit — pricing the catalogue every session pays for
 
-    skill_audit(root, enabled?, usage?, check?, budget?)
+    skill_audit(root, enabled?, usage?, check?, budget?, versions?)
 
 A skill's `description:` frontmatter is loaded into the agent's context in EVERY session; its
 body is read only when the skill is invoked. The descriptions are therefore a standing bill,
@@ -22,9 +22,12 @@ at the same moment, scored **0.000** and ranked 791st of 820, while the metric's
 shared vocabulary and fired at different times. It measures vocabulary similarity, and trigger
 collision is not vocabulary similarity. No threshold rescues it.
 
-**It does not read the machine.** `root`, `enabled` and `usage` all arrive as arguments. A tool
-that consulted `~/.claude` directly could not be compared across two runtimes, and the
-conformance gate is the only thing that makes "ported" mean more than "written twice".
+**It does not read the machine.** `root`, `enabled`, `usage` and `versions` all arrive as
+arguments. A tool that consulted `~/.claude` directly could not be compared across two
+runtimes, and the conformance gate is the only thing that makes "ported" mean more than
+"written twice". The three optional maps are the three facts a directory of files cannot
+answer: which plugins the host has switched on, how often each skill has fired, and which
+version directory of each plugin the host actually serves.
 
 ## The five findings
 
@@ -75,11 +78,29 @@ omissions — a separate subject from `duplicate-skill`, because a duplicate's b
 paid by the copy displacing it while a stale version's are paid by nobody, and folding the two
 together is precisely what kept the defect invisible.
 
+**The candidates are the version DIRECTORIES on disk, not the skills that survived reading.**
+A directory holding no `SKILL.md`, or only files that will not decode or will not parse, still
+exists and the host still serves it. Choosing among surviving skills instead made an empty
+newer version invisible and let an older directory win in silence — the resurrection defect
+above arriving through the other door, and one both runtimes committed identically, so the
+differential could not see it.
+
 **The tie-break is byte order of the version directory name, last wins, and it is wrong for
 `10.0.0` against `9.0.0`.** Semver is not available: `frontend-design` on this machine has nine
 version directories named as content hashes (`0120fb83da5d` … `ed404106fcd8`) plus the literal
 `unknown`. Byte order is total over all of them and computed identically by both runtimes,
 which is the property that matters more here. Every loser is named in an omission record.
+
+**…and byte order is only the fallback, because the caller can just say.** `versions` maps
+`<plugin>@<marketplace>` to the version directory name the host serves — the `installPath` in
+the same `installed_plugins.json` `enabled` is read out of — and where it names a plugin, no
+guess is made. Measured 2026-09-05: byte order picks `unknown` for `frontend-design` where the
+host serves `1dd995193ba2`, so the installed directory is thrown away as a duplicate, harmless
+only because all nine copies carry a byte-identical description. `versions` is not refused
+when it names a plugin or a directory this `root` does not hold: a plugin with no version
+directory here is not resolved at all, and a directory that is not here means every directory
+that IS here loses and is named in a `stale-version` record. That is the same discipline
+`enabled` follows — the caller is the authority on its own host.
 
 ## First run — 2026-09-05, this machine
 

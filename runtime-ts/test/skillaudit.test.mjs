@@ -140,6 +140,9 @@ const INVERTED_TIE_BREAK = [21, 2255];
 const RESOLVED_OVER_SURVIVORS = [21, 2388];
 
 const enabled = () => JSON.parse(readFileSync(join(FIXTURE, 'enabled.json'), 'utf8'));
+/** The version directory the fixture's "host" serves, which is NOT the byte-order winner. */
+const served = () => JSON.parse(readFileSync(join(FIXTURE, 'versions.json'), 'utf8'));
+const servedMap = () => new Map(Object.entries(served()));
 const usage = () => JSON.parse(readFileSync(join(FIXTURE, 'usage.json'), 'utf8'));
 const usageMap = () => new Map(Object.entries(usage()));
 
@@ -848,6 +851,74 @@ test('a version directory name that is not a version takes the same byte order',
   assert.equal(audit.catalogueBytes - 162 + 87, 2186);
 });
 
+test('the caller can name the version the host serves and it beats the byte order', () => {
+  // `versions` is HOST TRUTH, and byte order is the fallback it replaces. Byte order picks
+  // `unknown` for `hash-kit`, over two names that are not versions at all, and it is
+  // deterministic and ARBITRARY. The host does not guess: it records the directory it serves
+  // as `installPath` in the same `installed_plugins.json` the caller reads `enabled` out of.
+  // Measured 2026-09-05, that is `1dd995193ba2` for `frontend-design`, where byte order picks
+  // `unknown` and throws the installed copy away as a duplicate.
+  assert.deepEqual(served(), { 'hash-kit@kit-market': '0120fb83da5d' });
+  const guessed = fixtureAudit();
+  const told = fixtureAudit({ versions: servedMap() });
+  assert.equal(guessed.catalogueBytes, README_CATALOGUE_BYTES);
+  assert.equal(told.catalogueBytes, 2186);
+  assert.equal(told.skills, README_SKILLS);
+  assert.ok(subjects(guessed)[skillaudit.OMIT_DUPLICATE].what.includes('hash-kit/0120fb83da5d/'));
+  assert.ok(subjects(told)[skillaudit.OMIT_DUPLICATE].what.includes('hash-kit/unknown/'));
+  assert.equal(subjects(told)[skillaudit.OMIT_DUPLICATE].size, 131 - 87 + 162);
+});
+
+test('versions omitted and versions empty are the byte order and nothing else', () => {
+  // An absent map and an empty one both mean "the caller said nothing about any plugin".
+  // Unlike `usage` and `budget` there is no third state: `versions` selects nothing and
+  // suppresses nothing, it only replaces a guess for the plugins it names.
+  const baseline = fixtureAudit().asJson();
+  assert.equal(fixtureAudit({ versions: new Map() }).asJson(), baseline);
+  assert.equal(fixtureAudit({ versions: null }).asJson(), baseline);
+  assert.equal(fixtureAudit({ versions: new Map([['no-such-kit@kit-market', '1.0.0']]) }).asJson(), baseline);
+  // …and a key that is not a `<plugin>@<marketplace>` at all names no plugin either.
+  assert.equal(fixtureAudit({ versions: new Map([['hash-kit', '0120fb83da5d']]) }).asJson(), baseline);
+  assert.equal(fixtureAudit({ versions: new Map([['@', '1.0.0']]) }).asJson(), baseline);
+});
+
+test('a named version directory that is not there makes every one that is a loser', () => {
+  // An answer, not a refusal, and the same discipline `enabled` follows: the caller is the
+  // authority on its own host. If it says `dup-kit` is served at `9.9.9` and this root holds
+  // `1.0.0` and `1.1.0`, then this root holds no copy the host serves — so the plugin
+  // contributes no skill and both its files are named in a `stale-version` record.
+  const audit = fixtureAudit({ versions: new Map([['dup-kit@kit-market', '9.9.9']]) });
+  assert.equal(audit.skills, README_SKILLS - 1);
+  assert.equal(audit.catalogueBytes, README_CATALOGUE_BYTES - 112);
+  const stale = subjects(audit)[skillaudit.OMIT_STALE_VERSION];
+  assert.equal(stale.count, 4);
+  for (const path of [
+    'kit-market/dup-kit/1.0.0/skills/echo-check/SKILL.md',
+    'kit-market/dup-kit/1.0.0/skills/retired-check/SKILL.md',
+    'kit-market/dup-kit/1.1.0/skills/echo-check/SKILL.md',
+  ]) {
+    assert.ok(stale.what.includes(path), path);
+  }
+  assert.equal(audit.skills + audit.omissions.reduce((n, o) => n + o.count, 0), README_FILES);
+});
+
+test('a named version is per plugin and speaks for no other', () => {
+  // Two plugins under one marketplace, one of them named. The other keeps its guess.
+  const dir = room();
+  for (const plugin of ['a', 'b']) {
+    skill(dir, `m/${plugin}/1.0.0/skills/s`, frontmatter('s', `${plugin} one`));
+    skill(dir, `m/${plugin}/2.0.0/skills/s`, frontmatter('s', `${plugin} two`));
+  }
+  const told = new Map([['a@m', '1.0.0']]);
+  const kept = skillaudit
+    .scan(dir, null, told)
+    .filter((s) => s.omitted === null)
+    .map((s) => s.relpath)
+    .sort();
+  assert.deepEqual(kept, ['m/a/1.0.0/skills/s/SKILL.md', 'm/b/2.0.0/skills/s/SKILL.md']);
+  assert.equal(skillaudit.audit(dir, { versions: told }).catalogueBytes, 'a one'.length + 'b two'.length);
+});
+
 test('the tie-break is byte order and the semver case it gets wrong is stated', () => {
   // A KNOWN LIMITATION, pinned here and deliberately not in the shared fixture. Byte order
   // resolves `9.0.0` over `10.0.0`. A semver comparison would be right, would be a second thing
@@ -1108,6 +1179,32 @@ test('the tool serves the same document the module computes', async () => {
   await client.close();
 });
 
+test('the tool passes the callers named versions through the wire', async () => {
+  // `versions` is a served argument, not a module-only one. A handler that dropped it would
+  // answer the byte-order document and look perfectly correct, so the assertion is on the
+  // DIFFERENT document rather than merely on the absence of an error.
+  const { memory, log } = make(room());
+  const client = await connect(memory, log);
+  const [isError, text] = await callAudit(client, {
+    root: CACHE,
+    enabled: enabled(),
+    usage: usage(),
+    budget: README_BUDGET,
+    versions: served(),
+  });
+  assert.equal(isError, false, text);
+  assert.equal(text, fixtureAudit({ versions: servedMap() }).asJson());
+  assert.equal(JSON.parse(text).catalogue_bytes, 2186);
+  const [, without] = await callAudit(client, {
+    root: CACHE,
+    enabled: enabled(),
+    usage: usage(),
+    budget: README_BUDGET,
+  });
+  assert.equal(JSON.parse(without).catalogue_bytes, README_CATALOGUE_BYTES);
+  await client.close();
+});
+
 test('the tool defaults to every finding when check is not sent', async () => {
   const { memory, log } = make(room());
   const client = await connect(memory, log);
@@ -1168,6 +1265,26 @@ test('a refusal is recorded with no detail at all', async () => {
   assert.deepEqual(records(path), [
     { v: SCHEMA_VERSION, ts: FIXED_TS, tool: 'skill_audit', outcome: 'refused', detail: {} },
   ]);
+  await client.close();
+});
+
+test('a versions value that is not a string is refused the way pydantic refuses it', async () => {
+  // `versions: dict[str, str]` — the values are validated and the location is the KEY, the
+  // same shape `usage` has, with the difference that `str` is STRICT even in pydantic's lax
+  // mode: `1` coerces under `dict[str, int]` and is refused under `dict[str, str]`. The
+  // reference's model refuses before the handler is entered, so this port's `dictStr` field
+  // has to as well, or the two servers disagree about which calls are legal.
+  const { memory, log } = make(room());
+  const client = await connect(memory, log);
+  const [isError, text] = await callAudit(client, { root: CACHE, versions: { 'hash-kit@kit-market': 1 } });
+  assert.equal(isError, true);
+  assert.ok(text.includes('1 validation error for skill_auditArguments\nversions.hash-kit@kit-market\n'), text);
+  assert.ok(text.includes('[type=string_type, input_value=1, input_type=int]'), text);
+  // …and a non-dict is the dict_type error, at the field rather than at a key.
+  const [alsoError, alsoText] = await callAudit(client, { root: CACHE, versions: ['a'] });
+  assert.equal(alsoError, true);
+  assert.ok(alsoText.includes('\nversions\n'), alsoText);
+  assert.ok(alsoText.includes('[type=dict_type,'), alsoText);
   await client.close();
 });
 

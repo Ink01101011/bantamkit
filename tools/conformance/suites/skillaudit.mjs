@@ -147,7 +147,9 @@ export async function run(ctx) {
 
   const enabled = JSON.parse(readFileSync(join(FIXTURE, 'enabled.json'), 'utf8'));
   const usage = JSON.parse(readFileSync(join(FIXTURE, 'usage.json'), 'utf8'));
-  const usageMap = (u) => (u === null ? null : new Map(Object.entries(u)));
+  const served = JSON.parse(readFileSync(join(FIXTURE, 'versions.json'), 'utf8'));
+  const asMap = (u) => (u === null || u === undefined ? null : new Map(Object.entries(u)));
+  const usageMap = asMap;
 
   // ------------------------------------------------------- 1 & 2. the document, and refusals
 
@@ -167,6 +169,18 @@ export async function run(ctx) {
     ['budget/none', { root: CACHE, enabled, usage, check: null, budget: null }],
     ['budget/exact', { root: CACHE, enabled, usage, check: null, budget: 2261 }],
     ['budget/zero', { root: CACHE, enabled, usage, check: null, budget: 0 }],
+    // `versions` — the caller naming the version directory the host serves, which OVERRIDES
+    // the byte-order guess. `hash-kit` is the plugin whose two directories are content-hash
+    // names, so byte order picks `unknown` and the caller picks the other one: the headline
+    // moves by 75 bytes and the two `hash-kit` rows swap their omission tokens.
+    ['versions/named', { root: CACHE, enabled, usage, check: null, budget: 1024, versions: served }],
+    ['versions/empty', { root: CACHE, enabled, usage, check: null, budget: 1024, versions: {} }],
+    // A plugin with no version directory under this root: nothing to resolve, nothing moves.
+    ['versions/unknown-plugin', { root: CACHE, enabled, usage, check: null, budget: 1024, versions: { 'no-such-kit@kit-market': '1.0.0' } }],
+    // A directory that is not there. Every directory that IS there loses, so the plugin
+    // serves nothing and every file it holds is a `stale-version` record — an answer, not a
+    // refusal, for the reason `enabled` does not refuse an unknown plugin id either.
+    ['versions/absent-directory', { root: CACHE, enabled, usage, check: null, budget: 1024, versions: { 'dup-kit@kit-market': '9.9.9' } }],
     // The refusals. Each is an ARGUMENT failure and each has its own sentence; a suite that
     // stopped at the first would compare none of the others.
     ['refuse/check', { root: CACHE, enabled: null, usage: null, check: 'phrases', budget: null }],
@@ -188,6 +202,7 @@ export async function run(ctx) {
           usage: usageMap(config.usage),
           check: config.check === null ? 'all' : config.check,
           budget: config.budget,
+          versions: asMap(config.versions ?? null),
         })
         .asJson();
     } catch (e) {
@@ -226,19 +241,25 @@ export async function run(ctx) {
 
   // ------------------------------------------------------------------ 5. the per-file table
 
-  for (const [label, on] of [
-    ['enabled', enabled],
-    ['everything', null],
-    ['none', []],
+  for (const [label, on, told] of [
+    ['enabled', enabled, null],
+    ['everything', null, null],
+    ['none', [], null],
+    // The per-file table is where `versions` is worth comparing: `duplicate-skill` and
+    // `stale-version` are per-file tokens here, so a runtime that ignored the caller's
+    // version would swap them on the two `hash-kit` rows.
+    ['versions', enabled, served],
   ]) {
-    const py = ctx.runPython(REF, { op: 'skills', root: CACHE, enabled: on }).results.map((s) => ({
-      ...s,
-      id: unb64(s.id),
-      relpath: unb64(s.relpath),
-      phrases: s.phrases.map(unb64),
-      description: unb64(s.description),
-    }));
-    const node = skillaudit.scan(CACHE, on).map((s) => ({
+    const py = ctx
+      .runPython(REF, { op: 'skills', root: CACHE, enabled: on, versions: told })
+      .results.map((s) => ({
+        ...s,
+        id: unb64(s.id),
+        relpath: unb64(s.relpath),
+        phrases: s.phrases.map(unb64),
+        description: unb64(s.description),
+      }));
+    const node = skillaudit.scan(CACHE, on, asMap(told)).map((s) => ({
       id: s.id,
       relpath: s.relpath,
       bytes: s.bytes,
@@ -255,7 +276,7 @@ export async function run(ctx) {
     `fixture: ${CACHE} — 28 SKILL.md, 20 counted, 2261 catalogue bytes, ` +
       `5 omission records over 8 files`,
     `${cases.length} cases: ${configs.length} documents, ${UNWRAP_VALUES.length} unwrap values, ` +
-      `${phraseTexts.length} phrase texts, 3 per-file tables`,
+      `${phraseTexts.length} phrase texts, 4 per-file tables`,
   );
   return { cases, notes };
 }

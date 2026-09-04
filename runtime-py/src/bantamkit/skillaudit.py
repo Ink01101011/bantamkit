@@ -75,8 +75,26 @@ the literal `unknown`, where semver has nothing to compare. Byte order is total 
 of those, free, and already ported. What it gets wrong is stated rather than hidden: `10.0.0`
 loses to `9.0.0`, and among names that are not versions the winner is arbitrary — deterministic
 and arbitrary, not correct. Both losers are named in an omission record, so an operator can
-always see which directory was read. What the host itself records — the `installPath` in
-`installed_plugins.json` — is not consulted, because this module reads `root` and nothing else.
+always see which directory was read.
+
+**…and byte order is the FALLBACK, because the caller can just say.** The host records the
+directory it serves as `installPath` in `installed_plugins.json`, the same file `enabled` is
+read out of. `versions` carries that in — `{"<plugin>@<marketplace>": "<version directory>"}`
+— and where it names a plugin, the guess is not made. It is the same class of argument
+`enabled` is and it exists for the same reason: the caller is the authority on its own host,
+and this module still reads `root` and nothing else. Measured 2026-09-05: byte order picks
+`unknown` for `frontend-design` on this machine where the host serves `1dd995193ba2`, so the
+installed directory is thrown away as a duplicate — harmless only because all nine copies
+happen to carry a byte-identical description, which is a fact about that plugin and not about
+the rule.
+
+**A version directory exists on disk, not in the skills that survived reading.** The
+candidates are the directories spelled `<marketplace>/<plugin>/<version>/skills`, whatever is
+under them. Choosing among the skills that came through `_load` and `_apply_enabled` instead
+makes an EMPTY newer version invisible — it contributes no skill, so it is not a candidate,
+and an older directory wins in silence with nothing in the document to say so. Measured
+2026-09-05, both runtimes did exactly that and both agreed, which is why the differential
+could not see it.
 
 **A version directory that did not win yields two kinds of omission, and they are two subjects.**
 A file whose name IS in the resolved version is a `duplicate-skill`: the operator is looking at
@@ -90,7 +108,8 @@ nobody.
 
 **Deterministic, because two runtimes have to agree about it.** This module reads `root` and
 nothing else: no `~/.claude`, no transcripts, no clock. Call counts arrive in `usage` from the
-caller.
+caller, the switched-on plugins in `enabled`, and the served version directories in
+`versions` — three facts about the host that a directory of files cannot answer.
 
 **Nothing is dropped in silence.** Counted skills plus omissions account for every `SKILL.md`
 found. An omission is `{subject, count, size, what}` — the discipline `docread.Omission` set,
@@ -584,7 +603,11 @@ def _apply_enabled(found: list[_Skill], enabled: list[str] | None) -> None:
             skill.omitted = OMIT_NOT_ENABLED
 
 
-def _resolve_versions(found: list[_Skill], version_dirs: list[tuple[str, str, str]]) -> None:
+def _resolve_versions(
+    found: list[_Skill],
+    version_dirs: list[tuple[str, str, str]],
+    versions: dict[str, str] | None = None,
+) -> None:
     """Resolve ONE version directory per (marketplace, plugin), and omit every other one.
 
     This runs BEFORE `_apply_dedupe` and it is the whole fix for the resurrection defect: the
@@ -612,15 +635,41 @@ def _resolve_versions(found: list[_Skill], version_dirs: list[tuple[str, str, st
     nothing at all every one of them is a `stale-version` — which is the honest reading. They
     are on disk, they are in nobody's bill, and the plugin's counted skills are zero.
 
+    **`versions` IS HOST TRUTH AND IT OVERRIDES THE BYTE ORDER.** Byte order is total, free
+    and identical on two runtimes, and it is still a GUESS — `10.0.0` loses to `9.0.0`, and
+    among names that are not versions the winner is arbitrary. The host does not guess: it
+    records the directory it serves as `installPath` in `installed_plugins.json`, in the same
+    file the caller already reads `enabled` out of. So a caller that knows may say so, keyed
+    the way `enabled` is keyed, and this function stops guessing for that plugin. Measured
+    2026-09-05 on this machine: byte order picks `unknown` for `frontend-design` where the
+    host serves `1dd995193ba2`, and the installed directory is discarded as a duplicate —
+    harmless only because all nine copies carry a byte-identical description.
+
+    An entry naming a plugin with no version directory under `root` does nothing: there is
+    nothing to resolve. An entry naming a directory that is not there resolves to it anyway
+    and every directory that IS there loses, which is the honest answer — the host serves a
+    directory this root does not hold, so this root serves none of that plugin's skills, and
+    every file it does hold is named in a `stale-version` record. Neither is a refusal, for
+    the reason `enabled` does not refuse an unknown plugin id either: the caller is the
+    authority on its own host, and this tool reads `root` and nothing else.
+
     A skill outside a plugin keys on `("", "")` with an empty version, so every one of them is
     in the resolved version by construction and none is ever omitted here. No real path can
-    produce that key — every path segment is non-empty — so it is seeded rather than found.
+    produce that key — every path segment is non-empty — so it is seeded rather than found,
+    and it is skipped by the override loop because it names no plugin.
     """
     resolved: dict[tuple[str, str], str] = {("", ""): ""}
     for marketplace, plugin, version in version_dirs:
         held = resolved.get((marketplace, plugin))
         if held is None or version > held:
             resolved[(marketplace, plugin)] = version
+    named = versions or {}
+    for marketplace, plugin in list(resolved):
+        if not plugin:
+            continue
+        told = named.get(f"{plugin}@{marketplace}")
+        if told is not None:
+            resolved[(marketplace, plugin)] = told
     # The names the resolved version actually SERVES, which is a different question from
     # which directory won: a winner whose files were all unreadable, unparsable or switched
     # off serves nothing and is in no entry here. `.get(..., set())` below is that case, and
@@ -654,7 +703,11 @@ def _apply_dedupe(found: list[_Skill]) -> None:
         winners[skill.dedupe_key] = skill
 
 
-def _scan(root: str | Path, enabled: list[str] | None = None) -> list[_Skill]:
+def _scan(
+    root: str | Path,
+    enabled: list[str] | None = None,
+    versions: dict[str, str] | None = None,
+) -> list[_Skill]:
     """The scan, decided but not yet reported: every `SKILL.md` found, with `enabled`, the
     version resolution and the dedupe already applied.
 
@@ -669,7 +722,7 @@ def _scan(root: str | Path, enabled: list[str] | None = None) -> list[_Skill]:
     files, version_dirs = _scan_tree(base)
     found = [_load(path, base) for path in files]
     _apply_enabled(found, enabled)
-    _resolve_versions(found, version_dirs)
+    _resolve_versions(found, version_dirs, versions)
     _apply_dedupe(found)
     return found
 
@@ -715,6 +768,7 @@ def audit(
     usage: dict[str, int] | None = None,
     check: str = "all",
     budget: int | None = None,
+    versions: dict[str, str] | None = None,
 ) -> Audit:
     """Walk `root` and answer the whole audit.
 
@@ -723,6 +777,12 @@ def audit(
     `never-invoked` on the strength of it would be an assertion about data this tool was never
     given. So `never-invoked` fires only when `usage` is supplied — the same discipline
     `catalogue-over-budget` follows for `budget`, and for the same reason.
+
+    `versions` is the same kind of argument `enabled` is: HOST TRUTH the caller supplies
+    rather than a fact this tool can read off `root`. It names, per `<plugin>@<marketplace>`,
+    the version directory the host actually serves; a plugin absent from it falls back to the
+    byte order, which is deterministic and — among names that are not versions — arbitrary.
+    See `_resolve_versions`.
 
     `skills`, `catalogue_bytes` and `omissions` are reported whatever `check` says: they are
     the measurement, and `check` selects which family of FINDINGS is worth reporting on top
@@ -740,7 +800,7 @@ def audit(
     if not base.is_dir():
         raise SkillAuditError(f"{root} is a file, not a directory of skills")
 
-    found = _scan(base, enabled)
+    found = _scan(base, enabled, versions)
     counted = [s for s in found if s.omitted is None]
     catalogue_bytes = sum(s.bytes for s in counted)
 

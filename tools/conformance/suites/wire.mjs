@@ -316,6 +316,7 @@ export async function run(ctx) {
   const SKILL_CACHE = join(SKILL_FIXTURE, 'cache');
   const SKILL_ENABLED = JSON.parse(readFileSync(join(SKILL_FIXTURE, 'enabled.json'), 'utf8'));
   const SKILL_USAGE = JSON.parse(readFileSync(join(SKILL_FIXTURE, 'usage.json'), 'utf8'));
+  const SKILL_VERSIONS = JSON.parse(readFileSync(join(SKILL_FIXTURE, 'versions.json'), 'utf8'));
 
   const baseEnv = { HOME: home, USERPROFILE: home, BANTAMKIT_MEMORY_DIR: null, BANTAMKIT_ASSETS: ASSETS };
 
@@ -767,7 +768,13 @@ export async function run(ctx) {
    *   15-19 the argument shapes pydantic settles before the handler runs: a non-string
    *         `root`, a missing one, a non-list `enabled`, a `usage` value that is not an
    *         integer (the `dict[str, int]` VALUE check, whose location is the key), and a
-   *         `usage` value that is a string spelling one (lax, so it is NOT a refusal).
+   *         `usage` value that is a string spelling one (lax, so it is NOT a refusal);
+   *   20-22 `versions`, the caller naming the version directory the host serves: one that
+   *         MOVES the answer (`hash-kit` at its content-hash directory, which byte order
+   *         would not have picked), one naming a directory that is not there (an answer —
+   *         every directory that is there loses — and never a refusal), and a value that is
+   *         not a string, which is the `dict[str, str]` VALUE check and is STRICT where the
+   *         `usage` one is lax: `1` is `string_type` here and would coerce there.
    *
    * THE EVENT LOG IS ON so the two outcomes — `audited` with its four counts, `refused` with
    * nothing at all — are compared as records, `ts` masked, in the block below.
@@ -797,6 +804,9 @@ export async function run(ctx) {
     callTool(17, 'skill_audit', { root: SKILL_CACHE, enabled: 'trigger-kit@kit-market' }),
     callTool(18, 'skill_audit', { root: SKILL_CACHE, usage: { 'solo-check': 'x' } }),
     callTool(19, 'skill_audit', { root: SKILL_CACHE, enabled: SKILL_ENABLED, usage: { 'solo-check': '0' } }),
+    callTool(20, 'skill_audit', { root: SKILL_CACHE, enabled: SKILL_ENABLED, usage: SKILL_USAGE, budget: 1024, versions: SKILL_VERSIONS }),
+    callTool(21, 'skill_audit', { root: SKILL_CACHE, enabled: SKILL_ENABLED, usage: SKILL_USAGE, versions: { 'dup-kit@kit-market': '9.9.9' } }),
+    callTool(22, 'skill_audit', { root: SKILL_CACHE, versions: { 'hash-kit@kit-market': 1 } }),
   ], { env: { ...baseEnv, [EVENT_LOG_ENV]: '1' } });
 
   /**
@@ -1319,8 +1329,9 @@ export async function run(ctx) {
      * which the host can see — and `refused` carries an empty object. The five
      * argument-shaped calls record nothing at all, because pydantic (and `validateArguments`
      * here) refuses before the handler is entered, so the record COUNT is part of what is
-     * compared: 14 records for 18 calls, with the two `usage`-coercion calls among the
-     * fourteen because a lax int is not a refusal.
+     * compared: 16 records for 21 calls, with the two `usage`-coercion calls and the two
+     * `versions` calls among the sixteen — a lax int is not a refusal, and neither is a
+     * `versions` entry naming a directory this root does not hold.
      */
     const auditLog = results.get('skill-audit');
     cases.push({
@@ -1336,9 +1347,9 @@ export async function run(ctx) {
       actual: outcomesOf(auditLog.node.eventlog),
     });
     cases.push({
-      name: 'eventlog: the skill-audit session reached both skill_audit outcomes, 14 records for 18 calls',
+      name: 'eventlog: the skill-audit session reached both skill_audit outcomes, 16 records for 21 calls',
       kind: 'json',
-      expected: { outcomes: ['audited', 'refused'], records: 14 },
+      expected: { outcomes: ['audited', 'refused'], records: 16 },
       actual: {
         outcomes: [...new Set(outcomesOf(auditLog.node.eventlog).map(([, outcome]) => outcome))].sort(),
         records: outcomesOf(auditLog.node.eventlog).length,

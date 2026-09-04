@@ -40,6 +40,18 @@
  * `duplicate-skill`; one whose name is NOT is a `stale-version`, which is the subject that
  * makes a removed skill visible instead of resurrected.
  *
+ * **Byte order is the FALLBACK, because the caller can just say.** The host records the
+ * directory it serves as `installPath` in `installed_plugins.json`, the same file `enabled` is
+ * read out of; `versions` carries it in, keyed the way `enabled` is keyed, and where it names
+ * a plugin the guess is not made. Measured 2026-09-05: byte order picks `unknown` for
+ * `frontend-design` where the host serves `1dd995193ba2`.
+ *
+ * **A version directory exists on disk, not in the skills that survived reading.** The
+ * candidates are directories spelled `<marketplace>/<plugin>/<version>/skills`, whatever is
+ * under them; choosing among surviving skills instead makes an EMPTY newer version invisible
+ * and an older one win in silence. Both runtimes did that until 2026-09-05 and both agreed,
+ * which is why the differential could not see it.
+ *
  * **Nothing is dropped in silence.** Counted skills plus omissions account for every
  * `SKILL.md` found, and an omission is `{subject, count, size, what}`.
  *
@@ -714,11 +726,30 @@ function applyEnabled(found: Skill[], enabled: readonly string[] | null): void {
  * a directory that did not win gets an omission record, and when the winner serves nothing at
  * all every one of them is a `stale-version`.
  *
+ * **`versions` IS HOST TRUTH AND IT OVERRIDES THE BYTE ORDER.** Byte order is total, free and
+ * identical on two runtimes, and it is still a GUESS: `10.0.0` loses to `9.0.0`, and among
+ * names that are not versions the winner is arbitrary. The host does not guess — it records
+ * the directory it serves as `installPath` in `installed_plugins.json`, the same file the
+ * caller already reads `enabled` out of — so a caller that knows may say so, keyed the way
+ * `enabled` is keyed. Measured 2026-09-05: byte order picks `unknown` for `frontend-design`
+ * where the host serves `1dd995193ba2`, and the installed directory is discarded as a
+ * duplicate, harmless only because all nine copies carry a byte-identical description.
+ *
+ * An entry naming a plugin with no version directory under `root` does nothing; one naming a
+ * directory that is not there resolves to it anyway and every directory that IS there loses,
+ * which is the honest answer and is named in `stale-version` records. Neither is a refusal,
+ * for the reason `enabled` does not refuse an unknown plugin id either.
+ *
  * A skill outside a plugin keys on two empty strings with an empty version, so every one of
  * them is in the resolved version by construction and none is ever omitted here. No real path
- * can produce that key — every path segment is non-empty — so it is seeded, not found.
+ * can produce that key — every path segment is non-empty — so it is seeded, not found, and the
+ * override loop skips it because it names no plugin.
  */
-function resolveVersions(found: Skill[], versionDirs: readonly (readonly string[])[]): void {
+function resolveVersions(
+  found: Skill[],
+  versionDirs: readonly (readonly string[])[],
+  versions: ReadonlyMap<string, string> | null,
+): void {
   // The same key spelling the dedupe uses, one field shorter. The separator is a NUL byte —
   // written `\0` here, because the character itself is INVISIBLE in a comment and the
   // sentence then reads as if a space were the separator. NUL cannot occur in a path
@@ -729,6 +760,13 @@ function resolveVersions(found: Skill[], versionDirs: readonly (readonly string[
     const key = `${marketplace} ${plugin}`;
     const held = resolved.get(key);
     if (held === undefined || cmpCodepoint(version!, held) > 0) resolved.set(key, version!);
+  }
+  if (versions !== null) {
+    for (const [marketplace, plugin] of [...resolved.keys()].map((k) => k.split('\x00'))) {
+      if (plugin === '') continue;
+      const told = versions.get(`${plugin}@${marketplace}`);
+      if (told !== undefined) resolved.set(`${marketplace} ${plugin}`, told);
+    }
   }
   // The names the resolved version actually SERVES, which is a different question from which
   // directory won: a winner whose files were all unreadable, unparsable or switched off serves
@@ -828,6 +866,12 @@ export interface AuditOptions {
   readonly check?: string;
   /** The catalogue byte budget. `null` means the budget finding cannot fire. */
   readonly budget?: number | bigint | null;
+  /**
+   * The version directory the host actually serves, per `<plugin>@<marketplace>`. Host truth
+   * the caller supplies, the same class of argument `enabled` is; a plugin absent from it
+   * falls back to the byte order. `null` is every plugin absent.
+   */
+  readonly versions?: ReadonlyMap<string, string> | null;
 }
 
 /**
@@ -838,6 +882,11 @@ export interface AuditOptions {
  * `never-invoked` on the strength of it would be an assertion about data this tool was never
  * given. So `never-invoked` fires only when `usage` is supplied — the same discipline
  * `catalogue-over-budget` follows for `budget`.
+ *
+ * `versions` is the same kind of argument `enabled` is: host truth the caller supplies rather
+ * than a fact this tool can read off `root`. It names, per `<plugin>@<marketplace>`, the
+ * version directory the host actually serves; a plugin absent from it falls back to the byte
+ * order, which is deterministic and — among names that are not versions — arbitrary.
  *
  * `skills`, `catalogueBytes` and `omissions` are reported whatever `check` says: they are the
  * measurement, and `check` selects which family of FINDINGS is worth reporting on top of it.
@@ -870,17 +919,25 @@ export interface ScannedSkill {
  * two cancelling reasons: `audit` is the product surface, this is how a test asks which skill
  * paid what.
  */
-function decide(root: string, enabled: readonly string[] | null): Skill[] {
-  const { files, versions } = scanTree(root);
-  const found = files.map((parts) => load(root, parts));
+function decide(
+  root: string,
+  enabled: readonly string[] | null,
+  versions: ReadonlyMap<string, string> | null,
+): Skill[] {
+  const tree = scanTree(root);
+  const found = tree.files.map((parts) => load(root, parts));
   applyEnabled(found, enabled);
-  resolveVersions(found, versions);
+  resolveVersions(found, tree.versions, versions);
   applyDedupe(found);
   return found;
 }
 
-export function scan(root: string, enabled: readonly string[] | null = null): ScannedSkill[] {
-  return decide(root, enabled).map((s) => ({
+export function scan(
+  root: string,
+  enabled: readonly string[] | null = null,
+  versions: ReadonlyMap<string, string> | null = null,
+): ScannedSkill[] {
+  return decide(root, enabled, versions).map((s) => ({
     id: skillId(s),
     relpath: s.relpath,
     directory: s.directory,
@@ -902,6 +959,7 @@ export function audit(root: string, options: AuditOptions = {}): Audit {
   const usage = options.usage ?? null;
   const check = options.check ?? 'all';
   const budget = options.budget === undefined || options.budget === null ? null : BigInt(options.budget);
+  const versions = options.versions ?? null;
   if (!Object.prototype.hasOwnProperty.call(CHECK_FAMILIES, check)) {
     throw new SkillAuditError(
       `unknown check ${reprValue({ t: 'str', v: check })}; this tool checks: ` +
@@ -917,7 +975,7 @@ export function audit(root: string, options: AuditOptions = {}): Audit {
   }
   if (!stats.isDirectory()) throw new SkillAuditError(`${root} is a file, not a directory of skills`);
 
-  const found = decide(root, enabled);
+  const found = decide(root, enabled, versions);
   const counted = found.filter((s) => s.omitted === null);
   const catalogueBytes = counted.reduce((sum, s) => sum + descriptionBytes(s), 0);
 

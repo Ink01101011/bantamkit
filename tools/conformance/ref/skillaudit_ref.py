@@ -12,12 +12,12 @@ disagree and the reason `Audit.as_json` names its two arguments.
 
     {"op": "audit", "cases": [{"root": str, "enabled": [str]|null,
                                "usage": {str: int}|null, "check": str|null,
-                               "budget": int|null}]}
+                               "budget": int|null, "versions": {str: str}|null}]}
         -> {"results": [{"json": b64} | {"error": {"type": str, "message": b64}}]}
 
     {"op": "unwrap", "values": [b64]}       -> {"results": [b64]}
     {"op": "phrases", "texts": [b64]}       -> {"results": [[b64]]}
-    {"op": "skills",  "root": str, "enabled": [str]|null}
+    {"op": "skills",  "root": str, "enabled": [str]|null, "versions": {str: str}|null}
         -> {"results": [{"id": b64, "relpath": b64, "bytes": int, "router": bool,
                          "omitted": str|null, "malformed": str|null,
                          "phrases": [b64], "description": b64}]}
@@ -66,6 +66,7 @@ def op_audit(payload: dict) -> dict:
                 usage=case.get("usage"),
                 check="all" if case.get("check") is None else case["check"],
                 budget=case.get("budget"),
+                versions=case.get("versions"),
             )
         except Exception as exc:  # noqa: BLE001 — the refusal IS the comparison
             results.append(failure(exc))
@@ -91,7 +92,7 @@ def op_skills(payload: dict) -> dict:
     separates a headline that is right from one that is right for two cancelling reasons. It
     is ONE call rather than the four it wraps because the ORDER of those four is the rule.
     """
-    found = skillaudit._scan(payload["root"], payload.get("enabled"))
+    found = skillaudit._scan(payload["root"], payload.get("enabled"), payload.get("versions"))
     return {
         "results": [
             {

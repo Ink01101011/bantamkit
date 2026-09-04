@@ -11,9 +11,11 @@ and the call counts are `usage.json`, all three handed in by the caller. That is
 answer deterministic and therefore comparable between the two runtimes.
 
     root     = tools/conformance/fixtures/skill-audit/cache
-    enabled  = the three ids in enabled.json
+    enabled  = the five ids in enabled.json
     usage    = usage.json
     budget   = 1024   (below the tree's 2261 bytes, so the budget finding fires)
+    versions = NOT PASSED by default — versions.json exists and is used only by the cases
+               that pin it, because the default answer has to stay the byte-order answer
 
 ## What the tree should answer
 
@@ -335,6 +337,39 @@ plugin or version can be read off its path. Its id is the bare `solo-check` and 
 not speak to it: a skill that belongs to no plugin cannot be disabled by a plugin list, and
 dropping it would under-report a real personal skills directory by every file in it.
 
+## `versions`, the argument that replaces the guess
+
+Byte order is the FALLBACK. The host records the directory it serves as `installPath` in
+`~/.claude/plugins/installed_plugins.json`, the same file `enabled` is read out of, so a
+caller that knows may say so: `versions` maps `<plugin>@<marketplace>` to a version directory
+name, and where it names a plugin no guess is made.
+
+`versions.json` here names `hash-kit@kit-market` at `0120fb83da5d` — the directory byte order
+does NOT pick. Passing it moves three things at once, which is why it is worth a fixture:
+
+    20 / 2261   versions omitted — byte order, `unknown` resolved
+    20 / 2186   versions = versions.json — `0120fb83da5d` resolved, and the two `hash-kit`
+                rows swap: the `unknown` copy becomes the `duplicate-skill`
+
+Three more shapes are pinned in the cross-runtime suite and in both runtimes' own tests,
+because each is a decision rather than an arithmetic step:
+
+- **A plugin `versions` does not name** falls back to byte order, and the document is
+  byte-identical to the one with no `versions` at all. `{}` and an absent map are the same
+  thing — unlike `usage` and `budget`, there is no third state here, because `versions`
+  selects nothing and suppresses nothing.
+- **A plugin with no version directory under `root`** (`no-such-kit@kit-market`) names nothing
+  to resolve, and nothing moves.
+- **A directory that is not there** (`dup-kit@kit-market` at `9.9.9`) is an ANSWER, not a
+  refusal: this root holds no copy the host serves, so `dup-kit` contributes no skill and all
+  three of its files are named in `stale-version` records — 19 skills / 2149 bytes. Refusing
+  instead would make a tool that reads `root` and nothing else start arbitrating what the
+  caller may know about its own host, which is exactly what `enabled` already declines to do.
+
+Why this is not the tool guessing better: `enabled` exists because the plugin cache cannot say
+which plugins are switched on, and the resolved version is the same class of fact in the same
+file. The tool still reads `root` and nothing else.
+
 ## Known limitation, stated rather than fixed
 
 The version a plugin is resolved at is decided by a BYTE-ORDER comparison of the version
@@ -354,10 +389,11 @@ both stated here rather than fixed:
   cost nothing — all nine `frontend-design` copies carry a byte-identical 204-byte description,
   measured 2026-09-05 — but that is a fact about that plugin, not about the rule.
 
-What the host itself records — the `installPath` of each enabled plugin in
-`~/.claude/plugins/installed_plugins.json` — would decide both cases correctly and is NOT
-consulted, because the tool reads `root` and nothing else. Feeding it in would mean a new
-input, and it is not one this unit added.
+Both are limitations of the GUESS, and a caller that knows the answer no longer has to live
+with either: `versions` above carries the host's own `installPath` in, keyed the way `enabled`
+is keyed, and byte order applies only where the caller said nothing. What has not changed is
+that the tool reads `root` and nothing else — it does not go and look in
+`~/.claude/plugins/installed_plugins.json` itself.
 
 In every case the losing directory is named in an omission record, so an operator can always
 see which one was read.

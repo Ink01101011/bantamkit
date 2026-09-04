@@ -310,8 +310,8 @@
     {
       "label": "M44-an-empty-tree-refuses",
       "path": "runtime-py/src/bantamkit/skillaudit.py",
-      "anchor": "    found = _scan(base, enabled)",
-      "replacement": "    found = _scan(base, enabled)\n    if not found:\n        raise SkillAuditError(f\"no skills under {root}\")",
+      "anchor": "    found = _scan(base, enabled, versions)",
+      "replacement": "    found = _scan(base, enabled, versions)\n    if not found:\n        raise SkillAuditError(f\"no skills under {root}\")",
       "why": "nothing to audit stops being an answer and becomes a refusal"
     },
     {
@@ -474,6 +474,34 @@
       "anchor": "        stands_in = skill.directory in kept.get(skill.plugin_key, set())",
       "replacement": "        stands_in = skill.directory in kept[skill.plugin_key]",
       "why": "the pre-F3 lookup, which could not reach the case at all: a resolved version directory that serves no surviving skill has no `kept` entry, so the audit raises KeyError instead of recording every loser as a `stale-version`"
+    },
+    {
+      "label": "M68-the-callers-named-version-is-ignored",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    named = versions or {}",
+      "replacement": "    named = {}",
+      "why": "F4's whole argument stops working: the caller names the version directory the host actually serves and the byte-order guess answers anyway. `hash-kit` reads `unknown` where versions.json says `0120fb83da5d`, so the tree answers 2261 bytes rather than 2186 and the two hash-kit rows keep the wrong omission tokens"
+    },
+    {
+      "label": "M69-a-named-version-speaks-for-every-plugin",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        told = named.get(f\"{plugin}@{marketplace}\")",
+      "replacement": "        told = next(iter(named.values()), None)",
+      "why": "the override stops being per-plugin: one plugin's named version resolves every plugin in the tree, so naming `hash-kit@kit-market` empties `dup-kit`, `trigger-kit`, `frontmatter-kit` and `ghost-kit` as well"
+    },
+    {
+      "label": "M70-a-named-version-is-passed-but-not-applied",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    _resolve_versions(found, version_dirs, versions)",
+      "replacement": "    _resolve_versions(found, version_dirs)",
+      "why": "the argument reaches `_scan` and is dropped on the way to the rule, which is the shape a handler defect takes: every signature accepts it and nothing acts on it"
+    },
+    {
+      "label": "M71-the-handler-drops-the-versions-argument",
+      "path": "runtime-py/src/bantamkit/mcpserver.py",
+      "anchor": "                    budget=budget,\n                    versions=versions,",
+      "replacement": "                    budget=budget,",
+      "why": "the served surface accepts `versions` and the tool ignores it, so the model is told the answer honours host truth when it does not — the module is right and the product is wrong"
     }
   ]
 }

@@ -579,6 +579,9 @@ function runTool(
       // of the default lives in `skillaudit.audit`, and `null` and an absent argument reach
       // it as the same thing. `enabled` and `usage` do the same: an absent map is no
       // measurement, an empty one is a measurement of nothing, and the two answer differently.
+      // `versions` is the third caller-supplied host fact: the version directory the host
+      // actually serves, per `<plugin>@<marketplace>`, passed straight through, with an absent
+      // map meaning the byte-order fallback for every plugin.
       //
       // THE RECORD IS A DECISION, NEVER A REPLY, and it holds no free text: `audited` carries
       // the four counts the host cannot see and `refused` carries nothing at all. `root` is a
@@ -600,10 +603,16 @@ function runTool(
       const check = checkArg !== undefined && checkArg.t === 'str' ? checkArg.v : 'all';
       const budgetArg = args.get('budget');
       const budget = budgetArg !== undefined && budgetArg.t === 'int' ? budgetArg.v : null;
+      const versionsArg = args.get('versions');
+      let versions: Map<string, string> | null = null;
+      if (versionsArg !== undefined && versionsArg.t === 'dict') {
+        versions = new Map();
+        for (const [key, value] of versionsArg.v) versions.set(key, value.t === 'str' ? value.v : '');
+      }
       return recordRaise(log, 'skill_audit', () => {
         let result: skillaudit.Audit;
         try {
-          result = skillaudit.audit(root, { enabled, usage, check, budget });
+          result = skillaudit.audit(root, { enabled, usage, check, budget, versions });
         } catch (e) {
           // `except (skillaudit.SkillAuditError, OSError)`. The module answers `no such
           // directory` for a root it cannot stat, so a filesystem rejection is already inside

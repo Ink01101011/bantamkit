@@ -32,7 +32,7 @@ import { reprValue, type PyValue } from '../pyjson.js';
 /** What a parameter accepts. `optional` is `| None = None` in the signature. */
 export interface FieldSpec {
   readonly name: string;
-  readonly kind: 'str' | 'int' | 'dict' | 'dictInt' | 'listStr';
+  readonly kind: 'str' | 'int' | 'dict' | 'dictInt' | 'dictStr' | 'listStr';
   readonly optional: boolean;
   /** `Field(le=...)`: an inclusive ceiling, checked AFTER the lax int parse succeeds. */
   readonly le?: bigint;
@@ -129,7 +129,10 @@ export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
   // pydantic validates a typed dict's VALUES, so `{'a': 'x'}` is `usage.a` / `int_parsing`
   // where `handoff_patch`'s `dict[str, Any]` takes anything. `budget` carries no `le`,
   // because the reference binds none — the manifest's `maximum` is advisory to the client,
-  // and the handler's own refusal is the negative one.
+  // and the handler's own refusal is the negative one. `versions` is the only
+  // `dict[str, str]`, and the reason `dictStr` exists beside it: a `str` field is STRICT even
+  // in lax mode, so `{'a': 1}` is `versions.a` / `string_type` where the same value under
+  // `usage` would validate.
   skill_audit: {
     model: 'skill_auditArguments',
     fields: [
@@ -138,6 +141,7 @@ export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
       opt('usage', 'dictInt'),
       opt('check', 'str'),
       opt('budget', 'int'),
+      opt('versions', 'dictStr'),
     ],
   },
 };
@@ -214,6 +218,26 @@ function checkField(spec: FieldSpec, value: PyValue): { value: PyValue } | RawEr
     case 'dict':
       if (value.t === 'dict') return { value };
       return [{ loc: spec.name, type: 'dict_type', msg: 'Input should be a valid dictionary', input: value }];
+    case 'dictStr': {
+      // `dict[str, str]`. The same shape as `dictInt` next door, with the STRICT `str`
+      // validator on the values: one error per bad entry, in the dict's own order, with the
+      // KEY in the location — `versions.a`, never `versions.0`.
+      if (value.t !== 'dict') {
+        return [{ loc: spec.name, type: 'dict_type', msg: 'Input should be a valid dictionary', input: value }];
+      }
+      const bad: RawError[] = [];
+      for (const [key, item] of value.v) {
+        if (item.t !== 'str') {
+          bad.push({
+            loc: `${spec.name}.${key}`,
+            type: 'string_type',
+            msg: 'Input should be a valid string',
+            input: item,
+          });
+        }
+      }
+      return bad.length > 0 ? bad : { value };
+    }
     case 'dictInt': {
       // `dict[str, int]`. pydantic validates the VALUES too, one error per bad entry and in
       // the dict's own order, with the KEY in the location — `usage.a`, never `usage.0`. The

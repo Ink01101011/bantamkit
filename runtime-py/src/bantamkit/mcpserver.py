@@ -1028,6 +1028,7 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         usage: dict[str, int] | None = None,
         check: str | None = None,
         budget: int | None = None,
+        versions: dict[str, str] | None = None,
     ) -> str:
         """The catalogue auditor on the MCP surface: `skillaudit` measures, this serves it.
 
@@ -1049,6 +1050,10 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         spelling of the default lives in `skillaudit.audit`, and `None` and an absent
         argument reach it as the same thing.
 
+        `versions` is the third caller-supplied host fact beside `enabled` and `usage`: the
+        version directory the host actually serves, per `<plugin>@<marketplace>`. It is
+        passed straight through, and an absent map is the byte-order fallback.
+
         THE RECORD IS A DECISION, NEVER A REPLY, and it holds no free text: `audited`
         carries the four counts the host cannot see (skills, catalogue bytes, findings,
         omissions) and `refused` carries nothing at all. `root` is a path the operator
@@ -1063,6 +1068,7 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
                     usage=usage,
                     check="all" if check is None else check,
                     budget=budget,
+                    versions=versions,
                 )
             except (skillaudit.SkillAuditError, OSError) as exc:
                 log.record("skill_audit", "refused")

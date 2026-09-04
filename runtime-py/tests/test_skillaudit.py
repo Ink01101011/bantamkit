@@ -932,6 +932,88 @@ def test_a_version_directory_name_that_is_not_a_version_takes_the_same_byte_orde
     assert audit.catalogue_bytes - 162 + 87 == 2186
 
 
+def test_the_caller_can_name_the_version_the_host_serves_and_it_beats_the_byte_order():
+    """`versions` is HOST TRUTH, and byte order is the fallback it replaces.
+
+    Byte order picks `unknown` for `hash-kit`, over two names that are not versions at all,
+    and it is deterministic and ARBITRARY. The host does not guess: it records the directory
+    it serves as `installPath` in the same `installed_plugins.json` the caller already reads
+    `enabled` out of. Measured 2026-09-05 on this machine, that is `1dd995193ba2` for
+    `frontend-design`, where byte order picks `unknown` and throws the installed copy away as
+    a duplicate — harmless only because all nine copies carry a byte-identical description,
+    which is a fact about that plugin and not about the rule.
+
+    Three things move when the caller says, and all three are asserted: the headline, WHICH
+    of the two files is the duplicate, and the size the duplicate record carries.
+    """
+    served = json.loads((FIXTURE / "versions.json").read_text(encoding="utf-8"))
+    assert served == {"hash-kit@kit-market": "0120fb83da5d"}
+    guessed = fixture_audit()
+    told = fixture_audit(versions=served)
+    assert guessed.catalogue_bytes == README_CATALOGUE_BYTES
+    assert told.catalogue_bytes == 2186
+    assert told.skills == guessed.skills == README_SKILLS
+    assert "kit-market/hash-kit/0120fb83da5d/skills/hashed-check/SKILL.md" in (
+        subjects(guessed)[skillaudit.OMIT_DUPLICATE].what
+    )
+    assert "kit-market/hash-kit/unknown/skills/hashed-check/SKILL.md" in (
+        subjects(told)[skillaudit.OMIT_DUPLICATE].what
+    )
+    assert subjects(told)[skillaudit.OMIT_DUPLICATE].size == 131 - 87 + 162
+
+
+def test_versions_omitted_and_versions_empty_are_the_byte_order_and_nothing_else():
+    """An absent map and an empty one both mean "the caller said nothing about any plugin".
+
+    Unlike `usage` and `budget`, there is no third state here: `versions` selects nothing and
+    suppresses nothing, it only replaces a guess for the plugins it names. A map naming a
+    plugin with no version directory under `root` names nothing to resolve, and must not move
+    the answer either.
+    """
+    baseline = fixture_audit().as_json()
+    assert fixture_audit(versions={}).as_json() == baseline
+    assert fixture_audit(versions=None).as_json() == baseline
+    assert fixture_audit(versions={"no-such-kit@kit-market": "1.0.0"}).as_json() == baseline
+    # …and a key that is not a `<plugin>@<marketplace>` at all names no plugin either.
+    assert fixture_audit(versions={"hash-kit": "0120fb83da5d"}).as_json() == baseline
+    assert fixture_audit(versions={"@": "1.0.0"}).as_json() == baseline
+
+
+def test_a_named_version_directory_that_is_not_there_makes_every_one_that_is_a_loser():
+    """An answer, not a refusal, and the same discipline `enabled` follows.
+
+    The caller is the authority on its own host. If it says `dup-kit` is served at `9.9.9`
+    and this root holds `1.0.0` and `1.1.0`, then this root holds no copy the host serves —
+    so `dup-kit` contributes no skill, and both its files are named in a `stale-version`
+    record rather than being counted or dropped in silence. Refusing instead would make a
+    tool that reads `root` and nothing else start arbitrating what the caller may know.
+    """
+    audit = fixture_audit(versions={"dup-kit@kit-market": "9.9.9"})
+    assert audit.skills == README_SKILLS - 1
+    assert audit.catalogue_bytes == README_CATALOGUE_BYTES - 112
+    stale = subjects(audit)[skillaudit.OMIT_STALE_VERSION]
+    assert stale.count == 4
+    for path in (
+        "kit-market/dup-kit/1.0.0/skills/echo-check/SKILL.md",
+        "kit-market/dup-kit/1.0.0/skills/retired-check/SKILL.md",
+        "kit-market/dup-kit/1.1.0/skills/echo-check/SKILL.md",
+    ):
+        assert path in stale.what
+    assert audit.skills + sum(o.count for o in audit.omissions) == README_FILES
+
+
+def test_a_named_version_is_per_plugin_and_speaks_for_no_other(tmp_path):
+    """Two plugins under one marketplace, one of them named. The other keeps its guess."""
+    for plugin in ("a", "b"):
+        skill(tmp_path, f"m/{plugin}/1.0.0/skills/s", frontmatter("s", f"{plugin} one"))
+        skill(tmp_path, f"m/{plugin}/2.0.0/skills/s", frontmatter("s", f"{plugin} two"))
+    audit = skillaudit.audit(tmp_path, versions={"a@m": "1.0.0"})
+    scanned = skillaudit._scan(tmp_path, versions={"a@m": "1.0.0"})
+    kept = {s.relpath for s in scanned if s.omitted is None}
+    assert kept == {"m/a/1.0.0/skills/s/SKILL.md", "m/b/2.0.0/skills/s/SKILL.md"}
+    assert audit.catalogue_bytes == len("a one") + len("b two")
+
+
 def test_the_tie_break_is_byte_order_and_the_semver_case_it_gets_wrong_is_stated(tmp_path):
     """A KNOWN LIMITATION, pinned here and deliberately not in the shared fixture.
 
@@ -1219,6 +1301,32 @@ def test_the_tool_defaults_to_every_finding_when_check_is_not_sent(tmp_path):
     assert sent == omitted
 
 
+def test_the_tool_passes_the_callers_named_versions_through_the_wire(tmp_path):
+    """`versions` is a served argument, not a module-only one, and the wire proves it.
+
+    A handler that dropped the argument would answer the byte-order document and look
+    perfectly correct, so the assertion is on the DIFFERENT document rather than merely on
+    the absence of an error.
+    """
+    server, _ = make(tmp_path)
+    served = json.loads((FIXTURE / "versions.json").read_text(encoding="utf-8"))
+    is_error, text = call(
+        server,
+        root=str(CACHE),
+        enabled=enabled(),
+        usage=usage(),
+        budget=README_BUDGET,
+        versions=served,
+    )
+    assert not is_error, text
+    assert text == fixture_audit(versions=served).as_json()
+    assert json.loads(text)["catalogue_bytes"] == 2186
+    _, without = call(
+        server, root=str(CACHE), enabled=enabled(), usage=usage(), budget=README_BUDGET
+    )
+    assert json.loads(without)["catalogue_bytes"] == README_CATALOGUE_BYTES
+
+
 def test_a_bad_root_reaches_the_model_as_a_sentence_and_not_an_exception(tmp_path):
     """`isError` frames carrying a traceback are what `document_error` exists to prevent."""
     server, _ = make(tmp_path)
@@ -1267,6 +1375,23 @@ def test_a_refusal_is_recorded_with_no_detail_at_all(tmp_path):
             "detail": {},
         }
     ]
+
+
+def test_a_versions_value_that_is_not_a_string_is_refused_by_the_model(tmp_path):
+    """`versions: dict[str, str]` — the VALUES are validated, and the location is the key.
+
+    The difference from `usage` is that `str` is STRICT even in pydantic's lax mode: `1`
+    coerces under `dict[str, int]` and is refused under `dict[str, str]`. The refusal happens
+    before this handler is entered, which is what the Node port's `dictStr` field has to
+    reproduce or the two servers disagree about which calls are legal.
+    """
+    server, _ = make(tmp_path)
+    is_error, text = call(server, root=str(CACHE), versions={"hash-kit@kit-market": 1})
+    assert is_error
+    assert "versions.hash-kit@kit-market" in text
+    assert "string_type" in text
+    is_error, text = call(server, root=str(CACHE), versions=["a"])
+    assert is_error and "dict_type" in text
 
 
 def test_the_tool_is_served_eleventh_and_its_schema_is_the_assets(tmp_path):
