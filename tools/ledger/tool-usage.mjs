@@ -80,6 +80,16 @@ function walk(dir, out) {
   return out;
 }
 
+// The session a transcript belongs to. `<project>/<session>.jsonl` is the main file and
+// `<project>/<session>/subagents/*.jsonl` are its subagents', so the first path segment under
+// the project dir names the session either way. Counting FILES here instead reported 752
+// sessions for a corpus of 167 — the subagent transcripts each counted as one more.
+function sessionOf(projectDir, file) {
+  const rel = path.relative(projectDir, file);
+  const first = rel.split(path.sep)[0];
+  return first.endsWith('.jsonl') ? first.slice(0, -'.jsonl'.length) : first;
+}
+
 function serverOf(tool) {
   if (!tool.startsWith('mcp__')) return 'builtin';
   const parts = tool.split('__');
@@ -110,16 +120,16 @@ function readEvents() {
   try { return fs.readFileSync(EVENTS, 'utf8').split('\n').filter((l) => l.trim()); } catch { return []; }
 }
 
-let dirs = [];
+let allDirs = [];
 try {
-  dirs = fs.readdirSync(ROOT, { withFileTypes: true })
+  allDirs = fs.readdirSync(ROOT, { withFileTypes: true })
     .filter((e) => e.isDirectory())
     .map((e) => e.name);
 } catch {
   console.error(`no transcripts: ${ROOT} is not readable`);
   process.exit(1);
 }
-if (PROJECT) dirs = dirs.filter((d) => d.includes(PROJECT));
+const dirs = PROJECT ? allDirs.filter((d) => d.includes(PROJECT)) : allDirs;
 
 const seenIds = new Set();     // tool_use id → already counted
 const counts = new Map();      // group key → calls
@@ -134,10 +144,19 @@ function record(ev) {
   counts.set(key, (counts.get(key) ?? 0) + 1);
 }
 
+// `onDisk` is seeded from EVERY project, not the filtered set: a session can be logged under
+// one project slug and transcripted under another (a subagent whose cwd differs), and building
+// this from `dirs` made `--project` treat such a session as gone and recover a call that is
+// on disk — breaking the one invariant the events fallback rests on.
+for (const project of allDirs) {
+  const projectDir = path.join(ROOT, project);
+  for (const file of walk(projectDir, [])) onDisk.add(sessionOf(projectDir, file));
+}
+
 for (const project of dirs) {
-  for (const file of walk(path.join(ROOT, project), [])) {
+  const projectDir = path.join(ROOT, project);
+  for (const file of walk(projectDir, [])) {
     scanned += 1;
-    onDisk.add(path.basename(file, '.jsonl'));
     let text;
     try { text = fs.readFileSync(file, 'utf8'); } catch { skipped += 1; continue; }
     for (const line of text.split('\n')) {
@@ -166,7 +185,7 @@ for (const project of dirs) {
             : block.name === 'Agent' ? String(input.subagent_type || 'general-purpose')
               : '',
         };
-        sessions.add(file);
+        sessions.add(sessionOf(projectDir, file));
         record(ev);
       }
     }
@@ -181,6 +200,15 @@ for (const line of readEvents()) {
   let ev;
   try { ev = JSON.parse(line); } catch { continue; }
   if (!ev?.tool || !ev.session || onDisk.has(ev.session)) continue;
+  // Two writers append to this file by design, and one machine can register the hook at both
+  // user and project scope, so the same call can be logged twice. The transcript path guards
+  // that with `block.id`; this is the same guard on the same id space, for rows whose writer
+  // supplied one. Rows without an id (every row written before this field existed) fall
+  // through uncounted-against, exactly as they did before.
+  if (ev.tool_use_id) {
+    if (seenIds.has(ev.tool_use_id)) continue;
+    seenIds.add(ev.tool_use_id);
+  }
   if (SINCE !== null) {
     const ts = Date.parse(ev.ts ?? '');
     if (!Number.isNaN(ts) && ts < SINCE) continue;

@@ -64,8 +64,14 @@ transcripts is 1.24 s user here, so the cache buys nothing and adds a staleness 
 
 ## First run — 2026-09-04, all projects, all time
 
-Corpus: 813 transcripts, window 2026-08-04 … 2026-09-04. 42,705 tool calls, 752 sessions,
+Corpus: 813 transcripts, window 2026-08-04 … 2026-09-04. 42,705 tool calls, **116 sessions**,
 115 of those calls recovered from the events log for 4 sessions whose transcripts are gone.
+
+The session figure was published here as **752** and that was wrong: the counter was keyed on
+transcript FILES, and a session's subagent transcripts each counted as another session. A
+session is the first path segment under the project dir — `<session>.jsonl` and
+`<session>/subagents/*.jsonl` are one session — which is 116 here against 167 top-level
+transcript files, the difference being sessions that made no counted tool call.
 
 | `--group skill` | calls |
 |---|---|
@@ -84,8 +90,10 @@ this read 139/16, and the 9-call residual was accounted for exactly rather than 
 ## What it says
 
 Of the 41 skills in the plugin cache, **29 were never invoked once** in that month; over the
-34 that were actually *enabled*, 22. `mcp__bantamkit` answered 920 calls across 46 sessions
+34 that were actually *enabled*, 22. `mcp__bantamkit` answered 938 calls
 while the other locally-built MCP servers answered 14 between them, all in a single session.
+(Call counts only: the ledger totals sessions across the whole run, not per group key, and the
+per-server session figure quoted in an earlier draft came from the same miscount as above.)
 A skill that never fires still costs its description in every session — which is what the
 `skill_audit` tool this feed exists for is meant to price.
 
@@ -107,5 +115,6 @@ disposition — shrink, disable, or keep — is a ruling, not an inference.
 
 Both answer `{alpha: 1, beta: 1, gamma: 1}`. `node tools/ledger/tool-usage.test.mjs` pins each
 correction separately with a negative control, and the suite was checked by mutation: killing
-the id dedupe turns 4 red, dropping the subagent recursion 5, letting the events log see live
-sessions 4 — each time the correction's own assertion fails first.
+the id dedupe turns 4 red, dropping the subagent recursion 6, letting the events log see live
+sessions 4 — each time the correction's own assertion fails first. (The subagent figure was
+first written as 5; rerun at the fix commit it is 6.)

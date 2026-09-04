@@ -253,9 +253,19 @@ function appendUsageEvent(input) {
   const record = {
     ts: new Date().toISOString(),
     session: input.session_id || '',
-    project: String(input.cwd || '').replace(/[/.]/g, '-'),
+    // The HOST's slug, not tool-metrics' — `token-ledger.mjs` uses this same expression.
+    // log_event.py mapped `.` to a dash as well, which the host does not: this machine has
+    // both `-private-tmp-r3-p3.p1ex6K` and `-private-tmp-r3-p3-p1ex6K` as separate project
+    // dirs, so the python slug split one project into two keys under `--group project` and
+    // made `--project` miss the recovered rows entirely.
+    project: String(input.cwd || '').replace(/[\\/:]/g, '-'),
     tool,
     server: tool.startsWith('mcp__') && tool.split('__').length >= 3 ? tool.split('__')[1] : 'builtin',
+    // The dedupe key. Two writers append to this file by design and one machine can register
+    // the hook at both user and project scope, so a call can be logged twice; the reader
+    // dedupes on this the same way it dedupes transcript blocks. Rows written before this
+    // field existed simply carry none.
+    tool_use_id: String(input.tool_use_id ?? ''),
     detail: tool === 'Skill' ? String(ti.skill ?? '')
       : tool === 'Agent' ? String(ti.subagent_type || 'general-purpose')
         : '',
