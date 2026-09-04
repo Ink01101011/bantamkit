@@ -677,3 +677,95 @@ test('an unplaced cell renders through the contract layer\'s unknown-subject lin
     lines.join('\n'),
   );
 });
+
+// ---- H1: a STATEFUL codec is not a byte table, and must never be given one ---------------
+//
+// THE FAMILY. `charsets-table.py` writes `SINGLE_BYTE_TABLES` for every module it judges a
+// stateless single-byte codec. Its judgement was a 2-byte probe from SIX hand-picked lead
+// bytes (0x41, 0x80, 0xA4, 0xD0, 0xE9, 0xFF), and neither ESC (0x1B) nor `~` (0x7E) is among
+// them — so the codecs whose decoder carries STATE set by earlier bytes walked straight
+// through it. MEASURED: seven modules held a 256-character table they cannot have —
+// `hz` and the six `iso2022_jp*` — and `decodeSingleByte` then decoded them ONE BYTE AT A
+// TIME, which is what destroyed the escape sequences.
+//
+// MEASURED before the fix, on `'こんにちは'.encode('iso2022_jp')`:
+//   reference  'こんにちは'
+//   port       "�$B$3$s$K$A$O�(B"    (the ESCs mapped to U+FFFD by the table)
+// This was a REGRESSION: before round 3 the port called `TextDecoder(charset)` and ICU has
+// a real `iso-2022-jp` decoder.
+//
+// WHICH DECODER, decided by measurement and not by taste. Three arms over 8,829 inputs
+// (every character CPython's `iso2022_jp` can encode, in slices of 8, plus 7,920 random and
+// ESC-biased byte strings), scored against CPython's own answer:
+//
+//   arm                    all         valid iso-2022-jp text   random bytes
+//   byte table (before)    5021/8829   73/900                   4940/7920
+//   utf-8 fallback         4339/8829   45/900                   4288/7920
+//   ICU iso-2022-jp        5664/8829   888/900                  4768/7920
+//
+// and over the shared JIS X 0208 range each `iso2022_jp*` variant scores 99.5–99.7 % through
+// ICU against 1.4 % through UTF-8. `hz`, `iso2022_kr` and `utf_7` score 0 % through ICU —
+// WHATWG maps those three to the "replacement" encoding — so they keep the no-decoder path
+// `decodeCharset` already documents. That is where this family's boundary is, and it is a
+// number, not a preference.
+
+test('a stateful codec never holds a single-byte table (H1)', async () => {
+  // The property the generator must hold: a codec whose meaning depends on decoder STATE
+  // cannot be a byte-to-character map, so it must not be in the map table at all. Named
+  // individually so a regression names the module.
+  const charsets = await import(new URL('charsets.js', dist));
+  const stateful = [
+    'hz',
+    'utf_7',
+    'iso2022_jp',
+    'iso2022_jp_1',
+    'iso2022_jp_2',
+    'iso2022_jp_2004',
+    'iso2022_jp_3',
+    'iso2022_jp_ext',
+    'iso2022_kr',
+  ];
+  for (const module of stateful) {
+    assert.ok(charsets.CODEC_MODULES.has(module), `${module} is a module the registry has`);
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(charsets.SINGLE_BYTE_TABLES, module),
+      false,
+      `${module} is stateful and must not have a single-byte table`,
+    );
+  }
+});
+
+test('iso-2022-jp and its variants decode through the escape-aware decoder (H1)', () => {
+  // `'こんにちは'.encode('iso2022_jp')`. The reference answers 'こんにちは' for every one of
+  // the six `iso2022_jp*` modules; the port answered "�$B$3$s$K$A$O�(B".
+  const buf = Buffer.from('1b244224332473244b2441244f1b2842', 'hex');
+  for (const label of [
+    'iso-2022-jp',
+    'iso2022_jp',
+    'iso2022_jp_1',
+    'iso2022_jp_2',
+    'iso2022_jp_2004',
+    'iso2022_jp_3',
+    'iso2022_jp_ext',
+  ]) {
+    assert.equal(decodeCharset(buf, label), 'こんにちは', label);
+  }
+  // ASCII outside the escapes is still ASCII, and the shift back to ASCII is honoured.
+  assert.equal(
+    decodeCharset(Buffer.from('68690a1b24422422242424261b284277', 'hex'), 'iso-2022-jp'),
+    'hi\nあいうw',
+  );
+});
+
+test('the stateful codecs ICU has no decoder for keep the no-decoder path (H1)', () => {
+  // `hz`, `iso2022_kr` and `utf_7` are the WHATWG "replacement" encoding — ICU answers a
+  // single U+FFFD for any non-empty input, which is neither CPython's answer nor a useful
+  // one — so they stay on the UTF-8 fallback `decodeCharset` documents for a module this
+  // port has no decoder for. MEASURED: on these bytes CPython's own `hz` and `utf_7` answer
+  // the ASCII passthrough, so the port is byte-identical to the reference for both.
+  const buf = Buffer.from('1b244224332473244b2441244f1b2842', 'hex');
+  const passthrough = '\x1b$B$3$s$K$A$O\x1b(B';
+  assert.equal(decodeCharset(buf, 'hz'), passthrough);
+  assert.equal(decodeCharset(buf, 'utf-7'), passthrough);
+  assert.equal(decodeCharset(buf, 'iso-2022-kr'), passthrough);
+});

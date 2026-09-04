@@ -395,6 +395,42 @@ export function pyCodecModule(name: string): string | null {
  * `gb2312` is gbk, `big5` carries HKSCS, `euc-kr` is cp949), so a byte pair only one of the
  * two knows differs; the ERROR policy is CPython's, see `decodeMultiByte`.
  */
+/**
+ * The STATEFUL codecs — the ones whose decoder carries state set by earlier bytes, so that no
+ * byte-to-character map can describe them at all — module -> WHATWG label. Review round 4
+ * (H1).
+ *
+ * `charsets-table.py` judged a module a stateless single-byte codec with a 2-byte probe from
+ * six hand-picked lead bytes, and neither ESC nor `~` was among them, so seven of this family
+ * were written into `SINGLE_BYTE_TABLES` with a 256-character table they cannot have and
+ * `decodeSingleByte` then decoded them ONE BYTE AT A TIME. Measured: `iso2022_jp` bytes for
+ * こんにちは came back as "\ufffd$B$3$s$K$A$O\ufffd(B", the ESCs eaten by the table, where the
+ * reference answers こんにちは. That was a regression — before round 3 the port called
+ * `TextDecoder(charset)`, and ICU does have an `iso-2022-jp` decoder. The generator refuses
+ * them now (it sweeps all 65,536 pairs), and this map is where the six that HAVE a decoder go.
+ *
+ * SIX MODULES AND NOT NINE, by measurement. Over the shared JIS X 0208 range every
+ * `iso2022_jp*` variant scores 99.5–99.7 % against CPython through ICU's `iso-2022-jp`,
+ * against 1.4 % through the UTF-8 fallback. `hz`, `iso2022_kr` and `utf_7` score 0 % — WHATWG
+ * maps all three to the "replacement" encoding, which answers one U+FFFD for any non-empty
+ * input — so they keep the no-decoder path this module already documents. The residual for
+ * the six is ICU's table against CPython's, the divergence roadmap row 8 (o) registers: over
+ * 8,829 inputs ICU agrees on 5,664 to the byte table's 5,021 and the UTF-8 fallback's 4,339,
+ * and 888 of 900 valid-text inputs to their 73 and 45. The 12 are the wave dash, U+301C
+ * against U+FF5E.
+ *
+ * A PLAIN `TextDecoder` and never `decodeMultiByte`: that walk assumes a byte under 0x80 is
+ * its own ASCII character, which is exactly what an escape sequence is not.
+ */
+const ESCAPE_LABELS: Readonly<Record<string, string>> = {
+  iso2022_jp: 'iso-2022-jp',
+  iso2022_jp_1: 'iso-2022-jp',
+  iso2022_jp_2: 'iso-2022-jp',
+  iso2022_jp_2004: 'iso-2022-jp',
+  iso2022_jp_3: 'iso-2022-jp',
+  iso2022_jp_ext: 'iso-2022-jp',
+};
+
 const MULTI_BYTE_LABELS: Readonly<Record<string, string>> = {
   shift_jis: 'shift_jis',
   cp932: 'shift_jis',
@@ -422,12 +458,23 @@ const MULTI_BYTE_LABELS: Readonly<Record<string, string>> = {
  * module written by the registry itself (79 codecs, 20 of them measured over all 256 bytes
  * against the old path: 13 differed); the CJK codecs go through `TextDecoder` with
  * CPython's replacement policy (`decodeMultiByte`, where the residual is quantified); a
- * module this port has no decoder for (`utf_7`, `hz`, `iso2022_*`, `johab`, the JIS X
+ * module this port has no decoder for (`utf_7`, `hz`, `iso2022_kr`, `johab`, the JIS X
  * 0213 variants) decodes as UTF-8, which is the other remaining divergence.
+ *
+ * AMENDED at review round 4 (H1). This paragraph used to name `iso2022_*` among the modules
+ * with no decoder, and for seven of that family the code did something else and worse: the
+ * generator had written them a single-byte table, so they were decoded one byte at a time and
+ * their escape sequences became U+FFFD. The six `iso2022_jp*` modules now go through ICU's
+ * real decoder (`ESCAPE_LABELS`, where the three arms are scored); `hz`, `iso2022_kr` and
+ * `utf_7` are what is left of the no-decoder set, and for them this paragraph is now true.
  */
 export function decodeCharset(buf: Uint8Array, charset: string): string {
   const module = pyCodecModule(charset);
   if (module === null) return decodeUtf8(buf);
+  // BEFORE the table lookup, deliberately. A stateful codec must never be read as a byte
+  // map, and putting this first means a table that reappears cannot silently win again.
+  const escape = lookup(ESCAPE_LABELS, module);
+  if (escape !== undefined) return new TextDecoder(escape).decode(buf);
   const table = lookup(SINGLE_BYTE_TABLES, module);
   if (table !== undefined) return decodeSingleByte(buf, table);
   if (module === 'utf_8') return decodeUtf8(buf);
