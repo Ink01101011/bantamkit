@@ -61,34 +61,54 @@ README_BYTES = {
     "trigger-kit:quoted-scalar": 88,
     "trigger-kit:quoted-edge": 84,
     "trigger-kit:quoted-single": 83,
+    "trigger-kit:astral-a": 96,
+    "trigger-kit:astral-b": 96,
+    "trigger-kit:thai-race": 187,
+    "trigger-kit:thai-review": 169,
     "frontmatter-kit:misnamed": 84,
     "frontmatter-kit:no-description": 0,
     "dup-kit:echo-check": 112,
     "hash-kit:hashed-check": 162,
     "solo-check": 92,
 }
-README_SKILLS = 16
-README_CATALOGUE_BYTES = 1713
+README_SKILLS = 20
+README_CATALOGUE_BYTES = 2261
 #: Five RECORDS over six files — `duplicate-skill` carries two, one per multi-version plugin.
 README_OMISSIONS = 5
 README_OMITTED_FILES = 6
-README_FILES = 22
+README_FILES = 26
 README_BUDGET = 1024
+
+#: The four descriptions in the tree that are NOT pure ASCII, and what separates a byte count
+#: from a character count on each. Before they existed every counted description was ASCII, so
+#: `len(s)` and `len(s.encode())` were the same number for all sixteen and NOTHING in the
+#: corpus could tell the two apart — measured 2026-09-05, mutating `_Skill.bytes` to
+#: `len(self.description)` left the cross-runtime suite at "0 differed".
+NON_ASCII_BYTES = {
+    "trigger-kit:astral-a": (96, 34),
+    "trigger-kit:astral-b": (96, 34),
+    "trigger-kit:thai-race": (187, 65),
+    "trigger-kit:thai-review": (169, 59),
+}
+#: The phrase the Thai pair shares, which is what puts non-ASCII text in a finding's `detail`
+#: and therefore in the emitted document. `ensure_ascii=True` escapes it; nothing else in the
+#: document is non-ASCII, so nothing else could catch that.
+THAI_PHRASE = "ภาวะแข่งขัน"
 
 #: What the two WRONG readings of a whole-value quoted scalar answer over the same tree. The
 #: literal rule keeps both outer quotes and both `\"` backslashes; the eager rule strips a
 #: quote off `quoted-edge`, which is not one scalar at all. Three distinct numbers, so a
 #: `catalogue_bytes` that moved says WHICH mistake was made.
-LITERAL_QUOTE_BYTES = 1720
-EAGER_STRIP_BYTES = 1711
+LITERAL_QUOTE_BYTES = 2268
+EAGER_STRIP_BYTES = 2259
 
 #: What the two WRONG version rules answer over the same tree, as `(skills, catalogue_bytes)`.
 #: `MERGED_VERSIONS` is the pre-2026-09-05 dedupe, which resolves nothing and merges the two
 #: version directories, so `dup-kit:retired-check` — deleted in `1.1.0` — is resurrected.
 #: `INVERTED_TIE_BREAK` resolves the FIRST version directory in byte order instead of the last.
 #: Three distinct pairs, so a headline that moved says WHICH mistake was made.
-MERGED_VERSIONS = (17, 1850)
-INVERTED_TIE_BREAK = (17, 1707)
+MERGED_VERSIONS = (21, 2398)
+INVERTED_TIE_BREAK = (21, 2255)
 
 
 def enabled() -> list[str]:
@@ -180,17 +200,21 @@ def test_every_counted_skill_costs_the_bytes_the_readme_says_it_does():
 # ------------------------------------------------------------------- shared-trigger-phrase
 
 
-def test_exactly_the_two_shared_phrases_the_readme_names_are_reported():
-    """Two findings, both quote styles, and the right skills in each.
+def test_exactly_the_three_shared_phrases_the_readme_names_are_reported():
+    """Three findings, both quote styles, one of them non-ASCII, and the right skills in each.
 
     `'race condition'` is single-quoted and `"flaky in prod"` is double-quoted on purpose:
     a reader that implements only one delimiter reports one finding and is visible here
     rather than in a count that happens to look plausible.
 
-    Two findings still, and the MEMBERSHIP is where the quoted-scalar rule shows: three of the
-    five skills holding `"flaky in prod"` and one of the three holding `"race condition"` write
-    their whole description as a quoted YAML scalar, and each is dropped from one of these
-    lists by one of the two ways of getting the unwrapping wrong.
+    The MEMBERSHIP is where the quoted-scalar rule shows: three of the five skills holding
+    `"flaky in prod"` and one of the three holding `"race condition"` write their whole
+    description as a quoted YAML scalar, and each is dropped from one of these lists by one of
+    the two ways of getting the unwrapping wrong.
+
+    `'ภาวะแข่งขัน'` is the third, and it is the ONLY non-ASCII text the emitted document
+    carries — the ids and the paths are ASCII, so a `detail` is the only field that can hold
+    a byte above U+007F. See `test_the_document_does_not_escape_non_ascii`.
     """
     findings = kinds(fixture_audit(), skillaudit.KIND_SHARED_PHRASE)
     assert [(f.detail, list(f.skills)) for f in findings] == [
@@ -208,8 +232,36 @@ def test_exactly_the_two_shared_phrases_the_readme_names_are_reported():
             "race condition",
             ["trigger-kit:quoted-edge", "trigger-kit:race-debug", "trigger-kit:race-review"],
         ),
+        (THAI_PHRASE, ["trigger-kit:thai-race", "trigger-kit:thai-review"]),
     ]
     assert {f.severity for f in findings} == {"high"}
+
+
+def test_a_non_bmp_letter_flanking_an_apostrophe_suppresses_it_the_same_as_an_ascii_one():
+    """THE THIRD GUARD, and it is a guard against INDEXING, not against the rule.
+
+    `astral-a` and `astral-b` write `𠀀'并发'𠀁` and `𠀂'并发'𠀃`: both apostrophes are flanked
+    by letters, so neither delimits and neither skill quotes anything. The letters are above
+    U+FFFF, which is where a reader that indexes UTF-16 CODE UNITS instead of code points
+    stops agreeing — it inspects a lone surrogate, decides it is not a letter, and both
+    apostrophes become delimiters, so `并发` is torn out of both descriptions and reported as
+    a fourth `shared-trigger-phrase`. Measured 2026-09-05: that is exactly what the Node port
+    did (`runtime-ts/src/skillaudit.ts` `isLetter`), and no fixture in this tree contained a
+    non-BMP character to say so.
+
+    The reference cannot make that mistake — `str[i]` is the i-th code point — so this node
+    is here to keep the CORPUS honest: it is the only place a non-BMP letter is asserted to
+    behave like an ASCII one, and the cross-runtime suite reads the same two files.
+    """
+    audit = fixture_audit()
+    for finding in kinds(audit, skillaudit.KIND_SHARED_PHRASE):
+        assert "并发" != finding.detail
+        assert "trigger-kit:astral-a" not in finding.skills
+        assert "trigger-kit:astral-b" not in finding.skills
+    assert skillaudit.phrases("\U00020000'\u5e76\u53d1'\U00020001") == ()
+    # …and the same text with the flanking letters removed IS a phrase, so the node above
+    # cannot pass because the reader stopped finding phrases at all.
+    assert skillaudit.phrases(" '\u5e76\u53d1' ") == ("\u5e76\u53d1",)
 
 
 def test_a_contraction_is_not_a_quoted_phrase():
@@ -217,13 +269,13 @@ def test_a_contraction_is_not_a_quoted_phrase():
 
     `contraction-a` and `contraction-b` were written so the text BETWEEN their two
     apostrophes is byte-identical, so a reader that treats every `'` as a delimiter reports
-    a THIRD finding over that junk string. Three findings is the failure, not two — and the
+    one MORE finding over that junk string. Four findings is the failure, not three — and the
     assertion is on the junk string by name as well as on the count, because a count alone
     would also go red for reasons that have nothing to do with apostrophes.
     """
     audit = fixture_audit()
     findings = kinds(audit, skillaudit.KIND_SHARED_PHRASE)
-    assert len(findings) == 2
+    assert len(findings) == 3
     junk = "t happen locally and asks why the last run didn"
     assert junk not in [f.detail for f in findings]
     assert skillaudit.phrases("the bug don't happen and it didn't catch") == ()
@@ -233,7 +285,7 @@ def test_a_router_neither_raises_a_finding_nor_joins_one_and_is_still_counted():
     """THE SECOND GUARD, and a distinct symptom from the first.
 
     `loop-router` quotes `'stale worktree'`, which only `worktree-sweep` also quotes. Drop
-    the exemption and a third finding appears over THAT phrase — a different string from the
+    the exemption and one more finding appears over THAT phrase — a different string from the
     contraction failure, so the two cannot be confused for one another. Its 174 bytes stay
     in the bill either way: a router is exempt from the phrase index, never from the count.
     """
@@ -319,8 +371,8 @@ def test_a_value_that_merely_opens_and_ends_with_a_quote_is_not_one_scalar():
     and last characters are both `"` and it is still not one scalar — its opening quote closes
     at index 15. An eager reader strips those two characters, welds the middle into one junk
     phrase, and loses BOTH of its real phrases: measured on this tree, that drops `quoted-edge`
-    out of both collisions at once and answers 1549 bytes. The correct reading leaves the value
-    exactly as written, which is why its 84 bytes are the same number either way.
+    out of both ASCII collisions at once and answers 2259 bytes. The correct reading leaves
+    the value exactly as written, so its 84 bytes are the same number either way.
     """
     base = Path(CACHE)
     found = {s.id: s for s in (skillaudit._load(p, base) for p in skillaudit._walk(base))}
@@ -330,7 +382,8 @@ def test_a_value_that_merely_opens_and_ends_with_a_quote_is_not_one_scalar():
     assert edge.phrases == ("race condition", "flaky in prod")
     assert skillaudit.unwrap_scalar(edge.description) == edge.description
     for finding in kinds(fixture_audit(), skillaudit.KIND_SHARED_PHRASE):
-        assert "trigger-kit:quoted-edge" in finding.skills
+        if finding.detail in ("race condition", "flaky in prod"):
+            assert "trigger-kit:quoted-edge" in finding.skills
 
 
 def test_a_single_quoted_scalar_unwraps_and_a_doubled_apostrophe_is_one_apostrophe():
@@ -364,7 +417,7 @@ def test_the_two_wrong_readings_of_a_quoted_scalar_answer_two_other_byte_counts(
     that is not a scalar. The three are asserted as distinct rather than merely unequal to the
     right one, because two mistakes that happened to agree would hide behind a single `!=`.
     """
-    assert fixture_audit().catalogue_bytes == README_CATALOGUE_BYTES == 1713
+    assert fixture_audit().catalogue_bytes == README_CATALOGUE_BYTES == 2261
     assert len({README_CATALOGUE_BYTES, LITERAL_QUOTE_BYTES, EAGER_STRIP_BYTES}) == 3
     literal = sum(
         len(
@@ -455,10 +508,10 @@ def test_a_scalar_quoted_whole_and_folded_over_lines_is_unwrapped_after_the_fold
 
 
 def test_the_budget_finding_states_the_overage_and_only_fires_when_a_budget_is_given():
-    """1713 against 1024 is 689 over; no budget at all is not a budget of zero."""
+    """2261 against 1024 is 1237 over; no budget at all is not a budget of zero."""
     over = kinds(fixture_audit(), skillaudit.KIND_OVER_BUDGET)
     assert len(over) == 1
-    assert over[0].detail == "1713 > 1024, over by 689"
+    assert over[0].detail == "2261 > 1024, over by 1237"
     assert over[0].severity == "high" and over[0].skills == ()
     assert kinds(fixture_audit(budget=None), skillaudit.KIND_OVER_BUDGET) == []
     assert kinds(fixture_audit(budget=README_CATALOGUE_BYTES), skillaudit.KIND_OVER_BUDGET) == []
@@ -771,7 +824,7 @@ def test_a_version_directory_name_that_is_not_a_version_takes_the_same_byte_orde
     assert "kit-market/hash-kit/0120fb83da5d/skills/hashed-check/SKILL.md" in (
         subjects(audit)[skillaudit.OMIT_DUPLICATE].what
     )
-    assert audit.catalogue_bytes - 162 + 87 == 1638
+    assert audit.catalogue_bytes - 162 + 87 == 2186
 
 
 def test_the_tie_break_is_byte_order_and_the_semver_case_it_gets_wrong_is_stated(tmp_path):
@@ -939,13 +992,64 @@ def test_the_answer_does_not_move_between_two_runs_over_the_same_tree():
     assert fixture_audit().as_json() == fixture_audit().as_json()
 
 
-def test_the_json_is_two_space_indented_and_does_not_escape_non_ascii(tmp_path):
-    """`JSON.stringify(doc, null, 2)` in the Node port has to produce the same bytes."""
+def test_the_json_is_two_space_indented(tmp_path):
+    """`JSON.stringify(doc, null, 2)` in the Node port has to produce the same bytes.
+
+    FORMATTING ONLY. This node used to carry the byte-count assertion below as well, which
+    made `_Skill.bytes` a property nothing named — a mutation from `len(s.encode())` to
+    `len(s)` was caught by ONE assertion inside a test about indentation, and by nothing in
+    the cross-runtime suite at all (measured 2026-09-05: "66 cases, 0 differed"). The two
+    properties are two nodes now, and the fixture carries non-ASCII descriptions so the
+    differential can see the first of them.
+    """
     skill(tmp_path, "m/p/1.0.0/skills/s", frontmatter("s", "รายงาน"))
     text = skillaudit.audit(tmp_path).as_json()
     assert '\n  "skills": 1,' in text
-    assert json.loads(text)["catalogue_bytes"] == len("รายงาน".encode())
+    assert '\n  "catalogue_bytes": ' in text
+
+
+def test_a_description_is_priced_in_utf8_bytes_and_never_in_characters():
+    """`catalogue_bytes` is BYTES. The two numbers only differ on a non-ASCII description.
+
+    The bill a session pays is bytes on the wire, not characters, and for the first sixteen
+    skills in this tree the two were the same number — every `description:` was pure ASCII,
+    so nothing here or in the cross-runtime suite could tell `len(s)` from
+    `len(s.encode("utf-8"))`. The four skills in `NON_ASCII_BYTES` are what separate them:
+    each is asserted with BOTH numbers, so a reader that switched to characters lands on a
+    figure this table already names as the wrong one.
+    """
+    found = [skillaudit._load(path, CACHE) for path in skillaudit._walk(CACHE)]
+    by_id = {s.id: s for s in found}
+    for skill_id, (utf8_bytes, characters) in NON_ASCII_BYTES.items():
+        entry = by_id[skill_id]
+        assert utf8_bytes != characters, skill_id
+        assert entry.bytes == utf8_bytes, skill_id
+        assert len(entry.description) == characters, skill_id
+        assert README_BYTES[skill_id] == utf8_bytes
+    # …and the headline is the sum of the bytes, not of the characters. The two totals are
+    # asserted as distinct numbers so a reader that switched cannot land on the right one.
+    characters_total = sum(len(s.description) for s in found if s.omitted is None)
+    assert characters_total != README_CATALOGUE_BYTES
+    assert fixture_audit().catalogue_bytes == README_CATALOGUE_BYTES
+
+
+def test_the_document_does_not_escape_non_ascii():
+    """`ensure_ascii=False`, because `JSON.stringify` has no `\\uXXXX` escaping to match.
+
+    Nothing in the tree could catch this before 2026-09-05: every emitted string — the root
+    path, the skill ids, the omission paths, the finding details — was ASCII, so
+    `ensure_ascii=True` produced byte-identical output and the mutation was caught by NOTHING
+    (66 conformance cases, 0 differed; 71 unit tests, all passing). The Thai collision is
+    what puts a non-ASCII string into `findings[].detail`, and this node asserts the
+    character itself survives into the document rather than merely that no `\\u` appears —
+    an absent escape and a present character are two claims, and only the second one is what
+    the Node port has to reproduce.
+    """
+    text = fixture_audit().as_json()
+    assert THAI_PHRASE in text
     assert "\\u" not in text
+    assert THAI_PHRASE.encode("unicode_escape").decode("ascii") not in text
+    assert json.loads(text)["findings"][2]["detail"] == THAI_PHRASE
 
 
 def test_the_roots_field_echoes_what_was_scanned():

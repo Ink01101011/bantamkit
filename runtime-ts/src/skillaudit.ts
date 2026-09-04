@@ -160,8 +160,8 @@ const DOUBLE_ESCAPES = new Set(['"', BACKSLASH]);
  *
  * Reserved for a failure of the SCAN. A file that will not decode, a block that will not
  * parse and a plugin that is switched off are all recorded as omissions and counted, never
- * raised: an audit that refuses because one of nineteen files is malformed has told the
- * operator nothing about the other eighteen.
+ * raised: an audit that refuses because one of twenty-six files is malformed has told the
+ * operator nothing about the other twenty-five.
  */
 export class SkillAuditError extends BantamError {}
 
@@ -521,24 +521,33 @@ function parseFrontmatter(text: string): [Map<string, string> | null, string | n
 
 // ----------------------------------------------------------------------------- phrases
 
-function isLetter(text: string, index: number): boolean {
-  if (index < 0 || index >= text.length) return false;
-  return LETTER.test(text[index]!);
+/**
+ * `_is_letter(text, index)` on the reference, and `text` is a CODE POINT array here for the
+ * reason porting note 1 gives: `str[i]` in Python is the i-th code point, `str[i]` in
+ * JavaScript is the i-th UTF-16 code UNIT, and above U+FFFF those are not the same character.
+ * Indexing units hands `\p{L}` a lone surrogate, which is not a letter in any category, so a
+ * non-BMP letter beside an apostrophe stops flanking it and the apostrophe becomes a delimiter
+ * the reference suppressed. Measured on `trigger-kit/1.0.0/skills/astral-a` and `astral-b`:
+ * unit indexing invents a `shared-trigger-phrase` over `并发` that the reference does not emit.
+ */
+function isLetter(chars: readonly string[], index: number): boolean {
+  if (index < 0 || index >= chars.length) return false;
+  return LETTER.test(chars[index]!);
 }
 
 /**
- * The positions where `quote` opens or closes a phrase.
+ * The positions where `quote` opens or closes a phrase, in CODE POINTS.
  *
  * `"` always delimits. `'` delimits only where it is not flanked by letters on BOTH sides,
  * which is what separates `'race condition'` from `don't`. Measured on the fixture tree: the
  * naive rule reports a third `shared-trigger-phrase` over the junk string between two
  * contractions, so this is the one line that separates a correct reader from a plausible one.
  */
-function delimiters(text: string, quote: string): number[] {
+function delimiters(chars: readonly string[], quote: string): number[] {
   const positions: number[] = [];
-  for (let index = 0; index < text.length; index += 1) {
-    if (text[index] !== quote) continue;
-    if (quote === "'" && isLetter(text, index - 1) && isLetter(text, index + 1)) continue;
+  for (let index = 0; index < chars.length; index += 1) {
+    if (chars[index] !== quote) continue;
+    if (quote === "'" && isLetter(chars, index - 1) && isLetter(chars, index + 1)) continue;
     positions.push(index);
   }
   return positions;
@@ -558,11 +567,14 @@ const hasContent = (phrase: string): boolean => ALNUM.test(phrase);
  * character, and an unpaired trailing delimiter opens nothing.
  */
 export function phrases(text: string): string[] {
+  // `list(text)`: every index below is a CODE POINT index, and every slice is rejoined from
+  // code points, because the reference indexes and slices code points. See `isLetter`.
+  const chars = [...text];
   const found: string[] = [];
   for (const quote of SCALAR_QUOTES) {
-    const positions = delimiters(text, quote);
+    const positions = delimiters(chars, quote);
     for (let i = 0; i + 1 < positions.length; i += 2) {
-      const phrase = text.slice(positions[i]! + 1, positions[i + 1]!);
+      const phrase = chars.slice(positions[i]! + 1, positions[i + 1]!).join('');
       if (hasContent(phrase) && !found.includes(phrase)) found.push(phrase);
     }
   }
@@ -673,8 +685,10 @@ function applyEnabled(found: Skill[], enabled: readonly string[] | null): void {
  * them is in the resolved version by construction and none is ever omitted here.
  */
 function resolveVersions(found: Skill[]): void {
-  // The same key spelling the dedupe uses, one field shorter: a ` ` cannot occur in a path
-  // segment, so it is the one separator that cannot collide.
+  // The same key spelling the dedupe uses, one field shorter. The separator is a NUL byte —
+  // written `\0` here, because the character itself is INVISIBLE in a comment and the
+  // sentence then reads as if a space were the separator. NUL cannot occur in a path
+  // segment on any platform, so it is the one separator that cannot collide.
   const pluginKey = (s: Skill): string => `${s.marketplace} ${s.plugin}`;
   const resolved = new Map<string, string>();
   for (const skill of found) {
@@ -715,8 +729,10 @@ function applyDedupe(found: Skill[]): void {
   const winners = new Map<string, Skill>();
   for (const skill of found) {
     if (skill.omitted !== null) continue;
-    // The key is the (marketplace, plugin, name) TRIPLE, and a Map takes one string: ` `
-    // cannot occur in a path segment, so it is the one separator that cannot collide.
+    // The key is the (marketplace, plugin, name) TRIPLE, and a Map takes one string. The
+    // separator is a NUL byte — written `\0` here, because the character itself is INVISIBLE
+    // in a comment and the sentence then reads as if a space were the separator. NUL cannot
+    // occur in a path segment on any platform, so it is the one separator that cannot collide.
     const key = [skill.marketplace, skill.plugin, skill.directory].join(' ');
     const held = winners.get(key);
     if (held !== undefined) held.omitted = OMIT_DUPLICATE;

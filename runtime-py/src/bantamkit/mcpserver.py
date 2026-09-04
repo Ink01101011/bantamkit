@@ -1042,8 +1042,8 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         `tool_failed` — an unknown `check`, a negative `budget`, a `root` that is not a
         directory. Nothing about the CONTENT of the tree refuses: a file that will not
         decode, a block that will not parse and a plugin that is switched off are recorded
-        as omissions and counted. An audit that refused because one of sixteen files is
-        malformed would have said nothing about the other fifteen.
+        as omissions and counted. An audit that refused because one of twenty-six files is
+        malformed would have said nothing about the other twenty-five.
 
         `check` defaults HERE rather than in the signature's default so that the one
         spelling of the default lives in `skillaudit.audit`, and `None` and an absent

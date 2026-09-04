@@ -87,7 +87,7 @@
       "path": "runtime-py/src/bantamkit/skillaudit.py",
       "anchor": "        return len(self.description.encode(\"utf-8\"))",
       "replacement": "        return len(self.description)",
-      "why": "a non-ASCII description is priced in code points, not bytes"
+      "why": "a non-ASCII description is priced in code points, not bytes. RED ONLY BECAUSE THE CORPUS HAS NON-ASCII IN IT: until 2026-09-05 every counted description in the fixture was pure ASCII, so len(s) and len(s.encode()) were the same number for all sixteen, this row was caught by ONE assertion smuggled into a test about JSON indentation, and the cross-runtime suite stayed at '66 cases, 0 differed'. The four non-ASCII skills and test_a_description_is_priced_in_utf8_bytes_and_never_in_characters are what make it a real row"
     },
     {
       "label": "M13-unterminated-block-still-counted",
@@ -439,6 +439,20 @@
       "anchor": "    OMIT_STALE_VERSION,\n    OMIT_UNREADABLE,",
       "replacement": "    OMIT_UNREADABLE,",
       "why": "A SECOND SILENT DROP, in the shape M16 pins for `unreadable-file`: the file is omitted and no record is emitted for it, so counted + omitted stops accounting for the twenty-two files on disk"
+    },
+    {
+      "label": "M63-the-document-escapes-non-ascii",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        return json.dumps(self.as_dict(), indent=2, ensure_ascii=False)",
+      "replacement": "        return json.dumps(self.as_dict(), indent=2, ensure_ascii=True)",
+      "why": "THE VACUOUS GATE F2 CLOSES: ensure_ascii alone, with the indent left where it is. M43 moves both at once, so it was RED on the indent and said nothing about the escaping. Measured 2026-09-05 before the Thai pair existed, this row was caught by NOTHING — 66 conformance cases 0 differed, 71 unit tests all passing — because every string the document emits was ASCII and the two settings produced identical bytes. 'ภาวะแข่งขัน' in two skills puts a non-ASCII detail in findings[], which is the only field in the document that can hold one"
+    },
+    {
+      "label": "M64-a-non-bmp-letter-stops-flanking-an-apostrophe",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    return 0 <= index < len(text) and text[index].isalpha()",
+      "replacement": "    return 0 <= index < len(text) and text[index].isalpha() and ord(text[index]) < 0x10000",
+      "why": "the reference cannot make the Node port's UTF-16 mistake, so this row SIMULATES its effect: a letter above U+FFFF stops flanking an apostrophe, both quotes in astral-a and astral-b become delimiters, and '并发' is torn out of both as a fourth shared-trigger-phrase. That is exactly what runtime-ts answered until this round, and no fixture held a non-BMP character to say so"
     }
   ]
 }

@@ -1,6 +1,6 @@
 # `skill_audit` fixture tree
 
-Twenty-two `SKILL.md` files laid out the way a plugin cache lays them out, engineered so every
+Twenty-six `SKILL.md` files laid out the way a plugin cache lays them out, engineered so every
 `skill_audit` finding kind and every omission subject fires at least once. The contract they
 pin is `assets/tools/skill_audit.json`; this file says, per fixture, WHICH clause it exists to
 trigger — so a later unit can tell a fixture that stopped working from one that never worked.
@@ -13,15 +13,15 @@ answer deterministic and therefore comparable between the two runtimes.
     root     = tools/conformance/fixtures/skill-audit/cache
     enabled  = the three ids in enabled.json
     usage    = usage.json
-    budget   = 1024   (below the tree's 1713 bytes, so the budget finding fires)
+    budget   = 1024   (below the tree's 2261 bytes, so the budget finding fires)
 
 ## What the tree should answer
 
 Measured by hand over these files, applying the spec in `assets/tools/skill_audit.json`:
 
-    skills            16
-    catalogue_bytes   1713
-    omissions          5      (16 counted + 6 omitted = 22 SKILL.md on disk)
+    skills            20
+    catalogue_bytes   2261
+    omissions          5      (20 counted + 6 omitted = 26 SKILL.md on disk)
 
 Five omission RECORDS over six files: `duplicate-skill` carries two.
 
@@ -40,24 +40,44 @@ The identity of every counted skill, and its description bytes:
 |  88 | `trigger-kit:quoted-scalar` | `kit-market/trigger-kit/1.0.0/skills/quoted-scalar/` |
 |  84 | `trigger-kit:quoted-edge` | `kit-market/trigger-kit/1.0.0/skills/quoted-edge/` |
 |  83 | `trigger-kit:quoted-single` | `kit-market/trigger-kit/1.0.0/skills/quoted-single/` |
+|  96 | `trigger-kit:astral-a` | `kit-market/trigger-kit/1.0.0/skills/astral-a/` |
+|  96 | `trigger-kit:astral-b` | `kit-market/trigger-kit/1.0.0/skills/astral-b/` |
+| 187 | `trigger-kit:thai-race` | `kit-market/trigger-kit/1.0.0/skills/thai-race/` |
+| 169 | `trigger-kit:thai-review` | `kit-market/trigger-kit/1.0.0/skills/thai-review/` |
 |  84 | `frontmatter-kit:misnamed` | `kit-market/frontmatter-kit/2.3.1/skills/misnamed/` |
 |   0 | `frontmatter-kit:no-description` | `kit-market/frontmatter-kit/2.3.1/skills/no-description/` |
 | 112 | `dup-kit:echo-check` | `kit-market/dup-kit/1.1.0/skills/echo-check/` |
 | 162 | `hash-kit:hashed-check` | `kit-market/hash-kit/unknown/skills/hashed-check/` |
 |  92 | `solo-check` | `personal/skills/solo-check/` |
 
-These sixteen numbers are the AUTHOR'S ARITHMETIC, not the tool's output. The first twelve
+These twenty numbers are the AUTHOR'S ARITHMETIC, not the tool's output. The first twelve
 were written before the tool existed and have not moved since; three were added with the
 whole-value-quote rule and are computed by hand from the unwrapped scalar, not read off a run;
-the sixteenth was added with the version-resolution rule. They are here to be disagreed with: if an implementation answers something else, one of
-the two is wrong and the difference names which clause is in dispute.
+the sixteenth was added with the version-resolution rule, and the last four with the non-ASCII
+rule below. They are here to be disagreed with: if an implementation answers something else,
+one of the two is wrong and the difference names which clause is in dispute.
+
+**Four of the twenty are not pure ASCII, and that is load-bearing.** For the first sixteen
+`len(description)` and `len(description.encode("utf-8"))` were the same number, so no fixture
+in this tree — and no case in the cross-runtime suite — could tell a byte count from a
+character count. Measured 2026-09-05: mutating `_Skill.bytes` from `len(s.encode("utf-8"))` to
+`len(s)` left `node tools/conformance/run.mjs --suite skillaudit` at "66 cases, 0 differed",
+and was caught by a single assertion that had been smuggled into a test about JSON
+indentation. The four rows above are what separate the two numbers:
+
+| id | utf-8 bytes | code points |
+| --- | ---: | ---: |
+| `trigger-kit:astral-a` | 96 | 34 |
+| `trigger-kit:astral-b` | 96 | 34 |
+| `trigger-kit:thai-race` | 187 | 65 |
+| `trigger-kit:thai-review` | 169 | 59 |
 
 ## Findings, and the file that triggers each
 
 ### `shared-trigger-phrase` (severity high)
 
 Two or more non-router skills quote the same literal phrase, so which one a session reaches for
-is a coin flip. Two must fire:
+is a coin flip. Three must fire:
 
 - `race condition` — three skills: `race-review/` and `race-debug/` quote it with single
   quotes, `quoted-edge/` with double quotes. The delimiter is not part of the phrase, so a
@@ -65,8 +85,18 @@ is a coin flip. Two must fire:
 - `flaky in prod` — five skills: `race-debug/`, `deadlock-hunt/`, `quoted-scalar/`,
   `quoted-single/` and `quoted-edge/`. Double quotes, so both delimiters are exercised and a
   reader that implements only one is visible.
+- `ภาวะแข่งขัน` — two skills: `thai-race/` and `thai-review/`. Single quotes, and the phrase
+  is Thai. **This is the only non-ASCII text the emitted document carries**: `roots` is a
+  path, `findings[].skills` are ids and `omissions[].what` are relative paths, and all three
+  are ASCII, so a finding's `detail` is the one field that can hold a byte above U+007F.
+  Without it, `json.dumps(..., ensure_ascii=True)` produces byte-identical output and the
+  reference's own `ensure_ascii=False` is a claim nothing can check — measured 2026-09-05,
+  that mutation was caught by NOTHING: 66 conformance cases, 0 differed; 71 unit tests, all
+  passing; and `tools/conformance/suites/skillaudit.mjs` claimed in its own header that
+  `ensure_ascii=False` was under test.
 
-Two findings, and it is their MEMBERSHIP that the whole-value-quote rule moves — see below.
+Three findings, and it is the MEMBERSHIP of the first two that the whole-value-quote rule
+moves — see below.
 Neither finding may list `loop-router`; neither may list `off-kit:never-loaded` (which also
 quotes `'race condition'`, from a plugin that is not enabled); and neither may list
 `dup-kit:retired-check` (which also quotes `'race condition'`, from a version directory that
@@ -83,8 +113,8 @@ byte-identical in both:
 
 A reader that treats every `'` as a delimiter therefore reports a third
 `shared-trigger-phrase` finding over that junk string. Measured both ways when the fixture was
-written: the correct rule (`'` delimits only when it is not flanked by letters) yields two
-findings, the naive rule yields three. **Three findings is the failure, not two.** This pair is
+written: the correct rule (`'` delimits only when it is not flanked by letters) yields three
+findings, the naive rule yields four. **Four findings is the failure, not three.** This pair is
 the only thing in the tree that separates a correct implementation from a plausible one, so if
 it is ever "simplified", the guard is gone.
 
@@ -100,7 +130,7 @@ A router is dropped from the phrase index entirely: it neither raises a finding 
 It is still COUNTED — its 174 bytes are in every session's bill like any other description.
 
 `loop-router` quotes `'stale worktree'`, and the only other skill quoting it is
-`.../worktree-sweep/`. If the exemption is dropped, a third finding appears over that phrase —
+`.../worktree-sweep/`. If the exemption is dropped, one more finding appears over that phrase —
 a distinct symptom from the contraction failure above, so the two cannot be confused.
 
 `.../folded-note/` quotes `'ledger sweep'`, which nothing else quotes: a phrase held by exactly
@@ -140,9 +170,9 @@ Three files pin the rule, and each one fails differently under a different wrong
 
 The headline separates all three readings, which is the point of having three files:
 
-    1713   correct
-    1720   literal — keeps both outer quotes and both `\` of the escapes
-    1711   eager   — also strips a quote off a value that is not a scalar at all
+    2261   correct
+    2268   literal — keeps both outer quotes and both `\` of the escapes
+    2259   eager   — also strips a quote off a value that is not a scalar at all
 
 A value that OPENS with a quote and never closes one — including one whose last quote is
 escaped — is a LITERAL. It is not unwrapped, its quote character is counted, its unpaired
@@ -171,7 +201,7 @@ Two plugins here pin the rule, and they pin different halves of it.
   (marketplace, plugin, name) triple, which is what this tool did until 2026-09-05, has nothing
   to displace `retired-check` with, so it counts it: a skill a release DELETED is resurrected
   by its own audit. Four independent things move when that happens, which is why one file is
-  enough: the tree reads 17 skills / 1850 bytes rather than 16 / 1713, `stale-version` vanishes
+  enough: the tree reads 21 skills / 2398 bytes rather than 20 / 2261, `stale-version` vanishes
   from the omissions, `'race condition'` grows a fourth member, and `never-invoked` grows a
   fourth finding.
 
@@ -186,9 +216,9 @@ resolved is visible in `catalogue_bytes` and not only in the omission record.
 
 The two wrong readings are separated by the headline, the same way the quoting readings are:
 
-    16 / 1713   correct — one version resolved per plugin, then its skills
-    17 / 1850   the triple dedupe — versions MERGED, so `retired-check` is resurrected
-    17 / 1707   the tie-break inverted — `1.0.0` and `0120fb83da5d` resolved instead
+    20 / 2261   correct — one version resolved per plugin, then its skills
+    21 / 2398   the triple dedupe — versions MERGED, so `retired-check` is resurrected
+    21 / 2255   the tie-break inverted — `1.0.0` and `0120fb83da5d` resolved instead
 
 Why a fixture at all, when the real corpus already shows it: on this machine's own plugin
 cache, with the seven plugins `~/.claude/settings.json` has switched on, the triple dedupe
@@ -220,8 +250,8 @@ is wrong. Counted, 84 bytes, id `frontmatter-kit:misnamed`.
 
 ### `catalogue-over-budget` (severity high)
 
-No file triggers this — the caller does, by passing a `budget` below 1713. Pass `1024` and the
-finding fires with an overage of 689 bytes; omit `budget` entirely and it must not fire at all.
+No file triggers this — the caller does, by passing a `budget` below 2261. Pass `1024` and the
+finding fires with an overage of 1237 bytes; omit `budget` entirely and it must not fire at all.
 
 ### `never-invoked` (severity low)
 
@@ -234,10 +264,11 @@ a map. Three counted skills must be reported, and they exercise the two ways of 
 - `frontmatter-kit:no-description` — ABSENT from the map, which means zero, not unknown.
 
 `dup-kit:echo-check` has 7 calls under one key even though two copies are on disk; usage is
-keyed by the id the host uses, which has no version in it. The three `quoted-*` skills and
-`hash-kit:hashed-check` carry non-zero counts on purpose: they were added to pin a quoting rule
-and a version rule, not to grow this list, and a fourth entry here would make a `never-invoked`
-regression harder to read, not easier.
+keyed by the id the host uses, which has no version in it. The three `quoted-*` skills,
+`hash-kit:hashed-check`, the two `astral-*` and the two `thai-*` all carry non-zero counts on
+purpose: they were added to pin a quoting rule, a version rule and a text-encoding rule, not to
+grow this list, and a fourth entry here would make a `never-invoked` regression harder to read,
+not easier.
 
 `dup-kit:retired-check` is deliberately ABSENT from `usage.json` and must still not appear
 here, because it is not a counted skill at all. Under the pre-2026-09-05 dedupe it WAS counted,
@@ -248,7 +279,7 @@ version rule regressed, on top of the two headline numbers.
 
 An omission is `{subject, count, size, what}` — the same discipline as `bantamkit_read`, where
 what the reader could not deliver is a record and not silence. Counted skills plus omissions
-account for all twenty-two files; if that sum stops holding, something is being dropped quietly.
+account for all twenty-six files; if that sum stops holding, something is being dropped quietly.
 Five records over six files: `duplicate-skill` carries two, one per plugin that has more than
 one version directory.
 
@@ -295,12 +326,60 @@ input, and it is not one this unit added.
 In every case the losing directory is named in an omission record, so an operator can always
 see which one was read.
 
+## What moved when the non-ASCII pair landed, and what did not
+
+This tree was published at 16 skills / 1713 bytes / 5 omissions / 22 files, and every counted
+`description:` in it was pure ASCII. Four files took it to 20 / 2261 / 5 / 26. Every figure
+below was recomputed from a run over the tree and checked against hand arithmetic; the
+difference is entirely the four files.
+
+Why four and not one: the two properties they pin are different properties, and one file
+cannot hold both without confusing them.
+
+- `astral-a/` and `astral-b/` write `𠀀'并发'𠀁` and `𠀂'并发'𠀃`. Both apostrophes are flanked
+  by LETTERS above U+FFFF, so neither delimits and neither skill quotes anything — the same
+  rule the contraction pair pins, with the flanking letters moved out of the BMP. A reader
+  that indexes UTF-16 code UNITS instead of code points is handed a lone surrogate instead of
+  a letter, decides it is not one, and tears `并发` out of both descriptions as a fourth
+  `shared-trigger-phrase`. Measured 2026-09-05: that is precisely what `runtime-ts` did
+  (`isLetter`, `text[index]`), and no file in this tree held a character above U+FFFF, so the
+  cross-runtime suite compared 66 cases and found nothing. **A finding that must NOT fire, and
+  the third such pair here** — after the contraction guard and the router exemption.
+- `thai-race/` and `thai-review/` share `'ภาวะแข่งขัน'`. That IS a finding, and it is the only
+  non-ASCII text anywhere in the emitted document, so it is the only thing that can tell
+  `ensure_ascii=False` from `ensure_ascii=True`.
+
+All four also separate a byte count from a character count, which nothing here did before:
+96/34, 96/34, 187/65 and 169/59.
+
+| figure | before | after | why |
+| --- | ---: | ---: | --- |
+| `skills` | 16 | 20 | four files counted; none of them is omitted for any reason |
+| `catalogue_bytes` | 1713 | 2261 | +96 +96 +187 +169 = 548, and NOT ONE of the sixteen earlier byte counts moved |
+| omission RECORDS | 5 | 5 | the four new files are readable, enabled, parsed, unique and in the resolved version |
+| omitted FILES | 6 | 6 | same reason |
+| `SKILL.md` on disk | 22 | 26 | the four files |
+| `shared-trigger-phrase` findings | 2 | 3 | `ภาวะแข่งขัน` is new; the astral pair adds none, which is the point of it |
+| `catalogue-over-budget` overage at `budget = 1024` | 689 | 1237 | 2261 − 1024 |
+| `never-invoked` findings | 3 | 3 | all four carry non-zero counts in `usage.json` |
+| `frontmatter-malformed`, `name-mismatch` | 2, 1 | 2, 1 | untouched |
+| literal-quote reading | 1720 | 2268 | +548; none of the four is a quoted scalar, so the rule's three numbers stay 7 and 2 apart |
+| eager-strip reading | 1711 | 2259 | +548, same reason |
+| the triple dedupe (the defect) | 17 / 1850 | 21 / 2398 | +4 / +548 |
+| the tie-break inverted | 17 / 1707 | 21 / 2255 | +4 / +548 |
+| UTF-16 code-unit indexing | — | 4 findings | new: `并发` appears as a fourth `shared-trigger-phrase` |
+| `ensure_ascii=True` | — | 1 escaped detail | new: `ภาวะแข่งขัน` becomes `\u0e20\u0e32…` and the document stops being byte-identical |
+
+The sixteen earlier byte counts not moving is the load-bearing part: adding non-ASCII cannot
+have silently re-priced the tree it was added to.
+
 ## What moved when the version-resolution rule landed, and what did not
 
-This tree was published at 15 skills / 1551 bytes / 4 omissions / 19 files. It is now
-16 / 1713 / 5 / 22. Every figure was recomputed from the tool's output over the tree and
-checked against hand arithmetic, not adjusted until it looked tidy; the difference is entirely
-the three new files.
+This tree was published at 15 skills / 1551 bytes / 4 omissions / 19 files, and this rule took
+it to 16 / 1713 / 5 / 22. Those are the figures this section is about; the non-ASCII rule above
+then took the same tree to 20 / 2261 / 5 / 26. Every figure was recomputed from the tool's
+output over the tree and checked against hand arithmetic, not adjusted until it looked tidy;
+the difference is entirely the three new files.
 
 | figure | before | after | why |
 | --- | ---: | ---: | --- |
@@ -332,8 +411,9 @@ per-name comparison, and that the files it used to swallow silently now have the
 
 This tree was published at 12 skills / 1296 bytes / 4 omissions / 16 files, and this rule took
 it to 15 / 1551 / 4 / 19. Those are the figures this section is about; the version rule above
-then took the same tree to 16 / 1713 / 5 / 22. Every figure below was recomputed rather than
-adjusted, and the difference is entirely the three files this rule added:
+then took the same tree to 16 / 1713 / 5 / 22, and the non-ASCII rule to 20 / 2261 / 5 / 26.
+Every figure below was recomputed rather than adjusted, and the difference is entirely the
+three files this rule added:
 
 | figure | before | after | why |
 | --- | ---: | ---: | --- |

@@ -81,19 +81,37 @@ const README_BYTES = {
   'trigger-kit:quoted-scalar': 88,
   'trigger-kit:quoted-edge': 84,
   'trigger-kit:quoted-single': 83,
+  'trigger-kit:astral-a': 96,
+  'trigger-kit:astral-b': 96,
+  'trigger-kit:thai-race': 187,
+  'trigger-kit:thai-review': 169,
   'frontmatter-kit:misnamed': 84,
   'frontmatter-kit:no-description': 0,
   'dup-kit:echo-check': 112,
   'hash-kit:hashed-check': 162,
   'solo-check': 92,
 };
-const README_SKILLS = 16;
-const README_CATALOGUE_BYTES = 1713;
+const README_SKILLS = 20;
+const README_CATALOGUE_BYTES = 2261;
 /** Five RECORDS over six files — `duplicate-skill` carries two, one per multi-version plugin. */
 const README_OMISSIONS = 5;
 const README_OMITTED_FILES = 6;
-const README_FILES = 22;
+const README_FILES = 26;
 const README_BUDGET = 1024;
+
+/**
+ * The four descriptions in the tree that are NOT pure ASCII, as `[utf8 bytes, code points]`.
+ * Before they existed every counted description was ASCII, so the two numbers were equal for
+ * all sixteen and nothing in the corpus could tell a byte count from a character count.
+ */
+const NON_ASCII_BYTES = {
+  'trigger-kit:astral-a': [96, 34],
+  'trigger-kit:astral-b': [96, 34],
+  'trigger-kit:thai-race': [187, 65],
+  'trigger-kit:thai-review': [169, 59],
+};
+/** The phrase the Thai pair shares: the only non-ASCII text the emitted document carries. */
+const THAI_PHRASE = 'ภาวะแข่งขัน';
 
 /**
  * What the two WRONG readings of a whole-value quoted scalar answer over the same tree. The
@@ -101,8 +119,8 @@ const README_BUDGET = 1024;
  * quote off `quoted-edge`, which is not one scalar at all. Three distinct numbers, so a
  * `catalogue_bytes` that moved says WHICH mistake was made.
  */
-const LITERAL_QUOTE_BYTES = 1720;
-const EAGER_STRIP_BYTES = 1711;
+const LITERAL_QUOTE_BYTES = 2268;
+const EAGER_STRIP_BYTES = 2259;
 
 /**
  * What the two WRONG version rules answer over the same tree, as `[skills, catalogueBytes]`.
@@ -111,8 +129,8 @@ const EAGER_STRIP_BYTES = 1711;
  * `INVERTED_TIE_BREAK` resolves the FIRST version directory in byte order instead of the last.
  * Three distinct pairs, so a headline that moved says WHICH mistake was made.
  */
-const MERGED_VERSIONS = [17, 1850];
-const INVERTED_TIE_BREAK = [17, 1707];
+const MERGED_VERSIONS = [21, 2398];
+const INVERTED_TIE_BREAK = [21, 2255];
 
 const enabled = () => JSON.parse(readFileSync(join(FIXTURE, 'enabled.json'), 'utf8'));
 const usage = () => JSON.parse(readFileSync(join(FIXTURE, 'usage.json'), 'utf8'));
@@ -192,12 +210,13 @@ test('every counted skill costs the bytes the README says it does', () => {
 
 // ------------------------------------------------------------------ shared-trigger-phrase
 
-test('exactly the two shared phrases the README names are reported', () => {
+test('exactly the three shared phrases the README names are reported', () => {
   // `'race condition'` is single-quoted and `"flaky in prod"` is double-quoted on purpose: a
   // reader that implements only one delimiter reports one finding and is visible here rather
   // than in a count that happens to look plausible. The MEMBERSHIP is where the quoted-scalar
   // rule shows — three of the five skills holding `flaky in prod` and one of the three holding
-  // `race condition` write their whole description as a quoted YAML scalar.
+  // `race condition` write their whole description as a quoted YAML scalar. `ภาวะแข่งขัน` is
+  // the third and it is the only non-ASCII text the emitted document carries.
   const findings = kinds(fixtureAudit(), skillaudit.KIND_SHARED_PHRASE);
   assert.deepEqual(
     findings.map((f) => [f.detail, [...f.skills]]),
@@ -213,6 +232,7 @@ test('exactly the two shared phrases the README names are reported', () => {
         ],
       ],
       ['race condition', ['trigger-kit:quoted-edge', 'trigger-kit:race-debug', 'trigger-kit:race-review']],
+      [THAI_PHRASE, ['trigger-kit:thai-race', 'trigger-kit:thai-review']],
     ],
   );
   assert.deepEqual([...new Set(findings.map((f) => f.severity))], ['high']);
@@ -221,13 +241,36 @@ test('exactly the two shared phrases the README names are reported', () => {
 test('a contraction is not a quoted phrase', () => {
   // THE GUARD. `contraction-a` and `contraction-b` were written so the text BETWEEN their two
   // apostrophes is byte-identical, so a reader that treats every `'` as a delimiter reports a
-  // THIRD finding over that junk string. Three findings is the failure, not two — and the
+  // FOURTH finding over that junk string. Four findings is the failure, not three — and the
   // junk string is named as well as counted, because a count alone would also go red for
   // reasons that have nothing to do with apostrophes.
   const findings = kinds(fixtureAudit(), skillaudit.KIND_SHARED_PHRASE);
-  assert.equal(findings.length, 2);
+  assert.equal(findings.length, 3);
   assert.ok(!details(findings).includes('t happen locally and asks why the last run didn'));
   assert.deepEqual(skillaudit.phrases("the bug don't happen and it didn't catch"), []);
+});
+
+test('a non-BMP letter flanking an apostrophe suppresses it the same as an ascii one', () => {
+  // THE THIRD GUARD, and it guards INDEXING rather than the rule. `astral-a` and `astral-b`
+  // write `𠀀'并发'𠀁` and `𠀂'并发'𠀃`: both apostrophes are flanked by letters, so neither
+  // delimits and neither skill quotes anything. The letters are above U+FFFF, which is where
+  // `text[index]` stops being a character — it is a UTF-16 code UNIT, so the flank test was
+  // handed a lone SURROGATE, `\p{L}` was false, and both apostrophes became delimiters that
+  // the reference suppressed. Measured 2026-09-05, that invented a `shared-trigger-phrase`
+  // over `并发` on this side and none on the reference's, and no fixture in the tree held a
+  // non-BMP character to say so.
+  const audit = fixtureAudit();
+  for (const finding of kinds(audit, skillaudit.KIND_SHARED_PHRASE)) {
+    assert.notEqual(finding.detail, '并发');
+    assert.ok(!finding.skills.includes('trigger-kit:astral-a'));
+    assert.ok(!finding.skills.includes('trigger-kit:astral-b'));
+  }
+  assert.deepEqual(skillaudit.phrases("\u{20000}'并发'\u{20001}"), []);
+  // …and the same text with the flanking letters removed IS a phrase, so this cannot pass
+  // because the reader stopped finding phrases at all. The slice is code points too: a
+  // UTF-16 slice would cut the astral letter inside the phrase in half.
+  assert.deepEqual(skillaudit.phrases(" '并发' "), ['并发']);
+  assert.deepEqual(skillaudit.phrases(" '\u{20000}并发' "), ['\u{20000}并发']);
 });
 
 test('a router neither raises a finding nor joins one and is still counted', () => {
@@ -302,7 +345,7 @@ test('a value that merely opens and ends with a quote is not one scalar', () => 
   // `quoted-edge` opens with `"race condition"` and ends with `"flaky in prod"`, so its first
   // and last characters are both `"` and it is still not one scalar — its opening quote closes
   // at index 15. An eager reader strips those two characters, welds the middle into one junk
-  // phrase, loses BOTH of its real phrases and answers 1549.
+  // phrase, loses BOTH of its real phrases and answers 2259.
   const edge = scanned(CACHE, enabled())['trigger-kit:quoted-edge'];
   assert.equal(edge.bytes, README_BYTES['trigger-kit:quoted-edge']);
   assert.equal(edge.bytes, 84);
@@ -310,7 +353,9 @@ test('a value that merely opens and ends with a quote is not one scalar', () => 
   assert.deepEqual(edge.phrases, ['race condition', 'flaky in prod']);
   assert.equal(skillaudit.unwrapScalar(edge.description), edge.description);
   for (const finding of kinds(fixtureAudit(), skillaudit.KIND_SHARED_PHRASE)) {
-    assert.ok(finding.skills.includes('trigger-kit:quoted-edge'), finding.detail);
+    if (finding.detail === 'race condition' || finding.detail === 'flaky in prod') {
+      assert.ok(finding.skills.includes('trigger-kit:quoted-edge'), finding.detail);
+    }
   }
 });
 
@@ -337,7 +382,7 @@ test('the two wrong readings of a quoted scalar answer two other byte counts', (
   // scalar. The three are asserted as DISTINCT rather than merely unequal to the right one,
   // because two mistakes that happened to agree would hide behind a single `!==`.
   assert.equal(fixtureAudit().catalogueBytes, README_CATALOGUE_BYTES);
-  assert.equal(README_CATALOGUE_BYTES, 1713);
+  assert.equal(README_CATALOGUE_BYTES, 2261);
   assert.equal(new Set([README_CATALOGUE_BYTES, LITERAL_QUOTE_BYTES, EAGER_STRIP_BYTES]).size, 3);
   const extra = Object.entries({
     'trigger-kit:quoted-scalar': 'kit-market/trigger-kit/1.0.0/skills/quoted-scalar',
@@ -407,10 +452,10 @@ test('a scalar quoted whole and folded over lines is unwrapped after the fold', 
 // ------------------------------------------------------------------ catalogue-over-budget
 
 test('the budget finding states the overage and only fires when a budget is given', () => {
-  // 1713 against 1024 is 689 over; no budget at all is not a budget of zero.
+  // 2261 against 1024 is 1237 over; no budget at all is not a budget of zero.
   const over = kinds(fixtureAudit(), skillaudit.KIND_OVER_BUDGET);
   assert.equal(over.length, 1);
-  assert.equal(over[0].detail, '1713 > 1024, over by 689');
+  assert.equal(over[0].detail, '2261 > 1024, over by 1237');
   assert.equal(over[0].severity, 'high');
   assert.deepEqual(over[0].skills, []);
   assert.deepEqual(kinds(fixtureAudit({ budget: null }), skillaudit.KIND_OVER_BUDGET), []);
@@ -694,7 +739,7 @@ test('a version directory name that is not a version takes the same byte order',
       'kit-market/hash-kit/0120fb83da5d/skills/hashed-check/SKILL.md',
     ),
   );
-  assert.equal(audit.catalogueBytes - 162 + 87, 1638);
+  assert.equal(audit.catalogueBytes - 162 + 87, 2186);
 });
 
 test('the tie-break is byte order and the semver case it gets wrong is stated', () => {
@@ -855,15 +900,53 @@ test('the answer does not move between two runs over the same tree', () => {
   assert.equal(fixtureAudit().asJson(), fixtureAudit().asJson());
 });
 
-test('the json is two-space indented and does not escape non-ascii', () => {
+test('the json is two-space indented', () => {
   // `json.dumps(..., indent=2, ensure_ascii=False)` on the reference has to produce the same
   // bytes, and `JSON.stringify(doc, null, 2)` is what makes that true.
+  //
+  // FORMATTING ONLY. This node used to carry the byte-count assertion below as well, which
+  // made the description's PRICE a property nothing named — see the reference's
+  // `test_the_json_is_two_space_indented`.
   const dir = room();
   skill(dir, 'm/p/1.0.0/skills/s', frontmatter('s', 'รายงาน'));
   const text = skillaudit.audit(dir).asJson();
   assert.ok(text.includes('\n  "skills": 1,'));
-  assert.equal(JSON.parse(text).catalogue_bytes, Buffer.byteLength('รายงาน', 'utf8'));
+  assert.ok(text.includes('\n  "catalogue_bytes": '));
+});
+
+test('a description is priced in utf8 bytes and never in characters', () => {
+  // `catalogue_bytes` is BYTES. The two numbers only differ on a non-ASCII description, and
+  // until 2026-09-05 every counted description in the tree was ASCII — so `length` and
+  // `Buffer.byteLength` were the same number for all sixteen and nothing here or in the
+  // cross-runtime suite could tell them apart. The four skills below are what separate them,
+  // each asserted with BOTH numbers so a reader that switched to characters lands on a figure
+  // this table already names as the wrong one.
+  const found = skillaudit.scan(CACHE, enabled());
+  const byId = Object.fromEntries(found.map((s) => [s.id, s]));
+  for (const [id, [utf8Bytes, characters]] of Object.entries(NON_ASCII_BYTES)) {
+    assert.notEqual(utf8Bytes, characters, id);
+    assert.equal(byId[id].bytes, utf8Bytes, id);
+    assert.equal([...byId[id].description].length, characters, id);
+    assert.equal(README_BYTES[id], utf8Bytes);
+  }
+  const characterTotal = found
+    .filter((s) => s.omitted === null)
+    .reduce((sum, s) => sum + [...s.description].length, 0);
+  assert.notEqual(characterTotal, README_CATALOGUE_BYTES);
+  assert.equal(fixtureAudit().catalogueBytes, README_CATALOGUE_BYTES);
+});
+
+test('the document does not escape non-ascii', () => {
+  // `ensure_ascii=False` on the reference, and `JSON.stringify` has no escaping to match.
+  // Nothing in the tree could catch this before 2026-09-05: every emitted string was ASCII,
+  // so the reference's `ensure_ascii=True` mutant produced byte-identical output and was
+  // caught by NOTHING. The Thai collision is what puts a non-ASCII string into a finding's
+  // `detail`, and the character itself is asserted present rather than merely that no `\u`
+  // appears — an absent escape and a present character are two claims.
+  const text = fixtureAudit().asJson();
+  assert.ok(text.includes(THAI_PHRASE));
   assert.ok(!text.includes('\\u'));
+  assert.equal(JSON.parse(text).findings[2].detail, THAI_PHRASE);
 });
 
 test('the roots field echoes what was scanned', () => {

@@ -207,8 +207,8 @@ class SkillAuditError(BantamError):
 
     Reserved for a failure of the SCAN. A file that will not decode, a block that will not
     parse and a plugin that is switched off are all recorded as omissions and counted, never
-    raised: an audit that refuses because one of sixteen files is malformed has told the
-    operator nothing about the other fifteen.
+    raised: an audit that refuses because one of twenty-six files is malformed has told the
+    operator nothing about the other twenty-five.
     """
 
 

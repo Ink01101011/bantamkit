@@ -10,11 +10,13 @@
  * believed.
  *
  * WHAT IS COMPARED
- *   1. `audit()` over the committed fixture tree, in ELEVEN configurations: the README's own
+ *   1. `audit()` over the committed fixture tree, in SIXTEEN configurations: the README's own
  *      (enabled + usage + budget), each `check` family, `enabled` omitted and `enabled` empty,
- *      `usage` omitted and `usage` empty, and no budget at all. The whole `as_json()` string
- *      is the case, so key order, two-space indent and `ensure_ascii=False` are all under test
- *      and not merely the numbers.
+ *      `usage` omitted and `usage` empty, three budgets, and the four refusals. The whole
+ *      `as_json()` string is the case, so key order, two-space indent and `ensure_ascii=False`
+ *      are all under test and not merely the numbers — and since 2026-09-05 the tree carries a
+ *      shared THAI phrase, so `ensure_ascii=False` is a claim these cases can actually check:
+ *      before it, every emitted string was ASCII and `ensure_ascii=True` was byte-identical.
  *   2. The three REFUSALS, as strings: an unknown `check`, a negative `budget`, a `root` that
  *      is missing and a `root` that is a file. A port that refused with different words would
  *      hand the model a different recovery instruction, which is a product difference.
@@ -22,8 +24,10 @@
  *      opens a quote and never closes one is a property of the reader, not of a catalogue —
  *      plus every escape edge either runtime could get wrong.
  *   4. `phrases` over the delimiter corpus: contractions, both quote characters, punctuation
- *      -only phrases, unpaired delimiters, and the three fixture descriptions read LITERALLY,
- *      which is the reading the unwrap rule replaced.
+ *      -only phrases, unpaired delimiters, non-BMP letters flanking an apostrophe (the class
+ *      where `str[i]` is a code POINT on one side and a UTF-16 code UNIT on the other), and
+ *      the four fixture descriptions read LITERALLY, which is the reading the unwrap rule
+ *      replaced.
  *   5. The per-file record of every `SKILL.md` in the tree — id, relpath, description bytes,
  *      router flag, omission token, malformed token, phrases and the decoded description. The
  *      headline can be right for the wrong reasons; this is the table that says which skill
@@ -31,7 +35,7 @@
  *      would surface even when the sums happen to agree. It is also the only place the two
  *      halves are compared on WHICH version directory each resolved: `duplicate-skill` and
  *      `stale-version` are per-file tokens here, and a runtime that resolved the other
- *      directory would swap them on six of the twenty-two rows while the headline moved by a
+ *      directory would swap them on six of the twenty-six rows while the headline moved by a
  *      number a reader would have to look up.
  *
  * Every string travels as base64, in both directions. The descriptions in the fixture carry
@@ -107,6 +111,17 @@ const PHRASE_TEXTS = [
   'nested "outer \'inner\' outer" end',
   '"ตัวอักษรไทย" and "digits 123"',
   '"🙂" alone is punctuation to nobody',
+  // The non-BMP flank. `str[i]` is a code POINT on the reference and a UTF-16 code UNIT here,
+  // so a reader that indexes units inspects a lone surrogate, calls it not-a-letter, and lets
+  // the apostrophe delimit a phrase the reference suppressed. Five shapes: flanked on both
+  // sides (no phrase), the same twice over, a non-BMP letter INSIDE the phrase so the SLICE is
+  // compared and not only the guard, a non-BMP letter standing where a contraction's letters
+  // stand, and a phrase whose whole content is one non-BMP character.
+  "𠀀'并发'𠀁",
+  "𠀂'并发'𠀃 和 𠀀'并发'𠀁",
+  " '并发𠀀并发' ",
+  "don𠀀t and didn𠀀t",
+  "a'𠀀'b",
 ];
 
 const LITERAL_DESCRIPTIONS = [
@@ -148,7 +163,7 @@ export async function run(ctx) {
     ['usage/omitted', { root: CACHE, enabled, usage: null, check: null, budget: null }],
     ['usage/empty', { root: CACHE, enabled, usage: {}, check: null, budget: null }],
     ['budget/none', { root: CACHE, enabled, usage, check: null, budget: null }],
-    ['budget/exact', { root: CACHE, enabled, usage, check: null, budget: 1713 }],
+    ['budget/exact', { root: CACHE, enabled, usage, check: null, budget: 2261 }],
     ['budget/zero', { root: CACHE, enabled, usage, check: null, budget: 0 }],
     // The refusals. Each is an ARGUMENT failure and each has its own sentence; a suite that
     // stopped at the first would compare none of the others.
@@ -235,7 +250,7 @@ export async function run(ctx) {
   }
 
   notes.push(
-    `fixture: ${CACHE} — 22 SKILL.md, 16 counted, 1713 catalogue bytes, ` +
+    `fixture: ${CACHE} — 26 SKILL.md, 20 counted, 2261 catalogue bytes, ` +
       `5 omission records over 6 files`,
     `${cases.length} cases: ${configs.length} documents, ${UNWRAP_VALUES.length} unwrap values, ` +
       `${phraseTexts.length} phrase texts, 3 per-file tables`,
