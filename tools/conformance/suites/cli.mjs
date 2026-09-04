@@ -20,7 +20,9 @@
  * `scripts/sync-assets.mjs` vendors at prepack time. The trees are byte-identical file for
  * file, but they live at different paths by construction. The COUNT on line 2 is NOT ruled
  * and is compared on its own, so a future divergence in what the pack contains cannot hide
- * behind the ruled path.
+ * behind the ruled path. That ruling has a PRECONDITION — `runtime-ts/assets/` must exist,
+ * and on a clean checkout it does not — so this suite vendors the pack itself and asserts
+ * the result as a case; see `vendorThePack` below.
  *
  * NOTHING TOUCHES A REAL STORE. Four of these argv lines parse successfully and start a real
  * MCP server, which then exits on the closed stdin. Those runs get `HOME` and `cwd` pointed
@@ -35,7 +37,7 @@
  * without the scrub a developer's terminal size would be an input to a conformance result.
  */
 import { spawnSync } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -257,6 +259,45 @@ const SINGLE_LINE_USAGE =
   '[--statusline] [--store STORE | --start START]';
 const wrapBoundary = SINGLE_LINE_USAGE.length + 2;
 
+// ------------------------------------------------------------------- the pack precondition
+
+const VENDORED_PACK = join(repoRoot, 'runtime-ts', 'assets');
+const SYNC_ASSETS = join(repoRoot, 'runtime-ts', 'scripts', 'sync-assets.mjs');
+
+/**
+ * THE `--assets-root` RULING HAS A PRECONDITION, AND ON A CLEAN CHECKOUT IT IS FALSE.
+ *
+ * `runtime-ts/assets/` is NOT tracked — `runtime-ts/.gitignore:6` ignores it, and the only
+ * thing that creates it is `scripts/sync-assets.mjs`, which npm runs at `prepack`. Neither
+ * `npm run build` nor `npm test` nor `git clone` produces it, and `.github/workflows/ci.yml`
+ * runs `node tools/conformance/run.mjs --all` with no vendoring step before it. On a tree
+ * where the directory is absent Node falls back to the same repo-root `assets/` Python
+ * resolves, the two paths become equal, and the ruling above fails as a STALE RULING —
+ * measured in this worktree at `b6b1760`, `--suite cli` going from
+ * `PASS: 72 cases, 0 failures` to `FAIL: 72 cases, 2 failures` with nothing changed but the
+ * directory's presence (review round 4, I3-F4).
+ *
+ * A gate that cannot run on a fresh clone is not a gate, so this MAKES the precondition true
+ * rather than assuming it: the suite runs the repository's own vendoring script — the same
+ * one `prepack` runs, byte-for-byte copy, copy-then-prune since L5 — and then asserts the
+ * result as a case. The alternatives were both worse. Dropping the ruling when the pack is
+ * absent would silently measure a different thing on a clean checkout, which is the
+ * shrinking-gate class this round already found twice (I3-F1, I3-F7). Leaving it red would
+ * keep `--all` unrunnable anywhere but a machine that has published a tarball.
+ *
+ * The side effect is confined to a gitignored directory the packaging step owns anyway.
+ */
+function vendorThePack() {
+  const already = existsSync(VENDORED_PACK);
+  const r = spawnSync(process.execPath, [SYNC_ASSETS], { encoding: 'utf8', cwd: repoRoot });
+  return {
+    already,
+    ok: existsSync(VENDORED_PACK) && r.status === 0,
+    exit: r.status,
+    stderr: (r.stderr ?? '').trim(),
+  };
+}
+
 // ---------------------------------------------------------------------------------- run
 
 export async function run(ctx) {
@@ -265,6 +306,9 @@ export async function run(ctx) {
 
   const cases = [];
   const notes = [];
+
+  const vendoring = vendorThePack();
+
   const specs = matrix(ctx.scratch);
 
   /** The reference's own answer for the argv line whose ambiguity is asserted below. */
@@ -277,6 +321,17 @@ export async function run(ctx) {
     if (spec.shape === 'assets') cases.push(...assetsRootCases(spec.label, py, node, ASSETS_ROOT_RULING));
     else cases.push(...streamCases(spec.label, py, node));
   }
+
+  // The precondition, as a CASE and not as a note. If the vendoring ever stops working, the
+  // two `stdout-line1-path` rulings above go stale for a reason that has nothing to do with
+  // either runtime, and "STALE RULING: the case no longer differs" is not a sentence that
+  // points at the pack. This one is.
+  cases.push({
+    name: 'assets-root/precondition: the Node pack is vendored, so the two runtimes resolve different roots',
+    kind: 'json',
+    expected: { vendored: true },
+    actual: { vendored: vendoring.ok },
+  });
 
   // --------------------------------------------------------------- what the runs revealed
 
@@ -394,6 +449,14 @@ export async function run(ctx) {
       `${ambiguousPy.stdout.length} on stdout, exit ${ambiguousPy.exit}. a precondition in this ` +
       'file stops the suite if a flag rename ever makes --st unambiguous, because that would ' +
       'leave the case green and pointed at nothing.',
+  );
+  notes.push(
+    `the --assets-root ruling has a precondition: runtime-ts/assets/ is gitignored and only ` +
+      `prepack creates it, so on a clean checkout the two runtimes resolve the SAME root and the ` +
+      `ruling goes stale. this suite makes the precondition true by running the repository's own ` +
+      `scripts/sync-assets.mjs before the matrix. this run: pack was ` +
+      `${vendoring.already ? 'already present' : 'ABSENT and has been vendored'}, sync exited ` +
+      `${vendoring.exit}${vendoring.stderr ? ` — ${vendoring.stderr.split('\n').join(' / ')}` : ''}.`,
   );
   notes.push(
     'every process here runs with COLUMNS, LINES and BANTAMKIT_ASSETS deleted, and every argv line ' +
