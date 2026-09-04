@@ -50,8 +50,8 @@
     {
       "label": "M07-tie-break-inverted",
       "path": "runtime-py/src/bantamkit/skillaudit.py",
-      "anchor": "            if held is None or skill.version > held:",
-      "replacement": "            if held is None or skill.version < held:",
+      "anchor": "        if held is None or version > held:",
+      "replacement": "        if held is None or version < held:",
       "why": "the FIRST version directory in byte order is resolved instead of the last, so `dup-kit` reads 1.0.0 and `hash-kit` reads 0120fb83da5d: 17 skills / 1707 bytes, and `retired-check` is dragged in as a counted skill on top of the swap"
     },
     {
@@ -219,8 +219,8 @@
     {
       "label": "M31-scan-order-reversed",
       "path": "runtime-py/src/bantamkit/skillaudit.py",
-      "anchor": "    found.sort(key=lambda p: p.parts)\n    return found",
-      "replacement": "    found.sort(key=lambda p: p.parts, reverse=True)\n    return found",
+      "anchor": "    found.sort(key=lambda p: p.parts)\n    versions.sort()",
+      "replacement": "    found.sort(key=lambda p: p.parts, reverse=True)\n    versions.sort()",
       "why": "the order the omission record lists paths in stops being path order"
     },
     {
@@ -310,8 +310,8 @@
     {
       "label": "M44-an-empty-tree-refuses",
       "path": "runtime-py/src/bantamkit/skillaudit.py",
-      "anchor": "    found = [_load(path, base) for path in _walk(base)]",
-      "replacement": "    found = [_load(path, base) for path in _walk(base)]\n    if not found:\n        raise SkillAuditError(f\"no skills under {root}\")",
+      "anchor": "    found = _scan(base, enabled)",
+      "replacement": "    found = _scan(base, enabled)\n    if not found:\n        raise SkillAuditError(f\"no skills under {root}\")",
       "why": "nothing to audit stops being an answer and becomes a refusal"
     },
     {
@@ -324,8 +324,8 @@
     {
       "label": "M46-the-answer-depends-on-the-host",
       "path": "runtime-py/src/bantamkit/skillaudit.py",
-      "anchor": "    base = Path(root)",
-      "replacement": "    if not (Path(os.path.expanduser(\"~\")) / \".claude\").is_dir():\n        raise SkillAuditError(\"no host skill root\")\n    base = Path(root)",
+      "anchor": "    base = Path(root)\n    if not base.exists():",
+      "replacement": "    if not (Path(os.path.expanduser(\"~\")) / \".claude\").is_dir():\n        raise SkillAuditError(\"no host skill root\")\n    base = Path(root)\n    if not base.exists():",
       "why": "the tool starts consulting the host's own skill root instead of only its argument (bounded: one is_dir, no walk — the first form of this row walked the real HOME and had to be killed)"
     },
     {
@@ -422,7 +422,7 @@
     {
       "label": "M60-the-two-version-subjects-are-folded-into-one",
       "path": "runtime-py/src/bantamkit/skillaudit.py",
-      "anchor": "        stands_in = skill.directory in kept[skill.plugin_key]\n        skill.omitted = OMIT_DUPLICATE if stands_in else OMIT_STALE_VERSION",
+      "anchor": "        stands_in = skill.directory in kept.get(skill.plugin_key, set())\n        skill.omitted = OMIT_DUPLICATE if stands_in else OMIT_STALE_VERSION",
       "replacement": "        skill.omitted = OMIT_DUPLICATE",
       "why": "a skill a release REMOVED is reported as a duplicate of a skill that does not exist: the headline stays 16 / 1713 and only the omission record says so, which is exactly the reading under which the defect was invisible"
     },
@@ -453,6 +453,27 @@
       "anchor": "    return 0 <= index < len(text) and text[index].isalpha()",
       "replacement": "    return 0 <= index < len(text) and text[index].isalpha() and ord(text[index]) < 0x10000",
       "why": "the reference cannot make the Node port's UTF-16 mistake, so this row SIMULATES its effect: a letter above U+FFFF stops flanking an apostrophe, both quotes in astral-a and astral-b become delimiters, and '并发' is torn out of both as a fourth shared-trigger-phrase. That is exactly what runtime-ts answered until this round, and no fixture held a non-BMP character to say so"
+    },
+    {
+      "label": "M65-versions-resolved-over-surviving-skills",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    for marketplace, plugin, version in version_dirs:\n        held = resolved.get((marketplace, plugin))\n        if held is None or version > held:\n            resolved[(marketplace, plugin)] = version",
+      "replacement": "    for skill in found:\n        if skill.omitted is None:\n            held = resolved.get(skill.plugin_key)\n            if held is None or skill.version > held:\n                resolved[skill.plugin_key] = skill.version",
+      "why": "THE DEFECT F3 FIXES, and it is the resurrection defect arriving through the other door: the winner is chosen from the skills that SURVIVED loading and `enabled` rather than from the version directories on disk, so `ghost-kit/2.0.0` — whose only file does not parse — stops being a candidate, `1.0.0` wins by default, and `ghost-kit:present`, which the host does not serve, is counted. 21 skills / 2388 bytes, not 20 / 2261. BOTH runtimes did this and both agreed, so the differential was blind to it; the fixture is what put it under the differential"
+    },
+    {
+      "label": "M66-a-version-directory-declares-itself-without-the-skills-segment",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        if len(parts) == VERSION_PATH_SEGMENTS and parts[3] == SKILLS_SEGMENT:",
+      "replacement": "        if len(parts) == VERSION_PATH_SEGMENTS:",
+      "why": "the candidate stops being `<marketplace>/<plugin>/<version>/skills` and becomes any four-segment directory, so a stray sibling in a plugin directory can outrank the real version and empty the plugin"
+    },
+    {
+      "label": "M67-a-winner-that-serves-nothing-raises-instead-of-omitting",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        stands_in = skill.directory in kept.get(skill.plugin_key, set())",
+      "replacement": "        stands_in = skill.directory in kept[skill.plugin_key]",
+      "why": "the pre-F3 lookup, which could not reach the case at all: a resolved version directory that serves no surviving skill has no `kept` entry, so the audit raises KeyError instead of recording every loser as a `stale-version`"
     }
   ]
 }

@@ -75,8 +75,8 @@ README_SKILLS = 20
 README_CATALOGUE_BYTES = 2261
 #: Five RECORDS over six files — `duplicate-skill` carries two, one per multi-version plugin.
 README_OMISSIONS = 5
-README_OMITTED_FILES = 6
-README_FILES = 26
+README_OMITTED_FILES = 8
+README_FILES = 28
 README_BUDGET = 1024
 
 #: The four descriptions in the tree that are NOT pure ASCII, and what separates a byte count
@@ -109,6 +109,11 @@ EAGER_STRIP_BYTES = 2259
 #: Three distinct pairs, so a headline that moved says WHICH mistake was made.
 MERGED_VERSIONS = (21, 2398)
 INVERTED_TIE_BREAK = (21, 2255)
+#: …and what the tree answers when the version is resolved over the SURVIVING SKILLS rather
+#: than over the directories on disk, which is what this module did until 2026-09-05:
+#: `ghost-kit/2.0.0` holds nothing that parses, so it stops being a candidate, `1.0.0` wins by
+#: default and `ghost-kit:present` — which the host does not serve — is counted.
+RESOLVED_OVER_SURVIVORS = (21, 2388)
 
 
 def enabled() -> list[str]:
@@ -190,10 +195,7 @@ def test_every_counted_skill_costs_the_bytes_the_readme_says_it_does():
     because both are identities a reader could get wrong without moving the sum.
     """
     base = Path(CACHE)
-    found = [skillaudit._load(path, base) for path in skillaudit._walk(base)]
-    skillaudit._apply_enabled(found, enabled())
-    skillaudit._resolve_versions(found)
-    skillaudit._apply_dedupe(found)
+    found = skillaudit._scan(base, enabled())
     assert {s.id: s.bytes for s in found if s.omitted is None} == README_BYTES
 
 
@@ -566,12 +568,17 @@ def test_both_malformed_blocks_are_reported_and_only_one_of_them_is_counted():
     omitted and reaches neither `skills` nor `catalogue_bytes`. `no-description` parses and
     carries no `description:`, so it IS a skill — one costing zero bytes — because the host
     loads nothing from it per session and the operator should still be told it is there.
+
+    `ghost-kit:broken` is a third of the first kind, and it is reported even though its
+    plugin has no counted skill at all: it is the only file under the version directory that
+    was RESOLVED, which is what makes that directory the resolved one.
     """
     audit = fixture_audit()
     bad = kinds(audit, skillaudit.KIND_FRONTMATTER)
     assert [(f.skills[0], f.detail) for f in bad] == [
         ("frontmatter-kit:broken-open", skillaudit.BAD_UNTERMINATED),
         ("frontmatter-kit:no-description", skillaudit.BAD_NO_DESCRIPTION),
+        ("ghost-kit:broken", skillaudit.BAD_UNTERMINATED),
     ]
     assert {f.severity for f in bad} == {"medium"}
     assert README_BYTES["frontmatter-kit:no-description"] == 0
@@ -606,7 +613,7 @@ def test_the_frontmatter_name_that_disagrees_with_its_directory_is_the_one_that_
 
 
 def test_a_name_that_matches_its_directory_is_not_a_finding(tmp_path):
-    """Eleven of the twelve counted skills agree with their directories and say nothing."""
+    """Nineteen of the twenty counted skills agree with their directories and say nothing."""
     skill(tmp_path, "m/p/1.0.0/skills/agrees", frontmatter("agrees", "a description"))
     assert kinds(skillaudit.audit(tmp_path), skillaudit.KIND_NAME_MISMATCH) == []
 
@@ -618,17 +625,17 @@ def test_the_five_omission_subjects_carry_the_counts_bytes_and_paths_the_readme_
     """One record per subject, in a fixed order, each naming the file behind it.
 
     `size` is what the omission COST the catalogue: 112 bytes that enabling `off-kit` would
-    add, 44 + 87 for the two displaced copies, 137 for the skill `1.1.0` dropped. It is `0`
-    for the two files whose description could not be read at all — an unknowable cost, stated
-    as zero rather than guessed.
+    add, 44 + 87 for the two displaced copies, 137 + 127 for the two skills the resolved
+    version does not serve. It is `0` for the three files whose description could not be read
+    at all — an unknowable cost, stated as zero rather than guessed.
     """
     audit = fixture_audit()
     assert [(o.subject, o.count, o.size) for o in audit.omissions] == [
         (skillaudit.OMIT_NOT_ENABLED, 1, 112),
         (skillaudit.OMIT_DUPLICATE, 2, 131),
-        (skillaudit.OMIT_STALE_VERSION, 1, 137),
+        (skillaudit.OMIT_STALE_VERSION, 2, 264),
         (skillaudit.OMIT_UNREADABLE, 1, 0),
-        (skillaudit.OMIT_UNPARSED, 1, 0),
+        (skillaudit.OMIT_UNPARSED, 2, 0),
     ]
     by = subjects(audit)
     assert by[skillaudit.OMIT_NOT_ENABLED].what == (
@@ -639,13 +646,15 @@ def test_the_five_omission_subjects_carry_the_counts_bytes_and_paths_the_readme_
         "kit-market/hash-kit/0120fb83da5d/skills/hashed-check/SKILL.md"
     )
     assert by[skillaudit.OMIT_STALE_VERSION].what == (
-        "kit-market/dup-kit/1.0.0/skills/retired-check/SKILL.md"
+        "kit-market/dup-kit/1.0.0/skills/retired-check/SKILL.md, "
+        "kit-market/ghost-kit/1.0.0/skills/present/SKILL.md"
     )
     assert by[skillaudit.OMIT_UNREADABLE].what == (
         "kit-market/frontmatter-kit/2.3.1/skills/bad-bytes/SKILL.md"
     )
     assert by[skillaudit.OMIT_UNPARSED].what == (
-        "kit-market/frontmatter-kit/2.3.1/skills/broken-open/SKILL.md"
+        "kit-market/frontmatter-kit/2.3.1/skills/broken-open/SKILL.md, "
+        "kit-market/ghost-kit/2.0.0/skills/broken/SKILL.md"
     )
 
 
@@ -654,7 +663,7 @@ def test_an_invalid_utf8_byte_is_a_record_and_not_a_crash_and_not_a_replacement_
 
     A permissive decoder would substitute `U+FFFD` and count a description nobody wrote; a
     strict one that let the error escape would refuse the whole audit over one file. This
-    is the third option: the file is a record and the other fifteen are still answered.
+    is the third option: the file is a record and the other twenty-seven are still answered.
     """
     raw = (CACHE / "kit-market/frontmatter-kit/2.3.1/skills/bad-bytes/SKILL.md").read_bytes()
     assert b"\x80" in raw
@@ -675,9 +684,9 @@ def test_an_omission_subject_with_no_members_is_not_reported_at_all(tmp_path):
 
 
 def test_enabled_omitted_counts_everything_and_enabled_empty_counts_no_plugin_skill():
-    """Omitted and empty are different states, and the difference is fifteen skills here.
+    """Omitted and empty are different states, and the difference is twenty skills here.
 
-    Omitted: every skill under an enabled-or-not plugin counts — the sixteen plus
+    Omitted: every skill under an enabled-or-not plugin counts — the twenty plus
     `off-kit:never-loaded`. Empty: no plugin is switched on, so only the skill outside a
     plugin survives. The version rule runs in BOTH cases: `off-kit` has one version
     directory, so switching it on adds exactly one skill and not two.
@@ -687,19 +696,19 @@ def test_enabled_omitted_counts_everything_and_enabled_empty_counts_no_plugin_sk
     assert skillaudit.OMIT_NOT_ENABLED not in subjects(everything)
     none_on = skillaudit.audit(CACHE, enabled=[], usage=usage())
     assert none_on.skills == 1
-    # Nineteen: the twenty-two files, less `solo-check` (still counted), less the two whose
-    # own file failed first — an unreadable byte and an unparsable block outrank a plugin
-    # that is merely switched off, because neither can say what enabling it would cost. A
-    # plugin that is off never reaches the version rule either, so no `stale-version` here.
-    assert subjects(none_on)[skillaudit.OMIT_NOT_ENABLED].count == README_FILES - 3
+    # Twenty-four: the twenty-eight files, less `solo-check` (still counted), less the three
+    # whose own file failed first — an unreadable byte and two unparsable blocks outrank a
+    # plugin that is merely switched off, because none of them can say what enabling it would
+    # cost. A plugin that is off never reaches the version rule either, so no `stale-version`.
+    assert subjects(none_on)[skillaudit.OMIT_NOT_ENABLED].count == README_FILES - 4
     assert skillaudit.OMIT_STALE_VERSION not in subjects(none_on)
     assert skillaudit.OMIT_DUPLICATE not in subjects(none_on)
     assert none_on.skills + sum(o.count for o in none_on.omissions) == README_FILES
-    # The one record here holds thirteen paths, which is the only place in this file that
+    # The one record here holds twenty-four paths, which is the only place in this file that
     # scan ORDER is visible. It is path order, sorted, because two machines hand back
     # directory entries in two different orders and the document is byte-compared.
     listed = subjects(none_on)[skillaudit.OMIT_NOT_ENABLED].what.split(", ")
-    assert listed == sorted(listed) and len(listed) == README_FILES - 3
+    assert listed == sorted(listed) and len(listed) == README_FILES - 4
 
 
 def test_a_skill_outside_a_plugin_keeps_its_bare_name_and_enabled_cannot_speak_to_it():
@@ -765,11 +774,107 @@ def test_a_skill_the_resolved_version_dropped_is_a_stale_version_and_not_resurre
     assert (audit.skills, audit.catalogue_bytes) == (README_SKILLS, README_CATALOGUE_BYTES)
     assert (README_SKILLS, README_CATALOGUE_BYTES) != MERGED_VERSIONS
     stale = subjects(audit)[skillaudit.OMIT_STALE_VERSION]
-    assert (stale.count, stale.size) == (1, 137)
-    assert stale.what == "kit-market/dup-kit/1.0.0/skills/retired-check/SKILL.md"
+    assert (stale.count, stale.size) == (2, 264)
+    assert "kit-market/dup-kit/1.0.0/skills/retired-check/SKILL.md" in stale.what
     assert "dup-kit:retired-check" not in {s for f in audit.findings for s in f.skills}
     race = [f for f in kinds(audit, skillaudit.KIND_SHARED_PHRASE) if f.detail == "race condition"]
     assert len(race) == 1 and "dup-kit:retired-check" not in race[0].skills
+
+
+def test_the_resolved_version_is_the_directory_on_disk_over_the_committed_tree():
+    """`ghost-kit` in the committed tree, which is the same rule under the differential.
+
+    `ghost-kit/2.0.0/skills/` holds one file and it does not parse, so the plugin serves
+    NOTHING; `ghost-kit/1.0.0/skills/present/` is readable and is not what the host serves.
+    Resolving over surviving skills counts `present` and answers 21 skills / 2388 bytes; both
+    runtimes did, and both agreed, so the cross-runtime suite compared 71 cases and found
+    nothing. Four things say so here rather than one, because a headline alone cannot tell
+    "the rule works" from "two errors cancelled".
+    """
+    assert (CACHE / "kit-market/ghost-kit/2.0.0/skills/broken/SKILL.md").exists()
+    assert not (CACHE / "kit-market/ghost-kit/2.0.0/skills/present").exists()
+    audit = fixture_audit()
+    assert (audit.skills, audit.catalogue_bytes) == (README_SKILLS, README_CATALOGUE_BYTES)
+    assert (README_SKILLS, README_CATALOGUE_BYTES) != RESOLVED_OVER_SURVIVORS
+    assert "ghost-kit:present" not in README_BYTES
+    stale = subjects(audit)[skillaudit.OMIT_STALE_VERSION]
+    assert "kit-market/ghost-kit/1.0.0/skills/present/SKILL.md" in stale.what
+    assert "ghost-kit:present" not in {s for f in audit.findings for s in f.skills}
+    # The resolved directory serves nothing, and the ONE file under it is still reported:
+    # `ghost-kit:broken` is a `frontmatter-malformed` finding and an `unparsed-frontmatter`
+    # omission, which is how an operator sees which directory was read.
+    assert "ghost-kit:broken" in {f.skills[0] for f in kinds(audit, skillaudit.KIND_FRONTMATTER)}
+    assert "kit-market/ghost-kit/2.0.0/skills/broken/SKILL.md" in (
+        subjects(audit)[skillaudit.OMIT_UNPARSED].what
+    )
+
+
+def test_a_version_directory_with_no_readable_skill_in_it_still_wins(tmp_path):
+    """THE RESURRECTION DEFECT THROUGH THE OTHER DOOR, and the differential was blind to it.
+
+    A version directory exists on disk whether or not anything under it can be read, and the
+    host serves the one it serves. Resolving over the SURVIVING SKILLS instead — which is what
+    this module did until 2026-09-05 — means an empty `2.0.0` is never a candidate, `1.0.0`
+    wins by default, and the audit answers from a directory the host is not serving with no
+    omission, no finding, and no mention of `2.0.0` anywhere in the document.
+
+    Reproduced here in the four shapes a version directory can be invisible in: empty, holding
+    an unreadable file, holding an unparsable one, and holding a `skills/` directory with only
+    an empty subdirectory under it. In every one of them `2.0.0` wins and `1.0.0`'s skill is a
+    `stale-version` record — which is the honest answer: the file is on disk, the host does not
+    serve it, and the plugin's counted skills are zero.
+
+    BOTH RUNTIMES AGREED ON THE WRONG ANSWER, so `node tools/conformance/run.mjs` could not
+    see this at all. `ghost-kit` in the committed tree is what puts it under the differential;
+    this node is what states the rule, including the case git cannot commit (an empty
+    directory).
+    """
+    for case, build in {
+        "empty": lambda root: (root / "m/p/2.0.0/skills").mkdir(parents=True),
+        "unreadable": lambda root: (
+            (root / "m/p/2.0.0/skills/x").mkdir(parents=True),
+            (root / "m/p/2.0.0/skills/x/SKILL.md").write_bytes(
+                b"---\nname: x\ndescription: bad \x80 byte\n---\n"
+            ),
+        ),
+        "unparsable": lambda root: (
+            (root / "m/p/2.0.0/skills/x").mkdir(parents=True),
+            (root / "m/p/2.0.0/skills/x/SKILL.md").write_text("---\nname: x\n", encoding="utf-8"),
+        ),
+        "empty skill directory": lambda root: (root / "m/p/2.0.0/skills/x").mkdir(parents=True),
+    }.items():
+        root = tmp_path / case.replace(" ", "-")
+        skill(root, "m/p/1.0.0/skills/served", frontmatter("served", "the older copy"))
+        build(root)
+        audit = skillaudit.audit(root)
+        assert audit.skills == 0, case
+        assert audit.catalogue_bytes == 0, case
+        stale = subjects(audit).get(skillaudit.OMIT_STALE_VERSION)
+        assert stale is not None, case
+        assert (stale.count, stale.size) == (1, len("the older copy")), case
+        assert stale.what == "m/p/1.0.0/skills/served/SKILL.md", case
+        assert skillaudit.OMIT_DUPLICATE not in subjects(audit), case
+        # …and the sum still accounts for every file on disk, which is the property a silent
+        # resolution breaks in the other direction.
+        found = len(skillaudit._walk(root))
+        assert audit.skills + sum(o.count for o in audit.omissions) == found, case
+
+
+def test_a_directory_that_is_not_a_version_directory_declares_no_version(tmp_path):
+    """The candidate is `<marketplace>/<plugin>/<version>/skills`, and nothing wider.
+
+    Four segments AND the fourth spelled `skills`, which is the same shape a counted skill's
+    path already has to match. A plugin directory with a stray sibling in it — notes, a
+    `.git`, a half-extracted download — must not become a version that outranks the real one,
+    because that would empty the plugin on the strength of a directory holding no skills.
+    """
+    skill(tmp_path, "m/p/1.0.0/skills/served", frontmatter("served", "the only copy"))
+    for stray in ("m/p/zzz-notes", "m/p/9.9.9/not-skills", "m/zzz-loose/skills", "m/p/1.0.0/docs"):
+        (tmp_path / stray).mkdir(parents=True)
+    audit = skillaudit.audit(tmp_path)
+    assert audit.skills == 1
+    assert audit.catalogue_bytes == len("the only copy")
+    assert audit.omissions == ()
 
 
 def test_the_two_version_subjects_split_on_whether_the_resolved_version_has_the_name(tmp_path):

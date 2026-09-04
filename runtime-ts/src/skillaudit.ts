@@ -73,6 +73,12 @@ const SKILLS_SEGMENT = 'skills';
 // root. Any other shape is a skill outside a plugin.
 const PLUGIN_PATH_SEGMENTS = 6;
 
+// `<marketplace>/<plugin>/<version>/skills` — the first four of those, and the DIRECTORY that
+// declares a version directory exists. Version resolution is over these, not over the files
+// under them: a version directory that holds no readable `SKILL.md` still exists, and the host
+// still serves it. See `resolveVersions`.
+const VERSION_PATH_SEGMENTS = 4;
+
 // The subjects an `Omission` can carry. Stable tokens, because a renderer switches on them
 // and a caller filters on them.
 export const OMIT_NOT_ENABLED = 'plugin-not-enabled';
@@ -354,7 +360,8 @@ const descriptionBytes = (s: Skill): number => Buffer.byteLength(s.description, 
 // ------------------------------------------------------------------------------ the scan
 
 /**
- * Every `SKILL.md` under `root`, as relative path parts, in a fixed order.
+ * One walk, two answers: every `SKILL.md` under `root` as relative path parts, and every
+ * VERSION DIRECTORY, both in a fixed order.
  *
  * `readdirSync` hands back directory entries in whatever order the filesystem chose, and two
  * machines choose differently. Sorting is what makes the scan order — and therefore the
@@ -362,12 +369,23 @@ const descriptionBytes = (s: Skill): number => Buffer.byteLength(s.description, 
  * Symlinked directories are listed and NOT descended into, which is `os.walk`'s
  * `followlinks=False`; a symlink loop is not a skill catalogue. A directory that will not
  * open is skipped in silence, which is `onerror=None`.
+ *
+ * THE SECOND ANSWER IS WHY THIS IS NOT JUST A FILE LIST. A version directory declares itself
+ * by holding a `skills/` directory, and it declares itself whether or not anything under it
+ * can be read. Resolving over the files instead makes an EMPTY newer version invisible, so an
+ * older directory wins in silence; see `resolveVersions`. Only a directory this walk DESCENDS
+ * INTO is recorded, which is exactly the set `os.walk` yields as a `dirpath`, so a symlinked
+ * `skills/` declares nothing on either runtime.
  */
-function walk(root: string): string[][] {
+function scanTree(root: string): { files: string[][]; versions: string[][] } {
   const found: string[][] = [];
+  const versions: string[][] = [];
   const pending: string[][] = [[]];
   while (pending.length > 0) {
     const rel = pending.pop()!;
+    if (rel.length === VERSION_PATH_SEGMENTS && rel[3] === SKILLS_SEGMENT) {
+      versions.push([rel[0]!, rel[1]!, rel[2]!]);
+    }
     let entries;
     try {
       entries = readdirSync(join(root, ...rel), { withFileTypes: true });
@@ -394,7 +412,8 @@ function walk(root: string): string[][] {
     }
   }
   found.sort(cmpParts);
-  return found;
+  versions.sort(cmpParts);
+  return { files: found, versions };
 }
 
 // -------------------------------------------------------------- the whole-value scalar
@@ -681,26 +700,41 @@ function applyEnabled(found: Skill[], enabled: readonly string[] | null): void {
  * depends on whether the resolved version has a skill of the same name to stand in for it:
  * `duplicate-skill` when it does, `stale-version` when it does not.
  *
+ * **THE CANDIDATES ARE DIRECTORIES ON DISK, NOT SURVIVING SKILLS.** This function used to
+ * choose the winner from the skills that had come through `load` and `applyEnabled`, which is
+ * the resurrection defect arriving through the other door: a version directory holding no
+ * `SKILL.md`, or only files that would not decode or would not parse, contributed no skill, so
+ * it was never a candidate and an OLDER directory won in silence — no omission, no finding,
+ * and no mention of the directory the host actually serves. Measured 2026-09-05 with
+ * `mk/kit/2.0.0/skills/` empty beside a populated `1.0.0`: BOTH runtimes answered from
+ * `1.0.0` and said nothing, so the differential could not see it either. `versionDirs` comes
+ * from `scanTree` and names every directory that exists, whatever is under it.
+ *
+ * The losing case is then visible where every other skipped file already is: each skill under
+ * a directory that did not win gets an omission record, and when the winner serves nothing at
+ * all every one of them is a `stale-version`.
+ *
  * A skill outside a plugin keys on two empty strings with an empty version, so every one of
- * them is in the resolved version by construction and none is ever omitted here.
+ * them is in the resolved version by construction and none is ever omitted here. No real path
+ * can produce that key — every path segment is non-empty — so it is seeded, not found.
  */
-function resolveVersions(found: Skill[]): void {
+function resolveVersions(found: Skill[], versionDirs: readonly (readonly string[])[]): void {
   // The same key spelling the dedupe uses, one field shorter. The separator is a NUL byte —
   // written `\0` here, because the character itself is INVISIBLE in a comment and the
   // sentence then reads as if a space were the separator. NUL cannot occur in a path
   // segment on any platform, so it is the one separator that cannot collide.
   const pluginKey = (s: Skill): string => `${s.marketplace} ${s.plugin}`;
-  const resolved = new Map<string, string>();
-  for (const skill of found) {
-    if (skill.omitted !== null) continue;
-    const held = resolved.get(pluginKey(skill));
-    if (held === undefined || cmpCodepoint(skill.version, held) > 0) {
-      resolved.set(pluginKey(skill), skill.version);
-    }
+  const resolved = new Map<string, string>([[` `, '']]);
+  for (const [marketplace, plugin, version] of versionDirs) {
+    const key = `${marketplace} ${plugin}`;
+    const held = resolved.get(key);
+    if (held === undefined || cmpCodepoint(version!, held) > 0) resolved.set(key, version!);
   }
-  // The names the resolved version actually serves. Built from the same population the winner
-  // was chosen from, so a plugin whose files were ALL omitted first — unreadable, unparsable
-  // or switched off — is in neither map and is never looked up in one.
+  // The names the resolved version actually SERVES, which is a different question from which
+  // directory won: a winner whose files were all unreadable, unparsable or switched off serves
+  // nothing and is in no entry here. The `?? EMPTY` below is that case, and it is the one this
+  // function used to be unable to reach at all — it read `kept.get(key)!` and would have
+  // thrown on it.
   const kept = new Map<string, Set<string>>();
   for (const skill of found) {
     if (skill.omitted !== null || skill.version !== resolved.get(pluginKey(skill))) continue;
@@ -711,9 +745,11 @@ function resolveVersions(found: Skill[]): void {
     }
     names.add(skill.directory);
   }
+  const EMPTY: ReadonlySet<string> = new Set();
   for (const skill of found) {
     if (skill.omitted !== null || skill.version === resolved.get(pluginKey(skill))) continue;
-    skill.omitted = kept.get(pluginKey(skill))!.has(skill.directory) ? OMIT_DUPLICATE : OMIT_STALE_VERSION;
+    const standsIn = (kept.get(pluginKey(skill)) ?? EMPTY).has(skill.directory);
+    skill.omitted = standsIn ? OMIT_DUPLICATE : OMIT_STALE_VERSION;
   }
 }
 
@@ -824,20 +860,27 @@ export interface ScannedSkill {
 }
 
 /**
- * The scan, decided but not yet reported: every `SKILL.md` found, with `enabled` and the
- * dedupe already applied.
+ * The scan, decided but not yet reported: every `SKILL.md` found, with `enabled`, the version
+ * resolution and the dedupe already applied. `skillaudit._scan` on the reference.
  *
- * The seam the reference's tests reach into as `_walk` + `_load` + `_apply_enabled` +
- * `_resolve_versions` + `_apply_dedupe`, in one call, because the per-skill byte table is the only oracle that can
- * tell a headline that is right from a headline that is right for two cancelling reasons.
- * `audit` is the product surface; this is how a test asks which skill paid what.
+ * ONE seam rather than four calls in a fixed order, because the order IS the rule — the
+ * version resolution runs after `enabled` and before the dedupe — and a caller reproducing it
+ * by hand can get it wrong or miss an argument the four grow later. The per-skill byte table
+ * is the only oracle that can tell a headline that is right from a headline that is right for
+ * two cancelling reasons: `audit` is the product surface, this is how a test asks which skill
+ * paid what.
  */
-export function scan(root: string, enabled: readonly string[] | null = null): ScannedSkill[] {
-  const found = walk(root).map((parts) => load(root, parts));
+function decide(root: string, enabled: readonly string[] | null): Skill[] {
+  const { files, versions } = scanTree(root);
+  const found = files.map((parts) => load(root, parts));
   applyEnabled(found, enabled);
-  resolveVersions(found);
+  resolveVersions(found, versions);
   applyDedupe(found);
-  return found.map((s) => ({
+  return found;
+}
+
+export function scan(root: string, enabled: readonly string[] | null = null): ScannedSkill[] {
+  return decide(root, enabled).map((s) => ({
     id: skillId(s),
     relpath: s.relpath,
     directory: s.directory,
@@ -874,10 +917,7 @@ export function audit(root: string, options: AuditOptions = {}): Audit {
   }
   if (!stats.isDirectory()) throw new SkillAuditError(`${root} is a file, not a directory of skills`);
 
-  const found = walk(root).map((parts) => load(root, parts));
-  applyEnabled(found, enabled);
-  resolveVersions(found);
-  applyDedupe(found);
+  const found = decide(root, enabled);
   const counted = found.filter((s) => s.omitted === null);
   const catalogueBytes = counted.reduce((sum, s) => sum + descriptionBytes(s), 0);
 

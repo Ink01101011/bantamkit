@@ -35,8 +35,10 @@
  *      would surface even when the sums happen to agree. It is also the only place the two
  *      halves are compared on WHICH version directory each resolved: `duplicate-skill` and
  *      `stale-version` are per-file tokens here, and a runtime that resolved the other
- *      directory would swap them on six of the twenty-six rows while the headline moved by a
- *      number a reader would have to look up.
+ *      directory would swap them on eight of the twenty-eight rows while the headline moved
+ *      by a number a reader would have to look up. `ghost-kit` is the one whose resolved
+ *      version serves NOTHING, so it is also where a runtime that resolved over surviving
+ *      skills rather than over directories on disk would count a skill the host never serves.
  *
  * Every string travels as base64, in both directions. The descriptions in the fixture carry
  * quotes, backslashes and escaped quotes, which is precisely the material a JSON round trip
@@ -250,8 +252,8 @@ export async function run(ctx) {
   }
 
   notes.push(
-    `fixture: ${CACHE} — 26 SKILL.md, 20 counted, 2261 catalogue bytes, ` +
-      `5 omission records over 6 files`,
+    `fixture: ${CACHE} — 28 SKILL.md, 20 counted, 2261 catalogue bytes, ` +
+      `5 omission records over 8 files`,
     `${cases.length} cases: ${configs.length} documents, ${UNWRAP_VALUES.length} unwrap values, ` +
       `${phraseTexts.length} phrase texts, 3 per-file tables`,
   );

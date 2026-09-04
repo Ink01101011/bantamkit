@@ -120,6 +120,12 @@ SKILLS_SEGMENT = "skills"
 # root. Any other shape is a skill outside a plugin.
 PLUGIN_PATH_SEGMENTS = 6
 
+# `<marketplace>/<plugin>/<version>/skills` — the first four of those segments, and the
+# DIRECTORY that declares a version directory exists. Version resolution is over these, not
+# over the files under them: a version directory that holds no readable `SKILL.md` still
+# exists, and the host still serves it. See `_resolve_versions`.
+VERSION_PATH_SEGMENTS = 4
+
 # The subjects an `Omission` can carry. Stable tokens, because a renderer switches on them
 # and a caller filters on them.
 OMIT_NOT_ENABLED = "plugin-not-enabled"
@@ -343,21 +349,39 @@ def _relative_parts(path: Path, root: Path) -> list[str]:
     return list(path.relative_to(root).parts)
 
 
-def _walk(root: Path) -> list[Path]:
-    """Every `SKILL.md` under `root`, in a fixed order.
+def _scan_tree(root: Path) -> tuple[list[Path], list[tuple[str, str, str]]]:
+    """One walk, two answers: every `SKILL.md` under `root`, and every VERSION DIRECTORY.
 
     `os.walk` yields directory entries in whatever order the filesystem hands them over, and
-    two machines hand them over differently. Sorting in place is what makes the scan order —
-    and therefore the omission `what` lists and the duplicate tie-break's "last wins" — the
-    same everywhere. `followlinks` stays off: a symlink loop is not a skill catalogue.
+    two machines hand them over differently. Sorting is what makes the scan order — and
+    therefore the omission `what` lists and the duplicate tie-break's "last wins" — the same
+    everywhere. `followlinks` stays off: a symlink loop is not a skill catalogue.
+
+    THE SECOND ANSWER IS WHY THIS FUNCTION IS NOT JUST A FILE LIST. A version directory
+    declares itself by holding a `skills/` directory — `<marketplace>/<plugin>/<version>/
+    skills`, the first four segments of the path shape a skill has — and it declares itself
+    whether or not anything under it can be read. Resolving over the files instead makes an
+    EMPTY newer version invisible, so an older directory wins in silence; see
+    `_resolve_versions`. A directory reached by following a symlink is not walked into on
+    either runtime, so it declares nothing on either.
     """
     found: list[Path] = []
+    versions: list[tuple[str, str, str]] = []
     for dirpath, dirnames, filenames in os.walk(root, onerror=None):
         dirnames.sort()
+        parts = _relative_parts(Path(dirpath), root)
+        if len(parts) == VERSION_PATH_SEGMENTS and parts[3] == SKILLS_SEGMENT:
+            versions.append((parts[0], parts[1], parts[2]))
         if SKILL_FILE in filenames:
             found.append(Path(dirpath) / SKILL_FILE)
     found.sort(key=lambda p: p.parts)
-    return found
+    versions.sort()
+    return found, versions
+
+
+def _walk(root: Path) -> list[Path]:
+    """Every `SKILL.md` under `root`, in a fixed order. `_scan_tree`'s first answer."""
+    return _scan_tree(root)[0]
 
 
 def _scalar_close(value: str, quote: str) -> int:
@@ -560,7 +584,7 @@ def _apply_enabled(found: list[_Skill], enabled: list[str] | None) -> None:
             skill.omitted = OMIT_NOT_ENABLED
 
 
-def _resolve_versions(found: list[_Skill]) -> None:
+def _resolve_versions(found: list[_Skill], version_dirs: list[tuple[str, str, str]]) -> None:
     """Resolve ONE version directory per (marketplace, plugin), and omit every other one.
 
     This runs BEFORE `_apply_dedupe` and it is the whole fix for the resurrection defect: the
@@ -572,18 +596,35 @@ def _resolve_versions(found: list[_Skill]) -> None:
     subject depends on whether the resolved version has a skill of the same name to stand in
     for it — `duplicate-skill` when it does, `stale-version` when it does not.
 
+    **THE CANDIDATES ARE DIRECTORIES ON DISK, NOT SURVIVING SKILLS.** This function used to
+    choose the winner from the skills that had already come through `_load` and
+    `_apply_enabled`, which is the resurrection defect arriving through the other door: a
+    version directory holding no `SKILL.md` at all, or only files that would not decode or
+    would not parse, contributed no skill, so it was never a candidate and an OLDER directory
+    won in silence — no omission, no finding, and no mention anywhere in the document of the
+    directory the host is actually serving. Measured 2026-09-05 with `mk/kit/2.0.0/skills/`
+    empty beside a populated `1.0.0`: both runtimes answered from `1.0.0` and said nothing.
+    They agreed, so the differential could not see it either. `version_dirs` comes from
+    `_scan_tree` and names every directory that exists, whatever is under it.
+
+    The losing case is then visible where every other skipped file already is: each skill
+    under a directory that did not win gets an omission record, and when the winner serves
+    nothing at all every one of them is a `stale-version` — which is the honest reading. They
+    are on disk, they are in nobody's bill, and the plugin's counted skills are zero.
+
     A skill outside a plugin keys on `("", "")` with an empty version, so every one of them is
-    in the resolved version by construction and none is ever omitted here.
+    in the resolved version by construction and none is ever omitted here. No real path can
+    produce that key — every path segment is non-empty — so it is seeded rather than found.
     """
-    resolved: dict[tuple[str, str], str] = {}
-    for skill in found:
-        if skill.omitted is None:
-            held = resolved.get(skill.plugin_key)
-            if held is None or skill.version > held:
-                resolved[skill.plugin_key] = skill.version
-    # The names the resolved version actually serves. Built from the same population the
-    # winner was chosen from, so a plugin whose files were ALL omitted first — unreadable,
-    # unparsable or switched off — is not in either map and is never looked up in one.
+    resolved: dict[tuple[str, str], str] = {("", ""): ""}
+    for marketplace, plugin, version in version_dirs:
+        held = resolved.get((marketplace, plugin))
+        if held is None or version > held:
+            resolved[(marketplace, plugin)] = version
+    # The names the resolved version actually SERVES, which is a different question from
+    # which directory won: a winner whose files were all unreadable, unparsable or switched
+    # off serves nothing and is in no entry here. `.get(..., set())` below is that case, and
+    # it is the one this function used to be unable to reach at all.
     kept: dict[tuple[str, str], set[str]] = {}
     for skill in found:
         if skill.omitted is None and skill.version == resolved[skill.plugin_key]:
@@ -591,7 +632,7 @@ def _resolve_versions(found: list[_Skill]) -> None:
     for skill in found:
         if skill.omitted is not None or skill.version == resolved[skill.plugin_key]:
             continue
-        stands_in = skill.directory in kept[skill.plugin_key]
+        stands_in = skill.directory in kept.get(skill.plugin_key, set())
         skill.omitted = OMIT_DUPLICATE if stands_in else OMIT_STALE_VERSION
 
 
@@ -611,6 +652,26 @@ def _apply_dedupe(found: list[_Skill]) -> None:
         if held is not None:
             held.omitted = OMIT_DUPLICATE
         winners[skill.dedupe_key] = skill
+
+
+def _scan(root: str | Path, enabled: list[str] | None = None) -> list[_Skill]:
+    """The scan, decided but not yet reported: every `SKILL.md` found, with `enabled`, the
+    version resolution and the dedupe already applied.
+
+    One seam rather than four calls in a fixed order, because the order IS the rule — the
+    version resolution has to run after `enabled` and before the dedupe — and a caller that
+    reproduces it by hand can get it wrong, or can miss an argument the four grow later.
+    `runtime-ts/src/skillaudit.ts` exports the same seam under the same name for the same
+    reason: the per-skill byte table is the only oracle that separates a headline that is
+    right from one that is right for two cancelling reasons.
+    """
+    base = Path(root)
+    files, version_dirs = _scan_tree(base)
+    found = [_load(path, base) for path in files]
+    _apply_enabled(found, enabled)
+    _resolve_versions(found, version_dirs)
+    _apply_dedupe(found)
+    return found
 
 
 def _shared_phrase_findings(counted: list[_Skill]) -> list[Finding]:
@@ -679,10 +740,7 @@ def audit(
     if not base.is_dir():
         raise SkillAuditError(f"{root} is a file, not a directory of skills")
 
-    found = [_load(path, base) for path in _walk(base)]
-    _apply_enabled(found, enabled)
-    _resolve_versions(found)
-    _apply_dedupe(found)
+    found = _scan(base, enabled)
     counted = [s for s in found if s.omitted is None]
     catalogue_bytes = sum(s.bytes for s in counted)
 

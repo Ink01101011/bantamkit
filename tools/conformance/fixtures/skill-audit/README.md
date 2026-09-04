@@ -1,6 +1,6 @@
 # `skill_audit` fixture tree
 
-Twenty-six `SKILL.md` files laid out the way a plugin cache lays them out, engineered so every
+Twenty-eight `SKILL.md` files laid out the way a plugin cache lays them out, engineered so every
 `skill_audit` finding kind and every omission subject fires at least once. The contract they
 pin is `assets/tools/skill_audit.json`; this file says, per fixture, WHICH clause it exists to
 trigger — so a later unit can tell a fixture that stopped working from one that never worked.
@@ -21,9 +21,10 @@ Measured by hand over these files, applying the spec in `assets/tools/skill_audi
 
     skills            20
     catalogue_bytes   2261
-    omissions          5      (20 counted + 6 omitted = 26 SKILL.md on disk)
+    omissions          5      (20 counted + 8 omitted = 28 SKILL.md on disk)
 
-Five omission RECORDS over six files: `duplicate-skill` carries two.
+Five omission RECORDS over eight files: `duplicate-skill`, `stale-version` and
+`unparsed-frontmatter` each carry two.
 
 The identity of every counted skill, and its description bytes:
 
@@ -205,6 +206,32 @@ Two plugins here pin the rule, and they pin different halves of it.
   from the omissions, `'race condition'` grows a fourth member, and `never-invoked` grows a
   fourth finding.
 
+`ghost-kit` holds `1.0.0` and `2.0.0`, and it is the third half of the rule: **the candidates
+are DIRECTORIES ON DISK, not the skills that survived reading.** `2.0.0/skills/` holds one
+file and that file's frontmatter block is never closed, so the plugin serves NOTHING;
+`1.0.0/skills/present/` is perfectly readable and is not what the host serves.
+
+Resolving over surviving skills — which is what BOTH runtimes did until 2026-09-05 — makes
+`2.0.0` invisible: it contributes no skill, so it is never a candidate, `1.0.0` wins by
+default, and the audit counts `ghost-kit:present` with no omission, no finding and no mention
+of `2.0.0` anywhere in the document. Measured over this tree: **21 skills / 2388 bytes**
+against the correct 20 / 2261. The same happens for a version directory that is simply EMPTY,
+which is the shape the defect was reproduced in — and which git cannot commit, so both
+runtimes' own test files pin it in a `tmp_path` tree instead.
+
+Both runtimes agreed on the wrong answer, so the differential could not see this at all;
+`ghost-kit` is what puts it under the differential. What the document says instead is:
+`ghost-kit/1.0.0/skills/present/` is a `stale-version` (127 bytes paid by nobody) and
+`ghost-kit/2.0.0/skills/broken/` is an `unparsed-frontmatter` omission AND a
+`frontmatter-malformed` finding — which is how an operator sees which directory was read even
+when that directory serves nothing.
+
+A candidate is `<marketplace>/<plugin>/<version>/skills`: four segments, the fourth spelled
+`skills`, the same shape a counted skill's path already has to match. A stray sibling in a
+plugin directory — notes, a `.git`, a half-extracted download — is not a version, because a
+directory holding no `skills/` can never serve a skill and letting it win would empty the
+plugin. Both runtimes' test files pin that too.
+
 `hash-kit` holds `0120fb83da5d` and `unknown`, and both hold `hashed-check`. Neither name is a
 version. This is not invented: measured 2026-09-05, `frontend-design` on this machine has nine
 version directories spelled as content hashes plus the literal `unknown`, and the host's own
@@ -219,6 +246,8 @@ The two wrong readings are separated by the headline, the same way the quoting r
     20 / 2261   correct — one version resolved per plugin, then its skills
     21 / 2398   the triple dedupe — versions MERGED, so `retired-check` is resurrected
     21 / 2255   the tie-break inverted — `1.0.0` and `0120fb83da5d` resolved instead
+    21 / 2388   resolved over SURVIVING SKILLS — `ghost-kit/2.0.0` serves nothing, so it
+                stops being a candidate and `ghost-kit:present` is counted
 
 Why a fixture at all, when the real corpus already shows it: on this machine's own plugin
 cache, with the seven plugins `~/.claude/settings.json` has switched on, the triple dedupe
@@ -241,6 +270,10 @@ Two files, and they differ in whether the skill is still counted:
 - `frontmatter-kit/2.3.1/skills/no-description/` — the block parses and carries no
   `description:` key. This one IS counted, as a skill costing zero bytes: the host loads
   nothing from it per session, and an operator should still be told it exists.
+- `ghost-kit/2.0.0/skills/broken/` — a second unterminated block, and it is under the RESOLVED
+  version directory of a plugin whose counted skills are zero. It is reported for the same
+  reason the first one is, and it is the only thing in the document that names the directory
+  `ghost-kit` was resolved at.
 
 ### `name-mismatch` (severity medium)
 
@@ -279,9 +312,10 @@ version rule regressed, on top of the two headline numbers.
 
 An omission is `{subject, count, size, what}` — the same discipline as `bantamkit_read`, where
 what the reader could not deliver is a record and not silence. Counted skills plus omissions
-account for all twenty-six files; if that sum stops holding, something is being dropped quietly.
-Five records over six files: `duplicate-skill` carries two, one per plugin that has more than
-one version directory.
+account for all twenty-eight files; if that sum stops holding, something is being dropped
+quietly. Five records over eight files: `duplicate-skill` carries two, one per plugin that has
+more than one version directory with a same-named skill in both; `stale-version` and
+`unparsed-frontmatter` carry two each.
 
 | subject | file | size | why |
 | --- | --- | ---: | --- |
@@ -289,8 +323,10 @@ one version directory.
 | `duplicate-skill` | `kit-market/dup-kit/1.0.0/skills/echo-check/` | 44 | `1.1.0` is the resolved version for `dup-kit` and has a skill of this name, so this copy is displaced rather than lost. The two descriptions differ in length on purpose, so which directory was resolved is visible in `catalogue_bytes`. |
 | `duplicate-skill` | `kit-market/hash-kit/0120fb83da5d/skills/hashed-check/` | 87 | `unknown` is the resolved version for `hash-kit` — byte order, over two names that are not versions at all — and has a skill of this name. The record is what tells an operator which of the two directories was read. |
 | `stale-version` | `kit-market/dup-kit/1.0.0/skills/retired-check/` | 137 | It is under a version directory that was NOT resolved, and the resolved `1.1.0` has no skill of this name to stand in for it. So it is not a duplicate of anything: it is on disk, in nobody's bill, and this record is the only place the document says so. Its 137 bytes are paid by nobody, which is the difference from a duplicate: a duplicate's bytes are already paid by the copy that displaced it. |
+| `stale-version` | `kit-market/ghost-kit/1.0.0/skills/present/` | 127 | The resolved version for `ghost-kit` is `2.0.0`, whose only file does not parse — so the plugin serves nothing and this readable skill is served by nobody. Resolving over SURVIVING SKILLS instead makes `2.0.0` invisible and counts this file: 21 / 2388 rather than 20 / 2261. |
 | `unreadable-file` | `kit-market/frontmatter-kit/2.3.1/skills/bad-bytes/` | 0 | The description line ends with a lone `0x80`, which is not valid UTF-8. A strict decoder raises; the file is a record, not a crash and not a description with `U+FFFD` substituted into it. Chosen over a permissions bit because an invalid byte behaves the same on Windows. |
 | `unparsed-frontmatter` | `kit-market/frontmatter-kit/2.3.1/skills/broken-open/` | 0 | See `frontmatter-malformed` above: this file is both an omission and a finding. |
+| `unparsed-frontmatter` | `kit-market/ghost-kit/2.0.0/skills/broken/` | 0 | The same shape, under the RESOLVED version directory of a plugin that ends up serving nothing. It contributes no skill and it is still what makes `2.0.0` the resolved directory. |
 
 ## The one skill outside a plugin
 
@@ -325,6 +361,28 @@ input, and it is not one this unit added.
 
 In every case the losing directory is named in an omission record, so an operator can always
 see which one was read.
+
+## What moved when the version candidates became DIRECTORIES, and what did not
+
+This tree was published at 20 skills / 2261 bytes / 5 omissions / 26 files, and two files took
+it to 20 / 2261 / 5 / 28 — the headline deliberately does not move, because the two files this
+rule added are both omitted. What moves is what the WRONG rule answers.
+
+| figure | before | after | why |
+| --- | ---: | ---: | --- |
+| `skills` | 20 | 20 | `present` is a `stale-version` and `broken` does not parse; neither is counted |
+| `catalogue_bytes` | 2261 | 2261 | same reason, and NOT ONE of the twenty earlier byte counts moved |
+| omission RECORDS | 5 | 5 | both new files land under subjects that already had a record |
+| omitted FILES | 6 | 8 | `stale-version` 1 → 2, `unparsed-frontmatter` 1 → 2 |
+| `SKILL.md` on disk | 26 | 28 | `ghost-kit/1.0.0/skills/present`, `ghost-kit/2.0.0/skills/broken` |
+| `frontmatter-malformed` findings | 2 | 3 | `ghost-kit:broken` |
+| `shared-trigger-phrase`, `never-invoked`, `name-mismatch` | 3, 3, 1 | 3, 3, 1 | untouched |
+| `plugin-not-enabled` at `enabled = []` | 23 | 24 | one more file under a plugin, and `broken` still fails on its own first |
+| resolving over SURVIVING SKILLS | — | 21 / 2388 | new: what the tree answers when an unreadable version directory stops being a candidate |
+
+The twenty earlier byte counts not moving is the load-bearing part, and here it is doubly so:
+this rule changes WHICH directory wins, and if it had also re-priced a skill the two effects
+would be impossible to tell apart in the headline.
 
 ## What moved when the non-ASCII pair landed, and what did not
 

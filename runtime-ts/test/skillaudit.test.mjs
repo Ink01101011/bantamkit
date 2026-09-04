@@ -95,8 +95,8 @@ const README_SKILLS = 20;
 const README_CATALOGUE_BYTES = 2261;
 /** Five RECORDS over six files — `duplicate-skill` carries two, one per multi-version plugin. */
 const README_OMISSIONS = 5;
-const README_OMITTED_FILES = 6;
-const README_FILES = 26;
+const README_OMITTED_FILES = 8;
+const README_FILES = 28;
 const README_BUDGET = 1024;
 
 /**
@@ -131,6 +131,13 @@ const EAGER_STRIP_BYTES = 2259;
  */
 const MERGED_VERSIONS = [21, 2398];
 const INVERTED_TIE_BREAK = [21, 2255];
+/**
+ * …and what the tree answers when the version is resolved over the SURVIVING SKILLS rather
+ * than over the directories on disk, which is what both runtimes did until 2026-09-05:
+ * `ghost-kit/2.0.0` holds nothing that parses, so it stops being a candidate, `1.0.0` wins by
+ * default, and `ghost-kit:present` — which the host does not serve — is counted.
+ */
+const RESOLVED_OVER_SURVIVORS = [21, 2388];
 
 const enabled = () => JSON.parse(readFileSync(join(FIXTURE, 'enabled.json'), 'utf8'));
 const usage = () => JSON.parse(readFileSync(join(FIXTURE, 'usage.json'), 'utf8'));
@@ -499,13 +506,17 @@ test('both malformed blocks are reported and only one of them is counted', () =>
   // The two cases differ in whether the skill survives, and that is the whole point.
   // `broken-open` is opened and never closed: nothing in it can be trusted, so it is also
   // omitted and reaches neither `skills` nor `catalogue_bytes`. `no-description` parses and
-  // carries no `description:`, so it IS a skill — one costing zero bytes.
+  // carries no `description:`, so it IS a skill — one costing zero bytes. `ghost-kit:broken`
+  // is a third of the first kind, reported even though its plugin has no counted skill at
+  // all: it is the only file under the version directory that was RESOLVED, which is what
+  // makes that directory the resolved one.
   const bad = kinds(fixtureAudit(), skillaudit.KIND_FRONTMATTER);
   assert.deepEqual(
     bad.map((f) => [f.skills[0], f.detail]),
     [
       ['frontmatter-kit:broken-open', skillaudit.BAD_UNTERMINATED],
       ['frontmatter-kit:no-description', skillaudit.BAD_NO_DESCRIPTION],
+      ['ghost-kit:broken', skillaudit.BAD_UNTERMINATED],
     ],
   );
   assert.deepEqual([...new Set(bad.map((f) => f.severity))], ['medium']);
@@ -551,17 +562,18 @@ test('a name that matches its directory is not a finding', () => {
 test('the five omission subjects carry the counts, bytes and paths the README states', () => {
   // One record per subject, in a fixed order, each naming the file behind it. `size` is what
   // the omission COST the catalogue: 112 bytes that enabling `off-kit` would add, 44 + 87 for
-  // the two displaced copies, 137 for the skill `1.1.0` dropped. It is `0` for the two files
-  // whose description could not be read at all — an unknowable cost, stated rather than guessed.
+  // the two displaced copies, 137 + 127 for the two skills the resolved version does not
+  // serve. It is `0` for the three files whose description could not be read at all — an
+  // unknowable cost, stated rather than guessed.
   const audit = fixtureAudit();
   assert.deepEqual(
     audit.omissions.map((o) => [o.subject, o.count, o.size]),
     [
       [skillaudit.OMIT_NOT_ENABLED, 1, 112],
       [skillaudit.OMIT_DUPLICATE, 2, 131],
-      [skillaudit.OMIT_STALE_VERSION, 1, 137],
+      [skillaudit.OMIT_STALE_VERSION, 2, 264],
       [skillaudit.OMIT_UNREADABLE, 1, 0],
-      [skillaudit.OMIT_UNPARSED, 1, 0],
+      [skillaudit.OMIT_UNPARSED, 2, 0],
     ],
   );
   const by = subjects(audit);
@@ -571,9 +583,17 @@ test('the five omission subjects carry the counts, bytes and paths the README st
     'kit-market/dup-kit/1.0.0/skills/echo-check/SKILL.md, ' +
       'kit-market/hash-kit/0120fb83da5d/skills/hashed-check/SKILL.md',
   );
-  assert.equal(by[skillaudit.OMIT_STALE_VERSION].what, 'kit-market/dup-kit/1.0.0/skills/retired-check/SKILL.md');
+  assert.equal(
+    by[skillaudit.OMIT_STALE_VERSION].what,
+    'kit-market/dup-kit/1.0.0/skills/retired-check/SKILL.md, ' +
+      'kit-market/ghost-kit/1.0.0/skills/present/SKILL.md',
+  );
   assert.equal(by[skillaudit.OMIT_UNREADABLE].what, 'kit-market/frontmatter-kit/2.3.1/skills/bad-bytes/SKILL.md');
-  assert.equal(by[skillaudit.OMIT_UNPARSED].what, 'kit-market/frontmatter-kit/2.3.1/skills/broken-open/SKILL.md');
+  assert.equal(
+    by[skillaudit.OMIT_UNPARSED].what,
+    'kit-market/frontmatter-kit/2.3.1/skills/broken-open/SKILL.md, ' +
+      'kit-market/ghost-kit/2.0.0/skills/broken/SKILL.md',
+  );
 });
 
 test('an invalid utf8 byte is a record and not a crash and not a replacement character', () => {
@@ -581,7 +601,7 @@ test('an invalid utf8 byte is a record and not a crash and not a replacement cha
   // substitute `U+FFFD` and count a description nobody wrote — which is exactly what
   // `Buffer.toString('utf8')` does, and the reason this reader holds a `fatal: true`
   // `TextDecoder`. A strict one that let the error escape would refuse the whole audit over
-  // one file. This is the third option: the file is a record and the other fifteen are
+  // one file. This is the third option: the file is a record and the other twenty-seven are
   // still answered.
   const raw = readFileSync(join(CACHE, 'kit-market/frontmatter-kit/2.3.1/skills/bad-bytes/SKILL.md'));
   assert.ok(raw.includes(0x80));
@@ -603,7 +623,7 @@ test('an omission subject with no members is not reported at all', () => {
 
 test('enabled omitted counts everything and enabled empty counts no plugin skill', () => {
   // Omitted and empty are different states. Omitted: every skill under the root counts,
-  // disabled plugin and all — seventeen. Empty: no plugin is switched on, so only the skill
+  // disabled plugin and all — twenty-one. Empty: no plugin is switched on, so only the skill
   // outside a plugin survives. The version rule runs in BOTH cases: `off-kit` has one version
   // directory, so switching it on adds exactly one skill and not two.
   const everything = skillaudit.audit(CACHE, { usage: usageMap() });
@@ -611,20 +631,21 @@ test('enabled omitted counts everything and enabled empty counts no plugin skill
   assert.ok(!(skillaudit.OMIT_NOT_ENABLED in subjects(everything)));
   const noneOn = skillaudit.audit(CACHE, { enabled: [], usage: usageMap() });
   assert.equal(noneOn.skills, 1);
-  // Nineteen: the twenty-two files, less `solo-check` (still counted), less the two whose own
-  // file failed first — an unreadable byte and an unparsable block outrank a plugin that is
-  // merely switched off, because neither can say what enabling it would cost. A plugin that is
-  // off never reaches the version rule either, so no `stale-version` and no duplicate here.
-  assert.equal(subjects(noneOn)[skillaudit.OMIT_NOT_ENABLED].count, README_FILES - 3);
+  // Twenty-four: the twenty-eight files, less `solo-check` (still counted), less the three
+  // whose own file failed first — an unreadable byte and two unparsable blocks outrank a
+  // plugin that is merely switched off, because none of them can say what enabling it would
+  // cost. A plugin that is off never reaches the version rule either, so no `stale-version`
+  // and no duplicate here.
+  assert.equal(subjects(noneOn)[skillaudit.OMIT_NOT_ENABLED].count, README_FILES - 4);
   assert.ok(!(skillaudit.OMIT_STALE_VERSION in subjects(noneOn)));
   assert.ok(!(skillaudit.OMIT_DUPLICATE in subjects(noneOn)));
   assert.equal(noneOn.skills + noneOn.omissions.reduce((n, o) => n + o.count, 0), README_FILES);
-  // The one record here holds nineteen paths, which is the only place in this file that scan
-  // ORDER is visible. It is path order, sorted, because two machines hand back directory
+  // The one record here holds twenty-four paths, which is the only place in this file that
+  // scan ORDER is visible. It is path order, sorted, because two machines hand back directory
   // entries in two different orders and the document is byte-compared.
   const listed = subjects(noneOn)[skillaudit.OMIT_NOT_ENABLED].what.split(', ');
   assert.deepEqual(listed, [...listed].sort());
-  assert.equal(listed.length, README_FILES - 3);
+  assert.equal(listed.length, README_FILES - 4);
 });
 
 test('a skill outside a plugin keeps its bare name and enabled cannot speak to it', () => {
@@ -679,12 +700,97 @@ test('a skill the resolved version dropped is a stale-version and not resurrecte
   assert.deepEqual([audit.skills, audit.catalogueBytes], [README_SKILLS, README_CATALOGUE_BYTES]);
   assert.notDeepEqual([audit.skills, audit.catalogueBytes], MERGED_VERSIONS);
   const stale = subjects(audit)[skillaudit.OMIT_STALE_VERSION];
-  assert.deepEqual([stale.count, stale.size], [1, 137]);
-  assert.equal(stale.what, 'kit-market/dup-kit/1.0.0/skills/retired-check/SKILL.md');
+  assert.deepEqual([stale.count, stale.size], [2, 264]);
+  assert.ok(stale.what.includes('kit-market/dup-kit/1.0.0/skills/retired-check/SKILL.md'));
   assert.ok(!audit.findings.some((f) => f.skills.includes('dup-kit:retired-check')));
   const race = kinds(audit, skillaudit.KIND_SHARED_PHRASE).filter((f) => f.detail === 'race condition');
   assert.equal(race.length, 1);
   assert.ok(!race[0].skills.includes('dup-kit:retired-check'));
+});
+
+test('the resolved version is the directory on disk over the committed tree', () => {
+  // `ghost-kit` in the committed tree, which is the same rule under the differential.
+  // `ghost-kit/2.0.0/skills/` holds one file and it does not parse, so the plugin serves
+  // NOTHING; `ghost-kit/1.0.0/skills/present/` is readable and is not what the host serves.
+  // Resolving over surviving skills counts `present` and answers 21 skills / 2388 bytes —
+  // which BOTH runtimes did, and both agreed, so the cross-runtime suite compared 71 cases
+  // and found nothing.
+  assert.ok(existsSync(join(CACHE, 'kit-market/ghost-kit/2.0.0/skills/broken/SKILL.md')));
+  assert.ok(!existsSync(join(CACHE, 'kit-market/ghost-kit/2.0.0/skills/present')));
+  const audit = fixtureAudit();
+  assert.deepEqual([audit.skills, audit.catalogueBytes], [README_SKILLS, README_CATALOGUE_BYTES]);
+  assert.notDeepEqual([audit.skills, audit.catalogueBytes], RESOLVED_OVER_SURVIVORS);
+  assert.ok(!('ghost-kit:present' in README_BYTES));
+  assert.ok(subjects(audit)[skillaudit.OMIT_STALE_VERSION].what.includes('ghost-kit/1.0.0/skills/present'));
+  assert.ok(!audit.findings.some((f) => f.skills.includes('ghost-kit:present')));
+  // The resolved directory serves nothing, and the ONE file under it is still reported, which
+  // is how an operator sees which directory was read.
+  assert.ok(kinds(audit, skillaudit.KIND_FRONTMATTER).some((f) => f.skills[0] === 'ghost-kit:broken'));
+  assert.ok(subjects(audit)[skillaudit.OMIT_UNPARSED].what.includes('ghost-kit/2.0.0/skills/broken'));
+});
+
+test('a version directory with no readable skill in it still wins', () => {
+  // THE RESURRECTION DEFECT THROUGH THE OTHER DOOR, and the differential was blind to it: a
+  // version directory exists on disk whether or not anything under it can be read, and the
+  // host serves the one it serves. Resolving over the SURVIVING SKILLS instead — which is
+  // what both runtimes did until 2026-09-05 — means an empty `2.0.0` is never a candidate,
+  // `1.0.0` wins by default, and the audit answers from a directory the host is not serving
+  // with no omission, no finding and no mention of `2.0.0` in the document.
+  //
+  // Four shapes a version directory can be invisible in: empty, holding an unreadable file,
+  // holding an unparsable one, and holding only an empty skill subdirectory. In every one
+  // `2.0.0` wins and `1.0.0`'s skill is a `stale-version` — the file is on disk, the host
+  // does not serve it, and the plugin's counted skills are zero.
+  const cases = {
+    empty: (root) => mkdirSync(join(root, 'm/p/2.0.0/skills'), { recursive: true }),
+    unreadable: (root) => {
+      mkdirSync(join(root, 'm/p/2.0.0/skills/x'), { recursive: true });
+      writeFileSync(
+        join(root, 'm/p/2.0.0/skills/x/SKILL.md'),
+        Buffer.concat([Buffer.from('---\nname: x\ndescription: bad '), Buffer.from([0x80]), Buffer.from(' byte\n---\n')]),
+      );
+    },
+    unparsable: (root) => {
+      mkdirSync(join(root, 'm/p/2.0.0/skills/x'), { recursive: true });
+      writeFileSync(join(root, 'm/p/2.0.0/skills/x/SKILL.md'), '---\nname: x\n');
+    },
+    'empty-skill-directory': (root) => mkdirSync(join(root, 'm/p/2.0.0/skills/x'), { recursive: true }),
+  };
+  for (const [name, build] of Object.entries(cases)) {
+    const dir = room();
+    skill(dir, 'm/p/1.0.0/skills/served', frontmatter('served', 'the older copy'));
+    build(dir);
+    const audit = skillaudit.audit(dir);
+    assert.equal(audit.skills, 0, name);
+    assert.equal(audit.catalogueBytes, 0, name);
+    const stale = subjects(audit)[skillaudit.OMIT_STALE_VERSION];
+    assert.ok(stale !== undefined, name);
+    assert.deepEqual([stale.count, stale.size], [1, 'the older copy'.length], name);
+    assert.equal(stale.what, 'm/p/1.0.0/skills/served/SKILL.md', name);
+    assert.ok(!(skillaudit.OMIT_DUPLICATE in subjects(audit)), name);
+    // …and the sum still accounts for every file on disk.
+    assert.equal(
+      audit.skills + audit.omissions.reduce((n, o) => n + o.count, 0),
+      everySkillFile(dir).length,
+      name,
+    );
+  }
+});
+
+test('a directory that is not a version directory declares no version', () => {
+  // The candidate is `<marketplace>/<plugin>/<version>/skills`, and nothing wider: four
+  // segments AND the fourth spelled `skills`, the same shape a counted skill's path matches.
+  // A plugin directory with a stray sibling — notes, a `.git`, a half-extracted download —
+  // must not become a version that outranks the real one and empties the plugin.
+  const dir = room();
+  skill(dir, 'm/p/1.0.0/skills/served', frontmatter('served', 'the only copy'));
+  for (const stray of ['m/p/zzz-notes', 'm/p/9.9.9/not-skills', 'm/zzz-loose/skills', 'm/p/1.0.0/docs']) {
+    mkdirSync(join(dir, stray), { recursive: true });
+  }
+  const audit = skillaudit.audit(dir);
+  assert.equal(audit.skills, 1);
+  assert.equal(audit.catalogueBytes, 'the only copy'.length);
+  assert.deepEqual(audit.omissions, []);
 });
 
 test('the two version subjects split on whether the resolved version has the name', () => {
