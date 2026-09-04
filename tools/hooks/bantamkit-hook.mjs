@@ -44,7 +44,19 @@ const PROMPT_MIN_CHARS = 12;
 const STOP_NUDGE_MIN_TOOL_CALLS = 20;
 const COMPACT_AT = 0.9;   // index >= 90% of budget → compact …
 const COMPACT_TO = 0.8;   // … down to 80%, past the no-op band measured in job40 (C6)
+
+// PreCompact's steering, in BYTES. This string is paid TWICE: once as the summariser's
+// `newCustomInstructions`, and once echoed onto the user's screen as
+// `PreCompact [<command>] completed successfully: <output>` — the same bytes are both the
+// steering and the display, and there is no quieter variant (see the channel note below).
+// Unbounded, the arm's own worst case is PRECOMPACT_FILES_MAX absolute paths, and a single
+// malformed unit title put 35,315 B on the user's screen in one probe. 4000 B is the bound:
+// a third more than SESSION_INJECT_MAX, which buys the checkpoint line and the tail on top
+// of a useful slice of the list, and it is paid per compaction rather than per prompt. The
+// FIXED lines are never cut; the file list absorbs the whole trim.
+const PRECOMPACT_STDOUT_MAX = 4000;
 const PRECOMPACT_FILES_MAX = 40;
+const CHECKPOINT_LINE_MAX = 600;   // one checkpoint line: an absolute path, a cursor, a title
 
 function log(record) {
   try {
@@ -60,12 +72,32 @@ function emit(obj) {
 /**
  * PLAIN stdout, for the events whose steering the host reads as text rather than as the
  * `hookSpecificOutput` envelope. See `preCompact` for why that distinction is not cosmetic.
- * Leading `{` would make the host attempt a JSON parse, so it is refused here.
+ *
+ * It used to carry a leading-`{` refusal here. That branch could not fire — every part
+ * `preCompact` assembles begins with one of three constant prefixes — and had it ever
+ * fired it would have DROPPED the whole steering with no trace, which is the exact failure
+ * this arm exists to have fixed. The channel contract it was guarding ("output that does not
+ * start with `{` is taken as plain text") is now pinned where it can actually go red: the
+ * `hooks.test.mjs` case "the steering never starts with { — for every shape of input the
+ * arm accepts", which drives user-controlled strings (a `{braces}` path, a `{odd}.json`
+ * checkpoint, a `{C}` cursor) through the real dispatch and judges stdout the way the host
+ * does. Returns the number of bytes ACTUALLY written, so the caller's log line cannot claim
+ * bytes that never left the process.
  */
 function emitText(text) {
   const out = String(text).trim();
-  if (!out || out.startsWith('{')) return;
+  if (!out) return 0;
   process.stdout.write(out);
+  return Buffer.byteLength(out);
+}
+
+/** Truncate to at most `max` BYTES without splitting a UTF-8 character. */
+function capBytes(text, max) {
+  const buf = Buffer.from(String(text), 'utf8');
+  if (buf.length <= max) return String(text);
+  let end = max;
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) end -= 1;   // back off a continuation byte
+  return buf.subarray(0, end).toString('utf8');
 }
 
 function capLines(text, max) {
@@ -252,7 +284,16 @@ async function postSave(input) {
 // The cost of the working channel is that the host also echoes the text back to the user as
 // `PreCompact [<command>] completed successfully: <output>`. There is no quieter variant —
 // the same string is both the steering and the display — so the arm stays short on purpose.
-const CHECKPOINT_MAX_BYTES = 4_000_000;
+const CHECKPOINT_MAX_BYTES = 4_000_000;        // ONE checkpoint file
+// … and an AGGREGATE, because nothing bounded the COUNT. `.shiftwork` accumulates a
+// checkpoint per archived job and is never pruned: measured on this repo on 2026-09-04,
+// 136,885 B across 6 files, 11 KB of it added by a single session's orchestrator. Every one
+// of them was read and JSON-parsed on every compaction, so the worst case was n × 4 MB.
+// Candidates are scanned newest-first — the order that already decides the winner — so the
+// scan stops at the first OPEN one (on this repo: 1 file, 20,417 B, down from 6 and 136,885)
+// and what a spent budget drops is always the OLDEST, the least likely to be the open one.
+const CHECKPOINT_SCAN_MAX_BYTES = 1_000_000;
+const CHECKPOINT_SCAN_MAX_FILES = 64;
 
 /**
  * The structure `assets/schemas/shiftwork-checkpoint.json` requires of the parts this arm
@@ -279,29 +320,48 @@ function checkpointShape(doc) {
  * one unit is neither `done` nor `dropped`. Most recently written wins, filename breaks the
  * tie, so the choice is deterministic. Every failure — no directory, unreadable file,
  * malformed JSON, wrong shape — is a SKIP, never a throw.
+ *
+ * Returns `null` when there is no `.shiftwork` at all, else the scan's accounting:
+ * `{ winner, scanned, bytes, skipped }` — the caller logs the last three, because a scan
+ * that silently stops on a budget is a scan nobody can audit.
  */
 function openCheckpoint(cwd) {
   const dir = path.join(cwd, '.shiftwork');
   let names;
   try { names = fs.readdirSync(dir).filter((n) => n.endsWith('.json')); } catch { return null; }
-  const open = [];
+
+  // stat first (cheap, and the mtime is what orders the scan), read second (the expensive
+  // half, and the one the budget bounds). Same comparator the winner was already chosen by,
+  // so applying it before the read changes which files are READ, never which one wins.
+  const candidates = [];
   for (const name of names) {
     const file = path.join(dir, name);
-    let st;
-    let doc;
     try {
-      st = fs.statSync(file);
+      const st = fs.statSync(file);
       if (!st.isFile() || st.size > CHECKPOINT_MAX_BYTES) continue;
-      doc = JSON.parse(fs.readFileSync(file, 'utf8'));
-    } catch { continue; }
+      candidates.push({ file, mtimeMs: st.mtimeMs, size: st.size });
+    } catch { /* unreadable: skip */ }
+  }
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs || a.file.localeCompare(b.file));
+
+  let bytes = 0;
+  let read = 0;
+  let winner = null;
+  for (const c of candidates) {
+    // The budget is checked BEFORE each read and never before the first, so the newest
+    // candidate is always considered however large it is (bounded by CHECKPOINT_MAX_BYTES).
+    if (read > 0 && (bytes >= CHECKPOINT_SCAN_MAX_BYTES || read >= CHECKPOINT_SCAN_MAX_FILES)) break;
+    let doc;
+    try { doc = JSON.parse(fs.readFileSync(c.file, 'utf8')); } catch { read += 1; bytes += c.size; continue; }
+    read += 1;
+    bytes += c.size;
     const shape = checkpointShape(doc);
     if (!shape) continue;
     if (!shape.units.some((u) => u.status !== 'done' && u.status !== 'dropped')) continue;
-    open.push({ file, mtimeMs: st.mtimeMs, ...shape });
+    winner = { file: c.file, mtimeMs: c.mtimeMs, ...shape };
+    break;   // newest-first: the first open one IS the most recent open one
   }
-  if (open.length === 0) return null;
-  open.sort((a, b) => b.mtimeMs - a.mtimeMs || a.file.localeCompare(b.file));
-  return open[0];
+  return { winner, scanned: read, bytes, skipped: candidates.length - read };
 }
 
 /**
@@ -335,22 +395,43 @@ function preCompact(input) {
   const ledger = readLedger(input.session_id);
   const mine = transcriptFiles(ledger, input.transcript_path || input.session_id);
   const files = mine.slice(0, PRECOMPACT_FILES_MAX);
-  const parts = [];
-  if (files.length) parts.push(`Files already read in this context (keep the list; do not re-read unchanged ones after compaction):\n${files.map((f) => `- ${f}`).join('\n')}`);
-  let cp = null;
-  try { cp = openCheckpoint(input.cwd || process.cwd()); } catch { cp = null; }
+
+  let scan = null;
+  try { scan = openCheckpoint(input.cwd || process.cwd()); } catch { scan = null; }
+  const cp = scan && scan.winner;
+
+  // The FIXED lines are assembled first and are never cut: they carry the instruction, and a
+  // trimmed instruction steers worse than a trimmed list. Whatever budget they leave is what
+  // the file list gets.
+  const fixed = [];
   if (cp) {
     // The cursor names THE next unit; the schema keeps it at `plan.cursor`, never top level.
     const unit = cp.units.find((u) => u.id === cp.cursor);
     const at = unit
       ? `unit ${unit.id} (${unit.status})${unit.title ? ` — ${unit.title}` : ''}`
       : `unit ${cp.cursor}, which is not present in plan.units`;
-    parts.push(`Open shiftwork checkpoint: ${cp.file}, cursor ${JSON.stringify(cp.cursor)} → ${at}. Preserve unit status and the next unit to clock in.`);
+    fixed.push(capBytes(`Open shiftwork checkpoint: ${cp.file}, cursor ${JSON.stringify(cp.cursor)} → ${at}.`, CHECKPOINT_LINE_MAX)
+      + ' Preserve unit status and the next unit to clock in.');
   }
-  parts.push('Preserve verbatim: every number the user was shown, every decision the user made, and any pending operator step.');
-  const ctx = parts.join('\n\n');
-  log({ event: 'PreCompact', trigger: input.trigger, ledgerFiles: mine.length, capped: files.length, checkpoint: cp ? cp.file : null, cursor: cp ? cp.cursor : null, bytes: Buffer.byteLength(ctx) });
-  emitText(ctx);
+  fixed.push('Preserve verbatim: every number the user was shown, every decision the user made, and any pending operator step.');
+
+  const room = PRECOMPACT_STDOUT_MAX - Buffer.byteLength(fixed.join('\n\n')) - 2;
+  let block = files.length
+    ? capLines(`Files already read in this context (keep the list; do not re-read unchanged ones after compaction):\n${files.map((f) => `- ${f}`).join('\n')}`, Math.max(0, room))
+    : '';
+  // A header the budget left with no file under it steers nothing and costs bytes.
+  const listed = (block.match(/^- /gm) || []).length;
+  if (listed === 0) block = '';
+
+  const ctx = [block, ...fixed].filter(Boolean).join('\n\n');
+  const bytes = emitText(ctx);
+  log({
+    event: 'PreCompact', trigger: input.trigger,
+    ledgerFiles: mine.length, capped: files.length, listed,
+    checkpoint: cp ? cp.file : null, cursor: cp ? cp.cursor : null,
+    cpScanned: scan ? scan.scanned : 0, cpSkipped: scan ? scan.skipped : 0, cpBytes: scan ? scan.bytes : 0,
+    bytes,   // what LEFT the process, not what was considered
+  });
 }
 
 // ------------------------------------------------------------------- PostCompact

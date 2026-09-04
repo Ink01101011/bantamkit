@@ -372,3 +372,89 @@ test('the file list is capped by count, however many the ledger holds', () => {
   assert.equal(rec.ledgerFiles, 45, 'all 45 reads belong to this transcript');
   assert.equal(rec.capped, 40, 'the count cap must bind at 40 before any byte budget does');
 });
+
+test('PreCompact stdout stays inside its byte budget, and the tail always survives the cut', () => {
+  const home = newHome();
+  const cwd = newCwd();
+  const transcript = join(cwd, 'parent.jsonl');
+  // Long names, so 40 of them alone would run past the budget the host echoes to the user.
+  for (let i = 0; i < 40; i += 1) {
+    const file = join(cwd, `${'deep-directory-name-that-makes-this-path-long'.repeat(3)}-${i}.txt`);
+    writeFileSync(file, 'x');
+    seedRead(file, { home, cwd, transcript });
+  }
+  writeCheckpoint(cwd, 'checkpoint-live.json', checkpoint('U1', [
+    { id: 'U1', status: 'todo', title: 'a title '.repeat(400) },
+  ]));
+
+  const r = preCompact({ home, cwd, payload: { transcript_path: transcript } });
+  assert.equal(r.status, 0, r.stderr);
+  const bytes = Buffer.byteLength(r.stdout);
+  assert.ok(bytes <= 4000, `PreCompact stdout was ${bytes} B; the host echoes every byte of it to the user on every compaction`);
+  // The cut must land on the file list, never on the two lines that carry the instruction.
+  assert.match(r.stdout, /Preserve verbatim/, 'the tail is what the steering is FOR');
+  assert.match(r.stdout, /Open shiftwork checkpoint/, 'the open unit must survive the cut too');
+  assert.ok(listedFiles(r.stdout).length > 0, 'the budget must trim the list, not delete it');
+});
+
+test('the log records the bytes actually written, not the bytes considered', () => {
+  const home = newHome();
+  const cwd = newCwd();
+  const transcript = join(cwd, 'parent.jsonl');
+  seedReads(2, { home, cwd, transcript });
+  const r = preCompact({ home, cwd, payload: { transcript_path: transcript } });
+  const rec = hookLog(home, 'PreCompact').at(-1);
+  assert.equal(rec.bytes, Buffer.byteLength(r.stdout), 'this log is the repo\'s measurement of record; it must not assert bytes the process never wrote');
+  assert.equal(rec.listed, listedFiles(r.stdout).length);
+});
+
+test('the steering never starts with { — for every shape of input the arm accepts', () => {
+  // `emitText` used to carry an unreachable leading-`{` refusal that would have DROPPED the
+  // whole steering with no trace. The refusal is gone; this is the property it was guarding,
+  // pinned where it can actually go red — if a later edit ever puts a user-controlled string
+  // first, the host would JSON-parse it and reject the output the way it did at b3625d9.
+  const home = newHome();
+  const cwd = newCwd();
+  const transcript = join(cwd, 'parent.jsonl');
+  const brace = join(cwd, '{braces}.txt');
+  writeFileSync(brace, 'x');
+  seedRead(brace, { home, cwd, transcript });
+  writeCheckpoint(cwd, '{odd}.json', checkpoint('{C}', [{ id: '{C}', status: 'todo', title: '{a title}' }]));
+
+  for (const payload of [{ transcript_path: transcript }, {}]) {
+    const r = preCompact({ home, cwd, payload });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(!r.stdout.trim().startsWith('{'), `steering must reach the host as plain text: ${r.stdout.slice(0, 80)}`);
+    assert.ok(hostWouldAccept(r.stdout).accepted);
+    // …and it must still be THERE. Refusing to emit is not a way to satisfy the line above:
+    // `fK` drops an empty result, so a silent drop and a rejected envelope cost the same.
+    assert.match(r.stdout, /Preserve verbatim/, 'the steering must survive, not be suppressed');
+    assert.match(r.stdout, /\{odd\}\.json/, 'the user-controlled strings must reach the summariser');
+  }
+});
+
+test('a .shiftwork over the scan budget still steers, and the log says what it skipped', () => {
+  const home = newHome();
+  const cwd = newCwd();
+  // Every filler is CLOSED and NEWER than the open one, which is the only arrangement that
+  // makes the scan walk: newest-first stops at the first OPEN checkpoint, so when the live
+  // one is newest (the ordinary case, and what the cases above cover) exactly one file is
+  // ever read. `.shiftwork` is never pruned — measured on this repo 2026-09-04, 133,472 B
+  // across 6 files, 11 KB of it added by one session — and before the budget every one of
+  // them was read and JSON-parsed on every compaction.
+  const filler = checkpoint('D1', [{ id: 'D1', status: 'done', title: 'x'.repeat(200_000) }]);
+  writeCheckpoint(cwd, 'checkpoint-live.json', checkpoint('L9', [{ id: 'L9', status: 'todo', title: 'the open unit' }]), 1_000_000);
+  for (let i = 0; i < 12; i += 1) writeCheckpoint(cwd, `checkpoint-archive-${i}.json`, filler, 9_000_000 + i);
+
+  const r = preCompact({ home, cwd });
+  assert.equal(r.status, 0, r.stderr);
+  const rec = hookLog(home, 'PreCompact').at(-1);
+  assert.ok(rec.cpSkipped > 0, `the scan must stop on a budget, not read all 13: skipped ${rec.cpSkipped}`);
+  assert.ok(rec.cpBytes <= 1_000_000 + 4_000_000, `the aggregate read is bounded: ${rec.cpBytes} B`);
+
+  // What the bound COSTS, stated rather than hidden: a live checkpoint buried under more
+  // than a megabyte of newer archived ones is not reached, and the rest of the steering
+  // still goes out. The hook stays quiet and correct; the log says how many it skipped.
+  assert.ok(!/Open shiftwork checkpoint/.test(r.stdout), 'a checkpoint past the scan budget must not be reported as found');
+  assert.match(r.stdout, /Preserve verbatim/, 'the rest of the steering must survive a spent budget');
+});
