@@ -491,36 +491,77 @@ class MemoryStore:
         this method the store could bring a named fact back but not send one away, and an
         operator who knew exactly which fact had gone stale had no way to say so.
 
+        THE NAME IS CHECKED AGAINST `NAME_RE` BEFORE ANY SYSCALL. `save` was the only op
+        that enforced it, and `save` is not the only op that CREATES a filename: this one
+        builds `archive/<name>.md` out of whatever it is handed. Measured 2026-09-05 on
+        macOS, before the check existed: `archive ALPHA` against a live `facts/alpha.md`
+        exited 0 and left `archive/ALPHA.md` holding a fact whose frontmatter says
+        `name: alpha` — the case-insensitive filesystem matched the source, and nothing
+        asked the store's own naming rule about the destination it was about to write. On
+        a case-sensitive filesystem the same command refuses with "no fact". An archive
+        entry the store can never name again is worse than a refusal, and a command that
+        means two things on two filesystems is worse than either. `restore` is
+        deliberately NOT changed: its name has been unvalidated since it was written, and
+        narrowing a shipped command's input is a product decision rather than this fix's.
+        Traversal was never the hole — `..`, an absolute path and `sub/alpha` all refused
+        identically on both runtimes before this, because `facts/<name>.md` simply is not
+        there; the check makes them refuse EARLIER and with the reason named.
+
         THE PROMISE IS THE SAME ONE `restore` MAKES: a failed archive leaves the store
-        exactly as it found it. Two of its three guards carry over unchanged in shape and
-        one drops out:
+        exactly as it found it. One of its three guards carries over unchanged in shape
+        and two drop out:
 
         - Both stats are `_reachable`, not `exists()`, for the reason spelled at
           `_ARCHIVE_UNREACHABLE`: a refused stat is not an absent file, and reporting
           "no fact" for an EACCES sends the operator looking for a file that is there.
           The two sentences are their own constants because each names the side the fact
           is still on, and that side is the mirror of restore's.
-        - `_facts()` parses BEFORE the move, but NOT for the reason restore's docstring
-          gives, and the difference is worth stating rather than inheriting. In restore's
-          direction the pre-read is load-bearing: it stops a shape the rollback of the
-          day got wrong. Here it is NOT. Measured by deleting this line and rerunning:
-          every state assertion in
-          `test_archive_moves_nothing_when_a_fact_already_in_the_store_is_malformed`
-          still passes, because the rollback moves the fact back and re-raises the same
-          error class. What the parse buys is narrower — the move never happens at all,
-          so the promise never has to depend on the rollback's own two renames
-          succeeding, which is the one path that could strand a fact in `archive/` with
-          a stale index. It is kept for that, and no test pins it, because pinning it
-          needs fault injection on the rollback rather than a malformed fixture.
+        - NO `_facts()` PARSE BEFORE THE MOVE, and the asymmetry with `restore` is the
+          point rather than an oversight. In restore's direction the pre-read is
+          load-bearing: it stops a shape the rollback of the day got wrong. Here it did
+          the opposite of its job. The parse reads EVERY fact, so ONE malformed file in
+          `facts/` refused every archive in the store INCLUDING ITS OWN — measured
+          2026-09-05, `archive bad` against a `facts/bad.md` with no frontmatter answered
+          `malformed fact file bad.md: not enough values to unpack (expected 3, got 1)` —
+          and no other command removes a fact by name, so the one file the store calls
+          broken was the one file no CLI route could get rid of. That is the exact
+          opposite of what the paragraph above says this method is for. Without the parse
+          the same command SUCCEEDS, and it succeeds for a reason rather than by luck:
+          the move takes the bad file out of `facts/` first, so the `_rebuild_index`
+          below parses a directory that no longer holds it. A DIFFERENT fact being
+          malformed still fails, at that rebuild, and the rollback below puts the moved
+          fact back — which is the case the old docstring said the parse was protecting
+          and the rollback was already covering.
         - NO budget check. Archiving removes an index line, so the index can only shrink;
           `_check_index_budget` is restore's guard, in restore's direction, and running
           it here would be a check that cannot fail.
 
+        THE MOVE IS `Path.replace` AND NOT `Path.rename`, for the reason `d239480` gives
+        at `compact`: `os.rename` replaces an existing destination silently on POSIX and
+        raises `FileExistsError` on Windows, `os.replace` replaces on both, and
+        `runtime-ts` calls `pyReplace` here. The state that reaches it is NOT one guard 2
+        refuses. `_reachable` is `Path.exists()`, which FOLLOWS symlinks, so a DANGLING
+        symlink at `archive/<name>.md` is an occupied directory entry the guard cannot
+        see: measured 2026-09-05, `os.path.lexists` True and `Path.exists` False, the
+        guard passed, and the move landed on top of the link. On POSIX both calls replace
+        it; on Windows `rename` would have raised where the port's `replace` does not.
+        THE ROLLBACK BELOW IS STILL `rename`, on the terms `d239480` used to leave
+        restore's alone: it moves back onto a path the forward move has just emptied, so
+        it cannot meet an occupied destination and there is no red to demonstrate for it.
+
         The rollback stays, keyed on "the rebuild after the move failed" rather than on a
-        list of exception types, because the failure it exists for is the one no pre-read
-        can reach: the destination in `archive/` being a directory raises `OSError`, not
-        a `Memory*` error at all.
+        list of exception types, because the failure it exists for is not a `Memory*`
+        error at all. THE ROUTE THAT REACHES IT IS `index.md` BEING A DIRECTORY: the move
+        succeeds, `_rebuild_index` writes and raises `IsADirectoryError`, and the fact is
+        put back — measured 2026-09-05, `facts/` held `alpha.md` again and `archive/` was
+        empty afterwards. WHAT THIS PARAGRAPH USED TO SAY was that the route is "the
+        destination in `archive/` being a directory", copied out of restore without
+        re-deriving the direction, and that one is unreachable here: guard 2 stats that
+        exact path, so a directory at `archive/<name>.md` is refused with "already
+        archived" before anything moves (measured the same day, both runtimes).
         """
+        if not NAME_RE.match(name or ""):
+            raise MemoryValidationError(f"invalid name '{name}'; must match {NAME_RE.pattern}")
         source = self._fact_path(name)
         if not self._reachable(source, self.root / "facts", _FACT_UNREACHABLE):
             raise MemoryValidationError(
@@ -531,9 +572,12 @@ class MemoryStore:
             raise MemoryValidationError(
                 f"fact '{name}' is already archived; refusing to overwrite it"
             )
-        self._facts()  # parse BEFORE the move, not after it — see the docstring
         destination.parent.mkdir(parents=True, exist_ok=True)
-        source.rename(destination)
+        # `Path.replace`, not `Path.rename`: the two agree on POSIX and differ on Windows,
+        # where `rename` raises `FileExistsError` over an occupied `archive/<name>.md`. A
+        # dangling symlink there is exactly that and passes the guard above, which follows
+        # links. `runtime-ts` calls `pyReplace` here; this is the same call. See `d239480`.
+        source.replace(destination)
         try:
             self._rebuild_index()
         except Exception:
