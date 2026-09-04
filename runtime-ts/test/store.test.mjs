@@ -575,3 +575,147 @@ test('a fact with no created falls back to the file mtime, in LOCAL time', () =>
   assert.equal(s.recall('d', 3, false)[0].created, expected);
   rmSync(root, { recursive: true, force: true });
 });
+
+// -------------------------------------------------------------- eviction order (M3, M12)
+//
+// `compact()`'s order had NO test on this side at all — review round 4, M3. The property
+// was held solely by three `runtime-py` unit tests, and both I2 and I3 proved by mutation
+// that reverting `byEviction`'s rank on BOTH runtimes still leaves `--suite memorycli` at
+// `210 cases, 0 differed`: the differential suite never reaches `compact`. A rank nothing
+// can see go red is a rank nobody is holding.
+//
+// M12 is the rank itself. `byEviction` protected `feedback` on the stated reason that its
+// worth "does not decay with time-since-last-recall". That reason is a property of the
+// CLASS and not of the word: `assets/skills/memory.md` tells the model that `user` is "a
+// durable fact about the user", and a durable fact does not become less true because
+// nothing looked it up. Mirrors `runtime-py` `1d9e5eb`.
+
+/** A description unique to `name`, the same byte length for every name, pairwise below the
+ * duplicate threshold (jaccard 1/3 against any sibling) — `_describe` in `test_memory.py`. */
+const describe = (name) => `subject ${name[0].repeat(24)}`;
+
+const DURABLE_ROLES = [
+  ['ausr', 'user', '2026-01-01'],
+  ['bfb', 'feedback', '2026-01-02'],
+  ['crf', 'reference', '2026-08-01'],
+  ['dpj', 'project', '2026-08-02'],
+];
+
+/**
+ * Four facts, one per type, where the two DURABLE ones are the stalest in the store.
+ * Nothing is ever recalled, so the staleness key falls back to `created` and the purely
+ * temporal order is ausr, bfb, crf, dpj — the user's own durable facts first out.
+ */
+function seedDurableIsStalest(root) {
+  for (const [name, type, created] of DURABLE_ROLES) {
+    new MemoryStore(root, { today: () => created, indexBudget: 100_000 }).save(
+      type,
+      name,
+      describe(name),
+      `body of ${name}`,
+    );
+  }
+}
+
+/** The index bytes each fact costs, keyed by name, read off the index the store just wrote. */
+function indexSizes(root) {
+  const sizes = new Map();
+  for (const line of new MemoryStore(root, { today: () => TODAY }).indexText().split('\n')) {
+    const hit = /^- \[\[([^\]]+)\]\]/.exec(line);
+    if (hit) sizes.set(hit[1], Buffer.byteLength(`${line}\n`, 'utf8'));
+  }
+  return sizes;
+}
+
+test('compact archives a reference fact before any user fact', () => {
+  // One slot to free, and the stalest fact in the store is a never-recalled `user` fact.
+  // The temporal key answers `ausr`. The answer that holds the property is `crf` — the
+  // stalest fact of a class whose worth DOES decay — because no durable fact may go while
+  // any other class still has a candidate.
+  const root = fresh();
+  seedDurableIsStalest(root);
+  const sizes = indexSizes(root);
+  const total = [...sizes.values()].reduce((a, b) => a + b, 0);
+
+  const s = new MemoryStore(root, { today: () => '2026-08-21', indexBudget: total - 1 });
+  const result = s.compact(0);
+
+  assert.deepEqual(result.archived.map((f) => f.name), ['crf']);
+  assert.deepEqual(result.archived.map((f) => f.type), ['reference']);
+  assert.deepEqual(s.archived(), ['crf']);
+  assert.ok(result.indexAfter <= result.target);
+  s.lint();
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('compact orders every decaying fact ahead of every durable one', () => {
+  // Two slots orders the whole decaying class ahead of the whole durable class, and the
+  // staleness order inside each class is unchanged: `crf` (2026-08-01) then `dpj`
+  // (2026-08-02), both NEWER than either durable fact.
+  const root = fresh();
+  seedDurableIsStalest(root);
+  const sizes = indexSizes(root);
+  const total = [...sizes.values()].reduce((a, b) => a + b, 0);
+
+  const s = new MemoryStore(root, {
+    today: () => '2026-08-21',
+    indexBudget: total - sizes.get('crf') - 1,
+  });
+  const result = s.compact(0);
+
+  assert.deepEqual(result.archived.map((f) => f.name), ['crf', 'dpj']);
+  assert.deepEqual(s.archived(), ['crf', 'dpj']);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('the budget still wins once nothing but durable facts are left', () => {
+  // A priority, never a veto. Once every decaying fact is gone and the index is still over
+  // target, the durable class is archived by staleness, stalest first, and `compact` lands
+  // at or below the target.
+  const root = fresh();
+  seedDurableIsStalest(root);
+  const sizes = indexSizes(root);
+
+  const s = new MemoryStore(root, { today: () => '2026-08-21', indexBudget: sizes.get('bfb') });
+  const result = s.compact(0);
+
+  assert.deepEqual(result.archived.map((f) => f.name), ['crf', 'dpj', 'ausr']);
+  assert.deepEqual(s.archived(), ['ausr', 'crf', 'dpj']);
+  assert.ok(result.indexAfter <= result.target);
+  assert.deepEqual(s.compact(0).archived, [], 'still idempotent at the floor');
+  s.lint();
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('the eviction rank never raises on a hand-edited type', () => {
+  // `type` comes out of YAML with no cast, so `type: [a, b]` really does put a `list` in
+  // that field. The rank is two `pyEqualValue` comparisons against STRING literals and
+  // never a `Set.has` or an `Array.includes`: `pyEqualValue(x, 'feedback')` short-circuits
+  // on the string operand and answers false for any shape, where hashing the value takes
+  // `compact` — the operator's only way back under budget — down with it on the reference.
+  const root = fresh();
+  const s = new MemoryStore(root, { today: () => TODAY });
+  const weird = [[1, 2], { a: 1 }, 2026, null, Buffer.from('user')];
+  const facts = weird.map((type, i) => ({
+    name: `x${i}`,
+    description: 'd',
+    type,
+    body: '',
+    links: [],
+    last_recalled: null,
+    created: '2026-01-01',
+  }));
+  facts.push({
+    name: 'keep',
+    description: 'd',
+    type: 'user',
+    body: '',
+    links: [],
+    last_recalled: null,
+    created: '2020-01-01',
+  });
+  // The `user` fact is the OLDEST of the six, so a rank that did not protect it would put
+  // it first. It comes last, and nothing raised on the way.
+  assert.deepEqual(s.byEviction(facts).map((f) => f.name), ['x0', 'x1', 'x2', 'x3', 'x4', 'keep']);
+  rmSync(root, { recursive: true, force: true });
+});
