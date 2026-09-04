@@ -1172,13 +1172,27 @@ def html_rows(markup: str) -> tuple[str, ...]:
 
 
 def _decoded_body(part: email.message.Message) -> str:
+    """A part's bytes as text. A `charset` label decides HOW they are read, never WHETHER.
+
+    `LookupError` alone was not the class. Review round 4 (M4) swept every alias in
+    `encodings.aliases` through this function: 22 labels raise `LookupError` (`base64`,
+    `bz2`, `hex`, `mbcs` off Windows — bytes-to-bytes codecs and absent ones), and THREE
+    raise a `UnicodeError` instead — `undefined`, `idna` and `punycode`, codecs that exist,
+    are reached, and refuse. `errors="replace"` does not save them: those three never consult
+    the handler, `idna` raises `UnicodeError("Unsupported error handling replace")` on being
+    handed one at all. Before this, each escaped `extract` uncaught and crossed the MCP wire
+    as `isError` while the Node port read the same archive.
+
+    Both are caught, and the fallback is the one an unknown label already took, so a label
+    whose codec raises and a label with no codec give the same answer rather than two.
+    """
     payload = part.get_payload(decode=True)
     if payload is None:
         return ""
     charset = part.get_content_charset() or "utf-8"
     try:
         return payload.decode(charset, errors="replace")
-    except LookupError:
+    except (LookupError, UnicodeError):
         return payload.decode("utf-8", errors="replace")
 
 

@@ -1852,3 +1852,73 @@ def test_the_charset_table_is_the_codec_registrys_answer():
     for label, decoded in table.items():
         if decoded != "LookupError":
             assert decoded == CHARSET_PROBE.decode(label, errors="replace"), label
+
+
+# Review round 4 (M2, M4, M5): three escapes measured on this reader, each with the input
+# that pins it.
+
+
+CHARSETS_THAT_RAISE_PAST_LOOKUPERROR = ("undefined", "idna", "punycode")
+
+
+def _mhtml_with_charset(path, charset, payload=b"\x80h\xc3\xa9llo\xff"):
+    """One `text/plain` part with 8-bit bytes and a declared `charset`, verbatim on disk.
+
+    No transfer encoding, so `get_payload(decode=True)` hands `_decoded_body` exactly these
+    bytes and the only thing under test is what the label does to `bytes.decode`.
+    """
+    head = (
+        b"MIME-Version: 1.0\n"
+        # `sniff` decodes the first 4096 bytes as UTF-8 and refuses the file when they do not
+        # decode, so the 8-bit payload has to sit past that head for this to be a test of the
+        # DECODER rather than of the sniffer.
+        b"X-Padding: " + b"a" * 4200 + b"\n"
+        b'Content-Type: multipart/related; boundary="----=_P"\n'
+        b"\n"
+        b"------=_P\n"
+        b"Content-Type: text/plain; charset=" + charset.encode() + b"\n"
+        b"\n"
+    )
+    path.write_bytes(head + payload + b"\n\n------=_P--\n")
+    return path
+
+
+@pytest.mark.parametrize("charset", CHARSETS_THAT_RAISE_PAST_LOOKUPERROR)
+def test_a_charset_whose_codec_raises_falls_back_the_way_an_unknown_label_does(
+    tmp_path, charset
+):
+    """MEASURED before the fix: `_decoded_body` caught `LookupError` only, so a label naming a
+    codec that EXISTS but refuses these bytes left `extract` as an uncaught `UnicodeError` and
+    crossed the MCP wire as `isError`, while the Node port read the file. `undefined` and
+    `idna` raise `ValueError`/`UnicodeError`, `punycode` raises `UnicodeDecodeError` — and
+    `errors="replace"` does not reach any of them, because those codecs never consult it.
+
+    Swept over every alias in `encodings.aliases` (357 names) plus these three: 22 raise
+    `LookupError`, 3 raise `UnicodeError`, the rest decode. `UnicodeError` is therefore the
+    CLASS, not a list of three names, and `LookupError` already covered the other 22.
+
+    The property: a `charset` label decides how bytes are read, never whether the archive can
+    be read at all. The fallback is the one an unknown label already takes, so a label whose
+    codec raises and a label with no codec now give the same answer — the assertion below
+    compares them rather than restating the bytes."""
+    expected = extract(_mhtml_with_charset(tmp_path / "unknown.eml", "no-such-codec"))
+    doc = extract(_mhtml_with_charset(tmp_path / f"{charset}.eml", charset))
+    assert doc.kind == "mhtml"
+    assert doc.parts[0].rows == expected.parts[0].rows
+    assert doc.parts[0].rows == (b"\x80h\xc3\xa9llo\xff".decode("utf-8", errors="replace"),)
+
+
+def test_no_registered_codec_name_can_leave_the_body_decoder():
+    """The sweep behind the parametrize above, run rather than quoted: every alias the codec
+    registry knows is handed to `_decoded_body` and none of them escapes it."""
+    import email
+    import encodings.aliases
+
+    names = set(encodings.aliases.aliases) | set(encodings.aliases.aliases.values())
+    names |= set(CHARSETS_THAT_RAISE_PAST_LOOKUPERROR) | {"utf-8", "no-such-codec", ""}
+    assert len(names) > 300
+    for name in sorted(names):
+        part = email.message_from_bytes(
+            f"Content-Type: text/plain; charset={name}\n\n".encode() + b"\x80\xff"
+        )
+        docread._decoded_body(part)  # must not raise, whatever the label names
