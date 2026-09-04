@@ -1242,7 +1242,7 @@ export class ZipReader {
       // `lzma` modules; Node core has neither, and a decompressor is not a dependency this
       // package takes. The sentence is in the pdf/doc/rtf ruling family: what the member is,
       // which server reads it, where the ruling is written down.
-      throw new DocumentReadError(
+      throw new ZipMethodUnsupported(
         `${this.pathName} is a zip but its ${name} uses compression method ${entry.method} ` +
           `(${entry.method === 12 ? 'bzip2' : 'lzma'}), which the Node server cannot decompress ` +
           '(the Python server reads it); see docs/porting.md',
@@ -1255,6 +1255,27 @@ export class ZipReader {
     }
     if (crc32(out) !== entry.crc) throw new BadZipFile(`Bad CRC-32 for file ${pyRepr(name)}`);
     return out;
+  }
+}
+
+/**
+ * The ruled bzip2/lzma refusal, as its own class — review round 4 (M1).
+ *
+ * It IS a `DocumentReadError` and its sentence is unchanged, so `docs/porting.md`'s ruling
+ * and every case that pins the wording still hold. What the subclass buys is that
+ * `isUnreadableOptional` can name exactly this refusal: on the reference the same members are
+ * a `NotImplementedError`, which `_UNREADABLE_OPTIONAL` catches through `RuntimeError`, so a
+ * TOLERANT read swallows it there and must swallow it here. Without the class the only way to
+ * recognise it would be `instanceof DocumentReadError`, which would also swallow the
+ * encrypted-member and shared-string refusals that the same call can raise.
+ */
+export class ZipMethodUnsupported extends DocumentReadError {
+  constructor(message: string) {
+    super(message);
+    // `BantamError` stamps `new.target.name`, and `name` is OBSERVABLE — `dump_py.py` prints
+    // `type(e).__name__` for the reference, where the same refusal is one class. The subclass
+    // is an internal distinction and must not become a second class name on the wire.
+    this.name = 'DocumentReadError';
   }
 }
 
@@ -1381,6 +1402,20 @@ function isDamagedMember(err: unknown): err is Error {
  * `_UNREADABLE_OPTIONAL`: why a tolerant read of `.rels` or `styles.xml` yields nothing
  * rather than raising — malformed, absent, unreadable, encrypted or unsupported-method
  * (`RuntimeError`), a lying checksum (`BadZipFile`) or a broken deflate stream (`zlib.error`).
+ *
+ * `ZipMethodUnsupported` is here, and that is review round 4 (M1). The reference's tuple
+ * catches `RuntimeError`, which covers the `NotImplementedError` its `zipfile` raises for a
+ * method it has no decompressor for; this list covered method 9 (`ZipMemberUnreadable`) but
+ * not 12 and 14, which this port answers with the ruled bzip2/lzma refusal instead. MEASURED
+ * on an `.xlsx` whose OPTIONAL `xl/styles.xml` is bzip2-compressed: the reference read the
+ * whole workbook and this port refused it — no manifest, no parts. `docs/porting.md`'s bzip2
+ * row rules the REQUIRED member and has no optional-member fixture, so that difference was
+ * unruled and unpinned; `bzip2-optional-styles.xlsx` is the fixture it lacked, and the two
+ * runtimes now answer the same bytes for it.
+ *
+ * The list is a CLASS list and the comment above it names the reference's classes; the two
+ * are the same SET, which is the claim the paragraph above used to make while the code
+ * quietly did not deliver it.
  */
 function isUnreadableOptional(err: unknown): boolean {
   return (
@@ -1388,6 +1423,7 @@ function isUnreadableOptional(err: unknown): boolean {
     err instanceof RangeError ||
     isOsError(err) ||
     err instanceof ZipMemberUnreadable ||
+    err instanceof ZipMethodUnsupported ||
     isDamagedMember(err)
   );
 }

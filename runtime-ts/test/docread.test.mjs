@@ -769,3 +769,33 @@ test('the stateful codecs ICU has no decoder for keep the no-decoder path (H1)',
   assert.equal(decodeCharset(buf, 'utf-7'), passthrough);
   assert.equal(decodeCharset(buf, 'iso-2022-kr'), passthrough);
 });
+
+// ---- M1: a member read TOLERANTLY costs that member, never the document -----------------
+
+test('an optional member this port cannot decompress does not refuse the document (M1)', () => {
+  // Found independently by I1 (from the reference) and I2 (from here). `ZipReader.read`
+  // answers methods 12 and 14 with a `DocumentReadError` — the ruled bzip2/lzma sentence —
+  // and `isUnreadableOptional` did not name that class, so the refusal escaped the tolerant
+  // read of `xl/styles.xml` and refused the WHOLE workbook. MEASURED before the fix, on
+  // this fixture: `DocumentReadError: bzip2-optional-styles.xlsx is a zip but its
+  // xl/styles.xml uses compression method 12 (bzip2), which the Node server cannot
+  // decompress (the Python server reads it); see docs/porting.md` — no manifest, no parts.
+  //
+  // The reference reads the whole workbook here: its `zipfile` decompresses the styles
+  // through the stdlib `bz2`. What `docs/porting.md`'s bzip2 row rules is a REQUIRED member,
+  // where the two runtimes genuinely answer different things; it has no optional-member
+  // fixture, so this divergence was unruled AND unpinned. No cell in this fixture is
+  // date-styled, so what `styles.xml` would have said changes nothing and the two runtimes
+  // answer the same bytes — the docread suite compares them live.
+  const doc = extract(paths['bzip2-optional-styles.xlsx']);
+  assert.equal(doc.kind, 'xlsx');
+  assert.deepEqual(doc.parts.map((p) => [p.name, [...p.rows]]), [['Sales', ['ok']]]);
+  assert.deepEqual(omitted(doc.parts[0]), []);
+  // The SAME method on a REQUIRED member is still the ruling, word for word.
+  assert.throws(() => extract(paths['bzip2.docx']), {
+    name: 'DocumentReadError',
+    message:
+      'bzip2.docx is a zip but its word/document.xml uses compression method 12 (bzip2), ' +
+      'which the Node server cannot decompress (the Python server reads it); see docs/porting.md',
+  });
+});

@@ -87,6 +87,7 @@
 {"fixture": "refs.xlsx", "kind": "xlsx", "text_bytes": 11, "parts": [{"name": "Sales", "index": 0, "row_count": 1, "text_bytes": 11, "rows": ["a & b & & <"], "omissions": []}], "omissions": []}
 {"fixture": "badcd.xlsx", "error": "OSError", "message": "[Errno 22] Invalid argument"}
 {"fixture": "bzip2.docx", "kind": "docx", "text_bytes": 5, "parts": [{"name": "document", "index": 0, "row_count": 1, "text_bytes": 5, "rows": ["hello"], "omissions": []}], "omissions": []}
+{"fixture": "bzip2-optional-styles.xlsx", "kind": "xlsx", "text_bytes": 2, "parts": [{"name": "Sales", "index": 0, "row_count": 1, "text_bytes": 2, "rows": ["ok"], "omissions": []}], "omissions": []}
 {"fixture": "lzma.docx", "kind": "docx", "text_bytes": 5, "parts": [{"name": "document", "index": 0, "row_count": 1, "text_bytes": 5, "rows": ["hello"], "omissions": []}], "omissions": []}
 {"fixture": "method9.docx", "error": "DocumentReadError", "message": "method9.docx is a zip but its word/document.xml uses compression method 9, which this reader cannot decompress"}
 {"fixture": "encrypted-rels.xlsx", "kind": "xlsx", "text_bytes": 2, "parts": [{"name": "Sales", "index": 0, "row_count": 1, "text_bytes": 2, "rows": ["ok"], "omissions": []}], "omissions": [{"subject": "media", "count": 1, "size": 3, "where": [], "what": "png", "facts": {}}]}
