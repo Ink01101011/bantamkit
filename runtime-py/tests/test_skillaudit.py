@@ -1,13 +1,13 @@
 """`skillaudit` and `skill_audit`: the catalogue auditor, and the tool that serves it.
 
 TWO ORACLES, DELIBERATELY. The committed fixture tree
-(`tools/conformance/fixtures/skill-audit/`) is the one that matters — sixteen `SKILL.md`
+(`tools/conformance/fixtures/skill-audit/`) is the one that matters — nineteen `SKILL.md`
 laid out the way a plugin cache lays them out, with a README that states, per file, which
 clause it exists to trigger, and the AUTHOR'S HAND ARITHMETIC beside it. Those numbers were
 written before this module existed, so the nodes below assert the tool's answer AGAINST them
 rather than deriving anything from them: if the two disagree, one is wrong and the disagreement
 names which clause is in dispute. (Measured at the commit that added this file: they agree on
-all fifteen — twelve per-skill byte counts and the three headlines.)
+all eighteen — fifteen per-skill byte counts and the three headlines.)
 
 The second oracle is a set of trees built in `tmp_path`, for the clauses the committed tree
 cannot hold without invalidating its own arithmetic: an empty `enabled`, a `9.0.0`/`10.0.0`
@@ -58,16 +58,26 @@ README_BYTES = {
     "trigger-kit:worktree-sweep": 107,
     "trigger-kit:loop-router": 174,
     "trigger-kit:folded-note": 141,
+    "trigger-kit:quoted-scalar": 88,
+    "trigger-kit:quoted-edge": 84,
+    "trigger-kit:quoted-single": 83,
     "frontmatter-kit:misnamed": 84,
     "frontmatter-kit:no-description": 0,
     "dup-kit:echo-check": 112,
     "solo-check": 92,
 }
-README_SKILLS = 12
-README_CATALOGUE_BYTES = 1296
+README_SKILLS = 15
+README_CATALOGUE_BYTES = 1551
 README_OMISSIONS = 4
-README_FILES = 16
+README_FILES = 19
 README_BUDGET = 1024
+
+#: What the two WRONG readings of a whole-value quoted scalar answer over the same tree. The
+#: literal rule keeps both outer quotes and both `\"` backslashes; the eager rule strips a
+#: quote off `quoted-edge`, which is not one scalar at all. Three distinct numbers, so a
+#: `catalogue_bytes` that moved says WHICH mistake was made.
+LITERAL_QUOTE_BYTES = 1558
+EAGER_STRIP_BYTES = 1549
 
 
 def enabled() -> list[str]:
@@ -163,11 +173,28 @@ def test_exactly_the_two_shared_phrases_the_readme_names_are_reported():
     `'race condition'` is single-quoted and `"flaky in prod"` is double-quoted on purpose:
     a reader that implements only one delimiter reports one finding and is visible here
     rather than in a count that happens to look plausible.
+
+    Two findings still, and the MEMBERSHIP is where the quoted-scalar rule shows: three of the
+    five skills holding `"flaky in prod"` and one of the three holding `"race condition"` write
+    their whole description as a quoted YAML scalar, and each is dropped from one of these
+    lists by one of the two ways of getting the unwrapping wrong.
     """
     findings = kinds(fixture_audit(), skillaudit.KIND_SHARED_PHRASE)
     assert [(f.detail, list(f.skills)) for f in findings] == [
-        ("flaky in prod", ["trigger-kit:deadlock-hunt", "trigger-kit:race-debug"]),
-        ("race condition", ["trigger-kit:race-debug", "trigger-kit:race-review"]),
+        (
+            "flaky in prod",
+            [
+                "trigger-kit:deadlock-hunt",
+                "trigger-kit:quoted-edge",
+                "trigger-kit:quoted-scalar",
+                "trigger-kit:quoted-single",
+                "trigger-kit:race-debug",
+            ],
+        ),
+        (
+            "race condition",
+            ["trigger-kit:quoted-edge", "trigger-kit:race-debug", "trigger-kit:race-review"],
+        ),
     ]
     assert {f.severity for f in findings} == {"high"}
 
@@ -239,14 +266,186 @@ def test_double_quotes_delimit_even_between_letters(tmp_path):
     assert skillaudit.phrases("a'bc'd") == ()
 
 
+# ------------------------------------------------------- the whole-value quoted scalar
+
+
+def test_a_description_quoted_whole_is_unwrapped_before_it_is_counted_or_scanned():
+    """`quoted-scalar` writes its whole description as one `"..."` YAML scalar.
+
+    The host's parser strips those two quotes before a session ever sees them, so they are not
+    bytes anyone pays for, and the `\\"flaky in prod\\"` inside is a real trigger phrase rather
+    than part of one giant junk phrase. Measured on this tree both ways: the literal reading
+    prices the file at 92 bytes and finds the two junk strings either side of the escapes; the
+    corrected reading prices it at 88 and finds the one phrase. Both numbers are asserted,
+    because 88 alone would also be reached by a reader that dropped four bytes for a different
+    reason.
+    """
+    base = Path(CACHE)
+    found = {s.id: s for s in (skillaudit._load(p, base) for p in skillaudit._walk(base))}
+    note = found["trigger-kit:quoted-scalar"]
+    assert note.bytes == README_BYTES["trigger-kit:quoted-scalar"] == 88
+    assert not note.description.startswith('"') and not note.description.endswith('"')
+    assert note.description.startswith("Use when a suite is ")
+    assert note.phrases == ("flaky in prod",)
+    raw = (base / "kit-market/trigger-kit/1.0.0/skills/quoted-scalar/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    quoted = [line for line in raw.split("\n") if line.startswith("description:")][0]
+    literal = quoted.partition(":")[2].strip()
+    assert len(literal.encode()) == 92
+    assert skillaudit.phrases(literal) == (
+        "Use when a suite is \\",
+        " and the whole description is one quoted YAML scalar.",
+    )
+
+
+def test_a_value_that_merely_opens_and_ends_with_a_quote_is_not_one_scalar():
+    """THE THIRD GUARD, and the reason unwrapping is not `startswith` and `endswith`.
+
+    `quoted-edge` opens with `"race condition"` and ends with `"flaky in prod"`, so its first
+    and last characters are both `"` and it is still not one scalar — its opening quote closes
+    at index 15. An eager reader strips those two characters, welds the middle into one junk
+    phrase, and loses BOTH of its real phrases: measured on this tree, that drops `quoted-edge`
+    out of both collisions at once and answers 1549 bytes. The correct reading leaves the value
+    exactly as written, which is why its 84 bytes are the same number either way.
+    """
+    base = Path(CACHE)
+    found = {s.id: s for s in (skillaudit._load(p, base) for p in skillaudit._walk(base))}
+    edge = found["trigger-kit:quoted-edge"]
+    assert edge.bytes == README_BYTES["trigger-kit:quoted-edge"] == 84
+    assert edge.description.startswith('"') and edge.description.endswith('"')
+    assert edge.phrases == ("race condition", "flaky in prod")
+    assert skillaudit.unwrap_scalar(edge.description) == edge.description
+    for finding in kinds(fixture_audit(), skillaudit.KIND_SHARED_PHRASE):
+        assert "trigger-kit:quoted-edge" in finding.skills
+
+
+def test_a_single_quoted_scalar_unwraps_and_a_doubled_apostrophe_is_one_apostrophe():
+    """`quoted-single` pins YAML's OTHER escape, and the order the two rules compose in.
+
+    Inside a `'` scalar, `''` is one literal apostrophe — so it does not close the scalar, and
+    once unwrapped it is the `'` of `it's`, which the contraction guard then protects. The
+    literal reading keeps three characters nobody pays for (86 bytes, not 83) and reports two
+    junk phrases torn out of the middle of the description.
+    """
+    base = Path(CACHE)
+    found = {s.id: s for s in (skillaudit._load(p, base) for p in skillaudit._walk(base))}
+    single = found["trigger-kit:quoted-single"]
+    assert single.bytes == README_BYTES["trigger-kit:quoted-single"] == 83
+    assert "says it's " in single.description
+    assert "''" not in single.description
+    assert single.phrases == ("flaky in prod",)
+    raw = (base / "kit-market/trigger-kit/1.0.0/skills/quoted-single/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    literal = [line for line in raw.split("\n") if line.startswith("description:")][0]
+    literal = literal.partition(":")[2].strip()
+    assert len(literal.encode()) == 86
+    assert len(skillaudit.phrases(literal)) == 3
+
+
+def test_the_two_wrong_readings_of_a_quoted_scalar_answer_two_other_byte_counts():
+    """The headline separates all three readings, so a regression names itself.
+
+    1551 is correct, 1558 keeps the quotes and the backslashes, 1549 strips one off a value
+    that is not a scalar. The three are asserted as distinct rather than merely unequal to the
+    right one, because two mistakes that happened to agree would hide behind a single `!=`.
+    """
+    assert fixture_audit().catalogue_bytes == README_CATALOGUE_BYTES == 1551
+    assert len({README_CATALOGUE_BYTES, LITERAL_QUOTE_BYTES, EAGER_STRIP_BYTES}) == 3
+    literal = sum(
+        len(
+            [
+                line
+                for line in (CACHE / rel / "SKILL.md").read_text(encoding="utf-8").split("\n")
+                if line.startswith("description:")
+            ][0]
+            .partition(":")[2]
+            .strip()
+            .encode()
+        )
+        - README_BYTES[skill_id]
+        for skill_id, rel in {
+            "trigger-kit:quoted-scalar": "kit-market/trigger-kit/1.0.0/skills/quoted-scalar",
+            "trigger-kit:quoted-edge": "kit-market/trigger-kit/1.0.0/skills/quoted-edge",
+            "trigger-kit:quoted-single": "kit-market/trigger-kit/1.0.0/skills/quoted-single",
+        }.items()
+    )
+    assert README_CATALOGUE_BYTES + literal == LITERAL_QUOTE_BYTES
+
+
+@pytest.mark.parametrize(
+    "value, unwrapped",
+    [
+        ('"one scalar"', "one scalar"),
+        ("'one scalar'", "one scalar"),
+        ('"a" and "b"', '"a" and "b"'),
+        ("'a' and 'b'", "'a' and 'b'"),
+        ('"never closed', '"never closed'),
+        ("'never closed", "'never closed"),
+        ('"ends on an escape\\"', '"ends on an escape\\"'),
+        ('"say \\"hi\\""', 'say "hi"'),
+        ("'it''s'", "it's"),
+        ('"a backslash \\\\"', "a backslash \\"),
+        ("plain value", "plain value"),
+        ('a "quote" inside', 'a "quote" inside'),
+        ('""', ""),
+        ('"', '"'),
+    ],
+)
+def test_unwrap_scalar_is_the_whole_value_rule_and_nothing_wider(value, unwrapped):
+    """The rule as a table, including the case the fixture tree deliberately cannot hold.
+
+    `"ends on an escape\\"` OPENS a scalar and never closes one — its final quote is escaped —
+    and is therefore a LITERAL. That is a choice, stated here rather than left to whoever ports
+    it: there is no end point to unwrap to, so guessing one would delete a byte the reader
+    cannot prove is YAML's. It is not a `frontmatter-malformed` finding either, because those
+    three tokens name failures of the BLOCK and this value still reads, still costs bytes and
+    still contributes whatever phrases pair inside it.
+    """
+    assert skillaudit.unwrap_scalar(value) == unwrapped
+
+
+def test_a_quoted_name_and_a_quoted_router_flag_unwrap_too(tmp_path):
+    """One rule at one place, because it is a fact about YAML scalars and not about one key.
+
+    `name: "s"` is the name `s` and not `"s"`, so it does not become a `name-mismatch`; and
+    `router: "true"` is a router, so its phrases stay out of the index. A reader that unwrapped
+    `description:` alone would answer a spurious finding for the first and a real one for the
+    second.
+    """
+    body = '---\nname: "s"\nrouter: "true"\ndescription: quotes a \'shared phrase\' here\n---\n'
+    skill(tmp_path, "m/p/1.0.0/skills/s", body)
+    skill(tmp_path, "m/p/1.0.0/skills/t", frontmatter("t", "also a 'shared phrase' here"))
+    audit = skillaudit.audit(tmp_path)
+    assert kinds(audit, skillaudit.KIND_NAME_MISMATCH) == []
+    assert kinds(audit, skillaudit.KIND_SHARED_PHRASE) == []
+    assert audit.skills == 2
+
+
+def test_a_scalar_quoted_whole_and_folded_over_lines_is_unwrapped_after_the_fold(tmp_path):
+    """The closing quote is not on the line the value starts on, so order is not optional.
+
+    A reader that unwrapped each line as it arrived would find no closing quote on the first
+    and strip nothing, then leave the second line's quote in the middle of the value.
+    """
+    body = '---\nname: s\ndescription: "one \'kept phrase\'\n  and two"\n---\n'
+    skill(tmp_path, "m/p/1.0.0/skills/s", body)
+    audit = skillaudit.audit(tmp_path)
+    assert audit.catalogue_bytes == len("one 'kept phrase' and two")
+    base = Path(tmp_path)
+    found = [skillaudit._load(p, base) for p in skillaudit._walk(base)]
+    assert found[0].phrases == ("kept phrase",)
+
+
 # ------------------------------------------------------------------- catalogue-over-budget
 
 
 def test_the_budget_finding_states_the_overage_and_only_fires_when_a_budget_is_given():
-    """1296 against 1024 is 272 over; no budget at all is not a budget of zero."""
+    """1551 against 1024 is 527 over; no budget at all is not a budget of zero."""
     over = kinds(fixture_audit(), skillaudit.KIND_OVER_BUDGET)
     assert len(over) == 1
-    assert over[0].detail == "1296 > 1024, over by 272"
+    assert over[0].detail == "1551 > 1024, over by 527"
     assert over[0].severity == "high" and over[0].skills == ()
     assert kinds(fixture_audit(budget=None), skillaudit.KIND_OVER_BUDGET) == []
     assert kinds(fixture_audit(budget=README_CATALOGUE_BYTES), skillaudit.KIND_OVER_BUDGET) == []
@@ -459,13 +658,13 @@ def test_the_stale_version_loses_by_byte_order_and_its_bytes_are_named_in_the_om
     """`1.1.0` sorts last and wins; the 44-byte `1.0.0` copy is the omission.
 
     The two descriptions differ in length on purpose, so WHICH copy was counted is visible
-    in `catalogue_bytes`: 1296 with the right one and 1228 with the wrong one. Both numbers
+    in `catalogue_bytes`: 1551 with the right one and 1483 with the wrong one. Both numbers
     are asserted, because only the pair distinguishes "counted the winner" from "counted
     one of them".
     """
     audit = fixture_audit()
     assert audit.catalogue_bytes == README_CATALOGUE_BYTES
-    assert README_CATALOGUE_BYTES - README_BYTES["dup-kit:echo-check"] + 44 == 1228
+    assert README_CATALOGUE_BYTES - README_BYTES["dup-kit:echo-check"] + 44 == 1483
     assert subjects(audit)[skillaudit.OMIT_DUPLICATE].size == 44
     assert README_BYTES["dup-kit:echo-check"] == 112
 

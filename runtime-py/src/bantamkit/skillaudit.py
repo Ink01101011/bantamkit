@@ -21,6 +21,25 @@ two contractions as a shared phrase — measured on the fixture tree, where the 
 delimits only when it is NOT flanked by letters on both sides. `"` has no such problem and is
 always a delimiter.
 
+**A whole-value quoted scalar is YAML's quoting, not the author's.** `description: "Use when
+..."` writes the WHOLE value as a quoted YAML scalar: the host's parser strips those two quotes
+before the description ever reaches a session, so they are not bytes anyone pays for and the
+text between them is not a trigger phrase. A reader that takes them literally answers two bytes
+too many and turns the entire description into one giant phrase, which hides any real quoted
+phrase inside it. Measured 2026-09-05 over this machine's own plugin cache: 17 of the 31 enabled
+skills are written that way — the majority shape, not an edge case. So a value is unwrapped
+before it is counted or scanned, and only quotes INSIDE the value delimit a phrase.
+
+Unwrapping is deliberately narrow, because the eager version loses more than the literal one.
+A value is a whole-value scalar only when it opens with a quote AND that quote's own closing
+quote is the value's last character — `"a" and "b"` opens and ends with `"` and is NOT one
+scalar, and stripping it would destroy both real phrases in it. Closing is judged by YAML's two
+escape rules and no others: inside `"` a backslash escapes the next character, inside `'` a
+doubled `''` is one apostrophe. A value that OPENS with a quote and never closes is a LITERAL,
+not an unwrap and not a new finding — there is no end point to unwrap to, guessing one would
+delete a byte the reader cannot prove is YAML's, and `frontmatter-malformed` names failures of
+the BLOCK, not of one value. The unpaired quote then opens no phrase, which is already the rule.
+
 **A router quotes its siblings by design.** A skill whose frontmatter carries `router: true`
 routes a request to whichever sibling owns it, so it necessarily quotes their phrases; left in
 the index it collides with every skill it routes to and the finding floods. It is dropped from
@@ -132,6 +151,17 @@ KEY_ROUTER = "router"
 
 # The values YAML spells `true` with. A `router:` carrying anything else is not a router.
 TRUE_VALUES = frozenset({"true", "True", "TRUE", "yes", "Yes", "YES", "on", "On", "ON"})
+
+# The two characters a YAML scalar can be wrapped in whole. Order is the order a value is
+# tested in and cannot matter: a value opens with at most one of them.
+SCALAR_QUOTES = ('"', "'")
+
+# The escape character inside a DOUBLE-quoted scalar, and the only two sequences this reader
+# resolves — `\"` for a quote and `\\` for a backslash. Every other `\x` is left as written,
+# because inventing YAML's full escape table is a second thing two runtimes would have to
+# agree about character for character, and no `SKILL.md` frontmatter uses one.
+BACKSLASH = "\\"
+DOUBLE_ESCAPES = frozenset({'"', BACKSLASH})
 
 
 class SkillAuditError(BantamError):
@@ -285,6 +315,65 @@ def _walk(root: Path) -> list[Path]:
     return found
 
 
+def _scalar_close(value: str, quote: str) -> int:
+    """Index of the quote that CLOSES a scalar opened at index 0, or `-1` when none does.
+
+    YAML has exactly two escape rules for this and this reader implements exactly two: inside a
+    `"` scalar a backslash escapes whatever follows it, so `\\"` does not close; inside a `'`
+    scalar a doubled `''` is one literal apostrophe, so it does not close either. A quote that
+    is never closed returns `-1`, which is what makes an unterminated value a literal.
+    """
+    index = 1
+    while index < len(value):
+        char = value[index]
+        if quote == '"' and char == BACKSLASH:
+            index += 2
+            continue
+        if char == quote:
+            if quote == "'" and value[index + 1 : index + 2] == quote:
+                index += 2
+                continue
+            return index
+        index += 1
+    return -1
+
+
+def _unescape(content: str, quote: str) -> str:
+    """The content of a quoted scalar as the host's parser would hand it over.
+
+    Only the escapes `_scalar_close` honours are resolved, so the two functions cannot disagree
+    about what was inside the scalar and what closed it.
+    """
+    if quote == "'":
+        return content.replace("''", "'")
+    out: list[str] = []
+    index = 0
+    while index < len(content):
+        char = content[index]
+        if char == BACKSLASH and content[index + 1 : index + 2] in DOUBLE_ESCAPES:
+            out.append(content[index + 1])
+            index += 2
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def unwrap_scalar(value: str) -> str:
+    """A whole-value quoted YAML scalar without its quotes; every other value unchanged.
+
+    `"Use when a test is \\"flaky in prod\\""` is one scalar and unwraps. `"a" and "b"` opens
+    and ends with `"` and is NOT one — its first quote closes at index 2 — so it is left alone
+    and both of its phrases survive. `"never closed` never closes and is left alone too.
+    """
+    for quote in SCALAR_QUOTES:
+        if len(value) < 2 or not value.startswith(quote):
+            continue
+        if _scalar_close(value, quote) == len(value) - 1:
+            return _unescape(value[1:-1], quote)
+    return value
+
+
 def _parse_frontmatter(text: str) -> tuple[dict[str, str] | None, str | None]:
     """The `---` block as a flat mapping, or `None` and the token saying why not.
 
@@ -296,6 +385,13 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, str] | None, str | None]:
 
     A leading BOM is stripped before the first line is examined: an editor that writes one has
     not thereby made the file's frontmatter malformed.
+
+    Every value is unwrapped once the block closes, AFTER the fold and never during it: a
+    scalar quoted whole may be folded over several lines, so its closing quote is not known
+    until the last of them has been joined on. Unwrapping happens here rather than at
+    `description:` alone because it is a fact about YAML scalars — `name: "s"` is the name `s`
+    and `router: "true"` is a router — and one rule in one place is one rule for the Node half
+    to port.
     """
     if text.startswith("﻿"):
         text = text[1:]
@@ -306,7 +402,7 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, str] | None, str | None]:
     current: str | None = None
     for line in lines[1:]:
         if line.strip() == FRONTMATTER_FENCE:
-            return fields, None
+            return {key: unwrap_scalar(value) for key, value in fields.items()}, None
         if not line.strip():
             current = None
             continue

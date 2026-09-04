@@ -7,6 +7,9 @@
   "trigger-kit:worktree-sweep": 4,
   "trigger-kit:loop-router": 3,
   "trigger-kit:folded-note": 1,
+  "trigger-kit:quoted-scalar": 5,
+  "trigger-kit:quoted-edge": 2,
+  "trigger-kit:quoted-single": 1,
   "frontmatter-kit:misnamed": 1,
   "dup-kit:echo-check": 7,
   "solo-check": 0

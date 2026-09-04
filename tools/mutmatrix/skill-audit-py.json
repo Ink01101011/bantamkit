@@ -52,7 +52,7 @@
       "path": "runtime-py/src/bantamkit/skillaudit.py",
       "anchor": "loser, winner = (held, skill) if skill.version >= held.version else (skill, held)",
       "replacement": "loser, winner = (held, skill) if skill.version < held.version else (skill, held)",
-      "why": "the stale duplicate wins and catalogue_bytes reads 1228"
+      "why": "the stale duplicate wins and catalogue_bytes reads 1483"
     },
     {
       "label": "M08-no-dedupe-at-all",
@@ -101,7 +101,7 @@
       "path": "runtime-py/src/bantamkit/skillaudit.py",
       "anchor": "    except (UnicodeDecodeError, OSError):",
       "replacement": "    except OSError:",
-      "why": "one undecodable file takes the other fifteen with it"
+      "why": "one undecodable file takes the other eighteen with it"
     },
     {
       "label": "M15-a-bad-byte-is-repaired-in-silence",
@@ -326,7 +326,7 @@
       "path": "runtime-py/src/bantamkit/skillaudit.py",
       "anchor": "    base = Path(root)",
       "replacement": "    if not (Path(os.path.expanduser(\"~\")) / \".claude\").is_dir():\n        raise SkillAuditError(\"no host skill root\")\n    base = Path(root)",
-      "why": "the tool starts consulting the host's own skill root instead of only its argument (bounded: one is_dir, no walk \u2014 the first form of this row walked the real HOME and had to be killed)"
+      "why": "the tool starts consulting the host's own skill root instead of only its argument (bounded: one is_dir, no walk — the first form of this row walked the real HOME and had to be killed)"
     },
     {
       "label": "M47-the-reply-is-not-the-json-document",
@@ -369,6 +369,48 @@
       "anchor": "            except (skillaudit.SkillAuditError, OSError) as exc:",
       "replacement": "            except OSError as exc:",
       "why": "the refusal reaches the model as an isError frame instead of a sentence"
+    },
+    {
+      "label": "M53-no-unwrapping-at-all",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "            return {key: unwrap_scalar(value) for key, value in fields.items()}, None",
+      "replacement": "            return dict(fields), None",
+      "why": "THE DEFECT SA2b FIXES: a whole-value quoted scalar is read literally, so 17 of 31 real descriptions are priced two bytes high and quoted-scalar's phrase is buried (1558 bytes, not 1551)"
+    },
+    {
+      "label": "M54-unwrapping-is-startswith-and-endswith",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        if _scalar_close(value, quote) == len(value) - 1:",
+      "replacement": "        if value.endswith(quote):",
+      "why": "THE OPPOSITE MISTAKE: quoted-edge begins and ends with a quote and is not one scalar, so an eager strip welds it into one junk phrase and drops it out of BOTH collisions (1549 bytes, not 1551)"
+    },
+    {
+      "label": "M55-a-backslash-does-not-escape-a-quote",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        if quote == '\"' and char == BACKSLASH:",
+      "replacement": "        if False and char == BACKSLASH:",
+      "why": "quoted-scalar's first `\\\"` closes the scalar early, so the value stops being whole-value quoted and is read literally"
+    },
+    {
+      "label": "M56-a-doubled-apostrophe-is-two-apostrophes",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        return content.replace(\"''\", \"'\")",
+      "replacement": "        return content",
+      "why": "YAML's other escape: quoted-single reads 84 bytes instead of 83 and keeps an apostrophe the host never loads"
+    },
+    {
+      "label": "M57-an-unterminated-quote-is-unwrapped-anyway",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        if _scalar_close(value, quote) == len(value) - 1:\n            return _unescape(value[1:-1], quote)",
+      "replacement": "        if _scalar_close(value, quote) in (len(value) - 1, -1):\n            return _unescape(value[1:-1], quote)",
+      "why": "the rejected alternative: a value that opens a quote and never closes one gets its first and LAST character deleted on a guess"
+    },
+    {
+      "label": "M58-only-the-description-is-unwrapped",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "return {key: unwrap_scalar(value) for key, value in fields.items()}, None",
+      "replacement": "return {\n                key: unwrap_scalar(value) if key == KEY_DESCRIPTION else value\n                for key, value in fields.items()\n            }, None",
+      "why": "the rule stops being a fact about YAML scalars: `name: \"s\"` becomes a name-mismatch and `router: \"true\"` stops being a router"
     }
   ]
 }

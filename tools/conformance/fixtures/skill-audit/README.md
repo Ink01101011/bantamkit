@@ -1,6 +1,6 @@
 # `skill_audit` fixture tree
 
-Sixteen `SKILL.md` files laid out the way a plugin cache lays them out, engineered so every
+Nineteen `SKILL.md` files laid out the way a plugin cache lays them out, engineered so every
 `skill_audit` finding kind and every omission subject fires at least once. The contract they
 pin is `assets/tools/skill_audit.json`; this file says, per fixture, WHICH clause it exists to
 trigger — so a later unit can tell a fixture that stopped working from one that never worked.
@@ -13,15 +13,15 @@ answer deterministic and therefore comparable between the two runtimes.
     root     = tools/conformance/fixtures/skill-audit/cache
     enabled  = the three ids in enabled.json
     usage    = usage.json
-    budget   = 1024   (below the tree's 1296 bytes, so the budget finding fires)
+    budget   = 1024   (below the tree's 1551 bytes, so the budget finding fires)
 
 ## What the tree should answer
 
 Measured by hand over these files, applying the spec in `assets/tools/skill_audit.json`:
 
-    skills            12
-    catalogue_bytes   1296
-    omissions          4      (12 counted + 4 omitted = 16 SKILL.md on disk)
+    skills            15
+    catalogue_bytes   1551
+    omissions          4      (15 counted + 4 omitted = 19 SKILL.md on disk)
 
 The identity of every counted skill, and its description bytes:
 
@@ -35,14 +35,19 @@ The identity of every counted skill, and its description bytes:
 | 107 | `trigger-kit:worktree-sweep` | `kit-market/trigger-kit/1.0.0/skills/worktree-sweep/` |
 | 174 | `trigger-kit:loop-router` | `kit-market/trigger-kit/1.0.0/skills/loop-router/` |
 | 141 | `trigger-kit:folded-note` | `kit-market/trigger-kit/1.0.0/skills/folded-note/` |
+|  88 | `trigger-kit:quoted-scalar` | `kit-market/trigger-kit/1.0.0/skills/quoted-scalar/` |
+|  84 | `trigger-kit:quoted-edge` | `kit-market/trigger-kit/1.0.0/skills/quoted-edge/` |
+|  83 | `trigger-kit:quoted-single` | `kit-market/trigger-kit/1.0.0/skills/quoted-single/` |
 |  84 | `frontmatter-kit:misnamed` | `kit-market/frontmatter-kit/2.3.1/skills/misnamed/` |
 |   0 | `frontmatter-kit:no-description` | `kit-market/frontmatter-kit/2.3.1/skills/no-description/` |
 | 112 | `dup-kit:echo-check` | `kit-market/dup-kit/1.1.0/skills/echo-check/` |
 |  92 | `solo-check` | `personal/skills/solo-check/` |
 
-These twelve numbers are the AUTHOR'S ARITHMETIC, not the tool's output — the tool did not
-exist when they were written. They are here to be disagreed with: if an implementation answers
-something else, one of the two is wrong and the difference names which clause is in dispute.
+These fifteen numbers are the AUTHOR'S ARITHMETIC, not the tool's output. The first twelve
+were written before the tool existed and have not moved since; the last three were added with
+the whole-value-quote rule and are computed by hand from the unwrapped scalar, not read off a
+run. They are here to be disagreed with: if an implementation answers something else, one of
+the two is wrong and the difference names which clause is in dispute.
 
 ## Findings, and the file that triggers each
 
@@ -51,11 +56,14 @@ something else, one of the two is wrong and the difference names which clause is
 Two or more non-router skills quote the same literal phrase, so which one a session reaches for
 is a coin flip. Two must fire:
 
-- `'race condition'` — `trigger-kit/1.0.0/skills/race-review/` and `.../race-debug/`. Single
-  quotes, opened after a space and closed before a space or a comma.
-- `"flaky in prod"` — `.../race-debug/` and `.../deadlock-hunt/`. Double quotes, so the two
-  delimiters are both exercised and a reader that implements only one is visible.
+- `race condition` — three skills: `race-review/` and `race-debug/` quote it with single
+  quotes, `quoted-edge/` with double quotes. The delimiter is not part of the phrase, so a
+  phrase quoted two different ways is still one collision.
+- `flaky in prod` — five skills: `race-debug/`, `deadlock-hunt/`, `quoted-scalar/`,
+  `quoted-single/` and `quoted-edge/`. Double quotes, so both delimiters are exercised and a
+  reader that implements only one is visible.
 
+Two findings, and it is their MEMBERSHIP that the whole-value-quote rule moves — see below.
 Neither finding may list `loop-router`, and neither may list `off-kit:never-loaded` (which also
 quotes `'race condition'`, from a plugin that is not enabled).
 
@@ -94,6 +102,50 @@ one skill is not a finding. Its description is also one YAML scalar folded over 
 pins the joining rule — the folded value is joined with single spaces before it is counted (141
 bytes) or scanned, and a reader that keeps only the first line reports 73.
 
+### The whole-value quoted scalar — the rule that is the only way to see three of these
+
+`description: "Use when ..."` writes the WHOLE value as a quoted YAML scalar. The host's parser
+strips those two quotes before the description ever reaches a session, so they are not bytes
+anyone pays for and the text between them is not a trigger phrase. Measured 2026-09-05 over a
+real plugin cache: 17 of 31 enabled skills are written that way. A reader that takes the quotes
+literally answers two bytes too many per skill and welds the description into one giant phrase,
+which hides any phrase quoted inside it.
+
+Three files pin the rule, and each one fails differently under a different wrong reading:
+
+- `.../quoted-scalar/` — one `"` scalar whole, carrying `\"flaky in prod\"` escaped inside it.
+  This is the discriminator for the FINDING: read literally, the two `\"` escapes pair with the
+  outer quotes and the phrases are `Use when a suite is \` and
+  ` and the whole description is one quoted YAML scalar.` — both junk, both held by one skill,
+  so `flaky in prod` loses a member and NOTHING else in the tree says so. Read correctly, the
+  value unwraps, `\"` resolves to `"`, and the phrase is found. 88 bytes correct, 92 literal.
+- `.../quoted-single/` — one `'` scalar whole, carrying a doubled `''` (`it''s`) and a
+  double-quoted phrase. This is the discriminator for the OTHER escape rule: `''` is one
+  literal apostrophe, so it does not close the scalar, and once unwrapped it is the `'` of
+  `it's`, which the contraction guard above then protects. 83 bytes correct, 86 literal — and
+  read literally it also reports two junk phrases torn out of the middle of the description.
+- `.../quoted-edge/` — a value that BEGINS and ENDS with `"` and is still not one scalar: its
+  opening quote closes at index 15. This is the discriminator for the opposite mistake. A
+  reader that unwraps on `startswith` and `endswith` alone strips it, welds
+  `race condition" is the phrase to look for when a suite is only ever "flaky in prod` into one
+  junk phrase, and drops this skill out of BOTH findings at once. Read correctly the value is
+  left exactly as written, so its 84 bytes are the same number either way — the mistake is
+  visible only in the two findings and in the headline.
+
+The headline separates all three readings, which is the point of having three files:
+
+    1551   correct
+    1558   literal — keeps both outer quotes and both `\` of the escapes
+    1549   eager   — also strips a quote off a value that is not a scalar at all
+
+A value that OPENS with a quote and never closes one — including one whose last quote is
+escaped — is a LITERAL. It is not unwrapped, its quote character is counted, its unpaired
+quote opens no phrase, and it is NOT a `frontmatter-malformed` finding: there is no end point
+to unwrap to, guessing one would delete a byte the reader cannot prove is YAML's, and the three
+`frontmatter-malformed` tokens name failures of the BLOCK rather than of one value. No file in
+this tree holds that case, because it is a property of the reader rather than of a catalogue;
+`runtime-py/tests/test_skillaudit.py` pins it in a table beside the rest of the rule.
+
 ### `frontmatter-malformed` (severity medium)
 
 Two files, and they differ in whether the skill is still counted:
@@ -114,8 +166,8 @@ is wrong. Counted, 84 bytes, id `frontmatter-kit:misnamed`.
 
 ### `catalogue-over-budget` (severity high)
 
-No file triggers this — the caller does, by passing a `budget` below 1296. Pass `1024` and the
-finding fires with an overage of 272 bytes; omit `budget` entirely and it must not fire at all.
+No file triggers this — the caller does, by passing a `budget` below 1551. Pass `1024` and the
+finding fires with an overage of 527 bytes; omit `budget` entirely and it must not fire at all.
 
 ### `never-invoked` (severity low)
 
@@ -128,18 +180,20 @@ a map. Three counted skills must be reported, and they exercise the two ways of 
 - `frontmatter-kit:no-description` — ABSENT from the map, which means zero, not unknown.
 
 `dup-kit:echo-check` has 7 calls under one key even though two copies are on disk; usage is
-keyed by the id the host uses, which has no version in it.
+keyed by the id the host uses, which has no version in it. The three `quoted-*` skills carry
+non-zero counts on purpose: they were added to pin a quoting rule, not to grow this list, and
+a fourth entry here would make a `never-invoked` regression harder to read, not easier.
 
 ## Omissions, and the file that triggers each
 
 An omission is `{subject, count, size, what}` — the same discipline as `bantamkit_read`, where
 what the reader could not deliver is a record and not silence. Counted skills plus omissions
-account for all sixteen files; if that sum stops holding, something is being dropped quietly.
+account for all nineteen files; if that sum stops holding, something is being dropped quietly.
 
 | subject | file | size | why |
 | --- | --- | ---: | --- |
 | `plugin-not-enabled` | `kit-market/off-kit/1.0.0/skills/never-loaded/` | 112 | `off-kit@kit-market` is not in `enabled.json`. Readable, quotes `'race condition'`, and must contribute to nothing — not the count, not the bytes, not a phrase finding. The size is what enabling the plugin would cost. |
-| `duplicate-skill` | `kit-market/dup-kit/1.0.0/skills/echo-check/` | 44 | Same (marketplace, plugin, name) as the copy under `1.1.0`. `1.1.0` sorts last in byte order and wins; the 44-byte stale copy is omitted. The two descriptions differ in length on purpose, so which copy was counted is visible in `catalogue_bytes` (1296 with the right one, 1228 with the wrong one). |
+| `duplicate-skill` | `kit-market/dup-kit/1.0.0/skills/echo-check/` | 44 | Same (marketplace, plugin, name) as the copy under `1.1.0`. `1.1.0` sorts last in byte order and wins; the 44-byte stale copy is omitted. The two descriptions differ in length on purpose, so which copy was counted is visible in `catalogue_bytes` (1551 with the right one, 1483 with the wrong one). |
 | `unreadable-file` | `kit-market/frontmatter-kit/2.3.1/skills/bad-bytes/` | 0 | The description line ends with a lone `0x80`, which is not valid UTF-8. A strict decoder raises; the file is a record, not a crash and not a description with `U+FFFD` substituted into it. Chosen over a permissions bit because an invalid byte behaves the same on Windows. |
 | `unparsed-frontmatter` | `kit-market/frontmatter-kit/2.3.1/skills/broken-open/` | 0 | See `frontmatter-malformed` above: this file is both an omission and a finding. |
 
@@ -157,3 +211,35 @@ holding `9.0.0` and `10.0.0` counts `9.0.0`. A semver comparison would be right 
 second thing the two runtimes have to agree about character for character; the byte order is
 free. No fixture pins the `9.0.0`/`10.0.0` case, because pinning it would freeze the wrong
 answer. The omission record names the loser, so an operator can always see which copy was read.
+
+## What moved when the whole-value quote rule landed, and what did not
+
+This tree was published at 12 skills / 1296 bytes / 4 omissions / 16 files. It is now
+15 / 1551 / 4 / 19. Every figure above was recomputed rather than adjusted, and the difference
+is entirely the three new files:
+
+| figure | before | after | why |
+| --- | ---: | ---: | --- |
+| `skills` | 12 | 15 | three files added: `quoted-scalar`, `quoted-edge`, `quoted-single` |
+| `catalogue_bytes` | 1296 | 1551 | +88 +84 +83 = 255, and NOT ONE of the twelve original byte counts moved |
+| `omissions` | 4 | 4 | the new files are all readable, enabled, parsed and unique |
+| `SKILL.md` on disk | 16 | 19 | the same three files |
+| `shared-trigger-phrase` findings | 2 | 2 | still two phrases; three skills joined `flaky in prod` and one joined `race condition` |
+| `catalogue-over-budget` overage at `budget = 1024` | 272 | 527 | 1551 − 1024 |
+| wrong-dedupe `catalogue_bytes` | 1228 | 1483 | 1551 − 112 + 44, the same arithmetic over a bigger tree |
+| `never-invoked` findings | 3 | 3 | the three new skills carry non-zero counts in `usage.json` |
+| `frontmatter-malformed`, `name-mismatch` | 2, 1 | 2, 1 | untouched |
+
+The twelve original byte counts not moving is the load-bearing part: none of the original
+descriptions is a whole-value quoted scalar, so the rule cannot have silently re-priced the
+tree it was added to. The rule's effect on the ORIGINAL twelve is exactly zero, and everything
+it does is visible in the three files added to show it.
+
+One thing did not move that might have been expected to. Measured 2026-09-05 over this
+machine's own plugin cache, unwrapping changes NO finding there: all 17 whole-value-quoted
+descriptions carry only single-quoted phrases inside them, which the literal reader already
+found because its `'` scan is independent of its `"` scan. What it changes on the real corpus
+is 34 bytes and 17 junk phrases dropped from the index. The finding failure is real but
+LATENT there — it needs a phrase double-quoted inside a double-quoted scalar, and only
+`quoted-scalar/` in this tree has one. That is why the fixture exists rather than a note
+saying the real corpus already proves it.
