@@ -17,11 +17,9 @@
  * The real 65-fact store is one of the fixtures, copied to scratch. It is never opened in
  * place: the defect this module reimplements destroyed that store's index once.
  */
-import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
   cpSync,
-  existsSync,
   lstatSync,
   mkdirSync,
   readdirSync,
@@ -34,6 +32,7 @@ import {
 import { EOL } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { auditCorpus, corpusIntegrityCase } from '../lib/corpus.mjs';
 
 export const name = 'store';
 export const summary = 'save/recall/index: the directory after the call, byte for byte';
@@ -99,28 +98,15 @@ const factFile = (n, { description = `about ${n}`, type = 'project', created = '
 /**
  * Where the real store lives. Copied, with timestamps, so the `created`-from-mtime fallback
  * reads the same number on both sides instead of two `cp` clock samples.
+ *
+ * The finder itself is `lib/corpus.mjs`, shared with `codec.mjs`. It used to live here, and
+ * the rule it enforces — a store is `facts/` AND `index.md`, never `facts/` alone — was
+ * learned here (run 32644269451, an empty `facts/` at a runner's repository root killed
+ * this suite on an uncaught ENOENT). `codec.mjs` kept its own copy of the finder without
+ * that rule and lost 288 cases to it (I3-F1). One finder now, so there is nothing to drift.
  */
 function realStore(ctx) {
-  const explicit = ctx.options.corpus ?? process.env.BANTAMKIT_CONFORMANCE_CORPUS;
-  const candidates = [];
-  if (explicit) candidates.push(dirname(explicit));
-  candidates.push(join(ctx.repoRoot, '.bantamkit', 'memory'));
-  try {
-    const commonDir = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
-      cwd: ctx.repoRoot,
-      encoding: 'utf8',
-    }).trim();
-    candidates.push(join(dirname(commonDir), '.bantamkit', 'memory'));
-  } catch {
-    /* not a checkout; the other candidates still apply */
-  }
-  // BOTH, not just `facts/`. A store that has a `facts/` and no `index.md` is not a real
-  // corpus, it is a store something created and never wrote — MEASURED, run 32644269451:
-  // the server tests left exactly that at the repository root on a runner (they have since
-  // been isolated), this finder accepted it, and the live-index block below died on an
-  // uncaught ENOENT reading the `index.md` that was never there, taking the whole suite
-  // with it. The fixture this block needs is the pair; asking for the pair is the check.
-  return candidates.find((c) => existsSync(join(c, 'facts')) && existsSync(join(c, 'index.md'))) ?? null;
+  return auditCorpus(ctx);
 }
 
 /** Materialise one fixture spec at `root`. Modes are applied last and by the caller. */
@@ -695,8 +681,12 @@ export async function run(ctx) {
   const cases = [];
   const notes = [];
 
-  const real = realStore(ctx);
+  const audit = realStore(ctx);
+  const real = audit.root;
   notes.push(real ? `real corpus: ${real}` : 'real corpus: NOT FOUND — the synthetic fixtures ran alone');
+  // Same gate as `codec.mjs`: a resolved store that has quietly shrunk, or a real store
+  // turned away for want of an `index.md`, is a failure and not a smaller run.
+  cases.push(corpusIntegrityCase(audit));
 
   const { list, ruled } = scenarios(ctx, real);
   let n = 0;

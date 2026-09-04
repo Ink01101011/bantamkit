@@ -12,10 +12,11 @@
  * no empty description.
  */
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { auditCorpus, corpusIntegrityCase } from '../lib/corpus.mjs';
 
 export const name = 'codec';
 export const summary = 'fact-file frontmatter: emit byte-identically, and parse each other';
@@ -34,31 +35,18 @@ const sha = (s) => createHash('sha256').update(s, 'utf8').digest('hex');
  * copy, which is also what makes the suite safe to run while a server is live. If no store
  * is found the adversarial half still runs and the suite SAYS so — a silently shrinking
  * corpus is the way a conformance gate stops meaning anything.
+ *
+ * FINDING the store is not this suite's business any more: it is `lib/corpus.mjs`, shared
+ * with `store.mjs`, because when the two finders were separate they drifted (I3-F1) and
+ * this one accepted an empty `facts/` with no `index.md` — 494 cases became 206 and the run
+ * still printed PASS. The floor case below is what stops that from being quiet again.
  */
 function realStoreFacts(ctx) {
-  const explicit = ctx.options.corpus ?? process.env.BANTAMKIT_CONFORMANCE_CORPUS;
-  const candidates = [];
-  if (explicit) candidates.push(explicit);
-  candidates.push(join(ctx.repoRoot, '.bantamkit', 'memory', 'facts'));
-  try {
-    // In a worktree the store lives in the MAIN checkout, which git can name without
-    // anybody hardcoding a sibling path.
-    const commonDir = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
-      cwd: ctx.repoRoot,
-      encoding: 'utf8',
-    }).trim();
-    candidates.push(join(dirname(commonDir), '.bantamkit', 'memory', 'facts'));
-  } catch {
-    /* not a git checkout; the other candidates still apply */
-  }
-  for (const c of candidates) {
-    if (existsSync(c)) {
-      const copy = join(ctx.scratch, 'real-facts');
-      cpSync(c, copy, { recursive: true });
-      return { dir: copy, source: c };
-    }
-  }
-  return { dir: null, source: candidates.join(' | ') };
+  const audit = auditCorpus(ctx);
+  if (!audit.facts) return { audit, dir: null, source: audit.source };
+  const copy = join(ctx.scratch, 'real-facts');
+  cpSync(audit.facts, copy, { recursive: true });
+  return { audit, dir: copy, source: audit.facts };
 }
 
 /** The adversarial cases. Each one is here because something about it can silently differ. */
@@ -167,7 +155,7 @@ export async function run(ctx) {
   const notes = [];
 
   // ---------------------------------------------------------------- assemble the corpus
-  const { dir, source } = realStoreFacts(ctx);
+  const { audit, dir, source } = realStoreFacts(ctx);
   let realFacts = [];
   if (dir) {
     const files = readdirSync(dir).filter((f) => f.endsWith('.md')).sort();
@@ -197,6 +185,10 @@ export async function run(ctx) {
 
   const corpus = [...realFacts, ...adversarialFacts()];
   notes.push(`corpus: ${corpus.length} facts (${realFacts.length} real + ${corpus.length - realFacts.length} adversarial)`);
+  // The gate on the measuring instrument itself. Every case below is generated PER FACT, so
+  // a corpus that quietly halves halves the suite — and a suite that compares half as much
+  // reports PASS in exactly the same words. This one case is what makes that a failure.
+  cases.push(corpusIntegrityCase(audit));
 
   // ------------------------------------------------------------------- direction 1: emit
   const pyEmitted = ctx
