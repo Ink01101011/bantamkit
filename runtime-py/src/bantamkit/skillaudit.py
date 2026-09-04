@@ -778,6 +778,11 @@ def audit(
     given. So `never-invoked` fires only when `usage` is supplied — the same discipline
     `catalogue-over-budget` follows for `budget`, and for the same reason.
 
+    An empty `root` is refused rather than resolved. `Path("")` is `Path(".")` on the
+    reference and `statSync('')` throws on the port, so the two runtimes answered a
+    CWD-relative audit and a refusal for the same input — and the reference's half of that
+    contradicts the determinism this tool's contract claims.
+
     `versions` is the same kind of argument `enabled` is: HOST TRUTH the caller supplies
     rather than a fact this tool can read off `root`. It names, per `<plugin>@<marketplace>`,
     the version directory the host actually serves; a plugin absent from it falls back to the
@@ -794,6 +799,13 @@ def audit(
         )
     if budget is not None and budget < 0:
         raise SkillAuditError(f"budget must not be negative; got {budget}")
+    if str(root) == "":
+        # `Path("")` is `Path(".")`, so an empty root audits whatever directory the SERVER
+        # happens to be standing in — a different answer per host, from an argument that
+        # named no directory at all, out of a tool whose whole claim is that it reads `root`
+        # and nothing else. `""` passes JSON-schema `string` and pydantic `str` alike, so it
+        # reaches this function; it is refused here, where the other argument failures are.
+        raise SkillAuditError("root must not be empty; name the directory of skills to scan")
     base = Path(root)
     if not base.exists():
         raise SkillAuditError(f"no such directory: {root}")

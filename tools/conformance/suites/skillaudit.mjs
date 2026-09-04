@@ -44,7 +44,7 @@
  * quotes, backslashes and escaped quotes, which is precisely the material a JSON round trip
  * through two different encoders is most likely to launder.
  */
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -156,6 +156,19 @@ export async function run(ctx) {
   const missing = join(ctx.scratch, 'nowhere-at-all');
   const plainFile = join(repoRoot, 'tools', 'conformance', 'fixtures', 'skill-audit', 'enabled.json');
 
+  // A `SKILL.md` sitting DIRECTLY at the root, which is the one input where the root's own
+  // name is the skill's only identity — `Path(root).name` on the reference, `basename` here.
+  // The fixture tree cannot hold it (a `cache/SKILL.md` would join every headline), and the
+  // spellings below are the ones the two disagreed on: `Path('D/.')` is the path `D` and its
+  // name is `D`, where `basename('D/.')` is `'.'`. That name is the key `usage` is looked up
+  // by, so the difference is a silently missed call count, not a cosmetic one.
+  const rootSkill = join(ctx.scratch, 'root-level-skill');
+  mkdirSync(rootSkill, { recursive: true });
+  writeFileSync(
+    join(rootSkill, 'SKILL.md'),
+    '---\nname: root-level-skill\ndescription: Use when a SKILL.md sits at the root itself.\n---\n',
+  );
+
   const configs = [
     ['readme', { root: CACHE, enabled, usage, check: null, budget: 1024 }],
     ['check/phrase', { root: CACHE, enabled, usage, check: 'phrase', budget: 1024 }],
@@ -181,12 +194,28 @@ export async function run(ctx) {
     // serves nothing and every file it holds is a `stale-version` record — an answer, not a
     // refusal, for the reason `enabled` does not refuse an unknown plugin id either.
     ['versions/absent-directory', { root: CACHE, enabled, usage, check: null, budget: 1024, versions: { 'dup-kit@kit-market': '9.9.9' } }],
+    // `Path(root).name`, over the four spellings of one directory. `usage: {}` is what puts
+    // the id into the document: every counted skill becomes a `never-invoked` finding, and
+    // `findings[].skills` is the only field that carries it.
+    ['pathname/plain', { root: rootSkill, enabled: null, usage: {}, check: null, budget: null }],
+    ['pathname/dot', { root: `${rootSkill}/.`, enabled: null, usage: {}, check: null, budget: null }],
+    ['pathname/dot-slash', { root: `${rootSkill}/./`, enabled: null, usage: {}, check: null, budget: null }],
+    ['pathname/dot-slash-slash', { root: `${rootSkill}/.//`, enabled: null, usage: {}, check: null, budget: null }],
+    // A `usage` value that is not an integer. `usage.get(id, 0) == 0` on the reference never
+    // raises — `0.0 == 0` is True and `2.5 == 0` is False — where `BigInt(2.5)` throws an
+    // uncaught RangeError. `pyargs` refuses a fractional value before the MCP handler is
+    // entered, but `audit` is an exported entry point and this suite calls it directly.
+    ['usage/fractional', { root: CACHE, enabled, usage: { 'solo-check': 2.5, 'trigger-kit:deadlock-hunt': 0.0 }, check: null, budget: null }],
     // The refusals. Each is an ARGUMENT failure and each has its own sentence; a suite that
     // stopped at the first would compare none of the others.
     ['refuse/check', { root: CACHE, enabled: null, usage: null, check: 'phrases', budget: null }],
     ['refuse/budget', { root: CACHE, enabled: null, usage: null, check: null, budget: -1 }],
     ['refuse/missing-root', { root: missing, enabled: null, usage: null, check: null, budget: null }],
     ['refuse/file-root', { root: plainFile, enabled: null, usage: null, check: null, budget: null }],
+    // `''` passes JSON-schema `string` and pydantic `str`, so it reaches the module. It used
+    // to be `Path(".")` on the reference — an audit of whatever directory the SERVER stood
+    // in — and `statSync('')`'s throw here.
+    ['refuse/empty-root', { root: '', enabled: null, usage: null, check: null, budget: null }],
   ];
 
   const pyAudits = ctx.runPython(REF, { op: 'audit', cases: configs.map(([, c]) => c) }).results;

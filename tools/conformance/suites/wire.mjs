@@ -762,7 +762,7 @@ export async function run(ctx) {
    *   8-9   `usage` omitted (no `never-invoked` at all) and `usage` empty (every counted
    *         skill is one), which is the same distinction for the other map;
    *   10-11 no budget at all, and a budget exactly equal to the bill — neither fires;
-   *   12-14 the three refusals the module authors, reaching the model as `tool_failed`
+   *   12-14 three of the refusals the module authors, reaching the model as `tool_failed`
    *         sentences and NOT as `isError` frames: an unknown `check`, a negative `budget`,
    *         a root that is not there;
    *   15-19 the argument shapes pydantic settles before the handler runs: a non-string
@@ -774,7 +774,10 @@ export async function run(ctx) {
    *         would not have picked), one naming a directory that is not there (an answer —
    *         every directory that is there loses — and never a refusal), and a value that is
    *         not a string, which is the `dict[str, str]` VALUE check and is STRICT where the
-   *         `usage` one is lax: `1` is `string_type` here and would coerce there.
+   *         `usage` one is lax: `1` is `string_type` here and would coerce there;
+   *   23    the EMPTY root, which passes JSON-schema `string` and pydantic `str` and reaches
+   *         the module — where the reference used to resolve it to `Path(".")` and audit the
+   *         server's own working directory while this port threw from `statSync('')`.
    *
    * THE EVENT LOG IS ON so the two outcomes — `audited` with its four counts, `refused` with
    * nothing at all — are compared as records, `ts` masked, in the block below.
@@ -807,6 +810,7 @@ export async function run(ctx) {
     callTool(20, 'skill_audit', { root: SKILL_CACHE, enabled: SKILL_ENABLED, usage: SKILL_USAGE, budget: 1024, versions: SKILL_VERSIONS }),
     callTool(21, 'skill_audit', { root: SKILL_CACHE, enabled: SKILL_ENABLED, usage: SKILL_USAGE, versions: { 'dup-kit@kit-market': '9.9.9' } }),
     callTool(22, 'skill_audit', { root: SKILL_CACHE, versions: { 'hash-kit@kit-market': 1 } }),
+    callTool(23, 'skill_audit', { root: '' }),
   ], { env: { ...baseEnv, [EVENT_LOG_ENV]: '1' } });
 
   /**
@@ -1329,9 +1333,10 @@ export async function run(ctx) {
      * which the host can see — and `refused` carries an empty object. The five
      * argument-shaped calls record nothing at all, because pydantic (and `validateArguments`
      * here) refuses before the handler is entered, so the record COUNT is part of what is
-     * compared: 16 records for 21 calls, with the two `usage`-coercion calls and the two
-     * `versions` calls among the sixteen — a lax int is not a refusal, and neither is a
-     * `versions` entry naming a directory this root does not hold.
+     * compared: 17 records for 22 calls, with the two `usage`-coercion calls and the two
+     * `versions` calls among the seventeen — a lax int is not a refusal, and neither is a
+     * `versions` entry naming a directory this root does not hold. The empty root IS one, and
+     * it is recorded, because the module refuses it rather than the model doing so.
      */
     const auditLog = results.get('skill-audit');
     cases.push({
@@ -1347,9 +1352,9 @@ export async function run(ctx) {
       actual: outcomesOf(auditLog.node.eventlog),
     });
     cases.push({
-      name: 'eventlog: the skill-audit session reached both skill_audit outcomes, 16 records for 21 calls',
+      name: 'eventlog: the skill-audit session reached both skill_audit outcomes, 17 records for 22 calls',
       kind: 'json',
-      expected: { outcomes: ['audited', 'refused'], records: 16 },
+      expected: { outcomes: ['audited', 'refused'], records: 17 },
       actual: {
         outcomes: [...new Set(outcomesOf(auditLog.node.eventlog).map(([, outcome]) => outcome))].sort(),
         records: outcomesOf(auditLog.node.eventlog).length,

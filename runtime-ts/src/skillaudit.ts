@@ -70,7 +70,7 @@
  *      `number`.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import { BantamError } from './errors.js';
 import { reprValue } from './pyjson.js';
@@ -618,16 +618,31 @@ export function phrases(text: string): string[] {
 const STRICT_UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
 /**
- * `Path.name`, which is `basename` except for the two relative names that have none.
+ * `Path.name`, which is `basename` with every trailing `.` component dropped first.
  *
- * Measured against CPython: `Path('.').name` is `''` where `basename('.')` is `'.'`, and
- * `Path('/').name` is `''` where `basename('/')` is already `''`. `..` keeps its spelling on
- * both sides. It matters for exactly one input — a `SKILL.md` sitting directly at the root —
- * where the root's own name is the only identity the file has.
+ * `PurePath` DROPS `.` components when it parses a path, so `Path('D/.')` and `Path('D/./')`
+ * are both the path `D` and their name is `D` — where `basename` answers `'.'` for the first
+ * and `'.'` for the second. Handling only the bare `.` (which is what this did until
+ * 2026-09-05) left `D/.` naming `''` on this side and `D` on the reference, and that name is
+ * the key `usage` is looked up by, so a caller's call counts would silently miss.
+ *
+ * Every other case follows from `basename`, and the loop stops where `dirname` stops moving:
+ * `Path('.')` and `Path('./.')` are both `''`, `Path('/')` is `''`, and `..` keeps its
+ * spelling on both sides — `Path('a/..').name` is `'..'`, not `'a'`, because `PurePath`
+ * parsing does not resolve it.
+ *
+ * It matters for exactly one input — a `SKILL.md` sitting directly at the root — where the
+ * root's own name is the only identity the file has.
  */
 function pyPathName(path: string): string {
-  const base = basename(path);
-  return base === '.' ? '' : base;
+  let text = path;
+  for (;;) {
+    const base = basename(text);
+    if (base !== '.') return base;
+    const parent = dirname(text);
+    if (parent === text) return '';
+    text = parent;
+  }
 }
 
 /** One file read, decoded and parsed. Every failure lands in a field, none of them raise. */
@@ -883,6 +898,10 @@ export interface AuditOptions {
  * given. So `never-invoked` fires only when `usage` is supplied — the same discipline
  * `catalogue-over-budget` follows for `budget`.
  *
+ * An empty `root` is refused rather than resolved: `Path("")` is `Path(".")` on the reference
+ * and `statSync('')` throws here, so the two answered a CWD-relative audit and a refusal for
+ * the same input, and the reference's half contradicts the determinism the contract claims.
+ *
  * `versions` is the same kind of argument `enabled` is: host truth the caller supplies rather
  * than a fact this tool can read off `root`. It names, per `<plugin>@<marketplace>`, the
  * version directory the host actually serves; a plugin absent from it falls back to the byte
@@ -967,6 +986,12 @@ export function audit(root: string, options: AuditOptions = {}): Audit {
     );
   }
   if (budget !== null && budget < 0n) throw new SkillAuditError(`budget must not be negative; got ${budget}`);
+  // `Path("")` is `Path(".")` on the reference, so an empty root audited whatever directory
+  // the SERVER happened to be standing in — a different answer per host, out of a tool whose
+  // whole claim is that it reads `root` and nothing else — while `statSync('')` throws here
+  // and answered `no such directory: `. `''` passes JSON-schema `string` and pydantic `str`
+  // alike, so it reaches the module; both refuse it in the same sentence now.
+  if (root === '') throw new SkillAuditError('root must not be empty; name the directory of skills to scan');
   let stats;
   try {
     stats = statSync(root);
@@ -989,8 +1014,14 @@ export function audit(root: string, options: AuditOptions = {}): Audit {
   const byId = (a: Skill, b: Skill): number => cmpCodepoint(skillId(a), skillId(b));
   if (wanted.has(KIND_NEVER_INVOKED) && usage !== null) {
     for (const skill of [...counted].sort(byId)) {
-      const calls = usage.get(skillId(skill));
-      if (BigInt(calls ?? 0) === 0n) findings.push(new Finding(KIND_NEVER_INVOKED, [skillId(skill)], '0 calls'));
+      // `usage.get(id, 0) == 0` on the reference, which never raises: a float compares, and
+      // `0.0 == 0` is True. This used to be `BigInt(calls ?? 0) === 0n`, which throws an
+      // UNCAUGHT `RangeError` on any fractional value where the reference simply answers.
+      // Not reachable through MCP — `pyargs` refuses a non-integer first — but `audit` is an
+      // exported entry point and the conformance suite calls it directly.
+      const calls = usage.get(skillId(skill)) ?? 0;
+      const uncalled = typeof calls === 'bigint' ? calls === 0n : calls === 0;
+      if (uncalled) findings.push(new Finding(KIND_NEVER_INVOKED, [skillId(skill)], '0 calls'));
     }
   }
   if (wanted.has(KIND_FRONTMATTER)) {

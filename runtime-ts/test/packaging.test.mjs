@@ -104,7 +104,7 @@ test('every packed asset is byte-identical to the repository pack', () => {
     assert.equal(sha256(mirror), sha256(abs), `vendored copy of ${rel} differs`);
     bytes += readFileSync(abs).length;
   }
-  assert.equal(bytes, 227349); // +1739: skill_audit.json's `versions` argument, host truth over the byte-order guess (F4); +1415: its version-resolution rule (SA6); +1743: its whole-value-quote rule (SA2b); +5097 at 56f8a52: assets/tools/skill_audit.json (SA1); +2341 at 92661f7: bantamkit_read.json and its two contract sentences; +8 when its part example became "document"; +37 when offset gained maximum 2^53-1 (F1)
+  assert.equal(bytes, 227858); // +509: skill_audit.json's empty-root refusal (F5); +1739: skill_audit.json's `versions` argument, host truth over the byte-order guess (F4); +1415: its version-resolution rule (SA6); +1743: its whole-value-quote rule (SA2b); +5097 at 56f8a52: assets/tools/skill_audit.json (SA1); +2341 at 92661f7: bantamkit_read.json and its two contract sentences; +8 when its part example became "document"; +37 when offset gained maximum 2^53-1 (F1)
 });
 
 test('the tarball carries the executable entry point and its module', () => {

@@ -502,6 +502,27 @@
       "anchor": "                    budget=budget,\n                    versions=versions,",
       "replacement": "                    budget=budget,",
       "why": "the served surface accepts `versions` and the tool ignores it, so the model is told the answer honours host truth when it does not — the module is right and the product is wrong"
+    },
+    {
+      "label": "M72-an-empty-root-audits-the-servers-cwd",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    if str(root) == \"\":",
+      "replacement": "    if str(root) == \"\\0\":",
+      "why": "F5: `Path(\"\")` is `Path(\".\")`, so an empty root stops being refused and audits whatever directory the SERVER is standing in — a different answer per host, from an argument that named no directory, out of a tool whose contract claims it reads `root` and nothing else. The Node port refused it, so this was also a divergence"
+    },
+    {
+      "label": "M73-the-empty-root-refusal-borrows-another-sentence",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        raise SkillAuditError(\"root must not be empty; name the directory of skills to scan\")",
+      "replacement": "        raise SkillAuditError(f\"no such directory: {root}\")",
+      "why": "the four argument failures stop having four sentences: an empty root is told apart from a missing one by the words, and a model handed the wrong recovery instruction retries the same call"
+    },
+    {
+      "label": "M74-a-fractional-usage-value-raises",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "            if usage.get(skill.id, 0) == 0",
+      "replacement": "            if int(usage.get(skill.id, 0)) == 0 and not isinstance(usage.get(skill.id, 0), float)",
+      "why": "F8's shape on the reference side: a non-integer call count stops comparing as a number. `0.0` is zero and `2.5` is not, and the port used to reach the same two answers through `BigInt`, which throws an uncaught RangeError on `2.5` instead"
     }
   ]
 }

@@ -1062,6 +1062,72 @@ test('a root that is missing and a root that is a file refuse differently', () =
   );
 });
 
+test('an empty root is refused and never the servers own working directory', () => {
+  // `Path("")` is `Path(".")` on the reference, which is the one input that made this tool
+  // read the machine: an audit of whatever directory the SERVER happens to be standing in, a
+  // different answer per host, out of an argument that named no directory at all. `''` passes
+  // JSON-schema `string` and pydantic `str` alike, so it reaches the module. This side threw
+  // `no such directory: ` from `statSync('')`, so the two disagreed as well. Both refuse it
+  // now, in the same sentence, where the other argument failures are refused.
+  assert.throws(
+    () => skillaudit.audit(''),
+    (e) => e instanceof skillaudit.SkillAuditError && e.message === 'root must not be empty; name the directory of skills to scan',
+  );
+  // …and `.` is NOT refused, because it names a directory: the refusal is the empty string
+  // alone, not relative roots.
+  const dir = room();
+  skill(dir, 'm/p/1.0.0/skills/cwd-skill', frontmatter('cwd-skill', 'in the cwd'));
+  const before = process.cwd();
+  try {
+    process.chdir(dir);
+    assert.equal(skillaudit.audit('.').skills, 1);
+  } finally {
+    process.chdir(before);
+  }
+});
+
+test('a root spelled with a trailing dot names the same skill', () => {
+  // `Path('D/.')` is the path `D` and `.name` is `D` — the id `usage` is looked up by. It
+  // matters for exactly one input, a `SKILL.md` sitting directly at the root, where the
+  // root's own name is the file's only identity. `PurePath` DROPS `.` components when it
+  // parses, so all four spellings below are one path; `basename` answers `'.'` for two of
+  // them, which named the skill `''` here and `D` on the reference, and a caller's `usage`
+  // map keyed by the real name would have missed on every call.
+  const dir = room();
+  const root = join(dir, 'D');
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, 'SKILL.md'), frontmatter('D', 'a root level skill'));
+  for (const spelling of [root, `${root}/.`, `${root}/./`, `${root}/.//`]) {
+    const audit = skillaudit.audit(spelling, { usage: new Map() });
+    assert.deepEqual(
+      kinds(audit, skillaudit.KIND_NEVER_INVOKED).map((f) => f.skills[0]),
+      ['D'],
+      spelling,
+    );
+    assert.equal(audit.skills, 1, spelling);
+  }
+});
+
+test('a usage value that is not an integer is compared and never raises', () => {
+  // `usage.get(id, 0) == 0` on the reference never raises: a float compares, and `0.0 == 0`
+  // is True. `usage` reaches the MCP surface through a model that refuses a fractional value
+  // first, but `audit` is an exported entry point and the conformance suite calls it
+  // directly. `BigInt(calls ?? 0)` threw an UNCAUGHT `RangeError` on `2.5` where the
+  // reference simply answers — a crash against an answer, out of the same argument.
+  const audit = fixtureAudit({
+    usage: new Map([
+      ['solo-check', 2.5],
+      ['trigger-kit:deadlock-hunt', 0.0],
+    ]),
+  });
+  const never = kinds(audit, skillaudit.KIND_NEVER_INVOKED).map((f) => f.skills[0]);
+  assert.ok(!never.includes('solo-check'));
+  assert.ok(never.includes('trigger-kit:deadlock-hunt'));
+  // …and a bigint still compares, which is what the MCP handler hands in.
+  const asBig = fixtureAudit({ usage: new Map([['solo-check', 0n]]) });
+  assert.ok(kinds(asBig, skillaudit.KIND_NEVER_INVOKED).map((f) => f.skills[0]).includes('solo-check'));
+});
+
 test('an empty directory is zero skills and not a refusal', () => {
   // Nothing to audit is an answer. A tree with no skills in it is a real state.
   const audit = skillaudit.audit(room());

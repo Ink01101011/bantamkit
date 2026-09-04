@@ -1164,6 +1164,63 @@ def test_a_root_that_is_missing_and_a_root_that_is_a_file_refuse_differently(tmp
     assert "is a file, not a directory of skills" in str(file.value)
 
 
+def test_an_empty_root_is_refused_and_never_the_servers_own_cwd(tmp_path, monkeypatch):
+    """`Path("")` is `Path(".")`, which is the one input that made this tool read the machine.
+
+    `""` passes JSON-schema `string` and pydantic `str` alike, so it reaches this function.
+    Resolving it audits whatever directory the SERVER happens to be standing in: a different
+    answer per host, out of an argument that named no directory at all, from a tool whose
+    whole contract is that it reads `root` and nothing else. The Node port refused it —
+    `statSync('')` throws — so the two runtimes also disagreed. Both refuse it now, in the
+    same sentence, at the same place the other argument failures are refused.
+
+    The `chdir` is what makes the assertion about DETERMINISM rather than about a message: a
+    tree is planted in the working directory, and the refusal must not have counted it.
+    """
+    skill(tmp_path, "m/p/1.0.0/skills/cwd-skill", frontmatter("cwd-skill", "in the cwd"))
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(skillaudit.SkillAuditError) as refused:
+        skillaudit.audit("")
+    assert str(refused.value) == "root must not be empty; name the directory of skills to scan"
+    # …and `.` is NOT refused, because it names a directory: the refusal is about the empty
+    # string alone, not about relative roots.
+    assert skillaudit.audit(".").skills == 1
+
+
+def test_a_root_spelled_with_a_trailing_dot_names_the_same_skill(tmp_path):
+    """`Path('D/.')` is the path `D`, and `.name` is `D` — the id `usage` is looked up by.
+
+    It matters for exactly one input, a `SKILL.md` sitting directly at the root, where the
+    root's own name is the file's only identity. `PurePath` DROPS `.` components when it
+    parses, so all four spellings below are one path; the Node port used `basename`, which
+    answers `'.'` for two of them, and named the skill `''` instead. A caller's `usage` map
+    keyed by the real name would then have missed on every call.
+    """
+    root = tmp_path / "D"
+    root.mkdir()
+    (root / "SKILL.md").write_text(frontmatter("D", "a root level skill"), encoding="utf-8")
+    for spelling in (str(root), f"{root}/.", f"{root}/./", f"{root}/.//"):
+        audit = skillaudit.audit(spelling, usage={})
+        assert [f.skills[0] for f in kinds(audit, skillaudit.KIND_NEVER_INVOKED)] == ["D"], spelling
+        assert audit.skills == 1, spelling
+
+
+def test_a_usage_value_that_is_not_an_integer_is_compared_and_never_raises():
+    """`usage.get(id, 0) == 0` never raises: a float compares, and `0.0 == 0` is True.
+
+    `usage` reaches the MCP surface through a `dict[str, int]` model that refuses a fractional
+    value first, but `audit` is a library entry point and the conformance suite calls it
+    directly. The Node port converted through `BigInt`, which throws an UNCAUGHT `RangeError`
+    on `2.5` where this side simply answers — a crash against an answer, out of the same
+    argument.
+    """
+    audit = fixture_audit(usage={"solo-check": 2.5, "trigger-kit:deadlock-hunt": 0.0})
+    never = [f.skills[0] for f in kinds(audit, skillaudit.KIND_NEVER_INVOKED)]
+    # 2.5 is not zero, so `solo-check` is not reported; 0.0 IS zero, so `deadlock-hunt` is.
+    assert "solo-check" not in never
+    assert "trigger-kit:deadlock-hunt" in never
+
+
 def test_an_empty_directory_is_zero_skills_and_not_a_refusal(tmp_path):
     """Nothing to audit is an answer. A tree with no skills in it is a real state."""
     audit = skillaudit.audit(tmp_path)
