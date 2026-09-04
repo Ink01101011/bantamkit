@@ -528,6 +528,60 @@ def test_the_index_file_on_disk_tracks_the_facts(tmp_path, op):
     assert ("gone-fact" in on_disk) is (op != "compact")
 
 
+def test_archive_takes_one_named_fact_out_and_restore_puts_it_back(tmp_path):
+    """The door out, by name. `compact` chooses by rank and stops at the budget, so a
+    store already UNDER budget cannot be asked to put one stale fact away at all."""
+    store = MemoryStore(tmp_path / "mem", index_budget=100_000, today=lambda: "2026-08-21")
+    store.save("project", "stale-fact", "an alpha subject nobody wants", "the body")
+    store.save("user", "kept-fact", "a beta topic still in use", "b")
+    assert store.compact().names == []  # nothing is over budget; rank has no work to do
+
+    store.archive("stale-fact")
+
+    assert store.archived() == ["stale-fact"]
+    assert store.recall("alpha subject nobody wants") == []
+    assert [f.body for f in store.recall("beta topic still in use")] == ["b"]
+
+    store.restore("stale-fact")
+    assert store.archived() == []
+    assert [f.body for f in store.recall("alpha subject nobody wants")] == ["the body"]
+
+
+def test_archive_of_an_unknown_or_already_archived_name_is_a_validation_error(tmp_path):
+    """Both guards are reachable. The second needs a name present on BOTH sides, because
+    an ordinary archived fact has already left `facts/` and trips the first."""
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-21")
+    store.save("project", "live-fact", "a subject in use", "b")
+    with pytest.raises(MemoryValidationError, match="no fact"):
+        store.archive("never-existed")
+    (store.root / "archive").mkdir(parents=True, exist_ok=True)
+    (store.root / "archive" / "live-fact.md").write_text(
+        "---\nname: live-fact\n---\n\nb\n", encoding="utf-8"
+    )
+    with pytest.raises(MemoryValidationError, match="already archived"):
+        store.archive("live-fact")
+    assert (store.root / "facts" / "live-fact.md").exists()  # nothing moved
+
+
+def test_archive_moves_nothing_when_a_fact_already_in_the_store_is_malformed(tmp_path):
+    """The pre-move parse, in archive's direction: `_rebuild_index` would raise AFTER the
+    move, so the read that stops it is what keeps the store as it was found."""
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-21")
+    store.save("project", "good-fact", "a subject in use", "b")
+    (store.root / "facts" / "broken.md").write_text(
+        "---\nnot: frontmatter\n---\n", encoding="utf-8"
+    )
+    with pytest.raises(MemoryValidationError):
+        store.archive("good-fact")
+    assert (store.root / "facts" / "good-fact.md").exists()
+    # NOTE, measured: these assertions hold with archive's pre-move parse REMOVED too,
+    # because the rollback puts the fact back and re-raises the same error class. They
+    # pin the PROMISE ("a failed archive leaves the store as it found it"), which is
+    # what matters here, not the mechanism that keeps it. See `archive`'s docstring for
+    # why the parse is kept anyway and what it is honestly worth.
+    assert not (store.root / "archive" / "good-fact.md").exists()
+
+
 def test_restore_of_an_unknown_or_live_name_is_a_validation_error(tmp_path):
     store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-21")
     store.save("project", "live-fact", "a subject in use", "b")

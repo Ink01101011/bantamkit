@@ -65,6 +65,18 @@ _FACTS_UNREACHABLE = (
     "a destination that could not be stat'd is not a name that is already taken, and "
     "nothing has moved: the fact is still in archive/"
 )
+# The same two distinctions again for `archive`, which walks the move in the opposite
+# direction. They cannot reuse the pair above: each sentence names the side the fact is
+# STILL on when the stat is refused, and that side is the other one here.
+_FACT_UNREACHABLE = (
+    "a fact that could not be stat'd is not a fact that is not there, and answering "
+    "'no fact' here sends the operator looking for a file that is still on disk under "
+    "this path"
+)
+_ARCHIVE_DESTINATION_UNREACHABLE = (
+    "a destination that could not be stat'd is not a name that is already archived, "
+    "and nothing has moved: the fact is still in facts/"
+)
 
 
 class MemoryValidationError(BantamError):
@@ -468,6 +480,66 @@ class MemoryStore:
         """
         archive = self.root / "archive"
         return sorted(Path(name).stem for name in self._listing(archive, _ARCHIVE_UNREADABLE))
+
+    def archive(self, name: str) -> None:
+        """Move one named fact out of `facts/` and into `archive/`.
+
+        The door out, taken deliberately. `compact` already moves facts out, but it
+        chooses them by eviction rank and stops as soon as the index fits the budget, so
+        it can neither be asked for a PARTICULAR fact nor be used at all when the store
+        is already under budget. `restore` has taken a name since it was written; until
+        this method the store could bring a named fact back but not send one away, and an
+        operator who knew exactly which fact had gone stale had no way to say so.
+
+        THE PROMISE IS THE SAME ONE `restore` MAKES: a failed archive leaves the store
+        exactly as it found it. Two of its three guards carry over unchanged in shape and
+        one drops out:
+
+        - Both stats are `_reachable`, not `exists()`, for the reason spelled at
+          `_ARCHIVE_UNREACHABLE`: a refused stat is not an absent file, and reporting
+          "no fact" for an EACCES sends the operator looking for a file that is there.
+          The two sentences are their own constants because each names the side the fact
+          is still on, and that side is the mirror of restore's.
+        - `_facts()` parses BEFORE the move, but NOT for the reason restore's docstring
+          gives, and the difference is worth stating rather than inheriting. In restore's
+          direction the pre-read is load-bearing: it stops a shape the rollback of the
+          day got wrong. Here it is NOT. Measured by deleting this line and rerunning:
+          every state assertion in
+          `test_archive_moves_nothing_when_a_fact_already_in_the_store_is_malformed`
+          still passes, because the rollback moves the fact back and re-raises the same
+          error class. What the parse buys is narrower — the move never happens at all,
+          so the promise never has to depend on the rollback's own two renames
+          succeeding, which is the one path that could strand a fact in `archive/` with
+          a stale index. It is kept for that, and no test pins it, because pinning it
+          needs fault injection on the rollback rather than a malformed fixture.
+        - NO budget check. Archiving removes an index line, so the index can only shrink;
+          `_check_index_budget` is restore's guard, in restore's direction, and running
+          it here would be a check that cannot fail.
+
+        The rollback stays, keyed on "the rebuild after the move failed" rather than on a
+        list of exception types, because the failure it exists for is the one no pre-read
+        can reach: the destination in `archive/` being a directory raises `OSError`, not
+        a `Memory*` error at all.
+        """
+        source = self._fact_path(name)
+        if not self._reachable(source, self.root / "facts", _FACT_UNREACHABLE):
+            raise MemoryValidationError(
+                f"no fact '{name}' under {self.root / 'facts'}"
+            )
+        destination = self.root / "archive" / f"{name}.md"
+        if self._reachable(destination, self.root / "archive", _ARCHIVE_DESTINATION_UNREACHABLE):
+            raise MemoryValidationError(
+                f"fact '{name}' is already archived; refusing to overwrite it"
+            )
+        self._facts()  # parse BEFORE the move, not after it — see the docstring
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        source.rename(destination)
+        try:
+            self._rebuild_index()
+        except Exception:
+            destination.rename(source)
+            self._rebuild_index()
+            raise
 
     def restore(self, name: str) -> None:
         """Move an archived fact back into `facts/`; refuse if it would blow the budget.
