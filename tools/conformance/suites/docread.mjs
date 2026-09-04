@@ -260,16 +260,42 @@ export async function run(ctx) {
   // `charref-4301-digits.html`, `encrypted-member.docx`.
   // Round 3 (H1) added six more — `eszett-cell-ref.xlsx`, `compression-method-9.docx`,
   // `encrypted-mimetype.odt`, `bad-crc.docx`, `corrupt-deflate.docx`, `charset-table.json`.
-  // A CHECKED-IN FIXTURE WINS over a built one of the same name: the built
-  // `corrupt-deflate.docx` above and the checked-in one are both a corrupt deflate stream
-  // over `word/document.xml`, and the checked-in bytes are what both unit suites read, so
-  // the built copy is dropped here and the note names it — a throw (which is what this loop
-  // did until H3) stopped the whole suite from starting over a name collision.
+  // A CHECKED-IN FIXTURE WINS over a built one of the same name, and WHICH NAMES IT MAY WIN
+  // IS DECLARED, not discovered (review round 4, M8 / I3-F8).
+  //
+  // H3 turned a `throw` here into a `notes.push`, which was right — a throw stopped the whole
+  // suite from starting over a name collision — but a note is not a gate. Any future
+  // collision (someone checks in a `boundary.txt`, an `attlist.xlsx`, a `utf7.eml`) would
+  // silently replace built bytes that exist to exercise a specific edge or back a specific
+  // ruling, the run would stay green, and the note would scroll past: the same shrinking-gate
+  // class as I3-F1 and I3-F7.
+  //
+  // So the shadow list is written down and COMPARED. The built duplicate cannot simply be
+  // deleted from here: it is built by `runtime-ts/test/docread-fixtures.mjs`, which is the
+  // runtime-ts layer and whose own unit tests read it. One name is declared today —
+  // `corrupt-deflate.docx`, where the built copy and the checked-in one are both a corrupt
+  // deflate stream over `word/document.xml` and the checked-in bytes are what both unit
+  // suites read. The case below fails BOTH ways: an undeclared collision appears, or a
+  // declared one stops happening and the declaration goes stale.
+  const DECLARED_SHADOWS = ['corrupt-deflate.docx'];
   const notes = [];
+  const shadowed = [];
   for (const [file, path] of Object.entries(fixtures.checkedInFixtures())) {
-    if (paths[file] !== undefined) notes.push(`checked-in fixture ${file} shadows the built one of the same name; the checked-in bytes are compared`);
+    if (paths[file] !== undefined) shadowed.push(file);
     paths[file] = path;
   }
+  shadowed.sort();
+  const shadowCase = {
+    name: 'fixtures: exactly the declared checked-in fixtures shadow a built one of the same name',
+    kind: 'json',
+    expected: DECLARED_SHADOWS,
+    actual: shadowed,
+  };
+  notes.push(
+    `checked-in fixtures shadowing a built one: ${shadowed.length ? shadowed.join(', ') : '(none)'}; ` +
+      `declared: ${DECLARED_SHADOWS.join(', ')}. the checked-in bytes are what is compared, and the ` +
+      'list is a case, not a note — an undeclared collision fails the suite',
+  );
   // A NUL inside the file name: `a\x00b`. The reference's `Path.stat` raises `ValueError`
   // ("embedded null byte"), which `docread` answers as `no such file: a\x00b`; the port's
   // `fs.statSync` raises `ERR_INVALID_ARG_VALUE`, answered with the same sentence. Job43 G3
@@ -416,7 +442,7 @@ export async function run(ctx) {
 
   // ------------------------------------------------------------------------- the cases
 
-  const cases = [];
+  const cases = [shadowCase];
   const refused = (answer) => Boolean(answer.error);
   let ruled = 0;
   let readBoth = 0;
