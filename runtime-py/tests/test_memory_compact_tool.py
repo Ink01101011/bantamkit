@@ -38,6 +38,7 @@ SERVED_ORDER = [
     "bantamkit_status",
     "memory_compact",
     "bantamkit_read",
+    "skill_audit",
 ]
 
 
@@ -75,7 +76,7 @@ async def _fill(client, n: int) -> list[str]:
     return replies
 
 
-def test_tools_list_serves_nine_in_the_pinned_order(tmp_path):
+def test_tools_list_serves_eleven_in_the_pinned_order(tmp_path):
     """Order is served, not in the manifest, so it is pinned here as well as in the golden."""
 
     async def scenario():

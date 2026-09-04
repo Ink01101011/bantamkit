@@ -32,7 +32,7 @@ import { reprValue, type PyValue } from '../pyjson.js';
 /** What a parameter accepts. `optional` is `| None = None` in the signature. */
 export interface FieldSpec {
   readonly name: string;
-  readonly kind: 'str' | 'int' | 'dict' | 'listStr';
+  readonly kind: 'str' | 'int' | 'dict' | 'dictInt' | 'dictStr' | 'listStr';
   readonly optional: boolean;
   /** `Field(le=...)`: an inclusive ceiling, checked AFTER the lax int parse succeeds. */
   readonly le?: bigint;
@@ -123,6 +123,27 @@ export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
     model: 'bantamkit_readArguments',
     fields: [req('path', 'str'), opt('part', 'str'), opt('offset', 'int', { le: OFFSET_MAXIMUM }), opt('limit', 'int')],
   },
+  // `skill_audit(root: str, enabled: list[str] | None = None, usage: dict[str, int] | None =
+  // None, check: str | None = None, budget: int | None = None)` on the reference (job44).
+  // `usage` is the only `dict[str, int]` on the surface and the reason `dictInt` exists:
+  // pydantic validates a typed dict's VALUES, so `{'a': 'x'}` is `usage.a` / `int_parsing`
+  // where `handoff_patch`'s `dict[str, Any]` takes anything. `budget` carries no `le`,
+  // because the reference binds none — the manifest's `maximum` is advisory to the client,
+  // and the handler's own refusal is the negative one. `versions` is the only
+  // `dict[str, str]`, and the reason `dictStr` exists beside it: a `str` field is STRICT even
+  // in lax mode, so `{'a': 1}` is `versions.a` / `string_type` where the same value under
+  // `usage` would validate.
+  skill_audit: {
+    model: 'skill_auditArguments',
+    fields: [
+      req('root', 'str'),
+      opt('enabled', 'listStr'),
+      opt('usage', 'dictInt'),
+      opt('check', 'str'),
+      opt('budget', 'int'),
+      opt('versions', 'dictStr'),
+    ],
+  },
 };
 
 /** `type(value).__name__`, for the `input_type=` half of the sentence. */
@@ -197,6 +218,43 @@ function checkField(spec: FieldSpec, value: PyValue): { value: PyValue } | RawEr
     case 'dict':
       if (value.t === 'dict') return { value };
       return [{ loc: spec.name, type: 'dict_type', msg: 'Input should be a valid dictionary', input: value }];
+    case 'dictStr': {
+      // `dict[str, str]`. The same shape as `dictInt` next door, with the STRICT `str`
+      // validator on the values: one error per bad entry, in the dict's own order, with the
+      // KEY in the location — `versions.a`, never `versions.0`.
+      if (value.t !== 'dict') {
+        return [{ loc: spec.name, type: 'dict_type', msg: 'Input should be a valid dictionary', input: value }];
+      }
+      const bad: RawError[] = [];
+      for (const [key, item] of value.v) {
+        if (item.t !== 'str') {
+          bad.push({
+            loc: `${spec.name}.${key}`,
+            type: 'string_type',
+            msg: 'Input should be a valid string',
+            input: item,
+          });
+        }
+      }
+      return bad.length > 0 ? bad : { value };
+    }
+    case 'dictInt': {
+      // `dict[str, int]`. pydantic validates the VALUES too, one error per bad entry and in
+      // the dict's own order, with the KEY in the location — `usage.a`, never `usage.0`. The
+      // coerced value is what the handler gets, so `{'a': '0'}` reaches `skillaudit` as `0`
+      // and is a `never-invoked` finding exactly as `{'a': 0}` is.
+      if (value.t !== 'dict') {
+        return [{ loc: spec.name, type: 'dict_type', msg: 'Input should be a valid dictionary', input: value }];
+      }
+      const bad: RawError[] = [];
+      const coerced = new Map<string, PyValue>();
+      for (const [key, item] of value.v) {
+        const checked = checkInt(`${spec.name}.${key}`, item);
+        if ('value' in checked) coerced.set(key, checked.value);
+        else bad.push(checked);
+      }
+      return bad.length > 0 ? bad : { value: { t: 'dict', v: coerced } };
+    }
     case 'listStr': {
       if (value.t !== 'list') {
         return [{ loc: spec.name, type: 'list_type', msg: 'Input should be a valid list', input: value }];

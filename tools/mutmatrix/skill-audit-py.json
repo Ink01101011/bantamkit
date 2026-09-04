@@ -1,0 +1,528 @@
+{
+  "pytest_args": [
+    "runtime-py/tests/test_skillaudit.py",
+    "-q",
+    "--no-header"
+  ],
+  "mutations": [
+    {
+      "label": "M01-apostrophe-always-delimits",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "if quote == \"'\" and _is_letter(text, index - 1) and _is_letter(text, index + 1):",
+      "replacement": "if False and _is_letter(text, index - 1) and _is_letter(text, index + 1):",
+      "why": "the contraction guard: every ' becomes a delimiter, so don't/didn't collide"
+    },
+    {
+      "label": "M02-router-in-the-phrase-index",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        if skill.router:\n            continue",
+      "replacement": "        if False:\n            continue",
+      "why": "the router exemption is dropped and loop-router collides with its siblings"
+    },
+    {
+      "label": "M03-single-quotes-only",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "for quote in ('\"', \"'\"):",
+      "replacement": "for quote in (\"'\",):",
+      "why": "a reader that implements one delimiter loses the double-quoted phrase"
+    },
+    {
+      "label": "M04-punctuation-is-a-phrase",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    return any(ch.isalnum() for ch in phrase)",
+      "replacement": "    return True",
+      "why": "a phrase with no letter or digit stops being ignored"
+    },
+    {
+      "label": "M05-enabled-does-not-exclude",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "if skill.omitted is None and skill.in_plugin and skill.plugin_id not in allowed:",
+      "replacement": "if skill.omitted is None and skill.in_plugin and False:",
+      "why": "the disabled plugin is counted, priced and indexed for phrases"
+    },
+    {
+      "label": "M06-enabled-omitted-means-none-on",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    if enabled is None:\n        return\n    allowed = frozenset(enabled)",
+      "replacement": "    allowed = frozenset(enabled or [])",
+      "why": "an absent enabled list stops meaning every skill counts"
+    },
+    {
+      "label": "M07-tie-break-inverted",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        if held is None or version > held:",
+      "replacement": "        if held is None or version < held:",
+      "why": "the FIRST version directory in byte order is resolved instead of the last, so `dup-kit` reads 1.0.0 and `hash-kit` reads 0120fb83da5d: 17 skills / 1707 bytes, and `retired-check` is dragged in as a counted skill on top of the swap"
+    },
+    {
+      "label": "M08-no-dedupe-at-all",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        held = winners.get(skill.dedupe_key)",
+      "replacement": "        held = None",
+      "why": "the within-version dedupe stops firing: two files claiming the same bare name outside a plugin are both counted, which is the only shape that reaches it"
+    },
+    {
+      "label": "M09-dedupe-key-drops-the-plugin",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        return (self.marketplace, self.plugin, self.directory)",
+      "replacement": "        return (self.marketplace, self.directory)",
+      "why": "one name under two plugins collapses into one skill"
+    },
+    {
+      "label": "M10-fold-keeps-the-first-line-only",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "                joined = f\"{fields[current]} {line.strip()}\".strip()",
+      "replacement": "                joined = fields[current]",
+      "why": "folded-note reads 73 bytes instead of 141"
+    },
+    {
+      "label": "M11-fold-joins-with-two-spaces",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "                fields[current] = joined",
+      "replacement": "                fields[current] = joined.replace(\" \", \"  \", 1)",
+      "why": "the fold stops joining with exactly one space"
+    },
+    {
+      "label": "M12-bytes-counted-as-characters",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        return len(self.description.encode(\"utf-8\"))",
+      "replacement": "        return len(self.description)",
+      "why": "a non-ASCII description is priced in code points, not bytes. RED ONLY BECAUSE THE CORPUS HAS NON-ASCII IN IT: until 2026-09-05 every counted description in the fixture was pure ASCII, so len(s) and len(s.encode()) were the same number for all sixteen, this row was caught by ONE assertion smuggled into a test about JSON indentation, and the cross-runtime suite stayed at '66 cases, 0 differed'. The four non-ASCII skills and test_a_description_is_priced_in_utf8_bytes_and_never_in_characters are what make it a real row"
+    },
+    {
+      "label": "M13-unterminated-block-still-counted",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        skill.omitted = OMIT_UNPARSED\n        skill.malformed = bad",
+      "replacement": "        skill.malformed = bad",
+      "why": "a block nothing can be trusted from reaches skills and catalogue_bytes"
+    },
+    {
+      "label": "M14-a-bad-byte-refuses-the-whole-audit",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    except (UnicodeDecodeError, OSError):",
+      "replacement": "    except OSError:",
+      "why": "one undecodable file takes the other twenty-one with it"
+    },
+    {
+      "label": "M15-a-bad-byte-is-repaired-in-silence",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        text = path.read_bytes().decode(\"utf-8\")",
+      "replacement": "        text = path.read_bytes().decode(\"utf-8\", \"replace\")",
+      "why": "U+FFFD is substituted and a description nobody wrote is counted"
+    },
+    {
+      "label": "M16-a-dropped-file-is-neither-counted-nor-omitted",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        skill.omitted = OMIT_UNREADABLE\n        return skill",
+      "replacement": "        skill.omitted = \"ignored\"\n        return skill",
+      "why": "THE SILENT DROP: the sum of counted and omitted stops accounting for the tree"
+    },
+    {
+      "label": "M17-no-description-is-not-a-skill",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        skill.malformed = BAD_NO_DESCRIPTION\n        return skill",
+      "replacement": "        skill.malformed = BAD_NO_DESCRIPTION\n        skill.omitted = OMIT_UNPARSED\n        return skill",
+      "why": "a parsed block with no description stops being a skill costing zero"
+    },
+    {
+      "label": "M18-identity-comes-from-the-frontmatter-name",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        return f\"{self.plugin}:{self.directory}\" if self.in_plugin else self.directory",
+      "replacement": "        return f\"{self.plugin}:{self.name or self.directory}\" if self.in_plugin else self.directory",
+      "why": "the host loads by directory; a frontmatter name becomes a second identity"
+    },
+    {
+      "label": "M19-CONTROL-docstring-only",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        `<name>` alone for a skill outside a plugin.",
+      "replacement": "        `<name>` alone for a skill outside a plugin. (mutated)",
+      "why": "control row: a docstring edit changes nothing and must stay GREEN",
+      "expect": "GREEN"
+    },
+    {
+      "label": "M20-name-mismatch-inverted",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "            if skill.name and skill.name != skill.directory",
+      "replacement": "            if skill.name and skill.name == skill.directory",
+      "why": "the agreeing names are reported and the disagreeing one is not"
+    },
+    {
+      "label": "M21-malformed-only-over-counted-skills",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "            for skill in sorted(found, key=lambda s: s.id)",
+      "replacement": "            for skill in sorted(counted, key=lambda s: s.id)",
+      "why": "the file that could not be parsed stops being reported at all"
+    },
+    {
+      "label": "M22-absent-from-usage-means-unknown",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "            if usage.get(skill.id, 0) == 0",
+      "replacement": "            if usage.get(skill.id, 1) == 0",
+      "why": "a skill absent from the map stops counting as zero calls"
+    },
+    {
+      "label": "M23-empty-usage-is-no-measurement",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    if KIND_NEVER_INVOKED in wanted and usage is not None:",
+      "replacement": "    if KIND_NEVER_INVOKED in wanted and usage:",
+      "why": "an empty map stops being a measurement saying nothing was called"
+    },
+    {
+      "label": "M24-budget-defaults-to-zero",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    if KIND_OVER_BUDGET in wanted and budget is not None and catalogue_bytes > budget:",
+      "replacement": "    if KIND_OVER_BUDGET in wanted and catalogue_bytes > (budget or 0):",
+      "why": "no budget at all starts meaning a budget of zero"
+    },
+    {
+      "label": "M25-overage-arithmetic",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        detail = f\"{catalogue_bytes} > {budget}, over by {over}\"",
+      "replacement": "        detail = f\"{catalogue_bytes} > {budget}, over by {catalogue_bytes}\"",
+      "why": "the overage stops being the difference"
+    },
+    {
+      "label": "M26-budget-family-loses-never-invoked",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    \"budget\": frozenset({KIND_OVER_BUDGET, KIND_NEVER_INVOKED}),",
+      "replacement": "    \"budget\": frozenset({KIND_OVER_BUDGET}),",
+      "why": "a finding kind falls out of every family"
+    },
+    {
+      "label": "M27-unknown-check-is-accepted",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    if check not in CHECK_FAMILIES:",
+      "replacement": "    if check not in CHECK_FAMILIES and False:",
+      "why": "a check nobody implements stops being refused by name"
+    },
+    {
+      "label": "M28-negative-budget-is-accepted",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    if budget is not None and budget < 0:",
+      "replacement": "    if budget is not None and budget < -1:",
+      "why": "a negative budget stops being refused"
+    },
+    {
+      "label": "M29-missing-root-answers-zero",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    if not base.exists():\n        raise SkillAuditError(f\"no such directory: {root}\")",
+      "replacement": "    if not base.exists() and False:\n        raise SkillAuditError(f\"no such directory: {root}\")",
+      "why": "a root that is not there answers 0 skills instead of saying so"
+    },
+    {
+      "label": "M30-a-file-root-refuses-with-the-wrong-sentence",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "f\"{root} is a file, not a directory of skills\"",
+      "replacement": "f\"{root} cannot be scanned\"",
+      "why": "the two mistakes stop having two sentences"
+    },
+    {
+      "label": "M31-scan-order-reversed",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    found.sort(key=lambda p: p.parts)\n    versions.sort()",
+      "replacement": "    found.sort(key=lambda p: p.parts, reverse=True)\n    versions.sort()",
+      "why": "the order the omission record lists paths in stops being path order"
+    },
+    {
+      "label": "M32-plugin-shape-ignores-the-skills-segment",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    if len(parts) == PLUGIN_PATH_SEGMENTS and parts[3] == SKILLS_SEGMENT:",
+      "replacement": "    if len(parts) == PLUGIN_PATH_SEGMENTS:",
+      "why": "six segments alone is taken for the plugin shape"
+    },
+    {
+      "label": "M33-enabled-excludes-a-skill-outside-a-plugin",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        if skill.omitted is None and skill.in_plugin and skill.plugin_id not in allowed:\n            skill.omitted = OMIT_NOT_ENABLED",
+      "replacement": "        if skill.omitted is None and skill.plugin_id not in allowed:\n            skill.omitted = OMIT_NOT_ENABLED",
+      "why": "a plugin list starts speaking to a skill that belongs to no plugin"
+    },
+    {
+      "label": "M34-omission-size-not-reported",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "                size=sum(s.bytes for s in members),",
+      "replacement": "                size=0,",
+      "why": "what the omission cost the catalogue stops being said"
+    },
+    {
+      "label": "M35-omission-does-not-name-the-file",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "                what=\", \".join(s.relpath for s in members),",
+      "replacement": "                what=\"\",",
+      "why": "the record stops naming the paths behind it"
+    },
+    {
+      "label": "M36-empty-omission-subjects-are-emitted",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        if not members:\n            continue",
+      "replacement": "        if False:\n            continue",
+      "why": "a clean tree reports four records of zero instead of none"
+    },
+    {
+      "label": "M37-omission-subject-order",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "OMISSION_ORDER = (\n    OMIT_NOT_ENABLED,\n    OMIT_DUPLICATE,\n    OMIT_STALE_VERSION,\n    OMIT_UNREADABLE,\n    OMIT_UNPARSED,\n)",
+      "replacement": "OMISSION_ORDER = (\n    OMIT_UNPARSED,\n    OMIT_UNREADABLE,\n    OMIT_STALE_VERSION,\n    OMIT_DUPLICATE,\n    OMIT_NOT_ENABLED,\n)",
+      "why": "the order of the document's omission list moves"
+    },
+    {
+      "label": "M38-finding-order-reversed",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    findings.sort(key=lambda f: FINDING_ORDER.index(f.kind))",
+      "replacement": "    findings.sort(key=lambda f: -FINDING_ORDER.index(f.kind))",
+      "why": "the kind order the contract lists is not the order served"
+    },
+    {
+      "label": "M39-phrase-holders-unsorted",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        Finding(KIND_SHARED_PHRASE, tuple(sorted(holders)), phrase)",
+      "replacement": "        Finding(KIND_SHARED_PHRASE, tuple(reversed(holders)), phrase)",
+      "why": "the skills in a collision stop coming back in a fixed order"
+    },
+    {
+      "label": "M40-one-holder-is-a-collision",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        if len(holders) > 1",
+      "replacement": "        if len(holders) > 0",
+      "why": "a phrase exactly one skill quotes becomes a finding"
+    },
+    {
+      "label": "M41-roots-is-empty",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        roots=(str(root),),",
+      "replacement": "        roots=(),",
+      "why": "the document stops saying what was scanned"
+    },
+    {
+      "label": "M42-document-key-renamed",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "            \"catalogue_bytes\": self.catalogue_bytes,",
+      "replacement": "            \"catalogue_bytes \": self.catalogue_bytes,",
+      "why": "a key the Node port byte-compares changes spelling"
+    },
+    {
+      "label": "M43-json-indent-moves",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        return json.dumps(self.as_dict(), indent=2, ensure_ascii=False)",
+      "replacement": "        return json.dumps(self.as_dict(), indent=4, ensure_ascii=True)",
+      "why": "the bytes stop matching JSON.stringify(doc, null, 2)"
+    },
+    {
+      "label": "M44-an-empty-tree-refuses",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    found = _scan(base, enabled, versions)",
+      "replacement": "    found = _scan(base, enabled, versions)\n    if not found:\n        raise SkillAuditError(f\"no skills under {root}\")",
+      "why": "nothing to audit stops being an answer and becomes a refusal"
+    },
+    {
+      "label": "M45-the-document-carries-a-clock",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "            \"roots\": list(self.roots),",
+      "replacement": "            \"roots\": list(self.roots) + [str(__import__(\"time\").time())],",
+      "why": "the answer moves between two runs over the same tree"
+    },
+    {
+      "label": "M46-the-answer-depends-on-the-host",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    base = Path(root)\n    if not base.exists():",
+      "replacement": "    if not (Path(os.path.expanduser(\"~\")) / \".claude\").is_dir():\n        raise SkillAuditError(\"no host skill root\")\n    base = Path(root)\n    if not base.exists():",
+      "why": "the tool starts consulting the host's own skill root instead of only its argument (bounded: one is_dir, no walk — the first form of this row walked the real HOME and had to be killed)"
+    },
+    {
+      "label": "M47-the-reply-is-not-the-json-document",
+      "path": "runtime-py/src/bantamkit/mcpserver.py",
+      "anchor": "            return _noted(result.as_json())",
+      "replacement": "            return _noted(str(result.as_dict()))",
+      "why": "the tool serves a repr a caller cannot parse back"
+    },
+    {
+      "label": "M48-the-log-carries-the-root",
+      "path": "runtime-py/src/bantamkit/mcpserver.py",
+      "anchor": "                    \"skills\": result.skills,",
+      "replacement": "                    \"root\": root,\n                    \"skills\": result.skills,",
+      "why": "an operator's own path reaches the event log"
+    },
+    {
+      "label": "M49-the-refusal-record-carries-the-root",
+      "path": "runtime-py/src/bantamkit/mcpserver.py",
+      "anchor": "                log.record(\"skill_audit\", \"refused\")",
+      "replacement": "                log.record(\"skill_audit\", \"refused\", {\"root\": root})",
+      "why": "a refusal writes down the argument that caused it"
+    },
+    {
+      "label": "M50-check-defaults-to-phrase",
+      "path": "runtime-py/src/bantamkit/mcpserver.py",
+      "anchor": "                    check=\"all\" if check is None else check,",
+      "replacement": "                    check=\"phrase\" if check is None else check,",
+      "why": "an omitted check stops meaning every family"
+    },
+    {
+      "label": "M51-registration-order",
+      "path": "runtime-py/src/bantamkit/mcpserver.py",
+      "anchor": "        _from_manifest(bantamkit_read, \"bantamkit_read\"),\n        _from_manifest(skill_audit, \"skill_audit\"),",
+      "replacement": "        _from_manifest(skill_audit, \"skill_audit\"),\n        _from_manifest(bantamkit_read, \"bantamkit_read\"),",
+      "why": "the eleventh tool stops being served eleventh"
+    },
+    {
+      "label": "M52-a-refusal-escapes-as-an-error-frame",
+      "path": "runtime-py/src/bantamkit/mcpserver.py",
+      "anchor": "            except (skillaudit.SkillAuditError, OSError) as exc:",
+      "replacement": "            except OSError as exc:",
+      "why": "the refusal reaches the model as an isError frame instead of a sentence"
+    },
+    {
+      "label": "M53-no-unwrapping-at-all",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "            return {key: unwrap_scalar(value) for key, value in fields.items()}, None",
+      "replacement": "            return dict(fields), None",
+      "why": "THE DEFECT SA2b FIXES: a whole-value quoted scalar is read literally, so 17 of 31 real descriptions are priced two bytes high and quoted-scalar's phrase is buried (1558 bytes, not 1551)"
+    },
+    {
+      "label": "M54-unwrapping-is-startswith-and-endswith",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        if _scalar_close(value, quote) == len(value) - 1:",
+      "replacement": "        if value.endswith(quote):",
+      "why": "THE OPPOSITE MISTAKE: quoted-edge begins and ends with a quote and is not one scalar, so an eager strip welds it into one junk phrase and drops it out of BOTH collisions (1549 bytes, not 1551)"
+    },
+    {
+      "label": "M55-a-backslash-does-not-escape-a-quote",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        if quote == '\"' and char == BACKSLASH:",
+      "replacement": "        if False and char == BACKSLASH:",
+      "why": "quoted-scalar's first `\\\"` closes the scalar early, so the value stops being whole-value quoted and is read literally"
+    },
+    {
+      "label": "M56-a-doubled-apostrophe-is-two-apostrophes",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        return content.replace(\"''\", \"'\")",
+      "replacement": "        return content",
+      "why": "YAML's other escape: quoted-single reads 84 bytes instead of 83 and keeps an apostrophe the host never loads"
+    },
+    {
+      "label": "M57-an-unterminated-quote-is-unwrapped-anyway",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        if _scalar_close(value, quote) == len(value) - 1:\n            return _unescape(value[1:-1], quote)",
+      "replacement": "        if _scalar_close(value, quote) in (len(value) - 1, -1):\n            return _unescape(value[1:-1], quote)",
+      "why": "the rejected alternative: a value that opens a quote and never closes one gets its first and LAST character deleted on a guess"
+    },
+    {
+      "label": "M58-only-the-description-is-unwrapped",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "return {key: unwrap_scalar(value) for key, value in fields.items()}, None",
+      "replacement": "return {\n                key: unwrap_scalar(value) if key == KEY_DESCRIPTION else value\n                for key, value in fields.items()\n            }, None",
+      "why": "the rule stops being a fact about YAML scalars: `name: \"s\"` becomes a name-mismatch and `router: \"true\"` stops being a router"
+    },
+    {
+      "label": "M59-a-dropped-skill-survives-its-own-removal",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        skill.omitted = OMIT_DUPLICATE if stands_in else OMIT_STALE_VERSION",
+      "replacement": "        skill.omitted = OMIT_DUPLICATE if stands_in else None",
+      "why": "THE DEFECT SA6 FIXES: a version directory is no longer skipped WHOLE — a name the resolved version dropped has nothing to displace it, so it is counted. This is the pre-2026-09-05 cross-version merge in one line: `dup-kit:retired-check`, deleted in 1.1.0, is resurrected and the tree reads 17 skills / 1850 bytes, not 16 / 1713"
+    },
+    {
+      "label": "M60-the-two-version-subjects-are-folded-into-one",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        stands_in = skill.directory in kept.get(skill.plugin_key, set())\n        skill.omitted = OMIT_DUPLICATE if stands_in else OMIT_STALE_VERSION",
+      "replacement": "        skill.omitted = OMIT_DUPLICATE",
+      "why": "a skill a release REMOVED is reported as a duplicate of a skill that does not exist: the headline stays 16 / 1713 and only the omission record says so, which is exactly the reading under which the defect was invisible"
+    },
+    {
+      "label": "M61-one-version-resolved-per-marketplace",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        return (self.marketplace, self.plugin)",
+      "replacement": "        return (self.marketplace,)",
+      "why": "the resolution unit stops being the plugin: `unknown` sorts last across the whole of `kit-market`, so every plugin in it but `hash-kit` is skipped and the tree reads 2 skills. One plugin's version number starts deciding another plugin's skills"
+    },
+    {
+      "label": "M62-stale-version-is-dropped-from-the-reporting-order",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    OMIT_STALE_VERSION,\n    OMIT_UNREADABLE,",
+      "replacement": "    OMIT_UNREADABLE,",
+      "why": "A SECOND SILENT DROP, in the shape M16 pins for `unreadable-file`: the file is omitted and no record is emitted for it, so counted + omitted stops accounting for the twenty-two files on disk"
+    },
+    {
+      "label": "M63-the-document-escapes-non-ascii",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        return json.dumps(self.as_dict(), indent=2, ensure_ascii=False)",
+      "replacement": "        return json.dumps(self.as_dict(), indent=2, ensure_ascii=True)",
+      "why": "THE VACUOUS GATE F2 CLOSES: ensure_ascii alone, with the indent left where it is. M43 moves both at once, so it was RED on the indent and said nothing about the escaping. Measured 2026-09-05 before the Thai pair existed, this row was caught by NOTHING — 66 conformance cases 0 differed, 71 unit tests all passing — because every string the document emits was ASCII and the two settings produced identical bytes. 'ภาวะแข่งขัน' in two skills puts a non-ASCII detail in findings[], which is the only field in the document that can hold one"
+    },
+    {
+      "label": "M64-a-non-bmp-letter-stops-flanking-an-apostrophe",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    return 0 <= index < len(text) and text[index].isalpha()",
+      "replacement": "    return 0 <= index < len(text) and text[index].isalpha() and ord(text[index]) < 0x10000",
+      "why": "the reference cannot make the Node port's UTF-16 mistake, so this row SIMULATES its effect: a letter above U+FFFF stops flanking an apostrophe, both quotes in astral-a and astral-b become delimiters, and '并发' is torn out of both as a fourth shared-trigger-phrase. That is exactly what runtime-ts answered until this round, and no fixture held a non-BMP character to say so"
+    },
+    {
+      "label": "M65-versions-resolved-over-surviving-skills",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    for marketplace, plugin, version in version_dirs:\n        held = resolved.get((marketplace, plugin))\n        if held is None or version > held:\n            resolved[(marketplace, plugin)] = version",
+      "replacement": "    for skill in found:\n        if skill.omitted is None:\n            held = resolved.get(skill.plugin_key)\n            if held is None or skill.version > held:\n                resolved[skill.plugin_key] = skill.version",
+      "why": "THE DEFECT F3 FIXES, and it is the resurrection defect arriving through the other door: the winner is chosen from the skills that SURVIVED loading and `enabled` rather than from the version directories on disk, so `ghost-kit/2.0.0` — whose only file does not parse — stops being a candidate, `1.0.0` wins by default, and `ghost-kit:present`, which the host does not serve, is counted. 21 skills / 2388 bytes, not 20 / 2261. BOTH runtimes did this and both agreed, so the differential was blind to it; the fixture is what put it under the differential"
+    },
+    {
+      "label": "M66-a-version-directory-declares-itself-without-the-skills-segment",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        if len(parts) == VERSION_PATH_SEGMENTS and parts[3] == SKILLS_SEGMENT:",
+      "replacement": "        if len(parts) == VERSION_PATH_SEGMENTS:",
+      "why": "the candidate stops being `<marketplace>/<plugin>/<version>/skills` and becomes any four-segment directory, so a stray sibling in a plugin directory can outrank the real version and empty the plugin"
+    },
+    {
+      "label": "M67-a-winner-that-serves-nothing-raises-instead-of-omitting",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        stands_in = skill.directory in kept.get(skill.plugin_key, set())",
+      "replacement": "        stands_in = skill.directory in kept[skill.plugin_key]",
+      "why": "the pre-F3 lookup, which could not reach the case at all: a resolved version directory that serves no surviving skill has no `kept` entry, so the audit raises KeyError instead of recording every loser as a `stale-version`"
+    },
+    {
+      "label": "M68-the-callers-named-version-is-ignored",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    named = versions or {}",
+      "replacement": "    named = {}",
+      "why": "F4's whole argument stops working: the caller names the version directory the host actually serves and the byte-order guess answers anyway. `hash-kit` reads `unknown` where versions.json says `0120fb83da5d`, so the tree answers 2261 bytes rather than 2186 and the two hash-kit rows keep the wrong omission tokens"
+    },
+    {
+      "label": "M69-a-named-version-speaks-for-every-plugin",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        told = named.get(f\"{plugin}@{marketplace}\")",
+      "replacement": "        told = next(iter(named.values()), None)",
+      "why": "the override stops being per-plugin: one plugin's named version resolves every plugin in the tree, so naming `hash-kit@kit-market` empties `dup-kit`, `trigger-kit`, `frontmatter-kit` and `ghost-kit` as well"
+    },
+    {
+      "label": "M70-a-named-version-is-passed-but-not-applied",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    _resolve_versions(found, version_dirs, versions)",
+      "replacement": "    _resolve_versions(found, version_dirs)",
+      "why": "the argument reaches `_scan` and is dropped on the way to the rule, which is the shape a handler defect takes: every signature accepts it and nothing acts on it"
+    },
+    {
+      "label": "M71-the-handler-drops-the-versions-argument",
+      "path": "runtime-py/src/bantamkit/mcpserver.py",
+      "anchor": "                    budget=budget,\n                    versions=versions,",
+      "replacement": "                    budget=budget,",
+      "why": "the served surface accepts `versions` and the tool ignores it, so the model is told the answer honours host truth when it does not — the module is right and the product is wrong"
+    },
+    {
+      "label": "M72-an-empty-root-audits-the-servers-cwd",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    if str(root) == \"\":",
+      "replacement": "    if str(root) == \"\\0\":",
+      "why": "F5: `Path(\"\")` is `Path(\".\")`, so an empty root stops being refused and audits whatever directory the SERVER is standing in — a different answer per host, from an argument that named no directory, out of a tool whose contract claims it reads `root` and nothing else. The Node port refused it, so this was also a divergence"
+    },
+    {
+      "label": "M73-the-empty-root-refusal-borrows-another-sentence",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        raise SkillAuditError(\"root must not be empty; name the directory of skills to scan\")",
+      "replacement": "        raise SkillAuditError(f\"no such directory: {root}\")",
+      "why": "the four argument failures stop having four sentences: an empty root is told apart from a missing one by the words, and a model handed the wrong recovery instruction retries the same call"
+    },
+    {
+      "label": "M74-a-fractional-usage-value-raises",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "            if usage.get(skill.id, 0) == 0",
+      "replacement": "            if int(usage.get(skill.id, 0)) == 0 and not isinstance(usage.get(skill.id, 0), float)",
+      "why": "F8's shape on the reference side: a non-integer call count stops comparing as a number. `0.0` is zero and `2.5` is not, and the port used to reach the same two answers through `BigInt`, which throws an uncaught RangeError on `2.5` instead"
+    }
+  ]
+}

@@ -321,11 +321,12 @@ async def test_a_raising_handler_names_the_type_and_leaks_no_argument_value(tmp_
 
 @synchronous
 async def test_no_free_text_argument_reaches_the_file(tmp_path):
-    """Five of the ten tools take unbounded free text. None of it is on disk.
+    """Six of the eleven tools take unbounded free text. None of it is on disk.
 
     `bantamkit_read`'s `path` and `part` are covered by `test_bantamkit_read_tool.py`,
     which asserts the same property over a file whose path, part name and rows are all
-    sentinels.
+    sentinels. `skill_audit`'s `root` is covered by `test_skillaudit.py`, which asserts it
+    over a root whose every path segment is a sentinel.
     """
     _, path, server = make(tmp_path)
     secrets = {

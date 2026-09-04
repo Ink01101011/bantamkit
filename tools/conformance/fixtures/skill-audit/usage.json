@@ -1,0 +1,21 @@
+{
+  "trigger-kit:race-review": 9,
+  "trigger-kit:race-debug": 2,
+  "trigger-kit:deadlock-hunt": 0,
+  "trigger-kit:contraction-a": 1,
+  "trigger-kit:contraction-b": 1,
+  "trigger-kit:worktree-sweep": 4,
+  "trigger-kit:loop-router": 3,
+  "trigger-kit:folded-note": 1,
+  "trigger-kit:quoted-scalar": 5,
+  "trigger-kit:quoted-edge": 2,
+  "trigger-kit:quoted-single": 1,
+  "trigger-kit:astral-a": 6,
+  "trigger-kit:astral-b": 2,
+  "trigger-kit:thai-race": 8,
+  "trigger-kit:thai-review": 4,
+  "frontmatter-kit:misnamed": 1,
+  "dup-kit:echo-check": 7,
+  "hash-kit:hashed-check": 3,
+  "solo-check": 0
+}

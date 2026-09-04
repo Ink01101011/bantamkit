@@ -118,6 +118,7 @@ def test_every_served_tool_has_an_asset(tmp_path):
         "shiftwork_clock_in",
         "shiftwork_clock_out",
         "shiftwork_status",
+        "skill_audit",
         "validate_json",
     ]
     assert sorted(set(served) - have) == []
