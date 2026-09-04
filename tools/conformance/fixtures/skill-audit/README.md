@@ -170,7 +170,7 @@ Two plugins here pin the rule, and they pin different halves of it.
   `stale-version`. **This is the file that reddens the resurrection defect.** Deduping by the
   (marketplace, plugin, name) triple, which is what this tool did until 2026-09-05, has nothing
   to displace `retired-check` with, so it counts it: a skill a release DELETED is resurrected
-  by its own audit. Three independent numbers move when that happens, which is why one file is
+  by its own audit. Four independent things move when that happens, which is why one file is
   enough: the tree reads 17 skills / 1850 bytes rather than 16 / 1713, `stale-version` vanishes
   from the omissions, `'race condition'` grows a fourth member, and `never-invoked` grows a
   fourth finding.
@@ -178,8 +178,9 @@ Two plugins here pin the rule, and they pin different halves of it.
 `hash-kit` holds `0120fb83da5d` and `unknown`, and both hold `hashed-check`. Neither name is a
 version. This is not invented: measured 2026-09-05, `frontend-design` on this machine has nine
 version directories spelled as content hashes plus the literal `unknown`, and the host's own
-`installed_plugins.json` records it serving `1dd995193ba2` of them. Byte order puts `unknown` last —
-`u` (0x75) after `0` (0x30) — so `unknown` is resolved and the hash copy is a `duplicate-skill`.
+`installed_plugins.json` records it serving `1dd995193ba2` of them. Byte order puts `unknown`
+last — `u` (0x75) after `0` (0x30) — so `unknown` is resolved and the hash copy is a
+`duplicate-skill`.
 The two descriptions differ in length on purpose (162 against 87), so which directory was
 resolved is visible in `catalogue_bytes` and not only in the omission record.
 
