@@ -43,7 +43,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const name = 'wire';
-export const summary = 'the MCP surface: ten tools, one prompt, two templates, and the frames themselves';
+export const summary = 'the MCP surface: eleven tools, one prompt, two templates, and the frames themselves';
 
 const here = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = dirname(dirname(here));
@@ -303,6 +303,19 @@ export async function run(ctx) {
   // past the file (`zipfile` seeks there and `read(2)` answers `[Errno 22] Invalid argument`).
   const ampXlsx = doc('amp.xlsx', fixtures.xlsxBytes([['Sales', 'worksheets/sheet1.xml', fixtures.row([fixtures.inlineCell('A1', 'a & b')])]]));
   const badcdXlsx = doc('badcd.xlsx', fixtures.badCentralDirectoryOffset(fixtures.xlsxBytes([['Sales', 'worksheets/sheet1.xml', fixtures.row([fixtures.inlineCell('A1', 'x')])]])));
+
+  /**
+   * `skill_audit`'s corpus is the COMMITTED fixture tree, read where it lives.
+   *
+   * Not copied into scratch like the checkpoint: nothing in this session writes, the tree is
+   * tracked, and `roots[0]` echoes the path back into the document both sides are compared
+   * on — so it has to be one path, not two. `enabled.json` and `usage.json` are the caller's
+   * two maps, handed to the tool as arguments exactly as `docs/skill-audit` says a host would.
+   */
+  const SKILL_FIXTURE = join(repoRoot, 'tools', 'conformance', 'fixtures', 'skill-audit');
+  const SKILL_CACHE = join(SKILL_FIXTURE, 'cache');
+  const SKILL_ENABLED = JSON.parse(readFileSync(join(SKILL_FIXTURE, 'enabled.json'), 'utf8'));
+  const SKILL_USAGE = JSON.parse(readFileSync(join(SKILL_FIXTURE, 'usage.json'), 'utf8'));
 
   const baseEnv = { HOME: home, USERPROFILE: home, BANTAMKIT_MEMORY_DIR: null, BANTAMKIT_ASSETS: ASSETS };
 
@@ -735,6 +748,55 @@ export async function run(ctx) {
     callTool(29, 'bantamkit_read', { path: notesMd, limit: 2.5 }),
     callTool(30, 'bantamkit_read', { path: notesMd, offset: 'x' }),
     callTool(31, 'bantamkit_read', { path: notesMd, extra: 1 }),
+  ], { env: { ...baseEnv, [EVENT_LOG_ENV]: '1' } });
+
+  /**
+   * `skill_audit`, the eleventh tool, over the committed fixture tree: every branch it has.
+   *
+   *   2     the README's own configuration — `enabled` + `usage` + a budget under the bill —
+   *         so the whole JSON document, findings and omissions and all, is compared verbatim;
+   *   3-5   the three `check` families, which select findings and never the measurement;
+   *   6-7   `enabled` omitted (the disabled plugin joins the count) and `enabled` empty
+   *         (only the skill outside a plugin survives) — two states, not one;
+   *   8-9   `usage` omitted (no `never-invoked` at all) and `usage` empty (every counted
+   *         skill is one), which is the same distinction for the other map;
+   *   10-11 no budget at all, and a budget exactly equal to the bill — neither fires;
+   *   12-14 the three refusals the module authors, reaching the model as `tool_failed`
+   *         sentences and NOT as `isError` frames: an unknown `check`, a negative `budget`,
+   *         a root that is not there;
+   *   15-19 the argument shapes pydantic settles before the handler runs: a non-string
+   *         `root`, a missing one, a non-list `enabled`, a `usage` value that is not an
+   *         integer (the `dict[str, int]` VALUE check, whose location is the key), and a
+   *         `usage` value that is a string spelling one (lax, so it is NOT a refusal).
+   *
+   * THE EVENT LOG IS ON so the two outcomes — `audited` with its four counts, `refused` with
+   * nothing at all — are compared as records, `ts` masked, in the block below.
+   *
+   * `root` is an absolute path into the checkout and is therefore the same string for both
+   * runtimes; `roots[0]` in the reply echoes it, which is why it may not be a temp directory
+   * created per side.
+   */
+  add('skill-audit', [
+    INIT(),
+    INITIALIZED,
+    callTool(2, 'skill_audit', { root: SKILL_CACHE, enabled: SKILL_ENABLED, usage: SKILL_USAGE, budget: 1024 }),
+    callTool(3, 'skill_audit', { root: SKILL_CACHE, enabled: SKILL_ENABLED, usage: SKILL_USAGE, budget: 1024, check: 'phrase' }),
+    callTool(4, 'skill_audit', { root: SKILL_CACHE, enabled: SKILL_ENABLED, usage: SKILL_USAGE, budget: 1024, check: 'budget' }),
+    callTool(5, 'skill_audit', { root: SKILL_CACHE, enabled: SKILL_ENABLED, usage: SKILL_USAGE, budget: 1024, check: 'frontmatter' }),
+    callTool(6, 'skill_audit', { root: SKILL_CACHE, usage: SKILL_USAGE }),
+    callTool(7, 'skill_audit', { root: SKILL_CACHE, enabled: [], usage: SKILL_USAGE }),
+    callTool(8, 'skill_audit', { root: SKILL_CACHE, enabled: SKILL_ENABLED }),
+    callTool(9, 'skill_audit', { root: SKILL_CACHE, enabled: SKILL_ENABLED, usage: {} }),
+    callTool(10, 'skill_audit', { root: SKILL_CACHE, enabled: SKILL_ENABLED, usage: SKILL_USAGE, check: 'all' }),
+    callTool(11, 'skill_audit', { root: SKILL_CACHE, enabled: SKILL_ENABLED, usage: SKILL_USAGE, budget: 1551 }),
+    callTool(12, 'skill_audit', { root: SKILL_CACHE, check: 'phrases' }),
+    callTool(13, 'skill_audit', { root: SKILL_CACHE, budget: -1 }),
+    callTool(14, 'skill_audit', { root: join(docs, 'no-such-catalogue') }),
+    callTool(15, 'skill_audit', { root: 123 }),
+    callTool(16, 'skill_audit', {}),
+    callTool(17, 'skill_audit', { root: SKILL_CACHE, enabled: 'trigger-kit@kit-market' }),
+    callTool(18, 'skill_audit', { root: SKILL_CACHE, usage: { 'solo-check': 'x' } }),
+    callTool(19, 'skill_audit', { root: SKILL_CACHE, enabled: SKILL_ENABLED, usage: { 'solo-check': '0' } }),
   ], { env: { ...baseEnv, [EVENT_LOG_ENV]: '1' } });
 
   /**
@@ -1252,6 +1314,38 @@ export async function run(ctx) {
     });
 
     /**
+     * `skill_audit`'s records: both outcomes, and the `detail` that is four counts and no
+     * argument. `audited` carries `skills`, `bytes`, `findings` and `omissions` — none of
+     * which the host can see — and `refused` carries an empty object. The five
+     * argument-shaped calls record nothing at all, because pydantic (and `validateArguments`
+     * here) refuses before the handler is entered, so the record COUNT is part of what is
+     * compared: 14 records for 18 calls, with the two `usage`-coercion calls among the
+     * fourteen because a lax int is not a refusal.
+     */
+    const auditLog = results.get('skill-audit');
+    cases.push({
+      name: 'eventlog: skill_audit records audited / refused, with only `ts` masked',
+      kind: 'bytes',
+      expected: maskTs(auditLog.python.eventlog),
+      actual: maskTs(auditLog.node.eventlog),
+    });
+    cases.push({
+      name: 'eventlog: the (tool, outcome) sequence of the skill-audit session',
+      kind: 'json',
+      expected: outcomesOf(auditLog.python.eventlog),
+      actual: outcomesOf(auditLog.node.eventlog),
+    });
+    cases.push({
+      name: 'eventlog: the skill-audit session reached both skill_audit outcomes, 14 records for 18 calls',
+      kind: 'json',
+      expected: { outcomes: ['audited', 'refused'], records: 14 },
+      actual: {
+        outcomes: [...new Set(outcomesOf(auditLog.node.eventlog).map(([, outcome]) => outcome))].sort(),
+        records: outcomesOf(auditLog.node.eventlog).length,
+      },
+    });
+
+    /**
      * The shape of `ts`, asserted PER SIDE against its own record count.
      *
      * Not a differential: two runtimes that drifted the same way would agree with each other
@@ -1299,21 +1393,21 @@ export async function run(ctx) {
     notes.push(`event log: ${outcomesOf(node.eventlog).length} records, identical but for \`ts\``);
   }
 
-  // ------------------------------------------------- bantamkit_read: the tenth tool, served
+  // ------------------------------------------------- skill_audit: the eleventh tool, served
 
   /**
    * The advertisement session's `tools/list` is compared canonically above (`advertisement:
    * id 2`) and its raw order is ruled. This pins the two facts the golden entry was added
-   * for: TEN tools, and `bantamkit_read` served LAST, on both sides.
+   * for: ELEVEN tools, and `skill_audit` served LAST, on both sides.
    */
   {
     const toolNames = (side) => frameOf(side, 2).result.tools.map((t) => t.name);
     const { python, node } = results.get('advertisement');
-    cases.push({ name: 'advertisement: the ten tool names, in order', kind: 'json', expected: toolNames(python), actual: toolNames(node) });
+    cases.push({ name: 'advertisement: the eleven tool names, in order', kind: 'json', expected: toolNames(python), actual: toolNames(node) });
     cases.push({
-      name: 'advertisement: ten tools and bantamkit_read served tenth',
+      name: 'advertisement: eleven tools and skill_audit served eleventh',
       kind: 'json',
-      expected: { count: 10, last: 'bantamkit_read' },
+      expected: { count: 11, last: 'skill_audit' },
       actual: { count: toolNames(node).length, last: toolNames(node).at(-1) },
     });
   }

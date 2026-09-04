@@ -47,8 +47,10 @@ import {
   documentOffsetPastEnd,
   documentPage,
   schemaError,
+  toolFailed,
 } from '../contract.js';
 import * as docread from '../docread.js';
+import * as skillaudit from '../skillaudit.js';
 import { EventLog, type DetailValue } from '../eventlog.js';
 import type { Memory } from '../memory/component.js';
 import { PyOSError, asPyOSError, pyReadText } from '../memory/pyfs.js';
@@ -71,13 +73,13 @@ import {
 import type { RawStdioTransport } from './transport.js';
 
 /**
- * The ten, in the order `build_server` lists them — which is the order `tools/list` emits.
+ * The eleven, in the order `build_server` lists them — which is the order `tools/list` emits.
  *
  * `bantamkit_status` went LAST rather than first, `memory_compact` after it rather than
- * beside `memory_save` where a reader would look for it, and `bantamkit_read` after that,
- * for the same reason the reference appends all three: registration order IS the served
- * order, and appending is the only edit that leaves the other nine where every existing
- * declaration says they are.
+ * beside `memory_save` where a reader would look for it, `bantamkit_read` after that and
+ * `skill_audit` after that, for the same reason the reference appends all four: registration
+ * order IS the served order, and appending is the only edit that leaves the other ten where
+ * every existing declaration says they are.
  */
 export const MCP_TOOLS = [
   'memory_save',
@@ -90,6 +92,7 @@ export const MCP_TOOLS = [
   'bantamkit_status',
   'memory_compact',
   'bantamkit_read',
+  'skill_audit',
 ] as const;
 
 
@@ -553,6 +556,69 @@ function runTool(
           'bantamkit_read_page_next',
         );
         return { value: { t: 'str', v: noted(reply) }, wrapped: true };
+      });
+    }
+    case 'skill_audit': {
+      // The catalogue auditor on the MCP surface (job44): `skillaudit` measures, this serves
+      // it.
+      //
+      // THE REPLY IS A JSON DOCUMENT AND NOT PROSE, which is the one thing that makes this
+      // handler shaped differently from `bantamkit_read` above. The reader answers a person
+      // reading a transcript, so `contract` words it; this answers a caller that has to
+      // compare `catalogue_bytes` against a budget it set and act on the ids in
+      // `findings[].skills`. A sentence would have to be parsed back. So `Audit.asJson` is
+      // the reply verbatim, and the only string this layer authors is the refusal.
+      //
+      // THE REFUSALS ARE ARGUMENT FAILURES, ALL THREE OF THEM, so they go through
+      // `toolFailed` — an unknown `check`, a negative `budget`, a `root` that is not a
+      // directory. Nothing about the CONTENT of the tree refuses: a file that will not
+      // decode, a block that will not parse and a plugin that is switched off are recorded as
+      // omissions and counted.
+      //
+      // `check` defaults HERE rather than in the module's signature so that the one spelling
+      // of the default lives in `skillaudit.audit`, and `null` and an absent argument reach
+      // it as the same thing. `enabled` and `usage` do the same: an absent map is no
+      // measurement, an empty one is a measurement of nothing, and the two answer differently.
+      //
+      // THE RECORD IS A DECISION, NEVER A REPLY, and it holds no free text: `audited` carries
+      // the four counts the host cannot see and `refused` carries nothing at all. `root` is a
+      // path the operator typed and `findings[].skills` are the names of their skills;
+      // neither is a decision this handler made, so neither is written down.
+      const root = asText(args.get('root'));
+      const enabledArg = args.get('enabled');
+      const enabled =
+        enabledArg !== undefined && enabledArg.t === 'list'
+          ? enabledArg.v.map((item) => (item.t === 'str' ? item.v : ''))
+          : null;
+      const usageArg = args.get('usage');
+      let usage: Map<string, bigint> | null = null;
+      if (usageArg !== undefined && usageArg.t === 'dict') {
+        usage = new Map();
+        for (const [key, value] of usageArg.v) usage.set(key, value.t === 'int' ? value.v : 0n);
+      }
+      const checkArg = args.get('check');
+      const check = checkArg !== undefined && checkArg.t === 'str' ? checkArg.v : 'all';
+      const budgetArg = args.get('budget');
+      const budget = budgetArg !== undefined && budgetArg.t === 'int' ? budgetArg.v : null;
+      return recordRaise(log, 'skill_audit', () => {
+        let result: skillaudit.Audit;
+        try {
+          result = skillaudit.audit(root, { enabled, usage, check, budget });
+        } catch (e) {
+          // `except (skillaudit.SkillAuditError, OSError)`. The module answers `no such
+          // directory` for a root it cannot stat, so a filesystem rejection is already inside
+          // its own sentence and nothing else here catches one.
+          if (!(e instanceof skillaudit.SkillAuditError)) throw e;
+          log.record('skill_audit', 'refused');
+          return { value: { t: 'str', v: noted(toolFailed('skill_audit', e)) }, wrapped: true };
+        }
+        log.record('skill_audit', 'audited', {
+          skills: result.skills,
+          bytes: result.catalogueBytes,
+          findings: result.findings.length,
+          omissions: result.omissions.length,
+        });
+        return { value: { t: 'str', v: noted(result.asJson()) }, wrapped: true };
       });
     }
     default:

@@ -31,8 +31,9 @@ THREE HARD RULES, each with the failure it prevents:
   in this module touches `sys.stderr` or `sys.stdout`.
 * **Metadata only.** Never a tool argument's value, never a memory body, never a
   validated output, never a query, never a document row. Six of the eleven tools take
-  unbounded free text and four take absolute paths (`bantamkit_read`'s `path` is one,
-  and its record carries the container kind and counts, never the path or a part name).
+  unbounded free text and five take absolute paths (`bantamkit_read`'s `path` is one and
+  `skill_audit`'s `root` is another; each record carries counts and tokens from a closed
+  set, never the path, never a part name, never a skill id).
   Every value written here is an ASCII token from a closed
   set, an `int`, or a `bool`.
 * **Never `str(exception)`.** Only `type(exc).__name__`. This is not hypothetical: the

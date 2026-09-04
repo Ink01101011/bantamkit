@@ -1,5 +1,5 @@
 /**
- * The MCP surface: the ten tools, the two resource templates, and the wire.
+ * The MCP surface: the eleven tools, the two resource templates, and the wire.
  *
  * WHY MOST OF THIS DRIVES A REAL PROCESS RATHER THAN CALLING A HANDLER. Everything this
  * unit adds lives in the gap between a handler's return value and the bytes on stdout —
@@ -151,8 +151,9 @@ test('the agent-only tools are absent from tools/list and unknown to tools/call'
   );
   const names = byId(lines, 2).result.tools.map((t) => t.name);
   // Registration order IS served order, so `bantamkit_status` was appended, `memory_compact`
-  // after it and `bantamkit_read` after that, and the other nine stay exactly where they
-  // were. A list that reordered would be a wire change nobody asked for.
+  // after it, `bantamkit_read` after that and `skill_audit` after that, and the other ten
+  // stay exactly where they were. A list that reordered would be a wire change nobody
+  // asked for.
   assert.deepEqual(names, [
     'memory_save',
     'memory_recall',
@@ -164,6 +165,7 @@ test('the agent-only tools are absent from tools/list and unknown to tools/call'
     'bantamkit_status',
     'memory_compact',
     'bantamkit_read',
+    'skill_audit',
   ]);
   const refused = byId(lines, 3).result;
   assert.equal(refused.isError, true);
@@ -1029,7 +1031,7 @@ test('a healthy server reports Active, and the report is the five lines docs/sta
   assert.equal(rows.length, 5, report);
   assert.equal(rows[0], REPORT_LINE_1_ACTIVE);
   assert.match(rows[1], /^version \d+\.\d+\.\d+, build sha256:[0-9a-f]{64}$/);
-  assert.equal(rows[2], 'serving 10 tools, 1 prompt, 2 resource templates');
+  assert.equal(rows[2], 'serving 11 tools, 1 prompt, 2 resource templates');
   assert.equal(rows[3], `memory: 1 fact in the project store, index ${INDEX_BYTES} of ${HEALTHY_BUDGET} bytes`);
   assert.equal(rows[4], 'event log: off');
   // The unstructured half is the RAW string, not the JSON — `bantamkit_status` is a `-> str`

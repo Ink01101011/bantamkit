@@ -603,6 +603,19 @@ export function documentError(detail: unknown): string {
   return pyFormat(sentence(loadContract(), 'document_error'), { detail: text });
 }
 
+/**
+ * `tool_failed`: a handler raised, and `detail` is the handler's OWN words.
+ *
+ * The argument-shaped failures are settled before the handler is entered (`validateArguments`
+ * here, pydantic on the reference), so what reaches this is an exception from INSIDE one —
+ * `skill_audit`'s three refusals are the only ones today. `str(detail)` on the reference; an
+ * `Error`'s `message` is that string here, which is what `SkillAuditError` carries.
+ */
+export function toolFailed(tool: string, detail: unknown): string {
+  const text = detail instanceof Error ? detail.message : String(detail);
+  return pyFormat(sentence(loadContract(), 'tool_failed'), { tool, detail: text });
+}
+
 // ------------------------------------------------------------------------- extract_json
 
 /**

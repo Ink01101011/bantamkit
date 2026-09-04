@@ -162,9 +162,9 @@ derived field is a second thing to keep true.
 
 Never a tool argument's value, never a memory body, never a validated output, never a
 query string, never a document row. Six of the eleven tools take unbounded free text and
-four take absolute paths (`bantamkit_read`'s `path` is one, and its record carries the
-container kind and counts, never the path or a part name — `eventlog.py:33`,
-`eventlog.ts:35`). Every value written is an ASCII token from the closed vocabulary
+five take absolute paths (`bantamkit_read`'s `path` is one and `skill_audit`'s `root` is
+another; each record carries counts and tokens from a closed set, never the path, never a
+part name, never a skill id — `eventlog.py:33`, `eventlog.ts:35`). Every value written is an ASCII token from the closed vocabulary
 above, an `int`, or a `bool` —
 `test_eventlog.py::test_the_only_values_written_are_from_a_closed_set` enforces exactly
 that, so a future field carrying borrowed text fails without anyone having to think of a
