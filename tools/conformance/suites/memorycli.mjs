@@ -28,20 +28,25 @@
  * A `ruling:` case proves the two sides DIFFER. It never proves either is right, and on its
  * own it is a licence for anything else in the same bytes to drift with it. So a ruling here
  * is meant to sit beside an unruled case that holds the rest of those bytes still. This suite
- * emits 24 rulings and ALL 24 NOW HAVE ONE — the twenty-fourth got its companion on
- * 2026-08-25; see the `help-top/w40` entry below for what it took and what was wrong before.
- * All 24, by family:
+ * emits 29 rulings and ALL 29 HAVE ONE — the last family to get one was `help-top/w40` on
+ * 2026-08-25; see its entry below for what it took and what was wrong before.
  *
- *   - 13 `…/stderr-raw`, one per prog-bearing shape in `ARGV_SHAPES`. Companion: that
+ * THE COUNTS BELOW ARE PER-FAMILY SIZES, NOT CONSTANTS: each is `one per <declared thing>`,
+ * and every one of them moved when `archive` was added (2026-09-05). They were stale before
+ * that too — this block said 24 while the run printed 26, because the two feedback scenarios
+ * added a remediation ruling each and nobody re-counted. All 29, by family:
+ *
+ *   - 14 `…/stderr-raw`, one per prog-bearing shape in `ARGV_SHAPES`. Companion: that
  *     shape's `…/stderr`, the same stream compared after the substitution.
- *   - 4 `…/w200/prog-line-raw`, one per help form — line 1 alone, where the usage line fits.
+ *   - 5 `…/w200/prog-line-raw`, one per help form — line 1 alone, where the usage line fits.
  *     Companion: the unruled `…/w200/usage-block`, which CONTAINS that line substituted.
- *   - 4 `…/w80/usage-block`, one per help form, carrying `HANGING_INDENT_RULING`. Companion:
+ *   - 5 `…/w80/usage-block`, one per help form, carrying `HANGING_INDENT_RULING`. Companion:
  *     `…/w80/usage-block-compensated`, the reference re-run `DELTA` columns wider and
  *     dedented, which must match exactly and is what actually watches the wrap.
- *   - 2 `…/remediation-line-raw`, on `lint`'s `try: …` and `compact`'s `restore one with: …`.
- *     Companion: `…/remediation-line`, the same line substituted — and the whole sentence
- *     rides again inside the unruled `…/transcript` of every scenario that prints it.
+ *   - 4 `…/remediation-line-raw`, on `lint`'s `try: …` and `compact`'s `restore one with: …`,
+ *     one per scenario that prints one. Companion: `…/remediation-line`, the same line
+ *     substituted — and the whole sentence rides again inside the unruled `…/transcript` of
+ *     every scenario that prints it.
  *   - 1 `help-top/w40/usage-block`, carrying `BRANCH_SPLIT_RULING`. Companion:
  *     `help-top/w40/usage-block-compensated`, added 2026-08-25 and built the same way as the
  *     w80 ones.
@@ -420,13 +425,22 @@ const applyModes = (root, spec, on) => {
 // ------------------------------------------------------------------------------- the matrix
 
 /**
- * The four help forms. `restore` is here because it is the only sub-parser with a positional,
- * and a positional is rendered in a section the top parser's help does not have.
+ * The five help forms. `restore` is here because it was the first sub-parser with a
+ * positional, and a positional is rendered in a section the top parser's help does not have.
+ *
+ * `archive` is here because it is the SECOND, and because nothing else in this repository
+ * compares its help at all. `help-top`'s body already carries the one-line subcommand entry,
+ * but `archive -h` is a whole page — a usage line, a `positional arguments:` section, and the
+ * three shared options — that the port had to render itself, and CLAUDE.md's gate is a
+ * conformance case rather than the fact that someone wrote it twice. Its prog is
+ * `bantamkit-memory archive`, exactly as long as `bantamkit-memory restore`, so it lands in
+ * the same argparse branch as `restore` at every width here and is ruled in the same cell.
  */
 const HELP_FORMS = [
   ['help-top', ['-h']],
   ['help-status', ['status', '-h']],
   ['help-compact', ['compact', '-h']],
+  ['help-archive', ['archive', '-h']],
   ['help-restore', ['restore', '-h']],
 ];
 
@@ -468,6 +482,12 @@ const RULED_USAGE = new Map([
   ['help-top@80', HANGING_INDENT_RULING],
   ['help-status@80', HANGING_INDENT_RULING],
   ['help-compact@80', HANGING_INDENT_RULING],
+  // DECLARED, not observed: `bantamkit-memory archive` is 24 characters against the
+  // reference's 34, the same pair of lengths as `restore`, so at 80 both sides are in the
+  // hanging branch and indent to different columns, and at 40 both are in the flat branch and
+  // must match with no compensation. If either half of that is wrong the run says so — a
+  // ruling that matches fails as STALE and an unruled cell that differs fails as a mismatch.
+  ['help-archive@80', HANGING_INDENT_RULING],
   ['help-restore@80', HANGING_INDENT_RULING],
 ]);
 
@@ -491,6 +511,10 @@ const ARGV_SHAPES = [
   ['no-subcommand', [], true],
   ['bad-choice', ['nope'], true],
   ['restore-missing-positional', ['restore'], true],
+  // The mirror of the line above. `archive <name>` is the exact inverse of `restore <name>`,
+  // so argparse refuses the two the same way and this is the case that says the port's
+  // second positional is wired the same as its first — same sentence, same stream, exit 2.
+  ['archive-missing-positional', ['archive'], true],
   ['budget-not-an-int', ['status', '--budget', 'notanint'], true],
   ['budget-zero', ['status', '--budget', '0'], true],
   ['budget-negative', ['status', '--budget', '-5'], true],
@@ -584,6 +608,60 @@ function scenarios() {
     ['archived-empty', FOUR_FACTS, [['archived', '--store', '{BED}']]],
     ['archived-populated', { ...FOUR_FACTS, ...archived(['old-one', 'old-two']) },
       [['archived', '--store', '{BED}']]],
+
+    // ---- archive <name>: the door out, and the exact inverse of `restore <name>`
+    //
+    // Everything above moves a fact out by RANK — `compact` picks its own victims and stops
+    // as soon as the index fits, so it can neither be pointed at one fact nor run at all on a
+    // store already under budget. These five are the by-name direction, and they are new on
+    // both runtimes in the same job (2026-09-05). Read them against the `restore` block
+    // below: the same three shapes in the opposite direction, plus the one place the two
+    // deliberately do NOT mirror.
+    ['archive-ok', FOUR_FACTS, [['archive', 'alpha', '--store', '{BED}']], { archived: ['alpha'] }],
+    // Out, listed, and back — the sequence the operator actually performs, over one store, so
+    // the `archived` in step 2 reads what step 1 left and the `archived` in step 4 reads what
+    // step 3 undid. `old-one` is archived from the start and is never named by any step: it
+    // is what makes the closing literal `['old-one']` DISTINGUISHING rather than vacuous. An
+    // empty archive dir is also what an untouched fixture has, so `[]` would pass whether or
+    // not `restore` had done anything; `['old-one']` fails if alpha did not come back, and
+    // fails the other way if the round trip took the bystander with it.
+    ['archive-then-archived-then-restore',
+      { ...FOUR_FACTS, files: { ...FOUR_FACTS.files, 'archive/old-one.md': factFile('old-one') } },
+      [
+        ['archive', 'alpha', '--store', '{BED}'],
+        ['archived', '--store', '{BED}'],
+        ['restore', 'alpha', '--store', '{BED}'],
+        ['archived', '--store', '{BED}'],
+        ['status', '--store', '{BED}'],
+      ],
+      { archived: ['old-one'] }],
+    // Refusal 1, the mirror of `restore-no-such-name`: the name is in neither directory. The
+    // sentence names `facts/` where restore's names `archive/`, and the bed scrub leaves the
+    // rest of the path to be compared. The `[]` literal here is one-directional and says so:
+    // it fails if a refused archive nevertheless put SOMETHING in `archive/` on either side,
+    // and it cannot fail the other way because the fixture starts with nothing to remove.
+    ['archive-no-such-name', FOUR_FACTS, [['archive', 'nope', '--store', '{BED}']], { archived: [] }],
+    // Refusal 2, and the fixture is the whole point of the case. The second guard fires when
+    // `archive/<name>.md` is ALREADY THERE, and an ordinarily-archived fact cannot reach it —
+    // it has already left `facts/`, so it trips the first guard instead. The only state that
+    // reaches the second is the same name present in BOTH directories at once, which nothing
+    // this CLI can do builds: it has to be materialised. The stale archived copy differs from
+    // the fact in `facts/` by one description byte-run, so the tree case afterwards says
+    // which of the two survived and not merely that one did.
+    ['archive-already-archived',
+      { ...FOUR_FACTS,
+        files: { ...FOUR_FACTS.files, 'archive/alpha.md': factFile('alpha', { description: 'a STALE archived copy' }) } },
+      [['archive', 'alpha', '--store', '{BED}'], ['archived', '--store', '{BED}']],
+      { archived: ['alpha'] }],
+    // THE ONE PLACE THE INVERSE IS NOT A MIRROR. `restore-over-budget` below refuses at
+    // exit 1 because bringing a line back can push the index over; archiving REMOVES a line,
+    // so the same guard could not fail and neither runtime runs it. This is that decision as
+    // a case rather than as a docstring: the index here is 246 bytes, the budget asked for is
+    // 100, archiving `alpha` leaves it at 185 — still far over — and both sides print the
+    // success line with `185/100` in it and exit 0. A runtime that grew a budget check in
+    // this direction would redden here.
+    ['archive-does-not-check-the-budget', FOUR_FACTS,
+      [['archive', 'alpha', '--store', '{BED}', '--budget', '100']], { archived: ['alpha'] }],
 
     // ---- restore
     ['restore-ok', { dirs: ['facts', 'archive'], files: { 'facts/keep.md': factFile('keep'), 'archive/back.md': factFile('back') } },
@@ -836,13 +914,21 @@ export async function run(ctx) {
       //
       // The names come from the archive directory rather than from stdout, because the
       // property is what MOVED, not what was printed about it.
+      //
+      // TWO PROPERTIES RIDE ON THIS ONE MECHANISM, which is why the case is no longer named
+      // after the first of them. For the two compaction scenarios the literal is the
+      // EVICTION ORDER — which facts the ranker chose. For the `archive <name>` scenarios
+      // added 2026-09-05 it is WHICH FACT THE NAME MOVED, and for the refusals it is that
+      // nothing moved at all. Same failure mode in both directions: a differential
+      // comparator cannot see a change applied identically to both sides, and a typed
+      // literal can.
       const archivedNames = (b) =>
         readdirSync(join(b, 'archive'))
           .filter((f) => f.endsWith('.md'))
           .map((f) => f.slice(0, -3))
           .sort();
       cases.push({
-        name: `${label}/archived-names: the eviction order as a literal on each side`,
+        name: `${label}/archived-names: what archive/ holds afterwards, as a literal on each side`,
         kind: 'json',
         expected: { python: extra.archived, node: extra.archived },
         actual: { python: archivedNames(beds.py), node: archivedNames(beds.node) },

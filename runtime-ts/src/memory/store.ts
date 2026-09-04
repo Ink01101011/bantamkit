@@ -117,6 +117,16 @@ const ARCHIVE_UNREACHABLE =
 const FACTS_UNREACHABLE =
   "a destination that could not be stat'd is not a name that is already taken, and " +
   'nothing has moved: the fact is still in archive/';
+// The same two distinctions again for `archive`, which walks the move in the opposite
+// direction. They cannot reuse the pair above: each sentence names the side the fact is
+// STILL on when the stat is refused, and that side is the other one here.
+const FACT_UNREACHABLE =
+  "a fact that could not be stat'd is not a fact that is not there, and answering " +
+  "'no fact' here sends the operator looking for a file that is still on disk under " +
+  'this path';
+const ARCHIVE_DESTINATION_UNREACHABLE =
+  "a destination that could not be stat'd is not a name that is already archived, " +
+  'and nothing has moved: the fact is still in facts/';
 
 export class MemoryValidationError extends BantamError {}
 export class MemoryBudgetExceeded extends BantamError {}
@@ -728,6 +738,57 @@ export class MemoryStore {
    * a recovery the filesystem was still willing to perform is the wrong direction for the
    * door back.
    */
+  /**
+   * Move one named fact out of `facts/` and into `archive/`.
+   *
+   * The door out, taken deliberately. `compact` already moves facts out, but it chooses
+   * them by eviction rank and stops as soon as the index fits the budget, so it can
+   * neither be asked for a PARTICULAR fact nor be used at all when the store is already
+   * under budget. `restore` has taken a name since it was written; until this method the
+   * store could bring a named fact back but not send one away.
+   *
+   * Same promise as `restore` — a failed archive leaves the store exactly as it found it —
+   * and two of its three guards carry over while one drops out:
+   *
+   * - Both stats go through `reachable`, not an existence check, for the reason spelled at
+   *   `ARCHIVE_UNREACHABLE`. The two sentences are their own constants because each names
+   *   the side the fact is still on, and that side is the mirror of restore's.
+   * - NO budget check. Archiving removes an index line, so the index can only shrink;
+   *   `checkIndexBudget` is restore's guard in restore's direction and here it could not
+   *   fail.
+   * - `facts()` parses before the move, but NOT for the reason restore's docstring gives,
+   *   and the reference says so too. In restore's direction the pre-read is load-bearing.
+   *   Here it is not: measured in `runtime-py` by deleting the line, every state assertion
+   *   still passes, because the rollback moves the fact back and rethrows the same error
+   *   class. It is kept for the narrower reason that the move never happens at all, so the
+   *   promise never has to depend on the rollback's own two renames succeeding — and no
+   *   test pins it, because pinning it needs fault injection rather than a fixture.
+   */
+  archive(name: string): void {
+    const facts = pyJoin(this.root, 'facts');
+    const source = this.factPath(name);
+    if (!this.reachable(source, facts, FACT_UNREACHABLE)) {
+      throw new MemoryValidationError(`no fact '${name}' under ${facts}`);
+    }
+    const archive = pyJoin(this.root, 'archive');
+    const destination = pyJoin(archive, `${name}.md`);
+    if (this.reachable(destination, archive, ARCHIVE_DESTINATION_UNREACHABLE)) {
+      throw new MemoryValidationError(
+        `fact '${name}' is already archived; refusing to overwrite it`,
+      );
+    }
+    this.facts(); // parse BEFORE the move, not after it
+    pyMkdirParents(archive);
+    pyReplace(source, destination);
+    try {
+      this.rebuildIndex();
+    } catch (error) {
+      pyReplace(destination, source);
+      this.rebuildIndex();
+      throw error;
+    }
+  }
+
   restore(name: string): void {
     const archive = pyJoin(this.root, 'archive');
     const source = pyJoin(archive, `${name}.md`);
