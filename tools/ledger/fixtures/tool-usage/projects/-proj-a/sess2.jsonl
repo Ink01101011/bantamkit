@@ -1,0 +1,2 @@
+{"timestamp": "2026-09-02T09:00:00Z", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Skill", "input": {"skill": "alpha"}}]}}
+{"timestamp": "2026-09-02T09:01:00Z", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t4", "name": "Agent", "input": {"subagent_type": "Explore"}}]}}

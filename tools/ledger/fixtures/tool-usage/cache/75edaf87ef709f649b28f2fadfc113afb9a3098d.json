@@ -1,0 +1,1 @@
+{"stamp": [1788540915.5172923, 340, 2], "session": "sess2", "events": [{"ts": "2026-09-02T09:00:00Z", "session": "sess2", "project": "-proj-a", "tool": "Skill", "server": "builtin", "detail": "alpha", "id": "t1"}, {"ts": "2026-09-02T09:01:00Z", "session": "sess2", "project": "-proj-a", "tool": "Agent", "server": "builtin", "detail": "Explore", "id": "t4"}], "skipped": 0}

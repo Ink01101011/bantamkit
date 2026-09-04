@@ -39,7 +39,11 @@ const flag = (name, dflt) => { const i = args.indexOf(name); return i >= 0 ? arg
 const GROUP = flag('--group', 'tool');
 const JSON_OUT = args.includes('--json');
 const PROJECT = flag('--project', null);
-const ROOT = path.join(os.homedir(), '.claude', 'projects');
+// `CLAUDE_PROJECTS_DIR` and `TOOL_METRICS_DIR` are the names tool-metrics already honoured.
+// Reading the same two lets one fixture tree be pointed at both programs, which is how the
+// agreement in this file's header was checked and how it can be rechecked.
+const ROOT = flag('--root', process.env.CLAUDE_PROJECTS_DIR
+  || path.join(os.homedir(), '.claude', 'projects'));
 
 const GROUPS = ['tool', 'server', 'project', 'skill', 'agent'];
 if (!GROUPS.includes(GROUP)) {
@@ -98,7 +102,9 @@ function keyOf(ev) {
 
 // The events log the PostToolUse hook appends to. Default matches where tool-metrics writes,
 // so this reads a machine's existing history rather than starting an empty one.
-const EVENTS = flag('--events', path.join(os.homedir(), '.claude', 'tool-metrics', 'events.jsonl'));
+const EVENTS = flag('--events', path.join(
+  process.env.TOOL_METRICS_DIR || path.join(os.homedir(), '.claude', 'tool-metrics'),
+  'events.jsonl'));
 function readEvents() {
   if (args.includes('--no-events')) return [];
   try { return fs.readFileSync(EVENTS, 'utf8').split('\n').filter((l) => l.trim()); } catch { return []; }
