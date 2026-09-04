@@ -279,6 +279,7 @@ python -m bantamkit.memory status   [--store PATH | --start DIR] [--budget BYTES
 python -m bantamkit.memory lint     [...]
 python -m bantamkit.memory compact  [...] [--reserve BYTES]
 python -m bantamkit.memory archived [...]
+python -m bantamkit.memory archive NAME  [...]
 python -m bantamkit.memory restore NAME [...]
 ```
 
@@ -291,6 +292,22 @@ convention.
 Exit codes are `0` success, `1` a failure you must act on (over budget, a
 malformed fact, a refused restore), `2` a usage error — so `lint` drops into a
 pre-commit hook or CI job unchanged.
+
+`archive NAME` is the inverse of `restore NAME`, added 2026-09-05. `compact`
+chooses what leaves by eviction rank and stops the moment the index fits the
+budget, so it can neither be asked for a PARTICULAR fact nor do anything at all
+on a store that is already under budget; `restore` has taken a name since it was
+written. Until this the store could bring a named fact back but not send one
+away. It refuses on two shapes, both exit 1: `no fact 'NAME' under <facts dir>`,
+and `fact 'NAME' is already archived; refusing to overwrite it` — the second
+reachable only when the name is present in `facts/` and `archive/` at once,
+since an ordinary archived fact has already left `facts/` and trips the first.
+There is no budget check in this direction: archiving removes an index line, so
+the index can only shrink.
+
+This is the one capability the `memory-keeper` plugin had that this CLI lacked.
+`status`, `lint` (exit 1 over budget), `compact` and `archived`/`restore` were
+already here, which is why the fold was this subcommand and nothing else.
 
 The next two transcripts were run against a seeded 12-fact store, **from the
 Python install** — the repo venv activated, so `python` is `.venv/bin/python`:
