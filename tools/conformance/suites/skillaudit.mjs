@@ -27,7 +27,12 @@
  *      -only phrases, unpaired delimiters, non-BMP letters flanking an apostrophe (the class
  *      where `str[i]` is a code POINT on one side and a UTF-16 code UNIT on the other), and
  *      the four fixture descriptions read LITERALLY, which is the reading the unwrap rule
- *      replaced.
+ *      replaced. Then the ONE ruled difference: `str.isalpha()` and `\p{L}` are compiled
+ *      against different Unicode revisions, so U+1C89 is a letter on one side and unassigned
+ *      on the other. Two ruled cases (it reaches the apostrophe guard AND the punctuation
+ *      filter, in opposite directions), each with a literal companion naming which side
+ *      answers what, plus two NON-ruled ascii twins — because a ruling only proves the two
+ *      differ, and a port whose `phrases` stopped working entirely would keep both green.
  *   5. The per-file record of every `SKILL.md` in the tree — id, relpath, description bytes,
  *      router flag, omission token, malformed token, phrases and the decoded description. The
  *      headline can be right for the wrong reasons; this is the table that says which skill
@@ -125,6 +130,64 @@ const PHRASE_TEXTS = [
   "don𠀀t and didn𠀀t",
   "a'𠀀'b",
 ];
+
+/**
+ * THE ONE RULED DIFFERENCE, and the two sites it reaches.
+ *
+ * `str.isalpha()` asks CPython's own Unicode database and `\p{L}` asks V8/ICU's, and the two
+ * are compiled against different revisions of the standard. Measured 2026-09-05 on this
+ * machine by brute force over all 1,112,064 code points (0x0000-0x10FFFF less the surrogate
+ * range): CPython 3.12.13 carries `unicodedata.unidata_version` 15.0.0 and Node 25.2.1 carries
+ * `process.versions.unicode` 16.0 / ICU 77.1. **4,924 code points disagree for alpha and 5,004
+ * for alnum, and every one of them is one-directional** — the port says letter where the
+ * reference does not, never the other way round, because 16.0 only ADDED characters. The first
+ * is U+1C89 (CYRILLIC CAPITAL LETTER TJE), which is `Cn` — unassigned — in 15.0.0.
+ *
+ * `_is_letter` is the apostrophe guard, so a letter on one side and not the other flips
+ * whether an apostrophe delimits: the REFERENCE finds a phrase here where the port finds
+ * none. `_has_content` is the punctuation filter, so it flips the other way: the PORT keeps a
+ * phrase the reference drops. Both directions are ruled below, each with a literal companion
+ * saying which side answers what. See docs/porting.md, "`str.isalpha()` against `\p{L}`".
+ */
+const UNICODE_VERSION_TEXTS = [
+  // The guard. `'` flanked by U+1C89 on the left and `r`/`n` on the right and left: the
+  // reference sees a non-letter flank and delimits, the port sees a letter and does not.
+  ["the apostrophe guard", "\u1C89'race condition'\u1C89", ['race condition'], []],
+  // The filter. A phrase whose entire content is U+1C89: the reference finds no alnum in it
+  // and drops it as punctuation, the port keeps it.
+  ['the punctuation filter', '"\u1C89"', [], ['\u1C89']],
+];
+
+/**
+ * …and the SAME two constructions with an ASCII letter in the place of U+1C89.
+ *
+ * These are NOT ruled and they are the reason the rulings above are not the whole story: a
+ * ruling only proves the two answers DIFFER, so a port whose `phrases` stopped working
+ * altogether — always `[]` — would keep both rulings green. These two say the RULE is still
+ * shared and only the character table under it is not.
+ */
+const UNICODE_VERSION_TWINS = [
+  ["the apostrophe guard, ascii twin", "A'race condition'A"],
+  ['the punctuation filter, ascii twin', '"A"'],
+];
+
+/** The reason both cases above are allowed to differ, quoted in the failure when one stops. */
+const UNICODE_VERSION_RULING =
+  '`str.isalpha()` reads CPython\'s own Unicode database and `\\p{L}` reads V8/ICU\'s, and the ' +
+  'two are compiled against different revisions of the standard: measured 2026-09-05 by brute ' +
+  'force over all 1,112,064 code points, CPython 3.12.13 carries unidata 15.0.0 and Node ' +
+  '25.2.1 carries Unicode 16.0 (ICU 77.1), 4,924 code points disagree for alpha and 5,004 for ' +
+  'alnum, and every disagreement is one-directional — the port says letter where the reference ' +
+  'does not, never the reverse, because 16.0 only added characters. U+1C89 is the first of ' +
+  'them: a letter in 16.0 and unassigned (Cn) in 15.0.0. It reaches two sites. In `_is_letter` ' +
+  'it is the apostrophe guard, so the REFERENCE emits a `shared-trigger-phrase` the port does ' +
+  'not; in `_has_content` it is the punctuation filter, so the PORT keeps a phrase the ' +
+  'reference drops. Not lifted, because the fix is one of two things this program will not ' +
+  'do: vendor a 136,104-entry category table into `runtime-ts` and re-vendor it on every ' +
+  'CPython upgrade, or make the reference stop asking CPython and consult a table of its own. ' +
+  'Neither side is wrong — each is telling the truth about the Unicode version it was built ' +
+  'against — and no `SKILL.md` in either measured corpus contains a code point from the ' +
+  'disagreeing set. docs/porting.md, "`str.isalpha()` against `\\p{L}`".';
 
 const LITERAL_DESCRIPTIONS = [
   'kit-market/trigger-kit/1.0.0/skills/quoted-scalar',
@@ -268,6 +331,44 @@ export async function run(ctx) {
     });
   }
 
+  // ------------------------------------------- 4b. the one ruled difference, and its twins
+
+  const ruledTexts = UNICODE_VERSION_TEXTS.map(([, text]) => text);
+  const twinTexts = UNICODE_VERSION_TWINS.map(([, text]) => text);
+  const pyRuled = ctx.runPython(REF, { op: 'phrases', texts: [...ruledTexts, ...twinTexts].map(b64) })
+    .results.map((r) => r.map(unb64));
+
+  for (let i = 0; i < UNICODE_VERSION_TEXTS.length; i += 1) {
+    const [label, text, wantPython, wantNode] = UNICODE_VERSION_TEXTS[i];
+    cases.push({
+      name: `phrases: ${label} over U+1C89: the Unicode version is RULED`,
+      kind: 'json',
+      expected: pyRuled[i],
+      actual: skillaudit.phrases(text),
+      ruling: UNICODE_VERSION_RULING,
+    });
+    // THE COMPANION. A ruling only proves the two answers differ; this one says what each
+    // answer IS, as a literal, so a reference that started calling U+1C89 a letter (a CPython
+    // Unicode upgrade) or a port that stopped (an ICU downgrade) fails on its own line rather
+    // than behind "they still differ". This is not a refusal-shaped difference — neither side
+    // refuses, both answer a list — so there is no refusal bit to compare side to side.
+    cases.push({
+      name: `phrases: ${label} over U+1C89: the answer each side is required to carry`,
+      kind: 'json',
+      expected: { python: wantPython, node: wantNode },
+      actual: { python: pyRuled[i], node: skillaudit.phrases(text) },
+    });
+  }
+  for (let i = 0; i < UNICODE_VERSION_TWINS.length; i += 1) {
+    const [label, text] = UNICODE_VERSION_TWINS[i];
+    cases.push({
+      name: `phrases: ${label} (NOT ruled: the rule is shared, only the table is not)`,
+      kind: 'json',
+      expected: pyRuled[UNICODE_VERSION_TEXTS.length + i],
+      actual: skillaudit.phrases(text),
+    });
+  }
+
   // ------------------------------------------------------------------ 5. the per-file table
 
   for (const [label, on, told] of [
@@ -305,7 +406,13 @@ export async function run(ctx) {
     `fixture: ${CACHE} — 28 SKILL.md, 20 counted, 2261 catalogue bytes, ` +
       `5 omission records over 8 files`,
     `${cases.length} cases: ${configs.length} documents, ${UNWRAP_VALUES.length} unwrap values, ` +
-      `${phraseTexts.length} phrase texts, 4 per-file tables`,
+      `${phraseTexts.length} phrase texts, 4 per-file tables, ` +
+      `${UNICODE_VERSION_TEXTS.length} RULED (the Unicode version under \`isalpha\`/\`\\p{L}\`) ` +
+      `with ${UNICODE_VERSION_TEXTS.length} literal companions and ${UNICODE_VERSION_TWINS.length} ascii twins`,
+    'ruled: CPython 3.12.13 unidata 15.0.0 against Node 25.2.1 Unicode 16.0 (ICU 77.1) — ' +
+      '4,924 of 1,112,064 code points disagree for alpha and 5,004 for alnum, all one-directional ' +
+      '(the port says letter where the reference does not). U+1C89 is the first. See ' +
+      'docs/porting.md, "`str.isalpha()` against `\\p{L}`"',
   );
   return { cases, notes };
 }
