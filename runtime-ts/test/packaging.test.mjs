@@ -31,7 +31,8 @@ const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoPack = join(dirname(packageRoot), 'assets');
 
 /**
- * The size of the pack, measured: 86 files / 217,310 bytes at 92661f7, where job43's R1
+ * The size of the pack, measured: 87 files / 222,452 bytes at HEAD, where job44's SA1 added
+ * `assets/tools/skill_audit.json` (86 files / 217,310 bytes at 92661f7, where job43's R1
  * added `assets/tools/bantamkit_read.json` and two contract sentences (85 files / 214,969
  * bytes at 39c5a74, where job42's MC1 added `assets/tools/memory_compact.json` and
  * `"agent",` later joined its surfaces; 84 files / 213,773 bytes at 8634632, where U11
@@ -40,7 +41,7 @@ const repoPack = join(dirname(packageRoot), 'assets');
  * pack that grows or shrinks moves `assets_digest` and therefore `build_id`, and that
  * must be a deliberate edit here rather than a silent one.
  */
-const EXPECTED_ASSET_FILES = 86;
+const EXPECTED_ASSET_FILES = 87;
 
 function walk(dir) {
   const out = new Map();
@@ -101,7 +102,7 @@ test('every packed asset is byte-identical to the repository pack', () => {
     assert.equal(sha256(mirror), sha256(abs), `vendored copy of ${rel} differs`);
     bytes += readFileSync(abs).length;
   }
-  assert.equal(bytes, 217355); // +2341 at 92661f7: bantamkit_read.json and its two contract sentences; +8 when its part example became "document"; +37 when offset gained maximum 2^53-1 (F1)
+  assert.equal(bytes, 222452); // +5097: assets/tools/skill_audit.json (SA1); +2341 at 92661f7: bantamkit_read.json and its two contract sentences; +8 when its part example became "document"; +37 when offset gained maximum 2^53-1 (F1)
 });
 
 test('the tarball carries the executable entry point and its module', () => {
