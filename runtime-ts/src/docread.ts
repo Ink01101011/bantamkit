@@ -64,6 +64,11 @@ export const OMIT_UNREAD_PAGE = 'unread-page';
 export const OMIT_UNMAPPED = 'unmapped-text';
 export const OMIT_UNREAD_TAIL = 'unread-tail';
 export const OMIT_SIZE_CAP = 'size-cap';
+// A worksheet cell whose own `r` reference could not place it: not letters-then-digits, or a
+// column past the last one the format has. The cell's TEXT is in the rows, at its XML
+// position; what the rows do not carry is the column the file asked for. Counted per reason,
+// with the columns it landed in, exactly as `number-format` is counted per format code.
+export const OMIT_UNPLACED_CELL = 'unplaced-cell';
 
 /** Extraction failed. The message names what was seen, never just the format's own error. */
 export class DocumentReadError extends BantamError {}
@@ -2032,26 +2037,62 @@ export function columnLetter(index: number): string {
 }
 
 /**
- * `B7` -> 1. The cell's own reference decides its column; XML order is only a fallback.
- *
- * A reference is ASCII letters then ASCII digits, AS WRITTEN, or it is refused in the
- * reference's words (`_column`, review round 3): `r="ß1"` was a `TypeError` on the Python
- * side and column 486 (`SS1`, after `toUpperCase`) here, and a column number that depends
- * on a Unicode case table is not a fact about the workbook. `ß1`, `É1`, `A`, `1` and
- * `A1B` are all refused; the sentence names the reference and no file, like the
- * shared-string-index one.
+ * ECMA-376 gives a worksheet 16,384 columns, the last of them `XFD`. A reference past that
+ * does not name a column of any workbook, so this reader will not build a row wide enough to
+ * reach one. THE FORMAT'S NUMBER, not a limit invented here, which is why it is spelled as
+ * the last column's name rather than as a round figure someone liked.
  */
-export function columnIndex(ref: string | undefined, fallback: number): number {
-  if (!ref) return fallback;
+export const XLSX_MAX_COLUMNS = 16384;
+/**
+ * Four letters is already 18,278 (`AAAA`), past `XFD` whatever the letters are. Checking the
+ * LENGTH before the arithmetic is what keeps a megabyte of letters from being turned into a
+ * megabyte-long number on the way to being refused.
+ */
+const MAX_COLUMN_LETTERS = 3;
+/**
+ * Why a cell's own reference could not place it. Fixed strings, never the reference itself:
+ * `r` is whatever the file says, and an omission that echoed it would carry the file's bytes
+ * into the manifest with no bound at all.
+ */
+export const UNPLACED_SHAPE = 'the column of a cell whose reference is not letters then digits';
+export const UNPLACED_RANGE = 'the column of a cell past XFD, the last column the format has';
+
+/**
+ * `B7` -> `[1, '']`. The cell's own reference decides its column; XML order is a fallback.
+ *
+ * A reference is ASCII letters then ASCII digits naming a column the format has, or this
+ * reader cannot place it and says WHY. The match is on the reference AS WRITTEN and never on
+ * its uppercase (`_column`, review round 3): `r="ß1"` was a `TypeError` on the Python side
+ * and column 486 (`SS1`, after `toUpperCase`) here, and a column number that depends on a
+ * Unicode case table is not a fact about the workbook.
+ *
+ * AN ANSWER AND NOT A THROW, which is review round 4 (M2), mirroring `runtime-py` `a1acfa7`.
+ * Round 3 spelled the refusal as a `DocumentReadError` out of a function `sheetRows` does not
+ * catch, so ONE cell the reader could not place refused the entire workbook — measured on a
+ * two-sheet fixture where sheet `Good` is clean and sheet `Bad` holds one cell `r="1"`: no
+ * manifest, no parts, the clean sheet unreachable. `r="1"`, `r="A"` and `r="B7 "` all read
+ * before round 3. The strictness was right and its price was not: the cell keeps its text and
+ * takes its XML position, which is where it sat before round 3 and is the same position on
+ * both runtimes, and the column it did not get is disclosed as an `Omission` rather than
+ * charged to the whole document. The sentence "cell reference {r!r} is not a column-and-row
+ * reference like B7, so this reader cannot place it" NO LONGER EXISTS on either runtime.
+ *
+ * THE CEILING is review round 4 (M5). Round 3 made this function stricter about the SHAPE of
+ * a reference and left the resulting index unbounded: measured on the reference, a 1,755-byte
+ * xlsx whose one cell is `r="ZZZZZ1"` produced a 12,356,630-byte row, 7,041x the file. Row
+ * width is now bounded by the format at `XLSX_MAX_COLUMNS` fields however many bytes the file
+ * spends asking for more.
+ */
+export function columnIndex(ref: string | undefined, fallback: number): [number, string] {
+  if (!ref) return [fallback, ''];
   const match = /^([A-Za-z]+)[0-9]+$/.exec(ref);
-  if (match === null) {
-    throw new DocumentReadError(
-      `cell reference ${pyRepr(ref)} is not a column-and-row reference like B7, so this reader cannot place it`,
-    );
-  }
+  if (match === null) return [fallback, UNPLACED_SHAPE];
+  const letters = match[1] as string;
+  if (letters.length > MAX_COLUMN_LETTERS) return [fallback, UNPLACED_RANGE];
   let index = 0;
-  for (const ch of (match[1] as string).toUpperCase()) index = index * 26 + (ch.charCodeAt(0) - 64);
-  return index - 1;
+  for (const ch of letters.toUpperCase()) index = index * 26 + (ch.charCodeAt(0) - 64);
+  if (index > XLSX_MAX_COLUMNS) return [fallback, UNPLACED_RANGE];
+  return [index - 1, ''];
 }
 
 function sharedStrings(zf: ZipReader, path: string): string[] {
@@ -2104,6 +2145,7 @@ function sheetRows(
   const rows: string[] = [];
   let blank = 0;
   const dated = new Map<string, Map<number, number>>();
+  const unplaced = new Map<string, Map<number, number>>();
   for (const row of root.iter(NS_S + 'row')) {
     const cells = new Map<number, string>();
     let position = 0;
@@ -2112,8 +2154,16 @@ function sheetRows(
       const at = position;
       position += 1;
       if (!text) continue;
-      const column = columnIndex(cell.get('r'), at);
+      const [column, unplaceable] = columnIndex(cell.get('r'), at);
       cells.set(column, text);
+      if (unplaceable) {
+        let seen = unplaced.get(unplaceable);
+        if (seen === undefined) {
+          seen = new Map();
+          unplaced.set(unplaceable, seen);
+        }
+        seen.set(column, (seen.get(column) ?? 0) + 1);
+      }
       const t = cell.get('t');
       if (t === undefined || t === 'n') {
         const style = pyInt(cell.get('s') || '0');
@@ -2150,6 +2200,23 @@ function sheetRows(
         0,
         sortedColumns.map(columnLetter),
         code,
+      ),
+    );
+  }
+  // Then the unplaced cells, one omission per REASON, `pySorted` so the order is by
+  // codepoint the way `sorted(unplaced)` is on the reference — which puts `UNPLACED_RANGE`
+  // ("...past XFD...") before `UNPLACED_SHAPE` ("...whose reference is not..."), `p` before
+  // `w`. Same shape as `number-format`: a count, and the columns it landed in.
+  for (const reason of pySorted(unplaced.keys())) {
+    const columns = unplaced.get(reason) as Map<number, number>;
+    const sortedColumns = [...columns.keys()].sort((a, b) => a - b);
+    omissions.push(
+      new Omission(
+        OMIT_UNPLACED_CELL,
+        [...columns.values()].reduce((a, b) => a + b, 0),
+        0,
+        sortedColumns.map(columnLetter),
+        reason,
       ),
     );
   }

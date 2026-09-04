@@ -453,9 +453,20 @@ test('bantamkit_read: a corrupt deflate stream is the damaged-member sentence, z
     await readOne({ path: fixtures['encrypted-mimetype.odt'] }),
     'error: encrypted-mimetype.odt is a zip but its mimetype is encrypted, so this reader cannot read it without a password',
   );
+  // AMENDED at review round 4 (M2), mirroring `runtime-py` `a1acfa7`. This assertion held
+  // `error: cell reference 'ß1' is not a column-and-row reference like B7, so this reader
+  // cannot place it`. That sentence no longer exists on either runtime: a cell the reader
+  // cannot place costs that cell's COLUMN and never the whole workbook, so the same bytes
+  // now come back over the wire as a MANIFEST with an omission. Kept in this list because
+  // what it guards is unchanged — the checked-in G1 fixture crossing the wire whole.
+  const eszett = fixtures['eszett-cell-ref.xlsx'];
   assert.equal(
-    await readOne({ path: fixtures['eszett-cell-ref.xlsx'] }),
-    "error: cell reference 'ß1' is not a column-and-row reference like B7, so this reader cannot place it",
+    await readOne({ path: eszett }),
+    [
+      `${eszett} (xlsx) part 0 "Sharp": 1 rows, numbered 0 to 0`,
+      '  row 0 is the header: x',
+      '  NOT in those rows: 1 unplaced-cell (the column of a cell whose reference is not letters then digits)',
+    ].join('\n'),
   );
 });
 

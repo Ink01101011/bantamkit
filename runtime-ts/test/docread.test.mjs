@@ -30,6 +30,7 @@ import { checkedInFixtures, writeFixtures, xlsxBytes, zipBytes } from './docread
 
 const dist = new URL('../dist/', import.meta.url);
 const docread = await import(new URL('docread.js', dist));
+const contract = await import(new URL('contract.js', dist));
 const {
   DEFAULT_ROW_LIMIT,
   DocumentReadError,
@@ -225,11 +226,18 @@ test('the checked-in G1 fixtures are read from runtime-py/tests/data/docread, no
   );
 });
 
-test('review round 3 (H2): the five checked-in reproducers answer the reference\'s own sentences', () => {
+test('review round 3 (H2): the four checked-in reproducers answer the reference\'s own sentences', () => {
   // Each sentence is the `docread-expected.jsonl` line the Python reference wrote for the
   // same bytes (`dump_py.py`, commit message); named here so a regression is named too.
+  //
+  // AMENDED at review round 4 (M2). This list held FIVE, and the fifth was
+  // `eszett-cell-ref.xlsx`: "cell reference 'ß1' is not a column-and-row reference like B7,
+  // so this reader cannot place it". That sentence no longer exists on either runtime — one
+  // cell the reader cannot place must not cost the caller the whole workbook — so the
+  // fixture moved out of the refusal list and into "one unplaceable cell does not cost the
+  // caller the other sheet", which pins what it answers INSTEAD. Mirrors `runtime-py`
+  // `a1acfa7`; the reference's own new line for it is `docread-expected.jsonl:114`.
   const sentences = {
-    'eszett-cell-ref.xlsx': "cell reference 'ß1' is not a column-and-row reference like B7, so this reader cannot place it",
     'compression-method-9.docx':
       'compression-method-9.docx is a zip but its word/document.xml uses compression method 9, which this reader cannot decompress',
     'encrypted-mimetype.odt':
@@ -247,19 +255,21 @@ test('review round 3 (H2): the five checked-in reproducers answer the reference\
   assert.throws(() => sniff(paths['encrypted-mimetype.odt']), { message: sentences['encrypted-mimetype.odt'] });
 });
 
-test('a cell reference is ASCII letters then ASCII digits as written, or it is refused (H2)', () => {
-  // Python `_column`: `ß1`, `É1`, `A`, `1`, `A1B` refused; `B7` -> 1, `b7` -> 1, `AA1` -> 26.
-  assert.equal(columnIndex('B7', 9), 1);
-  assert.equal(columnIndex('b7', 9), 1);
-  assert.equal(columnIndex('AA1', 9), 26);
-  assert.equal(columnIndex(undefined, 9), 9);
-  assert.equal(columnIndex('', 9), 9);
+test('a cell reference is ASCII letters then ASCII digits as written, or it is not placed (H2)', () => {
+  // Python `_column`: `B7` -> 1, `b7` -> 1, `AA1` -> 26; `ß1`, `É1`, `A`, `1`, `A1B` are not
+  // placed. AMENDED at review round 4 (M2): the shapes this reader cannot place are an
+  // ANSWER now and not a throw — `[fallback, reason]`. What round 3 measured still holds and
+  // is what this case is for: no `TypeError` on `ß1`, and `ß1` is still NOT read as `SS1`
+  // (column 486), because the match is on the reference as written. The full shape list and
+  // the ceiling are pinned below, under M2/M5.
+  assert.deepEqual(columnIndex('B7', 9), [1, '']);
+  assert.deepEqual(columnIndex('b7', 9), [1, '']);
+  assert.deepEqual(columnIndex('AA1', 9), [26, '']);
+  assert.deepEqual(columnIndex(undefined, 9), [9, '']);
+  assert.deepEqual(columnIndex('', 9), [9, '']);
   for (const ref of ['ß1', 'É1', 'A', '1', 'A1B', 'A 1']) {
-    assert.throws(
-      () => columnIndex(ref, 0),
-      { message: `cell reference ${pyRepr(ref)} is not a column-and-row reference like B7, so this reader cannot place it` },
-      ref,
-    );
+    assert.deepEqual(columnIndex(ref, 0), [0, docread.UNPLACED_SHAPE], ref);
+    assert.notEqual(columnIndex(ref, 0)[0], 485, `${ref} must not be read through toUpperCase`);
   }
 });
 
@@ -541,4 +551,129 @@ test('repr() of a str and of bytes, as the refusal sentences print them', () => 
   assert.equal(pyRepr("it's"), '"it\'s"');
   assert.equal(pyRepr('tab\there​'), "'tab\\there\\u200b'");
   assert.equal(bytesRepr(Buffer.from('PK\x03\x04\n\xff\'"', 'latin1')), "b'PK\\x03\\x04\\n\\xff\\'\"'");
+});
+
+// ---- M2 / M5: a cell this reader cannot place costs that cell's COLUMN, nothing more ----
+//
+// Mirrors `runtime-py` `a1acfa7`. Round 3 made `columnIndex` strict about the SHAPE of a
+// cell reference — right — and spelled the answer as a `DocumentReadError` out of a
+// function `sheetRows` does not catch, so ONE cell refused the whole workbook. Round 3 also
+// left the resulting index unbounded, so a reference of five letters built a row wide enough
+// to hold it. Both are `columnIndex`, and they have one answer: it ANSWERS `[column, reason]`
+// and the column the cell did not get is disclosed through the omission channel.
+
+const sheet = (body) => xlsxBytes([['S', 'worksheets/sheet1.xml', body]]);
+const inline = (ref, value) => `<c r="${ref}" t="inlineStr"><is><t>${value}</t></is></c>`;
+const oneRow = (...cells) => `<row r="1">${cells.join('')}</row>`;
+/** `[(o.subject, o.count, o.where, o.what) for o in part.omissions]`, as the reference prints it. */
+const omitted = (part) => part.omissions.map((o) => [o.subject, o.count, [...o.where], o.what]);
+
+function xlsx(name, body) {
+  const path = join(dir, name);
+  writeFileSync(path, sheet(body));
+  return path;
+}
+
+test('one unplaceable cell does not cost the caller the other sheet (M2)', () => {
+  // MEASURED before the fix, on this exact fixture: `DocumentReadError: cell reference '1'
+  // is not a column-and-row reference like B7, so this reader cannot place it` — no
+  // manifest, no parts, and the CLEAN sheet unreachable. The cell keeps its text and takes
+  // its XML position, which is where it sat before round 3 and is the same position on both
+  // runtimes; what it loses is its stated column, and that loss is DISCLOSED.
+  const path = join(dir, 'two-sheets.xlsx');
+  writeFileSync(
+    path,
+    xlsxBytes([
+      ['Good', 'worksheets/sheet1.xml', oneRow(inline('A1', 'clean'))],
+      ['Bad', 'worksheets/sheet2.xml', oneRow(inline('1', 'oops'))],
+    ]),
+  );
+  const doc = extract(path);
+  assert.deepEqual(doc.parts.map((p) => [p.name, [...p.rows]]), [['Good', ['clean']], ['Bad', ['oops']]]);
+  assert.deepEqual(omitted(doc.parts[0]), []);
+  assert.deepEqual(omitted(doc.parts[1]), [['unplaced-cell', 1, ['A'], docread.UNPLACED_SHAPE]]);
+});
+
+test('every reference shape this reader cannot place is reported, not raised (M2)', () => {
+  // The shapes round 3 refused, each one now an answer instead of an exception. `ß1` is the
+  // one round 3 was written for and it still does NOT become column 486: the match is on
+  // the reference AS WRITTEN and never on its uppercase, so the cell falls back to its XML
+  // position and both runtimes place it in the same place.
+  for (const ref of ['1', 'A', 'A1B', 'É1', 'a-1', 'A 1', 'B7 ', 'ß1']) {
+    assert.deepEqual(columnIndex(ref, 3), [3, docread.UNPLACED_SHAPE], ref);
+  }
+  assert.deepEqual(columnIndex('ab7', 0), [27, '']);
+  assert.deepEqual(columnIndex('AB7', 0), [27, '']);
+  assert.deepEqual(columnIndex(undefined, 3), [3, '']);
+  assert.deepEqual(columnIndex('', 3), [3, '']);
+});
+
+test('a reference past the format\'s last column is not placed there (M5)', () => {
+  // MEASURED on the reference before the fix: 1,755 bytes of xlsx whose single cell is
+  // `r="ZZZZZ1"` produced a 12,356,630-byte row — 7,041x amplification, from a column index
+  // with no ceiling at all. The bound is the FORMAT's: ECMA-376 gives a worksheet 16,384
+  // columns, the last of them `XFD`.
+  const doc = extract(xlsx('zzzzz.xlsx', oneRow(inline('ZZZZZ1', 'x'))));
+  assert.deepEqual([...doc.parts[0].rows], ['x']);
+  assert.equal(Buffer.byteLength(doc.parts[0].rows[0], 'utf8'), 1);
+  assert.deepEqual(omitted(doc.parts[0]), [['unplaced-cell', 1, ['A'], docread.UNPLACED_RANGE]]);
+});
+
+test('the last column the format has is still read (M5)', () => {
+  // Off-by-one-proof from both sides: `XFD` is column 16,384 and reads; `XFE` is the first
+  // that does not exist and falls back. A ceiling that ate the last real column would be a
+  // second defect wearing the first one's fix.
+  assert.deepEqual(columnIndex('XFD1', 0), [16383, '']);
+  assert.equal(docread.XLSX_MAX_COLUMNS, 16384);
+  assert.equal(columnLetter(16383), 'XFD');
+  assert.deepEqual(columnIndex('XFE1', 0), [0, docread.UNPLACED_RANGE]);
+  assert.deepEqual(columnIndex('ZZZ1', 0), [0, docread.UNPLACED_RANGE]); // 18278, three letters
+  const doc = extract(xlsx('xfd.xlsx', oneRow(inline('XFD1', 'end'))));
+  assert.deepEqual([...doc.parts[0].rows], ['\t'.repeat(16383) + 'end']);
+  assert.deepEqual(omitted(doc.parts[0]), []);
+});
+
+test('a million-letter reference is answered without building the integer (M5)', () => {
+  // A reference of a million letters is a valid `[A-Za-z]+[0-9]+` and would otherwise be
+  // turned into a base-26 number of a million digits before anything looked at its size.
+  const start = process.hrtime.bigint();
+  assert.deepEqual(columnIndex('A'.repeat(1_000_000) + '1', 7), [7, docread.UNPLACED_RANGE]);
+  assert.ok(Number(process.hrtime.bigint() - start) / 1e9 < 1.0);
+});
+
+test('unplaced cells of one reason are counted together and the reasons apart (M2/M5)', () => {
+  // One omission per reason, columns in column order — the shape `number-format` already
+  // uses, so a caller that renders one renders the other. The reasons sort by CODEPOINT,
+  // which puts `past XFD` before `not letters then digits`.
+  const doc = extract(
+    xlsx('mixed.xlsx', oneRow(inline('1', 'a'), inline('ZZZZZ1', 'b'), inline('B7 ', 'c'), inline('C1', 'd'))),
+  );
+  assert.deepEqual(omitted(doc.parts[0]), [
+    ['unplaced-cell', 1, ['B'], docread.UNPLACED_RANGE],
+    ['unplaced-cell', 2, ['A', 'C'], docread.UNPLACED_SHAPE],
+  ]);
+});
+
+test('an unplaced cell renders through the contract layer\'s unknown-subject line', () => {
+  // `omissionLine` has no branch for this subject and does not need one: the generic line
+  // prints an unknown subject's count rather than dropping it, which is the whole reason
+  // that fallback exists. Pinning it here keeps the two layers honest about the lag.
+  const doc = extract(xlsx('unplaced-one.xlsx', oneRow(inline('1', 'a'))));
+  const lines = contract.documentManifest([
+    {
+      document: 'unplaced-one.xlsx',
+      kind: 'xlsx',
+      index: 1,
+      part: 'S',
+      row_count: 1,
+      rows: [...doc.parts[0].rows],
+      omissions: doc.parts[0].omissions.map((o) => o.asDict()),
+    },
+  ]).split('\n');
+  assert.ok(
+    lines.includes(
+      '  NOT in those rows: 1 unplaced-cell (the column of a cell whose reference is not letters then digits)',
+    ),
+    lines.join('\n'),
+  );
 });
