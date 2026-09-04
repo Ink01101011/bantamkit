@@ -154,6 +154,26 @@ literals; `charsets` 93 -> 88, which is a DROP, because H1 (`666f14f`) removed s
 tables that were never byte codecs and this round added two key-set cases (86 + 2); `wire`
 371 unchanged, one case removed and one added.
 
+**AMENDED 2026-09-05, twice, on the `feat/tool-usage-ledger` branch.** The `archive <name>`
+subcommand took the run to `6294 / 130` — `memorycli` 212 -> 250 and three new rulings, all
+of them the `archive -h` help form joining the four that were already ruled. Review round 5
+of that subcommand then took it to:
+
+```
+PASS: 6316 cases, 1560 byte-identical, 3272 exact-string, 1484 structural,
+      130 ruled-different, 0 failures
+```
+
+**+22 cases, no new ruling**, every one of them in `memorycli` (250 -> 272) and every one
+added because a mutation showed the existing case could not see the thing it was named for:
+two `unreadable-*-archive` rows reaching the two new "could not be stat'd" sentences that
+NOTHING referenced (both were corrupted in the Node build and `--all` stayed at 0 failures);
+two typed-literal `content-of-…` cases on the already-archived refusal, because
+`archived-names: ['alpha']` is what the refusal AND the overwrite both leave; one
+`archived-at-step-2` literal, because a round trip's CLOSING state is also what a jointly
+dead archive/restore pair leaves; and two name-validation scenarios. The mutation counts are
+in the commit messages.
+
 **A number in this paragraph that was measuring nothing:** the three `charset-<label>.eml`
 cases counted in the `6132` line above sent their bytes `8bit`, which made the file's HEAD
 undecodable, so the container sniffed `unknown` and BOTH runtimes refused before any codec was
