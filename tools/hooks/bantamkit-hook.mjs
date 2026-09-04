@@ -44,6 +44,7 @@ const PROMPT_MIN_CHARS = 12;
 const STOP_NUDGE_MIN_TOOL_CALLS = 20;
 const COMPACT_AT = 0.9;   // index >= 90% of budget → compact …
 const COMPACT_TO = 0.8;   // … down to 80%, past the no-op band measured in job40 (C6)
+const PRECOMPACT_FILES_MAX = 40;
 
 function log(record) {
   try {
@@ -179,7 +180,11 @@ function preToolUseRead(input) {
   if (!file) return;
   let st;
   try { st = fs.statSync(file); } catch { return; } // missing file: let Read produce its own error
-  const key = `${input.transcript_path || input.session_id}|${file}|${ti.offset ?? ''}|${ti.limit ?? ''}`;
+  // The transcript is the CONTEXT dimension: a subagent has its own transcript and has not
+  // seen the parent's reads. It is carried on the record as well as in the key, because
+  // `preCompact` must filter on it and a path may itself contain the key's delimiter.
+  const transcript = String(input.transcript_path || input.session_id || '');
+  const key = `${transcript}|${file}|${ti.offset ?? ''}|${ti.limit ?? ''}`;
   const ledger = readLedger(input.session_id);
   const prev = ledger.reads[key];
   const sig = `${st.mtimeMs}|${st.size}`;
@@ -192,7 +197,7 @@ function preToolUseRead(input) {
     emit({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } });
     return;
   }
-  ledger.reads[key] = { sig, at: new Date().toISOString(), count: (prev ? prev.count : 0) + 1, refused: false };
+  ledger.reads[key] = { sig, at: new Date().toISOString(), count: (prev ? prev.count : 0) + 1, refused: false, transcript, file };
   writeLedger(input.session_id, ledger);
   log({ event: 'PreToolUse', action: prev ? 'allow-after-refuse-or-change' : 'record', file, size: st.size });
 }
@@ -299,9 +304,37 @@ function openCheckpoint(cwd) {
   return open[0];
 }
 
+/**
+ * "Already read in THIS context" is a claim about one transcript, not about one session. The
+ * ledger file is per session, and a session holds the parent's reads and every subagent's:
+ * `preToolUseRead` keys on the transcript for exactly that reason (docs/hooks.md — "a
+ * subagent has its own transcript and is never refused for the parent's read"). Measured
+ * before this filter existed, on this repo's own tree: of the 30 files handed to a parent's
+ * summariser, 7 had been read only by a subagent whose output the parent never saw — so the
+ * summary carried a false premise, and the PostCompact ledger reset cannot undo it because
+ * the summary is already written. The predicate here is the one the refusal arm writes with.
+ */
+function transcriptFiles(ledger, transcript) {
+  const me = String(transcript || '');
+  const files = [];
+  const seen = new Set();
+  for (const [key, rec] of Object.entries(ledger.reads || {})) {
+    // Record fields where the entry has them; the key is the fallback for a ledger written
+    // by an older adapter, so an in-flight session degrades quietly instead of losing its list.
+    const parts = key.split('|');
+    const owner = (rec && rec.transcript) ?? parts[0];
+    const file = (rec && rec.file) ?? parts[1];
+    if (!file || String(owner) !== me || seen.has(file)) continue;
+    seen.add(file);
+    files.push(file);
+  }
+  return files;
+}
+
 function preCompact(input) {
   const ledger = readLedger(input.session_id);
-  const files = [...new Set(Object.keys(ledger.reads || {}).map((k) => k.split('|')[1]).filter(Boolean))].slice(0, 40);
+  const mine = transcriptFiles(ledger, input.transcript_path || input.session_id);
+  const files = mine.slice(0, PRECOMPACT_FILES_MAX);
   const parts = [];
   if (files.length) parts.push(`Files already read in this context (keep the list; do not re-read unchanged ones after compaction):\n${files.map((f) => `- ${f}`).join('\n')}`);
   let cp = null;
@@ -316,7 +349,7 @@ function preCompact(input) {
   }
   parts.push('Preserve verbatim: every number the user was shown, every decision the user made, and any pending operator step.');
   const ctx = parts.join('\n\n');
-  log({ event: 'PreCompact', trigger: input.trigger, files: files.length, checkpoint: cp ? cp.file : null, cursor: cp ? cp.cursor : null, bytes: Buffer.byteLength(ctx) });
+  log({ event: 'PreCompact', trigger: input.trigger, ledgerFiles: mine.length, capped: files.length, checkpoint: cp ? cp.file : null, cursor: cp ? cp.cursor : null, bytes: Buffer.byteLength(ctx) });
   emitText(ctx);
 }
 

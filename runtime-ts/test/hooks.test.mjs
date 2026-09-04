@@ -29,7 +29,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
@@ -259,4 +259,116 @@ test('an unknown event and unparseable stdin are both silent and exit 0', () => 
   assert.equal(bad.status, 0);
   assert.equal(bad.stdout, '');
   assert.equal(bad.stderr, '');
+});
+
+// ------------------------------------------------------------------ the ledger half
+/**
+ * The other half of roadmap #9, and the half that shipped with NO coverage at all: the file
+ * list PreCompact derives from the read ledger. Measured before these cases existed — delete
+ * the whole `if (files.length)` block, or the count cap, and the file still passed 10/10.
+ *
+ * The ledger is NEVER written by hand here. Every case seeds it by running the adapter's own
+ * `PreToolUse`/`Read` arm, the same process the host runs, so what is pinned is the PROPERTY
+ * ("a file this transcript read is listed; one it did not read is not") and not the on-disk
+ * shape of the ledger, which these cases never name.
+ */
+
+/** Record one Read in the ledger the way the host does: one hook process, one payload. */
+function seedRead(file, { home, cwd, transcript, sessionId = 'probe-session' }) {
+  const r = spawnSync(process.execPath, [HOOK], {
+    input: JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Read',
+      cwd,
+      session_id: sessionId,
+      transcript_path: transcript,
+      tool_input: { file_path: file },
+    }),
+    encoding: 'utf8',
+    env: { ...process.env, HOME: home, USERPROFILE: home },
+  });
+  assert.equal(r.status, 0, `seeding a read must never fail: ${r.stderr}`);
+  return r;
+}
+
+/** Make `count` real files under `cwd` (the arm stats them) and record a read of each. */
+function seedReads(count, opts) {
+  const files = [];
+  for (let i = 0; i < count; i += 1) {
+    const file = join(opts.cwd, `read-${String(i).padStart(3, '0')}.txt`);
+    writeFileSync(file, `body ${i}`);
+    seedRead(file, opts);
+    files.push(file);
+  }
+  return files;
+}
+
+/** The adapter's own measurement channel, `<home>/.bantamkit/hooks/hook-log.jsonl`. */
+function hookLog(home, event) {
+  const lines = readFileSync(join(home, '.bantamkit', 'hooks', 'hook-log.jsonl'), 'utf8')
+    .split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  return event ? lines.filter((r) => r.event === event) : lines;
+}
+
+/** The `- <path>` lines of the "Files already read" block. */
+function listedFiles(stdout) {
+  return stdout.split('\n').filter((l) => l.startsWith('- ')).map((l) => l.slice(2));
+}
+
+test('PreCompact lists the files THIS transcript read, taken from the ledger', () => {
+  const home = newHome();
+  const cwd = newCwd();
+  const transcript = join(cwd, 'parent.jsonl');
+  const files = seedReads(3, { home, cwd, transcript });
+
+  const r = preCompact({ home, cwd, payload: { transcript_path: transcript } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /Files already read in this context/, 'the ledger half must steer at all');
+  for (const f of files) assert.ok(r.stdout.includes(f), `${f} was read in this transcript and must be listed`);
+  assert.deepEqual(listedFiles(r.stdout).sort(), [...files].sort());
+});
+
+test('a file only a SUBAGENT read is not reported to the parent as read in this context', () => {
+  const home = newHome();
+  const cwd = newCwd();
+  const parent = join(cwd, 'parent.jsonl');
+  const child = join(cwd, 'subagent.jsonl');
+
+  const mine = join(cwd, 'seen-by-parent.txt');
+  const theirs = join(cwd, 'seen-by-subagent-only.txt');
+  writeFileSync(mine, 'a');
+  writeFileSync(theirs, 'b');
+  seedRead(mine, { home, cwd, transcript: parent });
+  seedRead(theirs, { home, cwd, transcript: child });
+
+  // The refusal arm already keys on the transcript ("a subagent has its own transcript and
+  // is never refused for the parent's read", docs/hooks.md:28). The steering must agree with
+  // it: telling the parent's summariser not to re-read a file the parent never saw hands the
+  // rebuilt context a false premise that survives the PostCompact ledger reset.
+  const r = preCompact({ home, cwd, payload: { transcript_path: parent } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(r.stdout.includes(mine), 'the parent read this one');
+  assert.ok(!r.stdout.includes(theirs), 'only the subagent read this one — the parent has never seen its content');
+  assert.deepEqual(listedFiles(r.stdout), [mine]);
+
+  // and symmetrically, from the subagent's own compaction
+  const s = preCompact({ home, cwd, payload: { transcript_path: child } });
+  assert.deepEqual(listedFiles(s.stdout), [theirs]);
+});
+
+test('the file list is capped by count, however many the ledger holds', () => {
+  const home = newHome();
+  const cwd = newCwd();
+  const transcript = join(cwd, 'parent.jsonl');
+  seedReads(45, { home, cwd, transcript });
+
+  const r = preCompact({ home, cwd, payload: { transcript_path: transcript } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(listedFiles(r.stdout).length <= 40, `listed ${listedFiles(r.stdout).length} paths; the cap is 40`);
+
+  // Path length varies by platform, so the byte budget below could be what binds in stdout.
+  // The adapter's own log separates the two bounds, and THIS is the one that pins the count.
+  const rec = hookLog(home, 'PreCompact').at(-1);
+  assert.equal(rec.ledgerFiles, 45, 'all 45 reads belong to this transcript');
+  assert.equal(rec.capped, 40, 'the count cap must bind at 40 before any byte budget does');
 });
