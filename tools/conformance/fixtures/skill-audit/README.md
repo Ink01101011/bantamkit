@@ -193,7 +193,7 @@ first: one version directory wins, its skills are the plugin's skills, and every
 under any other version directory of that plugin is omitted. A name absent from the resolved
 version is absent — it is never merged in from an older directory.
 
-Two plugins here pin the rule, and they pin different halves of it.
+Three plugins here pin the rule, and they pin different parts of it.
 
 `dup-kit` holds `1.0.0` and `1.1.0`. `1.1.0` sorts last in byte order and is resolved, so:
 
@@ -208,7 +208,7 @@ Two plugins here pin the rule, and they pin different halves of it.
   from the omissions, `'race condition'` grows a fourth member, and `never-invoked` grows a
   fourth finding.
 
-`ghost-kit` holds `1.0.0` and `2.0.0`, and it is the third half of the rule: **the candidates
+`ghost-kit` holds `1.0.0` and `2.0.0`, and it pins a third part of the rule: **the candidates
 are DIRECTORIES ON DISK, not the skills that survived reading.** `2.0.0/skills/` holds one
 file and that file's frontmatter block is never closed, so the plugin serves NOTHING;
 `1.0.0/skills/present/` is perfectly readable and is not what the host serves.
@@ -243,7 +243,7 @@ last — `u` (0x75) after `0` (0x30) — so `unknown` is resolved and the hash c
 The two descriptions differ in length on purpose (162 against 87), so which directory was
 resolved is visible in `catalogue_bytes` and not only in the omission record.
 
-The two wrong readings are separated by the headline, the same way the quoting readings are:
+The three wrong readings are separated by the headline, the same way the quoting readings are:
 
     20 / 2261   correct — one version resolved per plugin, then its skills
     21 / 2398   the triple dedupe — versions MERGED, so `retired-check` is resurrected
