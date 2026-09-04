@@ -1,7 +1,7 @@
 """`skillaudit` and `skill_audit`: the catalogue auditor, and the tool that serves it.
 
 TWO ORACLES, DELIBERATELY. The committed fixture tree
-(`tools/conformance/fixtures/skill-audit/`) is the one that matters — nineteen `SKILL.md`
+(`tools/conformance/fixtures/skill-audit/`) is the one that matters — twenty-two `SKILL.md`
 laid out the way a plugin cache lays them out, with a README that states, per file, which
 clause it exists to trigger, and the AUTHOR'S HAND ARITHMETIC beside it. Those numbers were
 written before this module existed, so the nodes below assert the tool's answer AGAINST them
@@ -64,20 +64,31 @@ README_BYTES = {
     "frontmatter-kit:misnamed": 84,
     "frontmatter-kit:no-description": 0,
     "dup-kit:echo-check": 112,
+    "hash-kit:hashed-check": 162,
     "solo-check": 92,
 }
-README_SKILLS = 15
-README_CATALOGUE_BYTES = 1551
-README_OMISSIONS = 4
-README_FILES = 19
+README_SKILLS = 16
+README_CATALOGUE_BYTES = 1713
+#: Five RECORDS over six files — `duplicate-skill` carries two, one per multi-version plugin.
+README_OMISSIONS = 5
+README_OMITTED_FILES = 6
+README_FILES = 22
 README_BUDGET = 1024
 
 #: What the two WRONG readings of a whole-value quoted scalar answer over the same tree. The
 #: literal rule keeps both outer quotes and both `\"` backslashes; the eager rule strips a
 #: quote off `quoted-edge`, which is not one scalar at all. Three distinct numbers, so a
 #: `catalogue_bytes` that moved says WHICH mistake was made.
-LITERAL_QUOTE_BYTES = 1558
-EAGER_STRIP_BYTES = 1549
+LITERAL_QUOTE_BYTES = 1720
+EAGER_STRIP_BYTES = 1711
+
+#: What the two WRONG version rules answer over the same tree, as `(skills, catalogue_bytes)`.
+#: `MERGED_VERSIONS` is the pre-2026-09-05 dedupe, which resolves nothing and merges the two
+#: version directories, so `dup-kit:retired-check` — deleted in `1.1.0` — is resurrected.
+#: `INVERTED_TIE_BREAK` resolves the FIRST version directory in byte order instead of the last.
+#: Three distinct pairs, so a headline that moved says WHICH mistake was made.
+MERGED_VERSIONS = (17, 1850)
+INVERTED_TIE_BREAK = (17, 1707)
 
 
 def enabled() -> list[str]:
@@ -133,6 +144,7 @@ def test_the_tool_answers_the_headline_numbers_the_readme_states_by_hand():
     assert audit.skills == README_SKILLS
     assert audit.catalogue_bytes == README_CATALOGUE_BYTES
     assert len(audit.omissions) == README_OMISSIONS
+    assert sum(o.count for o in audit.omissions) == README_OMITTED_FILES
 
 
 def test_counted_skills_plus_omissions_account_for_every_skill_file_on_disk():
@@ -140,7 +152,7 @@ def test_counted_skills_plus_omissions_account_for_every_skill_file_on_disk():
 
     This is the node that notices a file dropped in SILENCE — the failure mode omissions
     exist to make impossible. It counts the tree itself rather than trusting the README's
-    sixteen, and asserts the README's sixteen too, so a fixture that grew a file reddens
+    twenty-two, and asserts the README's twenty-two too, so a fixture that grew a file reddens
     here rather than quietly shifting every other number.
     """
     on_disk = list(CACHE.rglob("SKILL.md"))
@@ -160,6 +172,7 @@ def test_every_counted_skill_costs_the_bytes_the_readme_says_it_does():
     base = Path(CACHE)
     found = [skillaudit._load(path, base) for path in skillaudit._walk(base)]
     skillaudit._apply_enabled(found, enabled())
+    skillaudit._resolve_versions(found)
     skillaudit._apply_dedupe(found)
     assert {s.id: s.bytes for s in found if s.omitted is None} == README_BYTES
 
@@ -347,11 +360,11 @@ def test_a_single_quoted_scalar_unwraps_and_a_doubled_apostrophe_is_one_apostrop
 def test_the_two_wrong_readings_of_a_quoted_scalar_answer_two_other_byte_counts():
     """The headline separates all three readings, so a regression names itself.
 
-    1551 is correct, 1558 keeps the quotes and the backslashes, 1549 strips one off a value
+    1713 is correct, 1720 keeps the quotes and the backslashes, 1711 strips one off a value
     that is not a scalar. The three are asserted as distinct rather than merely unequal to the
     right one, because two mistakes that happened to agree would hide behind a single `!=`.
     """
-    assert fixture_audit().catalogue_bytes == README_CATALOGUE_BYTES == 1551
+    assert fixture_audit().catalogue_bytes == README_CATALOGUE_BYTES == 1713
     assert len({README_CATALOGUE_BYTES, LITERAL_QUOTE_BYTES, EAGER_STRIP_BYTES}) == 3
     literal = sum(
         len(
@@ -442,10 +455,10 @@ def test_a_scalar_quoted_whole_and_folded_over_lines_is_unwrapped_after_the_fold
 
 
 def test_the_budget_finding_states_the_overage_and_only_fires_when_a_budget_is_given():
-    """1551 against 1024 is 527 over; no budget at all is not a budget of zero."""
+    """1713 against 1024 is 689 over; no budget at all is not a budget of zero."""
     over = kinds(fixture_audit(), skillaudit.KIND_OVER_BUDGET)
     assert len(over) == 1
-    assert over[0].detail == "1551 > 1024, over by 527"
+    assert over[0].detail == "1713 > 1024, over by 689"
     assert over[0].severity == "high" and over[0].skills == ()
     assert kinds(fixture_audit(budget=None), skillaudit.KIND_OVER_BUDGET) == []
     assert kinds(fixture_audit(budget=README_CATALOGUE_BYTES), skillaudit.KIND_OVER_BUDGET) == []
@@ -548,17 +561,19 @@ def test_a_name_that_matches_its_directory_is_not_a_finding(tmp_path):
 # --------------------------------------------------------------------------- omissions
 
 
-def test_the_four_omission_subjects_carry_the_counts_bytes_and_paths_the_readme_states():
+def test_the_five_omission_subjects_carry_the_counts_bytes_and_paths_the_readme_states():
     """One record per subject, in a fixed order, each naming the file behind it.
 
     `size` is what the omission COST the catalogue: 112 bytes that enabling `off-kit` would
-    add, 44 bytes of the stale duplicate. It is `0` for the two files whose description
-    could not be read at all — an unknowable cost, stated as zero rather than guessed.
+    add, 44 + 87 for the two displaced copies, 137 for the skill `1.1.0` dropped. It is `0`
+    for the two files whose description could not be read at all — an unknowable cost, stated
+    as zero rather than guessed.
     """
     audit = fixture_audit()
     assert [(o.subject, o.count, o.size) for o in audit.omissions] == [
         (skillaudit.OMIT_NOT_ENABLED, 1, 112),
-        (skillaudit.OMIT_DUPLICATE, 1, 44),
+        (skillaudit.OMIT_DUPLICATE, 2, 131),
+        (skillaudit.OMIT_STALE_VERSION, 1, 137),
         (skillaudit.OMIT_UNREADABLE, 1, 0),
         (skillaudit.OMIT_UNPARSED, 1, 0),
     ]
@@ -567,7 +582,11 @@ def test_the_four_omission_subjects_carry_the_counts_bytes_and_paths_the_readme_
         "kit-market/off-kit/1.0.0/skills/never-loaded/SKILL.md"
     )
     assert by[skillaudit.OMIT_DUPLICATE].what == (
-        "kit-market/dup-kit/1.0.0/skills/echo-check/SKILL.md"
+        "kit-market/dup-kit/1.0.0/skills/echo-check/SKILL.md, "
+        "kit-market/hash-kit/0120fb83da5d/skills/hashed-check/SKILL.md"
+    )
+    assert by[skillaudit.OMIT_STALE_VERSION].what == (
+        "kit-market/dup-kit/1.0.0/skills/retired-check/SKILL.md"
     )
     assert by[skillaudit.OMIT_UNREADABLE].what == (
         "kit-market/frontmatter-kit/2.3.1/skills/bad-bytes/SKILL.md"
@@ -594,7 +613,7 @@ def test_an_invalid_utf8_byte_is_a_record_and_not_a_crash_and_not_a_replacement_
 
 
 def test_an_omission_subject_with_no_members_is_not_reported_at_all(tmp_path):
-    """A clean tree has an EMPTY omission list, not four records of zero."""
+    """A clean tree has an EMPTY omission list, not five records of zero."""
     skill(tmp_path, "m/p/1.0.0/skills/fine", frontmatter("fine", "a description"))
     assert skillaudit.audit(tmp_path).omissions == ()
 
@@ -603,21 +622,25 @@ def test_an_omission_subject_with_no_members_is_not_reported_at_all(tmp_path):
 
 
 def test_enabled_omitted_counts_everything_and_enabled_empty_counts_no_plugin_skill():
-    """Omitted and empty are different states, and the difference is twelve skills here.
+    """Omitted and empty are different states, and the difference is fifteen skills here.
 
-    Omitted: every skill under the root counts, disabled plugin and all — thirteen, the
-    twelve plus `off-kit:never-loaded`. Empty: no plugin is switched on, so only the skill
-    outside a plugin survives.
+    Omitted: every skill under an enabled-or-not plugin counts — the sixteen plus
+    `off-kit:never-loaded`. Empty: no plugin is switched on, so only the skill outside a
+    plugin survives. The version rule runs in BOTH cases: `off-kit` has one version
+    directory, so switching it on adds exactly one skill and not two.
     """
     everything = skillaudit.audit(CACHE, usage=usage())
     assert everything.skills == README_SKILLS + 1
     assert skillaudit.OMIT_NOT_ENABLED not in subjects(everything)
     none_on = skillaudit.audit(CACHE, enabled=[], usage=usage())
     assert none_on.skills == 1
-    # Thirteen: the sixteen files, less `solo-check` (still counted), less the two whose
+    # Nineteen: the twenty-two files, less `solo-check` (still counted), less the two whose
     # own file failed first — an unreadable byte and an unparsable block outrank a plugin
-    # that is merely switched off, because neither can say what enabling it would cost.
+    # that is merely switched off, because neither can say what enabling it would cost. A
+    # plugin that is off never reaches the version rule either, so no `stale-version` here.
     assert subjects(none_on)[skillaudit.OMIT_NOT_ENABLED].count == README_FILES - 3
+    assert skillaudit.OMIT_STALE_VERSION not in subjects(none_on)
+    assert skillaudit.OMIT_DUPLICATE not in subjects(none_on)
     assert none_on.skills + sum(o.count for o in none_on.omissions) == README_FILES
     # The one record here holds thirteen paths, which is the only place in this file that
     # scan ORDER is visible. It is path order, sorted, because two machines hand back
@@ -651,33 +674,116 @@ def test_a_path_that_is_not_the_plugin_shape_is_a_skill_outside_a_plugin(tmp_pat
     ]
 
 
-# --------------------------------------------------------------------------- the dedupe
+# ------------------------------------------------- the version resolution and the dedupe
 
 
-def test_the_stale_version_loses_by_byte_order_and_its_bytes_are_named_in_the_omission():
-    """`1.1.0` sorts last and wins; the 44-byte `1.0.0` copy is the omission.
+def test_the_version_directory_that_did_not_win_is_omitted_whole():
+    """`1.1.0` is resolved for `dup-kit`, so BOTH files under `1.0.0` are omitted.
 
-    The two descriptions differ in length on purpose, so WHICH copy was counted is visible
-    in `catalogue_bytes`: 1551 with the right one and 1483 with the wrong one. Both numbers
-    are asserted, because only the pair distinguishes "counted the winner" from "counted
-    one of them".
+    The two `echo-check` descriptions differ in length on purpose, so WHICH directory was
+    resolved is visible in `catalogue_bytes` and not only in the omission record.
     """
     audit = fixture_audit()
     assert audit.catalogue_bytes == README_CATALOGUE_BYTES
-    assert README_CATALOGUE_BYTES - README_BYTES["dup-kit:echo-check"] + 44 == 1483
-    assert subjects(audit)[skillaudit.OMIT_DUPLICATE].size == 44
     assert README_BYTES["dup-kit:echo-check"] == 112
+    by = subjects(audit)
+    echo = "kit-market/dup-kit/1.0.0/skills/echo-check/SKILL.md"
+    assert echo in by[skillaudit.OMIT_DUPLICATE].what
+    assert by[skillaudit.OMIT_STALE_VERSION].what.startswith("kit-market/dup-kit/1.0.0/")
+
+
+def test_a_skill_the_resolved_version_dropped_is_a_stale_version_and_not_resurrected():
+    """THE DEFECT THIS RULE FIXES, over the committed tree.
+
+    `dup-kit/1.0.0/skills/retired-check/` exists and `1.1.0` does not have it. Deduping by
+    the (marketplace, plugin, name) triple has nothing to displace it with, so it counts a
+    skill the newer release DELETED. Measured 2026-09-05 on this machine's own plugin cache,
+    that is nine of `kkskills-essentials`'s `0.4.0` skills — 31 skills / 9,280 bytes against
+    a host serving 22 / 3,396.
+
+    Four independent things say so over this tree, and all four are asserted, because a
+    headline alone cannot distinguish "the rule works" from "two errors cancelled":
+    the count, the bytes, the omission subject, and the fact that the phrase it quotes
+    reaches no finding.
+    """
+    assert (CACHE / "kit-market/dup-kit/1.0.0/skills/retired-check/SKILL.md").exists()
+    assert not (CACHE / "kit-market/dup-kit/1.1.0/skills/retired-check").exists()
+    audit = fixture_audit()
+    assert (audit.skills, audit.catalogue_bytes) == (README_SKILLS, README_CATALOGUE_BYTES)
+    assert (README_SKILLS, README_CATALOGUE_BYTES) != MERGED_VERSIONS
+    stale = subjects(audit)[skillaudit.OMIT_STALE_VERSION]
+    assert (stale.count, stale.size) == (1, 137)
+    assert stale.what == "kit-market/dup-kit/1.0.0/skills/retired-check/SKILL.md"
+    assert "dup-kit:retired-check" not in {s for f in audit.findings for s in f.skills}
+    race = [f for f in kinds(audit, skillaudit.KIND_SHARED_PHRASE) if f.detail == "race condition"]
+    assert len(race) == 1 and "dup-kit:retired-check" not in race[0].skills
+
+
+def test_the_two_version_subjects_split_on_whether_the_resolved_version_has_the_name(tmp_path):
+    """One rule, two subjects, and folding them together is what hid the defect.
+
+    `kept` is dropped from `2.0.0`, `shared` is not. Both live under a version directory
+    that did not win; only one of them has a counted skill standing in for it. Reporting
+    both as `duplicate-skill` would inflate the duplicate count by every skill a release
+    removed and make the removal invisible, which is exactly how the defect survived.
+    """
+    skill(tmp_path, "m/p/1.0.0/skills/shared", frontmatter("shared", "old shared"))
+    skill(tmp_path, "m/p/1.0.0/skills/kept", frontmatter("kept", "dropped in 2.0.0"))
+    skill(tmp_path, "m/p/2.0.0/skills/shared", frontmatter("shared", "new shared"))
+    audit = skillaudit.audit(tmp_path)
+    assert audit.skills == 1
+    assert audit.catalogue_bytes == len("new shared")
+    by = subjects(audit)
+    assert (by[skillaudit.OMIT_DUPLICATE].count, by[skillaudit.OMIT_DUPLICATE].size) == (
+        1,
+        len("old shared"),
+    )
+    assert by[skillaudit.OMIT_DUPLICATE].what == "m/p/1.0.0/skills/shared/SKILL.md"
+    assert by[skillaudit.OMIT_STALE_VERSION].what == "m/p/1.0.0/skills/kept/SKILL.md"
+    assert by[skillaudit.OMIT_STALE_VERSION].size == len("dropped in 2.0.0")
+
+
+def test_every_version_directory_but_one_is_skipped_however_many_there_are(tmp_path):
+    """The resolution is per PLUGIN, so three stale directories cost three omissions."""
+    for version in ("1.0.0", "2.0.0", "3.0.0", "4.0.0"):
+        skill(tmp_path, f"m/p/{version}/skills/s", frontmatter("s", version))
+        skill(tmp_path, f"m/p/{version}/skills/only-{version}", frontmatter("x", version))
+    audit = skillaudit.audit(tmp_path)
+    assert audit.skills == 2
+    assert audit.catalogue_bytes == 2 * len("4.0.0")
+    by = subjects(audit)
+    assert by[skillaudit.OMIT_DUPLICATE].count == 3
+    assert by[skillaudit.OMIT_STALE_VERSION].count == 3
+    assert audit.skills + sum(o.count for o in audit.omissions) == 8
+
+
+def test_a_version_directory_name_that_is_not_a_version_takes_the_same_byte_order():
+    """`hash-kit` spells its two directories `0120fb83da5d` and `unknown`.
+
+    That shape is real: `frontend-design` on this machine has nine content-hash directories
+    plus the literal `unknown`, and semver has nothing to compare there. Byte order is total
+    over all of them — `u` after `0` — so `unknown` is resolved. The answer is deterministic
+    and it is ARBITRARY, which is the honest state and the reason the fixture pins the
+    determinism rather than a correctness claim.
+    """
+    assert README_BYTES["hash-kit:hashed-check"] == 162
+    audit = fixture_audit()
+    assert "kit-market/hash-kit/0120fb83da5d/skills/hashed-check/SKILL.md" in (
+        subjects(audit)[skillaudit.OMIT_DUPLICATE].what
+    )
+    assert audit.catalogue_bytes - 162 + 87 == 1638
 
 
 def test_the_tie_break_is_byte_order_and_the_semver_case_it_gets_wrong_is_stated(tmp_path):
     """A KNOWN LIMITATION, pinned here and deliberately not in the shared fixture.
 
-    Byte order counts `9.0.0` over `10.0.0`. A semver comparison would be right and would
-    be a second thing the two runtimes must agree about character for character; the byte
-    order is free, and the omission record always names the loser so an operator can see
-    which copy was read. The committed fixture does not pin this case, because pinning it
-    there would freeze the wrong answer into the cross-runtime contract. Pinning it HERE
-    says out loud what the Python half does.
+    Byte order resolves `9.0.0` over `10.0.0`. A semver comparison would be right, would be
+    a second thing the two runtimes must agree about character for character, and would
+    still leave the content-hash case above undecided; the byte order is free, and the
+    omission record always names the loser so an operator can see which copy was read. The
+    committed fixture does not pin this case, because pinning it there would freeze the
+    wrong answer into the cross-runtime contract. Pinning it HERE says out loud what the
+    Python half does.
     """
     skill(tmp_path, "m/p/9.0.0/skills/s", frontmatter("s", "nine"))
     skill(tmp_path, "m/p/10.0.0/skills/s", frontmatter("s", "ten, which is longer"))
@@ -687,6 +793,20 @@ def test_the_tie_break_is_byte_order_and_the_semver_case_it_gets_wrong_is_stated
     assert subjects(audit)[skillaudit.OMIT_DUPLICATE].what.startswith("m/p/10.0.0/")
 
 
+def test_the_version_is_resolved_per_plugin_and_never_across_them(tmp_path):
+    """A newer version of one plugin cannot displace another plugin's skill.
+
+    `one` is at `2.0.0` and `two` at `1.0.0`; both have a skill called `s`. Resolving one
+    version per MARKETPLACE, or globally, would drop `two:s` on the strength of a version
+    number that has nothing to do with it.
+    """
+    skill(tmp_path, "m/one/2.0.0/skills/s", frontmatter("s", "first"))
+    skill(tmp_path, "m/two/1.0.0/skills/s", frontmatter("s", "second"))
+    skill(tmp_path, "other/one/1.0.0/skills/s", frontmatter("s", "third"))
+    audit = skillaudit.audit(tmp_path)
+    assert audit.skills == 3 and audit.omissions == ()
+
+
 def test_the_dedupe_key_is_the_marketplace_plugin_name_triple(tmp_path):
     """Same name under two different plugins is two skills, not a duplicate."""
     skill(tmp_path, "m/one/1.0.0/skills/s", frontmatter("s", "first"))
@@ -694,6 +814,24 @@ def test_the_dedupe_key_is_the_marketplace_plugin_name_triple(tmp_path):
     skill(tmp_path, "other/one/1.0.0/skills/s", frontmatter("s", "third"))
     audit = skillaudit.audit(tmp_path)
     assert audit.skills == 3 and audit.omissions == ()
+
+
+def test_a_skill_outside_a_plugin_is_never_touched_by_the_version_rule(tmp_path):
+    """No plugin, no version — so every bare skill is in its group's resolved version.
+
+    They still dedupe by NAME, which is the one case the within-version dedupe is reachable
+    at all: two files claiming the same bare name are a `duplicate-skill`, never a
+    `stale-version`, because there is no version directory that lost.
+    """
+    skill(tmp_path, "a/skills/solo", frontmatter("solo", "first on disk"))
+    skill(tmp_path, "b/skills/solo", frontmatter("solo", "second on disk, and longer"))
+    skill(tmp_path, "c/skills/other", frontmatter("other", "unrelated"))
+    audit = skillaudit.audit(tmp_path)
+    assert audit.skills == 2
+    assert audit.catalogue_bytes == len("second on disk, and longer") + len("unrelated")
+    by = subjects(audit)
+    assert skillaudit.OMIT_STALE_VERSION not in by
+    assert by[skillaudit.OMIT_DUPLICATE].what == "a/skills/solo/SKILL.md"
 
 
 # ------------------------------------------------------------------- the folded scalar

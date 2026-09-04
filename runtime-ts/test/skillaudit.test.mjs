@@ -23,7 +23,16 @@
  * lost.
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -75,12 +84,15 @@ const README_BYTES = {
   'frontmatter-kit:misnamed': 84,
   'frontmatter-kit:no-description': 0,
   'dup-kit:echo-check': 112,
+  'hash-kit:hashed-check': 162,
   'solo-check': 92,
 };
-const README_SKILLS = 15;
-const README_CATALOGUE_BYTES = 1551;
-const README_OMISSIONS = 4;
-const README_FILES = 19;
+const README_SKILLS = 16;
+const README_CATALOGUE_BYTES = 1713;
+/** Five RECORDS over six files — `duplicate-skill` carries two, one per multi-version plugin. */
+const README_OMISSIONS = 5;
+const README_OMITTED_FILES = 6;
+const README_FILES = 22;
 const README_BUDGET = 1024;
 
 /**
@@ -89,8 +101,18 @@ const README_BUDGET = 1024;
  * quote off `quoted-edge`, which is not one scalar at all. Three distinct numbers, so a
  * `catalogue_bytes` that moved says WHICH mistake was made.
  */
-const LITERAL_QUOTE_BYTES = 1558;
-const EAGER_STRIP_BYTES = 1549;
+const LITERAL_QUOTE_BYTES = 1720;
+const EAGER_STRIP_BYTES = 1711;
+
+/**
+ * What the two WRONG version rules answer over the same tree, as `[skills, catalogueBytes]`.
+ * `MERGED_VERSIONS` is the pre-2026-09-05 dedupe, which resolves nothing and merges the two
+ * version directories, so `dup-kit:retired-check` — deleted in `1.1.0` — is resurrected.
+ * `INVERTED_TIE_BREAK` resolves the FIRST version directory in byte order instead of the last.
+ * Three distinct pairs, so a headline that moved says WHICH mistake was made.
+ */
+const MERGED_VERSIONS = [17, 1850];
+const INVERTED_TIE_BREAK = [17, 1707];
 
 const enabled = () => JSON.parse(readFileSync(join(FIXTURE, 'enabled.json'), 'utf8'));
 const usage = () => JSON.parse(readFileSync(join(FIXTURE, 'usage.json'), 'utf8'));
@@ -150,12 +172,13 @@ test('the tool answers the headline numbers the README states by hand', () => {
 
 test('counted skills plus omissions account for every skill file on disk', () => {
   // The node that notices a file dropped in SILENCE — the failure mode omissions exist to
-  // make impossible. It counts the tree itself rather than trusting the README's nineteen,
-  // and asserts the README's nineteen too.
+  // make impossible. It counts the tree itself rather than trusting the README's twenty-two,
+  // and asserts the README's twenty-two too.
   const onDisk = everySkillFile(CACHE);
   assert.equal(onDisk.length, README_FILES);
   const audit = fixtureAudit();
   assert.equal(audit.skills + audit.omissions.reduce((n, o) => n + o.count, 0), onDisk.length);
+  assert.equal(audit.omissions.reduce((n, o) => n + o.count, 0), README_OMITTED_FILES);
 });
 
 test('every counted skill costs the bytes the README says it does', () => {
@@ -309,12 +332,12 @@ test('a single quoted scalar unwraps and a doubled apostrophe is one apostrophe'
 });
 
 test('the two wrong readings of a quoted scalar answer two other byte counts', () => {
-  // The headline separates all three readings, so a regression names itself. 1551 is correct,
+  // The headline separates all three readings, so a regression names itself. 1713 is correct,
   // 1558 keeps the quotes and the backslashes, 1549 strips one off a value that is not a
   // scalar. The three are asserted as DISTINCT rather than merely unequal to the right one,
   // because two mistakes that happened to agree would hide behind a single `!==`.
   assert.equal(fixtureAudit().catalogueBytes, README_CATALOGUE_BYTES);
-  assert.equal(README_CATALOGUE_BYTES, 1551);
+  assert.equal(README_CATALOGUE_BYTES, 1713);
   assert.equal(new Set([README_CATALOGUE_BYTES, LITERAL_QUOTE_BYTES, EAGER_STRIP_BYTES]).size, 3);
   const extra = Object.entries({
     'trigger-kit:quoted-scalar': 'kit-market/trigger-kit/1.0.0/skills/quoted-scalar',
@@ -384,10 +407,10 @@ test('a scalar quoted whole and folded over lines is unwrapped after the fold', 
 // ------------------------------------------------------------------ catalogue-over-budget
 
 test('the budget finding states the overage and only fires when a budget is given', () => {
-  // 1551 against 1024 is 527 over; no budget at all is not a budget of zero.
+  // 1713 against 1024 is 689 over; no budget at all is not a budget of zero.
   const over = kinds(fixtureAudit(), skillaudit.KIND_OVER_BUDGET);
   assert.equal(over.length, 1);
-  assert.equal(over[0].detail, '1551 > 1024, over by 527');
+  assert.equal(over[0].detail, '1713 > 1024, over by 689');
   assert.equal(over[0].severity, 'high');
   assert.deepEqual(over[0].skills, []);
   assert.deepEqual(kinds(fixtureAudit({ budget: null }), skillaudit.KIND_OVER_BUDGET), []);
@@ -480,24 +503,30 @@ test('a name that matches its directory is not a finding', () => {
 
 // --------------------------------------------------------------------------- omissions
 
-test('the four omission subjects carry the counts, bytes and paths the README states', () => {
+test('the five omission subjects carry the counts, bytes and paths the README states', () => {
   // One record per subject, in a fixed order, each naming the file behind it. `size` is what
-  // the omission COST the catalogue: 112 bytes that enabling `off-kit` would add, 44 bytes of
-  // the stale duplicate. It is `0` for the two files whose description could not be read at
-  // all — an unknowable cost, stated as zero rather than guessed.
+  // the omission COST the catalogue: 112 bytes that enabling `off-kit` would add, 44 + 87 for
+  // the two displaced copies, 137 for the skill `1.1.0` dropped. It is `0` for the two files
+  // whose description could not be read at all — an unknowable cost, stated rather than guessed.
   const audit = fixtureAudit();
   assert.deepEqual(
     audit.omissions.map((o) => [o.subject, o.count, o.size]),
     [
       [skillaudit.OMIT_NOT_ENABLED, 1, 112],
-      [skillaudit.OMIT_DUPLICATE, 1, 44],
+      [skillaudit.OMIT_DUPLICATE, 2, 131],
+      [skillaudit.OMIT_STALE_VERSION, 1, 137],
       [skillaudit.OMIT_UNREADABLE, 1, 0],
       [skillaudit.OMIT_UNPARSED, 1, 0],
     ],
   );
   const by = subjects(audit);
   assert.equal(by[skillaudit.OMIT_NOT_ENABLED].what, 'kit-market/off-kit/1.0.0/skills/never-loaded/SKILL.md');
-  assert.equal(by[skillaudit.OMIT_DUPLICATE].what, 'kit-market/dup-kit/1.0.0/skills/echo-check/SKILL.md');
+  assert.equal(
+    by[skillaudit.OMIT_DUPLICATE].what,
+    'kit-market/dup-kit/1.0.0/skills/echo-check/SKILL.md, ' +
+      'kit-market/hash-kit/0120fb83da5d/skills/hashed-check/SKILL.md',
+  );
+  assert.equal(by[skillaudit.OMIT_STALE_VERSION].what, 'kit-market/dup-kit/1.0.0/skills/retired-check/SKILL.md');
   assert.equal(by[skillaudit.OMIT_UNREADABLE].what, 'kit-market/frontmatter-kit/2.3.1/skills/bad-bytes/SKILL.md');
   assert.equal(by[skillaudit.OMIT_UNPARSED].what, 'kit-market/frontmatter-kit/2.3.1/skills/broken-open/SKILL.md');
 });
@@ -519,7 +548,7 @@ test('an invalid utf8 byte is a record and not a crash and not a replacement cha
 });
 
 test('an omission subject with no members is not reported at all', () => {
-  // A clean tree has an EMPTY omission list, not four records of zero.
+  // A clean tree has an EMPTY omission list, not five records of zero.
   const dir = room();
   skill(dir, 'm/p/1.0.0/skills/fine', frontmatter('fine', 'a description'));
   assert.deepEqual(skillaudit.audit(dir).omissions, []);
@@ -529,19 +558,23 @@ test('an omission subject with no members is not reported at all', () => {
 
 test('enabled omitted counts everything and enabled empty counts no plugin skill', () => {
   // Omitted and empty are different states. Omitted: every skill under the root counts,
-  // disabled plugin and all — sixteen. Empty: no plugin is switched on, so only the skill
-  // outside a plugin survives.
+  // disabled plugin and all — seventeen. Empty: no plugin is switched on, so only the skill
+  // outside a plugin survives. The version rule runs in BOTH cases: `off-kit` has one version
+  // directory, so switching it on adds exactly one skill and not two.
   const everything = skillaudit.audit(CACHE, { usage: usageMap() });
   assert.equal(everything.skills, README_SKILLS + 1);
   assert.ok(!(skillaudit.OMIT_NOT_ENABLED in subjects(everything)));
   const noneOn = skillaudit.audit(CACHE, { enabled: [], usage: usageMap() });
   assert.equal(noneOn.skills, 1);
-  // Sixteen: the nineteen files, less `solo-check` (still counted), less the two whose own
+  // Nineteen: the twenty-two files, less `solo-check` (still counted), less the two whose own
   // file failed first — an unreadable byte and an unparsable block outrank a plugin that is
-  // merely switched off, because neither can say what enabling it would cost.
+  // merely switched off, because neither can say what enabling it would cost. A plugin that is
+  // off never reaches the version rule either, so no `stale-version` and no duplicate here.
   assert.equal(subjects(noneOn)[skillaudit.OMIT_NOT_ENABLED].count, README_FILES - 3);
+  assert.ok(!(skillaudit.OMIT_STALE_VERSION in subjects(noneOn)));
+  assert.ok(!(skillaudit.OMIT_DUPLICATE in subjects(noneOn)));
   assert.equal(noneOn.skills + noneOn.omissions.reduce((n, o) => n + o.count, 0), README_FILES);
-  // The one record here holds sixteen paths, which is the only place in this file that scan
+  // The one record here holds nineteen paths, which is the only place in this file that scan
   // ORDER is visible. It is path order, sorted, because two machines hand back directory
   // entries in two different orders and the document is byte-compared.
   const listed = subjects(noneOn)[skillaudit.OMIT_NOT_ENABLED].what.split(', ');
@@ -573,26 +606,104 @@ test('a path that is not the plugin shape is a skill outside a plugin', () => {
   );
 });
 
-// --------------------------------------------------------------------------- the dedupe
+// ----------------------------------------- the version resolution and the dedupe
 
-test('the stale version loses by byte order and its bytes are named in the omission', () => {
-  // `1.1.0` sorts last and wins; the 44-byte `1.0.0` copy is the omission. The two
-  // descriptions differ in length on purpose, so WHICH copy was counted is visible in
-  // `catalogue_bytes`: 1551 with the right one and 1483 with the wrong one. Both numbers are
-  // asserted, because only the pair distinguishes "counted the winner" from "counted one".
+test('the version directory that did not win is omitted whole', () => {
+  // `1.1.0` is resolved for `dup-kit`, so BOTH files under `1.0.0` are omitted. The two
+  // `echo-check` descriptions differ in length on purpose, so WHICH directory was resolved is
+  // visible in `catalogueBytes` and not only in the omission record.
   const audit = fixtureAudit();
   assert.equal(audit.catalogueBytes, README_CATALOGUE_BYTES);
-  assert.equal(README_CATALOGUE_BYTES - README_BYTES['dup-kit:echo-check'] + 44, 1483);
-  assert.equal(subjects(audit)[skillaudit.OMIT_DUPLICATE].size, 44);
   assert.equal(README_BYTES['dup-kit:echo-check'], 112);
+  const by = subjects(audit);
+  assert.ok(by[skillaudit.OMIT_DUPLICATE].what.includes('kit-market/dup-kit/1.0.0/skills/echo-check/SKILL.md'));
+  assert.ok(by[skillaudit.OMIT_STALE_VERSION].what.startsWith('kit-market/dup-kit/1.0.0/'));
+});
+
+test('a skill the resolved version dropped is a stale-version and not resurrected', () => {
+  // THE DEFECT THIS RULE FIXES, over the committed tree.
+  // `dup-kit/1.0.0/skills/retired-check/` exists and `1.1.0` does not have it. Deduping by the
+  // (marketplace, plugin, name) triple has nothing to displace it with, so it counts a skill
+  // the newer release DELETED. Measured 2026-09-05 on a real plugin cache, that is nine of
+  // `kkskills-essentials`'s `0.4.0` skills — 31 skills / 9,280 bytes against a host serving
+  // 22 / 3,396. Four independent things say so over this tree, and all four are asserted,
+  // because a headline alone cannot distinguish "the rule works" from "two errors cancelled".
+  assert.ok(existsSync(join(CACHE, 'kit-market/dup-kit/1.0.0/skills/retired-check/SKILL.md')));
+  assert.ok(!existsSync(join(CACHE, 'kit-market/dup-kit/1.1.0/skills/retired-check')));
+  const audit = fixtureAudit();
+  assert.deepEqual([audit.skills, audit.catalogueBytes], [README_SKILLS, README_CATALOGUE_BYTES]);
+  assert.notDeepEqual([audit.skills, audit.catalogueBytes], MERGED_VERSIONS);
+  const stale = subjects(audit)[skillaudit.OMIT_STALE_VERSION];
+  assert.deepEqual([stale.count, stale.size], [1, 137]);
+  assert.equal(stale.what, 'kit-market/dup-kit/1.0.0/skills/retired-check/SKILL.md');
+  assert.ok(!audit.findings.some((f) => f.skills.includes('dup-kit:retired-check')));
+  const race = kinds(audit, skillaudit.KIND_SHARED_PHRASE).filter((f) => f.detail === 'race condition');
+  assert.equal(race.length, 1);
+  assert.ok(!race[0].skills.includes('dup-kit:retired-check'));
+});
+
+test('the two version subjects split on whether the resolved version has the name', () => {
+  // One rule, two subjects, and folding them together is what hid the defect. `kept` is
+  // dropped from `2.0.0`, `shared` is not. Both live under a version directory that did not
+  // win; only one has a counted skill standing in for it. Reporting both as `duplicate-skill`
+  // would inflate the duplicate count by every skill a release removed and make the removal
+  // invisible, which is exactly how the defect survived.
+  const dir = room();
+  skill(dir, 'm/p/1.0.0/skills/shared', frontmatter('shared', 'old shared'));
+  skill(dir, 'm/p/1.0.0/skills/kept', frontmatter('kept', 'dropped in 2.0.0'));
+  skill(dir, 'm/p/2.0.0/skills/shared', frontmatter('shared', 'new shared'));
+  const audit = skillaudit.audit(dir);
+  assert.equal(audit.skills, 1);
+  assert.equal(audit.catalogueBytes, 'new shared'.length);
+  const by = subjects(audit);
+  assert.deepEqual(
+    [by[skillaudit.OMIT_DUPLICATE].count, by[skillaudit.OMIT_DUPLICATE].size],
+    [1, 'old shared'.length],
+  );
+  assert.equal(by[skillaudit.OMIT_DUPLICATE].what, 'm/p/1.0.0/skills/shared/SKILL.md');
+  assert.equal(by[skillaudit.OMIT_STALE_VERSION].what, 'm/p/1.0.0/skills/kept/SKILL.md');
+  assert.equal(by[skillaudit.OMIT_STALE_VERSION].size, 'dropped in 2.0.0'.length);
+});
+
+test('every version directory but one is skipped however many there are', () => {
+  // The resolution is per PLUGIN, so three stale directories cost three omissions.
+  const dir = room();
+  for (const version of ['1.0.0', '2.0.0', '3.0.0', '4.0.0']) {
+    skill(dir, `m/p/${version}/skills/s`, frontmatter('s', version));
+    skill(dir, `m/p/${version}/skills/only-${version}`, frontmatter('x', version));
+  }
+  const audit = skillaudit.audit(dir);
+  assert.equal(audit.skills, 2);
+  assert.equal(audit.catalogueBytes, 2 * '4.0.0'.length);
+  const by = subjects(audit);
+  assert.equal(by[skillaudit.OMIT_DUPLICATE].count, 3);
+  assert.equal(by[skillaudit.OMIT_STALE_VERSION].count, 3);
+  assert.equal(audit.skills + audit.omissions.reduce((n, o) => n + o.count, 0), 8);
+});
+
+test('a version directory name that is not a version takes the same byte order', () => {
+  // `hash-kit` spells its two directories `0120fb83da5d` and `unknown`. That shape is real:
+  // `frontend-design` on this machine has nine content-hash directories plus the literal
+  // `unknown`, and semver has nothing to compare there. Byte order is total over all of them —
+  // `u` after `0` — so `unknown` is resolved. The answer is deterministic and it is ARBITRARY,
+  // which is the honest state and the reason the fixture pins the determinism.
+  assert.equal(README_BYTES['hash-kit:hashed-check'], 162);
+  const audit = fixtureAudit();
+  assert.ok(
+    subjects(audit)[skillaudit.OMIT_DUPLICATE].what.includes(
+      'kit-market/hash-kit/0120fb83da5d/skills/hashed-check/SKILL.md',
+    ),
+  );
+  assert.equal(audit.catalogueBytes - 162 + 87, 1638);
 });
 
 test('the tie-break is byte order and the semver case it gets wrong is stated', () => {
   // A KNOWN LIMITATION, pinned here and deliberately not in the shared fixture. Byte order
-  // counts `9.0.0` over `10.0.0`. A semver comparison would be right and would be a second
-  // thing the two runtimes must agree about character for character; the byte order is free,
-  // and the omission record always names the loser. Pinning it HERE says out loud what this
-  // half does, and it is the same sentence `test_skillaudit.py` pins for the other half.
+  // resolves `9.0.0` over `10.0.0`. A semver comparison would be right, would be a second thing
+  // the two runtimes must agree about character for character, and would still leave the
+  // content-hash case above undecided; the byte order is free, and the omission record always
+  // names the loser. Pinning it HERE says out loud what this half does, and it is the same
+  // sentence `test_skillaudit.py` pins for the other half.
   const dir = room();
   skill(dir, 'm/p/9.0.0/skills/s', frontmatter('s', 'nine'));
   skill(dir, 'm/p/10.0.0/skills/s', frontmatter('s', 'ten, which is longer'));
@@ -600,6 +711,19 @@ test('the tie-break is byte order and the semver case it gets wrong is stated', 
   assert.equal(audit.skills, 1);
   assert.equal(audit.catalogueBytes, 'nine'.length);
   assert.ok(subjects(audit)[skillaudit.OMIT_DUPLICATE].what.startsWith('m/p/10.0.0/'));
+});
+
+test('the version is resolved per plugin and never across them', () => {
+  // A newer version of one plugin cannot displace another plugin's skill. `one` is at `2.0.0`
+  // and `two` at `1.0.0`; both have a skill called `s`. Resolving one version per MARKETPLACE,
+  // or globally, would drop `two:s` on a version number that has nothing to do with it.
+  const dir = room();
+  skill(dir, 'm/one/2.0.0/skills/s', frontmatter('s', 'first'));
+  skill(dir, 'm/two/1.0.0/skills/s', frontmatter('s', 'second'));
+  skill(dir, 'other/one/1.0.0/skills/s', frontmatter('s', 'third'));
+  const audit = skillaudit.audit(dir);
+  assert.equal(audit.skills, 3);
+  assert.deepEqual(audit.omissions, []);
 });
 
 test('the dedupe key is the marketplace plugin name triple', () => {
@@ -611,6 +735,23 @@ test('the dedupe key is the marketplace plugin name triple', () => {
   const audit = skillaudit.audit(dir);
   assert.equal(audit.skills, 3);
   assert.deepEqual(audit.omissions, []);
+});
+
+test('a skill outside a plugin is never touched by the version rule', () => {
+  // No plugin, no version — so every bare skill is in its group's resolved version. They still
+  // dedupe by NAME, which is the one case the within-version dedupe is reachable at all: two
+  // files claiming the same bare name are a `duplicate-skill`, never a `stale-version`,
+  // because there is no version directory that lost.
+  const dir = room();
+  skill(dir, 'a/skills/solo', frontmatter('solo', 'first on disk'));
+  skill(dir, 'b/skills/solo', frontmatter('solo', 'second on disk, and longer'));
+  skill(dir, 'c/skills/other', frontmatter('other', 'unrelated'));
+  const audit = skillaudit.audit(dir);
+  assert.equal(audit.skills, 2);
+  assert.equal(audit.catalogueBytes, 'second on disk, and longer'.length + 'unrelated'.length);
+  const by = subjects(audit);
+  assert.ok(!(skillaudit.OMIT_STALE_VERSION in by));
+  assert.equal(by[skillaudit.OMIT_DUPLICATE].what, 'a/skills/solo/SKILL.md');
 });
 
 // ------------------------------------------------------------------- the folded scalar

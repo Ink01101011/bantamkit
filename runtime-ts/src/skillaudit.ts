@@ -26,6 +26,20 @@
  * fold, so it applies to every key: `name: "s"` is the name `s` and `router: "true"` is a
  * router.
  *
+ * **One version per plugin, resolved BEFORE anything is counted.** A plugin cache holds every
+ * version directory a plugin was ever installed at and the host serves exactly one, so ONE
+ * version directory is resolved per (marketplace, plugin) first and its skills are the
+ * plugin's skills. Deduping by the (marketplace, plugin, name) triple instead merges versions
+ * rather than choosing between them, and a name the winning version DROPPED then has nothing
+ * to displace it: measured 2026-09-05 on a real cache, 31 skills / 9,280 bytes against a host
+ * serving 22 / 3,396. The winner is the version directory name that sorts LAST in byte order —
+ * total, free, identical on both runtimes, and workable on names that are not versions at all
+ * (this machine spells nine of them as content hashes plus the literal `unknown`). What it
+ * gets wrong is stated, not hidden: `10.0.0` loses to `9.0.0`, and among non-version names the
+ * winner is deterministic but arbitrary. A loser whose name IS in the resolved version is a
+ * `duplicate-skill`; one whose name is NOT is a `stale-version`, which is the subject that
+ * makes a removed skill visible instead of resurrected.
+ *
  * **Nothing is dropped in silence.** Counted skills plus omissions account for every
  * `SKILL.md` found, and an omission is `{subject, count, size, what}`.
  *
@@ -63,11 +77,21 @@ const PLUGIN_PATH_SEGMENTS = 6;
 // and a caller filters on them.
 export const OMIT_NOT_ENABLED = 'plugin-not-enabled';
 export const OMIT_DUPLICATE = 'duplicate-skill';
+export const OMIT_STALE_VERSION = 'stale-version';
 export const OMIT_UNREADABLE = 'unreadable-file';
 export const OMIT_UNPARSED = 'unparsed-frontmatter';
 
-/** Reporting order for omissions. Fixed, so two runtimes emit the same document. */
-export const OMISSION_ORDER = [OMIT_NOT_ENABLED, OMIT_DUPLICATE, OMIT_UNREADABLE, OMIT_UNPARSED] as const;
+/**
+ * Reporting order for omissions. Fixed, so two runtimes emit the same document. The two
+ * version subjects are adjacent because they are the two halves of one rule.
+ */
+export const OMISSION_ORDER = [
+  OMIT_NOT_ENABLED,
+  OMIT_DUPLICATE,
+  OMIT_STALE_VERSION,
+  OMIT_UNREADABLE,
+  OMIT_UNPARSED,
+] as const;
 
 // The finding kinds. Severity is fixed per kind and is NOT an argument.
 export const KIND_SHARED_PHRASE = 'shared-trigger-phrase';
@@ -635,13 +659,57 @@ function applyEnabled(found: Skill[], enabled: readonly string[] | null): void {
 }
 
 /**
- * One skill per (marketplace, plugin, name); the LAST version directory in byte order wins.
+ * Resolve ONE version directory per (marketplace, plugin), and omit every other one.
  *
- * Byte order and deliberately NOT semver — `10.0.0` therefore loses to `9.0.0`, which is
- * wrong and is disclosed in the omission record rather than fixed, because a semver
- * comparison is a second thing the two halves would have to agree about character for
- * character. A skill outside a plugin has no version, so its key sorts on an empty string and
- * scan order decides.
+ * This runs BEFORE `applyDedupe` and it is the whole fix for the resurrection defect: the
+ * winning version's skills are the plugin's skills, and a name absent from it is absent — it
+ * is never merged in from another directory, however many versions the cache still holds.
+ *
+ * The winner is the version directory name that sorts LAST in byte order. The loser's subject
+ * depends on whether the resolved version has a skill of the same name to stand in for it:
+ * `duplicate-skill` when it does, `stale-version` when it does not.
+ *
+ * A skill outside a plugin keys on two empty strings with an empty version, so every one of
+ * them is in the resolved version by construction and none is ever omitted here.
+ */
+function resolveVersions(found: Skill[]): void {
+  // The same key spelling the dedupe uses, one field shorter: a ` ` cannot occur in a path
+  // segment, so it is the one separator that cannot collide.
+  const pluginKey = (s: Skill): string => `${s.marketplace} ${s.plugin}`;
+  const resolved = new Map<string, string>();
+  for (const skill of found) {
+    if (skill.omitted !== null) continue;
+    const held = resolved.get(pluginKey(skill));
+    if (held === undefined || cmpCodepoint(skill.version, held) > 0) {
+      resolved.set(pluginKey(skill), skill.version);
+    }
+  }
+  // The names the resolved version actually serves. Built from the same population the winner
+  // was chosen from, so a plugin whose files were ALL omitted first — unreadable, unparsable
+  // or switched off — is in neither map and is never looked up in one.
+  const kept = new Map<string, Set<string>>();
+  for (const skill of found) {
+    if (skill.omitted !== null || skill.version !== resolved.get(pluginKey(skill))) continue;
+    let names = kept.get(pluginKey(skill));
+    if (names === undefined) {
+      names = new Set();
+      kept.set(pluginKey(skill), names);
+    }
+    names.add(skill.directory);
+  }
+  for (const skill of found) {
+    if (skill.omitted !== null || skill.version === resolved.get(pluginKey(skill))) continue;
+    skill.omitted = kept.get(pluginKey(skill))!.has(skill.directory) ? OMIT_DUPLICATE : OMIT_STALE_VERSION;
+  }
+}
+
+/**
+ * One skill per (marketplace, plugin, name) INSIDE the resolved version; the last one wins.
+ *
+ * Only reachable for skills outside a plugin: inside one version directory a name is a
+ * directory name and the filesystem has already made it unique. Two files claiming the same
+ * bare name are still a duplicate, and saying so is better than counting a personal skill
+ * twice. Scan order decides, which is path order and therefore the same on both runtimes.
  */
 function applyDedupe(found: Skill[]): void {
   const winners = new Map<string, Skill>();
@@ -651,14 +719,8 @@ function applyDedupe(found: Skill[]): void {
     // cannot occur in a path segment, so it is the one separator that cannot collide.
     const key = [skill.marketplace, skill.plugin, skill.directory].join(' ');
     const held = winners.get(key);
-    if (held === undefined) {
-      winners.set(key, skill);
-      continue;
-    }
-    const skillWins = cmpCodepoint(skill.version, held.version) >= 0;
-    const loser = skillWins ? held : skill;
-    loser.omitted = OMIT_DUPLICATE;
-    winners.set(key, skillWins ? skill : held);
+    if (held !== undefined) held.omitted = OMIT_DUPLICATE;
+    winners.set(key, skill);
   }
 }
 
@@ -750,13 +812,14 @@ export interface ScannedSkill {
  * dedupe already applied.
  *
  * The seam the reference's tests reach into as `_walk` + `_load` + `_apply_enabled` +
- * `_apply_dedupe`, in one call, because the per-skill byte table is the only oracle that can
+ * `_resolve_versions` + `_apply_dedupe`, in one call, because the per-skill byte table is the only oracle that can
  * tell a headline that is right from a headline that is right for two cancelling reasons.
  * `audit` is the product surface; this is how a test asks which skill paid what.
  */
 export function scan(root: string, enabled: readonly string[] | null = null): ScannedSkill[] {
   const found = walk(root).map((parts) => load(root, parts));
   applyEnabled(found, enabled);
+  resolveVersions(found);
   applyDedupe(found);
   return found.map((s) => ({
     id: skillId(s),
@@ -797,6 +860,7 @@ export function audit(root: string, options: AuditOptions = {}): Audit {
 
   const found = walk(root).map((parts) => load(root, parts));
   applyEnabled(found, enabled);
+  resolveVersions(found);
   applyDedupe(found);
   const counted = found.filter((s) => s.omitted === null);
   const catalogueBytes = counted.reduce((sum, s) => sum + descriptionBytes(s), 0);

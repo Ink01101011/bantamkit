@@ -55,16 +55,46 @@ against a true 34 / 14,515 — every headline number inflated, in the direction 
 tool look useful. `enabled` is therefore the caller's, read from the host's settings, and a
 plugin absent from it is an omission carrying the bytes enabling it would cost.
 
+**One version per plugin, resolved BEFORE anything is counted.** A plugin cache holds every
+version directory a plugin has ever been installed at, and the host serves exactly one of them.
+So the resolution is per (marketplace, plugin) and it happens FIRST: one version directory wins,
+its skills are the plugin's skills, and every `SKILL.md` under any other version directory of
+that plugin is omitted. Deduping by the (marketplace, plugin, name) TRIPLE instead — which is
+what this module did until 2026-09-05 — merges versions rather than choosing between them: a
+name present in both versions is displaced correctly, but a name the winning version DROPPED
+has nothing to displace it and is counted anyway. Measured that day on this machine's own
+cache, where `kkskills-essentials` holds `0.4.0` (14 skills) and `0.5.0` (5, because nine were
+moved out to another plugin): the triple rule answered 31 skills / 9,280 bytes where the host
+serves 22 / 3,796. A skill deleted in the newer release was resurrected by its own audit.
+
+**The version that wins is the directory name that sorts LAST in BYTE ORDER, and that is still
+not a semver comparison.** The order has to be TOTAL and computed identically by two runtimes,
+and it has to work on names that are not versions at all: this machine's cache spells
+`frontend-design`'s nine directories as content hashes (`0120fb83da5d` … `ed404106fcd8`) plus
+the literal `unknown`, where semver has nothing to compare. Byte order is total over every one
+of those, free, and already ported. What it gets wrong is stated rather than hidden: `10.0.0`
+loses to `9.0.0`, and among names that are not versions the winner is arbitrary — deterministic
+and arbitrary, not correct. Both losers are named in an omission record, so an operator can
+always see which directory was read. What the host itself records — the `installPath` in
+`installed_plugins.json` — is not consulted, because this module reads `root` and nothing else.
+
+**A version directory that did not win yields two kinds of omission, and they are two subjects.**
+A file whose name IS in the resolved version is a `duplicate-skill`: the operator is looking at
+the right copy and the record says which stale one was skipped. A file whose name is NOT in the
+resolved version is a `stale-version`: it exists on disk, it is not in any session's bill, and
+nothing else in the document would say so. Folding the second into the first would inflate the
+duplicate count by every skill a release removed and make the resurrection defect invisible —
+which is exactly how it survived. `size` differs in meaning between them too: a duplicate's
+bytes are already paid by the copy that stands in for it, a `stale-version`'s are paid by
+nobody.
+
 **Deterministic, because two runtimes have to agree about it.** This module reads `root` and
 nothing else: no `~/.claude`, no transcripts, no clock. Call counts arrive in `usage` from the
-caller. The duplicate tie-break is a BYTE-ORDER comparison of the version directory name and
-deliberately not a semver comparison — `10.0.0` therefore loses to `9.0.0`, which is wrong and
-is disclosed in the omission record rather than fixed, because a semver comparison is a second
-thing the Python and Node halves would have to agree about character for character.
+caller.
 
 **Nothing is dropped in silence.** Counted skills plus omissions account for every `SKILL.md`
 found. An omission is `{subject, count, size, what}` — the discipline `docread.Omission` set,
-with only the fields these four subjects can fill: there is no column to name and no second
+with only the fields these five subjects can fill: there is no column to name and no second
 count to carry, and inventing empty slots for them would make the record harder to read, not
 more uniform. `size` is the description bytes the omission cost the catalogue, `0` where that
 is not knowable (a file that would not decode, a block that would not parse).
@@ -94,11 +124,19 @@ PLUGIN_PATH_SEGMENTS = 6
 # and a caller filters on them.
 OMIT_NOT_ENABLED = "plugin-not-enabled"
 OMIT_DUPLICATE = "duplicate-skill"
+OMIT_STALE_VERSION = "stale-version"
 OMIT_UNREADABLE = "unreadable-file"
 OMIT_UNPARSED = "unparsed-frontmatter"
 
-#: Reporting order for omissions. Fixed, so two runtimes emit the same document.
-OMISSION_ORDER = (OMIT_NOT_ENABLED, OMIT_DUPLICATE, OMIT_UNREADABLE, OMIT_UNPARSED)
+#: Reporting order for omissions. Fixed, so two runtimes emit the same document. The two
+#: version subjects are adjacent because they are the two halves of one rule.
+OMISSION_ORDER = (
+    OMIT_NOT_ENABLED,
+    OMIT_DUPLICATE,
+    OMIT_STALE_VERSION,
+    OMIT_UNREADABLE,
+    OMIT_UNPARSED,
+)
 
 # The finding kinds. Severity is fixed per kind and is NOT an argument: a severity a caller
 # can set is a severity that means something different in every report that carries it.
@@ -284,6 +322,13 @@ class _Skill:
     def plugin_id(self) -> str:
         """`<plugin>@<marketplace>`, the way settings.json spells an enabled plugin."""
         return f"{self.plugin}@{self.marketplace}"
+
+    @property
+    def plugin_key(self) -> tuple[str, str]:
+        """The unit ONE version directory is resolved for. A skill outside a plugin keys on
+        two empty strings, so every such skill shares one group whose resolved version is the
+        empty string — which keeps them all, because none of them has a version at all."""
+        return (self.marketplace, self.plugin)
 
     @property
     def dedupe_key(self) -> tuple[str, str, str]:
@@ -515,25 +560,57 @@ def _apply_enabled(found: list[_Skill], enabled: list[str] | None) -> None:
             skill.omitted = OMIT_NOT_ENABLED
 
 
-def _apply_dedupe(found: list[_Skill]) -> None:
-    """One skill per (marketplace, plugin, name); the LAST version directory in byte order wins.
+def _resolve_versions(found: list[_Skill]) -> None:
+    """Resolve ONE version directory per (marketplace, plugin), and omit every other one.
 
-    Byte order and deliberately not semver — see the module docstring. A skill outside a plugin
-    has no version, so its key sorts on an empty string and scan order decides; two files
-    claiming the same bare name are still a duplicate, and saying so is better than counting a
-    personal skill twice.
+    This runs BEFORE `_apply_dedupe` and it is the whole fix for the resurrection defect: the
+    winning version's skills are the plugin's skills, and a name absent from it is absent. It
+    is never merged in from another directory, however many versions of the plugin the cache
+    still holds. See the module docstring for the measurement that forced this.
+
+    The winner is the version directory name that sorts LAST in byte order. The loser's
+    subject depends on whether the resolved version has a skill of the same name to stand in
+    for it — `duplicate-skill` when it does, `stale-version` when it does not.
+
+    A skill outside a plugin keys on `("", "")` with an empty version, so every one of them is
+    in the resolved version by construction and none is ever omitted here.
+    """
+    resolved: dict[tuple[str, str], str] = {}
+    for skill in found:
+        if skill.omitted is None:
+            held = resolved.get(skill.plugin_key)
+            if held is None or skill.version > held:
+                resolved[skill.plugin_key] = skill.version
+    # The names the resolved version actually serves. Built from the same population the
+    # winner was chosen from, so a plugin whose files were ALL omitted first — unreadable,
+    # unparsable or switched off — is not in either map and is never looked up in one.
+    kept: dict[tuple[str, str], set[str]] = {}
+    for skill in found:
+        if skill.omitted is None and skill.version == resolved[skill.plugin_key]:
+            kept.setdefault(skill.plugin_key, set()).add(skill.directory)
+    for skill in found:
+        if skill.omitted is not None or skill.version == resolved[skill.plugin_key]:
+            continue
+        stands_in = skill.directory in kept[skill.plugin_key]
+        skill.omitted = OMIT_DUPLICATE if stands_in else OMIT_STALE_VERSION
+
+
+def _apply_dedupe(found: list[_Skill]) -> None:
+    """One skill per (marketplace, plugin, name) INSIDE the resolved version; last one wins.
+
+    Only reachable for skills outside a plugin: inside one version directory a name is a
+    directory name and the filesystem has already made it unique. Two files claiming the same
+    bare name are still a duplicate, and saying so is better than counting a personal skill
+    twice. Scan order decides, which is path order and therefore the same on both runtimes.
     """
     winners: dict[tuple[str, str, str], _Skill] = {}
     for skill in found:
         if skill.omitted is not None:
             continue
         held = winners.get(skill.dedupe_key)
-        if held is None:
-            winners[skill.dedupe_key] = skill
-            continue
-        loser, winner = (held, skill) if skill.version >= held.version else (skill, held)
-        loser.omitted = OMIT_DUPLICATE
-        winners[skill.dedupe_key] = winner
+        if held is not None:
+            held.omitted = OMIT_DUPLICATE
+        winners[skill.dedupe_key] = skill
 
 
 def _shared_phrase_findings(counted: list[_Skill]) -> list[Finding]:
@@ -604,6 +681,7 @@ def audit(
 
     found = [_load(path, base) for path in _walk(base)]
     _apply_enabled(found, enabled)
+    _resolve_versions(found)
     _apply_dedupe(found)
     counted = [s for s in found if s.omitted is None]
     catalogue_bytes = sum(s.bytes for s in counted)

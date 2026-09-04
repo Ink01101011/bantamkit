@@ -12,5 +12,6 @@
   "trigger-kit:quoted-single": 1,
   "frontmatter-kit:misnamed": 1,
   "dup-kit:echo-check": 7,
+  "hash-kit:hashed-check": 3,
   "solo-check": 0
 }

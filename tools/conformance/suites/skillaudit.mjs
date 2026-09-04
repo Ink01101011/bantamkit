@@ -28,7 +28,11 @@
  *      router flag, omission token, malformed token, phrases and the decoded description. The
  *      headline can be right for the wrong reasons; this is the table that says which skill
  *      paid what, and it is where a scan-ORDER difference between `os.walk` and `readdirSync`
- *      would surface even when the sums happen to agree.
+ *      would surface even when the sums happen to agree. It is also the only place the two
+ *      halves are compared on WHICH version directory each resolved: `duplicate-skill` and
+ *      `stale-version` are per-file tokens here, and a runtime that resolved the other
+ *      directory would swap them on six of the twenty-two rows while the headline moved by a
+ *      number a reader would have to look up.
  *
  * Every string travels as base64, in both directions. The descriptions in the fixture carry
  * quotes, backslashes and escaped quotes, which is precisely the material a JSON round trip
@@ -144,7 +148,7 @@ export async function run(ctx) {
     ['usage/omitted', { root: CACHE, enabled, usage: null, check: null, budget: null }],
     ['usage/empty', { root: CACHE, enabled, usage: {}, check: null, budget: null }],
     ['budget/none', { root: CACHE, enabled, usage, check: null, budget: null }],
-    ['budget/exact', { root: CACHE, enabled, usage, check: null, budget: 1551 }],
+    ['budget/exact', { root: CACHE, enabled, usage, check: null, budget: 1713 }],
     ['budget/zero', { root: CACHE, enabled, usage, check: null, budget: 0 }],
     // The refusals. Each is an ARGUMENT failure and each has its own sentence; a suite that
     // stopped at the first would compare none of the others.
@@ -231,7 +235,8 @@ export async function run(ctx) {
   }
 
   notes.push(
-    `fixture: ${CACHE} — 19 SKILL.md, 15 counted, 1551 catalogue bytes, 4 omissions`,
+    `fixture: ${CACHE} — 22 SKILL.md, 16 counted, 1713 catalogue bytes, ` +
+      `5 omission records over 6 files`,
     `${cases.length} cases: ${configs.length} documents, ${UNWRAP_VALUES.length} unwrap values, ` +
       `${phraseTexts.length} phrase texts, 3 per-file tables`,
   );

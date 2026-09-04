@@ -50,16 +50,16 @@
     {
       "label": "M07-tie-break-inverted",
       "path": "runtime-py/src/bantamkit/skillaudit.py",
-      "anchor": "loser, winner = (held, skill) if skill.version >= held.version else (skill, held)",
-      "replacement": "loser, winner = (held, skill) if skill.version < held.version else (skill, held)",
-      "why": "the stale duplicate wins and catalogue_bytes reads 1483"
+      "anchor": "            if held is None or skill.version > held:",
+      "replacement": "            if held is None or skill.version < held:",
+      "why": "the FIRST version directory in byte order is resolved instead of the last, so `dup-kit` reads 1.0.0 and `hash-kit` reads 0120fb83da5d: 17 skills / 1707 bytes, and `retired-check` is dragged in as a counted skill on top of the swap"
     },
     {
       "label": "M08-no-dedupe-at-all",
       "path": "runtime-py/src/bantamkit/skillaudit.py",
       "anchor": "        held = winners.get(skill.dedupe_key)",
       "replacement": "        held = None",
-      "why": "both copies of echo-check are counted"
+      "why": "the within-version dedupe stops firing: two files claiming the same bare name outside a plugin are both counted, which is the only shape that reaches it"
     },
     {
       "label": "M09-dedupe-key-drops-the-plugin",
@@ -101,7 +101,7 @@
       "path": "runtime-py/src/bantamkit/skillaudit.py",
       "anchor": "    except (UnicodeDecodeError, OSError):",
       "replacement": "    except OSError:",
-      "why": "one undecodable file takes the other eighteen with it"
+      "why": "one undecodable file takes the other twenty-one with it"
     },
     {
       "label": "M15-a-bad-byte-is-repaired-in-silence",
@@ -261,8 +261,8 @@
     {
       "label": "M37-omission-subject-order",
       "path": "runtime-py/src/bantamkit/skillaudit.py",
-      "anchor": "OMISSION_ORDER = (OMIT_NOT_ENABLED, OMIT_DUPLICATE, OMIT_UNREADABLE, OMIT_UNPARSED)",
-      "replacement": "OMISSION_ORDER = (OMIT_UNPARSED, OMIT_UNREADABLE, OMIT_DUPLICATE, OMIT_NOT_ENABLED)",
+      "anchor": "OMISSION_ORDER = (\n    OMIT_NOT_ENABLED,\n    OMIT_DUPLICATE,\n    OMIT_STALE_VERSION,\n    OMIT_UNREADABLE,\n    OMIT_UNPARSED,\n)",
+      "replacement": "OMISSION_ORDER = (\n    OMIT_UNPARSED,\n    OMIT_UNREADABLE,\n    OMIT_STALE_VERSION,\n    OMIT_DUPLICATE,\n    OMIT_NOT_ENABLED,\n)",
       "why": "the order of the document's omission list moves"
     },
     {
@@ -411,6 +411,34 @@
       "anchor": "return {key: unwrap_scalar(value) for key, value in fields.items()}, None",
       "replacement": "return {\n                key: unwrap_scalar(value) if key == KEY_DESCRIPTION else value\n                for key, value in fields.items()\n            }, None",
       "why": "the rule stops being a fact about YAML scalars: `name: \"s\"` becomes a name-mismatch and `router: \"true\"` stops being a router"
+    },
+    {
+      "label": "M59-a-dropped-skill-survives-its-own-removal",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        skill.omitted = OMIT_DUPLICATE if stands_in else OMIT_STALE_VERSION",
+      "replacement": "        skill.omitted = OMIT_DUPLICATE if stands_in else None",
+      "why": "THE DEFECT SA6 FIXES: a version directory is no longer skipped WHOLE — a name the resolved version dropped has nothing to displace it, so it is counted. This is the pre-2026-09-05 cross-version merge in one line: `dup-kit:retired-check`, deleted in 1.1.0, is resurrected and the tree reads 17 skills / 1850 bytes, not 16 / 1713"
+    },
+    {
+      "label": "M60-the-two-version-subjects-are-folded-into-one",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        stands_in = skill.directory in kept[skill.plugin_key]\n        skill.omitted = OMIT_DUPLICATE if stands_in else OMIT_STALE_VERSION",
+      "replacement": "        skill.omitted = OMIT_DUPLICATE",
+      "why": "a skill a release REMOVED is reported as a duplicate of a skill that does not exist: the headline stays 16 / 1713 and only the omission record says so, which is exactly the reading under which the defect was invisible"
+    },
+    {
+      "label": "M61-one-version-resolved-per-marketplace",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "        return (self.marketplace, self.plugin)",
+      "replacement": "        return (self.marketplace,)",
+      "why": "the resolution unit stops being the plugin: `unknown` sorts last across the whole of `kit-market`, so every plugin in it but `hash-kit` is skipped and the tree reads 2 skills. One plugin's version number starts deciding another plugin's skills"
+    },
+    {
+      "label": "M62-stale-version-is-dropped-from-the-reporting-order",
+      "path": "runtime-py/src/bantamkit/skillaudit.py",
+      "anchor": "    OMIT_STALE_VERSION,\n    OMIT_UNREADABLE,",
+      "replacement": "    OMIT_UNREADABLE,",
+      "why": "A SECOND SILENT DROP, in the shape M16 pins for `unreadable-file`: the file is omitted and no record is emitted for it, so counted + omitted stops accounting for the twenty-two files on disk"
     }
   ]
 }

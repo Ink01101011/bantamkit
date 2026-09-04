@@ -85,13 +85,14 @@ def op_phrases(payload: dict) -> dict:
 def op_skills(payload: dict) -> dict:
     """The per-file records after `enabled` and the dedupe, in scan order.
 
-    The private trio the reference's own tests reach into, because the per-skill byte table is
+    The private quartet the reference's own tests reach into, because the per-skill byte table is
     the only oracle that separates a headline that is right from one that is right for two
     cancelling reasons.
     """
     base = Path(payload["root"])
     found = [skillaudit._load(path, base) for path in skillaudit._walk(base)]
     skillaudit._apply_enabled(found, payload.get("enabled"))
+    skillaudit._resolve_versions(found)
     skillaudit._apply_dedupe(found)
     return {
         "results": [
