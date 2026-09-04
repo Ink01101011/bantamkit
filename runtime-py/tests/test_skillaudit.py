@@ -1349,6 +1349,10 @@ def test_the_tool_serves_the_same_document_the_module_computes(tmp_path):
     assert not is_error, text
     assert text == fixture_audit().as_json()
     assert json.loads(text)["skills"] == README_SKILLS
+    # …and the non-ASCII finding detail reaches the MODEL as the character, not as an escape.
+    # Asserted on the literal rather than against `as_json()`, because a comparison against
+    # the module would agree with itself through an `ensure_ascii` change on both sides.
+    assert THAI_PHRASE in text
 
 
 def test_the_tool_defaults_to_every_finding_when_check_is_not_sent(tmp_path):

@@ -1242,6 +1242,10 @@ test('the tool serves the same document the module computes', async () => {
   assert.equal(isError, false, text);
   assert.equal(text, fixtureAudit().asJson());
   assert.equal(JSON.parse(text).skills, README_SKILLS);
+  // …and the non-ASCII finding detail reaches the MODEL as the character, not as an escape.
+  // Asserted on the literal rather than against `asJson()`, because a comparison against the
+  // module would agree with itself through an escaping change on both sides.
+  assert.ok(text.includes(THAI_PHRASE), text.slice(0, 200));
   await client.close();
 });
 
