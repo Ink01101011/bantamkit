@@ -120,7 +120,45 @@ PASS: 6132 cases, 1500 byte-identical, 3267 exact-string, 1365 structural, 123 r
 4874 once the `memory-compact` wire session landed — 33 cases — and 4878 after its review
 hardened four of them, all on 2026-08-27; 4880 at `ce46fc3`, then 5512 on 2026-08-28 when
 the `docread` suite landed — 575 cases, 8 ruled — and the `wire` suite grew from 232 to 289
-with the `bantamkit_read` sessions, 7 of them ruled; 5600 at c8a62aa with 2 failures — the `badcd.xlsx` constructor-name artefact in the docread suite's `errorOf`, fixed in F4 — and 5760 after F4 on 2026-08-28: `docread` 633 -> 774 (9 ruled, the utf-7 ruling added), `wire` 289 -> 308 with the `read-edges` session; 116 ruled-different, 0 failures; 5855 at 905965a (job43 G2) with 6 failures — bzip2.docx and lzma.docx pending their ruling — and 5954 after G3 on 2026-08-29: `docread` 869 -> 935 (12 ruled: bzip2, lzma and RFC 2231 added, the seven checked-in fixtures and `a\x00b` read), `wire` 308 -> 341 with the `read-round2` session (20 ruled); 122 ruled-different, 0 failures; and 6132 after round 3's H3 on 2026-08-29 — at 643e323 the `docread` suite did not START, a name-collision throw over the checked-in `corrupt-deflate.docx`, lifted so the checked-in bytes win — `docread` 935 -> 990 (13 ruled: the `<!ATTLIST>` ruling added with its both-read companions; six round-3 checked-in fixtures, three `charset-<label>.eml` parts and the `<xmp>` charref unruled), `wire` 341 -> 371 with the `read-round3` session (unruled, 20 ruled unchanged), and the new `charsets` suite, 93 cases (`node tools/conformance/run.mjs --all`: 6132 cases, 123 ruled-different, 0 failures).)
+with the `bantamkit_read` sessions, 7 of them ruled; 5600 at c8a62aa with 2 failures — the `badcd.xlsx` constructor-name artefact in the docread suite's `errorOf`, fixed in F4 — and 5760 after F4 on 2026-08-28: `docread` 633 -> 774 (9 ruled, the utf-7 ruling added), `wire` 289 -> 308 with the `read-edges` session; 116 ruled-different, 0 failures; 5855 at 905965a (job43 G2) with 6 failures — bzip2.docx and lzma.docx pending their ruling — and 5954 after G3 on 2026-08-29: `docread` 869 -> 935 (12 ruled: bzip2, lzma and RFC 2231 added, the seven checked-in fixtures and `a\x00b` read), `wire` 308 -> 341 with the `read-round2` session (20 ruled); 122 ruled-different, 0 failures; and 6132 after round 3's H3 on 2026-08-29 — at 643e323 the `docread` suite did not START, a name-collision throw over the checked-in `corrupt-deflate.docx`, lifted so the checked-in bytes win — `docread` 935 -> 990 (13 ruled: the `<!ATTLIST>` ruling added with its both-read companions; six round-3 checked-in fixtures, three `charset-<label>.eml` parts and the `<xmp>` charref unruled), `wire` 341 -> 371 with the `read-round3` session (unruled, 20 ruled unchanged), and the new `charsets` suite, 93 cases (`node tools/conformance/run.mjs --all`: 6132 cases, 123 ruled-different, 0 failures).
+
+**AMENDED 2026-09-04, review round 4 (M6 / I3-F4): the `6132 cases, 123 ruled-different,
+0 failures` above did NOT reproduce, and one of the two reasons was a defect.** Measured at
+`952586e`, the same command answered `6199 cases, 125 ruled-different, 0 failures`. The CASE
+total legitimately co-moves with the operator's live memory store — that is a standing fact of
+the corpus-backed suites, and CI, which has no store, says so in its own notes. The RULED count
+must not, and it moved because two more rulings had landed since; a ruled count is a decision
+total, not a corpus function, and the record read as if the whole triple were rerunnable.
+Worse, at that same commit the command FAILED on a clean checkout: `runtime-ts/assets/` is
+gitignored and only `prepack` creates it, so the `--assets-root` ruling went stale and the gate
+went red on any tree that had not published a tarball. That is fixed in this round — the `cli`
+suite vendors the pack itself and asserts it as a precondition — so the number below is the
+first one in this paragraph that a fresh clone can reproduce.
+
+**Measured at `1cf8df2`, on this branch, by running it:**
+
+```
+PASS: 6280 cases, 1535 byte-identical, 3271 exact-string, 1474 structural,
+      127 ruled-different, 0 failures
+```
+
+Against `6199 / 125` at `952586e`: **+81 cases and +2 rulings**, and every one of them is
+named. The two new rulings are `hz.eml` and `iso2022kr.eml` (`docs/porting.md`, "`hz` and
+`iso-2022-kr` on Node") — the divergence H1 uncovered, priced this round. The cases: `codec`
+and `store` +2 for I3b's corpus-integrity gates; `cli` +1 for the pack precondition; `docread`
+999 -> 1062 (the fixture-shadow declaration; `max-column.xlsx`, `xfd-column.xlsx`,
+`iso2022jp.eml`, `hz.eml`, `iso2022kr.eml` and three `charset-raises-*.eml`, plus the two
+column-ceiling literals — and twelve cases that appeared because six `charset-*.eml` fixtures
+stopped being refused, see the note below); `memorycli` 210 -> 212 for the two eviction-order
+literals; `charsets` 93 -> 88, which is a DROP, because H1 (`666f14f`) removed seven byte
+tables that were never byte codecs and this round added two key-set cases (86 + 2); `wire`
+371 unchanged, one case removed and one added.
+
+**A number in this paragraph that was measuring nothing:** the three `charset-<label>.eml`
+cases counted in the `6132` line above sent their bytes `8bit`, which made the file's HEAD
+undecodable, so the container sniffed `unknown` and BOTH runtimes refused before any codec was
+consulted. They were green and they pinned a refusal. Corrected to `quoted-printable` this
+round; the cases they now generate are real.)
 
 **The notes are part of the result, not decoration.** Several measurements this project
 depends on exist only there — the live index byte count, the corpus SHA on both sides, how
