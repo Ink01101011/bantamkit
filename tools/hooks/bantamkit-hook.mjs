@@ -272,10 +272,58 @@ function appendUsageEvent(input) {
   };
   const dir = process.env.TOOL_METRICS_DIR
     || path.join(os.homedir(), '.claude', 'tool-metrics');
+  const file = path.join(dir, 'events.jsonl');
   try {
     fs.mkdirSync(dir, { recursive: true });
-    fs.appendFileSync(path.join(dir, 'events.jsonl'), `${JSON.stringify(record)}\n`);
+    fs.appendFileSync(file, `${JSON.stringify(record)}\n`);
+    pruneUsageEvents(file);
   } catch { /* the log is a convenience; never fail a tool call over it */ }
+}
+
+// The log's ONLY reader is `tools/ledger/tool-usage.mjs`, and it reads ONLY the sessions whose
+// transcript the host has deleted — 4 of 110 when this was written, holding 115 of 40,873
+// lines. The other 99.7 % are dead weight that the reader re-materialises on every run, and
+// now that this arm is matcher-less the file grows once per tool call (~42k/month here).
+//
+// So: a line whose session still has a transcript is redundant BY CONSTRUCTION, and dropping
+// it loses nothing the reader would have used. Above the cap, that is exactly what this drops.
+//
+// The cost is paid the right way round. `statSync` runs on every call and is a few
+// microseconds; the walk and rewrite run only when the file is over the cap, and each prune
+// puts it far enough under that the next one is thousands of calls away. The walk reads
+// DIRECTORY ENTRIES, never file contents.
+const EVENTS_MAX_BYTES = 4_000_000;
+function pruneUsageEvents(file) {
+  let size = 0;
+  try { size = fs.statSync(file).size; } catch { return; }
+  if (size <= EVENTS_MAX_BYTES) return;
+
+  const projects = path.join(HOME, '.claude', 'projects');
+  const onDisk = new Set();
+  const walk = (dir) => {
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (e.isDirectory()) { onDisk.add(e.name); walk(path.join(dir, e.name)); }
+      else if (e.name.endsWith('.jsonl')) onDisk.add(e.name.slice(0, -'.jsonl'.length));
+    }
+  };
+  walk(projects);
+  // A walk that found nothing is an unreadable projects dir, not a machine with no
+  // transcripts. Pruning on that reading would delete the whole log.
+  if (onDisk.size === 0) { log({ event: 'PostToolUse', action: 'prune-skipped', reason: 'no transcripts found', size }); return; }
+
+  const kept = [];
+  for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    let record;
+    try { record = JSON.parse(line); } catch { kept.push(line); continue; }  // keep what we cannot judge
+    if (!record?.session || !onDisk.has(record.session)) kept.push(line);
+  }
+  const tmp = `${file}.prune-${process.pid}`;
+  fs.writeFileSync(tmp, kept.length ? `${kept.join('\n')}\n` : '');
+  fs.renameSync(tmp, file);
+  log({ event: 'PostToolUse', action: 'prune', before: size, after: fs.statSync(file).size, kept: kept.length });
 }
 
 // ---------------------------------------------- PostToolUse memory_save → compact
