@@ -59,6 +59,8 @@ function check(label, actual, expected) {
 // events.jsonl                    sess1 Skill(alpha)          — transcript still on disk
 //                                 gone1 Skill(gamma) id e1    — transcript deleted
 //                                 gone1 Skill(gamma) id e1    — the SAME call, logged twice
+//                                 gone2 Skill(delta) id e2    — one call, and below it the
+//                                 gone2 Skill(delta) NO id      other writer's id-less copy
 //
 // So: four distinct tool_use ids on disk, plus exactly one recoverable call written twice.
 // Three sessions in total — sess1 (whose subagent file is not a fourth), sess2, gone1.
@@ -76,19 +78,26 @@ check('subagent transcript counted', skill.byKey.beta, 1);
 // 3. The events log covers ONLY sessions with no transcript. gone1 is recovered...
 check('call recovered for a deleted transcript', skill.byKey.gamma, 1);
 // ...and sess1's duplicate row in the same log must not inflate alpha, asserted above.
-check('one call recovered, not two', skill.recovered_from_events, 1);
+// Two calls are recoverable in total — gone1's and gone2's — and each is recovered ONCE
+// despite each being written to the log twice, by the two mechanisms asserted below.
+check('each recoverable call recovered once', skill.recovered_from_events, 2);
 
-check('skill rows', Object.keys(skill.byKey).sort(), ['alpha', 'beta', 'gamma']);
-check('total calls', skill.total, 5); // t1 t2 t3 t4 + gone1
+check('skill rows', Object.keys(skill.byKey).sort(), ['alpha', 'beta', 'delta', 'gamma']);
+check('total calls', skill.total, 6); // t1 t2 t3 t4 + gone1 + gone2
 check('transcripts walked', skill.transcripts, 3);
 
 // 3b. A session is the first path segment under the project dir, NOT a file: sess1's subagent
 // transcript is part of sess1. Keyed on files this read 4 here and 752 on the live corpus.
-check('sessions counted by id, not by file', skill.sessions, 3);
+check('sessions counted by id, not by file', skill.sessions, 4);
 
 // 3c. Two writers append to one events log by design, and one machine can register the hook at
 // both user and project scope. A row carrying a tool_use id already seen is not a second call.
-check('duplicate events row deduped by tool_use id', skill.recovered_from_events, 1);
+check('duplicate events row deduped by tool_use id', skill.recovered_from_events, 2);
+
+// 3d. Two writers appended to this file during the window where a disabled plugin's hook was
+// still firing. Its rows carry no id, so the id dedupe cannot pair them with ours. Within a
+// session that has ANY id-bearing row, an id-less row is the other writer's copy.
+check('id-less row ignored in a session that has ids', skill.byKey.delta, 1);
 
 // 4. Agent grouping reads subagent_type off the tool's own input.
 const agent = run(['--group', 'agent']);
@@ -96,7 +105,7 @@ check('agent grouping', agent.byKey, { Explore: 1 });
 
 // 5. Grouping that no call carries yields no rows rather than an "other" bucket.
 const server = run(['--group', 'server']);
-check('server grouping counts every call', server.byKey.builtin, 5);
+check('server grouping counts every call', server.byKey.builtin, 6);
 
 // ---- negative controls: each correction, switched off, must give the WRONG answer ---------
 // Without them a broken correction and a broken assertion look identical from here.

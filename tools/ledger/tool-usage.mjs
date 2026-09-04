@@ -196,10 +196,28 @@ for (const project of dirs) {
 // appends one line per call to an events log, so those sessions are still countable — but ONLY
 // the sessions with no transcript left, or every call in a live session would be counted twice.
 // Measured here: 4 of 110 logged sessions were gone, holding 9 skill calls.
-for (const line of readEvents()) {
+// TWO WRITERS, ONE FILE. The hook here stamps `tool_use_id`; the tool-metrics plugin it
+// replaced never did, and a disabled plugin's hooks keep firing until the host restarts, so a
+// session logged during that overlap holds each call TWICE — once with an id and once without.
+// The id dedupe below cannot see it, because the two rows are not both id-bearing.
+//
+// The rule that does: WITHIN A SESSION, if any row carries an id, only id-bearing rows count.
+// An id-less row there is the other writer's copy of a call this one already recorded. A
+// session logged entirely without ids (every row written before this field existed) keeps all
+// of its rows, which is the only reading under which the historical log stays usable.
+const eventLines = readEvents();
+const idBearingSessions = new Set();
+for (const line of eventLines) {
+  let ev;
+  try { ev = JSON.parse(line); } catch { continue; }
+  if (ev?.session && ev.tool_use_id) idBearingSessions.add(ev.session);
+}
+
+for (const line of eventLines) {
   let ev;
   try { ev = JSON.parse(line); } catch { continue; }
   if (!ev?.tool || !ev.session || onDisk.has(ev.session)) continue;
+  if (!ev.tool_use_id && idBearingSessions.has(ev.session)) continue;
   // Two writers append to this file by design, and one machine can register the hook at both
   // user and project scope, so the same call can be logged twice. The transcript path guards
   // that with `block.id`; this is the same guard on the same id space, for rows whose writer

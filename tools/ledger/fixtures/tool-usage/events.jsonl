@@ -1,3 +1,5 @@
 {"ts": "2026-09-01T10:00:00Z", "session": "sess1", "project": "-proj-a", "tool": "Skill", "server": "builtin", "detail": "alpha"}
 {"ts": "2026-08-20T08:00:00Z", "session": "gone1", "project": "-proj-a", "tool": "Skill", "server": "builtin", "detail": "gamma", "tool_use_id": "e1"}
 {"ts": "2026-08-20T08:00:00Z", "session": "gone1", "project": "-proj-a", "tool": "Skill", "server": "builtin", "detail": "gamma", "tool_use_id": "e1"}
+{"ts": "2026-08-21T09:00:00.000Z", "session": "gone2", "project": "-proj-a", "tool": "Skill", "server": "builtin", "tool_use_id": "e2", "detail": "delta"}
+{"ts": "2026-08-21T09:00:00.114217+00:00", "session": "gone2", "project": "-proj-a", "tool": "Skill", "server": "builtin", "detail": "delta"}
