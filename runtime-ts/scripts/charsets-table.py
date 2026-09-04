@@ -29,14 +29,33 @@ NOT_BYTE_CODECS = {"charmap", "raw_unicode_escape", "unicode_escape", "rot_13", 
 
 
 def single_byte(module: str) -> tuple[str, str | None] | None:
+    """The 256 characters `module` maps its bytes to, or `None` if it is not that kind of codec.
+
+    THE PAIR SWEEP IS EVERY LEAD BYTE — all 65,536 ordered pairs — and that is review round 4
+    (H1). It used to probe six hand-picked leads (0x41, 0x80, 0xA4, 0xD0, 0xE9, 0xFF), and
+    neither ESC (0x1B) nor `~` (0x7E) is among them, so every STATEFUL codec walked straight
+    through: a codec whose decoder carries state set by earlier bytes answers each byte alone
+    with exactly one character (an incomplete escape is one U+FFFD) and passes a probe that
+    never hands it the start of an escape. MEASURED: seven modules were written out with a
+    256-character table they cannot have — `hz` and the six `iso2022_jp*` — and the port then
+    decoded them one byte at a time, so `iso2022_jp` bytes for こんにちは came back as
+    "\ufffd$B$3$s$K$A$O\ufffd(B" where the reference answers こんにちは. The full sweep refuses
+    all seven — at (27, 0) for the ISO-2022 family and (126, 10) for `hz` — and still admits
+    every genuine single-byte codec.
+
+    The property is the one the table CLAIMS, stated over the whole domain instead of over a
+    sample: a stateless byte codec decodes any ordered pair as the concatenation of the two
+    bytes decoded alone. A codec that fails that anywhere is not a byte-to-character map and
+    gets no row here.
+    """
     try:
         chars = [bytes([b]).decode(module, errors="replace") for b in range(256)]
         if any(len(c) != 1 for c in chars):
             return None
-        pairs = (0x41, 0x80, 0xA4, 0xD0, 0xE9, 0xFF)
-        for a in pairs:
+        for a in range(256):
+            lead = chars[a]
             for b in range(256):
-                if bytes([a, b]).decode(module, errors="replace") != chars[a] + chars[b]:
+                if bytes([a, b]).decode(module, errors="replace") != lead + chars[b]:
                     return None
     except Exception:  # noqa: BLE001 — a codec that is not a byte codec fails any which way
         return None

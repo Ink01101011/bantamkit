@@ -17,9 +17,20 @@
  *      FAIL, not succeed short. The Python defect this rule comes from was a build that
  *      returned 0 and shipped an artifact without its data.
  *
- * The vendored copy is byte-for-byte (`copyFileSync`), and stale files are deleted
- * first, because `build_identity` hashes every byte of the whole tree — an extra file
- * moves `assets_digest` exactly as surely as a missing one.
+ * The vendored copy is byte-for-byte (`copyFileSync`), and stale files are deleted,
+ * because `build_identity` hashes every byte of the whole tree — an extra file moves
+ * `assets_digest` exactly as surely as a missing one.
+ *
+ * THE COPY GOES FIRST AND THE DELETE IS A PRUNE, which is review round 4 (L5). This used
+ * to be `rmSync(vendored, { recursive: true })` and then `cpSync`, and the vendored pack
+ * is a directory the whole TEST SUITE reads: `node --test` runs its files concurrently,
+ * `packaging.test.mjs` runs `npm pack --dry-run` whose `prepack` runs this script, and
+ * every other file reading an asset inside that window failed. MEASURED: `npm test` went
+ * red on 2 of ~20 full runs with `AssetNotFound: contract asset not found:
+ * runtime-ts/assets/contracts/default.yaml`, on a test that moved with the schedule; a
+ * process watching one asset for the length of one sync saw it unreadable 1,745 times.
+ * Overwriting in place and then removing only what the checkout no longer has holds the
+ * same two guarantees — byte-for-byte, no stale files — and never makes an asset absent.
  *
  * U9, 2026-08-24. THE LICENCE IS THE SAME PROBLEM AND IT IS NOT SOLVED BY npm's RULE.
  * npm is documented to include `LICENSE` in every tarball regardless of `files`, and
@@ -50,9 +61,24 @@ function populated(dir) {
   return existsSync(dir) && statSync(dir).isDirectory() && countFiles(dir) > 0;
 }
 
+/** Every path under `dir`, relative to it — files and directories both. */
+function entriesUnder(dir) {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true, recursive: true }).map((e) =>
+    join(e.parentPath ?? e.path, e.name).slice(dir.length + 1),
+  );
+}
+
 if (populated(checkout)) {
-  rmSync(vendored, { recursive: true, force: true });
-  cpSync(checkout, vendored, { recursive: true });
+  // Overwrite first, so no reader ever meets a missing file...
+  const stale = new Set(entriesUnder(vendored));
+  cpSync(checkout, vendored, { recursive: true, force: true });
+  for (const kept of entriesUnder(checkout)) stale.delete(kept);
+  // ...then prune only what the checkout no longer has, deepest first so a directory is
+  // empty by the time it is removed.
+  for (const gone of [...stale].sort((a, b) => b.length - a.length)) {
+    rmSync(join(vendored, gone), { recursive: true, force: true });
+  }
   process.stderr.write(
     `sync-assets: vendored ${countFiles(vendored)} files from ${checkout}\n`,
   );

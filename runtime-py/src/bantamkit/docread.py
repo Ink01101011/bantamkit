@@ -214,6 +214,11 @@ OMIT_UNREAD_TAIL = "unread-tail"
 # property of the file -- a limit this reader imposes -- which is exactly why it is declared
 # as a count instead of applied in silence.
 OMIT_SIZE_CAP = "size-cap"
+# A worksheet cell whose own `r` reference could not place it: not letters-then-digits, or a
+# column past the last one the format has. The cell's TEXT is in the rows, at its XML
+# position; what the rows do not carry is the column the file asked for. Counted per reason,
+# with the columns it landed in, exactly as `number-format` is counted per format code.
+OMIT_UNPLACED_CELL = "unplaced-cell"
 
 
 class DocumentReadError(BantamError):
@@ -847,31 +852,62 @@ def _letter(index: int) -> str:
 
 
 _CELL_REF = re.compile(r"([A-Za-z]+)[0-9]+")
+# ECMA-376 gives a worksheet 16,384 columns, the last of them `XFD`. A reference past that
+# does not name a column of any workbook, so this reader will not build a row wide enough to
+# reach one. THE FORMAT'S NUMBER, not a limit invented here, which is why it is spelled as
+# the last column's name rather than as a round figure someone liked.
+XLSX_MAX_COLUMNS = 16384
+# Four letters is already 18,278 (`AAAA`), past `XFD` whatever the letters are. Checking the
+# LENGTH before the arithmetic is what keeps a megabyte of letters from being turned into a
+# megabyte-long integer on the way to being refused.
+_MAX_COLUMN_LETTERS = 3
+# Why a cell's own reference could not place it. Fixed strings, never the reference itself:
+# `r` is whatever the file says, and an omission that echoed it would carry the file's bytes
+# into the manifest with no bound at all.
+UNPLACED_SHAPE = "the column of a cell whose reference is not letters then digits"
+UNPLACED_RANGE = "the column of a cell past XFD, the last column the format has"
 
 
-def _column(ref: str | None, fallback: int) -> int:
-    """`B7` -> 1. The cell's own reference decides its column; XML order is only a fallback.
+def _column(ref: str | None, fallback: int) -> tuple[int, str]:
+    """`B7` -> `(1, "")`. The cell's own reference decides its column; XML order is a fallback.
 
-    A reference is ASCII letters then ASCII digits, or it is refused. Review round 3 measured
-    `r="ß1"`: `str.isalpha` accepted the ß, `ord("ß".upper())` — `"SS"`, two code points —
-    raised `TypeError`, and the frame crossed the MCP wire as `isError` while the Node port
-    read the sheet. The match is on the reference AS WRITTEN, not on its uppercase: `"ß1"`
-    uppercases to `"SS1"`, which would be column 486 on one runtime and something else on
-    every other, and a column number that depends on a Unicode case table is not a fact
-    about the workbook.
+    A reference is ASCII letters then ASCII digits naming a column the format has, or this
+    reader cannot place it and says WHY. Review round 3 measured `r="ß1"`: `str.isalpha`
+    accepted the ß, `ord("ß".upper())` — `"SS"`, two code points — raised `TypeError`, and
+    the frame crossed the MCP wire as `isError` while the Node port read the sheet. The match
+    is on the reference AS WRITTEN, not on its uppercase: `"ß1"` uppercases to `"SS1"`, which
+    would be column 486 on one runtime and something else on every other, and a column number
+    that depends on a Unicode case table is not a fact about the workbook.
+
+    AN ANSWER AND NOT A RAISE, which is review round 4 (M2). Round 3 spelled the refusal as a
+    `DocumentReadError` out of a function `_sheet_rows` does not catch, so ONE cell the reader
+    could not place refused the entire workbook — measured on a two-sheet fixture where sheet
+    `Good` is clean and sheet `Bad` holds one cell `r="1"`: no manifest, no parts, the clean
+    sheet unreachable. `r="1"`, `r="A"` and `r="B7 "` all read before round 3. The strictness
+    was right and its price was not: the cell keeps its text and takes its XML position, which
+    is where it sat before round 3 and is the same position on both runtimes, and the column
+    it did not get is disclosed as an `Omission` rather than charged to the whole document.
+
+    THE CEILING is review round 4 (M5). Round 3 made this function stricter about the SHAPE of
+    a reference and left the resulting index unbounded: measured, a 1,755-byte xlsx whose one
+    cell is `r="ZZZZZ1"` produced a 12,356,630-byte row, 7,041x the file. Row width is now
+    bounded by the format at `XLSX_MAX_COLUMNS` fields however many bytes the file spends
+    asking for more.
     """
     if not ref:
-        return fallback
+        return fallback, ""
     match = _CELL_REF.fullmatch(ref)
     if match is None:
-        raise DocumentReadError(
-            f"cell reference {ref!r} is not a column-and-row reference like B7, "
-            "so this reader cannot place it"
-        )
+        return fallback, UNPLACED_SHAPE
+    letters = match.group(1)
+    if len(letters) > _MAX_COLUMN_LETTERS:
+        return fallback, UNPLACED_RANGE
     index = 0
-    for char in match.group(1).upper():
+    for char in letters.upper():
         index = index * 26 + (ord(char) - 64)
-    return index - 1
+    if index > XLSX_MAX_COLUMNS:
+        return fallback, UNPLACED_RANGE
+    return index - 1, ""
 
 
 def _shared_strings(zf: zipfile.ZipFile, path: Path) -> list[str]:
@@ -919,18 +955,27 @@ def _sheet_rows(
     The omissions are gathered in the same pass that renders, never by a second scan: a count
     derived from a different walk of the XML can disagree with the rows it claims to describe,
     and a disclosure that disagrees with the thing it discloses is worse than none.
+
+    A cell `_column` cannot place is one of those omissions and NOT a refusal (review round 4,
+    M2): it keeps its text at its XML position and loses only the column the file asked for.
+    Counted per reason and rendered after the format codes, so the order of this tuple is
+    blank rows, then number formats by code, then unplaced cells by reason.
     """
     rows = []
     blank = 0
     dated: dict[str, dict[int, int]] = {}
+    unplaced: dict[str, dict[int, int]] = {}
     for row in root.iter(NS_S + "row"):
         cells: dict[int, str] = {}
         for position, cell in enumerate(row.iter(NS_S + "c")):
             text = _clean(_cell_text(cell, shared))
             if not text:
                 continue
-            column = _column(cell.get("r"), position)
+            column, unplaceable = _column(cell.get("r"), position)
             cells[column] = text
+            if unplaceable:
+                unplaced.setdefault(unplaceable, {})
+                unplaced[unplaceable][column] = unplaced[unplaceable].get(column, 0) + 1
             if cell.get("t") in (None, "n"):  # a stored number; anything else is not a serial
                 try:
                     code = date_styles[int(cell.get("s") or 0)]
@@ -955,6 +1000,16 @@ def _sheet_rows(
                 sum(columns.values()),
                 where=tuple(_letter(c) for c in sorted(columns)),
                 what=code,
+            )
+        )
+    for reason in sorted(unplaced):
+        columns = unplaced[reason]
+        omissions.append(
+            Omission(
+                OMIT_UNPLACED_CELL,
+                sum(columns.values()),
+                where=tuple(_letter(c) for c in sorted(columns)),
+                what=reason,
             )
         )
     return tuple(rows), tuple(omissions)
@@ -1172,13 +1227,27 @@ def html_rows(markup: str) -> tuple[str, ...]:
 
 
 def _decoded_body(part: email.message.Message) -> str:
+    """A part's bytes as text. A `charset` label decides HOW they are read, never WHETHER.
+
+    `LookupError` alone was not the class. Review round 4 (M4) swept every alias in
+    `encodings.aliases` through this function: 22 labels raise `LookupError` (`base64`,
+    `bz2`, `hex`, `mbcs` off Windows — bytes-to-bytes codecs and absent ones), and THREE
+    raise a `UnicodeError` instead — `undefined`, `idna` and `punycode`, codecs that exist,
+    are reached, and refuse. `errors="replace"` does not save them: those three never consult
+    the handler, `idna` raises `UnicodeError("Unsupported error handling replace")` on being
+    handed one at all. Before this, each escaped `extract` uncaught and crossed the MCP wire
+    as `isError` while the Node port read the same archive.
+
+    Both are caught, and the fallback is the one an unknown label already took, so a label
+    whose codec raises and a label with no codec give the same answer rather than two.
+    """
     payload = part.get_payload(decode=True)
     if payload is None:
         return ""
     charset = part.get_content_charset() or "utf-8"
     try:
         return payload.decode(charset, errors="replace")
-    except LookupError:
+    except (LookupError, UnicodeError):
         return payload.decode("utf-8", errors="replace")
 
 

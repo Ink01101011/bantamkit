@@ -20,7 +20,7 @@
  */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
@@ -204,4 +204,65 @@ test('the two version declarations agree', () => {
     'the two runtimes declare different versions, so a client reading one cannot tell ' +
       'which half answered it. `__version__` is authoritative — see docs/release-npm.md.',
   );
+});
+
+// ---- L5: vendoring must never take the pack away from a concurrent reader ---------------
+
+test('sync-assets never leaves the vendored pack absent while it runs', async () => {
+  // MEASURED, review round 4 (L5): `npm test` fails intermittently — 2 of ~20 full runs on
+  // this machine — with `AssetNotFound: contract asset not found: runtime-ts/assets/
+  // contracts/default.yaml`, and the test it lands on moves with the schedule
+  // (`launcher.test.mjs:250` for the reviewer, a `documentManifest` case here). `node --test`
+  // runs the files CONCURRENTLY, this file's `packListing()` runs `npm pack --dry-run` whose
+  // `prepack` runs `scripts/sync-assets.mjs`, and that script used to `rmSync` the whole
+  // vendored tree before copying it back. Every other test file reading an asset in that
+  // window fails, and the failure names a file that is present before and after.
+  //
+  // The property: the vendored pack is a directory the whole suite reads, so vendoring must
+  // never make it absent. A copy that OVERWRITES in place, then removes only what the
+  // checkout no longer has, holds the script's own guarantee — byte-for-byte, no stale
+  // files, because `build_identity` hashes every byte — with no window at all.
+  //
+  // This case is deterministic where the flake is not: it watches the path while the script
+  // runs instead of hoping the schedule lands on it. Against the pre-fix script it goes red
+  // on the first run.
+  const { readFileSync: read, writeFileSync: write } = await import('node:fs');
+  const vendored = join(packageRoot, 'assets');
+  const witness = join(vendored, 'contracts', 'default.yaml');
+  const before = read(witness);
+  const verdict = join(mkdtempSync(join(realpathSync.native(tmpdir()), 'l5-')), 'verdict.json');
+
+  // The watcher is a CHILD PROCESS and not a promise in this one. `spawnSync` blocks the
+  // event loop for its whole duration, so an in-process poll — however it yields — cannot
+  // run while the thing it is watching runs, and would report a clean window that it never
+  // actually looked at. A second process is the only observer that is awake at the time.
+  const watcher = spawn(
+    process.execPath,
+    [
+      '-e',
+      `const fs=require('fs');const [w,v]=process.argv.slice(1);let gone=0,ok=0;` +
+        `const end=Date.now()+4000;` +
+        `process.on('SIGTERM',()=>{fs.writeFileSync(v,JSON.stringify({gone,ok}));process.exit(0)});` +
+        `while(Date.now()<end){try{fs.readFileSync(w);ok++}catch{gone++}}` +
+        `fs.writeFileSync(v,JSON.stringify({gone,ok}));`,
+      witness,
+      verdict,
+    ],
+    { stdio: 'ignore' },
+  );
+  await new Promise((r) => setTimeout(r, 250)); // let it get going
+
+  const run = spawnSync(process.execPath, [join(packageRoot, 'scripts', 'sync-assets.mjs')], {
+    cwd: packageRoot,
+    encoding: 'utf8',
+  });
+  await new Promise((r) => setTimeout(r, 250)); // and let it see the aftermath
+  watcher.kill('SIGTERM');
+  await new Promise((r) => watcher.on('exit', r));
+  const seen = JSON.parse(read(verdict, 'utf8'));
+
+  assert.equal(run.status, 0, run.stderr);
+  assert.ok(seen.ok > 0, 'the watcher has to have actually looked');
+  assert.equal(seen.gone, 0, `the pack was unreadable ${seen.gone} times while sync-assets ran`);
+  assert.deepEqual(read(witness), before, 'and it is byte-identical afterwards');
 });

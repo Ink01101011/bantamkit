@@ -1730,22 +1730,25 @@ def test_reference_an_internal_dtd_entity_is_expanded_by_expat():
 # Review round 3 (H1): four escapes the reviewer measured, each on a checked-in fixture.
 
 
-def test_a_cell_reference_that_is_not_letters_then_digits_is_refused_not_a_type_error():
-    """MEASURED before the fix: `TypeError: ord() expected a character, but string of length
-    2 found` — `"ß".upper()` is `"SS"` — across the wire as `isError`; Node read column 18.
-    The match is on the reference as written, not on its uppercase, so `ß1` is refused
-    rather than read as `SS1` (column 486)."""
-    with pytest.raises(DocumentReadError) as info:
-        extract(DATA / "eszett-cell-ref.xlsx")
-    assert str(info.value) == (
-        "cell reference 'ß1' is not a column-and-row reference like B7, "
-        "so this reader cannot place it"
-    )
-    assert docread._column("ab7", 0) == docread._column("AB7", 0) == 27
-    assert docread._column(None, 3) == docread._column("", 3) == 3
-    for ref in ("A", "1", "A1B", "É1", "a-1", "A 1"):
-        with pytest.raises(DocumentReadError):
-            docread._column(ref, 0)
+def test_a_cell_reference_that_is_not_letters_then_digits_is_not_a_type_error():
+    """MEASURED before round 3's fix: `TypeError: ord() expected a character, but string of
+    length 2 found` — `"ß".upper()` is `"SS"` — across the wire as `isError`; Node read
+    column 18. The match is on the reference as written, not on its uppercase, so `ß1` is
+    still NOT read as `SS1` (column 486) on either runtime.
+
+    AMENDED at review round 4 (M2). Round 3 spelled the answer as a `DocumentReadError`, and
+    that refused the whole workbook over one cell — the sentence "cell reference 'ß1' is not
+    a column-and-row reference like B7, so this reader cannot place it" no longer exists on
+    either runtime. What round 3 measured still holds: no `TypeError`, and no column 486.
+    What changed is the price — the cell takes its XML position and the column it did not get
+    is an `Omission`, which is what the rest of this section pins."""
+    doc = extract(DATA / "eszett-cell-ref.xlsx")
+    assert [(p.name, p.rows) for p in doc.parts] == [("Sharp", ("x",))]
+    assert [(o.subject, o.count, o.what) for o in doc.parts[0].omissions] == [
+        (docread.OMIT_UNPLACED_CELL, 1, docread.UNPLACED_SHAPE)
+    ]
+    assert docread._column("ab7", 0) == docread._column("AB7", 0) == (27, "")
+    assert docread._column(None, 3) == docread._column("", 3) == (3, "")
 
 
 def test_an_unsupported_compression_method_names_the_method_not_a_password():
@@ -1852,3 +1855,196 @@ def test_the_charset_table_is_the_codec_registrys_answer():
     for label, decoded in table.items():
         if decoded != "LookupError":
             assert decoded == CHARSET_PROBE.decode(label, errors="replace"), label
+
+
+# Review round 4 (M2, M4, M5): three escapes measured on this reader, each with the input
+# that pins it.
+
+
+CHARSETS_THAT_RAISE_PAST_LOOKUPERROR = ("undefined", "idna", "punycode")
+
+
+def _mhtml_with_charset(path, charset, payload=b"\x80h\xc3\xa9llo\xff"):
+    """One `text/plain` part with 8-bit bytes and a declared `charset`, verbatim on disk.
+
+    No transfer encoding, so `get_payload(decode=True)` hands `_decoded_body` exactly these
+    bytes and the only thing under test is what the label does to `bytes.decode`.
+    """
+    head = (
+        b"MIME-Version: 1.0\n"
+        # `sniff` decodes the first 4096 bytes as UTF-8 and refuses the file when they do not
+        # decode, so the 8-bit payload has to sit past that head for this to be a test of the
+        # DECODER rather than of the sniffer.
+        b"X-Padding: " + b"a" * 4200 + b"\n"
+        b'Content-Type: multipart/related; boundary="----=_P"\n'
+        b"\n"
+        b"------=_P\n"
+        b"Content-Type: text/plain; charset=" + charset.encode() + b"\n"
+        b"\n"
+    )
+    path.write_bytes(head + payload + b"\n\n------=_P--\n")
+    return path
+
+
+@pytest.mark.parametrize("charset", CHARSETS_THAT_RAISE_PAST_LOOKUPERROR)
+def test_a_charset_whose_codec_raises_falls_back_the_way_an_unknown_label_does(
+    tmp_path, charset
+):
+    """MEASURED before the fix: `_decoded_body` caught `LookupError` only, so a label naming a
+    codec that EXISTS but refuses these bytes left `extract` as an uncaught `UnicodeError` and
+    crossed the MCP wire as `isError`, while the Node port read the file. `undefined` and
+    `idna` raise `ValueError`/`UnicodeError`, `punycode` raises `UnicodeDecodeError` — and
+    `errors="replace"` does not reach any of them, because those codecs never consult it.
+
+    Swept over every alias in `encodings.aliases` (357 names) plus these three: 22 raise
+    `LookupError`, 3 raise `UnicodeError`, the rest decode. `UnicodeError` is therefore the
+    CLASS, not a list of three names, and `LookupError` already covered the other 22.
+
+    The property: a `charset` label decides how bytes are read, never whether the archive can
+    be read at all. The fallback is the one an unknown label already takes, so a label whose
+    codec raises and a label with no codec now give the same answer — the assertion below
+    compares them rather than restating the bytes."""
+    expected = extract(_mhtml_with_charset(tmp_path / "unknown.eml", "no-such-codec"))
+    doc = extract(_mhtml_with_charset(tmp_path / f"{charset}.eml", charset))
+    assert doc.kind == "mhtml"
+    assert doc.parts[0].rows == expected.parts[0].rows
+    assert doc.parts[0].rows == (b"\x80h\xc3\xa9llo\xff".decode("utf-8", errors="replace"),)
+
+
+def test_no_registered_codec_name_can_leave_the_body_decoder():
+    """The sweep behind the parametrize above, run rather than quoted: every alias the codec
+    registry knows is handed to `_decoded_body` and none of them escapes it."""
+    import email
+    import encodings.aliases
+
+    names = set(encodings.aliases.aliases) | set(encodings.aliases.aliases.values())
+    names |= set(CHARSETS_THAT_RAISE_PAST_LOOKUPERROR) | {"utf-8", "no-such-codec", ""}
+    assert len(names) > 300
+    for name in sorted(names):
+        part = email.message_from_bytes(
+            f"Content-Type: text/plain; charset={name}\n\n".encode() + b"\x80\xff"
+        )
+        docread._decoded_body(part)  # must not raise, whatever the label names
+
+
+# ---- M2 / M5: a cell this reader cannot place costs that cell's COLUMN, nothing more ----
+
+
+def test_one_unplaceable_cell_does_not_cost_the_caller_the_other_sheet(tmp_path):
+    """MEASURED before the fix, on this exact fixture: `DocumentReadError: cell reference '1'
+    is not a column-and-row reference like B7, so this reader cannot place it` — no manifest,
+    no parts, and the CLEAN sheet unreachable. Round 3 made `_column` strict about the SHAPE
+    of a reference, which was right, and paid for it with the whole workbook, which was not.
+
+    The property: a cell this reader cannot place must not cost the caller the rest of the
+    document. The cell keeps its text and takes its XML position, which is where it sat
+    before round 3; what it loses is its stated column, and that loss is DISCLOSED through
+    the omission channel this module already has for "we could not read part of it".
+    """
+    path = write_xlsx(
+        tmp_path / "two.xlsx",
+        [
+            ("Good", "worksheets/sheet1.xml", row(inline_cell("A1", "clean"))),
+            ("Bad", "worksheets/sheet2.xml", row(inline_cell("1", "oops"))),
+        ],
+    )
+    doc = extract(path)
+    assert [(p.name, p.rows) for p in doc.parts] == [("Good", ("clean",)), ("Bad", ("oops",))]
+    assert doc.parts[0].omissions == ()
+    assert [(o.subject, o.count, o.where, o.what) for o in doc.parts[1].omissions] == [
+        (docread.OMIT_UNPLACED_CELL, 1, ("A",), docread.UNPLACED_SHAPE)
+    ]
+
+
+@pytest.mark.parametrize("ref", ["1", "A", "A1B", "É1", "a-1", "A 1", "B7 ", "ß1"])
+def test_every_reference_shape_this_reader_refuses_is_reported_not_raised(ref):
+    """The shapes round 3 refused, each one now an answer instead of an exception. `ß1` is the
+    one round 3 was written for and it still does NOT become column 486: `_column` matches the
+    reference as written, never its uppercase, so the cell falls back to its XML position and
+    both runtimes place it in the same place."""
+    assert docread._column(ref, 3) == (3, docread.UNPLACED_SHAPE)
+
+
+def test_a_reference_past_the_formats_last_column_is_not_placed_there(tmp_path):
+    """MEASURED before the fix, on this fixture: 1,755 bytes of xlsx whose single cell is
+    `r="ZZZZZ1"` produced a 12,356,630-byte row — 7,041x amplification, from a column index
+    with no ceiling at all.
+
+    The bound is the FORMAT's, not an invented number: ECMA-376 gives a worksheet 16,384
+    columns, the last of them `XFD`, so a reference past `XFD` does not name a column of any
+    workbook and this reader will not build a row wide enough to reach it. Row width is now
+    bounded by the format at 16,384 fields however many bytes the file spends asking for more.
+
+    The letter-count check runs BEFORE the arithmetic: any reference with four or more
+    letters is already past `XFD` (`AAAA` is 18,278), so a megabyte of letters is refused
+    without a megabyte-long integer ever being built.
+    """
+    path = write_xlsx(
+        tmp_path / "wide.xlsx", [("S", "worksheets/sheet1.xml", row(inline_cell("ZZZZZ1", "x")))]
+    )
+    doc = extract(path)
+    assert doc.parts[0].rows == ("x",)
+    assert len(doc.parts[0].rows[0].encode()) == 1
+    assert [(o.subject, o.count, o.where, o.what) for o in doc.parts[0].omissions] == [
+        (docread.OMIT_UNPLACED_CELL, 1, ("A",), docread.UNPLACED_RANGE)
+    ]
+
+
+def test_the_last_column_the_format_has_is_still_read(tmp_path):
+    """The bound is off-by-one-proof from both sides: `XFD` is column 16,384 and reads; `XFE`
+    is the first that does not exist and falls back. A ceiling that ate the last real column
+    would be a second defect wearing the first one's fix."""
+    assert docread._column("XFD1", 0) == (16383, "")
+    assert docread.XLSX_MAX_COLUMNS == 16384
+    assert docread._letter(16383) == "XFD"
+    assert docread._column("XFE1", 0) == (0, docread.UNPLACED_RANGE)
+    assert docread._column("ZZZ1", 0) == (0, docread.UNPLACED_RANGE)  # 18278, three letters
+    path = write_xlsx(
+        tmp_path / "xfd.xlsx", [("S", "worksheets/sheet1.xml", row(inline_cell("XFD1", "end")))]
+    )
+    doc = extract(path)
+    assert doc.parts[0].rows == ("\t" * 16383 + "end",)
+    assert doc.parts[0].omissions == ()
+
+
+def test_a_million_letter_reference_is_answered_without_building_the_integer(tmp_path):
+    """A reference of a million letters is a valid `[A-Za-z]+[0-9]+` and would otherwise be
+    turned into a base-26 integer of a million digits before anything looked at its size."""
+    import time
+
+    start = time.monotonic()
+    assert docread._column("A" * 1_000_000 + "1", 7) == (7, docread.UNPLACED_RANGE)
+    assert time.monotonic() - start < 1.0
+
+
+def test_unplaced_cells_of_one_reason_are_counted_together_and_the_reasons_apart(tmp_path):
+    """One omission per reason, columns in column order — the shape `number-format` already
+    uses, so a caller that renders one renders the other."""
+    body = row(
+        inline_cell("1", "a"),
+        inline_cell("ZZZZZ1", "b"),
+        inline_cell("B7 ", "c"),
+        inline_cell("C1", "d"),
+    )
+    doc = extract(write_xlsx(tmp_path / "mixed.xlsx", [("S", "worksheets/sheet1.xml", body)]))
+    assert [(o.subject, o.count, o.where, o.what) for o in doc.parts[0].omissions] == [
+        (docread.OMIT_UNPLACED_CELL, 1, ("B",), docread.UNPLACED_RANGE),
+        (docread.OMIT_UNPLACED_CELL, 2, ("A", "C"), docread.UNPLACED_SHAPE),
+    ]
+
+
+def test_an_unplaced_cell_renders_through_the_contract_layers_unknown_subject_line(tmp_path):
+    """`contract._omission_line` has no branch for this subject and does not need one: the
+    generic line prints an unknown subject's count rather than dropping it, which is the whole
+    reason that fallback exists. Pinning it here keeps the two layers honest about the lag."""
+    from bantamkit import contract
+
+    body = row(inline_cell("1", "a"))
+    doc = extract(write_xlsx(tmp_path / "u.xlsx", [("S", "worksheets/sheet1.xml", body)]))
+    line = contract._omission_line(
+        contract.load_contract(), {"row_count": 1}, doc.parts[0].omissions[0].as_dict()
+    )
+    assert line == (
+        "  NOT in those rows: 1 unplaced-cell (the column of a cell whose reference is not "
+        "letters then digits)"
+    )

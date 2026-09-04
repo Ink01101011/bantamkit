@@ -64,6 +64,11 @@ export const OMIT_UNREAD_PAGE = 'unread-page';
 export const OMIT_UNMAPPED = 'unmapped-text';
 export const OMIT_UNREAD_TAIL = 'unread-tail';
 export const OMIT_SIZE_CAP = 'size-cap';
+// A worksheet cell whose own `r` reference could not place it: not letters-then-digits, or a
+// column past the last one the format has. The cell's TEXT is in the rows, at its XML
+// position; what the rows do not carry is the column the file asked for. Counted per reason,
+// with the columns it landed in, exactly as `number-format` is counted per format code.
+export const OMIT_UNPLACED_CELL = 'unplaced-cell';
 
 /** Extraction failed. The message names what was seen, never just the format's own error. */
 export class DocumentReadError extends BantamError {}
@@ -390,6 +395,42 @@ export function pyCodecModule(name: string): string | null {
  * `gb2312` is gbk, `big5` carries HKSCS, `euc-kr` is cp949), so a byte pair only one of the
  * two knows differs; the ERROR policy is CPython's, see `decodeMultiByte`.
  */
+/**
+ * The STATEFUL codecs — the ones whose decoder carries state set by earlier bytes, so that no
+ * byte-to-character map can describe them at all — module -> WHATWG label. Review round 4
+ * (H1).
+ *
+ * `charsets-table.py` judged a module a stateless single-byte codec with a 2-byte probe from
+ * six hand-picked lead bytes, and neither ESC nor `~` was among them, so seven of this family
+ * were written into `SINGLE_BYTE_TABLES` with a 256-character table they cannot have and
+ * `decodeSingleByte` then decoded them ONE BYTE AT A TIME. Measured: `iso2022_jp` bytes for
+ * こんにちは came back as "\ufffd$B$3$s$K$A$O\ufffd(B", the ESCs eaten by the table, where the
+ * reference answers こんにちは. That was a regression — before round 3 the port called
+ * `TextDecoder(charset)`, and ICU does have an `iso-2022-jp` decoder. The generator refuses
+ * them now (it sweeps all 65,536 pairs), and this map is where the six that HAVE a decoder go.
+ *
+ * SIX MODULES AND NOT NINE, by measurement. Over the shared JIS X 0208 range every
+ * `iso2022_jp*` variant scores 99.5–99.7 % against CPython through ICU's `iso-2022-jp`,
+ * against 1.4 % through the UTF-8 fallback. `hz`, `iso2022_kr` and `utf_7` score 0 % — WHATWG
+ * maps all three to the "replacement" encoding, which answers one U+FFFD for any non-empty
+ * input — so they keep the no-decoder path this module already documents. The residual for
+ * the six is ICU's table against CPython's, the divergence roadmap row 8 (o) registers: over
+ * 8,829 inputs ICU agrees on 5,664 to the byte table's 5,021 and the UTF-8 fallback's 4,339,
+ * and 888 of 900 valid-text inputs to their 73 and 45. The 12 are the wave dash, U+301C
+ * against U+FF5E.
+ *
+ * A PLAIN `TextDecoder` and never `decodeMultiByte`: that walk assumes a byte under 0x80 is
+ * its own ASCII character, which is exactly what an escape sequence is not.
+ */
+const ESCAPE_LABELS: Readonly<Record<string, string>> = {
+  iso2022_jp: 'iso-2022-jp',
+  iso2022_jp_1: 'iso-2022-jp',
+  iso2022_jp_2: 'iso-2022-jp',
+  iso2022_jp_2004: 'iso-2022-jp',
+  iso2022_jp_3: 'iso-2022-jp',
+  iso2022_jp_ext: 'iso-2022-jp',
+};
+
 const MULTI_BYTE_LABELS: Readonly<Record<string, string>> = {
   shift_jis: 'shift_jis',
   cp932: 'shift_jis',
@@ -417,12 +458,23 @@ const MULTI_BYTE_LABELS: Readonly<Record<string, string>> = {
  * module written by the registry itself (79 codecs, 20 of them measured over all 256 bytes
  * against the old path: 13 differed); the CJK codecs go through `TextDecoder` with
  * CPython's replacement policy (`decodeMultiByte`, where the residual is quantified); a
- * module this port has no decoder for (`utf_7`, `hz`, `iso2022_*`, `johab`, the JIS X
+ * module this port has no decoder for (`utf_7`, `hz`, `iso2022_kr`, `johab`, the JIS X
  * 0213 variants) decodes as UTF-8, which is the other remaining divergence.
+ *
+ * AMENDED at review round 4 (H1). This paragraph used to name `iso2022_*` among the modules
+ * with no decoder, and for seven of that family the code did something else and worse: the
+ * generator had written them a single-byte table, so they were decoded one byte at a time and
+ * their escape sequences became U+FFFD. The six `iso2022_jp*` modules now go through ICU's
+ * real decoder (`ESCAPE_LABELS`, where the three arms are scored); `hz`, `iso2022_kr` and
+ * `utf_7` are what is left of the no-decoder set, and for them this paragraph is now true.
  */
 export function decodeCharset(buf: Uint8Array, charset: string): string {
   const module = pyCodecModule(charset);
   if (module === null) return decodeUtf8(buf);
+  // BEFORE the table lookup, deliberately. A stateful codec must never be read as a byte
+  // map, and putting this first means a table that reappears cannot silently win again.
+  const escape = lookup(ESCAPE_LABELS, module);
+  if (escape !== undefined) return new TextDecoder(escape).decode(buf);
   const table = lookup(SINGLE_BYTE_TABLES, module);
   if (table !== undefined) return decodeSingleByte(buf, table);
   if (module === 'utf_8') return decodeUtf8(buf);
@@ -1190,7 +1242,7 @@ export class ZipReader {
       // `lzma` modules; Node core has neither, and a decompressor is not a dependency this
       // package takes. The sentence is in the pdf/doc/rtf ruling family: what the member is,
       // which server reads it, where the ruling is written down.
-      throw new DocumentReadError(
+      throw new ZipMethodUnsupported(
         `${this.pathName} is a zip but its ${name} uses compression method ${entry.method} ` +
           `(${entry.method === 12 ? 'bzip2' : 'lzma'}), which the Node server cannot decompress ` +
           '(the Python server reads it); see docs/porting.md',
@@ -1203,6 +1255,27 @@ export class ZipReader {
     }
     if (crc32(out) !== entry.crc) throw new BadZipFile(`Bad CRC-32 for file ${pyRepr(name)}`);
     return out;
+  }
+}
+
+/**
+ * The ruled bzip2/lzma refusal, as its own class — review round 4 (M1).
+ *
+ * It IS a `DocumentReadError` and its sentence is unchanged, so `docs/porting.md`'s ruling
+ * and every case that pins the wording still hold. What the subclass buys is that
+ * `isUnreadableOptional` can name exactly this refusal: on the reference the same members are
+ * a `NotImplementedError`, which `_UNREADABLE_OPTIONAL` catches through `RuntimeError`, so a
+ * TOLERANT read swallows it there and must swallow it here. Without the class the only way to
+ * recognise it would be `instanceof DocumentReadError`, which would also swallow the
+ * encrypted-member and shared-string refusals that the same call can raise.
+ */
+export class ZipMethodUnsupported extends DocumentReadError {
+  constructor(message: string) {
+    super(message);
+    // `BantamError` stamps `new.target.name`, and `name` is OBSERVABLE — `dump_py.py` prints
+    // `type(e).__name__` for the reference, where the same refusal is one class. The subclass
+    // is an internal distinction and must not become a second class name on the wire.
+    this.name = 'DocumentReadError';
   }
 }
 
@@ -1329,6 +1402,20 @@ function isDamagedMember(err: unknown): err is Error {
  * `_UNREADABLE_OPTIONAL`: why a tolerant read of `.rels` or `styles.xml` yields nothing
  * rather than raising — malformed, absent, unreadable, encrypted or unsupported-method
  * (`RuntimeError`), a lying checksum (`BadZipFile`) or a broken deflate stream (`zlib.error`).
+ *
+ * `ZipMethodUnsupported` is here, and that is review round 4 (M1). The reference's tuple
+ * catches `RuntimeError`, which covers the `NotImplementedError` its `zipfile` raises for a
+ * method it has no decompressor for; this list covered method 9 (`ZipMemberUnreadable`) but
+ * not 12 and 14, which this port answers with the ruled bzip2/lzma refusal instead. MEASURED
+ * on an `.xlsx` whose OPTIONAL `xl/styles.xml` is bzip2-compressed: the reference read the
+ * whole workbook and this port refused it — no manifest, no parts. `docs/porting.md`'s bzip2
+ * row rules the REQUIRED member and has no optional-member fixture, so that difference was
+ * unruled and unpinned; `bzip2-optional-styles.xlsx` is the fixture it lacked, and the two
+ * runtimes now answer the same bytes for it.
+ *
+ * The list is a CLASS list and the comment above it names the reference's classes; the two
+ * are the same SET, which is the claim the paragraph above used to make while the code
+ * quietly did not deliver it.
  */
 function isUnreadableOptional(err: unknown): boolean {
   return (
@@ -1336,6 +1423,7 @@ function isUnreadableOptional(err: unknown): boolean {
     err instanceof RangeError ||
     isOsError(err) ||
     err instanceof ZipMemberUnreadable ||
+    err instanceof ZipMethodUnsupported ||
     isDamagedMember(err)
   );
 }
@@ -2032,26 +2120,62 @@ export function columnLetter(index: number): string {
 }
 
 /**
- * `B7` -> 1. The cell's own reference decides its column; XML order is only a fallback.
- *
- * A reference is ASCII letters then ASCII digits, AS WRITTEN, or it is refused in the
- * reference's words (`_column`, review round 3): `r="ß1"` was a `TypeError` on the Python
- * side and column 486 (`SS1`, after `toUpperCase`) here, and a column number that depends
- * on a Unicode case table is not a fact about the workbook. `ß1`, `É1`, `A`, `1` and
- * `A1B` are all refused; the sentence names the reference and no file, like the
- * shared-string-index one.
+ * ECMA-376 gives a worksheet 16,384 columns, the last of them `XFD`. A reference past that
+ * does not name a column of any workbook, so this reader will not build a row wide enough to
+ * reach one. THE FORMAT'S NUMBER, not a limit invented here, which is why it is spelled as
+ * the last column's name rather than as a round figure someone liked.
  */
-export function columnIndex(ref: string | undefined, fallback: number): number {
-  if (!ref) return fallback;
+export const XLSX_MAX_COLUMNS = 16384;
+/**
+ * Four letters is already 18,278 (`AAAA`), past `XFD` whatever the letters are. Checking the
+ * LENGTH before the arithmetic is what keeps a megabyte of letters from being turned into a
+ * megabyte-long number on the way to being refused.
+ */
+const MAX_COLUMN_LETTERS = 3;
+/**
+ * Why a cell's own reference could not place it. Fixed strings, never the reference itself:
+ * `r` is whatever the file says, and an omission that echoed it would carry the file's bytes
+ * into the manifest with no bound at all.
+ */
+export const UNPLACED_SHAPE = 'the column of a cell whose reference is not letters then digits';
+export const UNPLACED_RANGE = 'the column of a cell past XFD, the last column the format has';
+
+/**
+ * `B7` -> `[1, '']`. The cell's own reference decides its column; XML order is a fallback.
+ *
+ * A reference is ASCII letters then ASCII digits naming a column the format has, or this
+ * reader cannot place it and says WHY. The match is on the reference AS WRITTEN and never on
+ * its uppercase (`_column`, review round 3): `r="ß1"` was a `TypeError` on the Python side
+ * and column 486 (`SS1`, after `toUpperCase`) here, and a column number that depends on a
+ * Unicode case table is not a fact about the workbook.
+ *
+ * AN ANSWER AND NOT A THROW, which is review round 4 (M2), mirroring `runtime-py` `a1acfa7`.
+ * Round 3 spelled the refusal as a `DocumentReadError` out of a function `sheetRows` does not
+ * catch, so ONE cell the reader could not place refused the entire workbook — measured on a
+ * two-sheet fixture where sheet `Good` is clean and sheet `Bad` holds one cell `r="1"`: no
+ * manifest, no parts, the clean sheet unreachable. `r="1"`, `r="A"` and `r="B7 "` all read
+ * before round 3. The strictness was right and its price was not: the cell keeps its text and
+ * takes its XML position, which is where it sat before round 3 and is the same position on
+ * both runtimes, and the column it did not get is disclosed as an `Omission` rather than
+ * charged to the whole document. The sentence "cell reference {r!r} is not a column-and-row
+ * reference like B7, so this reader cannot place it" NO LONGER EXISTS on either runtime.
+ *
+ * THE CEILING is review round 4 (M5). Round 3 made this function stricter about the SHAPE of
+ * a reference and left the resulting index unbounded: measured on the reference, a 1,755-byte
+ * xlsx whose one cell is `r="ZZZZZ1"` produced a 12,356,630-byte row, 7,041x the file. Row
+ * width is now bounded by the format at `XLSX_MAX_COLUMNS` fields however many bytes the file
+ * spends asking for more.
+ */
+export function columnIndex(ref: string | undefined, fallback: number): [number, string] {
+  if (!ref) return [fallback, ''];
   const match = /^([A-Za-z]+)[0-9]+$/.exec(ref);
-  if (match === null) {
-    throw new DocumentReadError(
-      `cell reference ${pyRepr(ref)} is not a column-and-row reference like B7, so this reader cannot place it`,
-    );
-  }
+  if (match === null) return [fallback, UNPLACED_SHAPE];
+  const letters = match[1] as string;
+  if (letters.length > MAX_COLUMN_LETTERS) return [fallback, UNPLACED_RANGE];
   let index = 0;
-  for (const ch of (match[1] as string).toUpperCase()) index = index * 26 + (ch.charCodeAt(0) - 64);
-  return index - 1;
+  for (const ch of letters.toUpperCase()) index = index * 26 + (ch.charCodeAt(0) - 64);
+  if (index > XLSX_MAX_COLUMNS) return [fallback, UNPLACED_RANGE];
+  return [index - 1, ''];
 }
 
 function sharedStrings(zf: ZipReader, path: string): string[] {
@@ -2104,6 +2228,7 @@ function sheetRows(
   const rows: string[] = [];
   let blank = 0;
   const dated = new Map<string, Map<number, number>>();
+  const unplaced = new Map<string, Map<number, number>>();
   for (const row of root.iter(NS_S + 'row')) {
     const cells = new Map<number, string>();
     let position = 0;
@@ -2112,8 +2237,16 @@ function sheetRows(
       const at = position;
       position += 1;
       if (!text) continue;
-      const column = columnIndex(cell.get('r'), at);
+      const [column, unplaceable] = columnIndex(cell.get('r'), at);
       cells.set(column, text);
+      if (unplaceable) {
+        let seen = unplaced.get(unplaceable);
+        if (seen === undefined) {
+          seen = new Map();
+          unplaced.set(unplaceable, seen);
+        }
+        seen.set(column, (seen.get(column) ?? 0) + 1);
+      }
       const t = cell.get('t');
       if (t === undefined || t === 'n') {
         const style = pyInt(cell.get('s') || '0');
@@ -2150,6 +2283,23 @@ function sheetRows(
         0,
         sortedColumns.map(columnLetter),
         code,
+      ),
+    );
+  }
+  // Then the unplaced cells, one omission per REASON, `pySorted` so the order is by
+  // codepoint the way `sorted(unplaced)` is on the reference — which puts `UNPLACED_RANGE`
+  // ("...past XFD...") before `UNPLACED_SHAPE` ("...whose reference is not..."), `p` before
+  // `w`. Same shape as `number-format`: a count, and the columns it landed in.
+  for (const reason of pySorted(unplaced.keys())) {
+    const columns = unplaced.get(reason) as Map<number, number>;
+    const sortedColumns = [...columns.keys()].sort((a, b) => a - b);
+    omissions.push(
+      new Omission(
+        OMIT_UNPLACED_CELL,
+        [...columns.values()].reduce((a, b) => a + b, 0),
+        0,
+        sortedColumns.map(columnLetter),
+        reason,
       ),
     );
   }

@@ -71,6 +71,18 @@ export type { Fact } from './factfile.js';
 export const VALID_TYPES = ['feedback', 'project', 'reference', 'user'] as const;
 
 /**
+ * `DURABLE_TYPES` — the types whose worth does NOT decay with time-since-last-recall, and
+ * which `compact` therefore archives only after every other candidate is exhausted
+ * (`byEviction`).
+ *
+ * An ARRAY walked with one `pyEqualValue` per entry, never a `Set`: this is compared
+ * against a value that came out of YAML uncast, and Python's `in` on a tuple is `==` per
+ * element where `in` on a set hashes and raises on a `list`. `runtime-py`'s
+ * `store.DURABLE_TYPES`.
+ */
+export const DURABLE_TYPES = ['feedback', 'user'] as const;
+
+/**
  * `re.compile(r"^[a-z0-9][a-z0-9-]*$")` used with `re.match`.
  *
  * The `\n?` is not decoration and not a widening: Python's `$` matches at the end of the
@@ -632,8 +644,9 @@ export class MemoryStore {
    * destination, so there is no state in which the two calls could answer differently.
    *
    * THE ORDER IS `byEviction`, NOT `byStaleness` — `sorted(facts, key=self._eviction_key)`.
-   * `feedback` is the user's standing instruction; it holds until revoked and its worth does
-   * not decay with time-since-last-recall, so a purely temporal key ranks that class exactly
+   * A `DURABLE_TYPES` fact — `feedback`, the user's standing instruction, or `user`, a
+   * durable fact about them — holds until revoked and its worth does not decay with
+   * time-since-last-recall, so a purely temporal key ranks those classes exactly
    * backwards. Measured on the real project store (index 21698 of a 24000-byte budget): one
    * auto-compaction archived 15 facts and 6 of them were `feedback`. See `byEviction`.
    */
@@ -773,12 +786,28 @@ export class MemoryStore {
    *
    * CLASS FIRST, THEN STALENESS. A `feedback` fact is a standing instruction from the user:
    * it holds until revoked, and its worth does not decay with time-since-last-recall, so the
-   * temporal key below is INVERTED for that one class — the better an instruction has been
-   * internalised the less anything recalls it, the staler it looks, and the sooner it leaves
-   * the index that is loaded at session start. `feedback` therefore ranks LAST and every
-   * other class is exhausted before any of it is archived. A priority and never a veto: the
-   * budget still wins, and with nothing else left feedback goes by staleness. Both sorts are
-   * STABLE, so a tied rank leaves the staleness answer below exactly as it was.
+   * temporal key below is INVERTED for that kind of fact — the better an instruction has
+   * been internalised the less anything recalls it, the staler it looks, and the sooner it
+   * leaves the index that is loaded at session start. That class therefore ranks LAST and
+   * every other class is exhausted before any of it is archived. A priority and never a
+   * veto: the budget still wins, and with nothing else left it goes by staleness. Both sorts
+   * are STABLE, so a tied rank leaves the staleness answer below exactly as it was.
+   *
+   * `DURABLE_TYPES` AND NOT `"feedback"` ALONE, because that reason is a property of the
+   * class and not of the word — review round 4 (M12), mirroring `runtime-py` `1d9e5eb`.
+   * `assets/skills/memory.md` tells the model that `user` is "a durable fact about the
+   * user", and a durable fact does not become less true because nothing looked it up.
+   * Measured on the reference before the change, on four facts one per type where nothing
+   * has ever been recalled: one slot to free and `compact` archived `ausr`, a never-recalled
+   * `user` fact, ahead of a `project` note created seven months later. The change is
+   * MONOTONE — the protected set only grows — so no existing store loses a fact this rank
+   * kept for it before. The two protected types share ONE rank rather than being ordered
+   * against each other: the reason for protecting them is identical, so any order between
+   * them would be an invention, and a tied rank leaves the staleness key to answer.
+   *
+   * The protected class is deliberately UNCAPPED. Nothing bounds how much of the index it
+   * may hold, and that cannot make `compact` fail: once every decaying fact is archived the
+   * loop keeps going through the protected ones by staleness, so the budget still wins.
    *
    * `last_recalled` ALONE conflated two opposite facts: one written seconds ago and one
    * nobody has asked for in a year both read as absent, and the empty string sorts before
@@ -793,10 +822,14 @@ export class MemoryStore {
    * are STABLE, so equal keys keep listing order on either side.
    */
   private byEviction(facts: readonly Fact[]): Fact[] {
-    // `1 if fact.type == "feedback" else 0`. `pyEqualValue` and not `===`, because `type`
+    // `1 if fact.type in DURABLE_TYPES else 0`. `pyEqualValue` and not `===`, because `type`
     // comes out of YAML uncast: a hand-edited `type: 2026` puts a `date` in that field, and
     // Python's `==` answers False across types rather than raising the way `<` would.
-    const rank = (fact: Fact): number => (pyEqualValue(fact.type, 'feedback') ? 1 : 0);
+    // `some` over the array is one `pyEqualValue` per entry, which is what Python's `in` on
+    // a TUPLE is; nothing here hashes `fact.type`, so a `type: [a, b]` ranks 0 rather than
+    // taking `compact` — the operator's only way back under budget — down with it.
+    const rank = (fact: Fact): number =>
+      DURABLE_TYPES.some((durable) => pyEqualValue(fact.type, durable)) ? 1 : 0;
     const key = (fact: Fact): [FactValue, FactValue] => [
       pyTruthy(fact.last_recalled) ? fact.last_recalled! : pyTruthy(fact.created) ? fact.created! : '',
       fact.name,

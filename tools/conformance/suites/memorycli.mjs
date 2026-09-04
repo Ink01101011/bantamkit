@@ -357,8 +357,29 @@ const factFile = (n, { description = `about ${n}`, type = 'project', created = '
  * description is the same byte length; only the name and the type word vary, so each feedback
  * line is 62 bytes, each project line 61, and the index is 246.
  *
- * This fixture is what makes the two compaction scenarios below FAIL against a temporal-only
- * key on BOTH runtimes rather than merely differ — the eviction order is the whole datum.
+ * WHAT THIS FIXTURE DOES AND DOES NOT DO, corrected in review round 4 (M3 / I2-F3 == I3-F6).
+ * The comment here used to claim that this fixture "is what makes the two compaction
+ * scenarios below FAIL against a temporal-only key on BOTH runtimes rather than merely
+ * differ". THAT CLAIM IS FALSE and was disproved by mutation, not by argument. Every case in
+ * this suite is `expected` = Python's answer against `actual` = Node's (`run.mjs:32-36`), and
+ * a differential comparator cannot see a change applied identically to both sides. Measured
+ * on full copies of the tree with the class rank removed from BOTH runtimes
+ * (`store.py::_eviction_key` -> temporal only, `store.ts` `rank` -> `() => 0`), rebuilt:
+ *
+ *     node tools/conformance/run.mjs --suite memorycli
+ *       -> PASS: 210 cases, 26 ruled-different, 0 failures        # UNCHANGED, green
+ *     the same mutant's CLIs on this fixture at budget 200:
+ *       python archived afb.md bfb.md | node archived afb.md bfb.md   <-- feedback evicted
+ *
+ * So the defect the change exists to prevent — the user's standing instructions archived
+ * first — was fully present in the mutant and this suite said PASS. What the SCENARIOS give
+ * is a one-sided-drift detector, which is real and worth having.
+ *
+ * What makes the two scenarios fail against a temporal key on BOTH runtimes is the
+ * `archived-names` LITERAL each of them now carries — the same pattern `wire.mjs:1538-1540`
+ * already states for its own case, where a joint drift on both sides fails and not only a
+ * divergence. The three `runtime-py/tests/test_memory.py` tests and the Node
+ * `runtime-ts/test/store.test.mjs` cases I5 added at `e59f91f` hold it per runtime.
  */
 const FEEDBACK_STALEST = {
   dirs: ['facts', 'archive'],
@@ -548,7 +569,7 @@ function scenarios() {
     // order, even though both are NEWER than either feedback fact.
     ['compact-spares-feedback-until-the-other-classes-are-gone', FEEDBACK_STALEST,
       [['compact', '--store', '{BED}', '--budget', '200'], ['status', '--store', '{BED}', '--budget', '200']],
-      { remediation: 'restore one with: ' }],
+      { remediation: 'restore one with: ', archived: ['cpj', 'dpj'] }],
     // The other side of the same rule: a PRIORITY is not a veto. `--budget 100 --reserve 1`
     // sets a target of 99, and archiving BOTH project facts only gets the index to 124, so
     // `afb` — the stalest feedback fact — goes too and compaction still lands at or below the
@@ -557,7 +578,7 @@ function scenarios() {
     // above already pins; 1 is the smallest reserve this scenario can ask for.)
     ['compact-archives-feedback-once-nothing-else-is-left', FEEDBACK_STALEST,
       [['compact', '--store', '{BED}', '--budget', '100', '--reserve', '1'], ['archived', '--store', '{BED}']],
-      { remediation: 'restore one with: ' }],
+      { remediation: 'restore one with: ', archived: ['afb', 'cpj', 'dpj'] }],
 
     // ---- archived
     ['archived-empty', FOUR_FACTS, [['archived', '--store', '{BED}']]],
@@ -802,6 +823,31 @@ export async function run(ctx) {
       expected: pyRuns.map((r) => ({ exit: r.exit, timedOut: r.timedOut })),
       actual: nodeRuns.map((r) => ({ exit: r.exit, timedOut: r.timedOut })),
     });
+
+    if (extra.archived) {
+      // THE EVICTION ORDER, AS A LITERAL ON EACH SIDE — review round 4, M3.
+      //
+      // Every other case in this suite compares Python's answer to Node's, so two runtimes
+      // that regress TOGETHER stay green: measured, a both-sides revert to a temporal-only
+      // key archived the user's `feedback` facts and `--suite memorycli` still printed
+      // `210 cases, 0 failures`. This case is what closes that. The expected side is a typed
+      // literal, not either runtime's output, so it fails if EITHER side drifts and not only
+      // if the two part — the pattern `wire.mjs` already uses for the sentences it pins.
+      //
+      // The names come from the archive directory rather than from stdout, because the
+      // property is what MOVED, not what was printed about it.
+      const archivedNames = (b) =>
+        readdirSync(join(b, 'archive'))
+          .filter((f) => f.endsWith('.md'))
+          .map((f) => f.slice(0, -3))
+          .sort();
+      cases.push({
+        name: `${label}/archived-names: the eviction order as a literal on each side`,
+        kind: 'json',
+        expected: { python: extra.archived, node: extra.archived },
+        actual: { python: archivedNames(beds.py), node: archivedNames(beds.node) },
+      });
+    }
 
     if (extra.remediation) {
       // The two sentences the port could not copy, pinned twice: RULED on the raw line,

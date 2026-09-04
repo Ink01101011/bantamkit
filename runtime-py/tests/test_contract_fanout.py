@@ -135,18 +135,16 @@ UNATTRIBUTABLE = {
 # Asserted EXACTLY — a string that leaves this class must leave this dict in the same diff, so
 # the register can only be read down. `RB-P95` shipped five closures (`validation_error`,
 # `loop_note`, `loop_warn`, `document_paste_preamble`,
-# `document_manifest_omitted_unread_page`); these three are what it did not close.
+# `document_manifest_omitted_unread_page`); review round 4 closed a sixth,
+# `document_manifest_omitted_other`, when `docread` grew the `unplaced-cell` subject that
+# layer has no template for and `test_docread.py` rendered the whole fallback line for it —
+# the second source the entry below said would take one. These two are what is left.
 SINGLE_SOURCED_DEBT = {
     "evidence_no_observation": (
         "stated only in `test_critique.py`, and the J28 catalogue classes it LAUNDERING: both "
         "nodes that redden on it promise a different claim in their names. It is the one "
         "string on the surface whose sole source is not the golden file, and closing it means "
         "a second consumer of `render_evidence` asserting the words — `RB-P89` work, not this."
-    ),
-    "document_manifest_omitted_other": (
-        "the fallback line for an omission subject this layer has no template for. Its only "
-        "long run, `  NOT in those rows: `, is shared with `document_manifest_omitted_media`, "
-        "so only a whole-line render can attribute it, and only `test_layers.py` writes one."
     ),
     "document_paste_none": (
         "the zero-rows-shown case of the paste arm. `test_document_tools.py` DOES go red on a "
@@ -162,8 +160,8 @@ SINGLE_SOURCED_DEBT = {
 # argument — it is the measurement at the commit this gate landed, 3 of 38, written down so
 # that raising it is a line in a diff someone has to defend. It is a ratchet: it may fall, and
 # `test_the_single_sourced_wording_register_is_exactly_what_is_measured` is what makes it fall
-# rather than drift.
-MAX_SINGLE_SOURCED_SHARE = 3 / 38
+# rather than drift. Read down from 3/38 to 2/38 at review round 4, when the entry above left.
+MAX_SINGLE_SOURCED_SHARE = 2 / 38
 
 CONTRACT = {key: value for key, value in load_contract().items() if key != "name"}
 SPLIT = re.compile(r"(\{[^{}]*\})")

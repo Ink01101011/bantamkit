@@ -831,8 +831,13 @@ export async function run(ctx) {
    * `runtime-py/tests/data/docread/`:
    *
    *   2   eszett-cell-ref.xlsx — a cell ref `ß1`, which `str.upper()` once turned into `SS1`
-   *       and a TypeError; now `cell reference 'ß1' is not a column-and-row reference like
-   *       B7, so this reader cannot place it`;
+   *       and a TypeError. Round 3 answered `cell reference 'ß1' is not a column-and-row
+   *       reference like B7, so this reader cannot place it` and refused the workbook.
+   *       SUPERSEDED in job43b (M2, `a1acfa7` Python / `4e56836` Node): the refusal is gone
+   *       — the workbook READS, the unplaceable cell keeps its text at its XML position and
+   *       loses only its column, and the loss is disclosed as `1 unplaced-cell`. The old
+   *       sentence is recorded here because it was the round-3 answer, not because it is
+   *       still emitted; the case below pins the manifest that replaced it;
    *   3   compression-method-9.docx — method 9 (deflate64) has its OWN sentence now, `uses
    *       compression method 9, which this reader cannot decompress` (it used to print the
    *       encrypted sentence, docs/porting.md);
@@ -1472,8 +1477,12 @@ export async function run(ctx) {
       return line === undefined ? null : line.replace(/^0[\t ]/, '');
     };
     const ids = [2, 3, 4, 5, 6, 7, 8, 9, 10];
-    const reader = [2, 3, 4, 5, 6];
-    const reads = [7, 8, 10];
+    // Id 2 (`eszett-cell-ref.xlsx`) MOVED from `reader` to `reads` in job43b/M2: an
+    // unplaceable cell reference now costs that cell its column and is disclosed as an
+    // omission, instead of refusing the whole workbook. Both runtimes moved together
+    // (`a1acfa7` Python, `4e56836` Node); the literals below are what they answer now.
+    const reader = [3, 4, 5, 6];
+    const reads = [2, 7, 8, 10];
     for (const id of [...reader, ...reads]) {
       cases.push({
         name: `read-round3: id ${id}: the refusal bit, side to side`,
@@ -1483,7 +1492,7 @@ export async function run(ctx) {
       });
     }
     cases.push({
-      name: 'read-round3: the ids the reader refuses (2-6) and reads (7, 8, 10), on each side, as a literal',
+      name: 'read-round3: the ids the reader refuses (3-6) and reads (2, 7, 8, 10), on each side, as a literal',
       kind: 'json',
       expected: { python: reader, node: reader },
       actual: { python: [...reader, ...reads].filter((id) => refusedAt(python, id)), node: [...reader, ...reads].filter((id) => refusedAt(node, id)) },
@@ -1507,7 +1516,6 @@ export async function run(ctx) {
     // literal was generated from (`.venv/bin/python -m bantamkit.mcpserver` over the fixture,
     // H1), never typed; the case fails if EITHER side drifts, not only if they part.
     const sentences = {
-      2: `error: cell reference 'ß1' is not a column-and-row reference like B7, so this reader cannot place it`,
       3: 'error: compression-method-9.docx is a zip but its word/document.xml uses compression method 9, which this reader cannot decompress',
       4: 'error: encrypted-mimetype.odt is a zip but its mimetype is encrypted, so this reader cannot read it without a password',
       5: `error: bad-crc.docx is a zip but its word/document.xml is damaged (Bad CRC-32 for file 'word/document.xml'), so this reader cannot read it`,
@@ -1519,6 +1527,25 @@ export async function run(ctx) {
         kind: 'json',
         expected: { python: sentence, node: sentence },
         actual: { python: firstLine(python, Number(id)), node: firstLine(node, Number(id)) },
+      });
+    }
+    // Id 2 is no longer a refusal, so it is no longer a first-line case: the WHOLE manifest
+    // is pinned as a literal on each side. The three lines are the datum — the workbook still
+    // reads, the placeable cell still lands, and the cell that could not be placed is
+    // DISCLOSED as an omission rather than dropped in silence. A runtime that went back to
+    // refusing the workbook, or forward to swallowing the unplaceable cell without saying so,
+    // fails here on both sides, not only when the two part.
+    {
+      const eszett = checkedIn['eszett-cell-ref.xlsx'];
+      const manifest =
+        `${eszett} (xlsx) part 0 "Sharp": 1 rows, numbered 0 to 0\n` +
+        '  row 0 is the header: x\n' +
+        '  NOT in those rows: 1 unplaced-cell (the column of a cell whose reference is not letters then digits)';
+      cases.push({
+        name: 'read-round3: id 2: the whole manifest, as a literal on each side — an unplaceable cell costs its column, not the workbook',
+        kind: 'json',
+        expected: { python: manifest, node: manifest },
+        actual: { python: toolTextOf(python, 2) ?? null, node: toolTextOf(node, 2) ?? null },
       });
     }
     // The 4301-digit character reference in a `<p>` is CAPPED to one replacement character on

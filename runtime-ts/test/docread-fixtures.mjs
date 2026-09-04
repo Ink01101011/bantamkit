@@ -455,6 +455,16 @@ export function fixtures() {
     // ---- job43 G2: the zip member arms
     // bzip2 / lzma: the reference reads both; the port refuses by method — the ruling.
     'bzip2.docx': docxRaw(HELLO_BZIP2),
+    // Review round 4 (M1): the SAME undecompressable method, on an OPTIONAL member. The
+    // reference reads the whole workbook (its `bz2` decompresses the styles); this port
+    // cannot decompress them, and a member it reads TOLERANTLY must cost it that member and
+    // never the document. No cell here is date-styled, so what `styles.xml` would have said
+    // changes nothing and BOTH runtimes answer the same bytes — that is what makes this a
+    // parity case rather than a second ruling.
+    'bzip2-optional-styles.xlsx': xlsxBytes(
+      [['Sales', 'worksheets/sheet1.xml', row([inlineCell('A1', 'ok')])]],
+      { extra: { 'xl/styles.xml': STYLES_BZIP2 } },
+    ),
     'lzma.docx': docxRaw(HELLO_LZMA),
     // A stored member relabelled method 9 (deflate64): `NotImplementedError` is a
     // `RuntimeError` on the reference, so BOTH sides print the encrypted sentence.
@@ -579,6 +589,21 @@ const HELLO_BZIP2 = {
   size: 151,
   raw: Buffer.from(
     '425a68393141592653599f7be89700001299805001d1173fe7dee0200064254d4c9a4f21a8f43537aa3d4f141aa7e94c1190321e90057bd6a6bded1dd85252727db0c2330aa306bb169f28d739b664c8450c8cf23f199a7ce5f493b75da05521c36372983068f623ee5cbaa615457a04b168d59eb95b025aeaa8876082492e47fd80fc5dc914e142427defa25c',
+    'hex',
+  ),
+};
+/**
+ * `xl/styles.xml` — a styleSheet with no custom formats — as CPython's `zipfile` compressed
+ * it with `compress_type=ZIP_BZIP2`. Review round 4 (M1) needs a bzip2 member that is
+ * OPTIONAL rather than required, and the ruled `bzip2.docx` puts its member at
+ * `word/document.xml`, which is neither.
+ */
+const STYLES_BZIP2 = {
+  method: 12,
+  crc: 0xb4212c1d,
+  size: 157,
+  raw: Buffer.from(
+    '425a683931415926535992411f740000101f805001f117012008402fe7de602000750d240da8f446468032320d3494f6a27ea9fa4d234d0f534c8c9b67f6ea0f8eac29a3d6a70b2f2c6166bb7644b634629748ea8ba0c019242d70dfa31ec4a214e614ee905c832f7a38c5054815427d69a623e29e070cddf71bf58e32f0a2794f8322fecc1863dcb5f21680c9d39ad6f1fc5dc914e1424249047dd0',
     'hex',
   ),
 };
