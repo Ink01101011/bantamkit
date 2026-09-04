@@ -14,7 +14,7 @@
  * nothing still gets its tree compared — "it raised before touching disk" is a claim about
  * the directory, and this is where it is checked rather than asserted.
  *
- * The real 65-fact store is one of the fixtures, copied to scratch. It is never opened in
+ * The operator's real fact store is one of the fixtures, copied to scratch. It is never opened in
  * place: the defect this module reimplements destroyed that store's index once.
  */
 import {
@@ -876,7 +876,7 @@ export async function run(ctx) {
         'carries the counts: a 1-line index.md 42 bytes against 41, a 10-line fact file 134 ' +
         'against 124, a 93-line checkpoint 2609 against 2516. Those pairs were CPython ' +
         'against the port BEFORE the reversal; today both sides would write the CRLF number. ' +
-        'The live 65-line store is arithmetic on that rule, never a second measurement — it ' +
+        'The live store is arithmetic on that rule, never a second measurement — it ' +
         'is not on a runner and must never be put on one.',
     );
   }

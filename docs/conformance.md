@@ -175,7 +175,17 @@ A failure prints both sides in full:
 
 ## The real store is copied, never opened in place
 
-The `codec` and `store` suites use the live 65-fact store as a fixture because synthetic
+**The size of that store is not written down here on purpose (corrected 2026-09-04, review
+round 4).** Three places used to say "the real 65-fact store" — this line and the `codec` and
+`store` suite headers — while the store was at 99 facts / 20,767 bytes when this line was last
+read. A count of a directory the operator writes to every day cannot be kept true in prose, and
+a wrong one reads as a claim about the corpus a case was measured over. Every run prints
+today's number in its own notes (`real corpus: N facts copied from …`, and `live index: N bytes
+on disk`), and the corpus-integrity case added by I3b is what makes a SHRINKING corpus a
+failure rather than a smaller number. These are pointers, not records, so they are corrected in
+place.
+
+The `codec` and `store` suites use the live fact store as a fixture because synthetic
 facts do not carry the shapes real ones do — 35 of the 65 carry PyYAML's 80-column wrap.
 
 They **copy it to scratch with `cpSync(..., { preserveTimestamps: true })`** and run there.

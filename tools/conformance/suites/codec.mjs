@@ -6,7 +6,7 @@
  * round-trips its own output is the failure mode this suite exists to catch — the live
  * store already holds files Python wrote, and `_stamp` rewrites one on every recall hit.
  *
- * The corpus is the real 65-fact store (copied to scratch — never opened in place; a defect
+ * The corpus is the operator's real fact store (copied to scratch — never opened in place; a defect
  * in this area destroyed its index once) plus an adversarial set, because the real corpus
  * is not adversarial enough: it has no non-ASCII in any frontmatter, no quoted scalar and
  * no empty description.
