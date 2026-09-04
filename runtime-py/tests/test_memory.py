@@ -277,6 +277,105 @@ def test_the_budget_still_wins_once_nothing_but_feedback_is_left(tmp_path):
     store.lint()
 
 
+# ---- the same protection, for the other class whose worth does not decay -----------------
+#
+# MEASURED DEFECT (review round 4, M12). `_eviction_key` protected `feedback` on the stated
+# reason that its value "does not decay with time-since-last-recall". That reason is a
+# property of the CLASS, not of the word `feedback`, and it holds verbatim for `user` —
+# `assets/skills/memory.md:13`, the instructions this server hands the model, define that
+# type as "a durable fact about the user". A durable fact does not become less true because
+# nothing looked it up. Measured before the fix on the seed below: one slot to free and
+# `compact` archived `ausr`, a never-recalled `user` fact, ahead of `dpj`, a `project` note
+# created seven months later.
+#
+# The property: `user` and `feedback` are ONE class for eviction, and the class is a
+# priority and not a veto — the budget still wins, and within the class the staleness order
+# is untouched. The change is monotone: every fact protected before is protected still, so
+# no store loses a fact this rule kept for it yesterday.
+
+DURABLE_ROLES = (
+    ("ausr", "user", "2026-01-01"),
+    ("bfb", "feedback", "2026-01-02"),
+    ("crf", "reference", "2026-08-01"),
+    ("dpj", "project", "2026-08-02"),
+)
+
+
+def _seed_durable_is_stalest(root):
+    """Four facts, one per type, where the two DURABLE ones are the stalest in the store.
+
+    Nothing is ever recalled, so `_staleness_key` falls back to `created` and the purely
+    temporal order is ausr, bfb, crf, dpj — the user's own durable facts first out.
+    """
+    store = MemoryStore(root, index_budget=100_000, today=lambda: "2026-01-01")
+    for name, type_, created in DURABLE_ROLES:
+        store._today = lambda created=created: created
+        store.save(type_, name, _describe(name), f"body of {name}")
+    store._today = lambda: "2026-08-21"
+    return store
+
+
+def test_compact_archives_a_reference_fact_before_any_user_fact(tmp_path):
+    """One slot to free, and the stalest fact in the store is a never-recalled `user` fact.
+
+    The temporal key answers `ausr`. The answer that holds the property is `crf` — the
+    stalest fact of a class whose worth DOES decay — because no durable fact may go while
+    any other class still has a candidate."""
+    store = _seed_durable_is_stalest(tmp_path / "mem")
+    sizes = {f.name: len(store._index_line(f).encode()) for f in store._facts()}
+
+    store.index_budget = sum(sizes.values()) - 1
+    result = store.compact(reserve=0)
+
+    assert result.names == ["crf"]
+    assert [f.type for f in result.archived] == ["reference"]
+    assert sorted(f.name for f in store._facts()) == ["ausr", "bfb", "dpj"]
+    assert result.index_after <= result.target
+    store.lint()
+
+
+def test_compact_orders_every_decaying_fact_ahead_of_every_durable_one(tmp_path):
+    """Two slots orders the whole decaying class ahead of the whole durable class, and the
+    staleness order inside each class is unchanged: `crf` (2026-08-01) then `dpj`
+    (2026-08-02), both NEWER than either durable fact."""
+    store = _seed_durable_is_stalest(tmp_path / "mem")
+    sizes = {f.name: len(store._index_line(f).encode()) for f in store._facts()}
+
+    store.index_budget = sum(sizes.values()) - sizes["crf"] - 1
+    result = store.compact(reserve=0)
+
+    assert result.names == ["crf", "dpj"]
+    assert sorted(f.name for f in store._facts()) == ["ausr", "bfb"]
+
+
+def test_the_budget_still_wins_once_nothing_but_durable_facts_are_left(tmp_path):
+    """A priority, never a veto — the same guarantee `feedback` already carried. Once every
+    decaying fact is gone and the index is still over target, the durable class is archived
+    by staleness, stalest first, and `compact` lands at or below the target."""
+    store = _seed_durable_is_stalest(tmp_path / "mem")
+    sizes = {f.name: len(store._index_line(f).encode()) for f in store._facts()}
+
+    store.index_budget = sizes["bfb"]  # only the newest durable fact can survive
+    result = store.compact(reserve=0)
+
+    assert result.names == ["crf", "dpj", "ausr"]
+    assert [f.name for f in store._facts()] == ["bfb"]
+    assert result.index_after <= result.target
+    assert store.compact(reserve=0).archived == [], "still idempotent at the floor"
+    store.lint()
+
+
+def test_the_eviction_rank_never_raises_on_a_hand_edited_type(tmp_path):
+    """`type` comes out of YAML with no cast, so `type: [a, b]` really does put a `list` in
+    that field. The rank compares with `==` against a TUPLE and never hashes the value: a
+    membership test against a `set` would raise `TypeError: unhashable type: 'list'` and
+    take `compact` — the operator's only way back under budget — with it."""
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-21")
+    for weird in ([1, 2], {"a": 1}, 2026, None, b"user"):
+        fact = type("F", (), {"type": weird, "last_recalled": None, "created": "", "name": "x"})()
+        assert store._eviction_key(fact)[0] == 0
+
+
 @pytest.mark.parametrize("budget", [512, 1024, 2048, 4096])
 @pytest.mark.parametrize("desc_len", [10, 40, 120])
 def test_compact_frees_room_in_the_state_the_budget_error_leaves_behind(

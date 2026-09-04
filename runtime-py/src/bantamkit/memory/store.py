@@ -16,6 +16,11 @@ import yaml
 from bantamkit.client import BantamError
 
 VALID_TYPES = {"user", "feedback", "project", "reference"}
+# The types whose worth does NOT decay with time-since-last-recall, and which `compact`
+# therefore archives only after every other candidate is exhausted (`_eviction_key`).
+# A TUPLE and not a set: this is compared against a value that came out of YAML uncast, and
+# `in` on a tuple is `==` per element where `in` on a set hashes and can raise.
+DURABLE_TYPES = ("feedback", "user")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 DUPLICATE_JACCARD = 0.5
 
@@ -575,24 +580,49 @@ class MemoryStore:
     def _eviction_key(self, fact: Fact) -> tuple[int, str, str]:
         """`compact`'s order: class first, then staleness. Nothing else reads it.
 
-        A `feedback` fact is the user's own correction, and it is the one class whose value
-        does NOT decay with time-since-last-recall -- it holds until the user revokes it. The
-        temporal key is inverted for exactly that class, which is why this rank exists and
-        why `feedback` sorts LAST: an instruction internalised well enough that nothing needs
-        to look it up again reads as maximally stale, and archiving moves it out of the index
-        loaded at session start, so the user's own correction silently stops being surfaced.
-        That is the failure this store exists to prevent, and it was measured happening -- on
-        the real project store one auto-compaction archived 15 facts, 6 of them `feedback`.
+        A `feedback` fact is the user's own correction, and its value does NOT decay with
+        time-since-last-recall -- it holds until the user revokes it. The temporal key is
+        inverted for exactly that kind of fact, which is why this rank exists and why it
+        sorts LAST: an instruction internalised well enough that nothing needs to look it up
+        again reads as maximally stale, and archiving moves it out of the index loaded at
+        session start, so the user's own correction silently stops being surfaced. That is
+        the failure this store exists to prevent, and it was measured happening -- on the
+        real project store one auto-compaction archived 15 facts, 6 of them `feedback`.
+
+        `DURABLE_TYPES` AND NOT `"feedback"` ALONE, because that reason is a property of the
+        class and not of the word. Review round 4 (M12) read it back against this repo's own
+        instructions to the model -- `assets/skills/memory.md`, "A durable fact about the
+        user -> `user`" -- and a durable fact does not become less true because nothing
+        looked it up. Measured before the change, on four facts one per type where nothing
+        has ever been recalled: one slot to free and `compact` archived `ausr`, a
+        never-recalled `user` fact, ahead of a `project` note created seven months later.
+        The change is MONOTONE -- the protected set only grows -- so no existing store loses
+        a fact this rank kept for it before.
+
+        The two protected types share ONE rank rather than being ordered against each other:
+        the reason for protecting them is identical, so any order between them would be an
+        invention, and a tied rank leaves `_staleness_key` to answer, which is what it is for.
 
         Within a class the order is `_staleness_key` unchanged, and `sorted` is stable, so a
         tied rank leaves the staleness answer exactly as it was.
 
-        `fact.type == "feedback"` and never `is` or `in`: `type` comes out of YAML with no
-        cast, so a hand-edited `type: 2026` really does put a `date` in that field. `==` is
-        False across types and never raises, where `<` on the same pair would;
-        `runtime-ts` spells the identical comparison `pyEqualValue`.
+        A PRIORITY AND NOT A VETO, and deliberately UNCAPPED. Nothing bounds how much of the
+        index the protected class may hold, and that cannot make `compact` fail: once every
+        decaying fact is archived the loop keeps going through the protected ones by
+        staleness, so the budget still wins. Capping the class instead -- protecting only the
+        first N bytes of it -- would archive a fact that today's rank keeps, which is exactly
+        what a live user store must not be made to do by a review round. The crowding that a
+        cap would address is not live either: on the real store at `952586e` the protected
+        classes hold 5634 of 20241 index bytes.
+
+        `in` against a TUPLE and never a `set` or `is`: `type` comes out of YAML with no
+        cast, so a hand-edited `type: 2026` really does put a `date` in that field and
+        `type: [a, b]` a `list`. `in` on a tuple is `==` per element -- False across types,
+        never raising -- where a `set` would hash the value and take `compact`, the operator's
+        only way back under budget, down with a `TypeError`. `runtime-ts` spells the same
+        comparison as one `pyEqualValue` per entry.
         """
-        return (1 if fact.type == "feedback" else 0, *self._staleness_key(fact))
+        return (1 if fact.type in DURABLE_TYPES else 0, *self._staleness_key(fact))
 
     def _listing(self, directory: Path, consequence: str) -> list[str]:
         """The `*.md` names in one of this store's two directories, or a raise. Never a lie.
