@@ -336,7 +336,25 @@ and `_cmd_archived` let an unreadable `facts/` escape `main` as a CPython traceb
 line it emitted was CRLF on Windows (`fbcf7c8`); and `MemoryStore.compact` moved an archived
 fact with `os.rename`, which raises `FileExistsError` on Windows over an existing
 `archive/<name>.md` and replaces silently on POSIX (`d239480`, now `os.replace`, which is
-what the port always called). They are named here rather than listed above because this list
+what the port always called).
+
+`MemoryStore.archive` shipped with the same `os.rename` and was closed the same way on
+2026-09-05, by review round 5. It is not a fourth entry because it never reached this list —
+it was found in review before it merged — but the reachability argument is worth recording,
+because it is NOT `compact`'s. `compact` needs a real file already sitting at
+`archive/<name>.md`; `archive`'s second guard refuses that outright. What reaches `archive`
+is the state the guard cannot see: `_reachable` is `Path.exists()`, which FOLLOWS symlinks,
+so a **dangling symlink** at `archive/<name>.md` is an occupied directory ENTRY reported as
+absent — measured on macOS, `os.path.lexists` True and `Path.exists` False, both guards
+passed, and the move landed on top of the link. `restore`'s forward move has the identical
+hole one directory over and is registered in `docs/roadmap-toolbox.md` (z) rather than fixed
+here: narrowing a shipped command is a product decision, and this list is for defects the
+PORT may not fix, which that is not — it is in both runtimes equally. The rollbacks on
+both methods stay `rename` against the port's `pyReplace`, on `d239480`'s terms: they move
+back onto a path the forward move has just emptied, so no state tells the two calls apart and
+there is no red to demonstrate.
+
+They are named here rather than listed above because this list
 is for what is **not** fixed, and a closed item left in it is a stale record. None of the
 three was ruled: a ruling is the price of a DELIBERATE difference, and an operator CLI that
 answers a permission error with a stack trace is not a decision anybody made. The measurement

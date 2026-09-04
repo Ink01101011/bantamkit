@@ -234,6 +234,98 @@ function preToolUseRead(input) {
   log({ event: 'PreToolUse', action: prev ? 'allow-after-refuse-or-change' : 'record', file, size: st.size });
 }
 
+// ---------------------------------------------- PostToolUse → the usage events log
+// One line per tool call, for `tools/ledger/tool-usage.mjs` to read when a transcript is gone.
+// The transcript is authoritative while it exists; this is the durable copy behind it, and it
+// is the ONLY record of a session whose transcript the host has since deleted (4 of 110 logged
+// sessions, measured 2026-09-04).
+//
+// `appendFileSync` and not the read-modify-write `writeLedger` above: the host fires one hook
+// PROCESS per tool call and a parallel tool block fires them concurrently, which loses 40–50 %
+// of a read-modify-write's records (roadmap-toolbox row 8, follow-up (q)). An append of a line
+// this size is atomic on both platforms, so this half has no such race.
+//
+// Folded in from tool-metrics' `hooks/scripts/log_event.py`; the field names are that file's,
+// so an events.jsonl written by either program reads in either.
+function appendUsageEvent(input) {
+  const tool = input.tool_name || '?';
+  const ti = input.tool_input && typeof input.tool_input === 'object' ? input.tool_input : {};
+  const record = {
+    ts: new Date().toISOString(),
+    session: input.session_id || '',
+    // The HOST's slug, not tool-metrics' — `token-ledger.mjs` uses this same expression.
+    // log_event.py mapped `.` to a dash as well, which the host does not: this machine has
+    // both `-private-tmp-r3-p3.p1ex6K` and `-private-tmp-r3-p3-p1ex6K` as separate project
+    // dirs, so the python slug split one project into two keys under `--group project` and
+    // made `--project` miss the recovered rows entirely.
+    project: String(input.cwd || '').replace(/[\\/:]/g, '-'),
+    tool,
+    server: tool.startsWith('mcp__') && tool.split('__').length >= 3 ? tool.split('__')[1] : 'builtin',
+    // The dedupe key. Two writers append to this file by design and one machine can register
+    // the hook at both user and project scope, so a call can be logged twice; the reader
+    // dedupes on this the same way it dedupes transcript blocks. Rows written before this
+    // field existed simply carry none.
+    tool_use_id: String(input.tool_use_id ?? ''),
+    detail: tool === 'Skill' ? String(ti.skill ?? '')
+      : tool === 'Agent' ? String(ti.subagent_type || 'general-purpose')
+        : '',
+  };
+  const dir = process.env.TOOL_METRICS_DIR
+    || path.join(os.homedir(), '.claude', 'tool-metrics');
+  const file = path.join(dir, 'events.jsonl');
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(file, `${JSON.stringify(record)}\n`);
+    pruneUsageEvents(file);
+  } catch { /* the log is a convenience; never fail a tool call over it */ }
+}
+
+// The log's ONLY reader is `tools/ledger/tool-usage.mjs`, and it reads ONLY the sessions whose
+// transcript the host has deleted — 4 of 110 when this was written, holding 115 of 40,873
+// lines. The other 99.7 % are dead weight that the reader re-materialises on every run, and
+// now that this arm is matcher-less the file grows once per tool call (~42k/month here).
+//
+// So: a line whose session still has a transcript is redundant BY CONSTRUCTION, and dropping
+// it loses nothing the reader would have used. Above the cap, that is exactly what this drops.
+//
+// The cost is paid the right way round. `statSync` runs on every call and is a few
+// microseconds; the walk and rewrite run only when the file is over the cap, and each prune
+// puts it far enough under that the next one is thousands of calls away. The walk reads
+// DIRECTORY ENTRIES, never file contents.
+const EVENTS_MAX_BYTES = 4_000_000;
+function pruneUsageEvents(file) {
+  let size = 0;
+  try { size = fs.statSync(file).size; } catch { return; }
+  if (size <= EVENTS_MAX_BYTES) return;
+
+  const projects = path.join(HOME, '.claude', 'projects');
+  const onDisk = new Set();
+  const walk = (dir) => {
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (e.isDirectory()) { onDisk.add(e.name); walk(path.join(dir, e.name)); }
+      else if (e.name.endsWith('.jsonl')) onDisk.add(e.name.slice(0, -'.jsonl'.length));
+    }
+  };
+  walk(projects);
+  // A walk that found nothing is an unreadable projects dir, not a machine with no
+  // transcripts. Pruning on that reading would delete the whole log.
+  if (onDisk.size === 0) { log({ event: 'PostToolUse', action: 'prune-skipped', reason: 'no transcripts found', size }); return; }
+
+  const kept = [];
+  for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    let record;
+    try { record = JSON.parse(line); } catch { kept.push(line); continue; }  // keep what we cannot judge
+    if (!record?.session || !onDisk.has(record.session)) kept.push(line);
+  }
+  const tmp = `${file}.prune-${process.pid}`;
+  fs.writeFileSync(tmp, kept.length ? `${kept.join('\n')}\n` : '');
+  fs.renameSync(tmp, file);
+  log({ event: 'PostToolUse', action: 'prune', before: size, after: fs.statSync(file).size, kept: kept.length });
+}
+
 // ---------------------------------------------- PostToolUse memory_save → compact
 async function postSave(input) {
   const ledger = readLedger(input.session_id);
@@ -476,7 +568,9 @@ async function main() {
     case 'SessionStart': return sessionStart(input);
     case 'UserPromptSubmit': return userPromptSubmit(input);
     case 'PreToolUse': return input.tool_name === 'Read' ? preToolUseRead(input) : undefined;
-    case 'PostToolUse': return input.tool_name === 'mcp__bantamkit__memory_save' ? postSave(input) : undefined;
+    case 'PostToolUse':
+      appendUsageEvent(input); // every tool, not just bantamkit's — it is a usage denominator
+      return input.tool_name === 'mcp__bantamkit__memory_save' ? postSave(input) : undefined;
     case 'PreCompact': return preCompact(input);
     case 'PostCompact': return postCompact(input);
     case 'Stop': return stop(input);

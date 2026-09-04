@@ -28,20 +28,25 @@
  * A `ruling:` case proves the two sides DIFFER. It never proves either is right, and on its
  * own it is a licence for anything else in the same bytes to drift with it. So a ruling here
  * is meant to sit beside an unruled case that holds the rest of those bytes still. This suite
- * emits 24 rulings and ALL 24 NOW HAVE ONE — the twenty-fourth got its companion on
- * 2026-08-25; see the `help-top/w40` entry below for what it took and what was wrong before.
- * All 24, by family:
+ * emits 29 rulings and ALL 29 HAVE ONE — the last family to get one was `help-top/w40` on
+ * 2026-08-25; see its entry below for what it took and what was wrong before.
  *
- *   - 13 `…/stderr-raw`, one per prog-bearing shape in `ARGV_SHAPES`. Companion: that
+ * THE COUNTS BELOW ARE PER-FAMILY SIZES, NOT CONSTANTS: each is `one per <declared thing>`,
+ * and every one of them moved when `archive` was added (2026-09-05). They were stale before
+ * that too — this block said 24 while the run printed 26, because the two feedback scenarios
+ * added a remediation ruling each and nobody re-counted. All 29, by family:
+ *
+ *   - 14 `…/stderr-raw`, one per prog-bearing shape in `ARGV_SHAPES`. Companion: that
  *     shape's `…/stderr`, the same stream compared after the substitution.
- *   - 4 `…/w200/prog-line-raw`, one per help form — line 1 alone, where the usage line fits.
+ *   - 5 `…/w200/prog-line-raw`, one per help form — line 1 alone, where the usage line fits.
  *     Companion: the unruled `…/w200/usage-block`, which CONTAINS that line substituted.
- *   - 4 `…/w80/usage-block`, one per help form, carrying `HANGING_INDENT_RULING`. Companion:
+ *   - 5 `…/w80/usage-block`, one per help form, carrying `HANGING_INDENT_RULING`. Companion:
  *     `…/w80/usage-block-compensated`, the reference re-run `DELTA` columns wider and
  *     dedented, which must match exactly and is what actually watches the wrap.
- *   - 2 `…/remediation-line-raw`, on `lint`'s `try: …` and `compact`'s `restore one with: …`.
- *     Companion: `…/remediation-line`, the same line substituted — and the whole sentence
- *     rides again inside the unruled `…/transcript` of every scenario that prints it.
+ *   - 4 `…/remediation-line-raw`, on `lint`'s `try: …` and `compact`'s `restore one with: …`,
+ *     one per scenario that prints one. Companion: `…/remediation-line`, the same line
+ *     substituted — and the whole sentence rides again inside the unruled `…/transcript` of
+ *     every scenario that prints it.
  *   - 1 `help-top/w40/usage-block`, carrying `BRANCH_SPLIT_RULING`. Companion:
  *     `help-top/w40/usage-block-compensated`, added 2026-08-25 and built the same way as the
  *     w80 ones.
@@ -420,13 +425,22 @@ const applyModes = (root, spec, on) => {
 // ------------------------------------------------------------------------------- the matrix
 
 /**
- * The four help forms. `restore` is here because it is the only sub-parser with a positional,
- * and a positional is rendered in a section the top parser's help does not have.
+ * The five help forms. `restore` is here because it was the first sub-parser with a
+ * positional, and a positional is rendered in a section the top parser's help does not have.
+ *
+ * `archive` is here because it is the SECOND, and because nothing else in this repository
+ * compares its help at all. `help-top`'s body already carries the one-line subcommand entry,
+ * but `archive -h` is a whole page — a usage line, a `positional arguments:` section, and the
+ * three shared options — that the port had to render itself, and CLAUDE.md's gate is a
+ * conformance case rather than the fact that someone wrote it twice. Its prog is
+ * `bantamkit-memory archive`, exactly as long as `bantamkit-memory restore`, so it lands in
+ * the same argparse branch as `restore` at every width here and is ruled in the same cell.
  */
 const HELP_FORMS = [
   ['help-top', ['-h']],
   ['help-status', ['status', '-h']],
   ['help-compact', ['compact', '-h']],
+  ['help-archive', ['archive', '-h']],
   ['help-restore', ['restore', '-h']],
 ];
 
@@ -468,6 +482,12 @@ const RULED_USAGE = new Map([
   ['help-top@80', HANGING_INDENT_RULING],
   ['help-status@80', HANGING_INDENT_RULING],
   ['help-compact@80', HANGING_INDENT_RULING],
+  // DECLARED, not observed: `bantamkit-memory archive` is 24 characters against the
+  // reference's 34, the same pair of lengths as `restore`, so at 80 both sides are in the
+  // hanging branch and indent to different columns, and at 40 both are in the flat branch and
+  // must match with no compensation. If either half of that is wrong the run says so — a
+  // ruling that matches fails as STALE and an unruled cell that differs fails as a mismatch.
+  ['help-archive@80', HANGING_INDENT_RULING],
   ['help-restore@80', HANGING_INDENT_RULING],
 ]);
 
@@ -491,6 +511,10 @@ const ARGV_SHAPES = [
   ['no-subcommand', [], true],
   ['bad-choice', ['nope'], true],
   ['restore-missing-positional', ['restore'], true],
+  // The mirror of the line above. `archive <name>` is the exact inverse of `restore <name>`,
+  // so argparse refuses the two the same way and this is the case that says the port's
+  // second positional is wired the same as its first — same sentence, same stream, exit 2.
+  ['archive-missing-positional', ['archive'], true],
   ['budget-not-an-int', ['status', '--budget', 'notanint'], true],
   ['budget-zero', ['status', '--budget', '0'], true],
   ['budget-negative', ['status', '--budget', '-5'], true],
@@ -585,6 +609,105 @@ function scenarios() {
     ['archived-populated', { ...FOUR_FACTS, ...archived(['old-one', 'old-two']) },
       [['archived', '--store', '{BED}']]],
 
+    // ---- archive <name>: the door out, and the exact inverse of `restore <name>`
+    //
+    // Everything above moves a fact out by RANK — `compact` picks its own victims and stops
+    // as soon as the index fits, so it can neither be pointed at one fact nor run at all on a
+    // store already under budget. These SEVEN are the by-name direction, and they are new on
+    // both runtimes in the same job (2026-09-05). Read them against the `restore` block
+    // below: the same three shapes in the opposite direction, plus the one place the two
+    // deliberately do NOT mirror, plus two name-validation shapes `restore` does not have.
+    // Five when the block was written; review round 5 added `archive-invalid-name` and
+    // `archive-traversal-name`, and strengthened two of the original five — each of those
+    // three edits because a MUTATION showed the case as written could not see the property
+    // it was named for. The counts on the two refusals below say which mutation.
+    ['archive-ok', FOUR_FACTS, [['archive', 'alpha', '--store', '{BED}']], { archived: ['alpha'] }],
+    // Out, listed, and back — the sequence the operator actually performs, over one store, so
+    // the `archived` in step 2 reads what step 1 left and the `archived` in step 4 reads what
+    // step 3 undid. `old-one` is archived from the start and is never named by any step: it
+    // is what makes the closing literal `['old-one']` DISTINGUISHING rather than vacuous. An
+    // empty archive dir is also what an untouched fixture has, so `[]` would pass whether or
+    // not `restore` had done anything; `['old-one']` fails if alpha did not come back, and
+    // fails the other way if the round trip took the bystander with it.
+    //
+    // THE CLOSING LITERAL ALONE IS STILL VACUOUS AGAINST JOINT DRIFT — review round 5, M4.
+    // It describes the state AFTER a round trip, and a round trip that never happened leaves
+    // the same state: with `archive` a no-op on BOTH runtimes, step 3's `restore` refuses
+    // ("no archived fact 'alpha'"), the two transcripts agree because both sides refuse, and
+    // `archive/` still ends `['old-one']`. MEASURED: both-sides no-op, `--suite memorycli`
+    // stayed at 0 failures. What closes it is `archivedAt`, the same typed literal taken at
+    // the MIDDLE of the sequence — step 2 must see `['alpha', 'old-one']`, which is a state
+    // only a working `archive` produces and only a working `restore` undoes.
+    ['archive-then-archived-then-restore',
+      { ...FOUR_FACTS, files: { ...FOUR_FACTS.files, 'archive/old-one.md': factFile('old-one') } },
+      [
+        ['archive', 'alpha', '--store', '{BED}'],
+        ['archived', '--store', '{BED}'],
+        ['restore', 'alpha', '--store', '{BED}'],
+        ['archived', '--store', '{BED}'],
+        ['status', '--store', '{BED}'],
+      ],
+      { archived: ['old-one'], archivedAt: { 2: ['alpha', 'old-one'], 4: ['old-one'] } }],
+    // Refusal 1, the mirror of `restore-no-such-name`: the name is in neither directory. The
+    // sentence names `facts/` where restore's names `archive/`, and the bed scrub leaves the
+    // rest of the path to be compared. The `[]` literal here is one-directional and says so:
+    // it fails if a refused archive nevertheless put SOMETHING in `archive/` on either side,
+    // and it cannot fail the other way because the fixture starts with nothing to remove.
+    ['archive-no-such-name', FOUR_FACTS, [['archive', 'nope', '--store', '{BED}']], { archived: [] }],
+    // Refusal 2, and the fixture is the whole point of the case. The second guard fires when
+    // `archive/<name>.md` is ALREADY THERE, and an ordinarily-archived fact cannot reach it —
+    // it has already left `facts/`, so it trips the first guard instead. The only state that
+    // reaches the second is the same name present in BOTH directories at once, which nothing
+    // this CLI can do builds: it has to be materialised. The stale archived copy differs from
+    // the fact in `facts/` by one description byte-run, so the tree case afterwards says
+    // which of the two survived and not merely that one did.
+    //
+    // AND THE NAME LITERAL ALONE COULD NOT SAY THAT — review round 5, M3. `['alpha']` is what
+    // a refusal leaves AND what an overwrite leaves: the guard's whole job is to stop the
+    // live fact being renamed on top of the stale archived copy, and both outcomes put a file
+    // called `alpha.md` in `archive/`. MEASURED: with the guard deleted from BOTH runtimes
+    // the mutant destroys the stale copy on both sides and `--suite memorycli` stayed at 0
+    // failures — the `/tree` case compares Python to Node and both had been mutated the same
+    // way. `files` below is the typed literal that separates them: the CONTENT of
+    // `archive/alpha.md` afterwards, which is the fixture's bytes if the guard held and the
+    // live fact's bytes if it did not.
+    ['archive-already-archived',
+      { ...FOUR_FACTS,
+        files: { ...FOUR_FACTS.files, 'archive/alpha.md': factFile('alpha', { description: 'a STALE archived copy' }) } },
+      [['archive', 'alpha', '--store', '{BED}'], ['archived', '--store', '{BED}']],
+      { archived: ['alpha'],
+        files: {
+          'archive/alpha.md': factFile('alpha', { description: 'a STALE archived copy' }),
+          'facts/alpha.md': factFile('alpha', { description: 'a reasonably long description of alpha' }),
+        } }],
+    // Refusal 3, added by review round 5 (L8): `NAME_RE` is now enforced HERE and not only on
+    // `save`, because `archive` is the direction that CREATES the archive-side filename.
+    // MEASURED on macOS before the check, on both runtimes: `archive ALPHA` against a live
+    // `facts/alpha.md` exited 0 and left `archive/ALPHA.md` whose frontmatter says
+    // `name: alpha` — the case-insensitive filesystem matched the source and nothing asked
+    // the store's naming rule about the destination. The same argv on a case-sensitive
+    // filesystem refused with "no fact", so ONE command meant two things on two filesystems.
+    // It now refuses with the same sentence `save` prints, everywhere, on both runtimes.
+    ['archive-invalid-name', FOUR_FACTS,
+      [['archive', 'ALPHA', '--store', '{BED}'], ['archived', '--store', '{BED}']],
+      { archived: [] }],
+    // Traversal was NEVER the hole — `..`, an absolute path and `sub/alpha` all refused
+    // identically on both runtimes before L8, because `facts/<name>.md` is simply not there.
+    // The case is here anyway: they refuse for a different REASON now, and a suite that only
+    // pinned the case-fold shape would not notice if one runtime kept the old sentence.
+    ['archive-traversal-name', FOUR_FACTS,
+      [['archive', '../alpha', '--store', '{BED}'], ['archive', 'sub/alpha', '--store', '{BED}']],
+      { archived: [] }],
+    // THE ONE PLACE THE INVERSE IS NOT A MIRROR. `restore-over-budget` below refuses at
+    // exit 1 because bringing a line back can push the index over; archiving REMOVES a line,
+    // so the same guard could not fail and neither runtime runs it. This is that decision as
+    // a case rather than as a docstring: the index here is 246 bytes, the budget asked for is
+    // 100, archiving `alpha` leaves it at 185 — still far over — and both sides print the
+    // success line with `185/100` in it and exit 0. A runtime that grew a budget check in
+    // this direction would redden here.
+    ['archive-does-not-check-the-budget', FOUR_FACTS,
+      [['archive', 'alpha', '--store', '{BED}', '--budget', '100']], { archived: ['alpha'] }],
+
     // ---- restore
     ['restore-ok', { dirs: ['facts', 'archive'], files: { 'facts/keep.md': factFile('keep'), 'archive/back.md': factFile('back') } },
       [['restore', 'back', '--store', '{BED}']]],
@@ -636,23 +759,46 @@ function scenarios() {
 }
 
 /**
- * The three commands that used to let a store error escape `main`.
+ * The commands run over a store the platform will not let them read.
  *
- * `facts/` at 0o000, and each of `status`, `compact`, `archived` run over it. The reference
- * printed a traceback where the port printed one line; both exited 1. That defect was handed
- * back and fixed, so NOTHING here is out of the matrix any more — stdout, stderr, the exit
- * code and the tree are all compared, and all of them unruled.
+ * WAS three: `facts/` at 0o000, and each of `status`, `compact`, `archived` run over it. The
+ * reference printed a traceback where the port printed one line; both exited 1. That defect
+ * was handed back and fixed, so NOTHING here is out of the matrix any more — stdout, stderr,
+ * the exit code and the tree are all compared, and all of them unruled.
  *
- * Only `status` and `compact` actually reach the refusal: `archived` lists `archive/`, which
- * the fixture leaves readable, so it exits 0 with empty stderr on both sides. Its four cases
- * still compare a success on both, which is worth having and is not a refusal.
+ * NOW FIVE, and the two new rows are `archive` — review round 5, H2. `archive` introduced two
+ * new "I was not allowed to look" sentences, `_FACT_UNREACHABLE` and
+ * `_ARCHIVE_DESTINATION_UNREACHABLE`, spelled by hand in `store.py` and again in `store.ts`.
+ * They are the halves of `restore`'s pair with the SIDES SWAPPED — each names the directory
+ * the fact is still on when the stat is refused — so a copy-paste that kept restore's wording
+ * would be wrong in a way only a reader would catch. NOTHING referenced either string:
+ * MEASURED by corrupting BOTH of them in the Node build, after which `--all` still printed
+ * 0 failures. These two rows are what reaches them, one per side of the move:
  *
- * On Windows `chmod 0o000` does not make a directory unreadable, so all three simply succeed
+ *   - `facts/` at 0o000 and `archive a` -> the first guard's stat of `facts/a.md` is refused
+ *     -> `_FACT_UNREACHABLE`.
+ *   - `archive/` at 0o000 and `archive a` -> the first guard passes on a readable `facts/`
+ *     and the SECOND guard's stat of `archive/a.md` is refused ->
+ *     `_ARCHIVE_DESTINATION_UNREACHABLE`. `facts/a.md` must be there for this to be reached
+ *     at all, which is why this row carries its own fixture rather than sharing the one above.
+ *
+ * Only `status`, `compact` and the two `archive` rows actually reach a refusal: `archived`
+ * lists `archive/`, which its fixture leaves readable, so it exits 0 with empty stderr on
+ * both sides. Its four cases still compare a success on both, which is worth having and is
+ * not a refusal.
+ *
+ * On Windows `chmod 0o000` does not make a directory unreadable, so every row simply succeeds
  * there and every case compares a success. That is not a hole this suite can close; it is
  * what the platform makes reachable, which is why the note records what was reached rather
  * than assuming. `store.mjs` runs its own 0o000 fixtures on the same terms.
  */
-const UNREADABLE_COMMANDS = ['status', 'compact', 'archived'];
+const UNREADABLE_SCENARIOS = [
+  ['unreadable-facts-status', ['status'], 'facts'],
+  ['unreadable-facts-compact', ['compact'], 'facts'],
+  ['unreadable-facts-archived', ['archived'], 'facts'],
+  ['unreadable-facts-archive', ['archive', 'a'], 'facts'],
+  ['unreadable-archive-archive', ['archive', 'a'], 'archive'],
+];
 
 // ------------------------------------------------------------------------------------ run
 
@@ -836,17 +982,87 @@ export async function run(ctx) {
       //
       // The names come from the archive directory rather than from stdout, because the
       // property is what MOVED, not what was printed about it.
+      //
+      // TWO PROPERTIES RIDE ON THIS ONE MECHANISM, which is why the case is no longer named
+      // after the first of them. For the two compaction scenarios the literal is the
+      // EVICTION ORDER — which facts the ranker chose. For the `archive <name>` scenarios
+      // added 2026-09-05 it is WHICH FACT THE NAME MOVED, and for the refusals it is that
+      // nothing moved at all. Same failure mode in both directions: a differential
+      // comparator cannot see a change applied identically to both sides, and a typed
+      // literal can.
       const archivedNames = (b) =>
         readdirSync(join(b, 'archive'))
           .filter((f) => f.endsWith('.md'))
           .map((f) => f.slice(0, -3))
           .sort();
       cases.push({
-        name: `${label}/archived-names: the eviction order as a literal on each side`,
+        name: `${label}/archived-names: what archive/ holds afterwards, as a literal on each side`,
         kind: 'json',
         expected: { python: extra.archived, node: extra.archived },
         actual: { python: archivedNames(beds.py), node: archivedNames(beds.node) },
       });
+    }
+
+    if (extra.archivedAt) {
+      // THE SAME LITERAL, TAKEN IN THE MIDDLE OF A SEQUENCE — review round 5, M4.
+      //
+      // `archived-names` above describes the state the LAST step left, and for a round trip
+      // that is a state a sequence which never ran also leaves: archive out and restore back
+      // returns `archive/` to exactly what it held before, so a jointly dead pair is
+      // indistinguishable from a working one at the end. The names printed by an `archived`
+      // STEP are what tell them apart, and they are read out of that step's stdout rather
+      // than off the disk because the disk no longer remembers.
+      //
+      // `_cmd_archived` prints `archived facts: N (<dir>)` and then two spaces and a name per
+      // line, so the parse is the indented lines and nothing else. Typed on the expected
+      // side, per side on the actual, for the reason `archived-names` gives: a differential
+      // cannot see a change applied identically to both runtimes.
+      const printedNames = (stdout) =>
+        dec(stdout)
+          .split('\n')
+          .filter((line) => /^ {2}\S/.test(line))
+          .map((line) => line.slice(2));
+      for (const [at, names] of Object.entries(extra.archivedAt)) {
+        const i = Number(at) - 1;
+        cases.push({
+          name: `${label}/archived-at-step-${at}: what that step PRINTED, as a literal on each side`,
+          kind: 'json',
+          expected: { python: names, node: names },
+          actual: { python: printedNames(pyRuns[i].stdout), node: printedNames(nodeRuns[i].stdout) },
+        });
+      }
+    }
+
+    if (extra.files) {
+      // THE CONTENT OF A NAMED FILE AFTERWARDS, AS A LITERAL — review round 5, M3.
+      //
+      // `archived-names` says WHICH names are in `archive/`, and for the already-archived
+      // refusal that is the same answer whether the guard held or the live fact was renamed
+      // on top of the stale copy: both leave one `alpha.md`. The bytes are what differ, and
+      // the `/tree` case cannot stand in for them — it compares Python to Node, so a guard
+      // deleted from both sides destroys the same file on both and the comparison agrees.
+      //
+      // Read with the store's own newline fold, so a Windows disk is compared on the text the
+      // fixture declared rather than on the translation, exactly as `factFile` spells it. A
+      // file that is GONE answers a marker rather than throwing: "the mutant moved it away"
+      // is an answer this case must be able to report, and a harness that dies instead
+      // reports nothing at all — measured, the first M3 mutation run crashed the suite on an
+      // ENOENT for `facts/alpha.md` before this line existed.
+      const fileText = (b, rel) => {
+        try {
+          return readFileSync(join(b, rel), 'utf8').split('\r\n').join('\n');
+        } catch (e) {
+          return `<no file at ${rel}: ${e.code}>`;
+        }
+      };
+      for (const [rel, expected] of Object.entries(extra.files)) {
+        cases.push({
+          name: `${label}/content-of-${rel}: the bytes that survived, as a literal on each side`,
+          kind: 'json',
+          expected: { python: expected, node: expected },
+          actual: { python: fileText(beds.py, rel), node: fileText(beds.node, rel) },
+        });
+      }
     }
 
     if (extra.remediation) {
@@ -871,27 +1087,32 @@ export async function run(ctx) {
     }
   }
 
-  // ------------------------------------------------ the three commands that let an error escape
+  // -------------------------------------------- the commands run over an unreadable store
 
-  const unreadable = { dirs: ['facts', 'archive'], files: { 'facts/a.md': factFile('a') }, modes: { facts: 0o000 } };
   const unreadableReached = [];
-  for (const command of UNREADABLE_COMMANDS) {
-    const label = `unreadable-facts-${command}`;
+  for (const [label, argv, denied] of UNREADABLE_SCENARIOS) {
+    // One fixture shape, one directory of it denied. `facts/a.md` is there in both, because
+    // the `archive/`-denied row needs the FIRST guard to pass before the second is reached.
+    const unreadable = {
+      dirs: ['facts', 'archive'],
+      files: { 'facts/a.md': factFile('a') },
+      modes: { [denied]: 0o000 },
+    };
     const bed = join(root, label);
     const beds = { py: join(bed, 'py'), node: join(bed, 'node') };
     for (const side of ['py', 'node']) {
       materialise(beds[side], unreadable);
       applyModes(beds[side], unreadable, true);
     }
-    const stepFor = (side) => [{ argv: [command, '--store', beds[side]], cwd, env: envFor(200) }];
+    const stepFor = (side) => [{ argv: [...argv, '--store', beds[side]], cwd, env: envFor(200) }];
     const [py] = runPy(ctx, stepFor('py'));
     const [node] = runNode(stepFor('node'));
     for (const side of ['py', 'node']) applyModes(beds[side], unreadable, false);
-    // Recorded per command, not once: `archived` never touches `facts/`, so "the platform
-    // refused" is true of `status` and `compact` here and false of the third — and on
-    // Windows it is false of all three. A note that generalised from the first command would
-    // claim a refusal two of these scenarios did not earn.
-    unreadableReached.push(`${command}: ${py.exit === 1 && node.exit === 1 ? 'refused, exit 1 on both' : `exit ${py.exit}/${node.exit} — compared a success`}`);
+    // Recorded per row, not once: `archived` never touches `facts/`, so "the platform
+    // refused" is true of `status`, `compact` and both `archive` rows here and false of that
+    // one — and on Windows it is false of all five. A note that generalised from the first
+    // row would claim a refusal the others did not earn.
+    unreadableReached.push(`${label}: ${py.exit === 1 && node.exit === 1 ? 'refused, exit 1 on both' : `exit ${py.exit}/${node.exit} — compared a success`}`);
 
     cases.push({
       name: `${label}/stdout`,
@@ -948,9 +1169,15 @@ export async function run(ctx) {
       'an unreadable facts/ escaped main and CPython printed a TRACEBACK carrying interpreter ' +
       'paths and line numbers, where the port printed one line. it was never ruled, it was ' +
       'handed back, and main now catches BantamError — and nothing wider — and prints ' +
-      '"<prog>: <message>" at exit 1. so the stderr TEXT of the three unreadable-facts ' +
+      '"<prog>: <message>" at exit 1. so the stderr TEXT of the unreadable-store ' +
       'scenarios is now COMPARED, unruled, after the one substitution: this suite excludes ' +
-      'nothing from its matrix. what each scenario reached on this platform — ' +
+      'nothing from its matrix. WIDENED 2026-09-05 by review round 5 (H2) from three rows to ' +
+      'five: `archive` spelled two new "could not be stat\'d" sentences by hand in both ' +
+      'runtimes and NOTHING referenced either — measured, both were corrupted in the Node ' +
+      'build and --all still printed 0 failures. unreadable-facts-archive reaches the first ' +
+      '(_FACT_UNREACHABLE) and unreadable-archive-archive, whose fixture denies archive/ ' +
+      'instead so the first guard passes, reaches the second ' +
+      '(_ARCHIVE_DESTINATION_UNREACHABLE). what each scenario reached on this platform — ' +
       `${unreadableReached.join('; ')} — because chmod 0o000 does not refuse everywhere, and ` +
       'archived lists archive/ rather than facts/ anywhere.',
   );

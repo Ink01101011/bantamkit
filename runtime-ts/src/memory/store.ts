@@ -117,6 +117,16 @@ const ARCHIVE_UNREACHABLE =
 const FACTS_UNREACHABLE =
   "a destination that could not be stat'd is not a name that is already taken, and " +
   'nothing has moved: the fact is still in archive/';
+// The same two distinctions again for `archive`, which walks the move in the opposite
+// direction. They cannot reuse the pair above: each sentence names the side the fact is
+// STILL on when the stat is refused, and that side is the other one here.
+const FACT_UNREACHABLE =
+  "a fact that could not be stat'd is not a fact that is not there, and answering " +
+  "'no fact' here sends the operator looking for a file that is still on disk under " +
+  'this path';
+const ARCHIVE_DESTINATION_UNREACHABLE =
+  "a destination that could not be stat'd is not a name that is already archived, " +
+  'and nothing has moved: the fact is still in facts/';
 
 export class MemoryValidationError extends BantamError {}
 export class MemoryBudgetExceeded extends BantamError {}
@@ -637,11 +647,26 @@ export class MemoryStore {
    * `compact re-archives over an existing archive entry` is a WINDOWS-ONLY regression guard:
    * a revert to `rename` on either side stays green on this machine.
    *
-   * `restore` below still calls `pyReplace` against a reference that still calls `rename`,
-   * and that one is unobservable by construction rather than by fixture: its forward move is
-   * guarded by a `reachable` check that refuses when `facts/<name>.md` is live, and its
-   * rollback moves back onto a path it has just emptied. Neither can meet an occupied
-   * destination, so there is no state in which the two calls could answer differently.
+   * THIS PARAGRAPH USED TO CLAIM THE OTHER TWO MOVES ARE UNOBSERVABLE BY CONSTRUCTION —
+   * "guarded by a `reachable` check that refuses when `facts/<name>.md` is live" and "moves
+   * back onto a path it has just emptied", so "there is no state in which the two calls could
+   * answer differently". THE FIRST HALF IS FALSE, and `archive` (2026-09-05) is what made it
+   * reachable enough to notice. `reachable` is `Path.exists()`, which FOLLOWS symlinks, so a
+   * DANGLING symlink at the destination is an occupied directory ENTRY that the guard reports
+   * as absent — measured on macOS at `archive/alpha.md`: `lexists` True, `exists` False, the
+   * guard passed, and the move landed on top of the link. `os.rename` would raise
+   * `FileExistsError` there on Windows and `pyReplace` would not, which is exactly the
+   * divergence `d239480` closed one method up. The reference's `archive` is therefore on
+   * `Path.replace` too, as of the same day, and its FORWARD move and this one are the same
+   * call on every platform. `restore`'s forward move has the identical hole one directory
+   * over (a dangling symlink at `facts/<name>.md`) and is NOT changed here: narrowing a
+   * shipped command is not this fix's to make, and it is registered instead.
+   *
+   * WHAT IS STILL UNOBSERVABLE BY CONSTRUCTION is the ROLLBACK on both methods, and only that:
+   * it moves back onto a path the forward move has just emptied, so it cannot meet an occupied
+   * destination at all — there is no red to demonstrate for it, which is the reason `d239480`
+   * gave for leaving restore's alone and the reason the reference's two rollbacks are still
+   * `rename` against this file's `pyReplace`.
    *
    * THE ORDER IS `byEviction`, NOT `byStaleness` — `sorted(facts, key=self._eviction_key)`.
    * A `DURABLE_TYPES` fact — `feedback`, the user's standing instruction, or `user`, a
@@ -728,6 +753,73 @@ export class MemoryStore {
    * a recovery the filesystem was still willing to perform is the wrong direction for the
    * door back.
    */
+  /**
+   * Move one named fact out of `facts/` and into `archive/`.
+   *
+   * The door out, taken deliberately. `compact` already moves facts out, but it chooses
+   * them by eviction rank and stops as soon as the index fits the budget, so it can
+   * neither be asked for a PARTICULAR fact nor be used at all when the store is already
+   * under budget. `restore` has taken a name since it was written; until this method the
+   * store could bring a named fact back but not send one away.
+   *
+   * THE NAME IS CHECKED AGAINST `NAME_RE` BEFORE ANY SYSCALL, and the reference does the
+   * same as of 2026-09-05. `save` was the only op enforcing it, and `save` is not the only
+   * op that CREATES a filename: this one builds `archive/<name>.md` out of what it is
+   * handed. Measured on macOS before the check: `archive ALPHA` against a live
+   * `facts/alpha.md` exited 0 on BOTH runtimes and left `archive/ALPHA.md` whose
+   * frontmatter says `name: alpha`, because the filesystem is case-insensitive and nothing
+   * asked the store's naming rule about the destination; on a case-sensitive filesystem the
+   * same command refuses. `restore` is deliberately left unvalidated on both sides.
+   *
+   * Same promise as `restore` — a failed archive leaves the store exactly as it found it —
+   * and one of its three guards carries over while two drop out:
+   *
+   * - Both stats go through `reachable`, not an existence check, for the reason spelled at
+   *   `ARCHIVE_UNREACHABLE`. The two sentences are their own constants because each names
+   *   the side the fact is still on, and that side is the mirror of restore's.
+   * - NO budget check. Archiving removes an index line, so the index can only shrink;
+   *   `checkIndexBudget` is restore's guard in restore's direction and here it could not
+   *   fail.
+   * - NO `facts()` PARSE BEFORE THE MOVE, and the reference dropped it the same day. The
+   *   parse reads EVERY fact, so ONE malformed file in `facts/` refused every archive in
+   *   the store INCLUDING ITS OWN, and no other command removes a fact by name — the one
+   *   file the store calls broken was the one file no CLI route could remove, which is the
+   *   opposite of what this method exists for. Without it the same command succeeds for a
+   *   reason: the move takes the bad file out of `facts/` first, so `rebuildIndex` parses a
+   *   directory that no longer holds it. A DIFFERENT fact being malformed still fails at
+   *   that rebuild, and the rollback below puts the moved fact back.
+   *
+   * The rollback is keyed on "the rebuild after the move failed", and the route that
+   * reaches it is `index.md` BEING A DIRECTORY — not, as the reference's docstring used to
+   * say, a directory at `archive/<name>.md`, which the guard above stats and refuses first.
+   */
+  archive(name: string): void {
+    if (!NAME_RE.test(name || '')) {
+      throw new MemoryValidationError(`invalid name '${name}'; must match ${NAME_PATTERN}`);
+    }
+    const facts = pyJoin(this.root, 'facts');
+    const source = this.factPath(name);
+    if (!this.reachable(source, facts, FACT_UNREACHABLE)) {
+      throw new MemoryValidationError(`no fact '${name}' under ${facts}`);
+    }
+    const archive = pyJoin(this.root, 'archive');
+    const destination = pyJoin(archive, `${name}.md`);
+    if (this.reachable(destination, archive, ARCHIVE_DESTINATION_UNREACHABLE)) {
+      throw new MemoryValidationError(
+        `fact '${name}' is already archived; refusing to overwrite it`,
+      );
+    }
+    pyMkdirParents(archive);
+    pyReplace(source, destination);
+    try {
+      this.rebuildIndex();
+    } catch (error) {
+      pyReplace(destination, source);
+      this.rebuildIndex();
+      throw error;
+    }
+  }
+
   restore(name: string): void {
     const archive = pyJoin(this.root, 'archive');
     const source = pyJoin(archive, `${name}.md`);

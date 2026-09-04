@@ -101,7 +101,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         prog=_PROG,
         description=(
             "Operator lifecycle for a bantamkit memory store: inspect, lint, "
-            "compact and restore. Not an agent surface."
+            "compact, archive and restore. Not an agent surface."
         ),
     )
     subs = parser.add_subparsers(dest="command", required=True)
@@ -132,6 +132,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="headroom to leave below the budget (default: the largest index line kept)",
     )
     common(subs.add_parser("archived", help="list what compaction has moved out"))
+    archive = common(subs.add_parser("archive", help="move one named fact out"))
+    archive.add_argument("name", help="name of the fact to archive")
     restore = common(subs.add_parser("restore", help="move an archived fact back"))
     restore.add_argument("name", help="name of the archived fact")
 
@@ -213,6 +215,16 @@ def _cmd_archived(store: MemoryStore, args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_archive(store: MemoryStore, args: argparse.Namespace) -> int:
+    try:
+        store.archive(args.name)
+    except MemoryValidationError as e:
+        print(f"archive failed: {e}", file=sys.stderr)
+        return 1
+    print(f"archived '{args.name}' — index now {_size(store)}/{store.index_budget} bytes")
+    return 0
+
+
 def _cmd_restore(store: MemoryStore, args: argparse.Namespace) -> int:
     try:
         store.restore(args.name)
@@ -235,6 +247,7 @@ _COMMANDS = {
     "lint": _cmd_lint,
     "compact": _cmd_compact,
     "archived": _cmd_archived,
+    "archive": _cmd_archive,
     "restore": _cmd_restore,
 }
 

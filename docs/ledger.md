@@ -37,3 +37,84 @@ labelled `est` (bytes/4); every figure from `usage` is real.
   output — head/tail policy, or a PreToolUse rewrite — not on Read.
 - **Every earlier chars/4 number in this repo is now replaceable** by this ledger. Re-run it
   before and after a change; the `--json` shape is stable enough to diff.
+
+# Usage ledger — the other denominator
+
+    node tools/ledger/tool-usage.mjs [--group tool|server|project|skill|agent] [--since 7d] [--json]
+
+The token ledger answers what a session cost. This answers what was ever REACHED FOR — the
+number you need before claiming that a skill, a tool or an MCP server earns the context it
+occupies. A skill's description is loaded into every session; its body is not. Whether that
+description pays for itself is a call count, and the count has been on disk all along.
+
+Folded in from the `tool-metrics` plugin (`kktest-dev`), which measured the same thing in
+Python. The recursive transcript walker already existed in `token-ledger.mjs`, so what this
+adds is the three things a naive scan gets wrong:
+
+- **Dedupe by `tool_use` id.** A resumed session rewrites earlier `tool_use` blocks verbatim,
+  so the same call is written to two files. Counting lines double-counts them.
+- **Skill and agent detail.** `skill` and `subagent_type` are read off the invoking tool's own
+  input, which is what makes `--group skill` and `--group agent` possible at all.
+- **An events-log fallback.** A transcript can be deleted while the calls it recorded still
+  matter. `~/.claude/tool-metrics/events.jsonl` (a `PostToolUse` append) is read for sessions
+  with **no transcript left** — only those, or a live session is counted twice.
+
+`metrics.py`'s on-disk cache and GC layer is deliberately not ported: a full scan of 813
+transcripts is 1.24 s user here, so the cache buys nothing and adds a staleness mode.
+
+## First run — 2026-09-04, all projects, all time
+
+Corpus: 813 transcripts, window 2026-08-04 … 2026-09-04. 42,705 tool calls, **116 sessions**,
+115 of those calls recovered from the events log for 4 sessions whose transcripts are gone.
+
+The session figure was published here as **752** and that was wrong: the counter was keyed on
+transcript FILES, and a session's subagent transcripts each counted as another session. A
+session is the first path segment under the project dir — `<session>.jsonl` and
+`<session>/subagents/*.jsonl` are one session — which is 116 here against 167 top-level
+transcript files, the difference being sessions that made no counted tool call.
+
+| `--group skill` | calls |
+|---|---|
+| superpowers:systematic-debugging | 45 |
+| kkskills-personal:user-profile | 39 |
+| kkskills-essentials:plan-decompose-orchestrate | 16 |
+| superpowers:brainstorming | 10 |
+| *(14 more)* | 38 |
+| **total** | **148 over 18 skills** |
+
+**The gate was agreement, not "it runs".** Run against the same corpus, `metrics.py stats
+--group skill` reports 148 over 18 and every row is identical. Before the events-log fallback
+this read 139/16, and the 9-call residual was accounted for exactly rather than waved at:
+4 of 110 logged sessions have no transcript on disk and hold precisely those 9 calls.
+
+## What it says
+
+Of the 41 skills in the plugin cache, **29 were never invoked once** in that month; over the
+34 that were actually *enabled*, 22. `mcp__bantamkit` answered 938 calls
+while the other locally-built MCP servers answered 14 between them, all in a single session.
+(Call counts only: the ledger totals sessions across the whole run, not per group key, and the
+per-server session figure quoted in an earlier draft came from the same miscount as above.)
+A skill that never fires still costs its description in every session — which is what the
+`skill_audit` tool this feed exists for is meant to price.
+
+Note the shape of that claim: **"never invoked" is not "useless."** `secret-hygiene` and
+`timezone-handling` are correct and merely unmatched. This ledger supplies the count; the
+disposition — shrink, disable, or keep — is a ruling, not an inference.
+
+## Rerunning the agreement
+
+`tool-usage.mjs` honours `CLAUDE_PROJECTS_DIR` and `TOOL_METRICS_DIR`, the two names
+`metrics.py` already read, so both programs can be pointed at one tree:
+
+    CLAUDE_PROJECTS_DIR=tools/ledger/fixtures/tool-usage/projects \
+    TOOL_METRICS_DIR=tools/ledger/fixtures/tool-usage \
+    python3 <kktest-dev>/plugins/tool-metrics/scripts/metrics.py stats --group skill --json
+
+    node tools/ledger/tool-usage.mjs --root tools/ledger/fixtures/tool-usage/projects \
+      --events tools/ledger/fixtures/tool-usage/events.jsonl --group skill --json
+
+Both answer `{alpha: 1, beta: 1, gamma: 1}`. `node tools/ledger/tool-usage.test.mjs` pins each
+correction separately with a negative control, and the suite was checked by mutation: killing
+the id dedupe turns 4 red, dropping the subagent recursion 6, letting the events log see live
+sessions 4 — each time the correction's own assertion fails first. (The subagent figure was
+first written as 5; rerun at the fix commit it is 6.)

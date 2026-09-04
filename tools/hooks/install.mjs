@@ -23,7 +23,10 @@ const ENTRIES = [
   ['SessionStart', 'startup|resume|clear|compact'],
   ['UserPromptSubmit', null],
   ['PreToolUse', 'Read'],
-  ['PostToolUse', 'mcp__bantamkit__memory_save'],
+  // MATCHER-LESS, and it must stay that way: the PostToolUse arm logs a usage event for
+  // EVERY tool call and then runs the memory_save half only when the tool was that one.
+  // A second, narrower entry beside this one would fire the save half twice.
+  ['PostToolUse', null],
   ['PreCompact', null],
   ['PostCompact', null],
   ['Stop', null],

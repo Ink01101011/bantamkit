@@ -164,8 +164,8 @@ const sub = (name: string, actions: readonly ActionSpec[]): ParserSpec => ({
 const PARSER: ParserSpec = {
   prog: PROG,
   description:
-    'Operator lifecycle for a bantamkit memory store: inspect, lint, compact and ' +
-    'restore. Not an agent surface.',
+    'Operator lifecycle for a bantamkit memory store: inspect, lint, compact, ' +
+    'archive and restore. Not an agent surface.',
   actions: [
     {
       optionStrings: ['-h', '--help'],
@@ -212,6 +212,20 @@ const PARSER: ParserSpec = {
           name: 'archived',
           help: 'list what compaction has moved out',
           parser: sub('archived', common()),
+        },
+        {
+          name: 'archive',
+          help: 'move one named fact out',
+          parser: sub('archive', [
+            ...common(),
+            {
+              optionStrings: [],
+              dest: 'name',
+              kind: 'positional',
+              help: 'name of the fact to archive',
+              defaultValue: null,
+            },
+          ]),
         },
         {
           name: 'restore',
@@ -344,6 +358,20 @@ function cmdArchived(store: MemoryStore): number {
   return 0;
 }
 
+function cmdArchive(store: MemoryStore, args: Args): number {
+  try {
+    store.archive(args.name);
+  } catch (error) {
+    if (error instanceof MemoryValidationError) {
+      err(`archive failed: ${error.message}`);
+      return 1;
+    }
+    throw error;
+  }
+  out(`archived '${args.name}' — index now ${size(store)}/${store.indexBudget} bytes`);
+  return 0;
+}
+
 function cmdRestore(store: MemoryStore, args: Args): number {
   try {
     store.restore(args.name);
@@ -370,6 +398,7 @@ const COMMANDS: Record<string, (store: MemoryStore, args: Args) => number> = {
   lint: cmdLint,
   compact: cmdCompact,
   archived: cmdArchived,
+  archive: cmdArchive,
   restore: cmdRestore,
 };
 

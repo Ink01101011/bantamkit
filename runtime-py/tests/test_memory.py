@@ -528,6 +528,65 @@ def test_the_index_file_on_disk_tracks_the_facts(tmp_path, op):
     assert ("gone-fact" in on_disk) is (op != "compact")
 
 
+def test_archive_takes_one_named_fact_out_and_restore_puts_it_back(tmp_path):
+    """The door out, by name. `compact` chooses by rank and stops at the budget, so a
+    store already UNDER budget cannot be asked to put one stale fact away at all."""
+    store = MemoryStore(tmp_path / "mem", index_budget=100_000, today=lambda: "2026-08-21")
+    store.save("project", "stale-fact", "an alpha subject nobody wants", "the body")
+    store.save("user", "kept-fact", "a beta topic still in use", "b")
+    assert store.compact().names == []  # nothing is over budget; rank has no work to do
+
+    store.archive("stale-fact")
+
+    assert store.archived() == ["stale-fact"]
+    assert store.recall("alpha subject nobody wants") == []
+    assert [f.body for f in store.recall("beta topic still in use")] == ["b"]
+
+    store.restore("stale-fact")
+    assert store.archived() == []
+    assert [f.body for f in store.recall("alpha subject nobody wants")] == ["the body"]
+
+
+def test_archive_of_an_unknown_or_already_archived_name_is_a_validation_error(tmp_path):
+    """Both guards are reachable. The second needs a name present on BOTH sides, because
+    an ordinary archived fact has already left `facts/` and trips the first."""
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-21")
+    store.save("project", "live-fact", "a subject in use", "b")
+    with pytest.raises(MemoryValidationError, match="no fact"):
+        store.archive("never-existed")
+    (store.root / "archive").mkdir(parents=True, exist_ok=True)
+    (store.root / "archive" / "live-fact.md").write_text(
+        "---\nname: live-fact\n---\n\nb\n", encoding="utf-8"
+    )
+    with pytest.raises(MemoryValidationError, match="already archived"):
+        store.archive("live-fact")
+    assert (store.root / "facts" / "live-fact.md").exists()  # nothing moved
+
+
+def test_archive_moves_nothing_when_a_fact_already_in_the_store_is_malformed(tmp_path):
+    """The rollback, in archive's direction: `_rebuild_index` raises AFTER the move, and
+    putting the fact back is what keeps the store as it was found.
+
+    WAS a node about the pre-move `_facts()` parse, which is gone (2026-09-05): the parse
+    read every fact, so one malformed file refused every archive in the store including its
+    own. These assertions were already measured to hold without it -- the note that used to
+    sit at the bottom of this test said so -- because the rollback puts the fact back and
+    the rebuild inside it raises the same error class. They pin the PROMISE ("a failed
+    archive leaves the store as it found it"), not the mechanism, which is why they did not
+    move when the mechanism did.
+    """
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-21")
+    store.save("project", "good-fact", "a subject in use", "b")
+    (store.root / "facts" / "broken.md").write_text(
+        "---\nnot: frontmatter\n---\n", encoding="utf-8"
+    )
+    with pytest.raises(MemoryValidationError):
+        store.archive("good-fact")
+    assert (store.root / "facts" / "good-fact.md").exists()
+    assert not (store.root / "archive" / "good-fact.md").exists()
+    assert (store.root / "facts" / "broken.md").exists(), "and the bad one is where it was"
+
+
 def test_restore_of_an_unknown_or_live_name_is_a_validation_error(tmp_path):
     store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-21")
     store.save("project", "live-fact", "a subject in use", "b")
@@ -2075,11 +2134,19 @@ def test_the_em_dash_this_cli_prints_is_three_bytes_and_not_one(tmp_path, monkey
 
 
 def _rename_that_refuses_an_existing_destination(monkeypatch):
-    """`Path.rename` with Windows' semantics: `FileExistsError` over a destination that is there."""
+    """`Path.rename` with Windows' semantics: `FileExistsError` over a destination that is there.
+
+    THE TEST IS `os.path.lexists` AND NOT `Path.exists`, and the difference is the whole of
+    the `archive` node below. `MoveFileW` without `MOVEFILE_REPLACE_EXISTING` fails when the
+    destination NAME is taken; it does not resolve that name first. A DANGLING SYMLINK is a
+    taken name whose `exists()` is False, so an injection keyed on `exists()` would sail
+    through the one state `archive`'s guard also cannot see, and the node would pass on an
+    injection that did nothing there. The control below asserts the refusal on BOTH shapes.
+    """
     real_rename = Path.rename
 
     def refusing(self, target):
-        if Path(target).exists():
+        if os.path.lexists(target):
             raise FileExistsError(17, "Cannot create a file when that file already exists")
         return real_rename(self, target)
 
@@ -2087,15 +2154,24 @@ def _rename_that_refuses_an_existing_destination(monkeypatch):
 
 
 def test_the_injected_rename_really_does_refuse(tmp_path, monkeypatch):
-    """The control: without it the node below could pass on an injection that does nothing."""
+    """The control: without it the nodes below could pass on an injection that does nothing."""
     source, occupied, free = tmp_path / "a", tmp_path / "b", tmp_path / "c"
+    dangling = tmp_path / "d"
     source.write_text("x", encoding="utf-8")
     occupied.write_text("y", encoding="utf-8")
+    dangling.symlink_to(tmp_path / "nothing-is-here.md")
     _rename_that_refuses_an_existing_destination(monkeypatch)
 
     with pytest.raises(FileExistsError):
         source.rename(occupied)
     assert source.read_text(encoding="utf-8") == "x", "the refused move left the source alone"
+    # The second shape, and the one `Path.exists()` reports as absent on both sides of the
+    # move: a symlink pointing at nothing is still a directory entry Windows will not
+    # overwrite. `lexists` True, `exists` False -- asserted here rather than assumed.
+    assert os.path.lexists(dangling) and not dangling.exists()
+    with pytest.raises(FileExistsError):
+        source.rename(dangling)
+    assert source.read_text(encoding="utf-8") == "x"
     source.rename(free)  # and the injection is not a blanket refusal
     assert free.read_text(encoding="utf-8") == "x"
 
@@ -2128,3 +2204,120 @@ def test_compact_re_archives_over_an_existing_entry_on_every_platform(tmp_path, 
     assert not (store.root / "facts" / "gone-fact.md").exists()
     assert stale.read_text(encoding="utf-8") == live, "the live fact is what is in archive/ now"
     assert store.archived() == ["gone-fact"]
+
+
+def test_archive_replaces_a_dangling_symlink_destination_on_every_platform(tmp_path, monkeypatch):
+    """The second reach for the same call, and the one `compact` could not build.
+
+    `compact`'s fixture needs an `archive/<name>.md` that is a real file, which `archive`'s
+    second guard refuses outright. What `archive` reaches instead is the state the guard
+    CANNOT see: `_reachable` is `Path.exists()`, which follows symlinks, so a DANGLING
+    symlink at `archive/<name>.md` is an occupied directory entry reported as absent.
+    Measured before the fix: `os.path.lexists` True, `Path.exists` False, both guards
+    passed, and `Path.rename` moved the live fact on top of the link. On POSIX that is a
+    silent replace; on Windows it is a `FileExistsError` the port's `pyReplace` does not
+    raise. `Path.replace` is the call that means the same thing on both, which is the
+    resolution `d239480` applied to `compact` and this applies here.
+    """
+    store = MemoryStore(tmp_path / "mem", index_budget=100_000, today=lambda: "2026-08-21")
+    store.save("project", "stale-fact", "an alpha subject nobody wants", "the body")
+    store.save("user", "kept-fact", "a beta topic still in use", "b")
+    (store.root / "archive").mkdir(parents=True, exist_ok=True)
+    destination = store.root / "archive" / "stale-fact.md"
+    destination.symlink_to(store.root / "archive" / "nothing-is-here.md")
+    assert os.path.lexists(destination) and not destination.exists()
+    live = (store.root / "facts" / "stale-fact.md").read_text(encoding="utf-8")
+
+    _rename_that_refuses_an_existing_destination(monkeypatch)
+    store.archive("stale-fact")
+
+    assert not (store.root / "facts" / "stale-fact.md").exists()
+    assert not destination.is_symlink(), "the link was replaced, not written through"
+    assert destination.read_text(encoding="utf-8") == live
+    assert store.archived() == ["stale-fact"]
+    assert "stale-fact" not in (store.root / "index.md").read_text(encoding="utf-8")
+
+
+def test_archive_takes_out_the_one_fact_the_store_calls_broken(tmp_path):
+    """The point of the door out, and the pre-move parse used to bar it.
+
+    `_facts()` parses EVERY fact, so one malformed file refused every archive in the store
+    INCLUDING ITS OWN -- and no other command removes a fact by name, so the operator was
+    told to archive a fact that could not be archived. Without the parse the move happens
+    first and `_rebuild_index` then reads a `facts/` the bad file has already left, which is
+    why this succeeds rather than merely failing later.
+    """
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-21")
+    store.save("project", "good-fact", "a subject in use", "b")
+    (store.root / "facts" / "broken.md").write_text(
+        "just a body, no frontmatter\n", encoding="utf-8"
+    )
+    with pytest.raises(MemoryValidationError, match="malformed fact file broken.md"):
+        store.lint()
+
+    store.archive("broken")
+
+    assert store.archived() == ["broken"]
+    assert not (store.root / "facts" / "broken.md").exists()
+    assert (store.root / "archive" / "broken.md").read_text(encoding="utf-8") == (
+        "just a body, no frontmatter\n"
+    )
+    store.lint()  # the store the operator was left with is a store that lints
+    assert [f.name for f in store._facts()] == ["good-fact"]
+
+
+def test_archive_of_a_name_the_store_could_never_have_written_is_refused(tmp_path):
+    """`NAME_RE`, enforced in the direction that CREATES the archive-side filename.
+
+    Measured on macOS before this check: `archive ALPHA` against a live `facts/alpha.md`
+    exited 0 and left `archive/ALPHA.md` whose frontmatter says `name: alpha`, because the
+    filesystem is case-insensitive and nothing asked the store's naming rule. The same
+    command refuses with "no fact" on a case-sensitive filesystem. The refusal now names the
+    reason and is the same sentence on both filesystems and both runtimes.
+    """
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-21")
+    store.save("project", "alpha", "a subject in use", "b")
+    for bad in ["ALPHA", "-leading", "under_score", "", "a b"]:
+        with pytest.raises(MemoryValidationError, match="invalid name"):
+            store.archive(bad)
+    assert (store.root / "facts" / "alpha.md").exists()
+    assert store.archived() == []
+    # Traversal was never the hole -- these refused before this check existed, because
+    # `facts/<name>.md` simply is not there -- but they refuse EARLIER and with the reason
+    # named now, and nothing is written outside the store either way.
+    for traversal in ["..", "sub/alpha", str(tmp_path / "elsewhere")]:
+        with pytest.raises(MemoryValidationError, match="invalid name"):
+            store.archive(traversal)
+    store.archive("alpha")  # and a legal name still goes
+    assert store.archived() == ["alpha"]
+
+
+def test_archive_rolls_back_when_index_md_is_a_directory(tmp_path):
+    """The route that actually reaches the rollback, which is not the one it was documented for.
+
+    The docstring used to say the rollback exists for "the destination in `archive/` being a
+    directory". That is unreachable: the second guard stats that exact path, so a directory
+    there is refused with "already archived" before anything moves -- asserted below so the
+    correction cannot rot. What DOES reach it is `index.md` being a directory: the move
+    succeeds, `_rebuild_index` raises `IsADirectoryError`, and the fact is put back.
+    """
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-21")
+    store.save("project", "alpha", "a subject in use", "b")
+    store.save("project", "beta", "another subject in use", "b")
+
+    # The route the docstring used to name: refused by the guard, nothing moves, no rollback.
+    (store.root / "archive").mkdir(parents=True, exist_ok=True)
+    (store.root / "archive" / "beta.md").mkdir()
+    with pytest.raises(MemoryValidationError, match="already archived"):
+        store.archive("beta")
+    (store.root / "archive" / "beta.md").rmdir()
+
+    # The route that does: the move happens and the rebuild is what fails.
+    (store.root / "index.md").unlink()
+    (store.root / "index.md").mkdir()
+    with pytest.raises(IsADirectoryError):
+        store.archive("alpha")
+
+    assert (store.root / "facts" / "alpha.md").exists(), "the fact was put back"
+    assert not (store.root / "archive" / "alpha.md").exists()
+    assert sorted(p.name for p in (store.root / "facts").iterdir()) == ["alpha.md", "beta.md"]

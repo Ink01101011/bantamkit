@@ -279,6 +279,7 @@ python -m bantamkit.memory status   [--store PATH | --start DIR] [--budget BYTES
 python -m bantamkit.memory lint     [...]
 python -m bantamkit.memory compact  [...] [--reserve BYTES]
 python -m bantamkit.memory archived [...]
+python -m bantamkit.memory archive NAME  [...]
 python -m bantamkit.memory restore NAME [...]
 ```
 
@@ -291,6 +292,51 @@ convention.
 Exit codes are `0` success, `1` a failure you must act on (over budget, a
 malformed fact, a refused restore), `2` a usage error — so `lint` drops into a
 pre-commit hook or CI job unchanged.
+
+`archive NAME` is the inverse of `restore NAME`, added 2026-09-05. `compact`
+chooses what leaves by eviction rank and stops the moment the index fits the
+budget, so it can neither be asked for a PARTICULAR fact nor do anything at all
+on a store that is already under budget; `restore` has taken a name since it was
+written. Until this the store could bring a named fact back but not send one
+away.
+
+It refuses on **five** shapes, all exit 1, all prefixed `archive failed: `. This
+list said "two" until 2026-09-05, and the missing three were not obscure — one of
+them is the only refusal an operator with a broken store will ever see:
+
+1. `invalid name 'NAME'; must match ^[a-z0-9][a-z0-9-]*$` — the same rule `save`
+   enforces, checked here before any syscall because this is the direction that
+   CREATES the archive-side filename. Measured on macOS before the check:
+   `archive ALPHA` against a live `facts/alpha.md` exited 0 and left
+   `archive/ALPHA.md` holding a fact whose frontmatter says `name: alpha`, and
+   the same command refused on a case-sensitive filesystem. `restore NAME` is
+   deliberately still unvalidated; narrowing a shipped command's input is a
+   separate decision.
+2. `no fact 'NAME' under <facts dir>`.
+3. `fact 'NAME' is already archived; refusing to overwrite it` — reachable only
+   when the name is present in `facts/` and `archive/` at once, since an ordinary
+   archived fact has already left `facts/` and trips 2.
+4. `malformed fact file <file>: <reason>` — raised by the index rebuild AFTER the
+   move, with the fact put back. **This is about some OTHER fact, never the one
+   you named.** Archiving a fact the store itself calls malformed SUCCEEDS, and
+   that is the point: the pre-move parse read every fact, so one bad file used to
+   refuse every archive in the store including its own, and no other subcommand
+   removes a fact by name — the one file the store called broken was the one file
+   no CLI route could remove. It now moves out first and the rebuild then reads a
+   `facts/` it has already left, so `archive` is the way to get a store that
+   `lint`s again.
+5. `memory store is unreadable: <dir>: <reason> (stat of NAME.md); …` — the
+   platform refused a stat rather than answering "not there". Two wordings, one
+   per side of the move: the `facts/` half says the fact is still on disk under
+   that path, the `archive/` half says nothing has moved and the fact is still in
+   `facts/`.
+
+There is no budget check in this direction: archiving removes an index line, so
+the index can only shrink.
+
+This is the one capability the `memory-keeper` plugin had that this CLI lacked.
+`status`, `lint` (exit 1 over budget), `compact` and `archived`/`restore` were
+already here, which is why the fold was this subcommand and nothing else.
 
 The next two transcripts were run against a seeded 12-fact store, **from the
 Python install** — the repo venv activated, so `python` is `.venv/bin/python`:

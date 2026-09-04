@@ -719,3 +719,98 @@ test('the eviction rank never raises on a hand-edited type', () => {
   assert.deepEqual(s.byEviction(facts).map((f) => f.name), ['x0', 'x1', 'x2', 'x3', 'x4', 'keep']);
   rmSync(root, { recursive: true, force: true });
 });
+
+// ---------------------------------------------------------------------------------------
+// `archive <name>` — the door out. Four nodes for the four things review round 5 found, and
+// each is the Node half of a `runtime-py/tests/test_memory.py` node added in the same job.
+// ---------------------------------------------------------------------------------------
+
+test('archive takes out the one fact the store calls broken', () => {
+  // The point of the door out, and the pre-move `facts()` parse used to bar it: the parse
+  // read EVERY fact, so one malformed file refused every archive in the store including its
+  // own, and no other command removes a fact by name. Without it the move happens first and
+  // `rebuildIndex` reads a `facts/` the bad file has already left.
+  const root = fresh();
+  const s = store(root);
+  s.save('project', 'good-fact', 'a subject in use', 'b');
+  writeFileSync(join(root, 'facts', 'broken.md'), 'just a body, no frontmatter\n');
+  assert.throws(() => s.lint(), MemoryValidationError);
+
+  s.archive('broken');
+
+  assert.deepEqual(s.archived(), ['broken']);
+  assert.equal(read(join(root, 'archive', 'broken.md')), 'just a body, no frontmatter\n');
+  s.lint(); // the store the operator is left with is a store that lints
+  assert.deepEqual(s.facts().map((f) => f.name), ['good-fact']);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('archive refuses a name the store could never have written', () => {
+  // `NAME_RE`, enforced in the direction that CREATES the archive-side filename. Measured on
+  // macOS before this check, on BOTH runtimes: `archive ALPHA` against a live
+  // `facts/alpha.md` exited 0 and left `archive/ALPHA.md` whose frontmatter says
+  // `name: alpha`, because the filesystem is case-insensitive and nothing asked the naming
+  // rule. On a case-sensitive filesystem the same command refuses with "no fact".
+  const root = fresh();
+  const s = store(root);
+  s.save('project', 'alpha', 'a subject in use', 'b');
+  for (const bad of ['ALPHA', '-leading', 'under_score', '', 'a b', '..', 'sub/alpha']) {
+    assert.throws(() => s.archive(bad), (e) =>
+      e instanceof MemoryValidationError && /^invalid name/.test(e.message));
+  }
+  assert.deepEqual(s.archived(), []);
+  assert.ok(statSync(join(root, 'facts', 'alpha.md')).isFile());
+  s.archive('alpha'); // and a legal name still goes
+  assert.deepEqual(s.archived(), ['alpha']);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('archive replaces a dangling symlink destination rather than being refused by the guard', () => {
+  // `reachable` is `Path.exists()`, which FOLLOWS symlinks, so a dangling symlink at
+  // `archive/<name>.md` is an occupied directory ENTRY the second guard reports as absent —
+  // the state that made `os.rename` vs `os.replace` reachable and got the reference moved
+  // onto `Path.replace` (`d239480`'s resolution, applied to `archive`). Node's `renameSync`
+  // replaces on every platform, so what this pins is the OUTCOME both runtimes now owe.
+  const root = fresh();
+  const s = store(root);
+  s.save('project', 'stale-fact', 'an alpha subject nobody wants', 'the body');
+  s.save('user', 'kept-fact', 'a beta topic still in use', 'b');
+  mkdirSync(join(root, 'archive'), { recursive: true });
+  const destination = join(root, 'archive', 'stale-fact.md');
+  symlinkSync(join(root, 'archive', 'nothing-is-here.md'), destination);
+  assert.ok(pyfs.pyLexists(destination) && !pyfs.pyExists(destination));
+  const live = read(join(root, 'facts', 'stale-fact.md'));
+
+  s.archive('stale-fact');
+
+  assert.ok(!lstatSync(destination).isSymbolicLink(), 'the link was replaced, not written through');
+  assert.equal(read(destination), live);
+  assert.deepEqual(s.archived(), ['stale-fact']);
+  assert.ok(!read(join(root, 'index.md')).includes('stale-fact'));
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('archive rolls back when index.md is a directory', () => {
+  // The route that actually reaches the rollback. The reference's docstring used to say the
+  // rollback is for "the destination in archive/ being a directory", which the second guard
+  // stats and refuses first — asserted here too, so the correction cannot rot.
+  const root = fresh();
+  const s = store(root);
+  s.save('project', 'alpha', 'a subject in use', 'b');
+  s.save('project', 'beta', 'another subject in use', 'b');
+
+  mkdirSync(join(root, 'archive'), { recursive: true });
+  mkdirSync(join(root, 'archive', 'beta.md'));
+  assert.throws(() => s.archive('beta'), (e) =>
+    e instanceof MemoryValidationError && /already archived/.test(e.message));
+  rmSync(join(root, 'archive', 'beta.md'), { recursive: true });
+
+  rmSync(join(root, 'index.md'));
+  mkdirSync(join(root, 'index.md'));
+  assert.throws(() => s.archive('alpha'), (e) => !(e instanceof MemoryValidationError));
+
+  assert.ok(statSync(join(root, 'facts', 'alpha.md')).isFile(), 'the fact was put back');
+  assert.deepEqual(readdirSync(join(root, 'facts')).sort(), ['alpha.md', 'beta.md']);
+  assert.deepEqual(readdirSync(join(root, 'archive')), []);
+  rmSync(root, { recursive: true, force: true });
+});
