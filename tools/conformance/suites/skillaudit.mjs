@@ -31,8 +31,10 @@
  *      against different Unicode revisions, so U+1C89 is a letter on one side and unassigned
  *      on the other. Two ruled cases (it reaches the apostrophe guard AND the punctuation
  *      filter, in opposite directions), each with a literal companion naming which side
- *      answers what, plus two NON-ruled ascii twins — because a ruling only proves the two
- *      differ, and a port whose `phrases` stopped working entirely would keep both green.
+ *      answers what, plus FOUR NON-ruled ascii twins — two per site, in both polarities —
+ *      because a ruling only proves the two differ. Measured: killing `phrases` entirely
+ *      leaves the apostrophe-guard ruling GREEN, and only a twin whose expected answer is
+ *      non-empty catches that.
  *   5. The per-file record of every `SKILL.md` in the tree — id, relpath, description bytes,
  *      router flag, omission token, malformed token, phrases and the decoded description. The
  *      headline can be right for the wrong reasons; this is the table that says which skill
@@ -159,16 +161,31 @@ const UNICODE_VERSION_TEXTS = [
 ];
 
 /**
- * …and the SAME two constructions with an ASCII letter in the place of U+1C89.
+ * …and the SAME two constructions with ASCII in the place of U+1C89, in both polarities.
  *
  * These are NOT ruled and they are the reason the rulings above are not the whole story: a
  * ruling only proves the two answers DIFFER, so a port whose `phrases` stopped working
- * altogether — always `[]` — would keep both rulings green. These two say the RULE is still
- * shared and only the character table under it is not.
+ * altogether would keep a ruling green wherever the reference's answer is the non-empty one.
+ * MEASURED 2026-09-05 by making `phrases` return `[]` for every input: the punctuation-filter
+ * ruling self-detects (it goes `STALE RULING`, because both sides then answer `[]`), the
+ * apostrophe-guard ruling does NOT, and only a companion can catch it.
+ *
+ * So each ruled site gets two twins: one where the shared rule SUPPRESSES the phrase (the two
+ * sides agree on `[]`, which says the rule itself is still there) and one where it KEEPS the
+ * phrase (the two sides agree on a non-empty list, which is the case a dead reader fails).
+ * Without the second of each pair the first is vacuous — it passes for a reader that finds
+ * nothing at all, which is precisely the mistake a ruling is blind to.
  */
 const UNICODE_VERSION_TWINS = [
-  ["the apostrophe guard, ascii twin", "A'race condition'A"],
-  ['the punctuation filter, ascii twin', '"A"'],
+  // The guard fires on an ASCII letter exactly as the ruling says it does on U+1C89 for one
+  // side: both answer `[]`.
+  ["the apostrophe guard, ascii twin, guard fires", "A'race condition'A", []],
+  // …and where it does not fire, both find the phrase. This is the one a dead `phrases` fails.
+  ["the apostrophe guard, ascii twin, guard does not fire", " 'race condition' ", ['race condition']],
+  // The filter keeps an ASCII letter on both sides — the case a dead `phrases` fails.
+  ['the punctuation filter, ascii twin, content kept', '"A"', ['A']],
+  // …and drops a phrase with no letter and no digit on both sides.
+  ['the punctuation filter, ascii twin, filter fires', '"-"', []],
 ];
 
 /** The reason both cases above are allowed to differ, quoted in the failure when one stops. */
@@ -360,12 +377,21 @@ export async function run(ctx) {
     });
   }
   for (let i = 0; i < UNICODE_VERSION_TWINS.length; i += 1) {
-    const [label, text] = UNICODE_VERSION_TWINS[i];
+    const [label, text, both] = UNICODE_VERSION_TWINS[i];
     cases.push({
       name: `phrases: ${label} (NOT ruled: the rule is shared, only the table is not)`,
       kind: 'json',
       expected: pyRuled[UNICODE_VERSION_TEXTS.length + i],
       actual: skillaudit.phrases(text),
+    });
+    // …and the literal both sides are required to reach, so a twin cannot pass because both
+    // runtimes broke the same way. This is the case that fails when `phrases` stops finding
+    // anything, which no ruling can catch.
+    cases.push({
+      name: `phrases: ${label}: the answer BOTH sides are required to carry`,
+      kind: 'json',
+      expected: { python: both, node: both },
+      actual: { python: pyRuled[UNICODE_VERSION_TEXTS.length + i], node: skillaudit.phrases(text) },
     });
   }
 
@@ -408,7 +434,8 @@ export async function run(ctx) {
     `${cases.length} cases: ${configs.length} documents, ${UNWRAP_VALUES.length} unwrap values, ` +
       `${phraseTexts.length} phrase texts, 4 per-file tables, ` +
       `${UNICODE_VERSION_TEXTS.length} RULED (the Unicode version under \`isalpha\`/\`\\p{L}\`) ` +
-      `with ${UNICODE_VERSION_TEXTS.length} literal companions and ${UNICODE_VERSION_TWINS.length} ascii twins`,
+      `with ${UNICODE_VERSION_TEXTS.length} literal companions and ${UNICODE_VERSION_TWINS.length} ` +
+      `NON-ruled ascii twins, each with its own both-sides literal`,
     'ruled: CPython 3.12.13 unidata 15.0.0 against Node 25.2.1 Unicode 16.0 (ICU 77.1) — ' +
       '4,924 of 1,112,064 code points disagree for alpha and 5,004 for alnum, all one-directional ' +
       '(the port says letter where the reference does not). U+1C89 is the first. See ' +
