@@ -33,6 +33,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from conftest import windows_cannot_construct
+
 from bantamkit.statusline import (
     ABSENT,
     ACTIVE,
@@ -198,13 +200,24 @@ def test_an_absent_log_is_unknown_and_is_spelled_differently_from_off(tmp_path):
 
 
 def test_an_unreadable_log_is_unknown_and_never_raises(tmp_path):
-    """Two shapes: a path whose parent is a regular file (ENOTDIR, portable to Windows) and
-    a file with no read permission."""
+    """Two shapes: a path whose parent is a regular file, and a file with no read permission.
+
+    THE FIRST SHAPE IS NOT PORTABLE, and this docstring used to say it was. POSIX raises
+    `NotADirectoryError` (ENOTDIR), an `OSError` that is not `FileNotFoundError`, so the
+    classifier renders UNREADABLE. Windows resolves the same path to
+    `ERROR_PATH_NOT_FOUND`, which CPython maps to `FileNotFoundError` — so the classifier
+    renders ABSENT, and it is right to: the operating system is saying the path does not
+    exist, not that it cannot be read. Measured on the first Windows CI run in weeks,
+    2026-09-05: `assert 'bantamkit Un...event log yet' == 'bantamkit Un...og unreadable'`.
+
+    The assertion follows the platform rather than the other way round. Forcing one answer
+    would mean either lying about what Windows reported or teaching the classifier to
+    contradict its own OS.
+    """
     wall = tmp_path / "wall"
     wall.write_text("not a directory", encoding="utf-8")
-    assert (
-        status_line(_env(wall / "mcp.jsonl"), store=str(tmp_path)) == f"{UNKNOWN}{SEP}{UNREADABLE}"
-    )
+    expected = ABSENT if os.name == "nt" else UNREADABLE
+    assert status_line(_env(wall / "mcp.jsonl"), store=str(tmp_path)) == f"{UNKNOWN}{SEP}{expected}"
 
     locked = _log(tmp_path / "locked.jsonl", _record("memory_save", "saved"))
     locked.chmod(0)
@@ -233,7 +246,12 @@ def test_the_absent_and_unreadable_arms_exit_zero_with_an_empty_stderr(tmp_path)
     the exit code are asserted — a return value cannot show that stderr stayed empty."""
     wall = tmp_path / "wall"
     wall.write_text("not a directory", encoding="utf-8")
-    for target, reason in ((tmp_path / "nope.jsonl", ABSENT), (wall / "mcp.jsonl", UNREADABLE)):
+    # The second arm follows the platform for the reason spelled out on
+    # `test_an_unreadable_log_is_unknown_and_never_raises`: Windows resolves a path whose
+    # parent is a regular file to ERROR_PATH_NOT_FOUND, which CPython maps to
+    # `FileNotFoundError`, so the classifier renders ABSENT there and is right to.
+    wall_reason = ABSENT if os.name == "nt" else UNREADABLE
+    for target, reason in ((tmp_path / "nope.jsonl", ABSENT), (wall / "mcp.jsonl", wall_reason)):
         done = _run_cli(
             ["--statusline", "--store", str(tmp_path / "store")],
             tmp_path,
@@ -283,6 +301,20 @@ def test_status_line_is_total_even_when_probe_itself_falls_over(monkeypatch, tmp
 # --- 3. no server, no child ------------------------------------------------------------
 
 
+@windows_cannot_construct(
+    because=(
+        "the trap is six shell scripts named `node`, `sh`, `python3` and friends, and "
+        "Windows cannot execute a file with no extension and a `#!` line — measured "
+        "2026-09-05, `OSError: [WinError 193] %1 is not a valid Win32 application` raised "
+        "by the test's own liveness check before the flag is ever run"
+    ),
+    unmeasured=(
+        "that `--statusline` starts no child process. The trap proves its own liveness by "
+        "invoking one shim, and that step is what Windows refuses, so neither the trap nor "
+        "the property it guards is exercised there. A Windows-only shell-out from the flag "
+        "would go unseen until the shims are rewritten as `.cmd`"
+    ),
+)
 def test_no_child_process_is_started_by_the_flag(tmp_path):
     """POSITIVE, NOT BY INSPECTION: a trap is armed and then shown un-sprung.
 

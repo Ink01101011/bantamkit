@@ -71,6 +71,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import windows_cannot_construct
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -165,8 +166,12 @@ _POSIX_ONLY = pytest.mark.skipif(
     os.name == "nt",
     reason=(
         "PRICED: `tools/bantamkit-mcp` is `#!/bin/sh` and Windows has no POSIX shell "
-        "to run it — RB-P101, an open item with its own job. The Node launcher below "
-        "is asked on every platform."
+        "to run it — RB-P101, an open item with its own job. THE SENTENCE THAT USED TO "
+        "FOLLOW THIS ONE — 'The Node launcher below is asked on every platform' — WAS "
+        "FALSE: `tools/bantamkit-mcp-node` is a POSIX shell script too, and Windows "
+        "answers `OSError: [WinError 193] %1 is not a valid Win32 application`. Measured "
+        "on the first Windows CI run in weeks, 2026-09-05. Both launchers are POSIX-only "
+        "until one of them gets a `.cmd`."
     ),
 )
 
@@ -239,6 +244,19 @@ def test_every_stated_tool_count_matches_what_is_served() -> None:
     )
 
 
+@windows_cannot_construct(
+    because=(
+        "`tools/bantamkit-mcp-node` is a POSIX shell script and Windows cannot execute one "
+        "— measured 2026-09-05, `OSError: [WinError 193] %1 is not a valid Win32 "
+        "application`. Its NAME says 'on every platform' and that was aspiration, not "
+        "measurement: there is no `.cmd` launcher for either runtime yet"
+    ),
+    unmeasured=(
+        "that the Node launcher serves the same tool count on Windows as it does on POSIX. "
+        "Nothing here has ever asked it on Windows, so a Windows-only drift in the served "
+        "surface would be invisible until a `.cmd` launcher exists to ask through"
+    ),
+)
 def test_the_node_launcher_serves_the_same_count_on_every_platform() -> None:
     """The half that runs on Windows too, so the matrix is not blind to the port."""
     if shutil.which("node") is None:  # pragma: no cover - node is a hard dependency here
