@@ -7,10 +7,20 @@ nothing else, which is what makes the redirection total.
 """
 
 import json
+import sys
 
 import pytest
 
 from bantamkit import hostinstall
+
+# The Node half of this file carries the same two markers, and the reason it carries them is
+# the reason these exist: the first Windows CI run in weeks failed three cases in THIS file
+# and nothing else of mine. `skip` had been applied on one runtime and not the other — a
+# parity slip in the tests, the same shape review had just found in the code.
+posix_only = pytest.mark.skipif(
+    sys.platform == "win32", reason="the stub is a #!/bin/sh script; the win32 arm is below"
+)
+windows_only = pytest.mark.skipif(sys.platform != "win32", reason="exercises a .cmd shim")
 
 
 @pytest.fixture
@@ -248,6 +258,12 @@ def test_a_null_entry_is_present_and_is_not_replaced_without_force(home):
     assert json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["bantamkit"]["command"] == CMD
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="`os.chmod` on Windows toggles the read-only bit and nothing else, so 0600 is not "
+    "a mode this can assert. The property still holds there — the same `st_mode` is carried "
+    "across — but there is no permission to observe it with.",
+)
 def test_the_files_mode_survives_the_replace(home):
     """A host config carries API keys in per-server `env`; 0600 must not come back 0644.
 
@@ -267,6 +283,7 @@ def test_the_files_mode_survives_the_replace(home):
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
+@posix_only
 def test_the_claude_arm_prints_a_command_someone_can_re_run(home, tmp_path, monkeypatch):
     """`ran    : claude mcp add ...`, with the verb.
 
@@ -290,6 +307,7 @@ def test_the_claude_arm_prints_a_command_someone_can_re_run(home, tmp_path, monk
     )
 
 
+@posix_only
 def test_the_claude_arm_reports_the_hosts_own_failure(home, tmp_path, monkeypatch):
     """A non-zero `claude mcp add` is the host's refusal and is passed through, not swallowed."""
     import os
@@ -306,3 +324,48 @@ def test_the_claude_arm_reports_the_hosts_own_failure(home, tmp_path, monkeypatc
 
     assert "`claude mcp add` failed (exit 3)" in str(caught.value)
     assert "no such scope" in str(caught.value)
+
+
+@windows_only
+def test_the_claude_arm_launches_a_cmd_shim_on_windows(home, tmp_path, monkeypatch):
+    """The Windows mirror of the two POSIX cases above, against a real `.cmd`.
+
+    `shutil.which` honours `PATHEXT`, so the reference finds `claude.cmd` where a bare name
+    lookup would not — the property the port needs `shell: True` to reach. Measured here
+    rather than assumed, because the whole Windows arm of this feature was written on a Mac.
+    """
+    import os
+
+    stub_dir = tmp_path / "bin"
+    stub_dir.mkdir()
+    (stub_dir / "claude.cmd").write_text("@echo off\r\nexit /b 0\r\n", encoding="utf-8")
+    monkeypatch.setenv("PATH", f"{stub_dir}{os.pathsep}{os.environ['PATH']}")
+
+    report = hostinstall.install("claude", CMD, ["--flag"])
+
+    assert report.splitlines()[1] == (
+        f"  ran    : claude mcp add bantamkit -s user -- {CMD} --flag"
+    )
+
+
+@windows_only
+def test_a_path_with_a_space_survives_on_windows(home, tmp_path, monkeypatch):
+    """`C:\\Program Files\\...` is the normal case on Windows, not an edge one.
+
+    The shim writes its own arguments to a file and this reads them back: a launcher that
+    mangled the quoting would still exit 0, so the exit code proves nothing.
+    """
+    import os
+
+    stub_dir = tmp_path / "bin"
+    stub_dir.mkdir()
+    seen = tmp_path / "seen.txt"
+    (stub_dir / "claude.cmd").write_text(
+        f'@echo off\r\necho %* > "{seen}"\r\nexit /b 0\r\n', encoding="utf-8"
+    )
+    monkeypatch.setenv("PATH", f"{stub_dir}{os.pathsep}{os.environ['PATH']}")
+    spaced = "C:\\Program Files\\bantamkit\\bantamkit-mcp.exe"
+
+    hostinstall.install("claude", spaced, [])
+
+    assert spaced in seen.read_text(encoding="utf-8")
