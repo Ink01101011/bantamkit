@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import base64
 import json
+import unicodedata
 import sys
 from pathlib import Path
 
@@ -110,7 +111,30 @@ def op_skills(payload: dict) -> dict:
     }
 
 
-OPS = {"audit": op_audit, "unwrap": op_unwrap, "phrases": op_phrases, "skills": op_skills}
+def op_unicode(_payload: dict) -> dict:
+    """What THIS CPython's Unicode table says, so the suite can stop assuming it.
+
+    The U+1C89 cases are ruled different because `str.isalpha()` and `\\p{L}` are compiled
+    against different revisions of the standard. That is a fact about two TABLES, not about
+    the code under test, and it stops being true when either side moves: node 18 carries ICU
+    15.1 and agrees with CPython 3.12, and CPython 3.14 carries Unicode 16.0 and agrees with
+    a modern Node. Both were measured 2026-09-05, and the first one turned the ruling stale in
+    CI while every developer laptop stayed green.
+
+    So the suite asks each side what its own table says and rules only when the two answers
+    differ. Reporting the version alongside is for the note: it is what a reader needs to know
+    WHY the run took the branch it did.
+    """
+    return {"unidata_version": unicodedata.unidata_version, "letter_1c89": chr(0x1C89).isalpha()}
+
+
+OPS = {
+    "audit": op_audit,
+    "unwrap": op_unwrap,
+    "phrases": op_phrases,
+    "skills": op_skills,
+    "unicode": op_unicode,
+}
 
 
 def main() -> None:

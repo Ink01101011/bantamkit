@@ -150,10 +150,19 @@ jobs:
     # the ruling goes stale and conformance fails: `PASS: 6196 cases` on node 22 and
     # `FAIL: 6196 cases` on node 18, same commit, same run.
     #
-    # Supporting 18 would mean either deleting a ruling that is true on every other supported
-    # version, or making the case conditional on an ICU version the package does not control.
-    # Raising the floor is the honest option: the range we promise is the range the gate can
-    # hold. 18 reached end-of-life in April 2025.
+    # THAT ARGUMENT WAS OVERTAKEN THE SAME DAY AND IS CORRECTED HERE RATHER THAN DELETED.
+    # It said supporting 18 would mean deleting a true ruling or making the case conditional on
+    # an ICU version this package does not control — and then the second of those was done, on
+    # purpose: `suites/skillaudit.mjs` now asks BOTH sides what their own Unicode table says
+    # about U+1C89 and rules only when the two answers differ. Measured after that change:
+    # `--all` is PASS 6495 cases on node 18 as well as on 22, with 134 ruled-different on 18
+    # and 136 on 22 — the two U+1C89 rulings correctly absent where the tables agree.
+    #
+    # So the gate CAN hold 18, and the floor stays at 20 for a different and smaller reason:
+    # node 18 reached end-of-life in April 2025, and a supported range is a promise to keep
+    # tested, not merely a range that happens to pass today. That is a judgement about what to
+    # promise, not a necessity — and saying so is the difference between a decision and a
+    # rationalisation.
     #
     # WHY THERE IS A PYTHON HERE. The gate is `npm test` AND the conformance harness, and
     # the harness produces its REFERENCE side by shelling out to CPython (see the header of
