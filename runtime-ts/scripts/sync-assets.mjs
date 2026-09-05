@@ -41,7 +41,7 @@
  * cannot reach above the package directory any more than hatchling can. So the licence
  * is vendored here, by the same two rules and in the same pass.
  */
-import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -92,6 +92,16 @@ function entriesUnder(dir) {
  * The prefix window stays real and stays unclosed. `short` still counts it, so the day it is
  * observed there will be a measurement to design against rather than a paragraph.
  */
+/** Whether the destination already holds exactly the source's bytes. Cheap: the pack is small. */
+function sameBytes(source, target) {
+  if (!existsSync(target)) return false;
+  const a = statSync(source);
+  const b = statSync(target);
+  if (!b.isFile() || a.size !== b.size) return false;
+  return readFileSync(source).equals(readFileSync(target));
+}
+
+
 if (populated(checkout)) {
   // Overwrite first, so no reader ever meets a missing file...
   const stale = new Set(entriesUnder(vendored));
@@ -101,7 +111,7 @@ if (populated(checkout)) {
     if (statSync(source).isDirectory()) mkdirSync(target, { recursive: true });
     else {
       mkdirSync(dirname(target), { recursive: true });
-      copyFileSync(source, target);
+      if (!sameBytes(source, target)) copyFileSync(source, target);
     }
   }
   for (const kept of entriesUnder(checkout)) stale.delete(kept);
