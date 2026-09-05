@@ -33,18 +33,48 @@ The uv equivalent is `uvx --from "bantamkit[mcp]" bantamkit-mcp`. uv is not
 installed on the machine this README was measured on, so unlike every other
 command here that one is the documented form rather than a measured one.
 
-### As an MCP server
+### Connect it to a host
+
+Every host below runs the same command; only the file and the key around it change. If
+you installed with `pip` into an environment you keep, replace the `command`/`args` pair
+with the absolute path to the `bantamkit-mcp` console script in that environment.
+
+**Claude Code** — one command, no file to edit. `-s user` makes it available in every
+project; drop it for this project only.
+
+```bash
+claude mcp add bantamkit -s user -- pipx run --spec "bantamkit[mcp]" bantamkit-mcp
+```
+
+**Claude Desktop** — `~/Library/Application Support/Claude/claude_desktop_config.json`
+on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows. Top-level key
+`mcpServers`; each entry takes `command`, `args` and an optional `env`.
 
 ```json
-{
-  "mcpServers": {
-    "bantamkit": {
-      "command": "pipx",
-      "args": ["run", "--spec", "bantamkit[mcp]", "bantamkit-mcp"]
-    }
-  }
-}
+{"mcpServers": {"bantamkit": {"command": "pipx", "args": ["run", "--spec", "bantamkit[mcp]", "bantamkit-mcp"]}}}
 ```
+
+**GitHub Copilot in VS Code** — `.vscode/mcp.json` for one workspace, or the user
+profile via the **MCP: Open User Configuration** command. Note the top-level key is
+`servers`, not `mcpServers`.
+
+```json
+{"servers": {"bantamkit": {"type": "stdio", "command": "pipx", "args": ["run", "--spec", "bantamkit[mcp]", "bantamkit-mcp"]}}}
+```
+
+**Cursor** — `.cursor/mcp.json` in the project, or `~/.cursor/mcp.json` globally. Back
+to `mcpServers`.
+
+```json
+{"mcpServers": {"bantamkit": {"command": "pipx", "args": ["run", "--spec", "bantamkit[mcp]", "bantamkit-mcp"]}}}
+```
+
+**Anything else that speaks MCP over stdio** runs the console script and talks JSON-RPC
+on its stdin and stdout. Nothing about this package is host-specific.
+
+The Claude Code and Claude Desktop forms were taken from this machine — `claude mcp add
+--help` and an existing config file. The VS Code and Cursor forms are from those
+projects' own documentation, not from a host installed here.
 
 Point `--start` at a directory to choose where project-store discovery begins, or
 `--store` at a single path to disable layering entirely. Do not reach for

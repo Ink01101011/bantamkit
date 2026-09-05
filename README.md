@@ -20,11 +20,19 @@ npx -y bantamkit-mcp --assets-root              # Node, no Python required
 pipx run --spec "bantamkit[mcp]" bantamkit-mcp --assets-root   # Python
 ```
 
-As host configuration:
+Wiring it into a host — Claude Code takes one command:
 
-```json
-{"mcpServers": {"bantamkit": {"command": "npx", "args": ["-y", "bantamkit-mcp"]}}}
+```bash
+claude mcp add bantamkit -s user -- npx -y bantamkit-mcp
 ```
+
+Claude Desktop, GitHub Copilot in VS Code, Cursor and anything else that speaks
+MCP over stdio each take a small JSON entry instead. The exact file, key and
+entry for each are in
+[the npm package's README](runtime-ts/README.md#connect-it-to-a-host) and
+[the Python package's README](runtime-py/README.md#connect-it-to-a-host) — the
+key differs between hosts (`servers` in VS Code, `mcpServers` everywhere else),
+which is the one detail that catches people out.
 
 **As a Python library**, which is what the rest of this page is about:
 
