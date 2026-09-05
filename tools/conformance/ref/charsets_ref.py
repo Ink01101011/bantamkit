@@ -56,12 +56,27 @@ def _multi_singles(codec: str) -> str | None:
 
 def main() -> None:
     payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
-    generated = subprocess.run(
-        [sys.executable, str(GENERATOR)], check=True, capture_output=True, text=True, encoding="utf-8"
-    ).stdout
+    # THE GENERATOR'S OUTCOME IS REPORTED, NOT ASSUMED. `check=True` used to turn a failure
+    # into a traceback whose only trace on the other side was `generated: null` and a
+    # `TypeError: Cannot read properties of null (reading 'replace')` — a crash of the whole
+    # conformance run, on Windows, with nothing in it naming the generator. Measured on CI
+    # 2026-09-05; the suite has never once completed on that platform.
+    #
+    # Whatever went wrong now arrives as data the suite can turn into a failing CASE.
+    done = subprocess.run(
+        [sys.executable, str(GENERATOR)], capture_output=True, text=True, encoding="utf-8"
+    )
+    generated = done.stdout if done.returncode == 0 else None
     out = {
         "version": sys.version.split()[0],
         "generated": generated,
+        "generator": {
+            "path": str(GENERATOR),
+            "exists": GENERATOR.exists(),
+            "returncode": done.returncode,
+            "stderr": (done.stderr or "")[-4000:],
+            "stdout_bytes": len(done.stdout or ""),
+        },
         "modules": sorted(m.name for m in pkgutil.iter_modules(encodings.__path__)),
         "aliases": dict(encodings.aliases.aliases),
         "tables": {c: _table(c) for c in payload.get("codecs", [])},

@@ -85,6 +85,25 @@ export async function run(ctx) {
   const notes = [];
 
   const fileVersion = source.match(HEADER)?.[0].match(/CPython (\S+)/)?.[1] ?? null;
+  // A GENERATOR THAT DID NOT RUN IS A FAILING CASE, NOT A CRASH. Reading `.replace` off a
+  // null took the whole run down on Windows with a `TypeError` that named neither the
+  // generator nor the platform, so the suite had never completed there and nothing said so.
+  // The reference now reports the outcome and this turns it into one legible failure.
+  if (typeof python.generated !== 'string') {
+    const g = python.generator ?? {};
+    cases.push({
+      name: 'scripts/charsets-table.py runs at all',
+      kind: 'json',
+      expected: { ran: true, returncode: 0 },
+      actual: { ran: typeof python.generated === 'string', returncode: g.returncode ?? null },
+    });
+    notes.push(
+      `charsets: the generator did not produce a table. path=${g.path} exists=${g.exists} ` +
+        `returncode=${g.returncode} stdout_bytes=${g.stdout_bytes}` +
+        (g.stderr ? `\n--- generator stderr ---\n${g.stderr}` : ''),
+    );
+    return { cases, notes };
+  }
   cases.push({
     name: 'src/charsets.ts is what scripts/charsets-table.py writes for the live registry (header line excluded)',
     kind: 'bytes',
