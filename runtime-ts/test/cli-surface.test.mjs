@@ -52,7 +52,8 @@ function run(argv, columns, assets) {
 const USAGE_80 =
   "usage: bantamkit-mcp [-h] [--assets-root] [--k K] [--index-budget BYTES]\n" +
   "                     [--mcp-report] [--statusline]\n" +
-  "                     [--store STORE | --start START]\n";
+  "                     [--install {claude,claude-desktop,copilot,cursor}]\n" +
+  "                     [--force] [--store STORE | --start START]\n";
 
 const HELP = new Map([
   [
@@ -64,6 +65,8 @@ const HELP = new Map([
     "       [--index-budget BYTES]\n" +
     "       [--mcp-report]\n" +
     "       [--statusline]\n" +
+    "       [--install {claude,claude-desktop,copilot,cursor}]\n" +
+    "       [--force]\n" +
     "       [--store STORE | --start START]\n" +
     "\n" +
     "bantamkit MCP\n" +
@@ -114,6 +117,20 @@ const HELP = new Map([
     "    for a host\n" +
     "    status bar,\n" +
     "    then exit\n" +
+    "  --install {claude,claude-desktop,copilot,cursor}\n" +
+    "    wire this\n" +
+    "    server into\n" +
+    "    a host's\n" +
+    "    MCP configu\n" +
+    "    ration,\n" +
+    "    then exit\n" +
+    "  --force\n" +
+    "    with\n" +
+    "    --install,\n" +
+    "    replace an\n" +
+    "    existing\n" +
+    "    bantamkit\n" +
+    "    entry\n" +
     "  --store STORE\n" +
     "    single\n" +
     "    memory\n" +
@@ -139,6 +156,8 @@ const HELP = new Map([
     "       [--index-budget BYTES]\n" +
     "       [--mcp-report]\n" +
     "       [--statusline]\n" +
+    "       [--install {claude,claude-desktop,copilot,cursor}]\n" +
+    "       [--force]\n" +
     "       [--store STORE | --start START]\n" +
     "\n" +
     "bantamkit MCP\n" +
@@ -182,6 +201,19 @@ const HELP = new Map([
     "    for a host\n" +
     "    status bar,\n" +
     "    then exit\n" +
+    "  --install {claude,claude-desktop,copilot,cursor}\n" +
+    "    wire this\n" +
+    "    server into a\n" +
+    "    host's MCP\n" +
+    "    configuration,\n" +
+    "    then exit\n" +
+    "  --force\n" +
+    "    with\n" +
+    "    --install,\n" +
+    "    replace an\n" +
+    "    existing\n" +
+    "    bantamkit\n" +
+    "    entry\n" +
     "  --store STORE\n" +
     "    single memory\n" +
     "    store path\n" +
@@ -202,6 +234,8 @@ const HELP = new Map([
     "                     [--index-budget BYTES]\n" +
     "                     [--mcp-report]\n" +
     "                     [--statusline]\n" +
+    "                     [--install {claude,claude-desktop,copilot,cursor}]\n" +
+    "                     [--force]\n" +
     "                     [--store STORE | --start START]\n" +
     "\n" +
     "bantamkit MCP server (stdio): per-\n" +
@@ -230,6 +264,14 @@ const HELP = new Map([
     "                line for a host\n" +
     "                status bar, then\n" +
     "                exit\n" +
+    "  --install {claude,claude-desktop,copilot,cursor}\n" +
+    "                wire this server\n" +
+    "                into a host's MCP\n" +
+    "                configuration, then\n" +
+    "                exit\n" +
+    "  --force       with --install,\n" +
+    "                replace an existing\n" +
+    "                bantamkit entry\n" +
     "  --store STORE\n" +
     "                single memory store\n" +
     "                path (disables\n" +
@@ -245,6 +287,8 @@ const HELP = new Map([
     "usage: bantamkit-mcp [-h] [--assets-root] [--k K]\n" +
     "                     [--index-budget BYTES]\n" +
     "                     [--mcp-report] [--statusline]\n" +
+    "                     [--install {claude,claude-desktop,copilot,cursor}]\n" +
+    "                     [--force]\n" +
     "                     [--store STORE | --start START]\n" +
     "\n" +
     "bantamkit MCP server (stdio): per-person memory +\n" +
@@ -266,6 +310,12 @@ const HELP = new Map([
     "                        exit\n" +
     "  --statusline          print one status line for a\n" +
     "                        host status bar, then exit\n" +
+    "  --install {claude,claude-desktop,copilot,cursor}\n" +
+    "                        wire this server into a\n" +
+    "                        host's MCP configuration,\n" +
+    "                        then exit\n" +
+    "  --force               with --install, replace an\n" +
+    "                        existing bantamkit entry\n" +
     "  --store STORE         single memory store path\n" +
     "                        (disables layering)\n" +
     "  --start START         directory to start project-\n" +

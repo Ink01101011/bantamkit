@@ -40,7 +40,25 @@ float* below — it is the failure this package makes easiest to hit and hardest
 
 ### Connect it to a host
 
-Every host below runs the same command; only the file and the key around it change.
+**One command, and it writes the entry for you:**
+
+```bash
+npx -y bantamkit-mcp --install claude          # Claude Code
+npx -y bantamkit-mcp --install claude-desktop  # Claude Desktop
+npx -y bantamkit-mcp --install copilot         # GitHub Copilot in VS Code
+npx -y bantamkit-mcp --install cursor          # Cursor
+```
+
+It never prompts. A second run that finds its own entry says so and changes nothing; an
+entry that differs is refused, printed beside the one it would write, and replaced only
+with `--force`. Every write backs the file up first, as `<name>.backup-<date>`, and a file
+that does not parse is refused rather than replaced.
+
+`--install claude` runs `claude mcp add` rather than editing `~/.claude.json` directly:
+that file is the host's, and it carries state that is not MCP configuration.
+
+The rest of this section is what those commands write, for anyone who would rather do it by
+hand. Every host runs the same command; only the file and the key around it change.
 
 **Claude Code** — one command, no file to edit. `-s user` makes it available in every
 project; drop it for this project only.

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import bantamkit
-from bantamkit import __version__, docread, shiftwork, skillaudit
+from bantamkit import __version__, docread, hostinstall, shiftwork, skillaudit
 from bantamkit.assets import AssetNotFound, assets_root, load_skill, load_tool_asset
 from bantamkit.client import BantamError
 from bantamkit.contract import (
@@ -1262,6 +1262,27 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="print one status line for a host status bar, then exit",
     )
+    # THE SAME PLACE AND THE SAME REASON AS THE TWO ABOVE. It prints and returns before a
+    # transport exists, so it belongs with the flags that need no server; and it is placed
+    # after `--statusline` rather than beside `-h` so that the FIRST line of the 80-column
+    # usage — pinned by
+    # `test_assets_root_appears_in_the_generated_help_in_the_documented_position` and by the
+    # `cli` conformance suite — stays byte-identical. The choices render long enough to take
+    # a line of their own; that line is below the pinned one.
+    parser.add_argument(
+        "--install",
+        choices=hostinstall.HOSTS,
+        help="wire this server into a host's MCP configuration, then exit",
+    )
+    # Paired with `--install` and useless without it, which the parser checks rather than
+    # the help text claiming it. It exists because this command NEVER prompts: an overwrite
+    # is exactly when a program wants to ask, and asking needs a TTY that neither Claude
+    # Code's `!` channel nor CI has.
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="with --install, replace an existing bantamkit entry",
+    )
     stores = parser.add_mutually_exclusive_group()
     stores.add_argument("--store", help="single memory store path (disables layering)")
     stores.add_argument(
@@ -1343,6 +1364,27 @@ def _print_assets_root() -> None:
     sys.stdout.buffer.flush()
 
 
+def _run_install(args: argparse.Namespace) -> None:
+    """`--install <host>`: register this server, print what happened, return.
+
+    Written through `sys.stdout.buffer` for the reason `_print_assets_root` gives: on
+    Windows `print` emits CRLF where Node's `process.stdout.write` emits LF, and a
+    byte-comparing conformance runner would read that as a divergence.
+
+    A refusal goes to stderr and exits 1. It is not an exception the operator has to read a
+    traceback for: every `InstallError` carries the sentence that says what to do next.
+    """
+    command, extra = hostinstall.this_command()
+    try:
+        report = hostinstall.install(args.install, command, extra, force=args.force)
+    except hostinstall.InstallError as exc:
+        sys.stderr.buffer.write(f"error: {exc}\n".encode())
+        sys.stderr.buffer.flush()
+        raise SystemExit(1) from None
+    sys.stdout.buffer.write(f"{report}\n".encode())
+    sys.stdout.buffer.flush()
+
+
 def main() -> None:
     if MCPServer is None:
         raise SystemExit(_INSTALL_HINT)
@@ -1358,6 +1400,14 @@ def main() -> None:
     if args.statusline:
         _print_status_line(args)
         return
+    if args.install:
+        _run_install(args)
+        return
+    # `--force` alone is a typo with a plausible reading -- somebody meant to install and
+    # dropped the flag that says where. Refusing names the missing half instead of starting
+    # a server that ignores it.
+    if args.force:
+        raise SystemExit("--force is only meaningful with --install")
     server = build_server(_build_memory(args))
     asyncio.run(server.run_stdio_async())
 

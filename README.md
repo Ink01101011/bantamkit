@@ -20,11 +20,15 @@ npx -y bantamkit-mcp --assets-root              # Node, no Python required
 pipx run --spec "bantamkit[mcp]" bantamkit-mcp --assets-root   # Python
 ```
 
-Wiring it into a host — Claude Code takes one command:
+Wiring it into a host — the server writes its own entry:
 
 ```bash
-claude mcp add bantamkit -s user -- npx -y bantamkit-mcp
+npx -y bantamkit-mcp --install claude   # or claude-desktop, copilot, cursor
 ```
+
+It backs the file up before changing it, refuses rather than overwriting an entry that
+differs (`--force` to replace), and never prompts — so it behaves the same in a terminal,
+in CI, and inside another agent.
 
 Claude Desktop, GitHub Copilot in VS Code, Cursor and anything else that speaks
 MCP over stdio each take a small JSON entry instead. The exact file, key and

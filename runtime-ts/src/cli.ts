@@ -62,6 +62,7 @@ import { packFileCount } from './mcp/identity.js';
 import { buildServer } from './mcp/server.js';
 import { RawStdioTransport } from './mcp/transport.js';
 import {
+  ArgumentTypeError,
   ArgvError,
   formatHelp,
   formatUsageBlock,
@@ -71,6 +72,8 @@ import {
   pyIntStrict,
   type ParserSpec,
 } from './pyargparse.js';
+import { pyRepr } from './memory/pyfs.js';
+import { HOSTS, type Host, install as installHost, InstallError, thisCommand } from './hostinstall.js';
 import { statusLine } from './statusline.js';
 
 /** `SystemExit("...")`: the message on stderr, exit 1. */
@@ -162,6 +165,42 @@ const PARSER: ParserSpec = {
       help: 'print one status line for a host status bar, then exit',
       defaultValue: false,
     },
+    // THE SAME PLACE AND THE SAME REASON AS THE TWO ABOVE, and the position is copied from
+    // the reference rather than chosen: argparse prints optionals in registration order, so
+    // this line decides where `[--install {...}]` sits in the generated usage. After
+    // `--statusline` leaves the FIRST line of the 80-column usage — pinned by the `cli`
+    // conformance suite — byte-identical.
+    //
+    // `choices` is NOT ported for ordinary options (see pyargparse.ts's not-ported list), and
+    // porting it for one flag would be a feature grown to serve a caller. The two things
+    // `choices` is visible through are reproduced directly instead: the metavar argparse
+    // builds, spelled out here, and the invalid-value sentence, thrown as an
+    // `ArgumentTypeError` so it prints VERBATIM after `argument --install: ` exactly as
+    // `_check_value` does.
+    {
+      optionStrings: ['--install'],
+      dest: 'install',
+      metavar: `{${HOSTS.join(',')}}`,
+      kind: 'store',
+      help: "wire this server into a host's MCP configuration, then exit",
+      convert: (raw: string): string => {
+        if (!(HOSTS as readonly string[]).includes(raw)) {
+          throw new ArgumentTypeError(
+            `invalid choice: ${pyRepr(raw)} (choose from ${HOSTS.join(', ')})`,
+          );
+        }
+        return raw;
+      },
+      typeName: 'str',
+      defaultValue: null,
+    },
+    {
+      optionStrings: ['--force'],
+      dest: 'force',
+      kind: 'storeTrue',
+      help: 'with --install, replace an existing bantamkit entry',
+      defaultValue: false,
+    },
     {
       optionStrings: ['--store'],
       dest: 'store',
@@ -177,7 +216,10 @@ const PARSER: ParserSpec = {
       defaultValue: null,
     },
   ],
-  groups: [[6, 7]],
+  // `--store`/`--start` moved from 6/7 to 8/9 when `--install` and `--force` were added
+  // ahead of them. These are POSITIONS, not names, so adding an action above the group and
+  // leaving this line alone would silently make two unrelated flags mutually exclusive.
+  groups: [[8, 9]],
 };
 
 /*
@@ -199,6 +241,8 @@ export interface Options {
   assetsRoot: boolean;
   mcpReport: boolean;
   statusline: boolean;
+  install: Host | null;
+  force: boolean;
 }
 
 /** `_parse_args`, arm for arm, including the mutually exclusive group and `-h`. */
@@ -212,6 +256,8 @@ export function parseArgs(argv: readonly string[]): Options {
     assetsRoot: values['assets_root'] as boolean,
     mcpReport: values['mcp_report'] as boolean,
     statusline: values['statusline'] as boolean,
+    install: values['install'] as Host | null,
+    force: values['force'] as boolean,
   };
 }
 
@@ -247,6 +293,21 @@ async function main(argv: readonly string[]): Promise<number> {
     process.stdout.write(`${root}\n${packFileCount(root)} files\n`);
     return 0;
   }
+  if (options.install !== null && options.install !== undefined) {
+    // Before any store or transport exists, the shape `--assets-root` established.
+    const { command, args } = thisCommand();
+    try {
+      process.stdout.write(`${installHost(options.install, command, args, options.force)}\n`);
+    } catch (e) {
+      if (!(e instanceof InstallError)) throw e;
+      process.stderr.write(`error: ${e.message}\n`);
+      return 1;
+    }
+    return 0;
+  }
+  // `--force` alone is a typo with a plausible reading — somebody meant to install and
+  // dropped the flag that says where. Refusing names the missing half.
+  if (options.force) throw new Refusal('--force is only meaningful with --install');
   if (options.mcpReport) {
     // Same discipline as `--assets-root`, and the same place in `main`: BEFORE
     // `buildMemory`, which touches the filesystem, and before the transport exists at all.
