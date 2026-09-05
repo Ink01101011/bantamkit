@@ -77,7 +77,24 @@ function checkout(name, { dist = false, deps = false } = {}) {
   // COPIED, never symlinked: Node resolves a symlink to its real path before it looks for
   // `node_modules`, so a symlinked `dist/` would silently borrow the repository's own
   // dependencies and the missing-dependency node would test nothing.
-  if (dist) cpSync(DIST, join(dir, 'runtime-ts', 'dist'), { recursive: true });
+  if (dist) {
+    cpSync(DIST, join(dir, 'runtime-ts', 'dist'), { recursive: true });
+    // `"type": "module"`, because a real checkout has one and Node 18 needs it.
+    //
+    // `dist/cli.js` is ESM. Without this file Node 18 reads it as CommonJS and dies with
+    // `SyntaxError: Cannot use import statement outside a module` — so the missing-dependency
+    // test got a syntax error where it expected the launcher's `deps :` line, and the
+    // assertion failed on a message about module systems. Node 22 detects ESM syntax and
+    // retries, which is why this passed on one cell of the matrix and not the other:
+    // measured on CI 2026-09-05, node 18 red and node 22 green on the same commit.
+    //
+    // The fixture was simply less than a checkout. `engines.node: ">=18"` is a promise, and a
+    // fixture that only works on 22 cannot test it.
+    writeFileSync(
+      join(dir, 'runtime-ts', 'package.json'),
+      `${JSON.stringify({ name: 'bantamkit-mcp', type: 'module' }, null, 2)}\n`,
+    );
+  }
   if (deps) cpSync(join(packageRoot, 'node_modules'), join(dir, 'runtime-ts', 'node_modules'), { recursive: true });
   return dir;
 }
@@ -207,6 +224,23 @@ test('no Node interpreter is a sentence naming BANTAMKIT_NODE, not a spawn error
     if (!existsSync(link)) symlinkSync(real, link);
   }
   assert.ok(!existsSync(join(bin, 'node')), 'the point of this PATH is that node is absent');
+
+  // AND THE TWO HARDCODED FALLBACKS, which no PATH can hide. After `command -v node` fails
+  // the launcher tries `/opt/homebrew/bin/node` and `/usr/local/bin/node` by absolute path —
+  // deliberately, for version managers whose shims are not on a GUI host's PATH. GitHub's
+  // ubuntu image installs Node at `/usr/local/bin/node`, so the branch this test is named for
+  // is UNREACHABLE there: the launcher finds an interpreter, runs, and exits 1 for an
+  // unrelated reason. Measured on CI 2026-09-05 as `1 !== 127`, twice, after the PATH fix
+  // above had already been applied.
+  //
+  // The precondition is asserted rather than assumed, and skipping says what it costs.
+  const fallbacks = ['/opt/homebrew/bin/node', '/usr/local/bin/node'].filter((c) => existsSync(c));
+  if (fallbacks.length > 0) {
+    // UNMEASURED HERE: that a machine with no Node at all gets a sentence naming
+    // BANTAMKIT_NODE rather than a spawn error. The fallbacks are absolute paths and a test
+    // cannot unmake them; only a machine without them can run this.
+    return;
+  }
 
   const { stdout, stderr, status } = run(dir, [], { PATH: bin, BANTAMKIT_NODE: '' });
   assert.equal(status, 127);
