@@ -320,6 +320,23 @@ export async function run(ctx) {
 
   const baseEnv = { HOME: home, USERPROFILE: home, BANTAMKIT_MEMORY_DIR: null, BANTAMKIT_ASSETS: ASSETS };
 
+  /**
+   * The same pack, plus the bytecode cache `pip install` leaves in it.
+   *
+   * The pack ships `.py` fixture files, so installing the wheel byte-compiles them and the
+   * installed pack gains a `__pycache__` the npm pack never has. Measured on the published
+   * 0.27.0 artifacts: the Python endpoint reported `sha256:fa8372f6…` over 98 files where
+   * Node reported `sha256:d47dcf4b…` over 87, and `cross_runtime` was at that moment telling
+   * callers that `assets_digest` is the field to compare across runtimes. Both runtimes now
+   * exclude `__pycache__`, and this pack is what makes that comparable rather than asserted.
+   *
+   * It is a REAL directory rather than a mocked walk because the defect lived in the walk.
+   * The `.pyc` payloads are not valid bytecode and do not need to be: nothing imports them,
+   * and a digest over bytes cannot tell a real cache from these.
+   */
+  const PYCACHE_ASSETS = join(scratch, 'assets-with-pycache');
+  const PYCACHE_DIR = join(PYCACHE_ASSETS, 'evals', 'devteam', 'repo', 'src', 'ledger', '__pycache__');
+
   /** Rebuild the on-disk world both runtimes are pointed at, from nothing. */
   const setup = () => {
     for (const dir of [home, project, store]) {
@@ -330,6 +347,12 @@ export async function run(ctx) {
     rmSync(`${checkpoint}.log.jsonl`, { force: true });
     cpSync(REAL_CHECKPOINT, checkpoint);
     writeFileSync(join(project, 'relative.md'), 'relative\nto the project\n');
+    rmSync(PYCACHE_ASSETS, { recursive: true, force: true });
+    cpSync(ASSETS, PYCACHE_ASSETS, { recursive: true });
+    mkdirSync(PYCACHE_DIR, { recursive: true });
+    for (const stem of ['config', 'errors', 'posting']) {
+      writeFileSync(join(PYCACHE_DIR, `${stem}.cpython-312.pyc`), `not real bytecode: ${stem}\n`);
+    }
   };
 
   const cursorUnit = JSON.parse(readFileSync(REAL_CHECKPOINT, 'utf8')).plan.cursor;
@@ -520,6 +543,9 @@ export async function run(ctx) {
   add('bad-params', [INIT(), INITIALIZED, rpc(2, 'tools/call', { name: 'memory_recall', arguments: 'notanobject' })]);
 
   add('identity', [INIT(), INITIALIZED, callTool(2, 'build_identity', {})]);
+  add('identity-pycache', [INIT(), INITIALIZED, callTool(2, 'build_identity', {})], {
+    env: { ...baseEnv, BANTAMKIT_ASSETS: PYCACHE_ASSETS },
+  });
 
   /**
    * `bantamkit_status`, its prompt, and the degraded footer — in the TWO STATES that are the
@@ -975,6 +1001,11 @@ export async function run(ctx) {
   /** Sessions whose frames are compared verbatim; the rest are inspected case by case. */
   const RULED_SESSIONS = new Set([
     'identity',
+    // Ruled for exactly the reasons `identity` is — `build_id`, `code_digest` and the paths
+    // are domain-separated by construction. The field this session exists for, `assets_digest`
+    // over a pack carrying a `__pycache__`, is compared in the `identity` block below and is
+    // NOT ruled there: a ruling would only prove the two sides still differ.
+    'identity-pycache',
     // Same reply, same ruling, and the `identity` block below already compares every field
     // of it that IS comparable. What this session exists for is its event-log record, which
     // is compared byte for byte in the `eventlog` block.
@@ -1839,6 +1870,46 @@ export async function run(ctx) {
       expected: `${py.assets_digest} over ${py.assets_files} files`,
       actual: `${nd.assets_digest} over ${nd.assets_files} files`,
     });
+    // The same field over a pack that carries the bytecode cache `pip install` leaves behind.
+    // This is the shape that actually shipped: on the published 0.27.0 artifacts the Python
+    // endpoint answered `sha256:fa8372f6…` over 98 files where Node answered `sha256:d47dcf4b…`
+    // over 87, so `cross_runtime`'s own instruction — compare `assets_digest` across runtimes —
+    // returned a false "different" on every real install. Nothing could see it, because both
+    // runtimes are exercised from a source checkout where no `__pycache__` exists.
+    const pyc = results.get('identity-pycache');
+    const pycPy = identityOf(pyc.python);
+    const pycNd = identityOf(pyc.node);
+    cases.push({
+      name: 'build_identity: assets_digest agrees across the two runtimes, over a pack carrying __pycache__',
+      kind: 'string',
+      expected: `${pycPy.assets_digest} over ${pycPy.assets_files} files`,
+      actual: `${pycNd.assets_digest} over ${pycNd.assets_files} files`,
+    });
+    // And the stronger property, per side: a bytecode cache must not move the digest AT ALL.
+    // Cross-runtime agreement alone would survive both sides counting the `.pyc` files, which
+    // is the symmetric regression a differential gate cannot see.
+    cases.push({
+      name: 'build_identity: a __pycache__ does not move assets_digest — the reference',
+      kind: 'string',
+      expected: `${py.assets_digest} over ${py.assets_files} files`,
+      actual: `${pycPy.assets_digest} over ${pycPy.assets_files} files`,
+    });
+    cases.push({
+      name: 'build_identity: a __pycache__ does not move assets_digest — the port',
+      kind: 'string',
+      expected: `${nd.assets_digest} over ${nd.assets_files} files`,
+      actual: `${pycNd.assets_digest} over ${pycNd.assets_files} files`,
+    });
+    // The note reports what was measured, never what the cases are supposed to prove: in the
+    // mutation run that took the exclusion back out, both sides moved together to
+    // `sha256:e740af3f…` over 90 files and the CROSS-RUNTIME case still passed — the two
+    // per-side cases above are the only ones that went red. A note asserting "unchanged"
+    // would have printed a falsehood in exactly the run where it mattered.
+    notes.push(
+      `identity: clean pack ${py.assets_digest} over ${py.assets_files} files; ` +
+        `with __pycache__ ${pycPy.assets_digest} over ${pycPy.assets_files} (reference), ` +
+        `${pycNd.assets_digest} over ${pycNd.assets_files} (port)`,
+    );
     cases.push({ name: 'build_identity: version agrees', kind: 'string', expected: py.version, actual: nd.version });
     cases.push({
       name: 'build_identity: server_name agrees',

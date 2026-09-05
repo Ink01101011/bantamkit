@@ -458,3 +458,43 @@ def test_one_build_in_two_install_shapes_is_one_build(pristine, tmp_path):
     assert wheel["code_digest"] == pristine["code_digest"]
     assert wheel["assets_digest"] == pristine["assets_digest"]
     assert wheel["build_id"] == pristine["build_id"]
+
+
+def test_pip_byte_compiling_the_packs_fixtures_is_not_a_different_pack(pristine, tmp_path):
+    """The same defect as the test above, one field over, found on the PUBLISHED artifacts.
+
+    `_code_fingerprint` has excluded `__pycache__` since it was written, for the reason
+    stated there: bytecode is derived, and a build must not fingerprint differently before
+    and after its first import. `_assets_fingerprint` did not, and the asset pack carries
+    eleven `.py` fixture files — so `pip install` byte-compiles them on the way in and the
+    installed pack gained eleven files the npm pack never has.
+
+    Measured on the published 0.27.0 artifacts, before this exclusion existed: the wheel
+    answered `sha256:fa8372f6…` over 98 files where the npm tarball answered
+    `sha256:d47dcf4b…` over 87, and deleting `__pycache__` from the wheel's pack reproduced
+    the npm digest byte for byte. `cross_runtime` was at that moment telling every caller
+    that `assets_digest` is the field to compare across runtimes, so the one instruction the
+    tool gives about itself returned a false "different" on every real install.
+
+    It was not only a cross-runtime defect. The digest was unstable for ONE install: it
+    changed the first time anything imported a fixture. This test pins that half, which is
+    the half a differential gate cannot see — pointed at one polluted pack, both runtimes
+    move together and agree with each other while both are wrong.
+
+    Note `_wheel_shaped` already copies with `ignore_patterns("__pycache__")`. The fixture
+    knew; the shipped walk did not.
+    """
+    pkgroot = _wheel_shaped(tmp_path, "compiled")
+    clean = _identity_of(pkgroot, tmp_path)
+
+    cache = pkgroot / "bantamkit" / "assets" / "evals" / "devteam" / "repo" / "src" / "ledger"
+    cache = cache / "__pycache__"
+    cache.mkdir(parents=True)
+    for stem in ("config", "errors", "posting"):
+        (cache / f"{stem}.cpython-312.pyc").write_bytes(b"not real bytecode\n")
+
+    compiled = _identity_of(pkgroot, tmp_path)
+
+    assert compiled["assets_files"] == clean["assets_files"] == pristine["assets_files"]
+    assert compiled["assets_digest"] == clean["assets_digest"] == pristine["assets_digest"]
+    assert compiled["build_id"] == clean["build_id"] == pristine["build_id"]
