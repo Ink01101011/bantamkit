@@ -233,7 +233,9 @@ test('sync-assets never leaves the vendored pack absent while it runs', async ()
   const vendored = join(packageRoot, 'assets');
   const witness = join(vendored, 'contracts', 'default.yaml');
   const before = read(witness);
-  const verdict = join(mkdtempSync(join(realpathSync.native(tmpdir()), 'l5-')), 'verdict.json');
+  const watchBed = mkdtempSync(join(realpathSync.native(tmpdir()), 'l5-'));
+  const verdict = join(watchBed, 'verdict.json');
+  const stop = join(watchBed, 'stop');
 
   // The watcher is a CHILD PROCESS and not a promise in this one. `spawnSync` blocks the
   // event loop for its whole duration, so an in-process poll — however it yields — cannot
@@ -248,14 +250,19 @@ test('sync-assets never leaves the vendored pack absent while it runs', async ()
       // PARTIAL file — which counts as `ok` to a watcher that only asks whether the read threw.
       // The file is byte-identical before and after, so any read of a different length is a
       // view of the copy in progress and nothing else.
-      `const fs=require('fs');const [w,v,n]=process.argv.slice(1);const want=Number(n);` +
-        `let gone=0,ok=0,short=0;const end=Date.now()+4000;` +
-        `const dump=()=>fs.writeFileSync(v,JSON.stringify({gone,ok,short}));` +
-        `process.on('SIGTERM',()=>{dump();process.exit(0)});` +
-        `while(Date.now()<end){try{const b=fs.readFileSync(w);if(b.length===want)ok++;else short++}catch{gone++}}` +
-        `dump();`,
+      // A STOP FILE, NOT A SIGNAL. `child.kill('SIGTERM')` on Windows is `TerminateProcess`:
+      // there is no SIGTERM to handle, the `process.on('SIGTERM')` arm never runs, and the
+      // verdict is never written — which is precisely how this test failed there, with
+      // `ENOENT ... verdict.json` and nothing said about the pack at all. Measured on CI
+      // 2026-09-05. A file both sides can see ends the watcher the same way everywhere.
+      `const fs=require('fs');const [w,v,s,n]=process.argv.slice(1);const want=Number(n);` +
+        `let gone=0,ok=0,short=0;const end=Date.now()+30000;` +
+        `while(Date.now()<end&&!fs.existsSync(s)){` +
+        `try{const b=fs.readFileSync(w);if(b.length===want)ok++;else short++}catch{gone++}}` +
+        `fs.writeFileSync(v,JSON.stringify({gone,ok,short}));`,
       witness,
       verdict,
+      stop,
       String(before.length),
     ],
     { stdio: 'ignore' },
@@ -267,7 +274,7 @@ test('sync-assets never leaves the vendored pack absent while it runs', async ()
     encoding: 'utf8',
   });
   await new Promise((r) => setTimeout(r, 250)); // and let it see the aftermath
-  watcher.kill('SIGTERM');
+  write(stop, '');
   await new Promise((r) => watcher.on('exit', r));
   const seen = JSON.parse(read(verdict, 'utf8'));
 

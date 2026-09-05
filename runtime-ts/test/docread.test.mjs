@@ -21,9 +21,9 @@
  * UTF-8 scanner's `reason` strings, quoted-printable's soft breaks, `repr()`.
  */
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { after, test } from 'node:test';
 
 import { checkedInFixtures, writeFixtures, xlsxBytes, zipBytes } from './docread-fixtures.mjs';
@@ -165,7 +165,17 @@ test('every fixture the reference reads or refuses gets the same bytes from the 
     if (DIVERGENT.has(name) || RAISED.has(name)) continue;
     const want = { ...expected.get(name) };
     delete want.fixture;
-    if (want.message) want.message = want.message.replaceAll('{dir}', dir);
+    // `{dir}/` AND NOT `{dir}`, because the separator in the template belongs to the platform
+    // the expectations were RECORDED on. Substituting a Windows temp directory into `{dir}/x`
+    // yields `C:\...\docread-xxx/x` — a mixed path no runtime produces — while the port spells
+    // it the way the OS does. Measured on CI 2026-09-05: expected `...docread-xjwmDz/a-directory`
+    // against actual `...docread-xjwmDz\a-directory`, one character apart.
+    //
+    // Only the separator that follows the placeholder is rewritten. Every `/` in these messages
+    // is a path separator today — checked, zero of the recorded messages contain one for any
+    // other purpose — but a blanket replace would silently corrupt the first message that
+    // carried a mime type, so this stays narrow.
+    if (want.message) want.message = want.message.replaceAll('{dir}/', dir + sep).replaceAll('{dir}', dir);
     assert.deepEqual(dump(path), want, name);
     compared += 1;
   }
