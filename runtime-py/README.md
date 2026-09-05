@@ -35,7 +35,31 @@ command here that one is the documented form rather than a measured one.
 
 ### Connect it to a host
 
-Every host below runs the same command; only the file and the key around it change. If
+**One command, and it writes the entry for you:**
+
+```bash
+bantamkit-mcp --install claude          # Claude Code
+bantamkit-mcp --install claude-desktop  # Claude Desktop
+bantamkit-mcp --install copilot         # GitHub Copilot in VS Code
+bantamkit-mcp --install cursor          # Cursor
+```
+
+It records the absolute path of the console script you just ran, so the entry points at the
+environment you installed into rather than at whatever is on a host's PATH.
+
+`--install claude` runs `claude mcp add` rather than editing `~/.claude.json` directly:
+that file is the host's, and it carries state that is not MCP configuration. What happens on
+a second run there is Claude Code's decision, not this command's, and `--force` does not
+reach it.
+
+**For the other three**, which are edited directly: it never prompts. A second run that
+finds its own entry says so and changes nothing; an entry that differs is refused, printed
+beside the one it would write, and replaced only with `--force`. Every write backs the file
+up first as `<name>.backup-<date>`, preserves the file's permissions, and a file that does
+not parse is refused rather than replaced.
+
+The rest of this section is what those commands write, for anyone who would rather do it by
+hand. Every host runs the same command; only the file and the key around it change. If
 you installed with `pip` into an environment you keep, replace the `command`/`args` pair
 with the absolute path to the `bantamkit-mcp` console script in that environment.
 

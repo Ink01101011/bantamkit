@@ -37,7 +37,7 @@
  * without the scrub a developer's terminal size would be an input to a conformance result.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -70,7 +70,7 @@ const DEFAULT_COLUMNS = 80;
 function runNode(spec) {
   const env = { ...process.env };
   for (const key of SCRUBBED) delete env[key];
-  for (const [key, value] of Object.entries(spec.env ?? {})) {
+  for (const [key, value] of Object.entries({ ...spec.env, ...(spec.sideEnv?.node ?? {}) })) {
     if (value === null) delete env[key];
     else env[key] = String(value);
   }
@@ -93,7 +93,10 @@ function runNode(spec) {
 function runPy(ctx, spec) {
   const answer = ctx.runPython(REF, {
     argv: spec.argv ?? [],
-    env: spec.env ?? {},
+    // `sideEnv` exists for ONE case shape: `--install` writes a file under HOME, so the two
+    // runtimes cannot share one. Given the same HOME the side that ran second would find the
+    // first side's entry and report a conflict — a difference manufactured by the harness.
+    env: { ...spec.env, ...(spec.sideEnv?.py ?? {}) },
     cwd: spec.cwd ?? repoRoot,
     timeout: spec.timeout ?? 60,
   });
@@ -170,6 +173,128 @@ function assetsRootCases(label, py, node, ruling) {
   ];
 }
 
+/**
+ * `--install <host>`, decomposed, because exactly one LINE of its stdout is not comparable.
+ *
+ * The two runtimes register DIFFERENT commands on purpose — this side records
+ * `npx -y bantamkit-mcp`, the reference its own console script — so the `  command: ` line
+ * is ruled and every other line is compared like anything else. That split is the same one
+ * `assetsRootCases` makes and for the same reason: a whole-stdout ruling would swallow the
+ * file, the key, the backup line and the exit code along with the command.
+ *
+ * HOME is masked because the two sides are given DIFFERENT home directories (see `sideEnv`),
+ * which is the harness's doing and not the runtimes'.
+ */
+function installCases(label, py, node, home, ruling, stderrRuling = null) {
+  const mask = (buf) =>
+    dec(buf).split(home.py).join('<HOME>').split(home.node).join('<HOME>');
+  const split = (text) => {
+    const commandLine = text.split('\n').find((l) => l.startsWith('  command: ')) ?? '';
+    const rest = text
+      .split('\n')
+      .filter((l) => !l.startsWith('  command: '))
+      .join('\n');
+    return { commandLine, rest };
+  };
+  const p = split(mask(py.stdout));
+  const n = split(mask(node.stdout));
+  // NOT EVERY `--install` REPORT NAMES A COMMAND. The idempotent arm — a second run that
+  // finds its own entry already there — prints two lines and neither is `  command: `, so
+  // there is nothing to rule and the whole report is compared as bytes. Attaching the ruling
+  // anyway made the harness say `STALE RULING: the case no longer differs`, which was right:
+  // a ruling over two empty strings pins nothing and would have gone on passing after the
+  // real difference had been removed.
+  // A report with no `command:` line: the idempotent arm, and every REFUSAL — a refusal
+  // writes nothing to stdout at all. The stderr ruling belongs here too, which the first
+  // version of this branch forgot: the broken-JSON case reaches exactly this path.
+  if (p.commandLine === '' && n.commandLine === '') {
+    return [
+      { name: `${label}/stdout`, kind: 'bytes', expected: mask(py.stdout), actual: mask(node.stdout) },
+      stderrRuling === null
+        ? { name: `${label}/stderr`, kind: 'bytes', expected: mask(py.stderr), actual: mask(node.stderr) }
+        : {
+            name: `${label}/stderr`,
+            kind: 'string',
+            expected: mask(py.stderr),
+            actual: mask(node.stderr),
+            ruling: stderrRuling,
+          },
+      ...(stderrRuling === null
+        ? []
+        : [
+            {
+              name: `${label}/both refuse (the refusal bit, side to side)`,
+              kind: 'json',
+              expected: { refused: true },
+              actual: { refused: py.exit !== 0 && node.exit !== 0 },
+            },
+          ]),
+      {
+        name: `${label}/exit`,
+        kind: 'json',
+        expected: { exit: py.exit, timedOut: py.timedOut },
+        actual: { exit: node.exit, timedOut: node.timedOut },
+      },
+    ];
+  }
+  return [
+    {
+      name: `${label}/stdout-command-line`,
+      kind: 'string',
+      expected: p.commandLine,
+      actual: n.commandLine,
+      ruling,
+    },
+    // The companion CLAUDE.md requires beside every ruling: everything the ruling does not
+    // cover, compared as bytes. A runtime that changed the file it writes, the key it writes
+    // under, or the backup it takes fails here while the ruling above still "differs".
+    { name: `${label}/stdout-everything-else`, kind: 'bytes', expected: p.rest, actual: n.rest },
+    stderrRuling === null
+      ? { name: `${label}/stderr`, kind: 'bytes', expected: mask(py.stderr), actual: mask(node.stderr) }
+      : {
+          name: `${label}/stderr`,
+          kind: 'string',
+          expected: mask(py.stderr),
+          actual: mask(node.stderr),
+          ruling: stderrRuling,
+        },
+    // The companion the ruling cannot stand without: the REFUSAL BIT. A ruling proves the
+    // two sentences differ; it says nothing about both sides still refusing, and a runtime
+    // that started writing the file would leave the ruling green.
+    ...(stderrRuling === null
+      ? []
+      : [
+          {
+            name: `${label}/both refuse (the refusal bit, side to side)`,
+            kind: 'json',
+            expected: { refused: true },
+            actual: { refused: py.exit !== 0 && node.exit !== 0 },
+          },
+        ]),
+    {
+      name: `${label}/exit`,
+      kind: 'json',
+      expected: { exit: py.exit, timedOut: py.timedOut },
+      actual: { exit: node.exit, timedOut: node.timedOut },
+    },
+  ];
+}
+
+const INSTALL_RULING =
+  'the two runtimes register DIFFERENT commands, by construction: this side writes ' +
+  '`npx -y bantamkit-mcp` and the reference writes its own console script, because the thing ' +
+  'installed must be the thing that answers and neither side may send a host looking for the ' +
+  "other's runtime. Only the `  command: ` line differs; the companion case beside this one " +
+  'compares every other byte of the report.';
+
+const PARSE_ERROR_RULING =
+  'a config that does not parse is refused by BOTH runtimes, naming the file, and the reason ' +
+  "after the colon is each JSON parser's own: CPython's `Expecting value (line 1, column 1)` " +
+  "against V8's `Unexpected token …`. Neither can produce the other's sentence — CPython " +
+  'reports a line and column that `JSON.parse` does not expose at all — and inventing a third ' +
+  'wording would throw away the position the reference gives. The companion case beside this ' +
+  'one compares the REFUSAL BIT, because a ruling only proves the two sides still differ.';
+
 const ASSETS_ROOT_RULING =
   'line 1 of --assets-root is the RESOLVED PACK PATH, and the two runtimes resolve different ' +
   'directories by construction: Python takes the repo-root assets/ (or the copy packaged inside ' +
@@ -186,6 +311,30 @@ const ASSETS_ROOT_RULING =
  * real server, which needs the scratch HOME and cwd. Everything else fails before a store is
  * ever constructed and can run in the repo root.
  */
+/**
+ * A home per SIDE for one `--install` label.
+ *
+ * The two runtimes write different commands, so one shared home would have the second side
+ * find the first side's entry and refuse — a conflict invented by the harness rather than
+ * measured. `USERPROFILE` moves with `HOME` so the same case means the same thing on Windows.
+ */
+function installSandbox(scratch, name, seed = null) {
+  const py = join(scratch, `install-${name}-py`);
+  const node = join(scratch, `install-${name}-node`);
+  mkdirSync(py, { recursive: true });
+  mkdirSync(node, { recursive: true });
+  if (seed !== null) {
+    for (const home of [py, node]) {
+      mkdirSync(join(home, '.cursor'), { recursive: true });
+      writeFileSync(join(home, '.cursor', 'mcp.json'), seed);
+    }
+  }
+  return {
+    sideEnv: { py: { HOME: py, USERPROFILE: py }, node: { HOME: node, USERPROFILE: node } },
+    homes: { py, node },
+  };
+}
+
 function matrix(scratch) {
   const sandbox = { cwd: join(scratch, 'cli-cwd'), env: { HOME: join(scratch, 'cli-home') } };
   return [
@@ -205,6 +354,42 @@ function matrix(scratch) {
     // leaves both runtimes on their own behaviour.
     { label: 'store-equals-value', argv: [`--store=${join(scratch, 'cli-store')}`], serves: true, ...sandbox },
     { label: 'k-equals-then-assets-root', argv: ['--k=7', '--assets-root'], shape: 'assets' },
+    // `--install`. The three file-writing hosts, each into a home the harness owns, plus the
+    // two argv refusals that need no home at all and must be byte-identical.
+    { label: 'install-cursor', argv: ['--install', 'cursor'], shape: 'install', ...installSandbox(scratch, 'cursor') },
+    { label: 'install-copilot', argv: ['--install', 'copilot'], shape: 'install', ...installSandbox(scratch, 'copilot') },
+    {
+      label: 'install-claude-desktop',
+      argv: ['--install', 'claude-desktop'],
+      shape: 'install',
+      ...installSandbox(scratch, 'desktop'),
+    },
+    // Run twice into the SAME home: the second is the idempotent arm, whose report names no
+    // command at all, so the ruling above must not be the thing that makes it pass.
+    { label: 'install-cursor-again', argv: ['--install', 'cursor'], shape: 'install', ...installSandbox(scratch, 'cursor') },
+    { label: 'install-bad-host', argv: ['--install', 'nope'] },
+    // A config that does not parse. Both runtimes refuse and neither writes; the REASON after
+    // the colon is CPython's `Expecting value (line 1, column 1)` on one side and V8's
+    // `Unexpected token …` on the other, which is ruled — see `docs/porting.md`.
+    {
+      label: 'install-broken-json',
+      argv: ['--install', 'cursor'],
+      shape: 'install',
+      ...installSandbox(scratch, 'broken', '{ "mcpServers": { broken\n'),
+      stderrRuling: PARSE_ERROR_RULING,
+    },
+    // THE ORDER CASES. `--install` is dispatched AFTER `--mcp-report` and `--statusline` on
+    // both sides, so an argv naming both prints the report and writes NOTHING. The port had
+    // it earlier and wrote a file where the reference did not: one command line, two states
+    // on the user's disk. Nothing in this matrix combined two early-return flags until now.
+    {
+      label: 'mcp-report-then-install',
+      argv: ['--mcp-report', '--install', 'cursor'],
+      shape: 'wrote-nothing',
+      ...installSandbox(scratch, 'order-report'),
+    },
+    { label: 'statusline-then-force', argv: ['--statusline', '--force'], shape: 'wrote-nothing', ...installSandbox(scratch, 'order-status') },
+    { label: 'force-without-install', argv: ['--force'] },
     { label: 'double-dash-positional', argv: ['--', 'positional'] },
     { label: 'prefix-abbreviation', argv: ['--inde', '5'], serves: true, ...sandbox },
     // `--inde` above is the ACCEPTING half of prefix abbreviation: it matches exactly one
@@ -318,8 +503,33 @@ export async function run(ctx) {
     const py = runPy(ctx, spec);
     const node = runNode(spec);
     if (spec.label === 'ambiguous-abbreviation') ambiguousPy = py;
-    if (spec.shape === 'assets') cases.push(...assetsRootCases(spec.label, py, node, ASSETS_ROOT_RULING));
-    else cases.push(...streamCases(spec.label, py, node));
+    if (spec.shape === 'wrote-nothing') {
+      // A LITERAL, not a differential. Both runtimes must leave the config ABSENT, and a
+      // side-to-side comparison would have stayed green through the defect this case exists
+      // for: the port wrote the file, the reference did not, and had both written it the
+      // comparison would still have said "identical". The expected value is written down.
+      const wrote = (home) => existsSync(join(home, '.cursor', 'mcp.json'));
+      cases.push({
+        name: `${spec.label}/wrote-no-config`,
+        kind: 'json',
+        expected: { python: false, node: false },
+        actual: { python: wrote(spec.homes.py), node: wrote(spec.homes.node) },
+      });
+      // The report names paths under HOME, and the two sides are given different homes by
+      // this harness, so the streams are compared with both masked.
+      const mask = (buf) => dec(buf).split(spec.homes.py).join('<HOME>').split(spec.homes.node).join('<HOME>');
+      cases.push({ name: `${spec.label}/stdout`, kind: 'bytes', expected: mask(py.stdout), actual: mask(node.stdout) });
+      cases.push({ name: `${spec.label}/stderr`, kind: 'bytes', expected: mask(py.stderr), actual: mask(node.stderr) });
+      cases.push({
+        name: `${spec.label}/exit`,
+        kind: 'json',
+        expected: { exit: py.exit, timedOut: py.timedOut },
+        actual: { exit: node.exit, timedOut: node.timedOut },
+      });
+    } else if (spec.shape === 'assets') cases.push(...assetsRootCases(spec.label, py, node, ASSETS_ROOT_RULING));
+    else if (spec.shape === 'install') {
+      cases.push(...installCases(spec.label, py, node, spec.homes, INSTALL_RULING, spec.stderrRuling ?? null));
+    } else cases.push(...streamCases(spec.label, py, node));
   }
 
   // The precondition, as a CASE and not as a note. If the vendoring ever stops working, the
