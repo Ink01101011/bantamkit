@@ -338,7 +338,10 @@ def test_the_claude_arm_launches_a_cmd_shim_on_windows(home, tmp_path, monkeypat
 
     stub_dir = tmp_path / "bin"
     stub_dir.mkdir()
-    (stub_dir / "claude.cmd").write_text("@echo off\r\nexit /b 0\r\n", encoding="utf-8")
+    # BYTES, not text. `cmd.exe` needs CRLF, and a `str` carrying `\r` through a text-mode
+    # write is the exact thing `test_newline_gate.py` forbids — it would land as `\r\r\n` on
+    # Windows, which is where this test runs. The gate caught this on the first CI run.
+    (stub_dir / "claude.cmd").write_bytes(b"@echo off\r\nexit /b 0\r\n")
     monkeypatch.setenv("PATH", f"{stub_dir}{os.pathsep}{os.environ['PATH']}")
 
     report = hostinstall.install("claude", CMD, ["--flag"])
@@ -360,8 +363,9 @@ def test_a_path_with_a_space_survives_on_windows(home, tmp_path, monkeypatch):
     stub_dir = tmp_path / "bin"
     stub_dir.mkdir()
     seen = tmp_path / "seen.txt"
-    (stub_dir / "claude.cmd").write_text(
-        f'@echo off\r\necho %* > "{seen}"\r\nexit /b 0\r\n', encoding="utf-8"
+    # BYTES, for the reason above.
+    (stub_dir / "claude.cmd").write_bytes(
+        f'@echo off\r\necho %* > "{seen}"\r\nexit /b 0\r\n'.encode()
     )
     monkeypatch.setenv("PATH", f"{stub_dir}{os.pathsep}{os.environ['PATH']}")
     spaced = "C:\\Program Files\\bantamkit\\bantamkit-mcp.exe"
