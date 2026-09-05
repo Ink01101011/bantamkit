@@ -299,11 +299,22 @@ async def test_a_raising_handler_names_the_type_and_leaks_no_argument_value(tmp_
         answer = await client.call_tool(
             "validate_json", {"output": "{}", "schema": {"type": sentinel}}
         )
-    # The SDK turns the escaping exception into an error result, and ITS text carries the
-    # sentinel — that is `docs/porting.md`'s registered defect 2, not this unit's, and it
-    # is exactly the hole the record must not widen.
+    # The SDK turns the escaping exception into an error result. WHETHER ITS TEXT CARRIES
+    # THE SENTINEL IS THE SDK'S BUSINESS AND IT CHANGED UNDER US: `mcp` 2.0.0 passed the
+    # exception text straight through, and 2.1.1 replaced it with
+    # `Error executing tool validate_json`. Both are within `mcp>=2.0,<3`, so this test used
+    # to pass on a developer laptop pinned at 2.0.0 and fail on CI's fresh 2.1.1 — measured
+    # 2026-09-05, on the first CI run in weeks.
+    #
+    # The assertion is gone rather than loosened. It pinned ANOTHER PROJECT'S DEFECT, and a
+    # gate that goes red when someone else fixes their leak is a gate that punishes the
+    # outcome it wanted. What this unit owns is below: the record carries the exception TYPE
+    # and no argument value, and that holds on either SDK.
+    #
+    # Non-vacuity is unaffected — `assert sentinel in str(caught.value)` above still proves
+    # the value is in the exception this code hands to the SDK, which is the whole reason the
+    # record has to be careful.
     assert answer.is_error
-    assert sentinel in answer.content[0].text
 
     raw = path.read_bytes()
     assert sentinel.encode() not in raw

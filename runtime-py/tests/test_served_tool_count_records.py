@@ -141,6 +141,21 @@ async def _served_names(command: str, args: list[str]) -> list[str]:
 
 
 def _served(command: str, args: list[str] | None = None) -> list[str]:
+    # THE BUILD IS CHECKED BEFORE THE SPAWN, because the spawn's failure names nothing.
+    # `runtime-ts/dist/` is build output and gitignored, so it is absent in a fresh clone, in
+    # a git worktree, and in CI's `test` job — and the launcher's careful "cannot load the
+    # Node build" message goes to STDERR, which `stdio_client` does not surface. What the
+    # test reported instead was `MCPError(-32000, 'Connection closed')`, which reads like a
+    # protocol fault and sent the first reader looking at the server. Measured on CI
+    # 2026-09-05.
+    dist = REPO / "runtime-ts" / "dist" / "cli.js"
+    if not dist.exists():
+        raise AssertionError(
+            f"the Node build is absent at {dist}, so the launcher exits before it speaks MCP.\n"
+            "  runtime-ts/dist/ is gitignored build output; a fresh clone, a worktree and a\n"
+            "  job that never runs npm all lack it.\n"
+            "  Fix: npm ci --prefix runtime-ts && npm run build --prefix runtime-ts"
+        )
     return asyncio.run(_served_names(command, args or []))
 
 

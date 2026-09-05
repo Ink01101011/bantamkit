@@ -28,7 +28,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -187,7 +187,28 @@ test('an unbuilt worktree refuses the deps root\u2019s build rather than serving
 
 test('no Node interpreter is a sentence naming BANTAMKIT_NODE, not a spawn error', { skip }, () => {
   const dir = checkout('nonode');
-  const { stdout, stderr, status } = run(dir, [], { PATH: join(scratch, 'empty-path'), BANTAMKIT_NODE: '' });
+  // A PATH WITH `dirname` AND WITHOUT `node`, which is not the same as an empty PATH.
+  //
+  // This used to pass `join(scratch, 'empty-path')`, and the launcher's FIRST line is
+  // `here=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd) || exit 127`. With nothing on PATH
+  // `dirname` is not found and the script dies there — never reaching the interpreter lookup
+  // this test is named for. On macOS that path happens to exit 127 too, so the assertion
+  // passed for the wrong reason; on CI's dash it exits 1 and the test went red. The failure
+  // was the test pointing at the wrong line, not the launcher.
+  //
+  // `dirname` is symlinked in and `node` deliberately is not, so the script gets as far as
+  // the lookup and takes the arm whose sentence is asserted below.
+  const bin = join(scratch, 'path-without-node');
+  mkdirSync(bin, { recursive: true });
+  for (const tool of ['dirname']) {
+    const real = ['/usr/bin', '/bin'].map((d) => join(d, tool)).find((c) => existsSync(c));
+    assert.ok(real, `${tool} is needed to reach the lookup and was not found`);
+    const link = join(bin, tool);
+    if (!existsSync(link)) symlinkSync(real, link);
+  }
+  assert.ok(!existsSync(join(bin, 'node')), 'the point of this PATH is that node is absent');
+
+  const { stdout, stderr, status } = run(dir, [], { PATH: bin, BANTAMKIT_NODE: '' });
   assert.equal(status, 127);
   assert.equal(stdout, '');
   assert.match(stderr, /^bantamkit-mcp-node: no Node interpreter found\.$/m);

@@ -98,6 +98,23 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install
         run: pip install -e "runtime-py[dev,mcp]"
+      # THE NODE BUILD, in the PYTHON job, for one reason that is worth the setup time:
+      # `test_served_tool_count_records.py` asks BOTH launchers for a live `tools/list` and
+      # compares them. That is the parity check the whole conformance layer exists for, and
+      # without `runtime-ts/dist/` the Node launcher exits before it speaks MCP — so the check
+      # was failing on every cell for a missing artefact rather than a real disagreement.
+      #
+      # Skipping the test when the build is absent was the cheaper fix and the wrong one: it
+      # would leave the gate green on the only machine where nobody is watching. The `node`
+      # job already installs a Python for the mirror-image reason.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: runtime-ts/package-lock.json
+      - name: Build the port, for the both-launchers parity test
+        run: npm ci && npm run build
+        working-directory: runtime-ts
       - name: Lint package
         run: ruff check .
         working-directory: runtime-py
