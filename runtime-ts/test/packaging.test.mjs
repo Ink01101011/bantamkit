@@ -281,8 +281,19 @@ test('sync-assets never leaves the vendored pack absent while it runs', async ()
   assert.equal(run.status, 0, run.stderr);
   assert.ok(seen.ok > 0, 'the watcher has to have actually looked');
   assert.equal(seen.gone, 0, `the pack was unreadable ${seen.gone} times while sync-assets ran`);
-  // The narrower window, and the reason the copy goes through a temp file and a rename: a
-  // reader must see ALL of the old bytes or ALL of the new ones, never a prefix.
+  // WHAT THIS COUNTER PROVES TODAY, AND IT IS LESS THAN THE SENTENCE THAT USED TO BE HERE.
+  // The old comment credited `short` to "a temp file and a rename". There is no rename — it
+  // was written, measured EPERM on Windows, and removed (`sync-assets.mjs` says why). And in
+  // the steady state this assertion cannot fail at all: `sameBytes` skips a file whose
+  // destination already holds the source's bytes, and the vendored witness always does after
+  // a build, so `copyFileSync` never opens it and the watcher can never catch a prefix.
+  // Measured 2026-09-05: the witness's mtime is unchanged across a full `sync-assets.mjs`.
+  //
+  // It is kept because it is not vacuous where it matters — on the FIRST sync after the
+  // checkout's assets change, which is the only moment the prefix window is open at all, and
+  // the moment a developer running this suite mid-edit is actually in. `gone` carries the L5
+  // property proper and has the same shape: both are red against the pre-fix script, which is
+  // what this case was written against.
   assert.equal(seen.short, 0, `the witness was read half-written ${seen.short} times`);
   assert.deepEqual(read(witness), before, 'and it is byte-identical afterwards');
 });

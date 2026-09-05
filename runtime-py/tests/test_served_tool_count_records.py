@@ -141,14 +141,20 @@ async def _served_names(command: str, args: list[str]) -> list[str]:
             return sorted(tool.name for tool in (await session.list_tools()).tools)
 
 
-def _served(command: str, args: list[str] | None = None) -> list[str]:
-    # THE BUILD IS CHECKED BEFORE THE SPAWN, because the spawn's failure names nothing.
-    # `runtime-ts/dist/` is build output and gitignored, so it is absent in a fresh clone, in
-    # a git worktree, and in CI's `test` job — and the launcher's careful "cannot load the
-    # Node build" message goes to STDERR, which `stdio_client` does not surface. What the
-    # test reported instead was `MCPError(-32000, 'Connection closed')`, which reads like a
-    # protocol fault and sent the first reader looking at the server. Measured on CI
-    # 2026-09-05.
+def _require_node_build() -> None:
+    """Refuse a Node-launcher probe when the build it needs is not there, and say which.
+
+    THIS IS NOT IN `_served`, and review found out why: `_served` is also how the PYTHON
+    launcher is asked, and `test_every_stated_tool_count_matches_what_is_served` needs
+    nothing from `runtime-ts/dist/`. With the check inside the helper, a fresh clone or a
+    worktree failed a CPython-only test with a message about a Node artefact it never uses.
+
+    `runtime-ts/dist/` is gitignored build output, so it is absent in a fresh clone, in a
+    worktree, and in any run before `npm run build`. The launcher's own "cannot load the Node
+    build" message goes to STDERR, which `stdio_client` does not surface — what the test
+    reported instead was `MCPError(-32000, 'Connection closed')`, which reads like a protocol
+    fault and sends the reader to the server.
+    """
     dist = REPO / "runtime-ts" / "dist" / "cli.js"
     if not dist.exists():
         raise AssertionError(
@@ -157,6 +163,9 @@ def _served(command: str, args: list[str] | None = None) -> list[str]:
             "  job that never runs npm all lack it.\n"
             "  Fix: npm ci --prefix runtime-ts && npm run build --prefix runtime-ts"
         )
+
+
+def _served(command: str, args: list[str] | None = None) -> list[str]:
     return asyncio.run(_served_names(command, args or []))
 
 
@@ -180,6 +189,7 @@ _POSIX_ONLY = pytest.mark.skipif(
 def test_both_launchers_serve_the_same_tools() -> None:
     """The parity half. A count that drifted on one side only dies here."""
     python_side = _served(str(REPO / "tools" / "bantamkit-mcp"))
+    _require_node_build()
     node_side = _served(str(REPO / "tools" / "bantamkit-mcp-node"))
     assert python_side == node_side, (
         "the two launchers do not serve the same tools\n"
@@ -261,5 +271,6 @@ def test_the_node_launcher_serves_the_same_count_on_every_platform() -> None:
     """The half that runs on Windows too, so the matrix is not blind to the port."""
     if shutil.which("node") is None:  # pragma: no cover - node is a hard dependency here
         pytest.skip("node is not on PATH")
+    _require_node_build()
     names = _served(str(REPO / "tools" / "bantamkit-mcp-node"))
     assert names, "the Node launcher served no tools at all"

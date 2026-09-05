@@ -89,8 +89,13 @@ function entriesUnder(dir) {
  * test holds exactly that file open — which is the scenario this script exists to survive. So
  * the atomic version does not merely fail to help there; it is the thing that breaks.
  *
- * The prefix window stays real and stays unclosed. `short` still counts it, so the day it is
- * observed there will be a measurement to design against rather than a paragraph.
+ * The prefix window stays real and stays unclosed, and `short` in that test is a WEAKER
+ * witness to it than the sentence that used to stand here claimed. `sameBytes` below skips a
+ * file whose destination already matches, and the vendored pack matches after any build — so
+ * in the steady state nothing is written, no prefix can exist, and the counter reports zero
+ * without having looked at anything. It only has teeth on the first sync after the checkout's
+ * assets change. That is a real moment and not a hypothetical one, but it is not the standing
+ * measurement the paragraph promised.
  */
 /** Whether the destination already holds exactly the source's bytes. Cheap: the pack is small. */
 function sameBytes(source, target) {

@@ -123,8 +123,24 @@ def _blocks(text: str, opener: re.Pattern[str]) -> list[tuple[int, str]]:
     ]
 
 
-PY_OPENER = re.compile(r"^def test_", re.MULTILINE)
-TS_OPENER = re.compile(r"^test\(", re.MULTILINE)
+# `async def` AND INDENTED `test(`, both found by review and both silent holes.
+#
+# `^def test_` never matched an `async def test_`, so an async test was not a block boundary
+# at all: its body joined the block above it and INHERITED that block's guard. Thirteen of
+# `test_eventlog.py`'s tests are async, and an offence inside one of them was being reported
+# at the previous test's line number. `^test\(` had the same hole for the eighteen indented
+# `test(` calls in the Node suite.
+#
+# A gate whose scanner cannot see a construct reports zero offences and looks like a pass.
+# That is the "silent case" this module's own docstring says it refuses, and it was refusing
+# it for some tests and not others.
+#
+# Python matches at column ZERO deliberately: a nested `def test_helper` inside a test is not
+# a boundary, and treating it as one would split a guard away from the body it guards.
+# JavaScript matches with leading whitespace because a `test(` inside a `describe(` IS the
+# declaration.
+PY_OPENER = re.compile(r"^(?:async )?def test_", re.MULTILINE)
+TS_OPENER = re.compile(r"^\s*test\(", re.MULTILINE)
 
 
 def _offences(path: Path, opener: re.Pattern[str]) -> list[str]:
