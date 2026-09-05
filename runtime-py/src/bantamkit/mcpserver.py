@@ -145,6 +145,29 @@ def _code_fingerprint() -> tuple[str, int, Path]:
         raise _Undetermined(f"unreadable source under {root}: {exc}") from None
 
 
+def _pack_files(root: Path) -> list[Path]:
+    """The pack as SHIPPED: every file except the bytecode caches an interpreter left in it.
+
+    ONE spelling of the rule, because there are TWO walks over this directory — the digest
+    behind `build_identity` and the count `--assets-root` prints — and a rule spelled twice
+    is a rule that gets fixed once. That is not hypothetical: the first version of this fix
+    excluded `__pycache__` from the digest alone, and a `pip install` then had one process
+    contradicting itself, `build_identity` answering 87 files while `--assets-root` printed
+    98 for the pack it had just loaded.
+
+    Bytecode is derived. `_code_fingerprint` has said so since it was written; this is the
+    same sentence applied to the pack, which carries eleven `.py` fixture files of its own.
+
+    The membership test is over the path RELATIVE to `root`, so a pack that happens to live
+    somewhere under a directory named `__pycache__` is walked rather than emptied.
+    """
+    return sorted(
+        p
+        for p in root.rglob("*")
+        if p.is_file() and "__pycache__" not in p.relative_to(root).parts
+    )
+
+
 def _assets_fingerprint() -> tuple[str, int, Path]:
     """Fingerprint the asset pack this build would load.
 
@@ -153,12 +176,26 @@ def _assets_fingerprint() -> tuple[str, int, Path]:
     different pack whether or not today's code opens it. `contracts/default.yaml` is the
     reason — `RB-P84` measured it as the one asset that differed between two live builds
     while no resource template exposed it, so it was invisible on every probed surface.
+
+    EXCEPT bytecode caches, and that exception is the whole point of this field. The pack
+    ships `.py` fixture files, so `pip install` byte-compiles them into `__pycache__` on the
+    way in and the digest of an INSTALLED pack stopped matching the digest of the identical
+    npm pack — measured on the published 0.27.0 artifacts, `sha256:fa8372f6…` over 98 files
+    against `sha256:d47dcf4b…` over 87, and deleting `__pycache__` from the wheel's pack
+    reproduced the npm digest byte for byte. `cross_runtime` tells the caller to compare
+    `assets_digest` across runtimes; without this rule that instruction returned a false
+    "different" on every real install. It was worse than cross-runtime: the digest was not
+    stable for ONE install either, because it changed the first time anything imported a
+    fixture. The pack is what was SHIPPED, never what an interpreter later wrote beside it.
+
+    The rule lives in `_pack_files`, which `--assets-root` shares, and is spelled the same
+    way in `runtime-ts`.
     """
     try:
         root = assets_root()
     except AssetNotFound as exc:
         raise _Undetermined(f"assets_root() could not resolve a pack: {exc}") from None
-    files = sorted(p for p in root.rglob("*") if p.is_file())
+    files = _pack_files(root)
     if not files:
         raise _Undetermined(f"asset pack at {root} contains no files")
     try:
@@ -1301,7 +1338,7 @@ def _print_assets_root() -> None:
     matches too.
     """
     root = assets_root()
-    files = sum(1 for path in root.rglob("*") if path.is_file())
+    files = len(_pack_files(root))
     sys.stdout.buffer.write(f"{root}\n{files} files\n".encode())
     sys.stdout.buffer.flush()
 

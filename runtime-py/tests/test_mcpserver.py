@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import shutil
 import tomllib
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from bantamkit.assets import load_skill, load_tool  # noqa: E402
 # The checkout under test, so a subprocess can be pointed at IT rather than at whatever
 # `bantamkit` is installed in the interpreter that spawns it.
 SRC = Path(__file__).resolve().parents[1] / "src"
+REPO_ASSETS = Path(__file__).resolve().parents[2] / "assets"
 from bantamkit.mcpserver import (  # noqa: E402
     _build_memory,
     _parse_args,
@@ -636,13 +638,60 @@ def test_assets_root_flag_prints_the_root_and_a_file_count_on_stdout(tmp_path):
     from bantamkit.assets import assets_root
 
     root = assets_root()
-    expected = sum(len(names) for _dirpath, _dirnames, names in os.walk(root))
+    # `os.walk` and not the implementation's `rglob`, so a fix that counted directories as
+    # well as files stays red — but with the SAME `__pycache__` rule the implementation
+    # applies, or this expectation becomes a landmine that fires the first time anything
+    # imports the eleven `.py` fixtures the pack ships.
+    expected = sum(
+        len(names)
+        for dirpath, _dirnames, names in os.walk(root)
+        if "__pycache__" not in Path(dirpath).relative_to(root).parts
+    )
     done = _run_cli(["--assets-root"], tmp_path)
 
     assert done.returncode == 0
     assert done.stderr == b""
     assert done.stdout == f"{root}\n{expected} files\n".encode()
     assert done.stdout.count(b"\n") == 2
+
+
+def test_assets_root_and_build_identity_count_the_same_pack_the_same_way(tmp_path):
+    """One process must not contradict itself about the pack it just loaded.
+
+    There are two walks over the asset pack — the digest behind `build_identity` and this
+    count — and the first version of the `__pycache__` exclusion filtered only the digest.
+    On a real `pip install` that left `build_identity` answering 87 files while
+    `--assets-root` printed 98 for the same directory, which is a worse failure than either
+    number being wrong: a caller comparing them has no way to decide which surface lied.
+
+    The pack here carries a `__pycache__` because that is what `pip` leaves behind — the
+    pack ships eleven `.py` fixtures and installing the wheel byte-compiles them.
+    """
+    import subprocess
+    import sys
+
+    pack = tmp_path / "pack"
+    shutil.copytree(REPO_ASSETS, pack, ignore=shutil.ignore_patterns("__pycache__"))
+    shipped = sum(1 for p in pack.rglob("*") if p.is_file())
+
+    cache = pack / "evals" / "devteam" / "repo" / "src" / "ledger" / "__pycache__"
+    cache.mkdir(parents=True)
+    for stem in ("config", "errors", "posting"):
+        (cache / f"{stem}.cpython-312.pyc").write_bytes(b"not real bytecode\n")
+    assert sum(1 for p in pack.rglob("*") if p.is_file()) == shipped + 3
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(SRC)
+    env["BANTAMKIT_ASSETS"] = str(pack)
+    done = subprocess.run(
+        [sys.executable, "-m", "bantamkit.mcpserver", "--assets-root"],
+        capture_output=True,
+        cwd=str(tmp_path),
+        env=env,
+    )
+
+    assert done.returncode == 0
+    assert done.stdout == f"{pack}\n{shipped} files\n".encode()
 
 
 def test_assets_root_flag_returns_before_a_store_or_a_transport_exists(monkeypatch, capsysbinary):

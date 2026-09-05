@@ -17,7 +17,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -800,6 +800,46 @@ test('build_identity declines a build_id when an input is underivable', async ()
     assert.deepEqual(id.unavailable, ['assets_digest', 'assets_files', 'assets_root', 'build_id', 'git_commit']);
     // The refusal is a refusal and not a degraded value: nothing here is a hashable string.
     assert.equal(typeof id.build_id, 'object');
+  } finally {
+    if (previous === undefined) delete process.env.BANTAMKIT_ASSETS;
+    else process.env.BANTAMKIT_ASSETS = previous;
+  }
+});
+
+test('a __pycache__ in the pack is not a different pack — the half a differential gate cannot see', async () => {
+  // This side never creates a `__pycache__`; `pip install` does, by byte-compiling the
+  // eleven `.py` fixture files the pack ships. Measured on the published 0.27.0 artifacts:
+  // the wheel answered `sha256:fa8372f6…` over 98 files where this tarball answered
+  // `sha256:d47dcf4b…` over 87, while `cross_runtime` told callers that `assets_digest` is
+  // the field to compare across runtimes.
+  //
+  // The exclusion is spelled on both sides even though only one side can produce the
+  // directory, because a rule held by one runtime is a rule the two disagree about the
+  // moment a pack carrying one reaches both. Conformance compares the two live servers over
+  // exactly such a pack; this test is the per-side invariant, which is what actually goes
+  // red — pointed at one polluted pack both runtimes move together and still agree.
+  const { buildIdentity } = await import('../dist/mcp/identity.js');
+  const pack = join(scratch, 'pack-with-pycache');
+  rmSync(pack, { recursive: true, force: true });
+  cpSync(ASSETS, pack, { recursive: true });
+
+  const previous = process.env.BANTAMKIT_ASSETS;
+  process.env.BANTAMKIT_ASSETS = pack;
+  try {
+    const clean = Object.fromEntries(buildIdentity('0.25.0', '1.30.0'));
+
+    const cache = join(pack, 'evals', 'devteam', 'repo', 'src', 'ledger', '__pycache__');
+    mkdirSync(cache, { recursive: true });
+    for (const stem of ['config', 'errors', 'posting']) {
+      writeFileSync(join(cache, `${stem}.cpython-312.pyc`), 'not real bytecode\n');
+    }
+
+    const compiled = Object.fromEntries(buildIdentity('0.25.0', '1.30.0'));
+    assert.equal(compiled.assets_files, clean.assets_files);
+    assert.equal(compiled.assets_digest, clean.assets_digest);
+    assert.equal(compiled.build_id, clean.build_id);
+    // And the count is the pack as shipped, not the pack as the interpreter left it.
+    assert.equal(compiled.assets_files, 87);
   } finally {
     if (previous === undefined) delete process.env.BANTAMKIT_ASSETS;
     else process.env.BANTAMKIT_ASSETS = previous;

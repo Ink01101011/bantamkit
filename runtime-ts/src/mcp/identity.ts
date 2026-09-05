@@ -109,8 +109,12 @@ function walkFiles(root: string): string[][] {
  * `as_posix()` is why the parts are joined with `/` here and not with `path.sep`: on Windows
  * the walk yields the same components and the digest must not change with the separator.
  */
-export function treeDigest(root: string): { digest: string; files: number } {
-  const files = walkFiles(root);
+export function treeDigest(
+  root: string,
+  keep?: (parts: string[]) => boolean,
+): { digest: string; files: number } {
+  const walked = walkFiles(root);
+  const files = keep === undefined ? walked : walked.filter(keep);
   const running = createHash('sha256');
   for (const parts of files) {
     const payload = readFileSync(join(root, ...parts));
@@ -167,7 +171,37 @@ function codeFingerprint(): { digest: string; files: number; root: string } {
  * `contracts/default.yaml` is the reason: `RB-P84` measured it as the one asset that differed
  * between two live builds while no resource template exposed it, so it was invisible on every
  * probed surface. It is also why N1 ships all 84 files rather than the 20 that are read.
+ *
+ * EXCEPT bytecode caches, and that exception is the whole point of this field. The pack ships
+ * `.py` fixture files, so `pip install` byte-compiles them into `__pycache__` on the way in and
+ * the digest of an INSTALLED Python pack stopped matching the digest of the identical npm pack
+ * — measured on the published 0.27.0 artifacts, `sha256:fa8372f6…` over 98 files against
+ * `sha256:d47dcf4b…` over 87, and deleting `__pycache__` from the wheel's pack reproduced the
+ * npm digest byte for byte. `cross_runtime` tells the caller to compare `assets_digest` across
+ * runtimes; without this rule that instruction returned a false "different" on every real
+ * install. The pack is what was SHIPPED, never what an interpreter later wrote beside it.
+ *
+ * The rule is spelled identically in `runtime-py`'s `_assets_fingerprint`, and it has to be:
+ * this side never creates a `__pycache__`, so a Node-only exclusion would still agree today
+ * and diverge again the moment a pack carrying one reached both runtimes.
  */
+export const notBytecodeCache = (parts: string[]): boolean => !parts.includes('__pycache__');
+
+/**
+ * The pack as SHIPPED, counted — what `--assets-root` prints.
+ *
+ * Exported so the CLI shares this walk rather than keeping a second one. There are TWO
+ * walks over this directory and a rule spelled twice is a rule that gets fixed once: the
+ * first version of this fix filtered the digest alone, and a `pip install` then had one
+ * process contradicting itself, `build_identity` answering 87 files while `--assets-root`
+ * printed 98 for the pack it had just loaded. The CLI's own `readdirSync(recursive)` is
+ * gone with it — `walkFiles` is the walk that mirrors CPython's `rglob`, which is what the
+ * reference's printer uses and what the conformance case compares the count against.
+ */
+export function packFileCount(root: string): number {
+  return walkFiles(root).filter(notBytecodeCache).length;
+}
+
 function assetsFingerprint(): { digest: string; files: number; root: string } {
   let root: string;
   try {
@@ -178,7 +212,7 @@ function assetsFingerprint(): { digest: string; files: number; root: string } {
   }
   let walked;
   try {
-    walked = treeDigest(root);
+    walked = treeDigest(root, notBytecodeCache);
   } catch (e) {
     const error = e instanceof PyOSError ? e : asPyOSError(e, root);
     // A root that does not exist at all is the `BANTAMKIT_ASSETS` typo, and Python reaches
