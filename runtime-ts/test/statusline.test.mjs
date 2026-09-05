@@ -173,14 +173,23 @@ test('an absent log is unknown and is spelled differently from off', () => {
 });
 
 test('an unreadable log is unknown and never throws', () => {
-  // Two shapes: a path whose parent is a regular file (ENOTDIR, portable to Windows) and a
-  // file with no read permission.
+  // Two shapes: a path whose parent is a regular file, and a file with no read permission.
+  //
+  // THE FIRST SHAPE IS NOT PORTABLE, and this comment used to say it was. POSIX reports
+  // ENOTDIR, which is not a not-found error, so the classifier renders UNREADABLE. Windows
+  // resolves the same path to ERROR_PATH_NOT_FOUND, surfaced as ENOENT, so it renders ABSENT
+  // — and it is right to: the operating system is saying the path does not exist, not that it
+  // cannot be read. Measured on CI 2026-09-05; the reference carries the same split.
   const dir = fresh('unreadable');
   const wall = join(dir, 'wall');
   writeFileSync(wall, 'not a directory');
-  assert.equal(statusLine(env(join(wall, 'mcp.jsonl')), dir), `${UNKNOWN}${SEP}${UNREADABLE}`);
+  const wallReason = process.platform === 'win32' ? ABSENT : UNREADABLE;
+  assert.equal(statusLine(env(join(wall, 'mcp.jsonl')), dir), `${UNKNOWN}${SEP}${wallReason}`);
 
   const locked = log(join(dir, 'locked.jsonl'), record('memory_save', 'saved'));
+  // `chmod 0` on Windows clears nothing a read has to honour — the file stays readable — so
+  // the second shape cannot be constructed there at all.
+  if (process.platform === 'win32') return;
   chmodSync(locked, 0);
   try {
     if (process.getuid?.() === 0) return; // root ignores the mode bits
@@ -205,9 +214,10 @@ test('the absent and unreadable arms exit 0 with an empty stderr', () => {
   const dir = fresh('streams');
   const wall = join(dir, 'wall');
   writeFileSync(wall, 'not a directory');
+  // The second arm follows the platform, for the reason on the test above.
   for (const [target, reason] of [
     [join(dir, 'nope.jsonl'), ABSENT],
-    [join(wall, 'mcp.jsonl'), UNREADABLE],
+    [join(wall, 'mcp.jsonl'), process.platform === 'win32' ? ABSENT : UNREADABLE],
   ]) {
     const r = runCli(['--statusline', '--store', join(dir, 'store')], dir, { BANTAMKIT_EVENT_LOG: target });
     assert.equal(r.status, 0, r.stderr);
@@ -255,7 +265,7 @@ test('statusLine is total even when the resolver itself throws', () => {
 
 // --- 3. no server, no child ---------------------------------------------------------------
 
-test('no child process is started by the flag', () => {
+test('no child process is started by the flag', { skip: process.platform === 'win32' && 'the trap is shell scripts named node/sh/python3 with no extension, and Windows cannot execute one — WinError 193 from the trap\u2019s own liveness check, before the flag runs. UNMEASURED THERE: that --statusline starts no child process at all.' }, () => {
   // POSITIVE, NOT BY INSPECTION: a trap is armed and then shown un-sprung. `PATH` becomes one
   // directory holding executables named `node`, `python3`, `npx` and `bantamkit-mcp`; each
   // writes a marker and exits 1. If the flag shelled out to anything BY NAME the directory

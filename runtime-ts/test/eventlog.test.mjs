@@ -614,7 +614,12 @@ test('the only values written are from a closed set', async () => {
  * that stopped appearing would now fail here, which the old single equality could not have
  * noticed.
  */
-test('three configurations, one set of replies: on, off, and unwritable', async () => {
+// The `unwritable` arm is a directory at 0o500, and Windows does not honour that: the write
+// SUCCEEDS there, so the degraded footer never appears and the arm asserts the opposite of
+// what happens. Measured on CI 2026-09-05 — `saved 'widget-cache'` where the test wanted the
+// footer. UNMEASURED ON WINDOWS: that an unwritable event log degrades rather than breaks the
+// reply. Constructing it needs an ACL, not a mode bit, and that is its own piece of work.
+test('three configurations, one set of replies: on, off, and unwritable', { skip: process.platform === 'win32' && 'a 0o500 directory is still writable on Windows; the unwritable arm cannot be constructed with a mode bit' }, async () => {
   const replies = {};
   for (const arm of ['on', 'off', 'unwritable']) {
     const dir = join(room(), arm);

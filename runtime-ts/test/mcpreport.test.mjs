@@ -331,9 +331,22 @@ test('off macOS the default root is unknown and the override is named', () => {
     );
     assert.equal(field(text, 'event-records'), '1', 'source B is reported alone');
   }
-  assert.equal(
-    defaultHostLogRoot('darwin', '/Users/x'),
-    '/Users/x/Library/Caches/claude-cli-nodejs',
+  // THE COMPONENTS, NOT THE SEPARATOR, and the difference is a limitation worth writing
+  // down rather than rediscovering. `defaultHostLogRoot` takes `platform` so it can be asked
+  // about a platform other than the host — but the join underneath it uses the HOST's
+  // separator, so asking "what is the darwin path" while running on Windows answers
+  // `\Users\x\Library\...`. Measured on CI 2026-09-05.
+  //
+  // The reference has the same shape (`home / "Library" / ...` builds a `WindowsPath` on
+  // Windows), so this is parity, not drift, and pinning the POSIX spelling here would have
+  // made the port promise something the reference does not. What the function actually owes
+  // its caller is the right directory under the right home; that is what is asserted.
+  const darwin = defaultHostLogRoot('darwin', '/Users/x');
+  assert.ok(darwin !== null);
+  assert.deepEqual(darwin.split(/[\\/]/).slice(-3), ['Library', 'Caches', 'claude-cli-nodejs']);
+  assert.ok(
+    darwin.startsWith('/Users/x') || darwin.startsWith('\\Users\\x'),
+    `the root is not under the home it was given: ${darwin}`,
   );
 });
 
