@@ -243,13 +243,20 @@ test('sync-assets never leaves the vendored pack absent while it runs', async ()
     process.execPath,
     [
       '-e',
-      `const fs=require('fs');const [w,v]=process.argv.slice(1);let gone=0,ok=0;` +
-        `const end=Date.now()+4000;` +
-        `process.on('SIGTERM',()=>{fs.writeFileSync(v,JSON.stringify({gone,ok}));process.exit(0)});` +
-        `while(Date.now()<end){try{fs.readFileSync(w);ok++}catch{gone++}}` +
-        `fs.writeFileSync(v,JSON.stringify({gone,ok}));`,
+      // `short` is the half a readability counter cannot see. `copyFileSync` opens the
+      // destination with O_TRUNC and streams into it, so a reader can succeed and still get a
+      // PARTIAL file — which counts as `ok` to a watcher that only asks whether the read threw.
+      // The file is byte-identical before and after, so any read of a different length is a
+      // view of the copy in progress and nothing else.
+      `const fs=require('fs');const [w,v,n]=process.argv.slice(1);const want=Number(n);` +
+        `let gone=0,ok=0,short=0;const end=Date.now()+4000;` +
+        `const dump=()=>fs.writeFileSync(v,JSON.stringify({gone,ok,short}));` +
+        `process.on('SIGTERM',()=>{dump();process.exit(0)});` +
+        `while(Date.now()<end){try{const b=fs.readFileSync(w);if(b.length===want)ok++;else short++}catch{gone++}}` +
+        `dump();`,
       witness,
       verdict,
+      String(before.length),
     ],
     { stdio: 'ignore' },
   );
@@ -267,5 +274,8 @@ test('sync-assets never leaves the vendored pack absent while it runs', async ()
   assert.equal(run.status, 0, run.stderr);
   assert.ok(seen.ok > 0, 'the watcher has to have actually looked');
   assert.equal(seen.gone, 0, `the pack was unreadable ${seen.gone} times while sync-assets ran`);
+  // The narrower window, and the reason the copy goes through a temp file and a rename: a
+  // reader must see ALL of the old bytes or ALL of the new ones, never a prefix.
+  assert.equal(seen.short, 0, `the witness was read half-written ${seen.short} times`);
   assert.deepEqual(read(witness), before, 'and it is byte-identical afterwards');
 });
