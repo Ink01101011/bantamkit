@@ -50,6 +50,19 @@ jobs:
     # wrapper propagates $LASTEXITCODE, so a nonzero pytest exit does fail the step -- but
     # a step that never ran prints no summary at all, and that is what to look for.
     runs-on: ${{ matrix.os }}
+    # A HANG IS A MEASURED FAILURE MODE HERE, NOT A HYPOTHETICAL, so both jobs carry a
+    # deadline. On 2026-09-05 `node tools/conformance/run.mjs --all` ran for 1h09m on a
+    # developer laptop with a `shiftwork_ref.py` child stuck and NO output at all — the run
+    # was killed by hand, and alone it finishes in about two minutes. Neither the harness
+    # nor `pytest` sets a per-child timeout, so nothing below this line would ever have
+    # ended the run: GitHub's default is 360 minutes, which is six hours of runner time
+    # spent to learn nothing, on a matrix of four cells, per push.
+    #
+    # 30 is an order of magnitude above the slowest honest reading (the Windows cells are
+    # the slow ones and they finish in single-digit minutes), so this cannot fail a run
+    # that is merely slow. It is a deadline, not a budget: if it ever fires, read it as
+    # "something is stuck" and go looking for the child, not as "raise the number".
+    timeout-minutes: 30
     # W1: the emitting half of the encoding gate. `EncodingWarning` is raised only when
     # the interpreter is started with this on, and it CANNOT be set from pytest's
     # `addopts` (`-X` is an interpreter flag; pytest exits 4 on it). `filterwarnings` in
@@ -176,6 +189,11 @@ jobs:
     # with 18 (see the fixture note in runtime-ts/test/assets.test.mjs for the one thing
     # that did not, and it was the fixture).
     runs-on: ${{ matrix.os }}
+    # The deadline, for the reason spelled out on the `test` job — and this is the job the
+    # measured hang was actually in. The conformance harness spawns a reference child per
+    # session and waits on it with no timeout of its own, so a stuck child is invisible
+    # from here: no output, no error, nothing but a job that never ends.
+    timeout-minutes: 30
     strategy:
       # Load-bearing for the same reason as the job above: the Windows readings ARE the
       # product, and cancelling siblings on the first red throws three of them away.
