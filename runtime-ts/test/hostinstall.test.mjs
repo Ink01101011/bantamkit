@@ -202,3 +202,103 @@ test('this side registers npx and never a path from this machine', async () => {
   const { thisCommand } = await import('../dist/hostinstall.js');
   assert.deepEqual(thisCommand(), { command: 'npx', args: ['-y', 'bantamkit-mcp'] });
 });
+
+// --- the five things review found that no test could see ------------------------------------
+
+for (const [payload, name] of [
+  ['"hello"', 'str'],
+  ['5', 'int'],
+  ['5.5', 'float'],
+  ['true', 'bool'],
+  ['null', 'NoneType'],
+]) {
+  test(`the refusal names CPython's type for JSON ${payload}`, async () => {
+    // `[1, 2, 3]` was the only input the first pair of tests used, and it was the wrong one:
+    // `list` is the ONE type name the two languages spell the same, so a port answering
+    // `string`, `number` and `boolean` passed both suites. Review measured it.
+    await withHome(async (h) => {
+      const path = h.hostConfigPath('cursor');
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, payload);
+      assert.throws(
+        () => h.install('cursor', CMD, []),
+        (e) => e.message.includes(`holds ${name}, not an object`),
+      );
+    });
+  });
+}
+
+test('a null entry is present and is not replaced without force', async () => {
+  // `"bantamkit": null` is an ENTRY. The reference used `.get() is not None` at first and
+  // rewrote the file where this side refused — one config, two outcomes.
+  await withHome(async (h) => {
+    const path = h.hostConfigPath('cursor');
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({ mcpServers: { bantamkit: null } }));
+    const before = readFileSync(path);
+    assert.throws(
+      () => h.install('cursor', CMD, []),
+      (e) => e.message.includes('current : null'),
+    );
+    assert.deepEqual(readFileSync(path), before);
+    h.install('cursor', CMD, [], true);
+    assert.equal(readJson(path).mcpServers.bantamkit.command, CMD);
+  });
+});
+
+test('the file’s mode survives the replace', { skip: process.platform === 'win32' }, async () => {
+  // A host config carries API keys in per-server `env`; 0600 must not come back 0644. The
+  // write is a temp file plus a rename and a fresh temp file gets the process umask.
+  const { chmodSync, statSync } = await import('node:fs');
+  await withHome(async (h) => {
+    const path = h.hostConfigPath('cursor');
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({ mcpServers: {} }));
+    chmodSync(path, 0o600);
+    h.install('cursor', CMD, []);
+    assert.equal(statSync(path).mode & 0o777, 0o600);
+  });
+});
+
+test('the claude arm prints a command someone can re-run', { skip: process.platform === 'win32' }, async () => {
+  // Nothing tested this arm at all, because it shells out. A stub on PATH is enough to pin
+  // what it prints — and the reference printed `mcp add bantamkit ...` without the verb.
+  const { chmodSync } = await import('node:fs');
+  await withHome(async (h, root) => {
+    const bin = join(root, 'bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, 'claude'), '#!/bin/sh\nexit 0\n');
+    chmodSync(join(bin, 'claude'), 0o755);
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${bin}:${previousPath}`;
+    try {
+      const report = h.install('claude', CMD, ['--flag']);
+      assert.equal(
+        report.split('\n')[1],
+        `  ran    : claude mcp add bantamkit -s user -- ${CMD} --flag`,
+      );
+    } finally {
+      process.env.PATH = previousPath;
+    }
+  });
+});
+
+test('the claude arm reports the host’s own failure', { skip: process.platform === 'win32' }, async () => {
+  const { chmodSync } = await import('node:fs');
+  await withHome(async (h, root) => {
+    const bin = join(root, 'bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, 'claude'), "#!/bin/sh\necho 'no such scope' >&2\nexit 3\n");
+    chmodSync(join(bin, 'claude'), 0o755);
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${bin}:${previousPath}`;
+    try {
+      assert.throws(
+        () => h.install('claude', CMD, []),
+        (e) => e.message.includes('`claude mcp add` failed (exit 3)') && e.message.includes('no such scope'),
+      );
+    } finally {
+      process.env.PATH = previousPath;
+    }
+  });
+});

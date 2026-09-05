@@ -293,21 +293,6 @@ async function main(argv: readonly string[]): Promise<number> {
     process.stdout.write(`${root}\n${packFileCount(root)} files\n`);
     return 0;
   }
-  if (options.install !== null && options.install !== undefined) {
-    // Before any store or transport exists, the shape `--assets-root` established.
-    const { command, args } = thisCommand();
-    try {
-      process.stdout.write(`${installHost(options.install, command, args, options.force)}\n`);
-    } catch (e) {
-      if (!(e instanceof InstallError)) throw e;
-      process.stderr.write(`error: ${e.message}\n`);
-      return 1;
-    }
-    return 0;
-  }
-  // `--force` alone is a typo with a plausible reading — somebody meant to install and
-  // dropped the flag that says where. Refusing names the missing half.
-  if (options.force) throw new Refusal('--force is only meaningful with --install');
   if (options.mcpReport) {
     // Same discipline as `--assets-root`, and the same place in `main`: BEFORE
     // `buildMemory`, which touches the filesystem, and before the transport exists at all.
@@ -332,6 +317,26 @@ async function main(argv: readonly string[]): Promise<number> {
     process.stdout.write(`${statusLine(process.env, options.store, options.start)}\n`);
     return 0;
   }
+  // ORDER IS OBSERVABLE, and it is the reference's order. `main` in `mcpserver.py` checks
+  // assets_root, then mcp_report, then statusline, then install, then force — so
+  // `--mcp-report --install cursor` prints a report and writes NOTHING. Dispatching install
+  // earlier here made the same argv write a file on one runtime and not the other: one
+  // command line, two different states on the user's disk. Reviewed and moved.
+  if (options.install !== null && options.install !== undefined) {
+    // Before any store or transport exists, the shape `--assets-root` established.
+    const { command, args } = thisCommand();
+    try {
+      process.stdout.write(`${installHost(options.install, command, args, options.force)}\n`);
+    } catch (e) {
+      if (!(e instanceof InstallError)) throw e;
+      process.stderr.write(`error: ${e.message}\n`);
+      return 1;
+    }
+    return 0;
+  }
+  // `--force` alone is a typo with a plausible reading — somebody meant to install and
+  // dropped the flag that says where. Refusing names the missing half.
+  if (options.force) throw new Refusal('--force is only meaningful with --install');
   const memory = buildMemory(options);
   const wire = new RawStdioTransport();
   const server = buildServer(memory, wire, version());

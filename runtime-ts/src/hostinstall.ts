@@ -22,7 +22,17 @@
  * other's runtime. `docs/porting.md` carries the row.
  */
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -83,6 +93,27 @@ export function entryFor(host: Host, command: string, args: string[]): Record<st
     : { command, args: [...args] };
 }
 
+/**
+ * `type(x).__name__` for the values `json.loads` can return.
+ *
+ * The reference prints CPython's type name and this sentence is compared byte for byte, so
+ * `typeof` is wrong in five of the six cases: `string`/`str`, `number`/`int`, `boolean`/`bool`.
+ * The first version of this translated only `list` and `NoneType` — and both unit tests used
+ * `[1, 2, 3]`, the ONE input where the two vocabularies happen to agree, so neither suite
+ * could see it. Review measured `"hello"` and `5`.
+ *
+ * `int` vs `float` follows `json`'s own split: a JSON number with no fraction and no exponent
+ * is decoded by `int`, everything else by `float`.
+ */
+function pyTypeName(value: unknown): string {
+  if (value === null) return 'NoneType';
+  if (Array.isArray(value)) return 'list';
+  if (typeof value === 'string') return 'str';
+  if (typeof value === 'boolean') return 'bool';
+  if (typeof value === 'number') return Number.isInteger(value) ? 'int' : 'float';
+  return typeof value;
+}
+
 function readConfig(path: string): Record<string, unknown> {
   if (!existsSync(path)) return {};
   let text: string;
@@ -104,8 +135,7 @@ function readConfig(path: string): Record<string, unknown> {
     );
   }
   if (loaded === null || typeof loaded !== 'object' || Array.isArray(loaded)) {
-    const kind = Array.isArray(loaded) ? 'list' : loaded === null ? 'NoneType' : typeof loaded;
-    throw new InstallError(`${path} holds ${kind}, not an object; refusing to touch it`);
+    throw new InstallError(`${path} holds ${pyTypeName(loaded)}, not an object; refusing to touch it`);
   }
   return loaded as Record<string, unknown>;
 }
@@ -113,8 +143,14 @@ function readConfig(path: string): Record<string, unknown> {
 function writeConfig(path: string, data: Record<string, unknown>): void {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.bantamkit-tmp`;
+  // The mode of the file being replaced, carried onto its replacement. A host config holds
+  // API keys in per-server `env` blocks, and a user who chmod'ed theirs to 0600 had it come
+  // back 0644, because a fresh temp file gets the process umask. Measured on both runtimes
+  // before this line existed.
+  const mode = existsSync(path) ? statSync(path).mode & 0o7777 : null;
   try {
     writeFileSync(tmp, `${dumps(data, 2)}\n`, 'utf8');
+    if (mode !== null) chmodSync(tmp, mode);
     renameSync(tmp, path);
   } catch (e) {
     rmSync(tmp, { force: true });
@@ -142,7 +178,15 @@ function backup(path: string): string | null {
 
 function installViaClaudeCli(command: string, args: string[]): string[] {
   const argv = ['mcp', 'add', ENTRY, '-s', 'user', '--', command, ...args];
-  const done = spawnSync('claude', argv, { encoding: 'utf8' });
+  // `shell: true` ON WINDOWS ONLY. An npm-installed `claude` is a `claude.cmd` shim, and
+  // `spawnSync` refuses to launch a batch file without a shell — it returns ENOENT, which
+  // this function would report as "not on PATH", the one message guaranteed to send someone
+  // looking in the wrong place. The reference has no such problem: `shutil.which` honours
+  // PATHEXT and `CreateProcess` runs the shim. Arguments are quoted because `shell: true`
+  // hands the string to `cmd.exe`, and a path with a space is the normal case on Windows.
+  const win = process.platform === 'win32';
+  const quoted = win ? argv.map((a) => (/[\s"^&|<>]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a)) : argv;
+  const done = spawnSync('claude', quoted, { encoding: 'utf8', shell: win });
   if (done.error) {
     const code = (done.error as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') {

@@ -150,6 +150,10 @@ def _write_config(path: Path, data: dict) -> None:
     """Write the whole object, atomically, leaving no half-file behind on a crash."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".bantamkit-tmp")
+    # The mode of the file being replaced, carried onto its replacement. A host config holds
+    # API keys in per-server `env` blocks, and a user who chmod'ed theirs to 0600 had it come
+    # back 0644 because a fresh temp file gets the process umask. Measured on both runtimes.
+    mode = path.stat().st_mode & 0o7777 if path.exists() else None
     # `ensure_ascii` is left at its DEFAULT, which escapes non-ASCII as `\uXXXX`. That is not
     # a style choice: `runtime-ts`'s `dumpJson` reproduces `json.dumps` including this, and a
     # home directory with a non-ASCII name — a Thai or Japanese Windows username, say — would
@@ -159,6 +163,8 @@ def _write_config(path: Path, data: dict) -> None:
     payload = json.dumps(data, indent=2) + "\n"
     try:
         tmp.write_text(payload, encoding="utf-8")
+        if mode is not None:
+            os.chmod(tmp, mode)
         os.replace(tmp, path)
     except OSError as exc:
         tmp.unlink(missing_ok=True)
@@ -223,7 +229,11 @@ def install(host: str, command: str, args: list[str], force: bool = False) -> st
 
     if host == "claude":
         argv = _install_via_claude_cli(command, args)
-        return f"installed bantamkit into claude\n  ran    : {' '.join(argv[1:])}"
+        # `claude`, not the resolved binary: `shutil.which` gives an absolute path and the
+        # port has no such path to print, so printing it would be a divergence with nothing
+        # behind it. And `argv[1:]` ALONE dropped the verb — the line read
+        # `mcp add bantamkit ...`, which is not a command anyone can copy. Found by review.
+        return f"installed bantamkit into claude\n  ran    : claude {' '.join(argv[1:])}"
 
     path = host_config_path(host)
     key = config_key(host)
@@ -236,10 +246,16 @@ def install(host: str, command: str, args: list[str], force: bool = False) -> st
     elif not isinstance(servers, dict):
         raise InstallError(f"{path} has a {key!r} that is not an object; refusing to touch it")
 
+    # MEMBERSHIP, not `is not None`: a config holding `"bantamkit": null` has an entry, and
+    # `.get()` cannot tell that from having none. Reviewed after the two runtimes were
+    # measured disagreeing on exactly that file — this side rewrote it without `--force`
+    # while the port refused, so the guarantee "an entry that differs is never replaced
+    # silently" was false here and nowhere else.
+    present = ENTRY in servers
     existing = servers.get(ENTRY)
-    if existing == wanted:
+    if present and existing == wanted:
         return f"bantamkit is already installed in {host} and matches\n  file   : {path}"
-    if existing is not None and not force:
+    if present and not force:
         raise InstallError(
             f"{host} already has a bantamkit entry with different settings\n"
             f"  file    : {path}\n"

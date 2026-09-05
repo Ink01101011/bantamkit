@@ -200,3 +200,109 @@ def test_the_written_json_escapes_non_ascii_so_both_runtimes_write_the_same_byte
 
     assert "\\u0e01" in raw
     assert "ก" not in raw
+
+
+# --- the five things review found that no test could see -----------------------------------
+
+
+@pytest.mark.parametrize(
+    ("payload", "name"),
+    [('"hello"', "str"), ("5", "int"), ("5.5", "float"), ("true", "bool"), ("null", "NoneType")],
+)
+def test_the_refusal_names_cpythons_type_for_every_json_scalar(home, payload, name):
+    """`[1, 2, 3]` was the only input the first pair of tests used, and it was the wrong one.
+
+    `list` is the ONE type name JavaScript and Python happen to spell the same way, so a port
+    that answered `string`, `number` and `boolean` passed both suites. Review measured it.
+    Every scalar `json.loads` can return is pinned here, and the port has the same table.
+    """
+    path = hostinstall.host_config_path("cursor")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload, encoding="utf-8")
+
+    with pytest.raises(hostinstall.InstallError) as caught:
+        hostinstall.install("cursor", CMD, [])
+
+    assert f"holds {name}, not an object" in str(caught.value)
+
+
+def test_a_null_entry_is_present_and_is_not_replaced_without_force(home):
+    """`"bantamkit": null` is an ENTRY, and `.get()` cannot tell it from having none.
+
+    The first version used `is not None`, so this side rewrote the file while the port
+    refused — one config, two outcomes, and the guarantee that a differing entry is never
+    replaced silently was false exactly here.
+    """
+    path = hostinstall.host_config_path("cursor")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"mcpServers": {"bantamkit": None}}), encoding="utf-8")
+    before = path.read_bytes()
+
+    with pytest.raises(hostinstall.InstallError) as caught:
+        hostinstall.install("cursor", CMD, [])
+
+    assert "current : null" in str(caught.value)
+    assert path.read_bytes() == before
+
+    hostinstall.install("cursor", CMD, [], force=True)
+    assert json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["bantamkit"]["command"] == CMD
+
+
+def test_the_files_mode_survives_the_replace(home):
+    """A host config carries API keys in per-server `env`; 0600 must not come back 0644.
+
+    The write is a temp file plus a rename, and a fresh temp file gets the process umask, so
+    the mode had to be carried across deliberately.
+    """
+    import os
+    import stat
+
+    path = hostinstall.host_config_path("cursor")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"mcpServers": {}}), encoding="utf-8")
+    os.chmod(path, 0o600)
+
+    hostinstall.install("cursor", CMD, [])
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_the_claude_arm_prints_a_command_someone_can_re_run(home, tmp_path, monkeypatch):
+    """`ran    : claude mcp add ...`, with the verb.
+
+    It read `mcp add bantamkit ...` at first — `' '.join(argv[1:])` dropped `argv[0]` and with
+    it the only word that makes the line a command. Nothing tested the arm at all, because it
+    shells out; a stub on PATH is enough to pin what it prints.
+    """
+    import os
+
+    stub_dir = tmp_path / "bin"
+    stub_dir.mkdir()
+    stub = stub_dir / "claude"
+    stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    os.chmod(stub, 0o755)
+    monkeypatch.setenv("PATH", f"{stub_dir}{os.pathsep}{os.environ['PATH']}")
+
+    report = hostinstall.install("claude", CMD, ["--flag"])
+
+    assert report.splitlines()[1] == (
+        f"  ran    : claude mcp add bantamkit -s user -- {CMD} --flag"
+    )
+
+
+def test_the_claude_arm_reports_the_hosts_own_failure(home, tmp_path, monkeypatch):
+    """A non-zero `claude mcp add` is the host's refusal and is passed through, not swallowed."""
+    import os
+
+    stub_dir = tmp_path / "bin"
+    stub_dir.mkdir()
+    stub = stub_dir / "claude"
+    stub.write_text("#!/bin/sh\necho 'no such scope' >&2\nexit 3\n", encoding="utf-8")
+    os.chmod(stub, 0o755)
+    monkeypatch.setenv("PATH", f"{stub_dir}{os.pathsep}{os.environ['PATH']}")
+
+    with pytest.raises(hostinstall.InstallError) as caught:
+        hostinstall.install("claude", CMD, [])
+
+    assert "`claude mcp add` failed (exit 3)" in str(caught.value)
+    assert "no such scope" in str(caught.value)

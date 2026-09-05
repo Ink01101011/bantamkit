@@ -47,13 +47,16 @@ bantamkit-mcp --install cursor          # Cursor
 It records the absolute path of the console script you just ran, so the entry points at the
 environment you installed into rather than at whatever is on a host's PATH.
 
-It never prompts. A second run that finds its own entry says so and changes nothing; an
-entry that differs is refused, printed beside the one it would write, and replaced only
-with `--force`. Every write backs the file up first, as `<name>.backup-<date>`, and a file
-that does not parse is refused rather than replaced.
-
 `--install claude` runs `claude mcp add` rather than editing `~/.claude.json` directly:
-that file is the host's, and it carries state that is not MCP configuration.
+that file is the host's, and it carries state that is not MCP configuration. What happens on
+a second run there is Claude Code's decision, not this command's, and `--force` does not
+reach it.
+
+**For the other three**, which are edited directly: it never prompts. A second run that
+finds its own entry says so and changes nothing; an entry that differs is refused, printed
+beside the one it would write, and replaced only with `--force`. Every write backs the file
+up first as `<name>.backup-<date>`, preserves the file's permissions, and a file that does
+not parse is refused rather than replaced.
 
 The rest of this section is what those commands write, for anyone who would rather do it by
 hand. Every host runs the same command; only the file and the key around it change. If
