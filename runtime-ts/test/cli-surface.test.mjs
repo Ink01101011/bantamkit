@@ -29,7 +29,9 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { test } from 'node:test';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -37,10 +39,11 @@ const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const CLI = join(packageRoot, 'dist', 'cli.js');
 
 /** The harness's scrub, kept identical so a terminal cannot decide a test result. */
-function run(argv, columns) {
+function run(argv, columns, assets) {
   const env = { ...process.env };
   for (const key of ['COLUMNS', 'LINES', 'BANTAMKIT_ASSETS']) delete env[key];
   if (columns !== undefined) env.COLUMNS = String(columns);
+  if (assets !== undefined) env.BANTAMKIT_ASSETS = assets;
   const r = spawnSync(process.execPath, [CLI, ...argv], { input: '', env, encoding: 'utf8' });
   return { stdout: r.stdout, stderr: r.stderr, exit: r.status };
 }
@@ -357,4 +360,32 @@ test('COLUMNS decides the width only when it parses to a positive integer', () =
     assert.equal(run(['-h'], bad).stdout, fallback, JSON.stringify(bad));
   }
   assert.equal(run(['-h'], '  60  ').stdout, run(['-h'], 60).stdout, 'int() tolerates surrounding space');
+});
+
+test('--assets-root counts the pack as shipped, not as an interpreter left it', () => {
+  // The count this prints and the `assets_files` `build_identity` reports must be the same
+  // number for the same directory. The first version of the `__pycache__` exclusion filtered
+  // only the digest, and a `pip install` then had one process contradicting itself — 87 from
+  // `build_identity`, 98 from `--assets-root`, for the pack it had just loaded. Node never
+  // creates a `__pycache__`; the rule is spelled here anyway, because a pack carrying one
+  // reaches both runtimes and a rule held by one is a rule the two disagree about.
+  const scratch = mkdtempSync(join(tmpdir(), 'bk-assets-root-'));
+  try {
+    const pack = join(scratch, 'pack');
+    cpSync(join(dirname(packageRoot), 'assets'), pack, { recursive: true });
+    const shipped = run(['--assets-root'], undefined, pack).stdout.split('\n')[1];
+
+    const cache = join(pack, 'evals', 'devteam', 'repo', 'src', 'ledger', '__pycache__');
+    mkdirSync(cache, { recursive: true });
+    for (const stem of ['config', 'errors', 'posting']) {
+      writeFileSync(join(cache, `${stem}.cpython-312.pyc`), 'not real bytecode\n');
+    }
+
+    const compiled = run(['--assets-root'], undefined, pack);
+    assert.equal(compiled.exit, 0);
+    assert.equal(compiled.stdout.split('\n')[1], shipped);
+    assert.equal(compiled.stdout, `${pack}\n${shipped}\n`);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 });

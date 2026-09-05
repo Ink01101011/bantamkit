@@ -51,13 +51,14 @@
  * reaches for is answered on the wire instead, by `build_identity`. `runtime-ts/README.md`
  * and `docs/install.md` carry the same correction in their own words.
  */
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 
 import { assetsRoot } from './assets.js';
 import { BantamError } from './errors.js';
 import { buildReport, resolveEventLogPath } from './mcpreport.js';
 import { Memory } from './memory/component.js';
 import { DEFAULT_INDEX_BUDGET } from './memory/store.js';
+import { packFileCount } from './mcp/identity.js';
 import { buildServer } from './mcp/server.js';
 import { RawStdioTransport } from './mcp/transport.js';
 import {
@@ -240,11 +241,10 @@ async function main(argv: readonly string[]): Promise<number> {
   const options = parseArgs(argv);
   if (options.assetsRoot) {
     const root = assetsRoot();
-    let files = 0;
-    for (const entry of readdirSync(root, { withFileTypes: true, recursive: true })) {
-      if (entry.isFile()) files += 1;
-    }
-    process.stdout.write(`${root}\n${files} files\n`);
+    // `packFileCount`, not a second walk: the count printed here and the count
+    // `build_identity` reports must be the same number for the same pack, and on a
+    // `pip install` the unfiltered version made one process contradict itself.
+    process.stdout.write(`${root}\n${packFileCount(root)} files\n`);
     return 0;
   }
   if (options.mcpReport) {

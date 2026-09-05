@@ -145,6 +145,29 @@ def _code_fingerprint() -> tuple[str, int, Path]:
         raise _Undetermined(f"unreadable source under {root}: {exc}") from None
 
 
+def _pack_files(root: Path) -> list[Path]:
+    """The pack as SHIPPED: every file except the bytecode caches an interpreter left in it.
+
+    ONE spelling of the rule, because there are TWO walks over this directory — the digest
+    behind `build_identity` and the count `--assets-root` prints — and a rule spelled twice
+    is a rule that gets fixed once. That is not hypothetical: the first version of this fix
+    excluded `__pycache__` from the digest alone, and a `pip install` then had one process
+    contradicting itself, `build_identity` answering 87 files while `--assets-root` printed
+    98 for the pack it had just loaded.
+
+    Bytecode is derived. `_code_fingerprint` has said so since it was written; this is the
+    same sentence applied to the pack, which carries eleven `.py` fixture files of its own.
+
+    The membership test is over the path RELATIVE to `root`, so a pack that happens to live
+    somewhere under a directory named `__pycache__` is walked rather than emptied.
+    """
+    return sorted(
+        p
+        for p in root.rglob("*")
+        if p.is_file() and "__pycache__" not in p.relative_to(root).parts
+    )
+
+
 def _assets_fingerprint() -> tuple[str, int, Path]:
     """Fingerprint the asset pack this build would load.
 
@@ -165,19 +188,14 @@ def _assets_fingerprint() -> tuple[str, int, Path]:
     stable for ONE install either, because it changed the first time anything imported a
     fixture. The pack is what was SHIPPED, never what an interpreter later wrote beside it.
 
-    The rule is spelled identically in `runtime-ts`'s `assetsFingerprint`. The membership
-    test is over the path RELATIVE to `root`, so a pack that happens to live somewhere under
-    a directory named `__pycache__` is fingerprinted rather than emptied.
+    The rule lives in `_pack_files`, which `--assets-root` shares, and is spelled the same
+    way in `runtime-ts`.
     """
     try:
         root = assets_root()
     except AssetNotFound as exc:
         raise _Undetermined(f"assets_root() could not resolve a pack: {exc}") from None
-    files = sorted(
-        p
-        for p in root.rglob("*")
-        if p.is_file() and "__pycache__" not in p.relative_to(root).parts
-    )
+    files = _pack_files(root)
     if not files:
         raise _Undetermined(f"asset pack at {root} contains no files")
     try:
@@ -1320,7 +1338,7 @@ def _print_assets_root() -> None:
     matches too.
     """
     root = assets_root()
-    files = sum(1 for path in root.rglob("*") if path.is_file())
+    files = len(_pack_files(root))
     sys.stdout.buffer.write(f"{root}\n{files} files\n".encode())
     sys.stdout.buffer.flush()
 

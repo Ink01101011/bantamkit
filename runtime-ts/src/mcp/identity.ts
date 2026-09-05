@@ -185,7 +185,22 @@ function codeFingerprint(): { digest: string; files: number; root: string } {
  * this side never creates a `__pycache__`, so a Node-only exclusion would still agree today
  * and diverge again the moment a pack carrying one reached both runtimes.
  */
-const notBytecodeCache = (parts: string[]): boolean => !parts.includes('__pycache__');
+export const notBytecodeCache = (parts: string[]): boolean => !parts.includes('__pycache__');
+
+/**
+ * The pack as SHIPPED, counted — what `--assets-root` prints.
+ *
+ * Exported so the CLI shares this walk rather than keeping a second one. There are TWO
+ * walks over this directory and a rule spelled twice is a rule that gets fixed once: the
+ * first version of this fix filtered the digest alone, and a `pip install` then had one
+ * process contradicting itself, `build_identity` answering 87 files while `--assets-root`
+ * printed 98 for the pack it had just loaded. The CLI's own `readdirSync(recursive)` is
+ * gone with it — `walkFiles` is the walk that mirrors CPython's `rglob`, which is what the
+ * reference's printer uses and what the conformance case compares the count against.
+ */
+export function packFileCount(root: string): number {
+  return walkFiles(root).filter(notBytecodeCache).length;
+}
 
 function assetsFingerprint(): { digest: string; files: number; root: string } {
   let root: string;
