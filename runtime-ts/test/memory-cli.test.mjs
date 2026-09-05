@@ -70,27 +70,34 @@ function seed() {
 }
 
 /**
- * One byte per index LINE, on Windows only, and every number below is derived from it.
+ * The index size is READ FROM `status`, not predicted, and the second part is the lesson.
  *
- * The store's writer translates LF to CRLF on Windows (`docs/porting.md`, N11) while the
- * budget counts the LF text, so a four-line index is 369 bytes on POSIX and 373 there. Every
- * literal in this test was a POSIX measurement, and three of them failed by exactly the
- * number of lines they described — measured on CI 2026-09-05, `373 !== 369`.
+ * Every number here was a POSIX literal and three failed on Windows. The obvious repair —
+ * "the writer emits CRLF, so add one byte per line" — was WRONG, and it was wrong in a way
+ * only CI could show: `bantamkit_status` reports the size of the file ON DISK (47 where POSIX
+ * has 46, measured in `server.test.mjs`) while `bantamkit-memory status` reports 369 on both.
+ * Two surfaces, two bases, and predicting either from the other produced `expected 373,
+ * actual 369` — the same failure with the sign flipped.
  *
- * The fact FILES are written by this test with `writeFileSync`, which translates nothing, so
- * only the index moves. `target` is `budget - reserve` and `headroom` is `budget - index`,
- * which is why they move with it and the budget does not.
+ * So nothing is predicted. The first `status` call is asked what the index is, and every
+ * later expectation is built from that: `headroom` is `budget - index`, `target` is
+ * `budget - reserve`, and the two line sizes come from the compact report itself. What the
+ * test still owns is the ARITHMETIC between them, which is the same on every platform.
  */
-const EOL = process.platform === 'win32' ? 1 : 0;
+const readIndexBytes = (statusStdout) => Number(/index: (\d+) bytes/.exec(statusStdout)[1]);
 
 test('the five subcommands answer, in sequence, exactly as the reference does', () => {
   const store = seed();
-  const index4 = 369 + 4 * EOL; // four facts, one line each
-  const index3 = 276 + 3 * EOL; // after the stalest is archived
-  const alpha = 93 + EOL; // the line that leaves
-  const reserve = 94 + EOL; // the LARGEST line kept, `charlie-fact`
-  const target = 400 - reserve;
+  // Read, not predicted. The two LINE sizes below are literals because they are properties
+  // of the facts this test seeds — the name, the description and one U+2014 — and nothing
+  // about a platform changes them; the index is read because whether it counts the bytes on
+  // disk or the bytes of the LF text is a decision this test does not get to make.
   const at = (...argv) => run([...argv, '--store', store, '--budget', '400']);
+  const index4 = readIndexBytes(at('status').stdout);
+  const alpha = 93; // `alpha-fact`, the stalest, the line that leaves
+  const reserve = 94; // `charlie-fact`, the LARGEST line kept
+  const index3 = index4 - alpha; // after the stalest is archived
+  const target = 400 - reserve;
 
   assert.deepEqual(at('status'), {
     stdout: `store: ${store}\nfacts: 4\nindex: ${index4} bytes\nbudget: 400\nheadroom: ${400 - index4}\narchived: 0\n`,
@@ -166,7 +173,7 @@ test('the three operational failures exit 1 with the reference sentence on stder
   assert.deepEqual(run(['lint', '--store', store, '--budget', '100']), {
     stdout: '',
     stderr:
-      `lint: FAIL — index is ${369 + 4 * EOL} bytes, budget is 100\n` +
+      `lint: FAIL — index is ${readIndexBytes(run(['status', '--store', store, '--budget', '400']).stdout)} bytes, budget is 100\n` +
       `  try: bantamkit-memory compact --store ${store} --budget 100\n`,
     exit: 1,
   });

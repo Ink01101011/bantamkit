@@ -338,16 +338,28 @@ test('under win32 every sentence names the path the way pathlib spells it there'
   // `Path('C:/docs/missing.docx')` prints `C:\docs\missing.docx` on Windows; the sentence
   // is built from `str(Path(p))`. The platform is faked, the filesystem is this one: the
   // stat of `C:\docs\missing.docx` fails here as it would there.
+  const realPlatform = process.platform;
   const platform = Object.getOwnPropertyDescriptor(process, 'platform');
   Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
   try {
     assert.throws(() => sniff('C:/docs/missing.docx'), { message: 'no such file: C:\\docs\\missing.docx' });
     assert.throws(() => extract('C:/docs/missing.docx'), { message: 'no such file: C:\\docs\\missing.docx' });
-    // `Path(p).name`: a file that is literally called `docs\junk.docx` on this filesystem is
-    // `junk.docx` to `PureWindowsPath`, and the refusal names it so. (`docs` is a directory
-    // component there, so the path is written with no separator this platform would split.)
-    const literal = join(dir, 'docs\\junk.docx');
-    writeFileSync(literal, 'PK\x03\x04 not a zip at all');
+    // `Path(p).name`: whatever `docs\junk.docx` denotes, the refusal names `junk.docx` and
+    // not the whole path. WHAT IT DENOTES IS NOT THE SAME EVERYWHERE and the fixture has to
+    // follow: on POSIX a backslash is an ordinary character, so this is ONE file whose name
+    // contains it; on a real Windows filesystem it is `junk.docx` inside a `docs` directory.
+    // Writing the POSIX shape there fails at `writeFileSync` with `ENOENT ... docs\junk.docx`
+    // because the directory does not exist — measured on CI 2026-09-05.
+    //
+    // `process.platform` IS FAKED ABOVE, so the real platform is asked for separately. The
+    // fake decides what the code under test SPELLS; the filesystem decides what can be
+    // written, and only the second one is a question about this machine.
+    if (realPlatform === 'win32') {
+      mkdirSync(join(dir, 'docs'), { recursive: true });
+      writeFileSync(join(dir, 'docs', 'junk.docx'), 'PK\x03\x04 not a zip at all');
+    } else {
+      writeFileSync(join(dir, 'docs\\junk.docx'), 'PK\x03\x04 not a zip at all');
+    }
     const cwd = process.cwd();
     process.chdir(dir);
     try {

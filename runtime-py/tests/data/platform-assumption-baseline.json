@@ -14,9 +14,6 @@
   "runtime-ts/test/checkschema.test.mjs": [
     "a filename literal contains a backslash"
   ],
-  "runtime-ts/test/docread.test.mjs": [
-    "a filename literal contains a backslash"
-  ],
   "runtime-ts/test/eventlog.test.mjs": [
     "a child is controlled with a signal"
   ],

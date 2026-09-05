@@ -178,7 +178,11 @@ def test_a_posix_assumption_names_the_platform_or_says_why_it_does_not_have_to(p
     `test_the_baseline_holds_nothing_that_is_already_fixed` fails the moment an entry stops
     being true, which is what stops the list from becoming furniture.
     """
-    rel = str(path.relative_to(REPO))
+    # `as_posix()` AND NOT `str()`. The baseline is a tracked file with `/` in its keys, and
+    # `str(PurePath)` gives `\` on Windows — so every lookup missed there and this gate, whose
+    # whole subject is platform assumptions, failed on every file for a platform assumption of
+    # its own. Measured on CI 2026-09-05, the first Windows run after it landed.
+    rel = path.relative_to(REPO).as_posix()
     allowed = set(_baseline().get(rel, []))
     offences = [
         o
@@ -201,7 +205,7 @@ def test_the_baseline_holds_nothing_that_is_already_fixed():
     construct come back into that file unnoticed — the allowance outliving the thing it was
     allowing.
     """
-    by_path = {str(p.relative_to(REPO)): (p, opener) for p, opener in _files()}
+    by_path = {p.relative_to(REPO).as_posix(): (p, opener) for p, opener in _files()}
     stale = []
     for rel, names in sorted(_baseline().items()):
         if rel not in by_path:
