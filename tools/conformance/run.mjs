@@ -137,6 +137,34 @@ if (!existsSync(python)) {
 }
 
 /**
+ * How long one reference child may take before it is treated as stuck.
+ *
+ * MEASURED, not chosen: instrumenting `runPython` over a full `--all` run timed 355 calls,
+ * and the slowest was `store_ref.py` at 50,139 ms. Everything else finished under 1.5 s.
+ * Ten minutes is twelve times the slowest honest call, which puts it firmly in "this is
+ * stuck" rather than "this machine is loaded" — a Windows runner is several times slower
+ * than the laptop this was taken on and still has an order of magnitude of room.
+ *
+ * WHY THE BOUND EXISTS AT ALL. On 2026-09-05 a full run sat for 1h09m with a
+ * `shiftwork_ref.py` child stuck, producing NO output — no case, no note, no error — and
+ * ended only because it was killed by hand. `spawnSync` waits forever by default, so
+ * nothing in this file would ever have ended it.
+ *
+ * WHY IT IS SMALLER THAN THE CI JOB DEADLINE, DELIBERATELY. `.github/workflows/ci.yml`
+ * caps each job at 30 minutes. That cap kills the runner and reports "took too long",
+ * which names nothing. This one fires first and names the script, the interpreter, and
+ * whether the child had written anything at all — the three facts that decide where to
+ * look next. A job deadline is a backstop; this is the diagnostic.
+ *
+ * `BANTAMKIT_CONFORMANCE_REF_TIMEOUT_MS` overrides it. That exists so the arm can be
+ * DEMONSTRATED rather than asserted — see the note in `docs/conformance.md` — and not so a
+ * slow machine can be papered over. If a real call needs more than ten minutes, the call is
+ * the thing to look at.
+ */
+const DEFAULT_REF_TIMEOUT_MS = 600_000;
+const REF_TIMEOUT_MS = Number(process.env.BANTAMKIT_CONFORMANCE_REF_TIMEOUT_MS ?? DEFAULT_REF_TIMEOUT_MS);
+
+/**
  * Run a reference script with a JSON payload on stdin and parse its JSON on stdout.
  *
  * `env` is merged over the parent environment, so a suite can pin `TZ` and compare a
@@ -148,7 +176,31 @@ function runPython(scriptPath, payload, env = {}) {
     encoding: 'utf8',
     maxBuffer: 256 * 1024 * 1024,
     env: { ...process.env, ...env },
+    timeout: REF_TIMEOUT_MS,
+    killSignal: 'SIGKILL',
   });
+  // The timeout arm comes FIRST, because `spawnSync` reports it as an ordinary `r.error`
+  // and the generic message below would blame the interpreter for being unlaunchable when
+  // it launched fine and then stopped answering. Those are different failures and they
+  // send a reader to different places.
+  if (r.error && (r.error.code === 'ETIMEDOUT' || r.signal === 'SIGKILL')) {
+    die(
+      `reference script did not finish within ${REF_TIMEOUT_MS / 1000}s and was killed\n` +
+        `  script : ${scriptPath}\n` +
+        `  python : ${python}\n` +
+        `  stdout : ${r.stdout ? `${r.stdout.length} bytes` : 'nothing at all'}\n` +
+        `  stderr : ${r.stderr ? `${r.stderr.length} bytes` : 'nothing at all'}\n` +
+        (r.stderr ? `--- stderr ---\n${r.stderr.slice(0, 2000)}\n` : '') +
+        // Only claimed when the bound is the measured one. Under an override the sentence
+        // would be false, and a diagnostic that lies about its own threshold is worse than
+        // one that says nothing — the reader is here precisely because they are confused.
+        (REF_TIMEOUT_MS === DEFAULT_REF_TIMEOUT_MS
+          ? '  this is a HANG, not a slow run: the slowest reference call measured on a full\n' +
+            '  run takes 50s, and this bound is twelve times that.'
+          : `  the bound was overridden by BANTAMKIT_CONFORMANCE_REF_TIMEOUT_MS; the default is\n` +
+            `  ${DEFAULT_REF_TIMEOUT_MS / 1000}s.`),
+    );
+  }
   if (r.error) die(`could not run ${python}: ${r.error.message}`);
   if (r.status !== 0) {
     die(`reference script failed (exit ${r.status})\n--- stderr ---\n${r.stderr}`);
