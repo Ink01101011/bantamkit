@@ -41,7 +41,7 @@
  * cannot reach above the package directory any more than hatchling can. So the licence
  * is vendored here, by the same two rules and in the same pass.
  */
-import { copyFileSync, cpSync, existsSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -69,10 +69,56 @@ function entriesUnder(dir) {
   );
 }
 
+/**
+ * WHY THIS IS `copyFileSync` AND NOT A TEMP FILE PLUS A RENAME.
+ *
+ * The measured defect — a reader meeting a MISSING file while the pack is vendored — is fixed
+ * by the per-file walk below, not by atomicity: replacing the bulk
+ * `cpSync(checkout, vendored, {recursive, force})` takes the concurrency case from 3/3 red to
+ * 5/5 green on node 18, and swapping this call for an atomic rename changes nothing there.
+ *
+ * An atomic rename WAS written, on the reasoning that `copyFileSync` opens with O_TRUNC and a
+ * reader can therefore see a prefix. The file said in as many words that this was reasoning
+ * rather than a measurement, and that the `short` counter in `packaging.test.mjs` was the
+ * thing that could turn it into one. The measurement arrived and went the other way:
+ *
+ *   Error: EPERM: operation not permitted, rename
+ *       at copyFileAtomically (sync-assets.mjs:99)
+ *
+ * Windows refuses to rename over a file another process has open, and the watcher in that
+ * test holds exactly that file open — which is the scenario this script exists to survive. So
+ * the atomic version does not merely fail to help there; it is the thing that breaks.
+ *
+ * The prefix window stays real and stays unclosed, and `short` in that test is a WEAKER
+ * witness to it than the sentence that used to stand here claimed. `sameBytes` below skips a
+ * file whose destination already matches, and the vendored pack matches after any build — so
+ * in the steady state nothing is written, no prefix can exist, and the counter reports zero
+ * without having looked at anything. It only has teeth on the first sync after the checkout's
+ * assets change. That is a real moment and not a hypothetical one, but it is not the standing
+ * measurement the paragraph promised.
+ */
+/** Whether the destination already holds exactly the source's bytes. Cheap: the pack is small. */
+function sameBytes(source, target) {
+  if (!existsSync(target)) return false;
+  const a = statSync(source);
+  const b = statSync(target);
+  if (!b.isFile() || a.size !== b.size) return false;
+  return readFileSync(source).equals(readFileSync(target));
+}
+
+
 if (populated(checkout)) {
   // Overwrite first, so no reader ever meets a missing file...
   const stale = new Set(entriesUnder(vendored));
-  cpSync(checkout, vendored, { recursive: true, force: true });
+  for (const rel of entriesUnder(checkout)) {
+    const source = join(checkout, rel);
+    const target = join(vendored, rel);
+    if (statSync(source).isDirectory()) mkdirSync(target, { recursive: true });
+    else {
+      mkdirSync(dirname(target), { recursive: true });
+      if (!sameBytes(source, target)) copyFileSync(source, target);
+    }
+  }
   for (const kept of entriesUnder(checkout)) stale.delete(kept);
   // ...then prune only what the checkout no longer has, deepest first so a directory is
   // empty by the time it is removed.

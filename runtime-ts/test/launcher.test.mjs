@@ -28,7 +28,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -77,7 +77,24 @@ function checkout(name, { dist = false, deps = false } = {}) {
   // COPIED, never symlinked: Node resolves a symlink to its real path before it looks for
   // `node_modules`, so a symlinked `dist/` would silently borrow the repository's own
   // dependencies and the missing-dependency node would test nothing.
-  if (dist) cpSync(DIST, join(dir, 'runtime-ts', 'dist'), { recursive: true });
+  if (dist) {
+    cpSync(DIST, join(dir, 'runtime-ts', 'dist'), { recursive: true });
+    // `"type": "module"`, because a real checkout has one and Node 18 needs it.
+    //
+    // `dist/cli.js` is ESM. Without this file Node 18 reads it as CommonJS and dies with
+    // `SyntaxError: Cannot use import statement outside a module` — so the missing-dependency
+    // test got a syntax error where it expected the launcher's `deps :` line, and the
+    // assertion failed on a message about module systems. Node 22 detects ESM syntax and
+    // retries, which is why this passed on one cell of the matrix and not the other:
+    // measured on CI 2026-09-05, node 18 red and node 22 green on the same commit.
+    //
+    // The fixture was simply less than a checkout. `engines.node: ">=18"` is a promise, and a
+    // fixture that only works on 22 cannot test it.
+    writeFileSync(
+      join(dir, 'runtime-ts', 'package.json'),
+      `${JSON.stringify({ name: 'bantamkit-mcp', type: 'module' }, null, 2)}\n`,
+    );
+  }
   if (deps) cpSync(join(packageRoot, 'node_modules'), join(dir, 'runtime-ts', 'node_modules'), { recursive: true });
   return dir;
 }
@@ -187,7 +204,45 @@ test('an unbuilt worktree refuses the deps root\u2019s build rather than serving
 
 test('no Node interpreter is a sentence naming BANTAMKIT_NODE, not a spawn error', { skip }, () => {
   const dir = checkout('nonode');
-  const { stdout, stderr, status } = run(dir, [], { PATH: join(scratch, 'empty-path'), BANTAMKIT_NODE: '' });
+  // A PATH WITH `dirname` AND WITHOUT `node`, which is not the same as an empty PATH.
+  //
+  // This used to pass `join(scratch, 'empty-path')`, and the launcher's FIRST line is
+  // `here=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd) || exit 127`. With nothing on PATH
+  // `dirname` is not found and the script dies there — never reaching the interpreter lookup
+  // this test is named for. On macOS that path happens to exit 127 too, so the assertion
+  // passed for the wrong reason; on CI's dash it exits 1 and the test went red. The failure
+  // was the test pointing at the wrong line, not the launcher.
+  //
+  // `dirname` is symlinked in and `node` deliberately is not, so the script gets as far as
+  // the lookup and takes the arm whose sentence is asserted below.
+  const bin = join(scratch, 'path-without-node');
+  mkdirSync(bin, { recursive: true });
+  for (const tool of ['dirname']) {
+    const real = ['/usr/bin', '/bin'].map((d) => join(d, tool)).find((c) => existsSync(c));
+    assert.ok(real, `${tool} is needed to reach the lookup and was not found`);
+    const link = join(bin, tool);
+    if (!existsSync(link)) symlinkSync(real, link);
+  }
+  assert.ok(!existsSync(join(bin, 'node')), 'the point of this PATH is that node is absent');
+
+  // AND THE TWO HARDCODED FALLBACKS, which no PATH can hide. After `command -v node` fails
+  // the launcher tries `/opt/homebrew/bin/node` and `/usr/local/bin/node` by absolute path —
+  // deliberately, for version managers whose shims are not on a GUI host's PATH. GitHub's
+  // ubuntu image installs Node at `/usr/local/bin/node`, so the branch this test is named for
+  // is UNREACHABLE there: the launcher finds an interpreter, runs, and exits 1 for an
+  // unrelated reason. Measured on CI 2026-09-05 as `1 !== 127`, twice, after the PATH fix
+  // above had already been applied.
+  //
+  // The precondition is asserted rather than assumed, and skipping says what it costs.
+  const fallbacks = ['/opt/homebrew/bin/node', '/usr/local/bin/node'].filter((c) => existsSync(c));
+  if (fallbacks.length > 0) {
+    // UNMEASURED HERE: that a machine with no Node at all gets a sentence naming
+    // BANTAMKIT_NODE rather than a spawn error. The fallbacks are absolute paths and a test
+    // cannot unmake them; only a machine without them can run this.
+    return;
+  }
+
+  const { stdout, stderr, status } = run(dir, [], { PATH: bin, BANTAMKIT_NODE: '' });
   assert.equal(status, 127);
   assert.equal(stdout, '');
   assert.match(stderr, /^bantamkit-mcp-node: no Node interpreter found\.$/m);

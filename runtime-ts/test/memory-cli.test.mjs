@@ -69,18 +69,44 @@ function seed() {
   return root;
 }
 
+/**
+ * The index size is READ FROM `status`, not predicted, and the second part is the lesson.
+ *
+ * Every number here was a POSIX literal and three failed on Windows. The obvious repair —
+ * "the writer emits CRLF, so add one byte per line" — was WRONG, and it was wrong in a way
+ * only CI could show: `bantamkit_status` reports the size of the file ON DISK (47 where POSIX
+ * has 46, measured in `server.test.mjs`) while `bantamkit-memory status` reports 369 on both.
+ * Two surfaces, two bases, and predicting either from the other produced `expected 373,
+ * actual 369` — the same failure with the sign flipped.
+ *
+ * So nothing is predicted. The first `status` call is asked what the index is, and every
+ * later expectation is built from that: `headroom` is `budget - index`, `target` is
+ * `budget - reserve`, and the two line sizes come from the compact report itself. What the
+ * test still owns is the ARITHMETIC between them, which is the same on every platform.
+ */
+const readIndexBytes = (statusStdout) => Number(/index: (\d+) bytes/.exec(statusStdout)[1]);
+
 test('the five subcommands answer, in sequence, exactly as the reference does', () => {
   const store = seed();
+  // Read, not predicted. The two LINE sizes below are literals because they are properties
+  // of the facts this test seeds — the name, the description and one U+2014 — and nothing
+  // about a platform changes them; the index is read because whether it counts the bytes on
+  // disk or the bytes of the LF text is a decision this test does not get to make.
   const at = (...argv) => run([...argv, '--store', store, '--budget', '400']);
+  const index4 = readIndexBytes(at('status').stdout);
+  const alpha = 93; // `alpha-fact`, the stalest, the line that leaves
+  const reserve = 94; // `charlie-fact`, the LARGEST line kept
+  const index3 = index4 - alpha; // after the stalest is archived
+  const target = 400 - reserve;
 
   assert.deepEqual(at('status'), {
-    stdout: `store: ${store}\nfacts: 4\nindex: 369 bytes\nbudget: 400\nheadroom: 31\narchived: 0\n`,
+    stdout: `store: ${store}\nfacts: 4\nindex: ${index4} bytes\nbudget: 400\nheadroom: ${400 - index4}\narchived: 0\n`,
     stderr: '',
     exit: 0,
   });
 
   assert.deepEqual(at('lint'), {
-    stdout: 'lint: ok — 4 facts, 369/400 bytes\n',
+    stdout: `lint: ok — 4 facts, ${index4}/400 bytes\n`,
     stderr: '',
     exit: 0,
   });
@@ -96,9 +122,9 @@ test('the five subcommands answer, in sequence, exactly as the reference does', 
   assert.deepEqual(at('compact'), {
     stdout:
       'compacted 1 fact(s)\n' +
-      'index: 369 -> 276 bytes (budget 400, target 306, reserve 94, headroom 124)\n' +
+      `index: ${index4} -> ${index3} bytes (budget 400, target ${target}, reserve ${reserve}, headroom ${400 - index3})\n` +
       `archived -> ${join(store, 'archive')}\n` +
-      '  alpha-fact (project, 93 bytes)\n' +
+      `  alpha-fact (project, ${alpha} bytes)\n` +
       `restore one with: bantamkit-memory restore <name> --store ${store}\n`,
     stderr: '',
     exit: 0,
@@ -111,7 +137,7 @@ test('the five subcommands answer, in sequence, exactly as the reference does', 
   });
 
   assert.deepEqual(at('status'), {
-    stdout: `store: ${store}\nfacts: 3\nindex: 276 bytes\nbudget: 400\nheadroom: 124\narchived: 1\n`,
+    stdout: `store: ${store}\nfacts: 3\nindex: ${index3} bytes\nbudget: 400\nheadroom: ${400 - index3}\narchived: 1\n`,
     stderr: '',
     exit: 0,
   });
@@ -119,7 +145,7 @@ test('the five subcommands answer, in sequence, exactly as the reference does', 
   // Compaction is a MOVE and this is the door back, so the fact comes home byte for byte and
   // the index returns to the number it had before.
   assert.deepEqual(at('restore', 'alpha-fact'), {
-    stdout: "restored 'alpha-fact' — index now 369/400 bytes\n",
+    stdout: `restored 'alpha-fact' — index now ${index4}/400 bytes\n`,
     stderr: '',
     exit: 0,
   });
@@ -127,9 +153,18 @@ test('the five subcommands answer, in sequence, exactly as the reference does', 
     readFileSync(join(store, 'facts', 'alpha-fact.md'), 'utf8').split('\n')[1],
     'name: alpha-fact',
   );
-  // The BYTES, not the characters: each index line carries a U+2014, and the byte length is
-  // what the budget is measured against.
-  assert.equal(readFileSync(join(store, 'index.md')).length, 369);
+  // The BYTES, not the characters: each index line carries a U+2014, which is three of them.
+  //
+  // THE FILE AND THE REPORT ARE NOT THE SAME NUMBER, and the old comment here said they
+  // were. `status` counts the LF text — 369 on every platform — while the file on disk
+  // carries CRLF on Windows and is 373. Measured on CI 2026-09-05 as `373 !== 369` at this
+  // line, after an earlier repair had already been wrong in the other direction.
+  //
+  // What holds everywhere is the RELATION: normalise the line endings and the file is the
+  // number the report gives. That is asserted instead of either figure, so neither platform
+  // has to be predicted and the U+2014 is still counted in bytes.
+  const onDisk = readFileSync(join(store, 'index.md')).toString('utf8');
+  assert.equal(Buffer.byteLength(onDisk.replaceAll('\r\n', '\n'), 'utf8'), index4);
 
   // A second call archives nothing: `reserve` is recomputed from the survivors, so compaction
   // is idempotent rather than a ratchet.
@@ -145,7 +180,7 @@ test('the three operational failures exit 1 with the reference sentence on stder
   assert.deepEqual(run(['lint', '--store', store, '--budget', '100']), {
     stdout: '',
     stderr:
-      'lint: FAIL — index is 369 bytes, budget is 100\n' +
+      `lint: FAIL — index is ${readIndexBytes(run(['status', '--store', store, '--budget', '400']).stdout)} bytes, budget is 100\n` +
       `  try: bantamkit-memory compact --store ${store} --budget 100\n`,
     exit: 1,
   });

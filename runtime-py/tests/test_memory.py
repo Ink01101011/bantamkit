@@ -2313,9 +2313,17 @@ def test_archive_rolls_back_when_index_md_is_a_directory(tmp_path):
     (store.root / "archive" / "beta.md").rmdir()
 
     # The route that does: the move happens and the rebuild is what fails.
+    #
+    # THE CLASS IS THE OPERATING SYSTEM'S, NOT OURS. Opening a directory for writing is
+    # `IsADirectoryError` (EISDIR) on POSIX and `PermissionError` (EACCES, WinError 5) on
+    # Windows — measured on CI 2026-09-05, `PermissionError: [Errno 13]` from
+    # `pathlib.py:1013`. Both are `OSError`, both reach the rollback, and neither is more
+    # correct: each is its platform telling the truth. The property this node owns is the
+    # line below — the fact comes back — and that is the same everywhere.
+    expected = PermissionError if os.name == "nt" else IsADirectoryError
     (store.root / "index.md").unlink()
     (store.root / "index.md").mkdir()
-    with pytest.raises(IsADirectoryError):
+    with pytest.raises(expected):
         store.archive("alpha")
 
     assert (store.root / "facts" / "alpha.md").exists(), "the fact was put back"

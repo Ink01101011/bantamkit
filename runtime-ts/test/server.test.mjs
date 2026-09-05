@@ -1036,17 +1036,50 @@ test('no shipped tool manifest carries a number JSON.parse cannot round-trip', a
 /** One fact, saved into a fresh store, so `index.md` exists and is a known size. */
 const SAVE_PROBE = (id) =>
   call(id, 'memory_save', { type: 'project', name: 'status-probe', description: 'a probe fact', body: 'body' });
-const INDEX_BYTES = 46; // `- [[status-probe]] (project) — a probe fact\n`, measured
+/**
+ * The index's size is MEASURED, not written down, because it is not the same number
+ * everywhere.
+ *
+ * It was `46` — the byte length of `- [[status-probe]] (project) — a probe fact\n` on POSIX.
+ * On Windows the store's writer translates LF to CRLF (`docs/porting.md`, N11) and the file is
+ * 47 bytes, so every assertion built on the constant was one byte out and three status tests
+ * failed on the first Windows CI run: `index 47 of 51` where the test wanted `index 46 of 51`.
+ *
+ * The reference never had this problem because its own status test never wrote the number
+ * down — `_shrink_the_budget_under_the_index` stats the file and binds the budget to what it
+ * finds. This does the same: one throwaway session saves the probe, the file is measured, and
+ * the two budgets that straddle the 90% line are derived from THAT.
+ */
+async function measureIndexBytes() {
+  const store = freshStore();
+  await session([INIT, INITIALIZED, SAVE_PROBE(2)], { args: ['--store', store] });
+  const size = statSync(join(store, 'index.md')).size;
+  assert.ok(size > 0, 'the probe wrote no index');
+  return size;
+}
 
 /**
- * The line the report renders, and the two budgets that straddle the 90% line around it.
+ * The two budgets around the 90% line, for a given index size.
  *
- * 46 * 100 = 4600. At a 51-byte budget 90 * 51 = 4590 <= 4600, so the store is degraded; at
- * 52, 90 * 52 = 4680 > 4600 and it is not. Both sides are driven below, because a threshold
- * asserted from one side is a threshold that could be anywhere below it.
+ * Degraded when `90 * budget <= 100 * size`, so the largest degrading budget is
+ * `floor(10 * size / 9)` and the smallest healthy one is the next integer. At 46 that is
+ * 51 and 52 — the pair this file used to hardcode — and at 47 it is 52 and 53. Both sides of
+ * the threshold are driven below, because a threshold asserted from one side could be
+ * anywhere below it.
  */
-const DEGRADED_BUDGET = 51;
-const HEALTHY_BUDGET = 52;
+let indexBytesCache = null;
+/** Measured once per run; every status assertion below reads it rather than a constant. */
+async function indexFacts() {
+  if (indexBytesCache === null) {
+    const size = await measureIndexBytes();
+    indexBytesCache = { size, ...budgetsAround(size) };
+  }
+  return indexBytesCache;
+}
+
+const budgetsAround = (size) => ({ degraded: Math.floor((size * 10) / 9), healthy: Math.floor((size * 10) / 9) + 1 });
+
+
 
 const REPORT_LINE_1_ACTIVE = 'bantamkit Active 🟢';
 const REPORT_LINE_1_DEGRADED = 'bantamkit Degraded 🟠';
@@ -1061,11 +1094,12 @@ async function statusSession(requests, budget) {
 }
 
 test('a healthy server reports Active, and the report is the five lines docs/status.md fixes', async () => {
+  const { size: INDEX_BYTES, healthy: HEALTHY_BUDGET } = await indexFacts();
   const { lines, stderr, store } = await statusSession(
     [INIT, INITIALIZED, SAVE_PROBE(2), call(3, 'bantamkit_status', {})],
     HEALTHY_BUDGET,
   );
-  assert.equal(statSync(join(store, 'index.md')).size, INDEX_BYTES, 'the index format moved; the budgets below are stale');
+  assert.equal(statSync(join(store, 'index.md')).size, INDEX_BYTES, 'two sessions wrote different indexes');
   const report = byId(lines, 3).result.structuredContent.result;
   const rows = report.split('\n');
   assert.equal(rows.length, 5, report);
@@ -1081,6 +1115,7 @@ test('a healthy server reports Active, and the report is the five lines docs/sta
 });
 
 test('the same store one byte of budget tighter reports Degraded, and names the condition', async () => {
+  const { size: INDEX_BYTES, degraded: DEGRADED_BUDGET } = await indexFacts();
   const { lines, stderr } = await statusSession(
     [INIT, INITIALIZED, SAVE_PROBE(2), call(3, 'bantamkit_status', {})],
     DEGRADED_BUDGET,
@@ -1131,6 +1166,7 @@ test('the footer rides on other tools only when degraded, in the shape each resu
     call(5, 'build_identity', {}),
     call(6, 'bantamkit_status', {}),
   ];
+  const { degraded: DEGRADED_BUDGET, healthy: HEALTHY_BUDGET } = await indexFacts();
   const degraded = await statusSession(requests(), DEGRADED_BUDGET);
   const healthy = await statusSession(requests(), HEALTHY_BUDGET);
 
@@ -1298,6 +1334,11 @@ test('the index condition is integer cross-multiplication, on both sides of the 
   const root = freshStore();
   const at = (budget) => indexPressureCondition(new Memory(root, { indexBudget: budget }));
   assert.equal(at(24000), null, 'a store with no index.md spends nothing of its budget');
+  // WRITTEN DIRECTLY, so the store's LF->CRLF translation does not apply and the size is
+  // exactly what is asked for on every platform. Any value works; 46 is kept because the
+  // arithmetic below was worked out against it.
+  const INDEX_BYTES = 46;
+  const { degraded: DEGRADED_BUDGET, healthy: HEALTHY_BUDGET } = budgetsAround(INDEX_BYTES);
   writeFileSync(join(root, 'index.md'), 'x'.repeat(INDEX_BYTES));
   // 46 * 100 = 4600 against 90 * budget. The equality case is ON the degraded side.
   assert.equal(at(HEALTHY_BUDGET), null, `${INDEX_BYTES} bytes of ${HEALTHY_BUDGET} is under nine tenths`);

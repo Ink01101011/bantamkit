@@ -71,6 +71,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import windows_cannot_construct
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -140,6 +141,30 @@ async def _served_names(command: str, args: list[str]) -> list[str]:
             return sorted(tool.name for tool in (await session.list_tools()).tools)
 
 
+def _require_node_build() -> None:
+    """Refuse a Node-launcher probe when the build it needs is not there, and say which.
+
+    THIS IS NOT IN `_served`, and review found out why: `_served` is also how the PYTHON
+    launcher is asked, and `test_every_stated_tool_count_matches_what_is_served` needs
+    nothing from `runtime-ts/dist/`. With the check inside the helper, a fresh clone or a
+    worktree failed a CPython-only test with a message about a Node artefact it never uses.
+
+    `runtime-ts/dist/` is gitignored build output, so it is absent in a fresh clone, in a
+    worktree, and in any run before `npm run build`. The launcher's own "cannot load the Node
+    build" message goes to STDERR, which `stdio_client` does not surface — what the test
+    reported instead was `MCPError(-32000, 'Connection closed')`, which reads like a protocol
+    fault and sends the reader to the server.
+    """
+    dist = REPO / "runtime-ts" / "dist" / "cli.js"
+    if not dist.exists():
+        raise AssertionError(
+            f"the Node build is absent at {dist}, so the launcher exits before it speaks MCP.\n"
+            "  runtime-ts/dist/ is gitignored build output; a fresh clone, a worktree and a\n"
+            "  job that never runs npm all lack it.\n"
+            "  Fix: npm ci --prefix runtime-ts && npm run build --prefix runtime-ts"
+        )
+
+
 def _served(command: str, args: list[str] | None = None) -> list[str]:
     return asyncio.run(_served_names(command, args or []))
 
@@ -150,8 +175,12 @@ _POSIX_ONLY = pytest.mark.skipif(
     os.name == "nt",
     reason=(
         "PRICED: `tools/bantamkit-mcp` is `#!/bin/sh` and Windows has no POSIX shell "
-        "to run it — RB-P101, an open item with its own job. The Node launcher below "
-        "is asked on every platform."
+        "to run it — RB-P101, an open item with its own job. THE SENTENCE THAT USED TO "
+        "FOLLOW THIS ONE — 'The Node launcher below is asked on every platform' — WAS "
+        "FALSE: `tools/bantamkit-mcp-node` is a POSIX shell script too, and Windows "
+        "answers `OSError: [WinError 193] %1 is not a valid Win32 application`. Measured "
+        "on the first Windows CI run in weeks, 2026-09-05. Both launchers are POSIX-only "
+        "until one of them gets a `.cmd`."
     ),
 )
 
@@ -160,6 +189,7 @@ _POSIX_ONLY = pytest.mark.skipif(
 def test_both_launchers_serve_the_same_tools() -> None:
     """The parity half. A count that drifted on one side only dies here."""
     python_side = _served(str(REPO / "tools" / "bantamkit-mcp"))
+    _require_node_build()
     node_side = _served(str(REPO / "tools" / "bantamkit-mcp-node"))
     assert python_side == node_side, (
         "the two launchers do not serve the same tools\n"
@@ -224,9 +254,23 @@ def test_every_stated_tool_count_matches_what_is_served() -> None:
     )
 
 
+@windows_cannot_construct(
+    because=(
+        "`tools/bantamkit-mcp-node` is a POSIX shell script and Windows cannot execute one "
+        "— measured 2026-09-05, `OSError: [WinError 193] %1 is not a valid Win32 "
+        "application`. Its NAME says 'on every platform' and that was aspiration, not "
+        "measurement: there is no `.cmd` launcher for either runtime yet"
+    ),
+    unmeasured=(
+        "that the Node launcher serves the same tool count on Windows as it does on POSIX. "
+        "Nothing here has ever asked it on Windows, so a Windows-only drift in the served "
+        "surface would be invisible until a `.cmd` launcher exists to ask through"
+    ),
+)
 def test_the_node_launcher_serves_the_same_count_on_every_platform() -> None:
     """The half that runs on Windows too, so the matrix is not blind to the port."""
     if shutil.which("node") is None:  # pragma: no cover - node is a hard dependency here
         pytest.skip("node is not on PATH")
+    _require_node_build()
     names = _served(str(REPO / "tools" / "bantamkit-mcp-node"))
     assert names, "the Node launcher served no tools at all"

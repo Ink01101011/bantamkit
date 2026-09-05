@@ -21,9 +21,9 @@
  * UTF-8 scanner's `reason` strings, quoted-printable's soft breaks, `repr()`.
  */
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { after, test } from 'node:test';
 
 import { checkedInFixtures, writeFixtures, xlsxBytes, zipBytes } from './docread-fixtures.mjs';
@@ -165,7 +165,17 @@ test('every fixture the reference reads or refuses gets the same bytes from the 
     if (DIVERGENT.has(name) || RAISED.has(name)) continue;
     const want = { ...expected.get(name) };
     delete want.fixture;
-    if (want.message) want.message = want.message.replaceAll('{dir}', dir);
+    // `{dir}/` AND NOT `{dir}`, because the separator in the template belongs to the platform
+    // the expectations were RECORDED on. Substituting a Windows temp directory into `{dir}/x`
+    // yields `C:\...\docread-xxx/x` — a mixed path no runtime produces — while the port spells
+    // it the way the OS does. Measured on CI 2026-09-05: expected `...docread-xjwmDz/a-directory`
+    // against actual `...docread-xjwmDz\a-directory`, one character apart.
+    //
+    // Only the separator that follows the placeholder is rewritten. Every `/` in these messages
+    // is a path separator today — checked, zero of the recorded messages contain one for any
+    // other purpose — but a blanket replace would silently corrupt the first message that
+    // carried a mime type, so this stays narrow.
+    if (want.message) want.message = want.message.replaceAll('{dir}/', dir + sep).replaceAll('{dir}', dir);
     assert.deepEqual(dump(path), want, name);
     compared += 1;
   }
@@ -328,16 +338,28 @@ test('under win32 every sentence names the path the way pathlib spells it there'
   // `Path('C:/docs/missing.docx')` prints `C:\docs\missing.docx` on Windows; the sentence
   // is built from `str(Path(p))`. The platform is faked, the filesystem is this one: the
   // stat of `C:\docs\missing.docx` fails here as it would there.
+  const realPlatform = process.platform;
   const platform = Object.getOwnPropertyDescriptor(process, 'platform');
   Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
   try {
     assert.throws(() => sniff('C:/docs/missing.docx'), { message: 'no such file: C:\\docs\\missing.docx' });
     assert.throws(() => extract('C:/docs/missing.docx'), { message: 'no such file: C:\\docs\\missing.docx' });
-    // `Path(p).name`: a file that is literally called `docs\junk.docx` on this filesystem is
-    // `junk.docx` to `PureWindowsPath`, and the refusal names it so. (`docs` is a directory
-    // component there, so the path is written with no separator this platform would split.)
-    const literal = join(dir, 'docs\\junk.docx');
-    writeFileSync(literal, 'PK\x03\x04 not a zip at all');
+    // `Path(p).name`: whatever `docs\junk.docx` denotes, the refusal names `junk.docx` and
+    // not the whole path. WHAT IT DENOTES IS NOT THE SAME EVERYWHERE and the fixture has to
+    // follow: on POSIX a backslash is an ordinary character, so this is ONE file whose name
+    // contains it; on a real Windows filesystem it is `junk.docx` inside a `docs` directory.
+    // Writing the POSIX shape there fails at `writeFileSync` with `ENOENT ... docs\junk.docx`
+    // because the directory does not exist — measured on CI 2026-09-05.
+    //
+    // `process.platform` IS FAKED ABOVE, so the real platform is asked for separately. The
+    // fake decides what the code under test SPELLS; the filesystem decides what can be
+    // written, and only the second one is a question about this machine.
+    if (realPlatform === 'win32') {
+      mkdirSync(join(dir, 'docs'), { recursive: true });
+      writeFileSync(join(dir, 'docs', 'junk.docx'), 'PK\x03\x04 not a zip at all');
+    } else {
+      writeFileSync(join(dir, 'docs\\junk.docx'), 'PK\x03\x04 not a zip at all');
+    }
     const cwd = process.cwd();
     process.chdir(dir);
     try {
@@ -350,11 +372,16 @@ test('under win32 every sentence names the path the way pathlib spells it there'
   } finally {
     Object.defineProperty(process, 'platform', platform);
   }
-  // And back on this platform the same literal name is one component.
+  // And back on this platform, where the same literal is read by THIS platform's rules: one
+  // component on POSIX, two on Windows. The sentence names the last component either way,
+  // which is the property — `Path(p).name` — and the expectation follows the reading rather
+  // than pinning one of them. Measured on CI 2026-09-05: `cannot read junk.docx` there
+  // against `cannot read docs\junk.docx` here, from one unchanged line of code.
+  const named = process.platform === 'win32' ? /^cannot read junk\.docx: / : /^cannot read docs\\junk\.docx: /;
   const cwd = process.cwd();
   process.chdir(dir);
   try {
-    assert.throws(() => extract('docs\\junk.docx'), { message: /^cannot read docs\\junk\.docx: / });
+    assert.throws(() => extract('docs\\junk.docx'), { message: named });
   } finally {
     process.chdir(cwd);
   }

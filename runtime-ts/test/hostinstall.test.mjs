@@ -302,3 +302,64 @@ test('the claude arm reports the host’s own failure', { skip: process.platform
     }
   });
 });
+
+// --- the Windows arm, which is the only code on this branch that was never run -------------
+//
+// `installViaClaudeCli` passes `shell: true` on win32 because an npm-installed `claude` is a
+// `claude.cmd` shim and `spawnSync` cannot launch a batch file without one — it returns
+// ENOENT, which this module would report as "not on PATH", the one message guaranteed to send
+// someone looking in the wrong place.
+//
+// That whole paragraph was REASONED, not measured: it was written on a Mac. The two tests
+// above that exercise the arm are skipped on win32 because their stub is a `#!/bin/sh` script,
+// so a Windows CI run would have skipped exactly the thing in question and reported green.
+// These two are the mirror image — they run ONLY on Windows, against a real `.cmd`.
+
+const winOnly = { skip: process.platform !== 'win32' };
+
+test('a claude.cmd shim is launched rather than reported as missing', winOnly, async () => {
+  await withHome(async (h, root) => {
+    const bin = join(root, 'bin');
+    mkdirSync(bin, { recursive: true });
+    // `@echo off` so the shim's own echo does not become the output under test.
+    writeFileSync(join(bin, 'claude.cmd'), '@echo off\r\nexit /b 0\r\n');
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${bin};${previousPath}`;
+    try {
+      const report = h.install('claude', CMD, ['--flag']);
+      assert.equal(
+        report.split('\n')[1],
+        `  ran    : claude mcp add bantamkit -s user -- ${CMD} --flag`,
+      );
+    } finally {
+      process.env.PATH = previousPath;
+    }
+  });
+});
+
+test('a path with a space survives the shell on Windows', winOnly, async () => {
+  // The quoting is the half most likely to be wrong: `cmd.exe` scans `"` to toggle its own
+  // quoting state while the child parses argv by C-runtime rules, and those are two different
+  // sets of rules. `C:\Program Files\...` is the normal case on Windows, not an edge one, so
+  // if the escaping is wrong this is where it shows.
+  await withHome(async (h, root) => {
+    const bin = join(root, 'bin');
+    mkdirSync(bin, { recursive: true });
+    // The shim writes its own arguments out, so the assertion is about what ARRIVED, not just
+    // about the exit code — a shell that mangled the quoting would still exit 0.
+    writeFileSync(join(bin, 'claude.cmd'), `@echo off\r\necho %* > "${join(root, 'seen.txt')}"\r\nexit /b 0\r\n`);
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${bin};${previousPath}`;
+    const spaced = 'C:\\Program Files\\bantamkit\\bantamkit-mcp.exe';
+    try {
+      h.install('claude', spaced, []);
+      const seen = readFileSync(join(root, 'seen.txt'), 'utf8');
+      assert.ok(
+        seen.includes(spaced),
+        `the shim received ${JSON.stringify(seen)}, which does not contain the spaced path`,
+      );
+    } finally {
+      process.env.PATH = previousPath;
+    }
+  });
+});

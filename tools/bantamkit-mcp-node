@@ -114,7 +114,7 @@ if [ -z "$node" ]; then
     echo "              node on PATH" >&2
     echo "              /opt/homebrew/bin/node" >&2
     echo "              /usr/local/bin/node" >&2
-    echo "The build needs Node >=18. If Node is installed under a version manager whose" >&2
+    echo "The build needs Node >=20. If Node is installed under a version manager whose" >&2
     echo "shims are not on this process's PATH, set BANTAMKIT_NODE to the interpreter in" >&2
     echo "the MCP registration's env." >&2
     exit 127

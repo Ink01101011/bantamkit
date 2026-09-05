@@ -233,7 +233,9 @@ test('sync-assets never leaves the vendored pack absent while it runs', async ()
   const vendored = join(packageRoot, 'assets');
   const witness = join(vendored, 'contracts', 'default.yaml');
   const before = read(witness);
-  const verdict = join(mkdtempSync(join(realpathSync.native(tmpdir()), 'l5-')), 'verdict.json');
+  const watchBed = mkdtempSync(join(realpathSync.native(tmpdir()), 'l5-'));
+  const verdict = join(watchBed, 'verdict.json');
+  const stop = join(watchBed, 'stop');
 
   // The watcher is a CHILD PROCESS and not a promise in this one. `spawnSync` blocks the
   // event loop for its whole duration, so an in-process poll — however it yields — cannot
@@ -243,13 +245,25 @@ test('sync-assets never leaves the vendored pack absent while it runs', async ()
     process.execPath,
     [
       '-e',
-      `const fs=require('fs');const [w,v]=process.argv.slice(1);let gone=0,ok=0;` +
-        `const end=Date.now()+4000;` +
-        `process.on('SIGTERM',()=>{fs.writeFileSync(v,JSON.stringify({gone,ok}));process.exit(0)});` +
-        `while(Date.now()<end){try{fs.readFileSync(w);ok++}catch{gone++}}` +
-        `fs.writeFileSync(v,JSON.stringify({gone,ok}));`,
+      // `short` is the half a readability counter cannot see. `copyFileSync` opens the
+      // destination with O_TRUNC and streams into it, so a reader can succeed and still get a
+      // PARTIAL file — which counts as `ok` to a watcher that only asks whether the read threw.
+      // The file is byte-identical before and after, so any read of a different length is a
+      // view of the copy in progress and nothing else.
+      // A STOP FILE, NOT A SIGNAL. `child.kill('SIGTERM')` on Windows is `TerminateProcess`:
+      // there is no SIGTERM to handle, the `process.on('SIGTERM')` arm never runs, and the
+      // verdict is never written — which is precisely how this test failed there, with
+      // `ENOENT ... verdict.json` and nothing said about the pack at all. Measured on CI
+      // 2026-09-05. A file both sides can see ends the watcher the same way everywhere.
+      `const fs=require('fs');const [w,v,s,n]=process.argv.slice(1);const want=Number(n);` +
+        `let gone=0,ok=0,short=0;const end=Date.now()+30000;` +
+        `while(Date.now()<end&&!fs.existsSync(s)){` +
+        `try{const b=fs.readFileSync(w);if(b.length===want)ok++;else short++}catch{gone++}}` +
+        `fs.writeFileSync(v,JSON.stringify({gone,ok,short}));`,
       witness,
       verdict,
+      stop,
+      String(before.length),
     ],
     { stdio: 'ignore' },
   );
@@ -260,12 +274,26 @@ test('sync-assets never leaves the vendored pack absent while it runs', async ()
     encoding: 'utf8',
   });
   await new Promise((r) => setTimeout(r, 250)); // and let it see the aftermath
-  watcher.kill('SIGTERM');
+  write(stop, '');
   await new Promise((r) => watcher.on('exit', r));
   const seen = JSON.parse(read(verdict, 'utf8'));
 
   assert.equal(run.status, 0, run.stderr);
   assert.ok(seen.ok > 0, 'the watcher has to have actually looked');
   assert.equal(seen.gone, 0, `the pack was unreadable ${seen.gone} times while sync-assets ran`);
+  // WHAT THIS COUNTER PROVES TODAY, AND IT IS LESS THAN THE SENTENCE THAT USED TO BE HERE.
+  // The old comment credited `short` to "a temp file and a rename". There is no rename — it
+  // was written, measured EPERM on Windows, and removed (`sync-assets.mjs` says why). And in
+  // the steady state this assertion cannot fail at all: `sameBytes` skips a file whose
+  // destination already holds the source's bytes, and the vendored witness always does after
+  // a build, so `copyFileSync` never opens it and the watcher can never catch a prefix.
+  // Measured 2026-09-05: the witness's mtime is unchanged across a full `sync-assets.mjs`.
+  //
+  // It is kept because it is not vacuous where it matters — on the FIRST sync after the
+  // checkout's assets change, which is the only moment the prefix window is open at all, and
+  // the moment a developer running this suite mid-edit is actually in. `gone` carries the L5
+  // property proper and has the same shape: both are red against the pre-fix script, which is
+  // what this case was written against.
+  assert.equal(seen.short, 0, `the witness was read half-written ${seen.short} times`);
   assert.deepEqual(read(witness), before, 'and it is byte-identical afterwards');
 });

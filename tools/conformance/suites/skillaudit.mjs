@@ -355,14 +355,42 @@ export async function run(ctx) {
   const pyRuled = ctx.runPython(REF, { op: 'phrases', texts: [...ruledTexts, ...twinTexts].map(b64) })
     .results.map((r) => r.map(unb64));
 
+  // THE DISCRIMINATOR IS THE TWO TABLES, NOT THE TWO ANSWERS.
+  //
+  // Asking "did the answers differ, and if so rule it" would be a gate that can never go red:
+  // agree and it compares, differ and it rules. So each side is asked what ITS OWN Unicode
+  // table says about U+1C89 — a fact about the runtime, not about `phrases` — and the
+  // expectation for each side is derived from that. `phrases` can still be wrong while the
+  // tables agree, and this catches it.
+  //
+  // WHY THIS IS NOT DEFENSIVE PROGRAMMING. Both directions have been MEASURED, 2026-09-05:
+  // node 18 carries ICU 15.1 and AGREES with CPython 3.12, which turned the ruling stale in
+  // CI while every laptop on node 22 stayed green; and CPython 3.14 carries Unicode 16.0 and
+  // agrees with a modern Node, which will do the same from the reference's side. The floor
+  // moved to node 20 for the first of those. This is the fix for both.
+  const pyUnicode = ctx.runPython(REF, { op: 'unicode' });
+  const nodeLetter1C89 = /\p{L}/u.test('\u1C89');
+  const tablesAgree = pyUnicode.letter_1c89 === nodeLetter1C89;
+  notes.push(
+    `skillaudit: U+1C89 is a letter to CPython ${pyUnicode.unidata_version}: ` +
+      `${pyUnicode.letter_1c89}; to Node ${process.versions.unicode}: ${nodeLetter1C89}. ` +
+      `The two tables ${tablesAgree ? 'AGREE, so the U+1C89 cases are compared like any other' : 'DIFFER, so those cases are ruled'}.`,
+  );
+
   for (let i = 0; i < UNICODE_VERSION_TEXTS.length; i += 1) {
     const [label, text, wantPython, wantNode] = UNICODE_VERSION_TEXTS[i];
+    // Each side is required to answer as ITS OWN table dictates: the `wantNode` shape when it
+    // calls U+1C89 a letter, the `wantPython` shape when it does not.
+    const expectPy = pyUnicode.letter_1c89 ? wantNode : wantPython;
+    const expectNode = nodeLetter1C89 ? wantNode : wantPython;
     cases.push({
-      name: `phrases: ${label} over U+1C89: the Unicode version is RULED`,
+      name: tablesAgree
+        ? `phrases: ${label} over U+1C89 (NOT ruled: both tables agree at ${pyUnicode.unidata_version})`
+        : `phrases: ${label} over U+1C89: the Unicode version is RULED`,
       kind: 'json',
       expected: pyRuled[i],
       actual: skillaudit.phrases(text),
-      ruling: UNICODE_VERSION_RULING,
+      ...(tablesAgree ? {} : { ruling: UNICODE_VERSION_RULING }),
     });
     // THE COMPANION. A ruling only proves the two answers differ; this one says what each
     // answer IS, as a literal, so a reference that started calling U+1C89 a letter (a CPython
@@ -372,7 +400,7 @@ export async function run(ctx) {
     cases.push({
       name: `phrases: ${label} over U+1C89: the answer each side is required to carry`,
       kind: 'json',
-      expected: { python: wantPython, node: wantNode },
+      expected: { python: expectPy, node: expectNode },
       actual: { python: pyRuled[i], node: skillaudit.phrases(text) },
     });
   }

@@ -1,0 +1,38 @@
+{
+  "runtime-py/tests/test_docread.py": [
+    "a #!/bin/sh fixture is executed"
+  ],
+  "runtime-py/tests/test_eventlog.py": [
+    "chmod removes a permission"
+  ],
+  "runtime-py/tests/test_mcpdrift.py": [
+    "a #!/bin/sh fixture is executed"
+  ],
+  "runtime-py/tests/test_memory.py": [
+    "chmod removes a permission"
+  ],
+  "runtime-ts/test/checkschema.test.mjs": [
+    "a filename literal contains a backslash"
+  ],
+  "runtime-ts/test/eventlog.test.mjs": [
+    "a child is controlled with a signal"
+  ],
+  "runtime-ts/test/launcher.test.mjs": [
+    "a child is controlled with a signal"
+  ],
+  "runtime-ts/test/layers.test.mjs": [
+    "chmod removes a permission"
+  ],
+  "runtime-ts/test/packaging.test.mjs": [
+    "a child is controlled with a signal"
+  ],
+  "runtime-ts/test/server.test.mjs": [
+    "a child is controlled with a signal"
+  ],
+  "runtime-ts/test/shiftwork.test.mjs": [
+    "chmod removes a permission"
+  ],
+  "runtime-ts/test/store.test.mjs": [
+    "chmod removes a permission"
+  ]
+}
