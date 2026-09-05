@@ -131,12 +131,29 @@ jobs:
     # multiply to eight cells to measure four things, and would tie a Node regression to a
     # Python matrix that has nothing to say about it. Two jobs, four cells each.
     #
-    # WHY THE LOW CELL IS 18 AND NOT SOMETHING COMFORTABLE. `runtime-ts/package.json`
-    # declares `engines.node: ">=18"`. That is a promise made to a teammate whose `node -v`
-    # nobody here controls, and until this job existed it had never been tested by anything:
-    # every number in job38 was taken on v25.2.1. The floor is the thing worth measuring, so
-    # the floor is what the matrix runs. 22 is the upper cell because it is the current LTS
-    # a team is most likely to actually be on.
+    # WHY THE LOW CELL IS THE FLOOR, AND WHY THE FLOOR MOVED FROM 18 TO 20.
+    # `runtime-ts/package.json` declares `engines.node`. That is a promise made to a teammate
+    # whose `node -v` nobody here controls, so the floor is the thing worth measuring and the
+    # floor is what the matrix runs. 22 is the upper cell because it is the current LTS a team
+    # is most likely to actually be on.
+    #
+    # THE FLOOR WAS 18 UNTIL THE FIRST CI RUN THAT COULD READ IT, and 18 turned out to be a
+    # promise the conformance suite cannot keep. MEASURED 2026-09-05, all four on one machine:
+    #
+    #   node 18.20.8  ICU 15.1  U+1C89 is a letter: false
+    #   node 20.20.2  ICU 17.0  U+1C89 is a letter: true
+    #   node 22.22.3  ICU 17.0  U+1C89 is a letter: true
+    #   CPython       15.0.0    'Ᲊ'.isalpha():      False
+    #
+    # `skillaudit`'s four U+1C89 cases are RULED DIFFERENT — the two runtimes read different
+    # Unicode versions and that is written down in docs/porting.md. On node 18 they AGREE, so
+    # the ruling goes stale and conformance fails: `PASS: 6196 cases` on node 22 and
+    # `FAIL: 6196 cases` on node 18, same commit, same run.
+    #
+    # Supporting 18 would mean either deleting a ruling that is true on every other supported
+    # version, or making the case conditional on an ICU version the package does not control.
+    # Raising the floor is the honest option: the range we promise is the range the gate can
+    # hold. 18 reached end-of-life in April 2025.
     #
     # WHY THERE IS A PYTHON HERE. The gate is `npm test` AND the conformance harness, and
     # the harness produces its REFERENCE side by shelling out to CPython (see the header of
@@ -207,10 +224,12 @@ jobs:
     # the same arm behind a flavour-explicit function is a one-second one. Put new Windows
     # behaviour on that side of the line, and give it a case that runs everywhere.
     #
-    # Both Node versions give the IDENTICAL result on each OS, which is the finding about
-    # Node: nothing here is version-dependent, and `engines.node: ">=18"` survived contact
-    # with 18 (see the fixture note in runtime-ts/test/assets.test.mjs for the one thing
-    # that did not, and it was the fixture).
+    # THAT CLAIM IS NOW WRONG AND IS KEPT AS THE RECORD OF WHY THE FLOOR MOVED. It read:
+    # "Both Node versions give the IDENTICAL result on each OS ... nothing here is
+    # version-dependent, and `engines.node: \">=18\"` survived contact with 18". Both halves
+    # were false and neither could be seen until CI ran again: conformance differs between 18
+    # and 22 over U+1C89, and `npm test` differed too — node 22 detects ESM syntax where 18
+    # does not, which hid a fixture missing its `"type": "module"`. The floor is 20.
     runs-on: ${{ matrix.os }}
     # The deadline, for the reason spelled out on the `test` job — and this is the job the
     # measured hang was actually in. The conformance harness spawns a reference child per
@@ -223,7 +242,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        node-version: ["18", "22"]
+        node-version: ["20", "22"]
     steps:
       - uses: actions/checkout@v4
         # Depth 1 on purpose, unlike the job above. That job needs history because the
