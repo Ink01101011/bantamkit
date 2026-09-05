@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "bantamkit"
 dynamic = ["version"]
 description = "bantamweight tooling — harness primitives that lift small-model agents"
+readme = "README.md"
 requires-python = ">=3.11"
 # U9, 2026-08-24. THE SPELLING IS MEASURED, not copied from a changelog. `runtime-ts/
 # package.json` has declared `"license": "MIT"` since it existed, against a `LICENSE`

@@ -9,6 +9,33 @@ runaway loops — are absorbed by code rather than by asking the model to try
 harder. A bundled eval suite quantifies the uplift: bare model vs model +
 toolkit on the same task suite, with token accounting.
 
+## Install
+
+**As an MCP server, without cloning anything.** There are two independent
+implementations of the same surface; install whichever your host makes easy, and
+they share a memory store on disk either way.
+
+```bash
+npx -y bantamkit-mcp --assets-root              # Node, no Python required
+pipx run --spec "bantamkit[mcp]" bantamkit-mcp --assets-root   # Python
+```
+
+As host configuration:
+
+```json
+{"mcpServers": {"bantamkit": {"command": "npx", "args": ["-y", "bantamkit-mcp"]}}}
+```
+
+**As a Python library**, which is what the rest of this page is about:
+
+```bash
+pip install bantamkit
+```
+
+Full notes, including the editable install used for development and how the two
+runtimes differ: [docs/install.md](docs/install.md) and
+[docs/porting.md](docs/porting.md).
+
 ## Minimal composition
 
 ```python
