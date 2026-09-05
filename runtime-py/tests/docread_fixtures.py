@@ -48,12 +48,26 @@ WORD_NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main
 _EPOCH = (1980, 1, 1, 0, 0, 0)
 
 
+# `ZipInfo.create_system` is 3 (Unix) on POSIX and 0 (FAT) on Windows, and it lands in the
+# central directory as one byte the checked-in fixtures already carry. The tracked files were
+# built on POSIX, so a Windows build of the same members differed from them at byte 815 —
+# `assert path.read_bytes() == (DATA / path.name).read_bytes()` measured it on CI 2026-09-05
+# as `b'\x00' != b'\x03'`. It is pinned rather than followed, because the docstring's claim
+# is the point: the bytes must be a function of the members, and the platform is not a member.
+_CREATE_SYSTEM_UNIX = 3
+
+
 def _zip(path: Path, members: list[tuple[str, str]]) -> Path:
-    """A zip whose bytes are a function of `members` alone: STORED, fixed timestamp."""
+    """A zip whose bytes are a function of `members` alone: STORED, fixed timestamp.
+
+    "Alone" is enforced, not hoped: the timestamp, the compression and the creating system
+    are all pinned, because each of them otherwise leaks the machine into a tracked file.
+    """
     with zipfile.ZipFile(path, "w") as z:
         for name, text in members:
             info = zipfile.ZipInfo(name, date_time=_EPOCH)
             info.compress_type = zipfile.ZIP_STORED
+            info.create_system = _CREATE_SYSTEM_UNIX
             z.writestr(info, text.encode("utf-8"))
     return path
 

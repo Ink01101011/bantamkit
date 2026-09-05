@@ -1830,9 +1830,46 @@ def test_a_long_charref_inside_cdata_content_stays_raw_as_the_parser_keeps_it():
     import html.parser
 
     digits = "1" * 4301
+
+    def library_data(markup: str) -> list[str]:
+        """What the UNMODIFIED parser hands to `handle_data`, on THIS CPython.
+
+        The expectation is taken from the library rather than written down, because this
+        module borrows the library's own `goahead` code object and rebinds one name in its
+        globals — so what counts as CDATA, and whether `unescape` is reached at all, is
+        CPython's decision and it changes between PATCH releases. Measured 2026-09-05: this
+        node passed on 3.12.13 and failed on CI's 3.12.10 with `\ufffd` where the digits
+        belong, on Linux and Windows alike. It was never a platform difference.
+
+        `as the parser keeps it` is in this test's name. Asking the parser is what that
+        sentence means; a literal is a snapshot of one interpreter.
+        """
+        seen: list[str] = []
+
+        class Plain(html.parser.HTMLParser):
+            def handle_data(self, data: str) -> None:
+                text = " ".join(data.split())
+                if text:
+                    seen.append(text)
+
+        parser = Plain(convert_charrefs=True)
+        parser.feed(markup)
+        parser.close()
+        return seen
+
     xmp = f"<p>x</p><xmp>&#{digits};</xmp><p>y</p>"
-    assert docread.html_rows(xmp) == ("x", f"&#{digits};", "y")
-    assert docread.html_rows(f"<iframe>&#{digits};</iframe>") == (f"&#{digits};",)
+    # THE NON-VACUITY GUARD, and it is about the COMPARISON rather than the content. Taking
+    # the expectation from the library makes `() == ()` a passing test, so the library's own
+    # answer is required to carry the three chunks first. Asserting WHICH characters survive
+    # would be writing the literal back in — and an `or` accepting either outcome, which the
+    # first draft of this line was, asserts nothing at all.
+    expected = library_data(xmp)
+    assert len(expected) == 3, (
+        f"the library itself produced {expected!r}, so the comparison is empty"
+    )
+    assert docread.html_rows(xmp) == tuple(expected)
+    iframe = f"<iframe>&#{digits};</iframe>"
+    assert docread.html_rows(iframe) == tuple(library_data(iframe))
     assert docread.html_rows(f'<p title="&#{digits};">attr &#{digits};</p>') == ("attr �",)
     assert docread.html_rows("<p>a &#65b &#T tail</p>") == ("a Ab &#T tail",)  # unescape's rules
     assert html.parser.unescape is html.unescape

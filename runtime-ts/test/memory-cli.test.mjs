@@ -69,18 +69,37 @@ function seed() {
   return root;
 }
 
+/**
+ * One byte per index LINE, on Windows only, and every number below is derived from it.
+ *
+ * The store's writer translates LF to CRLF on Windows (`docs/porting.md`, N11) while the
+ * budget counts the LF text, so a four-line index is 369 bytes on POSIX and 373 there. Every
+ * literal in this test was a POSIX measurement, and three of them failed by exactly the
+ * number of lines they described — measured on CI 2026-09-05, `373 !== 369`.
+ *
+ * The fact FILES are written by this test with `writeFileSync`, which translates nothing, so
+ * only the index moves. `target` is `budget - reserve` and `headroom` is `budget - index`,
+ * which is why they move with it and the budget does not.
+ */
+const EOL = process.platform === 'win32' ? 1 : 0;
+
 test('the five subcommands answer, in sequence, exactly as the reference does', () => {
   const store = seed();
+  const index4 = 369 + 4 * EOL; // four facts, one line each
+  const index3 = 276 + 3 * EOL; // after the stalest is archived
+  const alpha = 93 + EOL; // the line that leaves
+  const reserve = 94 + EOL; // the LARGEST line kept, `charlie-fact`
+  const target = 400 - reserve;
   const at = (...argv) => run([...argv, '--store', store, '--budget', '400']);
 
   assert.deepEqual(at('status'), {
-    stdout: `store: ${store}\nfacts: 4\nindex: 369 bytes\nbudget: 400\nheadroom: 31\narchived: 0\n`,
+    stdout: `store: ${store}\nfacts: 4\nindex: ${index4} bytes\nbudget: 400\nheadroom: ${400 - index4}\narchived: 0\n`,
     stderr: '',
     exit: 0,
   });
 
   assert.deepEqual(at('lint'), {
-    stdout: 'lint: ok — 4 facts, 369/400 bytes\n',
+    stdout: `lint: ok — 4 facts, ${index4}/400 bytes\n`,
     stderr: '',
     exit: 0,
   });
@@ -96,9 +115,9 @@ test('the five subcommands answer, in sequence, exactly as the reference does', 
   assert.deepEqual(at('compact'), {
     stdout:
       'compacted 1 fact(s)\n' +
-      'index: 369 -> 276 bytes (budget 400, target 306, reserve 94, headroom 124)\n' +
+      `index: ${index4} -> ${index3} bytes (budget 400, target ${target}, reserve ${reserve}, headroom ${400 - index3})\n` +
       `archived -> ${join(store, 'archive')}\n` +
-      '  alpha-fact (project, 93 bytes)\n' +
+      `  alpha-fact (project, ${alpha} bytes)\n` +
       `restore one with: bantamkit-memory restore <name> --store ${store}\n`,
     stderr: '',
     exit: 0,
@@ -111,7 +130,7 @@ test('the five subcommands answer, in sequence, exactly as the reference does', 
   });
 
   assert.deepEqual(at('status'), {
-    stdout: `store: ${store}\nfacts: 3\nindex: 276 bytes\nbudget: 400\nheadroom: 124\narchived: 1\n`,
+    stdout: `store: ${store}\nfacts: 3\nindex: ${index3} bytes\nbudget: 400\nheadroom: ${400 - index3}\narchived: 1\n`,
     stderr: '',
     exit: 0,
   });
@@ -119,7 +138,7 @@ test('the five subcommands answer, in sequence, exactly as the reference does', 
   // Compaction is a MOVE and this is the door back, so the fact comes home byte for byte and
   // the index returns to the number it had before.
   assert.deepEqual(at('restore', 'alpha-fact'), {
-    stdout: "restored 'alpha-fact' — index now 369/400 bytes\n",
+    stdout: `restored 'alpha-fact' — index now ${index4}/400 bytes\n`,
     stderr: '',
     exit: 0,
   });
@@ -128,8 +147,10 @@ test('the five subcommands answer, in sequence, exactly as the reference does', 
     'name: alpha-fact',
   );
   // The BYTES, not the characters: each index line carries a U+2014, and the byte length is
-  // what the budget is measured against.
-  assert.equal(readFileSync(join(store, 'index.md')).length, 369);
+  // what the budget is measured against. `index4` and not `369` because the file on disk
+  // carries CRLF on Windows and the reported number follows it — the status line above says
+  // the same figure, so a literal here would contradict the assertion twenty lines up.
+  assert.equal(readFileSync(join(store, 'index.md')).length, index4);
 
   // A second call archives nothing: `reserve` is recomputed from the survivors, so compaction
   // is idempotent rather than a ratchet.
@@ -145,7 +166,7 @@ test('the three operational failures exit 1 with the reference sentence on stder
   assert.deepEqual(run(['lint', '--store', store, '--budget', '100']), {
     stdout: '',
     stderr:
-      'lint: FAIL — index is 369 bytes, budget is 100\n' +
+      `lint: FAIL — index is ${369 + 4 * EOL} bytes, budget is 100\n` +
       `  try: bantamkit-memory compact --store ${store} --budget 100\n`,
     exit: 1,
   });
