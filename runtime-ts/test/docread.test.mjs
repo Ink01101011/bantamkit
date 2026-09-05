@@ -372,11 +372,16 @@ test('under win32 every sentence names the path the way pathlib spells it there'
   } finally {
     Object.defineProperty(process, 'platform', platform);
   }
-  // And back on this platform the same literal name is one component.
+  // And back on this platform, where the same literal is read by THIS platform's rules: one
+  // component on POSIX, two on Windows. The sentence names the last component either way,
+  // which is the property — `Path(p).name` — and the expectation follows the reading rather
+  // than pinning one of them. Measured on CI 2026-09-05: `cannot read junk.docx` there
+  // against `cannot read docs\junk.docx` here, from one unchanged line of code.
+  const named = process.platform === 'win32' ? /^cannot read junk\.docx: / : /^cannot read docs\\junk\.docx: /;
   const cwd = process.cwd();
   process.chdir(dir);
   try {
-    assert.throws(() => extract('docs\\junk.docx'), { message: /^cannot read docs\\junk\.docx: / });
+    assert.throws(() => extract('docs\\junk.docx'), { message: named });
   } finally {
     process.chdir(cwd);
   }

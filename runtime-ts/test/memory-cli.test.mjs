@@ -153,11 +153,18 @@ test('the five subcommands answer, in sequence, exactly as the reference does', 
     readFileSync(join(store, 'facts', 'alpha-fact.md'), 'utf8').split('\n')[1],
     'name: alpha-fact',
   );
-  // The BYTES, not the characters: each index line carries a U+2014, and the byte length is
-  // what the budget is measured against. `index4` and not `369` because the file on disk
-  // carries CRLF on Windows and the reported number follows it — the status line above says
-  // the same figure, so a literal here would contradict the assertion twenty lines up.
-  assert.equal(readFileSync(join(store, 'index.md')).length, index4);
+  // The BYTES, not the characters: each index line carries a U+2014, which is three of them.
+  //
+  // THE FILE AND THE REPORT ARE NOT THE SAME NUMBER, and the old comment here said they
+  // were. `status` counts the LF text — 369 on every platform — while the file on disk
+  // carries CRLF on Windows and is 373. Measured on CI 2026-09-05 as `373 !== 369` at this
+  // line, after an earlier repair had already been wrong in the other direction.
+  //
+  // What holds everywhere is the RELATION: normalise the line endings and the file is the
+  // number the report gives. That is asserted instead of either figure, so neither platform
+  // has to be predicted and the U+2014 is still counted in bytes.
+  const onDisk = readFileSync(join(store, 'index.md')).toString('utf8');
+  assert.equal(Buffer.byteLength(onDisk.replaceAll('\r\n', '\n'), 'utf8'), index4);
 
   // A second call archives nothing: `reserve` is recomputed from the survivors, so compaction
   // is idempotent rather than a ratchet.

@@ -41,7 +41,7 @@
  * cannot reach above the package directory any more than hatchling can. So the licence
  * is vendored here, by the same two rules and in the same pass.
  */
-import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -70,39 +70,28 @@ function entriesUnder(dir) {
 }
 
 /**
- * Copy one file so a concurrent reader sees ALL of the old bytes or ALL of the new ones.
+ * WHY THIS IS `copyFileSync` AND NOT A TEMP FILE PLUS A RENAME.
  *
- * `cpSync` opens the destination with O_TRUNC and streams into it, so a reader that opens the
- * same path mid-copy gets a short or empty file. Removing the rm-then-copy window left THIS
- * one, and it is narrower rather than gone: the whole suite reads this directory while
- * `prepack` rewrites it. Measured 2026-09-05 — `sync-assets never leaves the vendored pack
- * absent while it runs` reports `the pack was unreadable 1 times` on node 18 and on Windows,
- * and passes on node 22, which is a timing difference and not a platform one.
+ * The measured defect — a reader meeting a MISSING file while the pack is vendored — is fixed
+ * by the per-file walk below, not by atomicity: replacing the bulk
+ * `cpSync(checkout, vendored, {recursive, force})` takes the concurrency case from 3/3 red to
+ * 5/5 green on node 18, and swapping this call for an atomic rename changes nothing there.
  *
- * A temp file plus `renameSync` is atomic within a filesystem, and the temp name carries the
- * pid so two `prepack`s cannot collide on it.
+ * An atomic rename WAS written, on the reasoning that `copyFileSync` opens with O_TRUNC and a
+ * reader can therefore see a prefix. The file said in as many words that this was reasoning
+ * rather than a measurement, and that the `short` counter in `packaging.test.mjs` was the
+ * thing that could turn it into one. The measurement arrived and went the other way:
  *
- * HONESTLY: THE MEASURED DEFECT IS FIXED BY THE PER-FILE LOOP, NOT BY THIS. Replacing the
- * bulk `cpSync(checkout, vendored, {recursive, force})` with a walk is what takes the failure
- * from 3/3 red to 5/5 green on node 18. Swapping this function for a plain `copyFileSync`
- * leaves the test green 5/5 even after the watcher was taught to catch a partial read —
- * macOS's `copyFileSync` can clone the file, and a clone has no window to observe.
+ *   Error: EPERM: operation not permitted, rename
+ *       at copyFileAtomically (sync-assets.mjs:99)
  *
- * It is kept because the window is real where the copy is a read/write loop, which is Linux
- * and Windows, and CI runs both. That is REASONING, not a measurement taken here, and the
- * `short` counter in `packaging.test.mjs` is the thing that could turn it into one.
+ * Windows refuses to rename over a file another process has open, and the watcher in that
+ * test holds exactly that file open — which is the scenario this script exists to survive. So
+ * the atomic version does not merely fail to help there; it is the thing that breaks.
+ *
+ * The prefix window stays real and stays unclosed. `short` still counts it, so the day it is
+ * observed there will be a measurement to design against rather than a paragraph.
  */
-function copyFileAtomically(from, to) {
-  const tmp = `${to}.sync-${process.pid}`;
-  try {
-    copyFileSync(from, tmp);
-    renameSync(tmp, to);
-  } catch (e) {
-    rmSync(tmp, { force: true });
-    throw e;
-  }
-}
-
 if (populated(checkout)) {
   // Overwrite first, so no reader ever meets a missing file...
   const stale = new Set(entriesUnder(vendored));
@@ -112,7 +101,7 @@ if (populated(checkout)) {
     if (statSync(source).isDirectory()) mkdirSync(target, { recursive: true });
     else {
       mkdirSync(dirname(target), { recursive: true });
-      copyFileAtomically(source, target);
+      copyFileSync(source, target);
     }
   }
   for (const kept of entriesUnder(checkout)) stale.delete(kept);

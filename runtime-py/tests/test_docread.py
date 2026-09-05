@@ -1858,18 +1858,39 @@ def test_a_long_charref_inside_cdata_content_stays_raw_as_the_parser_keeps_it():
         return seen
 
     xmp = f"<p>x</p><xmp>&#{digits};</xmp><p>y</p>"
-    # THE NON-VACUITY GUARD, and it is about the COMPARISON rather than the content. Taking
-    # the expectation from the library makes `() == ()` a passing test, so the library's own
-    # answer is required to carry the three chunks first. Asserting WHICH characters survive
-    # would be writing the literal back in — and an `or` accepting either outcome, which the
-    # first draft of this line was, asserts nothing at all.
-    expected = library_data(xmp)
-    assert len(expected) == 3, (
-        f"the library itself produced {expected!r}, so the comparison is empty"
-    )
-    assert docread.html_rows(xmp) == tuple(expected)
+
+    # THE PROPERTY IS THAT THIS MODULE IS BOUNDED WHERE THE LIBRARY IS NOT, and on some
+    # interpreters that is the only thing left to assert.
+    #
+    # CPython refuses to build an int from more than 4300 digits — the 2022 DoS mitigation —
+    # and `html.unescape` does exactly that for `&#<digits>;`. Whether the plain parser
+    # REACHES that call for CDATA content changed inside 3.12: on 3.12.13 it does not and the
+    # digits come through untouched; on CI's 3.12.10 it does, and an unmodified `HTMLParser`
+    # raises `ValueError: Exceeds the limit (4300 digits)` — measured 2026-09-05.
+    #
+    # `_cap_charrefs` exists for precisely that, so where the library raises, this module must
+    # answer. Both arms are asserted rather than one being skipped, because "it did not raise"
+    # is the whole claim on the interpreter that made this test fail.
+    try:
+        expected = library_data(xmp)
+    except ValueError as exc:  # the library is unbounded here; this module is not
+        assert "4300 digits" in str(exc)
+        rows = docread.html_rows(xmp)
+        assert rows[0] == "x" and rows[-1] == "y", rows
+        assert len(rows) == 3, rows
+    else:
+        # Taking the expectation from the library makes `() == ()` a passing test, so the
+        # library's own answer has to carry the three chunks before it is worth comparing.
+        assert len(expected) == 3, (
+            f"the library itself produced {expected!r}, so the comparison is empty"
+        )
+        assert docread.html_rows(xmp) == tuple(expected)
+
     iframe = f"<iframe>&#{digits};</iframe>"
-    assert docread.html_rows(iframe) == tuple(library_data(iframe))
+    try:
+        assert docread.html_rows(iframe) == tuple(library_data(iframe))
+    except ValueError:
+        assert len(docread.html_rows(iframe)) == 1
     assert docread.html_rows(f'<p title="&#{digits};">attr &#{digits};</p>') == ("attr �",)
     assert docread.html_rows("<p>a &#65b &#T tail</p>") == ("a Ab &#T tail",)  # unescape's rules
     assert html.parser.unescape is html.unescape
