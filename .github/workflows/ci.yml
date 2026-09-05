@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  # ON DEMAND. The workflow spent 2026-09-04 to 2026-09-05 in `disabled_manually` and
+  # nothing said so: pushes to main created no run at all, which reads exactly like a repo
+  # with no CI rather than one whose CI is switched off. Without a manual trigger the only
+  # way to ask "does CI work now" is to push a commit, so the question costs a commit every
+  # time. `gh workflow run ci.yml` answers it for free.
+  workflow_dispatch:
 
 permissions:
   contents: read
