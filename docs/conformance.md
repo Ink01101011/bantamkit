@@ -107,6 +107,44 @@ that may not resolve. CI has no `.venv` at all, so the workflow writes
 `BANTAMKIT_CONFORMANCE_PYTHON=$(python -c 'import sys; print(sys.executable)')` into
 `GITHUB_ENV` before the step.
 
+## A reference child that stops answering
+
+Each reference script is bounded at **600 s**, killed with `SIGKILL`, and reported as its
+own failure naming the script, the interpreter, and whether the child had written anything:
+
+```
+conformance: reference script did not finish within 600s and was killed
+  script : .../tools/conformance/ref/store_ref.py
+  python : .../.venv/bin/python
+  stdout : nothing at all
+  stderr : nothing at all
+```
+
+The bound is measured, not chosen. Instrumenting `runPython` over a full `--all` run timed
+355 calls; the slowest was `store_ref.py` at **50,139 ms** and everything else finished under
+1.5 s. 600 s is twelve times the slowest honest call, which leaves an order of magnitude for a
+Windows runner and still lands far short of anything a working call reaches.
+
+It exists because `spawnSync` waits forever. On 2026-09-05 a full run sat for **1h09m** with a
+`shiftwork_ref.py` child stuck and produced no output at all — no case, no note, no error — and
+ended only because it was killed by hand.
+
+`.github/workflows/ci.yml` also caps each job at 30 minutes, and the ordering is deliberate:
+the job cap kills the runner and reports "took too long", which names nothing, so this bound is
+set to fire first and say which script it was.
+
+**Demonstrating the arm** — `BANTAMKIT_CONFORMANCE_REF_TIMEOUT_MS` overrides the bound so the
+failure can be watched rather than asserted:
+
+```
+BANTAMKIT_CONFORMANCE_REF_TIMEOUT_MS=1 node tools/conformance/run.mjs --suite validate
+```
+
+exits 2 and names `validate_ref.py`. Under an override the message says so and prints the
+default instead of claiming the twelve-times-headroom sentence, which would be false. The
+override is a demonstration seam, not a knob for slow machines: if a real call needs more than
+ten minutes, the call is the thing to look at.
+
 ## Reading the output
 
 ```
