@@ -38,6 +38,49 @@ than reading stdin, but that is version-dependent and `-y` costs nothing.
 machines can run different builds from one identical config line. See *Silent version
 float* below — it is the failure this package makes easiest to hit and hardest to see.
 
+### Connect it to a host
+
+Every host below runs the same command; only the file and the key around it change.
+
+**Claude Code** — one command, no file to edit. `-s user` makes it available in every
+project; drop it for this project only.
+
+```bash
+claude mcp add bantamkit -s user -- npx -y bantamkit-mcp
+```
+
+**Claude Desktop** — `~/Library/Application Support/Claude/claude_desktop_config.json`
+on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows. Top-level key
+`mcpServers`; each entry takes `command`, `args` and an optional `env`.
+
+```json
+{"mcpServers": {"bantamkit": {"command": "npx", "args": ["-y", "bantamkit-mcp"]}}}
+```
+
+**GitHub Copilot in VS Code** — `.vscode/mcp.json` for one workspace, or the user
+profile via the **MCP: Open User Configuration** command. Note the top-level key is
+`servers`, not `mcpServers`.
+
+```json
+{"servers": {"bantamkit": {"type": "stdio", "command": "npx", "args": ["-y", "bantamkit-mcp"]}}}
+```
+
+There is a CLI equivalent: `code --add-mcp '{"name":"bantamkit","command":"npx","args":["-y","bantamkit-mcp"]}'`.
+
+**Cursor** — `.cursor/mcp.json` in the project, or `~/.cursor/mcp.json` globally. Back
+to `mcpServers`.
+
+```json
+{"mcpServers": {"bantamkit": {"command": "npx", "args": ["-y", "bantamkit-mcp"]}}}
+```
+
+**Anything else that speaks MCP over stdio** runs `npx -y bantamkit-mcp` and talks
+JSON-RPC on its stdin and stdout. Nothing about this package is host-specific.
+
+The Claude Code and Claude Desktop forms were taken from this machine — `claude mcp add
+--help` and an existing config file. The VS Code and Cursor forms are from those
+projects' own documentation, not from a host installed here.
+
 ### Measured: what a cold start costs
 
 `node tools/conformance/npx-cold-start.mjs` in the repo packs the tarball, installs it

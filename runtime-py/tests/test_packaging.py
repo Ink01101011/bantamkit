@@ -195,7 +195,11 @@ def test_a_build_without_the_pack_fails_rather_than_shipping_short(tmp_path):
     """
     stripped = tmp_path / "runtime-py"
     (stripped / "src" / "bantamkit").mkdir(parents=True)
-    for name in ("pyproject.toml", "hatch_build.py"):
+    # README.md is here because `pyproject.toml` declares it as the long description:
+    # without it the build fails on the MISSING README and never reaches the pack, so
+    # the assertions below would pass on a build that failed for the wrong reason. The
+    # pack must be the only thing this tree is short of.
+    for name in ("pyproject.toml", "hatch_build.py", "README.md"):
         (stripped / name).write_bytes((PROJECT / name).read_bytes())
     (stripped / "src" / "bantamkit" / "__init__.py").write_bytes(
         (PROJECT / "src" / "bantamkit" / "__init__.py").read_bytes()

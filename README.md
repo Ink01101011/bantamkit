@@ -9,6 +9,41 @@ runaway loops — are absorbed by code rather than by asking the model to try
 harder. A bundled eval suite quantifies the uplift: bare model vs model +
 toolkit on the same task suite, with token accounting.
 
+## Install
+
+**As an MCP server, without cloning anything.** There are two independent
+implementations of the same surface; install whichever your host makes easy, and
+they share a memory store on disk either way.
+
+```bash
+npx -y bantamkit-mcp --assets-root              # Node, no Python required
+pipx run --spec "bantamkit[mcp]" bantamkit-mcp --assets-root   # Python
+```
+
+Wiring it into a host — Claude Code takes one command:
+
+```bash
+claude mcp add bantamkit -s user -- npx -y bantamkit-mcp
+```
+
+Claude Desktop, GitHub Copilot in VS Code, Cursor and anything else that speaks
+MCP over stdio each take a small JSON entry instead. The exact file, key and
+entry for each are in
+[the npm package's README](runtime-ts/README.md#connect-it-to-a-host) and
+[the Python package's README](runtime-py/README.md#connect-it-to-a-host) — the
+key differs between hosts (`servers` in VS Code, `mcpServers` everywhere else),
+which is the one detail that catches people out.
+
+**As a Python library**, which is what the rest of this page is about:
+
+```bash
+pip install bantamkit
+```
+
+Full notes, including the editable install used for development and how the two
+runtimes differ: [docs/install.md](docs/install.md) and
+[docs/porting.md](docs/porting.md).
+
 ## Minimal composition
 
 ```python
