@@ -210,15 +210,37 @@ OMIT_UNMAPPED = "unmapped-text"
 # votes on a 4096-byte head, so `extract` routinely meets bytes that verdict never saw, and
 # those bytes can contradict it. The prefix that IS text is content; the rest is COUNTED.
 OMIT_UNREAD_TAIL = "unread-tail"
-# Bytes past `TEXT_MAX_BYTES`, the ceiling this reader states for one plain-text file. Not a
-# property of the file -- a limit this reader imposes -- which is exactly why it is declared
-# as a count instead of applied in silence.
+# What a ceiling THIS READER imposes kept out of the rows. Not a property of the file, which
+# is exactly why it is declared as a count instead of applied in silence. Four ceilings carry
+# it, and each one names its own number in `what`: bytes past `TEXT_MAX_BYTES` for a plain-text
+# file, for the markup of an `.html`/`.mhtml`, and for what `textutil` converted a `.doc` or
+# an `.rtf` into — the same constant three times, because "how much of a file this reader
+# reads" is one number and not one per container — and rows past `XLSX_MAX_TEXT_BYTES` for a
+# workbook, where the thing that runs away is the RENDERING rather than the file.
+#
+# The principle overclaimed until review round 5 (H3), and the correction is worth stating
+# because the sentence is what stopped anyone looking: `.doc` and `.rtf` had NO ceiling of any
+# kind — `extract_textutil` rendered every byte of the converter's stdout — and `.docx` had
+# none either, measured at 40,000,000 bytes of text out of a 181,289-byte file, 2.38x
+# `TEXT_MAX_BYTES`, with both omission tuples empty.
+#
+# The fifth ceiling is deliberately NOT one of these, and that is the honest amendment rather
+# than a fifth token: `ZIP_MEMBER_MAX_BYTES` refuses instead of disclosing, because half an
+# XML member is not a smaller XML member. So an OOXML container is bounded by what this reader
+# will PARSE and says so by refusing; every other container is bounded by what it will READ
+# and says so by counting. `.docx` needs no rendering budget on top of that: the text a
+# `<w:t>` walk produces can never exceed the bytes of the part it walked.
 OMIT_SIZE_CAP = "size-cap"
 # A worksheet cell whose own `r` reference could not place it: not letters-then-digits, or a
 # column past the last one the format has. The cell's TEXT is in the rows, at its XML
 # position; what the rows do not carry is the column the file asked for. Counted per reason,
 # with the columns it landed in, exactly as `number-format` is counted per format code.
 OMIT_UNPLACED_CELL = "unplaced-cell"
+# A worksheet cell a LATER cell in the same row and column replaced. Last-wins is what both
+# runtimes do and what a writer's own second cell means, so the reading is kept; what was not
+# kept was the disclosure. Counted with the columns it happened in, like every other cell this
+# reader could not put in the rows.
+OMIT_DUPLICATE_CELL = "duplicate-cell"
 
 
 class DocumentReadError(BantamError):
@@ -621,6 +643,33 @@ _UNREADABLE_OPTIONAL = (
 )  # fmt: skip
 
 
+# How much ONE MEMBER of a zip this reader will decompress and parse. The ceiling on the
+# PARSE, which is a different door from `XLSX_MAX_TEXT_BYTES`: that one bounds the text a
+# workbook renders, and it never stands in front of this, because `_read` decompresses the
+# member whole and `_parse` builds a tree from it before the first row is rendered.
+#
+# MEASURED 2026-09-06 on this machine, through `docread.extract` at the shipped constants,
+# on a sheet of N `<row><c t="inlineStr"><is><t>x</t></is></c></row>` deflated at level 9:
+# 400,000 rows are 58,097 bytes on disk and peaked at 342.2 MB (5,890x) with NO omission;
+# 1,000,000 rows are 143,658 bytes and peaked at 838.8 MB (5,839x). Linear and unbounded —
+# the memory is the `Element` tree, not the text, so a budget over the rendering could not
+# see it. At this ceiling the same shape parses in 0.74 s and peaks at 264.3 MB, which is a
+# worst case rather than no case at all.
+#
+# 16 MiB, the number `TEXT_MAX_BYTES` states, because "how much of a file this reader reads"
+# is one number — but under its OWN NAME, because it bounds a member of a container and not a
+# file on a disk, and a bar that varies one must not be varying the other. MEASURED the same
+# day over `~/Downloads`, `~/Documents/Claude/Projects` and `~/Documents` (pruned as J25
+# prunes them): 25 OOXML/ODF packages, the largest single XML member among them 4,283,286
+# bytes — 3.9x under this — and the largest `word/document.xml` 159,976 bytes, 105x under it.
+#
+# A REFUSAL and not a truncation, which is the one place this module departs from
+# "disclose, never truncate": half an XML document is not a smaller XML document, and a tree
+# built from a severed member would carry text that is not what the file says. So the reader
+# stops and names the member, the number the file declares and its own ceiling.
+ZIP_MEMBER_MAX_BYTES = 16 * 1024 * 1024
+
+
 def _read(zf: zipfile.ZipFile, name: str, path: Path) -> bytes:
     """One member this reader cannot do without, or a refusal in the reader's own words.
 
@@ -642,8 +691,29 @@ def _read(zf: zipfile.ZipFile, name: str, path: Path) -> bytes:
     different facts about the file (a stored checksum that lies, a deflate stream that is
     not one), and it is the only part of the sentence the Node port cannot print from the
     same words — the ruling in docs/porting.md quotes it.
+
+    And a fifth, which is not zipfile's: a member that decompresses past
+    `ZIP_MEMBER_MAX_BYTES`. The gate is the UNCOMPRESSED SIZE the central directory declares,
+    read before anything is decompressed, and it is deliberately the cheapest possible check —
+    a member that says it is 46 MB costs no inflate at all to refuse.
+
+    Those are the attacker's bytes, so the question is what a lying declaration buys, and the
+    answer was MEASURED rather than assumed: `zipfile.ZipExtFile` clamps its own output to
+    `ZipInfo.file_size` and checks the CRC of what it produced, so a member declaring 10 bytes
+    while holding 100,000 yields 10 bytes and `BadZipFile: Bad CRC-32` — declaring LOW is a
+    damaged file, not a way past the ceiling, and declaring HIGH is what this refuses. That
+    clamp is CPython's and not the format's: the Node port walks the archive with its own
+    reader, and if that reader does not clamp it owes the property a ceiling on the real read.
+    The property is the contract; the mechanism is not.
     """
     try:
+        declared = zf.getinfo(name).file_size
+        if declared > ZIP_MEMBER_MAX_BYTES:
+            raise DocumentReadError(
+                f"{path.name} is a zip but its {name} declares {declared} bytes uncompressed, "
+                f"past the {ZIP_MEMBER_MAX_BYTES} bytes this reader parses, "
+                "so this reader cannot parse it"
+            )
         return zf.read(name)
     except KeyError:
         sample = ", ".join(sorted(zf.namelist())[:8]) or "(empty archive)"
@@ -866,6 +936,35 @@ _MAX_COLUMN_LETTERS = 3
 # into the manifest with no bound at all.
 UNPLACED_SHAPE = "the column of a cell whose reference is not letters then digits"
 UNPLACED_RANGE = "the column of a cell past XFD, the last column the format has"
+# What a cell loses when a later cell in the same row claims its column. Fixed for the same
+# reason the two above are: the reference is the file's bytes and the column letter is this
+# reader's own, so only the letter travels — in `where`, bounded by `XLSX_MAX_COLUMNS`.
+DUPLICATE_CELL = "the text of a cell a later cell in the same row and column replaced"
+
+# How much text ONE WORKBOOK may materialise, all sheets together. `XLSX_MAX_COLUMNS` bounds
+# a ROW and nothing bounded the document, which is a ceiling with a hole in it: the width is
+# bought a row at a time. MEASURED 2026-09-06 on both runtimes: 20,000 rows each holding one
+# `XFD1` cell deflate to 53,967 bytes and materialise 327,680,000 bytes in 9.02 s — 6,072x,
+# out of a file small enough to mail.
+#
+# 16 MiB, the same figure `TEXT_MAX_BYTES` carries and for the same kind of reason, but under
+# its OWN NAME because the two bound different things: bytes read off a disk there, bytes
+# rendered out of a container here, and a bar that varies one must not be varying the other.
+# MEASURED 2026-09-06 over `~/Downloads`, `~/Documents/Claude/Projects` and `~/Documents`
+# (pruned as J25 prunes them): 15 `.xlsx`, the largest 8,664,227 bytes on disk, and the
+# largest RENDERING among them 754,520 bytes — 22x under this budget, so no real workbook on
+# this machine meets it.
+#
+# It bounds the RENDERING and nothing else. The sentence that stood here said it bounded the
+# rendering "because the file is already bounded", and that was FALSE for the whole life of
+# this constant: `_read` decompressed a member whole and `_parse` built a tree from it, both
+# before the first row was rendered and both outside this budget, so 58,097 bytes on disk
+# peaked at 342.2 MB with no omission and this ceiling never saw it (review round 5, H1).
+# What bounds the file is `ZIP_MEMBER_MAX_BYTES`, one door earlier; this bounds what comes out
+# of it. The shortfall is disclosed as `OMIT_SIZE_CAP` counting the rows no sheet rendered: a
+# row is what a caller addresses, and a byte count of text that was never built would be a
+# number this reader cannot honestly produce.
+XLSX_MAX_TEXT_BYTES = 16 * 1024 * 1024
 
 
 def _column(ref: str | None, fallback: int) -> tuple[int, str]:
@@ -947,8 +1046,29 @@ def _cell_text(cell: ET.Element, shared: list[str]) -> str:
     return raw  # numbers, cached formula strings (`str`), errors (`e`): stored form, verbatim
 
 
+@dataclass
+class _TextBudget:
+    """How much rendered text one WORKBOOK may still materialise, and what it cost to stop.
+
+    One of these is made per `extract_xlsx` call and handed to every sheet, which is the whole
+    point: a budget made per sheet would let an N-sheet workbook materialise N budgets, and the
+    input this ceiling exists for is one sheet of 20,000 rows anyway.
+
+    `total` counts every `<row>` the document declares, rendered or not, because the omission
+    has to say what the rows it did render are a fraction OF. Counting them costs a walk of
+    XML that is already parsed and bounded by the file; rendering them is what does not.
+    """
+
+    remaining: int
+    total: int = 0
+    dropped: int = 0
+
+
 def _sheet_rows(
-    root: ET.Element, shared: list[str], date_styles: tuple[str, ...] = ()
+    root: ET.Element,
+    shared: list[str],
+    date_styles: tuple[str, ...] = (),
+    budget: _TextBudget | None = None,
 ) -> tuple[tuple[str, ...], tuple[Omission, ...]]:
     """The rendered rows of one sheet, and a count of what the rendering did not carry.
 
@@ -959,19 +1079,40 @@ def _sheet_rows(
     A cell `_column` cannot place is one of those omissions and NOT a refusal (review round 4,
     M2): it keeps its text at its XML position and loses only the column the file asked for.
     Counted per reason and rendered after the format codes, so the order of this tuple is
-    blank rows, then number formats by code, then unplaced cells by reason.
+    blank rows, then number formats by code, then unplaced cells by reason, then the cells a
+    later cell in the same row and column replaced.
+
+    A DUPLICATE is a cell whose column already holds text from a cell earlier in the same row.
+    Last-wins is kept — it is what both runtimes do and what a writer's own second cell means
+    — and the earlier cell's text is disclosed rather than dropped in silence, which is the
+    only part of that behaviour nobody chose.
+
+    `budget` is the DOCUMENT's, not this sheet's: the width of one row is already bounded by
+    `XLSX_MAX_COLUMNS` and the height of a workbook was not, so the row is where the ceiling
+    has to bite. A row is skipped whole rather than cut in half — half a row is a row this
+    reader cannot vouch for, which is the same rule `extract_text` follows at its own cap —
+    so the overshoot is at most one row, itself bounded at `XLSX_MAX_COLUMNS` fields.
     """
+    if budget is None:
+        budget = _TextBudget(XLSX_MAX_TEXT_BYTES)
     rows = []
     blank = 0
     dated: dict[str, dict[int, int]] = {}
     unplaced: dict[str, dict[int, int]] = {}
+    duplicated: dict[int, int] = {}
     for row in root.iter(NS_S + "row"):
+        budget.total += 1
+        if budget.remaining <= 0:
+            budget.dropped += 1
+            continue
         cells: dict[int, str] = {}
         for position, cell in enumerate(row.iter(NS_S + "c")):
             text = _clean(_cell_text(cell, shared))
             if not text:
                 continue
             column, unplaceable = _column(cell.get("r"), position)
+            if column in cells:
+                duplicated[column] = duplicated.get(column, 0) + 1
             cells[column] = text
             if unplaceable:
                 unplaced.setdefault(unplaceable, {})
@@ -986,6 +1127,7 @@ def _sheet_rows(
                     dated[code][column] = dated[code].get(column, 0) + 1
         width = max(cells) + 1 if cells else 0
         line = "\t".join(cells.get(i, "") for i in range(width))
+        budget.remaining -= len(line.encode())
         if not line:
             blank += 1
         rows.append(line)
@@ -1010,6 +1152,15 @@ def _sheet_rows(
                 sum(columns.values()),
                 where=tuple(_letter(c) for c in sorted(columns)),
                 what=reason,
+            )
+        )
+    if duplicated:
+        omissions.append(
+            Omission(
+                OMIT_DUPLICATE_CELL,
+                sum(duplicated.values()),
+                where=tuple(_letter(c) for c in sorted(duplicated)),
+                what=DUPLICATE_CELL,
             )
         )
     return tuple(rows), tuple(omissions)
@@ -1051,7 +1202,15 @@ def _media_omission(media: dict[str, int]) -> tuple[Omission, ...]:
 
 
 def extract_xlsx(path: str | Path) -> Document:
+    """Every declared sheet, under ONE `XLSX_MAX_TEXT_BYTES` budget for the whole workbook.
+
+    The budget is the document's, so it is made here and not in `_sheet_rows`, and the
+    shortfall is disclosed at the document's grain for the same reason — it is not a fact
+    about the sheet the budget happened to run out on. The cap is stated BEFORE the media
+    tally, because the media a reader met is a count of what it met underneath the cap.
+    """
     path = Path(path)
+    budget = _TextBudget(XLSX_MAX_TEXT_BYTES)
     with _open(path) as zf:
         shared = _shared_strings(zf, path)
         date_styles = _date_formats(zf)
@@ -1061,10 +1220,20 @@ def extract_xlsx(path: str | Path) -> Document:
             if target is None:
                 raise DocumentReadError(f"sheet {name!r} has no resolvable worksheet part")
             sheet = _parse(_read(zf, target, path), target, path)
-            rows, omissions = _sheet_rows(sheet, shared, date_styles)
+            rows, omissions = _sheet_rows(sheet, shared, date_styles, budget)
             omissions = _media_omission(_anchored_media(zf, target, media)) + omissions
             parts.append(Part(name=name, index=index, rows=rows, omissions=omissions))
-    return Document(kind="xlsx", parts=tuple(parts), omissions=_media_omission(media))
+    capped: tuple[Omission, ...] = ()
+    if budget.dropped:
+        capped = (
+            Omission(
+                OMIT_SIZE_CAP,
+                budget.dropped,
+                what=f"{budget.total} rows in this workbook; this reader renders "
+                f"{XLSX_MAX_TEXT_BYTES} bytes of cell text",
+            ),
+        )
+    return Document(kind="xlsx", parts=tuple(parts), omissions=capped + _media_omission(media))
 
 
 def extract_docx(path: str | Path) -> Document:
@@ -1136,20 +1305,48 @@ def _cap_charrefs(text: str) -> str:
 
 
 def _with_bounded_unescape(name: str):
-    """`HTMLParser.<name>`, as the library wrote it, with `unescape` bound to the capped one.
+    """`HTMLParser.<name>` with `unescape` bound to the capped one, or `None` if it cannot be.
 
     The two methods that call `unescape` (`goahead` on text, `parse_starttag` on attribute
     values) look it up in `html.parser`'s globals; a copy of the code object with one entry
     of that namespace replaced is the same loop calling the same helpers, and nothing else
     in the process — no other parser, not `html.unescape` itself — sees the change.
+
+    CONTAINED, `docs/roadmap-toolbox.md` row 8 entry (u). This depends on three properties of
+    a CPython private method at once — the name existing, `unescape` resolving as a MODULE
+    GLOBAL, and no closure — and it is called in a class body, so before this guard a single
+    changed property raised `AttributeError` (or `TypeError`) at MODULE IMPORT and the MCP
+    server did not start. `pyproject.toml` declares `requires-python = ">=3.11"` and CI
+    measures 3.11 and 3.12, so every interpreter from 3.13 up is permitted and none is
+    measured; an interpreter this package says it supports may not be able to make it fail
+    to import. Measured on this machine's CPython 3.12.13: `goahead` has `'unescape' in
+    co_names` True and `co_freevars ()`, `parse_starttag` the same.
+
+    All three are checked rather than caught, because the failure that is NOT an exception is
+    the dangerous one: a method that resolves `unescape` some other way would take this
+    rebinding silently and go on calling the uncapped `html.unescape`. `None` here is what
+    `html_rows` reads to fall back, and `HTML_UNESCAPE_BOUNDED` is what makes that visible.
     """
-    method = getattr(html.parser.HTMLParser, name)
+    method = getattr(html.parser.HTMLParser, name, None)
+    code = getattr(method, "__code__", None)
+    if code is None or "unescape" not in code.co_names or code.co_freevars:
+        return None
     return types.FunctionType(
-        method.__code__,
+        code,
         {**vars(html.parser), "unescape": lambda text: html.unescape(_cap_charrefs(text))},
         name,
         method.__defaults__,
     )
+
+
+# The rebindings that could be built on THIS interpreter, and whether both of them could.
+# `html_rows` reads the flag, a test can force it, and nothing about the fallback is silent.
+_BOUNDED_UNESCAPE = {
+    name: bound
+    for name in ("goahead", "parse_starttag")
+    if (bound := _with_bounded_unescape(name)) is not None
+}
+HTML_UNESCAPE_BOUNDED = len(_BOUNDED_UNESCAPE) == 2
 
 
 class _HtmlText(html.parser.HTMLParser):
@@ -1171,8 +1368,9 @@ class _HtmlText(html.parser.HTMLParser):
     # `handle_entityref` changes the library's chunking — `&#65b` is handed over as `&#`
     # and `65b`, and an `&#` with no `;` anywhere after it makes the parser emit the rest
     # of the document, tags included, as data at `close()`.
-    goahead = _with_bounded_unescape("goahead")
-    parse_starttag = _with_bounded_unescape("parse_starttag")  # attribute values, likewise
+    # The rebindings are attached AFTER the class statement, from `_BOUNDED_UNESCAPE`, so an
+    # interpreter that has neither method still produces a class — see `_with_bounded_unescape`
+    # and `html_rows` for what happens then.
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -1218,8 +1416,22 @@ class _HtmlText(html.parser.HTMLParser):
         self._flush()
 
 
+for _name, _bound in _BOUNDED_UNESCAPE.items():
+    setattr(_HtmlText, _name, _bound)
+
+
 def html_rows(markup: str) -> tuple[str, ...]:
-    """Rendered rows of one HTML fragment. A pure function of the string: no I/O, no host."""
+    """Rendered rows of one HTML fragment. A pure function of the string: no I/O, no host.
+
+    When the per-chunk binding could not be built on this interpreter, the WHOLE MARKUP is
+    capped first — the pre-H1 shape, kept as the fallback. It is measurably worse and it is
+    measurably not a crash: H1 refused it as the default because `&#<4301 digits>;` inside
+    `<xmp>` is CDATA the parser never unescapes, so this rewrite turns it into U+FFFD where
+    the bounded binding keeps the digits. A reader that answers slightly differently beats a
+    package that will not import, and the difference is one a test can see.
+    """
+    if not HTML_UNESCAPE_BOUNDED:
+        markup = _cap_charrefs(markup)
     parser = _HtmlText()
     parser.feed(markup)
     parser.close()
@@ -1251,6 +1463,30 @@ def _decoded_body(part: email.message.Message) -> str:
         return payload.decode("utf-8", errors="replace")
 
 
+def _read_to_ceiling(path: Path) -> tuple[bytes, tuple[Omission, ...]]:
+    """A file's bytes up to `TEXT_MAX_BYTES`, and the `OMIT_SIZE_CAP` for what is past it.
+
+    ONE ceiling and one sentence for every container that holds markup, because "how much of
+    a file this reader reads" is a fact about the reader and not about the suffix: a 1 GB
+    `.txt` stopped at `TEXT_MAX_BYTES` and counted the rest while a 1 GB `.html` was held
+    whole (`docs/roadmap-toolbox.md` row 8, entry (k)). The sentence is `extract_text`'s,
+    to the byte, so a caller cannot tell from it which reader hit the cap.
+
+    Where `extract_text` also cuts back to the last line break, this does not: markup is not
+    a line-oriented format, a half-open tag is not a claim about content the way half a line
+    is, and `html.parser` closes what the file left open without inventing text for it.
+    """
+    size = path.stat().st_size
+    with path.open("rb") as handle:
+        raw = handle.read(TEXT_MAX_BYTES + 1)
+    if len(raw) <= TEXT_MAX_BYTES:
+        return raw, ()
+    raw = raw[:TEXT_MAX_BYTES]
+    dropped = size - TEXT_MAX_BYTES
+    what = f"{size} bytes on disk; this reader reads {TEXT_MAX_BYTES}"
+    return raw, (Omission(OMIT_SIZE_CAP, dropped, size=dropped, what=what),)
+
+
 def extract_mhtml(path: str | Path) -> Document:
     """A MIME message / MHTML archive: every text part, in message order.
 
@@ -1261,8 +1497,12 @@ def extract_mhtml(path: str | Path) -> Document:
     `-format html` pass left `signature` split as `s= ignature`.
     """
     path = Path(path)
-    with path.open("rb") as handle:
-        message = email.message_from_binary_file(handle, policy=email.policy.default)
+    # BOUNDED, entry (k): `message_from_binary_file` reads the handle to EOF, so a 1 GB
+    # `.mht` was held whole — the same hole `extract_html` had, in its own spelling. The
+    # message is parsed from the bytes this reader will admit to having read; a truncated
+    # MIME message is one `email` still walks, and what it could not see is COUNTED.
+    raw, capped = _read_to_ceiling(path)
+    message = email.message_from_bytes(raw, policy=email.policy.default)
     bodies: list[tuple[str, str]] = []
     skipped: dict[str, int] = {}
     skipped_bytes = 0
@@ -1286,7 +1526,7 @@ def extract_mhtml(path: str | Path) -> Document:
         rows = html_rows(body) if subtype == "html" else _plain_rows(body)
         name = "document" if len(bodies) == 1 else f"part{index}"
         parts.append(Part(name=name, index=index, rows=rows))
-    omissions = ()
+    omissions: tuple[Omission, ...] = ()
     if skipped:
         omissions = (
             Omission(
@@ -1296,18 +1536,29 @@ def extract_mhtml(path: str | Path) -> Document:
                 what=", ".join(sorted(skipped)),
             ),
         )
+    # The cap first: the media tally counts what this reader met UNDERNEATH it, so a caller
+    # who reads that number without the cap above it has read a lower bound as a total.
     return _nonempty(
-        Document(kind="mhtml", parts=tuple(parts), omissions=omissions),
+        Document(kind="mhtml", parts=tuple(parts), omissions=capped + omissions),
         path,
         "no text/html or text/plain part carried any text",
     )
 
 
 def extract_html(path: str | Path) -> Document:
+    """Markup to rows, up to `TEXT_MAX_BYTES` of it, saying how much it did not read.
+
+    BOUNDED, entry (k): this did `path.read_bytes()`, so a 1 GB `.html` was materialised whole
+    where a 1 GB `.txt` had stopped at the cap and counted the rest since J10.
+    """
     path = Path(path)
-    raw = path.read_bytes()
+    raw, capped = _read_to_ceiling(path)
     markup = raw.decode("utf-8", errors="replace")
-    doc = Document(kind="html", parts=(Part(name="document", index=0, rows=html_rows(markup)),))
+    doc = Document(
+        kind="html",
+        parts=(Part(name="document", index=0, rows=html_rows(markup)),),
+        omissions=capped,
+    )
     return _nonempty(doc, path, "its markup carried no text outside script and style")
 
 
@@ -1321,13 +1572,45 @@ def _nonempty(doc: Document, path: Path, why: str) -> Document:
     `.xlsx` is deliberately exempt: a declared-but-empty sheet is a real part with no rows and
     J10's row counts are committed measurements. Here there is no such thing — a `.doc` that
     renders nothing is a `.doc` this reader did not read.
+
+    THE REFUSAL CARRIES THE OMISSIONS, review round 5 (H2). `extract_html` and `extract_mhtml`
+    build the `Document` with `capped` in `omissions` and hand it here, and here it raises: the
+    refusal kept the reader's verdict about the content and threw away the ceiling that
+    produced that verdict. MEASURED on a 16,777,291-byte `.html` whose 16 MiB `<script>`
+    comment is followed by one visible sentence — `its markup carried no text outside script
+    and style ... it is not an empty document`, about a document that carries text, from a
+    read that stopped 75 bytes short of it. The same on a `.mht` past the ceiling, where the
+    media tally went with it.
+
+    A reader is allowed to refuse. It is not allowed to state a false fact about a file, and
+    `why` is a fact about the file only when the whole file was read. Under a cap it is scoped
+    to the part that was read and the unread bytes are named, so a caller who would have
+    stopped looking has the one number that tells it not to.
     """
     if any(part.rows for part in doc.parts):
         return doc
-    raise DocumentReadError(
-        f"cannot read {path.name}: it is a {doc.kind} container but {why}, so this reader has "
-        "no text for it — it is not an empty document"
-    )
+    capped = next((o for o in doc.omissions if o.subject == OMIT_SIZE_CAP), None)
+    media = next((o for o in doc.omissions if o.subject == OMIT_MEDIA), None)
+    if capped is None:
+        said = (
+            f"cannot read {path.name}: it is a {doc.kind} container but {why}, so this reader "
+            "has no text for it — it is not an empty document"
+        )
+    else:
+        # The cap's own `what` is quoted rather than rebuilt, so the sentence and the omission
+        # can never state different numbers, and so the clause says whose bytes were counted:
+        # a file's on disk here, `textutil`'s output there.
+        said = (
+            f"cannot read {path.name}: it is a {doc.kind} container but {why} in the part "
+            f"this reader read ({capped.what}) — the {capped.count} bytes it did not read "
+            "may carry text"
+        )
+    if media is not None:
+        said += (
+            f", and it holds {media.count} embedded part(s) ({media.what}) this reader "
+            "renders no text for"
+        )
+    raise DocumentReadError(said)
 
 
 # --------------------------------------------------------------- plain text, in no container
@@ -1492,6 +1775,29 @@ def _textutil_type(exe: str, path: Path) -> str:
     return ""
 
 
+def _cap_converted(stdout: bytes) -> tuple[bytes, tuple[Omission, ...]]:
+    """`textutil`'s output up to `TEXT_MAX_BYTES`, and the `OMIT_SIZE_CAP` for what is past it.
+
+    THE FOURTH CEILING, review round 5 (H3). `.doc` and `.rtf` had none at all: every byte the
+    converter wrote was rendered, so the principle stated at `OMIT_SIZE_CAP` — "how much of a
+    file this reader reads" is one number and not one per container — was contradicted two
+    containers over by the same module.
+
+    The number is `TEXT_MAX_BYTES`, and `what` names WHOSE bytes were counted rather than
+    borrowing `_read_to_ceiling`'s sentence: these are the converter's, not the file's, and a
+    caller must not read this omission as a statement about the `.rtf` on disk. What is NOT
+    bounded here is the memory: `_textutil_run` captures the whole of a subprocess's stdout
+    before this sees a byte of it, so this bounds what the reader RENDERS and the host process
+    still decides how much it wrote. Saying so is the point — a comment that claimed otherwise
+    is exactly what (v) shipped.
+    """
+    if len(stdout) <= TEXT_MAX_BYTES:
+        return stdout, ()
+    dropped = len(stdout) - TEXT_MAX_BYTES
+    what = f"{len(stdout)} bytes {TEXTUTIL} produced; this reader reads {TEXT_MAX_BYTES}"
+    return stdout[:TEXT_MAX_BYTES], (Omission(OMIT_SIZE_CAP, dropped, size=dropped, what=what),)
+
+
 def extract_textutil(path: str | Path, kind: str = "doc") -> Document:
     """Convert through `textutil` and render its plain text as rows.
 
@@ -1519,8 +1825,11 @@ def extract_textutil(path: str | Path, kind: str = "doc") -> Document:
             "raw bytes re-encoded, not the document's text"
         )
     done = _textutil_run(exe, path, "-convert", "txt", "-stdout")
-    rows = _plain_rows(done.stdout.decode("utf-8", errors="replace"))
-    doc = Document(kind=kind, parts=(Part(name="document", index=0, rows=rows),))
+    produced, capped = _cap_converted(done.stdout)
+    rows = _plain_rows(produced.decode("utf-8", errors="replace"))
+    doc = Document(
+        kind=kind, parts=(Part(name="document", index=0, rows=rows),), omissions=capped
+    )
     return _nonempty(doc, path, f"{TEXTUTIL} converted it to no text at all")
 
 

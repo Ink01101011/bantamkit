@@ -218,6 +218,75 @@ undecodable, so the container sniffed `unknown` and BOTH runtimes refused before
 consulted. They were green and they pinned a refusal. Corrected to `quoted-printable` this
 round; the cases they now generate are real.)
 
+**AMENDED 2026-09-06 — job44 (`fix/job44-register-drain`), the register-drain job.** Measured
+at the tree that bumps the version to 0.29.2, on Node v25.2.1 and `.venv` CPython 3.12.13,
+with the runner given a message of its own — `pytest` and `run.mjs --all` in one message hang
+each other, measured at over an hour with a stuck reference child, and about two minutes apart:
+
+<!-- provenance: value=6662 cases, 149 ruled-different, 0 failures; commit=f484c70 plus this commit's working tree; command=node tools/conformance/run.mjs --all -->
+```
+PASS: 6662 cases, 1614 byte-identical, 3397 exact-string, 1651 structural,
+      149 ruled-different, 0 failures
+```
+
+Per suite, at that tree: `validate` 3015, `docread` 1107, `shiftwork` 596, `codec` 510,
+`wire` 417, `memorycli` 310, `store` 186, `charsets` 148, `cli` 106, `recall-strings` 96,
+`skillaudit` 94, `statusline` 52, `mcpreport` 25 — every one at 0 differed.
+
+**What job44 added, as its own units measured it** (the totals between the `6316` above and
+this one are recorded where they were made — row 11 of `docs/roadmap-toolbox.md` for
+`skill_audit`, and `docs/eval-data/` for the units here — rather than re-derived as
+arithmetic in this paragraph):
+
+* **`charsets` 88 -> 148, 0 -> 12 rulings** (unit U18). The CJK residual is pinned against a
+  recipe checked in at `tools/conformance/ref/cjk_ref.py` instead of a script nobody kept.
+  Each codec gets one ruling and four NON-ruled literal companions — match count, a digest of
+  CPython's own answers, a digest of ICU's own answers, and the first disagreeing input with
+  both answers. **The justification for the companions is a probe, not taste:** appending the
+  same string to BOTH sides for all ten codecs left every ruling green and every match count
+  green while 30 anchor cases went red, so a ruling-only pin would have passed that run.
+* **`docread`: the `bzip2Styles` ruling, two non-ruled disclosure companions, and a CONTROL**
+  (unit U17). The control is `deflate-date-styles.xlsx`, the same `xl/styles.xml` content and
+  CRC behind method 8 instead of 12, pinned as a literal on both sides — without it, a reader
+  that stopped resolving date styles altogether would make the ruling start MATCHING and be
+  reported as stale, which reads as good news.
+* **+82 cases in one change: `docread` +29, `memorycli` +38, `wire` +15** (unit U3), covering
+  every behaviour change the job landed, with `ruled-different` unmoved at 149 — every case
+  added is an unruled comparison or a typed literal. New machinery came with them: a summaries
+  protocol in `docread_ref.py` (rows as SHA-256 plus counts and edges) so a 16 MiB fixture
+  costs one digest rather than two 16 MiB comparisons; `links:` fixture support in `memorycli`
+  with a Windows symlink probe that skips by name; and a `{conformance: write}` driver
+  directive honoured in lock-step by both wire loops and never forwarded to the server.
+
+**The mutations are the reason to believe any of it, and two are worth quoting.** Removing the
+`lexists` guard from BOTH sides made both mutants agree on "a filesystem error stopped the move
+of back" — a sentence false about a move nobody attempted — and the differential was blind to
+it. Keying the document cache on `realpath` alone on both sides left the differential green
+while the typed literals went red. Every mutation this job applied was applied SYMMETRICALLY,
+and in every case the differential stayed green while the typed literal went red, which is the
+whole reason the literals are there.
+
+**Not everything measured this job became a case, and one refusal is deliberate.** The zlib
+damaged-member cause clause differs between the two runtimes on macOS (803 of 6,306 co-raising
+inputs) and not at all against a stock madler zlib, because the phrase comes from whichever
+`libz` the reference is linked against. Its expected value is a function of the HOST, so a
+ruling would be red where the sides agree and a parity case red where they do not; it is
+recorded in `docs/porting.md`'s gaps with the corpus and the commands, and NO case was written.
+
+**GitHub Actions is off for this account — it bills the user — so nothing here was checked by
+CI and nothing in this repository should be written as if it were.** The substitute is four
+local gates, each run alone. At this tree:
+
+<!-- provenance: value=2416 passed, 4 skipped, 1 deselected, 3 xfailed; commit=f484c70 plus this commit's working tree; command=.venv/bin/python -m pytest runtime-py/tests -q -->
+<!-- provenance: value=All checks passed!; commit=f484c70 plus this commit's working tree; command=.venv/bin/ruff check runtime-py -->
+<!-- provenance: value=595 tests, 593 pass, 0 fail, 2 skipped; commit=f484c70 plus this commit's working tree; command=cd runtime-ts && npm test -->
+`.venv/bin/python -m pytest runtime-py/tests -q` **2416 passed, 4 skipped, 1 deselected,
+3 xfailed**, with `grep -iE 'warnings summary|Warning'` over the run returning nothing;
+`.venv/bin/ruff check runtime-py` **All checks passed!**; `cd runtime-ts && npm test`
+**595 tests, 593 pass, 0 fail, 2 skipped**; and the `--all` line above. A pass count is a
+function of repo content rather than of test code, so each is quoted with the tree it was
+measured at and none of them is a standing number.
+
 **The notes are part of the result, not decoration.** Several measurements this project
 depends on exist only there — the live index byte count, the corpus SHA on both sides, how
 many emitted files carry PyYAML's 80-column wrap, and the one remaining `NOT MEASURED HERE`

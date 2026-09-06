@@ -9,11 +9,26 @@ matching the new reference.
 Protocol: one JSON request on stdin, one JSON response on stdout.
 
     {"paths": [<path>, ...],
+     "summaries": [<path>, ...],
      "pages": [{"path": <path>, "part": str|int, "offset": int, "limit": int,
                 "max_bytes": int|null}, ...]}
       -> {"textutil": bool,
           "files": [{"sniff": {...}|{"error": {...}}, "extract": {...}|{"error": {...}}}, ...],
+          "summaries": [{"sniff": ..., "extract": <summary>|{"error": {...}}}, ...],
           "pages": [{"page": {...}}|{"error": {...}}, ...]}
+
+WHY `summaries` EXISTS, AND WHY IT IS NOT A WEAKER COMPARISON. Four of this suite's
+fixtures are built to STRADDLE A CEILING, and a ceiling this reader states in mebibytes
+cannot be straddled by a small file: `over-budget.xlsx` renders 16,783,360 bytes before
+the workbook budget bites, `html-over-ceiling.html` and `mhtml-over-ceiling.mht` are each
+a byte-count over `TEXT_MAX_BYTES`, and `wide-row.xlsx` is the 300,000-cell row. Sent
+through `paths` each of those would push its whole rendering across this pipe TWICE — once
+as the reference's JSON and once as a `bytes` case comparing two 16 MiB strings — for a
+comparison whose ANSWER is a single equality. `summaries` sends the SHA-256 of the joined
+rows instead, plus every count, every omission and the head of the first and last row, so
+what is compared is still every rendered byte (through the digest) and every omission
+(verbatim); what is not sent is the megabytes themselves. A digest that matches is the same
+statement as sixteen mebibytes that match, and a digest that does not names the part.
 
 EVERY exception is reported, not only `DocumentReadError`: `{"type": <class name>,
 "message": str(exc)}`. That is deliberate. A `ValueError` that escapes `Document.part` is a
@@ -27,6 +42,7 @@ rather than assuming a macOS.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -61,6 +77,50 @@ def _document(doc: docread.Document) -> dict:
         ],
         "omissions": [o.as_dict() for o in doc.omissions],
     }
+
+
+def _summary(doc: docread.Document) -> dict:
+    """The whole answer, with each part's rows replaced by their digest, count and edges.
+
+    `rows_sha256` is over the rows joined by `\n` and encoded UTF-8 — the same string the
+    `paths` route compares byte for byte — so the two routes are asking the same question.
+    `head`/`tail` carry the first 120 characters of the first and last row: a digest names
+    THAT something differs and these say WHAT, which is the whole difference between a
+    failure a reader can act on and a hex string.
+    """
+    return {
+        "kind": doc.kind,
+        "text_bytes": doc.text_bytes,
+        "parts": [
+            {
+                "name": p.name,
+                "index": p.index,
+                "row_count": p.row_count,
+                "text_bytes": p.text_bytes,
+                "rows": len(p.rows),
+                "rows_bytes": len("\n".join(p.rows).encode()),
+                "rows_sha256": hashlib.sha256("\n".join(p.rows).encode()).hexdigest(),
+                "head": p.rows[0][:120] if p.rows else None,
+                "tail": p.rows[-1][:120] if p.rows else None,
+                "omissions": [o.as_dict() for o in p.omissions],
+            }
+            for p in doc.parts
+        ],
+        "omissions": [o.as_dict() for o in doc.omissions],
+    }
+
+
+def _summarised(path: str) -> dict:
+    out: dict = {}
+    try:
+        out["sniff"] = _container(docread.sniff(path))
+    except Exception as exc:  # noqa: BLE001
+        out["sniff"] = _error(exc)
+    try:
+        out["extract"] = _summary(docread.extract(path))
+    except Exception as exc:  # noqa: BLE001
+        out["extract"] = _error(exc)
+    return out
 
 
 def _page(pg: docread.Page) -> dict:
@@ -107,6 +167,7 @@ def main() -> None:
     out = {
         "textutil": docread.textutil_path() is not None,
         "files": [_file(p) for p in payload.get("paths", [])],
+        "summaries": [_summarised(p) for p in payload.get("summaries", [])],
         "pages": [_paged(s) for s in payload.get("pages", [])],
     }
     json.dump(out, sys.stdout)

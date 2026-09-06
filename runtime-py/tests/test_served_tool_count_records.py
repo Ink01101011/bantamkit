@@ -86,8 +86,16 @@ WORDS = {
 
 #: A count of tools immediately preceded by a verb that makes it a claim about
 #: what a server answers. Deliberately narrow — see the module docstring.
+#
+# `answers?...with` / `answered...with` allow up to 20 chars between the verb and "with"
+# (same bound already used below for `surface`). Widened 2026-09-06 (register item (g),
+# served-tools: dated — the surface was ten then): `docs/roadmap-toolbox.md` row 8 said
+# "both launchers answer `tools/list` with ten tools" and the old `answers? with` /
+# `answered with` alternatives required the two words adjacent, so a backticked token
+# between them made the whole sentence invisible to this gate — the row outlived the
+# tenth tool unseen until it was read by hand.
 CLAIM = re.compile(
-    r"(?:serves?|serving|served|answers? with|answered with|registers?|registered"
+    r"(?:serves?|serving|served|answers?[^.\n]{0,20}with|answered[^.\n]{0,20}with|registers?|registered"
     r"|exactly|surface[^.\n]{0,20}"
     # "the same N tools" / "of the N [served] tools": a count that names the whole served
     # surface by reference to it rather than with a verb. Widened 2026-08-27 after two
@@ -274,3 +282,60 @@ def test_the_node_launcher_serves_the_same_count_on_every_platform() -> None:
     _require_node_build()
     names = _served(str(REPO / "tools" / "bantamkit-mcp-node"))
     assert names, "the Node launcher served no tools at all"
+
+
+# --------------------------------------------------------------- register item (g)
+
+
+def test_claim_sees_a_token_between_the_verb_and_with() -> None:
+    """Register (g): `docs/roadmap-toolbox.md` row 8 outlived the tenth tool unseen because
+    a backticked token sits between "answer" and "with" -- "both launchers answer
+    `tools/list` with ten tools" -- and the old `answers? with` / `answered with`
+    alternatives require the two words to be adjacent.
+
+    This is a direct, file-scoped regression: it exercises CLAIM against the escaped
+    shape itself rather than against whatever `docs/roadmap-toolbox.md` currently says,
+    so it stays meaningful even if that file's wording changes later.
+
+    served-tools: dated -- these fixtures quote a past, escaped sentence and are not
+    claims about today's surface; the gate's own census counts them (see the module
+    docstring), which is exactly why they need the marker rather than an exemption.
+    """
+    # served-tools: dated
+    escaped = "both launchers answer `tools/list` with ten tools since #8 landed"
+    match = CLAIM.search(escaped)
+    assert match is not None, (
+        f"CLAIM does not see the row 8 item (g) escaped shape -- still invisible: {escaped!r}"
+    )
+    token = (match.group(1) or match.group(2)).lower()
+    assert WORDS.get(token) == 10, f"matched the wrong count: {token!r}"
+
+    # The past-tense sibling from the same item's quoted example ("answered ... with").
+    # served-tools: dated
+    escaped_answered = "the server answered `tools/list` with nine tools"
+    match2 = CLAIM.search(escaped_answered)
+    assert match2 is not None, (
+        f"CLAIM does not see the 'answered <token> with' shape: {escaped_answered!r}"
+    )
+
+
+def test_claim_still_matches_every_previously_caught_shape() -> None:
+    """`strictly wider` is the register's word: every alternative CLAIM caught before this
+    widening must still match. One sentence per existing alternative, plus the two
+    adjacent-verb forms the widening must not lose.
+    """
+    still_good = [
+        "bantamkit serves 11 tools",
+        "serving 11 tools, 1 prompt, 2 resource templates",
+        "the servers served 11 tools",
+        "both launchers answer with eleven tools",  # adjacent, no token in between
+        "the CLI answered with eleven tools",  # adjacent, past tense
+        "registers eleven tools",
+        "registered eleven tools",
+        "the surface is still exactly eleven tools",
+        "serves the same eleven tools",
+        "one of the eleven served tools",
+        "the eleven-tool surface",
+    ]
+    for line in still_good:
+        assert CLAIM.search(line) is not None, f"widening lost a previously-matched shape: {line!r}"

@@ -27,7 +27,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -207,6 +207,96 @@ test('the three operational failures exit 1 with the reference sentence on stder
   assert.deepEqual(run(['archived', '--store', store, '--budget', '400']).stdout.split('\n').slice(1, 2), [
     '  alpha-fact',
   ]);
+});
+
+/**
+ * job44 (y): an uncaught OS exception used to reach the operator as a raw stack trace.
+ * Measured 2026-09-05 on macOS, both entrances, both commands: `archive/` at 0o555 (the
+ * guards pass, `mkdir(exist_ok=True)` is a no-op, and the MOVE is refused) and `index.md` as
+ * a directory (the move succeeds, `_rebuild_index` raises, the rollback restores the store
+ * correctly, and the exception then escapes `main` the same way). Both already exited 1;
+ * only the TEXT differed — `node:fs` / `pyfs.js` on this side, a CPython traceback on the
+ * other. RECONCILED WITH U7's published wording.
+ *
+ * "nothing under <root> changed" is a claim this suite drove before trusting, not one taken
+ * on the reference's word: `restore`'s rollback used to be missing exactly here (see
+ * `store.test.mjs`'s "restore rolls back an index rebuild failure the same way archive does"
+ * for the drive), so the second `restore` assertion below is also a regression test for that
+ * fix, not only for the sentence.
+ */
+test('an index.md that is a directory reaches the operator as one sentence, not a stack trace', () => {
+  const store = seed();
+  run(['compact', '--store', store, '--budget', '400']); // moves alpha-fact into archive/
+
+  rmSync(join(store, 'index.md'));
+  mkdirSync(join(store, 'index.md'));
+  assert.deepEqual(run(['archive', 'bravo-fact', '--store', store, '--budget', '400']), {
+    stdout: '',
+    stderr: `archive failed: a filesystem error stopped the move of 'bravo-fact'; nothing under ${store} changed\n`,
+    exit: 1,
+  });
+  assert.ok(readFileSync(join(store, 'facts', 'bravo-fact.md'), 'utf8'), 'the fact was not left moved');
+
+  rmSync(join(store, 'index.md'), { recursive: true });
+  mkdirSync(join(store, 'index.md'));
+  assert.deepEqual(run(['restore', 'alpha-fact', '--store', store, '--budget', '400']), {
+    stdout: '',
+    stderr: `restore failed: a filesystem error stopped the move of 'alpha-fact'; nothing under ${store} changed\n`,
+    exit: 1,
+  });
+  assert.ok(
+    run(['archived', '--store', store, '--budget', '400']).stdout.includes('alpha-fact'),
+    'the fact was put back in archive/, not left stuck in facts/',
+  );
+});
+
+/**
+ * The other entrance: a directory the OS refuses to write into. `chmod` is a no-op on a
+ * directory on Windows and a root uid bypasses the mode bits — same caveat `store.test.mjs`
+ * documents at `withUnlistable` — so this diagnoses rather than silently skipping when the
+ * platform did not honour the mode.
+ */
+test('an unwritable archive or facts directory reaches the operator as one sentence', (t) => {
+  const store = seed();
+  mkdirSync(join(store, 'archive'), { recursive: true });
+  chmodSync(join(store, 'archive'), 0o555);
+  let archiveHonoured = true;
+  try {
+    writeFileSync(join(store, 'archive', 'probe.md'), 'x');
+    archiveHonoured = false;
+  } catch {
+    /* the mode bits were honoured */
+  }
+  if (archiveHonoured) {
+    assert.deepEqual(run(['archive', 'bravo-fact', '--store', store, '--budget', '400']), {
+      stdout: '',
+      stderr: `archive failed: a filesystem error stopped the move of 'bravo-fact'; nothing under ${store} changed\n`,
+      exit: 1,
+    });
+  } else {
+    t.diagnostic('NOT MEASURED: this platform did not honour 0o555 on a directory.');
+  }
+  chmodSync(join(store, 'archive'), 0o755);
+
+  run(['compact', '--store', store, '--budget', '400']); // moves alpha-fact into archive/
+  chmodSync(join(store, 'facts'), 0o555);
+  let factsHonoured = true;
+  try {
+    writeFileSync(join(store, 'facts', 'probe.md'), 'x');
+    factsHonoured = false;
+  } catch {
+    /* the mode bits were honoured */
+  }
+  if (factsHonoured) {
+    assert.deepEqual(run(['restore', 'alpha-fact', '--store', store, '--budget', '400']), {
+      stdout: '',
+      stderr: `restore failed: a filesystem error stopped the move of 'alpha-fact'; nothing under ${store} changed\n`,
+      exit: 1,
+    });
+  } else {
+    t.diagnostic('NOT MEASURED: this platform did not honour 0o555 on a directory.');
+  }
+  chmodSync(join(store, 'facts'), 0o755);
 });
 
 test('an empty --store is a refusal, not a store at the current directory', () => {

@@ -814,3 +814,90 @@ test('archive rolls back when index.md is a directory', () => {
   assert.deepEqual(readdirSync(join(root, 'archive')), []);
   rmSync(root, { recursive: true, force: true });
 });
+
+// ---------------------------------------------------------------------------------------
+// `restore <name>` — the door back. job44 (z): `restore` took a name since it was written
+// without ever enforcing `NAME_RE`, and its "already live" guard is the same `reachable` —
+// `Path.exists()`-equivalent — that follows symlinks, so a DANGLING symlink at
+// `facts/<name>.md` is an occupied directory entry the guard reported as absent. Measured
+// on macOS BEFORE this fix, both holes live: `restore ALPHA` against `archive/ALPHA.md`
+// exited 0 and wrote `facts/ALPHA.md` (case-insensitive filesystem), and `restore` against a
+// dangling `facts/beta.md` symlink did not refuse at the guard — it fell through to the
+// pre-move `facts()` parse, which raised a raw `FileNotFoundError` reading the dangling link
+// itself. Both are closed the same way `archive`'s NAME_RE hole was: refuse before any
+// syscall, and refuse an occupied destination whether or not it resolves.
+// ---------------------------------------------------------------------------------------
+
+test('restore refuses a name the store could never have written', () => {
+  const root = fresh();
+  const s = store(root);
+  s.save('project', 'alpha', 'a subject in use', 'b');
+  s.archive('alpha');
+  for (const bad of ['ALPHA', '-leading', 'under_score', '', 'a b', '..', 'sub/alpha']) {
+    assert.throws(() => s.restore(bad), (e) =>
+      e instanceof MemoryValidationError && /^invalid name/.test(e.message));
+  }
+  assert.deepEqual(s.archived(), ['alpha']); // nothing moved
+  assert.deepEqual(s.facts(), []);
+  s.restore('alpha'); // and a legal name still goes
+  assert.deepEqual(s.archived(), []);
+  assert.ok(statSync(join(root, 'facts', 'alpha.md')).isFile());
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('restore refuses a dangling symlink destination instead of moving through it', () => {
+  // The opposite outcome from `archive`'s mirror test just above, and deliberately so:
+  // `archive`'s forward move is `Path.replace`, which overwrites a dangling link on every
+  // platform with no divergence to demonstrate. `restore` still calls `pyReplace` here but
+  // `source.rename(destination)` on the reference (`d239480`'s divergence is restore's to
+  // keep, not this unit's to fix) — closing the guard here means an occupied destination is
+  // refused before that call is ever reached, on both runtimes.
+  //
+  // THE SENTENCE IS NOT "ALREADY LIVE" — reconciled with U7 (job44 handoff), because a
+  // dangling link is precisely a fact that is NOT live. This unit's first answer said
+  // "already live" (wrong reason); the reference's first answer let the guard pass and
+  // dressed the pre-read's `FileNotFoundError` as a move failure that never happened (wrong
+  // error, wrong layer). Both are replaced by a sentence that names what is actually true:
+  // something occupies `facts/<name>.md` and it cannot be read as a fact, so the guard now
+  // refuses BEFORE `facts()`'s pre-read is ever reached.
+  const root = fresh();
+  const s = store(root);
+  s.save('project', 'stale-fact', 'an alpha subject nobody wants', 'the body');
+  s.archive('stale-fact');
+  mkdirSync(join(root, 'facts'), { recursive: true });
+  const destination = join(root, 'facts', 'stale-fact.md');
+  symlinkSync(join(root, 'facts', 'nothing-is-here.md'), destination);
+  assert.ok(pyfs.pyLexists(destination) && !pyfs.pyExists(destination));
+
+  assert.throws(() => s.restore('stale-fact'), (e) =>
+    e instanceof MemoryValidationError &&
+    e.message === 'facts/stale-fact.md already exists but cannot be read as a fact; ' +
+      'refusing to restore over it');
+
+  assert.ok(lstatSync(destination).isSymbolicLink(), 'the link was left exactly as found');
+  assert.deepEqual(s.archived(), ['stale-fact'], 'nothing moved out of archive/');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('restore rolls back an index rebuild failure the same way archive does', () => {
+  // job44's reconciliation with U7: `restore`'s closing `rebuildIndex()` used to sit AFTER
+  // its only `try`, uncovered — `checkIndexBudget` never touches disk and passes cleanly, so
+  // a fault at the REBUILD left the fact stuck in `facts/`, gone from `archive/`, with no
+  // rollback attempted at all. MEASURED against the pre-fix code before this test was written
+  // (not reasoned from the code shape): driving this exact fixture left `facts/alpha.md`
+  // present and `archive/` empty afterwards. `checkIndexBudget` and the closing
+  // `rebuildIndex` are now ONE `try`, matching `archive`'s single-try shape.
+  const root = fresh();
+  const s = store(root);
+  s.save('project', 'alpha', 'a subject in use', 'b');
+  s.archive('alpha');
+  assert.deepEqual(s.archived(), ['alpha']);
+
+  rmSync(join(root, 'index.md'));
+  mkdirSync(join(root, 'index.md'));
+  assert.throws(() => s.restore('alpha'), (e) => !(e instanceof MemoryValidationError));
+
+  assert.deepEqual(s.archived(), ['alpha'], 'the fact was put back, not left stuck in facts/');
+  assert.deepEqual(readdirSync(join(root, 'facts')), []);
+  rmSync(root, { recursive: true, force: true });
+});

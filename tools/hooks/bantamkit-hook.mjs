@@ -326,16 +326,123 @@ function pruneUsageEvents(file) {
   log({ event: 'PostToolUse', action: 'prune', before: size, after: fs.statSync(file).size, kept: kept.length });
 }
 
+// ---------------------------------------------- the server's actual --index-budget
+// `Memory.layered(cwd)` opens the project store at DEFAULT_INDEX_BUDGET unless told
+// otherwise, and the MCP server honours `--index-budget N` (`runtime-ts/src/cli.ts:123-130`).
+// A RUNNING server never writes that number down anywhere: `MemoryStore` keeps `indexBudget`
+// in memory only (`runtime-ts/src/memory/store.ts:483`), so nothing publishes it and this
+// file cannot be made to (that would be a change inside `runtime-ts/src/memory`, a different
+// layer and a different unit). The one place the value survives between "the operator
+// configured it" and "this short-lived hook process needs it" is the SAME configuration a
+// Claude Code session itself reads to decide which server to start.
+// `tools/mcpdrift/mcpdrift.py`'s `discover()` already names the three scopes that can change
+// which server answers a session for a given project directory (user, local, project); this
+// reads the same three, for the same reason — those are the configs that can actually change
+// the answer, not a fourth format guessed at.
+//
+// WHAT THIS DELIBERATELY DOES NOT COVER: Claude Desktop / Cursor / Copilot configs (this
+// hook only ever runs under Claude Code, `docs/hooks.md`), enterprise-managed settings, and a
+// server started by hand outside all three files. None of those were covered before this fix
+// either — the old code always assumed the default — so leaving them uncovered narrows an
+// existing gap rather than regressing it.
+//
+// SCOPES DO NOT DISAGREE — THEY HAVE A PRECEDENCE, AND THIS FOLLOWS IT. Until 2026-09-06
+// this collected the DISTINCT `--index-budget` values across the three scopes and refused to
+// compact ("AMBIGUITY IS A REFUSAL, NOT A GUESS") whenever it found more than one. That
+// refusal fired on the NORMAL case: a machine with a user-scope default and a project-scope
+// override is configured, not ambiguous, and the cost was that automatic compaction silently
+// stopped for that project with nothing but a log line to show for it. Verified against the
+// host's own documentation on 2026-09-06 rather than reasoned about
+// (https://code.claude.com/docs/en/mcp, "MCP installation scopes"): when the same server name
+// is defined in more than one scope Claude Code connects to it ONCE, using the definition
+// from the highest-precedence source, and the precedence is
+//
+//     local  >  project  >  user
+//
+// — local being `~/.claude.json` `.projects[<resolved cwd>].mcpServers`, project being
+// `<cwd>/.mcp.json`, user being `~/.claude.json` `.mcpServers`.
+//
+// THE UNIT OF PRECEDENCE IS THE WHOLE ENTRY, NOT THE FLAG, which is the part that is easy to
+// get wrong: the same page says fields are NEVER merged across scopes. So the search below is
+// for the highest-precedence scope that registers `bantamkit` AT ALL, and `--index-budget` is
+// then read from that entry alone. A local-scope entry with no `--index-budget` therefore
+// means the DEFAULT, even when a user-scope entry names a number — because the user-scope
+// entry is not what the session launched. Reading the flag scope-by-scope instead would
+// reintroduce exactly the wrong-denominator bug this arm exists to fix.
+//
+// THERE IS NO AMBIGUOUS CASE LEFT, so there is no refusal branch — dead code shaped like a
+// safety net is worse than none. Precedence is total over the three scopes, each scope holds
+// at most one `bantamkit` entry, and each entry yields at most one `--index-budget`. Finding
+// no entry at all means nothing configures it anywhere this hook can see, and the default is
+// then the honest answer, not a guess: it is the same default the CLI itself falls back to
+// when `--index-budget` is absent.
+//
+// ONE RESIDUAL, NAMED RATHER THAN GUESSED AT: a project-scope `.mcp.json` server is not
+// launched until the user approves it, and that answer is recorded in the SAME file, as
+// `.projects[<cwd>].enabledMcpjsonServers` / `.disabledMcpjsonServers` — both keys are real
+// and present in this machine's `~/.claude.json`, both empty here. This hook does NOT consult
+// them, because the pending state (in neither list) is not resolvable from the file and the
+// disabled state has not been reproduced end to end from a live host. Registered in
+// `docs/roadmap-toolbox.md` rather than half-implemented.
+function readJsonSafe(file) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return {}; }
+}
+
+function indexBudgetFromArgs(args) {
+  if (!Array.isArray(args)) return undefined;
+  for (let i = 0; i < args.length; i += 1) {
+    const a = args[i];
+    if (a === '--index-budget' && i + 1 < args.length) {
+      const n = Number(args[i + 1]);
+      if (Number.isFinite(n)) return n;
+    } else if (typeof a === 'string' && a.startsWith('--index-budget=')) {
+      const n = Number(a.slice('--index-budget='.length));
+      if (Number.isFinite(n)) return n;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The `--index-budget` the `bantamkit` registration a session in `cwd` would actually launch
+ * carries — resolved by Claude Code's own MCP scope precedence, `local > project > user`, over
+ * the WHOLE entry. Cheap: two small file reads, and none of it requires the server to be up.
+ *
+ * Returns `{ budget, scope }`. `budget` is `undefined` when the winning entry configures no
+ * `--index-budget` and when no scope registers `bantamkit` at all; `scope` names the entry
+ * that won, or is `null` when none did, so the log says WHICH file the number came from.
+ */
+function configuredIndexBudget(cwd) {
+  const repo = path.resolve(cwd);
+  const claudeJson = readJsonSafe(path.join(HOME, '.claude.json'));
+  const mcpJson = readJsonSafe(path.join(repo, '.mcp.json'));
+  // Highest precedence first. Order is the whole point; do not sort or reorder.
+  const scopes = [
+    ['local', claudeJson?.projects?.[repo]?.mcpServers?.bantamkit],
+    ['project', mcpJson?.mcpServers?.bantamkit],
+    ['user', claudeJson?.mcpServers?.bantamkit],
+  ];
+  for (const [scope, entry] of scopes) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    return { budget: indexBudgetFromArgs(entry.args), scope };
+  }
+  return { budget: undefined, scope: null };
+}
+
 // ---------------------------------------------- PostToolUse memory_save → compact
 async function postSave(input) {
   const ledger = readLedger(input.session_id);
   ledger.saved = (ledger.saved || 0) + 1;
   writeLedger(input.session_id, ledger);
+  const cwd = input.cwd || process.cwd();
+  const configured = configuredIndexBudget(cwd);
+  const budgetSource = configured.budget !== undefined ? 'configured' : 'default';
+  const budgetScope = configured.budget !== undefined ? configured.scope : null;
   const { Memory } = await loadMemory();
-  const m = Memory.layered(input.cwd || process.cwd());
+  const m = Memory.layered(cwd, configured.budget !== undefined ? { indexBudget: configured.budget } : {});
   const [bytes, budget] = m.indexAccounting();
   if (bytes == null || bytes < COMPACT_AT * budget) {
-    log({ event: 'PostToolUse', action: 'saved', bytes, budget });
+    log({ event: 'PostToolUse', action: 'saved', bytes, budget, budgetSource, budgetScope });
     return;
   }
   // The user ruled compaction automatic (2026-08-24). `compact` archives the stalest facts
@@ -344,7 +451,7 @@ async function postSave(input) {
   const target = Math.floor(COMPACT_TO * budget);
   const r = spawnSync(process.execPath, [path.join(DIST, 'cli.js'), 'compact', '--store', m.store.root ?? m.store.path ?? '', '--budget', String(target)], { encoding: 'utf8', timeout: 8000 });
   const out = `${r.stdout || ''}${r.stderr || ''}`.trim();
-  log({ event: 'PostToolUse', action: 'auto-compact', bytes, budget, target, exit: r.status, out: out.slice(0, 400) });
+  log({ event: 'PostToolUse', action: 'auto-compact', bytes, budget, target, budgetSource, budgetScope, exit: r.status, out: out.slice(0, 400) });
   emit({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: `[bantamkit] memory index was ${bytes}/${budget} B; auto-compacted to ≤${target} B. ${out.slice(0, 600)}` } });
 }
 

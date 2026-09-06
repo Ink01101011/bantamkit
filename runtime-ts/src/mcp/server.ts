@@ -22,7 +22,7 @@
  * indistinguishable from a typo: a manifest renamed or a surface dropped would silently
  * shrink the served set, and the field would be a comment.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -214,6 +214,90 @@ function recordRaise<T>(log: EventLog, tool: string, body: () => T): T {
 }
 
 /**
+ * The last `docread.extract` result this server produced, and what it was OF.
+ *
+ * The port of `mcpserver._DocumentCache` (register entry (i), `docs/roadmap-toolbox.md` row
+ * 8). `bantamkit_read` re-parsed the whole document on EVERY call, so a caller paging a
+ * 12,001-row sheet in 200-row pages parsed the workbook once per page — paging was O(N^2) in
+ * the row window. MEASURED on this machine over a 1,553,944-byte 12,001-row xlsx driven
+ * through a real client with `docread.extract` counted by a loader hook: 68 tool calls, **68**
+ * parses, 4.128 s for the walk. After, over the same fixture and the same counter: **1**
+ * parse, 0.104 s (0.103 / 0.108 on two repeats). The committed, rerunnable form of the same
+ * count is `test/document-cache-and-bounds.test.mjs`, at 7 calls rather than 68.
+ *
+ * ONE entry, deliberately, and for the reference's reason. A single entry evicts whenever two
+ * callers alternate between two documents, and that case then costs exactly one parse per
+ * call — which is what the code this replaces cost for EVERY case, so the cache cannot make
+ * any caller slower than it was (`test/document-cache-and-bounds.test.mjs` counts the
+ * alternating walk and pins the number). What more entries would cost is resident memory: a
+ * `Document` holds its whole rendering as strings, bounded per document by
+ * `docread.TEXT_MAX_BYTES` and `docread.XLSX_MAX_TEXT_BYTES` (16 MiB each), and every extra
+ * entry multiplies that ceiling by one.
+ *
+ * **The key is (realpath, size, mtimeNs), and it has one hole — stated, not implied.** A
+ * rewrite that lands inside a single filesystem timestamp tick AND leaves the byte count
+ * unchanged is indistinguishable from no rewrite at all, and would be served from the stale
+ * parse. `mtimeNs` is nanosecond-SHAPED and not nanosecond-GRAINED: what it reports is
+ * whatever the filesystem stored, which on HFS+ is one second and on APFS/ext4 is finer but
+ * not unbounded. The alternative — hashing the bytes — would re-read the file this cache
+ * exists to avoid re-reading, which is the whole cost on the large documents that motivate
+ * it. So the hole stays, and the test that proves the key works changes the SIZE rather than
+ * racing the clock, because a test that raced it would be measuring the filesystem.
+ *
+ * THE CACHED VALUE IS THE RESULT, NEVER A READER. `docread.extract` hands its own `ZipReader`
+ * down to `extractXlsx`/`extractDocx` so an archive is read from disk once instead of twice,
+ * and that reader's lifetime ends with the `extract` call that opened it. This sits one layer
+ * above and holds a finished `Document`; no file handle outlives a call because of it.
+ */
+class DocumentCache {
+  private key: string | null = null;
+  private doc: docread.Document | null = null;
+
+  /** The cached document for `key`, or `null` — a `null` key never matches. */
+  get(key: string | null): docread.Document | null {
+    if (key === null || key !== this.key) {
+      return null;
+    }
+    return this.doc;
+  }
+
+  put(key: string | null, doc: docread.Document): void {
+    if (key === null) {
+      return;
+    }
+    this.key = key;
+    this.doc = doc;
+  }
+}
+
+/**
+ * What identifies the bytes at `path` — or `null`, which means "do not cache".
+ *
+ * `statSync` FOLLOWS symlinks, which is the same file the reader is about to open, and
+ * `{bigint: true}` is not decoration: `Stats.mtimeMs` is a float and has already lost the
+ * sub-millisecond digits the reference's `st_mtime_ns` keeps, so a key built from it would
+ * have a coarser hole than the one documented above. `size` and `mtimeNs` are read from the
+ * bigint view for the same reason.
+ *
+ * Any error here returns `null` rather than refusing: this is a cache key, and the refusal a
+ * caller reads must be the one `docread.extract` raises in the reader's own words, not one
+ * this function invented from a different syscall's errno. That covers the one shape the
+ * reference does not have — `os.path.realpath` is non-strict in CPython and answers even for
+ * a path that does not resolve, while `realpathSync` throws. A path that stats but will not
+ * resolve is therefore uncached here and cached there; nothing a client can observe moves,
+ * because the reply is the reader's either way.
+ */
+function documentKey(path: string): string | null {
+  try {
+    const stat = statSync(path, { bigint: true });
+    // NUL cannot occur in a path on either platform, so the join is unambiguous.
+    return `${realpathSync(path)}\0${stat.size}\0${stat.mtimeNs}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Run a shiftwork handler and record its `result` — the register's OWN verdict.
  *
  * Every `shiftwork` entry point answers a dict whose `result` key is the decision it made:
@@ -277,6 +361,7 @@ function runTool(
   args: Map<string, PyValue>,
   version: string,
   log: EventLog,
+  documents: DocumentCache,
 ): { value: PyValue; wrapped: boolean } {
   /**
    * The footer for right now — recomputed per call, never cached.
@@ -472,36 +557,45 @@ function runTool(
       // `document_error` like the encrypted one. Until job43 G2 this arm ran `extract`
       // outside `recordRaise` with a hand-copied catch.
       return recordRaise(log, 'bantamkit_read', () => {
-        let doc: docread.Document;
-        try {
-          doc = docread.extract(path);
-        } catch (e) {
-          // `except (docread.DocumentReadError, OSError)`. A Node fs error is CPython's
-          // `OSError` with the sentence rebuilt by `asPyOSError` — `[Errno 13] Permission
-          // denied: '<path>'` for a file this process may not open — through the CRT arm,
-          // because `open()` is the call the reference makes. A `BadZipFile` never reaches
-          // this arm on either side: `docread.ts`'s `zipKind`/`openZip` catch it exactly
-          // where `docread.py`'s `_zip_kind`/`_open` do, and what leaves them is the
-          // sentence naming what the reader saw, never the zip module's.
-          // A `PyOSError` the reader raised itself is already the reference's sentence —
-          // `[Errno 22] Invalid argument` from a zip whose member offset is negative, with
-          // NO filename, because the `seek` that fails there has none. Re-wrapping it would
-          // append `: '<path>'`.
-          // ONLY a filesystem rejection is an `OSError`: numeric `errno` AND the `syscall`
-          // it came from. A string `code` alone is not one — `Z_DATA_ERROR`,
-          // `ERR_INVALID_ARG_VALUE` and `ERR_STRING_TOO_LONG` all carry one, and until job43
-          // G2 each was printed as a fabricated `[Errno 0] …` sentence where the reference
-          // raises (the corrupt stream) or says `no such file` (the NUL byte, which
-          // `docread.statPath` now answers before this arm is reached).
-          const refusal =
-            e instanceof docread.DocumentReadError || e instanceof PyOSError
-              ? e
-              : isFsError(e)
-                ? asPyOSError(e, path, undefined, 'crt')
-                : null;
-          if (refusal === null) throw e;
-          log.record('bantamkit_read', 'refused-unreadable');
-          return { value: { t: 'str', v: noted(documentError(refusal)) }, wrapped: true };
+        // (i): the parse is cached on (realpath, size, mtimeNs), so a paging walk over one
+        // unchanged document parses it once. `documentKey` answering `null` means "do not
+        // cache" and leaves this arm exactly as it was.
+        const key = documentKey(path);
+        let doc: docread.Document | null = documents.get(key);
+        if (doc === null) {
+          try {
+            doc = docread.extract(path);
+          } catch (e) {
+            // `except (docread.DocumentReadError, OSError)`. A Node fs error is CPython's
+            // `OSError` with the sentence rebuilt by `asPyOSError` — `[Errno 13] Permission
+            // denied: '<path>'` for a file this process may not open — through the CRT arm,
+            // because `open()` is the call the reference makes. A `BadZipFile` never reaches
+            // this arm on either side: `docread.ts`'s `zipKind`/`openZip` catch it exactly
+            // where `docread.py`'s `_zip_kind`/`_open` do, and what leaves them is the
+            // sentence naming what the reader saw, never the zip module's.
+            // A `PyOSError` the reader raised itself is already the reference's sentence —
+            // `[Errno 22] Invalid argument` from a zip whose member offset is negative, with
+            // NO filename, because the `seek` that fails there has none. Re-wrapping it would
+            // append `: '<path>'`.
+            // ONLY a filesystem rejection is an `OSError`: numeric `errno` AND the `syscall`
+            // it came from. A string `code` alone is not one — `Z_DATA_ERROR`,
+            // `ERR_INVALID_ARG_VALUE` and `ERR_STRING_TOO_LONG` all carry one, and until job43
+            // G2 each was printed as a fabricated `[Errno 0] …` sentence where the reference
+            // raises (the corrupt stream) or says `no such file` (the NUL byte, which
+            // `docread.statPath` now answers before this arm is reached).
+            const refusal =
+              e instanceof docread.DocumentReadError || e instanceof PyOSError
+                ? e
+                : isFsError(e)
+                  ? asPyOSError(e, path, undefined, 'crt')
+                  : null;
+            if (refusal === null) throw e;
+            log.record('bantamkit_read', 'refused-unreadable');
+            return { value: { t: 'str', v: noted(documentError(refusal)) }, wrapped: true };
+          }
+          // A refusal is NOT cached: the entry holds a parse, and a path that has no parse
+          // must reach the reader again next call so the reply stays the reader's own.
+          documents.put(key, doc);
         }
         const detail: Record<string, DetailValue> = { kind: doc.kind, parts: doc.parts.length };
         if (part === null) {
@@ -674,6 +768,11 @@ export function buildServer(
     },
   );
 
+  // Per SERVER, not per process: two servers in one interpreter (the tests build several)
+  // must not answer each other's files, and the entry dies with the server rather than
+  // outliving it in a module global. The reference does the same, inside `build_server`.
+  const documents = new DocumentCache();
+
   // Startup, not call time: a tool without a manifest, or with the wrong surface, must stop
   // the process before a client ever sees a `tools/list`. The reference gets this from
   // `MCPServer(..., tools=[...])`; here it is one eager pass.
@@ -793,7 +892,7 @@ export function buildServer(
       const model = ARG_MODELS[name];
       if (model === undefined) throw new BantamError(`Unknown tool: ${name}`);
       const bound = validateArguments(model, args);
-      const { value, wrapped } = runTool(name, memory, bound, version, log);
+      const { value, wrapped } = runTool(name, memory, bound, version, log, documents);
       // `_convert_to_content` runs BEFORE the `{"result": ...}` wrap, so a str tool's text
       // block is the RAW STRING and a dict tool's is `to_json(..., indent=2)`.
       text = value.t === 'str' ? value.v : sdkJson(value, 2);

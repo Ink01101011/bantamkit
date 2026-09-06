@@ -463,3 +463,215 @@ test('a .shiftwork over the scan budget still steers, and the log says what it s
   assert.ok(!/Open shiftwork checkpoint/.test(r.stdout), 'a checkpoint past the scan budget must not be reported as found');
   assert.match(r.stdout, /Preserve verbatim/, 'the rest of the steering must survive a spent budget');
 });
+
+// ------------------------------------------------------ postSave's --index-budget denominator
+/**
+ * `postSave` (`PostToolUse` on `mcp__bantamkit__memory_save`) used to open `Memory.layered(cwd)`
+ * with no `indexBudget`, which always falls back to the DEFAULT — so under a real
+ * `--index-budget N` the 90% band was measured against the wrong denominator
+ * (`docs/roadmap-toolbox.md`, registered 2026-08-28, never fixed until now). The fix reads the
+ * same three scopes `tools/mcpdrift/mcpdrift.py`'s `discover()` reads for a project's
+ * `bantamkit` registration — user (`~/.claude.json` `.mcpServers`), local (that file's
+ * `.projects[<cwd>].mcpServers`), and project (`<cwd>/.mcp.json`).
+ *
+ * **CORRECTED 2026-09-06 (job44, unit F4). The first fix resolved the three scopes wrongly and
+ * one of the cases below used to pin the wrong answer.** It gathered the DISTINCT values across
+ * all three and logged `skip-ambiguous-budget` whenever it found more than one — which is the
+ * NORMAL configuration, not an ambiguous one, so a project-scope override beside a user-scope
+ * default silently stopped automatic compaction for that project. Claude Code resolves the same
+ * three by PRECEDENCE, `local > project > user`, connecting once to the highest-precedence
+ * definition and NEVER merging fields across scopes
+ * (https://code.claude.com/docs/en/mcp, "MCP installation scopes", read 2026-09-06).
+ *
+ * The `refuses to auto-compact when scopes disagree` case is therefore GONE rather than
+ * relaxed, and what replaced it asserts more, not less: each of the three scopes wins over the
+ * ones below it (the very configuration that case declared unresolvable now has to produce the
+ * right denominator AND compact), the local scope — which nothing exercised before — is read,
+ * and the whole-entry rule is pinned by the one shape that separates it from a per-flag search:
+ * a winning entry with no `--index-budget` means the DEFAULT even when a lower scope names a
+ * number.
+ */
+const MEMORY_DIST = join(repoRoot, 'runtime-ts', 'dist', 'memory');
+
+/**
+ * Seed real facts through the real `Memory.save`, never by hand-writing a fact file.
+ *
+ * The duplicate gate (`DUPLICATE_JACCARD = 0.5`, `store.ts:97`) scores on the TOKENS of
+ * `name + description` alone — body is never part of that check, and `indexText` is built
+ * from name/type/description too, never body (`store.ts:913-926`), so a fixture only needs
+ * a distinct, budget-sized description per fact; a shared filler body would make every fact
+ * a near-duplicate of the last one on NAME+DESCRIPTION grounds even though bytes differ.
+ * Each fact's description repeats ONE stem unique to that fact index, so cross-fact token
+ * sets never intersect and every save actually lands.
+ */
+async function seedFacts(store, count, targetBytesPerFact) {
+  const { Memory } = await import(join(MEMORY_DIST, 'component.js'));
+  const m = new Memory(store);
+  const stems = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel', 'india', 'juliet'];
+  for (let i = 0; i < count; i += 1) {
+    const stem = `${stems[i % stems.length]}${i}`;
+    let description = '';
+    while (Buffer.byteLength(description) < targetBytesPerFact) description += `${stem} `;
+    const outcome = m.saveOutcome('project', stem, description.trim(), 'body');
+    assert.equal(outcome.status, 'saved', `fixture fact ${i} must actually save: ${outcome.reply}`);
+  }
+}
+
+function postToolUseSave(opts = {}) {
+  return runHook({ hook_event_name: 'PostToolUse', tool_name: 'mcp__bantamkit__memory_save' }, opts);
+}
+
+function mcpJsonArgs(cwd, args) {
+  writeFileSync(join(cwd, '.mcp.json'), JSON.stringify({ mcpServers: { bantamkit: { command: 'tools/bantamkit-mcp', args } } }));
+}
+
+function claudeJsonUserArgs(home, args) {
+  writeFileSync(join(home, '.claude.json'), JSON.stringify({ mcpServers: { bantamkit: { command: 'npx', args } } }));
+}
+
+/**
+ * Both `~/.claude.json` scopes at once, because they live in ONE file: `user` is the top-level
+ * `.mcpServers`, `local` is `.projects[<cwd>].mcpServers`. Pass `[]` for an entry that exists
+ * and configures no flag — that shape is the whole-entry rule's witness — and omit the key
+ * entirely for a scope that registers nothing.
+ */
+function claudeJsonScopes(home, { user, local, cwd } = {}) {
+  const doc = {};
+  if (user !== undefined) doc.mcpServers = { bantamkit: { command: 'npx', args: user } };
+  if (local !== undefined) doc.projects = { [cwd]: { mcpServers: { bantamkit: { command: 'npx', args: local } } } };
+  writeFileSync(join(home, '.claude.json'), JSON.stringify(doc));
+}
+
+test('postSave measures the 90% band against a configured --index-budget, not the default', async () => {
+  const cwd = newCwd();
+  const home = newHome();
+  // Six facts of ~300 B each: nowhere near 90% of the DEFAULT 24000-byte budget, well over
+  // 90% of a configured 1500-byte one.
+  await seedFacts(join(cwd, '.bantamkit', 'memory'), 6, 300);
+  mcpJsonArgs(cwd, ['--index-budget', '1500']);
+
+  const r = postToolUseSave({ cwd, home });
+  assert.equal(r.status, 0, r.stderr);
+  const rec = hookLog(home, 'PostToolUse').find((l) => l.action === 'auto-compact' || l.action === 'saved');
+  assert.ok(rec, 'postSave must log a saved-or-compacted decision');
+  assert.equal(rec.budget, 1500, 'indexAccounting must be measured against the CONFIGURED budget, not the default 24000 — this is the bug this case pins');
+  assert.equal(rec.action, 'auto-compact', 'this index is over 90% of the configured 1500-byte budget and must trigger the automatic half');
+  assert.match(r.stdout, /"additionalContext":"\[bantamkit\] memory index was \d+\/1500 B/);
+});
+
+test('postSave still assumes the default budget when nothing configures --index-budget anywhere it looks', async () => {
+  const cwd = newCwd();
+  const home = newHome();
+  await seedFacts(join(cwd, '.bantamkit', 'memory'), 6, 300); // same fixture, no override anywhere
+  const r = postToolUseSave({ cwd, home });
+  assert.equal(r.status, 0, r.stderr);
+  const rec = hookLog(home, 'PostToolUse').find((l) => l.action === 'saved' || l.action === 'auto-compact');
+  assert.ok(rec);
+  assert.equal(rec.budget, 24000);
+  assert.equal(rec.budgetSource, 'default');
+  assert.equal(rec.action, 'saved', 'this index is nowhere near 90% of the true default budget');
+});
+
+// The three precedence cases. Each puts a WRONG number in every scope below the one under
+// test, so a hook that fell through to a lower scope — or that collected values across scopes
+// the way the first fix did — cannot pass by accident: 9000 and 24000 are both far enough
+// above this fixture's index that the 90% band would not trip, so picking the wrong scope
+// changes `action` and not merely `budget`.
+test('project scope beats user scope — the configuration the old ambiguity refusal broke', async () => {
+  const cwd = newCwd();
+  const home = newHome();
+  await seedFacts(join(cwd, '.bantamkit', 'memory'), 6, 300);
+  mcpJsonArgs(cwd, ['--index-budget', '1500']);        // project scope: the override
+  claudeJsonUserArgs(home, ['--index-budget', '9000']); // user scope: the machine-wide default
+
+  const r = postToolUseSave({ cwd, home });
+  assert.equal(r.status, 0, r.stderr);
+  const skipped = hookLog(home, 'PostToolUse').find((l) => l.action === 'skip-ambiguous-budget');
+  assert.equal(skipped, undefined, 'a project override beside a user default is configured, not ambiguous');
+  const rec = hookLog(home, 'PostToolUse').find((l) => l.action === 'auto-compact' || l.action === 'saved');
+  assert.equal(rec.budget, 1500, 'project scope outranks user scope');
+  assert.equal(rec.budgetScope, 'project');
+  assert.equal(rec.action, 'auto-compact', 'this is the failure the register named: compaction must NOT silently stop here');
+});
+
+test('local scope beats both project and user scope', async () => {
+  const cwd = newCwd();
+  const home = newHome();
+  await seedFacts(join(cwd, '.bantamkit', 'memory'), 6, 300);
+  mcpJsonArgs(cwd, ['--index-budget', '9000']);
+  claudeJsonScopes(home, { cwd, user: ['--index-budget', '9000'], local: ['--index-budget', '1500'] });
+
+  const r = postToolUseSave({ cwd, home });
+  assert.equal(r.status, 0, r.stderr);
+  const rec = hookLog(home, 'PostToolUse').find((l) => l.action === 'auto-compact' || l.action === 'saved');
+  assert.equal(rec.budget, 1500, 'local scope outranks project and user');
+  assert.equal(rec.budgetScope, 'local');
+  assert.equal(rec.action, 'auto-compact');
+});
+
+test('a lone local-scope --index-budget is read — the scope nothing exercised before', async () => {
+  const cwd = newCwd();
+  const home = newHome();
+  await seedFacts(join(cwd, '.bantamkit', 'memory'), 6, 300);
+  claudeJsonScopes(home, { cwd, local: ['--index-budget', '1500'] });
+
+  const r = postToolUseSave({ cwd, home });
+  assert.equal(r.status, 0, r.stderr);
+  const rec = hookLog(home, 'PostToolUse').find((l) => l.action === 'auto-compact' || l.action === 'saved');
+  assert.equal(rec.budget, 1500, '.projects[<cwd>].mcpServers is a scope this hook must read');
+  assert.equal(rec.budgetSource, 'configured');
+  assert.equal(rec.budgetScope, 'local');
+});
+
+// The whole-entry rule, and the ONLY shape that separates it from a per-flag search across
+// scopes. Claude Code never merges fields across scopes, so the local entry — which registers
+// no `--index-budget` — is the entry the session launched, and the answer is the DEFAULT. A
+// hook that searched scope by scope for the flag would find the user scope's 1500 and compact
+// against a denominator no live server is using.
+test('the winning entry is the whole answer: a local entry with no --index-budget means the default', async () => {
+  const cwd = newCwd();
+  const home = newHome();
+  await seedFacts(join(cwd, '.bantamkit', 'memory'), 6, 300);
+  claudeJsonScopes(home, { cwd, user: ['--index-budget', '1500'], local: [] });
+
+  const r = postToolUseSave({ cwd, home });
+  assert.equal(r.status, 0, r.stderr);
+  const rec = hookLog(home, 'PostToolUse').find((l) => l.action === 'auto-compact' || l.action === 'saved');
+  assert.equal(rec.budget, 24000, 'the local entry names no budget, so the default is what the launched server uses');
+  assert.equal(rec.budgetSource, 'default');
+  assert.equal(rec.budgetScope, null);
+  assert.equal(rec.action, 'saved', 'against the true default this index is nowhere near the 90% band');
+});
+
+test('a lone user-scope --index-budget (no project override) is read too', async () => {
+  const cwd = newCwd();
+  const home = newHome();
+  await seedFacts(join(cwd, '.bantamkit', 'memory'), 6, 300);
+  claudeJsonUserArgs(home, ['--index-budget', '1500']);
+  const r = postToolUseSave({ cwd, home });
+  assert.equal(r.status, 0, r.stderr);
+  const rec = hookLog(home, 'PostToolUse').find((l) => l.action === 'auto-compact' || l.action === 'saved');
+  assert.equal(rec.budget, 1500);
+  assert.equal(rec.budgetSource, 'configured');
+});
+
+// The `UserPromptSubmit` recall arm opens `Memory.layered` too, but only calls
+// `recallOutcome` — never `indexAccounting` — so a configured `--index-budget` cannot change
+// what it injects. Confirmed rather than assumed: a huge configured budget must not suppress
+// or alter a recall hit.
+test('UserPromptSubmit recall is unaffected by a configured --index-budget', async () => {
+  const cwd = newCwd();
+  const home = newHome();
+  const { Memory } = await import(join(MEMORY_DIST, 'component.js'));
+  new Memory(join(cwd, '.bantamkit', 'memory')).saveOutcome(
+    'project', 'deploy-flag', 'how the deploy flag works', 'run make deploy',
+  );
+  mcpJsonArgs(cwd, ['--index-budget', '1']); // absurdly small, would refuse a save if this arm read it
+  const r = runHook(
+    { hook_event_name: 'UserPromptSubmit', prompt: 'how does the deploy flag work here' },
+    { cwd, home },
+  );
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /"hookEventName":"UserPromptSubmit"/);
+  assert.match(r.stdout, /deploy-flag/);
+});

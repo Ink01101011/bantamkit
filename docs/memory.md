@@ -105,9 +105,13 @@ one exception, since job42: the user ruled compaction automatic on 2026-08-24, t
 names what the model can do (shorten the description, save under an existing
 name, or call `memory_compact`, which archives and never deletes). The tool acts
 on the writable project store only; grants and the profile layer are never
-compacted. One caveat: the hook's half assumes the default 24000-byte budget
-(it opens `Memory.layered(cwd)` without reading the server's flag), so under
-`--index-budget N` only the tool's half applies. The `MemoryBudgetExceeded` text names `compact()`, and that one is for
+compacted. **Fixed 2026-09-06 (job44):** the hook's half used to always assume the default
+24000-byte budget (it opened `Memory.layered(cwd)` without reading the server's flag), so
+under a real `--index-budget N` only the tool's half applied against the true budget. See
+`docs/hooks.md`'s `PostToolUse` row for the fix — the hook now reads `--index-budget` from
+the same host configs a Claude Code session itself resolves the `bantamkit` registration
+from, and refuses to auto-compact (rather than guess) when those configs disagree. The
+`MemoryBudgetExceeded` text names `compact()`, and that one is for
 host code.
 
 That position only holds if the operator has a lever, and until 2026-08-21 there

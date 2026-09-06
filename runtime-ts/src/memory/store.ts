@@ -820,29 +820,89 @@ export class MemoryStore {
     }
   }
 
+  /**
+   * `NAME_RE` ENFORCED BEFORE ANY SYSCALL, matching `archive` (job44, z). `restore` has
+   * built `facts/<name>.md` out of whatever it was handed since it was written; measured on
+   * macOS before this check, both runtimes: `restore ALPHA` against a live
+   * `archive/ALPHA.md` exited 0 and wrote `facts/ALPHA.md` — the case-insensitive
+   * filesystem matched the archived source, and nothing asked the store's own naming rule
+   * about the destination it was about to create.
+   *
+   * THE OCCUPIED-DESTINATION GUARD NOW ALSO CATCHES A DANGLING SYMLINK (job44, z). `reachable`
+   * is `pyExists`, `Path.exists()`'s equivalent, which FOLLOWS symlinks — so a dangling
+   * symlink at `facts/<name>.md` is an occupied directory entry the guard alone cannot see:
+   * measured, `pyLexists` true and `pyExists` false, and without the check below the guard
+   * passed and execution reached the pre-move `facts()` parse, which then raised a raw
+   * `FileNotFoundError` reading the dangling link it was about to parse as a fact. `pyLexists`
+   * is only consulted when `reachable` returned `false` WITHOUT raising — an EACCES on the
+   * same stat already escaped out of `reachable` first, so this never masks that distinction.
+   *
+   * TWO SENTENCES, NOT ONE, on job44's reconciliation with the reference. The first two
+   * answers tried here were both wrong: treating a dangling link the same as `reachable` said
+   * "already live", and a live fact is exactly what a dangling link is NOT; letting it fall
+   * through to `facts()`'s pre-read dressed an unrelated `FileNotFoundError` as a move
+   * failure when no move had been attempted (both runtimes made one of these two mistakes).
+   * The link occupies the path — refusing is still correct — but the REASON is that it
+   * cannot be read as a fact, not that a fact is already there, so the second branch below
+   * says that instead and never reaches `facts()` at all.
+   *
+   * THIS IS THE OPPOSITE OUTCOME FROM `archive`'s mirror of the same defect: `archive`'s
+   * forward move is `pyReplace`, which overwrites a dangling link identically on every
+   * platform, so the guard there is deliberately left as `reachable` alone (see the test
+   * pinning that). Closing the guard here removes the ONLY path that could reach an occupied
+   * destination, on both runtimes, rather than picking a side of what would happen there.
+   *
+   * AND THE FORWARD MOVE ITSELF NO LONGER DIVERGES — this sentence used to say it did, and
+   * was stale against its own commit. `restore`'s forward move is `pyReplace` on this side
+   * and `source.replace(destination)` on the reference (`store.py`, `restore`), changed in
+   * the SAME commit that added the guard above; at its parent `f484c70` the reference still
+   * called `source.rename(destination)`, which is what this comment described.
+   * `d239480`'s `rename`-versus-`pyReplace` difference is therefore REMOVED here, not merely
+   * made unreachable, and the same is true of `archive` (fixed by review round 5) and of
+   * `compact` (fixed by `d239480` itself). Every forward move in this store is `replace` on
+   * both sides; the only `rename` calls left on the reference are the two ROLLBACKS, which
+   * move back onto a path the forward move has just emptied — see `docs/porting.md`.
+   */
   restore(name: string): void {
+    if (!NAME_RE.test(name || '')) {
+      throw new MemoryValidationError(`invalid name '${name}'; must match ${NAME_PATTERN}`);
+    }
     const archive = pyJoin(this.root, 'archive');
     const source = pyJoin(archive, `${name}.md`);
     if (!this.reachable(source, archive, ARCHIVE_UNREACHABLE)) {
       throw new MemoryValidationError(`no archived fact '${name}' under ${archive}`);
     }
     const destination = this.factPath(name);
-    if (this.reachable(destination, pyJoin(this.root, 'facts'), FACTS_UNREACHABLE)) {
+    const facts = pyJoin(this.root, 'facts');
+    if (this.reachable(destination, facts, FACTS_UNREACHABLE)) {
       throw new MemoryValidationError(
         `fact '${name}' is already live; refusing to overwrite it from archive`,
       );
     }
+    if (pyLexists(destination)) {
+      throw new MemoryValidationError(
+        `facts/${name}.md already exists but cannot be read as a fact; refusing to restore over it`,
+      );
+    }
     this.facts(); // parse BEFORE the move, not after it
-    pyMkdirParents(pyJoin(this.root, 'facts'));
+    pyMkdirParents(facts);
     pyReplace(source, destination);
+    // THE FINAL `rebuildIndex()` IS INSIDE THIS TRY, and job44's reconciliation is why: it
+    // used to sit AFTER this block, uncovered, so a failure there — measured by driving the
+    // real fault (`index.md` a directory) rather than reading the code shape — left the fact
+    // STUCK in `facts/`, GONE from `archive/`, with no rollback attempted at all, because
+    // `checkIndexBudget` never touches disk and passes cleanly first. `archive`'s single try
+    // already covered its own write-then-check in one block; this brings restore's rollback
+    // up to the same coverage `runtime-py` gave `_check_index_budget` and the closing
+    // `_rebuild_index` together, in the same reconciliation.
     try {
       this.checkIndexBudget();
+      this.rebuildIndex();
     } catch (error) {
       pyReplace(destination, source);
       this.rebuildIndex();
       throw error;
     }
-    this.rebuildIndex();
   }
 
   /**

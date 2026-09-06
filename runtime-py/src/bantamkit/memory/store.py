@@ -621,7 +621,60 @@ class MemoryStore:
         a `Memory*` error at all. So the clause below is keyed on "the op after the
         move failed", not on a list of exception types: the promise is about the state
         of the store, and it is not a promise about which exception was raised.
+
+        THE NAME IS CHECKED AGAINST `NAME_RE` BEFORE ANY SYSCALL, matching `archive`'s
+        check (`roadmap-toolbox.md` row 8, (z)): this op has built `facts/<name>.md` out
+        of whatever it was handed since it was written, and `facts/` is exactly the
+        directory a bad name can plant a file in that no other command can name back out.
+
+        THE FORWARD MOVE IS `Path.replace` AND NOT `Path.rename`, for the reason
+        `d239480` gives at `compact` and the reason review round 5 applied to `archive`:
+        `os.rename` raises `FileExistsError` on Windows over an occupied destination
+        where `os.replace` replaces on both platforms, and `runtime-ts` has always
+        called `pyReplace` here. THE ROLLBACK STAYS `rename`, on the same terms
+        `d239480` left it: it moves back onto the path the forward move just emptied,
+        so no state tells the two calls apart there.
+
+        BOTH `_check_index_budget()` AND THE FINAL `_rebuild_index()` NOW SHARE ONE
+        `try`. They did not: the last `_rebuild_index()` used to run after this method's
+        only `try/except` had already exited clean, so a failure THERE — `index.md`
+        being a directory — raised with the fact already moved out of `archive/` and
+        into `facts/`, and nothing put it back. Measured at HEAD before this fix, on a
+        store with `index.md` replaced by a directory: `facts/` held the restored fact,
+        `archive/` was empty, and the promise this docstring opens with did not hold for
+        that one shape — `archive`'s mirror of this rollback was already wrapped and
+        never had the gap. Found while porting (z), not asked for by it: printing "the
+        filesystem refused this; nothing changed" from the CLI would otherwise be a lie
+        for exactly this shape.
+
+        THE DESTINATION GUARD ALSO CHECKS `os.path.lexists`, one line below
+        `_reachable`'s `Path.exists()`, and this is a SECOND finding from working (z),
+        made after `runtime-py` shipped as this job's reference and `runtime-ts` had
+        already answered a parity check against it. `_reachable(destination, ...)`
+        follows symlinks, so a DANGLING symlink at `facts/<name>.md` reports absent —
+        the predicted blind spot — but the state that reaches next on `runtime-py` is
+        NOT the move: it is `_facts()`, three lines below, which lists the same
+        directory the guard just cleared and calls `read_text()` on that same entry,
+        raising a bare `FileNotFoundError` before `source.replace(destination)` is ever
+        reached. Measured before this line existed: `restore` on that fixture raised
+        `FileNotFoundError`, uncaught by anything keyed on `Memory*`, and the CLI's (y)
+        fix dressed it up as "a filesystem error stopped the move" — true about nothing
+        having changed, false about a move having been attempted at all. `runtime-ts`
+        took the other branch, catching the same state at ITS guard and answering "is
+        already live" — also false, of a link that resolves to nothing. Neither
+        sentence named what was actually there, so this line does, once, and both
+        runtimes now say it the same way: `facts/<name>.md` is occupied by something
+        `restore` cannot read as a fact, and that is refused before either the pre-read
+        or the move runs, on the same terms `archive`'s own second guard already
+        refuses an occupied `archive/<name>.md` — the one difference being that
+        `archive`'s occupied-destination guard was never blind to a symlink in the
+        first place, because ITS check is on the side `compact` also writes to, and
+        this one guards the side `_facts()` reads whole. `archive` is UNCHANGED: its
+        `Path.replace` over a dangling symlink still replaces it, on the terms
+        `d239480` and review round 5 set, and nothing here touches that path.
         """
+        if not NAME_RE.match(name or ""):
+            raise MemoryValidationError(f"invalid name '{name}'; must match {NAME_RE.pattern}")
         source = self.root / "archive" / f"{name}.md"
         if not self._reachable(source, self.root / "archive", _ARCHIVE_UNREACHABLE):
             raise MemoryValidationError(
@@ -632,16 +685,28 @@ class MemoryStore:
             raise MemoryValidationError(
                 f"fact '{name}' is already live; refusing to overwrite it from archive"
             )
+        if os.path.lexists(destination):
+            # `_reachable` above already proved `Path.exists()` returned `False` without
+            # raising, so this cannot newly surface an EACCES `_reachable` would have
+            # caught: what is left is exactly the blind spot named in the docstring, a
+            # directory entry `exists()` cannot resolve — a dangling or circular
+            # symlink. Caught HERE, before `_facts()`'s pre-read reaches the same entry
+            # by a worse door.
+            raise MemoryValidationError(
+                f"facts/{name}.md already exists but cannot be read as a fact; "
+                "refusing to restore over it"
+            )
         self._facts()  # parse BEFORE the move, not after it — see the docstring
         destination.parent.mkdir(parents=True, exist_ok=True)
-        source.rename(destination)
+        # `Path.replace`, not `Path.rename`: see "THE FORWARD MOVE" above.
+        source.replace(destination)
         try:
             self._check_index_budget()
+            self._rebuild_index()
         except Exception:
             destination.rename(source)
             self._rebuild_index()
             raise
-        self._rebuild_index()
 
     def _reachable(self, path: Path, directory: Path, consequence: str) -> bool:
         """`path.exists()`, except that "I was not allowed to look" is never "it is not there".

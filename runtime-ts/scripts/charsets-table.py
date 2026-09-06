@@ -26,6 +26,20 @@ ASCII = [chr(i) for i in range(128)]
 MULTI_BYTE = ("shift_jis", "cp932", "euc_jp", "gb2312", "gbk", "gb18030", "big5", "big5hkscs", "euc_kr", "cp949")
 # Not byte codecs: text-to-text transforms and the sentinel that refuses everything.
 NOT_BYTE_CODECS = {"charmap", "raw_unicode_escape", "unicode_escape", "rot_13", "undefined"}
+# `mbcs` and `oem` are Windows API aliases, not fixed encodings: `mbcs` names the machine's
+# ANSI codepage and `oem` its OEM/console codepage. `codecs.lookup` only resolves either
+# name AT ALL on Windows — on POSIX both raise LookupError, which is why this exclusion
+# used to be implicit — and even on Windows the codec each one resolves TO (cp1252,
+# cp932, cp437, ...) depends on the machine's locale. Left to the `codecs.lookup` guard
+# below, that makes this generator's output depend on which interpreter, on which OS, on
+# which locale, produced it: a POSIX run silently drops both, and a Windows run admits
+# whichever single-byte table its own ANSI/OEM codepage happens to be that day. Naming
+# them here instead means the module set this generator writes is the same on every
+# platform that runs it. `docread.ts` still recognizes the NAMES `mbcs`/`oem` (see
+# `CODEC_ALIASES` and `CODEC_MODULES`, both drawn from the unfiltered module list, not
+# from this exclusion) — only the SINGLE_BYTE_TABLES row a real codepage would produce is
+# what a future reader must not "helpfully" restore without a fixed codepage to pin it to.
+PLATFORM_VARIANT_CODECS = {"mbcs", "oem"}
 
 
 def single_byte(module: str) -> tuple[str, str | None] | None:
@@ -68,7 +82,7 @@ def main() -> None:
     modules = sorted(m.name for m in pkgutil.iter_modules(encodings.__path__))
     tables = {}
     for module in modules:
-        if module in NOT_BYTE_CODECS:
+        if module in NOT_BYTE_CODECS or module in PLATFORM_VARIANT_CODECS:
             continue
         try:
             codecs.lookup(module)

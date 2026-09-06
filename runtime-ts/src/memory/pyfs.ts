@@ -68,6 +68,8 @@ import {
 } from 'node:fs';
 import { constants as osConstants, homedir, userInfo } from 'node:os';
 
+import { cmpCodepoint, pyRepr } from '../pysem.js';
+
 // ------------------------------------------------------------------------------ errno
 
 /**
@@ -824,25 +826,20 @@ export function normcase(name: string): string {
 // -------------------------------------------------------------------------- comparison
 
 /**
- * Python's `<` on `str`, which is CODEPOINT order. JS compares UTF-16 code units.
+ * Python's `<` on `str`, which is CODEPOINT order — `pysem.ts`'s, and no longer a second copy
+ * of it (`docs/roadmap-toolbox.md` row 8, entry (n)).
  *
- * They disagree for every astral character: `['\u{1F414}.md', '！.md'].sort()` puts the
- * chicken first because its lead surrogate is 0xD83D, and Python puts it last because
- * 0x1F414 > 0xFF01. `_fact_paths` sorts, `recall` breaks score ties on the name, and the
- * index is written in that order — so a single astral fact name is enough to make two
- * `index.md` files that differ.
+ * JS compares UTF-16 code units, and the two disagree for every astral character:
+ * `['\u{1F414}.md', '！.md'].sort()` puts the chicken first because its lead surrogate is
+ * 0xD83D, and Python puts it last because 0x1F414 > 0xFF01. `_fact_paths` sorts, `recall`
+ * breaks score ties on the name, and the index is written in that order — so a single astral
+ * fact name is enough to make two `index.md` files that differ.
+ *
+ * `docread.ts` carried its own, which agreed on the ORDER for every pair and disagreed on the
+ * numbers (it returned the codepoint difference, this returns -1/0/1). This spelling is the
+ * one that survived, to the digit, because every importer already sees these numbers.
  */
-export function cmpCodepoint(a: string, b: string): number {
-  const x = [...a];
-  const y = [...b];
-  const n = Math.min(x.length, y.length);
-  for (let i = 0; i < n; i += 1) {
-    const p = x[i]!.codePointAt(0)!;
-    const q = y[i]!.codePointAt(0)!;
-    if (p !== q) return p < q ? -1 : 1;
-  }
-  return x.length - y.length;
-}
+export { cmpCodepoint };
 
 /**
  * `sorted(directory / name for name in names)` — sorting `Path`s, not strings.
@@ -1540,38 +1537,22 @@ export function pyStatIsDir(path: string): boolean {
 // --------------------------------------------------------------------------------- repr
 
 /**
- * `repr(str)`, which `_pinned_store` interpolates with `{raw!r}` for a relative pin.
+ * `repr(str)`, which `_pinned_store` interpolates with `{raw!r}` for a relative pin — and
+ * which `pysem.ts` now spells once (`docs/roadmap-toolbox.md` row 8, entry (n)).
  *
  * Python quotes with `'` unless the value contains a `'` and no `"`; it escapes `\\`, the
  * quote, `\t`, `\n`, `\r`, and every codepoint that is not `str.isprintable()` — that is,
- * everything in a `C*` category and every separator except the space itself. JS spells the
- * same predicate `\p{C}` / `\p{Z}` under the `u` flag, so this is the rule rather than a
- * table. The escapes are `\xNN` below U+0100, `\uNNNN` below U+10000, `\UNNNNNNNN` above.
+ * everything in a `C*` category and every separator except the space itself. `docread.ts` had
+ * spelled the same predicate as an explicit `Cc|Cf|Cs|Co|Cn|Zl|Zp|Zs` class where this one
+ * spelled it `\p{C}|\p{Z}`; the two were compared on all 1,114,112 codepoints and answered
+ * byte-identically before they were merged.
  *
  * The one place it can drift is a codepoint whose category changed between CPython 3.12's
  * Unicode 15.0 and the ICU this Node was built against: a newly assigned character is `Cn`
  * (not printable, escaped) for Python and assigned (printable, raw) here. A pin path made of
  * brand-new codepoints is the only input that reaches it.
  */
-export function pyRepr(value: string): string {
-  const quote = value.includes("'") && !value.includes('"') ? '"' : "'";
-  let out = quote;
-  for (const ch of value) {
-    if (ch === '\\') out += '\\\\';
-    else if (ch === quote) out += `\\${ch}`;
-    else if (ch === '\t') out += '\\t';
-    else if (ch === '\n') out += '\\n';
-    else if (ch === '\r') out += '\\r';
-    else if (ch === ' ' || !/^(?:\p{C}|\p{Z})$/u.test(ch)) out += ch;
-    else {
-      const cp = ch.codePointAt(0)!;
-      if (cp < 0x100) out += `\\x${cp.toString(16).padStart(2, '0')}`;
-      else if (cp < 0x10000) out += `\\u${cp.toString(16).padStart(4, '0')}`;
-      else out += `\\U${cp.toString(16).padStart(8, '0')}`;
-    }
-  }
-  return out + quote;
-}
+export { pyRepr };
 
 /**
  * `repr(float)`.

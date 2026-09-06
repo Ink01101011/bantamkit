@@ -221,6 +221,20 @@ def _cmd_archive(store: MemoryStore, args: argparse.Namespace) -> int:
     except MemoryValidationError as e:
         print(f"archive failed: {e}", file=sys.stderr)
         return 1
+    except OSError:
+        # `roadmap-toolbox.md` row 8 (y): two entrances -- `archive/` refusing the write
+        # and `index.md` being a directory -- used to let a raw `PermissionError` or
+        # `IsADirectoryError` unwind through `main` as a CPython traceback. Both leave
+        # `archive()` having changed nothing (the second via its own rollback), so this
+        # sentence is true regardless of which OS exception reached it; see
+        # `docs/porting.md:333-336` for the precedent this follows and why neither this
+        # nor `restore`'s twin below is a `ruling:` case.
+        print(
+            f"archive failed: a filesystem error stopped the move of '{args.name}'; "
+            f"nothing under {store.root} changed",
+            file=sys.stderr,
+        )
+        return 1
     print(f"archived '{args.name}' — index now {_size(store)}/{store.index_budget} bytes")
     return 0
 
@@ -237,6 +251,17 @@ def _cmd_restore(store: MemoryStore, args: argparse.Namespace) -> int:
         return 1
     except MemoryValidationError as e:
         print(f"restore failed: {e}", file=sys.stderr)
+        return 1
+    except OSError:
+        # Same two entrances as `archive`'s catch above, mirrored on `restore`, plus the
+        # dangling-symlink guard hole (z) also opens: `_facts()`'s pre-read reaches the
+        # same `FileNotFoundError` one syscall before the guard's blind spot would ever
+        # let the move run. All of them leave the store exactly as `restore` found it.
+        print(
+            f"restore failed: a filesystem error stopped the move of '{args.name}'; "
+            f"nothing under {store.root} changed",
+            file=sys.stderr,
+        )
         return 1
     print(f"restored '{args.name}' — index now {_size(store)}/{store.index_budget} bytes")
     return 0

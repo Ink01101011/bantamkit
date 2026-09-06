@@ -25,8 +25,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { after, test } from 'node:test';
+import { execFileSync } from 'node:child_process';
 
-import { checkedInFixtures, writeFixtures, xlsxBytes, zipBytes } from './docread-fixtures.mjs';
+import { checkedInFixtures, docxBytes, writeFixtures, xlsxBytes, zipBytes } from './docread-fixtures.mjs';
 
 const dist = new URL('../dist/', import.meta.url);
 const docread = await import(new URL('docread.js', dist));
@@ -116,6 +117,23 @@ const DIVERGENT = new Map([
   [
     'lzma.docx',
     'lzma.docx is a zip but its word/document.xml uses compression method 14 (lzma), which the Node server cannot decompress (the Python server reads it); see docs/porting.md',
+  ],
+  // job44 U17. The bzip2 member M1 left unfixtured, now carrying a DATE format. Neither side
+  // refuses and both read the same row — the divergence is the DISCLOSURE: the reference
+  // decompresses `xl/styles.xml` through `bz2`, sees `yyyy-mm-dd` at the style A1 uses, and
+  // emits the `number-format` omission; `dateFormats` here catches the method-12 refusal as an
+  // unreadable OPTIONAL member and answers no formats, so the omission list is empty. The
+  // sibling `deflate-date-styles.xlsx` is the control and is NOT in this map: the same styles
+  // behind method 8 make both sides emit the omission, which is what says the fixture can show
+  // a difference at all.
+  [
+    'bzip2-date-styles.xlsx',
+    {
+      kind: 'xlsx',
+      text_bytes: 8,
+      parts: [{ name: 'Sales', index: 0, row_count: 1, text_bytes: 8, rows: ['46235\tok'], omissions: [] }],
+      omissions: [],
+    },
   ],
   [
     'rfc2231-charset.eml',
@@ -672,12 +690,19 @@ test('unplaced cells of one reason are counted together and the reasons apart (M
   // One omission per reason, columns in column order — the shape `number-format` already
   // uses, so a caller that renders one renders the other. The reasons sort by CODEPOINT,
   // which puts `past XFD` before `not letters then digits`.
+  //
+  // The DUPLICATE line is job44 (v)-(w)'s doing and was always true of this fixture: `B7 ` is
+  // unplaceable, so it falls back to its XML position — column 2, which is `C1`'s column, and
+  // `C1` overwrote it. This assertion said the sheet lost two things when it had lost three,
+  // and the third one is precisely the silence entry (w) registers.
   const doc = extract(
     xlsx('mixed.xlsx', oneRow(inline('1', 'a'), inline('ZZZZZ1', 'b'), inline('B7 ', 'c'), inline('C1', 'd'))),
   );
+  assert.deepEqual([...doc.parts[0].rows], ['a\tb\td']); // `c` is gone, and now it is gone OUT LOUD
   assert.deepEqual(omitted(doc.parts[0]), [
     ['unplaced-cell', 1, ['B'], docread.UNPLACED_RANGE],
     ['unplaced-cell', 2, ['A', 'C'], docread.UNPLACED_SHAPE],
+    ['duplicate-cell', 1, ['C'], docread.DUPLICATE_CELL],
   ]);
 });
 
@@ -825,4 +850,526 @@ test('an optional member this port cannot decompress does not refuse the documen
       'bzip2.docx is a zip but its word/document.xml uses compression method 12 (bzip2), ' +
       'which the Node server cannot decompress (the Python server reads it); see docs/porting.md',
   });
+});
+
+
+// ---- job44 U2: the ceilings a bounded file could otherwise blow past ---------------------
+//
+// The mirror of `runtime-py/tests/test_docread_ceilings.py` (U1), entries (v), (k) and (w) of
+// `docs/roadmap-toolbox.md` row 8, plus the port-only (a)/(j). Every SENTENCE and every
+// subject below is the reference's, byte for byte — `tools/conformance` compares them, so a
+// wording change here that is not also made there is a divergence and not a preference.
+//
+// Where the Python tests vary `TEXT_MAX_BYTES` with a monkeypatch, these use files that
+// actually cross the shipped ceiling: an ESM `const` export cannot be reassigned, and a
+// ceiling only a patched constant has ever met is a ceiling nobody measured.
+
+test('a workbook cannot materialise unbounded text out of a bounded file (v)', () => {
+  // MEASURED on both runtimes before the fix (register row 8, item (v)): 20,000 rows each
+  // holding ONE `XFD1` cell deflate to 53,967 B and materialise 327,680,000 B in ~9 s —
+  // 6,072x. `XLSX_MAX_COLUMNS` bounds how wide one ROW may get and nothing bounded the
+  // document, so the amplification was bought a row at a time.
+  //
+  // 2,000 rows rather than the register's 20,000: the ceiling bites at the SAME row either
+  // way (a row is 16,383 tabs + one character = 16,384 B, and 16,777,216 / 16,384 is 1,024),
+  // and a fixture that costs 32 MB before the fix says what one costing 327 MB says.
+  const rows = [];
+  for (let i = 1; i <= 2000; i += 1) rows.push(`<row r="${i}">${inline(`XFD${i}`, 'x')}</row>`);
+  const path = join(dir, 'wide-document.xlsx');
+  writeFileSync(path, xlsxBytes([['S', 'worksheets/sheet1.xml', rows.join('')]], { deflate: true }));
+  assert.ok(readFileSync(path).length < 100_000); // a bounded file in
+  const doc = extract(path);
+  assert.ok(doc.textBytes <= docread.XLSX_MAX_TEXT_BYTES + 16_384, String(doc.textBytes));
+  assert.equal(doc.parts[0].rowCount, 1024); // 16 MiB / 16,384 bytes a row, exactly
+  assert.deepEqual(
+    doc.omissions.map((o) => [o.subject, o.count, o.size, [...o.where], o.what]),
+    [['size-cap', 976, 0, [], '2000 rows in this workbook; this reader renders 16777216 bytes of cell text']],
+  );
+});
+
+test('the workbook budget is the DOCUMENT\'s and not one sheet\'s (v)', () => {
+  // A per-sheet budget would let an N-sheet workbook materialise N budgets. The count is the
+  // document's too: every row no sheet rendered is in the one omission, so a caller reads one
+  // number for "what this workbook did not give me" rather than summing across parts.
+  const wide = (n) => {
+    const out = [];
+    for (let i = 1; i <= n; i += 1) out.push(`<row r="${i}">${inline(`XFD${i}`, 'x')}</row>`);
+    return out.join('');
+  };
+  const path = join(dir, 'wide-two-sheets.xlsx');
+  writeFileSync(
+    path,
+    xlsxBytes([['First', 'worksheets/sheet1.xml', wide(700)], ['Second', 'worksheets/sheet2.xml', wide(700)]], {
+      deflate: true,
+    }),
+  );
+  const doc = extract(path);
+  assert.deepEqual(doc.parts.map((p) => [p.name, p.rowCount]), [['First', 700], ['Second', 324]]);
+  assert.deepEqual(
+    doc.omissions.map((o) => [o.subject, o.count, o.what]),
+    [['size-cap', 376, '1400 rows in this workbook; this reader renders 16777216 bytes of cell text']],
+  );
+});
+
+test('a workbook under the budget says nothing about it (v)', () => {
+  // The ceiling must be invisible to every real workbook. MEASURED 2026-09-06 over the goal's
+  // roots: 15 `.xlsx`, largest 8,664,227 B on disk, largest RENDERING 754,520 B — 22x under.
+  // An omission on any of them would be a false disclosure, the same defect wearing the other
+  // sign. The one-row `XFD1` fixture is the widest row this reader will build.
+  const doc = extract(xlsx('xfd-budget.xlsx', oneRow(inline('XFD1', 'end'))));
+  assert.deepEqual([...doc.parts[0].rows], ['\t'.repeat(16383) + 'end']);
+  assert.deepEqual(doc.omissions, []);
+  assert.deepEqual(doc.parts[0].omissions, []);
+});
+
+test('the workbook budget has its own name and can move alone (v)', () => {
+  // Named, not inlined, and NOT an alias of `TEXT_MAX_BYTES` — the two bound different things
+  // (bytes read off a disk, bytes rendered out of a container), and a bar that varies one must
+  // not silently be varying the other.
+  assert.equal(docread.XLSX_MAX_TEXT_BYTES, 16 * 1024 * 1024);
+  const source = readFileSync(new URL('../src/docread.ts', import.meta.url), 'utf8');
+  assert.ok(source.includes('export const XLSX_MAX_TEXT_BYTES = 16 * 1024 * 1024;'));
+  assert.ok(!source.includes('XLSX_MAX_TEXT_BYTES = TEXT_MAX_BYTES'));
+});
+
+test('an html file is read to the ceiling and says how much it left (k)', () => {
+  // `extractHtml` did `readFileSync(path)`: a 1 GB `.html` was held whole, where a 1 GB `.txt`
+  // stops at `TEXT_MAX_BYTES` six lines below and counts the rest. Same ceiling and the SAME
+  // SENTENCE — this reader states one number for "how much of a file I read", not one per
+  // container.
+  const path = join(dir, 'huge.html');
+  // One giant text run rather than two million elements: the ceiling is what is under test,
+  // and a 17 MiB fixture that also costs 17 MiB of parsing costs the suite for nothing.
+  const chunks = ['<html><body><p>first</p><p>', 'a'.repeat(17 * 1024 * 1024), '</p><p>last</p></body></html>'];
+  writeFileSync(path, chunks.join(''));
+  const size = readFileSync(path).length;
+  assert.ok(size > TEXT_MAX_BYTES);
+  const doc = extract(path);
+  assert.equal(doc.kind, 'html');
+  assert.equal(doc.parts[0].rows[0], 'first');
+  assert.ok(!doc.parts[0].rows.includes('last'));
+  assert.deepEqual(
+    doc.omissions.map((o) => [o.subject, o.count, o.size, [...o.where], o.what]),
+    [['size-cap', size - TEXT_MAX_BYTES, size - TEXT_MAX_BYTES, [], `${size} bytes on disk; this reader reads ${TEXT_MAX_BYTES}`]],
+  );
+});
+
+test('an html file under the ceiling is unchanged and discloses nothing (k)', () => {
+  const path = join(dir, 'small.html');
+  writeFileSync(path, '<html><body><p>one</p><p>two</p></body></html>');
+  const doc = extract(path);
+  assert.deepEqual([...doc.parts[0].rows], ['one', 'two']);
+  assert.deepEqual(doc.omissions, []);
+});
+
+test('an mhtml archive is read to the ceiling and says how much it left (k)', () => {
+  // `readFileSync(path).toString('latin1')` fed the WHOLE file to the MIME parser. The
+  // register named the reference's line off a grep and did not read the mhtml half line by
+  // line; read line by line, both halves were unbounded, each in its own spelling.
+  const path = join(dir, 'huge.mhtml');
+  const chunks = [
+    'MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nfirst\r\n',
+    'a'.repeat(17 * 1024 * 1024),
+    '\r\nlast\r\n',
+  ];
+  writeFileSync(path, chunks.join(''));
+  const size = readFileSync(path).length;
+  assert.ok(size > TEXT_MAX_BYTES);
+  const doc = extract(path);
+  assert.equal(doc.kind, 'mhtml');
+  assert.equal(doc.parts[0].rows[0], 'first');
+  assert.ok(!doc.parts[0].rows.includes('last'));
+  assert.deepEqual(
+    doc.omissions.map((o) => [o.subject, o.count, o.size, [...o.where], o.what]),
+    [['size-cap', size - TEXT_MAX_BYTES, size - TEXT_MAX_BYTES, [], `${size} bytes on disk; this reader reads ${TEXT_MAX_BYTES}`]],
+  );
+});
+
+test('a duplicate cell reference is disclosed instead of dropped in silence (w)', () => {
+  // MEASURED before the fix, on this exact fixture: `('second',)` and ZERO omissions, on both
+  // runtimes. Last-wins is KEPT — it is what both do and what a writer's own later cell means.
+  // The silence is the defect: every other cell this reader cannot place is disclosed, and a
+  // cell it placed another cell on top of is a cell the rows do not carry.
+  const doc = extract(xlsx('dup-ref.xlsx', oneRow(inline('A1', 'first'), inline('A1', 'second'))));
+  assert.deepEqual([...doc.parts[0].rows], ['second']);
+  assert.deepEqual(omitted(doc.parts[0]), [['duplicate-cell', 1, ['A'], docread.DUPLICATE_CELL]]);
+  assert.equal(docread.DUPLICATE_CELL, 'the text of a cell a later cell in the same row and column replaced');
+  assert.equal(docread.OMIT_DUPLICATE_CELL, 'duplicate-cell');
+});
+
+test('the duplicate omission never echoes the file\'s own reference (w)', () => {
+  // `UNPLACED_SHAPE`'s rule, one omission over: `r` is whatever the file says, and an omission
+  // that echoed it would carry the file's bytes into the manifest with no bound at all. The
+  // column LETTER is derived and bounded; the reference is not.
+  const ref = 'AAAA1'; // past XFD, so it falls back to its XML position — column A twice
+  const doc = extract(xlsx('dup-echo.xlsx', oneRow(inline('A1', 'first'), inline(ref, 'second'))));
+  const rendered = doc.parts[0].omissions.map((o) => o.what).join(' ');
+  assert.ok(!rendered.includes('AAAA'));
+});
+
+test('duplicates are counted across the sheet with their columns in order (w)', () => {
+  // One omission for the sheet, columns in column order — the shape `number-format` and
+  // `unplaced-cell` already use, so a caller that renders one renders this one. It is rendered
+  // AFTER the unplaced reasons, which is the reference's tuple order.
+  const body =
+    oneRow(inline('C1', 'a'), inline('C1', 'b'), inline('C1', 'c')) +
+    `<row r="2">${inline('A2', 'd')}${inline('A2', 'e')}</row>` +
+    `<row r="3">${inline('B3', 'f')}</row>`;
+  const doc = extract(xlsx('dups.xlsx', body));
+  assert.deepEqual([...doc.parts[0].rows], ['\t\tc', 'e', '\tf']);
+  assert.deepEqual(omitted(doc.parts[0]), [['duplicate-cell', 3, ['A', 'C'], docread.DUPLICATE_CELL]]);
+});
+
+test('an empty cell on top of a full one is not a duplicate (w)', () => {
+  // A cell with no text was never going to be in the rows, so it replaced nothing. Counting it
+  // would inflate the disclosure with cells nobody lost.
+  const doc = extract(
+    xlsx('dup-blank.xlsx', oneRow(inline('A1', 'kept'), '<c r="A1" t="inlineStr"><is><t></t></is></c>')),
+  );
+  assert.deepEqual([...doc.parts[0].rows], ['kept']);
+  assert.deepEqual(doc.parts[0].omissions, []);
+});
+
+test('a duplicate renders through the contract layer\'s generic omission line (w)', () => {
+  // `omissionLine` has no branch for this subject and does not need one: the generic line
+  // prints an unknown subject's count rather than dropping it. Pinned here so the lag between
+  // the two layers stays a slightly generic sentence and never a lost count.
+  const doc = extract(xlsx('dup-line.xlsx', oneRow(inline('A1', 'first'), inline('A1', 'second'))));
+  const lines = contract.documentManifest([
+    {
+      document: 'dup-line.xlsx',
+      kind: 'xlsx',
+      index: 1,
+      part: 'S',
+      row_count: 1,
+      rows: [...doc.parts[0].rows],
+      omissions: doc.parts[0].omissions.map((o) => o.asDict()),
+    },
+  ]).split('\n');
+  assert.ok(
+    lines.includes(
+      '  NOT in those rows: 1 duplicate-cell (the text of a cell a later cell in the same row and column replaced)',
+    ),
+    lines.join('\n'),
+  );
+});
+
+test('one extract reads the archive from disk ONCE, measured and not read off the source (a)(j)', () => {
+  // `sniff` opened the archive to list its members and the extractor opened it again: two
+  // whole-file `readFileSync` per call, MEASURED at 2 before the fix. A code reading is not
+  // the gate — the count is taken in a child process whose `node:fs` is wrapped BEFORE any
+  // ESM facade for `node:fs` exists, so the wrapper IS the binding `docread.js` resolved.
+  const preload = join(dir, 'count-fs.cjs');
+  writeFileSync(
+    preload,
+    "const fs = require('fs');\n" +
+      'const counts = Object.create(null);\n' +
+      'globalThis.__fsByPath = counts;\n' +
+      'const real = fs.readFileSync;\n' +
+      'fs.readFileSync = function (p, ...rest) {\n' +
+      '  counts[String(p)] = (counts[String(p)] || 0) + 1;\n' +
+      '  return real.call(this, p, ...rest);\n' +
+      '};\n',
+  );
+  const driver = join(dir, 'count-fs.mjs');
+  writeFileSync(
+    driver,
+    `const d = await import(${JSON.stringify(new URL('docread.js', dist).href)});\n` +
+      'const p = process.argv[2];\n' +
+      'const before = globalThis.__fsByPath[p] || 0;\n' +
+      'const doc = d.extract(p);\n' +
+      'const after = globalThis.__fsByPath[p] || 0;\n' +
+      'process.stdout.write(JSON.stringify({ reads: after - before, rows: doc.parts[0].rows.length }));\n',
+  );
+  const reads = (path) =>
+    JSON.parse(execFileSync(process.execPath, ['--require', preload, driver, path], { encoding: 'utf8' }));
+  const book = join(dir, 'read-once.xlsx');
+  writeFileSync(book, xlsxBytes([['S', 'worksheets/sheet1.xml', oneRow(inline('A1', 'x'))]], { deflate: true }));
+  assert.deepEqual(reads(book), { reads: 1, rows: 1 });
+  // The other OOXML container goes through the same `openZip`, so it is the same defect.
+  const word = join(dir, 'read-once.docx');
+  writeFileSync(word, docxBytes('<w:p><w:r><w:t>x</w:t></w:r></w:p>', { deflate: true }));
+  assert.deepEqual(reads(word), { reads: 1, rows: 1 });
+});
+
+test('the sniffed reader does not outlive the call that made it (a)(j)', () => {
+  // The correctness trap the efficiency fix opens, and the reason the reader is a local and
+  // never a field: a reader held across calls answers from bytes no longer on disk. Rewriting
+  // the file between two extracts must change the answer — the same property the single-entry
+  // document cache one layer up (entry (i), U5) is keyed on.
+  const path = join(dir, 'rewritten.xlsx');
+  writeFileSync(path, sheet(oneRow(inline('A1', 'before'))));
+  assert.deepEqual([...extract(path).parts[0].rows], ['before']);
+  writeFileSync(path, sheet(oneRow(inline('A1', 'after'))));
+  assert.deepEqual([...extract(path).parts[0].rows], ['after']);
+});
+
+test('the CPython semantics ported twice are now one module, and answer identically (n)', async () => {
+  // Entry (n): `pyStrip`, `cmpCodepoint` and `pyRepr` were each written twice. The gate before
+  // unifying was a DIFF, not a reading — see the U2 handoff for the numbers. This pins the
+  // outcome: the exported names still exist where they always did, and they are the same
+  // function object, so the two spellings cannot drift apart again.
+  const pysem = await import(new URL('pysem.js', dist));
+  const factfile = await import(new URL('memory/factfile.js', dist));
+  const pyfs = await import(new URL('memory/pyfs.js', dist));
+  assert.equal(docread.pyStrip, pysem.pyStrip);
+  assert.equal(factfile.pyStrip, pysem.pyStrip);
+  assert.equal(docread.cmpCodepoint, pysem.cmpCodepoint);
+  assert.equal(pyfs.cmpCodepoint, pysem.cmpCodepoint);
+  assert.equal(docread.pyRepr, pysem.pyRepr);
+  assert.equal(pyfs.pyRepr, pysem.pyRepr);
+  // The six codepoints `String.prototype.trim` and `str.strip()` disagree on, and the astral
+  // ordering `Array.sort` gets wrong — the reasons each copy existed, held by the one left.
+  assert.equal(pysem.pyStrip('\x1cx\x85'), 'x');
+  assert.equal(pysem.pyStrip('﻿x﻿'), '﻿x﻿');
+  assert.ok(pysem.cmpCodepoint('\u{1F414}', '！') > 0);
+  assert.equal(pysem.pyRepr("it's"), '"it\'s"');
+});
+
+// ---- job44 F2: review round 5, the three HIGH findings against U1/U2's own work -----------
+//
+// The mirror of `runtime-py/tests/test_docread_ceilings.py`'s round-2 block. Every sentence is
+// the reference's, byte for byte, and was CONFIRMED by running `runtime-py/src/bantamkit/
+// docread.py` over the same bytes rather than by reading it.
+//
+// One thing here is NOT a copy, and it is why the shape differs from the reference's. F1's
+// gate refuses on the size the central directory DECLARES, and it needed no second ceiling
+// because `zipfile.ZipExtFile` clamps its own output to `ZipInfo.file_size`. This half's
+// `ZipReader` is hand-written and MEASURED not to clamp: before `ZipReader.read` took a
+// `maxOutputLength`, a member declaring 10 bytes over a 19,600,112-byte deflate stream
+// inflated all 19,600,112, passed the CRC, and rendered 400,000 rows. The mechanism is
+// therefore two ceilings where the reference has one; the ANSWERS are identical on both sides
+// of the lie, which is what the last test in this block pins.
+
+/** The reviewer's own input: `count` rows each holding one inline-string cell of one `x`. */
+const inlineRows = (count) => '<row><c t="inlineStr"><is><t>x</t></is></c></row>'.repeat(count);
+
+test('a bounded zip cannot make this reader parse unbounded xml (v round 2)', () => {
+  // MEASURED before this fix, on THIS runtime, at the shipped constants, peak RSS from
+  // `process.resourceUsage().maxRSS`:
+  //
+  // | rows      | file on disk | member declares | RSS during `extract` | omissions |
+  // |-----------|--------------|-----------------|----------------------|-----------|
+  // |   400,000 |     58,378 B |    19,600,112 B | 102.2 -> 1,039.3 MB  | `[]`      |
+  // | 1,000,000 |    143,939 B |    49,000,112 B | 158.6 -> 2,290.8 MB  | `[]`      |
+  //
+  // Linear and unbounded, and `XLSX_MAX_TEXT_BYTES` never sees it: `readMember` decompresses
+  // the member whole and `parsePart` builds a tree from it, both before the first row is
+  // rendered. The tree is where the memory goes — 19.2 MB of member XML became a gigabyte of
+  // `XmlElement`. After: 2 ms and no growth at all, because nothing is inflated.
+  const path = join(dir, 'rows.xlsx');
+  writeFileSync(path, xlsxBytes([['S', 'worksheets/sheet1.xml', inlineRows(400_000)]], { deflate: true }));
+  assert.ok(readFileSync(path).length < 100_000); // a file small enough to mail
+  const declared = ZipReader.open(path).declaredSize('xl/worksheets/sheet1.xml');
+  assert.ok(declared > docread.ZIP_MEMBER_MAX_BYTES);
+  assert.throws(() => extract(path), {
+    name: 'DocumentReadError',
+    message:
+      `rows.xlsx is a zip but its xl/worksheets/sheet1.xml declares ${declared} bytes uncompressed, ` +
+      `past the ${docread.ZIP_MEMBER_MAX_BYTES} bytes this reader parses, so this reader cannot parse it`,
+  });
+});
+
+test('the shared string table is the same door one call earlier (v round 2)', () => {
+  // `sharedStrings` reached the archive before any sheet did, so a gate only on the worksheet
+  // would have left the workbook's biggest part wide open — and it went through `zf.read`
+  // rather than `readMember`, so it had neither this ceiling nor the reader's own sentences
+  // for a damaged or encrypted table. One gate in `readMember` covers every member this
+  // reader cannot do without: the two here, `xl/workbook.xml`, its rels, `word/document.xml`
+  // and an ODF `mimetype`.
+  const path = join(dir, 'shared.xlsx');
+  writeFileSync(
+    path,
+    xlsxBytes([['S', 'worksheets/sheet1.xml', '<row r="1"><c r="A1" t="s"><v>0</v></c></row>']], {
+      shared: ['x'.repeat(17 * 1024 * 1024)],
+      deflate: true,
+    }),
+  );
+  const declared = ZipReader.open(path).declaredSize('xl/sharedStrings.xml');
+  assert.ok(declared > docread.ZIP_MEMBER_MAX_BYTES);
+  assert.throws(() => extract(path), {
+    name: 'DocumentReadError',
+    message:
+      `shared.xlsx is a zip but its xl/sharedStrings.xml declares ${declared} bytes uncompressed, ` +
+      `past the ${docread.ZIP_MEMBER_MAX_BYTES} bytes this reader parses, so this reader cannot parse it`,
+  });
+});
+
+test('a word document part is bounded by the same member ceiling (k round 2)', () => {
+  // `.docx` had no ceiling of any kind — the (k) principle claimed one number for "how much of
+  // a file this reader reads" while `extractDocx` rendered every `<w:t>` with no budget and no
+  // omission. MEASURED before this fix on this runtime, on 100 runs of 400,000 `y`: a
+  // 41,254-byte `.docx` rendered 40,000,099 bytes of text in 306 ms — 2.38x `TEXT_MAX_BYTES`
+  // — with `doc.omissions` and `part.omissions` both empty. After: refused in 0 ms.
+  //
+  // The ceiling lands on the member rather than on the rendering because that is where the
+  // memory is spent, and because the rendering of an OOXML part can never exceed the bytes of
+  // the part: 40 MB of text needs 40 MB of `<w:t>` to come out of.
+  const path = join(dir, 'big.docx');
+  writeFileSync(path, docxBytes(`<w:p><w:r><w:t>${'y'.repeat(17 * 1024 * 1024)}</w:t></w:r></w:p>`, { deflate: true }));
+  const declared = ZipReader.open(path).declaredSize('word/document.xml');
+  assert.ok(declared > docread.ZIP_MEMBER_MAX_BYTES);
+  assert.throws(() => extract(path), {
+    name: 'DocumentReadError',
+    message:
+      `big.docx is a zip but its word/document.xml declares ${declared} bytes uncompressed, ` +
+      `past the ${docread.ZIP_MEMBER_MAX_BYTES} bytes this reader parses, so this reader cannot parse it`,
+  });
+});
+
+test('the member ceiling has its own name and the workbook budget no longer overclaims (v)', () => {
+  // Two claims, both of them source facts and both of them shipped: the ceiling is a named
+  // constant a bar can vary, and the sentence beside `XLSX_MAX_TEXT_BYTES` that said the file
+  // was already bounded is gone. That sentence was false for the whole life of the (v)
+  // closure and it is the reason the parse was never looked at.
+  assert.equal(docread.ZIP_MEMBER_MAX_BYTES, 16 * 1024 * 1024);
+  const source = readFileSync(new URL('../src/docread.ts', import.meta.url), 'utf8');
+  assert.ok(source.includes('export const ZIP_MEMBER_MAX_BYTES = 16 * 1024 * 1024;'));
+  // The false clause is gone as a CLAIM. It survives only inside the correction that names it
+  // false, which is the record of why (v) shipped half-closed and is worth keeping.
+  assert.ok(!source.includes('because the file is already bounded and the'));
+  assert.ok(source.includes('"because the file is already bounded", and that was FALSE'));
+});
+
+test('an ordinary workbook is far under the member ceiling and invents no refusal (v)', () => {
+  // A ceiling no real file meets, stated as a measurement rather than a hope. The reference
+  // measured the corpus: 25 OOXML/ODF packages under the goal's roots, the largest single XML
+  // member 4,283,286 B — 3.9x under this — and the largest `word/document.xml` 159,976 B.
+  // Held on a fixture rather than on the corpus, because the corpus is this machine's.
+  const path = xlsx('ordinary-member.xlsx', oneRow(inline('A1', 'first')) + `<row r="2">${inline('A2', 'second')}</row>`);
+  const zf = ZipReader.open(path);
+  assert.ok(Math.max(...zf.infolist().map((i) => i.fileSize)) * 4000 < docread.ZIP_MEMBER_MAX_BYTES);
+  const doc = extract(path);
+  assert.deepEqual([...doc.parts[0].rows], ['first', 'second']);
+  assert.deepEqual(doc.omissions, []);
+});
+
+test('a member that declares less than it holds cannot slip past the gate (v round 2)', () => {
+  // THE ONE THING THAT IS NOT A COPY. The gate reads the central directory, which is the
+  // ATTACKER's bytes, so this asks what a lying declaration BUYS rather than asserting from
+  // the source that it buys nothing.
+  //
+  // MEASURED on the reference: `ZipExtFile` clamps its output to `ZipInfo.file_size` and CRCs
+  // what it produced, so a member declaring 10 bytes while holding 19,600,112 yields 10 bytes
+  // and `Bad CRC-32`. MEASURED here BEFORE this fix, on the identical bytes: `ZipReader.read`
+  // returned all 19,600,112, the CRC passed (it covers the real content), and `extract`
+  // rendered 400,000 rows with no omission — the declared-size gate walked past by one 4-byte
+  // edit. `maxOutputLength` is that clamp with a hard stop instead of a truncation, and the
+  // sentence is the CRC check's own, which is what the reference prints for this file.
+  const path = join(dir, 'lie.xlsx');
+  const raw = xlsxBytes([['S', 'worksheets/sheet1.xml', inlineRows(400_000)]], { deflate: true });
+  const member = Buffer.from('xl/worksheets/sheet1.xml', 'utf8');
+  let central = raw.lastIndexOf('PK\x01\x02', raw.length, 'latin1');
+  while (!raw.subarray(central + 46, central + 46 + member.length).equals(member)) {
+    central = raw.lastIndexOf('PK\x01\x02', central - 1, 'latin1');
+    assert.notEqual(central, -1);
+  }
+  raw.writeUInt32LE(10, central + 24); // the DECLARED uncompressed size, and nothing else
+  writeFileSync(path, raw);
+  const zf = ZipReader.open(path);
+  assert.equal(zf.declaredSize('xl/worksheets/sheet1.xml'), 10);
+  assert.ok(10 < docread.ZIP_MEMBER_MAX_BYTES); // the declared-size gate lets this through
+  assert.throws(() => zf.read('xl/worksheets/sheet1.xml'), {
+    name: 'BadZipFile',
+    message: "Bad CRC-32 for file 'xl/worksheets/sheet1.xml'",
+  });
+  assert.throws(() => extract(path), {
+    name: 'DocumentReadError',
+    message:
+      "lie.xlsx is a zip but its xl/worksheets/sheet1.xml is damaged (Bad CRC-32 for file " +
+      "'xl/worksheets/sheet1.xml'), so this reader cannot read it",
+  });
+});
+
+test('an html refusal reached under the cap says the reader stopped early (w round 2)', () => {
+  // MEASURED before this fix, on the reviewer's own input — a 16 MiB comment inside `<script>`
+  // followed by one visible sentence:
+  //
+  //     cannot read big2.html: it is a html container but its markup carried no text outside
+  //     script and style, so this reader has no text for it — it is not an empty document
+  //
+  // The document DOES carry text. `extractHtml` built the `Document` with the `size-cap`
+  // omission in it and handed it to `nonempty`, which raises — and the refusal carried the
+  // reader's verdict about the content while the cap that produced that verdict was discarded.
+  // This is the finding most likely to reach a real user: a caller reading that sentence
+  // concludes the file is empty and stops.
+  const path = join(dir, 'big2.html');
+  writeFileSync(
+    path,
+    `<html><script>/*${'a'.repeat(TEXT_MAX_BYTES)}*/</script><p>the only sentence in this document</p></html>`,
+  );
+  const size = readFileSync(path).length;
+  assert.ok(size > TEXT_MAX_BYTES);
+  assert.throws(() => extract(path), {
+    name: 'DocumentReadError',
+    message:
+      'cannot read big2.html: it is a html container but its markup carried no text outside ' +
+      `script and style in the part this reader read (${size} bytes on disk; this reader reads ` +
+      `${TEXT_MAX_BYTES}) — the ${size - TEXT_MAX_BYTES} bytes it did not read may carry text`,
+  });
+});
+
+test('an mhtml refusal under the cap keeps the media tally too (w round 2)', () => {
+  // The reviewer's second input: a base64 `image/png` part and then a `text/plain` part past
+  // the ceiling. Both the `size-cap` AND the media tally were lost — the answer was the bare
+  // `no text/html or text/plain part carried any text`.
+  //
+  // The media clause is not decoration. It is the difference between "this file holds nothing
+  // I can read" and "this file holds one embedded object and I stopped before the text".
+  const path = join(dir, 'big.mht');
+  writeFileSync(
+    path,
+    'MIME-Version: 1.0\r\nContent-Type: multipart/related; boundary="B"\r\n\r\n--B\r\n' +
+      'Content-Type: image/png\r\nContent-Transfer-Encoding: base64\r\n\r\n' +
+      'iVBORw0KGgo='.repeat(TEXT_MAX_BYTES / 12) +
+      '\r\n\r\n--B\r\nContent-Type: text/plain\r\n\r\nthe only sentence in this document\r\n--B--\r\n',
+  );
+  const size = readFileSync(path).length;
+  assert.ok(size > TEXT_MAX_BYTES);
+  assert.throws(() => extract(path), {
+    name: 'DocumentReadError',
+    message:
+      'cannot read big.mht: it is a mhtml container but no text/html or text/plain part ' +
+      `carried any text in the part this reader read (${size} bytes on disk; this reader reads ` +
+      `${TEXT_MAX_BYTES}) — the ${size - TEXT_MAX_BYTES} bytes it did not read may carry text, ` +
+      'and it holds 1 embedded part(s) (image/png) this reader renders no text for',
+  });
+});
+
+test('a refusal with media behind it names the media it could not render (w round 2)', () => {
+  // No cap here, so the verdict about the text IS true — and the file is still not empty.
+  // `nonempty` threw every omission away, media included, on every path out of it.
+  const path = join(dir, 'picture.mht');
+  writeFileSync(
+    path,
+    'MIME-Version: 1.0\n' +
+      'Content-Type: multipart/related; boundary="B"\n\n' +
+      '--B\nContent-Type: image/png\nContent-Transfer-Encoding: base64\n\niVBORw0KGgo=\n\n--B--\n',
+  );
+  assert.throws(() => extract(path), {
+    name: 'DocumentReadError',
+    message:
+      'cannot read picture.mht: it is a mhtml container but no text/html or text/plain part ' +
+      'carried any text, so this reader has no text for it — it is not an empty document, ' +
+      'and it holds 1 embedded part(s) (image/png) this reader renders no text for',
+  });
+});
+
+test('a refusal with nothing behind it is the sentence it always was (w round 2)', () => {
+  // The common case does not move. An empty `.html` with no cap and no media still refuses in
+  // the words `docs/porting.md` pins, `docread-expected.jsonl` records and
+  // `tools/conformance` compares.
+  const path = join(dir, 'empty-round2.html');
+  writeFileSync(path, '<html><body><script>var x = 1;</script></body></html>');
+  assert.throws(() => extract(path), {
+    name: 'DocumentReadError',
+    message:
+      'cannot read empty-round2.html: it is a html container but its markup carried no text ' +
+      'outside script and style, so this reader has no text for it — it is not an empty document',
+  });
+  // And the two fixtures the reference's own answers are recorded for take the same branch —
+  // `blank.html` and `noboundary.mht` in `docread-expected.jsonl`, unchanged by this round.
+  for (const fixture of ['blank.html', 'noboundary.mht']) {
+    assert.equal(dump(paths[fixture]).message, expected.get(fixture).message);
+  }
 });
