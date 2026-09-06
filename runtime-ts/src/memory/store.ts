@@ -849,11 +849,19 @@ export class MemoryStore {
    * THIS IS THE OPPOSITE OUTCOME FROM `archive`'s mirror of the same defect: `archive`'s
    * forward move is `pyReplace`, which overwrites a dangling link identically on every
    * platform, so the guard there is deliberately left as `reachable` alone (see the test
-   * pinning that). `restore`'s forward move is still `pyReplace` on THIS side but
-   * `source.rename(destination)` on the reference — `d239480`'s divergence, not this unit's
-   * to fix — so closing the guard here removes the ONLY path that could reach an occupied
-   * destination and therefore that divergence, on both runtimes, rather than picking a side
-   * of it.
+   * pinning that). Closing the guard here removes the ONLY path that could reach an occupied
+   * destination, on both runtimes, rather than picking a side of what would happen there.
+   *
+   * AND THE FORWARD MOVE ITSELF NO LONGER DIVERGES — this sentence used to say it did, and
+   * was stale against its own commit. `restore`'s forward move is `pyReplace` on this side
+   * and `source.replace(destination)` on the reference (`store.py`, `restore`), changed in
+   * the SAME commit that added the guard above; at its parent `f484c70` the reference still
+   * called `source.rename(destination)`, which is what this comment described.
+   * `d239480`'s `rename`-versus-`pyReplace` difference is therefore REMOVED here, not merely
+   * made unreachable, and the same is true of `archive` (fixed by review round 5) and of
+   * `compact` (fixed by `d239480` itself). Every forward move in this store is `replace` on
+   * both sides; the only `rename` calls left on the reference are the two ROLLBACKS, which
+   * move back onto a path the forward move has just emptied — see `docs/porting.md`.
    */
   restore(name: string): void {
     if (!NAME_RE.test(name || '')) {

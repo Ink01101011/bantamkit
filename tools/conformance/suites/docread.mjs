@@ -447,6 +447,188 @@ export async function run(ctx) {
     writeFileSync(join(bed, file), bytes);
     paths[file] = join(bed, file);
   }
+
+  // -------- job44's FIX ROUND: three HIGH defects, and why none of them reddened a case
+  //
+  // Review round 5 found three defects in this job's own work, and every one of them was
+  // SYMMETRIC — the same hole in `docread.py` and in `docread.ts`, so all 6,662 comparisons
+  // in this harness stayed green through all three. That is the class this file already
+  // names twice (the column ceiling, the three ceilings): a differential cannot see two
+  // runtimes regressing together, and only a typed literal can. The fixtures are built here
+  // and the LITERALS are further down; what each fixture is FOR:
+  //
+  //   member-parse-bomb.xlsx      H1. 58,380 bytes of zip whose `xl/worksheets/sheet1.xml`
+  //                               declares 19,600,112 — the reviewer's own input. Before the
+  //                               fix BOTH runtimes decompressed it whole and built a tree
+  //                               from it (measured 342.2 MB of `tracemalloc` on the
+  //                               reference, 1,039.3 MB of RSS on the port) with NO omission,
+  //                               because `XLSX_MAX_TEXT_BYTES` bounds the RENDERING and
+  //                               stands one door behind the parse. Now both refuse on the
+  //                               DECLARED size, before any inflate.
+  //   member-at-ceiling.xlsx      The boundary, and it is a boundary and not a bar: a member
+  //   member-over-ceiling.xlsx    of exactly 16,777,216 bytes still parses and renders `ok`;
+  //                               one byte more is refused. Both are padded with whitespace
+  //                               inside `<sheetData>` so the member is 16 MiB while the
+  //                               RENDERING is one cell — the ceiling under test is the
+  //                               parse's, and a fixture that also blew up the rendering
+  //                               could not say which of the two doors answered.
+  //   lying-central-directory     H1's second half, and the case in this set that a
+  //   honest-central-directory    differential could not have been talked into. The two files
+  //                               are the SAME BYTES but for one 4-byte field: the central
+  //                               directory's uncompressed size, forged to 10 over a
+  //                               1,960,112-byte deflate stream. The honest one reads 40,000
+  //                               rows; the forged one is refused with `Bad CRC-32` — and the
+  //                               two runtimes reach that identical sentence by GENUINELY
+  //                               DIFFERENT MECHANISMS. The reference gets it free from
+  //                               CPython: `ZipExtFile` clamps its output to
+  //                               `ZipInfo.file_size` and then checksums what it produced.
+  //                               The port's zip reader is hand-written and had no clamp —
+  //                               MEASURED at `c6bfdeb` before the fix, it inflated all
+  //                               19,600,112 bytes of the larger shape, passed the CRC (which
+  //                               covers the real content) and rendered 400,000 rows — so it
+  //                               now passes `file_size` as `maxOutputLength` and renders
+  //                               `ERR_BUFFER_TOO_LARGE` as that same sentence. No
+  //                               `docs/porting.md` row is owed: the mechanisms differ, the
+  //                               answers do not, and only a real file on disk says so.
+  //   capped-refusal.html         H2. A refusal reached UNDER a cap threw the cap away to say
+  //   capped-refusal-media.mht    it: `its markup carried no text outside script and style`,
+  //                               about a document whose only sentence is 149 bytes past
+  //                               where the reader stopped. The verdict is now scoped to the
+  //                               part that was read and the unread bytes are named; on the
+  //                               `.mht` the media tally survives too. The two overshoots are
+  //                               149 and 263, different from each other and from the 4,321 /
+  //                               2,749 the (k) fixtures use, because the sentence
+  //                               INTERPOLATES them and a shared number lets one side's
+  //                               arithmetic hide inside another's.
+  //   uncapped-refusal.html       H2's other side: with no cap and no media the sentence does
+  //   media-refusal.mht           not move, and with media and no cap the media clause is
+  //                               there. Three of the four branches out of `_nonempty` are
+  //                               pinned by these two plus the pair above; the fourth is
+  //                               `cap-then-media.mht`, which does not refuse at all.
+  //   cap-then-media.mht          Finding 7. The `[size-cap, media]` ORDER at document grain
+  //                               was implemented and pinned only for `xlsx-over-budget.xlsx`
+  //                               — `mhtml-over-ceiling.mht` carries a cap and no media, so
+  //                               swapping the two on BOTH sides kept every case green. This
+  //                               is the mhtml grain with both: text in the part that was
+  //                               read, an image part underneath the cap, and 347 bytes past
+  //                               it.
+  //
+  // All nine are BUILT here and deleted with the scratch bed. Three are ~16 MiB, which is
+  // what a 16 MiB ceiling costs to straddle; the four workbooks are 17-59 KB on disk and
+  // carry their megabytes inside a member, which is the whole point of them.
+  const CEILING = 16 * 1024 * 1024;
+  const INLINE_ROW = '<row><c t="inlineStr"><is><t>x</t></is></c></row>';
+  // LAID DOWN AS THEY ARE BUILT, and not collected into an object first: three of these are
+  // ~16 MiB, and an object that outlives the write keeps every one of them alive for the
+  // whole run. The harness holds two full answer sets in memory already.
+  const round5 = [];
+  const lay = (file, bytes) => {
+    writeFileSync(join(bed, file), bytes);
+    paths[file] = join(bed, file);
+    round5.push(file);
+  };
+  // H1's input, at the reviewer's own 400,000 rows: refused on the declaration, so the
+  // 19,600,112 bytes are never inflated and the case costs the run nothing to answer.
+  lay(
+    'member-parse-bomb.xlsx',
+    fixtures.xlsxBytes([['Wide', 'worksheets/sheet1.xml', INLINE_ROW.repeat(400000)]], { deflate: true }),
+  );
+  // The boundary pair. The body is one `ok` cell and then whitespace, sized so the member is
+  // EXACTLY the ceiling and exactly one byte over it.
+  {
+    const okRow = fixtures.row([fixtures.inlineCell('A1', 'ok')]);
+    const wrapper = Buffer.byteLength(`<worksheet ${fixtures.SHEET_NS}><sheetData>${okRow}</sheetData></worksheet>`, 'utf8');
+    const memberOf = (size) => fixtures.xlsxBytes([['Wide', 'worksheets/sheet1.xml', okRow + ' '.repeat(size - wrapper)]], { deflate: true });
+    lay('member-at-ceiling.xlsx', memberOf(CEILING));
+    lay('member-over-ceiling.xlsx', memberOf(CEILING + 1));
+  }
+  // The forged declaration and its control. 40,000 rows and not 400,000: the property is the
+  // same at either size, and this one has to be RENDERED by the control — and by both
+  // runtimes under the mutation that proves the case is not vacuous.
+  const honest = fixtures.xlsxBytes([['Wide', 'worksheets/sheet1.xml', INLINE_ROW.repeat(40000)]], { deflate: true });
+  const lying = Buffer.from(honest);
+  let forgedAt = 0;
+  let forgedFrom = 0;
+  {
+    const member = Buffer.from('xl/worksheets/sheet1.xml', 'utf8');
+    const CENTRAL = Buffer.from('PK\x01\x02', 'latin1');
+    let at = lying.lastIndexOf(CENTRAL);
+    while (at > 0 && !lying.subarray(at + 46, at + 46 + member.length).equals(member)) at = lying.lastIndexOf(CENTRAL, at - 1);
+    if (at <= 0) throw new Error('docread: no central-directory header for the worksheet to forge');
+    forgedAt = at + 24; // the uncompressed size the archive DECLARES, in its central header
+    forgedFrom = lying.readUInt32LE(forgedAt);
+    lying.writeUInt32LE(10, forgedAt);
+  }
+  // The forged one travels as itself — it refuses, so its answer is one sentence. The honest
+  // one renders 40,000 rows, which is what the `summaries` route exists for, so it is laid
+  // down further below with the other fixtures that straddle a ceiling.
+  lay('lying-central-directory.xlsx', lying);
+  // H2. `head` + padding + `tail`, where the padding runs to the ceiling exactly and the tail
+  // is the overshoot, so the read prefix ends inside an unterminated `<script>` (html) or
+  // inside a base64 `image/png` part (mhtml) and carries no renderable text at all — while
+  // the file plainly does, `tail` bytes further on.
+  const straddle = (head, tail, filler) =>
+    Buffer.concat([Buffer.from(head, 'latin1'), Buffer.alloc(CEILING - head.length, filler), Buffer.from(tail, 'latin1')]);
+  /** `body` padded with `!` to exactly `want` bytes, so the overshoot is CHOSEN and not left over. */
+  const overshoot = (want, before, after) => {
+    const pad = want - Buffer.byteLength(before + after, 'latin1');
+    if (pad < 0) throw new Error(`docread: overshoot ${want} is shorter than its own tail`);
+    return before + '!'.repeat(pad) + after;
+  };
+  lay('capped-refusal.html', straddle('<html><script>/*', overshoot(149, '*/</script><p>the only sentence in this document', '</p></html>'), 0x61));
+  const MHT_MEDIA_HEAD =
+    'MIME-Version: 1.0\nContent-Type: multipart/related; boundary="B"\n\n' +
+    '--B\nContent-Type: image/png\nContent-Transfer-Encoding: base64\n\n';
+  lay(
+    'capped-refusal-media.mht',
+    straddle(MHT_MEDIA_HEAD, overshoot(263, '\n--B\nContent-Type: text/plain\n\nthe only sentence in this archive', '\n--B--\n'), 0x41),
+  );
+  // Finding 7's fixture: a text part ABOVE the cap so the document reads, then the image part
+  // the cap cuts through, then 347 bytes of text the reader never saw.
+  lay(
+    'cap-then-media.mht',
+    straddle(
+      'MIME-Version: 1.0\nContent-Type: multipart/related; boundary="B"\n\n' +
+        '--B\nContent-Type: text/plain\n\nalpha\n\n--B\nContent-Type: image/png\nContent-Transfer-Encoding: base64\n\n',
+      overshoot(347, '\n--B\nContent-Type: text/plain\n\npast the ceiling', '\n--B--\n'),
+      0x41,
+    ),
+  );
+  // The two branches out of `_nonempty` that have NO cap: the sentence that did not move, and
+  // the media clause on its own. Both are small enough to travel as themselves.
+  lay('uncapped-refusal.html', Buffer.from('<html><body><script>var x = 1;</script></body></html>', 'latin1'));
+  lay(
+    'media-refusal.mht',
+    Buffer.from(
+      'MIME-Version: 1.0\nContent-Type: multipart/related; boundary="B"\n\n' +
+        '--B\nContent-Type: image/png\nContent-Transfer-Encoding: base64\n\niVBORw0KGgo=\n\n--B--\n',
+      'latin1',
+    ),
+  );
+  // The forged file is the honest one with ONE FIELD changed, and that is a fact about the
+  // fixture rather than about either runtime — so it is checked here, where it can fail. If
+  // the two files ever differ outside that field, the refusal below stops being attributable
+  // to the declaration and the case that reads it is measuring something else.
+  //
+  // It is "inside the field" and not "four bytes": 1,960,112 is `70 e0 1d 00` and 10 is
+  // `0a 00 00 00`, so three of the four bytes actually change. Asserting 4 measured the
+  // arithmetic of two particular numbers rather than the property, and it failed on the first
+  // run — which is the case doing its job one round earlier than intended.
+  const forgedDiff = [];
+  for (let i = 0; i < Math.max(honest.length, lying.length); i += 1) if (honest[i] !== lying[i]) forgedDiff.push(i);
+  const forgedCase = {
+    name: 'fixtures: the lying central directory differs from the honest one only inside the 4-byte declared size',
+    kind: 'json',
+    expected: { sameLength: true, allDiffsInsideTheDeclaredSize: true, changed: true, was: 1960112, now: 10 },
+    actual: {
+      sameLength: honest.length === lying.length,
+      allDiffsInsideTheDeclaredSize: forgedDiff.every((i) => i >= forgedAt && i < forgedAt + 4),
+      changed: forgedDiff.length > 0,
+      was: forgedFrom,
+      now: lying.readUInt32LE(forgedAt),
+    },
+  };
+
   // The checked-in fixtures, read from where `runtime-py/tests/data/docread/` keeps them —
   // the same bytes both unit suites read, so nothing is rebuilt: `unicode-digit-shared-
   // string.xlsx` (an index `str.isdigit()` accepts and `int()` does not), `x-uuencode.eml`,
@@ -615,6 +797,10 @@ export async function run(ctx) {
     for (let i = 0; i < 300000; i += 1) cells += `<c r="${columnLetter(i)}1" t="inlineStr"><is><t>v${i}</t></is></c>`;
     summarise('wide-row.xlsx', fixtures.xlsxBytes([['Wide', 'worksheets/sheet1.xml', `<row r="1">${cells}</row>`]], { deflate: true }));
   }
+  // The lying central directory's CONTROL (job44 F3): the same archive with its declaration
+  // left alone. It renders 40,000 rows, which is exactly what this route is for — the digest
+  // is the same statement as the rows and does not push them across the pipe twice.
+  summarise('honest-central-directory.xlsx', honest);
   const summaryNames = Object.keys(SUMMARISED).sort();
 
   // ------------------------------------------------------------------------ the pages
@@ -761,7 +947,7 @@ export async function run(ctx) {
 
   // ------------------------------------------------------------------------- the cases
 
-  const cases = [shadowCase];
+  const cases = [shadowCase, forgedCase];
   const refused = (answer) => Boolean(answer.error);
   let ruled = 0;
   let readBoth = 0;
@@ -1205,6 +1391,204 @@ export async function run(ctx) {
       expected: { python: disclosed, node: disclosed },
       actual: { python: shapeOf(at(python)), node: shapeOf(at(node)) },
     });
+  }
+
+  // ------- the fix round's three HIGH defects, as LITERALS on each side (job44 F3)
+  //
+  // Every case in this block exists because the generic loop above cannot fail for these
+  // files. All three defects were symmetric: the reference and the port had the same hole,
+  // so `expected` and `actual` matched through every one of them and the suite reported
+  // 0 failures while a 58 KB workbook could take either runtime to a gigabyte. A
+  // side-to-side case answers "do the two agree"; these answer "and is the answer right",
+  // which is the only question a joint regression can be asked.
+  //
+  // The rule this block is written to: for each one, ASK whether it would go red if both
+  // runtimes regressed together. Where the answer is no, the literal is here. Each has been
+  // watched fail — the mutation for each is named in the comment above it, run symmetrically
+  // on both runtimes and reverted.
+  {
+    const at = (side, file) => side.files[names.indexOf(file)]?.extract ?? null;
+    /** The refusal SENTENCE, `type: message`, exactly as the two other refusal cases spell it. */
+    const said = (answer) => (answer?.error ? `${answer.error.type}: ${answer.error.message}` : `<read: ${(answer?.parts ?? []).length} part(s)>`);
+    const bothSaid = (name_, label, sentence) =>
+      cases.push({
+        name: `extract: ${name_}: ${label}, as a literal on each side`,
+        kind: 'json',
+        expected: { python: sentence, node: sentence },
+        actual: { python: said(at(python, name_)), node: said(at(node, name_)) },
+      });
+
+    // ---- H1, the member ceiling. MUTATION: `ZIP_MEMBER_MAX_BYTES` moved to 16 MiB + 1 on
+    // BOTH runtimes. The bomb's sentence changes its second number and `member-over-ceiling`
+    // starts reading; both cases below go red while every side-to-side case stays green.
+    bothSaid(
+      'member-parse-bomb.xlsx',
+      'a 58,380-byte workbook whose worksheet declares 19,600,112 bytes is refused before one byte is inflated',
+      'DocumentReadError: member-parse-bomb.xlsx is a zip but its xl/worksheets/sheet1.xml declares 19600112 bytes ' +
+        'uncompressed, past the 16777216 bytes this reader parses, so this reader cannot parse it',
+    );
+    bothSaid(
+      'member-over-ceiling.xlsx',
+      'one byte over the member ceiling is refused, and the sentence names both numbers',
+      'DocumentReadError: member-over-ceiling.xlsx is a zip but its xl/worksheets/sheet1.xml declares 16777217 bytes ' +
+        'uncompressed, past the 16777216 bytes this reader parses, so this reader cannot parse it',
+    );
+    // The other side of the same byte, and the case that makes it a CEILING rather than a
+    // reader that refuses OOXML: a member of exactly 16,777,216 bytes is decompressed, parsed
+    // and rendered, and invents no omission for having been close.
+    {
+      const shapeOf = (answer) => ({
+        refused: Boolean(answer?.error),
+        rows: (answer?.parts ?? []).flatMap((p) => p.rows),
+        docOmissions: answer?.omissions ?? null,
+        partOmissions: (answer?.parts ?? []).flatMap((p) => p.omissions),
+      });
+      const parsed = { refused: false, rows: ['ok'], docOmissions: [], partOmissions: [] };
+      cases.push({
+        name: 'extract: member-at-ceiling.xlsx: a member of exactly 16,777,216 bytes still parses and says nothing, as a literal on each side',
+        kind: 'json',
+        expected: { python: parsed, node: parsed },
+        actual: { python: shapeOf(at(python, 'member-at-ceiling.xlsx')), node: shapeOf(at(node, 'member-at-ceiling.xlsx')) },
+      });
+    }
+
+    // ---- H1's second half, THE LYING CENTRAL DIRECTORY, and the reason this fixture is a
+    // file on disk and not an assertion: the two runtimes reach the sentence below by
+    // different mechanisms. The reference gets the clamp from CPython (`ZipExtFile` stops at
+    // `ZipInfo.file_size`, then fails the CRC of the prefix it produced); the port's zip
+    // reader is hand-written and passes `file_size` as `maxOutputLength`, rendering
+    // `ERR_BUFFER_TOO_LARGE` as the same words. Nothing but running both over the same bytes
+    // can say they still agree. MUTATION: the port's `maxOutputLength` removed and the
+    // reference's clamp lifted (`ZipInfo.file_size` raised past the stream inside `_read`,
+    // after the gate) — both then inflate the whole member, pass the CRC that covers the real
+    // content, and render 40,000 rows. This case goes red; the side-to-side ones do not.
+    bothSaid(
+      'lying-central-directory.xlsx',
+      'a member that declares 10 bytes over a 1,960,112-byte stream is damaged, not a way past the ceiling',
+      "DocumentReadError: lying-central-directory.xlsx is a zip but its xl/worksheets/sheet1.xml is damaged " +
+        "(Bad CRC-32 for file 'xl/worksheets/sheet1.xml'), so this reader cannot read it",
+    );
+    // Its control, through the `summaries` route. The same archive with the declaration left
+    // alone reads all 40,000 rows on both sides, so the refusal above is the bytes
+    // `forgedCase` measures and not the stream, the CRC, or a reader that had stopped reading
+    // deflated worksheets. 79,999 is 40,000 rows of one `x` joined by 39,999 newlines — a
+    // second number that moves if the row count does, so the pair cannot both be wrong in a
+    // way that cancels.
+    {
+      const i = summaryNames.indexOf('honest-central-directory.xlsx');
+      const readsOf = (answer) => {
+        const part = answer?.parts?.[0];
+        return {
+          refused: Boolean(answer?.error),
+          parts: answer?.parts?.length ?? null,
+          rows: part?.rows ?? null,
+          rowsBytes: part?.rows_bytes ?? null,
+          head: part?.head ?? null,
+          tail: part?.tail ?? null,
+          docOmissions: answer?.omissions ?? null,
+        };
+      };
+      const control = { refused: false, parts: 1, rows: 40000, rowsBytes: 79999, head: 'x', tail: 'x', docOmissions: [] };
+      cases.push({
+        name: 'extract: honest-central-directory.xlsx: the same bytes with an honest declaration read all 40,000 rows, as a literal on each side',
+        kind: 'json',
+        expected: { python: control, node: control },
+        actual: {
+          python: readsOf(python.summaries[i]?.extract ?? null),
+          node: readsOf(node.summaries[i]?.extract ?? null),
+        },
+      });
+    }
+
+    // ---- H2, a refusal reached UNDER a cap. MUTATION: `_nonempty` / `nonempty` returned to
+    // the pre-fix single sentence on both runtimes (the cap and the media omission dropped
+    // before the sentence is built). The four cases below go red together; nothing else in
+    // the suite moves, because the fixtures that carry a cap and still READ are unaffected.
+    //
+    // The overshoots are 149 and 263 — both interpolated into the sentence, both different
+    // from each other and from the 4,321 / 2,749 of the (k) fixtures, so a runtime that
+    // computed the shortfall from the wrong end could not land on the right number twice.
+    bothSaid(
+      'capped-refusal.html',
+      'the refusal is scoped to the part that was read and names the 149 bytes it was not',
+      'DocumentReadError: cannot read capped-refusal.html: it is a html container but its markup carried no text ' +
+        'outside script and style in the part this reader read (16777365 bytes on disk; this reader reads 16777216) ' +
+        '— the 149 bytes it did not read may carry text',
+    );
+    bothSaid(
+      'capped-refusal-media.mht',
+      'the same refusal keeps the media tally too, and states the cap BEFORE it',
+      'DocumentReadError: cannot read capped-refusal-media.mht: it is a mhtml container but no text/html or ' +
+        'text/plain part carried any text in the part this reader read (16777479 bytes on disk; this reader reads ' +
+        '16777216) — the 263 bytes it did not read may carry text, and it holds 1 embedded part(s) (image/png) this ' +
+        'reader renders no text for',
+    );
+    // The branch that did NOT move. A fix to a refusal is worth as much for the sentence it
+    // leaves alone as for the one it changes: with no cap and no media this is the wording
+    // `docs/porting.md` pins and every other empty container in this suite answers.
+    bothSaid(
+      'uncapped-refusal.html',
+      'with no cap and no media the sentence is the one it always was',
+      'DocumentReadError: cannot read uncapped-refusal.html: it is a html container but its markup carried no text ' +
+        'outside script and style, so this reader has no text for it — it is not an empty document',
+    );
+    // And the media clause WITHOUT a cap: the verdict about the text is true here, and the
+    // file is still not empty. `_nonempty` threw this away on every path out of it.
+    bothSaid(
+      'media-refusal.mht',
+      'a media tally survives a refusal that has no cap behind it',
+      'DocumentReadError: cannot read media-refusal.mht: it is a mhtml container but no text/html or text/plain part ' +
+        'carried any text, so this reader has no text for it — it is not an empty document, and it holds 1 embedded ' +
+        'part(s) (image/png) this reader renders no text for',
+    );
+
+    // ---- FINDING 7, the `cap-before-media` order at document grain on an mhtml that READS.
+    // The order is implemented — the media tally counts what the reader met UNDERNEATH the
+    // cap, so a caller who reads it without the cap above has read a lower bound as a total —
+    // and it was pinned for `xlsx-over-budget.xlsx` only. `mhtml-over-ceiling.mht` carries a
+    // cap and no media part, so swapping the two on both sides left every mhtml case green.
+    // MUTATION: `capped + omissions` reversed to `omissions + capped` in `extract_mhtml` and
+    // in `extractMhtml`. This case is the only one in the suite that goes red.
+    {
+      const orderOf = (answer) => ({
+        refused: Boolean(answer?.error),
+        rows: (answer?.parts ?? []).flatMap((p) => p.rows),
+        docOmissions: answer?.omissions ?? null,
+      });
+      const ordered = {
+        refused: false,
+        rows: ['alpha'],
+        docOmissions: [
+          { subject: 'size-cap', count: 347, size: 347, where: [], what: '16777563 bytes on disk; this reader reads 16777216', facts: {} },
+          // 12,582,788 is the base64 body the cap cut through, decoded — the bytes this
+          // reader met and rendered nothing for. It is a THIRD independent number in the
+          // same case, and it is what makes "the media is counted underneath the cap"
+          // checkable rather than a sentence in a comment.
+          { subject: 'media', count: 1, size: 12582788, where: [], what: 'image/png', facts: {} },
+        ],
+      };
+      cases.push({
+        name: 'extract: cap-then-media.mht: an mhtml that reads states the cap BEFORE the media, as a literal on each side',
+        kind: 'json',
+        expected: { python: ordered, node: ordered },
+        actual: { python: orderOf(at(python, 'cap-then-media.mht')), node: orderOf(at(node, 'cap-then-media.mht')) },
+      });
+    }
+    notes.push(
+      `the fix round's fixtures are BUILT in harness scratch and deleted with it: ${round5.join(', ')}, plus ` +
+        'honest-central-directory.xlsx through the summaries route. capped-refusal.html is 16,777,365 B, ' +
+        'capped-refusal-media.mht 16,777,479 B and cap-then-media.mht 16,777,563 B, because a 16 MiB ceiling ' +
+        'cannot be straddled by a smaller file; the four workbooks are 17-59 KB on disk and carry their ' +
+        'megabytes inside a member, which is the defect they exist for',
+    );
+    notes.push(
+      'the fix round is pinned by LITERALS and not only side to side, because all three review-round-5 HIGHs were ' +
+        'symmetric and 6,662 comparisons stayed green through every one of them: the member ceiling (19,600,112 ' +
+        'declared, refused before any inflate) with its boundary at 16,777,216/16,777,217, the lying central ' +
+        'directory (10 declared over 1,960,112) with its honest control differing only inside the declared-size field, the capped ' +
+        'refusal for html and mhtml with its two uncapped branches, and finding 7 — the [size-cap, media] order at ' +
+        'mhtml document grain, which until this fixture existed was pinned at xlsx grain alone',
+    );
   }
 
   pages.forEach((spec, i) => {

@@ -73,6 +73,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 
 import { BantamError } from './errors.js';
+import { cmpCodepoint, PY_WS_CLASS, pyStrip } from './pysem.js';
 import { reprValue } from './pyjson.js';
 
 // The file a skill IS. Case-sensitive: the host loads this name and so does this reader.
@@ -186,44 +187,40 @@ export class SkillAuditError extends BantamError {}
 // -------------------------------------------------------------- Python string semantics
 
 /**
- * `str.strip()`, which is NOT `String.prototype.trim()` — measured, they disagree on six
- * code points (`memory/factfile.ts`). A frontmatter line's indent is stripped with this.
+ * `str.strip()` and `sorted()`'s order are `pysem.ts`'s, and no longer a third copy.
+ *
+ * This module carried its own `pyStrip` (a `PY_SPACE` Set of 29 codepoints, spread over
+ * `[...text]`) and its own `cmpCodepoint` (paired iterators returning `cx - cy`) —
+ * independently re-derived, and the two spellings `pysem.ts` explicitly REJECTED when it
+ * unified `docread.ts`'s and `memory/`'s copies for `docs/roadmap-toolbox.md` row 8, entry
+ * (n). That entry named only those two homes, so this third copy survived its closure while
+ * `pysem.ts`'s header claimed the semantics were written ONCE.
+ *
+ * **The pairs were gated before they were merged** (2026-09-06, job44 unit F4, the method U2
+ * used, against `dist/pysem.js` with this module's two functions transcribed beside it):
+ *
+ * * the SET — 29 codepoints on each side, and an EMPTY symmetric difference walking every
+ *   codepoint from 0 to 0x10FFFF, surrogates skipped;
+ * * `pyStrip` — 0 disagreements over 200,000 random strings built from the union alphabet
+ *   plus `a Z 0 U+1F414 U+FEFF U+200B U+FF1A` as non-space padding (the last three are the
+ *   characters `String.prototype.trim()` and `str.strip()` argue about);
+ * * `startsWithSpace` — 0 disagreements against `` new RegExp(`^${PY_WS_CLASS}`) `` over
+ *   eight hand-picked shapes AND over `String.fromCodePoint(cp) + 'x'` for every codepoint,
+ *   which is what lets the Set membership test below become a regex test;
+ * * `cmpCodepoint` — **0 sign disagreements** over 324 exhaustive pairs and 200,000 random
+ *   astral-bearing pairs, and **167,851 NUMBER disagreements** in the same run, the first
+ *   being `cmp('', 'ab')`: `-1` in the spelling deleted here, `-2` in `pysem.ts`'s. Same
+ *   order, different function. Safe only because every one of this module's six uses reads
+ *   the sign alone — `cmpParts` (`!== 0`, and itself only ever a `.sort` comparator), the
+ *   `> 0` version pick, and four bare `.sort()` calls — so the numbers were never observable
+ *   from here. A future use that subtracts or scales one of these values is NOT covered by
+ *   that argument and would have to re-establish it.
  */
-const PY_SPACE = new Set([
-  0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x85, 0xa0, 0x1680, 0x2000,
-  0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a, 0x2028,
-  0x2029, 0x202f, 0x205f, 0x3000,
-]);
-
-function pyStrip(text: string): string {
-  const chars = [...text];
-  let start = 0;
-  let end = chars.length;
-  while (start < end && PY_SPACE.has(chars[start]!.codePointAt(0)!)) start += 1;
-  while (end > start && PY_SPACE.has(chars[end - 1]!.codePointAt(0)!)) end -= 1;
-  return chars.slice(start, end).join('');
-}
 
 /** `line[:1].isspace()`: whether the line is a FOLD rather than a key. */
+const STARTS_WITH_PY_SPACE = new RegExp(`^${PY_WS_CLASS}`);
 function startsWithSpace(line: string): boolean {
-  const first = line.codePointAt(0);
-  return first !== undefined && PY_SPACE.has(first);
-}
-
-/** `sorted()` on strings: by code point, which is not what `Array.sort` does above U+FFFF. */
-function cmpCodepoint(a: string, b: string): number {
-  const ia = a[Symbol.iterator]();
-  const ib = b[Symbol.iterator]();
-  for (;;) {
-    const x = ia.next();
-    const y = ib.next();
-    if (x.done && y.done) return 0;
-    if (x.done) return -1;
-    if (y.done) return 1;
-    const cx = (x.value as string).codePointAt(0) as number;
-    const cy = (y.value as string).codePointAt(0) as number;
-    if (cx !== cy) return cx - cy;
-  }
+  return STARTS_WITH_PY_SPACE.test(line);
 }
 
 /** `sorted(paths, key=lambda p: p.parts)`: a tuple comparison, segment by segment. */

@@ -25,6 +25,19 @@
  *   `docread`'s copy had no importer at all and one use — `Array.prototype.sort`, which reads
  *   the sign and nothing else.
  *
+ * **A THIRD COPY SURVIVED THAT CLOSURE AND WAS FOLDED IN ON 2026-09-06 (job44, unit F4).**
+ * "written ONCE" was not true when it was written: entry (n) named `docread.ts` and `memory/`
+ * and nothing else, so `skillaudit.ts` — product surface, the eleventh MCP tool — kept its own
+ * `pyStrip` on a 29-codepoint Set and its own `cmpCodepoint` in the `cx - cy` spelling, the two
+ * this module had just rejected. Both now import from here, gated first by the same method:
+ * an empty symmetric difference between the two whitespace sets over every codepoint, 0
+ * disagreements on `pyStrip` over 200,000 random strings, 0 disagreements on a
+ * `` `^${PY_WS_CLASS}` `` regex against that module's Set-membership `startsWithSpace` over
+ * every codepoint, and — the reason the gate is not optional — `cmpCodepoint` agreeing on SIGN
+ * in all of 324 exhaustive plus 200,000 random pairs while disagreeing on the NUMBER in
+ * 167,851 of them. `skillaudit.ts`'s six uses read the sign alone, which is what made the
+ * substitution safe; its header carries the reading and the caveat.
+ *
  * Nothing here is re-exported from `index.ts`: the names stay exported from the modules that
  * always exported them, so this is a delegation and not a surface change.
  */

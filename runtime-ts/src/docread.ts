@@ -66,11 +66,26 @@ export const OMIT_UNMAPPED = 'unmapped-text';
 export const OMIT_UNREAD_TAIL = 'unread-tail';
 // What a ceiling THIS READER imposes kept out of the rows. Not a property of the file, which
 // is exactly why it is declared as a count instead of applied in silence. Three ceilings carry
-// it, and each one names its own number in `what`: bytes past `TEXT_MAX_BYTES` for a plain-text
-// file and for the markup of an `.html`/`.mhtml` (the same constant, because "how much of a
-// file this reader reads" is one number and not one per container), and rows past
+// it here, and each one names its own number in `what`: bytes past `TEXT_MAX_BYTES` for a
+// plain-text file and for the markup of an `.html`/`.mhtml` (the same constant, because "how
+// much of a file this reader reads" is one number and not one per container), and rows past
 // `XLSX_MAX_TEXT_BYTES` for a workbook, where the thing that runs away is the RENDERING rather
-// than the file.
+// than the file. The reference has a FOURTH — `textutil`'s output for a `.doc` or an `.rtf` —
+// which this side cannot have and does not owe, because it does not read those two kinds at
+// all (docs/porting.md, "pdf, doc and rtf on Node").
+//
+// The principle overclaimed until review round 5 (H3), and the correction is worth stating
+// because the sentence is what stopped anyone looking: `.docx` had no ceiling of any kind, and
+// on the reference `.doc` and `.rtf` had none either. MEASURED here 2026-09-06 before the
+// member ceiling existed: a 41,254-byte `.docx` rendered 40,000,099 bytes of text in 306 ms —
+// 2.38x `TEXT_MAX_BYTES` — with `doc.omissions` and `part.omissions` both empty.
+//
+// `ZIP_MEMBER_MAX_BYTES` is deliberately NOT one of these, and that is the honest amendment
+// rather than a fifth token: it refuses instead of disclosing, because half an XML member is
+// not a smaller XML member. So an OOXML container is bounded by what this reader will PARSE
+// and says so by refusing; every other container is bounded by what it will READ and says so
+// by counting. `.docx` needs no rendering budget on top of that: the text a `<w:t>` walk
+// produces can never exceed the bytes of the part it walked.
 export const OMIT_SIZE_CAP = 'size-cap';
 // A worksheet cell whose own `r` reference could not place it: not letters-then-digits, or a
 // column past the last one the format has. The cell's TEXT is in the rows, at its XML
@@ -1097,6 +1112,36 @@ function decodeZipName(raw: Uint8Array, flags: number): string {
   return out;
 }
 
+/**
+ * How much ONE MEMBER of a zip this reader will decompress and parse. The ceiling on the
+ * PARSE, which is a different door from `XLSX_MAX_TEXT_BYTES`: that one bounds the text a
+ * workbook renders, and it never stands in front of this, because `readMember` decompresses
+ * the member whole and `parsePart` builds a tree from it before the first row is rendered.
+ *
+ * MEASURED 2026-09-06 on this machine, through `docread.extract` on THIS runtime at the
+ * shipped constants, on a sheet of N `<row><c t="inlineStr"><is><t>x</t></is></c></row>`
+ * deflated by `deflateRawSync`, peak RSS from `process.resourceUsage().maxRSS`:
+ * 400,000 rows are 58,378 bytes on disk, declare 19,600,112, and took RSS from 102.2 MB to
+ * 1,039.3 MB in 1,019 ms with NO omission; 1,000,000 rows are 143,939 bytes, declare
+ * 49,000,112, and took it from 158.6 MB to 2,290.8 MB in 2,667 ms. Linear and unbounded —
+ * the memory is the `XmlElement` tree, not the text, so a budget over the rendering could
+ * not see it. The reference measured the same shape at 342.2 MB and 838.8 MB through
+ * `tracemalloc`; the numbers are not comparable (one counts a Python allocator, the other a
+ * whole process) and the SHAPE is what both of them state.
+ *
+ * 16 MiB, the number `TEXT_MAX_BYTES` states, because "how much of a file this reader reads"
+ * is one number — but under its OWN NAME, because it bounds a member of a container and not a
+ * file on a disk, and a bar that varies one must not be varying the other. The reference
+ * measured the corpus behind the figure: 25 OOXML/ODF packages under the goal's roots, the
+ * largest single XML member among them 4,283,286 bytes, 3.9x under this.
+ *
+ * A REFUSAL and not a truncation, which is the one place this module departs from
+ * "disclose, never truncate": half an XML document is not a smaller XML document, and a tree
+ * built from a severed member would carry text that is not what the file says. So the reader
+ * stops and names the member, the number the file declares and its own ceiling.
+ */
+export const ZIP_MEMBER_MAX_BYTES = 16 * 1024 * 1024;
+
 /** `zipfile.ZipFile` read-only: the central directory, and `read(name)` with a CRC check. */
 export class ZipReader {
   private readonly byName = new Map<string, ZipEntry>();
@@ -1210,6 +1255,13 @@ export class ZipReader {
     return this.byName.has(name);
   }
 
+  /** `getinfo(name).file_size`: what the central directory DECLARES, before any inflate. */
+  declaredSize(name: string): number {
+    const entry = this.byName.get(name);
+    if (entry === undefined) throw new RangeError(`There is no item named ${pyRepr(name)} in the archive`);
+    return entry.fileSize;
+  }
+
   /** `ZipFile.read(name)`; a missing member is a `KeyError` — here `RangeError`, see `readMember`. */
   read(name: string): Buffer {
     const entry = this.byName.get(name);
@@ -1235,8 +1287,23 @@ export class ZipReader {
     const start = at + 30 + nameLen + extraLen;
     const raw = data.subarray(start, start + entry.compressedSize);
     let out: Buffer;
-    if (entry.method === 0) out = Buffer.from(raw);
-    else if (entry.method === 8) out = inflateRaw(raw);
+    // THE CLAMP THE REFERENCE GETS FOR FREE, review round 5 (H1). `zipfile.ZipExtFile` stops
+    // at `ZipInfo.file_size` and CRCs what it produced, so on the reference a member that
+    // declares 10 bytes and holds 100,000 yields 10 bytes and `Bad CRC-32`. That is CPython's
+    // and not the format's, and this reader is hand-written: MEASURED before this line
+    // existed, a forged central directory declaring 10 bytes over a 19,600,112-byte deflate
+    // stream inflated all 19,600,112, passed the CRC (which covers the real content), and
+    // `extract` rendered 400,000 rows. So `readMember`'s ceiling on the DECLARED size was
+    // walked past by one 4-byte edit, and the property it exists for held on the reference
+    // and not here.
+    //
+    // `maxOutputLength` is the same clamp with a hard stop instead of a truncation: nothing
+    // past `file_size` is ever allocated. A member that overruns its declaration is what
+    // `ZipExtFile` would have handed to the CRC check as a short prefix, and a prefix of a
+    // longer stream is not what the checksum covers, so the refusal is that check's own
+    // sentence rather than a new one — the same words the reference prints for the same file.
+    if (entry.method === 0) out = Buffer.from(raw.subarray(0, entry.fileSize));
+    else if (entry.method === 8) out = entry.fileSize === 0 ? Buffer.alloc(0) : inflateRaw(raw, entry.fileSize, name);
     else if (entry.method === 12 || entry.method === 14) {
       // DELIBERATE DIVERGENCE (docs/porting.md, "bzip2 and lzma zip members on Node"): the
       // reference's `zipfile` decompresses methods 12 and 14 through the stdlib `bz2` and
@@ -1310,19 +1377,37 @@ export class ZipMemberUnreadable extends Error {
  * stream that merely ENDS early is not an error to `decompressobj` — it hands back what it
  * has, and `ZipExtFile` then fails the CRC — so `Z_BUF_ERROR` is retried with a sync flush
  * for the same partial bytes, and the CRC check in `read` refuses them the way it does there.
+ *
+ * `limit` is `ZipInfo.file_size` and it is `ZipExtFile`'s `_left`, not a budget of this
+ * reader's own: nothing past what the archive DECLARES the member holds is allocated, so an
+ * overrun costs the limit and never the stream. Node reports it as `ERR_BUFFER_TOO_LARGE`,
+ * a `RangeError` with no `errno`, which the arm below rethrows untouched for the outer catch.
+ *
+ * The one input where this and `ZipExtFile` could answer differently is a member whose
+ * declared CRC is the CRC of the first `file_size` bytes of a LONGER stream: the reference
+ * would hand back that prefix and this refuses it. Forging that costs the attacker a second
+ * field, it is not reachable from any file a writer produces, and closing it would mean
+ * materialising the overrun to checksum a prefix of it — which is the hole this closes.
  */
-function inflateRaw(raw: Buffer): Buffer {
+function inflateRaw(raw: Buffer, limit: number, member: string): Buffer {
   try {
-    return inflateRawSync(raw);
+    try {
+      return inflateRawSync(raw, { maxOutputLength: limit });
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      if (!(err instanceof Error) || typeof e.errno !== 'number') throw err;
+      if (e.code === 'Z_BUF_ERROR') {
+        return inflateRawSync(raw, { maxOutputLength: limit, finishFlush: zlibConstants.Z_SYNC_FLUSH });
+      }
+      const out = new Error(`Error ${e.errno} while decompressing data: ${e.message}`);
+      // `type(zlib.error).__name__` is `error` — the class is `zlib.error`, and `error` is what
+      // the reference records for it (`tools/conformance/ref/docread_ref.py`, `_error`).
+      out.name = 'error';
+      throw out;
+    }
   } catch (err) {
-    const e = err as NodeJS.ErrnoException;
-    if (!(err instanceof Error) || typeof e.errno !== 'number') throw err;
-    if (e.code === 'Z_BUF_ERROR') return inflateRawSync(raw, { finishFlush: zlibConstants.Z_SYNC_FLUSH });
-    const out = new Error(`Error ${e.errno} while decompressing data: ${e.message}`);
-    // `type(zlib.error).__name__` is `error` — the class is `zlib.error`, and `error` is what
-    // the reference records for it (`tools/conformance/ref/docread_ref.py`, `_error`).
-    out.name = 'error';
-    throw out;
+    if ((err as NodeJS.ErrnoException).code !== 'ERR_BUFFER_TOO_LARGE') throw err;
+    throw new BadZipFile(`Bad CRC-32 for file ${pyRepr(member)}`);
   }
 }
 
@@ -1364,6 +1449,19 @@ function readMember(zf: ZipReader, name: string, path: string): Buffer {
   if (!zf.has(name)) {
     const sample = pySorted(zf.namelist()).slice(0, 8).join(', ') || '(empty archive)';
     throw new DocumentReadError(`${pyPathName(path)} is a zip but has no ${name}; it contains: ${sample}`);
+  }
+  // The fifth arm, and it is not zipfile's: a member that decompresses past
+  // `ZIP_MEMBER_MAX_BYTES`. The gate is the UNCOMPRESSED SIZE the central directory declares,
+  // read before anything is decompressed, and it is deliberately the cheapest possible check —
+  // a member that says it is 46 MB costs no inflate at all to refuse. Those are the attacker's
+  // bytes, so declaring LOW is answered one layer down, in `ZipReader.read`: the clamp there
+  // is what makes this gate a ceiling rather than a suggestion.
+  const declared = zf.declaredSize(name);
+  if (declared > ZIP_MEMBER_MAX_BYTES) {
+    throw new DocumentReadError(
+      `${pyPathName(path)} is a zip but its ${name} declares ${declared} bytes uncompressed, ` +
+        `past the ${ZIP_MEMBER_MAX_BYTES} bytes this reader parses, so this reader cannot parse it`,
+    );
   }
   try {
     return zf.read(name);
@@ -2159,10 +2257,15 @@ export const DUPLICATE_CELL = 'the text of a cell a later cell in the same row a
  * and the largest RENDERING among them 754,520 bytes — 22x under this budget, so no real
  * workbook on this machine meets it.
  *
- * It bounds the RENDERING and not the file, because the file is already bounded and the
- * rendering is what runs away. The shortfall is disclosed as `OMIT_SIZE_CAP` counting the rows
- * no sheet rendered: a row is what a caller addresses, and a byte count of text that was never
- * built would be a number this reader cannot honestly produce.
+ * It bounds the RENDERING and nothing else. The sentence that stood here said it bounded the
+ * rendering "because the file is already bounded", and that was FALSE for the whole life of
+ * this constant: `readMember` decompressed a member whole and `parsePart` built a tree from
+ * it, both before the first row was rendered and both outside this budget, so 58,378 bytes on
+ * disk took RSS to 1,039.3 MB with no omission and this ceiling never saw it (review round 5,
+ * H1). What bounds the file is `ZIP_MEMBER_MAX_BYTES`, one door earlier; this bounds what
+ * comes out of it. The shortfall is disclosed as `OMIT_SIZE_CAP` counting the rows no sheet
+ * rendered: a row is what a caller addresses, and a byte count of text that was never built
+ * would be a number this reader cannot honestly produce.
  */
 export const XLSX_MAX_TEXT_BYTES = 16 * 1024 * 1024;
 
@@ -2224,7 +2327,11 @@ export function columnIndex(ref: string | undefined, fallback: number): [number,
 function sharedStrings(zf: ZipReader, path: string): string[] {
   if (!zf.has('xl/sharedStrings.xml')) return [];
   const out: string[] = [];
-  for (const si of parsePart(zf.read('xl/sharedStrings.xml'), 'xl/sharedStrings.xml', path).children) {
+  // `readMember` and not `zf.read`, as `_shared_strings` calls `_read` and not `zf.read`: the
+  // string table is a part this reader cannot do without, so a damaged or encrypted one owes
+  // the reader's own sentence — and it is the member ceiling's door one call before any
+  // worksheet reaches it, which is where a workbook's biggest part actually is.
+  for (const si of parsePart(readMember(zf, 'xl/sharedStrings.xml', path), 'xl/sharedStrings.xml', path).children) {
     const runs: string[] = [];
     for (const child of si.children) {
       if (child.tag === NS_S + 't') runs.push(child.text);
@@ -3301,12 +3408,41 @@ function plainRows(text: string): string[] {
     .filter((line) => line);
 }
 
+/**
+ * THE REFUSAL CARRIES THE OMISSIONS, review round 5 (H2). `extractHtml` and `extractMhtml`
+ * build the `Document` with `capped` in `omissions` and hand it here, and here it raised: the
+ * refusal kept the reader's verdict about the content and threw away the ceiling that
+ * produced that verdict. MEASURED on a 16,777,291-byte `.html` whose 16 MiB `<script>` comment
+ * is followed by one visible sentence — `its markup carried no text outside script and style
+ * ... it is not an empty document`, about a document that carries text, from a read that
+ * stopped 75 bytes short of it. The same on a `.mht` past the ceiling, where the media tally
+ * went with it.
+ *
+ * A reader is allowed to refuse. It is not allowed to state a false fact about a file, and
+ * `why` is a fact about the file only when the whole file was read. Under a cap it is scoped
+ * to the part that was read and the unread bytes are named, so a caller who would have stopped
+ * looking has the one number that tells it not to.
+ */
 function nonempty(doc: Document, path: string, why: string): Document {
   if (doc.parts.some((part) => part.rows.length)) return doc;
-  throw new DocumentReadError(
-    `cannot read ${pyPathName(path)}: it is a ${doc.kind} container but ${why}, so this reader has ` +
-      'no text for it — it is not an empty document',
-  );
+  const capped = doc.omissions.find((o) => o.subject === OMIT_SIZE_CAP);
+  const media = doc.omissions.find((o) => o.subject === OMIT_MEDIA);
+  let said: string;
+  if (capped === undefined) {
+    said =
+      `cannot read ${pyPathName(path)}: it is a ${doc.kind} container but ${why}, so this reader has ` +
+      'no text for it — it is not an empty document';
+  } else {
+    // The cap's own `what` is quoted rather than rebuilt, so the sentence and the omission can
+    // never state different numbers, and so the clause says whose bytes were counted.
+    said =
+      `cannot read ${pyPathName(path)}: it is a ${doc.kind} container but ${why} in the part ` +
+      `this reader read (${capped.what}) — the ${capped.count} bytes it did not read may carry text`;
+  }
+  if (media !== undefined) {
+    said += `, and it holds ${media.count} embedded part(s) (${media.what}) this reader renders no text for`;
+  }
+  throw new DocumentReadError(said);
 }
 
 // --------------------------------------------------------------- plain text, in no container

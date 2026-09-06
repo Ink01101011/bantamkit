@@ -14,12 +14,14 @@ without changing it there is a divergence rather than a wording preference.
 
 from __future__ import annotations
 
+import struct
 import subprocess
 import sys
 import zipfile
 from pathlib import Path
 
-from test_docread import inline_cell, row, write_mhtml, write_xlsx
+import pytest
+from test_docread import cell, inline_cell, row, write_docx, write_mhtml, write_xlsx
 
 from bantamkit import docread
 from bantamkit.docread import TEXT_MAX_BYTES, extract
@@ -356,3 +358,318 @@ def test_a_duplicate_renders_through_the_contract_layers_generic_line(tmp_path):
         "row and column replaced)"
     )
 
+
+
+# ------------------- (v) round 2: the PARSE, which the rendering budget never stood in front of
+
+
+def inline_rows(count: int) -> str:
+    """The reviewer's own input: `count` rows each holding one inline-string cell of one `x`.
+
+    48 bytes of XML a row, which deflates to roughly a seventh of a byte — the amplification
+    is bought in the PARSE, not in the rendering, and that is the whole point of the input.
+    """
+    return '<row><c t="inlineStr"><is><t>x</t></is></c></row>' * count
+
+
+def test_a_bounded_zip_cannot_make_this_reader_parse_unbounded_xml(tmp_path):
+    """The register's (v) closure bounded the RENDERING and said "the file is already bounded".
+
+    It is not. MEASURED before this fix, on this machine, through `docread.extract` at the
+    SHIPPED constants — the reviewer's input reproduced exactly:
+
+    | rows      | file on disk | rendered  | `tracemalloc` peak | omissions |
+    |-----------|--------------|-----------|--------------------|-----------|
+    |   400,000 |     58,097 B |   400,000 | 342.2 MB (5,890x)  | `[]`      |
+    | 1,000,000 |    143,658 B | 1,000,000 | 838.8 MB (5,839x)  | `[]`      |
+
+    Linear and unbounded, and `XLSX_MAX_TEXT_BYTES` never sees it: `_read` decompresses the
+    member whole and `_parse` builds a tree from it, both before the first row is rendered.
+    The tree is where the memory goes — 19.2 MB of member XML became 342 MB of `Element`.
+    """
+    body = inline_rows(400_000)
+    path = deflated_xlsx(tmp_path / "rows.xlsx", body)
+    assert path.stat().st_size < 100_000  # a file small enough to mail
+    with zipfile.ZipFile(path) as z:
+        declared = z.getinfo("xl/worksheets/sheet1.xml").file_size
+    assert declared > docread.ZIP_MEMBER_MAX_BYTES
+    with pytest.raises(docread.DocumentReadError) as caught:
+        extract(path)
+    assert str(caught.value) == (
+        f"rows.xlsx is a zip but its xl/worksheets/sheet1.xml declares {declared} bytes "
+        f"uncompressed, past the {docread.ZIP_MEMBER_MAX_BYTES} bytes this reader parses, "
+        "so this reader cannot parse it"
+    )
+
+
+def test_the_shared_string_table_is_the_same_door_one_call_earlier(tmp_path):
+    """`_shared_strings` reaches `_read` before any sheet does, so a gate only on the worksheet
+    would have left the workbook's biggest part wide open. One gate in `_read` covers every
+    member this reader cannot do without: the two here, `workbook.xml`, its rels, and
+    `word/document.xml`."""
+    path = tmp_path / "shared.xlsx"
+    with monkeyed(docread, "ZIP_MEMBER_MAX_BYTES", 512):
+        write_xlsx(
+            path,
+            [("S", "worksheets/sheet1.xml", row(cell("A1", "0", kind="s")))],
+            shared=["x" * 600],
+        )
+        with zipfile.ZipFile(path) as z:
+            declared = z.getinfo("xl/sharedStrings.xml").file_size
+        with pytest.raises(docread.DocumentReadError) as caught:
+            extract(path)
+    assert str(caught.value) == (
+        f"shared.xlsx is a zip but its xl/sharedStrings.xml declares {declared} bytes "
+        "uncompressed, past the 512 bytes this reader parses, so this reader cannot parse it"
+    )
+
+
+def test_a_word_document_part_is_bounded_by_the_same_member_ceiling(tmp_path):
+    """`.docx` had no ceiling of any kind — the register's (k) principle claimed one number for
+    "how much of a file this reader reads" while `extract_docx` rendered every `<w:t>` with no
+    budget and no omission. MEASURED before this fix: a **181,289-byte** `.docx` rendered
+    **40,000,000 bytes** of text — 2.38x `TEXT_MAX_BYTES` — in 1.18 s, `doc.omissions` and
+    `part.omissions` both empty.
+
+    The ceiling lands on the member rather than on the rendering because that is where the
+    memory is spent, and because the rendering of an OOXML part can never exceed the bytes of
+    the part: 40 MB of text needs 40 MB of `<w:t>` to come out of."""
+    path = tmp_path / "big.docx"
+    with monkeyed(docread, "ZIP_MEMBER_MAX_BYTES", 256):
+        write_docx(path, "<w:p><w:r><w:t>%s</w:t></w:r></w:p>" % ("y" * 400))
+        with zipfile.ZipFile(path) as z:
+            declared = z.getinfo("word/document.xml").file_size
+        with pytest.raises(docread.DocumentReadError) as caught:
+            extract(path)
+    assert str(caught.value) == (
+        f"big.docx is a zip but its word/document.xml declares {declared} bytes uncompressed, "
+        "past the 256 bytes this reader parses, so this reader cannot parse it"
+    )
+
+
+def test_a_member_that_declares_less_than_it_holds_cannot_slip_past_the_gate(tmp_path):
+    """The gate reads the central directory, which is the ATTACKER'S bytes — so this test asks
+    what a lying declaration buys, rather than asserting from the source that it buys nothing.
+
+    MEASURED here: `zipfile.ZipExtFile` clamps its own output to `ZipInfo.file_size` and
+    checks the CRC of what it produced, so a member that declares 10 bytes and holds 100,000
+    does not decompress to 100,000 — it decompresses to 10 and raises `BadZipFile: Bad CRC-32`.
+    Declaring LOW is therefore not a way past the ceiling on this runtime, and declaring HIGH
+    is the case the gate above refuses. A zip reader that does NOT clamp — the Node port's is
+    hand-written — needs its own ceiling on the real read to hold the same property; the
+    property is the contract, the mechanism is not."""
+    path = deflated_xlsx(tmp_path / "lie.xlsx", inline_rows(4_000))
+    raw = bytearray(path.read_bytes())
+    member = b"xl/worksheets/sheet1.xml"
+    central = raw.rfind(b"PK\x01\x02")
+    while raw[central + 46 : central + 46 + len(member)] != member:
+        central = raw.rfind(b"PK\x01\x02", 0, central)
+        assert central != -1
+    raw[central + 24 : central + 28] = struct.pack("<I", 10)
+    path.write_bytes(bytes(raw))
+    with zipfile.ZipFile(path) as z:
+        assert z.getinfo("xl/worksheets/sheet1.xml").file_size == 10
+    with monkeyed(docread, "ZIP_MEMBER_MAX_BYTES", 512):
+        with pytest.raises(docread.DocumentReadError) as caught:
+            extract(path)
+    assert str(caught.value).startswith(
+        "lie.xlsx is a zip but its xl/worksheets/sheet1.xml is damaged (Bad CRC-32"
+    )
+
+
+def test_the_member_ceiling_has_its_own_name_and_the_workbook_budget_no_longer_overclaims():
+    """Two claims, both of them source facts and both of them shipped: the ceiling is a named
+    constant a bar can vary, and the sentence beside `XLSX_MAX_TEXT_BYTES` that said the file
+    was already bounded is gone. That sentence was false for the whole life of the (v) closure
+    and it is the reason the parse was never looked at."""
+    assert docread.ZIP_MEMBER_MAX_BYTES == 16 * 1024 * 1024
+    source = (SRC / "bantamkit" / "docread.py").read_text(encoding="utf-8")
+    assert "ZIP_MEMBER_MAX_BYTES = 16 * 1024 * 1024" in source
+    # The false clause is gone as a CLAIM. It survives only inside the correction that names
+    # it false, which is the record of why (v) shipped half-closed and is worth keeping.
+    assert "because the file is already bounded and the" not in source
+    assert '"because the file is already bounded", and that was FALSE' in source
+
+
+def test_every_real_ooxml_file_on_this_machine_is_far_under_the_member_ceiling(tmp_path):
+    """A ceiling no real file meets, stated as a measurement rather than a hope. MEASURED
+    2026-09-06 over `~/Downloads`, `~/Documents/Claude/Projects` and `~/Documents` (pruned as
+    J25 prunes them): 25 OOXML/ODF packages, and the largest single XML member among them is
+    **4,283,286 bytes** — 3.9x under this ceiling. The largest `word/document.xml` is 159,976
+    bytes, 105x under it.
+
+    Held here on a fixture rather than on the corpus, because the corpus is this machine's and
+    a test that reads it is a test nobody else can run: what is pinned is that an ordinary
+    workbook's members are orders of magnitude under the gate and no omission is invented."""
+    body = row(inline_cell("A1", "first")) + row(inline_cell("A1", "second"), index=2)
+    path = write_xlsx(tmp_path / "ordinary.xlsx", [("S", "worksheets/sheet1.xml", body)])
+    with zipfile.ZipFile(path) as z:
+        assert max(i.file_size for i in z.infolist()) * 4000 < docread.ZIP_MEMBER_MAX_BYTES
+    doc = extract(path)
+    assert doc.parts[0].rows == ("first", "second")
+    assert doc.omissions == ()
+
+
+# ------------ (w) round 2: a refusal reached UNDER a cap, which threw the cap away to say it
+
+
+def test_an_html_refusal_reached_under_the_cap_says_the_reader_stopped_early(tmp_path):
+    """MEASURED before this fix, on the reviewer's own 16,777,291-byte input — a 16 MiB comment
+    inside `<script>` followed by one visible sentence:
+
+        cannot read big2.html: it is a html container but its markup carried no text outside
+        script and style, so this reader has no text for it — it is not an empty document
+
+    The document DOES carry text. `extract_html` built the `Document` with the `size-cap`
+    omission in it and handed it to `_nonempty`, which raises — and the refusal carried the
+    reader's verdict about the content while the cap that produced that verdict was discarded.
+
+    A reader is allowed to refuse. It is not allowed to state a false fact about a file: the
+    verdict is scoped to the part it read, and the bytes it did not read are named."""
+    path = tmp_path / "big2.html"
+    markup = b"<html><script>/*" + b"a" * 4000 + b"*/</script><p>the only sentence</p></html>"
+    path.write_bytes(markup)
+    size = path.stat().st_size
+    with monkeyed(docread, "TEXT_MAX_BYTES", size - 40):
+        with pytest.raises(docread.DocumentReadError) as caught:
+            extract(path)
+    assert str(caught.value) == (
+        "cannot read big2.html: it is a html container but its markup carried no text outside "
+        f"script and style in the part this reader read ({size} bytes on disk; this reader "
+        f"reads {size - 40}) — the 40 bytes it did not read may carry text"
+    )
+
+
+def test_the_html_refusal_under_the_cap_holds_at_the_shipped_ceiling(tmp_path):
+    """At the SHIPPED constant and on the reviewer's file, not a patched one. A ceiling only a
+    monkeypatch has ever met is a ceiling nobody measured, and this is the input that reaches
+    a real user: 16 MiB of script, one sentence past it, and the old answer said the markup
+    carried no text."""
+    path = tmp_path / "big2.html"
+    with path.open("wb") as handle:
+        handle.write(b"<html><script>/*")
+        block = b"a" * 65536
+        written = 16
+        while written <= TEXT_MAX_BYTES:
+            handle.write(block)
+            written += len(block)
+        handle.write(b"*/</script><p>the only sentence in this document</p></html>")
+    size = path.stat().st_size
+    with pytest.raises(docread.DocumentReadError) as caught:
+        extract(path)
+    assert str(caught.value) == (
+        "cannot read big2.html: it is a html container but its markup carried no text outside "
+        f"script and style in the part this reader read ({size} bytes on disk; this reader "
+        f"reads {TEXT_MAX_BYTES}) — the {size - TEXT_MAX_BYTES} bytes it did not read may "
+        "carry text"
+    )
+
+
+def test_an_mhtml_refusal_under_the_cap_keeps_the_media_tally_too(tmp_path):
+    """The reviewer's second input: a base64 `image/png` part and then a `text/plain` part past
+    the ceiling. Both the `size-cap` AND the media tally were lost — the answer was the bare
+    `no text/html or text/plain part carried any text`.
+
+    The media clause is not decoration. It is the difference between "this file holds nothing
+    I can read" and "this file holds one embedded object and I stopped before the text"."""
+    path = write_mhtml(tmp_path / "big.mht")
+    size = path.stat().st_size
+    with monkeyed(docread, "TEXT_MAX_BYTES", 200):
+        with pytest.raises(docread.DocumentReadError) as caught:
+            extract(path)
+    assert str(caught.value) == (
+        "cannot read big.mht: it is a mhtml container but no text/html or text/plain part "
+        f"carried any text in the part this reader read ({size} bytes on disk; this reader "
+        f"reads 200) — the {size - 200} bytes it did not read may carry text"
+    )
+
+
+def test_a_refusal_with_media_behind_it_names_the_media_it_could_not_render(tmp_path):
+    """No cap here, so the verdict about the text IS true — and the file is still not empty.
+    `_nonempty` threw every omission away, media included, on every path out of it."""
+    text = (
+        "MIME-Version: 1.0\n"
+        'Content-Type: multipart/related; boundary="B"\n'
+        "\n"
+        "--B\n"
+        "Content-Type: image/png\n"
+        "Content-Transfer-Encoding: base64\n"
+        "\n"
+        "iVBORw0KGgo=\n"
+        "\n"
+        "--B--\n"
+    )
+    path = write_mhtml(tmp_path / "picture.mht", text)
+    with pytest.raises(docread.DocumentReadError) as caught:
+        extract(path)
+    assert str(caught.value) == (
+        "cannot read picture.mht: it is a mhtml container but no text/html or text/plain part "
+        "carried any text, so this reader has no text for it — it is not an empty document, "
+        "and it holds 1 embedded part(s) (image/png) this reader renders no text for"
+    )
+
+
+def test_a_refusal_with_nothing_behind_it_is_the_sentence_it_always_was(tmp_path):
+    """The common case does not move. An empty `.html` with no cap and no media still refuses
+    in the words `docs/porting.md` pins and `tools/conformance` compares."""
+    path = tmp_path / "empty.html"
+    path.write_bytes(b"<html><body><script>var x = 1;</script></body></html>")
+    with pytest.raises(docread.DocumentReadError) as caught:
+        extract(path)
+    assert str(caught.value) == (
+        "cannot read empty.html: it is a html container but its markup carried no text "
+        "outside script and style, so this reader has no text for it — it is not an empty "
+        "document"
+    )
+
+
+# ------------------- (k) round 2: the two containers the one-number principle did not cover
+
+
+needs_textutil = pytest.mark.skipif(
+    docread.textutil_path() is None,
+    reason=f"{docread.TEXTUTIL} is a macOS built-in and is not on this host",
+)
+
+
+@needs_textutil
+def test_textutil_output_is_read_to_the_ceiling_and_says_how_much_it_left(tmp_path):
+    """`.doc` and `.rtf` had no ceiling at all: `extract_textutil` rendered every byte of the
+    converter's stdout, so the (k) principle — "how much of a file this reader reads" is one
+    number and not one per container — was contradicted two containers over.
+
+    The number is `TEXT_MAX_BYTES`, the same one `.txt`, `.html` and `.mhtml` state, and the
+    `what` says whose bytes were counted: these are the CONVERTER's, not the file's, so a
+    caller cannot read this omission as a statement about the `.rtf` on disk."""
+    path = tmp_path / "long.rtf"
+    path.write_bytes(rb"{\rtf1\ansi " + b"word " * 200 + rb"}")
+    with monkeyed(docread, "TEXT_MAX_BYTES", 40):
+        doc = extract(path)
+    assert doc.kind == "rtf"
+    (omission,) = doc.omissions
+    assert omission.subject == docread.OMIT_SIZE_CAP
+    assert omission.what.endswith(f" bytes {docread.TEXTUTIL} produced; this reader reads 40")
+    assert omission.count == omission.size
+    assert sum(len(r.encode()) for r in doc.parts[0].rows) <= 40
+
+
+@needs_textutil
+def test_an_ordinary_converted_document_invents_no_ceiling_omission(tmp_path):
+    """The other sign of the same defect. A `.rtf` whose conversion fits states nothing, so a
+    caller that sees the omission knows the reader really stopped."""
+    path = tmp_path / "short.rtf"
+    path.write_bytes(rb"{\rtf1\ansi hello}")
+    doc = extract(path)
+    assert doc.parts[0].rows == ("hello",)
+    assert doc.omissions == ()
+
+
+def test_the_one_number_principle_names_every_container_it_now_covers():
+    """The principle is a comment in shipped source and it was overclaiming — it listed the
+    containers that cap and left out the ones that did not. Held as a source assertion because
+    a false comment is what let (v) and (k) both ship half-closed."""
+    source = (SRC / "bantamkit" / "docread.py").read_text(encoding="utf-8")
+    principle = source[source.index("OMIT_SIZE_CAP = ") - 1400 : source.index("OMIT_SIZE_CAP = ")]
+    assert "one number and not one per container" in principle
+    for named in ("`.doc`", "`.rtf`", "textutil", "ZIP_MEMBER_MAX_BYTES"):
+        assert named in principle, named

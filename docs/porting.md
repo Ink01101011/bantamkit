@@ -425,6 +425,35 @@ and `archive` is unchanged and PINNED unchanged
 own destination guard has no pre-read ahead of it and `Path.replace` still silently replaces a
 dangling symlink there.
 
+**AMENDED AGAIN 2026-09-06 (job44, unit F4). The amendment above is IMPRECISE in the one word
+that carries it, and so is the sentence it corrects.** It says the `rename`-versus-`pyReplace`
+difference at `restore` is "no longer REACHABLE" and that "this list's live count for that
+divergence is now `archive` alone". Both are wrong at `c6bfdeb`, and the way they are wrong is
+the same: the difference at `restore` was not made unreachable, it was **removed**. Measured by
+reading the two files at that commit rather than reasoning from the guard: `runtime-py`'s
+`restore` forward move is `source.replace(destination)`, changed from `source.rename(destination)`
+in `c6bfdeb` itself — `git show f484c70:runtime-py/src/bantamkit/memory/store.py` still has the
+`rename`, `git show c6bfdeb:…` has the `replace`, and the reference's own docstring
+("THE FORWARD MOVE IS `Path.replace` AND NOT `Path.rename`") says so. So the guard argument is
+true but no longer load-bearing: even with an occupied destination there is now no side to pick,
+because both sides call `replace`.
+
+And `archive` is not a live count of one, it is a live count of **zero**. `archive`'s forward
+move was moved to `source.replace(destination)` by review round 5 on 2026-09-05 — the paragraph
+two above says so itself — against a port that always called `pyReplace`. With `compact` fixed at
+`d239480`, `archive` at review round 5 and `restore` at `c6bfdeb`, **every forward move in
+`MemoryStore` is `replace` on both runtimes**, and grepping the two files at `c6bfdeb` finds the
+only remaining `rename` calls on the reference to be `destination.rename(source)` in `archive`'s
+and `restore`'s rollbacks — the two the paragraph above already puts in the "no state tells the
+two calls apart" bucket. `d239480`'s divergence has no live case left anywhere in this store.
+
+What `archive` IS still alone in is a different fact, and conflating the two is how the wrong
+count got written: `archive`'s destination guard is deliberately still `_reachable` alone, so a
+dangling symlink at `archive/<name>.md` is still silently replaced there — pinned by
+`test_archive_still_replaces_a_dangling_symlink_after_the_restore_guard_change`. That is a guard
+difference between two methods of the SAME runtime, not a difference between the runtimes, and it
+belongs in no divergence row at all.
+
 They are named here rather than listed above because this list
 is for what is **not** fixed, and a closed item left in it is a stale record. None of the
 three was ruled: a ruling is the price of a DELIBERATE difference, and an operator CLI that

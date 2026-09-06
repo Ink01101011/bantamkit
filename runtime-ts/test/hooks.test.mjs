@@ -472,8 +472,24 @@ test('a .shiftwork over the scan budget still steers, and the log says what it s
  * (`docs/roadmap-toolbox.md`, registered 2026-08-28, never fixed until now). The fix reads the
  * same three scopes `tools/mcpdrift/mcpdrift.py`'s `discover()` reads for a project's
  * `bantamkit` registration — user (`~/.claude.json` `.mcpServers`), local (that file's
- * `.projects[<cwd>].mcpServers`), and project (`<cwd>/.mcp.json`) — and refuses to compact
- * rather than guess when two scopes disagree.
+ * `.projects[<cwd>].mcpServers`), and project (`<cwd>/.mcp.json`).
+ *
+ * **CORRECTED 2026-09-06 (job44, unit F4). The first fix resolved the three scopes wrongly and
+ * one of the cases below used to pin the wrong answer.** It gathered the DISTINCT values across
+ * all three and logged `skip-ambiguous-budget` whenever it found more than one — which is the
+ * NORMAL configuration, not an ambiguous one, so a project-scope override beside a user-scope
+ * default silently stopped automatic compaction for that project. Claude Code resolves the same
+ * three by PRECEDENCE, `local > project > user`, connecting once to the highest-precedence
+ * definition and NEVER merging fields across scopes
+ * (https://code.claude.com/docs/en/mcp, "MCP installation scopes", read 2026-09-06).
+ *
+ * The `refuses to auto-compact when scopes disagree` case is therefore GONE rather than
+ * relaxed, and what replaced it asserts more, not less: each of the three scopes wins over the
+ * ones below it (the very configuration that case declared unresolvable now has to produce the
+ * right denominator AND compact), the local scope — which nothing exercised before — is read,
+ * and the whole-entry rule is pinned by the one shape that separates it from a per-flag search:
+ * a winning entry with no `--index-budget` means the DEFAULT even when a lower scope names a
+ * number.
  */
 const MEMORY_DIST = join(repoRoot, 'runtime-ts', 'dist', 'memory');
 
@@ -513,6 +529,19 @@ function claudeJsonUserArgs(home, args) {
   writeFileSync(join(home, '.claude.json'), JSON.stringify({ mcpServers: { bantamkit: { command: 'npx', args } } }));
 }
 
+/**
+ * Both `~/.claude.json` scopes at once, because they live in ONE file: `user` is the top-level
+ * `.mcpServers`, `local` is `.projects[<cwd>].mcpServers`. Pass `[]` for an entry that exists
+ * and configures no flag — that shape is the whole-entry rule's witness — and omit the key
+ * entirely for a scope that registers nothing.
+ */
+function claudeJsonScopes(home, { user, local, cwd } = {}) {
+  const doc = {};
+  if (user !== undefined) doc.mcpServers = { bantamkit: { command: 'npx', args: user } };
+  if (local !== undefined) doc.projects = { [cwd]: { mcpServers: { bantamkit: { command: 'npx', args: local } } } };
+  writeFileSync(join(home, '.claude.json'), JSON.stringify(doc));
+}
+
 test('postSave measures the 90% band against a configured --index-budget, not the default', async () => {
   const cwd = newCwd();
   const home = newHome();
@@ -543,19 +572,75 @@ test('postSave still assumes the default budget when nothing configures --index-
   assert.equal(rec.action, 'saved', 'this index is nowhere near 90% of the true default budget');
 });
 
-test('postSave refuses to auto-compact when scopes disagree on --index-budget, rather than guessing', async () => {
+// The three precedence cases. Each puts a WRONG number in every scope below the one under
+// test, so a hook that fell through to a lower scope — or that collected values across scopes
+// the way the first fix did — cannot pass by accident: 9000 and 24000 are both far enough
+// above this fixture's index that the 90% band would not trip, so picking the wrong scope
+// changes `action` and not merely `budget`.
+test('project scope beats user scope — the configuration the old ambiguity refusal broke', async () => {
   const cwd = newCwd();
   const home = newHome();
   await seedFacts(join(cwd, '.bantamkit', 'memory'), 6, 300);
-  mcpJsonArgs(cwd, ['--index-budget', '1500']);       // project scope says 1500
-  claudeJsonUserArgs(home, ['--index-budget', '9000']); // user scope says 9000 — a real drift
+  mcpJsonArgs(cwd, ['--index-budget', '1500']);        // project scope: the override
+  claudeJsonUserArgs(home, ['--index-budget', '9000']); // user scope: the machine-wide default
 
   const r = postToolUseSave({ cwd, home });
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(r.stdout, '', 'an ambiguous budget must not emit an auto-compact envelope, only a log line');
-  const rec = hookLog(home, 'PostToolUse').find((l) => l.action === 'skip-ambiguous-budget');
-  assert.ok(rec, 'a genuine scope disagreement must be logged rather than silently resolved');
-  assert.deepEqual([...rec.budgets].sort((a, b) => a - b), [1500, 9000]);
+  const skipped = hookLog(home, 'PostToolUse').find((l) => l.action === 'skip-ambiguous-budget');
+  assert.equal(skipped, undefined, 'a project override beside a user default is configured, not ambiguous');
+  const rec = hookLog(home, 'PostToolUse').find((l) => l.action === 'auto-compact' || l.action === 'saved');
+  assert.equal(rec.budget, 1500, 'project scope outranks user scope');
+  assert.equal(rec.budgetScope, 'project');
+  assert.equal(rec.action, 'auto-compact', 'this is the failure the register named: compaction must NOT silently stop here');
+});
+
+test('local scope beats both project and user scope', async () => {
+  const cwd = newCwd();
+  const home = newHome();
+  await seedFacts(join(cwd, '.bantamkit', 'memory'), 6, 300);
+  mcpJsonArgs(cwd, ['--index-budget', '9000']);
+  claudeJsonScopes(home, { cwd, user: ['--index-budget', '9000'], local: ['--index-budget', '1500'] });
+
+  const r = postToolUseSave({ cwd, home });
+  assert.equal(r.status, 0, r.stderr);
+  const rec = hookLog(home, 'PostToolUse').find((l) => l.action === 'auto-compact' || l.action === 'saved');
+  assert.equal(rec.budget, 1500, 'local scope outranks project and user');
+  assert.equal(rec.budgetScope, 'local');
+  assert.equal(rec.action, 'auto-compact');
+});
+
+test('a lone local-scope --index-budget is read — the scope nothing exercised before', async () => {
+  const cwd = newCwd();
+  const home = newHome();
+  await seedFacts(join(cwd, '.bantamkit', 'memory'), 6, 300);
+  claudeJsonScopes(home, { cwd, local: ['--index-budget', '1500'] });
+
+  const r = postToolUseSave({ cwd, home });
+  assert.equal(r.status, 0, r.stderr);
+  const rec = hookLog(home, 'PostToolUse').find((l) => l.action === 'auto-compact' || l.action === 'saved');
+  assert.equal(rec.budget, 1500, '.projects[<cwd>].mcpServers is a scope this hook must read');
+  assert.equal(rec.budgetSource, 'configured');
+  assert.equal(rec.budgetScope, 'local');
+});
+
+// The whole-entry rule, and the ONLY shape that separates it from a per-flag search across
+// scopes. Claude Code never merges fields across scopes, so the local entry — which registers
+// no `--index-budget` — is the entry the session launched, and the answer is the DEFAULT. A
+// hook that searched scope by scope for the flag would find the user scope's 1500 and compact
+// against a denominator no live server is using.
+test('the winning entry is the whole answer: a local entry with no --index-budget means the default', async () => {
+  const cwd = newCwd();
+  const home = newHome();
+  await seedFacts(join(cwd, '.bantamkit', 'memory'), 6, 300);
+  claudeJsonScopes(home, { cwd, user: ['--index-budget', '1500'], local: [] });
+
+  const r = postToolUseSave({ cwd, home });
+  assert.equal(r.status, 0, r.stderr);
+  const rec = hookLog(home, 'PostToolUse').find((l) => l.action === 'auto-compact' || l.action === 'saved');
+  assert.equal(rec.budget, 24000, 'the local entry names no budget, so the default is what the launched server uses');
+  assert.equal(rec.budgetSource, 'default');
+  assert.equal(rec.budgetScope, null);
+  assert.equal(rec.action, 'saved', 'against the true default this index is nowhere near the 90% band');
 });
 
 test('a lone user-scope --index-budget (no project override) is read too', async () => {

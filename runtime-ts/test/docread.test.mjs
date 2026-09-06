@@ -1125,3 +1125,251 @@ test('the CPython semantics ported twice are now one module, and answer identica
   assert.ok(pysem.cmpCodepoint('\u{1F414}', '！') > 0);
   assert.equal(pysem.pyRepr("it's"), '"it\'s"');
 });
+
+// ---- job44 F2: review round 5, the three HIGH findings against U1/U2's own work -----------
+//
+// The mirror of `runtime-py/tests/test_docread_ceilings.py`'s round-2 block. Every sentence is
+// the reference's, byte for byte, and was CONFIRMED by running `runtime-py/src/bantamkit/
+// docread.py` over the same bytes rather than by reading it.
+//
+// One thing here is NOT a copy, and it is why the shape differs from the reference's. F1's
+// gate refuses on the size the central directory DECLARES, and it needed no second ceiling
+// because `zipfile.ZipExtFile` clamps its own output to `ZipInfo.file_size`. This half's
+// `ZipReader` is hand-written and MEASURED not to clamp: before `ZipReader.read` took a
+// `maxOutputLength`, a member declaring 10 bytes over a 19,600,112-byte deflate stream
+// inflated all 19,600,112, passed the CRC, and rendered 400,000 rows. The mechanism is
+// therefore two ceilings where the reference has one; the ANSWERS are identical on both sides
+// of the lie, which is what the last test in this block pins.
+
+/** The reviewer's own input: `count` rows each holding one inline-string cell of one `x`. */
+const inlineRows = (count) => '<row><c t="inlineStr"><is><t>x</t></is></c></row>'.repeat(count);
+
+test('a bounded zip cannot make this reader parse unbounded xml (v round 2)', () => {
+  // MEASURED before this fix, on THIS runtime, at the shipped constants, peak RSS from
+  // `process.resourceUsage().maxRSS`:
+  //
+  // | rows      | file on disk | member declares | RSS during `extract` | omissions |
+  // |-----------|--------------|-----------------|----------------------|-----------|
+  // |   400,000 |     58,378 B |    19,600,112 B | 102.2 -> 1,039.3 MB  | `[]`      |
+  // | 1,000,000 |    143,939 B |    49,000,112 B | 158.6 -> 2,290.8 MB  | `[]`      |
+  //
+  // Linear and unbounded, and `XLSX_MAX_TEXT_BYTES` never sees it: `readMember` decompresses
+  // the member whole and `parsePart` builds a tree from it, both before the first row is
+  // rendered. The tree is where the memory goes — 19.2 MB of member XML became a gigabyte of
+  // `XmlElement`. After: 2 ms and no growth at all, because nothing is inflated.
+  const path = join(dir, 'rows.xlsx');
+  writeFileSync(path, xlsxBytes([['S', 'worksheets/sheet1.xml', inlineRows(400_000)]], { deflate: true }));
+  assert.ok(readFileSync(path).length < 100_000); // a file small enough to mail
+  const declared = ZipReader.open(path).declaredSize('xl/worksheets/sheet1.xml');
+  assert.ok(declared > docread.ZIP_MEMBER_MAX_BYTES);
+  assert.throws(() => extract(path), {
+    name: 'DocumentReadError',
+    message:
+      `rows.xlsx is a zip but its xl/worksheets/sheet1.xml declares ${declared} bytes uncompressed, ` +
+      `past the ${docread.ZIP_MEMBER_MAX_BYTES} bytes this reader parses, so this reader cannot parse it`,
+  });
+});
+
+test('the shared string table is the same door one call earlier (v round 2)', () => {
+  // `sharedStrings` reached the archive before any sheet did, so a gate only on the worksheet
+  // would have left the workbook's biggest part wide open — and it went through `zf.read`
+  // rather than `readMember`, so it had neither this ceiling nor the reader's own sentences
+  // for a damaged or encrypted table. One gate in `readMember` covers every member this
+  // reader cannot do without: the two here, `xl/workbook.xml`, its rels, `word/document.xml`
+  // and an ODF `mimetype`.
+  const path = join(dir, 'shared.xlsx');
+  writeFileSync(
+    path,
+    xlsxBytes([['S', 'worksheets/sheet1.xml', '<row r="1"><c r="A1" t="s"><v>0</v></c></row>']], {
+      shared: ['x'.repeat(17 * 1024 * 1024)],
+      deflate: true,
+    }),
+  );
+  const declared = ZipReader.open(path).declaredSize('xl/sharedStrings.xml');
+  assert.ok(declared > docread.ZIP_MEMBER_MAX_BYTES);
+  assert.throws(() => extract(path), {
+    name: 'DocumentReadError',
+    message:
+      `shared.xlsx is a zip but its xl/sharedStrings.xml declares ${declared} bytes uncompressed, ` +
+      `past the ${docread.ZIP_MEMBER_MAX_BYTES} bytes this reader parses, so this reader cannot parse it`,
+  });
+});
+
+test('a word document part is bounded by the same member ceiling (k round 2)', () => {
+  // `.docx` had no ceiling of any kind — the (k) principle claimed one number for "how much of
+  // a file this reader reads" while `extractDocx` rendered every `<w:t>` with no budget and no
+  // omission. MEASURED before this fix on this runtime, on 100 runs of 400,000 `y`: a
+  // 41,254-byte `.docx` rendered 40,000,099 bytes of text in 306 ms — 2.38x `TEXT_MAX_BYTES`
+  // — with `doc.omissions` and `part.omissions` both empty. After: refused in 0 ms.
+  //
+  // The ceiling lands on the member rather than on the rendering because that is where the
+  // memory is spent, and because the rendering of an OOXML part can never exceed the bytes of
+  // the part: 40 MB of text needs 40 MB of `<w:t>` to come out of.
+  const path = join(dir, 'big.docx');
+  writeFileSync(path, docxBytes(`<w:p><w:r><w:t>${'y'.repeat(17 * 1024 * 1024)}</w:t></w:r></w:p>`, { deflate: true }));
+  const declared = ZipReader.open(path).declaredSize('word/document.xml');
+  assert.ok(declared > docread.ZIP_MEMBER_MAX_BYTES);
+  assert.throws(() => extract(path), {
+    name: 'DocumentReadError',
+    message:
+      `big.docx is a zip but its word/document.xml declares ${declared} bytes uncompressed, ` +
+      `past the ${docread.ZIP_MEMBER_MAX_BYTES} bytes this reader parses, so this reader cannot parse it`,
+  });
+});
+
+test('the member ceiling has its own name and the workbook budget no longer overclaims (v)', () => {
+  // Two claims, both of them source facts and both of them shipped: the ceiling is a named
+  // constant a bar can vary, and the sentence beside `XLSX_MAX_TEXT_BYTES` that said the file
+  // was already bounded is gone. That sentence was false for the whole life of the (v)
+  // closure and it is the reason the parse was never looked at.
+  assert.equal(docread.ZIP_MEMBER_MAX_BYTES, 16 * 1024 * 1024);
+  const source = readFileSync(new URL('../src/docread.ts', import.meta.url), 'utf8');
+  assert.ok(source.includes('export const ZIP_MEMBER_MAX_BYTES = 16 * 1024 * 1024;'));
+  // The false clause is gone as a CLAIM. It survives only inside the correction that names it
+  // false, which is the record of why (v) shipped half-closed and is worth keeping.
+  assert.ok(!source.includes('because the file is already bounded and the'));
+  assert.ok(source.includes('"because the file is already bounded", and that was FALSE'));
+});
+
+test('an ordinary workbook is far under the member ceiling and invents no refusal (v)', () => {
+  // A ceiling no real file meets, stated as a measurement rather than a hope. The reference
+  // measured the corpus: 25 OOXML/ODF packages under the goal's roots, the largest single XML
+  // member 4,283,286 B — 3.9x under this — and the largest `word/document.xml` 159,976 B.
+  // Held on a fixture rather than on the corpus, because the corpus is this machine's.
+  const path = xlsx('ordinary-member.xlsx', oneRow(inline('A1', 'first')) + `<row r="2">${inline('A2', 'second')}</row>`);
+  const zf = ZipReader.open(path);
+  assert.ok(Math.max(...zf.infolist().map((i) => i.fileSize)) * 4000 < docread.ZIP_MEMBER_MAX_BYTES);
+  const doc = extract(path);
+  assert.deepEqual([...doc.parts[0].rows], ['first', 'second']);
+  assert.deepEqual(doc.omissions, []);
+});
+
+test('a member that declares less than it holds cannot slip past the gate (v round 2)', () => {
+  // THE ONE THING THAT IS NOT A COPY. The gate reads the central directory, which is the
+  // ATTACKER's bytes, so this asks what a lying declaration BUYS rather than asserting from
+  // the source that it buys nothing.
+  //
+  // MEASURED on the reference: `ZipExtFile` clamps its output to `ZipInfo.file_size` and CRCs
+  // what it produced, so a member declaring 10 bytes while holding 19,600,112 yields 10 bytes
+  // and `Bad CRC-32`. MEASURED here BEFORE this fix, on the identical bytes: `ZipReader.read`
+  // returned all 19,600,112, the CRC passed (it covers the real content), and `extract`
+  // rendered 400,000 rows with no omission — the declared-size gate walked past by one 4-byte
+  // edit. `maxOutputLength` is that clamp with a hard stop instead of a truncation, and the
+  // sentence is the CRC check's own, which is what the reference prints for this file.
+  const path = join(dir, 'lie.xlsx');
+  const raw = xlsxBytes([['S', 'worksheets/sheet1.xml', inlineRows(400_000)]], { deflate: true });
+  const member = Buffer.from('xl/worksheets/sheet1.xml', 'utf8');
+  let central = raw.lastIndexOf('PK\x01\x02', raw.length, 'latin1');
+  while (!raw.subarray(central + 46, central + 46 + member.length).equals(member)) {
+    central = raw.lastIndexOf('PK\x01\x02', central - 1, 'latin1');
+    assert.notEqual(central, -1);
+  }
+  raw.writeUInt32LE(10, central + 24); // the DECLARED uncompressed size, and nothing else
+  writeFileSync(path, raw);
+  const zf = ZipReader.open(path);
+  assert.equal(zf.declaredSize('xl/worksheets/sheet1.xml'), 10);
+  assert.ok(10 < docread.ZIP_MEMBER_MAX_BYTES); // the declared-size gate lets this through
+  assert.throws(() => zf.read('xl/worksheets/sheet1.xml'), {
+    name: 'BadZipFile',
+    message: "Bad CRC-32 for file 'xl/worksheets/sheet1.xml'",
+  });
+  assert.throws(() => extract(path), {
+    name: 'DocumentReadError',
+    message:
+      "lie.xlsx is a zip but its xl/worksheets/sheet1.xml is damaged (Bad CRC-32 for file " +
+      "'xl/worksheets/sheet1.xml'), so this reader cannot read it",
+  });
+});
+
+test('an html refusal reached under the cap says the reader stopped early (w round 2)', () => {
+  // MEASURED before this fix, on the reviewer's own input — a 16 MiB comment inside `<script>`
+  // followed by one visible sentence:
+  //
+  //     cannot read big2.html: it is a html container but its markup carried no text outside
+  //     script and style, so this reader has no text for it — it is not an empty document
+  //
+  // The document DOES carry text. `extractHtml` built the `Document` with the `size-cap`
+  // omission in it and handed it to `nonempty`, which raises — and the refusal carried the
+  // reader's verdict about the content while the cap that produced that verdict was discarded.
+  // This is the finding most likely to reach a real user: a caller reading that sentence
+  // concludes the file is empty and stops.
+  const path = join(dir, 'big2.html');
+  writeFileSync(
+    path,
+    `<html><script>/*${'a'.repeat(TEXT_MAX_BYTES)}*/</script><p>the only sentence in this document</p></html>`,
+  );
+  const size = readFileSync(path).length;
+  assert.ok(size > TEXT_MAX_BYTES);
+  assert.throws(() => extract(path), {
+    name: 'DocumentReadError',
+    message:
+      'cannot read big2.html: it is a html container but its markup carried no text outside ' +
+      `script and style in the part this reader read (${size} bytes on disk; this reader reads ` +
+      `${TEXT_MAX_BYTES}) — the ${size - TEXT_MAX_BYTES} bytes it did not read may carry text`,
+  });
+});
+
+test('an mhtml refusal under the cap keeps the media tally too (w round 2)', () => {
+  // The reviewer's second input: a base64 `image/png` part and then a `text/plain` part past
+  // the ceiling. Both the `size-cap` AND the media tally were lost — the answer was the bare
+  // `no text/html or text/plain part carried any text`.
+  //
+  // The media clause is not decoration. It is the difference between "this file holds nothing
+  // I can read" and "this file holds one embedded object and I stopped before the text".
+  const path = join(dir, 'big.mht');
+  writeFileSync(
+    path,
+    'MIME-Version: 1.0\r\nContent-Type: multipart/related; boundary="B"\r\n\r\n--B\r\n' +
+      'Content-Type: image/png\r\nContent-Transfer-Encoding: base64\r\n\r\n' +
+      'iVBORw0KGgo='.repeat(TEXT_MAX_BYTES / 12) +
+      '\r\n\r\n--B\r\nContent-Type: text/plain\r\n\r\nthe only sentence in this document\r\n--B--\r\n',
+  );
+  const size = readFileSync(path).length;
+  assert.ok(size > TEXT_MAX_BYTES);
+  assert.throws(() => extract(path), {
+    name: 'DocumentReadError',
+    message:
+      'cannot read big.mht: it is a mhtml container but no text/html or text/plain part ' +
+      `carried any text in the part this reader read (${size} bytes on disk; this reader reads ` +
+      `${TEXT_MAX_BYTES}) — the ${size - TEXT_MAX_BYTES} bytes it did not read may carry text, ` +
+      'and it holds 1 embedded part(s) (image/png) this reader renders no text for',
+  });
+});
+
+test('a refusal with media behind it names the media it could not render (w round 2)', () => {
+  // No cap here, so the verdict about the text IS true — and the file is still not empty.
+  // `nonempty` threw every omission away, media included, on every path out of it.
+  const path = join(dir, 'picture.mht');
+  writeFileSync(
+    path,
+    'MIME-Version: 1.0\n' +
+      'Content-Type: multipart/related; boundary="B"\n\n' +
+      '--B\nContent-Type: image/png\nContent-Transfer-Encoding: base64\n\niVBORw0KGgo=\n\n--B--\n',
+  );
+  assert.throws(() => extract(path), {
+    name: 'DocumentReadError',
+    message:
+      'cannot read picture.mht: it is a mhtml container but no text/html or text/plain part ' +
+      'carried any text, so this reader has no text for it — it is not an empty document, ' +
+      'and it holds 1 embedded part(s) (image/png) this reader renders no text for',
+  });
+});
+
+test('a refusal with nothing behind it is the sentence it always was (w round 2)', () => {
+  // The common case does not move. An empty `.html` with no cap and no media still refuses in
+  // the words `docs/porting.md` pins, `docread-expected.jsonl` records and
+  // `tools/conformance` compares.
+  const path = join(dir, 'empty-round2.html');
+  writeFileSync(path, '<html><body><script>var x = 1;</script></body></html>');
+  assert.throws(() => extract(path), {
+    name: 'DocumentReadError',
+    message:
+      'cannot read empty-round2.html: it is a html container but its markup carried no text ' +
+      'outside script and style, so this reader has no text for it — it is not an empty document',
+  });
+  // And the two fixtures the reference's own answers are recorded for take the same branch —
+  // `blank.html` and `noboundary.mht` in `docread-expected.jsonl`, unchanged by this round.
+  for (const fixture of ['blank.html', 'noboundary.mht']) {
+    assert.equal(dump(paths[fixture]).message, expected.get(fixture).message);
+  }
+});
