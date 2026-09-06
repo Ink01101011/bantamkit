@@ -81,8 +81,27 @@ LEDGER = REPO / "tools" / "amendguard" / "ledger.json"
 WORDS = {
     "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
     "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-    "eleven": 11, "twelve": 12,
+    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+    "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
+    "nineteen": 19, "twenty": 20,
 }
+
+#: The spelled numbers, as ONE regex alternation built from `WORDS` rather than typed out.
+#
+# J45-11 had to teach this table the word "thirteen" before the thirteenth tool's records
+# could be seen at all -- without it, every "thirteen tools" record would have been
+# INVISIBLE to this gate rather than red, which is strictly worse than no gate. The table
+# was then typed in THREE places (here and twice inside `CLAIM`), so the next tool would
+# have hit the same cliff in three spots at once. It is derived now, so there is one list.
+#
+# Longest first: `re`'s alternation is ordered, and while backtracking does eventually
+# reach `sixteen` after `six` fails to be followed by `tools`, ordering makes that a
+# property of the pattern rather than of the engine's backtracking.
+#
+# The table still ENDS somewhere, and `test_the_served_count_is_spellable_by_this_gate`
+# is what makes that ending loud instead of silent: the day the surface outgrows the
+# table, that node goes red and names the word to add.
+_SPELLED = "|".join(sorted(WORDS, key=lambda w: (-len(w), w)))
 
 #: A count of tools immediately preceded by a verb that makes it a claim about
 #: what a server answers. Deliberately narrow — see the module docstring.
@@ -108,9 +127,9 @@ CLAIM = re.compile(
     # "the seven-tool surface", which is as much a count of the served surface as "seven
     # tools" is; the widened form went red on both before either was fixed). Bare
     # singular `tool` stays OUT: "17 of the 18 tool-argument failures" is not a count.
-    r"(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)(?:-tool|[-\s]+(?:served[-\s]+)?tools)\b"
+    rf"({_SPELLED}|\d+)(?:-tool|[-\s]+(?:served[-\s]+)?tools)\b"
     # And the noun-first form with no verb at all: "the N-tool surface".
-    r"|\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)-tool\s+surface\b",
+    rf"|\b({_SPELLED}|\d+)-tool\s+surface\b",
     re.IGNORECASE,
 )
 
@@ -284,6 +303,71 @@ def test_the_node_launcher_serves_the_same_count_on_every_platform() -> None:
     assert names, "the Node launcher served no tools at all"
 
 
+# ------------------------------------------------- the gate's own blind spot, made loud
+
+
+@_POSIX_ONLY
+def test_the_served_count_is_spellable_by_this_gate() -> None:
+    """The number of tools served must be a word this gate can READ, or the gate is blind.
+
+    THIS IS THE HOLE J45-11 FELL INTO AND PATCHED WITHOUT CLOSING. `WORDS` stopped at
+    "twelve"; the thirteenth tool landed; and every "thirteen tools" record in the tree
+    was INVISIBLE to `test_every_stated_tool_count_matches_what_is_served` rather than
+    red. Nothing failed. J45-11 found it by hand, added "thirteen", and left the table
+    ending one tool further out — so the fourteenth tool would have repeated it exactly.
+    Measured before this node existed (2026-09-07, review J45-12). The widened `CLAIM`
+    went RED on the second line below the moment it was widened, which is this change's
+    own non-vacuity proof — so the marker underneath is load-bearing, not decoration.
+
+    served-tools: dated — a probe transcript, not today's surface:
+
+        'serves thirteen tools'  -> MATCH, token 'thirteen', WORDS -> 13
+        'serves fourteen tools'  -> INVISIBLE, no token at all
+
+    A gate that goes QUIET when the surface grows is worse than no gate, because the
+    `checked >= 5` floor in the records node keeps passing on the twelve older claims
+    while the new ones are unread. So the ending of the table is asserted against the
+    LIVE surface: the day the servers answer a count `WORDS` cannot spell, this node
+    goes red and names the word to add.
+
+    It keys on `tools/list` for the module docstring's reason — a constant here would be
+    one more copy of the number to go stale, in the direction that hides the defect.
+    """
+    served = len(_served(str(REPO / "tools" / "bantamkit-mcp")))
+    assert served > 0
+
+    spelled = {value: word for word, value in WORDS.items()}
+    assert served in spelled, (
+        f"the servers answer {served} tools and `WORDS` cannot spell it — every record "
+        f"written as a WORD rather than a digit is now invisible to this gate rather "
+        f"than checked.\n  Fix: add the word for {served} to `WORDS`; `CLAIM` is built "
+        f"from it, so there is nothing else to edit.\n  Table ends at "
+        f"{max(WORDS.values())} ({spelled[max(WORDS.values())]})."
+    )
+
+    word = spelled[served]
+    for line in (
+        f"serves {word} tools",
+        f"the {word}-tool surface",
+        f"serves the same {word} tools",
+        f"both launchers answer `tools/list` with {word} tools",
+    ):
+        match = CLAIM.search(line)
+        assert match is not None, f"CLAIM cannot see a live-shaped claim: {line!r}"
+        token = (match.group(1) or match.group(2)).lower()
+        assert WORDS.get(token) == served, (
+            f"{line!r} matched but resolved to {WORDS.get(token)!r}, not {served}"
+        )
+
+    # And the pattern must still refuse the number BELOW the surface in the same shapes,
+    # or "spellable" would be satisfied by a regex that matched everything.
+    stale = spelled.get(served - 1)
+    assert stale is not None
+    match = CLAIM.search(f"serves {stale} tools")
+    assert match is not None
+    assert WORDS[(match.group(1) or match.group(2)).lower()] == served - 1
+
+
 # --------------------------------------------------------------- register item (g)
 
 
@@ -325,17 +409,17 @@ def test_claim_still_matches_every_previously_caught_shape() -> None:
     adjacent-verb forms the widening must not lose.
     """
     still_good = [
-        "bantamkit serves 11 tools",
-        "serving 11 tools, 1 prompt, 2 resource templates",
-        "the servers served 11 tools",
-        "both launchers answer with eleven tools",  # adjacent, no token in between
-        "the CLI answered with eleven tools",  # adjacent, past tense
-        "registers eleven tools",
-        "registered eleven tools",
-        "the surface is still exactly eleven tools",
-        "serves the same eleven tools",
-        "one of the eleven served tools",
-        "the eleven-tool surface",
+        "bantamkit serves 13 tools",
+        "serving 13 tools, 1 prompt, 2 resource templates",
+        "the servers served 13 tools",
+        "both launchers answer with thirteen tools",  # adjacent, no token in between
+        "the CLI answered with thirteen tools",  # adjacent, past tense
+        "registers thirteen tools",
+        "registered thirteen tools",
+        "the surface is still exactly thirteen tools",
+        "serves the same thirteen tools",
+        "one of the thirteen served tools",
+        "the thirteen-tool surface",
     ]
     for line in still_good:
         assert CLAIM.search(line) is not None, f"widening lost a previously-matched shape: {line!r}"

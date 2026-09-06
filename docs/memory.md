@@ -118,9 +118,9 @@ That position only holds if the operator has a lever, and until 2026-08-21 there
 was none: `index_budget` was on no argument parser, and the four ops above were
 reachable only by importing `MemoryStore` from Python. Both halves now exist —
 see [The operator CLI](#the-operator-cli) below and `--index-budget` on
-`bantamkit-mcp`. The MCP surface is now exactly eleven tools, `memory_compact`
-being the ninth; the in-process eval agent still binds only `memory_save` and
-`memory_recall`.
+`bantamkit-mcp`. The MCP surface is now exactly thirteen tools, `memory_compact`
+being the ninth and `memory_dream` the twelfth; the in-process eval agent still
+binds only `memory_save` and `memory_recall`.
 
 ```python
 from bantamkit.memory import MemoryBudgetExceeded, MemoryStore, MemoryValidationError
@@ -153,6 +153,95 @@ fact nobody has recalled yet.
 **The body is not searched.** A fact is only findable through the words in its
 name and description; this is why the skill insists descriptions be written to
 match the future query.
+
+#### The precision gate (`min_ratio` / `minRatio`) — roadmap #6
+
+`recall` takes a fourth argument in both runtimes: keep a fact only if its score
+is at least `min_ratio` of the **best score in that same recall**. Its default is
+the constant `RECALL_MIN_SCORE_RATIO`, spelled with that name in
+`runtime-py/src/bantamkit/memory/store.py` and `runtime-ts/src/memory/store.ts`,
+and it is **0.0 — a deliberate no-op**. At 0.0 the comparison `score >= 0.0 * best`
+holds for every fact the scoring loop kept (it keeps only `score > 0`), so the
+gate as shipped changes no recall, no injected header and no byte of any reply.
+Nothing on the MCP tool path or the CLI passes anything else; `memory_recall`'s
+input schema is unchanged, and there is no CLI flag.
+
+Why the number is a no-op, and what replaces it: the instrument that would justify
+a real cut is `tools/ledger/injection-precision.mjs`, and it still **refuses** to
+report a hit rate — on 2026-09-06 it had 491 injection records, 3 of them carrying
+names, scores and a session id, across 2 sessions, with no control arm, against a
+floor of 100 joinable injections across 5 sessions. The 488 older records carry
+`hits` and `bytes` only and cannot be joined to a transcript, so there is no
+retroactive baseline either. A threshold picked before that tool answers would ship
+as a silent suppressor of memory injection.
+
+Why a **ratio** and not a raw count. The score is an unnormalised intersection size,
+so it scales with the length of the query. The three instrumented injections show it:
+the same two-fact shape scored 2 and 2 on a 452-character prompt, 4 and 4 on a
+453-character one, and 22 and 21 on a 7855-character one. An absolute cut of 5 would
+gate out both short prompts entirely and admit everything on the long one. Within one
+recall the query is fixed, so dividing by that recall's best score cancels the length
+term exactly, and those three records read as `(1.0, 1.0)`, `(1.0, 1.0)` and
+`(1.0, 0.954…)`. Jaccard was the other candidate and carries the mirror-image bias —
+the query's token count sits in its denominator, so it would gate out long prompts
+instead of short ones.
+
+What the ratio does **not** fix. Tokenisation is `[a-z0-9]+` over the lowercased text,
+ASCII-only, so a wholly non-Latin prompt tokenises to the empty set and scores zero
+against every fact — it never reaches the gate, it is already an empty recall. A
+threshold tuned on English prompts would be tuned on a population that structurally
+excludes a Thai-writing operator's prompts, and a non-zero cut would suppress memory
+for them first. That is a property of the tokenizer rather than of the gate, and it is
+one reason the replacement number has to come from the control-armed measurement.
+
+The gate is **relative, so it can never empty a recall.** The floor is a fraction of
+that recall's own best score, and the best-scoring fact is by definition equal to the
+maximum, so it clears every ratio in `[0.0, 1.0]` — including `1.0`, the strictest
+value the range permits. Two consequences, both measured on a temporary store rather
+than argued: where one fact scores 3 and two score 1, `min_ratio=0.5` prunes three
+hits to one; where all three score 1, `min_ratio=1.0` prunes nothing and returns all
+three. So this gate narrows an injection, it does not suppress one. The count of
+injecting prompts is invariant under any setting, and a uniformly weak field is
+admitted whole. That is the price of cancelling the query-length term — the
+cancellation works by dividing two scores taken against the same query, which is
+exactly what makes an absolute judgement of "this whole recall is too weak"
+unavailable here. A rule that could refuse an entire recall would have to reintroduce
+a query-independent denominator, and every such denominator leaves the query's length
+in the numerator. Roadmap #6's measure should be read accordingly: "hit rate per 100
+injections" is a statement about the width of an injection, not about how many prompts
+get one. An empty recall still comes only from the score-`> 0` filter above, as it did
+before this gate existed.
+
+The gate is applied **per layer**. A layered `Memory` hands the same ratio to every
+store and each one measures against its own top hit, so a profile fact does not have
+to out-score the project store's best to be admitted. Where the gate sits relative to
+the top-`k` slice is not specified and cannot be observed: the survivors are always a
+prefix of the score-sorted list, so filtering before or after the slice returns the
+same facts.
+
+A ratio outside `[0.0, 1.0]` — `NaN` included — is refused **before any file is read**,
+with the same sentence in both runtimes:
+
+```
+recall min-score ratio must be between 0.0 and 1.0
+```
+
+The offending value is deliberately not interpolated: Python renders `2.0` as `2.0`
+and JavaScript renders it as `2`, and a sentence carrying the number would be a
+divergence manufactured by float formatting.
+
+Every claim in this section is rerunnable rather than reported. `node
+tools/conformance/run.mjs --suite recall-gate` runs the same store through both
+runtimes and compares the surviving facts, the directory afterwards, and the refusal
+— including the two points where the floor lands **exactly on** a fact and the fact
+must be admitted: on a 4/3/2/1 score ladder, `0.5 * 4` is 2.0 and `0.25 * 4` is 1.0,
+both exact in IEEE754 on both sides, so those are the only inputs that can tell `>=`
+from `>`. The constant itself is compared as its IEEE754 bits and never as a rendered
+decimal, because `json.dumps(0.0)` writes `0.0` where `JSON.stringify(0)` writes `0`
+— a serialiser difference, not a product one, and pinning it as a divergence would be
+a false entry in [porting.md](porting.md). `NaN` is constructed inside each reference
+rather than sent through the case file: JSON has no literal for it, so a `NaN` sent as
+data arrives as `null` and tests a different refusal.
 
 ### save
 
@@ -256,10 +345,207 @@ the same transaction `save` gets.
 frontmatter or an invalid `type`, then re-checks the budget. Run it in CI over a
 committed store, or on startup.
 
-There is no automatic compression or summarization in v1 — archiving is the only
-lifecycle action. You trigger it from the CLI or host code; the model triggers it
-through `memory_compact` after a budget refusal; the `PostToolUse` hook triggers
-it at 90 % of budget.
+There is no automatic compression or summarization in v1. Archiving is the only
+lifecycle action that *reduces* a store, and the only one the model or a hook can
+trigger: you trigger it from the CLI or host code, the model triggers it through
+`memory_compact` after a budget refusal, and the `PostToolUse` hook triggers it at
+90 % of budget. `dream()` below consolidates two layers into one copy of each fact;
+it is not a summarizer and it never rewrites a claim into fewer words.
+
+## Consolidation across layers: `dream()`
+
+`Memory.dream(dry_run=True)` merges the facts the **project** layer and the
+machine-wide **profile** layer hold under the **same name**. It returns a
+`DreamOutcome` whose `status` is one of `consolidated`, `previewed`,
+`nothing-to-consolidate`, `refused-budget` or `no-profile-layer`, and whose
+`result` is the whole diff (`bantamkit.memory.dream.DreamResult`).
+
+**It does not save meaningful tokens, and nothing here should be read as claiming
+it does.** The profile store has no `index.md` on disk and never has: its index is
+derived by `index_text()` at read time and is not loaded from any prompt, so
+deduplicating it frees approximately zero prompt bytes. What it buys is
+**correctness** — one copy of a user ruling instead of two that have already
+diverged.
+
+### Why the key is the name and not the similarity
+
+Measured over both live stores on 2026-09-06, before the feature existed:
+
+- **Zero duplicate pairs inside either store**, at `DUPLICATE_JACCARD` 0.5 and at a
+  0.35 floor; the highest-scoring pair anywhere is **0.25**. That is mechanical
+  rather than lucky: `save()` already refuses at 0.5, so a store built through
+  `save` is duplicate-free by construction. A within-store deduper would have an
+  empty input population on every store this runtime has ever written.
+- **14 names exist in both stores**, 13 of them byte-identical facts — 25,962 fact
+  bytes, 62.1 % of everything in the profile store.
+- **Zero cross-layer pairs above 0.35 that do not already share a name.** Every
+  duplicate is an exact copy; none is a paraphrase.
+- The fourteenth pair has **diverged**, and its two bodies score **0.333** — below
+  the threshold this runtime calls a duplicate. A merge gated on similarity would
+  find the 13 it did not need help with and miss the only hard one.
+
+So the merge key is name equality. Similarity is still computed and **reported**
+(`DreamResult.similar_unmerged`) so that a future store growing a paraphrase is
+visible, and it is never acted on.
+
+### What a merge produces
+
+- **Byte-identical pairs collapse to one copy.**
+- **A diverged pair is unioned, never won.** All three cheap tie-breakers were
+  measured against the real diverged pair and every one drops content the user
+  wrote: newest `created` and longest body both pick the profile copy and lose the
+  project copy's amended paragraph, project-layer-wins drops ~1.7 kB of the profile
+  copy, and `last_recalled` is the same date on both and separates nothing.
+- The union is **paragraph-level ordered set union, project first**: split both
+  bodies on blank lines, emit every project block in order, then every profile
+  block whose whitespace-collapsed lowercase text has not already been emitted.
+  It may **repeat** a claim and it may never **drop** one — a repeat is one edit to
+  remove, a dropped ruling is not recoverable.
+- **Descriptions** are `; `-joined unless they collapse to the same text; **links**
+  are an ordered set union, project first; **`created`** takes the earlier of the
+  two (it means first-landing) and **`last_recalled`** the later.
+- **Contradiction: newer wins, loser preserved.** A single-line `Subject: value`
+  block present on both sides with two different values is a contradiction. The
+  side whose *fact file* has the later mtime wins — `created` is first-landing and
+  points backwards on the real pair — and the losing claim is written verbatim
+  under a `## superseded by a dream merge` block rather than dropped.
+- **Relative dates are annotated, not rewritten away.** `today` becomes
+  `today (2026-08-27)`, resolved against **that fact's own mtime**, never against
+  the day the pass runs. Only exact day arithmetic is resolved (`today`,
+  `tonight`, `yesterday`, `tomorrow`, `right now`, `just now`, `N days/weeks ago`);
+  vaguer terms (`recently`, `last month`) are **reported and left alone**, because
+  substituting a day for them would invent a precision the writer did not have. A
+  term already carrying a stamp is skipped, so the pass is idempotent.
+- **A day count no calendar can hold is reported, not raised.** `N days ago` has no
+  upper bound in prose, and a body saying `999999999999 days ago` is something a
+  person can legitimately write. Such a term is treated exactly like `recently` —
+  listed in `DreamResult.unresolved` with `resolved: ""` and the body untouched.
+  The boundary is CPython's, on both runtimes: `timedelta`'s own magnitude cap of
+  999,999,999 days, and any result outside `date.min .. date.max`, which against a
+  2026-09-06 mtime is anything from 739,865 days back (739,864 days back is
+  `0001-01-01` and still resolves). Before this guard the pass raised
+  `OverflowError` out of `dream()` — the preview included — and the two runtimes did
+  not even raise the same thing: at `2147483648 days ago` CPython said `Python int
+  too large to convert to C int` and the port said `days=-2147483648; must have
+  magnitude <= 999999999`. Neither spells a sentence now, which is why there is no
+  sentence to keep in step.
+
+### Direction, cost and reversibility
+
+The **survivor stays in the project layer** and the **profile copy is archived**.
+The project layer is the only writable one — `save()` writes there and nowhere
+else — so a survivor parked in the read-only profile layer would be re-forked by
+the very next save under that name.
+
+That direction has a cost, and it is stated rather than hidden: **the profile store
+is machine-wide.** A fact archived out of it stops answering for every other
+project on this machine that has no store of its own. This is why `dry_run`
+defaults to `True`, why every consumed name and the archive directory appear in the
+result, and why consumption is the same one-way `facts/` → `archive/` **move**
+`compact()` makes — `MemoryStore.restore(name)` on the profile store brings any of
+it back.
+
+Read-only **grants** are never consumed. A grant is another operator's store.
+
+The budget is `compact()`'s budget, reused: the only index this can grow is the
+project one, and only by the bytes a unioned description adds. A plan whose
+projected index would not fit is returned **unapplied** with `over_budget` set and
+a reply naming `memory_compact`.
+
+**`dream()` never creates an `index.md` that was not already on disk**, in either
+store. The profile store has never had one, and putting a new file in the user's
+home directory has to be a decision somebody makes rather than a side effect of
+tidying two copies of a fact into one.
+
+### What it did to a real pair of stores, measured
+
+Run against a **copy** of both live stores on 2026-09-06 (the live roots were never
+opened for writing; the script and the full data are
+`.shiftwork/notes-job45/J45-4-after.{py,json,md}`):
+
+| | before | after |
+|---|---|---|
+| cross-store exact duplicate facts | 13 | **0** |
+| cross-store name collisions | 14 | **0** |
+| project `index.md` on disk | 18,707 B | **18,811 B** |
+| profile `index.md` on disk | no file | **no file** |
+| profile `index_text()`, derived at read time | 3,974 B | 1,151 B |
+| profile fact count / `archive/` | 20 / 0 | 6 / **14** |
+| total fact bytes across both stores | 267,339 | 238,788 |
+| **recall top-1 over a fixed 20-query set** | — | **identical on all 20** |
+
+Three of those rows are the honest ones. **The project index grew**, by the 104
+bytes of the one merged description — a merge that shrank it would have dropped
+half the survivor's query vocabulary. **The profile index fell by 2,823 bytes that
+were never on a prompt bill**, because that store's index is derived at read time
+and is not loaded from a file; the byte saving is real arithmetic and approximately
+zero tokens. And **retrieval did not move**: all 20 queries still answer, all 20
+still answer from the `project` layer, and no top-1 changed — which is the property
+a consolidation has to hold and not an improvement it delivers.
+
+Thirteen of the fourteen merges were byte-identical collapses. The fourteenth
+scored **0.333** — below the 0.5 this runtime calls a duplicate — and its union grew
+the body from 968 to 2,661 bytes with nothing superseded: the two copies did not
+contradict each other, they simply each held things the other did not.
+
+### The limit of the mtime basis, stated because it is real
+
+A relative date resolves against **the fact file's own mtime**, chosen over
+`created` because `created` is first-landing and a body re-saved later would resolve
+against the wrong day. On a store in daily use that choice is compromised, and
+measurably so: **`recall` stamps `last_recalled`, which rewrites the fact file,
+which moves the mtime.** In the run above every one of the ten annotations landed on
+2026-09-05 or 2026-09-06, including one on an August fact whose "today" is an August
+day and whose mtime says September because that is when it was last read.
+
+So the day this pass appends to a frequently-recalled fact is the day it was last
+**read**, not the day it was written. The design says which day it used rather than
+hiding it — the term is kept, the day goes in parentheses beside it, and
+`DreamResult.absolutised` carries the `basis` for every hit — so the substitution is
+auditable. It is still a date a careless reader will misread. Neither field on disk
+answers the question correctly today (`created` is first-landing, mtime is
+last-touched); the honest fix is a third field recording when the **body** last
+changed, which no store records.
+
+### The gate
+
+`tools/conformance/suites/dream.mjs` is what makes the port a fact rather than a
+claim: 18 scenarios, each materialised twice from one spec and compared on three
+things — the returned plan, the project directory byte for byte, and the profile
+directory byte for byte — plus the day-arithmetic boundary over 16 terms. Run it
+with `node tools/conformance/run.mjs --suite dream`.
+
+Two of its cases are **not** differential, and deliberately: the mtime tie-break and
+the calendar edge are rules written twice and, until that file existed, asserted
+nowhere — flip both halves at once and the two runtimes still agree, so no
+comparison between them can see it. Those two are pinned as typed literals against
+each side separately. Measured: 17 mutants applied to the port and to the reference,
+17 killed, and the two symmetric mutations reddened only the literals.
+
+```python
+from bantamkit.memory import Memory
+
+mem = Memory.layered()
+print(mem.dream())                  # a dry run: the whole plan, nothing written
+print(mem.dream(dry_run=False))     # apply it
+```
+
+The `memory_dream` MCP tool is served, twelfth, by BOTH runtimes — it landed in
+one change with the `runtime-ts` port of the pass, because a tool that exists on
+one runtime and not the other is how the two come to disagree about a user's
+data. It takes one argument, `dry_run`, and it **defaults to true**: the profile
+store is machine-wide, so a fact archived out of it stops answering for every
+other project on this machine that has no store of its own, and the short call is
+therefore the preview. Its reply is the same prose `Memory.dream` returns and its
+event-log outcome is one of `consolidated`, `previewed`,
+`nothing-to-consolidate`, `refused-budget`, `no-profile-layer` — read off the
+decision, never off the reply.
+
+The Node half is `runtime-ts/src/memory/dream.ts`. Six places where JavaScript's
+defaults differ from CPython's are pinned there rather than inherited — `\s`,
+`\d`, `\b`, `.`, `sorted()` on `str`, and `f"{x:.3f}"`'s round-half-to-even —
+each measured over every codepoint (or every reachable tie) before it was
+written; the header of that file carries the numbers.
 
 ## The operator CLI
 

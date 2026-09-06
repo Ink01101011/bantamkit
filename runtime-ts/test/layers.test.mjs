@@ -35,7 +35,7 @@ import {
   resolveProjectStore,
 } from '../dist/memory/layers.js';
 import { layerLabel, Memory, normalizeName, profileStore } from '../dist/memory/component.js';
-import { MemoryValidationError } from '../dist/memory/store.js';
+import { MemoryValidationError, RECALL_MIN_SCORE_RATIO } from '../dist/memory/store.js';
 
 /**
  * `os.stat`'s strerror for a path that is not there.
@@ -790,4 +790,93 @@ test('a corrupt read-only layer is skipped; the project layer failing is a real 
     assert.throws(() => Memory.layered(project, frozen()).recall('shared'), MemoryValidationError);
   });
   t.diagnostic('the grant raised inside recall and was skipped; the project layer was not');
+});
+
+// ------------------------------------- roadmap #6: the precision gate, from the component
+//
+// The same four nodes `runtime-py/tests/test_memory_component.py` holds under the same
+// heading. The store-level arithmetic is pinned in `store.test.mjs`; what these add is the
+// LAYERED behaviour, which no store-level node can see: the ratio is measured per layer,
+// against each layer's own top hit, and a bad ratio comes back as the argument error it is
+// rather than as an `unreadable` count.
+
+test('the gate default changes no layered recall', () => {
+  // The no-op proof at the surface every caller actually uses.
+  assert.equal(RECALL_MIN_SCORE_RATIO, 0.0);
+  const bed = fresh();
+  const home = join(bed, 'home');
+  mkstore(join(home, '.bantamkit', 'memory'), { gamma: 'alpha oscar papa quebec' });
+  const project = join(bed, 'companyA');
+  mkstore(join(project, '.bantamkit', 'memory'), {
+    alpha: 'alpha bravo charlie delta',
+    weak: 'alpha xray yankee zulu',
+  });
+  sandboxed(home, () => {
+    const mem = Memory.layered(project, frozen({ k: 9 }));
+    const plain = mem.recallOutcome('alpha bravo charlie delta');
+    assert.equal(plain.returned, 3);
+    assert.equal(mem.recallOutcome('alpha bravo charlie delta', null, 0.0).reply, plain.reply);
+    assert.equal(
+      mem.recallOutcome('alpha bravo charlie delta', null, RECALL_MIN_SCORE_RATIO).reply,
+      plain.reply,
+    );
+  });
+});
+
+test('the gate is measured per layer and never across layers', () => {
+  // A profile fact does not have to out-score the project store's top hit.
+  //
+  // Project scores 4 and 1; profile scores 1. At `minRatio=1.0` the project layer keeps only
+  // its own best — so `weak` goes — while `gamma` survives, because 1 is the best score in
+  // the store that holds it. A gate applied to the MERGED list would have dropped `gamma`
+  // too, and this is the assertion that tells them apart.
+  const bed = fresh();
+  const home = join(bed, 'home');
+  mkstore(join(home, '.bantamkit', 'memory'), { gamma: 'alpha oscar papa quebec' });
+  const project = join(bed, 'companyA');
+  mkstore(join(project, '.bantamkit', 'memory'), {
+    alpha: 'alpha bravo charlie delta',
+    weak: 'alpha xray yankee zulu',
+  });
+  sandboxed(home, () => {
+    const out = Memory.layered(project, frozen({ k: 9 })).recallOutcome(
+      'alpha bravo charlie delta',
+      null,
+      1.0,
+    );
+    assert.equal(out.returned, 2);
+    assert.ok(out.reply.includes('[alpha]') && out.reply.includes('[gamma]'));
+    assert.ok(!out.reply.includes('[weak]'));
+  });
+});
+
+test('a bad ratio surfaces as the error it is, not as an unreadable layer', () => {
+  // The writable project layer is reached FIRST, so the range check re-raises out of it
+  // instead of being caught by the read-only-layer arm and counted as a corrupt grant.
+  const bed = fresh();
+  const home = join(bed, 'home');
+  mkdirSync(home, { recursive: true });
+  const project = join(bed, 'companyA');
+  mkstore(join(project, '.bantamkit', 'memory'), { alpha: 'alpha bravo' });
+  sandboxed(home, () => {
+    assert.throws(
+      () => Memory.layered(project, frozen()).recallOutcome('alpha', null, 1.5),
+      (e) => {
+        assert.ok(e instanceof MemoryValidationError);
+        assert.equal(e.message, 'recall min-score ratio must be between 0.0 and 1.0');
+        return true;
+      },
+    );
+  });
+});
+
+test('Memory.recall passes the ratio through to the outcome', () => {
+  // `Memory.recall` is the string half of `recallOutcome`; the gate must reach it.
+  const root = mkstore(join(fresh(), 'm'), {
+    alpha: 'alpha bravo charlie delta',
+    weak: 'alpha xray yankee zulu',
+  });
+  const mem = new Memory(root, frozen({ k: 9 }));
+  assert.ok(mem.recall('alpha bravo charlie delta').includes('[weak]'));
+  assert.ok(!mem.recall('alpha bravo charlie delta', null, 1.0).includes('[weak]'));
 });

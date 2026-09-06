@@ -10,7 +10,9 @@
     "bantamkit_status",
     "memory_compact",
     "bantamkit_read",
-    "skill_audit"
+    "skill_audit",
+    "memory_dream",
+    "repo_map"
   ],
   "tools": {
     "bantamkit_status": {
@@ -395,6 +397,71 @@
         ],
         "type": "object",
         "title": "skill_auditOutput"
+      }
+    },
+    "memory_dream": {
+      "description": "Consolidate the memories the project layer and the machine-wide profile layer hold under the SAME NAME, and say exactly what changed. Byte-identical copies collapse to one; a pair that has diverged is UNIONED — every claim from both copies survives, never a winner-takes-all — and a relative date in a body is annotated with the day it resolves to against that fact's own mtime, never against today. The survivor stays in the writable project layer and the profile copy MOVES to that store's archive/: nothing is deleted and any consumed memory can be restored by name. This is a correctness pass, not a token saving: the profile index is derived at read time and is not loaded from a prompt, so consolidating it frees approximately no bytes — what it buys is one copy of a ruling instead of two that can disagree. It defaults to a DRY RUN because the profile store is machine-wide: a memory archived out of it stops answering for every other project on this machine that has no store of its own. Read the plan first, then call it again with dry_run false to apply it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "description": "Preview only. True (the default) performs every read, merge and projection and writes nothing. Pass false to apply the plan."
+          }
+        }
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object",
+        "title": "memory_dreamOutput"
+      }
+    },
+    "repo_map": {
+      "description": "A ranked map of a source tree: every file's definitions, ordered by how central that file is to the files you name in `focus`, truncated to a byte budget. Call it when you are about to work on a file and want to know which OTHER files matter to it — the ports, the callers, the module it reaches through a private helper — rather than reading a directory listing and guessing. `focus` is the file or files you are editing, relative to `root` and POSIX-separated; they are excluded from the listing because you already have them open, and an empty focus gives plain centrality over the whole tree. This is a PRECISION pass and it is not a token saving: the gate this feature was supposed to clear was refuted by measurement — discovery is 0.114% of real prompt tokens, because 97.8% of the bill is cache_read — so a map does not make a session cheaper. What it buys is the right file found sooner. Nothing the scanner cannot read is dropped silently: every unread file resolves into a named omission (unknown-language, unreadable-bytes, size-cap, no-definitions, unreachable, per-file-cap, budget) counted in a footer that is NOT charged to the budget. The budget is UTF-8 BYTES of the listing, not tokens; there is no model tokenizer in either runtime and this tool will not pretend to one.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "root"
+        ],
+        "properties": {
+          "root": {
+            "type": "string",
+            "description": "Directory to map, absolute or relative to the server's working directory"
+          },
+          "focus": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The files you are working on, relative to `root` and POSIX-separated. They are excluded from the listing. A name that is not a scanned source is ignored rather than refused."
+          },
+          "budget": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "UTF-8 bytes of listing to render; default 4000. The omission footer is not charged against it."
+          }
+        }
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object",
+        "title": "repo_mapOutput"
       }
     }
   }

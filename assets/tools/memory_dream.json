@@ -1,0 +1,20 @@
+{
+  "name": "memory_dream",
+  "description": "Consolidate the memories the project layer and the machine-wide profile layer hold under the SAME NAME, and say exactly what changed. Byte-identical copies collapse to one; a pair that has diverged is UNIONED — every claim from both copies survives, never a winner-takes-all — and a relative date in a body is annotated with the day it resolves to against that fact's own mtime, never against today. The survivor stays in the writable project layer and the profile copy MOVES to that store's archive/: nothing is deleted and any consumed memory can be restored by name. This is a correctness pass, not a token saving: the profile index is derived at read time and is not loaded from a prompt, so consolidating it frees approximately no bytes — what it buys is one copy of a ruling instead of two that can disagree. It defaults to a DRY RUN because the profile store is machine-wide: a memory archived out of it stops answering for every other project on this machine that has no store of its own. Read the plan first, then call it again with dry_run false to apply it.",
+  "surfaces": ["mcp"],
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "dry_run": {
+        "type": "boolean",
+        "description": "Preview only. True (the default) performs every read, merge and projection and writes nothing. Pass false to apply the plan."
+      }
+    }
+  },
+  "output_schema": {
+    "properties": { "result": { "title": "Result", "type": "string" } },
+    "required": ["result"],
+    "type": "object",
+    "title": "memory_dreamOutput"
+  }
+}

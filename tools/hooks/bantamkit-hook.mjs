@@ -25,6 +25,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const T0 = Date.now();
@@ -176,6 +177,59 @@ async function sessionStart(input) {
 }
 
 // ------------------------------------------------------------ UserPromptSubmit
+/**
+ * One injected recall header, parsed: `[layer] [name] (type) description`.
+ *
+ * ONE regex, used both to FILTER the reply's lines and to read the fields off them, so the
+ * set of lines called headers cannot drift from the set of lines the log describes.
+ */
+const RECALL_HEADER = /^\[([^\]]+)\] \[([^\]]+)\] \(([a-z]+)\) (.*)$/;
+
+/**
+ * The store's own score for one injected header against this prompt.
+ *
+ * `MemoryStore.recall` computes `score` and throws it away — it returns `Fact[]`, and
+ * `recallOutcome` carries counts but no per-fact score, so no runtime API surfaces the
+ * number roadmap #6 has to gate on. It does not need to. The score IS
+ *
+ *     |tokens(name + " " + description) ∩ tokens(query)|
+ *
+ * and all three inputs are here: `tokens` is exported from the runtime's own `store.js`
+ * (so this is the shipped tokenizer, not a second copy of it), the query is the prompt, and
+ * `name`/`description` are the two fields `Memory.format` interpolated into this very line.
+ * Re-deriving it is exact, not an estimate — for every fact `memory_save` writes, whose
+ * description is one line by construction. A hand-edited multi-line description would have
+ * already broken the header this parses, and would score its first line.
+ */
+function scoreHeader(head, queryTokens, tokenize) {
+  const m = RECALL_HEADER.exec(head);
+  if (!m) return null;
+  const [, layer, name, type, description] = m;
+  let score = 0;
+  for (const t of tokenize(`${name} ${description}`)) if (queryTokens.has(t)) score += 1;
+  return { name, layer, type, score };
+}
+
+/**
+ * The prompt, as a fingerprint that cannot be read back.
+ *
+ * THE LOG PERSISTS TO DISK AND THE PROMPTS ARE THE USER'S. Nothing reconstructible goes in:
+ * a SHA-256 hex digest and two sizes, and no substring of the prompt at any length. The
+ * digest exists to tell two prompts apart and to recognise the same prompt twice — that is
+ * all #6 needs from it. It is a one-way function, not a secret: someone holding a GUESS at
+ * the prompt can confirm the guess by hashing it. That is inherent to any stable hash, and
+ * the alternative — a per-machine salt — would buy nothing here (the guesser has the salt
+ * too, it sits in the same home directory) at the cost of digests that stop matching across
+ * machines. So: stable, unsalted, and documented rather than dressed up.
+ */
+function promptFingerprint(prompt) {
+  return {
+    sha256: createHash('sha256').update(prompt, 'utf8').digest('hex'),
+    chars: prompt.length,
+    bytes: Buffer.byteLength(prompt),
+  };
+}
+
 async function userPromptSubmit(input) {
   const prompt = String(input.prompt || '').trim();
   if (prompt.length < PROMPT_MIN_CHARS || prompt.startsWith('/')) {
@@ -183,6 +237,7 @@ async function userPromptSubmit(input) {
     return;
   }
   const { Memory } = await loadMemory();
+  const { tokens } = await import(path.join(DIST, 'store.js'));
   const m = Memory.layered(input.cwd || process.cwd());
   const o = m.recallOutcome(prompt, 3);
   if (o.status !== 'answered') {
@@ -192,10 +247,31 @@ async function userPromptSubmit(input) {
   // Only the HEADER line of each hit — `[layer] [name] (type) description`. The body costs
   // ~1.5 KB a fact and would be re-sent on every later call; the header is ~150 B and
   // tells the model exactly which name to pass to memory_recall if it wants the body.
-  const heads = o.reply.split('\n').filter((l) => /^\[[^\]]+\] \[[^\]]+\] \([a-z]+\) /.test(l));
+  const heads = o.reply.split('\n').filter((l) => RECALL_HEADER.test(l));
   if (heads.length === 0) { log({ event: 'UserPromptSubmit', action: 'none', reason: 'no-headers' }); return; }
   const ctx = capLines(`[bantamkit recall — memories that match this prompt; call mcp__bantamkit__memory_recall with the name for the body]\n${heads.join('\n')}`, PROMPT_INJECT_MAX);
-  log({ event: 'UserPromptSubmit', action: 'inject', hits: heads.length, bytes: Buffer.byteLength(ctx), source: o.source });
+  // `injected` is read back off `ctx`, NOT off `heads`. The byte cap drops whole lines, so a
+  // header that `recallOutcome` picked need not have left the process — and roadmap #6 asks
+  // "was an INJECTED name later used", a question a name the model never saw would poison.
+  // `hits` keeps its old meaning (headers picked, pre-cap) so the 487 records written before
+  // this change stay comparable; `dropped` is the difference the old shape could not show.
+  const queryTokens = tokens(prompt);
+  const injected = ctx.split('\n')
+    .map((l) => scoreHeader(l, queryTokens, tokens))
+    .filter((x) => x !== null);
+  log({
+    event: 'UserPromptSubmit',
+    action: 'inject',
+    hits: heads.length,
+    bytes: Buffer.byteLength(ctx),
+    source: o.source,
+    // The join key. Without it an injection record cannot be matched to the transcript that
+    // says what the model did next, which is why the 487 pre-existing records answer nothing.
+    session: input.session_id ?? null,
+    prompt: promptFingerprint(prompt),
+    injected,
+    dropped: heads.length - injected.length,
+  });
   emit({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: ctx } });
 }
 

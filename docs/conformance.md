@@ -24,22 +24,26 @@ two sources and agreed they match — which is the check that has never once cau
 difference that mattered. Every defect this job found in the port was found by running both
 sides, not by reading either.
 
-## The twelve suites
+## The sixteen suites
 
 | suite | what it compares |
 |---|---|
 | `cli` | the `bantamkit-mcp` command line as a process: stdout, stderr, exit code |
 | `charsets` | `runtime-ts/src/charsets.ts` against the live CPython codec registry: the file against what `runtime-ts/scripts/charsets-table.py` writes today (header excluded), all 256 bytes of every single-byte codec decoded by the reference against the port's table, the alias map and the module list |
 | `codec` | fact-file frontmatter: emit byte-identically, and parse each other |
+| `dream` | the cross-layer consolidation: one pair of stores materialised twice, `dream()` run on both, and three things compared per scenario — the returned `DreamResult`, the project directory byte for byte, and the profile directory byte for byte. Two of its cases are NOT differential: the mtime tie-break and the day-arithmetic calendar edge are rules written on both sides and asserted on neither, so they are pinned as typed literals against each runtime separately |
 | `docread` | the reader as a library: `sniff`, the rows per part, the omission dicts, every `DocumentReadError` sentence and the `page()` window over the same 99 paths (96 files, plus `''`, `a/b/.` and `/dev/zero`, which are not), plus the thirteen checked-in fixtures under `runtime-py/tests/data/docread/` (a checked-in name wins over a built one), `a\x00b`, three `charset-<label>.eml` parts over the charset table's five bytes and the `<xmp>` 4301-digit charref, and the rulings — pdf/doc/rtf (refused on Node), bzip2/lzma (read by the reference, refused on Node by method number), utf-7, RFC 2231 and `<!ATTLIST>` defaults (both read, one row apart) — each with its refusal-bit companions |
 | `mcpreport` | `--mcp-report` as a process, over one synthetic host-log/event-log pair |
 | `memorycli` | `bantamkit-memory` against `python -m bantamkit.memory` as processes: the transcript of every step, the exit codes, and the store afterwards |
+| `recall-gate` | roadmap #6's precision gate: the same store and the same `min_ratio` through both runtimes — which facts survive, the directory afterwards (a gated fact must not be stamped), and which ratios are refused. The ladder scores 4/3/2/1 so a floor can land EXACTLY on a fact: `0.5 * 4` is 2.0 and `0.25 * 4` is 1.0, exact in IEEE754 on both sides, and those are the only inputs that separate `>=` from `>`. `NaN`, `Infinity` and `-Infinity` are constructed inside each reference because JSON has no literal for them, and the constant is compared as its IEEE754 BITS because `json.dumps(0.0)` is `0.0` where `JSON.stringify(0)` is `0`. Four of its cases are NOT differential: the value of the constant, the at-threshold admission, the relative-gate property and the refusal sentence are each written twice and asserted on neither side, so they are pinned as typed literals against each runtime separately |
 | `recall-strings` | the binding layer: every sentence an empty recall can produce |
+| `repomap` | roadmap #10's ranked definition map: the walk, the per-file scan (comment-stripped digest, definitions, reference-set digest), the whole edge map, every node's IEEE-754 SCORE BITS, every rendered listing as bytes, every omission, and the `repo_map` tool's rendered reply — over five purpose-built trees (ordinary, boundary, astral, single-file, document-frequency) and 8 budget calls plus per-tree foci, and 7 `pagerank` scenarios with no filesystem at all. Every float travels as its big-endian bit pattern and every string as base64, because a differential comparing `String(x)` measures the serialisers. **The corpus is BUILT, never this repository**: J45-10 measured three wrong answers from mapping the checkout while writing into it, one of which scored four equivalent mutants as KILLED. Five of its cases are NOT differential — the constants, the astral-plane tie-break, the omission vocabulary, the reply tail and the empty-listing sentence are pinned as typed literals against each runtime separately, and the tie-break is the one rule NO Python test can make non-vacuous (CPython's `str` comparison IS code-point comparison), so only a case can prove the two agree |
 | `shiftwork` | the checkpoint writer: `ensure_ascii`, `sort_keys`, separators, `5.0` |
+| `skillaudit` | the catalogue auditor: the whole `Audit` document over the committed nineteen-skill fixture tree, every finding kind, every omission and every refusal sentence. **Added to this table 2026-09-07 by J45-11, which found it missing** — the suite has run in `--all` since job44 and the header said "fourteen" over fourteen rows for fifteen suites, so a reader counting this page was one short and nothing compared the page against `--list` |
 | `statusline` | `--statusline` as a process, over synthetic event logs ([statusline.md](statusline.md)) |
 | `store` | save/recall/index: the directory after the call, byte for byte |
 | `validate` | the validator: every sentence a schema failure can produce |
-| `wire` | the MCP surface: eleven tools, one prompt, two templates, and the frames themselves — including a `bantamkit_read` session over the reader's files and its event-log records, and a `read-edges` session over the inputs F2/F3 fixed (bare `&`, a bad EOCD offset, a 4301-digit key, `''`, `a/b/.`, offset 2**53+1 sent raw, `/dev/zero`), and a `read-round2` session over round 2's (part `"null"`/`"[1]"`/`"{}"` as sent, offset `"null"` as the one `isError`, a NUL in the path, the encrypted member, and the bzip2/lzma and RFC 2231 rulings with companions), and a `read-round3` session over round 3's (the `ß1` cell ref, method 9, the encrypted `mimetype`, bad CRC and corrupt deflate as literal sentences on each side, the capped `<p>` charref, `memory_save` with `links` as a 4303-character string refused as `list_type`, and the zero-row part's `has no rows` sentence pinned on `read` id 12) |
+| `wire` | the MCP surface: thirteen tools, one prompt, two templates, and the frames themselves — including a `bantamkit_read` session over the reader's files and its event-log records, and a `read-edges` session over the inputs F2/F3 fixed (bare `&`, a bad EOCD offset, a 4301-digit key, `''`, `a/b/.`, offset 2**53+1 sent raw, `/dev/zero`), and a `read-round2` session over round 2's (part `"null"`/`"[1]"`/`"{}"` as sent, offset `"null"` as the one `isError`, a NUL in the path, the encrypted member, and the bzip2/lzma and RFC 2231 rulings with companions), and a `read-round3` session over round 3's (the `ß1` cell ref, method 9, the encrypted `mimetype`, bad CRC and corrupt deflate as literal sentences on each side, the capped `<p>` charref, `memory_save` with `links` as a 4303-character string refused as `list_type`, and the zero-row part's `has no rows` sentence pinned on `read` id 12) |
 
 `cli`, `mcpreport`, `memorycli` and `statusline` are the odd ones out and deliberately so:
 every other suite compares two library functions, and that comparison cannot see which stream
@@ -232,6 +236,87 @@ PASS: 6662 cases, 1614 byte-identical, 3397 exact-string, 1651 structural,
 Per suite, at that tree: `validate` 3015, `docread` 1107, `shiftwork` 596, `codec` 510,
 `wire` 417, `memorycli` 310, `store` 186, `charsets` 148, `cli` 106, `recall-strings` 96,
 `skillaudit` 94, `statusline` 52, `mcpreport` 25 — every one at 0 differed.
+
+**AMENDED 2026-09-06 — job45 (`feat/job45-dream-precision-repomap`), roadmap row 5.** The
+`dream` suite landed: 78 cases over 18 scenarios and a 16-term day-arithmetic boundary.
+
+<!-- provenance: value=6760 cases, 149 ruled-different, 0 failures; commit=3f9bb55 plus job45's working tree; command=node tools/conformance/run.mjs --all -->
+```
+PASS: 6760 cases, 1654 byte-identical, 3397 exact-string, 1709 structural,
+      149 ruled-different, 0 failures
+```
+
+Per suite, at that tree: `validate` 3015, `docread` 1169, `shiftwork` 596, `codec` 468,
+`wire` 417, `memorycli` 310, `store` 186, `charsets` 148, `cli` 106, `recall-strings` 96,
+`skillaudit` 94, `dream` **78**, `statusline` 52, `mcpreport` 25 — every one at 0 differed.
+
+**THE TOTAL WENT DOWN BEFORE IT WENT UP, AND THE CAUSE IS THE OPERATOR'S STORE, NOT THIS
+JOB.** Job45's own baseline run, before a line of the new suite existed, measured **6682**
+against the 6724 job45's plan recorded — a fall of 42 with the suite code unchanged.
+`codec.mjs` generates exactly THREE cases per corpus fact (emit, python-parses-node,
+node-parses-python) over 65 adversarial facts plus the live project store, so 42 is 14 facts:
+`codec` 510 -> 468, and 510 is precisely the number the job44 provenance line above records
+when that store held 101 facts. It holds 87 now. `CORPUS_FLOOR` is 32, deliberately far below
+any real store, so a shrink of that size passes silently — the floor exists to catch a corpus
+that resolved to nothing, not to pin a number that moves whenever the operator saves or
+archives a fact. Quote a total against the tree AND the store it was taken on.
+
+Non-vacuity for the new suite is measured rather than asserted: **17 mutants applied and 17
+killed**, each restored and sha256-verified. Fifteen were one-sided and reddened between 1 and
+21 differential cases apiece. **The other two were symmetric** — the mtime tie-break flipped on
+both runtimes at once, and the calendar edge moved by one day on both at once — and each
+reddened exactly 2 cases, both of them literals, and not one differential case. That is the
+shape `differential-is-blind-to-symmetric-regression` names, caught here by design.
+
+**AMENDED 2026-09-07 — job45 (`feat/job45-dream-precision-repomap`), roadmap row 6.** The
+`recall-gate` suite landed: 37 cases over 11 store scenarios, 3 layered scenarios, the
+constant, and four literal pairs.
+
+<!-- provenance: value=6797 cases, 149 ruled-different, 0 failures; commit=3f9bb55 plus job45's working tree; command=node tools/conformance/run.mjs --all -->
+```
+PASS: 6797 cases, 1667 byte-identical, 3406 exact-string, 1724 structural,
+      149 ruled-different, 0 failures
+```
+
+Per suite, at that tree: `validate` 3015, `docread` 1169, `shiftwork` 596, `codec` 468,
+`wire` 417, `memorycli` 310, `store` 186, `charsets` 148, `cli` 106, `recall-strings` 96,
+`skillaudit` 94, `dream` 78, `statusline` 52, `recall-gate` **37**, `mcpreport` 25 — every
+one at 0 differed.
+
+**THE WHOLE DELTA IS THE NEW SUITE, and that is checked rather than assumed.** 6760 -> 6797
+is +37, and diffing the per-suite lines of the two runs — one taken before a line of the new
+suite existed, one after — shows every other suite at a byte-identical count. The operator's
+store held 87 facts for both runs, so `codec`'s 3-cases-per-fact did not move this time. It
+is still the reason a total must be quoted against the tree AND the store.
+
+Non-vacuity: **22 mutants applied on a `cp -R` copy, 21 killed and 1 equivalent by design.**
+A control run on the unmutated copy is green, so a red result is the mutation. Eighteen were
+one-sided — twelve against the reference, six against the port — and reddened between 1 and
+17 differential cases apiece; the survivor is the gate
+moved below the top-`k` slice, which both runtimes' implementers independently proved
+equivalent (the survivors are always a prefix of the score-sorted list), so this suite
+deliberately writes NO case that could distinguish the placement. Two of the one-sided
+mutants are worth naming because they each pin ONE case: the range check MOVED to after the
+facts are read — not deleted, so every readable store still refuses correctly — is seen by
+exactly one case, the unreadable-store ordering; and a floor that ignores the ratio entirely
+(`floor = max(...)`) is the only mutation an explicit `0.0` can see, which is what a no-op
+default means.
+
+**Four more symmetric mutants, and each reddened only literals.** The constant flipped on
+both runtimes at once, the sentence respelled on both, `>=` weakened to `>` on both, and the
+floor made absolute on both: **zero differential cases red** in every one of the four, and 2,
+2, 4 and 2 literal cases respectively. That is `differential-is-blind-to-symmetric-regression`
+measured a second time, on a second suite.
+
+**Two vacuous cases were found and dealt with, both tree comparisons that survived all 22
+mutants.** One was repaired: a multi-ratio scenario whose call list began at `0.0` stamped
+every fact on the first call, so its end state was saturated and no later call could change
+it — the list is now `1.0 -> 0.6 -> 0.5`, none of which admits the weakest fact, and the tree
+reddens under three mutants. The other was DELETED: the unreadable-store scenario cannot
+write a byte under any mutation of this rule, so its tree case could not fail. The claim it
+was meant to carry — a refused ratio touches no disk — is made non-vacuously by the six-ratio
+scenario over a readable store, whose tree reddens when the range check is deleted and `-0.1`
+stamps all four facts.
 
 **What job44 added, as its own units measured it** (the totals between the `6316` above and
 this one are recorded where they were made — row 11 of `docs/roadmap-toolbox.md` for

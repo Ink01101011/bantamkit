@@ -9,7 +9,11 @@ from bantamkit.assets import assets_root, load_skill, load_tool
 from bantamkit.memory import Memory
 from bantamkit.memory.component import normalize_name
 from bantamkit.memory.layers import MEMORY_DIR_ENV
-from bantamkit.memory.store import MemoryStore, MemoryValidationError
+from bantamkit.memory.store import (
+    RECALL_MIN_SCORE_RATIO,
+    MemoryStore,
+    MemoryValidationError,
+)
 
 
 def test_assets_root_env_override(monkeypatch, tmp_path):
@@ -878,3 +882,70 @@ def test_a_layer_that_could_not_be_read_is_not_evidence_that_nothing_is_saved(
     assert "nothing is saved in any layer bound here" not in out
     assert "could not be read" in out
     assert str(profile_facts.parent) in out
+
+
+# --------------------------------------------------------------------------- #
+# roadmap #6 — the precision gate, seen from the layered component.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_gate_default_changes_no_layered_recall(tmp_path, fake_home):
+    """The no-op proof at the surface every caller actually uses."""
+    assert RECALL_MIN_SCORE_RATIO == 0.0
+    project = tmp_path / "companyA"
+    project.mkdir()
+    store = project / ".bantamkit" / "memory"
+    _seed(store, "alpha", "x", description="alpha bravo charlie delta")
+    _seed(store, "weak", "x", description="alpha xray yankee zulu")
+    _seed(fake_home / ".bantamkit" / "memory", "gamma", "y", description="alpha oscar papa quebec")
+
+    mem = Memory.layered(start=project, k=9)
+    plain = mem.recall_outcome("alpha bravo charlie delta")
+    assert plain.returned == 3
+    assert mem.recall_outcome("alpha bravo charlie delta", min_ratio=0.0).reply == plain.reply
+    assert (
+        mem.recall_outcome("alpha bravo charlie delta", min_ratio=RECALL_MIN_SCORE_RATIO).reply
+        == plain.reply
+    )
+
+
+def test_the_gate_is_measured_per_layer_and_never_across_layers(tmp_path, fake_home):
+    """A profile fact does not have to out-score the project store's top hit.
+
+    Project scores 4 and 1; profile scores 1. At `min_ratio=1.0` the project layer
+    keeps only its own best — so `weak` goes — while `gamma` survives, because 1 is
+    the best score in the store that holds it. A gate applied to the merged list
+    would have dropped `gamma` too, and this is the assertion that tells them apart.
+    """
+    project = tmp_path / "companyA"
+    project.mkdir()
+    store = project / ".bantamkit" / "memory"
+    _seed(store, "alpha", "x", description="alpha bravo charlie delta")
+    _seed(store, "weak", "x", description="alpha xray yankee zulu")
+    _seed(fake_home / ".bantamkit" / "memory", "gamma", "y", description="alpha oscar papa quebec")
+
+    out = Memory.layered(start=project, k=9).recall_outcome(
+        "alpha bravo charlie delta", min_ratio=1.0
+    )
+    assert out.returned == 2
+    assert "[alpha]" in out.reply and "[gamma]" in out.reply
+    assert "[weak]" not in out.reply
+
+
+def test_a_bad_ratio_surfaces_as_the_error_it_is_not_as_an_unreadable_layer(tmp_path, fake_home):
+    """The writable project layer is reached first, so the range check re-raises."""
+    project = tmp_path / "companyA"
+    project.mkdir()
+    _seed(project / ".bantamkit" / "memory", "alpha", "x", description="alpha bravo")
+    with pytest.raises(MemoryValidationError) as excinfo:
+        Memory.layered(start=project).recall_outcome("alpha", min_ratio=1.5)
+    assert str(excinfo.value) == "recall min-score ratio must be between 0.0 and 1.0"
+
+
+def test_memory_recall_passes_the_ratio_through_to_the_outcome(tmp_path):
+    """`Memory.recall` is the string half of `recall_outcome`; the gate must reach it."""
+    mem = Memory(store=tmp_path / "m", k=9)
+    mem._save("project", "alpha", "alpha bravo charlie delta", "x")
+    mem._save("project", "weak", "alpha xray yankee zulu", "x")
+    assert "[weak]" in mem.recall("alpha bravo charlie delta")
+    assert "[weak]" not in mem.recall("alpha bravo charlie delta", min_ratio=1.0)

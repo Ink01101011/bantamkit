@@ -64,7 +64,31 @@ export {
 } from './memory/layers.js';
 export type { StoreBinding } from './memory/layers.js';
 export { layerLabel, Memory, normalizeName, profileStore } from './memory/component.js';
-export type { CompactOutcome, MemoryOptions, RecallOutcome, SaveOutcome } from './memory/component.js';
+export type {
+  CompactOutcome,
+  DreamOutcome,
+  MemoryOptions,
+  RecallOutcome,
+  SaveOutcome,
+} from './memory/component.js';
+export {
+  absolutise,
+  blockKey,
+  claimSlot,
+  collapse,
+  dream,
+  formatFixed3,
+  mergeBodies,
+  mergeDescriptions,
+  mergeLinks,
+  PROFILE_LAYER,
+  PROJECT_LAYER,
+  pyIntDigits,
+  sortedNames,
+  splitBlocks,
+  SUPERSEDED_HEADING,
+} from './memory/dream.js';
+export type { DateHit, DreamMerge, DreamResult, SimilarPair, Superseded } from './memory/dream.js';
 export {
   CAP_BYTES,
   DEFAULT_RELATIVE_PATH,
@@ -88,11 +112,12 @@ export {
   pyEqualValue,
   pyHashKey,
   pyText,
+  RECALL_MIN_SCORE_RATIO,
   sortScored,
   tokens,
   VALID_TYPES,
 } from './memory/store.js';
-export type { MemoryStoreOptions, SaveResult } from './memory/store.js';
+export type { MemoryStoreOptions, SaveResult, StoreInternals } from './memory/store.js';
 export {
   asPyOSError,
   cmpCodepoint,

@@ -17,7 +17,15 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import bantamkit
-from bantamkit import __version__, docmanifest, docread, hostinstall, shiftwork, skillaudit
+from bantamkit import (
+    __version__,
+    docmanifest,
+    docread,
+    hostinstall,
+    repomap,
+    shiftwork,
+    skillaudit,
+)
 from bantamkit.assets import AssetNotFound, assets_root, load_skill, load_tool_asset
 from bantamkit.client import BantamError
 from bantamkit.contract import (
@@ -861,6 +869,59 @@ def _record_result(log: EventLog, tool: str, call: Callable[[], dict[str, Any]])
     return answer
 
 
+#: The last paragraph of every `repo_map` reply, refusal excepted. FIXED AND MANDATORY.
+#:
+#: Roadmap row 10's build gate was "build only after #4 shows discovery tokens dominate",
+#: and #4 REFUTED it: discovery is 0.114 % of real prompt tokens because 97.8 % of the
+#: bill is `cache_read`. The feature ships on an explicit ruling to build it anyway, as a
+#: PRECISION feature. A surface that let a caller believe the map is a token saving would
+#: say the one thing the measurement forbids, so the refutation travels with every answer
+#: rather than living only in a doc nobody reads at call time.
+#:
+#: The second sentence is the budget's unit, for the same reason: `DEFAULT_BUDGET = 4000`
+#: is "1 K tokens" only at the char/4 convention, whose error bar is unmeasured because
+#: measuring it needs the tokenizer the pure-node ruling forbids. Bytes are what is
+#: enforced, so bytes are what the reply says.
+REPO_MAP_TAIL = (
+    "This is a precision pass, not a token saving: this feature's build gate was REFUTED "
+    "by measurement — discovery is 0.114% of real prompt tokens, because 97.8% of the "
+    "bill is cache_read — so a map does not make a session cheaper. What it buys is the "
+    "right file found sooner.\n"
+    "The budget above is UTF-8 BYTES of listing, not tokens: neither runtime carries a "
+    "model tokenizer and this tool will not pretend to one."
+)
+
+#: What a listing says when there is nothing to list. An empty string with two blank lines
+#: around it is not an answer, and "0 files" is already on the header line — this names the
+#: reason, which is the same discipline the omission footer is built on.
+REPO_MAP_EMPTY = "(nothing listed: no file under this root scanned into a definition)"
+
+
+def repo_map_reply(result: repomap.RepoMap) -> str:
+    """The `repo_map` tool's prose, byte for byte, from the structured result.
+
+    Split out of the handler so the two runtimes have ONE shape to reproduce rather than a
+    format string embedded in a `case`, and so the `repomap` conformance suite can compare
+    the rendered reply without standing up a server. No float is ever rendered here — see
+    `repomap`'s trap (8); every number on the header line is an int.
+    """
+    focus = (
+        ", ".join(result.focus)
+        if result.focus
+        else "(none) — plain centrality over the whole tree"
+    )
+    head = (
+        f"repo map: {result.nodes} files scanned, {result.definitions} definitions, "
+        f"{result.edges} edges.\n"
+        f"focus: {focus}\n"
+        f"budget: {result.budget} UTF-8 bytes; listing {result.listing_bytes} bytes; "
+        f"rendered {result.files_rendered} files, "
+        f"{result.definitions_rendered} definitions."
+    )
+    body = result.text if result.text else REPO_MAP_EMPTY
+    return f"{head}\n\n{body}\n\n{REPO_MAP_TAIL}"
+
+
 def build_server(memory: Memory, log: EventLog | None = None) -> Any:
     """Assemble the MCP server around one Memory instance (the per-person state).
 
@@ -980,6 +1041,34 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
                 "budget": outcome.budget,
                 "index_after": outcome.index_after,
                 "index_before": outcome.index_before,
+            },
+        )
+        return _noted(outcome.reply)
+
+    def memory_dream(dry_run: bool | None = None) -> str:
+        """Consolidate what the project and the machine-wide profile layer both hold.
+
+        `dry_run` DEFAULTS TO TRUE and the default lives HERE rather than in the
+        component: a client that omits the argument gets `None` through pydantic's
+        `bool | None = None`, and turning that into the safe answer is this handler's
+        job. It is the only tool on this surface that writes into the user's home
+        directory, and the only one whose effect is machine-wide — a fact archived out
+        of the profile store stops answering for every other project on this machine
+        with no store of its own — so the short call is the preview.
+
+        The status is a decision the pass already made (`DreamResult.applied`,
+        `.over_budget`, `.changes`), never a match on the reply.
+        """
+        with _record_raise(log, "memory_dream"):
+            outcome = memory.dream_outcome(True if dry_run is None else bool(dry_run))
+        log.record(
+            "memory_dream",
+            outcome.status,
+            {
+                "absolutised": outcome.absolutised,
+                "consumed": outcome.consumed,
+                "dry_run": outcome.dry_run,
+                "merged": outcome.merged,
             },
         )
         return _noted(outcome.reply)
@@ -1215,13 +1304,89 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
             )
             return _noted(result.as_json())
 
+    def repo_map(
+        root: str,
+        focus: list[str] | None = None,
+        budget: int | None = None,
+    ) -> str:
+        """The ranked definition map on the MCP surface: `repomap` measures, this serves it.
+
+        THE THREE REFUSALS LIVE HERE AND NOT IN `repomap.py`, and that is deliberate.
+        `repo_map()` over a root that does not exist answers an EMPTY map on both runtimes
+        — `os.walk` yields nothing for a missing directory and `walkSources`' `readdirSync`
+        catch does the same — which is the right answer for a library and the wrong one for
+        a tool: a caller who typed the path wrong would be told the tree holds no source.
+        So the argument checks are the SURFACE's, the way `bantamkit_read`'s
+        `refused-offset` is, and the engine J45-9/J45-10 proved byte-identical is not
+        touched by this unit.
+
+        `focus` names the files the caller already has open; they are excluded from the
+        listing. A focus entry that is not a scanned source is IGNORED, not refused —
+        `repo_map` documents that, and refusing would make the tool useless the moment a
+        caller named a file the scanner has no dialect for.
+
+        THE LAST PARAGRAPH IS FIXED AND MANDATORY. Row 10's build gate was refuted by
+        measurement (0.114 % of real prompt tokens) and the feature ships on an explicit
+        ruling to build it anyway; a surface that let a caller believe the map is a saving
+        would be the one sentence this whole feature is not allowed to say.
+
+        THE RECORD IS A DECISION AND HOLDS NO PATH. `root` is what the operator typed and
+        `focus` is the name of the file they are editing; neither is a decision this
+        handler made, so neither is written down. The counts are.
+        """
+        with _record_raise(log, "repo_map"):
+            names = [str(f) for f in (focus or [])]
+            wanted = repomap.DEFAULT_BUDGET if budget is None else int(budget)
+            base = Path(root)
+            if not root:
+                log.record("repo_map", "refused")
+                return _noted(
+                    tool_failed(
+                        "repo_map", "root must not be empty; name the directory to map"
+                    )
+                )
+            if wanted < 0:
+                log.record("repo_map", "refused")
+                return _noted(
+                    tool_failed("repo_map", f"budget must not be negative; got {wanted}")
+                )
+            # `Path.exists()` and `Path.is_dir()` both SWALLOW the not-here errno family
+            # (ENOENT, ENOTDIR, ELOOP, EBADF) and re-raise anything else, so a dangling
+            # symlink and `a-file.py/sub` are both "no such directory" while a permission
+            # failure flies to `_record_raise` rather than being dressed up as a missing
+            # tree. Node's `statSync` arm reproduces exactly that split; there is no
+            # `except OSError` here because `repomap.repo_map` raises none — its walk and
+            # its reads each already resolve a failure into a counted Omission.
+            if not base.exists():
+                log.record("repo_map", "refused")
+                return _noted(tool_failed("repo_map", f"no such directory: {root}"))
+            if not base.is_dir():
+                log.record("repo_map", "refused")
+                return _noted(
+                    tool_failed("repo_map", f"{root} is a file, not a directory to map")
+                )
+            result = repomap.repo_map(base, focus=names, budget=wanted)
+        log.record(
+            "repo_map",
+            "mapped",
+            {
+                "definitions": result.definitions,
+                "edges": result.edges,
+                "files_rendered": result.files_rendered,
+                "listing_bytes": result.listing_bytes,
+                "nodes": result.nodes,
+            },
+        )
+        return _noted(repo_map_reply(result))
+
     # The served surface, in one place, read out of the asset pack. Adding a tool here
     # without an asset raises AssetNotFound at startup — the manifest cannot drift behind
     # the server, because the server cannot start without it.
     #
     # `bantamkit_status` went LAST rather than first, `memory_compact` after it rather
     # than beside `memory_save` where a reader would look for it, `bantamkit_read`
-    # after that and `skill_audit` after that. Registration order IS the served order
+    # after that, `skill_audit` after that, `memory_dream` after that and `repo_map`
+    # after that. Registration order IS the served order
     # (`test_tool_manifest.py::test_the_golden_records_the_order_the_wire_actually_
     # serves`), and appending is the only edit that leaves the others where every
     # existing declaration says they are.
@@ -1237,6 +1402,8 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         _from_manifest(memory_compact, "memory_compact"),
         _from_manifest(bantamkit_read, "bantamkit_read"),
         _from_manifest(skill_audit, "skill_audit"),
+        _from_manifest(memory_dream, "memory_dream"),
+        _from_manifest(repo_map, "repo_map"),
     ]
 
     server = MCPServer(

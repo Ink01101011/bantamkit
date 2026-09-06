@@ -44,7 +44,10 @@ import {
   MemoryValidationError,
   pyHashKey,
   pyText,
+  RECALL_MIN_SCORE_RATIO,
 } from './store.js';
+import { dream as runDream, formatFixed3, SUPERSEDED_HEADING } from './dream.js';
+import type { DreamResult } from './dream.js';
 
 /**
  * The model's spelling adapted to the store's contract: lowercase, `_`/space -> `-`.
@@ -164,6 +167,31 @@ export interface RecallOutcome {
   readonly candidates: number;
   readonly source: string | null;
   readonly unreadable: number;
+}
+
+/**
+ * What `dream` DID, beside the sentence it says about it.
+ *
+ * The same seam as `SaveOutcome`, `RecallOutcome` and `CompactOutcome`: `status` is read off
+ * a decision the pass already made — `DreamResult.applied`, `.overBudget`, `.changes` — and
+ * never off the reply. `result` carries the whole diff for a caller that wants the numbers
+ * rather than the prose.
+ *
+ * `status` is one of `consolidated`, `previewed`, `nothing-to-consolidate`,
+ * `refused-budget`, `no-profile-layer`.
+ */
+export interface DreamOutcome {
+  readonly reply: string;
+  readonly status: string;
+  readonly dryRun: boolean;
+  readonly merged: number;
+  readonly consumed: number;
+  readonly absolutised: number;
+  readonly superseded: number;
+  readonly indexBefore: number;
+  readonly indexAfter: number;
+  readonly budget: number;
+  readonly result: DreamResult | null;
 }
 
 export class Memory {
@@ -297,8 +325,8 @@ export class Memory {
    * fact. The floor is the operator's configured default, not a constant, so a consumer who
    * really wants top-1 says so once at construction.
    */
-  recall(query: string, k: number | null = null): string {
-    return this.recallOutcome(query, k).reply;
+  recall(query: string, k: number | null = null, minRatio = RECALL_MIN_SCORE_RATIO): string {
+    return this.recallOutcome(query, k, minRatio).reply;
   }
 
   /**
@@ -317,8 +345,18 @@ export class Memory {
    * refuses to list contributes nothing and raises the `unreadable` count instead of being
    * scored as empty; that distinction is the whole subject of `nothingToReport` below and
    * must not be undone here.
+   *
+   * `minRatio` (roadmap #6) rides through to every layer's `MemoryStore.recall` unchanged,
+   * so the gate is measured against EACH LAYER's own best score and never across layers: a
+   * profile fact does not have to out-score the project store's top hit to be admitted,
+   * because the two stores are answering as two stores. Its default is
+   * `RECALL_MIN_SCORE_RATIO` = 0.0, which keeps every fact `recall` was going to return,
+   * and nothing on the tool path passes anything else today. A ratio outside `[0.0, 1.0]`
+   * raises out of the FIRST layer, which is the writable project store, so it surfaces as
+   * the error it is rather than as an `unreadable` count — the read-only-layer `catch`
+   * below would otherwise file a caller's bad argument as a corrupt grant.
    */
-  recallOutcome(query: string, k: number | null = null): RecallOutcome {
+  recallOutcome(query: string, k: number | null = null, minRatio = RECALL_MIN_SCORE_RATIO): RecallOutcome {
     const budget = k === null ? this.k : Math.max(k, this.k);
     const picked: Array<[string, Fact]> = [];
     const seen = new Set<string>();
@@ -330,7 +368,7 @@ export class Memory {
       reached += 1;
       let facts: Fact[];
       try {
-        facts = store.recall(query, budget, writable);
+        facts = store.recall(query, budget, writable, minRatio);
       } catch (e) {
         if (!(e instanceof BantamError || e instanceof PyOSError || e instanceof PyUnicodeDecodeError)) {
           throw e;
@@ -427,6 +465,165 @@ export class Memory {
       indexAfter: result.indexAfter,
       budget: result.budget,
     };
+  }
+
+  /** Consolidate what the project and profile layers hold under the same name. */
+  dream(dryRun = true): string {
+    return this.dreamOutcome(dryRun).reply;
+  }
+
+  /**
+   * `dream`, with the decision it took carried beside the sentence it wrote.
+   *
+   * ONLY THE PROFILE LAYER IS CONSUMED. `layers` also carries read-only GRANTS, and a grant
+   * is another operator's store: consolidating a fact out of one is not this person's move
+   * to make, so `dream` never looks at them. The label is matched exactly (`profile`), never
+   * by prefix, because a grant is labelled `extra:<name>` and a prefix match on a directory
+   * called `profile-something` would reach one.
+   *
+   * A `Memory` constructed directly — not through `layered` — has no profile layer at all,
+   * and that is `no-profile-layer` rather than an error: there is nothing to consolidate
+   * ACROSS when only one layer is bound.
+   *
+   * `dryRun` DEFAULTS TO TRUE. This is the only op in this component that writes into the
+   * user's home directory, and it is the only one whose effect is machine-wide: a fact
+   * archived out of the profile store stops answering for every other project on this
+   * machine that has no store of its own. A destructive consolidation nobody can preview is
+   * not shippable, so the safe call is the short one.
+   */
+  dreamOutcome(dryRun = true): DreamOutcome {
+    const profile = this.layers.find(([label]) => label === 'profile')?.[1] ?? null;
+    if (profile === null) {
+      return {
+        reply:
+          'nothing to consolidate: no profile layer is bound, so the project ' +
+          `store ${this.store.root} is the only layer there is.`,
+        status: 'no-profile-layer',
+        dryRun,
+        merged: 0,
+        consumed: 0,
+        absolutised: 0,
+        superseded: 0,
+        indexBefore: 0,
+        indexAfter: 0,
+        budget: this.store.indexBudget,
+        result: null,
+      };
+    }
+    const result = runDream(this.store, profile, dryRun);
+    let status: string;
+    if (result.overBudget) status = 'refused-budget';
+    else if (result.changes === 0) status = 'nothing-to-consolidate';
+    else if (result.applied) status = 'consolidated';
+    else status = 'previewed';
+    return {
+      reply: Memory.dreamReply(status, result),
+      status,
+      dryRun: result.dryRun,
+      merged: result.merged.length,
+      consumed: result.consumed.length,
+      absolutised: result.absolutised.length,
+      superseded: result.superseded.length,
+      indexBefore: result.indexBefore,
+      indexAfter: result.indexAfter,
+      budget: result.budget,
+      result,
+    };
+  }
+
+  /**
+   * The whole diff as prose: what merged, what was dated, what moved, what it cost.
+   *
+   * THE HONESTY SENTENCE AT THE END IS NOT DECORATION. Row 5 was planned as a token saving
+   * and J45-1 measured that it is not one: the profile store has no `index.md` on disk, its
+   * index is derived at read time, and nothing loads it into a prompt — so deduplicating it
+   * frees approximately zero prompt bytes. The value is that one ruling now has one copy
+   * instead of two that can disagree, and the reply says which of those two things the
+   * operator just bought.
+   *
+   * `formatFixed3` and not `toFixed(3)` for the two similarity figures: see the header of
+   * `dream.ts`. CPython's `.3f` rounds ties to EVEN and they are reachable.
+   */
+  private static dreamReply(status: string, result: DreamResult): string {
+    const lines: string[] = [];
+    if (status === 'nothing-to-consolidate') {
+      lines.push(
+        `nothing to consolidate: ${result.projectRoot} and ${result.profileRoot} ` +
+          'hold no fact under the same name, and no project fact carries a relative ' +
+          'date this pass will resolve.',
+      );
+    } else {
+      const identical = result.merged.filter((merge) => merge.kind === 'identical').length;
+      const diverged = result.merged.length - identical;
+      const verb = status === 'consolidated' ? 'consolidated' : 'would consolidate';
+      lines.push(
+        `${verb} ${result.merged.length} cross-layer name collision(s) — ${identical} ` +
+          `byte-identical, ${diverged} diverged and unioned — and rewrote ` +
+          `${result.rewritten.length} project fact(s). The survivor stays in the ` +
+          `project layer; the profile copy moves to ${result.archiveDir} and is NOT ` +
+          'deleted: restore it by name.',
+      );
+    }
+    for (const merge of result.merged) {
+      lines.push(
+        `- ${pyText(merge.name)} (${merge.kind}, name+description similarity ` +
+          `${formatFixed3(merge.jaccard)}) — body ${merge.bodyBefore} -> ${merge.bodyAfter} ` +
+          `bytes, ${merge.blocksAdded} block(s) kept from the ${merge.consumedLayer} ` +
+          `copy, survivor in ${merge.survivorLayer}`,
+      );
+    }
+    for (const record of result.superseded) {
+      lines.push(
+        `- superseded '${record.subject}': the ${record.lostLayer} copy ` +
+          `(${record.lostDate}) lost to the ${record.keptLayer} copy ` +
+          `(${record.keptDate}); the older claim is kept verbatim under ` +
+          `'${SUPERSEDED_HEADING}'`,
+      );
+    }
+    for (const hit of result.absolutised) {
+      lines.push(
+        `- dated ${pyText(hit.name)} (${hit.layer}): '${hit.term}' -> ${hit.resolved}, ` +
+          `resolved against that fact's own mtime ${hit.basis}, not today`,
+      );
+    }
+    for (const hit of result.unresolved) {
+      lines.push(
+        `- left alone in ${pyText(hit.name)} (${hit.layer}): '${hit.term}' — no exact day ` +
+          'follows from an mtime, so nothing was substituted',
+      );
+    }
+    for (const [name, reason] of result.refused) {
+      lines.push(`- refused ${pyText(name)}: ${reason}`);
+    }
+    for (const pair of result.similarUnmerged) {
+      lines.push(
+        `- similar but NOT merged: ${pyText(pair.projectName)} (project) and ` +
+          `${pyText(pair.profileName)} (profile) score ${formatFixed3(pair.jaccard)}; this pass merges ` +
+          'on name equality only, so nothing was done about it',
+      );
+    }
+    lines.push(
+      `project index ${result.indexBefore} -> ${result.indexAfter} bytes against a ` +
+        `${result.budget}-byte budget; the profile index (derived, no file on disk) ` +
+        `${result.profileIndexBefore} -> ${result.profileIndexAfter}; fact bytes ` +
+        `across both layers ${result.factBytesBefore} -> ${result.factBytesAfter}.`,
+    );
+    if (status === 'refused-budget') {
+      lines.push(
+        `NOTHING WAS WRITTEN: the merged index would be ${result.indexAfter} bytes ` +
+          `against a ${result.budget}-byte budget. Call \`memory_compact\` to archive ` +
+          'the stalest facts, then run this again.',
+      );
+    } else if (result.dryRun) {
+      lines.push('DRY RUN: nothing was written. Re-run with dry_run false to apply it.');
+    }
+    lines.push(
+      'This is a correctness pass, not a token saving: the profile index is derived ' +
+        'at read time and is not loaded from a file, so consolidating it frees ' +
+        'approximately no prompt bytes. What it buys is one copy of a ruling instead ' +
+        'of two that can diverge.',
+    );
+    return lines.join('\n');
   }
 
   /**

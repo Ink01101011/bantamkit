@@ -36,6 +36,7 @@ src/memory/layers.ts      store binding and the layered walk
 src/memory/factfile.ts    the fact codec
 src/contract.ts           contract loading and schema_error
 src/memory/component.ts   Memory
+src/memory/dream.ts       the cross-layer consolidation pass (dream.py)
 src/shiftwork.ts          clock_in / clock_out / status
 src/mcp/*                 server, identity, arg coercion, transport, SDK JSON
 src/pyargparse.ts         argparse's help, usage, errors and parse rules; textwrap
@@ -274,6 +275,21 @@ past that size raises `ERR_STRING_TOO_LONG` on the port where the reference — 
 a silent cut), but no conformance case pins it: building a 512 MiB fixture per run is not a
 cost the suite pays, so the divergence is REPORTED here, not matched, and `docs/roadmap-toolbox.md`
 row 8 carries it as a follow-up (job43 G3, 2026-08-29). A green `--all` says nothing about it. It stays a gap and not a ruling because a ruling needs a fixture that shows the two sides differing, and the smallest such fixture is 536 MB; H3 (2026-08-29) re-checked and left it here. The same rule kept the 300,000-cell row (`Math.max` over the cell keys, fixed in H2) out of the suite: the smallest deflated xlsx that shows it measures 1,501,739 bytes, over the 1 MB fixture ceiling, so it is held by `runtime-ts/test/docread.test.mjs` alone.
+
+**Which two type names a mixed-type name set puts in `sorted()`'s TypeError.** `dream`
+pairs facts on `Fact.name`, and a hand-edited frontmatter can put an `int` in that field
+(`store.pyText`, `store.pyHashKey`). The reference sorts `set(by_project) & set(by_profile)`,
+whose iteration order is HASH-derived; `dream.ts` sorts the same names in fact-file order,
+because a JS `Set` has no hash order to reproduce. Both runtimes then run the same CPython
+`listsort` and both RAISE `TypeError` on the first incomparable pair — but WHICH pair the
+binary search probes first can differ, and the sentence names the two types it probed. Where
+the order exists at all (every name a `str`, which is every store `save` has ever written)
+the two answers are identical, and the whole `dream` algorithm was compared over 24,908
+generated cases with zero disagreements. No conformance case pins the mixed-type sentence and
+no unit test on either side holds it: constructing the input needs a hand-written frontmatter
+with a non-`str` `name` under a name that ALSO collides across two layers. Named here rather
+than ruled, because a ruling needs a fixture that shows the two sides differing and nobody has
+built one; J45-3, 2026-09-06.
 
 **`detail.type` on a `raised` record.** The event log names an exception by the class
 CPython's `OSError.__new__` picks off the errno — `NotADirectoryError` for `ENOTDIR`, not

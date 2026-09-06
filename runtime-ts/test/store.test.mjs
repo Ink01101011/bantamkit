@@ -18,6 +18,7 @@ import {
   MemoryBudgetExceeded,
   MemoryStore,
   MemoryValidationError,
+  RECALL_MIN_SCORE_RATIO,
   tokens,
 } from '../dist/memory/store.js';
 import * as pyfs from '../dist/memory/pyfs.js';
@@ -900,4 +901,195 @@ test('restore rolls back an index rebuild failure the same way archive does', ()
   assert.deepEqual(s.archived(), ['alpha'], 'the fact was put back, not left stuck in facts/');
   assert.deepEqual(readdirSync(join(root, 'facts')), []);
   rmSync(root, { recursive: true, force: true });
+});
+
+// ------------------------------------------------------- roadmap #6: the precision gate
+//
+// The SAME nodes `runtime-py/tests/test_memory.py` holds under the same heading — same
+// fixture, same claims, same assertions — so a gate that moved on one side and not the
+// other goes red here rather than in the conformance differential. The gate ships as a
+// MECHANISM with a no-op number: the instrument that would justify a real threshold
+// (`tools/ledger/injection-precision.mjs`) still refuses to report a rate. Every node
+// below therefore pins the ARITHMETIC — that the default admits everything, that the cut
+// is relative to the best score in the same recall rather than an absolute count, and
+// where the boundary falls — so the day the number changes, the behaviour it buys is
+// already described.
+
+const LADDER_QUERY = 'alpha bravo charlie delta';
+
+/**
+ * Four facts scoring 4, 3, 2 and 1 against `LADDER_QUERY`.
+ *
+ * The name is scored too (`tokens(`${name} ${description}`)`), so each name is a word the
+ * query does not contain; otherwise every fact would carry a free point and the ladder
+ * would be 5/4/3/2 with the same shape but a lying comment.
+ */
+function scoreLadder(s) {
+  s.save('project', 'four', 'alpha bravo charlie delta', 'b');
+  s.save('project', 'three', 'alpha bravo charlie zulu', 'b');
+  s.save('project', 'two', 'alpha bravo yankee zulu', 'b');
+  s.save('project', 'one', 'alpha xray yankee zulu', 'b');
+  return s;
+}
+
+const names = (hits) => hits.map((f) => f.name);
+
+test('the score ladder is the ladder this fixture claims', () => {
+  // The gate nodes are worthless if the fixture does not score 4/3/2/1.
+  const s = scoreLadder(store(fresh()));
+  const scores = {};
+  for (const [name, description] of [
+    ['four', 'alpha bravo charlie delta'],
+    ['three', 'alpha bravo charlie zulu'],
+    ['two', 'alpha bravo yankee zulu'],
+    ['one', 'alpha xray yankee zulu'],
+  ]) {
+    const q = tokens(LADDER_QUERY);
+    let score = 0;
+    for (const t of tokens(`${name} ${description}`)) if (q.has(t)) score += 1;
+    scores[name] = score;
+  }
+  assert.deepEqual(scores, { four: 4, three: 3, two: 2, one: 1 });
+  assert.deepEqual(names(s.recall(LADDER_QUERY, 10)), ['four', 'three', 'two', 'one']);
+});
+
+test('the default ratio is zero and gates nothing', () => {
+  // The no-op proof: the shipped default returns exactly what an ungated recall does.
+  assert.equal(RECALL_MIN_SCORE_RATIO, 0.0);
+  const s = scoreLadder(store(fresh()));
+  const ungated = names(s.recall(LADDER_QUERY, 10, false, 0.0));
+  assert.deepEqual(ungated, ['four', 'three', 'two', 'one'], 'every scored fact survives');
+  assert.deepEqual(names(s.recall(LADDER_QUERY, 10, false)), ungated);
+  assert.deepEqual(names(s.recall(LADDER_QUERY, 10, false, RECALL_MIN_SCORE_RATIO)), ungated);
+});
+
+test('a fact exactly at the threshold is admitted', () => {
+  // AT the boundary, not near it: 0.5 * 4 === 2.0 exactly in IEEE754 on both runtimes, and
+  // the score-2 fact stays. This is the node that separates `>=` from `>`.
+  const s = scoreLadder(store(fresh()));
+  assert.equal(0.5 * 4, 2.0, 'the boundary is exact, so this node really is at it');
+  assert.deepEqual(names(s.recall(LADDER_QUERY, 10, false, 0.5)), ['four', 'three', 'two']);
+  // And one rung further down, where the floor lands exactly on the weakest fact.
+  assert.equal(0.25 * 4, 1.0);
+  assert.deepEqual(names(s.recall(LADDER_QUERY, 10, false, 0.25)), ['four', 'three', 'two', 'one']);
+});
+
+test('just above the threshold drops the fact and just below keeps it', () => {
+  const s = scoreLadder(store(fresh()));
+  assert.deepEqual(names(s.recall(LADDER_QUERY, 10, false, 0.6)), ['four', 'three']);
+  assert.deepEqual(names(s.recall(LADDER_QUERY, 10, false, 0.4)), ['four', 'three', 'two']);
+  assert.deepEqual(names(s.recall(LADDER_QUERY, 10, false, 1.0)), ['four']);
+});
+
+test('the gate can return fewer facts than k asked for', () => {
+  // `k` is a ceiling the gate is allowed to come in under.
+  //
+  // WHERE the gate sits relative to the `slice(0, limit)` is NOT pinned here, because the
+  // two orderings cannot be told apart: the floor is a fraction of the maximum score, the
+  // survivors are therefore a prefix of the score-sorted list, and taking the first `k` of
+  // that prefix is the same list as filtering the first `k`. J45-6 applied that mutation on
+  // the Python side and it survived as an EQUIVALENT mutant; this port places the filter
+  // above the slice, and either is correct.
+  const s = scoreLadder(store(fresh()));
+  assert.deepEqual(names(s.recall(LADDER_QUERY, 2, false)), ['four', 'three']);
+  assert.deepEqual(names(s.recall(LADDER_QUERY, 2, false, 1.0)), ['four']);
+});
+
+test('the gate is relative, so it can never empty a recall', () => {
+  // The property the orchestrator measured after J45-6 closed, asserted LITERALLY here and
+  // not only across the runtimes. The top hit IS the max, so `best >= ratio * best` holds
+  // at every ratio in range — 1.0 included. The gate narrows an injection; it never
+  // suppresses one, and the count of prompts that get an injection is invariant.
+  const s = scoreLadder(store(fresh()));
+  for (const ratio of [0.0, 0.25, 0.4, 0.5, 0.6, 0.9, 1.0]) {
+    const hits = s.recall(LADDER_QUERY, 10, false, ratio);
+    assert.ok(hits.length >= 1, `ratio ${ratio} emptied a non-empty recall`);
+    assert.equal(hits[0].name, 'four', `ratio ${ratio} dropped the top hit`);
+  }
+  // Uniformly weak: three facts that all score 1 are all their own store's best, so 1.0
+  // prunes NOTHING. This is the node that would catch a future "improvement" that quietly
+  // turns the gate absolute.
+  const flat = store(fresh());
+  flat.save('project', 'aa', 'alpha q1 q2 q3 q4 q5 q6', 'b');
+  flat.save('project', 'bb', 'alpha r1 r2 r3 r4 r5 r6', 'b');
+  flat.save('project', 'cc', 'alpha s1 s2 s3 s4 s5 s6', 'b');
+  assert.deepEqual(names(flat.recall('alpha', 10, false, 1.0)), ['aa', 'bb', 'cc']);
+});
+
+test('the cut is relative to the best score, not an absolute count', () => {
+  // The length bias an absolute threshold would have, measured on one store. Mirrors the
+  // three instrumented injections of 2026-09-06: the same near-tie scored (2, 2) on a
+  // 452-character prompt and (22, 21) on a 7855-character one. An absolute cut is a rule
+  // about prompt length; a ratio is not.
+  //
+  // The private filler on each side keeps `save`'s Jaccard duplicate gate out of the way;
+  // only the shared `one`..`ten` run is ever scored by the queries below.
+  const s = store(fresh());
+  s.save('project', 'alpha', 'one two three four five six seven eight nine ten aaa bbb ccc ddd eee fff ggg hhh', 'b');
+  s.save('project', 'bravo', 'one two three four five six seven eight nine iii jjj kkk lll mmm nnn ooo ppp qqq', 'b');
+  const short = 'one two';
+  const long = 'one two three four five six seven eight nine ten filler words and more of them';
+  const score = (name, description, query) => {
+    const q = tokens(query);
+    let n = 0;
+    for (const t of tokens(`${name} ${description}`)) if (q.has(t)) n += 1;
+    return n;
+  };
+  const alphaD = 'one two three four five six seven eight nine ten aaa bbb ccc ddd eee fff ggg hhh';
+  const bravoD = 'one two three four five six seven eight nine iii jjj kkk lll mmm nnn ooo ppp qqq';
+  // The absolute counts move by 5x with the length of the query...
+  assert.deepEqual([score('alpha', alphaD, short), score('bravo', bravoD, short)], [2, 2]);
+  assert.deepEqual([score('alpha', alphaD, long), score('bravo', bravoD, long)], [10, 9]);
+  // ...so any absolute cut above 2 would gate the short prompt out entirely while admitting
+  // both facts on the long one. The ratio does not move that way: the pair is a tie at the
+  // short length and a 0.9 near-tie at the long one, both times admitted at 0.9.
+  for (const query of [short, long]) {
+    assert.deepEqual(names(s.recall(query, 10, false)), ['alpha', 'bravo']);
+    assert.deepEqual(names(s.recall(query, 10, false, 0.9)), ['alpha', 'bravo']);
+  }
+  // Only the exact-tie requirement can tell the two lengths apart, and that is the ratio
+  // reporting a real difference in relevance rather than a difference in length.
+  assert.deepEqual(names(s.recall(short, 10, false, 1.0)), ['alpha', 'bravo']);
+  assert.deepEqual(names(s.recall(long, 10, false, 1.0)), ['alpha']);
+});
+
+// `NaN` is in this list on purpose and it is the reason the check is spelled
+// `!(minRatio >= 0 && minRatio <= 1)`. Every comparison against `NaN` is false, so the
+// obvious `(minRatio < 0 || minRatio > 1)` would ADMIT it — and `NaN * best` is `NaN`,
+// which no `score >= NaN` ever satisfies, so a `NaN` that got through would silently empty
+// every recall. Python's `not 0.0 <= min_ratio <= 1.0` refuses it for the same reason.
+for (const bad of [-0.1, 1.1, 2.0, NaN]) {
+  test(`a ratio outside the unit interval is refused: ${bad}`, () => {
+    const s = scoreLadder(store(fresh()));
+    assert.throws(
+      () => s.recall(LADDER_QUERY, 10, false, bad),
+      (e) => {
+        assert.ok(e instanceof MemoryValidationError);
+        // Byte-identical to the reference's, with the offending value NOT interpolated:
+        // Python renders `2.0` as `2.0` and JavaScript as `2`.
+        assert.equal(e.message, 'recall min-score ratio must be between 0.0 and 1.0');
+        return true;
+      },
+    );
+  });
+}
+
+test('the ratio is refused before the store is read', () => {
+  // A caller's bad argument must not be reported as a defect in someone's memories.
+  const root = fresh();
+  const missing = new MemoryStore(join(root, 'nope'), { today: () => TODAY, create: false });
+  assert.throws(
+    () => missing.recall('anything', 3, false, 2.0),
+    (e) => {
+      assert.equal(e.message, 'recall min-score ratio must be between 0.0 and 1.0');
+      assert.ok(!e.message.includes('nope'), 'it never got as far as naming a path');
+      return true;
+    },
+  );
+});
+
+test('zero and one are both inside the accepted range', () => {
+  const s = scoreLadder(store(fresh()));
+  assert.ok(s.recall(LADDER_QUERY, 10, false, 0.0).length > 0);
+  assert.ok(s.recall(LADDER_QUERY, 10, false, 1.0).length > 0);
 });

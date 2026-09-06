@@ -24,6 +24,58 @@ DURABLE_TYPES = ("feedback", "user")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 DUPLICATE_JACCARD = 0.5
 
+# ---- the precision gate (roadmap #6) ---------------------------------------------
+#
+# `recall` keeps a fact whose score is at least `min_ratio` of the BEST score in the
+# same recall. WHY THIS NUMBER IS 0.0, and what will replace it:
+#
+# 0.0 IS A DELIBERATE NO-OP, not a tuned value. `score >= 0.0 * best` is true for every
+# fact `recall` was ever going to return — the scoring loop keeps only `score > 0` — so
+# shipping this gate at its default changes not one recall, not one injected header, and
+# not one byte of any reply. That is the whole point. The threshold that would actually
+# cut something has to come from `tools/ledger/injection-precision.mjs`, and on the day
+# that tool shipped (2026-09-06) it REFUSED to report a rate: 491 injection records, 3 of
+# them carrying names+scores+session, 2 distinct sessions, and no control arm, against a
+# floor of 100 joinable injections across 5 sessions. There is no retroactive baseline —
+# the 488 older records carry `hits` and `bytes` and nothing joinable — so a number chosen
+# today would be a number chosen off three rows, shipped as a silent suppressor of memory
+# injection. The mechanism lands now; the number lands when that tool answers instead of
+# refusing.
+#
+# WHY A RATIO AND NOT A COUNT. `score` is an unnormalised intersection size,
+# `len(_tokens(name + " " + description) & _tokens(query))`, so it scales with how long
+# the QUERY is. Measured on the three instrumented records: the same two-fact shape scored
+# 2 and 2 on a 452-character prompt, 4 and 4 on a 453-character prompt, and 22 and 21 on a
+# 7855-character one. An absolute cut of, say, 5 would gate out both short prompts
+# entirely and admit everything on the long one, which is a rule about prompt length
+# wearing a relevance costume. Within ONE recall the query is fixed, so dividing by the
+# best score in that same recall cancels the length term exactly: those three records
+# become (1.0, 1.0), (1.0, 1.0) and (1.0, 0.9545…) — the near-tie reads as a near-tie at
+# both prompt lengths. Jaccard was the other candidate and was rejected for the mirror-
+# image bias: `len(a & b) / len(a | b)` puts the query's own token count in the
+# denominator, so it would gate out LONG prompts instead of short ones.
+#
+# WHAT THE RATIO DOES NOT FIX, and must be read alongside it: `_tokens` is
+# `re.findall(r"[a-z0-9]+", text.lower())`, ASCII-only. A wholly non-Latin prompt tokenises
+# to the empty set and scores 0 against every fact, so it never reaches this gate at all —
+# it is already an empty recall. This store's operator writes Thai; a threshold tuned on
+# English prompts would be tuned on a population that structurally excludes theirs, and
+# the first thing a non-zero cut suppresses is memory for the language the tokenizer
+# cannot see. That is a documented consequence of the tokenizer, not of this gate, and it
+# is a reason the replacement number must come from a control-armed measurement rather
+# than from a feel for what "looks relevant".
+#
+# The number lives HERE and only here. Both runtimes spell it `RECALL_MIN_SCORE_RATIO`
+# and hold the same float; `Memory.recall_outcome` and the `UserPromptSubmit` hook that
+# calls it inherit it rather than restating it, so the day it changes it changes once per
+# runtime and everything downstream moves with it.
+RECALL_MIN_SCORE_RATIO = 0.0
+
+# Spelled once because both runtimes raise it verbatim. The offending value is NOT
+# interpolated: Python renders `2.0` as `2.0` and JavaScript renders it as `2`, so a
+# sentence carrying the number would be a divergence manufactured by float formatting.
+_MIN_RATIO_RANGE = "recall min-score ratio must be between 0.0 and 1.0"
+
 # The index is loaded into the prompt every session, so this is a context bill, not a
 # disk limit. It was 4096 and that number was never measured against a real store.
 # Measured 2026-08-21 against the live 20-fact project store: index 3943 bytes, median
@@ -296,7 +348,13 @@ class MemoryStore:
         self._rebuild_index()
         return SaveResult(status="saved", name=name)
 
-    def recall(self, query: str, k: int | None = None, stamp: bool = True) -> list[Fact]:
+    def recall(
+        self,
+        query: str,
+        k: int | None = None,
+        stamp: bool = True,
+        min_ratio: float = RECALL_MIN_SCORE_RATIO,
+    ) -> list[Fact]:
         """Top-`k` facts whose name+description share tokens with `query`.
 
         WAS: an unreadable store scored zero facts and returned `[]` — the same answer
@@ -326,7 +384,23 @@ class MemoryStore:
         `_nothing_to_report` as "nothing is saved in any layer bound here". Deferred to
         the binding layer with the failing node that proves it —
         `test_memory_layers.py::test_a_dangling_facts_symlink_is_unreadable_to_both_layers`.
+
+        `min_ratio` is roadmap #6's precision gate: keep a fact only if its score is at
+        least that fraction of the BEST score in this same recall. The default is
+        `RECALL_MIN_SCORE_RATIO`, which is 0.0 and gates nothing — see the paragraph at
+        that constant for why the number is a no-op today and what has to be measured
+        before it stops being one. The comparison is relative to this store's own best
+        because that is the only quantity in reach here that cancels query length; a
+        layered `Memory` therefore applies the gate once per layer, against each layer's
+        own top hit, and never across layers.
+
+        THE RANGE CHECK RUNS BEFORE ANY FILE IS READ. A ratio outside `[0.0, 1.0]` — and
+        NaN, which fails the same comparison chain — is a caller's bug, and reporting it
+        as "your store has no matches" would send someone to look at their memories for
+        a defect that is in the argument.
         """
+        if not 0.0 <= min_ratio <= 1.0:
+            raise MemoryValidationError(_MIN_RATIO_RANGE)
         k = k if k is not None else self.k
         q = _tokens(query)
         scored = []
@@ -334,6 +408,12 @@ class MemoryStore:
             score = len(q & _tokens(f"{fact.name} {fact.description}"))
             if score > 0:
                 scored.append((score, fact))
+        if scored:
+            # No `if min_ratio > 0` shortcut on purpose: at 0.0 this line still runs and
+            # still keeps everything, so "the default gates nothing" is a fact about the
+            # arithmetic rather than about a branch that could be edited away.
+            floor = min_ratio * max(score for score, _ in scored)
+            scored = [pair for pair in scored if pair[0] >= floor]
         scored.sort(key=lambda pair: (-pair[0], pair[1].name))
         hits = [fact for _, fact in scored[:k]]
         if stamp:
@@ -948,7 +1028,15 @@ class MemoryStore:
         live.last_recalled = fact.last_recalled
         self._write_fact(live)
 
-    def _write_fact(self, fact: Fact) -> None:
+    def _fact_text(self, fact: Fact) -> str:
+        """The exact bytes `_write_fact` would put on disk, without writing them.
+
+        SPLIT OUT OF `_write_fact` AND NOT A SECOND COPY OF IT: `_write_fact` calls this,
+        so the serialisation a caller MEASURES and the serialisation the store WRITES
+        cannot drift apart. `dream()` is the caller — it reports the byte size of a
+        consolidated store before it has written one, and a private renderer of its own
+        would be a second frontmatter format to keep equal to this one.
+        """
         meta = {
             "name": fact.name,
             "description": fact.description,
@@ -957,13 +1045,16 @@ class MemoryStore:
             "last_recalled": fact.last_recalled,
             "links": fact.links,
         }
-        text = (
+        return (
             "---\n"
             + yaml.safe_dump(meta, sort_keys=False, allow_unicode=True)
             + "---\n\n"
             + fact.body.strip()
             + "\n"
         )
+
+    def _write_fact(self, fact: Fact) -> None:
+        text = self._fact_text(fact)
         path = self._fact_path(fact.name)
         tmp = path.with_suffix(".md.tmp")
         tmp.write_text(text, encoding="utf-8")

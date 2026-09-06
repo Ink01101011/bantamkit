@@ -32,7 +32,7 @@ import { reprValue, type PyValue } from '../pyjson.js';
 /** What a parameter accepts. `optional` is `| None = None` in the signature. */
 export interface FieldSpec {
   readonly name: string;
-  readonly kind: 'str' | 'int' | 'dict' | 'dictInt' | 'dictStr' | 'listStr';
+  readonly kind: 'str' | 'int' | 'bool' | 'dict' | 'dictInt' | 'dictStr' | 'listStr';
   readonly optional: boolean;
   /** `Field(le=...)`: an inclusive ceiling, checked AFTER the lax int parse succeeds. */
   readonly le?: bigint;
@@ -144,6 +144,28 @@ export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
   // `dict[str, str]`, and the reason `dictStr` exists beside it: a `str` field is STRICT even
   // in lax mode, so `{'a': 1}` is `versions.a` / `string_type` where the same value under
   // `usage` would validate.
+  // `dry_run: bool | None = None` on the reference (job45 row 5). LAX bool, and every arm
+  // below was MEASURED against the real stdio server, not read off pydantic's docs
+  // (`scratchpad` probe, 33 inputs): `0`/`1` and `0.0`/`1.0` coerce; any OTHER integral
+  // number — `2`, `-1`, `2.0` — is `bool_parsing`; a FRACTIONAL float is `bool_type`, a
+  // different frame from the integral one and the reason the float arm is split; a string
+  // is matched case-insensitively against two closed sets and is NOT stripped first, so
+  // `'true'` validates and `' true '` is `bool_parsing`; `''` is `bool_parsing`; a list or a
+  // dict is `bool_type`; and an explicit `null` is the default.
+  memory_dream: { model: 'memory_dreamArguments', fields: [opt('dry_run', 'bool')] },
+  // `repo_map(root: str, focus: list[str] | None = None, budget: int | None = None)` on
+  // the reference (job45 row 10). `root` is the strict `str` every other string field is —
+  // `123` is `string_type`. `focus` is the same `list[str]` as `skill_audit`'s `enabled`,
+  // so a non-list is `list_type` and a list holding a non-string is `focus.0` /
+  // `string_type`. `budget` is the lax `int` that `k`, `reserve` and `limit` are: `'2'`,
+  // `True` and `3.0` validate, `'2.5'` is `int_parsing`, `2.5` is `int_from_float`, and an
+  // explicit `null` is the default. No `le`, because the reference binds none — the
+  // manifest's `minimum: 0` is advisory to the client and the handler's own refusal is the
+  // negative one, exactly as `skill_audit`'s `budget` works.
+  repo_map: {
+    model: 'repo_mapArguments',
+    fields: [req('root', 'str'), opt('focus', 'listStr'), opt('budget', 'int')],
+  },
   skill_audit: {
     model: 'skill_auditArguments',
     fields: [
@@ -203,6 +225,14 @@ interface RawError {
   readonly msg: string;
   readonly input: PyValue;
 }
+
+/**
+ * The two closed sets pydantic-core matches a string against for a lax `bool`, lowercased.
+ *
+ * No stripping: `' true '` is `bool_parsing` on the reference, measured over the wire.
+ */
+const BOOL_TRUE = new Set(['1', 'on', 't', 'true', 'y', 'yes']);
+const BOOL_FALSE = new Set(['0', 'off', 'f', 'false', 'n', 'no']);
 
 /** i64, which is the width pydantic parses an int into before it complains about size. */
 const I64_MAX = 9223372036854775807n;
@@ -280,6 +310,39 @@ function checkField(spec: FieldSpec, value: PyValue): { value: PyValue } | RawEr
         }
       }
       return bad.length > 0 ? bad : { value };
+    }
+    case 'bool': {
+      const parsing = (): RawError[] => [
+        {
+          loc: spec.name,
+          type: 'bool_parsing',
+          msg: 'Input should be a valid boolean, unable to interpret input',
+          input: value,
+        },
+      ];
+      const wrongType = (): RawError[] => [
+        { loc: spec.name, type: 'bool_type', msg: 'Input should be a valid boolean', input: value },
+      ];
+      if (value.t === 'bool') return { value };
+      if (value.t === 'int') {
+        if (value.v === 0n || value.v === 1n) return { value: { t: 'bool', v: value.v === 1n } };
+        return parsing();
+      }
+      if (value.t === 'float') {
+        // A FRACTIONAL float is `bool_type` and an out-of-range integral one is
+        // `bool_parsing`. Measured, and not a distinction anyone would guess: `0.5` and
+        // `2.0` are both floats and they refuse under different frames.
+        if (!Number.isInteger(value.v)) return wrongType();
+        if (value.v === 0 || value.v === 1) return { value: { t: 'bool', v: value.v === 1 } };
+        return parsing();
+      }
+      if (value.t === 'str') {
+        const key = value.v.toLowerCase();
+        if (BOOL_TRUE.has(key)) return { value: { t: 'bool', v: true } };
+        if (BOOL_FALSE.has(key)) return { value: { t: 'bool', v: false } };
+        return parsing();
+      }
+      return wrongType();
     }
     case 'int': {
       const checked = checkInt(spec.name, value);

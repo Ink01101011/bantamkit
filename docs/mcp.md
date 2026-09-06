@@ -30,6 +30,10 @@ pip install "bantamkit[mcp] @ git+https://github.com/Ink01101011/bantamkit.git@v
 | `shiftwork_clock_out` | Record a finished unit: validate-whole, atomic write, append an accounting line |
 | `shiftwork_status` | Read-only progress summary of a checkpoint |
 | `bantamkit_status` | Is bantamkit working, and which bantamkit — one short report a person can read in the transcript. Also a **prompt** of the same name, so an operator can invoke it themselves. See [Status](status.md) |
+| `bantamkit_read` | Read a document through a program rather than its raw bytes: the manifest first (kind, parts, row counts, omissions), then rows a page at a time. See [Reader](docread.md) |
+| `skill_audit` | Price the skill catalogue every session pays for and name the collisions in it. See [Skill audit](skill-audit.md) |
+| `memory_dream` | Consolidate what the project layer and the machine-wide profile layer hold under the SAME name: identical copies collapse, a diverged pair is UNIONED so no claim from either is lost, and a relative date is annotated against that fact's own mtime. Defaults to a DRY RUN; the consumed profile copy is archived, never deleted. A correctness pass, not a token saving — see [Memory → Consolidation across layers](memory.md#consolidation-across-layers-dream) |
+| `repo_map` | A ranked map of a source tree: every file's definitions, ordered by how central that file is to the files named in `focus`, truncated to a byte budget. Call it before working on a file to find the OTHER files that matter to it — the ports, the callers, the module it reaches through a private helper. A PRECISION pass and **not** a token saving: this feature's build gate was refuted by measurement (discovery is 0.114 % of real prompt tokens, because 97.8 % of the bill is `cache_read`). The budget is UTF-8 BYTES, not tokens. Nothing unreadable is dropped silently — every unread file is a named, counted omission and the footer is not charged to the budget. See [The repo map](repomap.md) |
 
 The `memory_save`/`memory_recall` input schemas are the asset pack's
 `assets/tools/*.json` verbatim — the same contract agents see in-process.
