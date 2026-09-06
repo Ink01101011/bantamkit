@@ -50,6 +50,7 @@ import {
   toolFailed,
 } from '../contract.js';
 import * as docread from '../docread.js';
+import * as repomap from '../repomap.js';
 import * as skillaudit from '../skillaudit.js';
 import { EventLog, type DetailValue } from '../eventlog.js';
 import type { Memory } from '../memory/component.js';
@@ -73,13 +74,14 @@ import {
 import type { RawStdioTransport } from './transport.js';
 
 /**
- * The eleven, in the order `build_server` lists them — which is the order `tools/list` emits.
+ * The thirteen, in the order `build_server` lists them — which is the order `tools/list` emits.
  *
  * `bantamkit_status` went LAST rather than first, `memory_compact` after it rather than
- * beside `memory_save` where a reader would look for it, `bantamkit_read` after that and
- * `skill_audit` after that, for the same reason the reference appends all four: registration
- * order IS the served order, and appending is the only edit that leaves the other ten where
- * every existing declaration says they are.
+ * beside `memory_save` where a reader would look for it, `bantamkit_read` after that,
+ * `skill_audit` after that, `memory_dream` after that and `repo_map` after that, for the
+ * same reason the reference appends all six: registration order IS the served order, and
+ * appending is the only edit that leaves the other twelve where every existing declaration
+ * says they are.
  */
 export const MCP_TOOLS = [
   'memory_save',
@@ -93,6 +95,8 @@ export const MCP_TOOLS = [
   'memory_compact',
   'bantamkit_read',
   'skill_audit',
+  'memory_dream',
+  'repo_map',
 ] as const;
 
 
@@ -184,6 +188,73 @@ const asText = (value: PyValue | undefined): string => (value && value.t === 'st
 /** `int | None` after validation: the tagged int, or `null` for the default. */
 function asInt(value: PyValue | undefined): number | null {
   return value && value.t === 'int' ? Number(value.v) : null;
+}
+
+/**
+ * The errno family `Path.exists()` and `Path.is_dir()` answer `False` for instead of
+ * raising — CPython `pathlib`'s `_IGNORED_ERRNOS`, spelled as Node's `code` strings.
+ *
+ * Not a guess and not a superset: anything OUTSIDE this set makes both predicates raise on
+ * the reference, so it must reach `recordRaise` here too. A `statSync` wrapped in a bare
+ * `catch { }` would turn a permission failure into "no such directory", which is a
+ * different sentence about a different problem.
+ */
+const EXISTS_IGNORED = new Set(['ENOENT', 'ENOTDIR', 'EBADF', 'ELOOP']);
+
+/**
+ * The last paragraph of every `repo_map` reply, refusal excepted. FIXED AND MANDATORY, and
+ * byte-identical to the reference's `REPO_MAP_TAIL`.
+ *
+ * Roadmap row 10's build gate was "build only after #4 shows discovery tokens dominate",
+ * and #4 REFUTED it: discovery is 0.114 % of real prompt tokens because 97.8 % of the bill
+ * is `cache_read`. The feature ships on an explicit ruling to build it anyway, as a
+ * PRECISION feature. A surface that let a caller believe the map is a token saving would
+ * say the one thing the measurement forbids, so the refutation travels with every answer
+ * rather than living only in a doc nobody reads at call time.
+ *
+ * The second sentence is the budget's unit, for the same reason: `DEFAULT_BUDGET = 4000` is
+ * "1 K tokens" only at the char/4 convention, whose error bar is unmeasured because
+ * measuring it needs the tokenizer the pure-node ruling forbids.
+ */
+export const REPO_MAP_TAIL =
+  'This is a precision pass, not a token saving: this feature\'s build gate was REFUTED ' +
+  'by measurement — discovery is 0.114% of real prompt tokens, because 97.8% of the ' +
+  'bill is cache_read — so a map does not make a session cheaper. What it buys is the ' +
+  'right file found sooner.\n' +
+  'The budget above is UTF-8 BYTES of listing, not tokens: neither runtime carries a ' +
+  'model tokenizer and this tool will not pretend to one.';
+
+/** What a listing says when there is nothing to list. The reference's `REPO_MAP_EMPTY`. */
+export const REPO_MAP_EMPTY = '(nothing listed: no file under this root scanned into a definition)';
+
+/**
+ * The `repo_map` tool's prose, byte for byte, from the structured result.
+ *
+ * Split out of the handler for the same reason the reference splits `repo_map_reply` out of
+ * its own: one shape to reproduce rather than a format string buried in a `case`, and the
+ * `repomap` conformance suite compares the rendered reply without standing up a server. No
+ * float is ever rendered here — `repomap`'s trap (8); every number on the header line is an
+ * integer, and `String(1.0)` is `'1'` where `repr(1.0)` is `'1.0'`.
+ */
+export function repoMapReply(result: repomap.RepoMap): string {
+  const focus =
+    result.focus.length > 0
+      ? result.focus.join(', ')
+      : '(none) — plain centrality over the whole tree';
+  const head =
+    `repo map: ${result.nodes} files scanned, ${result.definitions} definitions, ` +
+    `${result.edges} edges.\n` +
+    `focus: ${focus}\n` +
+    `budget: ${result.budget} UTF-8 bytes; listing ${result.listingBytes} bytes; ` +
+    `rendered ${result.filesRendered} files, ` +
+    `${result.definitionsRendered} definitions.`;
+  const body = result.text !== '' ? result.text : REPO_MAP_EMPTY;
+  return `${head}\n\n${body}\n\n${REPO_MAP_TAIL}`;
+}
+
+/** `bool | None` after validation: the tagged bool, or `null` for the default. */
+function asBool(value: PyValue | undefined): boolean | null {
+  return value && value.t === 'bool' ? value.v : null;
 }
 
 /**
@@ -521,6 +592,31 @@ function runTool(
       });
       return { value: { t: 'str', v: noted(outcome.reply) }, wrapped: true };
     }
+    case 'memory_dream': {
+      // Consolidate what the project layer and the machine-wide profile layer both hold
+      // under one name (job45, roadmap row 5). `dryRun` DEFAULTS TO TRUE and the default
+      // lives HERE rather than in the component, exactly as the reference's handler carries
+      // it: a client that omits the argument sends nothing, `asBool` answers `null`, and
+      // turning that into the SAFE answer is this handler's job. It is the only tool on
+      // this surface that writes into the user's home directory, and the only one whose
+      // effect is machine-wide — a fact archived out of the profile store stops answering
+      // for every other project on this machine with no store of its own.
+      //
+      // THE RECORD IS A DECISION. `DreamOutcome.status` is read off `DreamResult.applied`,
+      // `.overBudget` and `.changes` — never off the reply, whose prose is allowed to
+      // improve without moving a single byte of the event log.
+      const dryRun = asBool(args.get('dry_run'));
+      const outcome = recordRaise(log, 'memory_dream', () =>
+        memory.dreamOutcome(dryRun === null ? true : dryRun),
+      );
+      log.record('memory_dream', outcome.status, {
+        absolutised: outcome.absolutised,
+        consumed: outcome.consumed,
+        dry_run: outcome.dryRun,
+        merged: outcome.merged,
+      });
+      return { value: { t: 'str', v: noted(outcome.reply) }, wrapped: true };
+    }
     case 'bantamkit_read': {
       // The reader on the MCP surface (job43): `docread` digests, `contract` words it. The
       // handler makes the SAME `contract` calls the reference's `bantamkit_read` makes,
@@ -722,6 +818,62 @@ function runTool(
           omissions: result.omissions.length,
         });
         return { value: { t: 'str', v: noted(result.asJson()) }, wrapped: true };
+      });
+    }
+    case 'repo_map': {
+      // The ranked definition map on the MCP surface (job45 row 10): `repomap` measures,
+      // this serves it. Byte for byte the reference's `repo_map` handler.
+      //
+      // THE THREE REFUSALS LIVE HERE AND NOT IN `repomap.ts`, and that is deliberate.
+      // `repoMap()` over a root that does not exist answers an EMPTY map on both runtimes
+      // — `os.walk` yields nothing for a missing directory and `walkSources`' `readdirSync`
+      // catch does the same — which is the right answer for a library and the wrong one for
+      // a tool: a caller who typed the path wrong would be told the tree holds no source.
+      // So the argument checks are the SURFACE's, and the engine J45-9/J45-10 proved
+      // byte-identical is not touched.
+      //
+      // THE `statSync` ARM IS `Path.exists()` / `Path.is_dir()`, NOT A SHORTCUT FOR THEM.
+      // Both pathlib predicates SWALLOW the not-here errno family and re-raise anything
+      // else, so `EXISTS_IGNORED` below is that family spelled out: a dangling symlink and
+      // `a-file.py/sub` are "no such directory" on both runtimes, while a permission
+      // failure flies to `recordRaise` rather than being dressed up as a missing tree.
+      //
+      // THE RECORD IS A DECISION AND HOLDS NO PATH. `root` is what the operator typed and
+      // `focus` is the name of the file they are editing; neither is a decision this
+      // handler made, so neither is written down. The counts are.
+      const root = asText(args.get('root'));
+      const focusArg = args.get('focus');
+      const focus =
+        focusArg !== undefined && focusArg.t === 'list'
+          ? focusArg.v.map((item) => (item.t === 'str' ? item.v : ''))
+          : [];
+      const budgetArg = args.get('budget');
+      const budget = budgetArg !== undefined && budgetArg.t === 'int' ? Number(budgetArg.v) : repomap.DEFAULT_BUDGET;
+      return recordRaise(log, 'repo_map', () => {
+        const refuse = (detail: string) => {
+          log.record('repo_map', 'refused');
+          return { value: { t: 'str' as const, v: noted(toolFailed('repo_map', detail)) }, wrapped: true };
+        };
+        if (root === '') return refuse('root must not be empty; name the directory to map');
+        if (budget < 0) return refuse(`budget must not be negative; got ${budget}`);
+        let stat = null;
+        try {
+          stat = statSync(root);
+        } catch (e) {
+          const code = (e as NodeJS.ErrnoException)?.code;
+          if (!EXISTS_IGNORED.has(String(code))) throw asPyOSError(e, root);
+        }
+        if (stat === null) return refuse(`no such directory: ${root}`);
+        if (!stat.isDirectory()) return refuse(`${root} is a file, not a directory to map`);
+        const result = repomap.repoMap(root, { focus, budget });
+        log.record('repo_map', 'mapped', {
+          definitions: result.definitions,
+          edges: result.edges,
+          files_rendered: result.filesRendered,
+          listing_bytes: result.listingBytes,
+          nodes: result.nodes,
+        });
+        return { value: { t: 'str', v: noted(repoMapReply(result)) }, wrapped: true };
       });
     }
     default:

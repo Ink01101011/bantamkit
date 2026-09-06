@@ -96,6 +96,57 @@ const NAME_PATTERN = '^[a-z0-9][a-z0-9-]*$';
 
 export const DUPLICATE_JACCARD = 0.5;
 
+// ---- the precision gate (roadmap #6) ---------------------------------------------
+//
+// `recall` keeps a fact whose score is at least `minRatio` of the BEST score in the same
+// recall. WHY THIS NUMBER IS 0.0, and what will replace it:
+//
+// 0.0 IS A DELIBERATE NO-OP, not a tuned value. `score >= 0.0 * best` is true for every
+// fact `recall` was ever going to return — the scoring loop keeps only `score > 0` — so
+// shipping this gate at its default changes not one recall, not one injected header, and
+// not one byte of any reply. That is the whole point. The threshold that would actually
+// cut something has to come from `tools/ledger/injection-precision.mjs`, and on the day
+// that tool shipped (2026-09-06) it REFUSED to report a rate: 491 injection records, 3 of
+// them carrying names+scores+session, 2 distinct sessions, and no control arm, against a
+// floor of 100 joinable injections across 5 sessions. There is no retroactive baseline —
+// the 488 older records carry `hits` and `bytes` and nothing joinable — so a number chosen
+// today would be a number chosen off three rows, shipped as a silent suppressor of memory
+// injection. The mechanism lands now; the number lands when that tool answers instead of
+// refusing.
+//
+// WHY A RATIO AND NOT A COUNT. `score` is an unnormalised intersection size,
+// `len(tokens(name + " " + description) & tokens(query))`, so it scales with how long the
+// QUERY is. Measured on the three instrumented records: the same two-fact shape scored 2
+// and 2 on a 452-character prompt, 4 and 4 on a 453-character prompt, and 22 and 21 on a
+// 7855-character one. An absolute cut of, say, 5 would gate out both short prompts
+// entirely and admit everything on the long one, which is a rule about prompt length
+// wearing a relevance costume. Within ONE recall the query is fixed, so dividing by the
+// best score in that same recall cancels the length term exactly. Jaccard was the other
+// candidate and was rejected for the mirror-image bias: `|a & b| / |a | b|` puts the
+// query's own token count in the denominator, so it would gate out LONG prompts instead.
+//
+// THE GATE IS RELATIVE, SO IT CAN NEVER EMPTY A RECALL. The top hit IS the max, so
+// `best >= minRatio * best` holds for every ratio in range, 1.0 included. It narrows an
+// injection; it never suppresses one, and the COUNT of prompts that get an injection is
+// invariant at every setting.
+//
+// WHAT THE RATIO DOES NOT FIX: `tokens` is `re.findall(r"[a-z0-9]+", text.lower())`,
+// ASCII-only. A wholly non-Latin prompt tokenises to the empty set and scores 0 against
+// every fact, so it never reaches this gate at all — it is already an empty recall. This
+// store's operator writes Thai; a threshold tuned on English prompts would be tuned on a
+// population that structurally excludes theirs.
+//
+// The number lives in TWO places, one per runtime, and they must hold the SAME float:
+// `runtime-py/src/bantamkit/memory/store.py`'s `RECALL_MIN_SCORE_RATIO` is the reference.
+// `Memory.recallOutcome` and the `UserPromptSubmit` hook that calls it inherit it rather
+// than restating it.
+export const RECALL_MIN_SCORE_RATIO = 0.0;
+
+// Spelled once because both runtimes raise it verbatim. The offending value is NOT
+// interpolated: Python renders `2.0` as `2.0` and JavaScript renders it as `2`, so a
+// sentence carrying the number would be a divergence manufactured by float formatting.
+const MIN_RATIO_RANGE = 'recall min-score ratio must be between 0.0 and 1.0';
+
 /** See the reference's comment: measured against a real store, not chosen. */
 export const DEFAULT_INDEX_BUDGET = 24_000;
 
@@ -166,6 +217,18 @@ export interface CompactResult {
   reserve: number;
   headroom: number;
   archiveDir: string;
+}
+
+/**
+ * The store members `dream.ts` needs and no caller outside it should have. See
+ * `MemoryStore.internals`.
+ */
+export interface StoreInternals {
+  facts(): Fact[];
+  factPath(name: FactValue): string;
+  indexLine(fact: Fact): string;
+  writeFact(fact: Fact): void;
+  rebuildIndex(): void;
 }
 
 export interface MemoryStoreOptions {
@@ -569,15 +632,45 @@ export class MemoryStore {
    * `[]` — the same answer as a real miss, which `component.Memory` used to turn into "no
    * memories matched. Try different words", telling a person to rephrase a question at a
    * filing cabinet nobody could open.
+   *
+   * `minRatio` is roadmap #6's precision gate: keep a fact only if its score is at least
+   * that fraction of the BEST score in this same recall. The default is
+   * `RECALL_MIN_SCORE_RATIO`, which is 0.0 and gates nothing — see the paragraph at that
+   * constant for why the number is a no-op today and what has to be measured before it
+   * stops being one. The comparison is relative to this store's own best because that is
+   * the only quantity in reach here that cancels query length; a layered `Memory` therefore
+   * applies the gate once per layer, against each layer's own top hit, and never across
+   * layers.
+   *
+   * THE RANGE CHECK RUNS BEFORE ANY FILE IS READ. A ratio outside `[0.0, 1.0]` is a
+   * caller's bug, and reporting it as "your store has no matches" would send someone to
+   * look at their memories for a defect that is in the argument. It is spelled
+   * `!(minRatio >= 0 && minRatio <= 1)` and NOT `(minRatio < 0 || minRatio > 1)`: every
+   * comparison against `NaN` is false, so the second spelling ADMITS `NaN` where the
+   * reference's `not 0.0 <= min_ratio <= 1.0` refuses it. That is a real mutant (M7b) and
+   * it is killed on both sides.
    */
-  recall(query: string, k: number | null = null, stamp = true): Fact[] {
+  recall(query: string, k: number | null = null, stamp = true, minRatio = RECALL_MIN_SCORE_RATIO): Fact[] {
+    if (!(minRatio >= 0 && minRatio <= 1)) throw new MemoryValidationError(MIN_RATIO_RANGE);
     const limit = k ?? this.k;
     const q = tokens(query);
-    const scored: Array<{ score: number; name: FactValue; fact: Fact }> = [];
+    let scored: Array<{ score: number; name: FactValue; fact: Fact }> = [];
     for (const fact of this.facts()) {
       let score = 0;
       for (const t of tokens(`${pyText(fact.name)} ${pyText(fact.description)}`)) if (q.has(t)) score += 1;
       if (score > 0) scored.push({ score, name: fact.name, fact });
+    }
+    if (scored.length > 0) {
+      // No `if (minRatio > 0)` shortcut on purpose: at 0.0 this line still runs and still
+      // keeps everything, so "the default gates nothing" is a fact about the arithmetic
+      // rather than about a branch that could be edited away. `Math.max(...scored)` is NOT
+      // used: a spread is one argument per fact and a large store would overflow the
+      // argument limit, which is a crash the reference's `max(...)` over a generator does
+      // not have.
+      let best = scored[0]!.score;
+      for (const s of scored) if (s.score > best) best = s.score;
+      const floor = minRatio * best;
+      scored = scored.filter((s) => s.score >= floor);
     }
     // `key=lambda pair: (-pair[0], pair[1].name)`. The name comparison is CODEPOINT order
     // for two strings — which is not what `Array.prototype.sort` does — and Python's `<`
@@ -920,6 +1013,30 @@ export class MemoryStore {
    */
   indexText(): string {
     return this.facts().map((fact) => this.indexLine(fact)).join('');
+  }
+
+  /**
+   * The `_`-prefixed members `dream.ts` reaches for, handed out as ONE named seam.
+   *
+   * The reference's `dream.py` calls `store._facts()`, `_fact_path`, `_index_line`,
+   * `_write_fact` and `_rebuild_index` directly — Python's underscore is a convention and
+   * costs nothing to cross. TypeScript's `private` is enforced, so the port needs a door,
+   * and this is deliberately one door rather than five relaxed modifiers: it is greppable,
+   * it names its one caller, and a sixth internal does not become reachable by accident.
+   *
+   * `_fact_text` has no member here because it never needed splitting out on this side —
+   * `formatFact` in `factfile.ts` has always been the serialiser `writeFact` calls, so the
+   * bytes `dream` MEASURES and the bytes the store WRITES are already one function. That is
+   * the code-shape difference the Python half had to manufacture, not a behaviour one.
+   */
+  internals(): StoreInternals {
+    return {
+      facts: () => this.facts(),
+      factPath: (name) => this.factPath(name),
+      indexLine: (fact) => this.indexLine(fact),
+      writeFact: (fact) => this.writeFact(fact),
+      rebuildIndex: () => this.rebuildIndex(),
+    };
   }
 
   // ---- internals ----

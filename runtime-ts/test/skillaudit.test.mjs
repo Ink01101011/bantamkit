@@ -1363,8 +1363,11 @@ test('the tool is served eleventh and its schema is the assets', async () => {
   const { memory, log } = make(room());
   const client = await connect(memory, log);
   const listed = (await client.listTools()).tools;
-  assert.equal(listed.at(-1).name, 'skill_audit');
-  assert.equal(listed.length, 11);
+  // Eleventh of THIRTEEN since job45 appended `memory_dream` and then `repo_map`, so the
+  // index is pinned rather than `at(-1)`: this node is about where `skill_audit` sits, and
+  // a later tool moving in behind it must not be able to satisfy it.
+  assert.equal(listed[10].name, 'skill_audit');
+  assert.equal(listed.length, 13);
   const asset = JSON.parse(readFileSync(join(repoRoot, 'assets', 'tools', 'skill_audit.json'), 'utf8'));
   const served = listed.find((t) => t.name === 'skill_audit');
   assert.equal(served.description, asset.description);

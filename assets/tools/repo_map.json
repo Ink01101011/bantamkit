@@ -1,0 +1,44 @@
+{
+  "name": "repo_map",
+  "description": "A ranked map of a source tree: every file's definitions, ordered by how central that file is to the files you name in `focus`, truncated to a byte budget. Call it when you are about to work on a file and want to know which OTHER files matter to it — the ports, the callers, the module it reaches through a private helper — rather than reading a directory listing and guessing. `focus` is the file or files you are editing, relative to `root` and POSIX-separated; they are excluded from the listing because you already have them open, and an empty focus gives plain centrality over the whole tree. This is a PRECISION pass and it is not a token saving: the gate this feature was supposed to clear was refuted by measurement — discovery is 0.114% of real prompt tokens, because 97.8% of the bill is cache_read — so a map does not make a session cheaper. What it buys is the right file found sooner. Nothing the scanner cannot read is dropped silently: every unread file resolves into a named omission (unknown-language, unreadable-bytes, size-cap, no-definitions, unreachable, per-file-cap, budget) counted in a footer that is NOT charged to the budget. The budget is UTF-8 BYTES of the listing, not tokens; there is no model tokenizer in either runtime and this tool will not pretend to one.",
+  "surfaces": [
+    "mcp"
+  ],
+  "parameters": {
+    "type": "object",
+    "required": [
+      "root"
+    ],
+    "properties": {
+      "root": {
+        "type": "string",
+        "description": "Directory to map, absolute or relative to the server's working directory"
+      },
+      "focus": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "The files you are working on, relative to `root` and POSIX-separated. They are excluded from the listing. A name that is not a scanned source is ignored rather than refused."
+      },
+      "budget": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "UTF-8 bytes of listing to render; default 4000. The omission footer is not charged against it."
+      }
+    }
+  },
+  "output_schema": {
+    "properties": {
+      "result": {
+        "title": "Result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "result"
+    ],
+    "type": "object",
+    "title": "repo_mapOutput"
+  }
+}

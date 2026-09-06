@@ -1,6 +1,7 @@
 import io
 import itertools
 import os
+import re
 import subprocess
 import sys
 import time
@@ -12,6 +13,7 @@ import pytest
 import bantamkit
 from bantamkit.memory import (
     DEFAULT_INDEX_BUDGET,
+    RECALL_MIN_SCORE_RATIO,
     Memory,
     MemoryBudgetExceeded,
     MemoryStore,
@@ -2614,3 +2616,169 @@ def test_restore_cli_prints_one_sentence_for_index_md_being_a_directory(tmp_path
     )
     assert "Traceback" not in err
     assert store.archived() == ["alpha"], "the rollback put it back"
+
+
+# --------------------------------------------------------------------------- #
+# roadmap #6 — the precision gate on `recall`.
+#
+# The gate ships as a MECHANISM with a no-op number: the instrument that would
+# justify a real threshold (`tools/ledger/injection-precision.mjs`) still refuses
+# to report a rate. Every test below therefore pins the ARITHMETIC — that the
+# default admits everything, that the cut is relative to the best score in the
+# same recall rather than an absolute count, and where the boundary falls — so
+# the day the number changes the behaviour it buys is already described.
+# --------------------------------------------------------------------------- #
+
+
+def _score_ladder(store):
+    """Four facts scoring 4, 3, 2 and 1 against `_LADDER_QUERY`.
+
+    The name is scored too (`_tokens(f"{name} {description}")`), so each name is a
+    word the query does not contain; otherwise every fact would carry a free point
+    and the ladder would be 5/4/3/2 with the same shape but a lying docstring.
+    """
+    store.save("project", "four", "alpha bravo charlie delta", "b")
+    store.save("project", "three", "alpha bravo charlie zulu", "b")
+    store.save("project", "two", "alpha bravo yankee zulu", "b")
+    store.save("project", "one", "alpha xray yankee zulu", "b")
+
+
+_LADDER_QUERY = "alpha bravo charlie delta"
+
+
+def test_the_score_ladder_is_the_ladder_this_fixture_claims(store):
+    """The gate tests are worthless if the fixture does not score 4/3/2/1."""
+    _score_ladder(store)
+    scores = {}
+    for name, description in (
+        ("four", "alpha bravo charlie delta"),
+        ("three", "alpha bravo charlie zulu"),
+        ("two", "alpha bravo yankee zulu"),
+        ("one", "alpha xray yankee zulu"),
+    ):
+        fact_tokens = set(f"{name} {description}".split())
+        scores[name] = len(fact_tokens & set(_LADDER_QUERY.split()))
+    assert scores == {"four": 4, "three": 3, "two": 2, "one": 1}
+    assert [f.name for f in store.recall(_LADDER_QUERY, k=10)] == ["four", "three", "two", "one"]
+
+
+def test_the_default_ratio_is_zero_and_gates_nothing(store):
+    """The no-op proof: the shipped default returns exactly what an ungated recall does."""
+    assert RECALL_MIN_SCORE_RATIO == 0.0
+    _score_ladder(store)
+    ungated = [f.name for f in store.recall(_LADDER_QUERY, k=10, min_ratio=0.0)]
+    assert ungated == ["four", "three", "two", "one"], "every scored fact survives"
+    assert [f.name for f in store.recall(_LADDER_QUERY, k=10)] == ungated
+    assert [
+        f.name for f in store.recall(_LADDER_QUERY, k=10, min_ratio=RECALL_MIN_SCORE_RATIO)
+    ] == ungated
+
+
+def test_a_fact_exactly_at_the_threshold_is_admitted(store):
+    """AT the boundary, not near it: 0.5 * 4 == 2.0 exactly, and the score-2 fact stays."""
+    _score_ladder(store)
+    assert [f.name for f in store.recall(_LADDER_QUERY, k=10, min_ratio=0.5)] == [
+        "four",
+        "three",
+        "two",
+    ]
+    # And one rung further down, where the floor lands exactly on the weakest fact.
+    assert [f.name for f in store.recall(_LADDER_QUERY, k=10, min_ratio=0.25)] == [
+        "four",
+        "three",
+        "two",
+        "one",
+    ]
+
+
+def test_just_above_the_threshold_drops_the_fact_and_just_below_keeps_it(store):
+    _score_ladder(store)
+    assert [f.name for f in store.recall(_LADDER_QUERY, k=10, min_ratio=0.6)] == ["four", "three"]
+    assert [f.name for f in store.recall(_LADDER_QUERY, k=10, min_ratio=0.4)] == [
+        "four",
+        "three",
+        "two",
+    ]
+    assert [f.name for f in store.recall(_LADDER_QUERY, k=10, min_ratio=1.0)] == ["four"]
+
+
+def test_the_gate_can_return_fewer_facts_than_k_asked_for(store):
+    """`k` is a ceiling the gate is allowed to come in under.
+
+    WHERE the gate sits relative to the `[:k]` slice is NOT pinned here, because the
+    two orderings cannot be told apart: the floor is a fraction of the maximum score,
+    the survivors are therefore a prefix of the score-sorted list, and taking the first
+    `k` of that prefix is the same list as filtering the first `k`. A mutant that moved
+    the gate below the slice was applied on a copy and survived — it is an equivalent
+    mutant, not an untested branch, and `runtime-ts` is free to place it either way.
+    """
+    _score_ladder(store)
+    assert [f.name for f in store.recall(_LADDER_QUERY, k=2)] == ["four", "three"]
+    assert [f.name for f in store.recall(_LADDER_QUERY, k=2, min_ratio=1.0)] == ["four"]
+
+
+def test_the_cut_is_relative_to_the_best_score_not_an_absolute_count(store):
+    """The length bias an absolute threshold would have, measured on one store.
+
+    Mirrors the three instrumented injections of 2026-09-06: the same near-tie
+    scored (2, 2) on a 452-character prompt and (22, 21) on a 7855-character one.
+    An absolute cut is a rule about prompt length; a ratio is not.
+    """
+    # The private filler on each side keeps `save`'s Jaccard duplicate gate out of the
+    # way; only the shared `one`..`ten` run is ever scored by the queries below.
+    store.save(
+        "project",
+        "alpha",
+        "one two three four five six seven eight nine ten aaa bbb ccc ddd eee fff ggg hhh",
+        "b",
+    )
+    store.save(
+        "project",
+        "bravo",
+        "one two three four five six seven eight nine iii jjj kkk lll mmm nnn ooo ppp qqq",
+        "b",
+    )
+    short = "one two"
+    long = "one two three four five six seven eight nine ten filler words and more of them"
+
+    def score(name, query):
+        fact = next(f for f in store.recall(query, k=10) if f.name == name)
+        return len(set(re.findall(r"[a-z0-9]+", f"{fact.name} {fact.description}".lower()))
+                   & set(re.findall(r"[a-z0-9]+", query.lower())))
+
+    # The absolute counts move by 5x with the length of the query...
+    assert (score("alpha", short), score("bravo", short)) == (2, 2)
+    assert (score("alpha", long), score("bravo", long)) == (10, 9)
+    # ...so any absolute cut above 2 would gate the short prompt out entirely while
+    # admitting both facts on the long one. The ratio does not move that way: the pair
+    # is a tie at 452 characters and a 0.9 near-tie at 7855, both times admitted at 0.9.
+    for query in (short, long):
+        assert [f.name for f in store.recall(query, k=10)] == ["alpha", "bravo"]
+        assert [f.name for f in store.recall(query, k=10, min_ratio=0.9)] == ["alpha", "bravo"]
+    # Only the exact-tie requirement can tell the two lengths apart, and that is the
+    # ratio reporting a real difference in relevance rather than a difference in length.
+    assert [f.name for f in store.recall(short, k=10, min_ratio=1.0)] == ["alpha", "bravo"]
+    assert [f.name for f in store.recall(long, k=10, min_ratio=1.0)] == ["alpha"]
+
+
+@pytest.mark.parametrize("bad", [-0.1, 1.1, 2.0, float("nan")])
+def test_a_ratio_outside_the_unit_interval_is_refused(store, bad):
+    _score_ladder(store)
+    with pytest.raises(MemoryValidationError) as excinfo:
+        store.recall(_LADDER_QUERY, min_ratio=bad)
+    assert str(excinfo.value) == "recall min-score ratio must be between 0.0 and 1.0"
+
+
+def test_the_ratio_is_refused_before_the_store_is_read(tmp_path):
+    """A caller's bad argument must not be reported as a defect in someone's memories."""
+    missing = MemoryStore(tmp_path / "nope", create=False, today=lambda: "2026-08-06")
+    with pytest.raises(MemoryValidationError) as excinfo:
+        missing.recall("anything", min_ratio=2.0)
+    assert str(excinfo.value) == "recall min-score ratio must be between 0.0 and 1.0"
+    assert "nope" not in str(excinfo.value), "it never got as far as naming a path"
+
+
+def test_zero_and_one_are_both_inside_the_accepted_range(store):
+    _score_ladder(store)
+    assert store.recall(_LADDER_QUERY, k=10, min_ratio=0.0)
+    assert store.recall(_LADDER_QUERY, k=10, min_ratio=1.0)

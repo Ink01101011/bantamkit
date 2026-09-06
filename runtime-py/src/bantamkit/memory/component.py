@@ -10,6 +10,8 @@ from pathlib import Path
 from bantamkit.agent import Agent, ToolDef
 from bantamkit.assets import load_skill, load_tool
 from bantamkit.client import BantamError
+from bantamkit.memory.dream import SUPERSEDED_HEADING, DreamResult
+from bantamkit.memory.dream import dream as _dream
 from bantamkit.memory.layers import (
     MEMORY_DIR_ENV,
     PROJECT_STORE,
@@ -20,6 +22,7 @@ from bantamkit.memory.layers import (
 )
 from bantamkit.memory.store import (
     DEFAULT_INDEX_BUDGET,
+    RECALL_MIN_SCORE_RATIO,
     Fact,
     MemoryBudgetExceeded,
     MemoryStore,
@@ -112,6 +115,32 @@ class CompactOutcome:
     index_before: int
     index_after: int
     budget: int
+
+
+@dataclass(frozen=True)
+class DreamOutcome:
+    """What `dream` DID, beside the sentence it says about it.
+
+    The same seam as `SaveOutcome`, `RecallOutcome` and `CompactOutcome`: `status` is read
+    off a decision the pass already made — `DreamResult.applied`, `.over_budget`,
+    `.changes` — and never off the reply. `result` carries the whole diff for a caller that
+    wants the numbers rather than the prose.
+
+    `status` is one of `consolidated`, `previewed`, `nothing-to-consolidate`,
+    `refused-budget`, `no-profile-layer`.
+    """
+
+    reply: str
+    status: str
+    dry_run: bool
+    merged: int
+    consumed: int
+    absolutised: int
+    superseded: int
+    index_before: int
+    index_after: int
+    budget: int
+    result: DreamResult | None = None
 
 
 def _profile_store() -> Path:
@@ -259,7 +288,12 @@ class Memory:
             )
         return SaveOutcome(reply=f"saved '{result.name}'", status="saved")
 
-    def recall(self, query: str, k: int | None = None) -> str:
+    def recall(
+        self,
+        query: str,
+        k: int | None = None,
+        min_ratio: float = RECALL_MIN_SCORE_RATIO,
+    ) -> str:
         """`k` is the model asking for *more*, never for less than the store's default.
 
         Measured cause (RB-P1, qwen2.5:14b-instruct): 57 of 60 `memory_recall` calls
@@ -273,9 +307,14 @@ class Memory:
         The floor is the operator's configured default, not a constant, so a consumer
         who really wants top-1 says so once at construction (`Memory(store, k=1)`).
         """
-        return self.recall_outcome(query, k).reply
+        return self.recall_outcome(query, k, min_ratio).reply
 
-    def recall_outcome(self, query: str, k: int | None = None) -> RecallOutcome:
+    def recall_outcome(
+        self,
+        query: str,
+        k: int | None = None,
+        min_ratio: float = RECALL_MIN_SCORE_RATIO,
+    ) -> RecallOutcome:
         """`recall`, carrying the walk it performed as numbers rather than as prose.
 
         The reply is byte-for-byte what `recall` has always returned; every field beside
@@ -291,6 +330,17 @@ class Memory:
         layer whose directory refuses to list contributes nothing and raises the
         `unreadable` count instead of being scored as empty; that distinction is the
         whole subject of `_nothing_to_report` below and must not be undone here.
+
+        `min_ratio` (roadmap #6) rides through to every layer's `MemoryStore.recall`
+        unchanged, so the gate is measured against EACH LAYER's own best score and never
+        across layers: a profile fact does not have to out-score the project store's top
+        hit to be admitted, because the two stores are answering as two stores. Its
+        default is `RECALL_MIN_SCORE_RATIO` = 0.0, which keeps every fact `recall` was
+        going to return, and nothing on the tool path passes anything else today. A ratio
+        outside `[0.0, 1.0]` raises out of the FIRST layer, which is the writable project
+        store, so it surfaces as the error it is rather than as an `unreadable` count —
+        the read-only-layer `except` below would otherwise file a caller's bad argument as
+        a corrupt grant.
         """
         budget = self.k if k is None else max(k, self.k)
         picked: list[tuple[str, Fact]] = []
@@ -303,7 +353,7 @@ class Memory:
                 break  # budget spent: later (read-only) layers are never even read
             reached += 1
             try:
-                facts = store.recall(query, budget, stamp=writable)
+                facts = store.recall(query, budget, stamp=writable, min_ratio=min_ratio)
             except (BantamError, OSError, UnicodeDecodeError):
                 if writable:
                     raise  # the project layer failing is a real error, as in v1
@@ -559,6 +609,158 @@ class Memory:
             index_after=result.index_after,
             budget=result.budget,
         )
+
+    def dream(self, dry_run: bool = True) -> str:
+        """Consolidate what the project and profile layers hold under the same name."""
+        return self.dream_outcome(dry_run).reply
+
+    def dream_outcome(self, dry_run: bool = True) -> DreamOutcome:
+        """`dream`, with the decision it took carried beside the sentence it wrote.
+
+        ONLY THE PROFILE LAYER IS CONSUMED. `_layers` also carries read-only GRANTS, and a
+        grant is another operator's store: consolidating a fact out of one is not this
+        person's move to make, so `dream` never looks at them. The label is matched exactly
+        (`profile`), never by prefix, because a grant is labelled `extra:<name>` and a
+        prefix match on a directory called `profile-something` would reach one.
+
+        A `Memory` constructed directly — not through `layered` — has no profile layer at
+        all, and that is `no-profile-layer` rather than an error: there is nothing to
+        consolidate ACROSS when only one layer is bound.
+
+        `dry_run` DEFAULTS TO TRUE. This is the only op in this component that writes into
+        the user's home directory, and it is the only one whose effect is machine-wide: a
+        fact archived out of the profile store stops answering for every other project on
+        this machine that has no store of its own. A destructive consolidation nobody can
+        preview is not shippable, so the safe call is the short one.
+        """
+        profile = next((store for label, store, _ in self._layers if label == "profile"), None)
+        if profile is None:
+            return DreamOutcome(
+                reply=(
+                    "nothing to consolidate: no profile layer is bound, so the project "
+                    f"store {self.store.root} is the only layer there is."
+                ),
+                status="no-profile-layer",
+                dry_run=dry_run,
+                merged=0,
+                consumed=0,
+                absolutised=0,
+                superseded=0,
+                index_before=0,
+                index_after=0,
+                budget=self.store.index_budget,
+            )
+        result = _dream(self.store, profile, dry_run)
+        if result.over_budget:
+            status = "refused-budget"
+        elif not result.changes:
+            status = "nothing-to-consolidate"
+        elif result.applied:
+            status = "consolidated"
+        else:
+            status = "previewed"
+        return DreamOutcome(
+            reply=self._dream_reply(status, result),
+            status=status,
+            dry_run=result.dry_run,
+            merged=len(result.merged),
+            consumed=len(result.consumed),
+            absolutised=len(result.absolutised),
+            superseded=len(result.superseded),
+            index_before=result.index_before,
+            index_after=result.index_after,
+            budget=result.budget,
+            result=result,
+        )
+
+    @staticmethod
+    def _dream_reply(status: str, result: DreamResult) -> str:
+        """The whole diff as prose: what merged, what was dated, what moved, what it cost.
+
+        THE HONESTY SENTENCE AT THE END IS NOT DECORATION. Row 5 was planned as a token
+        saving and J45-1 measured that it is not one: the profile store has no `index.md`
+        on disk, its index is derived at read time, and nothing loads it into a prompt — so
+        deduplicating it frees approximately zero prompt bytes. The value is that one
+        ruling now has one copy instead of two that can disagree, and the reply says which
+        of those two things the operator just bought.
+        """
+        lines: list[str] = []
+        if status == "nothing-to-consolidate":
+            lines.append(
+                f"nothing to consolidate: {result.project_root} and {result.profile_root} "
+                f"hold no fact under the same name, and no project fact carries a relative "
+                f"date this pass will resolve."
+            )
+        else:
+            identical = sum(1 for merge in result.merged if merge.kind == "identical")
+            diverged = len(result.merged) - identical
+            verb = {
+                "consolidated": "consolidated",
+                "previewed": "would consolidate",
+                "refused-budget": "would consolidate",
+            }[status]
+            lines.append(
+                f"{verb} {len(result.merged)} cross-layer name collision(s) — {identical} "
+                f"byte-identical, {diverged} diverged and unioned — and rewrote "
+                f"{len(result.rewritten)} project fact(s). The survivor stays in the "
+                f"project layer; the profile copy moves to {result.archive_dir} and is NOT "
+                f"deleted: restore it by name."
+            )
+        for merge in result.merged:
+            lines.append(
+                f"- {merge.name} ({merge.kind}, name+description similarity "
+                f"{merge.jaccard:.3f}) — body {merge.body_before} -> {merge.body_after} "
+                f"bytes, {merge.blocks_added} block(s) kept from the {merge.consumed_layer} "
+                f"copy, survivor in {merge.survivor_layer}"
+            )
+        for record in result.superseded:
+            lines.append(
+                f"- superseded '{record.subject}': the {record.lost_layer} copy "
+                f"({record.lost_date}) lost to the {record.kept_layer} copy "
+                f"({record.kept_date}); the older claim is kept verbatim under "
+                f"'{SUPERSEDED_HEADING}'"
+            )
+        for hit in result.absolutised:
+            lines.append(
+                f"- dated {hit.name} ({hit.layer}): '{hit.term}' -> {hit.resolved}, "
+                f"resolved against that fact's own mtime {hit.basis}, not today"
+            )
+        for hit in result.unresolved:
+            lines.append(
+                f"- left alone in {hit.name} ({hit.layer}): '{hit.term}' — no exact day "
+                f"follows from an mtime, so nothing was substituted"
+            )
+        for name, reason in result.refused:
+            lines.append(f"- refused {name}: {reason}")
+        for pair in result.similar_unmerged:
+            lines.append(
+                f"- similar but NOT merged: {pair.project_name} (project) and "
+                f"{pair.profile_name} (profile) score {pair.jaccard:.3f}; this pass merges "
+                f"on name equality only, so nothing was done about it"
+            )
+        lines.append(
+            f"project index {result.index_before} -> {result.index_after} bytes against a "
+            f"{result.budget}-byte budget; the profile index (derived, no file on disk) "
+            f"{result.profile_index_before} -> {result.profile_index_after}; fact bytes "
+            f"across both layers {result.fact_bytes_before} -> {result.fact_bytes_after}."
+        )
+        if status == "refused-budget":
+            lines.append(
+                f"NOTHING WAS WRITTEN: the merged index would be {result.index_after} bytes "
+                f"against a {result.budget}-byte budget. Call `memory_compact` to archive "
+                f"the stalest facts, then run this again."
+            )
+        elif result.dry_run:
+            lines.append(
+                "DRY RUN: nothing was written. Re-run with dry_run false to apply it."
+            )
+        lines.append(
+            "This is a correctness pass, not a token saving: the profile index is derived "
+            "at read time and is not loaded from a file, so consolidating it frees "
+            "approximately no prompt bytes. What it buys is one copy of a ruling instead "
+            "of two that can diverge."
+        )
+        return "\n".join(lines)
 
     # Back-compat aliases: the component's API predates the public names.
     _save = save

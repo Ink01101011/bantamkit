@@ -41,6 +41,8 @@ SERVED_ORDER = [
     "memory_compact",
     "bantamkit_read",
     "skill_audit",
+    "memory_dream",
+    "repo_map",
 ]
 
 

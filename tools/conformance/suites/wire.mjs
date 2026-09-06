@@ -43,7 +43,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const name = 'wire';
-export const summary = 'the MCP surface: eleven tools, one prompt, two templates, and the frames themselves';
+export const summary = 'the MCP surface: thirteen tools, one prompt, two templates, and the frames themselves';
 
 const here = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = dirname(dirname(here));
@@ -1609,22 +1609,27 @@ export async function run(ctx) {
     });
   }
 
-  // ------------------------------------------------- skill_audit: the eleventh tool, served
+  // -------------------------------------------------- repo_map: the thirteenth tool, served
 
   /**
    * The advertisement session's `tools/list` is compared canonically above (`advertisement:
-   * id 2`) and its raw order is ruled. This pins the two facts the golden entry was added
-   * for: ELEVEN tools, and `skill_audit` served LAST, on both sides.
+   * id 2`) and its raw order is ruled. This pins the three facts the golden entry was added
+   * for: THIRTEEN tools, `skill_audit` still eleventh, and `repo_map` served LAST, on both
+   * sides.
+   *
+   * The MIDDLE index is what makes this more than a count. A tool appended at the end moves
+   * the total and nothing else; a tool inserted anywhere earlier moves `eleventh` too, and
+   * that is a wire change to eleven existing advertisements rather than an addition.
    */
   {
     const toolNames = (side) => frameOf(side, 2).result.tools.map((t) => t.name);
     const { python, node } = results.get('advertisement');
-    cases.push({ name: 'advertisement: the eleven tool names, in order', kind: 'json', expected: toolNames(python), actual: toolNames(node) });
+    cases.push({ name: 'advertisement: the thirteen tool names, in order', kind: 'json', expected: toolNames(python), actual: toolNames(node) });
     cases.push({
-      name: 'advertisement: eleven tools and skill_audit served eleventh',
+      name: 'advertisement: thirteen tools, skill_audit eleventh and repo_map thirteenth',
       kind: 'json',
-      expected: { count: 11, last: 'skill_audit' },
-      actual: { count: toolNames(node).length, last: toolNames(node).at(-1) },
+      expected: { count: 13, eleventh: 'skill_audit', last: 'repo_map' },
+      actual: { count: toolNames(node).length, eleventh: toolNames(node)[10], last: toolNames(node).at(-1) },
     });
   }
 

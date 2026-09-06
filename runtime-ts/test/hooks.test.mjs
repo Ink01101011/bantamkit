@@ -29,6 +29,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -674,4 +675,119 @@ test('UserPromptSubmit recall is unaffected by a configured --index-budget', asy
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /"hookEventName":"UserPromptSubmit"/);
   assert.match(r.stdout, /deploy-flag/);
+});
+
+// --------------------------------------------- the injection record roadmap #6 measures on
+//
+// Roadmap #6 gates injection on a SCORE and then asks whether an injected name was later
+// used. Neither question can be asked of the record the arm used to write: `hits` and `bytes`
+// say how many and how big, never WHICH or AT WHAT SCORE, and with no session id the record
+// cannot be joined to the transcript that would say what happened next. The 488 records that
+// predate this shape are unanswerable for exactly that reason, which is why the fields below
+// are asserted rather than assumed. `tools/ledger/injection-precision.mjs` is the consumer.
+
+/** Facts built for one query, with a controlled number of query tokens in each. */
+async function seedScored(store, facts) {
+  const { Memory } = await import(join(MEMORY_DIST, 'component.js'));
+  const m = new Memory(store);
+  for (const [name, description] of facts) {
+    const outcome = m.saveOutcome('project', name, description, 'body');
+    assert.equal(outcome.status, 'saved', `fixture fact ${name} must save: ${outcome.reply}`);
+  }
+}
+
+function injectRecord(home) {
+  const recs = hookLog(home, 'UserPromptSubmit').filter((r) => r.action === 'inject');
+  assert.equal(recs.length, 1, 'exactly one injection was made');
+  return recs[0];
+}
+
+test('the injection record names WHICH facts were injected and at what score', async () => {
+  const cwd = newCwd();
+  const home = newHome();
+  // Query tokens: {the, deploy, flag, ships, tonight}. `pinned` shares deploy+flag+ships = 3,
+  // `middling` shares deploy+flag = 2, `thin` shares deploy = 1. Distinct on purpose: a score
+  // this file merely copied out of the reply would not be able to tell them apart.
+  await seedScored(join(cwd, '.bantamkit', 'memory'), [
+    ['pinned', 'deploy flag ships wombat wombat'],
+    ['middling', 'deploy flag narwhal narwhal narwhal'],
+    ['thin', 'deploy pangolin pangolin pangolin pangolin'],
+  ]);
+  const r = runHook({ hook_event_name: 'UserPromptSubmit', prompt: 'the deploy flag ships tonight' }, { cwd, home });
+  assert.equal(r.status, 0, r.stderr);
+
+  const rec = injectRecord(home);
+  assert.deepEqual(rec.injected.map((i) => i.name), ['pinned', 'middling', 'thin']);
+  assert.deepEqual(rec.injected.map((i) => i.score), [3, 2, 1],
+    'the score is |tokens(name + " " + description) ∩ tokens(prompt)|, the store\'s own formula');
+  assert.deepEqual(rec.injected.map((i) => i.layer), ['project', 'project', 'project']);
+  assert.deepEqual(rec.injected.map((i) => i.type), ['project', 'project', 'project']);
+  assert.equal(rec.session, 'probe-session', 'without this the record joins to no transcript');
+
+  // The scores must EXPLAIN the order the store returned, not merely sit beside it. The sort
+  // key is `(-score, name)`, so a logged score that disagreed with the ranking would be a
+  // number about some other computation.
+  const scores = rec.injected.map((i) => i.score);
+  assert.deepEqual(scores, [...scores].sort((a, b) => b - a),
+    'the store ranks by descending score; a logged score that does not is not that score');
+});
+
+test('no prompt text reaches the log — a digest, two sizes, and a closed field set', async () => {
+  const cwd = newCwd();
+  const home = newHome();
+  await seedScored(join(cwd, '.bantamkit', 'memory'), [['pinned', 'deploy flag ships wombat wombat']]);
+  // A nonce no fact contains, so anything that echoed the prompt would carry it. The rest of
+  // the prompt is fact vocabulary, so the injection still fires.
+  const nonce = 'zqxjkvw7788nonce';
+  const prompt = `the deploy flag ships tonight ${nonce}`;
+  const r = runHook({ hook_event_name: 'UserPromptSubmit', prompt }, { cwd, home });
+  assert.equal(r.status, 0, r.stderr);
+
+  const raw = readFileSync(join(home, '.bantamkit', 'hooks', 'hook-log.jsonl'), 'utf8');
+  assert.ok(!raw.includes(nonce), 'no substring of the prompt may reach the log');
+  assert.ok(!raw.includes(prompt), 'and certainly not the whole prompt');
+
+  const rec = injectRecord(home);
+  assert.equal(rec.prompt.sha256, createHash('sha256').update(prompt, 'utf8').digest('hex'),
+    'the digest is of the real prompt — otherwise this test would pass on a record that ignored it');
+  assert.equal(rec.prompt.chars, prompt.length);
+  assert.equal(rec.prompt.bytes, Buffer.byteLength(prompt));
+  assert.deepEqual(Object.keys(rec.prompt).sort(), ['bytes', 'chars', 'sha256'],
+    'the prompt object is CLOSED: a field added here is a field that could carry text');
+  assert.deepEqual(Object.keys(rec).sort(),
+    ['action', 'bytes', 'dropped', 'event', 'hits', 'injected', 'ms', 'prompt', 'session', 'source', 'ts'].sort(),
+    'the record is closed too — every string field here is ours, none is the user\'s');
+  for (const inj of rec.injected) {
+    assert.deepEqual(Object.keys(inj).sort(), ['layer', 'name', 'score', 'type']);
+  }
+});
+
+test('a header the byte cap dropped is NOT logged as injected', async () => {
+  const cwd = newCwd();
+  const home = newHome();
+  // Three matching facts whose headers cannot all fit PROMPT_INJECT_MAX = 700 B. Observed on
+  // the real log the day this shipped: `dropped: 1` on both instrumented records, so a `hits`
+  // of 3 was overstating what reached the model by a third. "Was an INJECTED name later used"
+  // is unanswerable if a name the model never saw is counted as injected.
+  const filler = (w) => `${w} `.repeat(40).trim();
+  await seedScored(join(cwd, '.bantamkit', 'memory'), [
+    ['bulky-alpha', `deploy flag ships ${filler('wombat')}`],
+    ['bulky-bravo', `deploy flag ${filler('narwhal')}`],
+    ['bulky-charlie', `deploy ${filler('pangolin')}`],
+  ]);
+  const r = runHook({ hook_event_name: 'UserPromptSubmit', prompt: 'the deploy flag ships tonight' }, { cwd, home });
+  assert.equal(r.status, 0, r.stderr);
+
+  const rec = injectRecord(home);
+  const ctx = JSON.parse(r.stdout).hookSpecificOutput.additionalContext;
+  assert.equal(rec.hits, 3, 'three headers were picked');
+  assert.ok(rec.injected.length < 3, 'but they cannot all fit 700 B — the fixture is sized so the cap bites');
+  assert.equal(rec.dropped, rec.hits - rec.injected.length);
+  for (const inj of rec.injected) {
+    assert.ok(ctx.includes(`[${inj.name}]`), `${inj.name} is logged as injected and must be in what left the process`);
+  }
+  for (const name of ['bulky-alpha', 'bulky-bravo', 'bulky-charlie']) {
+    if (rec.injected.some((i) => i.name === name)) continue;
+    assert.ok(!ctx.includes(`[${name}]`), `${name} was dropped by the cap and must not appear in the context`);
+  }
 });

@@ -118,3 +118,101 @@ correction separately with a negative control, and the suite was checked by muta
 the id dedupe turns 4 red, dropping the subagent recursion 6, letting the events log see live
 sessions 4 — each time the correction's own assertion fails first. (The subagent figure was
 first written as 5; rerun at the fix commit it is 6.)
+
+# Injection precision — was an injected name later used?
+
+    node tools/ledger/injection-precision.mjs [--json] [--log <file>] [--projects <dir>]
+
+Roadmap #6 wants a precision gate on what the `UserPromptSubmit` hook injects: only inject a
+recall hit whose score clears a threshold, and measure the hit rate per 100 injections. The
+gate cannot be chosen before the rate exists, so this instrument ships first. It joins each
+injection record in `~/.bantamkit/hooks/hook-log.jsonl` to the host's transcript for the same
+session and asks whether any injected name was afterwards used.
+
+**It names no threshold.** Choosing one is a later unit's job, off the data this collects.
+
+## History starts the day the instrument ships
+
+The 488 injection records written before `injected[]` and `session` were added carry `hits`
+and `bytes` only. No names, no scores, and no session id — so they cannot be matched to a
+transcript even in principle. There is no retroactive baseline and no honest way to
+manufacture one. The tool counts only records carrying the new fields and prints the split on
+every run.
+
+## The two signals, and exactly what they prove
+
+| signal | what it is | what it proves |
+|---|---|---|
+| `recall` | the name appears in the arguments of a later `mcp__bantamkit__memory_recall` call in that session's **main** transcript | the injection's own call to action was followed — the header line tells the model to pass the name to that tool. Not that the recall was useful. |
+| `quoted` | the name appears in a later assistant message | very little on its own — see the confounder below |
+
+Neither is causal. Both are "the name appears later in the same session": a name that would
+have been used anyway counts as a hit, and a fact whose *content* steered the model without
+its name being written counts as a miss. The rate is a floor on usefulness measured through a
+keyhole.
+
+**The confounder that shapes the whole design.** The `SessionStart` arm injects the memory
+INDEX — every fact name in the store — once per session. Every name is therefore already in
+context before any prompt-level injection happens, so a later quote is entirely consistent
+with the prompt injection having done nothing. That is why the tool ships a **control arm**:
+the same two signals measured, in the same window, over names the session did *not* have
+injected (drawn from the names the log has seen injected under the same cwd — nothing here
+opens a memory store). If the control rate matches the injected rate, the injection is not
+what caused the use, whatever the injected rate looks like alone. Never quote one without the
+other.
+
+**Sidechains are excluded.** `<project>/<session>/subagents/*.jsonl` carry the parent
+`sessionId` with `isSidechain: true`. A subagent has its own context and never received the
+parent's injection, so a name it writes is not evidence; those uses are counted separately and
+reported uncounted, so the exclusion is visible rather than silent.
+
+## It refuses rather than divide six by one
+
+Same idiom as `skill-discovery-check.mjs`: the refusal is the feature. The floors are
+**sample-size** floors, not precision thresholds —
+
+- **100 joinable injections**, because the measure is literally "per 100 injections"; below
+  that the "per 100" is extrapolation the reader cannot see in a percentage. At n=100 a rate
+  near 20 % still carries a 95 % Wilson interval about ±8 points wide, so 100 is the floor for
+  speaking at all, not the point at which the number is precise.
+- **5 distinct sessions**, because one session is one operator on one task and injected names
+  track what that task was about.
+- **a non-empty control arm**, because an injected rate with nothing to compare it against
+  cannot distinguish a working gate from a name the model would have written anyway.
+
+On a refusal it prints the raw counts — those are facts — and withholds only the ratio.
+
+## First run — 2026-09-06, the day it shipped
+
+    injection records       490 total, 2 carry names+scores+session, 488 predate this instrument
+    joined to a transcript  2 across 1 session(s)
+    control arm             0 name-window(s) that were NOT injected
+    REFUSED — the sample cannot support a rate, so none is printed.
+
+Which is the correct and expected outcome: two records is not a measurement. Both carried
+`dropped: 1` — the 700 B cap cut one of the three picked headers each time, so `hits: 3` had
+been overstating what reached the model by a third.
+
+## Rerunning the agreement
+
+`node tools/ledger/injection-precision.test.mjs` pins each decision separately — the refusal,
+the legacy split, the direction of time, the sidechain exclusion, the name boundary and the
+control arm — against a fixture generated from a recipe stated in the file (the verdict path
+needs 100 injections across 5 sessions; a hundred checked-in JSON lines is not a fixture
+anyone can verify by eye).
+
+The suite was checked by mutation, six mutants, each killed:
+
+| mutant | cases turned red |
+|---|---|
+| the time window is ignored (`e.t > after` → always) | 2 |
+| sidechain text counted as the main transcript | 5 |
+| the refusal removed (`refused = false`) | 4 |
+| name matched without a token boundary | 1 |
+| a record with no session counted as instrumented | 1 |
+| the control arm never sampled | 5 |
+
+The hook half is pinned in the gated suite instead, `runtime-ts/test/hooks.test.mjs`, and was
+checked with four mutants, each killed: dropping the `session` field turns 2 red; deriving
+`injected` from the header list instead of the emitted context, writing the prompt text into
+the record, and zeroing the score turn 1 red each.

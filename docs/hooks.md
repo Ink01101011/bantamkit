@@ -127,6 +127,51 @@ is what left the process rather than what was assembled.
     grep -c '"action":"refuse"' ~/.bantamkit/hooks/hook-log.jsonl        # reads saved
     grep '"event":"UserPromptSubmit"' ~/.bantamkit/hooks/hook-log.jsonl | grep -c inject
 
+**AMENDED 2026-09-06 (job45 J45-5): the `UserPromptSubmit` inject record carries WHICH facts
+were injected, at what score, in which session, and a digest of the prompt.** Roadmap #6 wants
+a precision gate on injection and then asks whether an injected name was later used; neither
+question can be put to the old record. `hits` and `bytes` say how many and how big, never
+which or at what score, and with no session id the record joins to no transcript. The 488
+records written before this change are therefore unanswerable, and **there is no retroactive
+baseline** — hit-rate history starts at the first record carrying `injected`.
+
+The record, field by field:
+
+| field | meaning |
+|---|---|
+| `hits` | headers `recallOutcome` picked, BEFORE the byte cap — unchanged, so the 488 old records stay comparable |
+| `bytes` | bytes of context that actually left the process — unchanged |
+| `source` | the layer the top hit came from — unchanged |
+| `session` | the host's `session_id`. The join key: without it the record matches no transcript |
+| `prompt.sha256` | SHA-256 of the trimmed prompt, hex |
+| `prompt.chars` / `prompt.bytes` | its two sizes |
+| `injected[]` | one entry per header that SURVIVED the 700 B cap: `name`, `layer`, `type`, `score` |
+| `dropped` | `hits - injected.length` — headers picked but cut by the cap |
+
+**No prompt text reaches the log, at any length.** The digest is the whole of what is kept
+about the prompt, and the `prompt` object is asserted CLOSED by
+`runtime-ts/test/hooks.test.mjs` ("no prompt text reaches the log — a digest, two sizes, and a
+closed field set"): a field added to it would turn that case red. The digest is one-way, not
+secret — somebody holding a *guess* at the prompt can confirm the guess by hashing it, which
+is inherent to any stable hash. A per-machine salt was considered and rejected: the guesser
+would have the salt too (it would live in the same home directory), so it buys nothing and
+costs digests that stop matching across machines.
+
+`injected` is read back off the context that was emitted, **not** off the header list, because
+the cap drops whole lines: on the first two instrumented records written on the real log,
+`dropped` was 1 both times, so `hits: 3` had been overstating what reached the model by a
+third. "Was an *injected* name later used" is unanswerable if a name the model never saw is
+counted as injected.
+
+`score` is the store's own `|tokens(name + " " + description) ∩ tokens(prompt)|`, re-derived in
+the hook with the runtime's *exported* `tokens` — `MemoryStore.recall` computes that integer
+and discards it, and no runtime API surfaces it. Re-deriving it needs no runtime change: the
+tokenizer is exported from `dist/memory/store.js`, and `name`/`description` are the two fields
+`Memory.format` interpolated into the header the hook already parses. So the logging half of
+roadmap #6 lives entirely in this operator-tooling layer.
+
+`node tools/ledger/injection-precision.mjs` is the consumer — see `docs/ledger.md`.
+
 ## The three properties (same as `docs/statusline.md`)
 
 1. **Cheap.** Imports `runtime-ts/dist/memory` in-process; never starts an MCP server.

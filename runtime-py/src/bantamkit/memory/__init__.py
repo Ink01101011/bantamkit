@@ -1,4 +1,10 @@
-from bantamkit.memory.component import CompactOutcome, Memory, RecallOutcome, SaveOutcome
+from bantamkit.memory.component import (
+    CompactOutcome,
+    DreamOutcome,
+    Memory,
+    RecallOutcome,
+    SaveOutcome,
+)
 from bantamkit.memory.divergence import (
     BodyDiff,
     DivergenceReport,
@@ -10,6 +16,13 @@ from bantamkit.memory.divergence import (
     parse_fact,
     read_store,
 )
+from bantamkit.memory.dream import (
+    DreamMerge,
+    DreamResult,
+    SimilarPair,
+    Superseded,
+    dream,
+)
 from bantamkit.memory.layers import (
     MEMORY_DIR_ENV,
     StoreBinding,
@@ -18,6 +31,7 @@ from bantamkit.memory.layers import (
 )
 from bantamkit.memory.store import (
     DEFAULT_INDEX_BUDGET,
+    RECALL_MIN_SCORE_RATIO,
     ArchivedFact,
     CompactResult,
     Fact,

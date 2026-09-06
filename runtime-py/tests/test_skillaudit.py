@@ -1466,7 +1466,12 @@ def test_the_tool_is_served_eleventh_and_its_schema_is_the_assets(tmp_path):
             ]
 
     tools, order = asyncio.run(scenario())
-    assert order[-1] == "skill_audit"
+    # Eleventh of THIRTEEN since job45 appended `memory_dream` and then `repo_map`, so the
+    # INDEX is pinned rather than `order[-1]`: this node is about where `skill_audit` sits,
+    # and a later tool moving in behind it must not be able to satisfy it. The TOTAL moves
+    # with the surface and the index does not — that is the whole design of this node.
+    assert order[10] == "skill_audit"
+    assert len(order) == 13
     asset = json.loads(
         (REPO / "assets" / "tools" / "skill_audit.json").read_text(encoding="utf-8")
     )
