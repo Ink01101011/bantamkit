@@ -42,6 +42,7 @@ import { BantamError } from './errors.js';
 import { CODEC_ALIASES, CODEC_MODULES, MULTI_BYTE_SINGLES, SINGLE_BYTE_TABLES } from './charsets.js';
 import { HTML5_ENTITIES } from './htmlentities.js';
 import { PyOSError, pyJoin, pyName, pySuffix as pyPathSuffix } from './memory/pyfs.js';
+import { cmpCodepoint, PY_WS_CLASS, pyRepr, pyStrip } from './pysem.js';
 
 export const NS_S = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}';
 export const NS_W = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}';
@@ -63,31 +64,38 @@ export const OMIT_NUMBER_FORMAT = 'number-format';
 export const OMIT_UNREAD_PAGE = 'unread-page';
 export const OMIT_UNMAPPED = 'unmapped-text';
 export const OMIT_UNREAD_TAIL = 'unread-tail';
+// What a ceiling THIS READER imposes kept out of the rows. Not a property of the file, which
+// is exactly why it is declared as a count instead of applied in silence. Three ceilings carry
+// it, and each one names its own number in `what`: bytes past `TEXT_MAX_BYTES` for a plain-text
+// file and for the markup of an `.html`/`.mhtml` (the same constant, because "how much of a
+// file this reader reads" is one number and not one per container), and rows past
+// `XLSX_MAX_TEXT_BYTES` for a workbook, where the thing that runs away is the RENDERING rather
+// than the file.
 export const OMIT_SIZE_CAP = 'size-cap';
 // A worksheet cell whose own `r` reference could not place it: not letters-then-digits, or a
 // column past the last one the format has. The cell's TEXT is in the rows, at its XML
 // position; what the rows do not carry is the column the file asked for. Counted per reason,
 // with the columns it landed in, exactly as `number-format` is counted per format code.
 export const OMIT_UNPLACED_CELL = 'unplaced-cell';
+// A worksheet cell a LATER cell in the same row and column replaced. Last-wins is what both
+// runtimes do and what a writer's own second cell means, so the reading is kept; what was not
+// kept was the disclosure. Counted with the columns it happened in, like every other cell this
+// reader could not put in the rows.
+export const OMIT_DUPLICATE_CELL = 'duplicate-cell';
 
 /** Extraction failed. The message names what was seen, never just the format's own error. */
 export class DocumentReadError extends BantamError {}
 
 // ------------------------------------------------------------------ Python string semantics
 
-/** The characters `str.isspace()` is true for — what `strip()` and `split()` consume. */
-const PY_WS =
-  '\t\n\x0b\x0c\r\x1c\x1d\x1e\x1f \x85\xa0                　';
-const PY_WS_CLASS = `[${PY_WS.replace(/[\]\\^-]/g, '\\$&')}]`;
+// The whitespace class, `str.strip()`, `sorted()`'s order and `repr(str)` are `pysem.ts`'s
+// (entry (n)): they were ported here AND under `memory/`, and the pairs were diffed before
+// they were merged. The names stay exported from here, so nothing that imports them moves.
 const PY_WS_RUN = new RegExp(`${PY_WS_CLASS}+`, 'g');
-const PY_STRIP = new RegExp(`^${PY_WS_CLASS}+|${PY_WS_CLASS}+$`, 'g');
 const PY_LSTRIP = new RegExp(`^${PY_WS_CLASS}+`);
 const PY_RSTRIP = new RegExp(`${PY_WS_CLASS}+$`);
 
-/** `str.strip()` with no argument. */
-export function pyStrip(s: string): string {
-  return s.replace(PY_STRIP, '');
-}
+export { cmpCodepoint, pyRepr, pyStrip };
 
 function pyRstrip(s: string): string {
   return s.replace(PY_RSTRIP, '');
@@ -190,50 +198,12 @@ function pyIndex<T>(list: readonly T[], index: number): T | undefined {
   return i >= 0 && i < list.length ? list[i] : undefined;
 }
 
-/** `sorted()` on strings: by code point, which is not what `Array.sort` does above U+FFFF. */
-export function cmpCodepoint(a: string, b: string): number {
-  const ia = a[Symbol.iterator]();
-  const ib = b[Symbol.iterator]();
-  for (;;) {
-    const x = ia.next();
-    const y = ib.next();
-    if (x.done && y.done) return 0;
-    if (x.done) return -1;
-    if (y.done) return 1;
-    const cx = (x.value as string).codePointAt(0) as number;
-    const cy = (y.value as string).codePointAt(0) as number;
-    if (cx !== cy) return cx - cy;
-  }
-}
-
 function pySorted(items: Iterable<string>): string[] {
   return [...items].sort(cmpCodepoint);
 }
 
-// `str.isprintable()` is false for these categories (space itself excepted).
-const NONPRINTABLE = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}\p{Zs}]/u;
-
 function quoteFor(s: string): string {
   return s.includes("'") && !s.includes('"') ? '"' : "'";
-}
-
-/** `repr(str)`. */
-export function pyRepr(s: string): string {
-  const quote = quoteFor(s);
-  let out = quote;
-  for (const ch of s) {
-    const code = ch.codePointAt(0) as number;
-    if (ch === quote || ch === '\\') out += '\\' + ch;
-    else if (ch === '\t') out += '\\t';
-    else if (ch === '\n') out += '\\n';
-    else if (ch === '\r') out += '\\r';
-    else if (ch !== ' ' && NONPRINTABLE.test(ch)) {
-      if (code < 0x100) out += '\\x' + code.toString(16).padStart(2, '0');
-      else if (code < 0x10000) out += '\\u' + code.toString(16).padStart(4, '0');
-      else out += '\\U' + code.toString(16).padStart(8, '0');
-    } else out += ch;
-  }
-  return out + quote;
 }
 
 /** `repr(bytes)`. */
@@ -848,12 +818,21 @@ function startsWith(head: Uint8Array, magic: Uint8Array): boolean {
   return true;
 }
 
-function zipKind(path: string, head: Uint8Array): Container {
+/**
+ * What a `PK`-headed file IS, **and the reader it took to find out** (entries (a)/(j)).
+ *
+ * The reader is handed back rather than dropped because `extract` needs the same bytes one
+ * call later: before this, `sniff` read the whole archive off disk to list its members and the
+ * extractor read it again, two whole-file `readFileSync` per `extract`. `null` for a zip this
+ * could not open — the kinds that answer `null` are the ones no extractor is reached for.
+ */
+function zipKind(path: string, head: Uint8Array): [Container, ZipReader | null] {
   const named = pyPathSuffix(path).toLowerCase().replace(/^\.+/, '');
   let names: string[];
   let mimetype = '';
+  let zf: ZipReader;
   try {
-    const zf = ZipReader.open(path);
+    zf = ZipReader.open(path);
     names = zf.namelist();
     // `readMember`, not `zf.read`: an encrypted `mimetype` is the encrypted sentence naming
     // that member, never "damaged" (review round 3 measured the latter on an .odt), and a
@@ -861,23 +840,26 @@ function zipKind(path: string, head: Uint8Array): Container {
     if (names.includes('mimetype')) mimetype = decodeUtf8(readMember(zf, 'mimetype', path));
   } catch (err) {
     if (err instanceof BadZipFile || isOsError(err)) {
-      return new Container(
-        'zip',
-        `a truncated or damaged zip archive (it starts with ${bytesRepr(head.subarray(0, 8))})`,
-        named,
-      );
+      return [
+        new Container(
+          'zip',
+          `a truncated or damaged zip archive (it starts with ${bytesRepr(head.subarray(0, 8))})`,
+          named,
+        ),
+        null,
+      ];
     }
     throw err;
   }
   const members = new Set(names);
   for (const [member, kind] of ZIP_MEMBERS) {
-    if (members.has(member)) return new Container(kind, `an OOXML package holding ${member}`, named);
+    if (members.has(member)) return [new Container(kind, `an OOXML package holding ${member}`, named), zf];
   }
   if (mimetype.startsWith('application/vnd.oasis.opendocument')) {
-    return new Container('odf', `an OpenDocument package (${mimetype})`, named);
+    return [new Container('odf', `an OpenDocument package (${mimetype})`, named), zf];
   }
   const sample = pySorted(members).slice(0, 5).join(', ') || '(empty archive)';
-  return new Container('zip', `a zip archive that is no OOXML package; it holds: ${sample}`, named);
+  return [new Container('zip', `a zip archive that is no OOXML package; it holds: ${sample}`, named), zf];
 }
 
 /** `dict.get(key)`: own keys only, so `constructor` is not a hit. */
@@ -998,37 +980,56 @@ function readPrefix(path: string, n: number): Buffer {
 
 /** What `path` IS. Magic bytes, then a zip's member list. The suffix is never consulted. */
 export function sniff(path: string): Container {
+  return sniffOpen(path)[0];
+}
+
+/**
+ * `sniff`, plus the `ZipReader` it had to open — the one caller that can reuse it is `extract`.
+ *
+ * Entries (a)/(j): deciding a `PK`-headed file is an OOXML package means reading the archive,
+ * and the extractor then read it again, so ONE `extract` of a `.xlsx` cost two whole-file
+ * `readFileSync` (MEASURED at 2 before this change, 1 after, by wrapping `node:fs` in a child
+ * process). Public `sniff` still drops the reader, which is what it always did.
+ *
+ * The reader is a RETURN VALUE and never module state: its lifetime is the caller's, so it
+ * cannot answer for a file that has changed on disk since. The single-entry document cache one
+ * layer up is the thing that is allowed to remember, and it is keyed on (realpath, size,
+ * mtime_ns) for exactly that reason.
+ */
+function sniffOpen(path: string): [Container, ZipReader | null] {
   const st = statPath(path);
   if (st.isDir) throw new DocumentReadError(`${pyPathStr(path)} is a directory, not a document`);
   if (!st.exists) throw new DocumentReadError(`no such file: ${pyPathStr(path)}`);
   const named = pyPathSuffix(path).toLowerCase().replace(/^\.+/, '');
   const head = readPrefix(path, HEAD_BYTES);
-  if (head.length === 0) return new Container('empty', 'an empty file (0 bytes)', named);
+  if (head.length === 0) return [new Container('empty', 'an empty file (0 bytes)', named), null];
   if (head[0] === 0x50 && head[1] === 0x4b) return zipKind(path, head);
   for (const [magic, kind] of MAGIC) {
     if (startsWith(head, magic)) {
       if (kind === 'pdf') {
         const version = pyStrip(head.subarray(1, 8).toString('latin1'));
-        return new Container('pdf', `a PDF document (${version})`, named);
+        return [new Container('pdf', `a PDF document (${version})`, named), null];
       }
-      return new Container(kind, lookup(WHAT, kind) ?? `a ${kind} file`, named);
+      return [new Container(kind, lookup(WHAT, kind) ?? `a ${kind} file`, named), null];
     }
   }
   if (head.subarray(4, 8).toString('latin1') === 'ftyp') {
     const brand = pyStrip(head.subarray(8, 12).toString('latin1')) || '?';
-    return new Container(
-      'isobmff',
-      `an ISO base-media container, brand ${pyRepr(brand)} (video/audio)`,
-      named,
-    );
+    return [
+      new Container('isobmff', `an ISO base-media container, brand ${pyRepr(brand)} (video/audio)`, named),
+      null,
+    ];
   }
   const guessed = textKind(head, named);
-  if (guessed !== null) return guessed;
-  return new Container(
-    'unknown',
-    `not a recognised container; it starts with ${bytesRepr(head.subarray(0, 12))}`,
-    named,
-  );
+  if (guessed !== null) return [guessed, null];
+  return [
+    new Container(
+      'unknown',
+      `not a recognised container; it starts with ${bytesRepr(head.subarray(0, 12))}`,
+      named,
+    ),
+    null,
+  ];
 }
 
 /** The one refusal sentence, and it names the CONTENT before it names anything else. */
@@ -2139,6 +2140,48 @@ const MAX_COLUMN_LETTERS = 3;
  */
 export const UNPLACED_SHAPE = 'the column of a cell whose reference is not letters then digits';
 export const UNPLACED_RANGE = 'the column of a cell past XFD, the last column the format has';
+// What a cell loses when a later cell in the same row claims its column. Fixed for the same
+// reason the two above are: the reference is the file's bytes and the column letter is this
+// reader's own, so only the letter travels — in `where`, bounded by `XLSX_MAX_COLUMNS`.
+export const DUPLICATE_CELL = 'the text of a cell a later cell in the same row and column replaced';
+
+/**
+ * How much text ONE WORKBOOK may materialise, all sheets together. `XLSX_MAX_COLUMNS` bounds a
+ * ROW and nothing bounded the document, which is a ceiling with a hole in it: the width is
+ * bought a row at a time. MEASURED 2026-09-06 on both runtimes: 20,000 rows each holding one
+ * `XFD1` cell deflate to 53,967 bytes and materialise 327,680,000 bytes in ~9 s — 6,072x, out
+ * of a file small enough to mail.
+ *
+ * 16 MiB, the same figure `TEXT_MAX_BYTES` carries and for the same kind of reason, but under
+ * its OWN NAME because the two bound different things: bytes read off a disk there, bytes
+ * rendered out of a container here, and a bar that varies one must not be varying the other.
+ * MEASURED 2026-09-06 over the goal's roots: 15 `.xlsx`, the largest 8,664,227 bytes on disk,
+ * and the largest RENDERING among them 754,520 bytes — 22x under this budget, so no real
+ * workbook on this machine meets it.
+ *
+ * It bounds the RENDERING and not the file, because the file is already bounded and the
+ * rendering is what runs away. The shortfall is disclosed as `OMIT_SIZE_CAP` counting the rows
+ * no sheet rendered: a row is what a caller addresses, and a byte count of text that was never
+ * built would be a number this reader cannot honestly produce.
+ */
+export const XLSX_MAX_TEXT_BYTES = 16 * 1024 * 1024;
+
+/**
+ * How much rendered text one WORKBOOK may still materialise, and what it cost to stop.
+ *
+ * One of these is made per `extractXlsx` call and handed to every sheet, which is the whole
+ * point: a budget made per sheet would let an N-sheet workbook materialise N budgets, and the
+ * input this ceiling exists for is one sheet of 20,000 rows anyway.
+ *
+ * `total` counts every `<row>` the document declares, rendered or not, because the omission has
+ * to say what the rows it did render are a fraction OF. Counting them costs a walk of XML that
+ * is already parsed and bounded by the file; rendering them is what does not.
+ */
+interface TextBudget {
+  remaining: number;
+  total: number;
+  dropped: number;
+}
 
 /**
  * `B7` -> `[1, '']`. The cell's own reference decides its column; XML order is a fallback.
@@ -2220,16 +2263,47 @@ function cellText(cell: XmlElement, shared: readonly string[]): string {
   return raw;
 }
 
+/**
+ * The rendered rows of one sheet, and a count of what the rendering did not carry.
+ *
+ * The omissions are gathered in the same pass that renders, never by a second scan: a count
+ * derived from a different walk of the XML can disagree with the rows it claims to describe,
+ * and a disclosure that disagrees with the thing it discloses is worse than none.
+ *
+ * A cell `columnIndex` cannot place is one of those omissions and NOT a refusal (review round
+ * 4, M2): it keeps its text at its XML position and loses only the column the file asked for.
+ * Counted per reason and rendered after the format codes, so the order of this array is blank
+ * rows, then number formats by code, then unplaced cells by reason, then the cells a later
+ * cell in the same row and column replaced.
+ *
+ * A DUPLICATE is a cell whose column already holds text from a cell earlier in the same row.
+ * Last-wins is kept — it is what both runtimes do and what a writer's own second cell means —
+ * and the earlier cell's text is disclosed rather than dropped in silence, which is the only
+ * part of that behaviour nobody chose (entry (w)).
+ *
+ * `budget` is the DOCUMENT's, not this sheet's: the width of one row is already bounded by
+ * `XLSX_MAX_COLUMNS` and the height of a workbook was not, so the row is where the ceiling has
+ * to bite (entry (v)). A row is skipped whole rather than cut in half — half a row is a row
+ * this reader cannot vouch for, which is the same rule `extractText` follows at its own cap —
+ * so the overshoot is at most one row, itself bounded at `XLSX_MAX_COLUMNS` fields.
+ */
 function sheetRows(
   root: XmlElement,
   shared: readonly string[],
   dateStyles: readonly string[] = [],
+  budget: TextBudget = { remaining: XLSX_MAX_TEXT_BYTES, total: 0, dropped: 0 },
 ): [string[], Omission[]] {
   const rows: string[] = [];
   let blank = 0;
   const dated = new Map<string, Map<number, number>>();
   const unplaced = new Map<string, Map<number, number>>();
+  const duplicated = new Map<number, number>();
   for (const row of root.iter(NS_S + 'row')) {
+    budget.total += 1;
+    if (budget.remaining <= 0) {
+      budget.dropped += 1;
+      continue;
+    }
     const cells = new Map<number, string>();
     let position = 0;
     for (const cell of row.iter(NS_S + 'c')) {
@@ -2238,6 +2312,7 @@ function sheetRows(
       position += 1;
       if (!text) continue;
       const [column, unplaceable] = columnIndex(cell.get('r'), at);
+      if (cells.has(column)) duplicated.set(column, (duplicated.get(column) ?? 0) + 1);
       cells.set(column, text);
       if (unplaceable) {
         let seen = unplaced.get(unplaceable);
@@ -2268,6 +2343,7 @@ function sheetRows(
     const fields: string[] = [];
     for (let k = 0; k < width; k += 1) fields.push(cells.get(k) ?? '');
     const line = fields.join('\t');
+    budget.remaining -= utf8Length(line);
     if (!line) blank += 1;
     rows.push(line);
   }
@@ -2300,6 +2376,20 @@ function sheetRows(
         0,
         sortedColumns.map(columnLetter),
         reason,
+      ),
+    );
+  }
+  // Then the duplicates: ONE omission for the sheet, columns in column order, the same shape
+  // `number-format` and `unplaced-cell` use so that a caller rendering one renders this one.
+  if (duplicated.size) {
+    const columns = [...duplicated.keys()].sort((a, b) => a - b);
+    omissions.push(
+      new Omission(
+        OMIT_DUPLICATE_CELL,
+        [...duplicated.values()].reduce((a, b) => a + b, 0),
+        0,
+        columns.map(columnLetter),
+        DUPLICATE_CELL,
       ),
     );
   }
@@ -2337,8 +2427,23 @@ function mediaOmission(media: Map<string, number>): Omission[] {
   return [new Omission(OMIT_MEDIA, media.size, size, [], pySorted(kinds).join(', '))];
 }
 
-export function extractXlsx(path: string): Document {
-  const zf = openZip(path);
+/**
+ * Every declared sheet, under ONE `XLSX_MAX_TEXT_BYTES` budget for the whole workbook.
+ *
+ * The budget is the document's, so it is made here and not in `sheetRows`, and the shortfall
+ * is disclosed at the document's grain for the same reason — it is not a fact about the sheet
+ * the budget happened to run out on. The cap is stated BEFORE the media tally, because the
+ * media a reader met is a count of what it met underneath the cap.
+ *
+ * `opened` is the reader `sniff` already had to build to decide this file is an OOXML package
+ * (entries (a)/(j)): before it was handed down, one `extract` read the whole archive off disk
+ * TWICE. It is a parameter and never a field, so its lifetime is this call — a reader kept
+ * across calls would answer from bytes no longer on disk, which is exactly what the document
+ * cache one layer up is keyed on (realpath, size, mtime_ns) to avoid.
+ */
+export function extractXlsx(path: string, opened: ZipReader | null = null): Document {
+  const zf = opened ?? openZip(path);
+  const budget: TextBudget = { remaining: XLSX_MAX_TEXT_BYTES, total: 0, dropped: 0 };
   const shared = sharedStrings(zf, path);
   const dateStyles = dateFormats(zf);
   const media = mediaIndex(zf);
@@ -2349,16 +2454,28 @@ export function extractXlsx(path: string): Document {
       throw new DocumentReadError(`sheet ${pyRepr(name)} has no resolvable worksheet part`);
     }
     const sheet = parsePart(readMember(zf, target, path), target, path);
-    const [rows, sheetOmissions] = sheetRows(sheet, shared, dateStyles);
+    const [rows, sheetOmissions] = sheetRows(sheet, shared, dateStyles, budget);
     const omissions = [...mediaOmission(anchoredMedia(zf, target, media)), ...sheetOmissions];
     parts.push(new Part(name, index, rows, omissions));
     index += 1;
   }
-  return new Document('xlsx', parts, mediaOmission(media));
+  const capped: Omission[] = [];
+  if (budget.dropped) {
+    capped.push(
+      new Omission(
+        OMIT_SIZE_CAP,
+        budget.dropped,
+        0,
+        [],
+        `${budget.total} rows in this workbook; this reader renders ${XLSX_MAX_TEXT_BYTES} bytes of cell text`,
+      ),
+    );
+  }
+  return new Document('xlsx', parts, [...capped, ...mediaOmission(media)]);
 }
 
-export function extractDocx(path: string): Document {
-  const zf = openZip(path);
+export function extractDocx(path: string, opened: ZipReader | null = null): Document {
+  const zf = opened ?? openZip(path);
   const root = parsePart(readMember(zf, 'word/document.xml', path), 'word/document.xml', path);
   const media = mediaIndex(zf);
   const anchored = mediaOmission(anchoredMedia(zf, 'word/document.xml', media));
@@ -3099,8 +3216,35 @@ function decodedBody(part: MimePart): string {
   return decodeCharset(payload, contentCharset(part) ?? 'utf-8');
 }
 
+/**
+ * A file's bytes up to `TEXT_MAX_BYTES`, and the `OMIT_SIZE_CAP` for what is past it.
+ *
+ * ONE ceiling and one sentence for every container that holds markup, because "how much of a
+ * file this reader reads" is a fact about the reader and not about the suffix: a 1 GB `.txt`
+ * stopped at `TEXT_MAX_BYTES` and counted the rest while a 1 GB `.html` was held whole
+ * (`docs/roadmap-toolbox.md` row 8, entry (k)). The sentence is `extractText`'s, to the byte,
+ * so a caller cannot tell from it which reader hit the cap.
+ *
+ * Where `extractText` also cuts back to the last line break, this does not: markup is not a
+ * line-oriented format, a half-open tag is not a claim about content the way half a line is,
+ * and the parsers close what the file left open without inventing text for it.
+ */
+function readToCeiling(path: string): [Buffer, Omission[]] {
+  const size = statSync(pyPathStr(path)).size;
+  const raw = readPrefix(path, TEXT_MAX_BYTES + 1);
+  if (raw.length <= TEXT_MAX_BYTES) return [raw, []];
+  const dropped = size - TEXT_MAX_BYTES;
+  const what = `${size} bytes on disk; this reader reads ${TEXT_MAX_BYTES}`;
+  return [raw.subarray(0, TEXT_MAX_BYTES), [new Omission(OMIT_SIZE_CAP, dropped, dropped, [], what)]];
+}
+
 export function extractMhtml(path: string): Document {
-  const message = parseMessage(splitLines(readFileSync(pyPathStr(path)).toString('latin1')), 'text/plain');
+  // BOUNDED, entry (k): the whole file went into the MIME parser, so a 1 GB `.mht` was held
+  // whole — the same hole `extractHtml` had, in its own spelling. The message is parsed from
+  // the bytes this reader will admit to having read; a truncated MIME message is one the
+  // parser still walks, and what it could not see is COUNTED.
+  const [raw, capped] = readToCeiling(path);
+  const message = parseMessage(splitLines(raw.toString('latin1')), 'text/plain');
   const bodies: [string, string][] = [];
   const skipped = new Map<string, number>();
   let skippedBytes = 0;
@@ -3129,13 +3273,25 @@ export function extractMhtml(path: string): Document {
     for (const c of skipped.values()) count += c;
     omissions = [new Omission(OMIT_MEDIA, count, skippedBytes, [], pySorted(skipped.keys()).join(', '))];
   }
-  return nonempty(new Document('mhtml', parts, omissions), path, 'no text/html or text/plain part carried any text');
+  // The cap first: the media tally counts what this reader met UNDERNEATH it, so a caller who
+  // reads that number without the cap above it has read a lower bound as a total.
+  return nonempty(
+    new Document('mhtml', parts, [...capped, ...omissions]),
+    path,
+    'no text/html or text/plain part carried any text',
+  );
 }
 
+/**
+ * Markup to rows, up to `TEXT_MAX_BYTES` of it, saying how much it did not read.
+ *
+ * BOUNDED, entry (k): this did `readFileSync(path)`, so a 1 GB `.html` was materialised whole
+ * where a 1 GB `.txt` had stopped at the cap and counted the rest since J10.
+ */
 export function extractHtml(path: string): Document {
-  const raw = readFileSync(pyPathStr(path));
+  const [raw, capped] = readToCeiling(path);
   const markup = new TextDecoder('utf-8', { fatal: false, ignoreBOM: true }).decode(raw);
-  const doc = new Document('html', [new Part('document', 0, htmlRows(markup))]);
+  const doc = new Document('html', [new Part('document', 0, htmlRows(markup))], capped);
   return nonempty(doc, path, 'its markup carried no text outside script and style');
 }
 
@@ -3208,7 +3364,7 @@ function nodeRefusal(kind: string): string {
   return `${kind} is read through ${TEXTUTIL} by the Python server and not by the Node server; see docs/porting.md`;
 }
 
-const EXTRACTORS: Readonly<Record<string, (path: string) => Document>> = {
+const EXTRACTORS: Readonly<Record<string, (path: string, opened: ZipReader | null) => Document>> = {
   text: extractText,
   xlsx: extractXlsx,
   docx: extractDocx,
@@ -3220,9 +3376,12 @@ const NODE_REFUSED = new Set(['pdf', 'doc', 'rtf']);
 
 /** Dispatch on what the file IS. Anything unreadable raises, naming the container. */
 export function extract(path: string): Document {
-  const container = sniff(path);
+  // `sniffOpen` and not `sniff`: an OOXML container's reader is already built by the time the
+  // kind is known, and handing it to the extractor is the whole of entries (a)/(j). It goes no
+  // further than this call.
+  const [container, opened] = sniffOpen(path);
   const reader = lookup(EXTRACTORS, container.kind);
-  if (reader !== undefined) return reader(path);
+  if (reader !== undefined) return reader(path, opened);
   if (NODE_REFUSED.has(container.kind)) throw refuse(path, container, nodeRefusal(container.kind));
   throw refuse(path, container, unsupportedRemedy());
 }

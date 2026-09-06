@@ -17,13 +17,13 @@ from pathlib import Path, PurePosixPath
 
 import yaml
 
+from bantamkit import docmanifest
 from bantamkit.agent import Agent, MaxTurnsExceeded, ToolDef, response_format_for
 from bantamkit.assets import assets_root, load_tool
 from bantamkit.budget import TokenBudget
 from bantamkit.client import BantamError, Message, ModelClient, OpenAICompatible, Tool, Usage
 from bantamkit.contract import (
     document_error,
-    document_manifest,
     document_offset_past_end,
     document_page,
     document_paste,
@@ -1292,27 +1292,14 @@ def _document_tools(fixtures: list[DocumentFixture]) -> list[ToolDef]:
         deciding at the harness which counts are worth the model's attention would put back
         exactly the silence `docread` was changed to end, and it would do it in the layer
         least able to know. `docread` counts, `contract` words it, this only carries it.
+
+        Since job44 it does not even carry it in its own words: `docmanifest.render_manifest`
+        is the ONE renderer, shared with `mcpserver.bantamkit_read`. The entry dict used to be
+        hand-copied into both, which is register entry (b) — and the copies had already drifted
+        (h). `tests/test_document_manifest_parity.py` compares the two renderings of the same
+        file byte-for-byte, which is the test that was missing.
         """
-        return document_manifest(
-            [
-                {
-                    "document": name,
-                    "kind": doc.kind,
-                    "index": part.index,
-                    "part": part.name,
-                    "row_count": part.row_count,
-                    "rows": part.rows,
-                    "omissions": [o.as_dict() for o in part.omissions],
-                }
-                for name, doc in docs.items()
-                for part in doc.parts
-            ],
-            [
-                {"document": name, "omissions": [o.as_dict() for o in doc.omissions]}
-                for name, doc in docs.items()
-                if doc.omissions
-            ],
-        )
+        return docmanifest.render_manifest(docs.items())
 
     def read_document(
         document: str | None = None,
@@ -1331,6 +1318,15 @@ def _document_tools(fixtures: list[DocumentFixture]) -> list[ToolDef]:
             return document_error(e)  # names every part it does have
         start = _document_int(offset, 0)
         rows = _document_int(limit, DOCUMENT_PAGE_ROW_LIMIT)
+        if target.row_count == 0:
+            # Register entry (h). `document_offset_past_end` over a part with NO rows prints
+            # `numbered 0 to -1` — a range with no members — and calls an offset of 0 "past
+            # the end", which it is not. `mcpserver` stopped doing that at job43's H1 and this
+            # caller did not, so the eval harness and the MCP server rendered different
+            # sentences for the same file. The server's sentence is the one that survives: it
+            # is pinned on the wire for BOTH runtimes by `tools/conformance/suites/wire.mjs`
+            # (`read: id 12`), so it is the one a change would have to be paid for.
+            return docmanifest.document_no_rows(target.name, name)
         if isinstance(start, int) and start >= target.row_count:
             # `page()` would return an empty page with `next_offset=None`, which reads as
             # "the part ended here" — a dead end the model cannot tell from a real one.

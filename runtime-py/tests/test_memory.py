@@ -2329,3 +2329,288 @@ def test_archive_rolls_back_when_index_md_is_a_directory(tmp_path):
     assert (store.root / "facts" / "alpha.md").exists(), "the fact was put back"
     assert not (store.root / "archive" / "alpha.md").exists()
     assert sorted(p.name for p in (store.root / "facts").iterdir()) == ["alpha.md", "beta.md"]
+
+
+# ---- roadmap-toolbox.md row 8 (z): restore's name and its forward move, one directory
+# over from what review round 5 closed on `archive` -----------------------------------
+
+
+def test_restore_rejects_an_invalid_name_before_any_syscall(tmp_path):
+    """`NAME_RE`, enforced in the direction `restore` builds `facts/<name>.md` out of.
+
+    `save` and `archive` both check this; `restore` never has, and it is the one op that
+    builds the LIVE filename from an unchecked argument. Same pattern as
+    `test_archive_of_a_name_the_store_could_never_have_written_is_refused`: refuse with
+    the reason named before any stat, rather than let a case-insensitive filesystem or a
+    stray character decide what lands in `facts/`.
+    """
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-21")
+    store.save("project", "alpha", "a subject in use", "b")
+    store.archive("alpha")
+    for bad in ["ALPHA", "-leading", "under_score", "", "a b"]:
+        with pytest.raises(MemoryValidationError, match="invalid name"):
+            store.restore(bad)
+    assert store.archived() == ["alpha"]  # nothing moved
+    for traversal in ["..", "sub/alpha", str(tmp_path / "elsewhere")]:
+        with pytest.raises(MemoryValidationError, match="invalid name"):
+            store.restore(traversal)
+    store.restore("alpha")  # and a legal name still goes
+    assert store.archived() == []
+
+
+def _archive_by_hand(store, name):
+    """Move a live fact into `archive/` without going through `store.archive`.
+
+    The dangling-symlink fixtures below need the fact OUT of `facts/` before the
+    symlink can occupy its name, but calling `store.archive()` first would run
+    `_rebuild_index()` and other machinery this fixture does not need to exercise.
+    """
+    (store.root / "archive").mkdir(parents=True, exist_ok=True)
+    live = (store.root / "facts" / f"{name}.md").read_text(encoding="utf-8")
+    (store.root / "facts" / f"{name}.md").replace(store.root / "archive" / f"{name}.md")
+    return live
+
+
+def test_restore_refuses_a_dangling_symlink_destination_instead_of_crashing_on_it(
+    tmp_path,
+):
+    """A parity break the coordinator caught: (z)'s second item, RE-DECIDED.
+
+    First cut (superseded): `restore`'s destination guard is `_reachable` /
+    `Path.exists()`, which reports a dangling symlink at `facts/<name>.md` absent, so
+    the "already live" refusal was skipped exactly as `docs/roadmap-toolbox.md`
+    predicted by analogy with `archive`. But `restore`, unlike `archive`, pre-reads all
+    of `facts/` with `_facts()` before the move, and THAT read hit the same entry one
+    syscall later with a bare `FileNotFoundError` -- so the first fix left `runtime-py`
+    answering an incidental crash dressed up as "a filesystem error stopped the move",
+    while `runtime-ts` (built from the same register entry, independently) added an
+    explicit `lexists` check and answered "already live" -- which is false of a link
+    that resolves to nothing. Two runtimes, two sentences, two different reasons: a
+    parity break neither unit could see alone.
+
+    NOW: the destination guard checks `os.path.lexists` too, one line below
+    `_reachable`, and refuses BEFORE `_facts()` ever runs -- a deliberate refusal
+    naming what is actually there, on both runtimes, in the same words.
+    """
+    store = MemoryStore(tmp_path / "mem", index_budget=100_000, today=lambda: "2026-08-21")
+    store.save("project", "stale-fact", "an alpha subject nobody wants", "the body")
+    live = _archive_by_hand(store, "stale-fact")
+
+    destination = store.root / "facts" / "stale-fact.md"
+    destination.symlink_to(store.root / "facts" / "nothing-is-here.md")
+    assert os.path.lexists(destination) and not destination.exists(), "the guard's blind spot"
+
+    with pytest.raises(MemoryValidationError, match="cannot be read as a fact"):
+        store.restore("stale-fact")
+
+    assert destination.is_symlink(), "the link is untouched, not written through"
+    assert (store.root / "archive" / "stale-fact.md").read_text(encoding="utf-8") == live
+    assert store.archived() == ["stale-fact"], "nothing moved"
+
+
+def test_restore_cli_names_the_dangling_symlink_rather_than_crashing_or_lying(
+    tmp_path, capsys
+):
+    """The CLI face of the parity fix above: one sentence, exit 1, nothing moved.
+
+    Not "restore failed: a filesystem error stopped the move ..." (this never reaches
+    a move) and not "... is already live ..." (it is not) -- the new, accurate
+    `MemoryValidationError` text, routed through `_cmd_restore`'s existing
+    `except MemoryValidationError` clause exactly like every other validation refusal.
+    """
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-21")
+    store.save("project", "stale-fact", "a subject in use", "b")
+    _archive_by_hand(store, "stale-fact")
+    destination = store.root / "facts" / "stale-fact.md"
+    destination.symlink_to(store.root / "facts" / "nothing-is-here.md")
+
+    rc = memory_main(["restore", "stale-fact", "--store", str(store.root)])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert err == (
+        "restore failed: facts/stale-fact.md already exists but cannot be read as a "
+        "fact; refusing to restore over it\n"
+    )
+    assert "Traceback" not in err
+    assert destination.is_symlink()
+    assert store.archived() == ["stale-fact"]
+
+
+def test_archive_still_replaces_a_dangling_symlink_after_the_restore_guard_change(
+    tmp_path, monkeypatch
+):
+    """The constraint the coordinator named explicitly: this fix must not touch `archive`.
+
+    Same fixture `test_archive_replaces_a_dangling_symlink_destination_on_every_platform`
+    uses, re-run after the `restore` guard change to pin that nothing here reaches
+    `archive`'s own destination guard or its `Path.replace` call.
+    """
+    store = MemoryStore(tmp_path / "mem", index_budget=100_000, today=lambda: "2026-08-21")
+    store.save("project", "stale-fact", "an alpha subject nobody wants", "the body")
+    store.save("user", "kept-fact", "a beta topic still in use", "b")
+    (store.root / "archive").mkdir(parents=True, exist_ok=True)
+    destination = store.root / "archive" / "stale-fact.md"
+    destination.symlink_to(store.root / "archive" / "nothing-is-here.md")
+    live = (store.root / "facts" / "stale-fact.md").read_text(encoding="utf-8")
+
+    _rename_that_refuses_an_existing_destination(monkeypatch)
+    store.archive("stale-fact")
+
+    assert not destination.is_symlink(), "archive still replaces the link, unchanged"
+    assert destination.read_text(encoding="utf-8") == live
+    assert store.archived() == ["stale-fact"]
+
+
+def test_restore_rolls_back_when_index_md_is_a_directory(tmp_path):
+    """The rollback `restore` never had for this route -- found while porting (z), not
+    asked for by it, and fixed here because printing "nothing changed" from the CLI
+    would otherwise be a lie for this one shape.
+
+    `archive`'s only `_rebuild_index()` call sits inside the `try` that undoes the move
+    on failure (`test_archive_rolls_back_when_index_md_is_a_directory`). `restore`'s did
+    not: the LAST `_rebuild_index()` ran after that `try/except` had already exited
+    clean, so a failure there — `index.md` being a directory — raised with the fact
+    already moved out of `archive/` and into `facts/`, and nothing put it back. Measured
+    at HEAD before this fix, on this exact fixture: `facts/` held `alpha.md`, `archive/`
+    was empty, and the promise `restore`'s own docstring states ("a failed restore
+    leaves the store exactly as it found it") did not hold. Both `_check_index_budget()`
+    and the final `_rebuild_index()` now share one `try`, so either failing undoes the
+    move the same way.
+    """
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-21")
+    store.save("project", "alpha", "a subject in use", "b")
+    store.archive("alpha")
+    assert store.archived() == ["alpha"]
+
+    expected = PermissionError if os.name == "nt" else IsADirectoryError
+    (store.root / "index.md").unlink()
+    (store.root / "index.md").mkdir()
+    with pytest.raises(expected):
+        store.restore("alpha")
+
+    assert not (store.root / "facts" / "alpha.md").exists(), "the fact was put back"
+    assert (store.root / "archive" / "alpha.md").exists()
+    assert store.archived() == ["alpha"]
+
+
+# ---- roadmap-toolbox.md row 8 (y): the CLI's own text for an OS exception it used to
+# let escape as a traceback, for both `archive` and `restore` -------------------------
+
+
+def _deny_replace(monkeypatch, path):
+    """Make `Path.replace` fail for exactly one destination, on every platform.
+
+    Portable stand-in for the destination directory sitting at a mode that refuses the
+    write -- `chmod(0o555)` is a no-op on Windows and for a uid that bypasses it, same
+    reason `_deny_stat` above injects rather than trusts mode bits. `PermissionError` is
+    exactly what a real 0o555 `archive/` (or `facts/`) raises here: measured 2026-09-05
+    on macOS, `archive/` at 0o555 against a live `facts/alpha.md` -- both guards passed,
+    `mkdir(exist_ok=True)` no-op'd on the directory already there, and `Path.replace`
+    raised `PermissionError: [Errno 13]`.
+    """
+    real_replace = Path.replace
+
+    def denied(self, target):
+        if Path(target) == Path(path):
+            raise PermissionError(13, "Permission denied")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", denied)
+
+
+def test_archive_cli_prints_one_sentence_for_a_permission_error_at_the_move(
+    tmp_path, monkeypatch, capsys
+):
+    """The first of (y)'s two entrances. WAS: a `PermissionError` out of `Path.replace`
+    unwound through `main` as a two-stage CPython traceback; both `_cmd_archive`'s own
+    `except` clauses were `MemoryValidationError`, and neither ever saw this. NOW:
+    `_cmd_archive` also catches `OSError` and prints the one sentence `docs/porting.md`'s
+    `a2c6e20` precedent uses for the same class of failure -- a report, not a stack trace.
+    """
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-21")
+    store.save("project", "alpha", "a subject in use", "b")
+
+    _deny_replace(monkeypatch, store.root / "archive" / "alpha.md")
+    rc = memory_main(["archive", "alpha", "--store", str(store.root)])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert err == (
+        "archive failed: a filesystem error stopped the move of 'alpha'; "
+        f"nothing under {store.root} changed\n"
+    )
+    assert "Traceback" not in err
+    assert (store.root / "facts" / "alpha.md").exists(), "nothing moved"
+    assert not (store.root / "archive" / "alpha.md").exists()
+
+
+def test_archive_cli_prints_one_sentence_for_index_md_being_a_directory(
+    tmp_path, capsys
+):
+    """(y)'s second entrance: the move succeeds, `_rebuild_index` raises, the store's own
+    rollback puts the fact back, and the exception used to still escape `main` as a
+    traceback. Exit 1 either way; this pins the TEXT.
+    """
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-21")
+    store.save("project", "alpha", "a subject in use", "b")
+    (store.root / "index.md").unlink()
+    (store.root / "index.md").mkdir()
+
+    rc = memory_main(["archive", "alpha", "--store", str(store.root)])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert err == (
+        "archive failed: a filesystem error stopped the move of 'alpha'; "
+        f"nothing under {store.root} changed\n"
+    )
+    assert "Traceback" not in err
+    assert (store.root / "facts" / "alpha.md").exists(), "the rollback put it back"
+    assert not (store.root / "archive" / "alpha.md").exists()
+
+
+def test_restore_cli_prints_one_sentence_for_a_permission_error_at_the_move(
+    tmp_path, monkeypatch, capsys
+):
+    """(y)'s first entrance, mirrored on `restore`: the destination directory refuses the
+    write and `Path.replace` (post-(z)) raises `PermissionError` before anything moves.
+    """
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-21")
+    store.save("project", "alpha", "a subject in use", "b")
+    store.archive("alpha")
+
+    _deny_replace(monkeypatch, store.root / "facts" / "alpha.md")
+    rc = memory_main(["restore", "alpha", "--store", str(store.root)])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert err == (
+        "restore failed: a filesystem error stopped the move of 'alpha'; "
+        f"nothing under {store.root} changed\n"
+    )
+    assert "Traceback" not in err
+    assert store.archived() == ["alpha"], "nothing moved"
+
+
+def test_restore_cli_prints_one_sentence_for_index_md_being_a_directory(tmp_path, capsys):
+    """(y)'s second entrance, mirrored on `restore`, closed together with the rollback fix
+    `test_restore_rolls_back_when_index_md_is_a_directory` pins at the store layer -- the
+    sentence would be a lie about the store's state without that fix.
+    """
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-21")
+    store.save("project", "alpha", "a subject in use", "b")
+    store.archive("alpha")
+    (store.root / "index.md").unlink()
+    (store.root / "index.md").mkdir()
+
+    rc = memory_main(["restore", "alpha", "--store", str(store.root)])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert err == (
+        "restore failed: a filesystem error stopped the move of 'alpha'; "
+        f"nothing under {store.root} changed\n"
+    )
+    assert "Traceback" not in err
+    assert store.archived() == ["alpha"], "the rollback put it back"

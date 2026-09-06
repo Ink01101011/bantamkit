@@ -463,3 +463,130 @@ test('a .shiftwork over the scan budget still steers, and the log says what it s
   assert.ok(!/Open shiftwork checkpoint/.test(r.stdout), 'a checkpoint past the scan budget must not be reported as found');
   assert.match(r.stdout, /Preserve verbatim/, 'the rest of the steering must survive a spent budget');
 });
+
+// ------------------------------------------------------ postSave's --index-budget denominator
+/**
+ * `postSave` (`PostToolUse` on `mcp__bantamkit__memory_save`) used to open `Memory.layered(cwd)`
+ * with no `indexBudget`, which always falls back to the DEFAULT — so under a real
+ * `--index-budget N` the 90% band was measured against the wrong denominator
+ * (`docs/roadmap-toolbox.md`, registered 2026-08-28, never fixed until now). The fix reads the
+ * same three scopes `tools/mcpdrift/mcpdrift.py`'s `discover()` reads for a project's
+ * `bantamkit` registration — user (`~/.claude.json` `.mcpServers`), local (that file's
+ * `.projects[<cwd>].mcpServers`), and project (`<cwd>/.mcp.json`) — and refuses to compact
+ * rather than guess when two scopes disagree.
+ */
+const MEMORY_DIST = join(repoRoot, 'runtime-ts', 'dist', 'memory');
+
+/**
+ * Seed real facts through the real `Memory.save`, never by hand-writing a fact file.
+ *
+ * The duplicate gate (`DUPLICATE_JACCARD = 0.5`, `store.ts:97`) scores on the TOKENS of
+ * `name + description` alone — body is never part of that check, and `indexText` is built
+ * from name/type/description too, never body (`store.ts:913-926`), so a fixture only needs
+ * a distinct, budget-sized description per fact; a shared filler body would make every fact
+ * a near-duplicate of the last one on NAME+DESCRIPTION grounds even though bytes differ.
+ * Each fact's description repeats ONE stem unique to that fact index, so cross-fact token
+ * sets never intersect and every save actually lands.
+ */
+async function seedFacts(store, count, targetBytesPerFact) {
+  const { Memory } = await import(join(MEMORY_DIST, 'component.js'));
+  const m = new Memory(store);
+  const stems = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel', 'india', 'juliet'];
+  for (let i = 0; i < count; i += 1) {
+    const stem = `${stems[i % stems.length]}${i}`;
+    let description = '';
+    while (Buffer.byteLength(description) < targetBytesPerFact) description += `${stem} `;
+    const outcome = m.saveOutcome('project', stem, description.trim(), 'body');
+    assert.equal(outcome.status, 'saved', `fixture fact ${i} must actually save: ${outcome.reply}`);
+  }
+}
+
+function postToolUseSave(opts = {}) {
+  return runHook({ hook_event_name: 'PostToolUse', tool_name: 'mcp__bantamkit__memory_save' }, opts);
+}
+
+function mcpJsonArgs(cwd, args) {
+  writeFileSync(join(cwd, '.mcp.json'), JSON.stringify({ mcpServers: { bantamkit: { command: 'tools/bantamkit-mcp', args } } }));
+}
+
+function claudeJsonUserArgs(home, args) {
+  writeFileSync(join(home, '.claude.json'), JSON.stringify({ mcpServers: { bantamkit: { command: 'npx', args } } }));
+}
+
+test('postSave measures the 90% band against a configured --index-budget, not the default', async () => {
+  const cwd = newCwd();
+  const home = newHome();
+  // Six facts of ~300 B each: nowhere near 90% of the DEFAULT 24000-byte budget, well over
+  // 90% of a configured 1500-byte one.
+  await seedFacts(join(cwd, '.bantamkit', 'memory'), 6, 300);
+  mcpJsonArgs(cwd, ['--index-budget', '1500']);
+
+  const r = postToolUseSave({ cwd, home });
+  assert.equal(r.status, 0, r.stderr);
+  const rec = hookLog(home, 'PostToolUse').find((l) => l.action === 'auto-compact' || l.action === 'saved');
+  assert.ok(rec, 'postSave must log a saved-or-compacted decision');
+  assert.equal(rec.budget, 1500, 'indexAccounting must be measured against the CONFIGURED budget, not the default 24000 — this is the bug this case pins');
+  assert.equal(rec.action, 'auto-compact', 'this index is over 90% of the configured 1500-byte budget and must trigger the automatic half');
+  assert.match(r.stdout, /"additionalContext":"\[bantamkit\] memory index was \d+\/1500 B/);
+});
+
+test('postSave still assumes the default budget when nothing configures --index-budget anywhere it looks', async () => {
+  const cwd = newCwd();
+  const home = newHome();
+  await seedFacts(join(cwd, '.bantamkit', 'memory'), 6, 300); // same fixture, no override anywhere
+  const r = postToolUseSave({ cwd, home });
+  assert.equal(r.status, 0, r.stderr);
+  const rec = hookLog(home, 'PostToolUse').find((l) => l.action === 'saved' || l.action === 'auto-compact');
+  assert.ok(rec);
+  assert.equal(rec.budget, 24000);
+  assert.equal(rec.budgetSource, 'default');
+  assert.equal(rec.action, 'saved', 'this index is nowhere near 90% of the true default budget');
+});
+
+test('postSave refuses to auto-compact when scopes disagree on --index-budget, rather than guessing', async () => {
+  const cwd = newCwd();
+  const home = newHome();
+  await seedFacts(join(cwd, '.bantamkit', 'memory'), 6, 300);
+  mcpJsonArgs(cwd, ['--index-budget', '1500']);       // project scope says 1500
+  claudeJsonUserArgs(home, ['--index-budget', '9000']); // user scope says 9000 — a real drift
+
+  const r = postToolUseSave({ cwd, home });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, '', 'an ambiguous budget must not emit an auto-compact envelope, only a log line');
+  const rec = hookLog(home, 'PostToolUse').find((l) => l.action === 'skip-ambiguous-budget');
+  assert.ok(rec, 'a genuine scope disagreement must be logged rather than silently resolved');
+  assert.deepEqual([...rec.budgets].sort((a, b) => a - b), [1500, 9000]);
+});
+
+test('a lone user-scope --index-budget (no project override) is read too', async () => {
+  const cwd = newCwd();
+  const home = newHome();
+  await seedFacts(join(cwd, '.bantamkit', 'memory'), 6, 300);
+  claudeJsonUserArgs(home, ['--index-budget', '1500']);
+  const r = postToolUseSave({ cwd, home });
+  assert.equal(r.status, 0, r.stderr);
+  const rec = hookLog(home, 'PostToolUse').find((l) => l.action === 'auto-compact' || l.action === 'saved');
+  assert.equal(rec.budget, 1500);
+  assert.equal(rec.budgetSource, 'configured');
+});
+
+// The `UserPromptSubmit` recall arm opens `Memory.layered` too, but only calls
+// `recallOutcome` — never `indexAccounting` — so a configured `--index-budget` cannot change
+// what it injects. Confirmed rather than assumed: a huge configured budget must not suppress
+// or alter a recall hit.
+test('UserPromptSubmit recall is unaffected by a configured --index-budget', async () => {
+  const cwd = newCwd();
+  const home = newHome();
+  const { Memory } = await import(join(MEMORY_DIST, 'component.js'));
+  new Memory(join(cwd, '.bantamkit', 'memory')).saveOutcome(
+    'project', 'deploy-flag', 'how the deploy flag works', 'run make deploy',
+  );
+  mcpJsonArgs(cwd, ['--index-budget', '1']); // absurdly small, would refuse a save if this arm read it
+  const r = runHook(
+    { hook_event_name: 'UserPromptSubmit', prompt: 'how does the deploy flag work here' },
+    { cwd, home },
+  );
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /"hookEventName":"UserPromptSubmit"/);
+  assert.match(r.stdout, /deploy-flag/);
+});

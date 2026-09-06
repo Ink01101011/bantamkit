@@ -17,13 +17,12 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import bantamkit
-from bantamkit import __version__, docread, hostinstall, shiftwork, skillaudit
+from bantamkit import __version__, docmanifest, docread, hostinstall, shiftwork, skillaudit
 from bantamkit.assets import AssetNotFound, assets_root, load_skill, load_tool_asset
 from bantamkit.client import BantamError
 from bantamkit.contract import (
     bantamkit_read_unknown_part,
     document_error,
-    document_manifest,
     document_offset_past_end,
     document_page,
     schema_error,
@@ -664,7 +663,109 @@ _NO_JSON_UNWRAP = frozenset({"bantamkit_read"})
 
 # `assets/tools/bantamkit_read.json` `offset.maximum` — Number.MAX_SAFE_INTEGER, the largest
 # integer a JSON parser on the Node side reads back unchanged.
+#
+# The asset is the published contract and this is the number the SIGNATURE enforces, so the
+# two are tied by a test that reads the asset off disk rather than by a fourth copy of the
+# literal: `tests/test_document_manifest_parity.py` compares this constant, the served schema
+# and the handler's own refusal against `assets/tools/bantamkit_read.json`. The same test ties
+# `docread.PAGE_MAX_ROWS` (the row clamp below), `docread.DEFAULT_ROW_LIMIT` and
+# `docread.PAGE_MAX_BYTES` to the same file, including the sentence in the `limit` description
+# that prints two of them. Register entries (c) and (l), `docs/roadmap-toolbox.md` row 8. It is
+# a test rather than a runtime read because `_from_manifest` already loads the asset at
+# `build_server` time and a MODULE-level load would make importing this module fail wherever
+# the asset pack is not on disk — the failure mode a packaging mistake would then have is "the
+# server will not import" rather than "the server refuses to register a tool".
 OFFSET_MAXIMUM = 9007199254740991
+
+
+@dataclass
+class _DocumentCache:
+    """The last `docread.extract` result this server produced, and what it was OF.
+
+    Register entry (i): `bantamkit_read` re-parsed the whole document on EVERY call, so a
+    caller paging a 12,001-row sheet in 200-row pages parsed the workbook once per page —
+    paging was O(N^2) in the row window. Measured on this machine over a 1,538,280-byte
+    12,001-row xlsx: 64 tool calls, **64** parses, 3.075 s for the walk.
+
+    ONE entry, deliberately. A single entry evicts whenever two callers alternate between two
+    documents, and that case then costs exactly one parse per call — which is what the code
+    this replaced cost for EVERY case, so the cache cannot make any caller slower than it was
+    (`tests/test_document_manifest_parity.py` measures the alternating walk and pins the
+    count). What more entries would cost is resident memory: a `Document` holds its whole
+    rendering as Python strings, bounded per document by `docread.TEXT_MAX_BYTES` and
+    `docread.XLSX_MAX_TEXT_BYTES` (16 MiB each, U1), and every extra entry multiplies that
+    ceiling by one. Bounding the server's resident set is worth more than the alternating
+    case, which is not made worse.
+
+    **The key is (realpath, size, mtime_ns), and it has one hole — stated, not implied.** A
+    rewrite that lands inside a single filesystem timestamp tick AND leaves the byte count
+    unchanged is indistinguishable from no rewrite at all, and would be served from the stale
+    parse. `mtime_ns` is nanosecond-SHAPED and not nanosecond-GRAINED: what it reports is
+    whatever the filesystem stored, which on HFS+ is one second and on APFS/ext4 is finer but
+    not unbounded. The alternative — hashing the bytes — would re-read the file this cache
+    exists to avoid re-reading, which is the whole cost on the large documents that motivate
+    it. So the hole stays, and the test that proves the key works changes the SIZE rather than
+    racing the clock, because a test that raced it would be measuring the filesystem.
+
+    `realpath` and not the path as given: two callers reaching one file by different relative
+    paths, or through a symlink, are reading the same bytes and should share the parse.
+    """
+
+    key: tuple[str, int, int] | None = None
+    doc: Any = None
+
+    def get(self, key: tuple[str, int, int] | None) -> Any:
+        """The cached document for `key`, or `None` — a `None` key never matches."""
+        if key is None or key != self.key:
+            return None
+        return self.doc
+
+    def put(self, key: tuple[str, int, int] | None, doc: Any) -> None:
+        if key is None:
+            return
+        self.key, self.doc = key, doc
+
+
+def _document_key(path: str) -> tuple[str, int, int] | None:
+    """What identifies the bytes at `path` — or `None`, which means "do not cache".
+
+    `stat` FOLLOWS symlinks, which is the same file the reader is about to open.
+
+    **A PATH THIS FUNCTION CANNOT KEY MUST NOT CHANGE WHAT THE CALLER READS.** Keying is an
+    optimisation and nothing else: it runs BEFORE `docread.extract`, so anything it raises
+    pre-empts the reader and speaks in the wrong voice — a syscall's words instead of the
+    reader's. Everything it cannot key is simply not cached, and `extract` then refuses in its
+    own sentence exactly as it did before this cache existed.
+
+    That promise was false for one class of path when the cache first landed, and the two
+    runtimes disagreed because of it (found by U3 on `wire/read-round2: id 6`): `os.stat`
+    raises `ValueError: stat: embedded null character in path` for `"a\\x00b"`, NOT `OSError`,
+    so the `ValueError` escaped and the SDK turned it into `isError: true` where `runtime-ts`
+    answered `error: no such file: ...` with `isError: false`.
+
+    **The set is `(OSError, ValueError)`, and it is a predicate rather than a patch.** Those
+    are the two ways a path fails to reach the filesystem, and between them they name all of
+    it: `OSError` is *the OS was asked and refused* (ENOENT, EACCES, ELOOP, ENAMETOOLONG), and
+    `ValueError` is *the string cannot be handed to the OS at all* — the embedded null, and
+    `UnicodeEncodeError` (a `ValueError` subclass) for a path the filesystem encoding rejects.
+
+    It is deliberately NOT the bare `except Exception` that `runtime-ts`'s `documentKey` gets
+    from a bare `catch {}`. Widening to match it would buy no parity — for every path either
+    side can fail on, both return "do not cache" and both then let the reader speak, which is
+    the only thing observable — and it would cost the thing a cache most needs: a real bug in
+    the keying would degrade to "never cache anything" and stay silent forever, which looks
+    exactly like a cache that is working. A defect in here should still be loud.
+
+    Both calls are inside the guard, not just the `stat`. `os.path.realpath` raises the same
+    `ValueError` on the same input (measured: `lstat: embedded null character in path`), so a
+    guard around the `stat` alone would only be correct for as long as `stat` happens to be
+    the call that fails first.
+    """
+    try:
+        stat = os.stat(path)
+        return (os.path.realpath(path), stat.st_size, stat.st_mtime_ns)
+    except (OSError, ValueError):
+        return None
 
 
 def _from_manifest(fn: Callable[..., Any], name: str) -> Any:
@@ -787,6 +888,10 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         raise SystemExit(_INSTALL_HINT)
     if log is None:
         log = EventLog.from_env(memory.store.root)
+    # Per SERVER, not per process: two servers in one interpreter (every test module here
+    # builds several) must not answer each other's files, and the entry dies with the server
+    # rather than outliving it in a module global.
+    cache = _DocumentCache()
 
     def _notice() -> str:
         """The footer for right now — recomputed per call, never cached.
@@ -1005,30 +1110,18 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         if limit is not None:
             rows = max(1, min(limit, docread.PAGE_MAX_ROWS))
         with _record_raise(log, "bantamkit_read"):
-            try:
-                doc = docread.extract(path)
-            except (docread.DocumentReadError, OSError) as exc:
-                log.record("bantamkit_read", "refused-unreadable")
-                return _noted(document_error(exc))
+            key = _document_key(path)
+            doc = cache.get(key)
+            if doc is None:
+                try:
+                    doc = docread.extract(path)
+                except (docread.DocumentReadError, OSError) as exc:
+                    log.record("bantamkit_read", "refused-unreadable")
+                    return _noted(document_error(exc))
+                cache.put(key, doc)
             detail: dict[str, Any] = {"kind": doc.kind, "parts": len(doc.parts)}
             if part is None:
-                reply = document_manifest(
-                    [
-                        {
-                            "document": path,
-                            "kind": doc.kind,
-                            "index": p.index,
-                            "part": p.name,
-                            "row_count": p.row_count,
-                            "rows": p.rows,
-                            "omissions": [o.as_dict() for o in p.omissions],
-                        }
-                        for p in doc.parts
-                    ],
-                    [{"document": path, "omissions": [o.as_dict() for o in doc.omissions]}]
-                    if doc.omissions
-                    else [],
-                )
+                reply = docmanifest.render_manifest([(path, doc)])
                 detail.update(rows=sum(p.row_count for p in doc.parts), bytes=doc.text_bytes)
                 log.record("bantamkit_read", "manifest", detail)
                 return _noted(reply)
@@ -1039,7 +1132,7 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
                 return _noted(bantamkit_read_unknown_part(part, path, [p.name for p in doc.parts]))
             if target.row_count == 0:
                 log.record("bantamkit_read", "refused-offset", detail)
-                return _noted(document_error(f'"{target.name}" in {path} has no rows'))
+                return _noted(docmanifest.document_no_rows(target.name, path))
             if start >= target.row_count:
                 log.record("bantamkit_read", "refused-offset", detail)
                 return _noted(document_offset_past_end(target.name, start, target.row_count))

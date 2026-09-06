@@ -58,8 +58,19 @@ const opt = (name: string, kind: FieldSpec['kind'], bound: { le?: bigint } = {})
  * `Annotated[int, Field(le=OFFSET_MAXIMUM)]`, so above it the refusal is pydantic's
  * `less_than_equal` frame and the handler never runs; this side reads the JSON with its
  * own decoder, so `9007199254740993` arrives exact and is refused with the same text.
+ *
+ * EXPORTED so the number can be TIED to the asset rather than copied a fourth time.
+ * `assets/tools/bantamkit_read.json` is the published contract and this is the number the
+ * signature enforces; `test/document-cache-and-bounds.test.mjs` reads that file OFF DISK and
+ * compares it against this constant, against the schema the server actually serves, and
+ * against what the handler refuses — the port of `runtime-py`'s
+ * `tests/test_document_manifest_parity.py`. Register entries (c) and (l),
+ * `docs/roadmap-toolbox.md` row 8. It stays a test rather than a runtime read for the
+ * reference's reason: a module-level asset load would make importing this module fail
+ * wherever the asset pack is not on disk, which is a worse failure than a refusal to
+ * register a tool.
  */
-const OFFSET_MAXIMUM = 9007199254740991n;
+export const OFFSET_MAXIMUM = 9007199254740991n;
 
 /**
  * One model per handler, mirroring `build_server`'s closures signature for signature.

@@ -2077,7 +2077,13 @@ def test_a_million_letter_reference_is_answered_without_building_the_integer(tmp
 
 def test_unplaced_cells_of_one_reason_are_counted_together_and_the_reasons_apart(tmp_path):
     """One omission per reason, columns in column order — the shape `number-format` already
-    uses, so a caller that renders one renders the other."""
+    uses, so a caller that renders one renders the other.
+
+    The DUPLICATE line is job44 (v)-(w)'s doing and was always true of this fixture: `B7 ` is
+    unplaceable, so it falls back to its XML position — column 2, which is `C1`'s column, and
+    `C1` overwrote it. This assertion said the sheet lost two things when it had lost three,
+    and the third one is precisely the silence entry (w) registers.
+    """
     body = row(
         inline_cell("1", "a"),
         inline_cell("ZZZZZ1", "b"),
@@ -2085,9 +2091,11 @@ def test_unplaced_cells_of_one_reason_are_counted_together_and_the_reasons_apart
         inline_cell("C1", "d"),
     )
     doc = extract(write_xlsx(tmp_path / "mixed.xlsx", [("S", "worksheets/sheet1.xml", body)]))
+    assert doc.parts[0].rows == ("a\tb\td",)  # `c` is gone, and now it is gone OUT LOUD
     assert [(o.subject, o.count, o.where, o.what) for o in doc.parts[0].omissions] == [
         (docread.OMIT_UNPLACED_CELL, 1, ("B",), docread.UNPLACED_RANGE),
         (docread.OMIT_UNPLACED_CELL, 2, ("A", "C"), docread.UNPLACED_SHAPE),
+        (docread.OMIT_DUPLICATE_CELL, 1, ("C",), docread.DUPLICATE_CELL),
     ]
 
 

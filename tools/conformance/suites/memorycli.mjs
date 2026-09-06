@@ -200,6 +200,8 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
+  rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
@@ -414,6 +416,30 @@ function materialise(root, spec) {
     mkdirSync(dirname(join(root, path)), { recursive: true });
     writeFileSync(join(root, path), Buffer.from(content, 'utf8'));
   }
+  // `links` is the shape `store.mjs` and `recall-strings.mjs` already had and this suite did
+  // not, which is why review round 5's dangling-symlink prediction had no CLI case: nothing
+  // here could BUILD one. The target is written as given and is never created, so a target
+  // that does not exist is exactly the fixture wanted — `Path.exists()` says absent,
+  // `os.path.lexists` says present, and the guard between them is what register entry (z)
+  // is about. On Windows this needs the developer-mode symlink privilege; where the call is
+  // refused the scenario is SKIPPED by name rather than silently compared over a missing
+  // file, and the note says so.
+  for (const [path, target] of Object.entries(spec.links ?? {})) {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    symlinkSync(target, join(root, path));
+  }
+}
+
+/** Whether this host will let the suite create a symlink at all (Windows may not). */
+function canSymlink(scratch) {
+  const probe = join(scratch, 'symlink-probe');
+  try {
+    symlinkSync('nowhere-at-all', probe);
+    rmSync(probe, { force: true });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const applyModes = (root, spec, on) => {
@@ -538,7 +564,7 @@ const ARGV_SHAPES = [
  * `{BED}` in an argv element or a cwd is replaced by that side's own root. It is left
  * LITERAL in the transcript header, so the two transcripts carry the same command line.
  */
-function scenarios() {
+function scenarios(symlinksWork) {
   const brokenFacts = (content) => ({ dirs: ['facts', 'archive'], files: { 'facts/bad.md': content } });
   const archived = (names) => ({
     dirs: ['facts', 'archive'],
@@ -708,6 +734,61 @@ function scenarios() {
     ['archive-does-not-check-the-budget', FOUR_FACTS,
       [['archive', 'alpha', '--store', '{BED}', '--budget', '100']], { archived: ['alpha'] }],
 
+    // ---- (y) the two entrances where an OS exception used to reach the operator
+    //
+    // `docs/roadmap-toolbox.md` row 8 (y). Both `archive` and `restore` had two places where
+    // the platform can refuse mid-command, and neither runtime caught it: CPython printed a
+    // `Traceback (most recent call last)` carrying interpreter paths and line numbers where
+    // Node printed a `node:fs`/`pyfs.js` stack ending in `PyOSError`. Both exited 1, so only
+    // the TEXT differed — which is why the register asked for one sentence and one exit code
+    // rather than a ruling.
+    //
+    // NOT ROWS IN `UNREADABLE_SCENARIOS`, and the reason is worth writing down because that
+    // is where the register pointed. That table denies ONE directory at `0o000` and runs one
+    // argv over it; neither of these shapes is that. The first needs `archive/` WRITE-denied
+    // but still readable (`0o555`) so both guards PASS and the MOVE is what fails — at
+    // `0o000` the first guard's stat is refused instead and the command never reaches the
+    // move, which is the row `unreadable-archive-archive` already covers. The second needs
+    // `index.md` to be a DIRECTORY, which is not a mode at all.
+    //
+    // MEASURED 2026-09-06 on macOS, all three, both runtimes: the same sentence to stderr and
+    // exit 1, and the store unchanged — `archived-names` and `/tree` are what say the last
+    // part, and for the `index.md` rows they say it about a ROLLBACK, because there the move
+    // succeeded and `_rebuild_index` is what raised.
+    //
+    // `0o555` and not `0o500`: the directory must stay LISTABLE, because `_cmd_archive`
+    // prints the index size afterwards and a mode that also denied reading would refuse
+    // somewhere else and prove a different thing.
+    ['archive-into-a-write-denied-archive-directory',
+      { ...FOUR_FACTS, modes: { archive: 0o555 } },
+      [['archive', 'alpha', '--store', '{BED}']],
+      { archived: [],
+        stderr: ["archive failed: a filesystem error stopped the move of 'alpha'; nothing under <BED> changed\n"],
+        exits: [1] }],
+    // The second entrance, on `archive`: the move SUCCEEDS and `_rebuild_index` is refused,
+    // so what this pins is the rollback as much as the sentence. `alpha` must be back in
+    // `facts/` and `archive/` must hold only the fact the fixture put there.
+    ['archive-with-index-md-a-directory',
+      { dirs: ['facts', 'archive', 'index.md'],
+        files: { ...FOUR_FACTS.files, 'archive/old-one.md': factFile('old-one') } },
+      [['archive', 'alpha', '--store', '{BED}']],
+      { archived: ['old-one'],
+        stderr: ["archive failed: a filesystem error stopped the move of 'alpha'; nothing under <BED> changed\n"],
+        exits: [1] }],
+    // The same entrance on `restore`, which is where it was NEWLY reachable: `restore`'s
+    // final `_rebuild_index()` used to run outside the method's own `try`, so a failure there
+    // left the fact moved out of `archive/` and into `facts/` with nothing putting it back.
+    // The literals below are that rollback: `back` is in `archive/` afterwards and `facts/`
+    // holds only `keep`.
+    ['restore-with-index-md-a-directory',
+      { dirs: ['facts', 'archive', 'index.md'],
+        files: { 'facts/keep.md': factFile('keep'), 'archive/back.md': factFile('back') } },
+      [['restore', 'back', '--store', '{BED}']],
+      { archived: ['back'],
+        stderr: ["restore failed: a filesystem error stopped the move of 'back'; nothing under <BED> changed\n"],
+        exits: [1],
+        files: { 'archive/back.md': factFile('back') } }],
+
     // ---- restore
     ['restore-ok', { dirs: ['facts', 'archive'], files: { 'facts/keep.md': factFile('keep'), 'archive/back.md': factFile('back') } },
       [['restore', 'back', '--store', '{BED}']]],
@@ -719,6 +800,62 @@ function scenarios() {
     // transcript case says on its own.
     ['restore-name-after-double-dash', { dirs: ['facts', 'archive'] },
       [['restore', '--store', '{BED}', '--', '--weird']]],
+
+    // ---- (z) `restore` validates the name it is handed, and its guard sees a dangling link
+    //
+    // `docs/roadmap-toolbox.md` row 8 (z), the mirror of the two holes review round 5 closed
+    // on `archive` (L8 and H1) one directory over. Deliberately shaped like
+    // `archive-invalid-name` / `archive-traversal-name` above, because the property is that
+    // the two directions now refuse in the SAME sentence: `restore` builds `facts/<name>.md`
+    // and `facts/` is the directory a bad name can plant a file in that no other command can
+    // name back out.
+    //
+    // MEASURED 2026-09-06 on both runtimes: `restore failed: invalid name 'BACK'; must match
+    // ^[a-z0-9][a-z0-9-]*$`, exit 1, `archive/` untouched.
+    ['restore-invalid-name',
+      { dirs: ['facts', 'archive'], files: { 'facts/keep.md': factFile('keep'), 'archive/back.md': factFile('back') } },
+      [['restore', 'BACK', '--store', '{BED}']],
+      { archived: ['back'],
+        stderr: ["restore failed: invalid name 'BACK'; must match ^[a-z0-9][a-z0-9-]*$\n"],
+        exits: [1] }],
+    // Traversal was never the hole here either — `archive/../back.md` is simply not there —
+    // and the case is here for the same reason its `archive` twin is: the REASON changed, and
+    // a suite that only pinned the case-fold shape would not notice one runtime keeping the
+    // old "no archived fact" sentence.
+    ['restore-traversal-name',
+      { dirs: ['facts', 'archive'], files: { 'facts/keep.md': factFile('keep'), 'archive/back.md': factFile('back') } },
+      [['restore', '../back', '--store', '{BED}'], ['restore', 'sub/back', '--store', '{BED}']],
+      { archived: ['back'],
+        stderr: [
+          "restore failed: invalid name '../back'; must match ^[a-z0-9][a-z0-9-]*$\n",
+          "restore failed: invalid name 'sub/back'; must match ^[a-z0-9][a-z0-9-]*$\n",
+        ],
+        exits: [1, 1] }],
+    // THE DANGLING SYMLINK, which is the half of (z) neither runtime answered the same way
+    // and neither answered accurately. `restore`'s destination guard is `Path.exists()`,
+    // which FOLLOWS symlinks, so `facts/back.md -> ../nowhere/gone.md` reports ABSENT and the
+    // "already live" refusal is skipped. What happened next differed by runtime: `runtime-py`
+    // reached `_facts()`'s pre-read, which lists the entry, calls `read_text()` on it and
+    // raises a bare `FileNotFoundError` — dressed up by (y)'s new catch as "a filesystem
+    // error stopped the move", true about nothing changing and false about a move having been
+    // attempted; `runtime-ts` added its own `lexists` check and answered "is already live",
+    // false of a link that resolves to nothing. Two runtimes, two reasons, two sentences.
+    // Both now refuse BEFORE the pre-read with one sentence naming what is actually there.
+    //
+    // The `/tree` case is what says the link SURVIVED: a refusal that had replaced it would
+    // leave a regular file at `facts/back.md`, and `manifest()` records links as `link\t<target>`.
+    ...(symlinksWork
+      ? [[
+          'restore-over-a-dangling-symlink',
+          { dirs: ['facts', 'archive'],
+            files: { 'facts/keep.md': factFile('keep'), 'archive/back.md': factFile('back') },
+            links: { 'facts/back.md': '../nowhere/gone.md' } },
+          [['restore', 'back', '--store', '{BED}']],
+          { archived: ['back'],
+            stderr: ['restore failed: facts/back.md already exists but cannot be read as a fact; refusing to restore over it\n'],
+            exits: [1] },
+        ]]
+      : []),
 
     // ---- store selection
     ['start-walks-up-to-a-store',
@@ -928,7 +1065,8 @@ export async function run(ctx) {
 
   // ------------------------------------------------------------- the scenarios that touch a store
 
-  const list = scenarios();
+  const symlinksWork = canSymlink(root);
+  const list = scenarios(symlinksWork);
   for (const [label, spec, steps, extra = {}] of list) {
     const bed = join(root, label);
     const beds = { py: join(bed, 'py'), node: join(bed, 'node') };
@@ -1065,6 +1203,46 @@ export async function run(ctx) {
       }
     }
 
+    if (extra.stderr) {
+      // THE REFUSAL SENTENCE AND THE EXIT CODE, AS LITERALS ON EACH SIDE — job44 U3, (y)/(z).
+      //
+      // Every case above this line compares Python's stderr to Node's, and both runtimes
+      // grew these sentences in the SAME job: revert both halves and the two sides agree on
+      // a traceback, `<label>/transcript` compares two tracebacks and passes, and the whole
+      // register entry goes green having measured nothing. That is the shape three parity
+      // bugs already survived in this repository, so the expected side here is TYPED —
+      // it fails if either runtime drifts and not only if the two part.
+      //
+      // Scrubbed the same way the transcript is (`<BED>` for the fixture root) and NOT
+      // substituted: none of these sentences names the prog, which is itself worth pinning —
+      // a remediation clause naming `python -m bantamkit.memory` would have to be ruled.
+      extra.stderr.forEach((line, i) => {
+        if (line === null) return;
+        cases.push({
+          name: `${label}/step-${i + 1}-stderr: the refusal sentence, as a literal on each side`,
+          kind: 'bytes',
+          expected: JSON.stringify({ python: line, node: line }),
+          actual: JSON.stringify({
+            python: scrubBed(dec(pyRuns[i].stderr), beds.py),
+            node: scrubBed(dec(nodeRuns[i].stderr), beds.node),
+          }),
+        });
+      });
+    }
+
+    if (extra.exits) {
+      // The exit CODE beside the sentence, also typed. `<label>/exits` above compares the two
+      // runtimes to each other; this says what the number has to BE, so a pair that both
+      // started exiting 0 on a refusal — the failure an operator's `set -e` would feel first
+      // — fails here rather than agreeing quietly.
+      cases.push({
+        name: `${label}/exit-codes: the status each step must end with, as a literal on each side`,
+        kind: 'json',
+        expected: { python: extra.exits, node: extra.exits },
+        actual: { python: pyRuns.map((r) => r.exit), node: nodeRuns.map((r) => r.exit) },
+      });
+    }
+
     if (extra.remediation) {
       // The two sentences the port could not copy, pinned twice: RULED on the raw line,
       // because a remediation that named the other runtime's command would be an
@@ -1149,6 +1327,16 @@ export async function run(ctx) {
 
   // ---------------------------------------------------------------------------------- notes
 
+  notes.push(
+    `job44 (y)/(z): six scenarios pin one sentence and one exit code as a TYPED literal on each ` +
+      `side — archive into a 0o555 archive/, archive and restore with index.md a directory, restore ` +
+      `with an invalid name, restore with a traversal name, and restore over a dangling symlink. ` +
+      `symlinks ${symlinksWork ? 'work on this host, so the dangling-link row RAN' : 'are refused on this host (Windows without the developer-mode privilege), so the dangling-link row is NOT MEASURED HERE'}. ` +
+      `the literals are what carry these: measured 2026-09-06, removing restore's NAME_RE guard from ` +
+      `BOTH runtimes reddened 5 cases and not one differential case, and removing its lexists guard ` +
+      `from both left the two runtimes AGREEING on "a filesystem error stopped the move" — a sentence ` +
+      `that is false about a move nobody attempted`,
+  );
   notes.push(
     `the substitution is one literal: ${JSON.stringify(PY_PROG)} -> ${JSON.stringify(NODE_PROG)}, ` +
       `${DELTA} columns shorter. every ruled case here is paired with an unruled case over the ` +

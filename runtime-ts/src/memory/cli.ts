@@ -78,7 +78,7 @@ import {
   type ParserSpec,
 } from '../pyargparse.js';
 import { discoverProjectStore } from './layers.js';
-import { pyJoin } from './pyfs.js';
+import { pyJoin, PyOSError } from './pyfs.js';
 import {
   DEFAULT_INDEX_BUDGET,
   MemoryBudgetExceeded,
@@ -358,12 +358,53 @@ function cmdArchived(store: MemoryStore): number {
   return 0;
 }
 
+/**
+ * job44 (y): an uncaught OS exception used to reach the operator here as a raw stack trace.
+ * Measured 2026-09-05 on macOS, both entrances: `archive/` at 0o555 (the guards pass,
+ * `pyMkdirParents` is a no-op on a directory that is already there, and the MOVE is refused)
+ * and `index.md` as a directory (the move succeeds, `rebuildIndex` raises, the rollback
+ * restores the store correctly, and the exception then escapes `main` the same way). Both
+ * already exited 1 — Node's default for an uncaught exception — so only the TEXT differed:
+ * a `node:fs` / `pyfs.js` stack ending in `PyOSError` here, a CPython traceback ending in
+ * `PermissionError: [Errno 13]` on the reference. `PyOSError` does not extend `BantamError`,
+ * so it reached neither this catch nor the top-level `BantamError` arm below — it fell all
+ * the way to `throw error` and out of the process.
+ *
+ * THE SENTENCE DELIBERATELY DOES NOT INTERPOLATE THE UNDERLYING ERROR, the same reason
+ * `cmdLint`'s budget sentence is not the store's own message: `PyOSError`'s text is a
+ * translation of Node's `errno`/`code`, and `OSError`'s is CPython's `strerror` — the two
+ * are never going to read the same, so printing either would just move the divergence from
+ * a stack trace into a sentence. RECONCILED WITH U7's published wording (job44 handoff).
+ *
+ * "NOTHING UNDER `store.root` CHANGED" IS A CLAIM, NOT A FLOURISH, and it was FALSE on the
+ * reference until U7's own reconciliation: `restore`'s final `_rebuild_index()` used to sit
+ * OUTSIDE its only `try`, so the same `index.md`-is-a-directory fault this comment describes
+ * left a restored fact stuck in `facts/`, gone from `archive/`, with no rollback at all.
+ * MEASURED the same way on this side before printing this sentence, not reasoned from the
+ * code shape: driving that exact fault against the pre-reconciliation `restore` here left
+ * `facts/alpha.md` present and `archive/` empty afterwards — the same hole, open on both
+ * runtimes. `restore`'s two-step tail is now ONE `try` (`checkIndexBudget` and the closing
+ * `rebuildIndex` together) for exactly that reason, so this sentence is true when it prints.
+ * `archive` never had the hole — its one write step was inside its only `try` from the start
+ * — and is untouched by that fix.
+ */
+function osErrorSentence(command: 'archive' | 'restore', name: string, store: MemoryStore): string {
+  return (
+    `${command} failed: a filesystem error stopped the move of '${name}'; ` +
+    `nothing under ${store.root} changed`
+  );
+}
+
 function cmdArchive(store: MemoryStore, args: Args): number {
   try {
     store.archive(args.name);
   } catch (error) {
     if (error instanceof MemoryValidationError) {
       err(`archive failed: ${error.message}`);
+      return 1;
+    }
+    if (error instanceof PyOSError) {
+      err(osErrorSentence('archive', args.name, store));
       return 1;
     }
     throw error;
@@ -385,6 +426,10 @@ function cmdRestore(store: MemoryStore, args: Args): number {
     }
     if (error instanceof MemoryValidationError) {
       err(`restore failed: ${error.message}`);
+      return 1;
+    }
+    if (error instanceof PyOSError) {
+      err(osErrorSentence('restore', args.name, store));
       return 1;
     }
     throw error;

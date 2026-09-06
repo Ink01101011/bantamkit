@@ -14,6 +14,13 @@
  * continuations, a second both-READ ruling over the one decoded row. H3 added the fourth
  * both-READ ruling, `<!ATTLIST>` defaults (`attlist.xlsx`, built below: the reference's expat
  * applies the default and reads `SHARED`, the port's subset walk skips it and reads `0`).
+ * Job44's U17 added the fifth both-READ ruling and the first whose divergence is an OMISSION
+ * rather than a row: a bzip2 `xl/styles.xml` that CARRIES a date format (`bzip2-date-styles
+ * .xlsx`), where both sides read `46235\tok` and only the reference can say that `46235` is
+ * `yyyy-mm-dd`. It is the one ruling with a CONTROL — `deflate-date-styles.xlsx`, the same
+ * styles bytes behind method 8, on which both sides disclose — pinned as a literal below,
+ * because a ruling over a missing omission goes quietly green if the input stops producing
+ * one at all.
  *
  * THE THIRTEEN CHECKED-IN FIXTURES under `runtime-py/tests/data/docread/` (job43 G1 wrote
  * seven, round 3's H1 six more) are read from where they lie, unruled but for `rfc2231-charset.eml`; and the path `a\x00b` — a NUL
@@ -35,6 +42,7 @@
  * `Document.part` once leaked `int()`'s `ValueError` for a part named `--1` — the case that
  * found it is below, unruled, and the reference was the side that changed.
  */
+import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -76,6 +84,24 @@ export function tinyPdf(text) {
 }
 
 /**
+ * `0 -> "A"`, `25 -> "Z"`, `26 -> "AA"`: a zero-based column index as ECMA-376 spells it.
+ *
+ * The same walk `runtime-ts/test/docread.test.mjs` uses to build its 300,000-cell row, kept
+ * here because the row is now a conformance fixture too (register entry (p)) and neither
+ * runtime's reader exports the inverse of `_letter`.
+ */
+export function columnLetter(index) {
+  let n = index + 1;
+  let out = '';
+  while (n > 0) {
+    const remainder = (n - 1) % 26;
+    out = String.fromCharCode(65 + remainder) + out;
+    n = Math.floor((n - 1) / 26);
+  }
+  return out;
+}
+
+/**
  * The three kinds the Node half refuses by name, and what each side is EXPECTED to do with
  * each ruled fixture. `python` is a function of whether the host has `/usr/bin/textutil`,
  * which the reference reports rather than the suite assuming; `node` is always a refusal.
@@ -108,6 +134,17 @@ const RULED = {
     python: () => false,
     reads: ['hello'],
     sentence: 'DocumentReadError: lzma.docx is a zip but its word/document.xml uses compression method 14 (lzma), which the Node server cannot decompress (the Python server reads it); see docs/porting.md',
+  },
+  // job44 U17. The same undecompressable method on an OPTIONAL member, now CARRYING a date
+  // format. Both sides READ (`node: false`), both answer the same row, and the divergence is
+  // the DISCLOSURE — so `discloses` is the literal the reference must emit and the port must
+  // not, measured from each side's own run. Its control, `deflate-date-styles.xlsx`, is not
+  // ruled and is pinned below.
+  'bzip2-date-styles.xlsx': {
+    kind: 'bzip2Styles',
+    python: () => false,
+    node: false,
+    discloses: [{ subject: 'number-format', count: 1, size: 0, where: ['A'], what: 'yyyy-mm-dd', facts: {} }],
   },
   // RFC 2231: both READ, one row apart — the utf-7 shape (`node: false` below).
   'rfc2231-charset.eml': { kind: 'rfc2231', python: () => false, node: false },
@@ -204,6 +241,22 @@ const RULING_REASON = {
     'but its <member> uses compression method 14 (lzma), which the Node server cannot decompress ' +
     '(the Python server reads it); see docs/porting.md". docs/porting.md, "bzip2 and lzma zip ' +
     'members on Node".',
+  bzip2Styles:
+    'an OPTIONAL zip member stored with compression method 12 (bzip2) costs BOTH runtimes only ' +
+    'that member since review round 4 (M1) — but the two do not lose the same amount, because ' +
+    'the member CARRIES something. `xl/styles.xml` here declares `yyyy-mm-dd` at the `cellXfs` ' +
+    'index cell A1 uses; the reference decompresses it through `bz2`, resolves the style, and ' +
+    'discloses the format as `number-format` (count 1, column A, `yyyy-mm-dd`), while ' +
+    '`docread.ts` `dateFormats` catches the method-12 refusal as an unreadable optional member ' +
+    'and answers no formats at all, so the omission list is empty. NEITHER side refuses and ' +
+    'both read the same row `46235\\tok`: the divergence is entirely in what the caller is TOLD ' +
+    'about that number, which in an `.xlsx` is the only thing separating a serial date from a ' +
+    'plain one. Same cause as "bzip2 and lzma zip members on Node" — `node:zlib` has deflate ' +
+    'and nothing else the zip format names, and runtime-ts may carry no new runtime dependency ' +
+    '— and lifting it means the same bzip2 decoder that row waits on. Measured, not predicted: ' +
+    '`deflate-date-styles.xlsx` is the SAME workbook with the SAME `xl/styles.xml` content (same ' +
+    'CRC, same uncompressed size) behind method 8, and on it both runtimes emit the omission. ' +
+    'docs/porting.md, "a bzip2 xl/styles.xml that carries date formats".',
   rfc2231:
     'a MIME text part whose charset arrives as RFC 2231 continuations (`charset*0=utf-8; ' +
     'charset*1=…`, or a `charset*=utf-8\'\'…` encoded value) is reassembled by the reference ' +
@@ -354,6 +407,41 @@ export async function run(ctx) {
       Buffer.from([0x1b, 0x24, 0x29, 0x43, 0x0e, 0x3d, 0x22, 0x0f]),
       Buffer.from('\n', 'latin1'),
     ]),
+    // ---- job44 U1/U2, entry (w): a duplicate cell reference is DISCLOSED, last-wins kept
+    //
+    // `<c r="A1">…</c>` twice in one row used to yield the second silently, with ZERO
+    // omissions on both runtimes — `docs/roadmap-toolbox.md` row 8 (w). Last-wins is what a
+    // writer's own second cell means and is unchanged; the SILENCE is what was fixed.
+    //
+    // THE SHEET IS BUILT TO PIN THE ORDER AND NOT ONLY THE SENTENCE. A part's omissions are
+    // emitted blank rows, then number formats by code, then unplaced cells by reason, then
+    // duplicates — and "duplicates last" is a choice a differential cannot see, because both
+    // runtimes make it together. So one sheet carries ALL FOUR at once:
+    //
+    //   row 1  `<c r="A1" s="1"><v>46235</v></c>` — a NUMBER FORMAT (`yyyy-mm-dd`, column A)
+    //          `<c r="B1">bee</c>`                — an ordinary cell
+    //          `<c r="A1">second</c>`             — the DUPLICATE, column A again
+    //          `<c r="1">nowhere</c>`             — an UNPLACED cell (`1` is not letters+digits),
+    //                                               which takes XML position 3, column D
+    //   row 2  no cells at all                    — a BLANK ROW
+    //   row 3  `A3` twice                         — a second duplicate, so `count` is 2 and not 1
+    //
+    // MEASURED on both runtimes 2026-09-06, and the literal below is that measurement: rows
+    // `second\tbee\t\tnowhere`, ``, `y`, and four omissions in that order. The second duplicate
+    // in row 3 is why `count` is 2: a count of 1 would be indistinguishable from a reader that
+    // disclosed only the first duplicate it ever met.
+    'duplicate-cell.xlsx': fixtures.xlsxBytes(
+      [
+        [
+          'Dupes',
+          'worksheets/sheet1.xml',
+          fixtures.row(['<c r="A1" s="1"><v>46235</v></c>', fixtures.inlineCell('B1', 'bee'), fixtures.inlineCell('A1', 'second'), fixtures.inlineCell('1', 'nowhere')], 1) +
+            fixtures.row([], 2) +
+            fixtures.row([fixtures.inlineCell('A3', 'x'), fixtures.inlineCell('A3', 'y')], 3),
+        ],
+      ],
+      { extra: { 'xl/styles.xml': fixtures.styles(['yyyy-mm-dd'], [0, 164]) } },
+    ),
   };
   for (const [file, bytes] of Object.entries(extra)) {
     writeFileSync(join(bed, file), bytes);
@@ -437,6 +525,98 @@ export async function run(ctx) {
 
   const names = Object.keys(paths).sort();
 
+  // ------------------------------------------- the fixtures that STRADDLE A CEILING
+  //
+  // Six files built HERE, in harness scratch, and deleted with it. They are not in `paths`
+  // and are not checked in, for two different reasons that both come to the same place.
+  //
+  // WHY THEY ARE GENERATED AND NOT COMMITTED — and this is what closes register entry (p).
+  // `docs/porting.md` records that the 300,000-cell row "has no conformance fixture: the
+  // smallest deflated xlsx that shows it is 1,501,739 bytes, over the 1 MB ceiling". That
+  // ceiling is a rule about what is CHECKED IN — it appears nowhere in a gate, a hook or a
+  // `.gitattributes`; it is a convention `docs/porting.md` states in prose, and the largest
+  // file under `runtime-py/tests/data/docread/` is 4,342 bytes. Nothing forbids a suite from
+  // BUILDING a large fixture, and this repository already does: `runtime-ts/test/docread.
+  // test.mjs:304` writes exactly this workbook into a temp dir on every run. So the entry was
+  // never blocked on the reader — it was blocked on the git tree, and building the same bytes
+  // in `ctx.scratch` costs the run 0.7 s and the repository nothing. Measured here: the file
+  // is 1,501,741 bytes, two bytes off the number the register recorded (the sheet name).
+  //
+  // WHY A CEILING CANNOT BE STRADDLED BY A SMALL FILE. `TEXT_MAX_BYTES` and
+  // `XLSX_MAX_TEXT_BYTES` are both 16 MiB, so a fixture that shows either one biting has to
+  // be over 16 MiB of file or 16 MiB of rendering. There is no smaller input; that is what a
+  // ceiling means.
+  //
+  // THEY GO THROUGH `summaries` AND NOT `paths`. The reference's `summaries` route replaces
+  // each part's rows with their SHA-256, their count and the first 120 characters of the
+  // first and last row, so the comparison still covers every rendered byte and every omission
+  // verbatim without pushing 16 MiB across the pipe twice. See `ref/docread_ref.py`.
+  const SUMMARISED = {};
+  const summarise = (file, bytes) => {
+    writeFileSync(join(bed, file), bytes);
+    SUMMARISED[file] = join(bed, file);
+  };
+  // The workbook budget's rows, `XFD` and all: one `A<n>` cell of `ok` and one `XFD<n>` cell
+  // of `v0000`, which is 16,384 fields — 2 + 16,383 tabs + 5 = 16,390 bytes — the SAME width
+  // for every row, so what the budget does is arithmetic and not a transcript. 16,777,216 /
+  // 16,390 = 1023.6, and a row is rendered whole or not at all, so 1,024 rows render and the
+  // 1,025th is the first to be dropped.
+  const budgetRows = (n) => {
+    let out = '';
+    for (let i = 1; i <= n; i += 1) {
+      out += fixtures.row([fixtures.inlineCell(`A${i}`, 'ok'), fixtures.inlineCell(`XFD${i}`, `v${String(i).padStart(4, '0')}`)], i);
+    }
+    return out;
+  };
+  // (v) The document-level materialisation budget, over it by 73 rows AND carrying media, so
+  // the ORDER of the two document omissions is pinned as well as the sentence: the cap is
+  // stated BEFORE the media tally, because the media a reader met is a count of what it met
+  // underneath the cap. 1,097 is deliberately not a round number and not a multiple of
+  // anything the reader computes.
+  summarise(
+    'xlsx-over-budget.xlsx',
+    fixtures.xlsxBytes([['Wide', 'worksheets/sheet1.xml', budgetRows(1097)]], {
+      deflate: true,
+      extra: fixtures.mediaPack({ 'worksheets/sheet1.xml': ['shot.png', 'logo.gif'] }),
+    }),
+  );
+  // (v)'s BOUNDARY, both sides of it, one row apart. Without these the cap case pins a
+  // refusal and not a ceiling: a reader that had stopped rendering rows at all, or one whose
+  // threshold had moved by a row, would keep the case above green. 1,024 rows must render
+  // WHOLE with no omission; 1,025 must drop exactly one.
+  summarise('xlsx-at-budget.xlsx', fixtures.xlsxBytes([['Wide', 'worksheets/sheet1.xml', budgetRows(1024)]], { deflate: true }));
+  summarise('xlsx-one-over-budget.xlsx', fixtures.xlsxBytes([['Wide', 'worksheets/sheet1.xml', budgetRows(1025)]], { deflate: true }));
+  // (k) html and mhtml read to `TEXT_MAX_BYTES` and count the rest, the way plain text has
+  // since J10. Both were `read_bytes()` / `readFileSync` — a 1 GB `.html` held whole.
+  //
+  // The padding is one unbroken run of a single byte INSIDE `<pre>` (html) or inside the one
+  // text part's body (mhtml), so the truncation lands in the middle of that run on both
+  // runtimes and neither has to agree with the other about half a tag. The two overshoots are
+  // different numbers on purpose — 4,321 and 2,749 — because the sentence interpolates the
+  // file's size and a shared constant would let one side's arithmetic hide inside the other's.
+  const TEXT_MAX_BYTES = 16 * 1024 * 1024;
+  const HTML_HEAD = '<html><body><p>alpha</p><pre>';
+  const MHT_HEAD = 'MIME-Version: 1.0\nContent-Type: text/plain; charset="utf-8"\nContent-Transfer-Encoding: 8bit\n\nalpha\n';
+  const padded = (head, over, byte) =>
+    Buffer.concat([Buffer.from(head, 'latin1'), Buffer.alloc(TEXT_MAX_BYTES - head.length + over, byte)]);
+  summarise('html-over-ceiling.html', padded(HTML_HEAD, 4321, 0x78));
+  summarise('mhtml-over-ceiling.mht', padded(MHT_HEAD, 2749, 0x79));
+  // (k)'s BOUNDARY: a file of EXACTLY `TEXT_MAX_BYTES` is read whole and says nothing. A cap
+  // that fired here would be a reader that truncates every file and admits it, which is not
+  // the behaviour (k) asked for.
+  summarise('html-at-ceiling.html', padded(HTML_HEAD, 0, 0x78));
+  // (p) The 300,000-cell row. `Math.max(...cells.keys())` over 300k keys is a `RangeError:
+  // Maximum call stack size exceeded`, fixed in round 3 (H2) and held since by
+  // `runtime-ts/test/docread.test.mjs:304` alone — one runtime's unit test, comparing nothing.
+  // Every reference past `XFD` is unplaceable and keeps its XML position, so the row is
+  // 300,000 fields wide and 283,616 of them are disclosed as `unplaced-cell`.
+  {
+    let cells = '';
+    for (let i = 0; i < 300000; i += 1) cells += `<c r="${columnLetter(i)}1" t="inlineStr"><is><t>v${i}</t></is></c>`;
+    summarise('wide-row.xlsx', fixtures.xlsxBytes([['Wide', 'worksheets/sheet1.xml', `<row r="1">${cells}</row>`]], { deflate: true }));
+  }
+  const summaryNames = Object.keys(SUMMARISED).sort();
+
   // ------------------------------------------------------------------------ the pages
 
   const p = paths['p.xlsx'];
@@ -489,6 +669,7 @@ export async function run(ctx) {
 
   const python = ctx.runPython(REF, {
     paths: names.map((n) => paths[n]),
+    summaries: summaryNames.map((n) => SUMMARISED[n]),
     pages: pages.map(({ name: _n, ...spec }) => spec),
   });
 
@@ -526,10 +707,42 @@ export async function run(ctx) {
       return errorOf(e);
     }
   };
+  /**
+   * `document()` with each part's rows replaced by their digest, count and edges.
+   *
+   * The port's half of `ref/docread_ref.py`'s `_summary`, field for field and in the same
+   * spelling, so the two are compared as one JSON object. `head`/`tail` slice by CODE POINT
+   * (`[...row]`) and not by UTF-16 unit, because CPython's `row[:120]` counts code points and
+   * a `slice(0, 120)` here would cut a surrogate pair in half on one side only.
+   */
+  const summary = (doc) => ({
+    kind: doc.kind,
+    text_bytes: doc.textBytes,
+    parts: doc.parts.map((part) => {
+      const joined = [...part.rows].join('\n');
+      return {
+        name: part.name,
+        index: part.index,
+        row_count: part.rowCount,
+        text_bytes: part.textBytes,
+        rows: part.rows.length,
+        rows_bytes: Buffer.byteLength(joined, 'utf8'),
+        rows_sha256: createHash('sha256').update(joined, 'utf8').digest('hex'),
+        head: part.rows.length ? [...part.rows[0]].slice(0, 120).join('') : null,
+        tail: part.rows.length ? [...part.rows[part.rows.length - 1]].slice(0, 120).join('') : null,
+        omissions: part.omissions.map((o) => o.asDict()),
+      };
+    }),
+    omissions: doc.omissions.map((o) => o.asDict()),
+  });
   const node = {
     files: names.map((n) => ({
       sniff: attempt(() => container(docread.sniff(paths[n]))),
       extract: attempt(() => document(docread.extract(paths[n]))),
+    })),
+    summaries: summaryNames.map((n) => ({
+      sniff: attempt(() => container(docread.sniff(SUMMARISED[n]))),
+      extract: attempt(() => summary(docread.extract(SUMMARISED[n]))),
     })),
     pages: pages.map((spec) =>
       attempt(() => ({
@@ -626,6 +839,27 @@ export async function run(ctx) {
           expected: { kind: py.extract.kind, parts: (py.extract.parts ?? []).map((x) => [x.name, x.index, x.row_count, x.rows?.length]), omissions: py.extract.omissions },
           actual: { kind: nd.extract.kind, parts: (nd.extract.parts ?? []).map((x) => [x.name, x.index, x.row_count, x.rows?.length]), omissions: nd.extract.omissions },
         });
+        // A ruling whose divergence is an OMISSION and not a row needs the same treatment
+        // `reads`/`sentence` give the bzip2/lzma pair: the refusal bit says neither side
+        // refuses, and the shape case above compares only DOCUMENT omissions, so without
+        // these two the whole divergence would live inside the ruling — where a passing
+        // comparison is reported as stale rather than as a side that changed. Each of these
+        // is NON-RULED: one names what the reference must disclose, one names that the port
+        // discloses nothing, and a port that grew a bzip2 decoder reddens the second.
+        if (rule.discloses !== undefined) {
+          cases.push({
+            name: `extract: ${n}: the reference discloses what the unreachable member carries, as measured`,
+            kind: 'json',
+            expected: rule.discloses,
+            actual: (py.extract.parts ?? []).flatMap((x) => x.omissions),
+          });
+          cases.push({
+            name: `extract: ${n}: the port discloses nothing, because the member holding it is method 12`,
+            kind: 'json',
+            expected: [],
+            actual: (nd.extract.parts ?? []).flatMap((x) => x.omissions),
+          });
+        }
         readBoth += 1;
       }
       // The port's refusal still names the container, the size and the suffix disagreement
@@ -680,6 +914,41 @@ export async function run(ctx) {
       actual: nd.extract.omissions,
     });
   });
+
+  // ------------------------------ the bzip2-styles ruling's CONTROL, as a LITERAL (U17)
+  //
+  // `bzip2-date-styles.xlsx` is ruled above because the reference discloses a `number-format`
+  // the port cannot reach. That ruling is only worth something while the INPUT can still show
+  // the difference — and a differential cannot check that on its own, because a reader that
+  // stopped resolving date styles altogether would leave both sides silent, the ruled
+  // comparison would start MATCHING (reported as a stale ruling, i.e. as good news), and the
+  // two non-ruled companions would both read `[]`. That is the shape three parity bugs already
+  // survived in this repo: the example chosen was the one where both sides agree.
+  //
+  // So the control is pinned as a literal on BOTH sides. `deflate-date-styles.xlsx` is the same
+  // workbook, the same sheet, and the same `xl/styles.xml` CONTENT — same CRC 0x7e197e5f, same
+  // 225 uncompressed bytes — behind method 8 instead of 12. One field of one header is the only
+  // difference between the two files, so if this case is green and the ruled one differs, the
+  // method is the only thing the difference can be.
+  {
+    const control = names.indexOf('deflate-date-styles.xlsx');
+    const disclosed = [{ subject: 'number-format', count: 1, size: 0, where: ['A'], what: 'yyyy-mm-dd', facts: {} }];
+    const omissionsOf = (answer) => (answer.extract.parts ?? []).flatMap((part) => part.omissions);
+    cases.push({
+      name: 'the bzip2-styles ruling has a control: the same styles behind method 8 make BOTH sides disclose',
+      kind: 'json',
+      expected: { python: disclosed, node: disclosed },
+      actual: {
+        python: omissionsOf(python.files[control]),
+        node: omissionsOf(node.files[control]),
+      },
+    });
+  }
+  notes.push(
+    'the bzip2 `xl/styles.xml` ruling is controlled: `deflate-date-styles.xlsx` carries the same ' +
+      'styles bytes (CRC 0x7e197e5f, 225 B) behind method 8 and both sides disclose `yyyy-mm-dd` ' +
+      'on it, so the ruled file\'s silence on the port is the method and not the input',
+  );
 
   // ------------------------------------------------- the column ceiling, as a LITERAL
   //
@@ -752,6 +1021,192 @@ export async function run(ctx) {
     });
   }
 
+  // ------------------------------ the three ceilings, side to side AND as literals (U3)
+  //
+  // Register entries (v), (k) and (p), plus (w) below. Every one of them landed in BOTH
+  // runtimes in this job, which is precisely the shape a differential cannot see: revert both
+  // halves and the two sides agree that there is no ceiling, and every case in this section
+  // that only compared Python to Node would stay green. So each fixture gets TWO kinds of
+  // case — the side-to-side comparison, which catches one runtime drifting, and a LITERAL
+  // pinned on each side, which catches both drifting together.
+  {
+    summaryNames.forEach((n, i) => {
+      const py = python.summaries[i];
+      const nd = node.summaries[i];
+      cases.push({ name: `summary: ${n}: sniff`, kind: 'json', expected: py.sniff, actual: nd.sniff });
+      cases.push({ name: `summary: ${n}: extract (rows by digest, omissions verbatim)`, kind: 'json', expected: py.extract, actual: nd.extract });
+    });
+    const at = (name_) => {
+      const i = summaryNames.indexOf(name_);
+      return { python: python.summaries[i]?.extract ?? null, node: node.summaries[i]?.extract ?? null };
+    };
+    /** `{refused, rows, docOmissions}` — what a ceiling case is actually about. */
+    const capShape = (answer) => ({
+      refused: Boolean(answer?.error),
+      rows: (answer?.parts ?? []).map((p) => p.row_count),
+      docOmissions: answer?.omissions ?? null,
+    });
+    const bothSides = (name_, expected, pick = capShape) => {
+      const sides = at(name_);
+      cases.push({
+        name: `extract: ${name_}: ${expected.label}`,
+        kind: 'json',
+        expected: { python: expected.value, node: expected.value },
+        actual: { python: pick(sides.python), node: pick(sides.node) },
+      });
+    };
+
+    // (v) The workbook budget, well over it, WITH media — so the cap's own sentence and the
+    // ORDER of the two document omissions are both pinned. `count` is the rows no sheet
+    // rendered (73) and `what` names what they are a fraction OF (1,097). MEASURED 2026-09-06
+    // on both runtimes; the arithmetic that predicts it is at `budgetRows` above.
+    const MEDIA = { subject: 'media', count: 2, size: 200, where: [], what: 'gif, png', facts: {} };
+    bothSides('xlsx-over-budget.xlsx', {
+      label: 'the workbook budget bites, the shortfall is 73 of 1,097 rows, and the cap is stated BEFORE the media',
+      value: {
+        refused: false,
+        rows: [1024],
+        docOmissions: [
+          {
+            subject: 'size-cap',
+            count: 73,
+            size: 0,
+            where: [],
+            what: '1097 rows in this workbook; this reader renders 16777216 bytes of cell text',
+            facts: {},
+          },
+          MEDIA,
+        ],
+      },
+    });
+    // The boundary, one row apart. 1,024 rows of 16,390 bytes is 16,783,360 — already past
+    // 16,777,216 — and still renders WHOLE, because a row is rendered or dropped and never
+    // cut; the 1,025th is the first the budget refuses.
+    bothSides('xlsx-at-budget.xlsx', {
+      label: '1,024 rows is the last workbook that renders whole and says nothing',
+      value: { refused: false, rows: [1024], docOmissions: [] },
+    });
+    bothSides('xlsx-one-over-budget.xlsx', {
+      label: '1,025 rows drops exactly one, and the count is the row and not the byte',
+      value: {
+        refused: false,
+        rows: [1024],
+        docOmissions: [
+          {
+            subject: 'size-cap',
+            count: 1,
+            size: 0,
+            where: [],
+            what: '1025 rows in this workbook; this reader renders 16777216 bytes of cell text',
+            facts: {},
+          },
+        ],
+      },
+    });
+    // (k) html and mhtml now stop where plain text stops, and say how much they did not read.
+    // The two files are different sizes on purpose: the sentence interpolates the size, so a
+    // shared number would let one side's arithmetic hide inside the other's.
+    bothSides('html-over-ceiling.html', {
+      label: 'markup is read to TEXT_MAX_BYTES and the 4,321 bytes past it are disclosed',
+      value: {
+        refused: false,
+        rows: [2],
+        docOmissions: [
+          { subject: 'size-cap', count: 4321, size: 4321, where: [], what: '16781537 bytes on disk; this reader reads 16777216', facts: {} },
+        ],
+      },
+    });
+    bothSides('mhtml-over-ceiling.mht', {
+      label: 'a MIME archive is read to the same ceiling, in the same sentence, over 2,749 bytes',
+      value: {
+        refused: false,
+        rows: [2],
+        docOmissions: [
+          { subject: 'size-cap', count: 2749, size: 2749, where: [], what: '16779965 bytes on disk; this reader reads 16777216', facts: {} },
+        ],
+      },
+    });
+    bothSides('html-at-ceiling.html', {
+      label: 'a file of exactly TEXT_MAX_BYTES is read whole and says nothing',
+      value: { refused: false, rows: [2], docOmissions: [] },
+    });
+    // (p) The 300,000-cell row, as a literal on each side. Three independent numbers, none of
+    // them round: one row, 300,000 fields, 2,288,889 bytes of text, and 283,616 references
+    // past XFD that kept their XML position and lost their column. `Math.max(...keys)` over
+    // 300k keys overflows the call stack, which is the defect this closes on the port; the
+    // reference has never had it, so a side-to-side case alone would say nothing about
+    // whether the fix is still there.
+    {
+      const sides = at('wide-row.xlsx');
+      const wideShape = (answer) => {
+        const part = answer?.parts?.[0];
+        return {
+          refused: Boolean(answer?.error),
+          parts: answer?.parts?.length ?? null,
+          row_count: part?.row_count ?? null,
+          text_bytes: answer?.text_bytes ?? null,
+          fields: part?.head === undefined ? null : (part?.rows_bytes ?? null),
+          unplaced: (part?.omissions ?? []).filter((o) => o.subject === 'unplaced-cell').map((o) => [o.count, o.what, o.where.length]),
+        };
+      };
+      const wide = {
+        refused: false,
+        parts: 1,
+        row_count: 1,
+        text_bytes: 2288889,
+        fields: 2288889,
+        unplaced: [[283616, 'the column of a cell past XFD, the last column the format has', 283616]],
+      };
+      cases.push({
+        name: 'extract: wide-row.xlsx: a 300,000-cell row is one row of 2,288,889 bytes with 283,616 columns disclosed, as a literal on each side',
+        kind: 'json',
+        expected: { python: wide, node: wide },
+        actual: { python: wideShape(sides.python), node: wideShape(sides.node) },
+      });
+    }
+    notes.push(
+      'the ceiling fixtures are BUILT in harness scratch and deleted with it — xlsx-over-budget 1,097 rows, ' +
+        'xlsx-at-budget 1,024, xlsx-one-over-budget 1,025, html-over-ceiling 16,781,537 B, html-at-ceiling ' +
+        '16,777,216 B, mhtml-over-ceiling 16,779,965 B, wide-row 1,501,741 B / 300,000 cells. the 1 MB rule ' +
+        'is about what is CHECKED IN (docs/porting.md) and is enforced by no gate; generating closes (p)',
+    );
+  }
+
+  // ---------------------------- (w) a duplicate cell is DISCLOSED, and disclosed LAST (U3)
+  //
+  // Small enough to travel through `paths`, so the generic loop above already compares its
+  // rows and its omissions side to side. What that cannot see is both runtimes losing the
+  // disclosure together — which is exactly how (w) got registered: `('second',)` and ZERO
+  // omissions, on both. So the whole part is pinned as a literal on each side, and the pin is
+  // the ORDER as much as the sentence: blank rows, then the number format, then the unplaced
+  // cell, then the duplicates. A reader that emitted duplicates FIRST would keep every
+  // side-to-side case in this file green.
+  {
+    const at = (side) => side.files[names.indexOf('duplicate-cell.xlsx')]?.extract ?? null;
+    const shapeOf = (answer) => ({
+      refused: Boolean(answer?.error),
+      rows: (answer?.parts ?? []).flatMap((p) => p.rows),
+      omissions: (answer?.parts ?? []).flatMap((p) => p.omissions.map((o) => [o.subject, o.count, o.where, o.what])),
+    });
+    const disclosed = {
+      refused: false,
+      // `second` and not `first`: last-wins is UNCHANGED, and this row is what says so.
+      rows: ['second\tbee\t\tnowhere', '', 'y'],
+      omissions: [
+        ['blank-rows', 1, [], ''],
+        ['number-format', 1, ['A'], 'yyyy-mm-dd'],
+        ['unplaced-cell', 1, ['D'], 'the column of a cell whose reference is not letters then digits'],
+        ['duplicate-cell', 2, ['A'], 'the text of a cell a later cell in the same row and column replaced'],
+      ],
+    };
+    cases.push({
+      name: 'extract: duplicate-cell.xlsx: last-wins is kept and the replaced cell is disclosed LAST, as a literal on each side',
+      kind: 'json',
+      expected: { python: disclosed, node: disclosed },
+      actual: { python: shapeOf(at(python)), node: shapeOf(at(node)) },
+    });
+  }
+
   pages.forEach((spec, i) => {
     const py = python.pages[i];
     const nd = node.pages[i];
@@ -771,7 +1226,8 @@ export async function run(ctx) {
 
   notes.push(
     `${names.length} files: ${readBoth} read on both sides, ${refusedBoth} refused on both, ${ruled} ruled ` +
-      `(pdf/doc/rtf; bzip2/lzma where the reference READS; utf-7, rfc2231 and attlist where both READ); /usr/bin/textutil ${python.textutil ? 'present' : 'absent'} on this host, so the reference ` +
+      `(pdf/doc/rtf; bzip2/lzma where the reference READS; utf-7, rfc2231, attlist and the bzip2 ` +
+      `date styles where both READ); /usr/bin/textutil ${python.textutil ? 'present' : 'absent'} on this host, so the reference ` +
       `${python.textutil ? 'reads note.rtf and refuses real.doc as "plain text"' : 'refuses note.rtf and real.doc by name'}`,
   );
   const pdfRows = python.files[names.indexOf('tiny.pdf')].extract.parts?.map((x) => x.rows) ?? null;

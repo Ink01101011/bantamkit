@@ -221,6 +221,12 @@ function runNode(spec) {
         let id = null;
         try {
           const parsed = JSON.parse(line);
+          // A HARNESS DIRECTIVE, not a request: performed here and never written to stdin.
+          // See `directive()` below for why the reader's cache needs one.
+          if (parsed && parsed.conformance === 'write') {
+            writeFileSync(parsed.path, Buffer.from(parsed.b64, 'base64'));
+            continue;
+          }
           if (parsed.id !== undefined && parsed.id !== null) id = JSON.stringify(parsed.id);
         } catch {
           /* a deliberately malformed line still goes down the pipe */
@@ -972,6 +978,58 @@ export async function run(ctx) {
   ]);
 
   /**
+   * THE DOCUMENT CACHE, ON THE WIRE: read a file, rewrite it in place, read it again.
+   *
+   * Register entry (i), `docs/roadmap-toolbox.md` row 8, and the case the entry asks for BY
+   * NAME. Both servers now keep the last `docread.extract` result, keyed on
+   * `(realpath, size, mtime_ns)`, so a caller paging one document stops re-parsing it once
+   * per page. A cache is only as good as its invalidation, and nothing else in this suite
+   * could ask about invalidation: every session hands the server a file it never touches.
+   *
+   * THE REWRITE CHANGES THE FILE'S SIZE, DELIBERATELY. `mtime_ns` is nanosecond-SHAPED and
+   * not nanosecond-GRAINED — what it reports is whatever the filesystem stored, one second on
+   * HFS+ — so a case that changed only the CONTENT would be racing the clock and would pass
+   * or fail by how fast the machine is. `v1` is 1,917 bytes and `v2` is 2,033; the sizes are
+   * pinned below, because a fixture edit that accidentally equalised them would leave this
+   * session green while measuring the timestamp instead of the key.
+   *
+   * AND IT REWRITES BACK. Step 8 restores `v1`, so the key is not "the size went up": a cache
+   * that only invalidated on growth would answer `v2` at id 6 and fail there.
+   *
+   * `directive()` is not a request. It is a line both drivers PERFORM and neither forwards —
+   * see `runNode` above and `_run_session` in `ref/wire_ref.py` — so the two servers meet the
+   * same two states in the same order inside one live session.
+   */
+  const cacheXlsx = join(docs, 'cache.xlsx');
+  const cacheSheet = (rows) => [['Sales', 'worksheets/sheet1.xml', rows]];
+  const CACHE_V1 = fixtures.xlsxBytes(
+    cacheSheet(
+      fixtures.row([fixtures.inlineCell('A1', 'fruit'), fixtures.inlineCell('B1', 'qty')]) +
+        fixtures.row([fixtures.inlineCell('A2', 'apple'), fixtures.inlineCell('B2', '3')], 2),
+    ),
+  );
+  const CACHE_V2 = fixtures.xlsxBytes(
+    cacheSheet(
+      fixtures.row([fixtures.inlineCell('A1', 'fruit'), fixtures.inlineCell('B1', 'qty')]) +
+        fixtures.row([fixtures.inlineCell('A2', 'apricot'), fixtures.inlineCell('B2', '17')], 2) +
+        fixtures.row([fixtures.inlineCell('A3', 'quince'), fixtures.inlineCell('B3', '29')], 3),
+    ),
+  );
+  const directive = (path, bytes) => JSON.stringify({ conformance: 'write', path, b64: bytes.toString('base64') });
+  add('read-cache', [
+    INIT(),
+    INITIALIZED,
+    directive(cacheXlsx, CACHE_V1),
+    callTool(2, 'bantamkit_read', { path: cacheXlsx }),
+    callTool(3, 'bantamkit_read', { path: cacheXlsx, part: 'Sales' }),
+    directive(cacheXlsx, CACHE_V2),
+    callTool(4, 'bantamkit_read', { path: cacheXlsx }),
+    callTool(5, 'bantamkit_read', { path: cacheXlsx, part: 'Sales' }),
+    directive(cacheXlsx, CACHE_V1),
+    callTool(6, 'bantamkit_read', { path: cacheXlsx, part: 'Sales' }),
+  ]);
+
+  /**
    * `build_identity` gets a session of its own, and the split is the point being made.
    *
    * Its REPLY is not comparable — `runtime`, `code_digest`, `build_id` and the Python-only
@@ -1438,6 +1496,117 @@ export async function run(ctx) {
     });
 
     notes.push(`event log: ${outcomesOf(node.eventlog).length} records, identical but for \`ts\``);
+  }
+
+  /**
+   * The cache session's three pages, as LITERALS on each side — job44 U3, entry (i).
+   *
+   * The generic per-frame loop above already compares Python's answer to Node's for every id
+   * here, and that is exactly the comparison a cache defect can survive: BOTH servers grew
+   * the cache in the same job, so a key that never invalidated would serve `v1` three times
+   * on both sides and every differential case would agree. The typed literal is what says
+   * which rows each read has to carry.
+   *
+   * The path is not in these strings: only the numbered data lines are compared, because the
+   * reply's first line embeds the scratch path and this case is about the ROWS.
+   */
+  {
+    const { python, node } = results.get('read-cache');
+    const dataRows = (side, id) =>
+      (toolTextOf(side, id) ?? '')
+        .split('\n')
+        .filter((line) => /^\d+\t/.test(line));
+    const V1 = ['0\tfruit\tqty', '1\tapple\t3'];
+    const V2 = ['0\tfruit\tqty', '1\tapricot\t17', '2\tquince\t29'];
+    const wanted = { 3: V1, 5: V2, 6: V1 };
+    for (const [id, rows] of Object.entries(wanted)) {
+      cases.push({
+        name: `read-cache: id ${id}: the rows this read must return, as a literal on each side`,
+        kind: 'json',
+        expected: { python: rows, node: rows },
+        actual: { python: dataRows(python, Number(id)), node: dataRows(node, Number(id)) },
+      });
+    }
+    // The manifest's own row count, which is the number the cache would be stale ABOUT: the
+    // first read sees a 2-row sheet, the second a 3-row one.
+    const rowCount = (side, id) => /part 0 "Sales": (\d+) rows/.exec(toolTextOf(side, id) ?? '')?.[1] ?? null;
+    cases.push({
+      name: 'read-cache: the manifest row count before and after the rewrite, as a literal on each side',
+      kind: 'json',
+      expected: { python: ['2', '3'], node: ['2', '3'] },
+      actual: { python: [rowCount(python, 2), rowCount(python, 4)], node: [rowCount(node, 2), rowCount(node, 4)] },
+    });
+    // THE PRECONDITION, as a case and not a comment. The key is (realpath, size, mtime_ns)
+    // and the size is the half this session controls; if a fixture edit made the two versions
+    // the same length the session would be measuring the filesystem's timestamp granularity
+    // instead, and would pass or fail by how fast the machine is.
+    cases.push({
+      name: 'read-cache: the two versions differ in SIZE, so the case does not race the mtime tick',
+      kind: 'json',
+      expected: { v1: 1917, v2: 2033, differ: true },
+      actual: { v1: CACHE_V1.length, v2: CACHE_V2.length, differ: CACHE_V1.length !== CACHE_V2.length },
+    });
+    notes.push(
+      `read-cache: read, rewrite in place (${CACHE_V1.length} B -> ${CACHE_V2.length} B), read again, rewrite back, read again — ` +
+        'the rows are pinned as a literal on each side because both runtimes grew the cache in one job and a ' +
+        'differential cannot see a stale key that is stale on both',
+    );
+  }
+
+  /**
+   * The numbers `assets/tools/bantamkit_read.json` PUBLISHES, as a literal on each side —
+   * job44 U3, register entries (c) and (l).
+   *
+   * `OFFSET_MAXIMUM` (2**53 - 1) and the `[1, 200]` row clamp are spelled in three places:
+   * the asset, `runtime-py/src/bantamkit/mcpserver.py` and `runtime-ts/src/mcp/pyargs.ts`.
+   * Each runtime now ties its own constant to the asset in its own unit suite. What NEITHER
+   * of those can do is what this case does: both servers SERVE the asset, so a number moved
+   * in the asset moves both served schemas together and `advertisement: id 2` — which
+   * compares Python's `tools/list` to Node's — stays green through it. The expected side here
+   * is typed, so the asset is compared to a number a human wrote down.
+   *
+   * The `limit` description is pinned with them, because it PRINTS two more of the same
+   * constants (`default 50`, `3072-byte page ceiling`) in prose where nothing else can see
+   * them drift.
+   */
+  {
+    const { python, node } = results.get('advertisement');
+    const readSchema = (side) =>
+      frameOf(side, 2)?.result?.tools?.find((t) => t.name === 'bantamkit_read')?.inputSchema?.properties ?? null;
+    const numbersOf = (props) =>
+      props === null
+        ? null
+        : {
+            offsetMinimum: props.offset?.minimum ?? null,
+            offsetMaximum: props.offset?.maximum ?? null,
+            limitMinimum: props.limit?.minimum ?? null,
+            limitMaximum: props.limit?.maximum ?? null,
+            limitDescription: props.limit?.description ?? null,
+          };
+    const published = {
+      offsetMinimum: 0,
+      offsetMaximum: 9007199254740991,
+      limitMinimum: 1,
+      limitMaximum: 200,
+      limitDescription: 'How many rows; default 50, a 3072-byte page ceiling may return fewer',
+    };
+    cases.push({
+      name: 'advertisement: bantamkit_read publishes 0..2**53-1 offsets and a 1..200 row clamp, as a literal on each side',
+      kind: 'json',
+      expected: { python: published, node: published },
+      actual: { python: numbersOf(readSchema(python)), node: numbersOf(readSchema(node)) },
+    });
+    // And the asset ON DISK, compared to the same literal — so the case names WHICH of the
+    // three copies moved. A served schema that disagreed with the file would be a packaging
+    // fault; a file that disagreed with this literal is a deliberate change that has to be
+    // paid for here.
+    const asset = JSON.parse(readFileSync(join(repoRoot, 'assets', 'tools', 'bantamkit_read.json'), 'utf8'));
+    cases.push({
+      name: 'advertisement: the asset on disk carries the same four numbers the two servers publish',
+      kind: 'json',
+      expected: published,
+      actual: numbersOf(asset.parameters.properties),
+    });
   }
 
   // ------------------------------------------------- skill_audit: the eleventh tool, served

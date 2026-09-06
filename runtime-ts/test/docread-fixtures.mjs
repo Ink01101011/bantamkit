@@ -465,6 +465,28 @@ export function fixtures() {
       [['Sales', 'worksheets/sheet1.xml', row([inlineCell('A1', 'ok')])]],
       { extra: { 'xl/styles.xml': STYLES_BZIP2 } },
     ),
+    // job44 U17: the RESIDUAL M1 named and left unfixtured — the same optional member, now
+    // CARRYING something. `xl/styles.xml` declares `yyyy-mm-dd` at `cellXfs` index 1 and cell
+    // A1 is a bare number at that style, so the styles the reader cannot reach are the styles
+    // it would otherwise have USED.
+    //
+    // THE PAIR IS THE POINT, and it is why there are two files rather than one. Both carry
+    // BYTE-IDENTICAL `xl/styles.xml` content — same CRC (0x7e197e5f), same uncompressed size
+    // (225) — and differ in one field of one header: compression method 8 against 12. So the
+    // control is not "a similar workbook", it is the same workbook with the one axis moved,
+    // and a difference between the two answers can only be the method.
+    //
+    // The control also stops the pair going green through a SYMMETRIC regression. Without it,
+    // a reader that stopped detecting dates at all would leave both sides silent on the bzip2
+    // file, the ruling would read as stale rather than as broken, and nothing would say the
+    // input had lost its teeth. `deflate-date-styles.xlsx` is the case that says the input can
+    // still show a difference: on it, BOTH runtimes emit the `number-format` omission.
+    'deflate-date-styles.xlsx': xlsxBytes([['Sales', 'worksheets/sheet1.xml', DATE_STYLED_ROW]], {
+      extra: { 'xl/styles.xml': preDeflated(DATE_STYLES) },
+    }),
+    'bzip2-date-styles.xlsx': xlsxBytes([['Sales', 'worksheets/sheet1.xml', DATE_STYLED_ROW]], {
+      extra: { 'xl/styles.xml': DATE_STYLES_BZIP2 },
+    }),
     'lzma.docx': docxRaw(HELLO_LZMA),
     // A stored member relabelled method 9 (deflate64): `NotImplementedError` is a
     // `RuntimeError` on the reference, so BOTH sides print the encrypted sentence.
@@ -607,6 +629,44 @@ const STYLES_BZIP2 = {
     'hex',
   ),
 };
+/**
+ * job44 U17. The other bzip2 `xl/styles.xml`: one that CARRIES a date format, so what the
+ * member says is something a reader would otherwise have disclosed.
+ *
+ * The XML is exactly `styles(['yyyy-mm-dd'], [0, 164])` — index 0 is General, index 1 is the
+ * custom `yyyy-mm-dd` — and the hex is what CPython's `zipfile` wrote for those 225 bytes with
+ * `compress_type=ZIP_BZIP2` (`ZIP_BZIP2` is stdlib, method 12; no writer had to be built for
+ * this). `crc` and `size` are read back off the local header of the archive it wrote, and they
+ * are the SAME two numbers `preDeflated(DATE_STYLES)` computes — which is the pair's control:
+ * two archives whose `xl/styles.xml` is the same content under two methods.
+ */
+const DATE_STYLES = styles(['yyyy-mm-dd'], [0, 164]);
+const DATE_STYLES_BZIP2 = {
+  method: 12,
+  crc: 0x7e197e5f,
+  size: 225,
+  raw: Buffer.from(
+    '425a68393141592653595e2b0cec00001adf8040005003f517092008402fe7de6020008a84a444347e8a6879134d321ea6d4fd506429a9ea7a9b4d269a6021936a31b6b73ab9d1338760a747948292a4530c1d3f6fb562f4ddbcb3136c903aa5b2da014f6a1196c050b8561180939f843d1ca7b5148fd33309e2b3c08f0a9754bf94e32b8a0f80e1849d8a63793fc232f1ca48af56618973ceec54bae77f6511d12a4be4f4eac55ecc3488e80d300bdf180419722ee48a70a120bc5619d8',
+    'hex',
+  ),
+};
+/**
+ * One row: A1 a bare number at `cellXfs` index 1 (the date style), B1 an inline string so the
+ * row is not carried by the styled cell alone. `46235` is a serial date and an ordinary number
+ * at the same time, which is the whole reason `number-format` exists — nothing but the style
+ * separates them.
+ */
+const DATE_STYLED_ROW = row(['<c r="A1" s="1"><v>46235</v></c>', inlineCell('B1', 'ok')]);
+/**
+ * The same `{method, raw, crc, size}` shape the bzip2 members use, for method 8 — so a control
+ * can put the identical content behind the one method `node:zlib` HAS. `zipBytes`'s own
+ * `deflate` option is not usable here: it deflates every member of the archive, and the claim
+ * this pair makes is that ONE member's method is the only thing that moved.
+ */
+function preDeflated(text) {
+  const buf = Buffer.from(text, 'utf8');
+  return { method: 8, raw: deflateRawSync(buf), crc: crc32(buf), size: buf.length };
+}
 const HELLO_LZMA = {
   method: 14,
   crc: 0x7a6d9799,

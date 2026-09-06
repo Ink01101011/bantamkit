@@ -14,6 +14,7 @@
  * `tools/conformance/suites/codec.mjs`; the shapes are pinned in `test/codec.test.mjs`.
  */
 import { constructPlain, PyScalar, safeDumpMapping } from './pyyaml.js';
+import { pyStrip } from '../pysem.js';
 
 export class FactParseError extends Error {}
 
@@ -45,27 +46,17 @@ export type FactMeta = Record<string, FactValue | FactValue[]>;
 // ------------------------------------------------------------------------ whitespace
 
 /**
- * `str.strip()`, which is NOT `String.prototype.trim()`.
+ * `str.strip()`, which is NOT `String.prototype.trim()` — `pysem.ts`'s, and no longer a second
+ * copy of it (`docs/roadmap-toolbox.md` row 8, entry (n)).
  *
  * Measured over all 0x110000 codepoints: Python strips 29, JS strips 25, and the two sets
  * disagree on six. Python also strips U+001C..U+001F and U+0085; JS also strips U+FEFF.
  * `_write_fact` ends with `fact.body.strip() + "\n"`, so each of those six is a byte of
- * difference in a file the store then compares, hashes and diffs.
+ * difference in a file the store then compares, hashes and diffs. `docread.ts` had derived
+ * the same set independently; the two were diffed over every codepoint and 200,000 random
+ * strings before they were merged, and the name stays exported from here.
  */
-const PY_SPACE = new Set([
-  0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x85, 0xa0, 0x1680, 0x2000,
-  0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a, 0x2028,
-  0x2029, 0x202f, 0x205f, 0x3000,
-]);
-
-export function pyStrip(text: string): string {
-  const chars = [...text];
-  let start = 0;
-  let end = chars.length;
-  while (start < end && PY_SPACE.has(chars[start]!.codePointAt(0)!)) start += 1;
-  while (end > start && PY_SPACE.has(chars[end - 1]!.codePointAt(0)!)) end -= 1;
-  return chars.slice(start, end).join('');
-}
+export { pyStrip };
 
 /**
  * The bytes of a fact file as Python's `Path.read_text(encoding="utf-8")` sees them.

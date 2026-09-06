@@ -134,6 +134,12 @@ async function readWith(s, path) {
   }
   const part = firstPart(manifest.text);
   row.part = part;
+  // A MANIFEST THAT NAMES NO PART is not a refusal and it is not a read. `contract.py`'s
+  // `render_document_manifest` returns `document_manifest_empty` — 38 B, no `error: ` prefix —
+  // the moment a document has zero parts, and `docread._nonempty` deliberately exempts `.xlsx`
+  // from the emptiness refusal, so a workbook that declares no `<sheet>` reaches here with
+  // `refused === false` and no page to ask for. It gets its own bucket rather than falling
+  // between the three that existed; `part === null` is what encodes it on the row.
   if (part === null) return row;
   const page = measure(await s.ask('tools/call', { name: 'bantamkit_read', arguments: { path, part, offset: 0 } }));
   row.pageBytes = page.textBytes;
@@ -184,23 +190,46 @@ for (const path of files) {
   const row = { path, ext: extname(path).toLowerCase().slice(1), rawBytes: raw, python, pyMs, node: nodeRow, nodeMs };
   rows.push(row);
   if (!JSON_OUT) {
-    const cell = (r) => (r === null ? '-' : r.refused ? `refused(${r.manifestBytes})` : `${r.manifestBytes} + ${r.pageRefused ? `refused(${r.pageBytes})` : (r.pageBytes ?? '-')}`);
+    const cell = (r) =>
+      r === null
+        ? '-'
+        : r.refused
+          ? `refused(${r.manifestBytes})`
+          : r.part === null
+            ? `no-part(${r.manifestBytes})`
+            : `${r.manifestBytes} + ${r.pageRefused ? `refused(${r.pageBytes})` : (r.pageBytes ?? '-')}`;
     console.log(`${row.ext}\t${raw}\tpy ${cell(python)}\t${pyMs} ms\tnode ${cell(nodeRow)}\t${nodeMs ?? '-'} ms\t${path}`);
   }
 }
 await py.close();
 await node.close();
 rmSync(scratch, { recursive: true, force: true });
-// THE TALLY, per server: how many reads were refused at the manifest, how many at the page,
-// and how many were read to a page. Printed to stderr so `--json` stdout stays one document.
+/**
+ * THE ONE BUCKET a row belongs to. Total by construction — every branch returns, and the
+ * branches are exclusive — which is what makes `files` equal the sum of the buckets rather
+ * than merely happen to.
+ *
+ * The fourth bucket, `noPart`, is why this is a function at all. It was three predicates
+ * written independently (`refused`, `!refused && pageRefused`, `!refused && pageRefused ===
+ * false`), and a document whose manifest named no part carries `pageRefused: null`, which is
+ * neither truthy nor `=== false`: it was counted in `files` and in no bucket, so the ledger's
+ * refusal count neither counted it nor named it. Measured before the fix on a real workbook
+ * with zero declared sheets: `{"files":1,"refusedManifest":0,"refusedPage":0,"read":0}`.
+ */
+const bucket = (r) => {
+  if (r.refused) return 'refusedManifest';
+  if (r.part === null) return 'noPart';
+  return r.pageRefused ? 'refusedPage' : 'read';
+};
+
+// THE TALLY, per server: how many reads were refused at the manifest, how many produced a
+// manifest that named no part at all, how many were refused at the page, and how many were
+// read to a page. Printed to stderr so `--json` stdout stays one document.
 const tally = (side) => {
   const seen = rows.map((r) => r[side]).filter((r) => r !== null);
-  return {
-    files: seen.length,
-    refusedManifest: seen.filter((r) => r.refused).length,
-    refusedPage: seen.filter((r) => !r.refused && r.pageRefused).length,
-    read: seen.filter((r) => !r.refused && r.pageRefused === false).length,
-  };
+  const counts = { files: seen.length, refusedManifest: 0, noPart: 0, refusedPage: 0, read: 0 };
+  for (const r of seen) counts[bucket(r)] += 1;
+  return counts;
 };
 console.error(`refusals: python ${JSON.stringify(tally('python'))}; node ${JSON.stringify(tally('node'))}`);
 if (JSON_OUT) console.log(JSON.stringify(rows, null, 2));

@@ -127,6 +127,18 @@ def _run_session(spec: dict) -> dict:
     for line in lines:
         try:
             request = json.loads(line)
+            # A HARNESS DIRECTIVE, not a request. `{"conformance": "write", "path": ...,
+            # "b64": ...}` replaces a file on disk BETWEEN two requests and is never written
+            # to the server's stdin. It exists for one property this suite could not
+            # otherwise reach: the document cache added by job44 entry (i) is keyed on
+            # (realpath, size, mtime_ns), and the only way to ask whether that key works is
+            # to read a file, rewrite it in place, and read it again IN ONE SESSION -- which
+            # means the driver has to be able to write mid-session. Both drivers honour it
+            # in the same place in the same lock-step loop, so both servers see the same two
+            # states in the same order.
+            if isinstance(request, dict) and request.get("conformance") == "write":
+                Path(request["path"]).write_bytes(base64.b64decode(request["b64"]))
+                continue
             wants = json.dumps(request["id"]) if isinstance(request, dict) and request.get("id") is not None else None
         except (ValueError, KeyError):
             wants = None
