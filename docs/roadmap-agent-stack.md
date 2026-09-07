@@ -135,6 +135,54 @@ one-sided. One pass, one verdict per row: product-and-must-port, research-and-do
 
 **Gate:** none. This is an audit, and its output is a table, not code.
 
+### AS-7 — Tell the operator they are stale; do NOT build `--update`
+
+Added 2026-09-07, from a question the user asked at the 0.30.0 release: *"should we add an
+update option?"* The answer measured out as **no** — but the question found a real hole
+next to it.
+
+**Why `--update` is the wrong build.** Four reasons, in order of how much they cost:
+
+1. **It cannot deliver the thing it promises.** The running MCP server keeps serving the
+   code it loaded at startup. Measured 2026-09-07: `runtime-ts/dist/` was rebuilt at 0.30.0
+   at 08:58 and `bantamkit_status` still answered `version 0.29.1, serving 11 tools` until
+   the host reconnected at 09:03. An `--update` would print success while the caller went
+   on talking to the old process — *more* confusion, not less.
+2. **It is expensive under the two-runtime rule.** The same flag would update from npm on
+   one side and PyPI on the other: different registry, different mechanism, different
+   failure modes. That is a deliberate divergence, and the price is a `docs/porting.md` row,
+   a `ruling:` case, and a second non-ruled case comparing the refusal bit — for something
+   `npm i` and `pip install -U` already do correctly.
+3. **Two of the five install shapes have nothing to update.** `npx` is ephemeral; a checkout
+   updates with `git pull` and a rebuild, never from a registry.
+4. **It needs the network**, which this toolbox otherwise does not.
+
+**What IS missing, and it is the thing that actually bit.** Nothing tells the operator they
+are stale. A Claude Desktop entry sat on **0.25.0 since 2026-08-24** — five releases back —
+and nothing in the config, the logs, or any tool reply said so. Worse, its `package.json`
+declared `"bantamkit-mcp": "file:/private/tmp/.../scratchpad/bantamkit-mcp-0.25.0.tgz"`, a
+local tarball **in a temp directory that no longer exists**, so `npm update` there is a
+no-op by construction.
+
+Two sub-tasks, and the cheap one comes first because it needs no network at all:
+
+- **(a) Install-shape self-diagnosis, offline.** From its own location the server can already
+  see whether it was installed from a registry, from a `file:` tarball, from a global prefix,
+  or is running out of a checkout — and whether a `file:` dependency still resolves. A
+  dangling `file:` install is a **local** fact and a pure refusal-shaped check, exactly the
+  kind this repo is good at. It would have caught the 0.25.0 machine the day it broke.
+- **(b) Staleness against the registry, opt-in.** `bantamkit_status` already reports the
+  running version and `build_id`. Comparing that to `latest` is one request — but it must be
+  **opt-in and never on the status path by default**, or an offline, dependency-free toolbox
+  quietly grows a network call in its health check.
+
+**Gate:** (a) needs none — it is a local check for a measured defect. (b) does not start until
+(a) ships and someone has been told they are stale by it, because (a) may be the whole fix.
+
+**Already done, so do not redo it:** the update routes are documented per install shape in
+`runtime-ts/README.md#updating` and summarised in the root `README.md`, including the restart
+step and the `build_id` check that distinguishes "the config moved" from "the process did".
+
 ## What this audit did NOT find
 
 No dog in the picture is something bantamkit has and shouldn't. Nothing here argues for deleting
