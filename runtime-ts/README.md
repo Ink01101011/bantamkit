@@ -278,7 +278,58 @@ no repository, and reading a checkout's HEAD would describe the tree rather than
 that were imported (RB-P84).
 
 **Pin the version in the config** if you want this to be a non-issue:
-`"args": ["-y", "bantamkit-mcp@0.25.0"]`.
+`"args": ["-y", "bantamkit-mcp@0.30.0"]`.
+
+## Updating
+
+**There is no `bantamkit-mcp --update`, deliberately.** The package manager that installed
+this is the thing that updates it, and there are five install shapes with five different
+answers. Pick the row you are actually on — and note that **the running server keeps
+serving the code it loaded at startup**, so every row ends with restarting it in the host.
+
+| how it was installed | how to update |
+|---|---|
+| `npx -y bantamkit-mcp` in the host config | nothing to update — but npx **caches the resolved version**, so add `@latest` (or a pinned `@0.30.0`) or it will keep serving what it resolved weeks ago. `rm -rf ~/.npm/_npx` forces a clean resolve. |
+| `npm i -g bantamkit-mcp` | `npm i -g bantamkit-mcp@latest` |
+| `npm i --prefix <dir> bantamkit-mcp` | `npm i --prefix <dir> bantamkit-mcp@latest` |
+| PyPI (`pip install "bantamkit[mcp]"`) | `pip install -U "bantamkit[mcp]"` · pipx: `pipx upgrade bantamkit` · uv: `uv tool upgrade bantamkit` |
+| a checkout, via `tools/bantamkit-mcp-node` | `git pull && npm ci --prefix runtime-ts && npm run build --prefix runtime-ts` — this one never touches a registry, and `runtime-ts/dist/` is build output, so a pull alone changes nothing |
+
+**Then restart the server in your host**, or you will keep talking to the old build. In
+Claude Code that is `/mcp` → reconnect; in Claude Desktop it is a full restart of the app.
+Measured 2026-09-07: a checkout whose `dist/` had just been rebuilt at 0.30.0 kept
+answering `version 0.29.1, serving 11 tools` until the host reconnected — the disk was
+current and the process was not.
+
+**Verify with `bantamkit_status`, not with the install log.** It reports the version and
+the `build_id` of *the code that is answering you*:
+
+```
+bantamkit Active 🟢
+version 0.30.0, build sha256:4441619d…
+serving 13 tools, 1 prompt, 2 resource templates
+```
+
+A version string that moved and a `build_id` that did not means you are reading a config,
+not a process.
+
+### The failure this table exists for
+
+Measured on a real machine, 2026-09-07: a Claude Desktop entry pointed at
+`~/.local/share/bantamkit-mcp/node_modules/.bin/bantamkit-mcp`, which was **0.25.0** — five
+releases stale — and its `package.json` declared
+
+```json
+"bantamkit-mcp": "file:/private/tmp/.../scratchpad/bantamkit-mcp-0.25.0.tgz"
+```
+
+a **local tarball in a temp directory that no longer existed**. `npm update` in that
+directory cannot help: the dependency does not name a registry. The fix is to install over
+it from the registry (`npm i --prefix ~/.local/share/bantamkit-mcp bantamkit-mcp@latest`),
+which restores a normal semver dependency and leaves the host config's path valid.
+
+If you install from a local `.tgz` to test a build, **install over it from the registry
+afterwards**, or that machine is pinned to a file that will be deleted.
 
 ## The second bin: `bantamkit-memory`
 

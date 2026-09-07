@@ -38,6 +38,25 @@ exact file, key and entry for each are in
 key differs between hosts (`servers` in VS Code, `mcpServers` everywhere else),
 which is the one detail that catches people out.
 
+**Updating.** There is no `--update` flag: whatever installed it updates it, and the
+running server keeps serving the code it loaded at startup, so every route ends with
+restarting the server in your host (`/mcp` → reconnect in Claude Code; a full app restart
+in Claude Desktop). The short version —
+
+```bash
+npx -y bantamkit-mcp@latest --assets-root   # npx CACHES; without @latest you get an old resolve
+npm i -g bantamkit-mcp@latest               # global npm install
+pip install -U "bantamkit[mcp]"             # PyPI (pipx upgrade bantamkit · uv tool upgrade bantamkit)
+git pull && npm run build --prefix runtime-ts   # a checkout: dist/ is build output, a pull alone does nothing
+```
+
+Then ask the server, not the config: `bantamkit_status` prints the version **and the
+`build_id` of the code answering you**. A version that moved while `build_id` did not means
+you are reading a config and talking to an older process. The per-install table, and the
+measured failure it exists for — a Desktop entry stuck five releases back on a `file:`
+dependency pointing at a deleted temp tarball — are in
+[the npm package's README](runtime-ts/README.md#updating).
+
 **As a Python library**, which is what the rest of this page is about:
 
 ```bash
