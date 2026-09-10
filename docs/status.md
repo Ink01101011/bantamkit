@@ -123,7 +123,7 @@ A healthy call is byte-identical to what it was before this surface existed.
 
 ## The conditions
 
-Four, in this order — the order **is** severity, and it is load-bearing because the footer
+Five, in this order — the order **is** severity, and it is load-bearing because the footer
 spells out the first one.
 
 | # | `key` | True when | Constructed in a test by |
