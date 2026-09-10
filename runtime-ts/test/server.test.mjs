@@ -17,7 +17,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -75,13 +75,13 @@ const INITIALIZED = { jsonrpc: '2.0', method: 'notifications/initialized' };
  * Both are now per-session and under the scratch bed. A test that wants the walk to reach
  * something puts it there itself, the way the layered test below does.
  */
-function session(requests, { args = [], env = {}, cwd = null } = {}) {
+function session(requests, { args = [], env = {}, cwd = null, cli = CLI } = {}) {
   const isolated = cwd ?? join(scratch, `cwd${(seq += 1)}`);
   mkdirSync(isolated, { recursive: true });
   const fakeHome = join(scratch, 'fakehome');
   mkdirSync(fakeHome, { recursive: true });
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [CLI, ...args], {
+    const child = spawn(process.execPath, [cli, ...args], {
       cwd: isolated,
       env: { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome, BANTAMKIT_ASSETS: ASSETS, ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -757,7 +757,12 @@ test('build_identity names its runtime and refuses to be compared across lineage
   assert.equal(id.assets_root_from_env, true);
   assert.equal(id.node_version, process.versions.node);
   assert.equal(id.interpreter, process.execPath);
-  assert.deepEqual(id.unavailable, ['git_commit']);
+  // `install_source`/`install_source_exists` joined the refusals in job46 (AS-7): this suite
+  // drives the server out of the CHECKOUT, and a checkout has no recorded origin path to
+  // check — the shape itself is still derived, and is asserted here so a build that lost the
+  // field entirely could not pass by refusing all three.
+  assert.equal(id.install_shape, 'checkout');
+  assert.deepEqual(id.unavailable, ['git_commit', 'install_source', 'install_source_exists']);
   // MEASURED DEFECT, FOUND BY DRIVING THE PACKAGED INSTALL. The obvious resolution
   // (`import.meta.resolve('@modelcontextprotocol/sdk/package.json')`) goes through the SDK's
   // `exports` map into `dist/esm/package.json`, a `{"type":"module"}` marker with no version,
@@ -799,7 +804,10 @@ test('build_identity declines a build_id when an input is underivable', async ()
     const id = Object.fromEntries(buildIdentity('0.25.0', '1.30.0'));
     assert.match(id.assets_digest.unavailable, /contains no files|could not resolve a pack/);
     assert.match(id.build_id.unavailable, /could not derive assets_digest/);
-    assert.deepEqual(id.unavailable, ['assets_digest', 'assets_files', 'assets_root', 'build_id', 'git_commit']);
+    assert.deepEqual(id.unavailable, [
+      'assets_digest', 'assets_files', 'assets_root', 'build_id', 'git_commit',
+      'install_source', 'install_source_exists',
+    ]);
     // The refusal is a refusal and not a degraded value: nothing here is a hashable string.
     assert.equal(typeof id.build_id, 'object');
   } finally {
@@ -1462,4 +1470,87 @@ test('the index remedy is not a no-op at the moment it is printed', async () => 
     [],
     'and a second run must still archive nothing',
   );
+});
+
+/**
+ * AS-7(a) end to end, from a REAL install whose recorded origin is really gone.
+ *
+ * `test/install-shape.test.mjs` covers the derivation over every shape. What only a spawned
+ * process can show is the rest of the chain: that the shape reaches the wire, that the
+ * condition reaches the report and the footer, and that it comes LAST — which is the half a
+ * unit test would have had to assume. So `dist/` is copied into a real
+ * `node_modules/bantamkit-mcp`, npm's hidden lockfile is written beside it naming a tarball
+ * that was never created, and the server is spawned from THERE. Nothing is stubbed and no seam
+ * is opened in the server to let a test say what its own install is.
+ *
+ * TWO CONDITIONS AT ONCE, because a position asserted with one condition in the list is not a
+ * position. The index budget is squeezed under the same 90% line the tests above measure, so
+ * the report has to order them — and the order is the reference's: the index refuses the next
+ * SAVE, while a dangling origin costs nothing until somebody tries to update.
+ */
+test('a real install whose `file:` origin is gone says so — on the wire, in the report, LAST', async () => {
+  const { size: INDEX_BYTES, degraded: DEGRADED_BUDGET } = await indexFacts();
+  const project = join(scratch, 'dangling-install');
+  const pkg = join(project, 'node_modules', 'bantamkit-mcp');
+  mkdirSync(pkg, { recursive: true });
+  cpSync(join(packageRoot, 'dist'), join(pkg, 'dist'), { recursive: true });
+  cpSync(join(packageRoot, 'package.json'), join(pkg, 'package.json'));
+  // The SDK resolves from `<project>/node_modules`, where npm would have put it.
+  symlinkSync(
+    join(packageRoot, 'node_modules', '@modelcontextprotocol'),
+    join(project, 'node_modules', '@modelcontextprotocol'),
+    'dir',
+  );
+  writeFileSync(join(project, 'package.json'), JSON.stringify({ name: 'host', version: '1.0.0' }), 'utf8');
+  writeFileSync(
+    join(project, 'node_modules', '.package-lock.json'),
+    JSON.stringify({
+      name: 'host',
+      lockfileVersion: 3,
+      packages: {
+        'node_modules/bantamkit-mcp': {
+          version: '0.25.0',
+          resolved: 'file:scratchpad/bantamkit-mcp-0.25.0.tgz',
+        },
+      },
+    }),
+    'utf8',
+  );
+  const gone = join(project, 'scratchpad', 'bantamkit-mcp-0.25.0.tgz');
+  assert.ok(!existsSync(gone), 'the fixture is only a fixture if the tarball really is absent');
+
+  const store = freshStore();
+  const { lines, stderr } = await session(
+    [INIT, INITIALIZED, SAVE_PROBE(2), call(3, 'bantamkit_status', {}), call(4, 'build_identity', {})],
+    { args: ['--store', store, '--index-budget', String(DEGRADED_BUDGET)], cli: join(pkg, 'dist', 'cli.js') },
+  );
+
+  const id = byId(lines, 4).result.structuredContent;
+  assert.equal(id.install_shape, 'local-file');
+  assert.equal(id.install_source, gone);
+  assert.equal(id.install_source_exists, false);
+  // A missing origin is a `false`, never a refusal: the check succeeded and the answer is no.
+  assert.deepEqual(id.unavailable, ['git_commit']);
+
+  const rows = byId(lines, 3).result.structuredContent.result.split('\n');
+  assert.equal(rows[0], REPORT_LINE_1_DEGRADED);
+  assert.equal(rows[5], '2 problems:');
+  assert.equal(
+    rows[6],
+    `- the memory index is ${INDEX_BYTES} bytes of a ${DEGRADED_BUDGET}-byte budget, so the next save is close to ` +
+      'being refused — archive or shorten facts with `bantamkit-memory compact`.',
+  );
+  assert.equal(
+    rows[7],
+    `- this server was installed from ${gone}, which no longer exists, so nothing can be ` +
+      'refreshed in place there — reinstall bantamkit by name from a package registry and ' +
+      'restart the server.',
+  );
+  assert.equal(rows.length, 8);
+
+  // The footer shows the FIRST condition, which is still the index one — so the count moved
+  // and the sentence did not. That pair is what would break if the order were changed by hand.
+  const footer = byId(lines, 4).result.structuredContent.bantamkit_degraded;
+  assert.ok(footer.startsWith(`${FOOTER_HEAD}2): the memory index is `), footer);
+  assert.equal(stderr, '');
 });

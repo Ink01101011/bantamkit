@@ -37,6 +37,8 @@ import type { EventLog } from '../eventlog.js';
 import { Memory } from '../memory/component.js';
 import { INDEX_PRESSURE_PERCENT } from '../memory/store.js';
 import type { MemoryStore } from '../memory/store.js';
+import { Undetermined, currentInstall, originStat } from './identity.js';
+import type { Install } from './identity.js';
 
 /**
  * The tool AND the prompt answer to this one name. Deliberately the same word: the operator
@@ -305,12 +307,69 @@ export function eventLogCondition(log: EventLog): Condition | null {
 }
 
 /**
+ * This install came from a path on this machine, and that path is gone.
+ *
+ * THE ONE CONDITION THAT NAMES A PATH, and the exception is deliberate. Every other sentence
+ * here refuses one because `assetsRoot()` resolves differently in the two runtimes by
+ * construction, so a path would be an uncomparable value bought for nothing. This path is not
+ * the server's own location — it is the origin THE INSTALLER WROTE DOWN, it is the entire
+ * actionable content of the finding (AS-7's measured case is a tarball under a
+ * `/private/tmp/.../scratchpad` that no longer exists), and a sentence saying "something is
+ * missing" without saying what would be a sentence nobody can act on.
+ *
+ * THE REMEDY IS THE ONE THAT ACTUALLY MOVES SOMETHING. J46-4 spent a unit removing a condition
+ * whose remedy exited 0 having changed nothing, and this is exactly the shape that invites
+ * another: `npm update` where a dangling `file:` install lives is a no-op BY CONSTRUCTION. So
+ * the sentence sends the reader at a reinstall BY NAME from a registry, which replaces the
+ * install rather than trying to refresh it in place. `bantamkit` is the PRODUCT name and is
+ * copied verbatim from the reference — it is not the npm package id, and turning it into one
+ * is how `git_commit` diverged on a noun.
+ *
+ * THE DERIVED HALF IS MEMOISED AND THIS HALF IS NOT: the shape cannot change under a running
+ * process, the path's existence can, and it is the one that has to be read now.
+ */
+export function installSourceCondition(install: Install | null): Condition | null {
+  if (install === null || install.source === null) return null;
+  // `present: null` is a check that could not be made, and the reference reports no condition
+  // for one either: an origin nobody may stat is not, on that evidence, an origin that is gone.
+  if (originStat(install.source).present !== false) return null;
+  return {
+    key: 'install-source-missing',
+    sentence:
+      `this server was installed from ${install.source}, which no longer exists, so nothing ` +
+      'can be refreshed in place there — reinstall bantamkit by name from a package registry ' +
+      'and restart the server.',
+  };
+}
+
+/**
+ * The shape, or nothing. A shape that could not be derived is a REPORTED gap.
+ *
+ * `buildIdentity` is where that gap is named, with its reason. It is not a degraded condition:
+ * an install this code cannot classify is not, on that evidence, an install that is broken, and
+ * a footer on every tool call saying otherwise would be the noise `degradedNotice` exists to
+ * avoid.
+ */
+function currentInstallOrNull(): Install | null {
+  try {
+    return currentInstall();
+  } catch (e) {
+    if (!(e instanceof Undetermined)) throw e;
+    return null;
+  }
+}
+
+/**
  * Everything wrong right now, worst first. An empty array means healthy.
  *
  * ORDER IS SEVERITY AND IT IS LOAD-BEARING, because the footer shows the first one: a pack
  * that vanished breaks every asset-backed surface; an unreadable layer makes recall ANSWER
  * WRONGLY rather than fail; a full index refuses the next save; a broken event log costs
- * diagnostics only.
+ * diagnostics only; and a dangling install origin costs nothing AT ALL right now — the server
+ * is serving correctly, and what is broken is the next attempt to update it. That is why it is
+ * last despite being the one that went unnoticed for five releases
+ * (`docs/roadmap-agent-stack.md` AS-7): severity here is what is failing, not what has been
+ * failing longest.
  *
  * EVERY CONDITION IS OBSERVED, NOT INFERRED — no heartbeat, no timer, no last-seen timestamp.
  * Each one is a state a test can construct and then watch this report: delete the pack, make a
@@ -319,8 +378,10 @@ export function eventLogCondition(log: EventLog): Condition | null {
  * claimed.
  *
  * THE COST, because this runs on every tool call: one `stat` for the index, one `stat` for the
- * pack, one directory listing per memory layer (two to four), and a field read for the log. No
- * fact file is opened and no index is parsed.
+ * pack, one directory listing per memory layer (two to four), a field read for the log, and one
+ * `stat` for the install origin. No fact file is opened, no index is parsed, and
+ * `node_modules` is NOT walked for a hidden lockfile — `currentInstall` does that once per
+ * process, because the bytes that were imported cannot change under a running one.
  */
 export function degradedConditions(memory: Memory, log: EventLog): Condition[] {
   return [
@@ -328,6 +389,7 @@ export function degradedConditions(memory: Memory, log: EventLog): Condition[] {
     unreadableLayerCondition(memory),
     indexPressureCondition(memory),
     eventLogCondition(log),
+    installSourceCondition(currentInstallOrNull()),
   ].filter((condition): condition is Condition => condition !== null);
 }
 
