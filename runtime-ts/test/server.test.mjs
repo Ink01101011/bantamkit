@@ -878,6 +878,47 @@ test('production passes no argv at all and still binds a layered memory', async 
   assert.match(text, /nothing is saved in any layer bound here/);
 });
 
+test('a bare launch over a pipe still completes a real handshake — THE production path', async () => {
+  // THE ONE THAT MATTERS for J46-27. `bantamkit-mcp` typed at a TERMINAL now prints the help
+  // instead of blocking as a mute stdio server (`typedBareAtATerminal` in `src/cli.ts`), and
+  // the bare form is ALSO what every host passes: `.mcp.json` and the user-scope registration
+  // both send `"args": []`, and the user-scope one points at `tools/bantamkit-mcp-node`, so
+  // this runtime is the one a broken bare path takes down.
+  //
+  // "The tests pass" is not the assertion. The protocol is spoken over a real pipe to a real
+  // child and the answer is read off the wire, with NO argv at all.
+  //
+  // RED-PROOF, run 2026-09-11 against a COPY of this tree with the discrimination removed —
+  // `if (true)` in place of `if (typedBareAtATerminal(argv))`, i.e. the shape a literal
+  // reading of the request would have shipped:
+  //
+  //   SyntaxError: Unexpected token 'u', "usage: ban"... is not valid JSON
+  //       at JSON.parse (<anonymous>)
+  //       at TestContext.<anonymous> (.../test/server.test.mjs:912:47)
+  //
+  // — this node reading the HELP TABLE off the wire and trying to parse it as a frame, which
+  // is exactly the malformed-frame failure `src/cli.ts`'s header gives as the reason the
+  // original N1 refusal to print on stdout existed. (37 of this file's 61 nodes went red on
+  // that mutation, because `if (true)` prints the help for every argv; this one is the node
+  // that names WHY. It does not time out: the child prints and exits, so a driver watching
+  // only for a hang would have seen nothing.) That is the direction that would break every
+  // MCP host on this machine, so it gets a node of its own rather than riding on the
+  // layered-memory node above.
+  const { lines, stderr, code } = await session(
+    [INIT, INITIALIZED, { jsonrpc: '2.0', id: 2, method: 'tools/list' }],
+    { args: [] },
+  );
+  assert.equal(code, 0);
+  assert.equal(stderr, '');
+  // Every line is a frame, not just the two that were asked for: the help table is 20-odd
+  // lines and `JSON.parse` is what notices any of them.
+  for (const line of lines) assert.equal(JSON.parse(line).jsonrpc, '2.0');
+  assert.equal(byId(lines, 1).result.serverInfo.name, 'bantamkit');
+  // Asking it a question, not counting the answer: the exact tool list is pinned elsewhere in
+  // this file and a second copy here would only mean two nodes to re-baseline.
+  assert.ok(byId(lines, 2).result.tools.some((t) => t.name === 'memory_recall'));
+});
+
 test('every byte on stdout is a JSON-RPC frame', async () => {
   const { lines, trailing, stderr } = await session(
     [INIT, INITIALIZED, { jsonrpc: '2.0', id: 2, method: 'tools/list' }, call(3, 'build_identity', {})],

@@ -29,11 +29,11 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { test } from 'node:test';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { after, test } from 'node:test';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const CLI = join(packageRoot, 'dist', 'cli.js');
@@ -438,4 +438,180 @@ test('--assets-root counts the pack as shipped, not as an interpreter left it', 
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
+});
+
+// ==== `bantamkit-mcp` typed bare at a terminal: help, not a mute server (J46-27/J46-26) ====
+//
+// The user, 2026-09-11: "เพิ่ม task set default when call bantamkit-mcp only ให้แสดงเหมือน --help".
+// Typing the command opened a stdio server and blocked — no output, no prompt back, Ctrl-C
+// the only exit — which to a person is a hang.
+//
+// THE BARE FORM IS ALSO THE PRODUCTION LAUNCH PATH, and on THIS runtime that is the sharper
+// half: `.mcp.json` and the user-scope registration both pass `"args": []`, and the user-scope
+// one points at `tools/bantamkit-mcp-node`, so the Node server is the one a broken bare path
+// takes down. The other half of the pair — a bare launch over a pipe completing a real
+// `initialize` — is in `test/server.test.mjs`, where the session driver lives. Neither node is
+// optional: make the terminal branch unconditional and that one reddens; revert the branch and
+// these do.
+//
+// AMENDMENT TO THIS FILE'S HEADER, which says "NOTHING HERE TOUCHES A REAL STORE. Every argv
+// line below fails or prints before `_build_memory` runs". That stays true of everything above
+// and is NOT true of the truth table below: three of its five rows are invocations that SERVE,
+// and serving is exactly what they assert. So those rows do not go through `run` — they go
+// through `spawnBare`, which pins `cwd`, `HOME` and `USERPROFILE` into a per-test bed. Without
+// that, `Memory.layered` walks up from the runner's cwd and falls back to a store under the
+// operator's own `~/.bantamkit/memory`, which is `test/server.test.mjs`'s measured hazard
+// (run 32644269451) reproduced in a new file.
+
+/**
+ * A real child process whose `process.stdin` says it is a terminal.
+ *
+ * A `pty` slave would be the more literal article and it is deliberately not used in a node:
+ * pty allocation is absent or different on Windows, so this node would carry a `skip`, go
+ * UNMEASURED on the platform where this branch is least understood, and grow this repository's
+ * pinned skip roster. What the branch reads is stdin's tty-ness and nothing else, so a stdin
+ * that answers `isTTY === true` is a faithful stand-in for the thing being detected, and this
+ * way the node runs everywhere. J46-26 made the same call on the Python side.
+ *
+ * The real-pty form was still RUN, by hand, against the SHIPPED launcher rather than the built
+ * module — `python3 -c "import pty, subprocess; m, s = pty.openpty(); ..."` on
+ * `tools/bantamkit-mcp-node` — and it printed these same 1256 bytes and exited 0. That is a
+ * probe, not a node.
+ *
+ * The wrapper is a FILE, not `node -e`: `-e` gives `process.argv` as `[node, ...args]` with no
+ * script slot, so `process.argv.slice(2)` — what `dist/cli.js` reads — would eat the first flag
+ * and every flagged row below would silently test the bare form instead. A script file restores
+ * the slot, which is the same splice `tools/bantamkit-mcp-node` has to do for the same reason.
+ */
+const ttyWrapper = (() => {
+  const dir = mkdtempSync(join(tmpdir(), 'bk-tty-bare-'));
+  after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'typed-at-a-terminal.mjs');
+  writeFileSync(
+    path,
+    // `defineProperty` rather than assignment: `isTTY` is an own property of the stream Node
+    // builds for fd 0, and it is the one signal `typedBareAtATerminal` reads.
+    "Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });\n" +
+      "await import(process.env.BANTAMKIT_TEST_CLI);\n",
+  );
+  return path;
+})();
+
+/**
+ * `run`'s scrub, plus an isolated cwd and HOME, and optionally a stdin that claims a terminal.
+ *
+ * `input: ''` gives the child a stdin PIPE that is already at EOF. That is what makes "it
+ * served" observable without speaking the protocol: a server reads EOF on its first read and
+ * exits 0 having written nothing, so an empty stdout is the serving arm and the help text is
+ * the person arm. The real handshake is asserted in `test/server.test.mjs`; what is needed
+ * here is only to tell the two branches apart.
+ */
+function spawnBare({ argv = [], tty = false, bed, columns = 80 }) {
+  const home = join(bed, 'home');
+  mkdirSync(home, { recursive: true });
+  const env = { ...process.env };
+  for (const key of ['COLUMNS', 'LINES', 'BANTAMKIT_ASSETS', 'BANTAMKIT_MEMORY_DIR']) delete env[key];
+  env.COLUMNS = String(columns);
+  env.HOME = home;
+  env.USERPROFILE = home; // the Windows spelling; `Path.home()`/`os.homedir()` read this one
+  const command = tty ? [ttyWrapper, ...argv] : [CLI, ...argv];
+  if (tty) env.BANTAMKIT_TEST_CLI = pathToFileURL(CLI).href;
+  const r = spawnSync(process.execPath, command, { cwd: bed, input: '', env, encoding: 'utf8' });
+  return { stdout: r.stdout, stderr: r.stderr, exit: r.status };
+}
+
+/** One disposable cwd+HOME per test, removed however the test ends. */
+function bedFor(label) {
+  const bed = mkdtempSync(join(tmpdir(), `bk-tty-${label}-`));
+  after(() => rmSync(bed, { recursive: true, force: true }));
+  return bed;
+}
+
+test('bare at a terminal prints the help `-h` prints — the same bytes, stream and exit code', () => {
+  // RED-PROOF, run 2026-09-11 against a COPY of this tree with the `typedBareAtATerminal`
+  // branch deleted from `main` in `src/cli.ts`, i.e. the behaviour as shipped before J46-27.
+  //
+  // The load-bearing assertion is the stdout comparison and NOT `exit === 0`. Measured: with
+  // the branch gone the child does not hang — it starts a server, reads EOF off the closed
+  // stdin pipe on its first read, and exits 0 with an empty stdout. An exit code cannot tell
+  // that apart from a help that printed. J46-26 measured the same thing on the Python side and
+  // said so, which is the only reason this node was not written the wrong way round.
+  const typed = spawnBare({ tty: true, bed: bedFor('help') });
+  const dashH = run(['-h'], 80);
+  assert.equal(typed.stdout, dashH.stdout);
+  assert.equal(typed.stderr, '', 'the help is stdout; nothing goes to stderr');
+  assert.equal(typed.exit, 0);
+
+  // Pinned as TEXT, not as "something was printed". A differential conformance case cannot see
+  // a change applied to BOTH runtimes — measured nine times in this job — so these literals are
+  // what notices if the help itself moves.
+  const lines = typed.stdout.split('\n');
+  assert.equal(lines[0], 'usage: bantamkit-mcp [-h] [--assets-root] [--k K] [--index-budget BYTES]');
+  assert.ok(lines.includes('bantamkit MCP server (stdio): per-person memory + JSON validation.'));
+  assert.ok(lines.includes('  -h, --help            show this help message and exit'));
+
+  // NOT A FRAME. The whole hazard of printing on this process's stdout is that stdout IS the
+  // JSON-RPC channel; anything that reached this branch must not hand a host something it would
+  // try to parse.
+  for (const line of lines) assert.ok(!line.trimStart().startsWith('{'), line);
+  assert.ok(!typed.stdout.includes('jsonrpc'));
+});
+
+test('the terminal check is scoped to the BARE command and reads only stdin', () => {
+  // The truth table, including row two — the production launch path. `"args": []` over a pipe
+  // is what both registrations on this machine pass, and it must answer "serve" forever.
+  // Rows three and four are the SCOPE: the user asked for `bantamkit-mcp` "only", so an
+  // invocation carrying flags is an operator explicitly asking for a configured server and
+  // keeps getting one at a terminal. J46-26 noted that a bare-only conformance case would not
+  // see a disagreement on this row, which is why the case is spelled out here as well.
+  const bed = bedFor('scope');
+  const store = join(bed, 'store');
+  const rows = [
+    { argv: [], tty: true, help: true, why: 'a person typed the command with nothing after it' },
+    { argv: [], tty: false, help: false, why: 'a host: `args: []` over a pipe — THE production path' },
+    { argv: ['--start', bed], tty: true, help: false, why: 'an operator asked for a configured server, at a tty' },
+    { argv: ['--store', store], tty: true, help: false, why: 'same, with the other store flag' },
+    { argv: ['--k', '5'], tty: false, help: false, why: 'a host with arguments' },
+  ];
+  const help = run(['-h'], 80).stdout;
+  for (const { argv, tty, help: wantsHelp, why } of rows) {
+    const r = spawnBare({ argv, tty, bed });
+    assert.equal(r.exit, 0, `${why}\n${r.stderr}`);
+    assert.equal(r.stderr, '', why);
+    assert.equal(r.stdout, wantsHelp ? help : '', why);
+  }
+});
+
+test('the terminal branch returns before a store exists in the cwd somebody was standing in', () => {
+  // Same discipline as `--assets-root`: every road to a server is a detonator. A person who
+  // typed a command to see what it does has not asked for a `.bantamkit/memory` directory in
+  // the cwd they were standing in — and `buildMemory` is the call that would create one if the
+  // branch sat a single line later.
+  const bed = bedFor('nostore');
+  const r = spawnBare({ tty: true, bed });
+  assert.equal(r.exit, 0);
+  assert.ok(r.stdout.startsWith('usage: bantamkit-mcp [-h] [--assets-root]'), r.stdout);
+  assert.ok(!existsSync(join(bed, '.bantamkit')), 'the help path created a store in the cwd');
+  assert.ok(!existsSync(join(bed, 'home', '.bantamkit')), 'the help path created a store under HOME');
+});
+
+test('isTTY is undefined on a pipe, so the check is TRUTHINESS — `=== false` would be inverted', () => {
+  // The one thing in this change that is not a translation of the reference. `sys.stdin.isatty()`
+  // is a bool; `process.stdin.isTTY` is `true` on a terminal and `undefined` — never `false` —
+  // on a pipe, a file or /dev/null. A `stream.isTTY === false` test would therefore be `false`
+  // for EVERY host launch, the person branch would fire on the production path, and the help
+  // table would go out on the JSON-RPC channel. This node MEASURES the premise instead of
+  // quoting the docs for it, so the day Node changes it the reason the code is written this way
+  // changes with it.
+  const probe = spawnSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      'process.stdout.write(JSON.stringify({ t: typeof process.stdin.isTTY, v: process.stdin.isTTY ?? null, eqFalse: process.stdin.isTTY === false }))',
+    ],
+    { input: '', encoding: 'utf8' },
+  );
+  assert.equal(probe.status, 0, probe.stderr);
+  assert.deepEqual(JSON.parse(probe.stdout), { t: 'undefined', v: null, eqFalse: false });
 });
