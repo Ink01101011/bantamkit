@@ -191,6 +191,42 @@ Two sub-tasks, and the cheap one comes first because it needs no network at all:
 `runtime-ts/README.md#updating` and summarised in the root `README.md`, including the restart
 step and the `build_id` check that distinguishes "the config moved" from "the process did".
 
+**CLOSED (a), 2026-09-11 — appended, nothing above rewritten.** Shipped on both runtimes in
+one job: `da97b52` (runtime-py), `c9372ca` (runtime-ts), gated by `50e0f74` / `2d656b9`
+(`tools/conformance/suites/install.mjs`, 30 cases, 4 ruled-different), with the four
+deliberate differences registered in `docs/porting.md` at `a7f9007` and the fifth degraded
+condition documented at `8dd4117`. `build_identity` carries `install_shape`,
+`install_source` and `install_source_exists`; `bantamkit_status` carries
+`install-source-missing`, last in severity, because the server is serving correctly and what
+is broken is the next attempt to update it.
+
+Four things worth carrying forward, because they are not in the sub-task text above:
+
+* **The vocabulary is five words on both sides and only four are answerable on each.** The
+  reference never answers `ephemeral`; the port never answers `checkout` for a running file
+  no `package.json` owns, because it cannot name the package at all without one. Both
+  DECLARE all five so a consumer handles one set rather than two.
+* **Shape and origin are two axes, and the measured incident is both at once** — an `npx`
+  cache filled from a `file:` tarball that is gone. The environment wins the word and the
+  origin survives in `install_source`, so the condition still fires and still names the path.
+  Collapsing them would have thrown away the fact AS-7 was filed about.
+* **The reference's no-network gate has a measured blind spot** (found by this unit, review
+  finding, NOT fixed here because it is a change to `runtime-py/tests/`). It walks the
+  module's AST and checks every MODULE-LEVEL global the new functions touch against an
+  allowlist. Measured 2026-09-11, four mutations: a module-level `import urllib.request`
+  plus a call inside `_derive_install` reddens it; a **function-local** `import
+  urllib.request` plus the same call does NOT, because a local import creates no module
+  global; `__import__("urllib.request")…` does NOT, for the same reason; and a mention in a
+  comment correctly stays green. The port's gate — an `async_hooks` census that opens a
+  local socket on purpose so its silence means something — reddens on BOTH shapes, measured
+  the same day. The FEATURE is offline on both sides (neither module imports a network
+  module at any level; the port's whole import list is `node:crypto`, `node:fs`, `node:path`,
+  `node:url`), so this is an instrument gap and not a defect in AS-7(a). It matters most
+  precisely at (b), where somebody will be adding a network call on purpose.
+* **(b) is still gated, and the gate has not been met.** It does not start until someone has
+  actually been told they are stale by (a). Nothing on this branch touches a registry: the
+  only occurrences of `--update` in either runtime are comments naming J46-29.
+
 ## What this audit did NOT find
 
 No dog in the picture is something bantamkit has and shouldn't. Nothing here argues for deleting
