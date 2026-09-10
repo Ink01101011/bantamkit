@@ -235,6 +235,11 @@ test('an origin that cannot be STATTED is not an origin that is gone', (t) => {
   // where the truth is a directory nobody may read. The reference returns no condition for one,
   // and so does this: `present` is `null`, and only `false` fires.
   //
+  // platform-checked: PORTABLE, and the skip below is the mechanism. Windows honours only the
+  // read-only bit, so `chmodSync(dir, 0o000)` changes nothing a stat has to obey and the stat
+  // SUCCEEDS there — which is precisely the `present === true` arm, so this test skips itself on
+  // Windows and asserts nothing about it. It is not marked POSIX-only because the arm that
+  // matters (`present === false`, the regression) is still a FAILURE on every platform.
   // THE SKIP IS NARROW ON PURPOSE. An earlier draft bailed out whenever `present` was anything
   // but `null`, which meant the `false` a regression produces ALSO passed silently — measured:
   // the mutation that reports every errno as "gone" stayed green through it. It now skips only
