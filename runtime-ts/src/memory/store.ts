@@ -150,6 +150,44 @@ const MIN_RATIO_RANGE = 'recall min-score ratio must be between 0.0 and 1.0';
 /** See the reference's comment: measured against a real store, not chosen. */
 export const DEFAULT_INDEX_BUDGET = 24_000;
 
+/**
+ * Percent of the index budget that has to be SPENT before the store is called degraded.
+ *
+ * 90 and not 100 because the useful moment is before the refusal, not after it: at 100% the
+ * next `memory_save` has already failed and the operator has already seen the error. An
+ * INTEGER percent, compared by cross-multiplication where it is read, so the two runtimes
+ * cannot land on opposite sides of the line through a float they rounded differently.
+ *
+ * AMENDMENT (job46, J46-5, mirroring the reference's J46-4). It used to live in
+ * `mcp/status.ts`, next to the only thing that read it, and that is exactly what
+ * `docs/porting.md`'s register item 7 is about: the report warned at THIS line while the
+ * remedy it named — `compact` — aimed at a different one, so between the two the command
+ * exited 0 having archived nothing. `compact` has to know where the warning is to be able to
+ * clear it, and `mcp/status.ts` is above this layer, so the number moved DOWN to the layer
+ * both readers can reach. Same name, same value, same integer comparison; `mcp/status.ts`
+ * imports it and re-exports the name rather than spelling a second 90.
+ */
+export const INDEX_PRESSURE_PERCENT = 90;
+
+/**
+ * The largest index size `INDEX_PRESSURE_PERCENT` does NOT call degraded, in bytes.
+ *
+ * Integer arithmetic only, and the identity it holds is
+ * `size > undegradedIndexCeiling(b)` exactly when `size * 100 >= PERCENT * b` — the
+ * cross-multiplied comparison `mcp/status.ts`'s `indexPressureCondition` writes. The two
+ * spellings are pinned against each other by a boundary sweep in `test/server.test.mjs`,
+ * because they are two spellings and a test is the only thing that can keep them one line.
+ *
+ * `Math.floor` AND NOT `Math.trunc`, because the reference spells this `//` — floor division,
+ * which rounds toward -infinity — and `Math.trunc` rounds toward zero. The two differ on
+ * every negative budget, and a budget is not guaranteed positive by anything in this
+ * function's own signature. `test/store.test.mjs` sweeps both signs against a BigInt oracle
+ * rather than against a second copy of this expression.
+ */
+export function undegradedIndexCeiling(budget: number): number {
+  return Math.floor((INDEX_PRESSURE_PERCENT * budget - 1) / 100);
+}
+
 // The second half of the "unreadable" sentence, one per directory this store lists — and
 // then the same distinction one syscall down, for the stats `restore` does instead of a
 // listing. They are separate strings because the failures do different damage, and an error
@@ -721,6 +759,28 @@ export class MemoryStore {
    * store currently holds (capped at half the budget), so the headroom bought is "a fact as
    * big as your biggest one will fit", measured from this store's own data.
    *
+   * AMENDMENT (job46, J46-5, the port of the reference's J46-4), and it supersedes the
+   * sentence above about where that reserve is measured FROM. WAS: `budget - largest index
+   * line`. NOW: that same largest line plus the headroom `INDEX_PRESSURE_PERCENT` demands, so
+   * the target is `undegradedIndexCeiling(budget) - largest index line`. THE REASON IS
+   * `docs/porting.md`'s register item 7: the degraded report warns at 90% of the budget and
+   * names THIS command, while the old target sat at `budget - largest line`, so on any store
+   * whose biggest line is under a tenth of its budget the command the operator was told to
+   * run archived nothing and the warning stayed up. MEASURED on a read-only copy of this
+   * machine's project store (101 facts, index.md 21819 bytes of 24000 = 90.91%, largest index
+   * line 361 bytes, so the old target was 23639 = 98.50%): `compact()` answered
+   * `archived: []` and `index-budget-low` was still firing afterwards — the same two answers
+   * the reference gave on the same store, which is why the register calls this a defect of
+   * the reference and NOT a divergence. The paragraph above is why the fix is a substitution
+   * and not a new number — "a loop that stopped at 'fits' would archive nothing at the only
+   * moment the remedy is ever named" is the same argument one line lower down, so the reserve
+   * is measured from the line the WARNING draws instead of the one the REFUSAL draws.
+   *
+   * WHAT THIS DOES NOT CHANGE, deliberately: the eviction ORDER (`byEviction`), the
+   * half-the-budget cap, and an EXPLICIT `reserve`. A caller that passes one gets the
+   * arithmetic it always got, byte for byte — every eviction-order node in `store.test.mjs`
+   * passes one for exactly that reason, and so may any caller that needs the old default back.
+   *
    * `facts()` runs FIRST, before any rename, so an unreadable store moves nothing.
    *
    * THE MOVE IS `os.replace`, AND THE REFERENCE'S IS NOW TOO — the difference this comment
@@ -775,7 +835,19 @@ export class MemoryStore {
       sizes.set(pyHashKey(fact.name), Buffer.byteLength(this.indexLine(fact), 'utf8'));
     }
     const all = [...sizes.values()];
-    if (reserve === null) reserve = all.length === 0 ? 0 : Math.max(...all);
+    if (reserve === null) {
+      // The default reserve is measured from the WARNING LINE, not from the budget. One
+      // substitution, and it is the whole of `docs/porting.md` item 7: the sentence that
+      // names this command fires at `INDEX_PRESSURE_PERCENT`, so a remedy that only reaches
+      // `budget - largest line` is a no-op everywhere between them. `undegradedIndexCeiling`
+      // is that line; `+ largest line` keeps this method's own promise on the other side of
+      // it, unchanged in words: "a fact as big as your biggest one will fit" — before the
+      // index is degraded AGAIN, rather than before it is over budget.
+      reserve =
+        this.indexBudget -
+        undegradedIndexCeiling(this.indexBudget) +
+        (all.length === 0 ? 0 : Math.max(...all));
+    }
     // `min(reserve, self.index_budget // 2)`: floor division, and the budget is >= 1 here
     // because both CLIs refuse a smaller one at the edge.
     reserve = Math.max(0, Math.min(reserve, Math.floor(this.indexBudget / 2)));

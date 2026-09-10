@@ -94,9 +94,20 @@ test('the five subcommands answer, in sequence, exactly as the reference does', 
   // disk or the bytes of the LF text is a decision this test does not get to make.
   const at = (...argv) => run([...argv, '--store', store, '--budget', '400']);
   const index4 = readIndexBytes(at('status').stdout);
-  const alpha = 93; // `alpha-fact`, the stalest, the line that leaves
-  const reserve = 94; // `charlie-fact`, the LARGEST line kept
-  const index3 = index4 - alpha; // after the stalest is archived
+  const alpha = 93; // `alpha-fact`, the stalest, the first line to leave
+  const charlie = 94; // `charlie-fact`, the LARGEST line in the store, and the second to leave
+  //
+  // RE-MEASURED 2026-09-10 against `python -m bantamkit.memory` on this same fixture, after
+  // job46 closed `docs/porting.md`'s register item 7 on both runtimes (the reference in
+  // `87cc1f7`, this side in the same job). The default `reserve` used to be `charlie` alone —
+  // the largest index line kept — which put the target at `400 - 94 = 306` and archived ONE
+  // fact. It is now measured from the WARNING line instead of from the budget:
+  // `(400 - undegradedIndexCeiling(400)) + charlie` = `(400 - 359) + 94` = 135, target 265,
+  // and TWO facts leave. Nine commands were run against both CLIs on the identical fixture
+  // and every byte matched but the prog name, which is the one declared divergence this file
+  // already substitutes.
+  const reserve = 41 + charlie; // 41 = 400 - undegradedIndexCeiling(400), the pressure headroom
+  const index2 = index4 - alpha - charlie; // after the stalest AND the largest are archived
   const target = 400 - reserve;
 
   assert.deepEqual(at('status'), {
@@ -117,35 +128,39 @@ test('the five subcommands answer, in sequence, exactly as the reference does', 
     exit: 0,
   });
 
-  // The stalest fact by `last_recalled` goes first, and the default reserve is the LARGEST
-  // index line kept (94 bytes, `charlie-fact`), not the one that left (93).
+  // The order is `byEviction`: the stalest DECAYING fact goes first (`alpha-fact`, a
+  // `project`), then the next (`charlie-fact`, a `reference`). The two DURABLE facts —
+  // `bravo-fact` (feedback) and `delta-fact` (user) — are still here, which is the eviction
+  // rank this sequence also pins. The reserve is `charlie-fact`'s line (94, the largest kept
+  // OR lost) plus the headroom the 90% warning line demands, not the largest line alone.
   assert.deepEqual(at('compact'), {
     stdout:
-      'compacted 1 fact(s)\n' +
-      `index: ${index4} -> ${index3} bytes (budget 400, target ${target}, reserve ${reserve}, headroom ${400 - index3})\n` +
+      'compacted 2 fact(s)\n' +
+      `index: ${index4} -> ${index2} bytes (budget 400, target ${target}, reserve ${reserve}, headroom ${400 - index2})\n` +
       `archived -> ${join(store, 'archive')}\n` +
       `  alpha-fact (project, ${alpha} bytes)\n` +
+      `  charlie-fact (reference, ${charlie} bytes)\n` +
       `restore one with: bantamkit-memory restore <name> --store ${store}\n`,
     stderr: '',
     exit: 0,
   });
 
   assert.deepEqual(at('archived'), {
-    stdout: `archived facts: 1 (${join(store, 'archive')})\n  alpha-fact\n`,
+    stdout: `archived facts: 2 (${join(store, 'archive')})\n  alpha-fact\n  charlie-fact\n`,
     stderr: '',
     exit: 0,
   });
 
   assert.deepEqual(at('status'), {
-    stdout: `store: ${store}\nfacts: 3\nindex: ${index3} bytes\nbudget: 400\nheadroom: ${400 - index3}\narchived: 1\n`,
+    stdout: `store: ${store}\nfacts: 2\nindex: ${index2} bytes\nbudget: 400\nheadroom: ${400 - index2}\narchived: 2\n`,
     stderr: '',
     exit: 0,
   });
 
   // Compaction is a MOVE and this is the door back, so the fact comes home byte for byte and
-  // the index returns to the number it had before.
+  // the index goes back up by exactly the line that left.
   assert.deepEqual(at('restore', 'alpha-fact'), {
-    stdout: `restored 'alpha-fact' — index now ${index4}/400 bytes\n`,
+    stdout: `restored 'alpha-fact' — index now ${index2 + alpha}/400 bytes\n`,
     stderr: '',
     exit: 0,
   });
@@ -164,12 +179,41 @@ test('the five subcommands answer, in sequence, exactly as the reference does', 
   // number the report gives. That is asserted instead of either figure, so neither platform
   // has to be predicted and the U+2014 is still counted in bytes.
   const onDisk = readFileSync(join(store, 'index.md')).toString('utf8');
-  assert.equal(Buffer.byteLength(onDisk.replaceAll('\r\n', '\n'), 'utf8'), index4);
+  assert.equal(Buffer.byteLength(onDisk.replaceAll('\r\n', '\n'), 'utf8'), index2 + alpha);
 
   // A second call archives nothing: `reserve` is recomputed from the survivors, so compaction
-  // is idempotent rather than a ratchet.
+  // is idempotent rather than a ratchet. The first call here re-archives the fact just
+  // restored (275 -> 182, at a target of 266 — a SMALLER surviving largest line RAISES the
+  // next target, which is why the third call breaks on its first iteration).
   at('compact');
   assert.match(at('compact').stdout, /^compacted 0 fact\(s\)\n.*\nnothing to archive/s);
+});
+
+test("the hook's explicit --budget is still the budget compaction uses", () => {
+  // `tools/hooks/bantamkit-hook.mjs` routed AROUND `docs/porting.md` item 7 by naming its own
+  // budget. Its `postSave` arm computes `floor(COMPACT_TO * budget)` — `COMPACT_TO = 0.8` —
+  // and passes it as `--budget`, with a comment saying in as many words that it does so to
+  // skip the no-op band. IT SPAWNS THIS CLI, not the reference's, so that caller has to keep
+  // working here more than anywhere: `--budget N` still means N, the command still exits 0,
+  // and the index still lands at or below the number the caller named. The hook is a
+  // different layer and is not touched by this change — this is the assertion that it did not
+  // need to be.
+  const store = seed();
+  const COMPACT_TO = 0.8; // `bantamkit-hook.mjs`'s constant, spelled here so a drift shows
+  const budget = 400;
+  const hookTarget = Math.floor(COMPACT_TO * budget); // 320
+  const before = readIndexBytes(run(['status', '--store', store, '--budget', String(budget)]).stdout);
+  assert.ok(before > hookTarget, 'a fixture already under the hook target would prove nothing');
+
+  const r = run(['compact', '--store', store, '--budget', String(hookTarget)]);
+
+  assert.equal(r.exit, 0, r.stderr);
+  assert.match(r.stdout, new RegExp(`budget ${hookTarget}`), 'the budget the caller named is the one reported');
+  const after = readIndexBytes(run(['status', '--store', store, '--budget', String(hookTarget)]).stdout);
+  assert.ok(after <= hookTarget, `index ended at ${after}, above the ${hookTarget} the hook asked for`);
+  // `lint` exits 1 on an over-budget store, so this is the aim being MET and not approached.
+  assert.equal(run(['lint', '--store', store, '--budget', String(hookTarget)]).exit, 0);
+  rmSync(store, { recursive: true, force: true });
 });
 
 test('the three operational failures exit 1 with the reference sentence on stderr', () => {

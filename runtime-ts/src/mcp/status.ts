@@ -35,6 +35,7 @@ import { join } from 'node:path';
 import { AssetNotFound, assetsRoot } from '../assets.js';
 import type { EventLog } from '../eventlog.js';
 import { Memory } from '../memory/component.js';
+import { INDEX_PRESSURE_PERCENT } from '../memory/store.js';
 import type { MemoryStore } from '../memory/store.js';
 
 /**
@@ -79,14 +80,13 @@ export const SERVED_PROMPTS = 1;
 export const SERVED_RESOURCE_TEMPLATES = 2;
 
 /**
- * Percent of the index budget that has to be SPENT before the store is called degraded.
- *
- * 90 and not 100 because the useful moment is before the refusal, not after it: at 100% the
- * next `memory_save` has already failed and the operator has already seen the error. An
- * INTEGER percent, compared by cross-multiplication below, so the two runtimes cannot land
- * on opposite sides of the line through a float they rounded differently.
+ * `INDEX_PRESSURE_PERCENT` is re-exported here, where it used to be DEFINED, so that
+ * `import { INDEX_PRESSURE_PERCENT } from './mcp/status.js'` keeps resolving. It moved down
+ * to `memory/store.ts` in job46 (J46-5, mirroring the reference's J46-4):
+ * `MemoryStore.compact` is the remedy the sentence below names, and it cannot clear a warning
+ * whose line it cannot see. The comment that says why the number is 90 moved with it.
  */
-export const INDEX_PRESSURE_PERCENT = 90;
+export { INDEX_PRESSURE_PERCENT };
 
 /**
  * One thing that is wrong, carried in the two forms the two surfaces need.
@@ -247,6 +247,20 @@ export function unreadableLayerCondition(memory: Memory): Condition | null {
  * (`INDEX_PRESSURE_PERCENT` here, `MemoryStore.compact`'s default `reserve` there), so it is
  * not a divergence and is not fixed here; it is registered in `docs/porting.md`. The sentence
  * says "archive or shorten facts", which is what the operator has to do either way.
+ *
+ * AMENDMENT (job46, J46-5): THE PARAGRAPH ABOVE IS A RECORD OF A DEFECT THAT IS NOW CLOSED,
+ * and it is left standing because it is the measurement that motivated the fix. What it says
+ * was true until this job: the band was real, and on this machine's own project store
+ * (101 facts, index.md 21819 bytes of a 24000-byte budget = 90.91%, largest index line 361
+ * bytes so the old target was 23639 = 98.50%) `compact()` answered `archived: []` with this
+ * very sentence on screen. What has changed is the second half — "is not fixed here". It is
+ * fixed now, in the layer that owns it: `MemoryStore.compact`'s default `reserve` is measured
+ * from `undegradedIndexCeiling(budget)` rather than from `budget`, so running the command
+ * this sentence names clears the condition this sentence reports. Both runtimes moved in the
+ * same job (the reference in `87cc1f7`), because a band that closed on one side only would be
+ * the divergence the paragraph above correctly said this was not. The register entry's own
+ * closure is not written here — that is a `docs/porting.md` edit, and it waits on a
+ * conformance case comparing the two answers.
  *
  * THIS SENTENCE IS FOR THE OPERATOR; THE MODEL HAS ITS OWN REMEDY. Since job42 the model
  * can call `memory_compact` (the ninth served tool) when a save is actually refused, and

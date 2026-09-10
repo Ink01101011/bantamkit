@@ -1347,3 +1347,119 @@ test('the index condition is integer cross-multiplication, on both sides of the 
   assert.equal(at(DEGRADED_BUDGET).key, 'index-budget-low');
   assert.equal(at(Math.floor((INDEX_BYTES * 100) / 90)).key, 'index-budget-low');
 });
+
+// ---- the remedy the report names is not a no-op at the moment it is printed -------------
+//
+// `docs/porting.md`'s register item 7, and the Node half of the fix job46/J46-4 landed on the
+// reference. The two runtimes carry the SAME two constants — `INDEX_PRESSURE_PERCENT` and
+// `MemoryStore.compact`'s default `reserve` — which is why the register calls this a defect of
+// the reference and not a divergence, and why the port has to land in the same job or the two
+// sides really would disagree about a user's data.
+
+test('the helper compaction aims at is the same line the report warns at', async () => {
+  // Two spellings of one threshold, swept across the byte where they could disagree.
+  // `indexPressureCondition` cross-multiplies (`size * 100 >= PERCENT * budget`);
+  // `MemoryStore.compact` needs the same line as a SIZE, and `undegradedIndexCeiling` spells
+  // it `floor((PERCENT * budget - 1) / 100)`. The identity is exact over the integers, and
+  // nothing in either file makes it stay that way — this does. Sweeping budgets around
+  // `floor(size * 100 / 90)` puts the boundary INSIDE the range rather than near it, and both
+  // outcomes are asserted to occur, so a helper that answered a constant would redden this.
+  const { degradedConditions } = await import('../dist/mcp/status.js');
+  const { undegradedIndexCeiling } = await import('../dist/memory/store.js');
+  const { Memory } = await import('../dist/memory/component.js');
+  const { EventLog } = await import('../dist/eventlog.js');
+
+  const root = freshStore();
+  new Memory(root).store.save('project', 'pressure', 'a fact that fills the budget', 'body');
+  // The bytes ON DISK, which is what `indexBytes` reads and what CRLF translation moves.
+  const size = statSync(join(root, 'index.md')).size;
+
+  const seen = new Set();
+  const middle = Math.floor((size * 100) / 90);
+  for (let budget = middle - 3; budget <= middle + 3; budget += 1) {
+    const memory = new Memory(root, { indexBudget: budget });
+    const keys = degradedConditions(memory, new EventLog(null)).map((c) => c.key);
+    const fires = keys.length === 1 && keys[0] === 'index-budget-low';
+    assert.equal(
+      fires,
+      size > undegradedIndexCeiling(budget),
+      `the two spellings disagree at budget ${budget} on an index of ${size} bytes`,
+    );
+    seen.add(fires);
+  }
+  assert.deepEqual([...seen].sort(), [false, true], 'the sweep never crossed the line it claims to pin');
+});
+
+/**
+ * Fill a store and bind a budget the report warns about and the OLD `compact` ignored.
+ *
+ * The band is `[ceil(90% of budget) .. budget - largest index line]`. The report fires at its
+ * bottom edge and `compact`'s pre-fix target — `budget - reserve`, `reserve` defaulting to the
+ * largest index line kept — sat at its top edge, so every size in between printed a command
+ * that exited 0 having archived nothing.
+ *
+ * THE BUDGET IS DERIVED, NOT GUESSED, and the band is asserted non-empty before it is used: an
+ * input picked where the two thresholds already agree would prove nothing. The budget chosen
+ * is the band's midpoint, so neither edge is what makes this pass.
+ */
+function putTheIndexInsideTheOldNoOpBand(store) {
+  for (let n = 0; n < 20; n += 1) {
+    // Pairwise below the duplicate threshold: one token unique to the fact, one shared, so
+    // jaccard is 1/3 and no save is swallowed as a near-duplicate of the last one.
+    store.save('project', `pressure-${n}`, `subject${n} ${'y'.repeat(60)}`, 'body');
+  }
+  const size = statSync(join(store.root, 'index.md')).size;
+  const largest = Math.max(
+    ...store.internals().facts().map((f) => Buffer.byteLength(store.internals().indexLine(f), 'utf8')),
+  );
+  const lowestDegradedBudget = size + largest; // the largest budget the old target ignored
+  const highestDegradedBudget = Math.floor((size * 100) / 90); // the largest that still warns
+  assert.ok(
+    lowestDegradedBudget < highestDegradedBudget,
+    `fixture is not inside the band: index ${size}, largest line ${largest}`,
+  );
+  return { size, largest, budget: Math.floor((lowestDegradedBudget + highestDegradedBudget) / 2) };
+}
+
+test('the index remedy is not a no-op at the moment it is printed', async () => {
+  // Run the command the sentence names and it must do something. MEASURED BEFORE THE FIX on
+  // this side, on a read-only copy of this machine's own project store (`.bantamkit/memory`,
+  // 101 facts): index.md 21819 bytes of a 24000-byte budget = 90.91%, largest index line 361
+  // bytes so the old target was 23639 = 98.50%. `degradedConditions` printed
+  // `index-budget-low` and `MemoryStore.compact()` answered `archived: []`, leaving the
+  // condition firing — the same answer the reference gave, to the byte.
+  //
+  // The band's TOP edge moves with the store — the register measured 99.2% when the largest
+  // index line was 186 bytes, and the same store measured 98.50% at 361 — so the fixture
+  // derives both edges instead of quoting either number.
+  const { degradedConditions } = await import('../dist/mcp/status.js');
+  const { Memory } = await import('../dist/memory/component.js');
+  const { EventLog } = await import('../dist/eventlog.js');
+
+  const root = freshStore();
+  const { size, largest, budget } = putTheIndexInsideTheOldNoOpBand(new Memory(root).store);
+  const memory = new Memory(root, { indexBudget: budget });
+
+  // The band, asserted rather than assumed: the report fires, AND the pre-fix target
+  // (`budget - largest index line`) sat at or above the index, so it archived nothing.
+  assert.deepEqual(
+    degradedConditions(memory, new EventLog(null)).map((c) => c.key),
+    ['index-budget-low'],
+  );
+  assert.ok(size <= budget - largest, 'the old target would have archived something here');
+
+  const result = memory.store.compact();
+
+  assert.ok(result.archived.length > 0, 'the command the report names must do something');
+  assert.ok(result.indexAfter < budget, 'merely-fitting leaves the caller in a retry loop');
+  assert.deepEqual(
+    degradedConditions(memory, new EventLog(null)),
+    [],
+    'running the remedy the report named must clear the condition it was printed for',
+  );
+  assert.deepEqual(
+    memory.store.compact().archived,
+    [],
+    'and a second run must still archive nothing',
+  );
+});

@@ -14,12 +14,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  INDEX_PRESSURE_PERCENT,
   jaccard,
   MemoryBudgetExceeded,
   MemoryStore,
   MemoryValidationError,
   RECALL_MIN_SCORE_RATIO,
   tokens,
+  undegradedIndexCeiling,
 } from '../dist/memory/store.js';
 import * as pyfs from '../dist/memory/pyfs.js';
 
@@ -1092,4 +1094,104 @@ test('zero and one are both inside the accepted range', () => {
   const s = scoreLadder(store(fresh()));
   assert.ok(s.recall(LADDER_QUERY, 10, false, 0.0).length > 0);
   assert.ok(s.recall(LADDER_QUERY, 10, false, 1.0).length > 0);
+});
+
+// ---- the default reserve is measured from the WARNING line, not from the budget --------
+//
+// MEASURED DEFECT (`docs/porting.md`, register item 7). The degraded report warns at
+// `INDEX_PRESSURE_PERCENT` of the budget and names `compact` as the remedy; the old default
+// reserve was the largest surviving index line, so the target sat at `budget - largest line`.
+// On any store whose biggest line is under a tenth of its budget those are different numbers,
+// and everything between them is a band where the named command exits 0 having archived
+// nothing. Closed on the reference by job46/J46-4 (`87cc1f7`) and here in the same job — the
+// two runtimes carry the same two constants, which is why the register calls this a defect of
+// the reference rather than a divergence.
+//
+// The property, and it is one substitution: the default target is
+// `undegradedIndexCeiling(budget) - largest index line`. The promise in `compact`'s docstring
+// is unchanged in words — "a fact as big as your biggest one will fit" — and only the line it
+// is measured from moves, from the one the REFUSAL draws to the one the WARNING draws. The
+// order, the half-budget cap and an explicit `reserve` are untouched.
+
+/** `n` distinct facts whose descriptions cannot collide under the dedupe check — `_fill`. */
+const fill = (s, n, width = 60) => {
+  for (let i = 0; i < n; i += 1) {
+    const id = String(i).padStart(3, '0');
+    const words = [];
+    for (let j = 0; j < Math.floor(width / 8); j += 1) words.push(`w${id}q${j}`);
+    s.save('project', `fact-${id}`, words.join(' '), `body ${i}`);
+  }
+};
+
+/** The largest index line the store currently holds, in bytes — `compact`'s own measurement. */
+const largestIndexLine = (s) =>
+  Math.max(
+    ...s.internals().facts().map((f) => Buffer.byteLength(s.internals().indexLine(f), 'utf8')),
+  );
+
+for (const budget of [2_048, 4_096, 24_000, 100_000]) {
+  test(`the default reserve is measured from the warning line, not the budget: ${budget}`, () => {
+    // Swept over budgets, because the old and new targets coincide at small ones. The sweep
+    // carries its own non-vacuity: the two targets are asserted DIFFERENT at every point, so a
+    // budget where the fix cannot show is not silently counted as a pass.
+    const root = fresh();
+    const s = new MemoryStore(root, { today: () => '2026-08-21', indexBudget: budget });
+    fill(s, 12);
+    const largest = largestIndexLine(s);
+
+    const result = s.compact();
+
+    const oldTarget = budget - Math.min(largest, Math.floor(budget / 2));
+    assert.ok(result.target < oldTarget, 'sweep point cannot tell the two targets apart');
+    assert.equal(result.target, undegradedIndexCeiling(budget) - largest);
+    assert.equal(result.reserve, budget - undegradedIndexCeiling(budget) + largest);
+    assert.ok(result.indexAfter <= result.target);
+    assert.ok(result.indexAfter < budget);
+    rmSync(root, { recursive: true, force: true });
+  });
+}
+
+test('an explicit reserve still gets the arithmetic it always got', () => {
+  // The escape hatch, asserted: naming a `reserve` opts out of the pressure floor. This is
+  // what keeps every eviction-order node above honest — each one passes a `reserve` precisely
+  // so it fails on the ORDER and never on the reserve policy — and it is what a caller that
+  // wants the pre-job46 default back would use. `budget - reserve` and nothing else, with no
+  // floor anywhere near it.
+  const budget = 24_000;
+  const root = fresh();
+  const s = new MemoryStore(root, { today: () => '2026-08-21', indexBudget: budget });
+  fill(s, 12);
+  const largest = largestIndexLine(s);
+
+  const explicit = s.compact(largest);
+
+  assert.equal(explicit.reserve, largest);
+  assert.equal(explicit.target, budget - largest);
+  assert.ok(
+    explicit.target > undegradedIndexCeiling(budget),
+    'the point of this node is that an explicit reserve is NOT pulled below the warning line',
+  );
+  assert.deepEqual(explicit.archived, []);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('undegradedIndexCeiling is Python floor division, checked against exact integers', () => {
+  // THE ONE THING THAT COULD DRIFT BETWEEN CPYTHON AND V8. The reference spells this
+  // `(INDEX_PRESSURE_PERCENT * budget - 1) // 100`, which is floor division over arbitrary
+  // -precision integers; this side spells it `Math.floor(... / 100)` over IEEE-754 doubles.
+  // They agree for every budget either CLI will accept, and the oracle here is BigInt — exact
+  // integer division, not a second copy of the same float expression. `Math.floor` and not
+  // `Math.trunc` is load-bearing: Python's `//` floors toward -infinity and so does
+  // `Math.floor`, so the two stay together on the negative side of zero as well.
+  const oracle = (b) => {
+    const n = BigInt(INDEX_PRESSURE_PERCENT) * BigInt(b) - 1n;
+    const q = n / 100n;
+    return Number(n % 100n !== 0n && n < 0n ? q - 1n : q); // BigInt / truncates; Python floors
+  };
+  for (let budget = -5; budget <= 400; budget += 1) {
+    assert.equal(undegradedIndexCeiling(budget), oracle(budget), `budget ${budget}`);
+  }
+  for (const budget of [1_000, 2_048, 4_096, 24_000, 100_000, 999_999, 1_000_003, 2 ** 31 - 1]) {
+    assert.equal(undegradedIndexCeiling(budget), oracle(budget), `budget ${budget}`);
+  }
 });
