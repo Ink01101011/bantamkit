@@ -216,3 +216,109 @@ The hook half is pinned in the gated suite instead, `runtime-ts/test/hooks.test.
 checked with four mutants, each killed: dropping the `session` field turns 2 red; deriving
 `injected` from the header list instead of the emitted context, writing the prompt text into
 the record, and zeroing the score turn 1 red each.
+
+# The price table — a token count reported as money, and what it refuses
+
+    assets/pricing/default.json          the shipped table: NO rates, deliberately
+    $BANTAMKIT_PRICES                    the operator's own table, which wins when set
+
+    runtime-py/src/bantamkit/pricing.py  load_price_table / price_tokens / format_micros
+    runtime-ts/src/pricing.ts            loadPriceTable / priceTokens / formatMicros
+
+`docs/roadmap-agent-stack.md` AS-1(b). Everything above this heading counts tokens and calls;
+**nothing above it has ever converted one into money.** Re-probed on 2026-09-11 before this
+was built: `grep -rniE 'usd|price|cost_per|per_million' runtime-py/src tools/ledger` returns
+**12 lines** (the roadmap's record says 16, measured at a different tree — the difference is
+`evalrun.py`, and the load-bearing half is unchanged), and **none of the 12 is currency**:
+5 are `evalrun`'s fixture tool named `price_lookup` and 7 are the English word *price* in
+prose. `grep -rnE 'per_million|perMillion|MTok|per million token'` over the whole checkout and
+over `~/.claude/plugins` returns nothing at all.
+
+## It ships with no rates, and that is the finished thing
+
+There was no rate anywhere in this repository to inherit, this toolbox does not go to the
+network, and a price a language model recalls is exactly the unfalsifiable figure this program
+exists to refuse — worse than most, because it prints as money and money reads as
+authoritative. So the mechanism is complete and the table is empty, which makes **the refusal
+the default answer**:
+
+```
+>>> price_tokens(load_price_table(), "any-model", usage)
+{'unavailable': "no rate recorded for model 'any-model' -- add one with its date and source,
+                 or point BANTAMKIT_PRICES at a table that has it"}
+```
+
+A rate enters the system only as *the operator's fact with the operator's date*: copy the
+shipped file, add an entry, point `BANTAMKIT_PRICES` at the copy. The loader **refuses** an
+entry that has no `recorded` date or no `source`, so it is not possible to put a number in
+this table without saying when it was read and where from.
+
+## Which stream carries the counts being priced — and it is none of the four
+
+`docs/eventlog.md`'s routing table has four streams. **None of them carries a token count.**
+Streams 1, 2 and 3 record decisions, injections and tool calls; stream 4 is the host's arrival
+log. The token counts are in a fifth place, which is the host's own transcripts —
+`~/.claude/projects/<cwd-slug>/<session>.jsonl` and the `<session>/subagents/*.jsonl` beneath
+them — where every assistant record carries the API's `usage` block. `token-ledger.mjs` is the
+only reader of it, and what it hands out is what this prices.
+
+## The four token classes are priced separately, because they are not the same token
+
+`usage` distinguishes `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`
+and `output_tokens`, and the first run above measured **98.1 % of every prompt as cache_read**.
+One rate per model would average that away and be wrong in the direction of the cache, which
+is the direction that matters here. So a rate is a per-class map, the answer carries a
+per-class `breakdown`, and there is no scalar rate anywhere in the module to average with. A
+usage block must carry **all four** classes and nothing else: a class silently ignored is money
+silently dropped, and a class silently defaulted to zero is money silently invented.
+
+## Money is an integer, and the rounding is pinned across the two runtimes
+
+| decision | what it is | why not the obvious thing |
+|---|---|---|
+| rate | integer micro-USD per 1,000,000 tokens (`$3.00/M` is `3000000`) | a float rate is a float cost, and `0.30000000000000004` on one side against `0.3` on the other is a real divergence found late |
+| cost | integer micro-USD, plus `amount` as a fixed-6-decimal string built by integer division | cents cannot hold the answer: 1,234 tokens at $3.00/M is **$0.003702**, which is zero cents |
+| rounding | half-up on non-negative integers, `(n * rate + 500000) // 1000000` | Python's `round` is banker's and JS's `Math.round` is half-toward-+inf; they differ by one micro-USD on every exact half |
+| breakdown | rounded per class, and the total is the SUM of the rounded parts | so the printed parts always add up to the printed total |
+| ceiling | a cost above `2**53-1` micro-USD is **refused on both sides with the same sentence** | `count * rate` reaches 2**106 for permitted operands, which a JS `number` rounds and a Python `int` does not — so the place the two would part company is a refusal, not a wrong answer |
+
+## A missing rate is named, never zeroed
+
+Same discipline as `build_identity`'s `{"unavailable": "<reason>"}`. `$0.00` for an unpriced
+model is the worst possible output, so there is no code path that produces one. An unpriced
+model refuses; a priced model whose rate does not cover a class **that tokens were spent on**
+refuses and names the class and the count. The one arm that answers zero is a class with zero
+tokens, which costs zero under any rate whatsoever and therefore substitutes nothing.
+
+## Rerunning the agreement
+
+`node tools/conformance/run.mjs --suite pricing` is the gate: **81 cases, 0 differed**, at the
+commit this landed. Six of them are NOT differential — the constants, the half-up rounding at
+the exact half, and the shipped table's emptiness are pinned as typed literals against each
+runtime separately, because a differential between two implementations that were both changed
+is green.
+
+The suite was checked by mutation, seven mutants, each killed:
+
+| mutant | cases turned red |
+|---|---|
+| the `+ 500000` half-up dropped (Node only) | 4 |
+| `.sort()` for `cmpCodepoint` (Node only) | 2 |
+| `'recorded'` no longer required (Node only) | 1 |
+| a class with tokens but no rate silently zeroed (Node only) | 2 |
+| one refusal sentence reworded (Python only) | 1 |
+| **the half-up dropped in BOTH runtimes** | **2 — and they are the two literal cases; all 73 differential cases stayed green** |
+| **a rate pasted into the shipped `default.json`** | **2 — again only the literals, for the same reason: both sides read the same file** |
+
+Two further symmetric mutants — a token class renamed in both runtimes, and `CURRENCY` changed
+in both — kill the suite by making the reference raise on its own fixture. That is a kill, but
+a crude one, and it is recorded here rather than in the table because it does not demonstrate
+what the two rows above do.
+
+`.venv/bin/python -m pytest runtime-py/tests/test_pricing.py -q` and
+`cd runtime-ts && npm test -- pricing` are the in-runtime halves, so a mutation is visible
+without the other language on PATH.
+
+**Nothing is surfaced yet.** No CLI flag, no MCP tool, no `bantamkit_status` field: that is
+AS-1(c), and the reason to keep it separate is that a surface over an empty table is a surface
+that only ever prints a refusal.

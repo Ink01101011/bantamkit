@@ -83,6 +83,30 @@ fold is not available without one side abandoning its contract; and **subagent s
 already partly recorded** — 114 `Agent` rows across 7 sessions in stream 3 — while
 `SubagentStart`/`SubagentStop` reach no bantamkit arm at all. (b) and (c) remain open.
 
+**AMENDED 2026-09-11 (job46, J46-17) — (b) is CLOSED, and the table it closes with is EMPTY.**
+The mechanism ships in both runtimes (`runtime-py/src/bantamkit/pricing.py`,
+`runtime-ts/src/pricing.ts`) over a shared data asset (`assets/pricing/default.json`), gated by
+`tools/conformance/suites/pricing.mjs` — **81 cases, 0 differed**, seven mutants killed. It is
+written up in [ledger.md](ledger.md)'s *The price table* section. **(c) remains open.**
+
+Three corrections to the paragraph above, each re-probed on this machine that day.
+**The grep now returns 12 lines, not 16** — 5 are `evalrun`'s `price_lookup` fixture and 7 are
+the word *price* in prose; the record's 16 was measured at the job45 working tree and the
+difference is `evalrun.py`. The load-bearing half is unchanged: **none of the 12 is currency.**
+And the search was widened before anything was built — `grep -rnE
+'per_million|perMillion|MTok|per million token'` over the whole checkout and over
+`~/.claude/plugins` returns **nothing**.
+
+Which is why the table ships with **no rates**, and why that is the finished unit rather than
+half of one. There was no rate in this repository to inherit, the toolbox does not go to the
+network, and a rate recalled by a language model is precisely the unfalsifiable figure this
+program refuses — worse than most, because it prints as money. A rate enters only as the
+operator's fact with the operator's date, through `$BANTAMKIT_PRICES`, and the loader
+**refuses** an entry carrying no `recorded` date or no `source`. So **the refusal is the
+DEFAULT answer**, which is the strongest available test of "a model with no rate is named,
+never zeroed" — and the shipped table's emptiness is asserted as a typed literal on both sides,
+because a differential cannot see a file both runtimes read.
+
 ### AS-2 — Make the model a checked fact, not a logged one
 
 The orchestration policy in both `CLAUDE.md` files says the model *"is per role, never random,
