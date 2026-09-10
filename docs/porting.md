@@ -491,6 +491,111 @@ site owns, which is why the fix reconfigures the streams rather than sweeping th
 calls — and item 6 above is what that measurement left open one layer down. `--assets-root`
 is the same shape and has simply never been run on Windows by anything that compared it.
 
+## The unported Python modules, one verdict per row
+
+`docs/roadmap-agent-stack.md` AS-6 named sixteen `runtime-py/src/bantamkit/` modules with no
+`.ts` counterpart and left them unaudited. J46-2 re-derived the list rather than trusting
+AS-6's, because a name-only diff produces false rows — a module can have a counterpart under a
+different name (`mcpserver.py` → `mcp/server.ts`, already caught by AS-6) or have its function
+folded into another module's file rather than shipping as its own.
+
+**Re-derivation, run clean:**
+
+```
+comm -23 \
+  <(find runtime-py/src/bantamkit -name '*.py' ! -name '__init__.py' ! -name '__main__.py' \
+      | sed 's#runtime-py/src/bantamkit/##; s#\.py$##' | sort) \
+  <(find runtime-ts/src -name '*.ts' \
+      | sed 's#runtime-ts/src/##; s#\.ts$##' | sort)
+```
+
+Run clean, this prints exactly fifteen names, sorted:
+
+```
+agent
+budget
+client
+criticreplay
+critique
+docmanifest
+evalrun
+filegraph
+loopguard
+mcpserver
+memory/divergence
+pdfread
+profile
+structured
+textutil
+```
+
+That is AS-6's own sixteen minus `repomap` — `runtime-ts/src/repomap.ts` now exists (AS-6
+flagged this row `(J45-10 pending)`; it has since landed), which a bare path-and-suffix diff
+already resolves correctly on its own, no rename table needed. Two of the remaining fifteen
+are still false rows, found not by name but by reading the actual code:
+
+- **`mcpserver`** — AS-6 already named its counterpart: `mcp/server.ts`. Dropped, per AS-6's
+  own caveat.
+- **`docmanifest`** — not caught by AS-6. `docmanifest.py` exists only to stop `evalrun.py`
+  and `mcpserver.py` from hand-building the same manifest-entry dict twice and drifting (its
+  own docstring names the drift this fixed: two different `document_no_rows`-shaped sentences
+  for a zero-row part). `runtime-ts` has no second caller to drift against — only
+  `mcp/server.ts` reads a document on that side — so the port folds `manifest_entries` /
+  `package_entries` / `document_no_rows` inline into the `bantamkit_read` case
+  (`runtime-ts/src/mcp/server.ts`, the `documentManifest(...)` call building the same entry
+  shape `docmanifest.py` builds), rather than factoring out a module with only one caller.
+  Same output, verified on the wire by `tools/conformance/suites/wire.mjs` and
+  `tools/conformance/suites/docread.mjs`. Dropped from the list; this is the new finding this
+  unit adds to AS-6's own audit.
+
+That leaves **thirteen real rows** — three fewer than AS-6's sixteen: `repomap` (now ported),
+`mcpserver` (renamed, already known) and `docmanifest` (inlined, newly found here) are the
+difference.
+
+**How "dead" was decided.** Not by reading — by an anchored import grep run separately for
+each name, over `runtime-py/src`, `runtime-py/tests` and `tools/`:
+
+```
+grep -rn '^from bantamkit\.<name> import\|^from bantamkit import <name>\|^import bantamkit\.<name>\b' \
+  runtime-py/src runtime-py/tests tools
+```
+
+Every one of the thirteen came back with at least one real import (never only a docstring
+mention — `evalrun.py`'s and `docmanifest.py`'s prose mentions of each other were checked and
+excluded this way). **Zero rows are dead.**
+
+| module | verdict | why |
+|---|---|---|
+| `evalrun` | research-and-documented | The eval harness itself. `docs/architecture.md`: "**Measurement** is not a product layer — it is the boundary keeper: `evalrun.py` produces the evidence…". Not a console script (`runtime-py/pyproject.toml`'s only `[project.scripts]` entry is `bantamkit-mcp = bantamkit.mcpserver:main`); `mcpserver.py`'s one `evalrun` hit is a comment, not an import. |
+| `agent` | research-and-documented | `docs/architecture.md`'s layer table names `agent.py` as Layer 1 and states the port "implements Layers 1 + 3 and whatever Layer-5 surface it wants" — Layer 1 is not owed whole. Its only product-surface-adjacent caller is `memory/component.py`, whose port (`runtime-ts/src/memory/component.ts`) documents the check directly: "`setup()` and `batch()`, the only two consumers of `Agent`. The prep probe traced a real stdio server through the tools and both resource templates: neither is reachable from the MCP surface." |
+| `budget` | research-and-documented | `budget.py`'s own docstring: "Layer 1 — a global spend governor for one agent run". Reached only through `agent.py`/`evalrun.py`, both above — same unreachable-from-MCP finding applies transitively. |
+| `client` | research-and-documented | `docs/porting.md` already states it, measured with `sys.settrace`, not guessed: "`client.py` and `memory/divergence.py` execute **zero** call-time lines on the MCP path" (§"What the port actually covers"). Its `BantamError` base class already has a named counterpart — `runtime-ts/src/errors.ts` opens "The error base the Python runtime exposes from `bantamkit.client` as `BantamError`." The remainder (`ModelClient`, `OpenAICompatible`, `Message`/`ToolCall`/`Usage`) is the eval harness's LLM transport and reaches only `agent.py`/`evalrun.py`/`critique.py`/`structured.py`/`criticreplay.py`/`budget.py` — confirmed by checking `assets.load_tool_asset` (what `mcpserver.py` actually calls) returns a plain `dict`, never the `client.Tool` dataclass that `assets.load_tool` (the eval-harness variant, unused by `mcpserver.py`) constructs. |
+| `profile` | research-and-documented | `profile.py`'s own docstring: "Layer 4 — named tunable profiles". `docs/architecture.md`: "Layers 2 + 4 are pure asset-pack data, shared verbatim across runtimes" — the data (`assets/profiles/`) is already shared; the code that reads it for the agent loop's tunables is not owed since every caller (`agent`, `budget`, `critique`, `loopguard`, `structured`, `evalrun`) is itself unreachable from the MCP surface. |
+| `loopguard` | research-and-documented | `loopguard.py`'s own docstring: "Layer 1 — consecutive identical-observation detection on tool calls". Attaches only via `Agent.use(...)`; same unreachable-from-MCP finding as `agent`. |
+| `structured` | research-and-documented | Layer 1 gate mechanics (`docs/architecture.md`'s layer table: "gate mechanics in `critique.py` / `structured.py`"). Reached only through `agent.py`/`critique.py`/`criticreplay.py`/`evalrun.py`. |
+| `critique` | research-and-documented | Same Layer 1 gate-mechanics citation as `structured`; `CritiqueGate` is constructed only by `evalrun.py` and `criticreplay.py`, neither reachable from `mcpserver.py`. |
+| `criticreplay` | research-and-documented | Names its own layer in its own docstring: "Layer: Measurement. It reads Contract assets (rubrics) and the frozen suite read-only, calls Transport (`client.py`) and Core (`structured()`), and adds nothing to either." Used only by `tools/pinharness/` and its own tests. |
+| `filegraph` | research-and-documented | `assets/tools/file_graph.json` declares `"surfaces": ["agent"]` — never `"mcp"`. `docs/filegraph.md` documents it as an `Agent.use(...)` component. `runtime-ts/src/mcp/server.ts` itself names the gap it deliberately leaves open: "of the thirteen manifests (`document_list`, `document_read`, `file_graph`) claim only `agent`." Matches this repo's own prior finding (`filegraph-serves-evalrun-not-the-operator`), re-confirmed here from the asset file and the port's own comment rather than quoted from memory. |
+| `textutil` | research-and-documented | Its two real functions (`truncate`, `truncate_counted`) are imported only by `agent.py` (observation truncation in the research agent loop), `contract.py`'s `render_evidence` (critic-transcript rendering, called only by `critique.py`'s `CritiqueGate` — unreachable from MCP), and `filegraph.py` (unreachable, above). `docread.py`, the one product-surface reader, does **not** import it — `docread.page()`'s own docstring explains it computes `dropped` bytes itself, deliberately "WITHOUT `textutil.truncate`'s in-band marker"; `docread.ts` ports that inline byte-accounting directly (`dropped = size - utf8Length(text)` and siblings), which is why row/page truncation is already cross-runtime-conformance-tested without a `textutil.ts`. |
+| `memory/divergence` | research-and-documented | `docs/porting.md` already states it (same sentence as `client`, above): executes zero call-time lines on the MCP path. Confirmed independently here: not imported by `memory/__main__.py` (the CLI) or `mcpserver.py` — only re-exported by `memory/__init__.py` and used by its own tests. It is a read-only instrument comparing this repo's memory store against Claude Code's own native store (its docstring: "Do two memory stores hold the same facts? A read-only instrument, owning no writer"), which is a fact about two things neither runtime serves as a tool. |
+| `pdfread` | **product-and-must-port** | The one row that is actually owed. `docread.py` imports it directly (`from bantamkit import pdfread`) and `mcpserver.py`'s `bantamkit_read` reads PDFs through `docread.extract` in production. This is not a new finding — `docs/porting.md`'s own "pdf, doc and rtf on Node" divergence row already tracks it, with `ruling:` cases in `tools/conformance/suites/docread.mjs` and `wire.mjs` and a refusal-bit companion case, satisfying the deliberate-divergence bar. What is new here: that row's own text says "**job44 ports `pdfread`**", and job44 (`fix/job44-register-drain`, per `docs/conformance.md`) was the register-drain job, not a PDF port — `runtime-ts/src/docread.ts`'s `NODE_REFUSED` set still contains `'pdf'` today, and `docread.ts` still refuses it with "pdf is not readable by the Node server yet". The divergence row's promise is unfulfilled; the port remains owed. What would have to move: a hand-rolled PDF text extractor in `runtime-ts` under the no-new-dependency rule, the same shape as `pdfread.py`'s own (tokenizer, object graph via the `N G obj` linear scan, `ObjStm` expansion, `ToUnicode`/simple-font/`Differences` character provenance) — `pdfread.py`'s own docstring is effectively the spec for it. Not done in this unit (out of scope: audit, not port). |
+
+**Counts:** 1 product-and-must-port (`pdfread`), 12 research-and-documented, 0 dead. 13 rows
+total, against AS-6's 16 (the three-row difference is `repomap`, `mcpserver`, `docmanifest`,
+explained above).
+
+**For J46-3, on `evalrun`.** What imports it: `bantamkit/__init__.py` (`CONFIGS`,
+`format_report`, `run_suite`), `criticreplay.py` (`TrackingClient`), and a chain of
+`runtime-py/tests/test_document_*.py` files plus `tools/devteam/build_tasks.py`. Nothing in
+`mcpserver.py` imports it (its one hit there is a comment). What it pulls in, transitively:
+`docmanifest`, `agent`, `assets`, `budget`, `client`, `contract`, `critique`, `docread`,
+`filegraph`, `loopguard`, `profile`, `structured` — i.e. essentially every module in this
+table plus the two shared, already-ported modules (`assets`, `contract`, `docread`). It is
+the hub that gives all the Layer-1/3/4/Measurement modules above their only import path; it
+has no CLI entry point of its own (no `[project.scripts]` binding, `python -m` only) and no
+MCP tool advertises it. For it to reach a surface, either a new MCP tool or CLI subcommand
+would have to call `run_suite`/`format_report` directly — nothing today does.
+
 ## Concurrency
 
 Measured, not assumed: 12 pipelined saves all land in order; a recall behind a save **sees**

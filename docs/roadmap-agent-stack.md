@@ -135,6 +135,16 @@ one-sided. One pass, one verdict per row: product-and-must-port, research-and-do
 
 **Gate:** none. This is an audit, and its output is a table, not code.
 
+**AMENDED 2026-09-10 — J46-2 closed this row.** The list above is superseded, not corrected in
+place: `repomap` ported since this row was written, and re-deriving the list by hand found two
+more false rows this row's own text did not catch (`docmanifest` folds into `mcp/server.ts`
+inline, on top of the `mcpserver` rename already noted above) — thirteen real rows, not sixteen.
+Every row now carries exactly one verdict: 1 product-and-must-port (`pdfread` — PDF reading is
+on the `bantamkit_read` surface in Python and still refused on Node; this is already a tracked
+divergence in `docs/porting.md`, not a new gap, and that row's own "job44 ports `pdfread`" text
+did not happen), 12 research-and-documented, 0 dead. Full table, evidence, and the re-derivation
+command: [docs/porting.md, "The unported Python modules, one verdict per row"](porting.md#the-unported-python-modules-one-verdict-per-row).
+
 ### AS-7 — Tell the operator they are stale; do NOT build `--update`
 
 Added 2026-09-07, from a question the user asked at the 0.30.0 release: *"should we add an
