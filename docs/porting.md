@@ -596,6 +596,55 @@ has no CLI entry point of its own (no `[project.scripts]` binding, `python -m` o
 MCP tool advertises it. For it to reach a surface, either a new MCP tool or CLI subcommand
 would have to call `run_suite`/`format_report` directly — nothing today does.
 
+**AMENDMENT (J46-3, AS-3's decision, checked rather than accepted).** AS-3
+(`docs/roadmap-agent-stack.md`) names two honest endings for `evalrun` — port it to
+`runtime-ts` with a CLI on both sides, or record here that it is a research tool shipping on
+**neither** surface — and forbids the third, silence. **The ending is: neither surface,
+recorded.** `evalrun`'s own `research-and-documented` verdict above already points this way;
+this amendment is the three-part check AS-3's gate demands before taking that ending, run
+against the repo rather than assumed:
+
+1. *Not on the surface today.* Same finding as J46-2's paragraph above, re-run independently:
+   `grep -n '\[project.scripts\]' -A2 runtime-py/pyproject.toml` shows the one entry,
+   `bantamkit-mcp = "bantamkit.mcpserver:main"`; `grep -n evalrun runtime-py/src/bantamkit/mcpserver.py`
+   returns one line, a comment, not an import. TRUE.
+2. *Porting buys nothing a user can call, for a cost that recurs.* `wc -l
+   runtime-py/src/bantamkit/evalrun.py` = 1999 — the "~2000 lines" AS-3 names. Combined with
+   check 1 (nothing calls it today, on either side), a port adds a maintenance surface with no
+   caller at the end of it. TRUE, and it follows from check 1 rather than being separate.
+3. *It reaches for something the pure-node ruling forbids.* Not a feeling about imports —
+   traced. `evalrun.py` line 18 is `import yaml`; line 382 is
+   `yaml.safe_load(f.read_text(encoding="utf-8"))`, parsing arbitrary task files
+   (`assets/evals/tasks/*.yaml`) — e.g. `shop-stock-total.yaml` has a nested mapping
+   (`scoring: {kind, expected}`), a list (`tools: [...]`), and a block scalar (`prompt: |`).
+   The only YAML code on the Node side, `runtime-ts/src/memory/pyyaml.ts`, is not a general
+   parser and says so in its own header: "this is not a YAML emitter. It is PyYAML's emitter
+   for one document shape: a root-level block mapping whose values are strings, `null`, or
+   lists of strings. Everything outside that shape throws rather than guessing." A
+   `scoring:`/`tools:`/`prompt: |` document is outside that shape on every count. The
+   dependency this file's own "Four libraries rejected" section (`js-yaml` for the emit side)
+   already turned away is exactly what a general parse would need to reach for again, and the
+   no-new-runtime-dependency invariant forbids adding it. TRUE.
+
+All three hold, so the decision stands: **`evalrun` ships on neither `runtime-py`'s product
+surface nor `runtime-ts`, and that is a recorded fact, not a gap.** J46-2's verdict
+(`research-and-documented`) does not contradict this — it is the same conclusion, reached
+first from reachability rather than from AS-3's three-part test.
+
+**Whether this is a `ruling:` case.** No. This file's own convention (see the "Where the two
+runtimes deliberately differ" rulings, e.g. the charset and compression rows above) reserves
+`ruling:` conformance cases for a divergence that pins **wording both runtimes emit** for the
+same call — the kind of thing a future edit could silently drift. This row is the other kind:
+a module with no counterpart on the other side at all. There is no call either runtime answers
+where the presence or absence of `evalrun.ts` produces a wording difference to pin, and no
+refusal bit to compare, because `evalrun` is unreachable from both MCP surfaces — there is no
+user-facing call on either side that this ending could make diverge. `agent`, `budget`,
+`profile`, `loopguard`, `structured`, `critique`, `criticreplay`, `filegraph`,
+`textutil` and `memory/divergence`, above, are the same kind of row and none of them carries a
+`ruling:` case either, for the same reason. A ruled case here would be unpinnable — there is
+no observable behaviour on either side for it to hold constant — so adding one would be a case
+that can never fail, which is worse than no case.
+
 ## Concurrency
 
 Measured, not assumed: 12 pipelined saves all land in order; a recall behind a save **sees**

@@ -2,6 +2,12 @@
 
 ← [README](../README.md) · [Install](install.md) · [Usage](usage.md) · [Memory](memory.md) · [MCP](mcp.md)
 
+**This harness is `runtime-py`-only, deliberately.** There is no `evalrun.ts`, no MCP tool,
+and no CLI subcommand on either runtime that calls it — it is a research tool, not a product
+surface, and AS-3's decision plus the three checks behind it are recorded in
+[`docs/porting.md`](porting.md#the-unported-python-modules-one-verdict-per-row) (search that
+file for `evalrun`).
+
 The point of the eval harness is one number: does the toolkit actually lift this
 model, and at what token cost? It runs the same task suite under several
 harness configurations against the same endpoint.
