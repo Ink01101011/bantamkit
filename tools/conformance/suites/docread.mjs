@@ -117,7 +117,20 @@ export function columnLetter(index) {
  *   note.rtf   a real RTF: read where textutil is, refused where it is not; the port refuses.
  */
 const RULED = {
-  'tiny.pdf': { kind: 'pdf', python: () => false },
+  // The sharpest ruling in the file, and until J46-24 the only `reads`-shaped entry without
+  // its two literals. A ruling proves the two sides still DIFFER; the refusal bit proves
+  // WHICH side refuses. Neither says what the READING side read — so a Python-side PDF
+  // regression left both green. MEASURED 2026-09-11: truncating every row by one character
+  // in `pdfread._rows_from_runs` moved this file's row to `Hello conformanc` and the suite
+  // still answered `1169 cases, 0 failures`; the only thing that moved was a note, and a
+  // note is not a case. `reads` and `sentence` close that, the same way the bzip2/lzma pair
+  // below already did — both generated from a measured run, never written by hand.
+  'tiny.pdf': {
+    kind: 'pdf',
+    python: () => false,
+    reads: ['Hello conformance'],
+    sentence: 'DocumentReadError: cannot read tiny.pdf: it is a PDF document (PDF-1.4), 592 bytes on disk. pdf is not readable by the Node server yet (the Python server reads it); see docs/porting.md',
+  },
   // Two compression methods `node:zlib` has not got. The reference reads both to one row
   // (`zipfile` links bz2 and lzma); the port names the member, the method NUMBER and its
   // name in the refusal. `reads` and `sentence` are the two literals the companions pin —
