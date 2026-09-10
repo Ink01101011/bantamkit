@@ -1,0 +1,22 @@
+[
+  "how should a subagent wait on a long running command",
+  "does a standing permission survive compaction",
+  "when do I clock in a shiftwork unit",
+  "what do I do when a unit escalates",
+  "is a pytest pass count stable across commits",
+  "do I hand the brief or the path to a subagent",
+  "must bantamkit work on windows",
+  "can I edit a file a live unit is holding",
+  "should a fix name the property or the mechanism",
+  "why grep the warnings in a CI log",
+  "why does pytest in a worktree test main",
+  "am I allowed to tag a release",
+  "how do I know a target is really refuted",
+  "how does the user want long multi job work run",
+  "where do orchestrator numbers go wrong",
+  "should I send a prep probe before planning",
+  "can I guess or must I probe",
+  "when is a job actually finished",
+  "how do I verify a gate is not vacuous",
+  "how does a reader hand a file to an agent"
+]
