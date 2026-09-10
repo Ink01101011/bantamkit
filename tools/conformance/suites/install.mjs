@@ -35,7 +35,7 @@
  * that reaches a case is the scratch directory the fixtures were built in, and that is
  * identical on both sides by construction.
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -155,6 +155,17 @@ function buildScenarios(root) {
   const notADirectory = join(origins, 'a-file');
   writeFile(notADirectory, 'a regular file\n');
   const underAFile = join(notADirectory, 'bantamkit-0.25.0.tgz');
+  // AND THE OTHER SIDE OF THAT LINE, which is the case this suite was missing until it was
+  // hunted for. Every scenario above reaches "the origin is not there", and an errno set
+  // widened until EVERY failure means "gone" would pass all of them — the vacuity J46-12
+  // found in its own draft. This origin EXISTS behind a directory nobody may enter, so a
+  // runtime that answers `false` for it is reporting a deleted tarball where the truth is a
+  // stat that never happened. `Path.exists()` raises here (EACCES is not in
+  // `pathlib._ignore_error`) and `originStat` reports `present: null`; neither may fire the
+  // condition, and neither may say `false`.
+  const denied = join(origins, 'denied');
+  const behindADeniedDirectory = join(denied, 'bantamkit-0.25.0.tgz');
+  writeFile(behindADeniedDirectory, 'an origin that is really there\n');
 
   const scenarios = [];
   const add = (id, py, node) => scenarios.push({ id, py, node });
@@ -187,6 +198,12 @@ function buildScenarios(root) {
     'local-file-under-a-file',
     py('local-file-under-a-file', { directUrl: { url: url(underAFile), archive_info: {} } }),
     nd('local-file-under-a-file', { entry: { version: '0.25.0', resolved: fileSpec(project('local-file-under-a-file'), underAFile) } }),
+  );
+
+  add(
+    'local-file-denied',
+    py('local-file-denied', { directUrl: { url: url(behindADeniedDirectory), archive_info: {} } }),
+    nd('local-file-denied', { entry: { version: '0.25.0', resolved: fileSpec(project('local-file-denied'), behindADeniedDirectory) } }),
   );
 
   // An editable install here, a `link: true` lockfile entry there. The reference's editable
@@ -240,7 +257,7 @@ function buildScenarios(root) {
   // and falls through to `checkout`; the port cannot identify the package at all and refuses.
   add('unowned-file', pythonCheckout(join(root, 'py', 'unowned-file')), nodeUnowned(join(root, 'node', 'unowned-file')));
 
-  return { scenarios, origins: { liveArchive, liveTree, goneArchive, underAFile } };
+  return { scenarios, origins: { liveArchive, liveTree, goneArchive, underAFile, denied, behindADeniedDirectory } };
 }
 
 // ------------------------------------------------------------------------------ comparison
@@ -261,26 +278,35 @@ export async function run(ctx) {
   const { scenarios, origins } = buildScenarios(root);
 
   const nodeAnswers = {};
-  for (const scenario of scenarios) {
+  const reference = (() => {
+    // The denied directory is closed for exactly as long as both sides are being asked, and
+    // reopened in a `finally` so a throw anywhere in here cannot leave harness scratch
+    // undeletable. Both runtimes see the SAME mode, which is the whole point of the scenario.
+    chmodSync(origins.denied, 0o000);
     try {
-      const install = identity.deriveInstall(scenario.node.running, scenario.node.entry);
-      const condition = status.installSourceCondition(install);
-      const stat = install.source === null ? null : identity.originStat(install.source);
-      nodeAnswers[scenario.id] = {
-        refused: false,
-        shape: install.shape,
-        source: install.source,
-        source_reason: install.sourceReason,
-        source_exists: stat === null ? null : stat.present,
-        condition: condition === null ? null : { key: condition.key, sentence: condition.sentence },
-      };
-    } catch (error) {
-      if (!(error instanceof identity.Undetermined)) throw error;
-      nodeAnswers[scenario.id] = { refused: true, refusal: error.message };
+      for (const scenario of scenarios) {
+        try {
+          const install = identity.deriveInstall(scenario.node.running, scenario.node.entry);
+          const condition = status.installSourceCondition(install);
+          const stat = install.source === null ? null : identity.originStat(install.source);
+          nodeAnswers[scenario.id] = {
+            refused: false,
+            shape: install.shape,
+            source: install.source,
+            source_reason: install.sourceReason,
+            source_exists: stat === null ? null : stat.present,
+            condition: condition === null ? null : { key: condition.key, sentence: condition.sentence },
+          };
+        } catch (error) {
+          if (!(error instanceof identity.Undetermined)) throw error;
+          nodeAnswers[scenario.id] = { refused: true, refusal: error.message };
+        }
+      }
+      return ctx.runPython(REF, { scenarios });
+    } finally {
+      chmodSync(origins.denied, 0o755);
     }
-  }
-
-  const reference = ctx.runPython(REF, { scenarios });
+  })();
   const pyAnswers = reference.answers;
 
   const cases = [];
@@ -374,6 +400,50 @@ export async function run(ctx) {
       'string',
     ),
   );
+
+  // ------------------------------------ "not there" against "could not look", on both sides
+
+  /**
+   * THE CASE THIS SUITE WAS MISSING, AND IT WAS FOUND BY LOOKING FOR IT.
+   *
+   * Every other scenario here reaches "the origin is not there", so an errno set widened
+   * until EVERY stat failure means "gone" would pass all of them — the exact vacuity J46-12
+   * found in its own draft, one layer up. This origin EXISTS, behind a directory nobody may
+   * enter. A runtime that answers `false` for it reports a deleted tarball where the truth is
+   * a stat that never happened, and would fire `install-source-missing` at an operator whose
+   * install is fine.
+   *
+   * THE SKIP IS NARROW, for the same reason it is narrow in the two unit suites: it fires
+   * only where the stat genuinely SUCCEEDED — running as root, or a filesystem that ignores
+   * the mode, which is Windows — and never where a side answered `false`. A skip that bailed
+   * out on anything but `null` would let the regression through silently, which is the shape
+   * that was measured to do exactly that.
+   */
+  const denied = { py: pyAnswers['local-file-denied'], nd: nodeAnswers['local-file-denied'] };
+  if (denied.py.source_exists === true || denied.nd.source_exists === true) {
+    notes.push(
+      'local-file-denied: SKIPPED — a stat got through a 0o000 directory on this filesystem ' +
+        `(reference ${JSON.stringify(denied.py.source_exists)}, port ${JSON.stringify(denied.nd.source_exists)}), ` +
+        'so there is nothing here to deny and the comparison would prove nothing. This is the ' +
+        'expected outcome as root and on Windows; a `false` from either side is NOT skipped.',
+    );
+  } else {
+    cases.push({
+      name: 'install: an origin that could not be STATTED is not an origin that is gone',
+      kind: 'json',
+      expected: denied.py,
+      actual: denied.nd,
+    });
+    cases.push(
+      ...literalCases(
+        `exists=${JSON.stringify(denied.py.source_exists)} condition=${JSON.stringify(denied.py.condition)}`,
+        `exists=${JSON.stringify(denied.nd.source_exists)} condition=${JSON.stringify(denied.nd.condition)}`,
+        'install: a denied stat reports neither a missing origin nor a condition',
+        'exists=null condition=null',
+        'string',
+      ),
+    );
+  }
 
   // -------------------------------------------------------- the refusal BIT, before any word
 
