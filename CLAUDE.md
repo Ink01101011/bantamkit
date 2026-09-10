@@ -59,5 +59,19 @@ run its agent spawns through the shiftwork MCP tools:
 3. On `result: escalate`, stop and ask the user. On `result: success`, the
    job is done.
 
+**Amendment 2026-09-11 (job46, AS-2).** The clause above stands as written: the
+model is per role, never random, always logged. As of this job it is also
+CHECKED. `job.roles` in the checkpoint contract
+(`assets/schemas/shiftwork-checkpoint.json`) maps a unit role to the model
+identifiers that role may report; when it names a unit's role,
+`shiftwork_clock_out` refuses an accounting entry whose `model` is not on that
+list — and refuses one that reports no model at all — before anything is
+written: no accounting line, no cursor advance, the checkpoint byte-unchanged.
+Models compare exactly (`claude-opus-5[1m]` is not `claude-opus-5`). Declaring
+nothing keeps exactly the behaviour the clause describes, so a checkpoint
+written before this job is unaffected. Enforced in both runtimes and gated by
+38 per-side cases in `node tools/conformance/run.mjs --suite shiftwork`; see
+`docs/shiftwork.md`.
+
 Exempt: one-off ad-hoc spawns (a single search or review with no plan
 behind it) — no unit to clock.
