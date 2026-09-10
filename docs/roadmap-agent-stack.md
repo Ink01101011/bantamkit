@@ -155,9 +155,7 @@ next to it.
 
 1. **It cannot deliver the thing it promises.** The running MCP server keeps serving the
    code it loaded at startup. Measured 2026-09-07: `runtime-ts/dist/` was rebuilt at 0.30.0
-   at 08:58 and `bantamkit_status` still answered `version 0.29.1, serving 11 tools` until
-   the host reconnected at 09:03. An `--update` would print success while the caller went
-   on talking to the old process — *more* confusion, not less.
+   at 08:58 and `bantamkit_status` still answered `version 0.29.1, serving 11 tools` (served-tools: dated — the surface was eleven then; 0.30.0's `memory_dream` and `repo_map` made it thirteen) until the host reconnected at 09:03. An `--update` would print success while the caller went on talking to the old process — *more* confusion, not less.
 2. **It is expensive under the two-runtime rule.** The same flag would update from npm on
    one side and PyPI on the other: different registry, different mechanism, different
    failure modes. That is a deliberate divergence, and the price is a `docs/porting.md` row,

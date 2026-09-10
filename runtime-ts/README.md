@@ -297,9 +297,10 @@ serving the code it loaded at startup**, so every row ends with restarting it in
 
 **Then restart the server in your host**, or you will keep talking to the old build. In
 Claude Code that is `/mcp` → reconnect; in Claude Desktop it is a full restart of the app.
-Measured 2026-09-07: a checkout whose `dist/` had just been rebuilt at 0.30.0 kept
-answering `version 0.29.1, serving 11 tools` until the host reconnected — the disk was
-current and the process was not.
+Measured 2026-09-07 (served-tools: dated — the surface was eleven then; 0.30.0's
+`memory_dream` and `repo_map` made it thirteen): a checkout whose `dist/` had just been
+rebuilt at 0.30.0 kept answering `version 0.29.1, serving 11 tools` until the host
+reconnected — the disk was current and the process was not.
 
 **Verify with `bantamkit_status`, not with the install log.** It reports the version and
 the `build_id` of *the code that is answering you*:
