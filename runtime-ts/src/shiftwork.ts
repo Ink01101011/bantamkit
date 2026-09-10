@@ -279,14 +279,26 @@ function pyFormat(value: PyValue): string {
  * spelling this job has never produced is a finding to rule on, not a string to massage.
  *
  * The two sentences are BYTE-IDENTICAL to `runtime-py`'s and are copied, never paraphrased.
+ *
+ * THE TEST IS KEY PRESENCE, NOT TRUTHINESS, AND THAT IS A RULING (J46-10). Both runtimes
+ * spelled this `if not allowed`, which reads `roles: {implementer: []}` as unconstrained and
+ * so makes an empty list a silent opt-out of the rule the checkpoint just declared. Today
+ * `minItems: 1` refuses such a document during the read and nothing reaches here — but the
+ * schema is a SHARED asset, the class job46 has measured three times as invisible to the
+ * differential half of the harness, and a check whose safety rests on another layer's
+ * keyword fails open the day that keyword moves. The DECLARATION is the key: a role the map
+ * names is held to its list, and a list of nothing allows nothing. `names` is then the empty
+ * string and the sentence says so. Reachable, and therefore measured: `BANTAMKIT_ASSETS` is
+ * honoured by both runtimes, so the tests and the conformance corpus drive this branch
+ * through a pack whose schema has lost `minItems`.
  */
 function modelRefusal(document: PyDict, unitId: string, unit: PyDict, accounting: unknown): string | null {
   const role = text(field(unit, 'role'));
   const roles = subDict(document, 'job').v.get('roles');
   const allowed = roles === undefined || roles.t !== 'dict' ? undefined : roles.v.get(role);
-  // `if not allowed`: an empty list is falsy in Python and unconstrained here too — though
-  // the schema's `minItems: 1` refuses such a checkpoint before this function is reached.
-  if (allowed === undefined || allowed.t !== 'list' || allowed.v.length === 0) return null;
+  // `role not in roles`. The `t !== 'list'` arm is a TYPE guard and not a policy: the schema
+  // pins the value to an array, so the only way past it is a document no read would accept.
+  if (allowed === undefined || allowed.t !== 'list') return null;
   const names = allowed.v.map((model) => pyFormat(model)).join(', ');
   const offered = asPatch(accounting).get('model');
   if (offered === undefined || offered.t === 'null') {

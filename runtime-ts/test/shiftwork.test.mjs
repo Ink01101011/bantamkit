@@ -25,6 +25,7 @@ const { clockIn, clockOut, status, HISTORY_RING_SIZE } = await import(new URL('s
 const { dumpJson, fromJs, parseJson, toJs } = await import(new URL('pyjson.js', dist));
 const { pyNewlineOut, pyReadText, pyReplace, pyRepr, pySuffix } =
   await import(new URL('memory/pyfs.js', dist));
+const { loadSchema } = await import(new URL('assets.js', dist));
 
 /**
  * A path as `str(OSError)` prints it: `%r`, which ESCAPES A BACKSLASH.
@@ -632,6 +633,93 @@ test('an EMPTY allowed list is not the absent case: the schema refuses the whole
     reason: "checkpoint invalid: JSON does not match schema at 'job/roles/implementer': [] should be non-empty",
   });
   assert.equal(existsSync(`${path}.log.jsonl`), false);
+  rmSync(root, { recursive: true, force: true });
+});
+
+/**
+ * An asset pack whose checkpoint schema has lost `minItems: 1` on the roles list.
+ *
+ * The ONLY way to reach the empty-list branch of `modelRefusal`: with the shipped schema
+ * `roles: {implementer: []}` is refused during the read and the check is never called.
+ * `BANTAMKIT_ASSETS` is the same override `runtime-py` honours, so the two halves of the
+ * J46-10 ruling are measured by the same instrument on both sides.
+ */
+function packWithoutMinItems(root) {
+  // `loadSchema`, not a hand-built path: the pack this run would otherwise have used is the
+  // one whose copy must be mutated, and a second guess at where it lives is a second way to
+  // be wrong. The companion test below is what proves the copy actually took effect.
+  const shipped = loadSchema('shiftwork-checkpoint');
+  delete shipped.properties.job.properties.roles.additionalProperties.minItems;
+  const pack = join(root, 'pack');
+  mkdirSync(join(pack, 'schemas'), { recursive: true });
+  writeFileSync(join(pack, 'schemas', 'shiftwork-checkpoint.json'), JSON.stringify(shipped), 'utf8');
+  return pack;
+}
+
+/** Run `body` with the asset root pointed at `dir`, and put the environment back. */
+function withAssets(dir, body) {
+  const before = process.env.BANTAMKIT_ASSETS;
+  process.env.BANTAMKIT_ASSETS = dir;
+  try {
+    return body();
+  } finally {
+    if (before === undefined) delete process.env.BANTAMKIT_ASSETS;
+    else process.env.BANTAMKIT_ASSETS = before;
+  }
+}
+
+test('an empty allowed list still REFUSES once the schema stops catching it — the check fails closed', () => {
+  const root = fresh();
+  // RULING 1 (J46-10), decided for J46-9. `if not allowed` read `[]` as unconstrained on
+  // both sides, so the day `minItems` moves, an empty list becomes a silent opt-out of the
+  // rule the checkpoint just declared — and the schema is a SHARED asset, which the
+  // differential half of the harness cannot see change. The DECLARATION is the key: a role
+  // the map names is held to its list, and a list of nothing allows nothing. `names` renders
+  // empty and the sentence says so, rather than growing a third string to keep in sync.
+  const pack = packWithoutMinItems(root);
+  const path = writeCheckpoint(root, withRoles({ implementer: [] }));
+  const before = bytes(path);
+  withAssets(pack, () => {
+    assert.deepEqual(js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, ACCOUNTING, { now: 1 })), {
+      result: 'error',
+      reason: 'unit N1 in role implementer reported model haiku, which job.roles.implementer does not allow: ',
+    });
+    // And reporting no model is not an escape from a list of nothing either.
+    assert.deepEqual(js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, { tokens: 1 }, { now: 1 })), {
+      result: 'error',
+      reason: 'unit N1 in role implementer reported no model, but job.roles.implementer allows only: ',
+    });
+  });
+  assert.deepEqual(bytes(path), before);
+  assert.equal(existsSync(`${path}.log.jsonl`), false);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('the mutated pack is what lets the empty list through — the gate reaches what it claims to check', () => {
+  const root = fresh();
+  // The companion that keeps the test above honest. Under the SHIPPED schema the same
+  // document comes back with the SCHEMA's sentence and never reaches the model check; under
+  // the pack it reaches it. Without this pair, a `packWithoutMinItems` that silently failed
+  // to load would leave the test above asserting nothing it thinks it asserts.
+  const pack = packWithoutMinItems(root);
+  const path = writeCheckpoint(root, withRoles({ implementer: [] }));
+  const call = () => js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, ACCOUNTING, { now: 1 })).reason;
+  assert.equal(call(), "checkpoint invalid: JSON does not match schema at 'job/roles/implementer': [] should be non-empty");
+  assert.ok(withAssets(pack, call).startsWith('unit N1 in role implementer reported model haiku, which'));
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('under one pack, an ABSENT role and an EMPTY list are different inputs', () => {
+  const root = fresh();
+  // Neither is refused by this pack's schema, so the difference that shows is the runtime's
+  // own reading: absent means unconstrained, `[]` means nothing is allowed.
+  const pack = packWithoutMinItems(root);
+  const absent = writeCheckpoint(root, withRoles({ reviewer: ['claude-opus-5'] }), 'absent.json');
+  const empty = writeCheckpoint(root, withRoles({ implementer: [] }), 'empty.json');
+  withAssets(pack, () => {
+    assert.equal(js(clockOut(absent, 'N1', 'done', {}, OK_ENTRY, ACCOUNTING, { now: 1 })).result, 'ok');
+    assert.equal(js(clockOut(empty, 'N1', 'done', {}, OK_ENTRY, ACCOUNTING, { now: 1 })).result, 'error');
+  });
   rmSync(root, { recursive: true, force: true });
 });
 
