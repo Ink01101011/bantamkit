@@ -40,7 +40,7 @@ from bantamkit.contract import (
 from bantamkit.eventlog import EventLog
 from bantamkit.mcpreport import build_report as build_mcp_report
 from bantamkit.mcpreport import resolve_event_log_path
-from bantamkit.memory import DEFAULT_INDEX_BUDGET, Memory
+from bantamkit.memory import DEFAULT_INDEX_BUDGET, INDEX_PRESSURE_PERCENT, Memory
 from bantamkit.statusline import status_line
 
 try:
@@ -359,13 +359,11 @@ STATUS_PROMPT_TAIL = (
 SERVED_PROMPTS = 1
 SERVED_RESOURCE_TEMPLATES = 2
 
-#: Percent of the index budget that has to be SPENT before the store is called degraded.
-#:
-#: 90 and not 100 because the useful moment is before the refusal, not after it: at 100%
-#: the next `memory_save` has already failed and the operator has already seen the error.
-#: An INTEGER percent, compared by cross-multiplication below, so the two runtimes cannot
-#: land on opposite sides of the line through a float they rounded differently.
-INDEX_PRESSURE_PERCENT = 90
+#: `INDEX_PRESSURE_PERCENT` is re-exported here, where it used to be DEFINED, so that
+#: `from bantamkit.mcpserver import INDEX_PRESSURE_PERCENT` keeps working. It moved down to
+#: `memory/store.py` in job46 (J46-4): `MemoryStore.compact` is the remedy the sentence
+#: below names, and it cannot clear a warning whose line it cannot see. The comment that
+#: says why the number is 90 moved with it.
 
 
 @dataclass(frozen=True)

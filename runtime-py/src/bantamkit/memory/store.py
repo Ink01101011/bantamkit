@@ -90,6 +90,37 @@ _MIN_RATIO_RANGE = "recall min-score ratio must be between 0.0 and 1.0"
 # ceiling pass `index_budget=4096`; nothing about the budget mechanism changed.
 DEFAULT_INDEX_BUDGET = 24_000
 
+#: Percent of the index budget that has to be SPENT before the store is called degraded.
+#:
+#: 90 and not 100 because the useful moment is before the refusal, not after it: at 100%
+#: the next `memory_save` has already failed and the operator has already seen the error.
+#: An INTEGER percent, compared by cross-multiplication where it is read, so the two
+#: runtimes cannot land on opposite sides of the line through a float they rounded
+#: differently.
+#:
+#: AMENDMENT (job46, J46-4). It used to live in `mcpserver.py`, next to the only thing that
+#: read it, and that is exactly what `docs/porting.md`'s register item 7 is about: the
+#: report warned at THIS line while the remedy it named — `compact` — aimed at a different
+#: one, so between the two the command exited 0 having archived nothing. `compact` has to
+#: know where the warning is to be able to clear it, and `mcpserver` is above this layer,
+#: so the number moved DOWN to the layer both readers can reach. Same name, same value,
+#: same integer comparison; `mcpserver` imports it rather than spelling a second 90.
+INDEX_PRESSURE_PERCENT = 90
+
+
+def undegraded_index_ceiling(budget: int) -> int:
+    """The largest index size `INDEX_PRESSURE_PERCENT` does NOT call degraded, in bytes.
+
+    Integer arithmetic only, and the identity it holds is
+    `size > undegraded_index_ceiling(b)` exactly when `size * 100 >= PERCENT * b` — the
+    cross-multiplied comparison `mcpserver._index_pressure_condition` writes. The two
+    spellings are pinned against each other by a boundary sweep in
+    `tests/test_status_surface.py`, because they are two spellings and a test is the only
+    thing that can keep them one line.
+    """
+    return (INDEX_PRESSURE_PERCENT * budget - 1) // 100
+
+
 # The second half of the "unreadable" sentence, one per directory this store lists.
 # They are separate strings because the two failures do different damage, and an error
 # that names the wrong damage sends the reader to the wrong place. Both are spelled
@@ -457,6 +488,28 @@ class MemoryStore:
         headroom however long one description grows. `reserve` is recomputed from the
         survivors, so a second call archives nothing and `compact()` is idempotent.
 
+        AMENDMENT (job46, J46-4), and it supersedes the sentence above about where that
+        reserve is measured FROM. WAS: `budget - largest index line`. NOW: that same
+        largest line plus the headroom `INDEX_PRESSURE_PERCENT` demands, so the target is
+        `undegraded_index_ceiling(budget) - largest index line`. THE REASON IS THE THIRD
+        DEFECT OF THIS METHOD and it is `docs/porting.md`'s register item 7: the degraded
+        report warns at 90% of the budget and names THIS command, while the old target sat
+        at `budget - largest line`, so on any store whose biggest line is under a tenth of
+        its budget the command the operator was told to run archived nothing and the
+        warning stayed up. MEASURED on a read-only copy of this machine's project store
+        (101 facts, index.md 21819 bytes of 24000 = 90.91%, largest index line 361 bytes,
+        so the old target was 23639 = 98.50%): `compact()` answered `archived=[]` and
+        `index-budget-low` was still firing afterwards. The two paragraphs above are why
+        the fix is a substitution and not a new number -- "compacting to merely-fits leaves
+        the caller looping" is the same argument one line lower down, so the reserve is
+        measured from the line the WARNING draws instead of the one the REFUSAL draws.
+
+        WHAT THIS DOES NOT CHANGE, deliberately: the eviction ORDER (`_eviction_key`), the
+        half-the-budget cap, and an EXPLICIT `reserve`. A caller that passes one gets the
+        arithmetic it always got, byte for byte -- every eviction-order node in
+        `tests/test_memory.py` passes one for exactly that reason, and so may any caller
+        that needs the old default back.
+
         WAS: an unreadable store compacted to `CompactResult(archived=[])`, and the CLI
         printed "nothing to archive — the index is already at or below the target"
         about a store whose size it had failed to measure. NOW: the first statement
@@ -491,7 +544,17 @@ class MemoryStore:
         facts = self._facts()
         sizes = {fact.name: len(self._index_line(fact).encode()) for fact in facts}
         if reserve is None:
-            reserve = max(sizes.values(), default=0)
+            # The default reserve is measured from the WARNING LINE, not from the budget.
+            # One substitution, and it is the whole of `docs/porting.md` item 7: the
+            # sentence that names this command fires at `INDEX_PRESSURE_PERCENT`, so a
+            # remedy that only reaches `budget - largest line` is a no-op everywhere
+            # between them. `undegraded_index_ceiling` is that line; `+ largest line`
+            # keeps this method's own promise on the other side of it, unchanged in
+            # words: "a fact as big as the biggest one you keep will fit" -- before the
+            # index is degraded AGAIN, rather than before it is over budget.
+            reserve = (self.index_budget - undegraded_index_ceiling(self.index_budget)) + max(
+                sizes.values(), default=0
+            )
         reserve = max(0, min(reserve, self.index_budget // 2))
         target = self.index_budget - reserve
 
