@@ -501,8 +501,11 @@ test('clock_out refuses a model the role is not allowed, and the refused path wr
 
 test('the allowed list is rendered in CHECKPOINT order, not sorted', () => {
   const root = fresh();
-  // `claude-sonnet-5` before `claude-opus-5` is not alphabetical, so a `sorted()` on either
-  // side shows up here. A map already in sorted order cannot state this property at all.
+  // `zzz-last` before `aaa-first` is as far from sorted as two entries get, so a `sorted()`
+  // on either side shows up here. A map already in alphabetical order cannot state this
+  // property at all — which is exactly why runtime-py's own fixture could not fail, and why
+  // J46-10 added the mirror there (`ROLES` above is non-alphabetical for the same reason,
+  // but two entries one swap apart is a weaker witness than this one).
   const path = writeCheckpoint(root, withRoles({ implementer: ['zzz-last', 'aaa-first'] }));
   assert.equal(
     js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, ACCOUNTING, { now: 1 })).reason,
