@@ -132,6 +132,7 @@ spells out the first one.
 | 2 | `memory-layer-unreadable` | any bound layer's `facts/` cannot be listed (`count_facts` raises) | replacing a layer's `facts/` with a regular file — `NotADirectoryError`, portable to Windows |
 | 3 | `index-budget-low` | `index.md` bytes × 100 ≥ 90 × `index_budget` | building a store at a large budget, then re-binding the same root at a small one |
 | 4 | `event-log-unwritable` | the log is on and `record` has already swallowed an `OSError` | `BANTAMKIT_EVENT_LOG` pointed under a regular file |
+| 5 | `install-source-missing` | this install records an origin path on this machine (`install_shape` is `local-file`, `linked` or `ephemeral`) and that path is **gone** — not merely unreadable | building a real `.dist-info` with a `direct_url.json` naming an archive that was never created, or a real `node_modules/.package-lock.json` with a `file:` `resolved` pointing at one |
 
 Rules that shaped the list:
 
@@ -151,6 +152,59 @@ Rules that shaped the list:
   `scandir` per bound layer (two to four), one field read for the log. No fact file is
   opened and no index is parsed — `Memory.index_accounting()` re-derives the index from
   every fact and is deliberately *not* on this path.
+
+### Amendment, 2026-09-11 — AS-7(a), the fifth condition (J46-13)
+
+Appended rather than written into the rules above, because those rules are what was said
+when there were four conditions and rewriting them would hide that this one changed
+something. Three corrections, in the order a reader meets them.
+
+**1. The path rule now has exactly one exception, and `install-source-missing` is it.**
+The metadata-only rule above ends *"No path appears in any sentence"*, and gives the
+reason: `assets_root()` resolves differently in the two runtimes by construction, so a
+path there would be a second uncomparable value bought for nothing. That reason does not
+reach this condition, and the difference is not a loophole — it is the whole finding.
+The path in this sentence is **not the server's own location**. It is the origin *the
+installer wrote down*, it is the same string on both runtimes for the same install, and
+it is the entire actionable content: AS-7's measured case is a tarball under a
+`/private/tmp/.../scratchpad` that no longer exists, and a sentence saying "an origin is
+missing" without saying which would be a sentence nobody can act on. Both halves are
+pinned rather than promised — `install: the dangling-origin sentence names the path that
+is gone`, per side, in `tools/conformance/suites/install.mjs`, over a fixture where the
+two runtimes are handed the *same* origin path so the whole sentence is compared with the
+path in it.
+
+The rule is otherwise unchanged and this is not licence to add a second exception: the
+other four sentences still name no path, and the reason they do not still holds for them.
+
+**2. The remedy is a reinstall BY NAME, and that is load-bearing.** `npm update` or
+`pip install -U` where a dangling `file:` install lives is a no-op *by construction* —
+the origin it would refresh from is the thing that is gone. A condition whose remedy
+exits 0 having changed nothing is the defect J46-4/5/6 spent three units removing, so the
+sentence sends the reader at a reinstall from a registry, which replaces the install
+instead of refreshing it. Pinned per side by `install: the remedy is a reinstall by name,
+never an update in place`. **Known limit, stated rather than papered over:** for
+`ephemeral` (an `npx` cache) the sentence is still the right instruction at the level of
+the product, but the reader carries it out by changing the spec on the *host's* command
+line, not by running an install where the server is — `runtime-ts/README.md#updating` has
+the route per shape, and this sentence deliberately does not try to be five sentences.
+
+**3. The cost line above is one syscall short.** `degraded_conditions` now also does
+**one `stat` for the install origin**, on every call. What it does *not* do on every call
+is derive the shape: `sys.path` (and `node_modules`) is walked **once per process**,
+memoised, because the bytes that were imported cannot change under a running server —
+only the existence of the recorded path can, and that is the half that is re-read. Both
+runtimes say so in `_install_once` / `currentInstall`, and the reference counts it through
+the real `distributions()` in a test.
+
+**Where the three fields live.** The condition is the *alarm*; the facts are on
+`build_identity`, which gained `install_shape` (one of `registry`, `local-file`, `linked`,
+`checkout`, `ephemeral`), `install_source` and `install_source_exists`. A shape with no
+origin path names the gap as `{"unavailable": <reason>}` rather than dropping the field.
+`install_shape` is **location, never identity**, and is kept out of `build_id` on both
+sides — mutation-checked: folding it in reddens a test in each runtime. Four of these
+answers differ between the runtimes by ecosystem and each difference costs a row in
+[porting.md](porting.md#where-the-two-runtimes-deliberately-differ).
 
 ### What the index condition does not promise
 
