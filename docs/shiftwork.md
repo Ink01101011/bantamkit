@@ -77,6 +77,57 @@ free-text annotation space.
 driver can pick a model without reading a brief. Re-planning needs no special
 mode: a planner unit is just a unit.
 
+### `job.roles` — the declaration that makes the role checkable
+
+**Added in 0.30.x (job46, AS-2). Optional, and omitting it changes nothing.**
+
+`job.roles` is a map from unit role to the model identifiers a session in that
+role may report — spelled exactly as the accounting line logs them:
+
+```json
+"job": {
+  "roles": {
+    "implementer": ["claude-sonnet-5", "claude-opus-5"],
+    "reviewer": ["claude-opus-5"]
+  }
+}
+```
+
+Until this existed, the model a unit ran on was *recorded* and never *compared*:
+it lived in `history[]`/`retro[]`, the only two objects in the contract that
+allow extra keys, so nothing could hold a role to a list. With the map declared,
+`shiftwork_clock_out` refuses an accounting entry whose `model` is not on the
+named role's list — and refuses one that reports **no** model at all, because a
+rule you can escape by omitting a field is enforced only against the honest.
+
+Four properties worth knowing before you declare one:
+
+- **The refusal is total, and it happens first.** It is taken before any
+  mutation and before the log-then-commit pair, so a rejected clock-out leaves
+  the checkpoint byte-unchanged, writes no accounting line, and does not move
+  the cursor. There is no orphan log line claiming a model that was refused.
+- **Omitting the map keeps the old behaviour exactly.** So does naming only some
+  roles: a role the map does not list is unconstrained, and declaring one role
+  forbids nothing about the others. A checkpoint written before this feature
+  clocks out unchanged, model and all.
+- **Models compare EXACTLY.** No normalisation, no prefix match, no
+  strip-the-brackets rule — `claude-opus-5[1m]` is not `claude-opus-5`, and both
+  runtimes pin that case as a refusal so that any future attempt at a fuzzy
+  compare turns red. The map's whole value is that it is the literal list of the
+  spellings a session logs; a spelling you have not seen before is a finding to
+  rule on, not a string to massage.
+- **A list must be non-empty**, and the two layers agree about that rather than
+  one relying on the other: the schema refuses `"implementer": []` outright
+  (`minItems: 1` — a role allowed no model is a typo, not a policy), and the
+  check itself treats a role it is *given* with an empty list as allowing
+  nothing. Keys are the `plan.units[].role` enum, so a key that is not a role is
+  refused rather than quietly ignored.
+
+Note that `job` is a closed object, so an older bantamkit does not skip the key
+— it refuses the whole file. That is deliberate: opening `job` so an old reader
+could ignore `roles` is exactly what would make this check bypassable by running
+an older server.
+
 ### Checkpoint failure modes
 
 | Failure | Behavior |
@@ -86,6 +137,7 @@ mode: a planner unit is just a unit.
 | Cursor unit `blocked` | Write the reason into the unit, set `open_questions`, clock out |
 | `verify` fails on a `done` unit | Distrust the checkpoint from that unit forward; planner re-plans |
 | External `until_cmd` never met | Driver-level timeout, then escalation |
+| Reported model not on `job.roles[role]` (or absent) | Clock-out refuses before writing: no accounting line, no cursor advance, checkpoint byte-unchanged |
 
 ## The driver
 
@@ -214,6 +266,19 @@ choose, `clock_out`'s accounting line records the **model actually used**
 per unit, so every run is auditable after the fact. This mirrors the
 driver's explicit `driver.json` role dispatch — the MCP flavor moves the
 decision into the orchestrator but keeps it explicit and logged.
+
+**Amendment 2026-09-11 (job46, AS-2).** The paragraph above stands as
+written and describes what the MCP flavor did until this release: the
+model was *logged*, and auditing it meant reading the log afterwards. As
+of 0.30.x it can also be **checked at the moment it is reported** — see
+[`job.roles`](#jobroles--the-declaration-that-makes-the-role-checkable).
+Declare the map and `clock_out` refuses a model the role is not allowed,
+and refuses a unit in that role that reports no model at all, before
+anything is written. Declaring nothing keeps exactly the behaviour above.
+So "auditable after the fact" is now the floor rather than the ceiling:
+the recommendation for *which* model to pick is unchanged, and what is
+new is that the choice can be written into the checkpoint and enforced
+instead of remembered.
 
 **Code-fix template.** `tools/shiftwork/example-codefix-checkpoint.json`
 is a schema-valid starting point for the classic fix-a-bug job: units
