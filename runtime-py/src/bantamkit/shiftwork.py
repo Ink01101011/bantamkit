@@ -15,6 +15,11 @@ asset, same discipline:
   atomically (temp file + rename, the driver's pattern) — a validation failure
   writes nothing, and every write-path OSError comes back as a structured
   `{"result": "error"}` refusal, mirroring the read side;
+* clock-out refuses an accounting entry naming a model the unit's role is not
+  allowed, when `job.roles` names that role (AS-2) — a validation-time refusal
+  taken BEFORE the log line is appended, so a rejected model never leaves an
+  orphan accounting line behind; a role the map omits, or a checkpoint with no
+  map, is unconstrained and behaves exactly as it did before the map existed;
 * every clock-out appends one line to `<checkpoint>.log.jsonl` beside the
   checkpoint (unit, role, status, ts, plus orchestrator-reported accounting)
   — the driver-log shape, so the history ring's 5-entry cap never loses
@@ -119,6 +124,42 @@ def clock_in(checkpoint: str) -> dict[str, Any]:
     }
 
 
+def _model_refusal(document: dict, unit_id: str, unit: dict, accounting: dict | None) -> str | None:
+    """AS-2: a role named in `job.roles` may only report a model on its list.
+
+    Returns the refusal sentence, or None when the clock-out may proceed. A role
+    the map does not name — and a checkpoint carrying no map at all — is
+    unconstrained: that is the schema's shape (J46-7) and it is what lets a
+    checkpoint written before this feature clock out unchanged.
+
+    A role the map DOES name must say which model it ran: a missing `model` is
+    refused with the same force as a wrong one, because a rule you can escape by
+    omitting a field is enforced only against the honest.
+
+    Models compare exactly — no normalisation, no prefix match, no
+    strip-the-suffix rule. The map's whole value is that it is the literal list
+    of the spellings a session logs, so a spelling this job has never produced is
+    a finding to rule on, not a string to massage.
+    """
+    role = unit["role"]
+    allowed = document["job"].get("roles", {}).get(role)
+    if not allowed:
+        return None
+    names = ", ".join(allowed)
+    offered = (accounting or {}).get("model")
+    if offered is None:
+        return (
+            f"unit {unit_id} in role {role} reported no model, "
+            f"but job.roles.{role} allows only: {names}"
+        )
+    if offered not in allowed:
+        return (
+            f"unit {unit_id} in role {role} reported model {offered}, "
+            f"which job.roles.{role} does not allow: {names}"
+        )
+    return None
+
+
 def clock_out(
     checkpoint: str,
     unit_id: str,
@@ -130,7 +171,10 @@ def clock_out(
     """Apply the cursor unit's result to the checkpoint, validate whole, write atomically.
 
     `unit_id` must name the cursor unit — the contract is execute-the-cursor
-    (driver parity); anything else is a structured error. Mutations: set the
+    (driver parity); anything else is a structured error. When `job.roles` names
+    the unit's role, `accounting["model"]` must be one of that role's models,
+    spelled exactly; a wrong or missing model is refused here, before any
+    mutation and before the accounting line. Mutations: set the
     unit's status, advance `plan.cursor` to the first non-terminal unit
     (v1-linear, `depends_on` is ignored), shallow-merge `handoff_patch` into
     `handoff`, push `history_entry` onto the 5-entry ring. The mutated
@@ -151,6 +195,9 @@ def clock_out(
     cursor = document["plan"]["cursor"]
     if unit_id != cursor:
         return _error(f"unit {unit_id} is not the cursor unit {cursor}")
+    wrong_model = _model_refusal(document, unit_id, unit, accounting)
+    if wrong_model is not None:
+        return _error(wrong_model)
 
     unit["status"] = status
     remaining = [u for u in document["plan"]["units"] if u["status"] not in TERMINAL_UNIT_STATUS]

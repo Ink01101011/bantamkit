@@ -428,6 +428,166 @@ def test_full_cycle_on_the_v1_example(tmp_path, example):
     assert len(read_log(path)) == 2
 
 
+# --- MCP flavor: clock_out, the AS-2 role/model check ------------------------
+#
+# `job.roles` (J46-7, contract 3fe21ac) maps a role to the model identifiers a
+# session in that role may report. A role the map does not name -- and a
+# checkpoint with no map at all -- is unconstrained, so these tests carry the
+# before-and-after in one place: the refusal, and the four shapes that must
+# still behave exactly as they did before the feature existed.
+#
+# The sentences are pinned as TEXT, not as "an error was raised": the rule
+# lives in one place per runtime and is copied to the other side, so a
+# differential conformance case cannot see a change to it (J46-7 measured
+# that on the schema itself). Per-side literals are the teeth.
+
+ROLES = {"implementer": ["claude-opus-5", "claude-sonnet-5"], "reviewer": ["claude-opus-5"]}
+
+
+def test_clock_out_refuses_a_model_the_role_is_not_allowed(tmp_path, example):
+    """U3 is the implementer cursor unit; haiku is not on the implementer's list."""
+    example["job"]["roles"] = ROLES
+    path = write_checkpoint(tmp_path, example)
+    before = path.read_bytes()
+    r = ops.clock_out(
+        str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, ACCOUNTING
+    )
+    assert r == {
+        "result": "error",
+        "reason": (
+            "unit U3 in role implementer reported model haiku, which "
+            "job.roles.implementer does not allow: claude-opus-5, claude-sonnet-5"
+        ),
+    }
+    # Nothing was written: not the checkpoint, and not the accounting line. The
+    # check is BEFORE the log-then-commit pair, so there is no orphan line
+    # claiming a model that was rejected.
+    assert path.read_bytes() == before
+    assert not Path(str(path) + ".log.jsonl").exists()
+    assert read_log(path) == []
+    assert ops.clock_in(str(path))["unit"]["id"] == "U3"  # the cursor never moved
+
+
+def test_clock_out_accepts_a_model_on_the_roles_list(tmp_path, example):
+    example["job"]["roles"] = ROLES
+    path = write_checkpoint(tmp_path, example)
+    r = ops.clock_out(
+        str(path),
+        "U3",
+        "done",
+        {},
+        {"unit": "U3", "outcome": "done"},
+        dict(ACCOUNTING, model="claude-sonnet-5"),
+    )
+    assert r["result"] == "ok" and r["cursor"] == "U4"
+    assert read_log(path)[-1]["model"] == "claude-sonnet-5"
+
+
+def test_clock_out_compares_the_model_string_exactly(tmp_path, example):
+    """No normalisation, no prefix match, no strip-the-brackets rule (the J46-7 ruling).
+
+    Sibling jobs on this machine log `claude-opus-5[1m]`; the map lists
+    `claude-opus-5`. Those are different strings and the refusal says so.
+    """
+    example["job"]["roles"] = ROLES
+    path = write_checkpoint(tmp_path, example)
+    r = ops.clock_out(
+        str(path),
+        "U3",
+        "done",
+        {},
+        {"unit": "U3", "outcome": "done"},
+        {"model": "claude-opus-5[1m]"},
+    )
+    assert r["result"] == "error"
+    assert "reported model claude-opus-5[1m]" in r["reason"]
+    assert read_log(path) == []
+
+
+def test_clock_out_refuses_a_constrained_role_that_reports_no_model(tmp_path, example):
+    """Case 3, decided: a role the map names must SAY which model it ran.
+
+    Otherwise the rule is enforced only against the honest -- omit the field
+    and the list stops applying.
+    """
+    example["job"]["roles"] = ROLES
+    path = write_checkpoint(tmp_path, example)
+    before = path.read_bytes()
+    r = ops.clock_out(
+        str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, {"tokens": 1234}
+    )
+    assert r == {
+        "result": "error",
+        "reason": (
+            "unit U3 in role implementer reported no model, but "
+            "job.roles.implementer allows only: claude-opus-5, claude-sonnet-5"
+        ),
+    }
+    assert path.read_bytes() == before
+    assert read_log(path) == []
+
+
+def test_clock_out_refuses_a_constrained_role_with_no_accounting_at_all(tmp_path, example):
+    """Same refusal for a missing accounting object as for a missing model key."""
+    example["job"]["roles"] = ROLES
+    path = write_checkpoint(tmp_path, example)
+    r = ops.clock_out(str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"})
+    assert r["result"] == "error"
+    assert "reported no model" in r["reason"]
+    assert read_log(path) == []
+
+
+def test_clock_out_is_unchanged_when_the_checkpoint_declares_no_roles(tmp_path, example):
+    """Property 2: a checkpoint written before this feature clocks out unchanged.
+
+    The shipped example has no `job.roles`, and ACCOUNTING names `haiku` --
+    a model no list anywhere would allow.
+    """
+    assert "roles" not in example["job"]
+    path = write_checkpoint(tmp_path, example)
+    r = ops.clock_out(
+        str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, ACCOUNTING
+    )
+    assert r["result"] == "ok" and r["cursor"] == "U4"
+    assert read_log(path)[-1]["model"] == "haiku"
+
+
+def test_clock_out_is_unchanged_for_a_role_the_map_does_not_name(tmp_path, example):
+    """An absent role is unconstrained (the schema's shape, deliberately preserved).
+
+    U3 is the implementer; this map names only the reviewer, so U3 may report
+    anything -- including nothing at all.
+    """
+    example["job"]["roles"] = {"reviewer": ["claude-opus-5"]}
+    path = write_checkpoint(tmp_path, example)
+    r = ops.clock_out(
+        str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, ACCOUNTING
+    )
+    assert r["result"] == "ok"
+    assert read_log(path)[-1]["model"] == "haiku"
+
+
+def test_clock_out_role_check_runs_after_the_cursor_check(tmp_path, example):
+    """A non-cursor unit is refused for being non-cursor, not for its model.
+
+    Ordering matters for the message a human acts on: the structural refusal
+    that was already there keeps its sentence.
+    """
+    example["job"]["roles"] = ROLES
+    path = write_checkpoint(tmp_path, example)
+    r = ops.clock_out(str(path), "U4", "done", {}, {"unit": "U4", "outcome": "done"}, ACCOUNTING)
+    assert r == {"result": "error", "reason": "unit U4 is not the cursor unit U3"}
+    assert read_log(path) == []
+
+
+def test_roles_refusal_does_not_fire_on_clock_in_or_status(tmp_path, example):
+    """AS-2 constrains what a unit REPORTS, so it can only be checked at clock-out."""
+    example["job"]["roles"] = ROLES
+    path = write_checkpoint(tmp_path, example)
+    assert ops.clock_in(str(path))["result"] == "brief"
+    assert ops.status(str(path))["result"] == "status"
+
+
 # --- MCP flavor: status -----------------------------------------------------
 
 
