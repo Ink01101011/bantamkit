@@ -1,0 +1,14 @@
+{"type": "user", "sessionId": "s1", "cwd": "/w/บันทึก", "timestamp": "2026-09-10T10:00:00.000Z", "message": {"role": "user", "content": "hello"}}
+{"type": "assistant", "sessionId": "s1", "cwd": "/w/บันทึก", "requestId": "r1", "timestamp": "2026-09-10T10:00:05.000Z", "message": {"role": "assistant", "usage": {"input_tokens": 11, "cache_creation_input_tokens": 200, "cache_read_input_tokens": 3000, "output_tokens": 7}}}
+{"type": "assistant", "sessionId": "s1", "cwd": "/w/บันทึก", "requestId": "r1", "timestamp": "2026-09-10T10:00:05.000Z", "message": {"role": "assistant", "usage": {"input_tokens": 11, "cache_creation_input_tokens": 200, "cache_read_input_tokens": 3000, "output_tokens": 7}}}
+{"type": "assistant", "sessionId": "s1", "cwd": "/w/บันทึก", "requestId": "r2", "timestamp": "2026-09-10T09:59:00.000Z", "message": {"role": "assistant", "usage": {"input_tokens": 5, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 100, "output_tokens": 2}}}
+{"type": "assistant", "sessionId": "s1"
+[1, 2, 3]
+{"type": "assistant", "requestId": "r9", "timestamp": "2026-09-10T10:01:00.000Z", "message": {"role": "assistant", "usage": {"input_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 1}}}
+{"type": "assistant", "sessionId": "s1", "cwd": "/w/บันทึก", "requestId": "r3", "timestamp": "2026-09-10T10:02:00.000Z"}
+{"type": "assistant", "sessionId": "s1", "cwd": "/w/บันทึก", "requestId": "r4", "timestamp": "2026-09-10T10:03:00.000Z", "message": {"role": "assistant", "usage": {"input_tokens": 1, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}}
+{"type": "assistant", "sessionId": "s1", "cwd": "/w/บันทึก", "timestamp": "2026-09-10T10:04:00.000Z", "message": {"role": "assistant", "usage": {"input_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 9}}}
+{"type": "assistant", "sessionId": "s1", "cwd": "/w/บันทึก", "requestId": "r5", "timestamp": "2026-09-10T10:05:00.000Z", "message": {"role": "assistant", "usage": {"input_tokens": 1, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": true}}}
+{"type": "assistant", "sessionId": "s1", "cwd": "/w/บันทึก", "requestId": "r6", "timestamp": "2026-09-10T10:06:00.000Z", "message": {"role": "assistant", "usage": {"input_tokens": 3.0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 4}}}
+{"type": "assistant", "sessionId": "s1", "requestId": "r10", "message": {"usage": {"input_tokens": Infinity, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 0}}}
+{"type": "assistant", "sessionId": "s1", "cwd": "/w/บันทึก", "requestId": "r7", "timestamp": "2026-09-10T10:07:00.000Z", "message": {"role": "assistant", "usage": {"input_tokens": 2, "cache_creation_input_tokens": 1, "cache_read_input_tokens": 5, "output_tokens": 6, "service_tier": "standard", "server_tool_use": {"web_search_requests": 0}}}}

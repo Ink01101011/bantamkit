@@ -269,7 +269,7 @@ One JSON object per line, UTF-8, terminated by a single `\n`.
 |---|---|---|
 | `v` | int | record schema version, currently `1`. Bump only when a key is added, removed or renamed; both runtimes move together. |
 | `ts` | string | UTC, `YYYY-MM-DDTHH:MM:SS.mmmZ`. Byte-identical to JavaScript's `new Date(ms).toISOString()`. |
-| `tool` | string | one of the thirteen served tools. The **join key** to the host's log, not the payload. |
+| `tool` | string | one of the fourteen served tools. The **join key** to the host's log, not the payload. |
 | `outcome` | string | the decision. Closed vocabulary, below. |
 | `detail` | object | metadata: counts, and one string — `bantamkit_read`'s `kind`, a container name from `docread`'s closed set. Always present; `{}` when empty. |
 
@@ -293,6 +293,7 @@ Python needs `ensure_ascii=False`). No value written today is non-ASCII.
 | `memory_compact` | `archived`, `nothing-archived` | `archived` (count), `budget`, `index_after`, `index_before` |
 | `memory_dream` | `consolidated`, `previewed`, `nothing-to-consolidate`, `refused-budget`, `no-profile-layer` | `absolutised` (count), `consumed` (count), `dry_run` (bool), `merged` (count). Never a fact name, never a body, never a store path |
 | `skill_audit` | `audited`, `refused` | on `audited`: `skills`, `bytes`, `findings`, `omissions` (all counts); nothing on `refused` |
+| `token_ledger` | `read`, `refused` | on `read`: `transcripts`, `lines`, `requests`, `sessions` (all counts); nothing on `refused`. Never the root, never a session id, never a `cwd`, never a model name — and never a TOKEN COUNT either: the numbers are the reply, and this log records what the server DID |
 | `validate_json` | `valid`, `invalid` | — |
 | `bantamkit_read` | `manifest`, `page`, `refused-unreadable`, `refused-unknown-part`, `refused-offset` | `kind` (a string: the container kind `extract` identified), `parts` (count); on `manifest` also `rows` (all parts) and `bytes` (`text_bytes`); on `page` also `rows` and `bytes` OF THE PAGE; nothing on `refused-unreadable`, where `extract` raised before a kind was known. Never the path, never a part name |
 | `shiftwork_clock_in` | `brief`, `escalate`, `success`, `error` | — |
@@ -347,11 +348,12 @@ derived field is a second thing to keep true.
 ## Metadata only
 
 Never a tool argument's value, never a memory body, never a validated output, never a
-query string, never a document row. Seven of the thirteen tools take unbounded free text
-and six take absolute paths (`bantamkit_read`'s `path` is one, `skill_audit`'s `root` is
-another and `repo_map`'s `root` and `focus` are the third; each record carries counts and
-tokens from a closed set, never the path, never a part name, never a skill id, never a
-mapped file — `eventlog.py:33`, `eventlog.ts:35`). Every value written is an ASCII token from the closed vocabulary
+query string, never a document row. Eight of the fourteen tools take unbounded free text
+and seven take absolute paths (`bantamkit_read`'s `path` is one, `skill_audit`'s `root` is
+another, `repo_map`'s `root` and `focus` are the third and `token_ledger`'s `root` and
+`prices` are the fourth; each record carries counts and tokens from a closed set, never the
+path, never a part name, never a skill id, never a mapped file, never a session id, never a
+model name — `eventlog.py:33`, `eventlog.ts:35`). Every value written is an ASCII token from the closed vocabulary
 above, an `int`, or a `bool` —
 `test_eventlog.py::test_the_only_values_written_are_from_a_closed_set` enforces exactly
 that, so a future field carrying borrowed text fails without anyone having to think of a

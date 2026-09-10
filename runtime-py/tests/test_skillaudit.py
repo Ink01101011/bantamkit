@@ -1471,7 +1471,7 @@ def test_the_tool_is_served_eleventh_and_its_schema_is_the_assets(tmp_path):
     # and a later tool moving in behind it must not be able to satisfy it. The TOTAL moves
     # with the surface and the index does not — that is the whole design of this node.
     assert order[10] == "skill_audit"
-    assert len(order) == 13
+    assert len(order) == 14
     asset = json.loads(
         (REPO / "assets" / "tools" / "skill_audit.json").read_text(encoding="utf-8")
     )

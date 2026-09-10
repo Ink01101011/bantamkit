@@ -48,6 +48,7 @@ SERVED_ORDER = [
     "skill_audit",
     "memory_dream",
     "repo_map",
+    "token_ledger",
 ]
 
 #: Every path segment, file name and definition name in the fixture is a sentinel, so the

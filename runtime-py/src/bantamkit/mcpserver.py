@@ -27,6 +27,7 @@ from bantamkit import (
     repomap,
     shiftwork,
     skillaudit,
+    tokenledger,
 )
 from bantamkit.assets import AssetNotFound, assets_root, load_skill, load_tool_asset
 from bantamkit.client import BantamError
@@ -43,6 +44,7 @@ from bantamkit.eventlog import EventLog
 from bantamkit.mcpreport import build_report as build_mcp_report
 from bantamkit.mcpreport import resolve_event_log_path
 from bantamkit.memory import DEFAULT_INDEX_BUDGET, INDEX_PRESSURE_PERCENT, Memory
+from bantamkit.pricing import PriceTableError
 from bantamkit.statusline import status_line
 
 try:
@@ -1716,14 +1718,65 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         )
         return _noted(repo_map_reply(result))
 
+    def token_ledger(
+        root: str,
+        model: str | None = None,
+        prices: str | None = None,
+    ) -> str:
+        """The transcript ledger on the MCP surface: `tokenledger` measures, this serves it.
+
+        THE REPLY IS A JSON DOCUMENT AND NOT PROSE, the same shape and for the same reason as
+        `skill_audit` above: a caller comparing `totals` before and after a change, or
+        deciding whether `omissions` explain a total that looks too small, has to read
+        numbers rather than parse a sentence back out of English. `Ledger.as_json` is the
+        reply verbatim and the only strings this layer authors are the refusals.
+
+        THE FOUR REFUSALS ARE ARGUMENT FAILURES — an empty `root`, a `root` that is missing,
+        a `root` that is a file, an empty `model` — so they go through `tool_failed`.
+        Nothing about the CONTENT of the tree refuses: a transcript that will not decode, a
+        line that will not parse and a record with no usage are omissions and are counted. A
+        ledger that refused because one of eight hundred transcripts is truncated would have
+        told the operator nothing about the other seven hundred and ninety-nine.
+
+        `PriceTableError` is caught here BESIDE `TokenLedgerError` and is not the same kind
+        of thing: it is an operator configuration fault reached only when `model` names a
+        price table that will not load. It is still an argument failure from the CALLER's
+        side — it names the path they passed — so it is refused with the same wording
+        machinery rather than crashing the request.
+
+        THE RECORD IS A DECISION, NEVER A REPLY. `read` carries the four counts the host
+        cannot see (transcripts, lines, requests, sessions) and `refused` carries nothing at
+        all. `root` is a path the operator typed and `sessions[].cwd` are their own working
+        directories; neither is a decision this handler made, so neither is written down.
+        And no token count is recorded either: the event log is a record of what this server
+        DID, and the numbers are the reply.
+        """
+        with _record_raise(log, "token_ledger"):
+            try:
+                result = tokenledger.read(root, model=model, prices=prices)
+            except (tokenledger.TokenLedgerError, PriceTableError, OSError) as exc:
+                log.record("token_ledger", "refused")
+                return _noted(tool_failed("token_ledger", exc))
+            log.record(
+                "token_ledger",
+                "read",
+                {
+                    "transcripts": result.transcripts,
+                    "lines": result.lines,
+                    "requests": result.requests,
+                    "sessions": len(result.sessions),
+                },
+            )
+            return _noted(result.as_json())
+
     # The served surface, in one place, read out of the asset pack. Adding a tool here
     # without an asset raises AssetNotFound at startup — the manifest cannot drift behind
     # the server, because the server cannot start without it.
     #
     # `bantamkit_status` went LAST rather than first, `memory_compact` after it rather
     # than beside `memory_save` where a reader would look for it, `bantamkit_read`
-    # after that, `skill_audit` after that, `memory_dream` after that and `repo_map`
-    # after that. Registration order IS the served order
+    # after that, `skill_audit` after that, `memory_dream` after that, `repo_map`
+    # after that and `token_ledger` after that. Registration order IS the served order
     # (`test_tool_manifest.py::test_the_golden_records_the_order_the_wire_actually_
     # serves`), and appending is the only edit that leaves the others where every
     # existing declaration says they are.
@@ -1741,6 +1794,7 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         _from_manifest(skill_audit, "skill_audit"),
         _from_manifest(memory_dream, "memory_dream"),
         _from_manifest(repo_map, "repo_map"),
+        _from_manifest(token_ledger, "token_ledger"),
     ]
 
     server = MCPServer(

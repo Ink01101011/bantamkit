@@ -107,6 +107,60 @@ DEFAULT answer**, which is the strongest available test of "a model with no rate
 never zeroed" — and the shipped table's emptiness is asserted as a typed literal on both sides,
 because a differential cannot see a file both runtimes read.
 
+**AMENDED 2026-09-11 (job46, J46-18) — (c) is CLOSED, and AS-1 with it.** The scripts get a
+surface as a FOURTEENTH MCP tool, `token_ledger`, on both runtimes
+(`runtime-py/src/bantamkit/tokenledger.py`, `runtime-ts/src/tokenledger.ts`,
+`assets/tools/token_ledger.json`), gated by `tools/conformance/suites/tokenledger.mjs` —
+**30 cases, 0 differed**, seven mutants killed — over a FROZEN corpus in git
+(`tools/ledger/fixtures/token-ledger/`) and never `~/.claude/projects`. It is written up in
+[ledger.md](ledger.md)'s *The ledger reaches the surface* section.
+
+Three things about that closure are corrections rather than deliveries.
+
+**Only ONE of the seven scripts was surfaced, and only HALF of that one.** `token-ledger.mjs`
+reports the API's `usage` block, tool calls by name, `tool_result` BYTES and repeated `Read`s;
+the last three are `bytes / 4` and carry an `est` label where the script prints it. An estimate
+served to a model through a tool is an estimate that will be quoted back as a fact, and the
+label does not survive the quoting — so only the `usage` half crossed. The verdict for the
+other six scripts is the table at the end of this amendment.
+
+**The surface makes a correction the script has wrong.** `token-ledger.mjs` dedupes `requestId`
+per FILE, and `tool-usage.mjs` already measured why that is not enough: a resumed session
+rewrites earlier records verbatim into a new file. The tool dedupes across the whole walk and
+reports every later copy as a `duplicate-request` omission.
+
+**Roadmap-toolbox row 4's "not yet surfaced in `bantamkit_status` or the statusline" is STILL
+TRUE**, deliberately, and the reason is the same one that shaped everything else here — see
+that row's own amendment.
+
+## The other six `tools/ledger/*.mjs` scripts, one verdict per row
+
+Read, not guessed at: each verdict names what a surface would have to promise and whether the
+script can keep it. The bar is the one this unit had to clear — a tool must answer the same
+question twice over the same bytes, or it cannot be gated.
+
+| script | verdict | why |
+|---|---|---|
+| `token-ledger.mjs` | **SURFACED, in half** — keep the script | The `usage` half is `token_ledger`. The `tool_result`-bytes and repeated-`Read` halves stay here because they are `bytes / 4` and the `est` label is the only thing keeping them honest. The script also keeps `--days`, which the tool deliberately does not have. |
+| `tool-usage.mjs` | **SURFACE IT NEXT** — the strongest remaining candidate | It is already fixture-driven (`tools/ledger/fixtures/tool-usage/`), already honours `--root`, already carries a hand-run `.test.mjs` with a mutation matrix, and `skill_audit`'s `usage` argument is a hole shaped exactly like its `--group skill` output — today a person runs the script and pastes the numbers in. Its `--since` would have to go the way `--days` did, for the same reason. |
+| `injection-precision.mjs` | **LEAVE IT AN OPERATOR SCRIPT, for now** | It joins two live logs — `~/.bantamkit/hooks/hook-log.jsonl` AND the host's transcripts — and its whole product is a REFUSAL until 100 joinable injections across 5 sessions exist. A tool that answers "refused" on every machine but this one is a surface with nothing behind it. Revisit when the sample clears its own floor; the instrument is right, the population is not there yet. |
+| `read-bytes.mjs` | **LEAVE IT AN OPERATOR SCRIPT** | It measures what the PreToolUse read gate would have refused — a before/after instrument for one hook, not a question a model asks. Its answer is only meaningful against a change the operator is making. |
+| `skill-discovery-check.mjs` | **LEAVE IT AN OPERATOR SCRIPT** | Its question is already on the surface: `skill_audit` prices the catalogue and names the collisions. This checks discovery end to end against a live plugin cache, which is a health check for the person installing skills. |
+| `injection-precision.test.mjs`, `tool-usage.test.mjs` | **NOT SCRIPTS — they are the tests** | Named here only because AS-1(c) counted seven files. They are hand-run test files for two of the above; if `tool-usage.mjs` is surfaced they become an in-runtime suite. |
+
+**And the question J46-16 left for this sub-task, answered.** It found that `tools/ledger/`
+reads two different always-on logs written by ONE Node process — `~/.bantamkit/hooks/
+hook-log.jsonl` and `~/.claude/tool-metrics/events.jsonl` — and declined to say whether they
+should be one. They should not, and it is the same answer (a) reached for the same reason,
+one level down: the two have different KEYS and different lifetimes. The hook log is keyed by
+injection and is read by joining to a transcript by `session`; the tool-metrics log is keyed by
+`tool_use` id and exists precisely to survive a transcript being deleted, which is why
+`tool-usage.mjs` reads it only for sessions with no transcript left. Merging them would give
+one file two pruning rules — the tool-metrics arm prunes above 4 MB by dropping rows whose
+session still has a transcript, which is exactly the row the hook log must keep — and there is
+no single rule that serves both. They stay apart, and nothing was added to either runtime, so
+no divergence row and no `ruling:` case is owed for this either.
+
 ### AS-2 — Make the model a checked fact, not a logged one
 
 The orchestration policy in both `CLAUDE.md` files says the model *"is per role, never random,

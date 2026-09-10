@@ -41,6 +41,7 @@ SERVED_ORDER = [
     "skill_audit",
     "memory_dream",
     "repo_map",
+    "token_ledger",
 ]
 
 

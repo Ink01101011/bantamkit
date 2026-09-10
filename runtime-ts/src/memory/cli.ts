@@ -4,7 +4,7 @@
  *
  * `docs/memory.md` states, as a design decision, that `lint`, `archived` and `restore`
  * are **not** agent tools — "lifecycle is an operator decision, not a model decision" —
- * and the thirteen-tool surface holds to it; `compact` is the one exception since job42
+ * and the fourteen-tool surface holds to it; `compact` is the one exception since job42
  * (`memory_compact`, the on-refusal path the model reaches itself). `runtime-py` made that
  * position coherent in August 2026 by giving the operator `python -m bantamkit.memory`.
  * `runtime-ts` did not. MEASURED 2026-08-24 before this file existed: `node dist/cli.js -h`

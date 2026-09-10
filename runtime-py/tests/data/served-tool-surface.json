@@ -12,7 +12,8 @@
     "bantamkit_read",
     "skill_audit",
     "memory_dream",
-    "repo_map"
+    "repo_map",
+    "token_ledger"
   ],
   "tools": {
     "bantamkit_status": {
@@ -186,7 +187,7 @@
       }
     },
     "shiftwork_clock_out": {
-      "description": "Shift-work clock-out: record a finished unit — set its status, advance plan.cursor, merge handoff_patch, push history_entry onto the 5-entry ring — validating the whole mutated document against the checkpoint schema BEFORE an atomic write (a failure writes nothing and returns result=error). Every success appends one accounting line (unit, role, status, ts, plus your accounting fields, e.g. tokens/duration/model) to <checkpoint>.log.jsonl. If the checkpoint's job.roles names this unit's role, accounting.model must be one of that role's model identifiers, spelled exactly \u2014 a model that is not on the list, or none reported at all, is refused before anything is written; a role job.roles omits, and a checkpoint carrying no job.roles, are unconstrained.",
+      "description": "Shift-work clock-out: record a finished unit — set its status, advance plan.cursor, merge handoff_patch, push history_entry onto the 5-entry ring — validating the whole mutated document against the checkpoint schema BEFORE an atomic write (a failure writes nothing and returns result=error). Every success appends one accounting line (unit, role, status, ts, plus your accounting fields, e.g. tokens/duration/model) to <checkpoint>.log.jsonl. If the checkpoint's job.roles names this unit's role, accounting.model must be one of that role's model identifiers, spelled exactly — a model that is not on the list, or none reported at all, is refused before anything is written; a role job.roles omits, and a checkpoint carrying no job.roles, are unconstrained.",
       "inputSchema": {
         "properties": {
           "checkpoint": {
@@ -462,6 +463,42 @@
         ],
         "type": "object",
         "title": "repo_mapOutput"
+      }
+    },
+    "token_ledger": {
+      "description": "What a session actually cost, read off the host's own transcripts. Walks `root` for `*.jsonl` transcripts -- the host writes `<cwd-slug>/<session>.jsonl` and `<cwd-slug>/<session>/subagents/*.jsonl` beneath a projects directory, which on this machine is `~/.claude/projects` -- and answers ONE JSON document: `root` (echoed as given), `transcripts` (files read), `lines` (records seen), `requests` (distinct API requests counted), `totals` (the four token classes), `sessions` (one row each), `omissions` (every line that was read and not counted), and `cost` only when `model` is given. This is the ONLY reader of the token counts: `docs/eventlog.md`'s four event streams record decisions, injections, tool calls and the host's arrival log, and NONE of the four carries a token count. Every figure here is the API's own `usage` block and nothing is estimated -- the byte-derived `est` figures in `tools/ledger/token-ledger.mjs` (tool_result bytes, repeated Reads) are deliberately NOT served, because an estimate handed to a model through a tool is an estimate that will be quoted back as a fact. COUNTING IS PER `requestId`, NEVER PER LINE: the host writes one API response as several assistant records -- a text block, a tool_use block -- which all carry the SAME `usage`, so summing records overcounts by the number of content blocks. The dedupe spans the WHOLE walk and not one file, because a resumed session rewrites earlier records verbatim into a new file and a per-file rule counts that request twice; the first occurrence in walk order wins and every later copy is reported as a `duplicate-request` omission rather than dropped in silence. EVERY LINE IS COUNTED OR OMITTED AND THE TWO ADD UP: `lines` equals `requests` plus the sum of every omission's `count`, always, so 'your transcripts hold no usage' is distinguishable from 'I skipped most of your transcripts'. An omission is `{subject, count, what}` with subject one of `undecodable-file`, `unparsed-line`, `not-an-object`, `no-session-id`, `not-an-assistant-record`, `no-usage`, `malformed-usage`, `no-request-id`, `duplicate-request`, and `what` naming the FIRST site as `<relpath>:<line>` plus `and N more` -- bounded on purpose, because a real corpus omits tens of thousands of lines as `not-an-assistant-record` (the host writes attachments, mode changes and titles into the same file) and listing them all would hand back a megabyte of paths in place of an answer. A blank line is not a record and is counted nowhere. A record is counted only when it carries a non-empty `sessionId`, `type` of `assistant`, a `message.usage` object holding ALL FOUR of `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens` and `output_tokens` as non-negative integers below 2**53, and a non-empty `requestId`; the host's other `usage` keys (`service_tier`, `iterations`, `server_tool_use`) are ignored, but a MISSING class is `malformed-usage` and never a zero, because a class defaulted to zero is a token invented. A session row carries `cwd` (the first one seen), `first` and `last` (the minimum and maximum timestamp, as strings), `requests`, `sidechain_requests` and the four classes. `sidechain_requests` is stated rather than hidden because it is an ASYMMETRY a caller would otherwise discover late: a subagent's transcript carries its PARENT's `sessionId` with `isSidechain: true`, so its cost lands in the parent session and is not a session of its own. Sessions are ordered by `first` as a STRING then by session id, both in code-point order, never by parsed time -- the host writes ISO-8601 with a `Z`, for which byte order already is time order. Directory listings are sorted by name in code-point order at every level, so the walk order -- which decides which copy of a duplicated `requestId` counts -- is a property of the tree and not of the filesystem. THERE IS NO TIME WINDOW, deliberately: the operator script has `--days N` and this has nothing, because a tool whose answer depends on the wall clock cannot be pinned by a gate that runs twice, and 'the last 7 days' is a question about a live machine rather than a fact about a corpus. `root` is the CALLER's, exactly as `skill_audit`'s is: this tool reads nothing but `root`, so it can be pointed at a frozen corpus and asked the same question twice. Pass `model` to convert the totals into money through the price table; `assets/pricing/default.json` ships with NO rates on purpose, so `{\"unavailable\": \"no rate recorded for model ...\"}` is the NORMAL answer and not an error path -- a rate enters only as an operator's own fact with its date and its source, through `$BANTAMKIT_PRICES` or through `prices`. `cost` carries `micros` (integer micro-USD), `amount` (a fixed-6-decimal string), a per-class `breakdown` and the `rate` that produced it; the four classes are priced separately because 98.1 % of a real prompt measured here was `cache_read`, and one averaged rate would be wrong in exactly that direction. Four argument failures are refused with their own sentences and never as a partial answer: an EMPTY `root` -- which passes JSON-schema `string` and would otherwise resolve to the server's own working directory -- a `root` that is missing, a `root` that is a file, and an EMPTY `model`, which would otherwise be reported as \"no rate recorded for model ''\" and read as a missing price rather than a missing argument. Nothing about the CONTENT of the tree refuses: a transcript that will not decode, a line that will not parse and a record with no usage are omissions and are counted, because a ledger that refused over one of eight hundred transcripts would have said nothing about the other seven hundred and ninety-nine. The one content failure that DOES refuse is a token total above 2**53-1, which is exact in Python and rounded in JavaScript: the place the two runtimes would part company is a refusal, not a wrong number. Deterministic: the tool reads `root`, and `prices` or `$BANTAMKIT_PRICES` when a `model` is named.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "root"
+        ],
+        "properties": {
+          "root": {
+            "type": "string",
+            "description": "Directory of host transcripts to walk, absolute or relative to the server's working directory; `~/.claude/projects` is where the host keeps them on this machine. It must name a directory: the empty string is refused rather than resolved, because resolving it would read whatever directory the server happens to be standing in"
+          },
+          "model": {
+            "type": "string",
+            "description": "Model to price the totals as, e.g. the id an assistant record's `message.model` carries. Omit it and no `cost` key is reported at all; name one with no recorded rate and `cost` is `{\"unavailable\": ...}`, which is what the shipped table answers for every model"
+          },
+          "prices": {
+            "type": "string",
+            "description": "Price table to read instead of `$BANTAMKIT_PRICES` or the shipped one; only consulted when `model` is given. A malformed table is a configuration fault and stops with its own sentence, rather than being reported as an unpriced model"
+          }
+        }
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object",
+        "title": "token_ledgerOutput"
       }
     }
   }

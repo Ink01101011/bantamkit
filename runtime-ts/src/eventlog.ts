@@ -32,11 +32,12 @@
  *   one stray write breaks the wire suite. Nothing in this module names `process.stdout`,
  *   `process.stderr` or `console`.
  * * **Metadata only.** Never a tool argument's value, never a memory body, never a
- *   validated output, never a query, never a document row. Seven of the thirteen tools take
- *   unbounded free text and six take absolute paths (`bantamkit_read`'s `path` is one,
- *   `skill_audit`'s `root` is another and `repo_map`'s `root` and `focus` are the third;
- *   each record carries counts and tokens from a closed set — never the path, never a part
- *   name, never a skill id, never a mapped file).
+ *   validated output, never a query, never a document row. Eight of the fourteen tools take
+ *   unbounded free text and seven take absolute paths (`bantamkit_read`'s `path` is one,
+ *   `skill_audit`'s `root` is another, `repo_map`'s `root` and `focus` are the third and
+ *   `token_ledger`'s `root` and `prices` are the fourth; each record carries counts and
+ *   tokens from a closed set — never the path, never a part name, never a skill id, never a
+ *   mapped file, never a session id, never a model name).
  *   Every value written here is an ASCII token from a closed set, a number, or a boolean.
  * * **Never `String(err)`.** Only the constructor name. This is not hypothetical: the host
  *   itself has already persisted `input_value={'schema_path': '/Users/k...

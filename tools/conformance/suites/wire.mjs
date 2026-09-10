@@ -43,7 +43,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const name = 'wire';
-export const summary = 'the MCP surface: thirteen tools, one prompt, two templates, and the frames themselves';
+export const summary = 'the MCP surface: fourteen tools, one prompt, two templates, and the frames themselves';
 
 const here = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = dirname(dirname(here));
@@ -1740,13 +1740,17 @@ export async function run(ctx) {
     });
   }
 
-  // -------------------------------------------------- repo_map: the thirteenth tool, served
+  // ------------------------------------------------ token_ledger: the fourteenth tool, served
 
   /**
    * The advertisement session's `tools/list` is compared canonically above (`advertisement:
    * id 2`) and its raw order is ruled. This pins the three facts the golden entry was added
-   * for: THIRTEEN tools, `skill_audit` still eleventh, and `repo_map` served LAST, on both
+   * for: FOURTEEN tools, `skill_audit` still eleventh, and `token_ledger` served LAST, on both
    * sides.
+   *
+   * It was THIRTEEN with `repo_map` last until job46's J46-18 appended `token_ledger`, and the
+   * paragraph below is why that edit is two numbers and not thirteen: `eleventh` did not move,
+   * so no existing advertisement changed.
    *
    * The MIDDLE index is what makes this more than a count. A tool appended at the end moves
    * the total and nothing else; a tool inserted anywhere earlier moves `eleventh` too, and
@@ -1755,11 +1759,11 @@ export async function run(ctx) {
   {
     const toolNames = (side) => frameOf(side, 2).result.tools.map((t) => t.name);
     const { python, node } = results.get('advertisement');
-    cases.push({ name: 'advertisement: the thirteen tool names, in order', kind: 'json', expected: toolNames(python), actual: toolNames(node) });
+    cases.push({ name: 'advertisement: the fourteen tool names, in order', kind: 'json', expected: toolNames(python), actual: toolNames(node) });
     cases.push({
-      name: 'advertisement: thirteen tools, skill_audit eleventh and repo_map thirteenth',
+      name: 'advertisement: fourteen tools, skill_audit eleventh and token_ledger fourteenth',
       kind: 'json',
-      expected: { count: 13, eleventh: 'skill_audit', last: 'repo_map' },
+      expected: { count: 14, eleventh: 'skill_audit', last: 'token_ledger' },
       actual: { count: toolNames(node).length, eleventh: toolNames(node)[10], last: toolNames(node).at(-1) },
     });
   }

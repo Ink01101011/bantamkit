@@ -217,6 +217,141 @@ checked with four mutants, each killed: dropping the `session` field turns 2 red
 `injected` from the header list instead of the emitted context, writing the prompt text into
 the record, and zeroing the score turn 1 red each.
 
+# The ledger reaches the surface — `token_ledger`, on both runtimes
+
+    mcp: token_ledger(root, model?, prices?)     -> one JSON document
+    runtime-py/src/bantamkit/tokenledger.py      read / Ledger.as_json
+    runtime-ts/src/tokenledger.ts                read / asJson
+    tools/ledger/fixtures/token-ledger/          the frozen corpus both gates read
+
+`docs/roadmap-agent-stack.md` AS-1(c). Everything above this heading is a Node script an
+operator runs by hand. The agent that would act on the numbers could not ask for them and
+`runtime-py` could not ask at all — which is what "the measurement" being unreachable actually
+costs, because AS-1's own rule is that a claim of "X % saved" is read off the ledger or is not
+made.
+
+## Only the REAL half is promoted, and that is the whole scope decision
+
+`token-ledger.mjs` reports four things: the API's `usage` block, tool calls by name,
+`tool_result` BYTES, and repeated `Read`s. **Only the first is measured.** The other three are
+bytes, and every token figure derived from them is `bytes / 4` and printed with an `est` label.
+An estimate served to a model through a tool is an estimate that will be quoted back as a fact,
+and the label does not survive the quoting. So what crossed onto the surface is the `usage`
+block; the byte half stays an operator script, where its label travels with it.
+
+## The correction it makes over the script
+
+`token-ledger.mjs` dedupes `requestId` **per file**. That is not enough, and `tool-usage.mjs`
+already found out why over the same corpus: a resumed session rewrites earlier records verbatim
+into a new file, so one request is on disk twice under two paths and a per-file `seen` set
+counts it twice. Here the dedupe spans the whole walk, first occurrence in walk order wins, and
+every later copy is reported as a `duplicate-request` omission rather than dropped in silence.
+
+## Every line is counted or omitted, and the two add up
+
+`lines` equals `requests` plus the sum of every omission's `count`, always. That identity is
+what makes a small total readable: it separates *your transcripts hold no usage* from *I
+skipped most of your transcripts*, and a bare total cannot. On a real corpus
+`not-an-assistant-record` dominates, because the host writes attachments, mode changes and
+titles into the same file. The nine subjects, in report order:
+
+    undecodable-file  unparsed-line  not-an-object  no-session-id
+    not-an-assistant-record  no-usage  malformed-usage  no-request-id  duplicate-request
+
+`what` names the FIRST site as `<relpath>:<line>` plus `and N more`. Bounded on purpose: a real
+corpus omits tens of thousands of lines under one subject and listing them would hand a model a
+megabyte of paths in place of an answer.
+
+## There is no time window, and `root` is the caller's
+
+The script has `--days N` and the tool has nothing. A tool whose answer depends on the wall
+clock cannot be pinned by a gate that runs twice, and "the last 7 days" is an operator's
+question about a live machine rather than a fact about a corpus. `root` is the caller's for the
+same reason `skill_audit`'s is: a tool that reached into `~/.claude` on its own would answer a
+different question on every machine and could not be handed a fixture.
+
+## The cost, and why the refusal is the normal answer
+
+`model` converts the four totals into money through AS-1(b)'s price table. The shipped table has
+no rates, so `{"unavailable": "no rate recorded for model ..."}` is what every model gets until
+an operator records one with its date and its source. That is the default answer a user sees,
+not an error path, and it is asserted as a typed literal on both sides — a differential between
+two runtimes reading one file cannot see a rate pasted into it.
+
+## First run on the real corpus — 2026-09-10T22:36Z, both runtimes, `~/.claude/projects`
+
+The gate reads a fixture; this is the tool doing the job it was built for. Read-only, nothing
+under `~/.claude` was written, and **the numbers move every time a session does** — this is a
+snapshot with a timestamp on it, not a constant.
+
+| | |
+|---|---|
+| transcripts / lines | 808 / 203,380 |
+| API requests (distinct `requestId`) | **46,687** over 165 sessions |
+| input_tokens | 701,678 |
+| cache_creation_input_tokens | 167,941,429 |
+| cache_read_input_tokens | **7,769,075,503** |
+| output_tokens | 20,548,417 |
+| omitted | 156,693 — and `lines == requests + omitted` holds |
+
+Both runtimes answered the same document, to the token, over 7.9 billion of them. The omission
+table is where the interesting fact is:
+
+    not-an-assistant-record  114,003     the host's attachments, titles, modes, prompts
+    duplicate-request         41,298     the SAME response written as several records
+    no-session-id              1,365
+    no-request-id                 27
+
+**41,298 of the 87,985 records carrying a usage block are duplicates** — 47 % — which is what
+"summing records overcounts by the number of content blocks" costs when nobody dedupes. Zero
+lines failed to parse, zero usage blocks were malformed and zero transcripts failed to decode,
+so on this machine every subject that fired is a shape of record and not a shape of damage.
+
+## Rerunning the agreement
+
+`node tools/conformance/run.mjs --suite tokenledger` is the gate: **30 cases, 0 differed**, at
+the commit this landed. It reads the committed fixture corpus and five corpora built into the
+harness scratch, and **never `~/.claude/projects`** — J46-1 measured two runs of one of these
+tools on one day disagreeing because the session in between added a call, and a differential
+over a live corpus is a case that goes red for a reason nobody caused and is then "fixed" by
+weakening it. Six of the thirty are NOT differential: the omission vocabulary, the corpus's
+headline counts and the shipped table's refusal are pinned as typed literals per side.
+
+The suite was checked by mutation, seven mutants, each killed:
+
+| mutant | cases turned red |
+|---|---|
+| `.sort()` instead of `cmpCodepoint` in the walk (Node only) | 3 |
+| `readFileSync(p, 'utf8')` instead of the fatal `TextDecoder` (Node only) | 8 |
+| the session tie-break by UTF-16 instead of code point (Node only) | 7 |
+| one refusal sentence reworded (Python only) | 2 |
+| `_is_count` accepts a `bool` (Python only) | 8 |
+| **the `requestId` dedupe removed in BOTH runtimes** | **2 — and they are the two literal cases; all 28 differential cases stayed green** |
+| **the walk sort removed in BOTH runtimes** | **2 — and they are the two `walk:` differential cases, for the reason below** |
+
+`.venv/bin/python -m pytest runtime-py/tests/test_tokenledger.py -q` (30 nodes) and
+`cd runtime-ts && npm test -- tokenledger` (31) are the in-runtime halves, so a mutation is
+visible without the other language on PATH.
+
+**The last row is the one to read carefully, and it is a limit rather than a success.** That
+symmetric mutant was caught by a DIFFERENTIAL, which should be impossible — and the reason is
+that the two runtimes' `readdir` do not agree when nobody sorts them. Measured on this machine,
+one directory holding `z m a q ｱ 𝄞 b`:
+
+    node  readdirSync : ["a","b","m","q","z","ｱ","𝄞"]     — libuv's scandir sorts
+    python os.listdir : ["z","a","m","q","b","𝄞","ｱ"]     — CPython does not
+
+So on macOS the Node-side sort is a no-op that agrees with what libuv already did, the
+Python-side sort is load-bearing, and the mutant reddened because only one side moved. On a
+filesystem where the two happened to agree it would have survived the differential — and it
+would also have survived the per-side sortedness node, which stayed GREEN through it on this
+machine because `readdirSync` handed back sorted names anyway. That node asserts sortedness
+exactly and cannot guarantee an unsorted walk would look different; twelve names in three
+directories makes a coincidence unlikely rather than impossible, and the limit is written here
+rather than left for someone to find. The sort stays on both sides regardless: libuv's order is
+a byte order, which happens to be code-point order for UTF-8 names, and `.sort()` without a
+comparator would actively break it — which is what the first row measures.
+
 # The price table — a token count reported as money, and what it refuses
 
     assets/pricing/default.json          the shipped table: NO rates, deliberately
@@ -322,3 +457,11 @@ without the other language on PATH.
 **Nothing is surfaced yet.** No CLI flag, no MCP tool, no `bantamkit_status` field: that is
 AS-1(c), and the reason to keep it separate is that a surface over an empty table is a surface
 that only ever prints a refusal.
+
+**AMENDED 2026-09-11 (job46, J46-18, AS-1(c)) — it is surfaced now, and the paragraph above is
+still the right description of what that surface prints.** `token_ledger`'s optional `model`
+argument prices the four totals through this module; over the shipped table it answers
+`{"unavailable": ...}` for every model, which is asserted as a typed literal on both sides in
+`tools/conformance/suites/tokenledger.mjs`. So the refusal is not a corner of the new surface —
+it is the whole of it until an operator records a rate, and the design point holds: what was
+built here is a mechanism, not a claim about prices.

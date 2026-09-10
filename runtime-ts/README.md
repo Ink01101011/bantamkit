@@ -1,7 +1,7 @@
 # bantamkit-mcp
 
 The bantamkit MCP server as a pure-Node package: `npx bantamkit-mcp`, no Python, no
-`uv`, no `pipx`, no interpreter bootstrap. It serves the same thirteen tools, the same
+`uv`, no `pipx`, no interpreter bootstrap. It serves the same fourteen tools, the same
 `bantamkit_status` prompt and the same two resource templates as `runtime-py`'s server,
 reads and writes the same memory store, and is checked against the Python server frame by
 frame — 4500+ conformance cases, with every intentional difference written down as a
@@ -308,7 +308,7 @@ the `build_id` of *the code that is answering you*:
 ```
 bantamkit Active 🟢
 version 0.30.0, build sha256:4441619d…
-serving 13 tools, 1 prompt, 2 resource templates
+serving 14 tools, 1 prompt, 2 resource templates
 ```
 
 A version string that moved and a `build_id` that did not means you are reading a config,

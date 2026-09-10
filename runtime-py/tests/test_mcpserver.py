@@ -70,6 +70,7 @@ def test_lists_exactly_the_twelve_tools(tmp_path):
                 "shiftwork_clock_out",
                 "shiftwork_status",
                 "skill_audit",
+                "token_ledger",
                 "validate_json",
             ]
 
@@ -465,6 +466,7 @@ def test_stdio_subprocess_initializes(tmp_path):
                     "shiftwork_clock_out",
                     "shiftwork_status",
                     "skill_audit",
+                    "token_ledger",
                     "validate_json",
                 ]
 
@@ -524,6 +526,7 @@ def test_module_entrypoint_serves_over_stdio(tmp_path):
                     "shiftwork_clock_out",
                     "shiftwork_status",
                     "skill_audit",
+                    "token_ledger",
                     "validate_json",
                 ]
 

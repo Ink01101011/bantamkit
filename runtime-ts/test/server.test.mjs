@@ -1,5 +1,5 @@
 /**
- * The MCP surface: the thirteen tools, the two resource templates, and the wire.
+ * The MCP surface: the fourteen tools, the two resource templates, and the wire.
  *
  * WHY MOST OF THIS DRIVES A REAL PROCESS RATHER THAN CALLING A HANDLER. Everything this
  * unit adds lives in the gap between a handler's return value and the bytes on stdout —
@@ -168,6 +168,7 @@ test('the agent-only tools are absent from tools/list and unknown to tools/call'
     'skill_audit',
     'memory_dream',
     'repo_map',
+    'token_ledger',
   ]);
   const refused = byId(lines, 3).result;
   assert.equal(refused.isError, true);
@@ -750,7 +751,7 @@ test('build_identity names its runtime and refuses to be compared across lineage
   const id = byId(lines, 2).result.structuredContent;
   assert.equal(id.runtime, 'node');
   assert.equal(id.server_name, 'bantamkit');
-  assert.equal(id.assets_files, 90); // +1: assets/pricing/default.json (job46 J46-17, AS-1(b))
+  assert.equal(id.assets_files, 91); // +1: assets/tools/token_ledger.json (job46 J46-18, AS-1(c)); +1: assets/pricing/default.json (job46 J46-17, AS-1(b))
   assert.match(id.assets_digest, /^sha256:[0-9a-f]{64}$/);
   assert.match(id.code_digest, /^sha256:[0-9a-f]{64}$/);
   assert.match(id.build_id, /^sha256:[0-9a-f]{64}$/);
@@ -849,7 +850,7 @@ test('a __pycache__ in the pack is not a different pack — the half a different
     assert.equal(compiled.assets_digest, clean.assets_digest);
     assert.equal(compiled.build_id, clean.build_id);
     // And the count is the pack as shipped, not the pack as the interpreter left it.
-    assert.equal(compiled.assets_files, 90);
+    assert.equal(compiled.assets_files, 91);
   } finally {
     if (previous === undefined) delete process.env.BANTAMKIT_ASSETS;
     else process.env.BANTAMKIT_ASSETS = previous;
@@ -901,7 +902,7 @@ test('--assets-root still answers, and it is the only thing that prints outside 
   const { lines, code } = await session([], { args: ['--assets-root'] });
   assert.equal(code, 0);
   assert.equal(lines[0], ASSETS);
-  assert.equal(lines[1], '90 files');
+  assert.equal(lines[1], '91 files');
 });
 
 // ================================================= the pydantic-shaped argument refusals
@@ -1115,7 +1116,7 @@ test('a healthy server reports Active, and the report is the five lines docs/sta
   assert.equal(rows.length, 5, report);
   assert.equal(rows[0], REPORT_LINE_1_ACTIVE);
   assert.match(rows[1], /^version \d+\.\d+\.\d+, build sha256:[0-9a-f]{64}$/);
-  assert.equal(rows[2], 'serving 13 tools, 1 prompt, 2 resource templates');
+  assert.equal(rows[2], 'serving 14 tools, 1 prompt, 2 resource templates');
   assert.equal(rows[3], `memory: 1 fact in the project store, index ${INDEX_BYTES} of ${HEALTHY_BUDGET} bytes`);
   assert.equal(rows[4], 'event log: off');
   // The unstructured half is the RAW string, not the JSON — `bantamkit_status` is a `-> str`

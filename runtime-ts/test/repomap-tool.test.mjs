@@ -57,6 +57,7 @@ const SERVED_ORDER = [
   'skill_audit',
   'memory_dream',
   'repo_map',
+  'token_ledger',
 ];
 
 const scratch = realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-repomap-tool-')));
@@ -137,7 +138,7 @@ test('repo_map is served thirteenth and its schema is the asset', async () => {
   const listed = (await client.listTools()).tools;
   assert.deepEqual(listed.map((t) => t.name), SERVED_ORDER);
   assert.equal(listed[12].name, 'repo_map');
-  assert.equal(listed.length, 13);
+  assert.equal(listed.length, 14);
   const asset = JSON.parse(readFileSync(join(repoRoot, 'assets', 'tools', 'repo_map.json'), 'utf8'));
   const served = listed[12];
   assert.equal(served.description, asset.description);
