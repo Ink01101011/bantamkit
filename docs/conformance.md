@@ -358,6 +358,60 @@ inputs) and not at all against a stock madler zlib, because the phrase comes fro
 ruling would be red where the sides agree and a parity case red where they do not; it is
 recorded in `docs/porting.md`'s gaps with the corpus and the commands, and NO case was written.
 
+**AMENDED 2026-09-10 — job46 (`feat/job46-register-and-agent-stack`), `docs/porting.md`
+register item 7.** The band in which `compact` was a no-op is closed on both runtimes, and the
+gate for it is `wire.mjs`'s new `index-band` session plus a ceiling-parity sweep in
+`store.mjs`. This entry records a RED the harness found and a red it could not have found.
+
+<!-- provenance: value=7064 cases, 149 ruled-different, 0 failures; commit=55575c3 plus J46-6's working tree; command=node tools/conformance/run.mjs --all -->
+```
+PASS: 7064 cases, 1790 byte-identical, 3423 exact-string, 1851 structural,
+      149 ruled-different, 0 failures
+```
+
+Against the commit this unit started from (`55575c3`): **7034 cases, 149 ruled-different, 1
+failure**. The delta is +30 cases — `store` 186 -> 189 and `wire` 417 -> 444, every other suite
+at a byte-identical count — and `ruled-different` did not move, so nothing in the job became a
+deliberate divergence.
+
+**THE ONE FAILURE WAS ALREADY THERE, AND THE UNIT THAT CAUSED IT COULD NOT HAVE SEEN IT.**
+`memorycli/compact-spares-feedback-until-the-other-classes-are-gone/archived-names` pinned
+`['cpj','dpj']` as a literal. Bisected by RUNNING rather than reasoned: green at `6e506ca`
+(310 cases, 0 differed), green at `181744a`, **11 differed at `87cc1f7`** — the reference-only
+commit — and 1 differed at `55575c3` once the port caught up. `87cc1f7`'s own verify was
+`.venv/bin/python -m pytest runtime-py/tests -q`, which does not run this harness at all, so a
+unit that changed a memory-store default had no gate that could see the suite comparing the
+two runtimes over that default. **The verify for a unit that changes shared-store behaviour is
+`--suite <the suites that drive that store>` beside its own unit tests**, not the unit tests
+alone.
+
+The repair is an explicit `--reserve 62` on that scenario, not a bumped literal. Bumping it to
+the three names the new default archives would also be green and would make the case's answer
+identical to its sibling `compact-archives-feedback-once-nothing-else-is-left`, so the pair
+would stop separating "the priority holds" from "the priority is not a veto" — the only thing
+the pair exists for. An explicit reserve is what every eviction-order node here already passes,
+so the case fails on ORDER and never on reserve policy. Checked: under a symmetric removal of
+the class rank from both runtimes the repaired case still goes red.
+
+**Non-vacuity, and the symmetric one is the finding.** Three mutations, each applied to a
+`cp -R`/`git checkout` copy and reverted, with a green control either side:
+
+* `Math.floor` -> `Math.trunc` in the port's `undegradedIndexCeiling`: **2 red**, both new
+  ceiling cases.
+* the `- 1` dropped from the same expression: **2 red** — and with the corpus trimmed to
+  budgets that are NOT multiples of ten, the ceiling case goes **GREEN** under that same
+  mutation. That is why the corpus carries a membership case pinning that both divisibility
+  classes are still in it.
+* **the default reserve reverted to `budget - largest line` on BOTH runtimes at once** — the
+  exact change job46 made, undone symmetrically. `--suite memorycli`: **310 cases, 0 failures,
+  green.** `--suite wire`: every per-frame differential comparison **green**, and 6 red, all of
+  them per-side literals. A fourth mutation, the eviction class rank removed from both sides,
+  reddened 4 literals in `wire` and 2 in `memorycli` and again not one differential case.
+
+So the differential half of this harness was blind to the whole of register item 7 in both
+directions, which is why `index-band`'s four assertions per side are literals and not one
+runtime's answer handed to the other.
+
 **GitHub Actions is off for this account — it bills the user — so nothing here was checked by
 CI and nothing in this repository should be written as if it were.** The substitute is four
 local gates, each run alone. At this tree:

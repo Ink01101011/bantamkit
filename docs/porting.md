@@ -397,6 +397,53 @@ reference and the disagreement is with CPython rather than with Node. Found whil
    which is not a porting unit's to make. The sentence deliberately says "archive or shorten
    facts **with** `…`" rather than promising the command is sufficient.
 
+   **CLOSED 2026-09-10 (job46, units J46-4, J46-5 and J46-6).** The entry above stays as
+   written — the "not fixed here" sentence is a record of what was true when a porting unit
+   wrote it, and it was right that the fix was a product decision in both runtimes at once.
+   That decision was taken in job46, and it is one substitution: the default `reserve` keeps
+   its promise verbatim ("a fact as big as the biggest one you keep will fit") and only the
+   line it is measured from moves, from the one the REFUSAL draws to the one the WARNING
+   draws.
+
+   ```
+   target = undegraded_index_ceiling(budget) - largest index line
+   undegraded_index_ceiling(b) = (INDEX_PRESSURE_PERCENT * b - 1) // 100      # integer only
+   ```
+
+   `INDEX_PRESSURE_PERCENT` moved down a layer with it — into `memory/store.py` and
+   `memory/store.ts`, re-exported from `mcpserver.py` and `mcp/status.ts` — because `compact`
+   cannot clear a warning whose line it cannot see, and a second literal 90 is the defect
+   being closed. `runtime-py` at `87cc1f7`, `runtime-ts` at `55575c3`. The `index-budget-low`
+   sentence is untouched on both sides: diffed programmatically, the two differ in exactly two
+   edit operations, `delete "python -m "` and `replace "." -> "-"`, which is the pre-existing
+   CLI-name divergence declared in the table above and nothing else. What did NOT move: the
+   eviction order, the half-the-budget cap, and an EXPLICIT `reserve` — a caller that passes
+   one gets `budget - reserve` byte for byte, which is the escape hatch `tools/hooks/`'s
+   auto-compaction arm now uses.
+
+   **WHAT THE CONFORMANCE CASE PINS**, because a feature is not ported until
+   `node tools/conformance/run.mjs --all` compares the two answers. `wire.mjs`'s `index-band`
+   session drives a store built to sit strictly inside the band — the report warns, the
+   command it names runs, the warning goes away — and four cases PER SIDE, as literals rather
+   than as one runtime's answer handed to the other: that the fixture is in the band at all
+   (both edges DERIVED from what the session left on disk, never a percentage); that the
+   remedy archives and the condition then clears; that a second run archives nothing; and that
+   the names, their order and their classes are what the eviction order requires, with
+   `feedback` exhausted last. `store.mjs` compares `undegraded_index_ceiling` against
+   `undegradedIndexCeiling` over 227 budgets spanning both divisibility classes and both
+   signs, with a companion case pinning that the corpus still contains each class.
+
+   **The literals are per side because a differential could not have seen this at all.**
+   Measured 2026-09-10: with BOTH halves reverted to the old arithmetic, `--suite memorycli`
+   was green over 310 cases and every one of `wire.mjs`'s per-frame comparisons was green;
+   only the per-side cases above went red. That is this repository's third named vacuity — a
+   symmetric regression — happening to the exact change this entry closes.
+
+   **A percentage is not quoted here on purpose.** The band's lower edge is the constant 90 %;
+   its upper edge is `(budget - largest index line) / budget`, a function of store CONTENT.
+   The register above measured 99.2 % at a 186-byte largest line, and the same store measures
+   98.50 % today at 361 bytes. Neither number is wrong and both are dated.
+
 **Three that were registered here and are now CLOSED**, by the job that built
 `tools/conformance/suites/memorycli.mjs`: `memory/__main__.py`'s `_cmd_status`, `_cmd_compact`
 and `_cmd_archived` let an unreadable `facts/` escape `main` as a CPython traceback
