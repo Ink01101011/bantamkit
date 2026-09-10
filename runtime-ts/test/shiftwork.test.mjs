@@ -450,6 +450,215 @@ test('an unwritable checkpoint directory refuses AFTER the log line, and says so
     rmSync(root, { recursive: true, force: true });
   }
 });
+// --------------------------------------------- AS-2: the role/model check at clock_out
+//
+// `job.roles` (J46-7) maps a unit role to the model identifiers a session in that role may
+// report; J46-8 made clock_out refuse a mismatch in runtime-py and this is the other half.
+// The SENTENCES ARE PINNED AS TEXT, byte-for-byte what `runtime-py` renders, because the
+// rule lives in one place per runtime: the differential half of the harness compares Node
+// to Python and would stay green through a change made to BOTH (measured twice in job46 —
+// on a reverted default, and on the schema's own `propertyNames`). A per-side literal is
+// the only thing that turns red here.
+//
+// The fixture's cursor unit N1 is the implementer and N2 is the reviewer, and the two roles
+// deliberately get DIFFERENT lists: a map whose roles all allow the same models cannot tell
+// a per-role lookup from a lookup that reads whichever entry it finds first.
+
+const ROLES = { implementer: ['claude-sonnet-5', 'claude-opus-5'], reviewer: ['claude-opus-5'] };
+/** The orchestrator's accounting as the tool receives it — `haiku` is on nobody's list. */
+const ACCOUNTING = { tokens: 1234, duration: 88.2, model: 'haiku' };
+const withRoles = (roles = ROLES) => {
+  const doc = checkpointDocument();
+  doc.job.roles = roles;
+  return doc;
+};
+const logLine = (path) => JSON.parse(read(`${path}.log.jsonl`).split('\n').filter(Boolean).pop());
+
+test('clock_out refuses a model the role is not allowed, and the refused path writes NOTHING', () => {
+  const root = fresh();
+  const path = writeCheckpoint(root, withRoles());
+  const before = bytes(path);
+  const answer = js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, ACCOUNTING, { now: 1 }));
+  assert.deepEqual(answer, {
+    result: 'error',
+    reason:
+      'unit N1 in role implementer reported model haiku, which job.roles.implementer ' +
+      'does not allow: claude-sonnet-5, claude-opus-5',
+  });
+  // The check sits BEFORE the log-then-commit pair, so there is no orphan accounting line
+  // claiming a model that was rejected. Asserting the file does not EXIST is what catches a
+  // check moved below the append; asserting `result === 'error'` would not.
+  assert.deepEqual(bytes(path), before, 'the checkpoint is byte-unchanged');
+  assert.equal(existsSync(`${path}.log.jsonl`), false, 'no accounting line was appended');
+  assert.equal(existsSync(`${path}.tmp`), false, 'no temp file left behind');
+  assert.equal(js(clockIn(path)).unit.id, 'N1', 'the cursor never moved');
+  // And the append WOULD have worked — the same call with an allowed model writes one.
+  assert.equal(js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, { model: 'claude-opus-5' }, { now: 1 })).result, 'ok');
+  assert.equal(existsSync(`${path}.log.jsonl`), true, 'which proves the log append was available');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('the allowed list is rendered in CHECKPOINT order, not sorted', () => {
+  const root = fresh();
+  // `claude-sonnet-5` before `claude-opus-5` is not alphabetical, so a `sorted()` on either
+  // side shows up here. A map already in sorted order cannot state this property at all.
+  const path = writeCheckpoint(root, withRoles({ implementer: ['zzz-last', 'aaa-first'] }));
+  assert.equal(
+    js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, ACCOUNTING, { now: 1 })).reason,
+    'unit N1 in role implementer reported model haiku, which job.roles.implementer does not allow: zzz-last, aaa-first',
+  );
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('a model ON the role’s list clocks out, and the accounting line keeps it', () => {
+  const root = fresh();
+  const path = writeCheckpoint(root, withRoles());
+  const answer = js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, { ...ACCOUNTING, model: 'claude-sonnet-5' }, { now: 1 }));
+  assert.equal(answer.result, 'ok');
+  assert.equal(answer.cursor, 'N2');
+  assert.equal(logLine(path).model, 'claude-sonnet-5');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('the model compares EXACTLY: `claude-opus-5[1m]` is not `claude-opus-5`', () => {
+  const root = fresh();
+  // The standing ruling: no normalisation, no prefix match, no strip-the-brackets rule.
+  // Sibling jobs on this machine log `claude-opus-5[1m]` and the map lists `claude-opus-5`;
+  // those are different strings, and this case is pinned as a REFUSAL so that any future
+  // attempt at a fuzzy compare turns it red.
+  const path = writeCheckpoint(root, withRoles());
+  const answer = js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, { model: 'claude-opus-5[1m]' }, { now: 1 }));
+  assert.equal(answer.result, 'error');
+  assert.ok(answer.reason.startsWith('unit N1 in role implementer reported model claude-opus-5[1m], which'), answer.reason);
+  assert.equal(existsSync(`${path}.log.jsonl`), false);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('a model that is not a string is rendered by `str()`, not by reaching for the tag', () => {
+  const root = fresh();
+  // `accounting` carries no schema, so `model` is whatever the orchestrator sent, and
+  // Python interpolates it with `str()`. Reaching for the tagged `.v` instead would print
+  // `5` for a float and `true` for a bool, and print a list as `[object Object]`. MEASURED
+  // against the running CPython: all four of these came back byte-identical from both
+  // runtimes. The float arrives TAGGED because that is the MCP path — `parseJson` over the
+  // wire bytes — where a plain JS `5.0` has already lost the `.0` before this module sees it.
+  const path = writeCheckpoint(root, withRoles());
+  const rendered = (accounting) =>
+    js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, accounting, { now: 1 })).reason.split(' reported model ')[1].split(', which')[0];
+  assert.equal(rendered({ model: 5 }), '5');
+  assert.equal(rendered({ model: true }), 'True');
+  assert.equal(rendered(parseJson('{"model": 5.0}')), '5.0');
+  assert.equal(rendered({ model: ['a', 'b'] }), "['a', 'b']");
+  assert.equal(existsSync(`${path}.log.jsonl`), false, 'and none of the four wrote a line');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('a role the map NAMES must say which model it ran — an absent `model` is refused too', () => {
+  const root = fresh();
+  // Case 3, J46-8's decision: a rule you escape by omitting a field is enforced only
+  // against the honest.
+  const path = writeCheckpoint(root, withRoles());
+  const before = bytes(path);
+  const answer = js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, { tokens: 1234 }, { now: 1 }));
+  assert.deepEqual(answer, {
+    result: 'error',
+    reason:
+      'unit N1 in role implementer reported no model, but job.roles.implementer ' +
+      'allows only: claude-sonnet-5, claude-opus-5',
+  });
+  assert.deepEqual(bytes(path), before);
+  assert.equal(existsSync(`${path}.log.jsonl`), false);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('no accounting at all, and an explicit `model: null`, get that same refusal', () => {
+  const root = fresh();
+  const path = writeCheckpoint(root, withRoles());
+  // `(accounting or {}).get("model") is None` covers all three spellings in Python; in Node
+  // the absent key and the tagged `null` are two different values and both must land here.
+  for (const accounting of [null, undefined, { model: null }, {}]) {
+    const answer = js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, accounting, { now: 1 }));
+    assert.equal(answer.result, 'error', `accounting ${JSON.stringify(accounting) ?? 'undefined'}`);
+    assert.ok(answer.reason.startsWith('unit N1 in role implementer reported no model, but'), answer.reason);
+  }
+  assert.equal(existsSync(`${path}.log.jsonl`), false);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('the list consulted is the UNIT’s role, not the first entry in the map', () => {
+  const root = fresh();
+  // N2 is the reviewer, whose list does NOT carry `claude-sonnet-5` even though the
+  // implementer's does. Close N1 first so the reviewer is the cursor.
+  const path = writeCheckpoint(root, withRoles());
+  assert.equal(js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, { model: 'claude-opus-5' }, { now: 1 })).result, 'ok');
+  const answer = js(clockOut(path, 'N2', 'done', {}, { unit: 'N2', outcome: 'done' }, { model: 'claude-sonnet-5' }, { now: 2 }));
+  assert.deepEqual(answer, {
+    result: 'error',
+    reason: 'unit N2 in role reviewer reported model claude-sonnet-5, which job.roles.reviewer does not allow: claude-opus-5',
+  });
+  assert.equal(read(`${path}.log.jsonl`).split('\n').filter(Boolean).length, 1, 'still just N1’s line');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('a checkpoint with no `job.roles` clocks out exactly as it did before AS-2 existed', () => {
+  const root = fresh();
+  const path = writeCheckpoint(root);
+  assert.equal('roles' in checkpointDocument().job, false, 'the fixture must not declare roles');
+  const answer = js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, ACCOUNTING, { now: 1 }));
+  assert.equal(answer.result, 'ok');
+  assert.equal(logLine(path).model, 'haiku', 'a model no list anywhere would allow');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('a role the map does NOT name is unconstrained — declaring one role forbids nothing else', () => {
+  const root = fresh();
+  // N1 is the implementer; this map names only the reviewer.
+  const path = writeCheckpoint(root, withRoles({ reviewer: ['claude-opus-5'] }));
+  assert.equal(js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, ACCOUNTING, { now: 1 })).result, 'ok');
+  assert.equal(logLine(path).model, 'haiku');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('an EMPTY allowed list is not the absent case: the schema refuses the whole checkpoint', () => {
+  const root = fresh();
+  // These two look alike and are not the same test. An absent role falls through to
+  // unconstrained (above); a role declared with `[]` never reaches the model check at all,
+  // because `minItems: 1` refuses the document during the read — "a role allowed no model
+  // is a typo, not a policy". If this ever answered `ok`, an empty list would have become a
+  // silent way to opt out of the rule you just declared.
+  const path = writeCheckpoint(root, withRoles({ implementer: [] }));
+  assert.deepEqual(js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, ACCOUNTING, { now: 1 })), {
+    result: 'error',
+    reason: "checkpoint invalid: JSON does not match schema at 'job/roles/implementer': [] should be non-empty",
+  });
+  assert.equal(existsSync(`${path}.log.jsonl`), false);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('the model check runs AFTER the cursor check, so a non-cursor unit keeps its sentence', () => {
+  const root = fresh();
+  const path = writeCheckpoint(root, withRoles());
+  // N2 is the reviewer and `haiku` is not on the reviewer's list either — the refusal that
+  // comes back still has to be the structural one that was already there.
+  assert.deepEqual(js(clockOut(path, 'N2', 'done', {}, OK_ENTRY, ACCOUNTING, { now: 1 })), {
+    result: 'error',
+    reason: 'unit N2 is not the cursor unit N1',
+  });
+  assert.deepEqual(js(clockOut(path, 'ZZ', 'done', {}, OK_ENTRY, ACCOUNTING, { now: 1 })), {
+    result: 'error',
+    reason: 'unit ZZ is not in the plan',
+  });
+  assert.equal(existsSync(`${path}.log.jsonl`), false);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('AS-2 constrains what a unit REPORTS, so clock_in and status are untouched by it', () => {
+  const root = fresh();
+  const path = writeCheckpoint(root, withRoles());
+  assert.equal(js(clockIn(path)).result, 'brief');
+  assert.equal(js(status(path)).result, 'status');
+  rmSync(root, { recursive: true, force: true });
+});
 
 // ============================================================================ status
 
