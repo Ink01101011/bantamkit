@@ -558,6 +558,34 @@ test('postSave measures the 90% band against a configured --index-budget, not th
   assert.equal(rec.budget, 1500, 'indexAccounting must be measured against the CONFIGURED budget, not the default 24000 — this is the bug this case pins');
   assert.equal(rec.action, 'auto-compact', 'this index is over 90% of the configured 1500-byte budget and must trigger the automatic half');
   assert.match(r.stdout, /"additionalContext":"\[bantamkit\] memory index was \d+\/1500 B/);
+  // WHAT THE ARM ACTUALLY ASKS `compact` FOR, added 2026-09-10 (job46, J46-6) because
+  // NOTHING PINNED IT. Every case in this file matched on `action` alone, so the arm could
+  // have asked for any target at all and all 28 tests would still have passed — which is how
+  // job46's change to the DEFAULT reserve silently moved this arm's real aim from
+  // `0.8 * budget - largest line` to `0.9 * 0.8 * budget - largest line` with no test
+  // noticing. The aim is now named as a RESERVE against the real budget, so it is exact and
+  // it is decidable here: 80% of 1500 is 1200, the reserve is the 300 bytes above it, and
+  // `compact`'s target is `budget - reserve` = 1200 — the same number the message prints.
+  //
+  // THE ASSERTION IS ON THE CLI'S OWN ACCOUNTING LINE AND NOT ON THE LOG RECORD, and the
+  // difference is the whole point. `rec.target` and `rec.reserve` are computed in the hook
+  // before the spawn and are logged whatever argv is actually sent — MEASURED: reverting the
+  // argv to the pre-J46-6 `--budget <target>` left all three log fields identical and this
+  // test green. `compact` echoes the budget and the target IT was given, so that line is the
+  // only thing here that can tell the two spellings apart. 80% of 1500 is 1200, and the arm
+  // asks for it as `--budget 1500 --reserve 300` so that the DEFAULT reserve — which job46
+  // moved — cannot move this aim again.
+  assert.equal(rec.budget, 1500, 'indexAccounting is measured against the configured budget');
+  assert.equal(rec.target, 1200, '80% of the configured budget');
+  assert.equal(rec.reserve, 300, 'the aim, expressed as headroom under the real budget');
+  const accounting = /index: \d+ -> \d+ bytes \(budget (\d+), target (\d+), reserve (\d+),/.exec(r.stdout);
+  assert.ok(accounting, `compact must echo its accounting; got ${JSON.stringify(r.stdout.slice(0, 400))}`);
+  assert.deepEqual(
+    accounting.slice(1, 4).map(Number),
+    [1500, 1200, 300],
+    'compact must be told the REAL budget and asked for the aim as a reserve — a `--budget 1200` with a default reserve lands somewhere else',
+  );
+  assert.match(r.stdout, /auto-compacted to ≤1200 B/);
 });
 
 test('postSave still assumes the default budget when nothing configures --index-budget anywhere it looks', async () => {

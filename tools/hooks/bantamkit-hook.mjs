@@ -45,6 +45,35 @@ const PROMPT_MIN_CHARS = 12;
 const STOP_NUDGE_MIN_TOOL_CALLS = 20;
 const COMPACT_AT = 0.9;   // index >= 90% of budget → compact …
 const COMPACT_TO = 0.8;   // … down to 80%, past the no-op band measured in job40 (C6)
+//
+// AMENDED 2026-09-10 (job46, J46-6). The half-sentence "past the no-op band measured in
+// job40 (C6)" is a record of a defect that is now CLOSED, and it stays because it is why
+// this number exists at all. `docs/porting.md` register item 7 was that band: the degraded
+// report warned at COMPACT_AT and named `compact`, while `compact`'s default target sat at
+// `budget - largest index line`, so between the two the command archived nothing. Both
+// runtimes closed it in job46 (`87cc1f7`, `55575c3`) by measuring the default reserve from
+// the warning line instead of from the budget.
+//
+// COMPACT_TO STAYS, and NOT because the workaround is harmless — it is not. What it was
+// doing was naming a budget this store does not have (0.8 * budget) so that `compact` would
+// aim below the real one. Now that `compact` derives its own floor FROM the budget it is
+// given, that lie COMPOUNDS: the aim became 0.9 * (0.8 * budget) - largest line. MEASURED on
+// a read-only copy of this machine's project store (101 facts, 21819 bytes, largest index
+// line 361, budget 24000), one auto-compaction:
+//
+//     before job46, `--budget 19200`, default reserve : target 18839, archived 15
+//     after  job46, `--budget 19200`, default reserve : target 16918, archived 23
+//     today,        `--budget 24000 --reserve 4800`   : target 19200, archived 13
+//
+// So the arm was quietly archiving eight more of the user's facts per fire than the 80% it
+// advertises, and landing 2379 bytes below the number its own message prints. The fix is not
+// to drop the aim — 80% is the HYSTERESIS that keeps this arm from re-firing on the next
+// save, which matters more now that the default target sits just under the warning line — it
+// is to ask for the aim in the argument that MEANS it. `--reserve` is the documented escape
+// hatch from the new floor (both runtimes, both conformance suites), so the hook now names
+// the real budget and the headroom it wants, and gets `budget - reserve` exactly. That is
+// also why this is the durable spelling: it cannot be moved again by a future change to the
+// DEFAULT reserve, which is exactly what moved it this time.
 
 // PreCompact's steering, in BYTES. This string is paid TWICE: once as the summariser's
 // `newCustomInstructions`, and once echoed onto the user's screen as
@@ -524,10 +553,18 @@ async function postSave(input) {
   // The user ruled compaction automatic (2026-08-24). `compact` archives the stalest facts
   // until the index sits at --budget; aiming at 80% skips the 90–99.2% band where the
   // default reserve makes it a no-op.
+  //
+  // AMENDED 2026-09-10 (job46, J46-6): the band is closed, and the aim is now asked for as a
+  // RESERVE against the real budget rather than as a fake budget — see COMPACT_TO above for
+  // the measurement. `compact`'s target is `budget - reserve`, so this lands at exactly
+  // `target` instead of at whatever the default reserve makes of a budget it was misled
+  // about. `reserve` is at least 1 for every budget >= 1 (both parsers refuse 0), and
+  // 0.2 * budget is always under the `budget // 2` cap, so neither edge is reachable here.
   const target = Math.floor(COMPACT_TO * budget);
-  const r = spawnSync(process.execPath, [path.join(DIST, 'cli.js'), 'compact', '--store', m.store.root ?? m.store.path ?? '', '--budget', String(target)], { encoding: 'utf8', timeout: 8000 });
+  const reserve = budget - target;
+  const r = spawnSync(process.execPath, [path.join(DIST, 'cli.js'), 'compact', '--store', m.store.root ?? m.store.path ?? '', '--budget', String(budget), '--reserve', String(reserve)], { encoding: 'utf8', timeout: 8000 });
   const out = `${r.stdout || ''}${r.stderr || ''}`.trim();
-  log({ event: 'PostToolUse', action: 'auto-compact', bytes, budget, target, budgetSource, budgetScope, exit: r.status, out: out.slice(0, 400) });
+  log({ event: 'PostToolUse', action: 'auto-compact', bytes, budget, target, reserve, budgetSource, budgetScope, exit: r.status, out: out.slice(0, 400) });
   emit({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: `[bantamkit] memory index was ${bytes}/${budget} B; auto-compacted to ≤${target} B. ${out.slice(0, 600)}` } });
 }
 
