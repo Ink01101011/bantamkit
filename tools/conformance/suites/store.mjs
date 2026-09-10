@@ -1034,6 +1034,116 @@ export async function run(ctx) {
     },
   });
 
+  // ------------------------------------------ the pressure line, as integer arithmetic
+  //
+  // `undegraded_index_ceiling(b)` is `(INDEX_PRESSURE_PERCENT * b - 1) // 100` on the
+  // reference and `Math.floor((INDEX_PRESSURE_PERCENT * b - 1) / 100)` on the port. It is new
+  // in job46 and it is the number `MemoryStore.compact`'s default `reserve` is now measured
+  // from, so a one-byte disagreement here is a different set of facts archived on the two
+  // sides of a store they share on disk. `//` against `Math.floor` is exactly the class of
+  // expression that drifts between CPython and V8, so it is compared here rather than
+  // reasoned about — and NOT by re-deriving the same expression in the harness, which would
+  // only prove the harness agrees with itself.
+  //
+  // WHY THE CORPUS IS NOT A LIST OF ROUND NUMBERS, and why a case over 24000 alone would
+  // prove nothing. Two distinct things can go wrong and each has its own class of budget:
+  //
+  //   * `PCT * b` NOT divisible by 100 — every budget that is not a multiple of 10. Here the
+  //     floor truncates something, and an implementation that divided in floating point and
+  //     rounded would land one byte out.
+  //   * `PCT * b` divisible by 100 — every budget that IS a multiple of 10. Here and ONLY
+  //     here does subtracting 1 change the answer, so this is the class that says whether the
+  //     `- 1` survived the port. The default budget, 24000, is in it.
+  //   * a NEGATIVE budget, where CPython's `//` floors toward -infinity and `Math.trunc`
+  //     rounds toward zero. Unreachable through either CLI (both refuse a budget below 1) and
+  //     compared anyway, because the function's signature does not refuse one and a helper
+  //     that is right only on the inputs today's callers pass is a helper that breaks the
+  //     first time a caller changes.
+  //
+  // The membership case below counts each class and pins the counts, so a later edit that
+  // quietly trimmed the corpus to round numbers fails instead of going quietly green.
+  //
+  // THE BOOLEAN RIDES WITH THE NUMBER, and it is what makes the ceiling mean anything: the
+  // condition both servers actually write is the cross-multiplied `size * 100 >= PCT * b`,
+  // and the ceiling's whole contract is that `size > ceiling(b)` is the same predicate. Each
+  // budget is therefore probed at `ceiling - 1`, `ceiling` and `ceiling + 1` — taken from the
+  // PORT's ceiling — and the reference answers the comparison for those three sizes. A port
+  // whose ceiling is one byte out probes three shifted sizes and the reference's answer stops
+  // being `[false, false, true]`, so one case catches a wrong ceiling AND a wrong comparison.
+  const ceilingBudgets = [
+    // Every residue mod 10 and mod 100 across a full two hundred, so both classes above are
+    // swept densely rather than sampled.
+    ...Array.from({ length: 200 }, (_, i) => i + 1),
+    // The budgets the product itself names or has been driven at.
+    4096, 19200, 24000, 320, 1101, 995, 900,
+    // Bigger, and each a different shape: a round thousand, one under, one over, a prime.
+    1000, 999, 1001, 100000, 999999, 1000003,
+    // 90 * (2**31 - 1) is 1.93e11 — exactly representable as a double, so this is a size
+    // comparison and not a precision ruling in disguise.
+    2 ** 31 - 1, 2 ** 31,
+    // Zero and the negatives, where floor and trunc part company.
+    0, -1, -2, -3, -5, -9, -10, -11, -99, -100, -101, -1000,
+  ];
+  const nodeCeiling = ceilingBudgets.map((b) => store.undegradedIndexCeiling(b));
+  const ceilingSizes = nodeCeiling.map((c) => [c - 1, c, c + 1]);
+  const ceilingRef = ctx.runPython(REF, { op: 'index_ceiling', budgets: ceilingBudgets, sizes: ceilingSizes });
+  cases.push({
+    name: 'undegraded_index_ceiling: the floor-divided pressure line, over both divisibility classes and both signs',
+    kind: 'json',
+    expected: { percent: ceilingRef.percent, ceiling: ceilingRef.ceiling },
+    actual: { percent: store.INDEX_PRESSURE_PERCENT, ceiling: nodeCeiling },
+  });
+  cases.push({
+    name: 'undegraded_index_ceiling: `size > ceiling(b)` is the cross-multiplied comparison the servers write',
+    kind: 'json',
+    // The reference answers `size * 100 >= PCT * b` for the three sizes straddling the PORT's
+    // ceiling; the port answers its own `>` against its own ceiling. Both must be the same
+    // triple, and that triple must be the straddle — a helper that answered a constant would
+    // match itself and is caught by the literal.
+    expected: { degraded: ceilingRef.degraded, straddles: ceilingBudgets.length },
+    actual: {
+      degraded: ceilingSizes.map((sizes, i) => sizes.map((size) => size > nodeCeiling[i])),
+      straddles: ceilingSizes.filter((sizes, i) => {
+        const said = sizes.map((size) => size > nodeCeiling[i]).join(',');
+        return said === 'false,false,true';
+      }).length,
+    },
+  });
+  // The corpus's own teeth, per side and as a literal: a later edit that dropped the
+  // multiples of ten would take the `- 1` out of the comparison without failing anything
+  // above, because every remaining budget agrees whether or not the `- 1` is there.
+  // 90 SPELLED OUT, and deliberately not read from either runtime: this is the harness's own
+  // copy of the constant, the way `codec.mjs` keeps its own copy of `_write_fact`. If the
+  // product ever moves the percent, these counts change and this case goes red — which is the
+  // alarm wanted, because a corpus chosen for one percent is not swept for another.
+  const HARNESS_PRESSURE_PERCENT = 90;
+  const roundBudgets = ceilingBudgets.filter((b) => (HARNESS_PRESSURE_PERCENT * b) % 100 === 0);
+  const floorNotTrunc = ceilingBudgets.filter(
+    (b) =>
+      Math.floor((HARNESS_PRESSURE_PERCENT * b - 1) / 100) !==
+      Math.trunc((HARNESS_PRESSURE_PERCENT * b - 1) / 100),
+  );
+  cases.push({
+    name: 'undegraded_index_ceiling: the corpus contains both divisibility classes and the budgets where floor and trunc differ',
+    kind: 'json',
+    expected: {
+      budgets: 227,
+      distinct: 227,
+      whereTheMinusOneBites: 30,
+      whereFloorBeatsTrunc: 12,
+      holdsTheDefaultBudget: true,
+      percentIsStillNinety: true,
+    },
+    actual: {
+      budgets: ceilingBudgets.length,
+      distinct: new Set(ceilingBudgets).size,
+      whereTheMinusOneBites: roundBudgets.length,
+      whereFloorBeatsTrunc: floorNotTrunc.length,
+      holdsTheDefaultBudget: ceilingBudgets.includes(DEFAULT_INDEX_BUDGET),
+      percentIsStillNinety: ceilingRef.percent === HARNESS_PRESSURE_PERCENT,
+    },
+  });
+
   // -------------------------------------------------------- the Windows path algebra
   //
   // THIS ONE RUNS ON EVERY PLATFORM AND THAT IS THE POINT. `ntpath` and `PureWindowsPath`

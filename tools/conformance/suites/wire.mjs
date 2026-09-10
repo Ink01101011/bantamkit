@@ -680,6 +680,23 @@ export async function run(ctx) {
    * reply embeds `archive_dir`, an absolute path, which is why this suite runs both sides
    * over the identical `${scratch}/store`.
    *
+   * AMENDED (job46, J46-6). THE TARGET ARITHMETIC IN THE PARAGRAPH ABOVE IS NO LONGER THE
+   * ARITHMETIC THIS SESSION RUNS, and it stays because it is the measurement the session was
+   * built on. "the default `reserve` is the largest line the store holds (55), so the target
+   * is 265" was true until `87cc1f7` / `55575c3`; since then the default `reserve` is
+   * `(budget - undegraded_index_ceiling(budget)) + largest line`, which at 320 is
+   * (320 - 287) + 55 = 88 and puts the target at 232 rather than 265.
+   *
+   * WHAT DID NOT CHANGE IS THIS SESSION'S ANSWER, and that is worth stating rather than
+   * leaving to be re-derived: 266 is above BOTH targets and one 53-byte archive lands at 213,
+   * which is under both, so exactly one fact still moves and every literal below still reads
+   * the same. This session is therefore NOT the one that measures the change — a session
+   * whose answer is the same on either side of a fix cannot be. `index-band` below is, and it
+   * is built to sit in the band this one is nowhere near: at a 320-byte budget the band
+   * `[0.9 * budget, budget - largest line]` = [288, 265] is EMPTY, because 320 < 10 * 55.
+   * The `reserve: 9999` arm is untouched for a different reason — an explicit `reserve` opts
+   * out of the new floor, so its cap at `budget // 2` = 160 is the same number it always was.
+   *
    * THE EVICTION ORDER MUST NOT DEPEND ON THE WALL-CLOCK DATE OF THE RUN. The staleness key
    * is `(last_recalled or created, name)`, and every date in this session is "today" — so a
    * midnight between the saves and a recall that stamped SOME survivors would make the
@@ -724,6 +741,75 @@ export async function run(ctx) {
     callTool(21, 'memory_compact', { extra: 1 }),
     callTool(22, 'memory_compact', { reserve: [1] }),
   ], { argv: ['--store', store, '--index-budget', '320'], env: { ...baseEnv, [EVENT_LOG_ENV]: '1' } });
+
+  /**
+   * THE BAND: the report warns, the remedy it names runs, and the warning goes away.
+   *
+   * This is `docs/porting.md` register item 7 turned into a comparison. The register's own
+   * words: `index-budget-low` fires at `INDEX_PRESSURE_PERCENT` (90) percent of the budget and
+   * NAMES `compact`, while `compact`'s default target sat at `budget - largest index line` —
+   * so everything between the two was a band in which the command the operator was told to run
+   * exited 0 having archived nothing. `87cc1f7` and `55575c3` closed it on the two sides by
+   * measuring the default `reserve` from the warning line instead of from the budget. Nothing
+   * in this repository compared the two answers until this session, and the unit that changed
+   * the reference verified with `pytest`, which does not run this harness at all.
+   *
+   * THE FIXTURE IS BUILT TO SIT INSIDE THE BAND, AND EVERY EDGE OF IT IS DERIVED. A band
+   * exists at all only when `budget >= 10 * largest line`, because it is `[0.9 * budget,
+   * budget - largest line]` and below that the interval is empty. So:
+   *
+   *   - seven `feedback` facts whose index lines are 105 bytes and five `project` facts whose
+   *     lines are 52, for an index of 7*105 + 5*52 = 995 bytes against a budget of 1101;
+   *   - the LOWER edge: 995 * 100 = 99500 >= 90 * 1101 = 99090, so the store is degraded and
+   *     `bantamkit_status` prints the sentence naming the remedy;
+   *   - the UPPER edge: the OLD default target was `budget - largest line` = 1101 - 105 = 996,
+   *     and 995 < 996, so the old `compact` archived NOTHING here. The fixture is strictly
+   *     inside the band rather than on either edge of it, which is what stops the case being
+   *     the kind whose fixture agrees with the threshold by coincidence.
+   *
+   * 1101 IS NOT A ROUND NUMBER ON PURPOSE: 90 * 1101 = 99090 is not divisible by 100, so the
+   * ceiling is a real floor division (990, not 990.9) rather than an exact one. The `- 1` in
+   * `undegraded_index_ceiling` is invisible at this budget and is swept separately, over the
+   * multiples of ten, by `store.mjs` — see the corpus-membership case there.
+   *
+   * THE ORDER IS THE OTHER HALF, and the names are chosen so a wrong order is visible rather
+   * than merely different. Every fact is saved on the same day, so the staleness key falls
+   * back to the name, and `band-f*` sorts BEFORE `band-p*`: an eviction order that ignored the
+   * class would archive `band-f1, band-f2, band-f3` — the user's standing instructions. What
+   * both runtimes must archive is `band-p1, band-p2, band-p3`, in that order, with all seven
+   * feedback facts left in the index and two project facts still standing, so the loop is seen
+   * to have STOPPED at the target rather than run out of candidates.
+   *
+   * ONE MASK AND ONE SUBSTITUTION, both the same as `status-degraded`'s and for the same
+   * reasons: `build sha256:` fingerprints two different trees, and the remedy sentence names
+   * the command THIS install provides.
+   */
+  const bandDesc = (word, n) => `${word} ${word.repeat(40)}`.slice(0, n);
+  const BAND_FEEDBACK = ['alfa', 'bravo', 'coral', 'delta', 'ember', 'falcon', 'gamma'];
+  const BAND_PROJECT = ['hotel', 'india', 'juliet', 'kilo', 'lima'];
+  add('index-band', [
+    INIT(),
+    INITIALIZED,
+    // A `feedback` line is `- [[<name>]] (feedback) — <description>\n`: 15 fixed bytes (the em
+    // dash is three of them) plus the name, the type word and the description. 7 + 8 + 75 + 15
+    // = 105. A `project` line is 7 + 7 + 23 + 15 = 52. Every description is built from a word
+    // no other fact uses, because `memory_save` DEDUPES on token overlap and twelve facts
+    // padded from one phrase would be eleven refusals and an empty band.
+    ...BAND_FEEDBACK.map((word, i) =>
+      callTool(2 + i, 'memory_save', { type: 'feedback', name: `band-f${i + 1}`, description: bandDesc(word, 75), body: 'b' }),
+    ),
+    ...BAND_PROJECT.map((word, i) =>
+      callTool(9 + i, 'memory_save', { type: 'project', name: `band-p${i + 1}`, description: bandDesc(word, 23), body: 'b' }),
+    ),
+    callTool(14, 'bantamkit_status', {}),
+    callTool(15, 'memory_compact', {}),
+    callTool(16, 'bantamkit_status', {}),
+    callTool(17, 'memory_compact', {}),
+  ], {
+    argv: ['--store', store, '--index-budget', '1101'],
+    mask: maskBuild,
+    refMask: substituteMemoryProg,
+  });
 
   /**
    * `bantamkit_read`, the tenth tool, over the reader's files: every branch the handler has.
@@ -2299,16 +2385,34 @@ export async function run(ctx) {
           if ((listing ?? []).length > 0) wroteArchive.push(`${spec.name} (${where}): ${listing.join(',')}`);
         }
       }
-      const saidMoved = [...namedBy(9), ...namedBy(13)].map((name) => `${name}.md`).sort();
+      // WIDENED (job46, J46-6) FROM ONE SESSION TO A LIST OF THEM, and it is a widening and
+      // not a loosening: the expectation is still built from what the REPLIES said moved, and
+      // it still forbids every other session and every other store. `index-band` is the second
+      // session in this suite that compacts — it is register item 7's own story, and before it
+      // this case's one-element literal would have failed on its existence rather than on
+      // anything it did. The ids are the archiving calls of each session, named here so a
+      // session that started compacting silently is still a failure.
+      const COMPACTING = [['memory-compact', [9, 13]], ['index-band', [15]]];
+      const expectedArchives = COMPACTING.map(([session, ids]) => {
+        const from = results.get(session)[key];
+        const said = ids
+          .flatMap((id) => [...(toolTextOf(from, id) ?? '').matchAll(/^- (\S+) \(/gm)].map((m) => `${m[1]}.md`))
+          .sort();
+        return `${session} (store): ${said.join(',')}`;
+      });
       cases.push({
-        name: `memory_compact: ${label} wrote \`archive/\` in the session that compacted, in no other store, and only what the replies named`,
+        name: `memory_compact: ${label} wrote \`archive/\` in the sessions that compacted, in no other store, and only what the replies named`,
         kind: 'json',
-        expected: [`memory-compact (store): ${saidMoved.join(',')}`],
+        expected: expectedArchives,
         actual: wroteArchive,
       });
       // The arithmetic the whole session stands on, pinned on disk rather than in prose:
       // five ~53-byte lines make 266 against a 320 budget, one over the 265 default target
       // (the largest line is 55), and the three survivors' lines reach 160 by equality.
+      // AMENDED (job46, J46-6): "the 265 default target" is the PRE-job46 number and stays
+      // as the record of what this case was built against; the default target at a 320-byte
+      // budget is now 232, and 266 is over both. See the session's own comment for why its
+      // answer is unchanged either way, and `index-band` for the case that is not.
       const savedRecords = (side.eventlog ?? '')
         .split('\n')
         .filter((line) => line !== '')
@@ -2327,6 +2431,164 @@ export async function run(ctx) {
       });
     }
     notes.push(`memory_compact (node): ${textOf(results.get('memory-compact').node, 9).split('\n')[0]}`);
+  }
+
+  // -------------------------------------------------- the band, held to register item 7
+
+  /**
+   * PER SIDE AND AS LITERALS, for the reason the block above gives and one more that is
+   * specific to this change: `87cc1f7` and `55575c3` moved the SAME arithmetic on both
+   * runtimes in one job, so a differential comparison of the two cannot see whether either of
+   * them is right. That is this repository's third named vacuity — a symmetric regression —
+   * and the only defence against it is a literal each side has to reach on its own. Both sides
+   * of every case below are therefore fixed numbers and fixed name lists, not one runtime's
+   * answer handed to the other.
+   *
+   * Four things, one case each, in the order the operator meets them:
+   *
+   *   1. IN THE BAND: the report warns, and the command it names is not a no-op there. The
+   *      band is DERIVED from what the session actually left on disk — the index size the
+   *      compaction reply quotes and the largest line `index.md` still carries — and never
+   *      from a percentage. A percentage would rot: the register wrote 99.2% off a store whose
+   *      largest index line was 186 bytes, and the same store measures 98.50% today at 361,
+   *      because the upper edge is a function of store CONTENT.
+   *   2. CLEARED: the condition the report printed before is absent from the report after.
+   *   3. IDEMPOTENT: the second run archives nothing.
+   *   4. ORDER: the same three names, in the same order, on both sides, all of them
+   *      non-feedback — while the three facts a key that ignored the class would have taken
+   *      are all `feedback` and all still in the index.
+   */
+  {
+    const textOf = (side, id) => toolTextOf(side, id) ?? '';
+    /** `- <name> (<type>) — <description>`: the bullets a compaction reply lists, in reply order. */
+    const movedBy = (side, id) =>
+      [...textOf(side, id).matchAll(/^- (\S+) \((\w+)\) — /gm)].map((m) => ({ name: m[1], type: m[2] }));
+    const ALL_BAND_NAMES = [
+      ...BAND_FEEDBACK.map((_, i) => `band-f${i + 1}`),
+      ...BAND_PROJECT.map((_, i) => `band-p${i + 1}`),
+    ];
+    for (const [label, key] of [
+      ['the reference', 'python'],
+      ['the port', 'node'],
+    ]) {
+      const side = results.get('index-band')[key];
+      const before = textOf(side, 14);
+      const compacted = textOf(side, 15);
+      const after = textOf(side, 16);
+      const again = textOf(side, 17);
+      // "the index went from 995 to 839 bytes against a 1101-byte budget" — the two sizes and
+      // the budget read out of the reply the operator is shown, so the arithmetic pinned here
+      // is the arithmetic that was printed and not a second computation of it.
+      const went = /the index went from (\d+) to (\d+) bytes against a (\d+)-byte budget/.exec(compacted);
+      const indexAfter = went ? Number(went[2]) : null;
+      // THE BAND IS MEASURED FROM THE WARNING'S OWN NUMBERS, not from the remedy's. The
+      // degraded sentence is `the memory index is <n> bytes of a <b>-byte budget, …`, and
+      // reading the pair out of THAT is what lets the band case still measure a band when the
+      // remedy has gone back to being a no-op and printed no numbers at all. The remedy's
+      // `from` is compared against it below rather than substituted for it.
+      const warned = /the memory index is (\d+) bytes of a (\d+)-byte budget/.exec(before);
+      const indexBefore = warned ? Number(warned[1]) : null;
+      const budget = warned ? Number(warned[2]) : null;
+      const largestLine = side.index?.largestLine ?? null;
+      cases.push({
+        name: `index-band: ${label} is inside the band — degraded at the warning line, and under the target the OLD default would have aimed at`,
+        kind: 'json',
+        expected: {
+          indexBefore: 995,
+          budget: 1101,
+          largestLine: 105,
+          // 995 * 100 = 99500 >= 90 * 1101 = 99090. Derived from the two numbers above rather
+          // than asserted, so a fixture that drifted out of the band fails here and does not
+          // quietly go on to test nothing.
+          degradedAtTheWarningLine: true,
+          // 995 <= 1101 - 105 = 996: the OLD default target, which is why the remedy used to
+          // exit 0 having archived nothing exactly here.
+          underTheOldDefaultTarget: true,
+          // …and the band is non-empty at all only because 1101 >= 10 * 105.
+          theBandIsNonEmpty: true,
+          reportNamesTheRemedy: true,
+        },
+        actual: {
+          indexBefore,
+          budget,
+          largestLine,
+          degradedAtTheWarningLine: indexBefore !== null && budget !== null && indexBefore * 100 >= 90 * budget,
+          underTheOldDefaultTarget:
+            indexBefore !== null && budget !== null && largestLine !== null && indexBefore <= budget - largestLine,
+          theBandIsNonEmpty: budget !== null && largestLine !== null && budget >= 10 * largestLine,
+          reportNamesTheRemedy: before.includes(REMEDY_HEAD),
+        },
+      });
+      cases.push({
+        name: `index-band: ${label} — the remedy the degraded report names archives something, and the condition has cleared afterwards`,
+        kind: 'json',
+        expected: {
+          archivedCount: 3,
+          indexAfter: 839,
+          remedyAgreesWithTheWarningAboutTheSize: true,
+          stillDegraded: false,
+          reportStillNamesTheRemedy: false,
+        },
+        actual: {
+          archivedCount: movedBy(side, 15).length,
+          indexAfter,
+          // The report and the remedy are two surfaces reading one store; a job that moved
+          // one of them and not the other is the whole defect this session exists for.
+          remedyAgreesWithTheWarningAboutTheSize: went !== null && Number(went[1]) === indexBefore,
+          stillDegraded: indexAfter !== null && budget !== null && indexAfter * 100 >= 90 * budget,
+          // The report AFTER, read for the same sentence the report BEFORE carried. A runtime
+          // that stopped printing the sentence altogether would pass this half and fail the
+          // `reportNamesTheRemedy` half of the case above.
+          reportStillNamesTheRemedy: after.includes(REMEDY_HEAD),
+        },
+      });
+      cases.push({
+        name: `index-band: ${label} — running the remedy a second time archives nothing`,
+        kind: 'json',
+        expected: { archived: [], saysNothingToArchive: true },
+        actual: {
+          archived: movedBy(side, 17).map((m) => m.name),
+          // The reply's own words for the empty outcome. A positive check, so a run that
+          // errored — and archived nothing because it never got that far — fails here rather
+          // than passing as "idempotent".
+          saysNothingToArchive: again.includes('nothing archived: the index is '),
+        },
+      });
+      cases.push({
+        name: `index-band: ${label} — the names and the order, with feedback exhausted last`,
+        kind: 'json',
+        expected: {
+          moved: [
+            { name: 'band-p1', type: 'project' },
+            { name: 'band-p2', type: 'project' },
+            { name: 'band-p3', type: 'project' },
+          ],
+          onDisk: ['band-p1.md', 'band-p2.md', 'band-p3.md'],
+          // What a key that ranked by staleness ALONE would have archived here: every fact was
+          // saved on the same day, so the name breaks the tie, and `band-f*` sorts first. The
+          // three it would have taken are the user's standing instructions.
+          whatATemporalKeyWouldTake: ['band-f1', 'band-f2', 'band-f3'],
+          everyFeedbackFactSurvived: true,
+          // Two project facts are still in the index, so the loop STOPPED at the target
+          // rather than running out of non-feedback candidates — without this the case would
+          // pass under a rule that simply archived every project fact it could find.
+          projectFactsLeftStanding: 2,
+        },
+        actual: {
+          moved: movedBy(side, 15),
+          onDisk: side.archive ?? null,
+          whatATemporalKeyWouldTake: [...ALL_BAND_NAMES].sort().slice(0, 3),
+          everyFeedbackFactSurvived: BAND_FEEDBACK.every((_, i) => !(side.archive ?? []).includes(`band-f${i + 1}.md`)),
+          projectFactsLeftStanding: BAND_PROJECT.filter((_, i) => !(side.archive ?? []).includes(`band-p${i + 1}.md`)).length,
+        },
+      });
+    }
+    notes.push(`index-band (node): ${textOf(results.get('index-band').node, 15).split('\n')[0]}`);
+    notes.push(
+      `index-band: the band on this fixture — degraded from 90% of 1101 = 990.9 up to the old ` +
+        `default target 1101 - 105 = 996, index 995, new target ` +
+        `${Math.floor((90 * 1101 - 1) / 100) - 105}; every edge derived, no percentage pinned`,
+    );
   }
 
   // --------------------------------------------------- the SDK-lineage rulings, in full
