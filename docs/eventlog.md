@@ -10,6 +10,10 @@ byte-compares the two files. Record shape, key order, timestamp format, file loc
 rotation rule are all specified below; change them here and in both runtimes, or not at
 all.
 
+**It is not the only log on the machine, and it is not where every question goes.** There
+are four streams; [Four streams, not one](#four-streams-not-one--and-why-they-stay-apart)
+is the routing table and the written reason they are not merged.
+
 ## What the host already has, measured
 
 Claude Code persists an MCP log per project at
@@ -36,6 +40,186 @@ capabilities: {...}`, `Sending SIGINT`, `MCP server process exited cleanly`) and
 So the tool **name**, the **ok/fail bit**, the **duration** and the **session** are
 already on disk. None of the four is a field in this log. Duplicating them would buy
 nothing and cost an operator disk.
+
+## Four streams, not one — and why they stay apart
+
+`docs/roadmap-agent-stack.md` **AS-1(a)** asked for one event stream, or the written reason
+there must be more than one. **This is the written reason: they stay apart.** No key was
+added, removed or renamed on either side; `SCHEMA_VERSION` stays **1**.
+
+The premise of the question was that there are two streams. There are **four**, and the
+first thing a reader needs is the routing table. Re-derived on the development machine on
+**2026-09-11**; every count below has its command beside it.
+
+| # | stream | file | written by | on by default | its only reader | the question it answers |
+|---|---|---|---|---|---|---|
+| 1 | **this log** | `<store>/events/mcp.jsonl` | the MCP server, **both runtimes** | **no** — `BANTAMKIT_EVENT_LOG` | `bantamkit-mcp --mcp-report`, `--statusline` | *what did a tool **decide**, behind the one word the host records?* |
+| 2 | **the hook log** | `~/.bantamkit/hooks/hook-log.jsonl` | `tools/hooks/bantamkit-hook.mjs` | **yes** — always, there is no switch | `tools/ledger/injection-precision.mjs` | *what did the **automatic** half do at the host boundary, and did the user's model then use it?* |
+| 3 | **the usage log** | `~/.claude/tool-metrics/events.jsonl` | the same hook's `PostToolUse` arm | **yes** — always | `tools/ledger/tool-usage.mjs` | *how many tool calls of which kind — **the denominator**, and the only copy once the host deletes a transcript* |
+| 4 | **the host's own MCP log** | `~/Library/Caches/claude-cli-nodejs/<slug>/mcp-logs-bantamkit/*.jsonl` | Claude Code | **yes** — always | `bantamkit-mcp --mcp-report` | *did the call **arrive**, did it succeed, how long did it take?* |
+
+Streams 2 and 3 are written by **one Node process**; that they are two files is the second
+question, and [ledger.md](ledger.md) owns it. Stream 4 is the host's and bantamkit cannot
+change it. So AS-1(a)'s fold is only ever a fold of **1 and 2**, and the four paragraphs
+below are why it is refused.
+
+The census, on the development machine:
+
+```
+# 1  620 records, 2026-08-24T20:55:47.304Z → 2026-09-10T21:01:21.945Z
+wc -l .bantamkit/memory/events/mcp.jsonl
+# 2  1966 records, 339931 B, 2026-08-27T15:33:53.107Z → 2026-09-10T20:57:16.091Z
+wc -lc ~/.bantamkit/hooks/hook-log.jsonl
+# 3  12590 records, 3033642 B
+wc -lc ~/.claude/tool-metrics/events.jsonl
+```
+
+Two of those three are **snapshots of a live stream and will read higher on a rerun**. The
+same three commands, twenty minutes later in the session that wrote this section, answered
+620 / **1972** / **12658**: stream 1 did not move because no MCP tool was called, while 2
+and 3 gained six and sixty-eight records from the session merely running. That is fact (1)
+demonstrating itself, and it is why every count below was taken against a **read-only copy**
+of the hook log (`cp -Rp`) pinned at 1966 records rather than against the growing file.
+
+This machine is an **opted-in operator**: `BANTAMKIT_EVENT_LOG` is `"on"` in
+`~/.claude.json` under `.mcpServers.bantamkit.env`. That is why stream 1 is non-empty here
+and empty on a default install, which is fact (1) below.
+
+### 1. The fold has no direction that does not destroy something
+
+**A user who has never set `BANTAMKIT_EVENT_LOG` has stream 1 empty and stream 2 complete.**
+On this machine, an opted-in one, those are 620 and 1966 records over overlapping windows.
+On a default install the first is **0** no matter what the session did, and the second is
+whatever the session did.
+
+* Folding the **always-on** stream into the **opt-in** one silently drops every hook record
+  for every user who has not opted in — which is every user by default, and is the exact
+  population the hook exists to serve, since the hook is the half that fires without anyone
+  calling it.
+* Folding the **opt-in** one into the **always-on** one turns "an operator diagnostic opts
+  in" into "bantamkit writes into your memory store by default". The reason that default is
+  measured rather than stylistic is stated above under [The switch](#the-switch):
+  `node tools/conformance/run.mjs --all` reads the operator's live memory store by design
+  and read-only, and an on-by-default log turns that read into a **write against real user
+  data every time the suite runs**.
+
+Neither default is a preference. Each is load-bearing for its own stream, and they point in
+opposite directions.
+
+### 2. The record shapes are not compatible — measured, not asserted
+
+The event log's hard rule is that **every value written is an ASCII token from a closed set,
+an `int`, or a `bool`** (see [Metadata only](#metadata-only), held by
+`test_the_only_values_written_are_from_a_closed_set`). Measured over the 1966 real hook
+records:
+
+```
+789 of 1966 (40.1%) carry a value that rule forbids
+  absolute paths   cwd, file, checkpoint
+  a memory fact name   injected[].name
+  exception text   error
+  child-process stdout   out
+  a digest of the user's prompt   prompt.sha256
+  the host's session id   session
+```
+
+All six break the closed-set rule, and three of them break a **prohibition this page
+already states in words**: never a path, never a fact name, never `str(exception)`. The
+sixth is sharper still. **`session` is
+the hook log's join key and it is a field the event log can never carry** — not by policy
+but by construction: `sessionId` is a Claude Code concept and is never sent over the wire,
+so the server process cannot observe it (see
+[What is deliberately not in the record](#what-is-deliberately-not-in-the-record)). A folded
+table would have a join key that is null on every MCP row, which is not one stream — it is
+two streams in one file with a column that says which.
+
+The two vocabularies are disjoint as well: this log keys on `(tool, outcome)` from a closed
+list, the hook log on `(event, action)` — 17 live combinations, sharing not one value.
+Five top-level keys here; **48** across the hook log.
+
+So a fold is not a merge. It is either the event log abandoning the rule that makes it safe
+to leave on, or the hook log abandoning the fields that make it answerable.
+
+### 3. The two are already recording the same call, and answering different questions
+
+This is the case that most looks like duplication, and it is the clearest evidence against
+the fold. Inside the shared window (`ts >= 2026-08-27T15:33:53.107Z`) stream 1 holds **121
+`memory_save` records** and stream 2 holds **119 `PostToolUse`/`saved` records**. Nearly the
+same calls. They say different things and neither contains the other:
+
+| | stream 1 says | stream 2 says |
+|---|---|---|
+| about a `memory_save` | which of four outcomes `save` **decided** — `saved`, `duplicate`, `refused-validation`, `refused-budget` | what the **hook** did next: index bytes against budget, which scope configured that budget, and whether an auto-compaction fired — 3 `auto-compact` records stand beside those 119 |
+
+A reader asking "did my save land?" wants stream 1. A reader asking "is my index about to
+be compacted, and why did it pick that budget?" wants stream 2. Merged on `ts`, they would
+be one row with two disjoint halves and a `null` in whichever half the writer was not.
+
+### 4. A fold would land on both runtimes and only one could write it
+
+A key added here bumps `SCHEMA_VERSION` **in both runtimes together** — that is the
+constant's own rule and it is not negotiable. The hook is a **Node host adapter**, and
+structurally so: it is registered in `~/.claude/settings.json` as one Node command, there
+is no Python hook, and there will not be one, because the public install is pure Node by
+ruling. So a hook-shaped key would be a field `runtime-py` must carry, must version, and can
+never populate — a one-sided surface wearing a two-sided version number, and the kind of
+difference a differential conformance case cannot see at all, because both sides would
+agree on the empty answer.
+
+**No divergence row and no `ruling:` case is owed for this decision, and that is the point:
+nothing was added to either runtime, so the two-runtime rule is not engaged.** The refusal
+is what keeps it that way.
+
+### And the discontinuity, which no fold could repair
+
+Any fold inherits a break that already exists and would add a second. **488 of the 625
+injection records in stream 2 carry neither names nor a session id** — they predate the
+instrument, and `injection-precision.mjs` says so on every run: *history starts the day the
+new hook record ships.* A fold would move the file, the shape and the reader all at once and
+put a **second** cut-over in the middle of a measurement that is live. J46-15 measured that
+instrument at 576 injection records on 2026-09-10 and 624 on 2026-09-11, crossing its own
+sample floor for the first time between one unit and the next; the re-derivation for this
+section, later the same day, reads **625**. The log grows while you read it.
+
+Stream 2 is also **unbounded**, while this log rotates at 1 MiB keeping one generation. At
+339,931 B the hook log is a third of the way to a cap that, if inherited, would silently
+delete the older half of the only evidence roadmap #6 has — and the deletion would be
+correct behaviour for stream 1 and evidence destruction for stream 2. One rotation rule
+cannot be right for both.
+
+### Where the reader goes for the union
+
+**There is no single place, and this section is the honest answer instead of one.** The
+nearest thing is `bantamkit-mcp --mcp-report`, which joins streams **1 and 4** on
+`(ts, tool)` and prints its own uncertainty ([mcpreport.md](mcpreport.md)). Nothing joins
+stream 2 to any of the others, because the field that would do it — `session` — exists in
+2 and cannot exist in 1.
+
+So the routing rule for *"what did bantamkit do in this session?"* is: **what a tool
+decided → here; what fired without anyone calling it → the hook log; how much of anything
+→ the usage log; whether the wire worked → the host's.**
+
+**This table is a gate, not prose.** `runtime-ts/test/hooks.test.mjs`'s
+*"every JSONL stream the hook writes is named in docs/eventlog.md"* runs the hook across its
+registered events under a scratch `HOME`, enumerates the `*.jsonl` files that actually
+appear, and fails if one of them is not named above. A fifth stream cannot arrive
+undocumented.
+
+### What this section does not answer
+
+AS-1 names two further gaps and this is sub-task (a). **Subagent spawns turn out to be
+partly covered already, in the stream nobody would look in.** The `PostToolUse` arm writes
+every `Agent` call into stream 3 with `detail` set to the `subagent_type`: measured
+2026-09-11, **114 `Agent` rows across 7 sessions** (113 `general-purpose`, 1
+`claude-code-guide`). What is *not* recorded is the spawn's **start, end and outcome** —
+`SubagentStart` and `SubagentStop` are both members of the host's event union and neither
+runs bantamkit's adapter (this machine's `~/.claude/settings.json` has a `SubagentStop`
+entry, but its command is not this hook), and the adapter's own dispatch has no case for
+either, so they fall to `default: log({event, action: 'ignored'})`. The *inner* activity is
+missing too: a subagent's tool calls arrive under the parent `session`, and
+`injection-precision.mjs` deliberately excludes sidechains for that reason. "Anything a session does outside the
+server" is unbounded by definition and is a matter for the ledger tools' surface, AS-1(c).
+
 
 ## What it records instead
 

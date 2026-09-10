@@ -1073,3 +1073,80 @@ test('a cwd outside any project does not merge the profile store with itself', (
   assert.deepEqual(factNames(profile), ['a-profile-fact.md', 'another-profile-fact.md']);
   assert.equal(existsSync(join(profile, 'archive')), false, 'nothing was consumed');
 });
+
+// ------------------------------------------------- the census AS-1(a) answered, as a gate
+//
+// `docs/roadmap-agent-stack.md` AS-1(a) asked for one event stream or the written reason
+// there is more than one. The written reason is `docs/eventlog.md`'s "Four streams, not one"
+// section, and its load-bearing claim is a CENSUS: these are the streams, there are no
+// others. A census in prose goes stale the first time an arm starts writing somewhere new,
+// and nothing would say so — which is the whole failure AS-1(a) is about.
+//
+// So the census is checked against the RUN, not against the source. This fires the hook for
+// every event the user's registration actually sends (`docs/hooks.md`), then walks the
+// scratch HOME and asks what `.jsonl` files ARE THERE. Grepping the adapter for path
+// expressions would pass on a stream that a helper builds and would miss one an import
+// writes; the filesystem cannot be talked around.
+//
+// `.jsonl` and not every file: `dream-state.json` and `ledger-<session>.json` are
+// read-modify-write STATE, not append-only streams, and AS-1(a) is about streams. A new
+// stream that arrived as `.json` would slip past — noted here rather than guarded, because
+// an append log in this project is a `.jsonl` by convention and widening the glob to catch
+// the state files would make this test fail on every legitimate change to them.
+test('every JSONL stream the hook writes is named in docs/eventlog.md', () => {
+  const home = newHome();
+  const cwd = newCwd();
+  writeFileSync(join(scratch, 'transcript.jsonl'), '{"type":"tool_use"}\n');
+  const events = [
+    { hook_event_name: 'SessionStart', source: 'startup' },
+    { hook_event_name: 'UserPromptSubmit', prompt: 'how does the deploy flag work here' },
+    { hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: join(cwd, 'README.md') } },
+    { hook_event_name: 'PostToolUse', tool_name: 'Read', tool_input: {}, tool_use_id: 't1' },
+    { hook_event_name: 'PreCompact', trigger: 'manual', transcript_path: join(scratch, 'transcript.jsonl'), custom_instructions: null },
+    { hook_event_name: 'PostCompact' },
+    stopPayload(),
+  ];
+  writeFileSync(join(cwd, 'README.md'), 'a file for the read ledger\n');
+  for (const payload of events) {
+    const r = runHook(payload, { home, cwd });
+    assert.equal(r.status, 0, `${payload.hook_event_name}: ${r.stderr}`);
+  }
+
+  const streams = [];
+  const walk = (dir, rel) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.isDirectory()) walk(join(dir, e.name), `${rel}${e.name}/`);
+      else if (e.name.endsWith('.jsonl')) streams.push(`~/${rel}${e.name}`);
+    }
+  };
+  walk(home, '');
+  streams.sort();
+
+  // Non-vacuity: a walk that found nothing would pass the loop below without reading a
+  // thing. These two are the census as `docs/eventlog.md` prints it; a third that is
+  // documented is welcome, an undocumented one is the failure.
+  assert.deepEqual(
+    streams.filter((s) => s === '~/.bantamkit/hooks/hook-log.jsonl' || s === '~/.claude/tool-metrics/events.jsonl'),
+    ['~/.bantamkit/hooks/hook-log.jsonl', '~/.claude/tool-metrics/events.jsonl'],
+    'both streams the census names must actually be written by a real run',
+  );
+
+  // The census is the TABLE, not the page. A first cut of this test asked whether the path
+  // appeared anywhere in `docs/eventlog.md` and a deliberate mutation of the table row left
+  // it GREEN, because the same path also sits inside a `wc -lc` line in the census's own
+  // reproduce block. That is the identical defect as this unit's checkpoint verify
+  // (`grep -q injection docs/eventlog.md`), reproduced by accident: a substring search cannot
+  // tell a documented decision from an incidental mention. So this reads the row.
+  const rows = readFileSync(join(repoRoot, 'docs', 'eventlog.md'), 'utf8')
+    .split('\n')
+    .filter((l) => /^\|\s*\d+\s*\|/.test(l))          // `| 2 | **the hook log** | \`path\` | … |`
+    .map((l) => l.split('|').map((c) => c.trim()));
+  const census = new Set(rows.map((cells) => (cells[3] || '').replace(/^`|`$/g, '')));
+  assert.ok(census.size >= 4, `the census table did not parse — found ${census.size} rows, expected 4`);
+
+  for (const stream of streams) {
+    assert.ok(census.has(stream),
+      `the hook writes ${stream} and the census table in docs/eventlog.md does not list it — `
+      + "AS-1(a)'s written answer is now wrong. Add a row naming the question it answers, or stop writing it.");
+  }
+});

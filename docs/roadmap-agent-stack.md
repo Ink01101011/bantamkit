@@ -72,6 +72,17 @@ with a surface, in both runtimes.
 
 **Gate:** none needed. This is finishing a thing that already exists.
 
+**AMENDED 2026-09-11 (job46, J46-16) — (a) is CLOSED, and the answer is "they stay apart".**
+The written reason is `docs/eventlog.md`'s *Four streams, not one* section. Nothing was added
+to either runtime and `SCHEMA_VERSION` stays `1`, so no divergence row and no `ruling:` case
+is owed. Three corrections to the sentence above, each measured on this machine that day:
+there are **four** streams and not two — the hook also writes
+`~/.claude/tool-metrics/events.jsonl`, and the host writes its own MCP log; **40.1 % of the
+1966 real hook records (789) carry a value `eventlog`'s closed-set rule forbids**, so the
+fold is not available without one side abandoning its contract; and **subagent spawns are
+already partly recorded** — 114 `Agent` rows across 7 sessions in stream 3 — while
+`SubagentStart`/`SubagentStop` reach no bantamkit arm at all. (b) and (c) remain open.
+
 ### AS-2 — Make the model a checked fact, not a logged one
 
 The orchestration policy in both `CLAUDE.md` files says the model *"is per role, never random,
