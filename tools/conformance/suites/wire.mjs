@@ -1433,14 +1433,59 @@ export async function run(ctx) {
      * `build_identity` answers two different trees' digests by construction. The record
      * carries the COUNT of underivable fields instead, and nothing else, so it is the same
      * bytes on both sides — which is the whole reason no digest was put in it.
+     *
+     * ONE SUBSTITUTION, FOR THE SAME REASON THE `unavailable` CASE IS SPLIT. AS-7 added three
+     * fields whose availability is decided by how the server was INSTALLED, and this harness
+     * does not install its two sides alike — the reference through an editable install of
+     * `runtime-py`, the port out of `runtime-ts/dist`. At `c9372ca` that made this record
+     * `{"unavailable":1}` against `{"unavailable":3}` with no code difference behind it. So
+     * the count compared here is the count NET of the install fields, taken from each side's
+     * own reply in the same session; every other byte of the record still reaches the
+     * comparison as the runtime wrote it, and the raw counts are printed in the note below.
+     *
+     * The substitution deletes nothing, because the case underneath it is stronger than what
+     * it replaces: the record's count must equal the length of the reply's own `unavailable`
+     * list, which is the property that says the record was DERIVED from the answer rather
+     * than computed a second time — and it is pinned per side, so both runtimes miscounting
+     * together still reddens.
      */
     const identityLog = results.get('eventlog-identity');
+    const INSTALL_FIELDS_LOGGED = ['install_shape', 'install_source', 'install_source_exists'];
+    const identityReplyOf = (side) => frameOf(side, 2)?.result?.structuredContent ?? {};
+    const installNamed = (side) =>
+      (identityReplyOf(side).unavailable ?? []).filter((k) => INSTALL_FIELDS_LOGGED.includes(k)).length;
+    const netCount = (text, side) =>
+      maskTs(text ?? '').replace(/"unavailable":(\d+)/g, (_m, n) => `"unavailable":${Number(n) - installNamed(side)}`);
     cases.push({
-      name: 'eventlog: build_identity answers differently and records identically',
+      name: 'eventlog: build_identity answers differently and records identically, net of the install fields',
       kind: 'bytes',
-      expected: maskTs(identityLog.python.eventlog),
-      actual: maskTs(identityLog.node.eventlog),
+      expected: netCount(identityLog.python.eventlog, identityLog.python),
+      actual: netCount(identityLog.node.eventlog, identityLog.node),
     });
+    const recordedCount = (side) => {
+      const line = (side.eventlog ?? '').split('\n').find((l) => l.includes('"build_identity"'));
+      return line === undefined ? null : JSON.parse(line).detail.unavailable;
+    };
+    const countMatchesReply = (side) =>
+      `${recordedCount(side) === (identityReplyOf(side).unavailable ?? []).length}`;
+    cases.push({
+      name: "eventlog: the recorded count is the reply's own unavailable list, counted — the reference",
+      kind: 'string',
+      expected: 'true',
+      actual: countMatchesReply(identityLog.python),
+    });
+    cases.push({
+      name: "eventlog: the recorded count is the reply's own unavailable list, counted — the port",
+      kind: 'string',
+      expected: 'true',
+      actual: countMatchesReply(identityLog.node),
+    });
+    notes.push(
+      `eventlog: build_identity recorded unavailable=${recordedCount(identityLog.python)} (reference) and ` +
+        `unavailable=${recordedCount(identityLog.node)} (port); of those, ${installNamed(identityLog.python)} and ` +
+        `${installNamed(identityLog.node)} are the AS-7 install fields, whose availability is a fact about how ` +
+        'this harness is installed and not about either runtime. The bytes case above compares the counts net of them.',
+    );
 
     const budgetLog = results.get('eventlog-budget');
     cases.push({
@@ -2196,12 +2241,114 @@ export async function run(ctx) {
         'sides report a semver STRING, which is what caught this field silently being `null` ' +
         'on the Node side.',
     });
+    /**
+     * THE UNAVAILABLE LIST, SPLIT BY WHAT DECIDES EACH ENTRY. Read this before changing it.
+     *
+     * This case used to compare the two lists whole, and at `c9372ca` it went red with no
+     * code difference behind it. AS-7 added three fields whose availability is decided by
+     * how the SERVER WAS INSTALLED, and the harness does not install its two sides alike:
+     * the reference is imported from an editable install of `runtime-py` (`linked`, an
+     * origin that exists, nothing added to the list) and the port is run out of the checkout
+     * (`checkout`, no origin path at all, so `install_source` and `install_source_exists`
+     * are both named as unavailable). Same code, two environments — and a colleague whose
+     * laptop carries a `pip install` and an `npm i` would see the two lists agree again.
+     *
+     * A case whose colour is decided by how the developer set their laptop up is not an
+     * instrument, so the list is split rather than narrowed:
+     *
+     *   * everything the CODE decides is still compared whole, below, and still reddens if
+     *     either side starts or stops refusing a field;
+     *   * the three install fields are compared for the RULE they follow, per side against a
+     *     literal, so a symmetric regression cannot hide in a differential;
+     *   * their VALUES are compared across the two runtimes in the `install` suite, over ten
+     *     matched installs both sides are handed, which is strictly more than this case ever
+     *     saw — it only ever compared the one shape this machine happened to be in.
+     *
+     * If you are here because one of these went red: the note at the end of this suite prints
+     * both sides' `install_shape`. Two different shapes is an ENVIRONMENT difference and no
+     * case below should see it. The same shape with different answers is a code difference.
+     */
+    const INSTALL_FIELDS = ['install_shape', 'install_source', 'install_source_exists'];
+    // Written out rather than imported from either runtime, so this file is not testing a
+    // vocabulary against itself. That the two runtimes DECLARE the same five words, in the
+    // same order, is pinned per side in the `install` suite.
+    const INSTALL_SHAPES = ['registry', 'local-file', 'linked', 'checkout', 'ephemeral'];
+    const codeDecided = (identity) => (identity.unavailable ?? []).filter((k) => !INSTALL_FIELDS.includes(k));
     cases.push({
-      name: 'build_identity: the unavailable list agrees',
+      name: 'build_identity: the unavailable list agrees, over every field whose availability the CODE decides',
       kind: 'json',
-      expected: py.unavailable,
-      actual: nd.unavailable,
+      expected: codeDecided(py),
+      actual: codeDecided(nd),
     });
+    // THE CASE THAT COULD NOT FAIL, CLOSED. `codeDecided` reads `identity.unavailable ?? []`,
+    // so two runtimes that both stopped reporting the key at all would compare `[]` against
+    // `[]` and pass — and the case above would have said the lists agree while neither side
+    // had one. That hole is in the case this replaced, too. The literal is what shuts it: a
+    // correctly provisioned harness refuses exactly `git_commit` and derives everything else,
+    // which is a property of the code (both sides refuse a commit by rule) and of the harness
+    // (`BANTAMKIT_ASSETS` is pinned, so the pack is never the missing thing).
+    cases.push({
+      name: 'build_identity: the code-decided refusals against a literal — the reference',
+      kind: 'json',
+      expected: ['git_commit'],
+      actual: codeDecided(py),
+    });
+    cases.push({
+      name: 'build_identity: the code-decided refusals against a literal — the port',
+      kind: 'json',
+      expected: ['git_commit'],
+      actual: codeDecided(nd),
+    });
+    /**
+     * And the install fields, as the rule they are supposed to follow rather than as the
+     * shape this machine is in. Each clause is a property of the code:
+     *
+     *   * the shape is one of the five words, or the whole triple is a named gap;
+     *   * `install_source` is a non-empty path, or a named gap — never dropped, never `""`;
+     *   * `install_source_exists` is a bool EXACTLY when `install_source` is a path;
+     *   * and a named gap in one is a named gap in the other.
+     *
+     * Pinned per side against the same literal, which is the only shape that reddens when
+     * both runtimes break together — the failure mode this job has now measured five times.
+     */
+    const named = (value) =>
+      value !== null && typeof value === 'object' && typeof value.unavailable === 'string' && value.unavailable !== '';
+    const installFieldRule = (identity) => {
+      const shape = identity.install_shape;
+      const source = identity.install_source;
+      const exists = identity.install_source_exists;
+      if (named(shape)) {
+        return `shape undetermined and named; source and exists named too: ${named(source) && named(exists)}`;
+      }
+      return [
+        `shape is one of the five words: ${INSTALL_SHAPES.includes(shape)}`,
+        `source is a non-empty path or a named gap: ${typeof source === 'string' ? source !== '' : named(source)}`,
+        `exists is a bool exactly when source is a path: ${(typeof exists === 'boolean') === (typeof source === 'string')}`,
+        `exists is a named gap exactly when source is: ${named(exists) === named(source)}`,
+      ].join('; ');
+    };
+    const INSTALL_FIELD_RULE =
+      'shape is one of the five words: true; source is a non-empty path or a named gap: true; ' +
+      'exists is a bool exactly when source is a path: true; exists is a named gap exactly when source is: true';
+    cases.push({
+      name: 'build_identity: the three install fields follow their rule — the reference',
+      kind: 'string',
+      expected: INSTALL_FIELD_RULE,
+      actual: installFieldRule(py),
+    });
+    cases.push({
+      name: 'build_identity: the three install fields follow their rule — the port',
+      kind: 'string',
+      expected: INSTALL_FIELD_RULE,
+      actual: installFieldRule(nd),
+    });
+    notes.push(
+      `identity: install_shape — reference ${JSON.stringify(py.install_shape)}, port ${JSON.stringify(nd.install_shape)}. ` +
+        'These are ENVIRONMENT facts about how this harness is installed, not answers being compared: the reference ' +
+        'is imported from whatever install owns `runtime-py` and the port is run from `runtime-ts/dist`. If they ' +
+        'differ, that is the harness and not the code. The `install` suite compares the three fields over matched ' +
+        'installs, where a difference IS the code.',
+    );
     cases.push({
       name: 'build_identity: build_id is domain-separated and MUST differ',
       kind: 'string',
