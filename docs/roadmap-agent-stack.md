@@ -197,6 +197,31 @@ yields the empty set.
 and `reader-verified-over-365924-files` already name the denominator. If naming the file
 directly already wins, say so and stop.
 
+**AMENDED 2026-09-11 (job46, J46-19) — THE GATE WAS RUN AND IT FAILS. AS-4 IS REFUTED ON
+THIS CORPUS AND NOTHING WAS BUILT.** Measurement:
+[`docs/eval-data/2026-09-10-job46-as4-gate.md`](eval-data/2026-09-10-job46-as4-gate.md),
+probe `docs/eval-data/2026-09-10-job46-as4-probe.py`. Query set: **148 discovery queries**
+derived by rule from the operator's own 28 transcripts — a user-typed prompt whose next
+concrete act was opening a file, and that file is the ground truth. 96.6% contain Thai.
+
+- **Naming already wins.** Median **2 tool calls** from prompt to opening the right file,
+  25.7% on the first call — and `Grep`/`Glob` were used in **0 of 148**. The agent goes to
+  a path it already holds; ranking offers a faster route to where it is already standing.
+- **The lexical ceiling is 48.3%**, measured with no prototype: a lexical ranker scores only
+  documents sharing ≥1 query term, so `grep -l` over the term union *is* its non-zero-score
+  set and bounds its recall at any k. 31.0% of in-corpus queries tokenise to the **empty
+  set**. On the hits, the target sits among a median of **554 candidates (26.9% of the
+  2,058-file corpus)** to be found from a median of **2 tokens**.
+- **Only 39.2% of real discovery queries target a file in the corpus at all** — end to end
+  lexical retrieval is reachable for **18.9%** of them.
+- **The tokenizer is a symptom, not the bottleneck.** All 58 in-corpus queries carry a Thai
+  run ≥3 chars; **1.7%** of their target files contain one. The queries are Thai, the corpus
+  is English (113 of 2,058 files hold any Thai at all), so a Unicode-aware tokenizer raises
+  the ceiling to ~1.7% on the real content words. There is no lexical bridge to build.
+
+**J46-20, J46-21 and J46-22 are dropped.** `memory_recall`'s scorer was not touched.
+AS-5 stays [K] — see its gate, which this amendment does not satisfy.
+
 ### AS-5 — Embeddings, only if AS-4's lexical ceiling is measured and hit
 
 Do **not** start here. The whole point of AS-4 running first is to produce the number that says
@@ -206,6 +231,18 @@ endpoint changes what bantamkit *is* (an offline, dependency-free toolbox) more 
 so far.
 
 **Gate:** AS-4 ships and its measured ceiling is the limiting factor. Until then this row is [K].
+
+**AMENDED 2026-09-11 (job46, J46-19) — this gate is now UNSATISFIABLE AS WRITTEN, and that is
+the correct state.** AS-4 was refuted before shipping, so "AS-4 ships" will not happen and this
+row stays **[K]**. The refutation measured a **1.7%** cross-lingual overlap between the
+operator's Thai queries and this English corpus
+([`docs/eval-data/2026-09-10-job46-as4-gate.md`](eval-data/2026-09-10-job46-as4-gate.md)) —
+which is exactly the gap embeddings address, and therefore exactly the number most likely to be
+quoted to reopen this row. It does not reopen it. The refutation also measured the arm AS-5
+would have to beat, and it is the same one AS-4 lost to: **naming the file wins in a median of
+2 tool calls with 0 of 148 queries using a search tool.** Nothing about that changes when the
+retriever is dense instead of lexical. Reopening AS-5 needs a new gate and a user ruling on the
+pure-node constraint, not this figure.
 
 ### AS-6 — The sixteen unported Python modules
 
