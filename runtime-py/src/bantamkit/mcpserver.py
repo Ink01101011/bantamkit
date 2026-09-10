@@ -9,12 +9,14 @@ import json
 import os
 import platform
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import lru_cache
 from importlib import metadata
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import unquote
 
 import bantamkit
 from bantamkit import (
@@ -211,6 +213,261 @@ def _assets_fingerprint() -> tuple[str, int, Path]:
         raise _Undetermined(f"unreadable asset under {root}: {exc}") from None
 
 
+# ---------------------------------------------------------------------------------------
+# WHICH INSTALL SHAPE IS RUNNING — offline, from this server's own location.
+#
+# THE DEFECT, AND IT IS MEASURED (`docs/roadmap-agent-stack.md` AS-7). A Claude Desktop
+# entry sat on 0.25.0 from 2026-08-24 through five releases with nothing in the config, the
+# logs or any tool reply saying so — and its `package.json` declared the dependency as
+# `file:/private/tmp/.../scratchpad/bantamkit-mcp-0.25.0.tgz`, a local tarball in a temp
+# directory that no longer existed. An update run where that install lives is a no-op BY
+# CONSTRUCTION, and nothing anywhere said which of those two things was wrong.
+#
+# WHY THIS IS A REFUSAL AND NOT A LOOKUP. The origin is written down by the installer, on
+# this disk, in `direct_url.json` (PEP 610). Whether that path still exists is a `stat`.
+# NO NETWORK IS TOUCHED ON ANY PATH BELOW — comparing the running version against a
+# registry is AS-7(b), a separate unit, gated behind this one, and deliberately opt-in
+# because an offline toolbox must not grow a network call in its health check.
+#
+# SHAPE IS LOCATION, NEVER IDENTITY. It is reported for the same reason `package_path` and
+# `interpreter` are — it is what a person acts on — and it is kept OUT of `build_id` for
+# the same reason they are: one build installed two ways is ONE build, and
+# `test_build_identity.py` recomputes the hash from its four named inputs to prove it.
+# ---------------------------------------------------------------------------------------
+
+#: The closed vocabulary, spelled the same way in both runtimes, and it answers ONE
+#: question: what would updating this install even mean?
+#:
+#:   registry     came from a package index (PyPI here, npm there). Reinstall by name.
+#:   local-file   came from a path on THIS machine — an archive or a directory whose
+#:                contents were copied in. The path is recorded and may be gone.
+#:   linked       a directory on this machine is still the source being read: an editable
+#:                install here, a `file:`/`npm link` symlink there. Update that tree.
+#:   checkout     no installer recorded this tree at all; it is on the import path. Git.
+#:   ephemeral    a temporary environment discarded after the run. Nothing to update.
+#:
+#: `ephemeral` IS IN THE VOCABULARY AND THIS RUNTIME NEVER ANSWERS IT, which is a deliberate
+#: divergence carried in `docs/porting.md`: `npx` leaves a cache directory a Node server can
+#: recognise, while a `pipx run` or `uvx` environment is not distinguishable from an
+#: ordinary venv without pattern-matching cache directory names — a guess, and this surface
+#: does not guess. The word is declared here anyway so that a consumer of either runtime
+#: handles ONE set of five, rather than two sets it has to reconcile.
+INSTALL_SHAPES = ("registry", "local-file", "linked", "checkout", "ephemeral")
+
+
+@dataclass(frozen=True)
+class Install:
+    """Where the running code came from, and the origin path it can still be checked against.
+
+    `source` is `None` for the two shapes that HAVE no origin path rather than for the ones
+    whose path could not be read — `source_reason` carries which, in the operator's words,
+    and `build_identity` turns it into the `{"unavailable": ...}` shape `RB-P51` requires.
+    A shape that could not be derived at all is an `_Undetermined`, never a sixth word.
+    """
+
+    shape: str
+    source: str | None = None
+    source_reason: str = ""
+
+
+def _normalized_project_name(name: str) -> str:
+    """PEP 503 normalisation, hand-rolled: `Bantam_Kit.Extra` and `bantam-kit-extra` are one.
+
+    Spelled out rather than imported because the only consumer is the comparison below and
+    a regex here would be a second place `re` has to be right about a name pip already
+    canonicalised on the way in.
+    """
+    out: list[str] = []
+    for char in name.strip().lower():
+        replacement = "-" if char in "-_." else char
+        if replacement == "-" and out and out[-1] == "-":
+            continue
+        out.append(replacement)
+    return "".join(out).strip("-")
+
+
+def _file_url_path(url: str) -> Path | None:
+    """A `file:` URL as a path on this machine, or `None` when it names neither.
+
+    THE INVERSE OF `Path.as_uri()`, AND WINDOWS IS WHY IT IS WRITTEN OUT. `file:///C:/x`
+    carries a leading slash before the drive letter that is not part of the path, and the
+    encoder percent-escapes anything a URL cannot hold — a space in a person's own
+    directory name being the case that actually turns up. `urllib.request.url2pathname`
+    does this correctly and drags `http.client` and `socket` in behind it; this surface is
+    offline by rule, so the ten lines are cheaper than the import.
+
+    A `file://` URL with a real authority (`file://otherhost/share`) names a path on a
+    machine that is not this one, so it is not a local origin and the caller is told so.
+    """
+    if not url.startswith("file://"):
+        return None
+    rest = url[len("file://") :]
+    if rest.startswith("localhost/"):
+        rest = rest[len("localhost") :]
+    if not rest.startswith("/"):
+        return None
+    path = unquote(rest)
+    if len(path) > 2 and path[1].isalpha() and path[2] == ":":
+        path = path[1:]  # `/C:/x` is `C:/x`; POSIX paths never match this shape
+    return Path(path)
+
+
+def _dist_owns(dist: metadata.Distribution, running: Path) -> bool:
+    """Did THIS distribution put the file that is running on disk?
+
+    The question a dist-info's mere existence cannot answer. Two bantamkits under one name
+    is the situation `RB-P84` filed, and a checkout earlier on `sys.path` shadows an
+    installed wheel completely — so a `bantamkit-0.30.0.dist-info` in some site-packages is
+    not evidence about the bytes that were imported. Matching on the resolved file is.
+    """
+    try:
+        located = Path(str(dist.locate_file("bantamkit/__init__.py"))).resolve()
+    except (OSError, ValueError):
+        return False
+    return located == running
+
+
+def _direct_url_record(dist: metadata.Distribution) -> str | None:
+    """`direct_url.json` as the installer wrote it, or `None` when there is none.
+
+    THE ONE-LINE INDIRECTION IS DELIBERATE AND IT IS NOT A DODGE OF THE ENCODING GATE.
+    `test_encoding_gate.py` flags every `.read_text(` that does not name an encoding, and
+    it is right to: `Path.read_text` falls back to `locale.getencoding()`, which is UTF-8
+    on this machine and cp1252 on a Windows runner — the defect that gate exists for.
+    `importlib.metadata.Distribution.read_text` is a DIFFERENT function under the same
+    name: it takes a metadata-file name, accepts no `encoding` at all (passing one is a
+    `TypeError`), and decodes UTF-8 itself, which is what PEP 610 requires of this file.
+    The gate matches on the attribute name alone and cannot see the difference, and its
+    pragma is pinned at a single use by `test_the_pragma_is_used_exactly_once` — which
+    belongs to the node that proves the gate bites and is not available to borrow. Binding
+    the method first says what is being called instead of looking like the defect. The
+    better fix is to teach the gate the signature; that is a change to the gate, which is
+    not this unit's to make.
+    """
+    read_metadata_file = dist.read_text
+    try:
+        return read_metadata_file("direct_url.json")
+    except OSError:
+        return None
+
+
+def _derive_install(
+    package_file: Path, dists: Iterable[metadata.Distribution]
+) -> Install:
+    """The whole diagnosis, over a running file and a set of distributions. Pure and offline.
+
+    Taken as ARGUMENTS rather than read from the process so that every shape can be built
+    as a real `.dist-info` directory in a test and discovered through
+    `metadata.distributions(path=[...])` — the same discovery the server runs. A mock here
+    would assert this function's own reasoning back at it, and the entire question is what
+    pip actually writes down.
+    """
+    running = package_file.resolve()
+    for dist in dists:
+        try:
+            name = dist.metadata["Name"]
+        except (KeyError, OSError):
+            continue
+        if not name or _normalized_project_name(str(name)) != "bantamkit":
+            continue
+        raw = _direct_url_record(dist)
+        if raw is None:
+            # PEP 610 writes that file for a direct URL or a local path and for nothing
+            # else, so its ABSENCE beside a dist-info that owns the running files is
+            # positive evidence of an index install — not a missing fact.
+            if _dist_owns(dist, running):
+                return Install(
+                    "registry",
+                    None,
+                    "a registry install records no origin path on this machine: PEP 610 "
+                    "writes `direct_url.json` only for a direct URL or a local path, and "
+                    "this install has none. Reinstall by name to move it.",
+                )
+            continue
+        try:
+            direct = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(direct, dict):
+            continue
+        url = str(direct.get("url", ""))
+        recorded = _file_url_path(url)
+        editable = bool(dict(direct.get("dir_info") or {}).get("editable"))
+        if editable:
+            # The dist-info lives in site-packages while the code is read from the tree the
+            # URL names, so ownership is containment, not equality.
+            if recorded is not None and _is_within(running, recorded):
+                return Install("linked", str(recorded))
+            continue
+        if not _dist_owns(dist, running):
+            continue
+        if recorded is None:
+            raise _Undetermined(
+                f"this install records its origin as {url or 'an empty URL'}, which is "
+                "neither a package index nor a path on this machine, so its shape is not "
+                f"one of {', '.join(INSTALL_SHAPES)}. A git or http origin is updated by "
+                "reinstalling from that same URL."
+            )
+        return Install("local-file", str(recorded))
+    return Install(
+        "checkout",
+        None,
+        "no installer recorded this tree, so there is no origin path to check — the "
+        "source IS `package_path`, and it is updated where it was cloned.",
+    )
+
+
+def _is_within(child: Path, parent: Path) -> bool:
+    """`child` under `parent`, tolerating a `parent` that is a symlink or does not exist."""
+    for candidate in (parent, parent.resolve()):
+        try:
+            if child.is_relative_to(candidate):
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
+def _running_package_file() -> Path:
+    located = getattr(bantamkit, "__file__", None)
+    if not located:
+        raise _Undetermined("bantamkit has no __file__; the running code is not on disk")
+    return Path(located)
+
+
+@lru_cache(maxsize=1)
+def _install_once() -> tuple[Install | None, _Undetermined | None]:
+    """Derived ONCE, because the bytes that were imported cannot change under a process.
+
+    `degraded_conditions` runs on every tool call and `docs/status.md` promises what that
+    costs: one `stat`, one `is_dir`, one `scandir` per memory layer. Walking `sys.path` for
+    distributions is none of those. So the SHAPE is memoised and only the EXISTENCE of the
+    recorded path is re-read — which is the half that can actually change while a server
+    is running, and the half the measured defect is about.
+
+    The failure is memoised too. An exception is a derivation that has already been done
+    and would be done identically a second time; `lru_cache` alone does not cache one.
+    """
+    try:
+        return _derive_install(_running_package_file(), metadata.distributions()), None
+    except _Undetermined as exc:
+        return None, exc
+
+
+def current_install() -> Install:
+    """Which install shape is running. Importable, and NOT owned by the status path.
+
+    Deliberately a module-level function taking no arguments and touching no server state:
+    the `--update` flag planned as J46-29 has to be shape-aware — two of the five shapes
+    have no registry route at all — and it must be able to ask this question from the CLI,
+    before a memory store or a transport exists, without building an MCP server to do it.
+    """
+    install, exc = _install_once()
+    if install is None:
+        raise exc if exc is not None else _Undetermined("the install shape was not derived")
+    return install
+
+
 def build_identity() -> dict[str, Any]:
     """What this build can honestly say about itself, over the protocol.
 
@@ -261,6 +518,32 @@ def build_identity() -> dict[str, Any]:
     # root was chosen by the operator or resolved by the package is a fact a caller
     # comparing two endpoints needs. A bool, so it is never confusable with a missing one.
     identity["assets_root_from_env"] = bool(os.environ.get("BANTAMKIT_ASSETS"))
+
+    # Location too, and the same rule: which install SHAPE is running says what updating
+    # this server would even mean, and says nothing about which build it is. A `file:`
+    # install whose tarball was deleted answers `local-file` with a path that no longer
+    # exists — the measured defect AS-7 filed — and `install_source_exists` is the bit
+    # that says so. No network is consulted for any of the three.
+    try:
+        install = current_install()
+        identity["install_shape"] = install.shape
+        if install.source is None:
+            identity["install_source"] = _unavailable(install.source_reason)
+            identity["install_source_exists"] = _unavailable(
+                f"a {install.shape} install records no origin path, so there is nothing "
+                "here to check for."
+            )
+        else:
+            identity["install_source"] = install.source
+            try:
+                identity["install_source_exists"] = Path(install.source).exists()
+            except OSError as exc:
+                identity["install_source_exists"] = _unavailable(
+                    f"the recorded origin path could not be checked: {exc}"
+                )
+    except _Undetermined as exc:
+        for field_name in ("install_shape", "install_source", "install_source_exists"):
+            identity[field_name] = _unavailable(str(exc))
 
     identity["git_commit"] = _unavailable(
         "refused, not missing. An installed wheel carries no repository at all, and "
@@ -517,13 +800,66 @@ def _event_log_condition(log: EventLog) -> Condition | None:
     )
 
 
+def _install_source_condition(install: Install | None) -> Condition | None:
+    """This install came from a path on this machine, and that path is gone.
+
+    THE ONE CONDITION THAT NAMES A PATH, and the exception is deliberate. Every other
+    sentence here refuses one because `assets_root()` resolves differently in the two
+    runtimes by construction, so a path would be an uncomparable value bought for nothing.
+    This path is not the server's own location — it is the origin THE INSTALLER WROTE DOWN,
+    it is the entire actionable content of the finding (AS-7's measured case is a tarball
+    under a `/private/tmp/.../scratchpad` that no longer exists), and a sentence saying
+    "something is missing" without saying what would be a sentence nobody can act on.
+
+    THE REMEDY IS THE ONE THAT ACTUALLY MOVES SOMETHING. J46-4 spent a unit removing a
+    condition whose remedy exited 0 having changed nothing, and this is exactly the shape
+    that invites another: an update run where a dangling `file:` install lives is a no-op
+    BY CONSTRUCTION. So the sentence sends the reader at a reinstall BY NAME from a
+    registry, which replaces the install rather than trying to refresh it in place.
+
+    THE DERIVED HALF IS MEMOISED AND THIS HALF IS NOT: the shape cannot change under a
+    running process, the path's existence can, and it is the one that has to be read now.
+    """
+    if install is None or install.source is None:
+        return None
+    try:
+        if Path(install.source).exists():
+            return None
+    except OSError:
+        return None
+    return Condition(
+        "install-source-missing",
+        f"this server was installed from {install.source}, which no longer exists, so "
+        "nothing can be refreshed in place there — reinstall bantamkit by name from a "
+        "package registry and restart the server.",
+    )
+
+
+def _current_install_or_none() -> Install | None:
+    """The shape, or nothing. A shape that could not be derived is a REPORTED gap.
+
+    `build_identity` is where that gap is named, with its reason. It is not a degraded
+    condition: an install this code cannot classify is not, on that evidence, an install
+    that is broken, and a footer on every tool call saying otherwise would be the noise
+    `degraded_notice` exists to avoid.
+    """
+    try:
+        return current_install()
+    except _Undetermined:
+        return None
+
+
 def degraded_conditions(memory: Memory, log: EventLog) -> list[Condition]:
     """Everything wrong right now, worst first. Empty list means healthy.
 
     ORDER IS SEVERITY AND IT IS LOAD-BEARING, because the footer shows the first one: a
     pack that vanished breaks every asset-backed surface; an unreadable layer makes recall
     ANSWER WRONGLY rather than fail; a full index refuses the next save; a broken event log
-    costs diagnostics only.
+    costs diagnostics only; and a dangling install origin costs nothing AT ALL right now —
+    the server is serving correctly, and what is broken is the next attempt to update it.
+    That is why it is last despite being the one that went unnoticed for five releases
+    (`docs/roadmap-agent-stack.md` AS-7): severity here is what is failing, not what has
+    been failing longest.
 
     EVERY CONDITION IS OBSERVED, NOT INFERRED — no heartbeat, no timer, no last-seen
     timestamp. Each one is a state a test can construct and then watch this report: delete
@@ -532,14 +868,17 @@ def degraded_conditions(memory: Memory, log: EventLog) -> list[Condition]:
     cannot be constructed is not claimed.
 
     THE COST, because this runs on every tool call: one `stat` for the index, one `is_dir`
-    for the pack, one `scandir` per memory layer (two to four), and a field read for the
-    log. No fact file is opened and no index is parsed.
+    for the pack, one `scandir` per memory layer (two to four), a field read for the log,
+    and one `exists` for the install origin. No fact file is opened, no index is parsed,
+    and `sys.path` is NOT walked for distributions — `_install_once` does that once per
+    process, because the bytes that were imported cannot change under a running one.
     """
     found = (
         _asset_pack_condition(),
         _unreadable_layer_condition(memory),
         _index_pressure_condition(memory),
         _event_log_condition(log),
+        _install_source_condition(_current_install_or_none()),
     )
     return [condition for condition in found if condition is not None]
 

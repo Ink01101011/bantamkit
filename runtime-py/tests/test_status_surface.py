@@ -10,6 +10,10 @@ vacuous":
 * `test_<each>_is_observed_when_it_is_constructed` — four nodes, one per condition, each of
   which builds the broken state on disk and then reads the report. A condition that cannot
   be constructed is not claimed, so a condition with no node here must not be in the list.
+  **AMENDED 2026-09-11 (J46-11, `docs/roadmap-agent-stack.md` AS-7): five, not four.**
+  `install-source-missing` joined the list, last, and
+  `test_an_install_whose_origin_path_is_gone_is_observed_and_named` is its node — built the
+  same way, from a real path that is really deleted.
 * `test_no_argument_value_reaches_the_status_report_or_the_footer` — the absence asserted
   POSITIVELY, against a sentinel that provably went into three different tools.
 * `test_the_server_refuses_to_start_without_the_status_manifest_entry` — the registration
@@ -494,6 +498,58 @@ def test_an_event_log_whose_writes_fail_is_observed_from_the_lost_record_onward(
     assert first["bantamkit_degraded"].startswith(f"{FOOTER_MARK} (1): the event log")
     assert _keys(memory, log) == ["event-log-unwritable"]
     assert "event log: on" in status_of(server)
+
+
+def test_an_install_whose_origin_path_is_gone_is_observed_and_named(tmp_path, monkeypatch):
+    """The fifth condition, end to end: `degraded_conditions`, the footer, and the report.
+
+    WHAT IS REAL HERE AND WHAT IS SUBSTITUTED. The path is real, it really exists and is
+    really deleted, and everything from `_install_source_condition` outward — the ordering,
+    the footer, the report — is the shipped code. What is substituted is the one step that
+    cannot be built inside this process: `_install_once` walks `sys.path` for the
+    distribution that owns the RUNNING bantamkit, and this interpreter has exactly one
+    answer to that. Discovery itself is tested where it can be honest, against real
+    `.dist-info` directories, in `test_install_shape.py`.
+
+    LAST, NOT FIRST, and that is asserted rather than assumed: the server is serving
+    correctly and what is broken is the next attempt to UPDATE it, so a working event log
+    outranks it. The footer therefore keeps spelling out the event log's sentence while the
+    count moves to 2 — which is the behaviour that would break first if the order were
+    changed by hand.
+    """
+    from bantamkit import mcpserver
+
+    archive = tmp_path / "scratchpad" / "bantamkit-mcp-0.25.0.tgz"
+    archive.parent.mkdir()
+    archive.write_bytes(b"a tarball that will not be here for long")
+    monkeypatch.setattr(
+        mcpserver,
+        "_install_once",
+        lambda: (mcpserver.Install("local-file", str(archive)), None),
+    )
+    memory = make_memory(tmp_path)
+    server = build_server(memory)
+
+    assert _keys(memory, EventLog(None)) == [], "a source that is there is not a problem"
+
+    archive.unlink()
+
+    assert _keys(memory, EventLog(None)) == ["install-source-missing"]
+    notice = validate_reply(server)["bantamkit_degraded"]
+    assert notice.startswith(f"{FOOTER_MARK} (1): this server was installed from ")
+    report = status_of(server)
+    assert report.startswith(DEGRADED_LINE)
+    assert str(archive) in report
+    assert "reinstall bantamkit by name from a package registry" in report
+
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a regular file", encoding="utf-8")
+    log = EventLog(blocker / "events" / "mcp.jsonl")
+    log.record("validate_json", "valid")
+    assert _keys(memory, log) == ["event-log-unwritable", "install-source-missing"]
+
+    archive.write_bytes(b"reinstalled")
+    assert _keys(memory, EventLog(None)) == [], "and it clears when the path comes back"
 
 
 def test_a_disabled_event_log_is_never_a_degraded_condition(tmp_path):

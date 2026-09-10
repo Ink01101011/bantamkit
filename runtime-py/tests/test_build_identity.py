@@ -33,6 +33,7 @@ model call. Nothing skips: what these nodes need, they build.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -71,6 +72,9 @@ FIELDS = {
     "assets_files",
     "assets_root",
     "assets_root_from_env",
+    "install_shape",
+    "install_source",
+    "install_source_exists",
     "git_commit",
     "interpreter",
     "python_version",
@@ -274,6 +278,32 @@ def test_the_tool_is_listed_and_takes_no_arguments(tmp_path):
 
 def test_every_promised_field_is_present():
     assert set(build_identity()) == FIELDS
+
+
+def test_the_install_shape_is_location_and_cannot_reach_build_id():
+    """The three AS-7 fields are LOCATION, and location is kept out of the fingerprint.
+
+    THE PROOF IS A RECOMPUTATION, NOT A READING OF THE SOURCE. `build_id` is rebuilt here
+    from the four inputs it promises — `server_name`, `version`, `code_digest`,
+    `assets_digest` — and compared byte for byte. Adding a fifth input on the server side
+    reddens this node whatever that input is, which is the property `RB-P84` needs:
+    `test_two_copies_of_one_build_at_two_paths_are_one_build` already says two paths are one
+    build, and an install SHAPE folded into the hash would make one build installed two ways
+    read as two. Demonstrated by mutation 2026-09-11: appending `install_shape` to
+    `identity_inputs` in `mcpserver.py` fails this node and nothing else in the file.
+
+    The membership assertion is the precondition — without it the recomputation would still
+    pass on a build that had dropped the three fields entirely.
+    """
+    identity = build_identity()
+    assert {"install_shape", "install_source", "install_source_exists"} <= set(identity)
+
+    inputs = {
+        key: identity[key]
+        for key in ("server_name", "version", "code_digest", "assets_digest")
+    }
+    canonical = json.dumps(inputs, sort_keys=True, separators=(",", ":"))
+    assert identity["build_id"] == "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def test_git_commit_is_a_stated_refusal_and_never_reads_as_a_value():
