@@ -588,6 +588,131 @@ def test_roles_refusal_does_not_fire_on_clock_in_or_status(tmp_path, example):
     assert ops.status(str(path))["result"] == "status"
 
 
+# --- AS-2, the two J46-10 rulings -------------------------------------------
+
+
+def test_the_allowed_list_is_rendered_in_checkpoint_order_not_sorted(tmp_path, example):
+    """RULING 2. `ROLES` above lists its models ALPHABETICALLY, so every test that
+    uses it passes whether the renderer joins in checkpoint order or in
+    `sorted()` order -- `tests-that-pick-the-input-that-cannot-fail` by name.
+    runtime-ts already carried a `['zzz-last', 'aaa-first']` case and this side
+    did not, so a `sorted()` introduced HERE passed this suite, and introduced in
+    both passed the differential too. This is the mirror.
+    """
+    example["job"]["roles"] = {"implementer": ["zzz-last", "aaa-first"]}
+    path = write_checkpoint(tmp_path, example)
+    r = ops.clock_out(
+        str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, ACCOUNTING
+    )
+    assert r["reason"] == (
+        "unit U3 in role implementer reported model haiku, "
+        "which job.roles.implementer does not allow: zzz-last, aaa-first"
+    )
+
+
+def _pack_without_min_items(tmp_path, schema):
+    """An asset pack whose checkpoint schema has lost `minItems: 1` on the roles list.
+
+    The ONLY way to reach the empty-list branch of `_model_refusal`: with the
+    shipped schema, `roles: {implementer: []}` is refused during the read and the
+    check is never called. `BANTAMKIT_ASSETS` is the same override both runtimes
+    honour, so the Node half of this ruling is measured the same way.
+    """
+    mutated = copy.deepcopy(schema)
+    del mutated["properties"]["job"]["properties"]["roles"]["additionalProperties"]["minItems"]
+    root = tmp_path / "pack"
+    (root / "schemas").mkdir(parents=True)
+    (root / "schemas" / "shiftwork-checkpoint.json").write_text(
+        json.dumps(mutated), encoding="utf-8"
+    )
+    return root
+
+
+def test_an_empty_allowed_list_still_refuses_when_the_schema_stops_catching_it(
+    tmp_path, monkeypatch, schema, example
+):
+    """RULING 1, decided for J46-9: the check FAILS CLOSED on an empty list.
+
+    `if not allowed` used to read `[]` as unconstrained, so the day `minItems`
+    moves, an empty list becomes a silent opt-out of the rule the checkpoint just
+    declared. The declaration is the KEY: a role the map names is held to its
+    list, and an empty list allows nothing.
+
+    This test is what makes that a measurement rather than a promise -- it drives
+    the real `clock_out` against a pack whose schema no longer refuses `[]`.
+    """
+    monkeypatch.setenv("BANTAMKIT_ASSETS", str(_pack_without_min_items(tmp_path, schema)))
+    example["job"]["roles"] = {"implementer": []}
+    path = write_checkpoint(tmp_path, example)
+    before = path.read_bytes()
+    assert ops.clock_out(
+        str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, ACCOUNTING
+    ) == {
+        "result": "error",
+        "reason": (
+            "unit U3 in role implementer reported model haiku, "
+            "which job.roles.implementer does not allow: "
+        ),
+    }
+    # And no model is not an escape either.
+    assert ops.clock_out(
+        str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, {"tokens": 1}
+    ) == {
+        "result": "error",
+        "reason": (
+            "unit U3 in role implementer reported no model, "
+            "but job.roles.implementer allows only: "
+        ),
+    }
+    assert path.read_bytes() == before
+    assert read_log(path) == []
+
+
+def test_the_mutated_pack_really_is_the_thing_that_lets_the_empty_list_through(
+    tmp_path, monkeypatch, schema, example
+):
+    """The companion that keeps the test above honest: with the SHIPPED schema the
+    same document never reaches the model check at all, and the two refusals are
+    different sentences. A gate has to be confirmed to reach the thing it checks.
+    """
+    example["job"]["roles"] = {"implementer": []}
+    path = write_checkpoint(tmp_path, example)
+    assert ops.clock_out(
+        str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, ACCOUNTING
+    ) == {
+        "result": "error",
+        "reason": (
+            "checkpoint invalid: JSON does not match schema at "
+            "'job/roles/implementer': [] should be non-empty"
+        ),
+    }
+    monkeypatch.setenv("BANTAMKIT_ASSETS", str(_pack_without_min_items(tmp_path, schema)))
+    assert "does not allow" in ops.clock_out(
+        str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, ACCOUNTING
+    )["reason"]
+
+
+def test_an_absent_role_and_an_empty_list_are_different_inputs(
+    tmp_path, monkeypatch, schema, example
+):
+    """They look alike and they are not the same case. Under the SAME pack, where
+    neither is refused by the schema, an absent role clocks out and `[]` refuses.
+    """
+    monkeypatch.setenv("BANTAMKIT_ASSETS", str(_pack_without_min_items(tmp_path, schema)))
+    for name in ("a", "b"):
+        (tmp_path / name).mkdir()
+    def with_roles(name, roles):
+        document = copy.deepcopy(example)
+        document["job"]["roles"] = roles
+        return write_checkpoint(tmp_path / name, document)
+
+    absent = with_roles("a", {"reviewer": ["claude-opus-5"]})
+    empty = with_roles("b", {"implementer": []})
+    args = ("U3", "done", {}, {"unit": "U3", "outcome": "done"}, ACCOUNTING)
+    assert ops.clock_out(str(absent), *args)["result"] == "ok"
+    assert ops.clock_out(str(empty), *args)["result"] == "error"
+
+
 # --- MCP flavor: status -----------------------------------------------------
 
 

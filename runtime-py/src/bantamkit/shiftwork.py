@@ -140,11 +140,26 @@ def _model_refusal(document: dict, unit_id: str, unit: dict, accounting: dict | 
     strip-the-suffix rule. The map's whole value is that it is the literal list
     of the spellings a session logs, so a spelling this job has never produced is
     a finding to rule on, not a string to massage.
+
+    THE TEST IS KEY PRESENCE, NOT TRUTHINESS, AND THAT IS A RULING (J46-10).
+    `if not allowed` read `roles: {implementer: []}` as unconstrained, which
+    makes an empty list a silent opt-out of the very rule the checkpoint just
+    declared. Today `minItems: 1` refuses such a document during the read, so
+    nothing reaches here — but the schema is a SHARED asset, exactly the class
+    job46 has now measured three times as invisible to a differential suite, and
+    a check whose safety rests on another layer's keyword is a check that fails
+    open the day that keyword moves. The declaration is the KEY: a role the map
+    names is constrained by its list, and an empty list allows nothing, so every
+    model and no model alike are refused. `names` is then the empty string and
+    the sentence says so. Measured, not asserted: the conformance corpus and
+    both runtimes' tests drive this through a `BANTAMKIT_ASSETS` pack whose
+    schema has no `minItems`, which is the only way to reach the branch at all.
     """
     role = unit["role"]
-    allowed = document["job"].get("roles", {}).get(role)
-    if not allowed:
+    roles = document["job"].get("roles", {})
+    if role not in roles:
         return None
+    allowed = roles[role]
     names = ", ".join(allowed)
     offered = (accounting or {}).get("model")
     if offered is None:
