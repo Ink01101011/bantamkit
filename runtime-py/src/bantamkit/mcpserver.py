@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from importlib import metadata
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, TextIO
 from urllib.parse import unquote
 
 import bantamkit
@@ -1851,7 +1851,15 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
     return server
 
 
-def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def _build_parser() -> argparse.ArgumentParser:
+    """The parser, as an object, so something other than `parse_args` can render its help.
+
+    Extracted from `_parse_args` for exactly one caller: the bare-at-a-terminal branch in
+    `main`, which prints THE HELP `-h` PRINTS and must not be able to drift from it. A
+    second hand-written copy of a generated string is the defect `runtime-ts/src/cli.ts`'s
+    header records having already shipped once; the way to not have it here is to have one
+    parser and two callers, not two strings.
+    """
     parser = argparse.ArgumentParser(
         prog="bantamkit-mcp",
         description="bantamkit MCP server (stdio): per-person memory + JSON validation.",
@@ -1939,7 +1947,65 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     stores.add_argument(
         "--start", help="directory to start project-store discovery from (default: cwd)"
     )
-    return parser.parse_args(argv)
+    return parser
+
+
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return _build_parser().parse_args(argv)
+
+
+def _typed_bare_at_a_terminal(
+    argv: list[str] | None = None, stdin: TextIO | None = None
+) -> bool:
+    """True when a PERSON typed `bantamkit-mcp` with nothing after it. Never for a host.
+
+    WHY THERE IS A DISCRIMINATION HERE AT ALL. Typing the command at a prompt used to open
+    a stdio JSON-RPC server and block: no output, no prompt back, Ctrl-C the only way out.
+    To a person that is indistinguishable from a hang, and it is what the user asked to be
+    fixed on 2026-09-11 -- "เพิ่ม task set default when call bantamkit-mcp only ให้แสดงเหมือน --help".
+
+    WHY IT IS NOT SIMPLY "NO ARGUMENTS -> PRINT HELP". The bare invocation IS the
+    production launch path. Both registrations on this machine pass an empty `args`:
+
+        $ cat .mcp.json
+        {"mcpServers":{"bantamkit":{"command":"tools/bantamkit-mcp","args":[]}}}
+        $ # user scope, ~/.claude.json
+        bantamkit  {"type":"stdio","command":".../tools/bantamkit-mcp-node","args":[], ...}
+
+    and `runtime-ts/src/cli.ts`'s header says the same in its own words, as the reason an
+    earlier refusal on the bare form was retired: "the production invocation passes NO
+    arguments at all ... so the bare form is the one that must serve." A literal reading of
+    the request would therefore break every MCP host here, including the bantamkit server
+    this repository's own policy orchestrates through.
+
+    SO THE SIGNAL IS `stdin.isatty()`, AND IT IS THE ONLY SIGNAL. A host wires stdin to a
+    pipe or a socket; a person at a keyboard has a terminal on it. Deliberately NOT
+    `stdout.isatty()`: stdout is the JSON-RPC channel and a host may redirect the two
+    streams differently, so a tty on stdout says nothing about who is asking. Deliberately
+    not a flag either -- a flag to opt out means the bare form is no longer bare, and the
+    bare form is the one under discussion.
+
+    AND THE EMPTY ARGV IS A SCOPE, NOT A SECOND SIGNAL. What the user asked for is the
+    command "only" -- with nothing after it. `bantamkit-mcp --store /tmp/x` typed at a
+    terminal is an operator explicitly asking for a configured server, and it keeps
+    getting one; hand-driving the line-delimited protocol at a prompt stays possible. The
+    two conditions do different jobs: `argv` says WHICH invocation is in scope, `isatty`
+    says WHO is on the other end of it. `runtime-ts/src/cli.ts` holds the same pair.
+
+    `isatty()` on a closed stream raises `ValueError`, and `sys.stdin` is `None` under a
+    GUI launcher with no console. Neither is a person at a terminal, and neither may be
+    allowed to take down the serving path, so both answer False.
+    """
+    argv = sys.argv[1:] if argv is None else argv
+    if argv:
+        return False
+    stream = sys.stdin if stdin is None else stdin
+    if stream is None:
+        return False
+    try:
+        return bool(stream.isatty())
+    except ValueError:
+        return False
 
 
 def _build_memory(args: argparse.Namespace) -> Memory:
@@ -2059,6 +2125,23 @@ def main() -> None:
     # a server that ignores it.
     if args.force:
         raise SystemExit("--force is only meaningful with --install")
+    # A PERSON TYPED IT. `_typed_bare_at_a_terminal` carries the whole argument; what
+    # belongs here is only that this sits BEFORE `_build_memory`, which is what creates a
+    # store. Somebody who typed a command to see what it does has not asked for a
+    # `.bantamkit/memory` directory in whatever cwd they were standing in, and the flags
+    # above return before a transport for the same class of reason.
+    #
+    # STDOUT AND EXIT 0, i.e. byte-for-byte what `-h` does on this platform, because the
+    # request was "ให้แสดงเหมือน --help" -- show it the way `--help` shows it. `print_help`
+    # is the same call argparse's own `-h` action makes, so the two cannot diverge: fix
+    # the stream or the newlines for one and the other follows. The alternative reading --
+    # stderr and exit 2, "a bare invocation is a usage error" -- is refused because this
+    # is not an error: it is the documented answer to the documented request, and the exit
+    # code is only ever read by a shell a human is standing at. Nothing non-interactive
+    # can reach this line at all.
+    if _typed_bare_at_a_terminal():
+        _build_parser().print_help()
+        return
     server = build_server(_build_memory(args))
     asyncio.run(server.run_stdio_async())
 
