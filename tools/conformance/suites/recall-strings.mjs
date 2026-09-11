@@ -293,6 +293,25 @@ function scenarios() {
       merge(homeStore, { dirs: ['lonely/proj'] }),
       { registration: 'layered', start: 'lonely/proj' },
       [recall('anything')]],
+    // J48-3. THE SAME DESIGNATION, over a directory NOTHING CAN BE CREATED UNDER — which is
+    // what every GUI MCP host hands this program, because it launches its child with cwd `/`.
+    // Until job48 the project layer was built eagerly, so this fixture was not a scenario at
+    // all: it was a crash out of `mkdir` before `Memory.layered` returned, and the client saw
+    // CONNECTION_CLOSED. Four claims in one call list, and each of them is a thing the fix
+    // promised: the construction SUCCEEDS, both layers are bound, the recall is ANSWERED out
+    // of the profile layer, and the write that finally needs the directory refuses BY NAME
+    // instead of raising `OSError` at whoever is listening. The tree case beside it says the
+    // designated root is still absent afterwards.
+    //
+    // `0o555` AND A PROBE, not `0o555` and a hope: see `sealedProbe` in `run`. A platform or a
+    // uid that creates directories there anyway skips this scenario with a note rather than
+    // reporting four green cases over a bed that denies nothing.
+    ['layered: the designated root cannot be created, so it is not — and the server still answers',
+      merge(storeSpec('home/.bantamkit/memory', { 'p-fact': 'profile subject' }),
+        { dirs: ['sealed/proj'], modes: { 'sealed/proj': 0o555 } }),
+      { registration: 'layered', start: 'sealed/proj' },
+      [layersOp(), recall('profile subject'), recall('anything'), save('project', 'newfact', 'a subject nothing shares', 'body')],
+      'denied-creation'],
     ['layered: the pin is named as the reason',
       merge(emptyOwn, homeStore, storeSpec('pinned')),
       { registration: 'layered', start: 'companyA', pin: 'pinned' },
@@ -426,6 +445,80 @@ const CONFIGS = [
  * statement; the marker is what makes it visible to the gate, which could not see the
  * `chmodSync(join(...), 0o000)` spelling until 2026-09-11.
  */
+/**
+ * Does a `0o555` directory in THIS scratch tree actually deny creation?
+ *
+ * `applyModes` above already says, in as many words, that a mode-restricted bed is not a wall
+ * on Windows and is not a wall for root, and that what was missing was "a probe that tries the
+ * denied operation, and a `notes.push('NOT MEASURED: ...')` when the mode was not honoured".
+ * J48-3 needed one, so this is it. It is a claim about the directory in front of it and never
+ * about `process.platform`, because nobody here has a Windows run to type a claim from.
+ */
+function sealedProbe(scratch) {
+  const dir = join(scratch, 'sealed-probe');
+  mkdirSync(dir, { recursive: true });
+  chmodSync(dir, 0o555);
+  try {
+    mkdirSync(join(dir, 'can-anything-be-made-here'));
+    rmSync(join(dir, 'can-anything-be-made-here'), { recursive: true, force: true });
+    return { denies: false, why: 'the 0o555 mode was not honoured — this platform or this uid creates directories there anyway' };
+  } catch (e) {
+    return { denies: true, why: `mkdir inside it was refused with ${e?.code ?? 'an error carrying no code'}` };
+  } finally {
+    chmodSync(dir, 0o755);
+  }
+}
+
+/**
+ * THE TWO SENTENCES job48 CONTRACTED, typed here rather than taken from either runtime.
+ *
+ * Both of these are produced by BOTH runtimes today, byte for byte — J48-2 compared them by
+ * sha256 rather than by eye — so every differential over them is green whatever they say, and
+ * stays green if both sides change together. That is not a hypothetical: reverting job48
+ * symmetrically left `--all` printing its baseline summary unchanged, 0 failures, while both
+ * CLIs went back to refusing to start from cwd `/`. A literal is the only thing in this
+ * repository that can notice a symmetric change, and job47 established the second half of the
+ * lesson too — an existing literal must not be assumed to cover a new spelling, so these are
+ * new cases and not an edit to an old one.
+ *
+ * `<ROOT>` is `scrub`'s marker for the side's own bed, so the path is compared and not dropped.
+ */
+const DESIGNATED_TAIL = (from, root) =>
+  `No memory store existed at or above ${from}, so ${root} was designated for this session; ` +
+  'nothing was created there. That is a binding, not a search result — if your facts are in ' +
+  'another store, set BANTAMKIT_MEMORY_DIR to its absolute path and restart; otherwise save a ' +
+  'memory to start this one.';
+
+/** What `memory_recall` says when the walk designated a root and nothing is saved anywhere. */
+const DESIGNATED_FROM_NOTHING =
+  'no memories to search: nothing is saved in any layer bound here. ' +
+  DESIGNATED_TAIL('<ROOT>/lonely/proj', '<ROOT>/lonely/proj/.bantamkit/memory');
+
+/**
+ * The four answers the sealed scenario must give, in order.
+ *
+ * [0] BOTH LAYERS ARE BOUND. The construction did not fail, which is the whole fix.
+ * [1] THE PROFILE LAYER ANSWERS. A server that starts and then cannot recall anything would
+ *     satisfy [0] and be useless; this is the case that says the operator's facts still reach
+ *     the model from a cwd their host chose and they never saw.
+ * [2] THE AMENDED SENTENCE, in situ. It used to read "so the empty <root> was created for this
+ *     session", which became FALSE when nothing was created — a sentence sending an operator
+ *     to look for a directory that is not there. Pinned whole rather than as a fragment,
+ *     because the remedy after it ("otherwise save a memory to start this one") is the half
+ *     that is now literally true and a fragment would not hold it.
+ * [3] THE WRITE REFUSES BY NAME. The sentence lands at the write that needed the directory,
+ *     carries `self.root` and no errno — one cwd gives CPython EROFS(30) where Node reports
+ *     ENOENT(-2) for the same denial, and Linux gives EACCES for both — and it is a refusal
+ *     rather than an `OSError` reaching whoever was listening.
+ */
+const SEALED_ANSWERS = [
+  'project, profile',
+  '[profile] [p-fact] (project) profile subject\nb',
+  `no memories matched. Try different words, or proceed without. ${DESIGNATED_TAIL('<ROOT>/sealed/proj', '<ROOT>/sealed/proj/.bantamkit/memory')}`,
+  'error: memory store could not be created: <ROOT>/sealed/proj/.bantamkit/memory; the directory ' +
+    'is not there and this filesystem would not make it, so nothing was written',
+];
+
 export async function run(ctx) {
   const mod = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'component.js')).href);
   const layers = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'layers.js')).href);
@@ -435,9 +528,20 @@ export async function run(ctx) {
   const scratch = realpathSync(ctx.scratch);
 
   // -------------------------------------------------------------- the scenarios
+  const sealed = sealedProbe(scratch);
+  if (!sealed.denies) {
+    notes.push(
+      'the designated-root-cannot-be-created scenario: NOT MEASURED HERE — ' +
+        `${sealed.why}. Its four claims and the two pinned sentences below it are not reported ` +
+        'rather than reported as passes nobody earned; every other scenario is measured here.',
+    );
+  }
+  /** Each scenario's rendered answers, kept so a literal below can pin one against a constant. */
+  const answersByLabel = new Map();
   let n = 0;
   let layeredCount = 0;
-  for (const [label, spec, options, calls] of scenarios()) {
+  for (const [label, spec, options, calls, requires] of scenarios()) {
+    if (requires === 'denied-creation' && !sealed.denies) continue;
     n += 1;
     if (options.registration === 'layered') layeredCount += 1;
     const bed = join(scratch, `r${String(n).padStart(2, '0')}`);
@@ -471,14 +575,31 @@ export async function run(ctx) {
     for (const side of ['py', 'node']) applyModes(roots[side], spec, false);
 
     const arms = Math.max(py.results.length, nd.results.length);
+    // A MISSING ARM IS DATA, NOT A CRASH, and this is a defect J48-3 found by mutating rather
+    // than by reading. `Math.max` is here precisely because the two sides can return different
+    // numbers of results — a construction that raises on ONE runtime produces a single encoded
+    // error where the other produced four answers — and until now the shorter side's missing
+    // entries reached `scrub` as `undefined` and took the whole suite down with
+    // `TypeError: Cannot read properties of undefined (reading 'split')`, from inside `run()`,
+    // where every other case in the file goes unreported and the failure arrives as a stack
+    // trace instead of as a named case. `cli.mjs`'s `framesOf` makes the same argument about
+    // an unparsable line: the thing that went wrong is the answer, so it travels as one.
+    const armOf = (results, i, root) =>
+      i < results.length
+        ? scrub(answer(results[i]), root)
+        : `NO ANSWER: this side returned ${results.length} result(s) and the other returned ${arms}`;
+    const rendered = { py: [], node: [] };
     for (let i = 0; i < arms; i += 1) {
+      rendered.py.push(armOf(py.results, i, roots.py));
+      rendered.node.push(armOf(nd.results, i, roots.node));
       cases.push({
         name: `${label} [${i}]`,
         kind: 'string',
-        expected: scrub(answer(py.results[i]), roots.py),
-        actual: scrub(answer(nd.results[i]), roots.node),
+        expected: rendered.py[i],
+        actual: rendered.node[i],
       });
     }
+    answersByLabel.set(label, rendered);
     cases.push({
       name: `${label} — tree`,
       kind: 'bytes',
@@ -486,6 +607,30 @@ export async function run(ctx) {
       actual: manifest(roots.node),
     });
   }
+  // ---- THE LITERALS. Everything above is a differential and a differential is satisfied by
+  // two runtimes that are wrong in the same way — measured on this very change, not supposed:
+  // reverting job48 on BOTH runtimes left `--all` printing its baseline summary character for
+  // character while both CLIs went back to refusing to start from cwd `/`. These two compare
+  // each side against text typed into this file instead.
+  const designated = answersByLabel.get('layered: nothing existed anywhere, so a store was designated');
+  cases.push({
+    name: 'PINNED PER SIDE: the designated sentence, whole, against this file',
+    kind: 'json',
+    expected: { python: [DESIGNATED_FROM_NOTHING], node: [DESIGNATED_FROM_NOTHING] },
+    actual: { python: designated.py, node: designated.node },
+  });
+  const sealedAnswers = answersByLabel.get(
+    'layered: the designated root cannot be created, so it is not — and the server still answers',
+  );
+  if (sealedAnswers !== undefined) {
+    cases.push({
+      name: 'PINNED PER SIDE: bound, answered from the profile layer, and the write refused by name',
+      kind: 'json',
+      expected: { python: SEALED_ANSWERS, node: SEALED_ANSWERS },
+      actual: { python: sealedAnswers.py, node: sealedAnswers.node },
+    });
+  }
+
   notes.push(
     `${n} scenarios compared, ${layeredCount} under Memory.layered (the registration ` +
       'production runs) and the rest under the --store form',
