@@ -352,6 +352,20 @@ second bin instead of a subcommand: lifecycle output on the server's stdout woul
 the transport, and `bantamkit-mcp`'s help is a byte-compared artifact against
 `python -m bantamkit.mcpserver -h`, which a subparsers action would move.
 
+**Amendment, 2026-09-11 (J46-26/J46-27).** "Not a thing you run by hand" is now half
+true and the half that changed is worth knowing. Typing `bantamkit-mcp` at a prompt
+with nothing after it no longer opens a mute server and blocks — it prints the help,
+on stdout, exit 0, the same bytes `-h` prints. The discrimination is whether **stdin is
+a terminal** and nothing else, so every host launch is unchanged: `"args": []` down a
+pipe still starts the server and still answers `initialize`. The paragraph above stays
+true of what it was describing — stdout is the wire, and nothing but frames goes down
+it when a host is on the other end. What is new is that typing the command to see what
+it does is now a reasonable thing to do. An argument after the command is an operator
+asking for a configured server and still gets one: `bantamkit-mcp --store /tmp/x` at a
+terminal serves. Compared between the two runtimes by
+`tools/conformance/suites/cli.mjs` (`bare-at-a-tty`, `flagged-at-a-tty`,
+`bare-over-a-pipe`).
+
 Five subcommands, scoped to the writable **project** layer only — read-only grants and the
 profile store are out of its reach by the code path, not by convention:
 

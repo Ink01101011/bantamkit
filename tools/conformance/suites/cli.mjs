@@ -47,6 +47,8 @@ export const summary = 'the `bantamkit-mcp` command line as a process: stdout, s
 const here = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = dirname(dirname(here));
 const REF = join(here, 'ref', 'cli_ref.py');
+/** The terminal. One `pty.openpty()`, allocated for EITHER side — see `cli_tty_ref.py`. */
+const TTY_REF = join(here, 'ref', 'cli_tty_ref.py');
 const CLI = join(repoRoot, 'runtime-ts', 'dist', 'cli.js');
 
 /** Same list `cli_ref.py` scrubs. Kept literal on both sides so the two cannot drift apart. */
@@ -54,6 +56,74 @@ const SCRUBBED = ['COLUMNS', 'LINES', 'BANTAMKIT_ASSETS'];
 
 const unb64 = (s) => Buffer.from(s, 'base64');
 const dec = (buf) => buf.toString('utf8');
+
+/** Two buffers, byte for byte. `run.mjs` has its own; a suite cannot reach it. */
+const bytesDiffer = (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)) !== 0;
+
+/**
+ * Would an MCP host try to PARSE this line?
+ *
+ * Not "does it start with a brace" — that is a grep for a character. A host's stdio reader
+ * splits stdout on newlines and hands each line to a JSON parser, so the question is whether
+ * the parser accepts it and gets a JSON-RPC envelope back. Anything else is text a host
+ * reports as a malformed frame, which is precisely what the person branch must never emit.
+ */
+function looksLikeAFrame(line) {
+  try {
+    const value = JSON.parse(line);
+    return typeof value === 'object' && value !== null && value.jsonrpc === '2.0';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The two streams, diffed PROGRAMMATICALLY, reported as edit opcodes.
+ *
+ * Common prefix and common suffix, then whatever is left in the middle — a real edit script
+ * over the bytes, not a minimal one, and enough to answer the only question anybody asks of
+ * it: how many opcodes are NOT `equal`. J46-27 measured zero through CPython's
+ * `difflib.SequenceMatcher(None, a, b, autojunk=False)`; this says the same thing in the
+ * gate, where it can be rerun.
+ */
+function describeOpcodes(a, b) {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  let head = 0;
+  while (head < x.length && head < y.length && x[head] === y[head]) head += 1;
+  let tail = 0;
+  while (tail < x.length - head && tail < y.length - head && x[x.length - 1 - tail] === y[y.length - 1 - tail]) {
+    tail += 1;
+  }
+  if (head === x.length && x.length === y.length) {
+    return `diffed byte for byte: ONE opcode, equal over all ${x.length} bytes — zero non-equal opcodes, so the two help outputs do not differ at all. there is no prog-name divergence to except: both parsers set prog explicitly and neither reads argv[0].`;
+  }
+  const opcodes = [];
+  if (head > 0) opcodes.push(`equal [0,${head})`);
+  opcodes.push(`replace python[${head},${x.length - tail}) -> node[${head},${y.length - tail})`);
+  if (tail > 0) opcodes.push(`equal (last ${tail} bytes)`);
+  return `diffed byte for byte: ${opcodes.length} opcodes, 1 non-equal — ${opcodes.join(' / ')}`;
+}
+
+/**
+ * A real handshake, as a host sends it: newline-delimited JSON on stdin.
+ *
+ * `initialize` and the notification that completes it, and NOTHING AFTER. A third request
+ * would be a race rather than a case: measured on this checkout, a bare Python server handed
+ * `initialize` + `notifications/initialized` + `ping` and then EOF answers the initialize and
+ * exits before the ping, while Node answers both. That is the harness closing the pipe under a
+ * server, not a difference between the runtimes — `wire` keeps stdin open and waits for ids,
+ * which is why full sessions live there. Two frames, five runs a side, 1456 bytes every time.
+ */
+const HANDSHAKE_FRAMES = [
+  JSON.stringify({
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'initialize',
+    params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'conformance', version: '0' } },
+  }),
+  JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+];
 
 /**
  * The default terminal width argparse falls back to with no tty and no `COLUMNS`.
@@ -75,7 +145,9 @@ function runNode(spec) {
     else env[key] = String(value);
   }
   const r = spawnSync(process.execPath, [CLI, ...(spec.argv ?? [])], {
-    input: '',
+    // `''` — a pipe already at EOF — unless the case feeds it real frames. See the `stdin`
+    // note in `cli_ref.py`: an empty pipe shows that a server STARTED, never that it answered.
+    input: spec.stdin ?? '',
     cwd: spec.cwd ?? repoRoot,
     env,
     timeout: (spec.timeout ?? 60) * 1000,
@@ -99,8 +171,38 @@ function runPy(ctx, spec) {
     env: { ...spec.env, ...(spec.sideEnv?.py ?? {}) },
     cwd: spec.cwd ?? repoRoot,
     timeout: spec.timeout ?? 60,
+    stdin: Buffer.from(spec.stdin ?? '', 'utf8').toString('base64'),
   });
   if (answer.error) throw new Error(`cli_ref.py: ${answer.error}`);
+  return {
+    stdout: unb64(answer.stdout),
+    stderr: unb64(answer.stderr),
+    exit: answer.exit,
+    timedOut: answer.timedOut,
+  };
+}
+
+/**
+ * The same argv line, with a REAL TERMINAL on stdin, on whichever side is named.
+ *
+ * Both children go through `cli_tty_ref.py`, which allocates one `pty.openpty()` and hands
+ * the slave to the process under test. That is deliberate and it is the only way this
+ * comparison means anything: Node has no pty in its standard library, so measuring each side
+ * through its own fake would compare the fakes. `null` comes back where the platform has no
+ * pty at all — Windows — and the caller turns that into a note, not into a pass.
+ */
+function runTty(ctx, side, spec) {
+  const env = { ...spec.env, ...(spec.sideEnv?.[side] ?? {}) };
+  const answer = ctx.runPython(TTY_REF, {
+    side,
+    argv: spec.argv ?? [],
+    env,
+    cwd: spec.cwd ?? repoRoot,
+    timeout: spec.timeout ?? 60,
+    node: { exec: process.execPath, cli: CLI },
+  });
+  if (answer.unsupported) return null;
+  if (answer.error) throw new Error(`cli_tty_ref.py (${side}): ${answer.error}`);
   return {
     stdout: unb64(answer.stdout),
     stderr: unb64(answer.stderr),
@@ -631,7 +733,267 @@ export async function run(ctx) {
     );
   }
 
+  // ============================== the bare invocation: WHO is on the other end of stdin ==
+  //
+  // J46-26 and J46-27 changed what `bantamkit-mcp` does when it is typed with no arguments:
+  // stdin a terminal -> the help, stdout, exit 0; stdin a pipe -> the server, unchanged. Two
+  // implementations of one property, and until this block nothing compared them.
+  //
+  // THE TRIGGER IS A PAIR — `stdin.isatty()` AND an empty `argv[1:]` — and the argv half is a
+  // SCOPE, not a second signal: an operator who types `bantamkit-mcp --store /tmp/x` at a
+  // terminal is asking for a configured server and still gets one. Both implementers flagged
+  // that a bare-only case cannot see the two runtimes disagreeing about that half, so
+  // `flagged-at-a-tty` is here beside `bare-at-a-tty`.
+  //
+  // AND HALF OF WHAT IS BELOW IS A PER-SIDE LITERAL, ON PURPOSE. Every other case in this file
+  // is a differential, and a differential is satisfied by two runtimes that are wrong in the
+  // same way: J46-6 reverted a shared default on BOTH runtimes earlier in this job and every
+  // differential stayed green. A symmetric revert of THIS change would be invisible the same
+  // way — both sides would print nothing and exit 0 — so what each side printed is also
+  // compared against strings written down here.
+  const ttyRoot = join(ctx.scratch, 'cli-tty');
+  const ttyHome = join(ttyRoot, 'home');
+  const ttyCwd = join(ttyRoot, 'cwd');
+  mkdirSync(ttyHome, { recursive: true });
+  mkdirSync(ttyCwd, { recursive: true });
+  // `USERPROFILE` moves with `HOME` so the same case means the same thing on Windows, and
+  // because `Memory.layered` falls back to a store under the operator's own home when it
+  // cannot find one — the hazard J46-27's first draft hit against the real HOME.
+  const ttyEnv = { HOME: ttyHome, USERPROFILE: ttyHome };
+  const ttySpecs = {
+    bare: { argv: [], cwd: ttyCwd, env: ttyEnv },
+    flagged: { argv: ['--store', join(ttyRoot, 'store')], cwd: ttyCwd, env: ttyEnv },
+  };
+
+  /** What a person must see, written down rather than taken from the other runtime. */
+  const helpShape = (r) => {
+    const text = dec(r.stdout);
+    const lines = text.split('\n');
+    return {
+      firstLine: lines[0] ?? '',
+      namesTheServer: lines.includes('bantamkit MCP server (stdio): per-person memory + JSON validation.'),
+      namesDashH: lines.includes('  -h, --help            show this help message and exit'),
+      endsWithNewline: text.endsWith('\n'),
+      // The whole hazard of printing on THIS process's stdout is that stdout is the JSON-RPC
+      // channel. Whatever reached the person branch must not be something a host would parse.
+      noLineIsAFrame: lines.filter((l) => l.trim() !== '').every((l) => !looksLikeAFrame(l)),
+    };
+  };
+  const HELP_AS_A_PERSON_SEES_IT = {
+    firstLine: pinned,
+    namesTheServer: true,
+    namesDashH: true,
+    endsWithNewline: true,
+    noLineIsAFrame: true,
+  };
+
+  const bareTtyPy = runTty(ctx, 'py', ttySpecs.bare);
+  const bareTtyNode = bareTtyPy === null ? null : runTty(ctx, 'node', ttySpecs.bare);
+
+  if (bareTtyPy === null || bareTtyNode === null) {
+    // The repository's own shape for an unmeasurable platform (see `store.mjs`'s winerror
+    // table and `docread.mjs`'s `/dev/zero`): no case, and a note that says what is missing
+    // rather than a pass nobody earned.
+    notes.push(
+      'bare-at-a-tty and flagged-at-a-tty: NOT MEASURED HERE — `pty.openpty()` is POSIX-only and ' +
+        `this is ${process.platform}. The tty branch itself IS exercised on every platform by each ` +
+        "runtime's own suite (`runtime-py/tests/test_mcpserver.py`, `runtime-ts/test/cli-surface.test.mjs`), " +
+        'each with its own fake stdin; what a Windows run cannot tell you is whether the two ' +
+        'runtimes still agree about a REAL terminal. The pipe cases below are measured everywhere.',
+    );
+  } else {
+    const flaggedTtyPy = runTty(ctx, 'py', ttySpecs.flagged);
+    const flaggedTtyNode = runTty(ctx, 'node', ttySpecs.flagged);
+
+    // ---- bare at a terminal: the two answers, side to side.
+    cases.push(...streamCases('bare-at-a-tty', bareTtyPy, bareTtyNode));
+
+    // ---- bare at a terminal: what each side printed, against text typed into THIS file.
+    cases.push({
+      name: 'bare-at-a-tty/PINNED PER SIDE: each runtime printed the help a person needs',
+      kind: 'json',
+      expected: { python: HELP_AS_A_PERSON_SEES_IT, node: HELP_AS_A_PERSON_SEES_IT },
+      actual: { python: helpShape(bareTtyPy), node: helpShape(bareTtyNode) },
+    });
+
+    // ---- bare at a terminal: STREAM and EXIT CODE, pinned per side rather than compared.
+    // Two runtimes that both printed nothing agree perfectly; this is the case that does not.
+    const personArm = (r) => ({
+      onStdout: r.stdout.length > 0,
+      onStderr: r.stderr.length > 0,
+      exit: r.exit,
+      timedOut: r.timedOut,
+    });
+    cases.push({
+      name: 'bare-at-a-tty/PINNED PER SIDE: stdout, nothing on stderr, exit 0, no hang',
+      kind: 'json',
+      expected: {
+        python: { onStdout: true, onStderr: false, exit: 0, timedOut: false },
+        node: { onStdout: true, onStderr: false, exit: 0, timedOut: false },
+      },
+      actual: { python: personArm(bareTtyPy), node: personArm(bareTtyNode) },
+    });
+
+    // ---- bare at a terminal: it is THAT SIDE'S OWN `-h`, byte for byte.
+    // The request was "ให้แสดงเหมือน --help", and both runtimes claim to satisfy it by calling
+    // the same renderer over the same parser rather than by holding a second string. This is
+    // the case that notices if one of them grows a second string. It is per-side by
+    // construction — each half compares a runtime only against itself.
+    const sameAsOwnDashH = (bare, dashH) => ({
+      sameBytesAsOwnDashH: !bytesDiffer(bare.stdout, dashH.stdout),
+      empty: bare.stdout.length === 0,
+    });
+    cases.push({
+      name: "bare-at-a-tty/PINNED PER SIDE: the bytes are that runtime's OWN -h output",
+      kind: 'json',
+      expected: {
+        python: { sameBytesAsOwnDashH: true, empty: false },
+        node: { sameBytesAsOwnDashH: true, empty: false },
+      },
+      actual: {
+        python: sameAsOwnDashH(bareTtyPy, helpPy),
+        node: sameAsOwnDashH(bareTtyNode, helpNode),
+      },
+    });
+
+    // ---- FLAGGED at a terminal: the argv half of the trigger, which no bare case can see.
+    cases.push(...streamCases('flagged-at-a-tty', flaggedTtyPy, flaggedTtyNode));
+    const serverArm = (r) => ({
+      printedHelp: dec(r.stdout).startsWith('usage:'),
+      stdoutEmpty: r.stdout.length === 0,
+      stderrEmpty: r.stderr.length === 0,
+      exit: r.exit,
+      timedOut: r.timedOut,
+    });
+    const SERVED = { printedHelp: false, stdoutEmpty: true, stderrEmpty: true, exit: 0, timedOut: false };
+    cases.push({
+      name: 'flagged-at-a-tty/PINNED PER SIDE: --store at a terminal SERVES, and prints no help',
+      kind: 'json',
+      expected: { python: SERVED, node: SERVED },
+      actual: { python: serverArm(flaggedTtyPy), node: serverArm(flaggedTtyNode) },
+    });
+
+    // The brief's last question, answered by diffing the two streams rather than by reading
+    // them. `prog` is set explicitly on both parsers (`prog="bantamkit-mcp"` /
+    // `prog: 'bantamkit-mcp'`), so neither side ever reads `argv[0]` and there is no
+    // prog-name divergence on this surface to except.
+    notes.push(
+      `bare at a REAL terminal (pty.openpty(), one allocator for both sides): python printed ` +
+        `${bareTtyPy.stdout.length} bytes on stdout and ${bareTtyPy.stderr.length} on stderr, exit ` +
+        `${bareTtyPy.exit}; node ${bareTtyNode.stdout.length} / ${bareTtyNode.stderr.length}, exit ` +
+        `${bareTtyNode.exit}. ${describeOpcodes(bareTtyPy.stdout, bareTtyNode.stdout)}`,
+    );
+    notes.push(
+      'flagged at a REAL terminal (`--store <scratch>`): the argv half of the trigger is a SCOPE, ' +
+        `not a second signal — python exited ${flaggedTtyPy.exit} with ${flaggedTtyPy.stdout.length} ` +
+        `bytes on stdout, node ${flaggedTtyNode.exit} with ${flaggedTtyNode.stdout.length}. an ` +
+        'operator who asked for a configured server at a prompt still gets one.',
+    );
+  }
+
+  // ---- BARE OVER A PIPE, with a real handshake. THE PRODUCTION PATH, on both runtimes.
+  //
+  // `bare-closed-stdin` in the matrix above hands the child a pipe that is already at EOF, and
+  // both units measured what that proves and what it does not: a REVERTED branch does not hang
+  // either — the server starts, reads EOF on its first read and exits 0 with an empty stdout in
+  // ~168 ms. So "it did not time out" is worth nothing here and "it answered" is the whole
+  // question. This sends a real `initialize` down the same pipe and compares what comes back.
+  //
+  // Key ORDER inside the `initialize` result is not observable here: `kind: 'json'` sorts keys.
+  // The two SDKs do disagree about that order and it is already a ruling in the `wire` suite
+  // ("initialize: the result key ORDER is the SDK's, and the two disagree"); this case is about
+  // whether a bare launch answers at all, and must not manufacture a second ruling for it.
+  const pipeHome = join(ctx.scratch, 'cli-pipe-home');
+  const pipeCwd = join(ctx.scratch, 'cli-pipe-cwd');
+  mkdirSync(pipeHome, { recursive: true });
+  mkdirSync(pipeCwd, { recursive: true });
+  const handshakeSpec = {
+    argv: [],
+    cwd: pipeCwd,
+    env: { HOME: pipeHome, USERPROFILE: pipeHome },
+    stdin: `${HANDSHAKE_FRAMES.join('\n')}\n`,
+  };
+  const pipePy = runPy(ctx, handshakeSpec);
+  const pipeNode = runNode(handshakeSpec);
+
+  // A TOLERANT PARSE, and the tolerance is load-bearing. Make the person branch unconditional
+  // on both runtimes and this stdout is the help table; a bare `JSON.parse` here throws
+  // `SyntaxError: Unexpected token 'u', "usage: ban"...`, which aborts the whole suite from
+  // inside `run()` — every other case in this file goes unreported and the failure arrives as a
+  // stack trace instead of as a named case. Measured: that is exactly what the both-sides
+  // `if (true)` mutation did to the first draft of this block. An unparsable line is DATA — it
+  // is the defect — so it travels as one and is compared like anything else.
+  const framesOf = (r) =>
+    dec(r.stdout)
+      .split('\n')
+      .filter((l) => l.trim() !== '')
+      .map((l) => {
+        try {
+          return JSON.parse(l);
+        } catch (e) {
+          return { 'NOT A FRAME': l, 'the parser said': e.message };
+        }
+      });
+
+  cases.push({
+    name: 'bare-over-a-pipe/handshake: the frames a bare launch answers with',
+    kind: 'json',
+    expected: framesOf(pipePy),
+    actual: framesOf(pipeNode),
+  });
+  cases.push({ name: 'bare-over-a-pipe/stderr', kind: 'bytes', expected: pipePy.stderr, actual: pipeNode.stderr });
+  cases.push({
+    name: 'bare-over-a-pipe/exit',
+    kind: 'json',
+    expected: { exit: pipePy.exit, timedOut: pipePy.timedOut },
+    actual: { exit: pipeNode.exit, timedOut: pipeNode.timedOut },
+  });
+
+  // The per-side literal for the served arm. A symmetric revert — the help printed on BOTH
+  // runtimes' JSON-RPC channel — leaves the differential above green and fails this.
+  const handshakeShape = (r) => {
+    const lines = dec(r.stdout).split('\n').filter((l) => l.trim() !== '');
+    let result = null;
+    try {
+      result = JSON.parse(lines[0] ?? 'null');
+    } catch {
+      result = null;
+    }
+    return {
+      everyLineIsAFrame: lines.length > 0 && lines.every(looksLikeAFrame),
+      answeredTheInitialize: result?.id === 1 && typeof result?.result === 'object' && result?.result !== null,
+      protocolVersion: result?.result?.protocolVersion ?? null,
+      serverName: result?.result?.serverInfo?.name ?? null,
+      stderrEmpty: r.stderr.length === 0,
+      exit: r.exit,
+      timedOut: r.timedOut,
+    };
+  };
+  const SERVED_A_HANDSHAKE = {
+    everyLineIsAFrame: true,
+    answeredTheInitialize: true,
+    protocolVersion: '2025-06-18',
+    serverName: 'bantamkit',
+    stderrEmpty: true,
+    exit: 0,
+    timedOut: false,
+  };
+  cases.push({
+    name: 'bare-over-a-pipe/PINNED PER SIDE: a bare launch completed a real initialize',
+    kind: 'json',
+    expected: { python: SERVED_A_HANDSHAKE, node: SERVED_A_HANDSHAKE },
+    actual: { python: handshakeShape(pipePy), node: handshakeShape(pipeNode) },
+  });
+
   // ------------------------------------------------------------------------------- notes
+
+  notes.push(
+    `bare over a pipe, driven with a real initialize: python answered ${framesOf(pipePy).length} frame(s) ` +
+      `and exited ${pipePy.exit}; node ${framesOf(pipeNode).length} and ${pipeNode.exit}. this is the ` +
+      'production launch path — `.mcp.json` and the user-scope registration both pass `"args": []` — ' +
+      'and an empty-stdin case cannot tell a server that ANSWERED from one that was reverted: both ' +
+      'exit 0 with an empty stdout.',
+  );
 
   notes.push(
     `python's -h writes ${helpPy.stdout.length} bytes to STDOUT and ${helpPy.stderr.length} to stderr; ` +

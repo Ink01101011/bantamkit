@@ -11,8 +11,17 @@ there is no stdout to go to.
 So: SUBPROCESS, always. `sys.executable -m bantamkit.mcpserver`, stdin closed, streams
 captured as BYTES.
 
-    {"argv": [...], "env": {"COLUMNS": "60"}, "cwd": "/tmp/...", "timeout": 60}
+    {"argv": [...], "env": {"COLUMNS": "60"}, "cwd": "/tmp/...", "timeout": 60,
+     "stdin": b64}
         -> {"stdout": b64, "stderr": b64, "exit": int, "timedOut": bool}
+
+`stdin` DEFAULTS TO EMPTY, which is what every argv line here wanted until J46-28: a pipe
+already at end-of-file, so a line that parses starts a server, reads EOF on its first read
+and exits without a word. That tells "it served" from "it printed", and nothing more. It
+does NOT show that the server ANSWERED, and a change to the bare invocation is precisely a
+change to whether a host gets an answer -- so the field exists to feed a real `initialize`
+frame down the same pipe and compare what comes back. Base64, because the frame is bytes on
+this wire and a text round trip would decide the newline for it.
 
 THIS SCRIPT ALWAYS EXITS 0. `run.mjs`'s `runPython` calls `die()` on a non-zero exit from a
 reference script, so letting the inner CLI's exit 2 become this script's exit 2 would abort
@@ -69,12 +78,13 @@ def main() -> None:
     cwd = payload.get("cwd") or str(REPO_ROOT)
     timeout = float(payload.get("timeout", 60))
     env = child_env(payload.get("env") or {})
+    stdin = base64.b64decode(payload.get("stdin") or "")
 
     command = [sys.executable, "-m", "bantamkit.mcpserver", *argv]
     try:
         completed = subprocess.run(
             command,
-            input=b"",
+            input=stdin,
             capture_output=True,
             cwd=cwd,
             env=env,

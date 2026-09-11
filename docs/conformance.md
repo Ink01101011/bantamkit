@@ -28,7 +28,7 @@ sides, not by reading either.
 
 | suite | what it compares |
 |---|---|
-| `cli` | the `bantamkit-mcp` command line as a process: stdout, stderr, exit code |
+| `cli` | the `bantamkit-mcp` command line as a process: stdout, stderr, exit code. **Extended 2026-09-11 by J46-28** to the question of WHO is on the other end of stdin: the bare invocation at a real terminal (the help, on stdout, exit 0), the bare invocation over a pipe driven with a real `initialize`, and `--store` at a terminal, which still SERVES because the empty argv is a scope and not a second signal. Five of its cases are NOT differential — what each side printed at a terminal, which stream carried it, that it is that runtime's own `-h` bytes, that a flagged terminal launch served, and that a piped bare launch answered — because a revert applied to BOTH runtimes leaves every differential green: measured, `--suite cli` goes from 4 failures on a one-sided revert to **3** on the two-sided one, and the differential `bare-at-a-tty/stdout` is one of the cases that goes back to passing |
 | `charsets` | `runtime-ts/src/charsets.ts` against the live CPython codec registry: the file against what `runtime-ts/scripts/charsets-table.py` writes today (header excluded), all 256 bytes of every single-byte codec decoded by the reference against the port's table, the alias map and the module list |
 | `codec` | fact-file frontmatter: emit byte-identically, and parse each other |
 | `dream` | the cross-layer consolidation: one pair of stores materialised twice, `dream()` run on both, and three things compared per scenario — the returned `DreamResult`, the project directory byte for byte, and the profile directory byte for byte. Two of its cases are NOT differential: the mtime tie-break and the day-arithmetic calendar edge are rules written on both sides and asserted on neither, so they are pinned as typed literals against each runtime separately |
@@ -56,6 +56,18 @@ than adding a second reference script — it already is "spawn the CLI with this
 back both streams", which is their question with a different argv. `memorycli` carries its
 own `ref/memorycli_ref.py` because it compares a fourth thing those three do not: the store
 on disk after every step.
+
+**Amendment, 2026-09-11 (J46-28): `cli` now carries a second script, and the sentence above
+is the reason to explain why.** `ref/cli_tty_ref.py` is not a second "spawn the CLI with this
+argv" — it is a TERMINAL. Both runtimes discriminate a person from a host on `stdin.isatty()`
+/ `process.stdin.isTTY`, so comparing their answers needs a real pty on fd 0 of each, and Node
+has no pty in its standard library. The alternative was two different fakes, one per runtime,
+and a differential over two fakes measures the fakes. So this one script allocates a single
+`pty.openpty()` and runs **either** side over it — the only script under `ref/` that runs the
+port as well as the reference, and the reason it is allowed to is that what it contributes is
+the harness's terminal, not either runtime's behaviour. Where the platform has no pty
+(Windows) it answers `{"unsupported": …}` and the suite emits a note naming what went
+unmeasured, rather than a case nobody earned.
 
 Suites are discovered by **directory listing**, not by a registry someone has to remember to
 edit. Drop a module in `suites/` and it runs.

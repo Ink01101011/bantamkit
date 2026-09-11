@@ -92,6 +92,17 @@ no console script for. Both spellings are documented together in
 [porting.md](porting.md#where-the-two-runtimes-deliberately-differ). It is deliberately
 not an MCP surface: lifecycle prints reports, and this server's stdout is the wire.
 
+**Typing the server's name is now a way to check an install.** Added 2026-09-11
+(J46-26/J46-27) on both runtimes at once: `bantamkit-mcp` with nothing after it, typed
+at a terminal, prints its help on stdout and exits 0 instead of opening a stdio server
+and blocking with no output — which is what it used to do and what is indistinguishable
+from a hang. Same for `python -m bantamkit.mcpserver`, byte for byte. **Nothing about a
+host launch changes**: the signal is whether *stdin* is a terminal, so the `"args": []`
+that every config on this page passes still starts the server down its pipe, and an
+argument still means a server even at a prompt — `bantamkit-mcp --store /tmp/x` typed by
+hand serves. The two runtimes' answers are compared, help bytes and handshake both, by
+`tools/conformance/suites/cli.mjs`.
+
 ### Migrating from `tools/bantamkit-mcp`
 
 The sh launcher is **not** deprecated and nothing is being removed. Both endpoints read
