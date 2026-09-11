@@ -252,18 +252,46 @@ export class Memory {
   private readonly layers: Layer[];
   private showLayers = false;
   /**
-   * How this store came to be the store, captured once. It cannot be re-derived later: the
-   * constructor above has already made the directory, so a store that was only DESIGNATED a
-   * moment ago is indistinguishable on disk from one that was found empty. `null` means the
-   * caller named the path outright and no resolution happened to report.
+   * How this store came to be the store, captured once. It is still captured here and not
+   * re-derived later, but the reason has changed with the constructor below and the old one is
+   * recorded rather than deleted: it WAS that the constructor had already made the directory,
+   * so a store that was only DESIGNATED a moment ago was indistinguishable on disk from one
+   * that was found empty. That complaint is now discharged — nothing is created — and the
+   * binding is kept because it also carries WHY this path (`origin`, `searchedFrom`), which no
+   * amount of looking at the disk recovers. `null` means the caller named the path outright
+   * and no resolution happened to report.
    */
   private readonly binding: StoreBinding | null;
 
   constructor(store: string, options: MemoryOptions = {}, binding: StoreBinding | null = null) {
     const k = options.k ?? 3;
+    // `create: false`, AND IT IS THE WHOLE OF THE cwd-`/` FIX. This was the last eager layer —
+    // grants and the profile store have always been lazy — so a cwd that no directory can be
+    // created under was a STARTUP CRASH: every GUI MCP host launches its child with cwd `/`,
+    // measured live on this machine (`lsof -p <pid> -a -d cwd` on Claude Desktop and all four
+    // of its `bantamkit-mcp` children returns `/`), and the client saw only CONNECTION_CLOSED.
+    // Refusing at startup with a sentence was the other candidate and it is REFUTED by
+    // measurement: it leaves those same four processes dead, which is strictly worse than
+    // today. Built lazily, the server starts from `/`, binds `['project', 'profile']`, and
+    // answers out of the profile layer. The sentence still exists — it is what
+    // `MemoryStore.save`/`compact` say when a write actually needs the directory
+    // (`store.ensureDirs`).
+    //
+    // It is legal because every READ is already defined over an absent directory:
+    // `recall() -> []`, `archived() -> []`, `indexText() -> ''`. `facts()`' docstring says so
+    // outright, and `create: false` is one of the three callers it names.
+    //
+    // THE PRICE, stated rather than discovered: a bare server start in a perfectly good cwd no
+    // longer scatters `.bantamkit/memory/{facts,archive}` there before anything is saved. That
+    // moves TOWARD a stance this file already holds — see the binding comment above, and
+    // `cli.ts`'s bare-TTY guard.
+    //
+    // The reference is `component.py`'s `Memory.__init__` (job48, J48-1); this is the same
+    // change in the same place, and the two sentences below are spelled byte for byte.
     this.store = new MemoryStore(store, {
       indexBudget: options.indexBudget ?? DEFAULT_INDEX_BUDGET,
       k,
+      create: false,
       ...(options.today ? { today: options.today } : {}),
     });
     this.k = k;
@@ -276,8 +304,15 @@ export class Memory {
    *
    * `resolveProjectStore` rather than `discoverProjectStore`: the path both return is the
    * same path, but only the binding carries WHY it is that path and whether it holds
-   * anything — and `recall` cannot recover either fact afterwards, because constructing the
-   * store creates the directory.
+   * anything — and `recall` cannot recover either fact afterwards.
+   *
+   * AMENDMENT 2026-09-12 (job48, J48-2), correcting the reason the clause above used to give
+   * and not the clause itself. WAS: "because constructing the store creates the directory."
+   * NOW that is false — the project layer is built `create: false` (see the constructor) and
+   * constructing it creates nothing. The binding is still the only carrier of WHY, because
+   * `origin` and `searchedFrom` were never on the disk to begin with; what the disk has
+   * stopped being able to answer is merely "was this empty or brand new", which it now answers
+   * correctly for the first time.
    */
   static layered(start?: string | null, options: MemoryOptions = {}): Memory {
     const binding = resolveProjectStore(start);
@@ -730,6 +765,12 @@ export class Memory {
    * at construction and has been saved to since really can answer. The DIAGNOSIS is keyed on
    * the binding, because "designated" stops being visible on disk the moment `MemoryStore`
    * creates the directory.
+   *
+   * AMENDMENT 2026-09-12 (job48, J48-2). The reason in the clause above no longer holds and
+   * the keying does: the project layer is built `create: false`, so a designated store IS now
+   * distinguishable on disk — it is absent. The DIAGNOSIS still keys on the binding because
+   * only the binding carries `origin` and `searchedFrom`, which the disk never held, and
+   * because an absent directory and an emptied one must not be told apart by a race.
    */
   private nothingToReport(): [status: string, text: string] {
     let status: string;
@@ -831,9 +872,19 @@ export class Memory {
     if (binding === null) {
       where = `The project store ${root} is empty.`;
     } else if (binding.state === 'designated') {
+      // AMENDED 2026-09-12 (job48, J48-2) because the sentence became FALSE, not because it
+      // read badly. WAS: "No memory store existed at or above <from>, so the empty <root> was
+      // created for this session." Under a lazily-built project layer nothing is created — the
+      // path is designated and stays absent until a save needs it — so the old sentence told
+      // an operator to go look for a directory that is not there. The new one borrows the
+      // pin's own closing clause, "nothing was created", because it is the same claim about
+      // the same thing, and it reuses the binding's existing `designated` vocabulary rather
+      // than minting a word for it. The remedy that follows — "otherwise save a memory to
+      // start this one" — is now literally true: the save is what brings the directory into
+      // existence. Byte for byte the reference's, `component.py`'s `_binding_diagnosis`.
       where =
-        `No memory store existed at or above ${binding.searchedFrom}, so the ` +
-        `empty ${root} was created for this session.`;
+        `No memory store existed at or above ${binding.searchedFrom}, so ${root} ` +
+        `was designated for this session; nothing was created there.`;
     } else if (binding.origin === 'pin') {
       where = `The project store ${root} is empty; ${MEMORY_DIR_ENV} pinned it.`;
     } else if (this.walkAscended()) {
