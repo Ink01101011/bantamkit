@@ -19,7 +19,10 @@ asset, same discipline:
   allowed, when `job.roles` names that role (AS-2) — a validation-time refusal
   taken BEFORE the log line is appended, so a rejected model never leaves an
   orphan accounting line behind; a role the map omits, or a checkpoint with no
-  map, is unconstrained and behaves exactly as it did before the map existed;
+  map, is unconstrained and behaves exactly as it did before the map existed.
+  J47-4: a role the map DOES name whose value is not a list of model identifiers
+  is refused there too — an unreadable declaration allows no model, and the
+  refusal is the same structured one, taken in the same place;
 * every clock-out appends one line to `<checkpoint>.log.jsonl` beside the
   checkpoint (unit, role, status, ts, plus orchestrator-reported accounting)
   — the driver-log shape, so the history ring's 5-entry cap never loses
