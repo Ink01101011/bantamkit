@@ -287,6 +287,21 @@ this is the thing that updates it, and there are five install shapes with five d
 answers. Pick the row you are actually on — and note that **the running server keeps
 serving the code it loaded at startup**, so every row ends with restarting it in the host.
 
+> **AMENDED 2026-09-11 — there IS a `bantamkit-mcp --update` now, and the paragraph above is
+> kept rather than rewritten because everything in it is still true of what the flag does.**
+> `bantamkit-mcp --update` asks the npm registry for `latest` and compares it to the version
+> that is installed. If they match it prints both numbers and `up to date.` and stops. If the
+> index is ahead **and this is a registry install**, it runs the row below that applies to you
+> and prints what npm said. If the index is ahead and this is any OTHER shape, **it refuses,
+> exits 1, and names the row you are on** — it will not write a registry install into a tree
+> you manage with `git`, and a command that exits 0 having changed nothing is worse than one
+> that says no. Either way it ends by telling you to restart the server, for the reason the
+> paragraph above gives: a successful update does not change the process that is answering
+> you. The flag reaches the network and nothing else here does — not at startup, not on
+> `bantamkit_status`, not on any tool — with a 10-second timeout, and being offline is a named
+> refusal on stderr, never a traceback. The table below is still the reference for what to do
+> by hand, and it is what `--update` prints back at you when it will not act.
+
 | how it was installed | how to update |
 |---|---|
 | `npx -y bantamkit-mcp` in the host config | nothing to update — but npx **caches the resolved version**, so add `@latest` (or a pinned `@0.30.0`) or it will keep serving what it resolved weeks ago. `rm -rf ~/.npm/_npx` forces a clean resolve. |

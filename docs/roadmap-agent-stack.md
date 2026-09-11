@@ -353,6 +353,97 @@ Four things worth carrying forward, because they are not in the sub-task text ab
   actually been told they are stale by (a). Nothing on this branch touches a registry: the
   only occurrences of `--update` in either runtime are comments naming J46-29.
 
+**REVERSED BY THE USER, 2026-09-11 — appended, and NOTHING ABOVE IS REWRITTEN.** The
+heading still says *"do NOT build `--update`"* and the four reasons are still there, word for
+word, because they are the evidence for why the flag that now exists is shaped the way it is.
+Delete them and the shape stops making sense.
+
+The user asked for the flag: *"เพิ่ม task add update option เมื่อพิมพ์ให้ไปเช็ค latest version ถ้า
+mismatch ให้ update auto ถ้า match ให้แสดงคำ uptodate"*. That is a decision, not an argument, and it
+is not relitigated here. What IS recorded here is what happened to the four reasons, because
+three of them were MEASURED FACTS and a fact does not stop being true when the decision above
+it changes. **None of the four was refuted. Three are ANSWERED by the shipped flag and one was
+PAID.**
+
+* **Reason 1 — "it cannot deliver the thing it promises" — is ANSWERED, and it is the one
+  reason nothing here could refute.** A running server still keeps serving the code it loaded
+  at startup; the 2026-09-07 measurement above still stands unchanged. So a successful update
+  ends with `RESTART`: *"restart the server: a running bantamkit-mcp keeps serving the code it
+  loaded at startup, so bantamkit_status will report <the old version> until the host
+  reconnects."* That sentence is not politeness appended to a success — it is the only reason
+  the success is not a lie, and an `--update` that printed success without it would have
+  proved reason 1 right. It is byte-identical on both runtimes and pinned per side in
+  `tools/conformance/suites/cli.mjs`.
+* **Reason 2 — "it is expensive under the two-runtime rule" — is PAID, at exactly the price
+  this row quoted in advance.** Three `docs/porting.md` rows (`--update`'s upgrade command;
+  its per-shape route sentences; its `ephemeral` route), three `ruling:` cases, and the
+  non-ruled companions beside each: the NO_ROUTE frame as bytes on all four route arms, every
+  line that does not name the command as bytes on all seven command arms, and the refusal bit
+  compared for all 25 arms at once — because a ruling proves the two sides still DIFFER and
+  can never prove both still refuse. Two further differences that no ruling can carry, because
+  they produce no opcode in any output, are registered in that file's *"Gaps the differential
+  cannot see"* section instead of being left undeclared: the index URL with its JSON path, and
+  the dispatch's stream-and-exit-code mapping.
+* **Reason 3 — "two of the five install shapes have nothing to update" — is ANSWERED, and it
+  is now four of five.** `ROUTES` answers PER SHAPE and never runs an installer for a shape
+  that did not come from the index. `local-file`, `linked`, `checkout` and `ephemeral` each
+  get their own sentence naming their own real route; `registry` is the only shape this flag
+  installs for. A shape word the table has never heard of refuses rather than guessing.
+  Writing a registry install into a tree the operator manages with `git` would be worse than
+  doing nothing, and doing nothing while exiting 0 is the J46-4 defect — so every refusal
+  here, the no-route one included, exits 1.
+* **Reason 4 — "it needs the network" — is ANSWERED by making that the flag's own property
+  and nobody else's.** The network is on this flag's path and on no other: not at startup, not
+  on `bantamkit_status`, not on any served tool. There is an explicit 10-second timeout, and
+  an offline failure is a NAMED refusal on stderr with a non-zero exit, never a traceback.
+  Both runtimes hold a no-network gate over the offline half — and the reference's blind spot
+  that the AS-7(a) closure recorded above (a function-local import creates no module global)
+  was closed by J46-32 in this job: the gate is now red on a function-local import and on
+  `__import__` too.
+
+**RULING ON AS-7(b): CLOSED, 2026-09-11, in the narrow form (b) itself asked for — and the
+boundary matters more than the verdict.** (b) asked for *"staleness against the registry,
+opt-in … it must be opt-in and never on the status path by default"*. `--update` is exactly
+that: one request, made only when a person types the flag, off the status path entirely, and
+the `COMPARISON` line carries BOTH numbers on every arm — including the shapes it will not
+touch, so an operator on a checkout five releases behind is told the number and told the real
+route. What is NOT delivered, and was never asked for, is a PASSIVE notification: nothing
+tells an operator they are stale without being asked. (b) ruled that out itself.
+**(b)'s own GATE was not met and was overridden rather than satisfied** — it said "(b) does
+not start until (a) ships and someone has been told they are stale by it, because (a) may be
+the whole fix", and nobody had been. The user's instruction overrode it. That is recorded as
+an override, not dressed up as the gate having passed.
+
+**RULING, also recorded here because J46-29 raised it and a decision nobody wrote down is a
+decision that gets re-made: `--update` STAYS A CLI FLAG AND DOES NOT BECOME AN MCP TOOL.**
+The half of (b) that survived the reversal is the half about reach. A `bantamkit_update` tool
+would put a network call — and an installer that rewrites the code the calling process is
+running — behind a host's own reach, callable by a model without a person typing anything.
+That is precisely the default (b) forbade, and it is a strictly larger surface than the one
+the user asked for. The flag returns before a store or a transport exists, which is also why
+it can be typed at a server that is not running.
+
+**Shipped both sides in one job, and the bullet above about "nothing on this branch touches a
+registry" is the sentence this amendment supersedes.** `a590df8` (runtime-py), `3c77544`
+(runtime-ts), gated by the `update/*` cases in `tools/conformance/suites/cli.mjs` driven
+through `tools/conformance/ref/update_ref.py` — 25 arms on both runtimes with the network and
+the installer stubbed at the flag's own two seams, so no request leaves the machine and no
+installer ever runs. Re-derived over those arms: **14 arms byte-identical over their whole
+length, 11 differing on exactly one line each, 33 character-level opcodes in total, and every
+one of them inside the three rows registered in `docs/porting.md`.**
+
+**One measured fact worth carrying forward, because it is the place in this feature where
+being wrong costs the user something they cannot get back.** `npm install --prefix <dir>
+<pkg>` into a directory with no `package.json` beside `node_modules` PRUNES the siblings —
+measured 2026-09-11 with npm 11.6.2, a two-package fixture came back with one — and that is
+exactly the global tree's shape. `upgradeCommand` therefore answers `--global` there and
+`--prefix` only where npm itself wrote the `package.json`. A naive `--prefix` port would have
+deleted the operator's other global CLIs. Pinned by
+`no package.json beside node_modules is the GLOBAL tree, and --prefix there is destructive` in
+`runtime-ts/test/selfupdate.test.mjs` and, across runtimes, by the per-side literal
+`update/PINNED PER SIDE: the upgrade command in a prefix tree and in the global tree`.
+
+
 ## What this audit did NOT find
 
 No dog in the picture is something bantamkit has and shouldn't. Nothing here argues for deleting
