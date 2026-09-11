@@ -835,6 +835,20 @@ case pins in isolation, but nothing joins the two. NOT fixed here: adding a case
 implementation work and the reviewer does not write the gate he is reviewing. It is the first
 thing a follow-up job should land.
 
+**CLOSED 2026-09-12 by J48-4B (`37a1c1b`) — the follow-up job this entry asked for, landed in
+the same job that opened it.** 15 cases, `--suite cli` 192 -> 207, in three shapes, each a
+differential PLUS a literal per side against the sentences typed above: `store-at-a-regular-file`
+(5), `store-under-a-sealed-parent` (7), `store-at-a-path-that-is-not-there` (3). The
+`unreachable` arm's dependence on `e.strerror` — the join this entry says nothing made — is the
+sealed-parent shape's second literal, which pins the product's half of the sentence on its own.
+The paragraph above stands exactly as written: it was true at the commit it describes, and its
+mutation measurement is the reason the cases exist — emptying `_check_store_flag` and
+`checkStoreFlag` together, and each alone, left `--all` printing the `6f0701b` baseline
+character for character. With the cases in place the same reverts are red: reference alone 7,
+port alone 7, both 3 (the per-side literals, since every cross-runtime comparison goes green).
+Nothing else in this entry is closed — `--store <missing>` still exits 0 on purpose, per (ww),
+and the third shape is there so a later "fix" into a refusal has to be a decision somebody takes.
+
 **(yy) A doc that quotes a runtime sentence verbatim has no gate, and one went stale in this
 very job.** `docs/mcp.md`'s **designated** row quoted `No memory store existed at or above
 <start>, so the empty <path> was created for this session.` J48-1 and J48-2 changed that
