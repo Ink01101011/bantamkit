@@ -89,8 +89,10 @@ export function profileStore(): string {
  * 0844ccb). Realpath, not string equality, and that distinction is measured rather than
  * tidy: on macOS the walk up from a cwd under `/var` returns `/private/var/...` while
  * `pyHome()` returns `/var/...`, so two spellings of one directory compare unequal as
- * strings. The Stop hook's `samePath` (`tools/hooks/bantamkit-hook.mjs`) already compares
- * the same two roots the same way and for the same reason. When the resolution itself
+ * strings. The Stop hook's `samePath` (`tools/hooks/bantamkit-hook.mjs`) compares the same
+ * two roots the same way and for the same reason — it carried the identical defect, and
+ * J47-7 (`a109f99`) brought it to the same `realpathSync.native`, following this function
+ * rather than leading it. When the resolution itself
  * fails, an absolute-path comparison is the honest fallback: it can only under-report a
  * match, never invent one.
  *
