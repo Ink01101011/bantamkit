@@ -39,7 +39,11 @@
  * therefore pinned as per-side literals in each runtime's own tests. The check runs at
  * validation time — after the cursor check, before the first mutation, and so before the
  * log-then-commit pair below — because a refusal taken after the append would leave an
- * orphan accounting line claiming a model that was rejected.
+ * orphan accounting line claiming a model that was rejected. J47-5: a role the map DOES
+ * name whose value is not a list of model identifiers is refused there too — an unreadable
+ * declaration allows no model, and the refusal is the same structured one, taken in the
+ * same place. That makes three refusal strings, not two, and the third is likewise a
+ * per-side literal.
  *
  * WHAT IS NOT PORTED, DELIBERATELY. The `depends_on` field is ignored on cursor advance
  * (v1-linear, the Python module's own ruling), there is no lock (the MCP topology has one
