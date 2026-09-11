@@ -211,7 +211,10 @@ def clock_out(
     (driver parity); anything else is a structured error. When `job.roles` names
     the unit's role, `accounting["model"]` must be one of that role's models,
     spelled exactly; a wrong or missing model is refused here, before any
-    mutation and before the accounting line. Mutations: set the
+    mutation and before the accounting line. Extended 2026-09-11 (job47): so is a
+    `job.roles` value for that role that is not a list of model identifiers —
+    an unreadable declaration allows no model, and it is refused in the same
+    place, by the same structured return, writing nothing. Mutations: set the
     unit's status, advance `plan.cursor` to the first non-terminal unit
     (v1-linear, `depends_on` is ignored), shallow-merge `handoff_patch` into
     `handoff`, push `history_entry` onto the 5-entry ring. The mutated

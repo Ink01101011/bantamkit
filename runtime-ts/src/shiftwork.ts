@@ -350,7 +350,10 @@ function modelRefusal(document: PyDict, unitId: string, unit: PyDict, accounting
  * `unitId` must name the cursor unit — the contract is execute-the-cursor (driver parity),
  * never pick-a-unit. When `job.roles` names the unit's role, `accounting.model` must be one
  * of that role's models, spelled exactly; a wrong or missing model is refused here, before
- * any mutation and before the accounting line. Mutations: set the unit's status, advance
+ * any mutation and before the accounting line. Extended 2026-09-11 (job47): so is a
+ * `job.roles` value for that role that is not a list of model identifiers — an unreadable
+ * declaration allows no model, and it is refused in the same place, by the same structured
+ * return, writing nothing. Mutations: set the unit's status, advance
  * `plan.cursor` to the first non-terminal unit in PLAN order (`depends_on` is ignored),
  * shallow-merge `handoffPatch` into `handoff`, push `historyEntry` onto the 5-entry ring.
  *
