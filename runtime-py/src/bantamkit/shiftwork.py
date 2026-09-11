@@ -154,12 +154,31 @@ def _model_refusal(document: dict, unit_id: str, unit: dict, accounting: dict | 
     the sentence says so. Measured, not asserted: the conformance corpus and
     both runtimes' tests drive this through a `BANTAMKIT_ASSETS` pack whose
     schema has no `minItems`, which is the only way to reach the branch at all.
+
+    AND A DECLARATION THIS CODE CANNOT READ IS NOT A LICENCE (J47-4). The same
+    ruling, one step further out: a role the map names is constrained by what it
+    NAMES, and a value that is not a list of model identifiers names nothing, so
+    it allows nothing. What made this a second case rather than a corollary is
+    that `", ".join(allowed)` answered for every shape without ever deciding one
+    — over a string it iterated CHARACTERS and refused while misquoting the
+    checkpoint back at its author, and over a number, a null, a bool or a list
+    holding a non-string it raised `TypeError` straight out of `clock_out`, which
+    is the one exit the ruling forbids: not a structured refusal, so not an
+    answer at all. Fail CLOSED and say only what is true — the declaration cannot
+    be read, therefore no model is allowed — without rendering the unreadable
+    value into the sentence. `[]` is untouched by this: an empty list IS a list
+    of model identifiers, and it keeps the sentence J46-10 pinned.
     """
     role = unit["role"]
     roles = document["job"].get("roles", {})
     if role not in roles:
         return None
     allowed = roles[role]
+    if not isinstance(allowed, list) or not all(isinstance(m, str) for m in allowed):
+        return (
+            f"unit {unit_id} in role {role} cannot clock out: job.roles.{role} "
+            f"is not a list of model identifiers, so it allows no model"
+        )
     names = ", ".join(allowed)
     offered = (accounting or {}).get("model")
     if offered is None:
