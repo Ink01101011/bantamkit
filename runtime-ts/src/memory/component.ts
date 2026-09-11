@@ -25,6 +25,9 @@
  * lines carry a `[project] ` tag that the `--store` form never emits. A port validated
  * against only one of them ships a string the deployment never produces.
  */
+import { realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import { BantamError } from '../errors.js';
 import type { Fact } from './factfile.js';
 import { pyStrip } from './factfile.js';
@@ -77,6 +80,26 @@ export function normalizeName<T>(name: T): T {
  */
 export function profileStore(): string {
   return pyJoin(pyHome(), ...PROJECT_STORE);
+}
+
+/**
+ * Whether two paths name ONE directory, symlinks and `/var` vs `/private/var` included.
+ *
+ * Port of `_same_directory` (`runtime-py/src/bantamkit/memory/component.py`, J47-1,
+ * 0844ccb). Realpath, not string equality, and that distinction is measured rather than
+ * tidy: on macOS the walk up from a cwd under `/var` returns `/private/var/...` while
+ * `pyHome()` returns `/var/...`, so two spellings of one directory compare unequal as
+ * strings. The Stop hook's `samePath` (`tools/hooks/bantamkit-hook.mjs`) already compares
+ * the same two roots the same way and for the same reason. When the resolution itself
+ * fails, an absolute-path comparison is the honest fallback: it can only under-report a
+ * match, never invent one.
+ */
+function sameDirectory(a: string, b: string): boolean {
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return resolve(a) === resolve(b);
+  }
 }
 
 /** The name a layer answers under: the PROJECT directory, not the store directory. */
@@ -240,11 +263,21 @@ export class Memory {
         false,
       ]);
     }
-    mem.layers.push([
-      'profile',
-      new MemoryStore(profileStore(), { k, create: false, ...(today ? { today } : {}) }),
-      false,
-    ]);
+    // ONE DIRECTORY IS ONE LAYER. The walk above starts at the cwd and climbs, so a
+    // session with no `.bantamkit` anywhere above it resolves `~/.bantamkit/memory` —
+    // the profile store — as its PROJECT store. Binding that directory a second time
+    // gave `dream` the same store twice: every fact collided with itself, was merged
+    // into itself, and the "profile copy" that was archived was the same file. It
+    // archived 20 of 20 of the user's real facts on 2026-09-10. Such a session has one
+    // layer, and `dreamOutcome` already has a true thing to say about that.
+    const profileRoot = profileStore();
+    if (!sameDirectory(profileRoot, binding.path)) {
+      mem.layers.push([
+        'profile',
+        new MemoryStore(profileRoot, { k, create: false, ...(today ? { today } : {}) }),
+        false,
+      ]);
+    }
     return mem;
   }
 

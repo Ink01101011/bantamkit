@@ -447,6 +447,63 @@ test('layered binds project, then the grants, then the profile', () => {
   });
 });
 
+// ---------------------------------------------------- one directory is one layer (J47-2)
+//
+// The Node twin of `test_memory_dream.py`'s two nodes of the same name, landed for the
+// reference by J47-1 (0844ccb). `resolveProjectStore` WALKS UP from the cwd, so a session
+// with no `.bantamkit` anywhere above it resolves `~/.bantamkit/memory` — the profile store
+// — as its PROJECT store, and `layered` used to push that same directory a second time as
+// "profile". `dream` was then handed one directory twice: every fact collided with itself,
+// was merged into itself, and the "profile copy" archived was the same file. It archived 20
+// of 20 of the user's real facts on 2026-09-10. `dreamOutcome` itself needs no change: not
+// pushing the duplicate layer routes into the `no-profile-layer` outcome that already exists.
+
+test('one directory is one layer when the walk lands on the profile store', () => {
+  const home = fresh();
+  const work = join(home, 'work');
+  mkdirSync(work, { recursive: true });
+  const profile = mkstore(join(home, '.bantamkit', 'memory'), {
+    'alpha-routing-rule': 'how the alpha router picks a shard',
+  });
+
+  sandboxed(home, () => {
+    const memory = Memory.layered(work, frozen());
+    const outcome = memory.dreamOutcome(false);
+
+    assert.equal(memory.store.root, profile, 'the walk landed on the profile store itself');
+    assert.equal(outcome.status, 'no-profile-layer');
+    assert.deepEqual([outcome.merged, outcome.consumed], [0, 0]);
+    assert.deepEqual(readdirSync(join(profile, 'facts')), ['alpha-routing-rule.md']);
+    assert.equal(readdirSync(join(profile, 'archive')).length, 0, 'nothing was consumed');
+    assert.deepEqual(memory.layerLabels(), ['project']);
+  });
+});
+
+test('one directory is one layer through a symlinked home', () => {
+  // The Stop hook's `samePath` needed `fs.realpathSync` rather than `path.resolve` for
+  // exactly this shape — macOS `/var` vs `/private/var` — and that is the case this pins:
+  // without resolving symlinks, the walk's spelling and `profileStore()`'s spelling of one
+  // directory compare unequal as strings and the guard would let the self-merge through.
+  const bed = fresh();
+  const real = join(bed, 'real-home');
+  mkdirSync(join(real, 'work'), { recursive: true });
+  const link = join(bed, 'linked-home');
+  symlinkSync(real, link, 'dir');
+  const profile = mkstore(join(link, '.bantamkit', 'memory'), {
+    'beta-timezone': 'which timezone the operator works in',
+  });
+
+  sandboxed(link, () => {
+    const memory = Memory.layered(join(real, 'work'), frozen());
+    const outcome = memory.dreamOutcome(false);
+
+    assert.notEqual(memory.store.root, profile, 'the two spellings really differ as strings');
+    assert.equal(outcome.status, 'no-profile-layer');
+    assert.deepEqual(readdirSync(join(profile, 'facts')), ['beta-timezone.md']);
+    assert.equal(readdirSync(join(profile, 'archive')).length, 0);
+  });
+});
+
 // ------------------------------------------------------------- the four nothings, verbatim
 
 test('a populated store that misses says so, and makes no claim about the binding', () => {
