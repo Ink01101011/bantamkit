@@ -457,3 +457,85 @@ destroyed) while trying to DATE a record, and `a7f90073` removed two backslashes
 classified `amendment`. History is not amended, so `check` over any range containing those two
 commits stays red by design; the explanation is in `tools/amendguard/ledger.json`'s
 `closed_2026_09_11` block.
+
+## Registered 2026-09-11 — the closing review of job46 (J46-23), branch `feat/job46-register-and-agent-stack`
+
+Appended under the block above, not woven into it: `(ee)`'s record stands exactly as J46-32
+wrote it, and `(ff)` below is what re-running J46-32's own command found beside it.
+
+**(ff) `(ee)` is an incomplete record of its own run: the range it names reports THREE reds,
+and it wrote down two.** Re-derived 2026-09-11 by running the command `(ee)` describes, with
+the ledger as it stands today:
+
+<!-- provenance: value="rows=19 ok=16 red=3", commit=df48b68, command=".venv/bin/python tools/amendguard/amendguard.py check . 6e506ca..df48b68 tools/amendguard/ledger.json" -->
+```
+VERDICT commit=181744a86 path=docs/roadmap-agent-stack.md  verdict=RECORD-EDITED
+VERDICT commit=a7f90073d path=docs/porting.md              verdict=RECORD-EDITED
+VERDICT commit=98048579f path=docs/eval-data/2026-09-10-job46-as4-gate.md verdict=STAMP-MISSING
+SUMMARY rows=19 ok=16 red=3 broken=0 merges=0 unmeasured=0
+```
+
+The third red is not a record edit, so `(ee)`'s sentence — "two records really were edited in
+place" — is TRUE. What is incomplete is the accounting around it: "the other five in-place
+hunks destroy nothing" reads as the whole of the run, and the run printed a third verdict that
+is not any of those five. **The miss is not explained by the new ledger coverage.**
+`docs/eval-data/*.md` has been in `amend_only` since long before this branch, and
+`unstamped_gate_lines` existed at `6e506ca` — measured by judging J46-19's commit with the
+ledger exactly as it stood at the base:
+
+<!-- provenance: value="rows=1 ok=0 red=1", commit=98048579, command=".venv/bin/python tools/amendguard/amendguard.py check . 9804857^..9804857 <ledger from 6e506ca>" -->
+```
+VERDICT commit=98048579f path=docs/eval-data/2026-09-10-job46-as4-gate.md verdict=STAMP-MISSING
+SUMMARY rows=1 ok=0 red=1 broken=0 merges=0 unmeasured=0
+```
+
+So the red was catchable the day it was committed, by the gate that was already installed, and
+five subsequent units passed over it.
+
+<!-- provenance: value="2742 passed / 1 failed, 92 passed", commit=98048579, command="git show 98048579:docs/eval-data/2026-09-10-job46-as4-gate.md | sed -n '223p;236p'  (the values are QUOTED from that record, and the absence of their own stamp is the finding)" -->
+
+The two unstamped lines are in
+`docs/eval-data/2026-09-10-job46-as4-gate.md`: line 223, `**2742 passed**, 4 skipped, 2
+deselected, 3 xfailed`, and line 236, `(1 failed, 92 passed) and green again when restored`.
+Both are CROSS-ARTIFACT co-moving counts — a pytest total — which the module docstring says
+fall back to RECORD plus a provenance stamp of (value, commit, command). Neither carries one,
+so a reader is handed a number with no command to re-derive it and no commit to re-derive it
+at. **History is not amended, so this stays red by design**, exactly as `(ee)` does; what is
+closed here is the RECORD of it, not the verdict. The lesson is the one this repository keeps
+relearning and is worth stating plainly: **a unit that runs a checker reports what the checker
+printed, not what it was looking for.**
+
+**(gg) The Python `local-file` update route names a bare `pip`, in the one module whose own
+docstring forbids it.** Found 2026-09-11 by the closing review's no-op sweep.
+`runtime-py/src/bantamkit/selfupdate.py`'s `ROUTES["local-file"]` ends *"or run pip install
+--upgrade {distribution} to move it onto the index"*, while `upgrade_command()` in the same
+file returns `[sys.executable, "-m", "pip", ...]` and says why in as many words:
+
+> `sys.executable -m pip` and never a bare `pip`: the server may be running from a venv whose
+> `pip` is not the one first on `PATH`, and upgrading the wrong environment is a failure that
+> reports success.
+
+An MCP server is almost never launched from the operator's activated shell, and this machine
+already carries two bantamkit venvs under one name (`reference-two-bantamkit-mcp-builds`), so a
+literal reading of this remedy upgrades some other interpreter, exits 0, and leaves the stale
+install serving. **It is the J46-4 class — a remedy that reports success without changing the
+complained-about state — surviving in the very module built to close it.** The port does not
+have it: `runtime-ts/src/selfupdate.ts` interpolates `{command}`, the same string
+`upgradeCommand()` builds. **Not fixed here, and the reason is layer discipline, not
+appetite:** this is an operator-facing product sentence, so it changes in both runtimes under
+CLAUDE.md, it is covered by the `update: the local-file, linked and checkout routes…` ruling
+and by `runtime-py/tests/test_selfupdate.py`'s literals, and a closing review unit that edits a
+gated product string is doing an implementer's work without an implementer's gate. The fix is
+one substitution — interpolate `shlex.join(upgrade_command())` where the bare `pip` is now,
+which is what the port already does — plus the conformance case that proves the two still
+differ for the declared reason rather than by accident.
+
+**Two smaller notes from the same sweep, registered rather than fixed.**
+`runtime-ts/src/mcp/identity.ts`'s `CHECKOUT_REASON` says a checkout *"is updated where it was
+cloned"* with no rebuild caveat, while the SAME runtime's `ROUTES.checkout` ends *"and rebuild
+it — dist/ is build output, so a pull alone changes nothing"*: one runtime, one install shape,
+two levels of truth, and the weaker one is the one `build_identity` prints. And
+`runtime-ts/src/mcp/status.ts`'s `install-source-missing` tells a Node operator to reinstall
+`bantamkit` by name, which is the PyPI distribution; the npm package is `bantamkit-mcp`. It
+names no command, so nothing exits 0 having changed nothing, but it is the one place the Node
+server hands its operator an identifier that is not this package.
