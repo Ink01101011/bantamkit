@@ -31,6 +31,33 @@ WHAT THIS DELIBERATELY DOES NOT DO. It does not try to decide whether the guard 
 CORRECT — that is what CI is for, and CI is the thing that found all of this. It only
 refuses the silent case: a POSIX assumption with nothing anywhere near it that has
 considered another platform.
+
+WHICH FILES IT READS, WIDENED 2026-09-11 (J46-32, defect 3). It read `runtime-py/tests/
+test_*.py` and `runtime-ts/test/*.test.mjs` and stopped there, which left
+`tools/conformance/suites/*.mjs` — nineteen modules that build real files on disk and drive
+real child processes — outside it entirely. J46-13 wrote a `chmodSync(0o000)` fixture into
+one of those suites and guarded it correctly by hand; nothing in this repository would have
+noticed if it had not. Widening found TWO offences, both real and both now carrying a
+sentence: `install.mjs`'s denied-directory scenario (already Windows-aware in its own prose
+and in a runtime skip, but naming no platform anywhere the gate could see it) and
+`wire.mjs`'s `child.kill('SIGKILL')` timeout.
+
+A SUITE IS SPLIT AT ITS TOP-LEVEL DECLARATIONS, not at `test(`, because a suite module has
+no tests in it — it is a `run(ctx)` that returns cases. The block therefore starts at the
+JSDoc above a `function` / `const` / `class`, which is exactly where a marker belongs and
+exactly what `_blocks`'s walk back over contiguous non-blank lines already produces. Reading
+each suite as ONE block was measured and rejected: it found only one of the two offences,
+because a `process.platform` check 800 lines away from a `SIGKILL` greened the whole file —
+the same "the guard is in the previous block" defect this gate already had to fix once.
+
+`t.skip(` IS NOT A GUARD, AND THAT IS A DECISION RATHER THAN AN OVERSIGHT. J46-13 recorded
+that the guard list recognises `skip:` and `skipif` but not Node's `t.skip(`. Measured before
+deciding: `t.skip(` appears in ZERO files under `runtime-ts/test/`, and ZERO blocks that
+currently trip this gate contain it. So adding it would redden nothing, green nothing today,
+and green an unknown set tomorrow — because `t.skip(` is not a platform statement at all. A
+test skipped because a fixture is slow would then satisfy a gate about Windows. Every entry
+in `GUARDS` either names a platform or is a marker that promises a sentence; `t.skip(` does
+neither, and the loosening is the one direction this gate must not move on its own.
 """
 
 from __future__ import annotations
@@ -44,6 +71,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 PY_TESTS = REPO / "runtime-py" / "tests"
 TS_TESTS = REPO / "runtime-ts" / "test"
+SUITES = REPO / "tools" / "conformance" / "suites"
 
 # The marker a writer adds when the construct IS portable and the reason is not obvious.
 MARKER = "platform-checked:"
@@ -72,8 +100,24 @@ ASSUMPTIONS: tuple[tuple[str, re.Pattern[str], str], ...] = (
         "Windows cannot execute a file with a shebang and no extension: WinError 193",
     ),
     (
+        # WIDENED 2026-09-11 (J46-32). The pattern used to be
+        #     chmod(?:Sync)?\s*\(\s*[^,)]*,?\s*0o?[0-7]{0,3}\s*\)
+        # which reads "a chmod whose FIRST argument contains no comma, followed by an octal
+        # literal". That excluded `chmodSync(join(root, path), 0o000)` — a comma inside the
+        # path expression — which is how essentially every Node fixture in this repository
+        # writes it, and `locked.chmod(stat.S_IRUSR | stat.S_IWUSR)`, which is how Python
+        # writes a symbolic mode. MEASURED: 19 real call sites across
+        # `runtime-ts/test/` and `tools/conformance/suites/` were invisible to it, one of
+        # them in a file this gate had been scanning since the day it was written. A gate
+        # cannot be blind to the dominant spelling of the thing it is named after.
+        #
+        # THE CALL, NOT THE MODE, is what is matched now. The old pattern already accepted
+        # `0o755` — it was never a restrictive-mode detector — so nothing is lost by dropping
+        # the mode entirely, and what is gained is that no spelling of the argument can hide
+        # the call. `chmod` is asked about at all because the QUESTION ("what does this do on
+        # Windows?") is worth asking at every site; the gate does not try to answer it.
         "chmod removes a permission",
-        re.compile(r"chmod(?:Sync)?\s*\(\s*[^,)]*,?\s*0o?[0-7]{0,3}\s*\)"),
+        re.compile(r"\bchmod(?:Sync)?\s*\("),
         "Windows honours only the read-only bit; a 0 or 0o500 mode changes nothing a "
         "read or a write has to obey",
     ),
@@ -141,6 +185,10 @@ def _blocks(text: str, opener: re.Pattern[str]) -> list[tuple[int, str]]:
 # declaration.
 PY_OPENER = re.compile(r"^(?:async )?def test_", re.MULTILINE)
 TS_OPENER = re.compile(r"^\s*test\(", re.MULTILINE)
+# A conformance suite has no `test(` in it: it is a module of top-level helpers plus one
+# `run(ctx)`. Matching at column ZERO keeps a nested helper from splitting a guard away from
+# the body it guards, the same reason `PY_OPENER` does.
+SUITE_OPENER = re.compile(r"^(?:export )?(?:async )?(?:function|const|let|class)\s", re.MULTILINE)
 
 
 def _offences(path: Path, opener: re.Pattern[str]) -> list[str]:
@@ -160,6 +208,7 @@ def _files() -> list[tuple[Path, re.Pattern[str]]]:
     here = Path(__file__).name
     out = [(p, PY_OPENER) for p in sorted(PY_TESTS.glob("test_*.py")) if p.name != here]
     out += [(p, TS_OPENER) for p in sorted(TS_TESTS.glob("*.test.mjs"))]
+    out += [(p, SUITE_OPENER) for p in sorted(SUITES.glob("*.mjs"))]
     return out
 
 
@@ -247,7 +296,12 @@ def test_the_gate_can_see_each_construct_it_claims_to_see():
             "stub.write_text('#!/bin/sh\\nexit 0\\n')",
             "write_text('hello')",
         ),
-        "chmod removes a permission": ("locked.chmod(0)", "shutil.copy2(a, b)"),
+        # The `hit` is the spelling the old pattern could not see, so this row is the
+        # widening's own red proof and not a transcription of it.
+        "chmod removes a permission": (
+            "chmodSync(join(root, 'facts'), 0o000)",
+            "shutil.copy2(a, b)",
+        ),
         "a child is controlled with a signal": ("watcher.kill('SIGTERM')", "watcher.kill()"),
         "a filename literal contains a backslash": (
             r"""join(dir, 'docs\\junk.docx')""",
@@ -263,6 +317,29 @@ def test_the_gate_can_see_each_construct_it_claims_to_see():
 def test_the_gate_reads_both_suites_and_neither_is_empty():
     """A path that stopped resolving would make this file pass by scanning nothing."""
     py = [p for p, _ in _files() if p.suffix == ".py"]
-    ts = [p for p, _ in _files() if p.suffix == ".mjs"]
+    ts = [p for p, _ in _files() if p.parent == TS_TESTS]
+    suites = [p for p, _ in _files() if p.parent == SUITES]
     assert len(py) > 20, f"only {len(py)} Python test files found under {PY_TESTS}"
     assert len(ts) > 15, f"only {len(ts)} Node test files found under {TS_TESTS}"
+    assert len(suites) > 15, f"only {len(suites)} conformance suites found under {SUITES}"
+
+
+def test_the_suite_opener_splits_a_suite_into_more_than_one_block():
+    """The widening's own vacuity check.
+
+    `SUITE_OPENER` matching nothing would make `_blocks` return the WHOLE FILE as one block,
+    and then a single `process.platform` anywhere would green two thousand lines. That is not
+    a hypothetical: reading each suite whole was measured to hide one of the two offences the
+    widening found. So the split is asserted to actually split.
+    """
+    thin = []
+    for path, opener in _files():
+        if path.parent != SUITES:
+            continue
+        blocks = _blocks(path.read_text(encoding="utf-8"), opener)
+        if len(blocks) < 3:
+            thin.append(f"{path.name}: {len(blocks)} block(s)")
+    assert not thin, (
+        "a conformance suite did not split into blocks, so its whole body is judged as one "
+        "and any guard in it greens all of it:\n  " + "\n  ".join(thin)
+    )

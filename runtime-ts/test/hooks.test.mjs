@@ -30,7 +30,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
@@ -98,11 +98,11 @@ function writeCheckpoint(cwd, name, doc, mtimeSeconds) {
 }
 
 /** Run the adapter the way the host does: JSON on stdin, judge exit code and stdout. */
-function runHook(payload, { home = newHome(), cwd = newCwd() } = {}) {
+function runHook(payload, { home = newHome(), cwd = newCwd(), env = {} } = {}) {
   const r = spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify({ cwd, session_id: 'probe-session', ...payload }),
     encoding: 'utf8',
-    env: { ...process.env, HOME: home, USERPROFILE: home },
+    env: { ...process.env, HOME: home, USERPROFILE: home, ...env },
   });
   return { ...r, cwd, home };
 }
@@ -558,6 +558,34 @@ test('postSave measures the 90% band against a configured --index-budget, not th
   assert.equal(rec.budget, 1500, 'indexAccounting must be measured against the CONFIGURED budget, not the default 24000 — this is the bug this case pins');
   assert.equal(rec.action, 'auto-compact', 'this index is over 90% of the configured 1500-byte budget and must trigger the automatic half');
   assert.match(r.stdout, /"additionalContext":"\[bantamkit\] memory index was \d+\/1500 B/);
+  // WHAT THE ARM ACTUALLY ASKS `compact` FOR, added 2026-09-10 (job46, J46-6) because
+  // NOTHING PINNED IT. Every case in this file matched on `action` alone, so the arm could
+  // have asked for any target at all and all 28 tests would still have passed — which is how
+  // job46's change to the DEFAULT reserve silently moved this arm's real aim from
+  // `0.8 * budget - largest line` to `0.9 * 0.8 * budget - largest line` with no test
+  // noticing. The aim is now named as a RESERVE against the real budget, so it is exact and
+  // it is decidable here: 80% of 1500 is 1200, the reserve is the 300 bytes above it, and
+  // `compact`'s target is `budget - reserve` = 1200 — the same number the message prints.
+  //
+  // THE ASSERTION IS ON THE CLI'S OWN ACCOUNTING LINE AND NOT ON THE LOG RECORD, and the
+  // difference is the whole point. `rec.target` and `rec.reserve` are computed in the hook
+  // before the spawn and are logged whatever argv is actually sent — MEASURED: reverting the
+  // argv to the pre-J46-6 `--budget <target>` left all three log fields identical and this
+  // test green. `compact` echoes the budget and the target IT was given, so that line is the
+  // only thing here that can tell the two spellings apart. 80% of 1500 is 1200, and the arm
+  // asks for it as `--budget 1500 --reserve 300` so that the DEFAULT reserve — which job46
+  // moved — cannot move this aim again.
+  assert.equal(rec.budget, 1500, 'indexAccounting is measured against the configured budget');
+  assert.equal(rec.target, 1200, '80% of the configured budget');
+  assert.equal(rec.reserve, 300, 'the aim, expressed as headroom under the real budget');
+  const accounting = /index: \d+ -> \d+ bytes \(budget (\d+), target (\d+), reserve (\d+),/.exec(r.stdout);
+  assert.ok(accounting, `compact must echo its accounting; got ${JSON.stringify(r.stdout.slice(0, 400))}`);
+  assert.deepEqual(
+    accounting.slice(1, 4).map(Number),
+    [1500, 1200, 300],
+    'compact must be told the REAL budget and asked for the aim as a reserve — a `--budget 1200` with a default reserve lands somewhere else',
+  );
+  assert.match(r.stdout, /auto-compacted to ≤1200 B/);
 });
 
 test('postSave still assumes the default budget when nothing configures --index-budget anywhere it looks', async () => {
@@ -789,5 +817,336 @@ test('a header the byte cap dropped is NOT logged as injected', async () => {
   for (const name of ['bulky-alpha', 'bulky-bravo', 'bulky-charlie']) {
     if (rec.injected.some((i) => i.name === name)) continue;
     assert.ok(!ctx.includes(`[${name}]`), `${name} was dropped by the cap and must not appear in the context`);
+  }
+});
+
+// ------------------------------------------------------- Stop -> dream (J46-14, row 5)
+//
+// `memory_dream`'s MECHANISM shipped in job45; its TRIGGER did not, and until this change
+// the string `dream` did not occur in `tools/hooks/bantamkit-hook.mjs` at all. The arm under
+// test fires the consolidation from `Stop` — NOT from the `SessionEnd` the row's spec named,
+// because the user's registration does not carry `SessionEnd` and an arm there would be
+// inert. See the arm's own header for the re-derived event list.
+//
+// THESE TESTS ASSERT WHAT THE PASS DID, NOT THAT AN ARM RAN. J46-6 measured 28 tests in this
+// file matching on `action` alone, which let the hook's real arithmetic move with nothing
+// red; and its own first repair of that was itself vacuous because the fields it checked were
+// computed before the spawn. So every assertion below is on the consolidation's OUTCOME —
+// `status`, `merged`, `changes` — and, where it matters, on the store on disk.
+
+/** A fact file in `<root>/facts`, in the shape `MemoryStore` writes. */
+function seedFact(root, name, { description, body, type = 'feedback', created = '2026-08-01' }) {
+  const facts = join(root, 'facts');
+  mkdirSync(facts, { recursive: true });
+  writeFileSync(
+    join(facts, `${name}.md`),
+    `---\nname: ${name}\ndescription: ${description}\ntype: ${type}\ncreated: '${created}'\nlast_recalled: '${created}'\nlinks: []\n---\n\n${body}\n`,
+  );
+}
+
+/**
+ * A project layer and a profile layer sharing `shared-ruling`, with DIFFERENT bodies so the
+ * merge is a real union and not the trivial identical case.
+ */
+function seedTwoLayers({ home, cwd }) {
+  const project = join(cwd, '.bantamkit', 'memory');
+  const profile = join(home, '.bantamkit', 'memory');
+  seedFact(project, 'shared-ruling', {
+    description: 'the project half of a ruling that exists in both layers',
+    body: 'The project copy says the gate is a conformance case.',
+  });
+  seedFact(profile, 'shared-ruling', {
+    description: 'the profile half of a ruling that exists in both layers',
+    body: 'The profile copy says a ruling costs a divergence row.',
+  });
+  seedFact(project, 'project-only-fact', {
+    description: 'a fact only the project layer holds',
+    body: 'Nothing in the profile layer answers to this name.',
+  });
+  seedFact(profile, 'profile-only-fact', {
+    description: 'a fact only the profile layer holds',
+    body: 'Nothing in the project layer answers to this name.',
+  });
+  return { project, profile };
+}
+
+function stopPayload() {
+  return { hook_event_name: 'Stop', transcript_path: join(scratch, 'transcript.jsonl') };
+}
+
+/** Every record this arm wrote, in order. `action` is one of dream / dream-skip / dream-failed. */
+function dreamRecords(home) {
+  return hookLog(home, 'Stop').filter((r) => String(r.action).startsWith('dream'));
+}
+
+function factNames(root) {
+  try {
+    return readdirSync(join(root, 'facts')).filter((n) => n.endsWith('.md')).sort();
+  } catch { return []; }
+}
+
+test('Stop consolidates the duplicate the two layers share, and reports what it merged', () => {
+  const home = newHome(); const cwd = newCwd();
+  const { project, profile } = seedTwoLayers({ home, cwd });
+  writeFileSync(join(scratch, 'transcript.jsonl'), '{"type":"tool_use"}\n');
+
+  assert.deepEqual(factNames(project), ['project-only-fact.md', 'shared-ruling.md']);
+  assert.deepEqual(factNames(profile), ['profile-only-fact.md', 'shared-ruling.md']);
+
+  const r = runHook(stopPayload(), { home, cwd });
+  assert.equal(r.status, 0, r.stderr);
+
+  const [rec] = dreamRecords(home);
+  // The OUTCOME, not merely that the arm ran.
+  assert.equal(rec.action, 'dream');
+  assert.equal(rec.status, 'consolidated');
+  assert.equal(rec.merged, 1, 'exactly the one name both layers hold');
+  assert.equal(rec.consumed, 1);
+  assert.ok(rec.changes >= 1, `changes should count the merge, got ${rec.changes}`);
+
+  // …and the store on disk actually moved: the profile copy is gone, the project copy holds
+  // BOTH bodies. A union that dropped a claim would pass an `action`-only assertion.
+  assert.deepEqual(factNames(profile), ['profile-only-fact.md'], 'the profile duplicate is consumed');
+  assert.deepEqual(factNames(project), ['project-only-fact.md', 'shared-ruling.md']);
+  const merged = readFileSync(join(project, 'facts', 'shared-ruling.md'), 'utf8');
+  assert.match(merged, /the gate is a conformance case/, 'the project claim survives');
+  assert.match(merged, /a ruling costs a divergence row/, 'the profile claim survives');
+});
+
+test('an unchanged store does not dream a second time, and the skip is cheap', () => {
+  const home = newHome(); const cwd = newCwd();
+  seedTwoLayers({ home, cwd });
+  writeFileSync(join(scratch, 'transcript.jsonl'), '{"type":"tool_use"}\n');
+
+  runHook(stopPayload(), { home, cwd });
+  runHook(stopPayload(), { home, cwd });
+  runHook(stopPayload(), { home, cwd });
+
+  const records = dreamRecords(home);
+  assert.equal(records.length, 3, 'the arm reports on every Stop');
+  assert.equal(records.filter((r) => r.action === 'dream').length, 1,
+    'the consolidation itself runs exactly once for one change to the store');
+  for (const skipped of records.slice(1)) {
+    assert.equal(skipped.action, 'dream-skip');
+    assert.equal(skipped.reason, 'unchanged');
+  }
+});
+
+test('a change to either layer re-arms the gate, and the second pass is a no-op', () => {
+  const home = newHome(); const cwd = newCwd();
+  const { project, profile } = seedTwoLayers({ home, cwd });
+  writeFileSync(join(scratch, 'transcript.jsonl'), '{"type":"tool_use"}\n');
+
+  runHook(stopPayload(), { home, cwd });
+  const after = readFileSync(join(project, 'facts', 'shared-ruling.md'), 'utf8');
+
+  // A save in the PROFILE layer — the machine-wide one another project's session can touch.
+  seedFact(profile, 'a-new-profile-fact', { description: 'written after the first dream', body: 'new.' });
+  runHook(stopPayload(), { home, cwd });
+
+  const records = dreamRecords(home);
+  const ran = records.filter((r) => r.action === 'dream');
+  assert.equal(ran.length, 2, 'the change re-armed the gate');
+  assert.equal(ran[1].status, 'nothing-to-consolidate', 'nothing is left to merge');
+  assert.equal(ran[1].changes, 0);
+  assert.equal(ran[1].merged, 0);
+  assert.equal(ran[1].indexBefore, ran[1].indexAfter, 'a no-op pass does not move the index');
+  assert.equal(readFileSync(join(project, 'facts', 'shared-ruling.md'), 'utf8'), after,
+    'the merged fact is byte-identical after a second pass');
+});
+
+// The two ways this arm can fail are DIFFERENT CODE PATHS and both are covered: the project
+// store decides whether the arm can resolve a store at all (in-process, before any spawn),
+// and the profile store is only ever read by the CHILD. Breaking the project store therefore
+// exercises `unresolved-store` and breaking the profile store exercises `dream-failed` —
+// a single "broken store" test would have proved only whichever one it happened to hit.
+test('a project store that cannot be resolved is logged and skipped, not thrown', () => {
+  const home = newHome(); const cwd = newCwd();
+  const { project } = seedTwoLayers({ home, cwd });
+  writeFileSync(join(scratch, 'transcript.jsonl'), '{"type":"tool_use"}\n');
+  rmSync(join(project, 'facts'), { recursive: true, force: true });
+  writeFileSync(join(project, 'facts'), 'not a directory');
+
+  const r = runHook(stopPayload(), { home, cwd });
+  assert.equal(r.status, 0, 'an unresolvable store must not fail the hook');
+  assert.ok(hostWouldAccept(r.stdout).accepted, hostWouldAccept(r.stdout).why);
+
+  const [rec] = dreamRecords(home);
+  assert.equal(rec.action, 'dream-skip');
+  assert.equal(rec.reason, 'unresolved-store');
+  assert.ok(rec.error && rec.error.length > 0, 'the reason is reported, not swallowed silently');
+  assert.equal(existsSync(join(home, '.bantamkit', 'hooks', 'dream-state.json')), false);
+});
+
+test('a pass that fails in the child is logged, does not throw, and does not record the fingerprint', () => {
+  const home = newHome(); const cwd = newCwd();
+  const { profile } = seedTwoLayers({ home, cwd });
+  writeFileSync(join(scratch, 'transcript.jsonl'), '{"type":"tool_use"}\n');
+  // The PROFILE layer is read only by the child, so this raises inside the spawned pass.
+  rmSync(join(profile, 'facts'), { recursive: true, force: true });
+  writeFileSync(join(profile, 'facts'), 'not a directory');
+
+  const r = runHook(stopPayload(), { home, cwd });
+  assert.equal(r.status, 0, 'a failing consolidation must not fail the hook');
+  assert.ok(hostWouldAccept(r.stdout).accepted, hostWouldAccept(r.stdout).why);
+
+  const [rec] = dreamRecords(home);
+  assert.equal(rec.action, 'dream-failed');
+  assert.notEqual(rec.exit, 0, 'the child really did fail');
+  assert.ok(rec.error && rec.error.length > 0, 'the failure is reported, not swallowed silently');
+  // The marker must NOT advance: the next Stop has to try again rather than treat an
+  // unconsolidated store as already dreamt.
+  assert.equal(existsSync(join(home, '.bantamkit', 'hooks', 'dream-state.json')), false);
+});
+
+test('a slow pass is killed by the timeout instead of eating the session', () => {
+  const home = newHome(); const cwd = newCwd();
+  seedTwoLayers({ home, cwd });
+  writeFileSync(join(scratch, 'transcript.jsonl'), '{"type":"tool_use"}\n');
+
+  // A 1 ms bound is shorter than any real pass, so a real child is really killed here — this
+  // is the bound doing its job, not a stub standing in for it.
+  const r = runHook(stopPayload(), { home, cwd, env: { BANTAMKIT_DREAM_TIMEOUT_MS: '1' } });
+  assert.equal(r.status, 0, 'the hook survives a pass it had to kill');
+  assert.ok(hostWouldAccept(r.stdout).accepted);
+
+  const [rec] = dreamRecords(home);
+  assert.equal(rec.action, 'dream-failed');
+  // platform-checked: PORTABLE, and this assertion is the mechanism. `spawnSync` reports a
+  // timeout kill as an `ETIMEDOUT` error on every platform, so `timedOut` means the same
+  // thing on Windows as here. The POSIX signal name is deliberately NOT asserted: on Windows
+  // the kill is `TerminateProcess`, there is no such signal to read, and a test that demanded
+  // one would either fail there or have to be skipped — which would leave the timeout bound
+  // unproven on the platform this repo is required to support.
+  assert.equal(rec.timedOut, true, 'the child was killed by the bound, not merely slow');
+  assert.equal(existsSync(join(home, '.bantamkit', 'hooks', 'dream-state.json')), false,
+    'a killed pass leaves the gate armed');
+});
+
+test('the dream arm never emits, so the Stop nudge stays the only voice on stdout', () => {
+  const home = newHome(); const cwd = newCwd();
+  seedTwoLayers({ home, cwd });
+  // 20+ tool calls and no save: the nudge fires on the same Stop the dream does.
+  writeFileSync(join(scratch, 'transcript.jsonl'), '{"type":"tool_use"}\n'.repeat(30));
+
+  const r = runHook(stopPayload(), { home, cwd });
+  assert.equal(r.status, 0);
+  const out = r.stdout.trim();
+  assert.doesNotThrow(() => JSON.parse(out), 'stdout must be ONE JSON object, not two concatenated');
+  const parsed = JSON.parse(out);
+  assert.equal(parsed.decision, 'block', 'the nudge still owns the answer to the host');
+  // …and the dream still happened on that same Stop.
+  assert.equal(dreamRecords(home)[0].status, 'consolidated');
+});
+
+// THE REGRESSION THIS ARM CAUSED ONCE, AND MUST NEVER CAUSE AGAIN.
+//
+// `resolveProjectStore` WALKS UP from the cwd. A session running outside any project
+// therefore resolves `~/.bantamkit/memory` — the PROFILE store — as its "project" store, and
+// `Memory.layered` binds that one directory as BOTH layers. `dream` then merges the store
+// with itself: every fact matches itself by name and the "profile copy" (the same file) is
+// archived, emptying `facts/`.
+//
+// This happened to the user's real profile store on 2026-09-10 while this arm was being
+// written, because the live hook registration points at the working-tree file: a real `Stop`
+// consolidated 20 of 20 facts into the archive. The tell was `indexBefore == indexAfter`,
+// two layers reporting one number because they were one store.
+test('a cwd outside any project does not merge the profile store with itself', () => {
+  const home = newHome();
+  // No `.bantamkit` anywhere above this cwd EXCEPT the one in home: the walk lands on the
+  // profile store, which is exactly the shape that emptied the real store.
+  const cwd = join(home, 'somewhere', 'deep');
+  mkdirSync(cwd, { recursive: true });
+  const profile = join(home, '.bantamkit', 'memory');
+  seedFact(profile, 'a-profile-fact', { description: 'the only copy there is', body: 'Keep me.' });
+  seedFact(profile, 'another-profile-fact', { description: 'also the only copy', body: 'Keep me too.' });
+  writeFileSync(join(scratch, 'transcript.jsonl'), '{"type":"tool_use"}\n');
+
+  const r = runHook(stopPayload(), { home, cwd });
+  assert.equal(r.status, 0);
+
+  const [rec] = dreamRecords(home);
+  assert.equal(rec.action, 'dream-skip');
+  assert.equal(rec.reason, 'single-layer', 'the arm must recognise one directory bound twice');
+
+  // The property that actually matters: the facts are STILL THERE and nothing was archived.
+  assert.deepEqual(factNames(profile), ['a-profile-fact.md', 'another-profile-fact.md']);
+  assert.equal(existsSync(join(profile, 'archive')), false, 'nothing was consumed');
+});
+
+// ------------------------------------------------- the census AS-1(a) answered, as a gate
+//
+// `docs/roadmap-agent-stack.md` AS-1(a) asked for one event stream or the written reason
+// there is more than one. The written reason is `docs/eventlog.md`'s "Four streams, not one"
+// section, and its load-bearing claim is a CENSUS: these are the streams, there are no
+// others. A census in prose goes stale the first time an arm starts writing somewhere new,
+// and nothing would say so — which is the whole failure AS-1(a) is about.
+//
+// So the census is checked against the RUN, not against the source. This fires the hook for
+// every event the user's registration actually sends (`docs/hooks.md`), then walks the
+// scratch HOME and asks what `.jsonl` files ARE THERE. Grepping the adapter for path
+// expressions would pass on a stream that a helper builds and would miss one an import
+// writes; the filesystem cannot be talked around.
+//
+// `.jsonl` and not every file: `dream-state.json` and `ledger-<session>.json` are
+// read-modify-write STATE, not append-only streams, and AS-1(a) is about streams. A new
+// stream that arrived as `.json` would slip past — noted here rather than guarded, because
+// an append log in this project is a `.jsonl` by convention and widening the glob to catch
+// the state files would make this test fail on every legitimate change to them.
+test('every JSONL stream the hook writes is named in docs/eventlog.md', () => {
+  const home = newHome();
+  const cwd = newCwd();
+  writeFileSync(join(scratch, 'transcript.jsonl'), '{"type":"tool_use"}\n');
+  const events = [
+    { hook_event_name: 'SessionStart', source: 'startup' },
+    { hook_event_name: 'UserPromptSubmit', prompt: 'how does the deploy flag work here' },
+    { hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: join(cwd, 'README.md') } },
+    { hook_event_name: 'PostToolUse', tool_name: 'Read', tool_input: {}, tool_use_id: 't1' },
+    { hook_event_name: 'PreCompact', trigger: 'manual', transcript_path: join(scratch, 'transcript.jsonl'), custom_instructions: null },
+    { hook_event_name: 'PostCompact' },
+    stopPayload(),
+  ];
+  writeFileSync(join(cwd, 'README.md'), 'a file for the read ledger\n');
+  for (const payload of events) {
+    const r = runHook(payload, { home, cwd });
+    assert.equal(r.status, 0, `${payload.hook_event_name}: ${r.stderr}`);
+  }
+
+  const streams = [];
+  const walk = (dir, rel) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.isDirectory()) walk(join(dir, e.name), `${rel}${e.name}/`);
+      else if (e.name.endsWith('.jsonl')) streams.push(`~/${rel}${e.name}`);
+    }
+  };
+  walk(home, '');
+  streams.sort();
+
+  // Non-vacuity: a walk that found nothing would pass the loop below without reading a
+  // thing. These two are the census as `docs/eventlog.md` prints it; a third that is
+  // documented is welcome, an undocumented one is the failure.
+  assert.deepEqual(
+    streams.filter((s) => s === '~/.bantamkit/hooks/hook-log.jsonl' || s === '~/.claude/tool-metrics/events.jsonl'),
+    ['~/.bantamkit/hooks/hook-log.jsonl', '~/.claude/tool-metrics/events.jsonl'],
+    'both streams the census names must actually be written by a real run',
+  );
+
+  // The census is the TABLE, not the page. A first cut of this test asked whether the path
+  // appeared anywhere in `docs/eventlog.md` and a deliberate mutation of the table row left
+  // it GREEN, because the same path also sits inside a `wc -lc` line in the census's own
+  // reproduce block. That is the identical defect as this unit's checkpoint verify
+  // (`grep -q injection docs/eventlog.md`), reproduced by accident: a substring search cannot
+  // tell a documented decision from an incidental mention. So this reads the row.
+  const rows = readFileSync(join(repoRoot, 'docs', 'eventlog.md'), 'utf8')
+    .split('\n')
+    .filter((l) => /^\|\s*\d+\s*\|/.test(l))          // `| 2 | **the hook log** | \`path\` | … |`
+    .map((l) => l.split('|').map((c) => c.trim()));
+  const census = new Set(rows.map((cells) => (cells[3] || '').replace(/^`|`$/g, '')));
+  assert.ok(census.size >= 4, `the census table did not parse — found ${census.size} rows, expected 4`);
+
+  for (const stream of streams) {
+    assert.ok(census.has(stream),
+      `the hook writes ${stream} and the census table in docs/eventlog.md does not list it — `
+      + "AS-1(a)'s written answer is now wrong. Add a row naming the question it answers, or stop writing it.");
   }
 });

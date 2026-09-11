@@ -52,6 +52,8 @@ import {
 import * as docread from '../docread.js';
 import * as repomap from '../repomap.js';
 import * as skillaudit from '../skillaudit.js';
+import { PriceTableError } from '../pricing.js';
+import * as tokenledger from '../tokenledger.js';
 import { EventLog, type DetailValue } from '../eventlog.js';
 import type { Memory } from '../memory/component.js';
 import { PyOSError, asPyOSError, pyReadText } from '../memory/pyfs.js';
@@ -78,7 +80,8 @@ import type { RawStdioTransport } from './transport.js';
  *
  * `bantamkit_status` went LAST rather than first, `memory_compact` after it rather than
  * beside `memory_save` where a reader would look for it, `bantamkit_read` after that,
- * `skill_audit` after that, `memory_dream` after that and `repo_map` after that, for the
+ * `skill_audit` after that, `memory_dream` after that, `repo_map` after that and
+ * `token_ledger` after that, for the
  * same reason the reference appends all six: registration order IS the served order, and
  * appending is the only edit that leaves the other twelve where every existing declaration
  * says they are.
@@ -97,6 +100,7 @@ export const MCP_TOOLS = [
   'skill_audit',
   'memory_dream',
   'repo_map',
+  'token_ledger',
 ] as const;
 
 
@@ -874,6 +878,58 @@ function runTool(
           nodes: result.nodes,
         });
         return { value: { t: 'str', v: noted(repoMapReply(result)) }, wrapped: true };
+      });
+    }
+    case 'token_ledger': {
+      // The transcript ledger on the MCP surface (job46, AS-1(c)): `tokenledger` measures,
+      // this serves it. Byte for byte the reference's `token_ledger` handler.
+      //
+      // THE REPLY IS A JSON DOCUMENT AND NOT PROSE, the same shape and for the same reason as
+      // `skill_audit` above: a caller comparing `totals` before and after a change, or
+      // deciding whether `omissions` explain a total that looks too small, has to read
+      // numbers rather than parse a sentence back out of English. `asJson` is the reply
+      // verbatim and the only string this layer authors is the refusal.
+      //
+      // THE FOUR REFUSALS ARE ARGUMENT FAILURES — an empty `root`, a `root` that is missing,
+      // a `root` that is a file, an empty `model` — so they go through `toolFailed`, and
+      // unlike `repo_map` above they live in the MODULE rather than here: `read()` over a
+      // missing root does not answer an empty ledger that a caller could mistake for a real
+      // one, it refuses, so there is nothing for this layer to add.
+      //
+      // `PriceTableError` is caught BESIDE `TokenLedgerError` and is not the same kind of
+      // thing: it is an operator configuration fault reached only when `model` names a price
+      // table that will not load. It is still an argument failure from the CALLER's side —
+      // it names the path they passed — so it is refused rather than crashing the request.
+      //
+      // THE RECORD IS A DECISION, NEVER A REPLY. `read` carries the four counts the host
+      // cannot see and `refused` carries nothing at all, and no token count is recorded
+      // either: the event log is a record of what this server DID, and the numbers are the
+      // reply.
+      const root = asText(args.get('root'));
+      const modelArg = args.get('model');
+      const model = modelArg !== undefined && modelArg.t === 'str' ? modelArg.v : null;
+      const pricesArg = args.get('prices');
+      const prices = pricesArg !== undefined && pricesArg.t === 'str' ? pricesArg.v : null;
+      return recordRaise(log, 'token_ledger', () => {
+        let result: tokenledger.Ledger;
+        try {
+          result = tokenledger.read(root, { model, prices });
+        } catch (e) {
+          // `except (tokenledger.TokenLedgerError, PriceTableError, OSError)`. Both classes
+          // extend `BantamError` and both already carry the reference's own sentence.
+          if (!(e instanceof tokenledger.TokenLedgerError) && !(e instanceof PriceTableError)) {
+            throw e;
+          }
+          log.record('token_ledger', 'refused');
+          return { value: { t: 'str', v: noted(toolFailed('token_ledger', e)) }, wrapped: true };
+        }
+        log.record('token_ledger', 'read', {
+          transcripts: result.transcripts,
+          lines: result.lines,
+          requests: result.requests,
+          sessions: result.sessions.length,
+        });
+        return { value: { t: 'str', v: noted(tokenledger.asJson(result)) }, wrapped: true };
       });
     }
     default:

@@ -118,7 +118,7 @@ That position only holds if the operator has a lever, and until 2026-08-21 there
 was none: `index_budget` was on no argument parser, and the four ops above were
 reachable only by importing `MemoryStore` from Python. Both halves now exist —
 see [The operator CLI](#the-operator-cli) below and `--index-budget` on
-`bantamkit-mcp`. The MCP surface is now exactly thirteen tools, `memory_compact`
+`bantamkit-mcp`. The MCP surface is now exactly fourteen tools, `memory_compact`
 being the ninth and `memory_dream` the twelfth; the in-process eval agent still
 binds only `memory_save` and `memory_recall`.
 
@@ -311,6 +311,34 @@ Two things about that target matter, and both were measured defects:
   you keep will fit", a number that scales with your data rather than a guessed
   constant, and it is recomputed from the survivors, so calling `compact()` twice
   archives nothing the second time.
+
+  **AMENDED 2026-09-10 (job46).** The bullet above says where the reserve is
+  measured *from*, and that is the half that moved. The promise it quotes is
+  unchanged and still exact; the line it is measured from is now the one the
+  degraded report *warns* at rather than the one a save is *refused* at:
+
+  ```
+  reserve = (index_budget - undegraded_index_ceiling(index_budget)) + largest index line
+  undegraded_index_ceiling(b) = (INDEX_PRESSURE_PERCENT * b - 1) // 100
+  ```
+
+  **Why**, and it was `docs/porting.md`'s register item 7: the degraded report
+  fires at `INDEX_PRESSURE_PERCENT` (90) percent of the budget and *names this
+  command*, while the old target sat at `budget - largest line`. On any store
+  whose biggest index line is under a tenth of its budget everything between the
+  two is a band in which the command the operator was told to run exits 0 having
+  archived nothing. Measured on this machine's own project store — 101 facts,
+  `index.md` 21819 bytes of a 24000-byte budget, largest index line 361 bytes —
+  `compact()` answered `archived=[]` with the warning still on screen. The upper
+  edge of that band is a function of store *content*, not a constant: the same
+  store measured a 186-byte largest line when the register was written and 361
+  today, so any percentage quoted for it is dated the day it is written.
+
+  **An explicit `reserve` opts out**, byte for byte: a caller that passes one
+  gets `budget - reserve`, exactly as before. Everything else here still holds —
+  the cap at half the budget, the recomputation from the survivors, and the
+  idempotence that follows from it. The two runtimes moved in the same job and
+  are compared by `index-band` in `tools/conformance/suites/wire.mjs`.
 
 **The eviction order is class first, then staleness:**
 `(0 if type != "feedback" else 1, last_recalled or created, name)`.

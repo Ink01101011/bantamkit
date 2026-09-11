@@ -37,6 +37,15 @@ A call is one of
     {"fn": "chmod", "path": str, "mode": int}          # set up a write failure
     {"fn": "mkdir", "path": str}                       # plant a directory in the way
 
+A session case may also carry `"assets": <dir>`, which sets `BANTAMKIT_ASSETS` for that
+case's calls and puts the environment back afterwards. Both runtimes honour that override
+(`bantamkit/assets.py` and `runtime-ts/src/assets.ts`, same precedence), and it is the ONLY
+way to reach the AS-2 empty-allowed-list branch: with the shipped schema, `minItems: 1`
+refuses `roles: {implementer: []}` during the read and the model check is never called. The
+suite points it at a pack whose checkpoint schema has lost that one keyword, which is the
+shape the ruling is about — the schema is a SHARED asset, so a differential cannot see it
+move, and a check whose safety rests on it fails open the day it does.
+
 `handoff_patch`, `history_entry` and `accounting` travel as JSON TEXT and each side runs
 its OWN decoder over the same bytes, so `{"tokens": 5.0}` stays a float on both sides.
 That is the exact route; the lossy one (a value already through an SDK's `JSON.parse`) is
@@ -150,6 +159,9 @@ def main() -> None:
             if case.get("checkpoint") is not None:
                 path.write_bytes(base64.b64decode(case["checkpoint"]))
             target = case.get("target", str(path))
+            previous_assets = os.environ.get("BANTAMKIT_ASSETS")
+            if case.get("assets"):
+                os.environ["BANTAMKIT_ASSETS"] = case["assets"]
             steps = []
             for call in case["calls"]:
                 fn = call["fn"]
@@ -188,6 +200,11 @@ def main() -> None:
                         "tmp_left": tmp.exists(),
                     },
                 )
+            if case.get("assets"):
+                if previous_assets is None:
+                    del os.environ["BANTAMKIT_ASSETS"]
+                else:
+                    os.environ["BANTAMKIT_ASSETS"] = previous_assets
             results.append({"steps": steps})
         json.dump({"results": results}, sys.stdout)
         return

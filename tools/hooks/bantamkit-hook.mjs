@@ -45,6 +45,35 @@ const PROMPT_MIN_CHARS = 12;
 const STOP_NUDGE_MIN_TOOL_CALLS = 20;
 const COMPACT_AT = 0.9;   // index >= 90% of budget → compact …
 const COMPACT_TO = 0.8;   // … down to 80%, past the no-op band measured in job40 (C6)
+//
+// AMENDED 2026-09-10 (job46, J46-6). The half-sentence "past the no-op band measured in
+// job40 (C6)" is a record of a defect that is now CLOSED, and it stays because it is why
+// this number exists at all. `docs/porting.md` register item 7 was that band: the degraded
+// report warned at COMPACT_AT and named `compact`, while `compact`'s default target sat at
+// `budget - largest index line`, so between the two the command archived nothing. Both
+// runtimes closed it in job46 (`87cc1f7`, `55575c3`) by measuring the default reserve from
+// the warning line instead of from the budget.
+//
+// COMPACT_TO STAYS, and NOT because the workaround is harmless — it is not. What it was
+// doing was naming a budget this store does not have (0.8 * budget) so that `compact` would
+// aim below the real one. Now that `compact` derives its own floor FROM the budget it is
+// given, that lie COMPOUNDS: the aim became 0.9 * (0.8 * budget) - largest line. MEASURED on
+// a read-only copy of this machine's project store (101 facts, 21819 bytes, largest index
+// line 361, budget 24000), one auto-compaction:
+//
+//     before job46, `--budget 19200`, default reserve : target 18839, archived 15
+//     after  job46, `--budget 19200`, default reserve : target 16918, archived 23
+//     today,        `--budget 24000 --reserve 4800`   : target 19200, archived 13
+//
+// So the arm was quietly archiving eight more of the user's facts per fire than the 80% it
+// advertises, and landing 2379 bytes below the number its own message prints. The fix is not
+// to drop the aim — 80% is the HYSTERESIS that keeps this arm from re-firing on the next
+// save, which matters more now that the default target sits just under the warning line — it
+// is to ask for the aim in the argument that MEANS it. `--reserve` is the documented escape
+// hatch from the new floor (both runtimes, both conformance suites), so the hook now names
+// the real budget and the headroom it wants, and gets `budget - reserve` exactly. That is
+// also why this is the durable spelling: it cannot be moved again by a future change to the
+// DEFAULT reserve, which is exactly what moved it this time.
 
 // PreCompact's steering, in BYTES. This string is paid TWICE: once as the summariser's
 // `newCustomInstructions`, and once echoed onto the user's screen as
@@ -58,6 +87,19 @@ const COMPACT_TO = 0.8;   // … down to 80%, past the no-op band measured in jo
 const PRECOMPACT_STDOUT_MAX = 4000;
 const PRECOMPACT_FILES_MAX = 40;
 const CHECKPOINT_LINE_MAX = 600;   // one checkpoint line: an absolute path, a cursor, a title
+
+// The Stop-triggered consolidation pass. See `maybeDream` for why the event is `Stop`.
+const DREAM_STATE = path.join(STATE, 'dream-state.json');
+// The host kills the WHOLE hook at 10 s (`timeout: 10` in the registration), so the child's
+// bound has to sit under that. A measured consolidation of the 121 facts on this machine
+// took 72 ms, so the headroom is two orders of magnitude.
+//
+// THE ENV OVERRIDE IS A TEST SEAM AND NOTHING ELSE. Without it the timeout is a constant no
+// test can reach, and this repo has been bitten twice by arithmetic in this file that drifted
+// because nothing ran it. With it, `hooks.test.mjs` sets a 1 ms bound and exercises a REAL
+// SIGTERM kill of a real child, which is the only way to show that a slow pass degrades to a
+// log line instead of eating the session.
+const DREAM_TIMEOUT_MS = Number(process.env.BANTAMKIT_DREAM_TIMEOUT_MS) || 8000;
 
 function log(record) {
   try {
@@ -464,6 +506,14 @@ function readJsonSafe(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return {}; }
 }
 
+/** Best-effort marker write. A marker that cannot be written costs a repeated dream, not a crash. */
+function writeJsonSafe(file, value) {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(value));
+  } catch { /* the gate degrades to "always fires", which is safe and merely not free */ }
+}
+
 function indexBudgetFromArgs(args) {
   if (!Array.isArray(args)) return undefined;
   for (let i = 0; i < args.length; i += 1) {
@@ -524,10 +574,18 @@ async function postSave(input) {
   // The user ruled compaction automatic (2026-08-24). `compact` archives the stalest facts
   // until the index sits at --budget; aiming at 80% skips the 90–99.2% band where the
   // default reserve makes it a no-op.
+  //
+  // AMENDED 2026-09-10 (job46, J46-6): the band is closed, and the aim is now asked for as a
+  // RESERVE against the real budget rather than as a fake budget — see COMPACT_TO above for
+  // the measurement. `compact`'s target is `budget - reserve`, so this lands at exactly
+  // `target` instead of at whatever the default reserve makes of a budget it was misled
+  // about. `reserve` is at least 1 for every budget >= 1 (both parsers refuse 0), and
+  // 0.2 * budget is always under the `budget // 2` cap, so neither edge is reachable here.
   const target = Math.floor(COMPACT_TO * budget);
-  const r = spawnSync(process.execPath, [path.join(DIST, 'cli.js'), 'compact', '--store', m.store.root ?? m.store.path ?? '', '--budget', String(target)], { encoding: 'utf8', timeout: 8000 });
+  const reserve = budget - target;
+  const r = spawnSync(process.execPath, [path.join(DIST, 'cli.js'), 'compact', '--store', m.store.root ?? m.store.path ?? '', '--budget', String(budget), '--reserve', String(reserve)], { encoding: 'utf8', timeout: 8000 });
   const out = `${r.stdout || ''}${r.stderr || ''}`.trim();
-  log({ event: 'PostToolUse', action: 'auto-compact', bytes, budget, target, budgetSource, budgetScope, exit: r.status, out: out.slice(0, 400) });
+  log({ event: 'PostToolUse', action: 'auto-compact', bytes, budget, target, reserve, budgetSource, budgetScope, exit: r.status, out: out.slice(0, 400) });
   emit({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: `[bantamkit] memory index was ${bytes}/${budget} B; auto-compacted to ≤${target} B. ${out.slice(0, 600)}` } });
 }
 
@@ -715,6 +773,165 @@ function postCompact(input) {
   log({ event: 'PostCompact', action: 'ledger-reset' });
 }
 
+// ------------------------------------------------------------------ Stop -> dream
+// Row 5 of `docs/roadmap-toolbox.md` shipped `memory_dream`'s MECHANISM and left its TRIGGER
+// open — the row still carries its own `STILL OPEN: the trigger` sentence. Before this arm
+// the string `dream` did not occur anywhere in this file, so the consolidation ran only when
+// a model chose to call the tool, which is precisely the operator-only design the user has
+// already overruled once: `memory_compact` was built as the model's path on refusal and the
+// user ruled compaction AUTOMATIC (2026-08-24). `postSave` is what that ruling produced, and
+// this arm is the same move for consolidation.
+//
+// THE EVENT IS `Stop`, AND IT IS NOT THE ONE THE ROW NAMED. The row's spec said "run from a
+// `SessionEnd`/cron". Re-derived from the user's own `~/.claude/settings.json` on
+// 2026-09-10, the events that actually reach this hook are
+//
+//     PostCompact · PostToolUse · PreCompact · PreToolUse[Read]
+//     SessionStart[startup|resume|clear|compact] · Stop · UserPromptSubmit
+//
+// and `SessionEnd` is NOT among them. The host supports the event; this registration simply
+// does not carry it. A `SessionEnd` arm would therefore be INERT until the user edited their
+// own settings file, and a unit may not edit the user's permission and hook surface. `Stop`
+// already fires, already reads the per-session ledger, already decides whether to act, and
+// fires at the END of a turn when no tool call is in flight. The row named a mechanism; the
+// property it was after is that the consolidation happens without anyone asking, and `Stop`
+// is the event on this machine that delivers it the moment this merges.
+//
+// THE GATE IS THE STORE'S OWN FINGERPRINT, because `Stop` fires every turn and a dream on
+// every turn is a cost with no benefit. The pass runs only when a `facts/*.md` in either
+// layer has appeared, vanished, or changed size or mtime since the last dream. A quiet turn
+// costs one small JSON read, two `readdir`s and one `stat` per fact — measured at ~6 ms over
+// the 121 facts on this machine, with no store loaded and no subprocess spawned.
+//
+// BOTH LAYERS ARE FINGERPRINTED ON PURPOSE. The profile store is machine-wide, so another
+// project's session can add the very duplicate this session should consolidate. A gate keyed
+// on THIS session's saves would never see it. For the same reason the marker lives beside the
+// log in `~/.bantamkit/hooks/`, not in the per-session ledger: the question "has the store
+// changed since the last dream" outlives any one session.
+/**
+ * Do two paths name the same directory? REALPATH, not `path.resolve`.
+ *
+ * `resolveProjectStore` hands back a realpath-resolved path and `os.homedir()` does not, so
+ * on macOS the SAME directory arrives as `/private/var/folders/...` from one and
+ * `/var/folders/...` from the other. `path.resolve` normalises `..` and makes a path
+ * absolute; it does not follow symlinks, so it calls those two different and the guard below
+ * would let a self-merge through. Measured: the first version of this guard did exactly that,
+ * and the test that seeds a store under `tmpdir()` is what caught it.
+ *
+ * A path that cannot be realpathed (it does not exist yet) falls back to `resolve`, which is
+ * the honest answer for a directory nothing has created.
+ */
+function samePath(a, b) {
+  const real = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+  return real(a) === real(b);
+}
+
+function storeFingerprint(roots) {
+  const h = createHash('sha256');
+  for (const root of roots) {
+    h.update(`\u0000${root}\u0000`);
+    let names = [];
+    try {
+      names = fs.readdirSync(path.join(root, 'facts')).filter((n) => n.endsWith('.md')).sort();
+    } catch { /* a layer with no facts/ contributes its name and nothing else */ }
+    for (const n of names) {
+      let st;
+      try { st = fs.statSync(path.join(root, 'facts', n)); } catch { continue; }
+      h.update(`${n}\u0000${st.size}\u0000${st.mtimeMs}\u0000`);
+    }
+  }
+  return h.digest('hex');
+}
+
+/**
+ * Consolidate, at most once per change to either layer, in a bounded child process.
+ *
+ * NOTHING IS EMITTED. `stop` may answer the host with `decision: 'block'`, and two JSON
+ * objects on one stdout is not a protocol — so this arm reports only into the hook log.
+ *
+ * THE CHILD IS `node -e`, NOT A CLI SUBCOMMAND, because there is no `dream` subcommand to
+ * call: `memory_dream` is an MCP tool over `Memory.dreamOutcome`, and the memory CLI's
+ * choices are status/lint/compact/archived/archive/restore. Adding one would be a runtime
+ * change in both runtimes plus a conformance case — a different layer and a different unit.
+ * The child gets `postSave`'s discipline: a `spawnSync` with a timeout, everything logged,
+ * and any failure degrading to a log line rather than an exception.
+ *
+ * WHAT IS LOGGED IS WHAT THE PASS ACTUALLY DID, parsed out of the child's stdout — `status`,
+ * `merged`, `consumed`, `changes`, and the index either side. J46-6 measured the cost of the
+ * other habit: a log record whose fields are computed BEFORE the spawn is vacuous, and its
+ * own first repair of that was itself vacuous for exactly that reason.
+ */
+async function maybeDream(input) {
+  const cwd = input.cwd || process.cwd();
+  let projectRoot;
+  try {
+    const { resolveProjectStore } = await import(path.join(DIST, 'layers.js'));
+    projectRoot = resolveProjectStore(cwd).path;
+  } catch (e) {
+    log({ event: 'Stop', action: 'dream-skip', reason: 'unresolved-store', error: String(e && e.message || e) });
+    return;
+  }
+  // THE TWO LAYERS MUST BE TWO DIRECTORIES, AND MEASURED ON 2026-09-10 THEY ARE NOT ALWAYS.
+  // `resolveProjectStore` WALKS UP from the cwd, so a session whose cwd has no project store
+  // above it resolves the profile store itself as the "project" store — `~/.bantamkit/memory`
+  // bound as BOTH layers. `dream` then merges that store with ITSELF: every fact matches
+  // itself by name, is merged into itself, and the "profile copy" — the same file — is
+  // archived, which empties `facts/`.
+  //
+  // THIS IS NOT HYPOTHETICAL. It happened to the user's real profile store while this arm was
+  // being written: a live `Stop` in a session running outside any project consolidated 20 of
+  // 20 facts into the archive with `indexBefore == indexAfter == 3974`, the giveaway that the
+  // "project" index and the profile index were one number because they were one store. The
+  // facts were restored from `archive/` (`dream` is reversible by design, which is the only
+  // reason that was recoverable) and this guard is why it cannot recur.
+  //
+  // THE GUARD LIVES HERE, IN THE TRIGGER, NOT IN `dream`. The defect is `Memory.layered`
+  // binding one directory twice, and `memory_dream`'s behaviour is pinned by a conformance
+  // suite in both runtimes — changing it is a different layer and a different unit, and it is
+  // registered as such in `docs/roadmap-toolbox.md`. What this unit owns is WHEN to fire, and
+  // "when the two layers are the same directory" is never.
+  if (samePath(projectRoot, PROFILE)) {
+    log({ event: 'Stop', action: 'dream-skip', reason: 'single-layer', root: projectRoot });
+    return;
+  }
+  const roots = [projectRoot, PROFILE];
+  const fingerprint = storeFingerprint(roots);
+  const prior = readJsonSafe(DREAM_STATE);
+  if (prior.fingerprint === fingerprint) {
+    log({ event: 'Stop', action: 'dream-skip', reason: 'unchanged', fingerprint: fingerprint.slice(0, 12) });
+    return;
+  }
+  const script = `(async () => {
+    const { Memory } = await import(${JSON.stringify(path.join(DIST, 'component.js'))});
+    const o = Memory.layered(process.argv[1]).dreamOutcome(false);
+    process.stdout.write(JSON.stringify({ status: o.status, merged: o.merged, consumed: o.consumed,
+      absolutised: o.absolutised, superseded: o.superseded, changes: o.result ? o.result.changes : 0,
+      indexBefore: o.indexBefore, indexAfter: o.indexAfter, budget: o.budget }));
+  })().catch((e) => { process.stderr.write(String(e && e.stack || e)); process.exit(1); });`;
+  const t = Date.now();
+  const r = spawnSync(process.execPath, ['-e', script, cwd], { encoding: 'utf8', timeout: DREAM_TIMEOUT_MS });
+  const ms = Date.now() - t;
+  let outcome = null;
+  try { outcome = JSON.parse(r.stdout || ''); } catch { /* a child that died has no JSON to give */ }
+  if (outcome === null) {
+    // A failed or timed-out pass must NOT record the new fingerprint: the next Stop should
+    // try again rather than treat an unconsolidated store as already dreamt.
+    // `timedOut` AND NOT `signal`. `spawnSync` reports the timeout kill as an `ETIMEDOUT`
+    // error on every platform, whereas `signal` is a POSIX notion: on Windows the kill is
+    // `TerminateProcess` and there is no SIGTERM to report. `signal` is kept because it is
+    // informative where it exists, but the field that MEANS "the bound stopped this" is the
+    // portable one, and it is the one anything asserting on this arm should read.
+    log({ event: 'Stop', action: 'dream-failed', ms, exit: r.status, signal: r.signal ?? null,
+      timedOut: r.error !== undefined && r.error.code === 'ETIMEDOUT',
+      error: `${r.stderr || ''}`.trim().slice(0, 400) || String(r.error && r.error.message || '') });
+    return;
+  }
+  // The pass may itself have moved files, so the fingerprint recorded is the one AFTER it —
+  // otherwise a merge that changed the store would re-arm the gate and dream again forever.
+  writeJsonSafe(DREAM_STATE, { fingerprint: storeFingerprint(roots), at: new Date().toISOString(), status: outcome.status });
+  log({ event: 'Stop', action: 'dream', ms, ...outcome });
+}
+
 // -------------------------------------------------------------------------- Stop
 // The experience collector. Once per session, when the session did real work and nothing
 // durable was written, hand the turn back with one instruction. The host's `type:prompt`
@@ -756,7 +973,9 @@ async function main() {
       return input.tool_name === 'mcp__bantamkit__memory_save' ? postSave(input) : undefined;
     case 'PreCompact': return preCompact(input);
     case 'PostCompact': return postCompact(input);
-    case 'Stop': return stop(input);
+    case 'Stop':
+      await maybeDream(input);   // gated on the store changing; logs only, never emits
+      return stop(input);
     default: log({ event: ev, action: 'ignored' });
   }
 }

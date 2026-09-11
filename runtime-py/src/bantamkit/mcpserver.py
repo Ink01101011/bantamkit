@@ -9,12 +9,14 @@ import json
 import os
 import platform
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import lru_cache
 from importlib import metadata
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, NoReturn, TextIO
+from urllib.parse import unquote
 
 import bantamkit
 from bantamkit import (
@@ -23,8 +25,10 @@ from bantamkit import (
     docread,
     hostinstall,
     repomap,
+    selfupdate,
     shiftwork,
     skillaudit,
+    tokenledger,
 )
 from bantamkit.assets import AssetNotFound, assets_root, load_skill, load_tool_asset
 from bantamkit.client import BantamError
@@ -40,7 +44,8 @@ from bantamkit.contract import (
 from bantamkit.eventlog import EventLog
 from bantamkit.mcpreport import build_report as build_mcp_report
 from bantamkit.mcpreport import resolve_event_log_path
-from bantamkit.memory import DEFAULT_INDEX_BUDGET, Memory
+from bantamkit.memory import DEFAULT_INDEX_BUDGET, INDEX_PRESSURE_PERCENT, Memory
+from bantamkit.pricing import PriceTableError
 from bantamkit.statusline import status_line
 
 try:
@@ -211,6 +216,269 @@ def _assets_fingerprint() -> tuple[str, int, Path]:
         raise _Undetermined(f"unreadable asset under {root}: {exc}") from None
 
 
+# ---------------------------------------------------------------------------------------
+# WHICH INSTALL SHAPE IS RUNNING — offline, from this server's own location.
+#
+# THE DEFECT, AND IT IS MEASURED (`docs/roadmap-agent-stack.md` AS-7). A Claude Desktop
+# entry sat on 0.25.0 from 2026-08-24 through five releases with nothing in the config, the
+# logs or any tool reply saying so — and its `package.json` declared the dependency as
+# `file:/private/tmp/.../scratchpad/bantamkit-mcp-0.25.0.tgz`, a local tarball in a temp
+# directory that no longer existed. An update run where that install lives is a no-op BY
+# CONSTRUCTION, and nothing anywhere said which of those two things was wrong.
+#
+# WHY THIS IS A REFUSAL AND NOT A LOOKUP. The origin is written down by the installer, on
+# this disk, in `direct_url.json` (PEP 610). Whether that path still exists is a `stat`.
+# NO NETWORK IS TOUCHED ON ANY PATH BELOW — comparing the running version against a
+# registry is AS-7(b), a separate unit, gated behind this one, and deliberately opt-in
+# because an offline toolbox must not grow a network call in its health check.
+#
+# AMENDED 2026-09-11, J46-31: AS-7(b) HAS SHIPPED, as `--update`, and the first sentence
+# above is still exactly true — that is the point of recording it here. The registry
+# comparison lives in `selfupdate.py`, reached only from the flag, never from any path
+# below and never from `bantamkit_status`. The clause that is now dated is "gated behind
+# this one": the user reversed AS-7 on 2026-09-11 and the gate was overridden rather than
+# met. "Deliberately opt-in" survived the reversal intact and is the reason `--update` is a
+# CLI flag and not an MCP tool — see the ruling appended to AS-7.
+#
+# SHAPE IS LOCATION, NEVER IDENTITY. It is reported for the same reason `package_path` and
+# `interpreter` are — it is what a person acts on — and it is kept OUT of `build_id` for
+# the same reason they are: one build installed two ways is ONE build, and
+# `test_build_identity.py` recomputes the hash from its four named inputs to prove it.
+# ---------------------------------------------------------------------------------------
+
+#: The closed vocabulary, spelled the same way in both runtimes, and it answers ONE
+#: question: what would updating this install even mean?
+#:
+#:   registry     came from a package index (PyPI here, npm there). Reinstall by name.
+#:   local-file   came from a path on THIS machine — an archive or a directory whose
+#:                contents were copied in. The path is recorded and may be gone.
+#:   linked       a directory on this machine is still the source being read: an editable
+#:                install here, a `file:`/`npm link` symlink there. Update that tree.
+#:   checkout     no installer recorded this tree at all; it is on the import path. Git.
+#:   ephemeral    a temporary environment discarded after the run. Nothing to update.
+#:
+#: `ephemeral` IS IN THE VOCABULARY AND THIS RUNTIME NEVER ANSWERS IT, which is a deliberate
+#: divergence carried in `docs/porting.md`: `npx` leaves a cache directory a Node server can
+#: recognise, while a `pipx run` or `uvx` environment is not distinguishable from an
+#: ordinary venv without pattern-matching cache directory names — a guess, and this surface
+#: does not guess. The word is declared here anyway so that a consumer of either runtime
+#: handles ONE set of five, rather than two sets it has to reconcile.
+INSTALL_SHAPES = ("registry", "local-file", "linked", "checkout", "ephemeral")
+
+
+@dataclass(frozen=True)
+class Install:
+    """Where the running code came from, and the origin path it can still be checked against.
+
+    `source` is `None` for the two shapes that HAVE no origin path rather than for the ones
+    whose path could not be read — `source_reason` carries which, in the operator's words,
+    and `build_identity` turns it into the `{"unavailable": ...}` shape `RB-P51` requires.
+    A shape that could not be derived at all is an `_Undetermined`, never a sixth word.
+    """
+
+    shape: str
+    source: str | None = None
+    source_reason: str = ""
+
+
+def _normalized_project_name(name: str) -> str:
+    """PEP 503 normalisation, hand-rolled: `Bantam_Kit.Extra` and `bantam-kit-extra` are one.
+
+    Spelled out rather than imported because the only consumer is the comparison below and
+    a regex here would be a second place `re` has to be right about a name pip already
+    canonicalised on the way in.
+    """
+    out: list[str] = []
+    for char in name.strip().lower():
+        replacement = "-" if char in "-_." else char
+        if replacement == "-" and out and out[-1] == "-":
+            continue
+        out.append(replacement)
+    return "".join(out).strip("-")
+
+
+def _file_url_path(url: str) -> Path | None:
+    """A `file:` URL as a path on this machine, or `None` when it names neither.
+
+    THE INVERSE OF `Path.as_uri()`, AND WINDOWS IS WHY IT IS WRITTEN OUT. `file:///C:/x`
+    carries a leading slash before the drive letter that is not part of the path, and the
+    encoder percent-escapes anything a URL cannot hold — a space in a person's own
+    directory name being the case that actually turns up. `urllib.request.url2pathname`
+    does this correctly and drags `http.client` and `socket` in behind it; this surface is
+    offline by rule, so the ten lines are cheaper than the import.
+
+    A `file://` URL with a real authority (`file://otherhost/share`) names a path on a
+    machine that is not this one, so it is not a local origin and the caller is told so.
+    """
+    if not url.startswith("file://"):
+        return None
+    rest = url[len("file://") :]
+    if rest.startswith("localhost/"):
+        rest = rest[len("localhost") :]
+    if not rest.startswith("/"):
+        return None
+    path = unquote(rest)
+    if len(path) > 2 and path[1].isalpha() and path[2] == ":":
+        path = path[1:]  # `/C:/x` is `C:/x`; POSIX paths never match this shape
+    return Path(path)
+
+
+def _dist_owns(dist: metadata.Distribution, running: Path) -> bool:
+    """Did THIS distribution put the file that is running on disk?
+
+    The question a dist-info's mere existence cannot answer. Two bantamkits under one name
+    is the situation `RB-P84` filed, and a checkout earlier on `sys.path` shadows an
+    installed wheel completely — so a `bantamkit-0.30.0.dist-info` in some site-packages is
+    not evidence about the bytes that were imported. Matching on the resolved file is.
+    """
+    try:
+        located = Path(str(dist.locate_file("bantamkit/__init__.py"))).resolve()
+    except (OSError, ValueError):
+        return False
+    return located == running
+
+
+def _direct_url_record(dist: metadata.Distribution) -> str | None:
+    """`direct_url.json` as the installer wrote it, or `None` when there is none.
+
+    THE ONE-LINE INDIRECTION IS DELIBERATE AND IT IS NOT A DODGE OF THE ENCODING GATE.
+    `test_encoding_gate.py` flags every `.read_text(` that does not name an encoding, and
+    it is right to: `Path.read_text` falls back to `locale.getencoding()`, which is UTF-8
+    on this machine and cp1252 on a Windows runner — the defect that gate exists for.
+    `importlib.metadata.Distribution.read_text` is a DIFFERENT function under the same
+    name: it takes a metadata-file name, accepts no `encoding` at all (passing one is a
+    `TypeError`), and decodes UTF-8 itself, which is what PEP 610 requires of this file.
+    The gate matches on the attribute name alone and cannot see the difference, and its
+    pragma is pinned at a single use by `test_the_pragma_is_used_exactly_once` — which
+    belongs to the node that proves the gate bites and is not available to borrow. Binding
+    the method first says what is being called instead of looking like the defect. The
+    better fix is to teach the gate the signature; that is a change to the gate, which is
+    not this unit's to make.
+    """
+    read_metadata_file = dist.read_text
+    try:
+        return read_metadata_file("direct_url.json")
+    except OSError:
+        return None
+
+
+def _derive_install(
+    package_file: Path, dists: Iterable[metadata.Distribution]
+) -> Install:
+    """The whole diagnosis, over a running file and a set of distributions. Pure and offline.
+
+    Taken as ARGUMENTS rather than read from the process so that every shape can be built
+    as a real `.dist-info` directory in a test and discovered through
+    `metadata.distributions(path=[...])` — the same discovery the server runs. A mock here
+    would assert this function's own reasoning back at it, and the entire question is what
+    pip actually writes down.
+    """
+    running = package_file.resolve()
+    for dist in dists:
+        try:
+            name = dist.metadata["Name"]
+        except (KeyError, OSError):
+            continue
+        if not name or _normalized_project_name(str(name)) != "bantamkit":
+            continue
+        raw = _direct_url_record(dist)
+        if raw is None:
+            # PEP 610 writes that file for a direct URL or a local path and for nothing
+            # else, so its ABSENCE beside a dist-info that owns the running files is
+            # positive evidence of an index install — not a missing fact.
+            if _dist_owns(dist, running):
+                return Install(
+                    "registry",
+                    None,
+                    "a registry install records no origin path on this machine: PEP 610 "
+                    "writes `direct_url.json` only for a direct URL or a local path, and "
+                    "this install has none. Reinstall by name to move it.",
+                )
+            continue
+        try:
+            direct = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(direct, dict):
+            continue
+        url = str(direct.get("url", ""))
+        recorded = _file_url_path(url)
+        editable = bool(dict(direct.get("dir_info") or {}).get("editable"))
+        if editable:
+            # The dist-info lives in site-packages while the code is read from the tree the
+            # URL names, so ownership is containment, not equality.
+            if recorded is not None and _is_within(running, recorded):
+                return Install("linked", str(recorded))
+            continue
+        if not _dist_owns(dist, running):
+            continue
+        if recorded is None:
+            raise _Undetermined(
+                f"this install records its origin as {url or 'an empty URL'}, which is "
+                "neither a package index nor a path on this machine, so its shape is not "
+                f"one of {', '.join(INSTALL_SHAPES)}. A git or http origin is updated by "
+                "reinstalling from that same URL."
+            )
+        return Install("local-file", str(recorded))
+    return Install(
+        "checkout",
+        None,
+        "no installer recorded this tree, so there is no origin path to check — the "
+        "source IS `package_path`, and it is updated where it was cloned.",
+    )
+
+
+def _is_within(child: Path, parent: Path) -> bool:
+    """`child` under `parent`, tolerating a `parent` that is a symlink or does not exist."""
+    for candidate in (parent, parent.resolve()):
+        try:
+            if child.is_relative_to(candidate):
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
+def _running_package_file() -> Path:
+    located = getattr(bantamkit, "__file__", None)
+    if not located:
+        raise _Undetermined("bantamkit has no __file__; the running code is not on disk")
+    return Path(located)
+
+
+@lru_cache(maxsize=1)
+def _install_once() -> tuple[Install | None, _Undetermined | None]:
+    """Derived ONCE, because the bytes that were imported cannot change under a process.
+
+    `degraded_conditions` runs on every tool call and `docs/status.md` promises what that
+    costs: one `stat`, one `is_dir`, one `scandir` per memory layer. Walking `sys.path` for
+    distributions is none of those. So the SHAPE is memoised and only the EXISTENCE of the
+    recorded path is re-read — which is the half that can actually change while a server
+    is running, and the half the measured defect is about.
+
+    The failure is memoised too. An exception is a derivation that has already been done
+    and would be done identically a second time; `lru_cache` alone does not cache one.
+    """
+    try:
+        return _derive_install(_running_package_file(), metadata.distributions()), None
+    except _Undetermined as exc:
+        return None, exc
+
+
+def current_install() -> Install:
+    """Which install shape is running. Importable, and NOT owned by the status path.
+
+    Deliberately a module-level function taking no arguments and touching no server state:
+    the `--update` flag planned as J46-29 has to be shape-aware — two of the five shapes
+    have no registry route at all — and it must be able to ask this question from the CLI,
+    before a memory store or a transport exists, without building an MCP server to do it.
+    """
+    install, exc = _install_once()
+    if install is None:
+        raise exc if exc is not None else _Undetermined("the install shape was not derived")
+    return install
+
+
 def build_identity() -> dict[str, Any]:
     """What this build can honestly say about itself, over the protocol.
 
@@ -261,6 +529,32 @@ def build_identity() -> dict[str, Any]:
     # root was chosen by the operator or resolved by the package is a fact a caller
     # comparing two endpoints needs. A bool, so it is never confusable with a missing one.
     identity["assets_root_from_env"] = bool(os.environ.get("BANTAMKIT_ASSETS"))
+
+    # Location too, and the same rule: which install SHAPE is running says what updating
+    # this server would even mean, and says nothing about which build it is. A `file:`
+    # install whose tarball was deleted answers `local-file` with a path that no longer
+    # exists — the measured defect AS-7 filed — and `install_source_exists` is the bit
+    # that says so. No network is consulted for any of the three.
+    try:
+        install = current_install()
+        identity["install_shape"] = install.shape
+        if install.source is None:
+            identity["install_source"] = _unavailable(install.source_reason)
+            identity["install_source_exists"] = _unavailable(
+                f"a {install.shape} install records no origin path, so there is nothing "
+                "here to check for."
+            )
+        else:
+            identity["install_source"] = install.source
+            try:
+                identity["install_source_exists"] = Path(install.source).exists()
+            except OSError as exc:
+                identity["install_source_exists"] = _unavailable(
+                    f"the recorded origin path could not be checked: {exc}"
+                )
+    except _Undetermined as exc:
+        for field_name in ("install_shape", "install_source", "install_source_exists"):
+            identity[field_name] = _unavailable(str(exc))
 
     identity["git_commit"] = _unavailable(
         "refused, not missing. An installed wheel carries no repository at all, and "
@@ -359,13 +653,11 @@ STATUS_PROMPT_TAIL = (
 SERVED_PROMPTS = 1
 SERVED_RESOURCE_TEMPLATES = 2
 
-#: Percent of the index budget that has to be SPENT before the store is called degraded.
-#:
-#: 90 and not 100 because the useful moment is before the refusal, not after it: at 100%
-#: the next `memory_save` has already failed and the operator has already seen the error.
-#: An INTEGER percent, compared by cross-multiplication below, so the two runtimes cannot
-#: land on opposite sides of the line through a float they rounded differently.
-INDEX_PRESSURE_PERCENT = 90
+#: `INDEX_PRESSURE_PERCENT` is re-exported here, where it used to be DEFINED, so that
+#: `from bantamkit.mcpserver import INDEX_PRESSURE_PERCENT` keeps working. It moved down to
+#: `memory/store.py` in job46 (J46-4): `MemoryStore.compact` is the remedy the sentence
+#: below names, and it cannot clear a warning whose line it cannot see. The comment that
+#: says why the number is 90 moved with it.
 
 
 @dataclass(frozen=True)
@@ -519,13 +811,66 @@ def _event_log_condition(log: EventLog) -> Condition | None:
     )
 
 
+def _install_source_condition(install: Install | None) -> Condition | None:
+    """This install came from a path on this machine, and that path is gone.
+
+    THE ONE CONDITION THAT NAMES A PATH, and the exception is deliberate. Every other
+    sentence here refuses one because `assets_root()` resolves differently in the two
+    runtimes by construction, so a path would be an uncomparable value bought for nothing.
+    This path is not the server's own location — it is the origin THE INSTALLER WROTE DOWN,
+    it is the entire actionable content of the finding (AS-7's measured case is a tarball
+    under a `/private/tmp/.../scratchpad` that no longer exists), and a sentence saying
+    "something is missing" without saying what would be a sentence nobody can act on.
+
+    THE REMEDY IS THE ONE THAT ACTUALLY MOVES SOMETHING. J46-4 spent a unit removing a
+    condition whose remedy exited 0 having changed nothing, and this is exactly the shape
+    that invites another: an update run where a dangling `file:` install lives is a no-op
+    BY CONSTRUCTION. So the sentence sends the reader at a reinstall BY NAME from a
+    registry, which replaces the install rather than trying to refresh it in place.
+
+    THE DERIVED HALF IS MEMOISED AND THIS HALF IS NOT: the shape cannot change under a
+    running process, the path's existence can, and it is the one that has to be read now.
+    """
+    if install is None or install.source is None:
+        return None
+    try:
+        if Path(install.source).exists():
+            return None
+    except OSError:
+        return None
+    return Condition(
+        "install-source-missing",
+        f"this server was installed from {install.source}, which no longer exists, so "
+        "nothing can be refreshed in place there — reinstall bantamkit by name from a "
+        "package registry and restart the server.",
+    )
+
+
+def _current_install_or_none() -> Install | None:
+    """The shape, or nothing. A shape that could not be derived is a REPORTED gap.
+
+    `build_identity` is where that gap is named, with its reason. It is not a degraded
+    condition: an install this code cannot classify is not, on that evidence, an install
+    that is broken, and a footer on every tool call saying otherwise would be the noise
+    `degraded_notice` exists to avoid.
+    """
+    try:
+        return current_install()
+    except _Undetermined:
+        return None
+
+
 def degraded_conditions(memory: Memory, log: EventLog) -> list[Condition]:
     """Everything wrong right now, worst first. Empty list means healthy.
 
     ORDER IS SEVERITY AND IT IS LOAD-BEARING, because the footer shows the first one: a
     pack that vanished breaks every asset-backed surface; an unreadable layer makes recall
     ANSWER WRONGLY rather than fail; a full index refuses the next save; a broken event log
-    costs diagnostics only.
+    costs diagnostics only; and a dangling install origin costs nothing AT ALL right now —
+    the server is serving correctly, and what is broken is the next attempt to update it.
+    That is why it is last despite being the one that went unnoticed for five releases
+    (`docs/roadmap-agent-stack.md` AS-7): severity here is what is failing, not what has
+    been failing longest.
 
     EVERY CONDITION IS OBSERVED, NOT INFERRED — no heartbeat, no timer, no last-seen
     timestamp. Each one is a state a test can construct and then watch this report: delete
@@ -534,14 +879,17 @@ def degraded_conditions(memory: Memory, log: EventLog) -> list[Condition]:
     cannot be constructed is not claimed.
 
     THE COST, because this runs on every tool call: one `stat` for the index, one `is_dir`
-    for the pack, one `scandir` per memory layer (two to four), and a field read for the
-    log. No fact file is opened and no index is parsed.
+    for the pack, one `scandir` per memory layer (two to four), a field read for the log,
+    and one `exists` for the install origin. No fact file is opened, no index is parsed,
+    and `sys.path` is NOT walked for distributions — `_install_once` does that once per
+    process, because the bytes that were imported cannot change under a running one.
     """
     found = (
         _asset_pack_condition(),
         _unreadable_layer_condition(memory),
         _index_pressure_condition(memory),
         _event_log_condition(log),
+        _install_source_condition(_current_install_or_none()),
     )
     return [condition for condition in found if condition is not None]
 
@@ -1379,14 +1727,65 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         )
         return _noted(repo_map_reply(result))
 
+    def token_ledger(
+        root: str,
+        model: str | None = None,
+        prices: str | None = None,
+    ) -> str:
+        """The transcript ledger on the MCP surface: `tokenledger` measures, this serves it.
+
+        THE REPLY IS A JSON DOCUMENT AND NOT PROSE, the same shape and for the same reason as
+        `skill_audit` above: a caller comparing `totals` before and after a change, or
+        deciding whether `omissions` explain a total that looks too small, has to read
+        numbers rather than parse a sentence back out of English. `Ledger.as_json` is the
+        reply verbatim and the only strings this layer authors are the refusals.
+
+        THE FOUR REFUSALS ARE ARGUMENT FAILURES — an empty `root`, a `root` that is missing,
+        a `root` that is a file, an empty `model` — so they go through `tool_failed`.
+        Nothing about the CONTENT of the tree refuses: a transcript that will not decode, a
+        line that will not parse and a record with no usage are omissions and are counted. A
+        ledger that refused because one of eight hundred transcripts is truncated would have
+        told the operator nothing about the other seven hundred and ninety-nine.
+
+        `PriceTableError` is caught here BESIDE `TokenLedgerError` and is not the same kind
+        of thing: it is an operator configuration fault reached only when `model` names a
+        price table that will not load. It is still an argument failure from the CALLER's
+        side — it names the path they passed — so it is refused with the same wording
+        machinery rather than crashing the request.
+
+        THE RECORD IS A DECISION, NEVER A REPLY. `read` carries the four counts the host
+        cannot see (transcripts, lines, requests, sessions) and `refused` carries nothing at
+        all. `root` is a path the operator typed and `sessions[].cwd` are their own working
+        directories; neither is a decision this handler made, so neither is written down.
+        And no token count is recorded either: the event log is a record of what this server
+        DID, and the numbers are the reply.
+        """
+        with _record_raise(log, "token_ledger"):
+            try:
+                result = tokenledger.read(root, model=model, prices=prices)
+            except (tokenledger.TokenLedgerError, PriceTableError, OSError) as exc:
+                log.record("token_ledger", "refused")
+                return _noted(tool_failed("token_ledger", exc))
+            log.record(
+                "token_ledger",
+                "read",
+                {
+                    "transcripts": result.transcripts,
+                    "lines": result.lines,
+                    "requests": result.requests,
+                    "sessions": len(result.sessions),
+                },
+            )
+            return _noted(result.as_json())
+
     # The served surface, in one place, read out of the asset pack. Adding a tool here
     # without an asset raises AssetNotFound at startup — the manifest cannot drift behind
     # the server, because the server cannot start without it.
     #
     # `bantamkit_status` went LAST rather than first, `memory_compact` after it rather
     # than beside `memory_save` where a reader would look for it, `bantamkit_read`
-    # after that, `skill_audit` after that, `memory_dream` after that and `repo_map`
-    # after that. Registration order IS the served order
+    # after that, `skill_audit` after that, `memory_dream` after that, `repo_map`
+    # after that and `token_ledger` after that. Registration order IS the served order
     # (`test_tool_manifest.py::test_the_golden_records_the_order_the_wire_actually_
     # serves`), and appending is the only edit that leaves the others where every
     # existing declaration says they are.
@@ -1404,6 +1803,7 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         _from_manifest(skill_audit, "skill_audit"),
         _from_manifest(memory_dream, "memory_dream"),
         _from_manifest(repo_map, "repo_map"),
+        _from_manifest(token_ledger, "token_ledger"),
     ]
 
     server = MCPServer(
@@ -1460,7 +1860,15 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
     return server
 
 
-def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def _build_parser() -> argparse.ArgumentParser:
+    """The parser, as an object, so something other than `parse_args` can render its help.
+
+    Extracted from `_parse_args` for exactly one caller: the bare-at-a-terminal branch in
+    `main`, which prints THE HELP `-h` PRINTS and must not be able to drift from it. A
+    second hand-written copy of a generated string is the defect `runtime-ts/src/cli.ts`'s
+    header records having already shipped once; the way to not have it here is to have one
+    parser and two callers, not two strings.
+    """
     parser = argparse.ArgumentParser(
         prog="bantamkit-mcp",
         description="bantamkit MCP server (stdio): per-person memory + JSON validation.",
@@ -1522,6 +1930,23 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="print one status line for a host status bar, then exit",
     )
+    # THE ONE FLAG ON THIS PARSER THAT TOUCHES THE NETWORK, and the placement is what keeps
+    # that from spreading. `--assets-root` sits beside `-h` because it needs nothing; this
+    # one needs the most of any flag here, so it does NOT go there — and the second reason is
+    # the same measured one the comment above gives: the first line of the 80-column usage is
+    # pinned in `test_assets_root_appears_in_the_generated_help_in_the_documented_position`,
+    # in `test_mcpreport.py`, and in the `cli` conformance suite, and a flag added before
+    # `--mcp-report` would move it and turn a differential suite into a re-baselining one.
+    # Registered here it grows the SECOND usage line only.
+    #
+    # DEFAULTS OFF, like every other flag on this parser, which is the whole of AS-7(3): the
+    # network is reached when a person asks for it by name and on no other path. There is no
+    # startup check, nothing on `bantamkit_status`, and no background poller.
+    parser.add_argument(
+        "--update",
+        action="store_true",
+        help="check the package index and update this install if it differs, then exit",
+    )
     # THE SAME PLACE AND THE SAME REASON AS THE TWO ABOVE. It prints and returns before a
     # transport exists, so it belongs with the flags that need no server; and it is placed
     # after `--statusline` rather than beside `-h` so that the FIRST line of the 80-column
@@ -1548,7 +1973,65 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     stores.add_argument(
         "--start", help="directory to start project-store discovery from (default: cwd)"
     )
-    return parser.parse_args(argv)
+    return parser
+
+
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return _build_parser().parse_args(argv)
+
+
+def _typed_bare_at_a_terminal(
+    argv: list[str] | None = None, stdin: TextIO | None = None
+) -> bool:
+    """True when a PERSON typed `bantamkit-mcp` with nothing after it. Never for a host.
+
+    WHY THERE IS A DISCRIMINATION HERE AT ALL. Typing the command at a prompt used to open
+    a stdio JSON-RPC server and block: no output, no prompt back, Ctrl-C the only way out.
+    To a person that is indistinguishable from a hang, and it is what the user asked to be
+    fixed on 2026-09-11 -- "เพิ่ม task set default when call bantamkit-mcp only ให้แสดงเหมือน --help".
+
+    WHY IT IS NOT SIMPLY "NO ARGUMENTS -> PRINT HELP". The bare invocation IS the
+    production launch path. Both registrations on this machine pass an empty `args`:
+
+        $ cat .mcp.json
+        {"mcpServers":{"bantamkit":{"command":"tools/bantamkit-mcp","args":[]}}}
+        $ # user scope, ~/.claude.json
+        bantamkit  {"type":"stdio","command":".../tools/bantamkit-mcp-node","args":[], ...}
+
+    and `runtime-ts/src/cli.ts`'s header says the same in its own words, as the reason an
+    earlier refusal on the bare form was retired: "the production invocation passes NO
+    arguments at all ... so the bare form is the one that must serve." A literal reading of
+    the request would therefore break every MCP host here, including the bantamkit server
+    this repository's own policy orchestrates through.
+
+    SO THE SIGNAL IS `stdin.isatty()`, AND IT IS THE ONLY SIGNAL. A host wires stdin to a
+    pipe or a socket; a person at a keyboard has a terminal on it. Deliberately NOT
+    `stdout.isatty()`: stdout is the JSON-RPC channel and a host may redirect the two
+    streams differently, so a tty on stdout says nothing about who is asking. Deliberately
+    not a flag either -- a flag to opt out means the bare form is no longer bare, and the
+    bare form is the one under discussion.
+
+    AND THE EMPTY ARGV IS A SCOPE, NOT A SECOND SIGNAL. What the user asked for is the
+    command "only" -- with nothing after it. `bantamkit-mcp --store /tmp/x` typed at a
+    terminal is an operator explicitly asking for a configured server, and it keeps
+    getting one; hand-driving the line-delimited protocol at a prompt stays possible. The
+    two conditions do different jobs: `argv` says WHICH invocation is in scope, `isatty`
+    says WHO is on the other end of it. `runtime-ts/src/cli.ts` holds the same pair.
+
+    `isatty()` on a closed stream raises `ValueError`, and `sys.stdin` is `None` under a
+    GUI launcher with no console. Neither is a person at a terminal, and neither may be
+    allowed to take down the serving path, so both answer False.
+    """
+    argv = sys.argv[1:] if argv is None else argv
+    if argv:
+        return False
+    stream = sys.stdin if stdin is None else stdin
+    if stream is None:
+        return False
+    try:
+        return bool(stream.isatty())
+    except ValueError:
+        return False
 
 
 def _build_memory(args: argparse.Namespace) -> Memory:
@@ -1645,6 +2128,61 @@ def _run_install(args: argparse.Namespace) -> None:
     sys.stdout.buffer.flush()
 
 
+def _run_update() -> None:
+    """`--update`: ask the package index, act on the answer, print what happened, return.
+
+    THE SENTENCES ARE NOT HERE. Every string this can print is a named constant in
+    `selfupdate`, because `runtime-ts` copies them byte for byte and a second spelling in a
+    second module is exactly the drift the two-runtime rule exists to stop. This function
+    owns three things and nothing else: where the shape comes from, which stream each
+    outcome is written to, and the exit code.
+
+    STDOUT + EXIT 0 IS ONLY FOR AN ANSWER THAT IS ALREADY TRUE — up to date, the index
+    behind, or an update that actually ran. Everything else is `error: <sentence>` on
+    stderr and exit 1, including the install shapes this flag will not touch: an operator
+    who typed `--update` asked for an update, and a command that exits 0 having changed
+    nothing is the J46-4 defect by name. Exit 1 rather than 2 because argparse already owns
+    2 for a usage error, and `--update` on a parser that declares it is not one.
+
+    THE SHAPE IS `current_install()`'s ANSWER AND NOT A SECOND DETECTOR. AS-7(a) shipped
+    that at `da97b52` as a module-level function taking no arguments and touching no server
+    state, explicitly so this flag could ask it before a store or a transport exists. A
+    second copy of a derived answer is the defect the `cli` suite exists to catch.
+
+    `_Undetermined` — a `pip install git+https://…` origin, which is neither an index nor a
+    path on this machine — is a refusal and not a fallback. Its own message already names
+    the route ("reinstalling from that same URL"), so it is quoted rather than paraphrased.
+
+    Written through `sys.stdout.buffer`/`sys.stderr.buffer` for the reason
+    `_print_assets_root` gives: on Windows `print` emits CRLF where Node's
+    `process.stdout.write` emits LF, and a byte-comparing conformance runner would read
+    that as a divergence belonging to the writer rather than to the product.
+    """
+    try:
+        install = current_install()
+    except _Undetermined as exc:
+        _refuse_update(selfupdate.SHAPE_UNKNOWN.format(reason=exc))
+    # `source` is `None` for the two shapes that HAVE no recorded origin rather than for one
+    # whose path could not be read — `registry`, where the route is this flag itself, and
+    # `checkout`, whose tree IS the thing to update and which J46-11 deliberately left
+    # without a `source` because finding a repo root without git would be a guess. The
+    # running package directory is not a guess: it is where the code being executed lives.
+    source = install.source or str(_running_package_file().resolve().parent)
+    try:
+        report = selfupdate.update(_version(), selfupdate.Origin(install.shape, source))
+    except selfupdate.UpdateRefused as exc:
+        _refuse_update(str(exc))
+    sys.stdout.buffer.write(f"{report}\n".encode())
+    sys.stdout.buffer.flush()
+
+
+def _refuse_update(sentence: str) -> NoReturn:
+    """One refusal writer, so every `--update` arm exits the same way on the same stream."""
+    sys.stderr.buffer.write(f"error: {sentence}\n".encode())
+    sys.stderr.buffer.flush()
+    raise SystemExit(1)
+
+
 def main() -> None:
     if MCPServer is None:
         raise SystemExit(_INSTALL_HINT)
@@ -1660,6 +2198,9 @@ def main() -> None:
     if args.statusline:
         _print_status_line(args)
         return
+    if args.update:
+        _run_update()
+        return
     if args.install:
         _run_install(args)
         return
@@ -1668,6 +2209,23 @@ def main() -> None:
     # a server that ignores it.
     if args.force:
         raise SystemExit("--force is only meaningful with --install")
+    # A PERSON TYPED IT. `_typed_bare_at_a_terminal` carries the whole argument; what
+    # belongs here is only that this sits BEFORE `_build_memory`, which is what creates a
+    # store. Somebody who typed a command to see what it does has not asked for a
+    # `.bantamkit/memory` directory in whatever cwd they were standing in, and the flags
+    # above return before a transport for the same class of reason.
+    #
+    # STDOUT AND EXIT 0, i.e. byte-for-byte what `-h` does on this platform, because the
+    # request was "ให้แสดงเหมือน --help" -- show it the way `--help` shows it. `print_help`
+    # is the same call argparse's own `-h` action makes, so the two cannot diverge: fix
+    # the stream or the newlines for one and the other follows. The alternative reading --
+    # stderr and exit 2, "a bare invocation is a usage error" -- is refused because this
+    # is not an error: it is the documented answer to the documented request, and the exit
+    # code is only ever read by a shell a human is standing at. Nothing non-interactive
+    # can reach this line at all.
+    if _typed_bare_at_a_terminal():
+        _build_parser().print_help()
+        return
     server = build_server(_build_memory(args))
     asyncio.run(server.run_stdio_async())
 

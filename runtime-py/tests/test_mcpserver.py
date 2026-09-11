@@ -70,6 +70,7 @@ def test_lists_exactly_the_twelve_tools(tmp_path):
                 "shiftwork_clock_out",
                 "shiftwork_status",
                 "skill_audit",
+                "token_ledger",
                 "validate_json",
             ]
 
@@ -465,6 +466,7 @@ def test_stdio_subprocess_initializes(tmp_path):
                     "shiftwork_clock_out",
                     "shiftwork_status",
                     "skill_audit",
+                    "token_ledger",
                     "validate_json",
                 ]
 
@@ -524,6 +526,7 @@ def test_module_entrypoint_serves_over_stdio(tmp_path):
                     "shiftwork_clock_out",
                     "shiftwork_status",
                     "skill_audit",
+                    "token_ledger",
                     "validate_json",
                 ]
 
@@ -772,3 +775,273 @@ def test_assets_root_writes_lf_even_when_the_text_stream_would_translate(monkeyp
     assert b"\r" not in written
     assert written.endswith(b" files\n")
     assert written.count(b"\n") == 2
+
+
+# ---- `bantamkit-mcp` typed bare at a terminal: help, not a mute server (J46-26) ----
+#
+# The user, 2026-09-11: "เพิ่ม task set default when call bantamkit-mcp only ให้แสดงเหมือน --help".
+# Typing the command opened a stdio server and blocked -- no output, no prompt back, Ctrl-C
+# the only exit -- which to a person is a hang.
+#
+# THE BARE FORM IS ALSO THE PRODUCTION LAUNCH PATH: `.mcp.json` and the user-scope
+# registration both pass `"args": []`. So the nodes below are a PAIR and neither is
+# optional. One asserts that a bare launch over a pipe still completes a real handshake --
+# the assertion that a change of this shape does not take every MCP host on the machine
+# with it -- and the other asserts that a bare launch whose stdin says it is a terminal
+# prints the help and never a frame. Make the terminal branch unconditional and the first
+# reddens; revert the branch entirely and the second does. Both directions were run.
+
+_TTY_STDIN_BARE_MAIN = """
+import sys
+
+
+class _SaysItIsATerminal:
+    def __init__(self, wrapped):
+        self._wrapped = wrapped
+
+    def isatty(self):
+        return True
+
+    def __getattr__(self, name):
+        return getattr(self._wrapped, name)
+
+
+sys.stdin = _SaysItIsATerminal(sys.stdin)
+from bantamkit.mcpserver import main
+
+main()
+"""
+"""A real child process, bare argv, whose stdin answers `isatty()` True.
+
+A `pty.openpty()` slave would be the more literal article and it is deliberately not used
+here: `os.openpty` does not exist on Windows, so that node would carry a `skipif` and go
+UNMEASURED on the platform where this branch is least understood -- and it would grow
+`test_criticreplay.py`'s W9 roster, which exists to make exactly that cost visible. What
+the branch reads is `sys.stdin.isatty()` and nothing else, so a stdin that answers True is
+a faithful stand-in for the thing being detected, and this way the node runs everywhere.
+
+The real-pty form was still RUN, by hand, against the shipped launcher rather than the
+module -- `python -c "import pty,subprocess; m,s = pty.openpty(); ..."` on
+`tools/bantamkit-mcp` -- and it prints the same help. That is a probe, not a node.
+
+`python -c` leaves `sys.argv == ["-c"]`, so `sys.argv[1:]` is empty: this IS the bare form.
+"""
+
+
+def _child_env(home):
+    """PYTHONPATH pinned to this checkout, and HOME moved off the operator's machine.
+
+    A bare invocation means `Memory.layered(start=None)`, which walks from cwd for a
+    project store and reads a profile store under `Path.home()`. A node that let either
+    resolve to the real thing would be asserting a fact about this machine -- and the
+    serving arm below is one `memory_save` away from writing to it.
+    """
+    import sys
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(SRC)
+    env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)  # `Path.home()` reads this one on Windows
+    env["COLUMNS"] = "80"  # argparse wraps to the terminal width; pin it or nothing compares
+    env.pop("BANTAMKIT_ASSETS", None)
+    assert sys.executable
+    return env
+
+
+def test_a_bare_invocation_over_a_pipe_still_serves_a_real_session(tmp_path):
+    """THE ONE THAT MATTERS: no arguments, stdin a pipe, and a real `initialize` comes back.
+
+    This is the host path -- `"args": []` is what both registrations on this machine pass --
+    and "the tests pass" is not the assertion. The protocol is spoken over a real pipe to a
+    real child and the answer is read off the wire.
+
+    RED-PROOF, run 2026-09-11 against a copy of this tree with the branch made
+    unconditional (`if True:` in place of `if _typed_bare_at_a_terminal():`):
+
+        mcp.shared.exceptions.MCPError: Connection closed
+        ERROR mcp.client.stdio: Failed to parse JSONRPC message from server
+          Invalid JSON: invalid number at line 1 column 4
+          input_value='  --start START         ...ct-store discovery from'
+        1 failed, 2 passed
+
+    The client is reading the help table off the wire as frames, which is the whole reason
+    `runtime-ts/src/cli.ts`'s header gives for having refused to print on stdout at all.
+    That is the direction that would break every MCP host on this machine, so it is the
+    direction that gets a node.
+    """
+    import sys
+
+    from mcp import ClientSession
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+
+    params = StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "bantamkit.mcpserver"],  # BARE. No `--store`, no `--start`, nothing.
+        cwd=str(tmp_path),
+        env=_child_env(tmp_path),
+    )
+
+    async def scenario():
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                init = await session.initialize()
+                assert init.server_info.name == "bantamkit"
+                tools = await session.list_tools()
+                # Asking it a question, not counting the answer: the exact tool list is
+                # pinned by `test_stdio_subprocess_initializes` and a second copy here
+                # would only mean two nodes to re-baseline.
+                assert "memory_recall" in {t.name for t in tools.tools}
+
+    run(scenario())
+
+
+def test_a_bare_invocation_at_a_terminal_prints_the_help_and_never_a_frame(tmp_path):
+    """A person typed it: the help `-h` prints, on stdout, exit 0, and no JSON-RPC anywhere.
+
+    The help is pinned as TEXT on this side, not as "something was printed". A differential
+    conformance case cannot catch a change applied to both runtimes -- measured nine times
+    in this job -- so the literals below are what notices if the help itself moves.
+
+    RED-PROOF, run 2026-09-11 against a copy of this tree with the branch deleted from
+    `main`, i.e. the behaviour as shipped before this unit:
+
+        assert typed.stdout == dash_h.stdout
+        E   assert b'' == b"usage: bant...fault: cwd)\\n"
+        1 failed, 2 passed
+
+    The load-bearing assertion is that one and NOT `returncode == 0`, which is what an
+    earlier draft of this docstring claimed. Measured: with the branch gone the child does
+    not hang -- it starts a server, reads EOF off `stdin` on its first read, and exits 0
+    with an empty stdout. A return code cannot tell that apart from a help that printed.
+
+    WHICH IS WHY `stdin` IS PINNED TO DEVNULL rather than inherited. `subprocess.run`
+    without it hands the child whatever pytest left on fd 0 -- a null-ish file normally,
+    the developer's real terminal under `-s` -- so the reverted-code arm would EOF in one
+    run and block for the full 60s in the other. The only thing standing in for a terminal
+    here is `isatty()` answering True, which is the one signal the branch reads.
+    """
+    import subprocess
+    import sys
+
+    env = _child_env(tmp_path)
+    typed = subprocess.run(
+        [sys.executable, "-c", _TTY_STDIN_BARE_MAIN],
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        cwd=str(tmp_path),
+        env=env,
+        timeout=60,
+    )
+    dash_h = subprocess.run(
+        [sys.executable, "-m", "bantamkit.mcpserver", "-h"],
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        cwd=str(tmp_path),
+        env=env,
+        timeout=60,
+    )
+
+    # "ให้แสดงเหมือน --help" -- the same bytes, the same stream, the same exit code.
+    assert typed.returncode == 0, typed
+    assert typed.stderr == b""
+    assert typed.stdout == dash_h.stdout
+    assert dash_h.returncode == 0
+
+    text = typed.stdout.decode()
+    lines = text.splitlines()
+    assert lines[0] == "usage: bantamkit-mcp [-h] [--assets-root] [--k K] [--index-budget BYTES]"
+    assert "bantamkit MCP server (stdio): per-person memory + JSON validation." in lines
+    assert "  -h, --help            show this help message and exit" in lines
+    assert "  --assets-root         print the resolved asset pack root and its file count," in lines
+
+    # NOT A FRAME. The whole hazard of printing on this process's stdout is that stdout is
+    # the JSON-RPC channel; a host that somehow reached this branch must not be handed
+    # something it would try to parse. Nothing here is a frame, and the child is gone.
+    for line in lines:
+        assert not line.lstrip().startswith("{"), line
+    assert "jsonrpc" not in text
+
+
+def test_the_terminal_branch_returns_before_a_store_or_a_transport_exists(monkeypatch, capsys):
+    """Same discipline as `--assets-root`: every road to a server is a detonator.
+
+    A person who typed a command to see what it does has not asked for a `.bantamkit/memory`
+    directory in the cwd they were standing in, so `_build_memory` is on the list too -- and
+    it is the one that would fire if the branch were placed one line later.
+    """
+    import io
+    import sys
+
+    import bantamkit.mcpserver as m
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("the bare-at-a-terminal branch reached the server path")
+
+    class _Tty(io.StringIO):
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(sys, "argv", ["bantamkit-mcp"])
+    monkeypatch.setattr(sys, "stdin", _Tty())
+    monkeypatch.setattr(m, "_build_memory", boom)
+    monkeypatch.setattr(m, "build_server", boom)
+    monkeypatch.setattr(m.asyncio, "run", boom)
+
+    m.main()  # returns; does not raise SystemExit, so the exit code is 0
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out.startswith("usage: bantamkit-mcp [-h] [--assets-root]")
+
+
+@pytest.mark.parametrize(
+    ("argv", "tty", "expected", "why"),
+    [
+        ([], True, True, "a person typed the command with nothing after it"),
+        ([], False, False, "a host: `args: []` with a pipe on stdin -- THE production path"),
+        (["--start", "."], True, False, "an operator asked for a configured server, at a tty"),
+        (["--store", "/tmp/x"], True, False, "same, with the other store flag"),
+        (["--k", "5"], False, False, "a host with arguments"),
+    ],
+)
+def test_the_terminal_check_is_scoped_to_the_bare_command_and_reads_only_stdin(
+    argv, tty, expected, why
+):
+    """The truth table, including the row that is the production launch path.
+
+    Row two is the one that costs something if it moves: `"args": []` over a pipe is what
+    `.mcp.json` and the user-scope registration both do, and it must answer False forever.
+    Rows three and four are the SCOPE: the user asked for `bantamkit-mcp` "only", and an
+    invocation carrying flags is an explicit request for a configured server that keeps
+    working at a terminal.
+    """
+    import io
+
+    from bantamkit.mcpserver import _typed_bare_at_a_terminal
+
+    class _Stream(io.StringIO):
+        def isatty(self):
+            return tty
+
+    assert _typed_bare_at_a_terminal(argv, _Stream()) is expected, why
+
+
+def test_no_stdin_at_all_is_not_a_person_and_cannot_take_the_serving_path_down():
+    """`sys.stdin` is None under a console-less launcher, and closed streams raise.
+
+    Neither is a person at a terminal, and neither may be allowed to turn a serving
+    invocation into a traceback -- this runs before any transport, on the path every host
+    takes. `io.StringIO.isatty` on a closed file raises `ValueError`, which is the real
+    interpreter behaviour being stood in for, not an invented one.
+    """
+    import io
+
+    from bantamkit.mcpserver import _typed_bare_at_a_terminal
+
+    assert _typed_bare_at_a_terminal([], None) is False
+
+    closed = io.StringIO()
+    closed.close()
+    with pytest.raises(ValueError):
+        closed.isatty()
+    assert _typed_bare_at_a_terminal([], closed) is False

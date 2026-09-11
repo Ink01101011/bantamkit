@@ -1,6 +1,6 @@
 {
   "name": "shiftwork_clock_out",
-  "description": "Shift-work clock-out: record a finished unit — set its status, advance plan.cursor, merge handoff_patch, push history_entry onto the 5-entry ring — validating the whole mutated document against the checkpoint schema BEFORE an atomic write (a failure writes nothing and returns result=error). Every success appends one accounting line (unit, role, status, ts, plus your accounting fields, e.g. tokens/duration/model) to <checkpoint>.log.jsonl.",
+  "description": "Shift-work clock-out: record a finished unit — set its status, advance plan.cursor, merge handoff_patch, push history_entry onto the 5-entry ring — validating the whole mutated document against the checkpoint schema BEFORE an atomic write (a failure writes nothing and returns result=error). Every success appends one accounting line (unit, role, status, ts, plus your accounting fields, e.g. tokens/duration/model) to <checkpoint>.log.jsonl. If the checkpoint's job.roles names this unit's role, accounting.model must be one of that role's model identifiers, spelled exactly \u2014 a model that is not on the list, or none reported at all, is refused before anything is written; a role job.roles omits, and a checkpoint carrying no job.roles, are unconstrained.",
   "surfaces": [
     "mcp"
   ],

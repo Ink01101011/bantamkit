@@ -442,6 +442,23 @@ function canSymlink(scratch) {
   }
 }
 
+/**
+ * Apply one fixture spec's modes to a bed, or put them back.
+ *
+ * platform-checked: BOTH BEDS GET THE SAME CALL FROM THE SAME SPEC — `applyModes` is invoked
+ * once per side (`for (const side of ['py', 'node'])`) with one `spec`, so a platform that
+ * ignores the mode removes the restriction from the reference's tree and the port's tree
+ * identically. That is the property this suite's comparison rests on, and it holds on every
+ * platform because it is a property of the harness rather than of the filesystem.
+ *
+ * WHAT IS NOT CLAIMED, and it is not claimed because it is not measured: whether the
+ * resulting comparison still has teeth on Windows. It does not — an unrestricted bed answers
+ * a question nobody asked — and this repository has no Windows run to show it with, because
+ * Actions is off on this account. `recall-strings.mjs` shows the shape that would measure it:
+ * a probe that tries the denied operation, and a `notes.push('NOT MEASURED: ...')` when the
+ * mode was not honoured. Registered rather than written here, because a sentence asserting
+ * Windows behaviour nobody has run is the thing this gate's own docstring warns about.
+ */
 const applyModes = (root, spec, on) => {
   for (const [path, mode] of Object.entries(spec.modes ?? {})) {
     chmodSync(join(root, path), on ? mode : 0o755);
@@ -617,8 +634,31 @@ function scenarios(symlinksWork) {
     // target is 138 and two lines must go. The temporal answer is [afb, bfb]; the answer that
     // holds the property is [cpj, dpj] — the project facts, in their own unchanged staleness
     // order, even though both are NEWER than either feedback fact.
+    //
+    // AMENDED (job46, J46-6). THE SENTENCE ABOVE DESCRIBES A DEFAULT THAT NO LONGER EXISTS,
+    // and it stays because it is the record of what this case was measured against. The
+    // default `reserve` is no longer "the largest line": since `87cc1f7` / `55575c3` it is
+    // `(budget - undegraded_index_ceiling(budget)) + largest line`, which at budget 200 is
+    // 21 + 62 = 83 and puts the target at 117 rather than 138. MEASURED on both CLIs on this
+    // fixture: the default now archives `[cpj, dpj, afb]` — the same three names as the
+    // sibling scenario below — so this case went RED on its `archived-names` literal at
+    // `87cc1f7` (the reference alone; the two runtimes DIFFERED there, Python 3 names against
+    // Node 2) and stayed red at `55575c3` with the two sides agreeing byte for byte.
+    //
+    // THE REPAIR IS AN EXPLICIT `--reserve 62`, NOT A BUMPED LITERAL, and the difference is
+    // what the case still distinguishes. Bumping the literal to the three names would also be
+    // green, and would make this scenario's answer IDENTICAL to
+    // `compact-archives-feedback-once-nothing-else-is-left` below — the pair would stop
+    // separating "the priority holds" from "the priority is not a veto", which is the only
+    // thing the pair is for. An explicit reserve is what every other eviction-order node in
+    // this repository already passes, for exactly this reason: it makes the case fail on
+    // ORDER and never on reserve policy, and reserve policy now has its own cases in
+    // `wire.mjs` (`index-band`) and `store.mjs` (the ceiling sweep). 62 is the largest index
+    // line this fixture holds, so `--reserve 62` reproduces the pre-job46 default byte for
+    // byte: `index: 246 -> 124 bytes (budget 200, target 138, reserve 62, headroom 76)` on
+    // both CLIs, archiving `[cpj, dpj]`.
     ['compact-spares-feedback-until-the-other-classes-are-gone', FEEDBACK_STALEST,
-      [['compact', '--store', '{BED}', '--budget', '200'], ['status', '--store', '{BED}', '--budget', '200']],
+      [['compact', '--store', '{BED}', '--budget', '200', '--reserve', '62'], ['status', '--store', '{BED}', '--budget', '200']],
       { remediation: 'restore one with: ', archived: ['cpj', 'dpj'] }],
     // The other side of the same rule: a PRIORITY is not a veto. `--budget 100 --reserve 1`
     // sets a target of 99, and archiving BOTH project facts only gets the index to 124, so

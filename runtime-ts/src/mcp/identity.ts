@@ -40,8 +40,8 @@
  * partial identity would agree with every other build that lost the same input.
  */
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync } from 'node:fs';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { AssetNotFound, assetsRoot } from '../assets.js';
@@ -50,8 +50,14 @@ import { PyOSError, asPyOSError } from '../memory/pyfs.js';
 
 export const SERVER_NAME = 'bantamkit';
 
-/** A build fact that could not be derived, carrying WHY. Never becomes a value. */
-class Undetermined extends Error {}
+/**
+ * A build fact that could not be derived, carrying WHY. Never becomes a value.
+ *
+ * Exported since job46: `bantamkit_status` has to distinguish "this install could not be
+ * classified" — which is a REPORTED gap and not a degraded server — from a real fault, and
+ * `instanceof` is the only way to do that without matching on a message.
+ */
+export class Undetermined extends Error {}
 
 /**
  * The shape an underivable fact takes on the wire — `RB-P51`, unchanged from Python.
@@ -226,6 +232,457 @@ function assetsFingerprint(): { digest: string; files: number; root: string } {
   return { digest: walked.digest, files: walked.files, root };
 }
 
+// ---------------------------------------------------------------------------------------
+// WHICH INSTALL SHAPE IS RUNNING — offline, from this server's own location.
+//
+// THE DEFECT IS A NODE DEFECT AND IT IS MEASURED (`docs/roadmap-agent-stack.md` AS-7). A
+// Claude Desktop entry sat on 0.25.0 from 2026-08-24 through five releases with nothing in
+// the config, the logs or any tool reply saying so — and its `package.json` declared the
+// dependency as `"bantamkit-mcp": "file:/private/tmp/.../scratchpad/bantamkit-mcp-0.25.0.tgz"`,
+// a local tarball in a temp directory that no longer existed. An update run where that install
+// lives is a no-op BY CONSTRUCTION, and nothing anywhere said which of those two things was
+// wrong. Four of those caches are still on this machine under `~/.npm/_npx/*/`.
+//
+// WHY THIS IS A REFUSAL AND NOT A LOOKUP. The origin is written down by the installer, on this
+// disk, in `node_modules/.package-lock.json` — npm's hidden lockfile, the Node counterpart of
+// PEP 610's `direct_url.json`. Whether that path still exists is a `stat`. NO NETWORK IS
+// TOUCHED ON ANY PATH BELOW: comparing the running version against a registry is AS-7(b), a
+// separate unit, gated behind this one, and deliberately opt-in because an offline toolbox
+// must not grow a network call in its health check.
+//
+// AMENDED 2026-09-11, J46-31: AS-7(b) HAS SHIPPED, as `--update`, and the first sentence
+// above is still exactly true — that is the point of recording it here. The registry
+// comparison lives in `selfupdate.ts`, reached only from the flag in `cli.ts`, never from any
+// path below and never from `bantamkit_status`. The clause that is now dated is "gated behind
+// this one": the user reversed AS-7 on 2026-09-11 and the gate was overridden rather than met.
+// "Deliberately opt-in" survived the reversal intact and is the reason `--update` is a CLI
+// flag and not an MCP tool — see the ruling appended to AS-7.
+//
+// SHAPE IS LOCATION, NEVER IDENTITY. It is reported for the same reason `package_path` and
+// `interpreter` are — it is what a person acts on — and it is kept OUT of `build_id` for the
+// same reason they are: one build installed two ways is ONE build, and
+// `test/install-shape.test.mjs` recomputes the hash from its five named inputs to prove it.
+//
+// WHAT NPM ACTUALLY WRITES, MEASURED AGAINST npm 11.6.2 BEFORE ANY OF THIS WAS WRITTEN — every
+// branch below is a record that was read off this machine, not a shape recalled from docs:
+//
+//   tarball      `{"resolved": "file:../x.tgz"}` — `file:` then a RAW path, relative to the
+//                directory that owns `node_modules`, and NOT percent-encoded (measured with a
+//                space in the directory name, which is the case that actually turns up).
+//   `file:` dir  `{"resolved": "../src", "link": true}` — no `file:` prefix at all, and the
+//                package directory under `node_modules` is a real symlink.
+//   registry     `{"resolved": "https://registry.npmjs.org/…"}`.
+//   global       `<npm prefix -g>/lib/node_modules` carries NO `.package-lock.json` at all,
+//                and npm 7+ writes no `_resolved` into the installed `package.json` either.
+//   npx          the cache project's own `package.json` carries `"_npx": {"packages": [...]}`.
+// ---------------------------------------------------------------------------------------
+
+/**
+ * The closed vocabulary, spelled the same way in both runtimes, and it answers ONE question:
+ * what would updating this install even mean?
+ *
+ *   registry     came from a package index (npm here, PyPI there). Reinstall by name.
+ *   local-file   came from a path on THIS machine — an archive or a directory whose contents
+ *                were copied in. The path is recorded and may be gone.
+ *   linked       a directory on this machine is still the source being read: a `file:` dir or
+ *                an `npm link` symlink here, an editable install there. Update that tree.
+ *   checkout     no installer recorded this tree at all. Git.
+ *   ephemeral    a temporary environment discarded after the run. Nothing to update.
+ *
+ * `ephemeral` IS ANSWERED HERE AND NEVER BY `runtime-py`, which is the one divergence in this
+ * surface: npm writes an `_npx` marker into the cache project's own `package.json`, so this is
+ * a RECORD, while a `pipx run` or `uvx` environment is not distinguishable from an ordinary
+ * venv without pattern-matching cache directory names — a guess, and that surface does not
+ * guess. The word is declared on BOTH sides anyway so a consumer of either runtime handles ONE
+ * set of five rather than two sets it has to reconcile.
+ */
+export const INSTALL_SHAPES = ['registry', 'local-file', 'linked', 'checkout', 'ephemeral'] as const;
+
+/**
+ * Where the running code came from, and the origin path it can still be checked against.
+ *
+ * `source` is `null` for the shapes that HAVE no origin path rather than for the ones whose
+ * path could not be read — `sourceReason` carries which, in the operator's words, and
+ * `buildIdentity` turns it into the `{"unavailable": ...}` shape RB-P51 requires. A shape that
+ * could not be derived at all is an `Undetermined`, never a sixth word.
+ */
+export interface Install {
+  readonly shape: string;
+  readonly source: string | null;
+  readonly sourceReason: string;
+}
+
+const NODE_MODULES = 'node_modules';
+
+const REGISTRY = (): Install => ({
+  shape: 'registry',
+  source: null,
+  sourceReason:
+    'a registry install records no origin path on this machine: npm writes a local origin ' +
+    'into `node_modules/.package-lock.json` only for a `file:` path or a link, and this ' +
+    'install has none. Reinstall by name to move it.',
+});
+
+const CHECKOUT_REASON =
+  'no installer recorded this tree, so there is no origin path to check — the source IS ' +
+  '`package_path`, and it is updated where it was cloned.';
+
+const EPHEMERAL_REASON =
+  'an ephemeral install records no origin path on this machine: npm resolves the `npx` cache ' +
+  'again on the next run rather than updating it in place, so there is nothing here to ' +
+  'refresh. Change the spec the host command line names to move it.';
+
+/** Parsed JSON from a file, or `null` when the file is missing, unreadable or not an object. */
+function readJsonObject(path: string): Record<string, unknown> | null {
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+    ? (parsed as Record<string, unknown>)
+    : null;
+}
+
+/**
+ * A recorded origin as a path on this machine, or `null` when it names neither.
+ *
+ * TWO FORMS, AND THE DIFFERENCE IS MEASURED. npm writes `file:` followed by a RAW path — a
+ * space in a person's own directory arrives as a space, not as `%20`, so decoding that form
+ * would corrupt any real filename containing a literal `%`. The `file://` URL form IS
+ * percent-encoded, carries a leading slash before a Windows drive letter that is not part of
+ * the path, and may name `localhost`; `url.fileURLToPath` handles it, and is not used here
+ * because it throws on the bare form npm actually writes and would have to be guarded either
+ * way. A `file://` URL with a real authority (`file://otherhost/share`) names a path on a
+ * machine that is not this one, so it is not a local origin and the caller is told so.
+ */
+function localOriginPath(resolved: string, base: string): string | null {
+  if (!resolved.startsWith('file:')) return null;
+  const rest = resolved.slice('file:'.length);
+  if (!rest.startsWith('//')) return resolve(base, rest);
+  let path = rest.slice(2);
+  if (path.startsWith('localhost/')) path = path.slice('localhost'.length);
+  if (!path.startsWith('/')) return null;
+  path = decodeURIComponent(path);
+  // `/C:/x` is `C:/x`; a POSIX path never matches this shape.
+  if (path.length > 2 && /[A-Za-z]/.test(path[1] as string) && path[2] === ':') path = path.slice(1);
+  return resolve(base, path);
+}
+
+/** `Path.is_relative_to`, tolerating a `parent` that is a symlink or does not exist. */
+function isWithin(child: string, parent: string): boolean {
+  for (const candidate of [parent, safeRealpath(parent)]) {
+    if (candidate === null) continue;
+    const step = relative(candidate, child);
+    if (step === '' || (!step.startsWith('..') && !step.startsWith(`${sep}`))) return true;
+  }
+  return false;
+}
+
+/** `Path.is_symlink()`: false for a missing path and for anything that is not a link. */
+function isSymlink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === undefined) throw e;
+    return false;
+  }
+}
+
+function safeRealpath(path: string): string | null {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The package that OWNS the running file: the nearest `package.json` above it.
+ *
+ * The nearest one and not a named one, so a rename of the published package does not silently
+ * turn every install into a `checkout`. It is the same question `_dist_owns` asks on the
+ * Python side — which distribution put the file that is running on disk — answered the way
+ * Node's own resolver answers it.
+ */
+function packageRootFor(startDir: string): { root: string; name: string } | null {
+  let here = resolve(startDir);
+  for (;;) {
+    const manifest = readJsonObject(join(here, 'package.json'));
+    if (manifest !== null) {
+      const name = manifest['name'];
+      return { root: here, name: typeof name === 'string' ? name : '' };
+    }
+    const parent = dirname(here);
+    if (parent === here) return null;
+    here = parent;
+  }
+}
+
+interface Installed {
+  readonly projectRoot: string;
+  readonly nodeModules: string;
+  readonly key: string;
+}
+
+/**
+ * Every `node_modules` this package sits under, nearest first, with the lockfile key each one
+ * would use.
+ *
+ * There can be more than one: a nested `a/node_modules/b/node_modules/c` is keyed from the
+ * OUTERMOST project, which is the only place npm writes the hidden lockfile, while a plain
+ * install is keyed from the nearest. Both are tried rather than guessed between.
+ */
+function nodeModulesAncestors(packageRoot: string): Installed[] {
+  const found: Installed[] = [];
+  let here = dirname(packageRoot);
+  for (;;) {
+    if (basename(here) === NODE_MODULES) {
+      const projectRoot = dirname(here);
+      found.push({
+        projectRoot,
+        nodeModules: here,
+        key: relative(projectRoot, packageRoot).split(sep).join('/'),
+      });
+    }
+    const parent = dirname(here);
+    if (parent === here) return found;
+    here = parent;
+  }
+}
+
+/** npm's own record for this package, from the hidden lockfile, or `null` when there is none. */
+function lockfileEntry(place: Installed): Record<string, unknown> | null {
+  const lock = readJsonObject(join(place.nodeModules, '.package-lock.json'));
+  const packages = lock?.['packages'];
+  if (typeof packages !== 'object' || packages === null) return null;
+  const entry = (packages as Record<string, unknown>)[place.key];
+  return typeof entry === 'object' && entry !== null && !Array.isArray(entry)
+    ? (entry as Record<string, unknown>)
+    : null;
+}
+
+/** npm's own marker for an `npx` cache project — a record it writes, not a directory name. */
+function isNpxProject(projectRoot: string): boolean {
+  const manifest = readJsonObject(join(projectRoot, 'package.json'));
+  return manifest !== null && typeof manifest['_npx'] === 'object' && manifest['_npx'] !== null;
+}
+
+/** The origin npm wrote down, as one of the five words. */
+function originFromEntry(entry: Record<string, unknown>, projectRoot: string): Install {
+  const raw = entry['resolved'];
+  const recorded = typeof raw === 'string' ? raw : '';
+  if (entry['link'] === true && recorded !== '') {
+    // A link entry carries a bare relative path with no `file:` prefix at all (measured).
+    return { shape: 'linked', source: resolve(projectRoot, recorded), sourceReason: '' };
+  }
+  // AN http(s) ORIGIN IS `registry` AND NOT A REFUSAL, which is where this parts company with
+  // the reference. There, an http `direct_url.json` is underivable; here the registry IS an
+  // https URL, and telling a published tarball URL from the configured index would mean
+  // knowing which index was configured — a guess. Either way the origin is REMOTE, so it can
+  // never be the dangling-local-path defect this surface exists for, and the route out is a
+  // reinstall by name.
+  if (/^https?:\/\//i.test(recorded)) return REGISTRY();
+  const path = localOriginPath(recorded, projectRoot);
+  if (path !== null) return { shape: 'local-file', source: path, sourceReason: '' };
+  if (recorded === '') return REGISTRY();
+  throw new Undetermined(
+    `this install records its origin as ${recorded}, which is neither a package index nor a ` +
+      `path on this machine, so its shape is not one of ${INSTALL_SHAPES.join(', ')}. A git ` +
+      'or http origin is updated by reinstalling from that same URL.',
+  );
+}
+
+/** Every path a symlink chain passes through, starting with the one it was handed. */
+function symlinkChain(start: string): string[] {
+  const chain: string[] = [];
+  let here = resolve(start);
+  for (let step = 0; step < 40; step += 1) {
+    chain.push(here);
+    let target: string;
+    try {
+      target = readlinkSync(here);
+    } catch {
+      break;
+    }
+    here = resolve(dirname(here), target);
+    if (chain.includes(here)) break;
+  }
+  return chain;
+}
+
+/** Does this path pass through `node_modules/<name>` — the entry npm's link would occupy? */
+function passesThroughEntry(path: string, name: string): boolean {
+  const parts = path.split(/[\\/]/);
+  const wanted = name.split('/');
+  for (let i = 0; i < parts.length; i += 1) {
+    if (parts[i] !== NODE_MODULES) continue;
+    if (wanted.every((segment, j) => parts[i + 1 + j] === segment)) return true;
+  }
+  return false;
+}
+
+/**
+ * Is this tree being SERVED through an `npm link`, even though it does not sit in node_modules?
+ *
+ * MEASURED, AND IT IS THE REASON THIS FUNCTION EXISTS AT ALL. Node realpaths ESM specifiers,
+ * so a linked install's `import.meta.url` names the SOURCE tree and the `node_modules` ancestor
+ * is gone from it — which would make every `npm link` and every `file:` directory dependency
+ * report `checkout`. `process.argv[1]` is the half Node does NOT resolve: driving the same file
+ * through a `file:` dir install printed `import.meta.url = …/src/dist/index.js` beside
+ * `argv[1] = …/node_modules/bantamkit-mcp/dist/index.js`. So the pair is the evidence, and both
+ * halves are location — neither is server state, and both are fixed for the life of a process.
+ *
+ * The entry has to actually BE this tree (its realpath lands inside the package root) and it
+ * has to pass through `node_modules/<this package>` (npm's link, not somebody else's): a
+ * checkout keeps its own `node_modules` for devDependencies, so the bare segment proves nothing.
+ */
+function servedThroughNodeModules(entryPath: string, packageRoot: string, name: string): boolean {
+  if (name === '') return false;
+  const chain = symlinkChain(entryPath);
+  const last = chain[chain.length - 1];
+  if (last === undefined) return false;
+  const landing = safeRealpath(last);
+  if (landing === null || !isWithin(landing, packageRoot)) return false;
+  return chain.some((step) => passesThroughEntry(step, name));
+}
+
+/**
+ * The whole diagnosis, over a running file and the path the process was launched through.
+ *
+ * Taken as ARGUMENTS rather than read from the process so that every shape can be built as a
+ * real `node_modules` tree with a real hidden lockfile, a real symlink and a really-absent
+ * tarball, and read back through the same code the server runs. A stubbed filesystem here
+ * would assert this function's own reasoning back at it, and the entire question is what npm
+ * actually writes down.
+ */
+export function deriveInstall(runningFile: string, entryPath: string | null): Install {
+  const owner = packageRootFor(dirname(resolve(runningFile)));
+  if (owner === null) {
+    throw new Undetermined(
+      `no package.json owns ${runningFile}, so there is no installer record to read and this ` +
+        'build cannot say where it came from.',
+    );
+  }
+  const places = nodeModulesAncestors(owner.root);
+  for (const place of places) {
+    const entry = lockfileEntry(place);
+    if (entry === null) continue;
+    return withEnvironment(originFromEntry(entry, place.projectRoot), places);
+  }
+  // Under `node_modules` with no record anywhere: the global-install shape measured above. The
+  // ABSENCE is positive evidence, because the two alternatives both leave a trace — a `file:`
+  // origin in the lockfile, or a symlink where the package directory should be — and an
+  // installed copy that left neither came from an index.
+  if (places.length > 0) {
+    // A package directory that IS a symlink is npm's link, whatever the lockfile says or fails
+    // to say. Reached only where the symlink survived to here — Node realpaths ESM specifiers,
+    // so in practice that is `--preserve-symlinks` — and it is checked before falling back to
+    // the absence-is-evidence branch, because an absence proves nothing next to a symlink.
+    const linkedTarget = safeRealpath(owner.root);
+    if (linkedTarget !== null && isSymlink(owner.root)) {
+      return { shape: 'linked', source: linkedTarget, sourceReason: '' };
+    }
+    return withEnvironment(REGISTRY(), places);
+  }
+  if (entryPath !== null && servedThroughNodeModules(entryPath, owner.root, owner.name)) {
+    return { shape: 'linked', source: owner.root, sourceReason: '' };
+  }
+  return { shape: 'checkout', source: null, sourceReason: CHECKOUT_REASON };
+}
+
+/**
+ * `ephemeral` is the ENVIRONMENT and the origin is the ORIGIN — two axes, and only one word.
+ *
+ * The environment wins the word, because it is the half that is true whatever the origin was:
+ * an `npx` cache is not updated in place at all, so what has to change is the spec on the
+ * host's command line. The origin is NOT lost with it — `source` and `install_source_exists`
+ * still carry it, and `install-source-missing` still fires and still names the path. Collapsing
+ * the two would have thrown away exactly the fact AS-7 was filed about, since the measured
+ * incident is both at once: an `npx` cache filled from a tarball that no longer exists.
+ */
+function withEnvironment(origin: Install, places: readonly Installed[]): Install {
+  if (!places.some((place) => isNpxProject(place.projectRoot))) return origin;
+  return {
+    shape: 'ephemeral',
+    source: origin.source,
+    sourceReason: origin.source === null ? EPHEMERAL_REASON : '',
+  };
+}
+
+/**
+ * The errnos that mean "not there" rather than "could not look" — the reference's
+ * `pathlib._ignore_error` set, which is what makes `Path.exists()` return `False` instead of
+ * raising. Everything else is a check that did not happen, and saying `false` for one of those
+ * would report a deleted origin where the truth is a directory nobody may read.
+ */
+const NOT_THERE = new Set(['ENOENT', 'ENOTDIR', 'EBADF', 'ELOOP', 'EINVAL', 'ENAMETOOLONG']);
+
+/**
+ * Is the recorded origin still on disk? `present: null` when the check itself could not be made.
+ *
+ * `existsSync` is deliberately not used: it swallows EVERY error and answers `false`, so an
+ * origin under a directory the server may not read would be reported as DELETED — a wrong
+ * answer where the reference gives none. This is the half that is re-read on every tool call,
+ * so it is one `stat` and nothing else.
+ */
+export function originStat(path: string): { present: boolean | null; reason: string } {
+  try {
+    statSync(path);
+    return { present: true, reason: '' };
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === undefined) throw e;
+    if (NOT_THERE.has(code)) return { present: false, reason: '' };
+    return {
+      present: null,
+      reason: `the recorded origin path could not be checked: ${(e as Error).message}`,
+    };
+  }
+}
+
+let installOnce: { readonly install: Install | null; readonly error: Undetermined | null } | null = null;
+
+/**
+ * Which install shape is running. Importable, and NOT owned by the status path.
+ *
+ * DERIVED ONCE, because the bytes that were imported cannot change under a process. The footer
+ * runs `degradedConditions` on every tool call and `docs/status.md` promises what that costs;
+ * walking `node_modules` for a hidden lockfile is not on that list. So the SHAPE is memoised
+ * and only the EXISTENCE of the recorded path is re-read — which is the half that can actually
+ * change while a server is running, and the half the measured defect is about. The failure is
+ * memoised too: a derivation that already failed would fail identically a second time.
+ *
+ * Deliberately a module-level function taking no arguments and touching no server state: the
+ * `--update` flag planned as J46-29 has to be shape-aware — two of the five shapes have no
+ * registry route at all — and it must be able to ask this question from the CLI, before a
+ * memory store or a transport exists, without building an MCP server to do it.
+ */
+export function currentInstall(): Install {
+  if (installOnce === null) {
+    try {
+      installOnce = {
+        install: deriveInstall(fileURLToPath(import.meta.url), process.argv[1] ?? null),
+        error: null,
+      };
+    } catch (e) {
+      if (!(e instanceof Undetermined)) throw e;
+      installOnce = { install: null, error: e };
+    }
+  }
+  if (installOnce.install === null) {
+    throw installOnce.error ?? new Undetermined('the install shape was not derived');
+  }
+  return installOnce.install;
+}
+
 /** `sha256(json.dumps(inputs, sort_keys=True, separators=(",", ":")))` — the identity. */
 export function buildIdFor(inputs: Record<string, string>): string {
   const canonical = `{${Object.keys(inputs)
@@ -287,6 +744,38 @@ export function buildIdentity(version: string, sdkVersion: string | { unavailabl
   // chosen by the operator or resolved by the package is a fact a caller comparing two
   // endpoints needs. A bool, so it is never confusable with a missing one.
   identity.set('assets_root_from_env', Boolean(process.env.BANTAMKIT_ASSETS));
+
+  // Location too, and the same rule: which install SHAPE is running says what updating this
+  // server would even mean, and says nothing about which build it is. A `file:` install whose
+  // tarball was deleted answers with a path that no longer exists — the measured defect AS-7
+  // filed — and `install_source_exists` is the bit that says so. No network is consulted for
+  // any of the three.
+  try {
+    const install = currentInstall();
+    identity.set('install_shape', install.shape);
+    if (install.source === null) {
+      identity.set('install_source', unavailable(install.sourceReason));
+      identity.set(
+        'install_source_exists',
+        unavailable(
+          `a ${install.shape} install records no origin path, so there is nothing here to check for.`,
+        ),
+      );
+    } else {
+      identity.set('install_source', install.source);
+      const origin = originStat(install.source);
+      identity.set(
+        'install_source_exists',
+        origin.present === null ? unavailable(origin.reason) : origin.present,
+      );
+    }
+  } catch (e) {
+    if (!(e instanceof Undetermined)) throw e;
+    for (const field of ['install_shape', 'install_source', 'install_source_exists']) {
+      identity.set(field, unavailable(e.message));
+    }
+  }
+
   identity.set('git_commit', unavailable(GIT_COMMIT_REFUSAL));
 
   identity.set('interpreter', process.execPath || unavailable('process.execPath is empty; this process cannot name its own binary'));

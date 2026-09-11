@@ -31,6 +31,17 @@ const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoPack = join(dirname(packageRoot), 'assets');
 
 /**
+ * AMENDED 2026-09-11 (job46, J46-18, AS-1(c)): 91 files / 243,565 bytes, measured at that
+ * commit, where `assets/tools/token_ledger.json` arrived at 7,459 bytes — the manifest for the
+ * fourteenth served tool, the transcript ledger. Every earlier line stands as it was written.
+ *
+ * AMENDED 2026-09-11 (job46, J46-17, AS-1(b)): 90 files / 236,106 bytes, measured at that
+ * commit, where `assets/pricing/default.json` arrived at 1,041 bytes — the price table, which
+ * ships with an EMPTY `rates` map on purpose. The sentence below is left as it stood; note
+ * that its own "231,821 bytes at HEAD" had already gone stale against the byte node, exactly
+ * as the 224,195 before it did, and for the same reason — the file count and the byte total
+ * are two records and only one of them is asserted in this paragraph.
+ *
  * The size of the pack, measured: 89 files / 231,821 bytes at HEAD, where job45's J45-11
  * added `assets/tools/repo_map.json` at 2,358 bytes (88 files / 229,463 bytes before it,
  * where J45-3 added
@@ -48,7 +59,7 @@ const repoPack = join(dirname(packageRoot), 'assets');
  * pack that grows or shrinks moves `assets_digest` and therefore `build_id`, and that
  * must be a deliberate edit here rather than a silent one.
  */
-const EXPECTED_ASSET_FILES = 89;
+const EXPECTED_ASSET_FILES = 91;
 
 function walk(dir) {
   const out = new Map();
@@ -109,7 +120,7 @@ test('every packed asset is byte-identical to the repository pack', () => {
     assert.equal(sha256(mirror), sha256(abs), `vendored copy of ${rel} differs`);
     bytes += readFileSync(abs).length;
   }
-  assert.equal(bytes, 231821); // +2358: assets/tools/repo_map.json (job45 J45-11, roadmap row 10); +1605: assets/tools/memory_dream.json (job45 J45-3, roadmap row 5); +509: skill_audit.json's empty-root refusal (F5); +1739: skill_audit.json's `versions` argument, host truth over the byte-order guess (F4); +1415: its version-resolution rule (SA6); +1743: its whole-value-quote rule (SA2b); +5097 at 56f8a52: assets/tools/skill_audit.json (SA1); +2341 at 92661f7: bantamkit_read.json and its two contract sentences; +8 when its part example became "document"; +37 when offset gained maximum 2^53-1 (F1)
+  assert.equal(bytes, 243565); // +7459: assets/tools/token_ledger.json, the fourteenth served tool's manifest — the transcript ledger promoted off `tools/ledger/token-ledger.mjs` (job46 J46-18, AS-1(c)); +1041: assets/pricing/default.json, the price table, shipped with an empty `rates` map because no rate in it could have been sourced (job46 J46-17, AS-1(b)); +320: assets/tools/shiftwork_clock_out.json says the AS-2 roles check exists, so the surprise reaches the reader of the tool schema (job46 J46-10); +2924: assets/schemas/shiftwork-checkpoint.json gains the optional job.roles map and the $comment amendment that explains it (job46 J46-7, AS-2); +2358: assets/tools/repo_map.json (job45 J45-11, roadmap row 10); +1605: assets/tools/memory_dream.json (job45 J45-3, roadmap row 5); +509: skill_audit.json's empty-root refusal (F5); +1739: skill_audit.json's `versions` argument, host truth over the byte-order guess (F4); +1415: its version-resolution rule (SA6); +1743: its whole-value-quote rule (SA2b); +5097 at 56f8a52: assets/tools/skill_audit.json (SA1); +2341 at 92661f7: bantamkit_read.json and its two contract sentences; +8 when its part example became "document"; +37 when offset gained maximum 2^53-1 (F1)
 });
 
 test('the tarball carries the executable entry point and its module', () => {

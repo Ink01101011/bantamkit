@@ -31,6 +31,7 @@ from bantamkit.memory.layers import (
 )
 from bantamkit.memory.store import (
     DEFAULT_INDEX_BUDGET,
+    INDEX_PRESSURE_PERCENT,
     RECALL_MIN_SCORE_RATIO,
     ArchivedFact,
     CompactResult,
@@ -39,4 +40,5 @@ from bantamkit.memory.store import (
     MemoryStore,
     MemoryValidationError,
     SaveResult,
+    undegraded_index_ceiling,
 )

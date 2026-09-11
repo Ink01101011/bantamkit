@@ -1367,7 +1367,7 @@ test('the tool is served eleventh and its schema is the assets', async () => {
   // index is pinned rather than `at(-1)`: this node is about where `skill_audit` sits, and
   // a later tool moving in behind it must not be able to satisfy it.
   assert.equal(listed[10].name, 'skill_audit');
-  assert.equal(listed.length, 13);
+  assert.equal(listed.length, 14);
   const asset = JSON.parse(readFileSync(join(repoRoot, 'assets', 'tools', 'skill_audit.json'), 'utf8'));
   const served = listed.find((t) => t.name === 'skill_audit');
   assert.equal(served.description, asset.description);

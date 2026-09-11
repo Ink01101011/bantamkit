@@ -43,6 +43,14 @@ running server keeps serving the code it loaded at startup, so every route ends 
 restarting the server in your host (`/mcp` → reconnect in Claude Code; a full app restart
 in Claude Desktop). The short version —
 
+> **AMENDED 2026-09-11 — there is a `--update` flag now.** The sentence above is kept rather
+> than rewritten because the rest of it still holds: `bantamkit-mcp --update` asks the package
+> index for `latest`, prints both numbers, says `up to date.` when they match, updates when
+> they differ **and the install came from the index**, and otherwise refuses with exit 1 and
+> names the route below that applies to you. It always ends by telling you to restart the
+> server, because an update does not change the process already answering you. It is the only
+> thing in this toolbox that touches the network, and only when you type it.
+
 ```bash
 npx -y bantamkit-mcp@latest --assets-root   # npx CACHES; without @latest you get an old resolve
 npm i -g bantamkit-mcp@latest               # global npm install

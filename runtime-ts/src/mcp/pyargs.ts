@@ -166,6 +166,16 @@ export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
     model: 'repo_mapArguments',
     fields: [req('root', 'str'), opt('focus', 'listStr'), opt('budget', 'int')],
   },
+  // `token_ledger(root: str, model: str | None = None, prices: str | None = None)` on the
+  // reference (job46, AS-1(c)). All three are the strict `str` every other string field is —
+  // `123` is `string_type`, not a coerced `'123'` — and an explicit `null` is the default for
+  // the two optional ones. There is no `int` here at all, which is why this entry is the
+  // shortest on the surface: the tool's every number is READ off the corpus rather than
+  // passed in, so there is no lax-int arm to measure.
+  token_ledger: {
+    model: 'token_ledgerArguments',
+    fields: [req('root', 'str'), opt('model', 'str'), opt('prices', 'str')],
+  },
   skill_audit: {
     model: 'skill_auditArguments',
     fields: [

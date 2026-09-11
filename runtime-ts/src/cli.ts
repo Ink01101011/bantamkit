@@ -2,6 +2,17 @@
 /**
  * The `bantamkit-mcp` entry point: the stdio MCP server, and six flags.
  *
+ * AMENDED 2026-09-11, J46-31 — "six flags" WAS ALREADY WRONG BEFORE THIS JOB AND IS WRONGER
+ * NOW. It was written at `0d067fa`; the parser had nine by the time `--update` was proposed
+ * and has ten today, plus `-h/--help`: `--assets-root`, `--k`, `--index-budget`,
+ * `--mcp-report`, `--statusline`, `--update`, `--install`, `--force`, `--store`, `--start`.
+ * The sentence is kept rather than renumbered because WHAT IT WAS COUNTING AT `0d067fa`
+ * cannot be recovered — six is not the count of anything in `PARSER` at that commit either —
+ * and a number quietly changed to a different wrong number is worse than one a reader can
+ * date. DO NOT RENUMBER IT AGAIN. `PARSER` below is the count; the paragraph after this one
+ * is the reason a second copy of a generated fact does not belong in a comment, and this
+ * amendment is that reason happening to the comment itself.
+ *
  * THE COMMAND LINE IS DATA, NOT PRINTED TEXT. `PARSER` below is the whole description of
  * this CLI, and `pyargparse.ts` renders it — the help table, the usage line at whatever
  * width the terminal is, and every `bantamkit-mcp: error: …` block — with CPython
@@ -18,6 +29,12 @@
  * refusal was protecting is kept and is now checked directly — `test/server.test.mjs` asserts
  * that every line a real session put on stdout parses as a JSON-RPC frame, that stdout never
  * ends mid-line, and that a clean session writes nothing to stderr either.
+ *
+ * THE BARE FORM STILL SERVES — WITH ONE QUALIFICATION ADDED BY J46-27, and it does not touch
+ * the sentence above. A bare invocation whose STDIN IS A TERMINAL is a person, not a host, and
+ * gets the help instead of a mute server; a bare invocation over a pipe is unchanged, byte for
+ * byte, and that is the arm `test/server.test.mjs` drives with a real `initialize`. See
+ * `typedBareAtATerminal` below for why the discrimination is stdin's tty-ness and nothing else.
  *
  * PRODUCTION RUNS LAYERED. No `--store` means `Memory.layered`, which prepends `[project] `
  * to a recall line; a build validated only against `--store` would ship a recall string the
@@ -52,6 +69,8 @@
  * and `docs/install.md` carry the same correction in their own words.
  */
 import { readFileSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { assetsRoot } from './assets.js';
 import { BantamError } from './errors.js';
@@ -74,6 +93,7 @@ import {
 } from './pyargparse.js';
 import { pyRepr } from './memory/pyfs.js';
 import { HOSTS, type Host, install as installHost, InstallError, thisCommand } from './hostinstall.js';
+import { runUpdate } from './selfupdate.js';
 import { statusLine } from './statusline.js';
 
 /** `SystemExit("...")`: the message on stderr, exit 1. */
@@ -165,6 +185,25 @@ const PARSER: ParserSpec = {
       help: 'print one status line for a host status bar, then exit',
       defaultValue: false,
     },
+    // THE ONE FLAG ON THIS PARSER THAT TOUCHES THE NETWORK, and the placement is what keeps
+    // that from spreading. `--assets-root` sits first because it needs NOTHING; this one needs
+    // the most of any flag here, so it does NOT go there — and the second reason is the same
+    // measured one the comments above give: the FIRST line of the 80-column usage is pinned by
+    // `test/cli-surface.test.mjs` and by the `cli` conformance suite, and a flag registered
+    // before `--mcp-report` would move it and turn a differential suite into a re-baselining
+    // one. Registered HERE — after `--statusline`, before `--install`, the reference's own
+    // position at `a590df8` — it grows the SECOND usage line only.
+    //
+    // DEFAULTS OFF, like every other flag on this parser, which is the whole of AS-7(3): the
+    // network is reached when a person asks for it by name and on no other path. There is no
+    // startup check, nothing on `bantamkit_status`, and no background poller.
+    {
+      optionStrings: ['--update'],
+      dest: 'update',
+      kind: 'storeTrue',
+      help: 'check the package index and update this install if it differs, then exit',
+      defaultValue: false,
+    },
     // THE SAME PLACE AND THE SAME REASON AS THE TWO ABOVE, and the position is copied from
     // the reference rather than chosen: argparse prints optionals in registration order, so
     // this line decides where `[--install {...}]` sits in the generated usage. After
@@ -217,9 +256,10 @@ const PARSER: ParserSpec = {
     },
   ],
   // `--store`/`--start` moved from 6/7 to 8/9 when `--install` and `--force` were added
-  // ahead of them. These are POSITIONS, not names, so adding an action above the group and
-  // leaving this line alone would silently make two unrelated flags mutually exclusive.
-  groups: [[8, 9]],
+  // ahead of them, and from 8/9 to 9/10 when `--update` was. These are POSITIONS, not names,
+  // so adding an action above the group and leaving this line alone would silently make two
+  // unrelated flags mutually exclusive.
+  groups: [[9, 10]],
 };
 
 /*
@@ -241,6 +281,7 @@ export interface Options {
   assetsRoot: boolean;
   mcpReport: boolean;
   statusline: boolean;
+  update: boolean;
   install: Host | null;
   force: boolean;
 }
@@ -256,9 +297,65 @@ export function parseArgs(argv: readonly string[]): Options {
     assetsRoot: values['assets_root'] as boolean,
     mcpReport: values['mcp_report'] as boolean,
     statusline: values['statusline'] as boolean,
+    update: values['update'] as boolean,
     install: values['install'] as Host | null,
     force: values['force'] as boolean,
   };
+}
+
+/**
+ * `_typed_bare_at_a_terminal`: True when a PERSON typed `bantamkit-mcp` with nothing after
+ * it. Never for a host.
+ *
+ * WHY THERE IS A DISCRIMINATION HERE AT ALL. Typing the command at a prompt used to open a
+ * stdio JSON-RPC server and block: no output, no prompt back, Ctrl-C the only way out. To a
+ * person that is indistinguishable from a hang, and it is what the user asked to be fixed on
+ * 2026-09-11 — "เพิ่ม task set default when call bantamkit-mcp only ให้แสดงเหมือน --help".
+ *
+ * WHY IT IS NOT SIMPLY "NO ARGUMENTS -> PRINT HELP". The bare invocation IS the production
+ * launch path, and this file's own header says so above: "the production invocation passes NO
+ * arguments at all (`.mcp.json` and the user-scope config both call the launcher bare), so the
+ * bare form is the one that must serve." On THIS side that is sharper than on the Python side:
+ * the user-scope registration on this machine points at `tools/bantamkit-mcp-node`, so the Node
+ * server is the one a broken bare path takes down.
+ *
+ * SO THE SIGNAL IS stdin's tty-ness, AND IT IS THE ONLY SIGNAL. A host wires stdin to a pipe or
+ * a socket; a person at a keyboard has a terminal on it. Deliberately NOT `process.stdout.isTTY`:
+ * stdout is the JSON-RPC channel and a host may redirect the two streams differently, so a tty
+ * on stdout says nothing about who is asking. Deliberately not a flag either — a flag to opt out
+ * means the bare form is no longer bare, and the bare form is the one under discussion.
+ *
+ * AND THE EMPTY ARGV IS A SCOPE, NOT A SECOND SIGNAL. What the user asked for is the command
+ * "only". `bantamkit-mcp --store /tmp/x` typed at a terminal is an operator explicitly asking
+ * for a configured server and keeps getting one; hand-driving the line-delimited protocol at a
+ * prompt stays possible. `argv` says WHICH invocation is in scope, the tty says WHO is on the
+ * other end of it. `runtime-py/src/bantamkit/mcpserver.py` holds the same pair.
+ *
+ * THE ONE THING THAT IS NOT A TRANSLATION OF THE REFERENCE. `sys.stdin.isatty()` returns a
+ * bool; `process.stdin.isTTY` is `true` on a terminal and **`undefined`** — not `false` — on a
+ * pipe, a file or `/dev/null` (measured on Node v25.2.1: `isTTY= undefined undefined`). So this
+ * is a TRUTHINESS test. A `=== false` test would be the same bug inverted and far worse than a
+ * missing feature: `undefined === false` is `false`, so every host launch would take the person
+ * branch and be handed the help table on the JSON-RPC channel.
+ *
+ * The reference's two "not a person, and must not be allowed to raise" arms — `sys.stdin is
+ * None` and `isatty()` on a closed stream raising `ValueError` — have Node counterparts on the
+ * same getter: `process.stdin` is documented to be able to be `null` where no stdin exists, and
+ * the getter itself can throw for an fd type the platform cannot wrap. Probed here on macOS with
+ * fd 0 closed (`0<&-`) it neither threw nor answered null, so the guards are not decoration for
+ * a measured case — they are on the path EVERY host takes, and a serving invocation must not be
+ * turnable into a stack trace by the check that decides it is serving.
+ */
+function typedBareAtATerminal(argv: readonly string[]): boolean {
+  if (argv.length > 0) return false;
+  let stream: NodeJS.ReadStream | null;
+  try {
+    stream = process.stdin;
+  } catch {
+    return false;
+  }
+  if (stream === null || stream === undefined) return false;
+  return Boolean(stream.isTTY);
 }
 
 /** `_build_memory`, including the two refusals argparse cannot express. */
@@ -317,8 +414,27 @@ async function main(argv: readonly string[]): Promise<number> {
     process.stdout.write(`${statusLine(process.env, options.store, options.start)}\n`);
     return 0;
   }
+  if (options.update) {
+    // Same discipline and the same place as the three above, and the same place the reference
+    // dispatches it: after `--statusline`, before `--install`. It is the one flag here that
+    // reaches the network, and it still returns before `buildMemory` — somebody who typed
+    // `--update` has not asked for a `.bantamkit/memory` directory in whatever cwd they were
+    // standing in, and has certainly not asked for a stdio server on a process that is about
+    // to be replaced on disk.
+    //
+    // `import.meta.url`'s DIRECTORY is the running package directory — `dist/` in an install,
+    // the built tree in a checkout — which is the counterpart of the reference's
+    // `_running_package_file().resolve().parent`. It stands in for `source` on the two shapes
+    // that record no origin, and it is not a guess: it is where the code being executed lives.
+    return await runUpdate(
+      (text) => process.stdout.write(text),
+      (text) => process.stderr.write(text),
+      version(),
+      dirname(fileURLToPath(import.meta.url)),
+    );
+  }
   // ORDER IS OBSERVABLE, and it is the reference's order. `main` in `mcpserver.py` checks
-  // assets_root, then mcp_report, then statusline, then install, then force — so
+  // assets_root, then mcp_report, then statusline, then update, then install, then force — so
   // `--mcp-report --install cursor` prints a report and writes NOTHING. Dispatching install
   // earlier here made the same argv write a file on one runtime and not the other: one
   // command line, two different states on the user's disk. Reviewed and moved.
@@ -337,6 +453,25 @@ async function main(argv: readonly string[]): Promise<number> {
   // `--force` alone is a typo with a plausible reading — somebody meant to install and
   // dropped the flag that says where. Refusing names the missing half.
   if (options.force) throw new Refusal('--force is only meaningful with --install');
+  // A PERSON TYPED IT. `typedBareAtATerminal` carries the whole argument; what belongs here is
+  // only that this sits BEFORE `buildMemory`, which is what creates a store. Somebody who typed
+  // a command to see what it does has not asked for a `.bantamkit/memory` directory in whatever
+  // cwd they were standing in, and every flag above returns before a transport for the same
+  // class of reason. It is also after `--force`, which is the reference's order.
+  //
+  // STDOUT AND EXIT 0, i.e. byte-for-byte what `-h` does, because the request was
+  // "ให้แสดงเหมือน --help" — show it the way `--help` shows it. `formatHelp(PARSER, helpWidth())`
+  // is the SAME CALL the `HelpRequested` arm at the bottom of this file makes, over the same
+  // `PARSER` object, so the two cannot diverge: there is one parser and two callers, never two
+  // strings. That is the defect this file's header records having already shipped once.
+  //
+  // The alternative reading — stderr and exit 2, "a bare invocation is a usage error" — was
+  // considered and refused by J46-26: it is not an error, it is the documented answer to the
+  // documented request, and nothing non-interactive can reach this line at all.
+  if (typedBareAtATerminal(argv)) {
+    process.stdout.write(formatHelp(PARSER, helpWidth()));
+    return 0;
+  }
   const memory = buildMemory(options);
   const wire = new RawStdioTransport();
   const server = buildServer(memory, wire, version());

@@ -29,6 +29,18 @@ THE TWO THINGS C8B'S DESIGN INSISTS ON, and why each is here.
    The marker is `served-tools: dated` on the claiming line or on any of the
    three lines above it.
 
+   FINDING (J46-25, 2026-09-10): that lookback is exactly three lines, not "nearby" —
+   so a marker sitting on the third line above its claim is already at the edge of the
+   window, and an edit that inserts one more line between the two (a wrapped sentence
+   gaining a clause, a new bullet) silently un-exempts the claim with no diff to the
+   marker or the claim themselves. Measured on the tracked tree the same day: four
+   markers already sit at that maximum distance (`test_mcpserver.py`,
+   `test_status_surface.py`, `test_tool_manifest.py`, and this file's own
+   `test_the_served_count_is_spellable_by_this_gate` docstring). Nothing is wrong with
+   them today; the risk is that the failure surfaces later, in an unrelated job, as a
+   mystery red rather than as a diff anyone reviewed. Prefer putting the marker on the
+   claiming line itself (distance zero) when the prose allows it.
+
 THE ONE BLANKET EXEMPTION, and why it is principled rather than convenient:
 the files in `tools/amendguard/ledger.json`'s `amend_only` list. Those files
 cannot be edited in place at all — they are an append-only record of what was
@@ -409,17 +421,17 @@ def test_claim_still_matches_every_previously_caught_shape() -> None:
     adjacent-verb forms the widening must not lose.
     """
     still_good = [
-        "bantamkit serves 13 tools",
-        "serving 13 tools, 1 prompt, 2 resource templates",
-        "the servers served 13 tools",
-        "both launchers answer with thirteen tools",  # adjacent, no token in between
-        "the CLI answered with thirteen tools",  # adjacent, past tense
-        "registers thirteen tools",
-        "registered thirteen tools",
-        "the surface is still exactly thirteen tools",
-        "serves the same thirteen tools",
-        "one of the thirteen served tools",
-        "the thirteen-tool surface",
+        "bantamkit serves 14 tools",
+        "serving 14 tools, 1 prompt, 2 resource templates",
+        "the servers served 14 tools",
+        "both launchers answer with fourteen tools",  # adjacent, no token in between
+        "the CLI answered with fourteen tools",  # adjacent, past tense
+        "registers fourteen tools",
+        "registered fourteen tools",
+        "the surface is still exactly fourteen tools",
+        "serves the same fourteen tools",
+        "one of the fourteen served tools",
+        "the fourteen-tool surface",
     ]
     for line in still_good:
         assert CLAIM.search(line) is not None, f"widening lost a previously-matched shape: {line!r}"

@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "currency": "USD",
+  "unit": "micro_usd_per_million_tokens",
+  "note": "Ships with NO rates, deliberately. bantamkit is offline and nothing in this repository or on the machine it was built on carries a published price, so every rate here would have had to be recalled rather than sourced - which is the unfalsifiable figure this project exists to refuse. The mechanism is complete and the refusal path is therefore the DEFAULT: price_tokens answers {\"unavailable\": ...} for every model until an operator records a rate. To record one, copy this file, add an entry under 'rates', and point BANTAMKIT_PRICES at the copy. Each entry needs 'recorded' (YYYY-MM-DD, the day YOU read the rate), 'source' (where you read it, so the next reader can re-derive it), and one or more of the four token classes priced in micro-USD per 1,000,000 tokens - so $3.00 per million input tokens is 3000000. The loader REFUSES a rate that has no date or no source: a number in this file without both is not a fact.",
+  "rates": {}
+}

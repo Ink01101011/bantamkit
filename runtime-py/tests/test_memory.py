@@ -19,6 +19,7 @@ from bantamkit.memory import (
     MemoryStore,
     MemoryValidationError,
     SaveResult,
+    undegraded_index_ceiling,
 )
 from bantamkit.memory.__main__ import main as memory_main
 
@@ -676,6 +677,96 @@ def test_compact_never_surrenders_more_than_half_the_budget_to_headroom(tmp_path
     result = store.compact()
     assert result.reserve == store.index_budget // 2
     assert result.target == store.index_budget - store.index_budget // 2 > 0
+
+
+# ---- the default reserve is measured from the WARNING line, not from the budget --------
+#
+# MEASURED DEFECT (`docs/porting.md`, register item 7, closed by job46/J46-4). The degraded
+# report warns at `INDEX_PRESSURE_PERCENT` of the budget and names `compact` as the remedy;
+# the old default reserve was the largest surviving index line, so the target sat at
+# `budget - largest line`. On any store whose biggest line is under a tenth of its budget
+# those are different numbers and everything between them is a band where the named command
+# exits 0 having archived nothing. Measured on a read-only copy of this machine's project
+# store: 101 facts, index.md 21819 bytes of a 24000-byte budget (90.91%), largest index line
+# 361 bytes, old target 23639 (98.50%) -> `compact()` returned `archived=[]` with
+# `index-budget-low` still firing.
+#
+# The property, and it is one substitution: the default target is
+# `undegraded_index_ceiling(budget) - largest index line`. The promise in `compact`'s
+# docstring is unchanged in words -- "a fact as big as the biggest one you keep will fit" --
+# and only the line it is measured from moves, from the one the REFUSAL draws to the one the
+# WARNING draws. The order, the half-budget cap and an explicit `reserve` are untouched.
+
+
+@pytest.mark.parametrize("budget", [2_048, 4_096, 24_000, 100_000])
+def test_the_default_reserve_is_measured_from_the_warning_line_not_the_budget(
+    tmp_path, budget
+):
+    """Swept over budgets, because the old and new targets coincide at small ones.
+
+    The sweep carries its own non-vacuity: the two targets are asserted DIFFERENT at every
+    point, so a budget where the fix cannot show is not silently counted as a pass.
+    """
+    store = MemoryStore(tmp_path / "mem", index_budget=budget, today=lambda: "2026-08-21")
+    _fill(store, 12)
+    largest = max(len(store._index_line(f).encode()) for f in store._facts())
+
+    result = store.compact()
+
+    old_target = budget - min(largest, budget // 2)
+    assert result.target < old_target, "sweep point cannot tell the two targets apart"
+    assert result.target == undegraded_index_ceiling(budget) - largest
+    assert result.reserve == (budget - undegraded_index_ceiling(budget)) + largest
+    assert result.index_after <= result.target
+    assert result.index_after < budget
+
+
+def test_an_explicit_reserve_still_gets_the_arithmetic_it_always_got(tmp_path):
+    """The escape hatch, asserted: naming a `reserve` opts out of the pressure floor.
+
+    This is what keeps every eviction-order node above honest — each one passes a `reserve`
+    precisely so it fails on the ORDER and never on the reserve policy — and it is what a
+    caller that wants the pre-job46 default back would use. `budget - reserve` and nothing
+    else, with no floor anywhere near it.
+    """
+    budget = 24_000
+    store = MemoryStore(tmp_path / "mem", index_budget=budget, today=lambda: "2026-08-21")
+    _fill(store, 12)
+    largest = max(len(store._index_line(f).encode()) for f in store._facts())
+
+    explicit = store.compact(reserve=largest)
+
+    assert explicit.reserve == largest
+    assert explicit.target == budget - largest
+    assert explicit.target > undegraded_index_ceiling(budget), (
+        "the point of this node is that an explicit reserve is NOT pulled below the "
+        "warning line"
+    )
+    assert explicit.archived == []
+
+
+def test_the_hooks_explicit_budget_is_still_the_budget_compaction_uses(tmp_path, capsys):
+    """`tools/hooks/bantamkit-hook.mjs` routed AROUND item 7 by naming its own budget.
+
+    Its `postSave` arm computes `floor(0.8 * budget)` and passes it as `--budget`, with a
+    comment saying in as many words that it does so to skip the no-op band. That caller must
+    keep working: `--budget N` still means N, the command still exits 0, and the index still
+    lands at or below the number the caller named. The hook is a different layer and is not
+    touched here — this is the assertion that it did not need to be.
+    """
+    store = MemoryStore(tmp_path / "mem", index_budget=DEFAULT_INDEX_BUDGET)
+    _fill(store, 40)
+    hook_target = (80 * DEFAULT_INDEX_BUDGET) // 100
+
+    code, out, err = _run(
+        ["compact", "--store", str(store.root), "--budget", str(hook_target)], capsys
+    )
+
+    assert code == 0, err
+    assert f"budget {hook_target}" in out
+    after = MemoryStore(store.root, index_budget=hook_target)
+    assert len(after.index_text().encode()) <= hook_target
+    after.lint()  # exits over-budget stores; the hook's aim was met, not merely approached
 
 
 def test_a_negative_reserve_is_floored_to_zero_in_the_store(tmp_path):

@@ -24,17 +24,19 @@ two sources and agreed they match — which is the check that has never once cau
 difference that mattered. Every defect this job found in the port was found by running both
 sides, not by reading either.
 
-## The sixteen suites
+## The nineteen suites
 
 | suite | what it compares |
 |---|---|
-| `cli` | the `bantamkit-mcp` command line as a process: stdout, stderr, exit code |
+| `cli` | the `bantamkit-mcp` command line as a process: stdout, stderr, exit code. **Extended 2026-09-11 by J46-28** to the question of WHO is on the other end of stdin: the bare invocation at a real terminal (the help, on stdout, exit 0), the bare invocation over a pipe driven with a real `initialize`, and `--store` at a terminal, which still SERVES because the empty argv is a scope and not a second signal. Five of its cases are NOT differential — what each side printed at a terminal, which stream carried it, that it is that runtime's own `-h` bytes, that a flagged terminal launch served, and that a piped bare launch answered — because a revert applied to BOTH runtimes leaves every differential green: measured, `--suite cli` goes from 4 failures on a one-sided revert to **3** on the two-sided one, and the differential `bare-at-a-tty/stdout` is one of the cases that goes back to passing |
 | `charsets` | `runtime-ts/src/charsets.ts` against the live CPython codec registry: the file against what `runtime-ts/scripts/charsets-table.py` writes today (header excluded), all 256 bytes of every single-byte codec decoded by the reference against the port's table, the alias map and the module list |
 | `codec` | fact-file frontmatter: emit byte-identically, and parse each other |
 | `dream` | the cross-layer consolidation: one pair of stores materialised twice, `dream()` run on both, and three things compared per scenario — the returned `DreamResult`, the project directory byte for byte, and the profile directory byte for byte. Two of its cases are NOT differential: the mtime tie-break and the day-arithmetic calendar edge are rules written on both sides and asserted on neither, so they are pinned as typed literals against each runtime separately |
 | `docread` | the reader as a library: `sniff`, the rows per part, the omission dicts, every `DocumentReadError` sentence and the `page()` window over the same 99 paths (96 files, plus `''`, `a/b/.` and `/dev/zero`, which are not), plus the thirteen checked-in fixtures under `runtime-py/tests/data/docread/` (a checked-in name wins over a built one), `a\x00b`, three `charset-<label>.eml` parts over the charset table's five bytes and the `<xmp>` 4301-digit charref, and the rulings — pdf/doc/rtf (refused on Node), bzip2/lzma (read by the reference, refused on Node by method number), utf-7, RFC 2231 and `<!ATTLIST>` defaults (both read, one row apart) — each with its refusal-bit companions |
 | `mcpreport` | `--mcp-report` as a process, over one synthetic host-log/event-log pair |
+| `install` | install-shape self-diagnosis (AS-7a) over ELEVEN matched installs BUILT PER RUN — a real `.dist-info` with a real `direct_url.json` on the reference side, a real `node_modules` with npm's real hidden lockfile on the port side — because the two runtimes' OWN installs are not alike in this harness and comparing them compares environments, not code. Shape, origin, reason, `install_source_exists`, the refusal bit and the whole `install-source-missing` sentence, path included: the origin is shared between the two halves so nothing is relativised into agreement. Four ruled divergences, each with the non-ruled companion `docs/porting.md` requires |
 | `memorycli` | `bantamkit-memory` against `python -m bantamkit.memory` as processes: the transcript of every step, the exit codes, and the store afterwards |
+| `pricing` | AS-1(b)'s price table: a token count converted into money. Every table travels as raw JSON TEXT so both decoders are under test, every sentence as base64, and the normalised table as ORDERED PAIRS because `JSON.parse` hoists an integer-like model name and `json.loads` does not — the one ordering the two runtimes are NOT claimed to share. 81 cases over the validator's every fault sentence, the four token classes priced separately, the per-class refusal, the 2**53-1 ceiling and `format_micros`. Six of its cases are NOT differential: the constants, the half-up rounding at the exact half and **the shipped table's emptiness** are pinned as typed literals against each runtime separately — the last of those is what makes pasting an unsourced rate into `assets/pricing/default.json` a visible act, and a differential cannot see it because both sides read the same file |
 | `recall-gate` | roadmap #6's precision gate: the same store and the same `min_ratio` through both runtimes — which facts survive, the directory afterwards (a gated fact must not be stamped), and which ratios are refused. The ladder scores 4/3/2/1 so a floor can land EXACTLY on a fact: `0.5 * 4` is 2.0 and `0.25 * 4` is 1.0, exact in IEEE754 on both sides, and those are the only inputs that separate `>=` from `>`. `NaN`, `Infinity` and `-Infinity` are constructed inside each reference because JSON has no literal for them, and the constant is compared as its IEEE754 BITS because `json.dumps(0.0)` is `0.0` where `JSON.stringify(0)` is `0`. Four of its cases are NOT differential: the value of the constant, the at-threshold admission, the relative-gate property and the refusal sentence are each written twice and asserted on neither side, so they are pinned as typed literals against each runtime separately |
 | `recall-strings` | the binding layer: every sentence an empty recall can produce |
 | `repomap` | roadmap #10's ranked definition map: the walk, the per-file scan (comment-stripped digest, definitions, reference-set digest), the whole edge map, every node's IEEE-754 SCORE BITS, every rendered listing as bytes, every omission, and the `repo_map` tool's rendered reply — over five purpose-built trees (ordinary, boundary, astral, single-file, document-frequency) and 8 budget calls plus per-tree foci, and 7 `pagerank` scenarios with no filesystem at all. Every float travels as its big-endian bit pattern and every string as base64, because a differential comparing `String(x)` measures the serialisers. **The corpus is BUILT, never this repository**: J45-10 measured three wrong answers from mapping the checkout while writing into it, one of which scored four equivalent mutants as KILLED. Five of its cases are NOT differential — the constants, the astral-plane tie-break, the omission vocabulary, the reply tail and the empty-listing sentence are pinned as typed literals against each runtime separately, and the tie-break is the one rule NO Python test can make non-vacuous (CPython's `str` comparison IS code-point comparison), so only a case can prove the two agree |
@@ -42,8 +44,9 @@ sides, not by reading either.
 | `skillaudit` | the catalogue auditor: the whole `Audit` document over the committed nineteen-skill fixture tree, every finding kind, every omission and every refusal sentence. **Added to this table 2026-09-07 by J45-11, which found it missing** — the suite has run in `--all` since job44 and the header said "fourteen" over fourteen rows for fifteen suites, so a reader counting this page was one short and nothing compared the page against `--list` |
 | `statusline` | `--statusline` as a process, over synthetic event logs ([statusline.md](statusline.md)) |
 | `store` | save/recall/index: the directory after the call, byte for byte |
+| `tokenledger` | AS-1(c)'s transcript ledger: what a session cost, read off the host's own transcripts. The whole `as_json()` document over a FROZEN corpus in git (`tools/ledger/fixtures/token-ledger/`) plus five corpora built into the harness scratch — the walk order as a sequence, the `requestId` dedupe across files, every omission subject, the four argument refusals with the class that raised each, the 2**53 ceiling, and the cost, whose default answer over the shipped price table is the REFUSAL. **It never reads `~/.claude/projects`**: the operator scripts under `tools/ledger/` do, and J46-1 measured two runs of one of them on one day disagreeing because the session in between added a call — a differential over a live corpus is a case that goes red for a reason nobody caused and is then "fixed" by weakening it. Six of its cases are NOT differential: the omission vocabulary, the committed corpus's headline counts and the shipped table's refusal are pinned as typed literals against each runtime separately, because a `requestId` dedupe deleted from BOTH sides leaves two runtimes agreeing perfectly on a wrong number |
 | `validate` | the validator: every sentence a schema failure can produce |
-| `wire` | the MCP surface: thirteen tools, one prompt, two templates, and the frames themselves — including a `bantamkit_read` session over the reader's files and its event-log records, and a `read-edges` session over the inputs F2/F3 fixed (bare `&`, a bad EOCD offset, a 4301-digit key, `''`, `a/b/.`, offset 2**53+1 sent raw, `/dev/zero`), and a `read-round2` session over round 2's (part `"null"`/`"[1]"`/`"{}"` as sent, offset `"null"` as the one `isError`, a NUL in the path, the encrypted member, and the bzip2/lzma and RFC 2231 rulings with companions), and a `read-round3` session over round 3's (the `ß1` cell ref, method 9, the encrypted `mimetype`, bad CRC and corrupt deflate as literal sentences on each side, the capped `<p>` charref, `memory_save` with `links` as a 4303-character string refused as `list_type`, and the zero-row part's `has no rows` sentence pinned on `read` id 12) |
+| `wire` | the MCP surface: fourteen tools, one prompt, two templates, and the frames themselves — including a `bantamkit_read` session over the reader's files and its event-log records, and a `read-edges` session over the inputs F2/F3 fixed (bare `&`, a bad EOCD offset, a 4301-digit key, `''`, `a/b/.`, offset 2**53+1 sent raw, `/dev/zero`), and a `read-round2` session over round 2's (part `"null"`/`"[1]"`/`"{}"` as sent, offset `"null"` as the one `isError`, a NUL in the path, the encrypted member, and the bzip2/lzma and RFC 2231 rulings with companions), and a `read-round3` session over round 3's (the `ß1` cell ref, method 9, the encrypted `mimetype`, bad CRC and corrupt deflate as literal sentences on each side, the capped `<p>` charref, `memory_save` with `links` as a 4303-character string refused as `list_type`, and the zero-row part's `has no rows` sentence pinned on `read` id 12) |
 
 `cli`, `mcpreport`, `memorycli` and `statusline` are the odd ones out and deliberately so:
 every other suite compares two library functions, and that comparison cannot see which stream
@@ -53,6 +56,18 @@ than adding a second reference script — it already is "spawn the CLI with this
 back both streams", which is their question with a different argv. `memorycli` carries its
 own `ref/memorycli_ref.py` because it compares a fourth thing those three do not: the store
 on disk after every step.
+
+**Amendment, 2026-09-11 (J46-28): `cli` now carries a second script, and the sentence above
+is the reason to explain why.** `ref/cli_tty_ref.py` is not a second "spawn the CLI with this
+argv" — it is a TERMINAL. Both runtimes discriminate a person from a host on `stdin.isatty()`
+/ `process.stdin.isTTY`, so comparing their answers needs a real pty on fd 0 of each, and Node
+has no pty in its standard library. The alternative was two different fakes, one per runtime,
+and a differential over two fakes measures the fakes. So this one script allocates a single
+`pty.openpty()` and runs **either** side over it — the only script under `ref/` that runs the
+port as well as the reference, and the reason it is allowed to is that what it contributes is
+the harness's terminal, not either runtime's behaviour. Where the platform has no pty
+(Windows) it answers `{"unsupported": …}` and the suite emits a note naming what went
+unmeasured, rather than a case nobody earned.
 
 Suites are discovered by **directory listing**, not by a registry someone has to remember to
 edit. Drop a module in `suites/` and it runs.
@@ -357,6 +372,60 @@ inputs) and not at all against a stock madler zlib, because the phrase comes fro
 `libz` the reference is linked against. Its expected value is a function of the HOST, so a
 ruling would be red where the sides agree and a parity case red where they do not; it is
 recorded in `docs/porting.md`'s gaps with the corpus and the commands, and NO case was written.
+
+**AMENDED 2026-09-10 — job46 (`feat/job46-register-and-agent-stack`), `docs/porting.md`
+register item 7.** The band in which `compact` was a no-op is closed on both runtimes, and the
+gate for it is `wire.mjs`'s new `index-band` session plus a ceiling-parity sweep in
+`store.mjs`. This entry records a RED the harness found and a red it could not have found.
+
+<!-- provenance: value=7064 cases, 149 ruled-different, 0 failures; commit=55575c3 plus J46-6's working tree; command=node tools/conformance/run.mjs --all -->
+```
+PASS: 7064 cases, 1790 byte-identical, 3423 exact-string, 1851 structural,
+      149 ruled-different, 0 failures
+```
+
+Against the commit this unit started from (`55575c3`): **7034 cases, 149 ruled-different, 1
+failure**. The delta is +30 cases — `store` 186 -> 189 and `wire` 417 -> 444, every other suite
+at a byte-identical count — and `ruled-different` did not move, so nothing in the job became a
+deliberate divergence.
+
+**THE ONE FAILURE WAS ALREADY THERE, AND THE UNIT THAT CAUSED IT COULD NOT HAVE SEEN IT.**
+`memorycli/compact-spares-feedback-until-the-other-classes-are-gone/archived-names` pinned
+`['cpj','dpj']` as a literal. Bisected by RUNNING rather than reasoned: green at `6e506ca`
+(310 cases, 0 differed), green at `181744a`, **11 differed at `87cc1f7`** — the reference-only
+commit — and 1 differed at `55575c3` once the port caught up. `87cc1f7`'s own verify was
+`.venv/bin/python -m pytest runtime-py/tests -q`, which does not run this harness at all, so a
+unit that changed a memory-store default had no gate that could see the suite comparing the
+two runtimes over that default. **The verify for a unit that changes shared-store behaviour is
+`--suite <the suites that drive that store>` beside its own unit tests**, not the unit tests
+alone.
+
+The repair is an explicit `--reserve 62` on that scenario, not a bumped literal. Bumping it to
+the three names the new default archives would also be green and would make the case's answer
+identical to its sibling `compact-archives-feedback-once-nothing-else-is-left`, so the pair
+would stop separating "the priority holds" from "the priority is not a veto" — the only thing
+the pair exists for. An explicit reserve is what every eviction-order node here already passes,
+so the case fails on ORDER and never on reserve policy. Checked: under a symmetric removal of
+the class rank from both runtimes the repaired case still goes red.
+
+**Non-vacuity, and the symmetric one is the finding.** Three mutations, each applied to a
+`cp -R`/`git checkout` copy and reverted, with a green control either side:
+
+* `Math.floor` -> `Math.trunc` in the port's `undegradedIndexCeiling`: **2 red**, both new
+  ceiling cases.
+* the `- 1` dropped from the same expression: **2 red** — and with the corpus trimmed to
+  budgets that are NOT multiples of ten, the ceiling case goes **GREEN** under that same
+  mutation. That is why the corpus carries a membership case pinning that both divisibility
+  classes are still in it.
+* **the default reserve reverted to `budget - largest line` on BOTH runtimes at once** — the
+  exact change job46 made, undone symmetrically. `--suite memorycli`: **310 cases, 0 failures,
+  green.** `--suite wire`: every per-frame differential comparison **green**, and 6 red, all of
+  them per-side literals. A fourth mutation, the eviction class rank removed from both sides,
+  reddened 4 literals in `wire` and 2 in `memorycli` and again not one differential case.
+
+So the differential half of this harness was blind to the whole of register item 7 in both
+directions, which is why `index-band`'s four assertions per side are literals and not one
+runtime's answer handed to the other.
 
 **GitHub Actions is off for this account — it bills the user — so nothing here was checked by
 CI and nothing in this repository should be written as if it were.** The substitute is four

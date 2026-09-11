@@ -32,6 +32,8 @@ survive byte-exactly travels as base64.
           "absolute": [...], "name": [...], "suffix": [...], "joined": [...],
           "suffixed": [...]}
     {"op": "winerror", "numbers": [int, ...]}     -> {"messages": {n: text}}  (Windows only)
+    {"op": "index_ceiling", "budgets": [int, ...], "sizes": [[int, ...], ...]}
+      -> {"percent": int, "ceiling": [int], "degraded": [[bool]]}
 """
 
 from __future__ import annotations
@@ -48,7 +50,13 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "runtime-py" / "src"))
 
-from bantamkit.memory.store import MemoryStore, _jaccard, _tokens
+from bantamkit.memory.store import (
+    INDEX_PRESSURE_PERCENT,
+    MemoryStore,
+    _jaccard,
+    _tokens,
+    undegraded_index_ceiling,
+)
 
 
 def b64(text: str) -> str:
@@ -237,6 +245,22 @@ def main() -> None:
             "suffixed": [
                 b64(str(PureWindowsPath(unb64(p)).with_suffix(unb64(s))))
                 for p, s in request["suffixes"]
+            ],
+        }
+    elif op == "index_ceiling":
+        # `undegraded_index_ceiling` is `(PCT * b - 1) // 100` — CPython FLOOR division. The
+        # port spells it `Math.floor(...)`, and `Math.trunc` would be the natural-looking
+        # wrong answer, so the corpus below is chosen by the caller to contain the budgets
+        # where the two would part company. The BOOLEAN is asked for beside the number
+        # because the ceiling only earns its place if it agrees with the cross-multiplied
+        # comparison `mcpserver._index_pressure_condition` actually writes, and a helper that
+        # matched the port while disagreeing with the comparison would be worthless.
+        out = {
+            "percent": INDEX_PRESSURE_PERCENT,
+            "ceiling": [undegraded_index_ceiling(b) for b in request["budgets"]],
+            "degraded": [
+                [size * 100 >= INDEX_PRESSURE_PERCENT * b for size in sizes]
+                for b, sizes in zip(request["budgets"], request["sizes"])
             ],
         }
     elif op == "winerror":

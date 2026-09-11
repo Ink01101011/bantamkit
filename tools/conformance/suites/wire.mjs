@@ -43,7 +43,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const name = 'wire';
-export const summary = 'the MCP surface: thirteen tools, one prompt, two templates, and the frames themselves';
+export const summary = 'the MCP surface: fourteen tools, one prompt, two templates, and the frames themselves';
 
 const here = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = dirname(dirname(here));
@@ -148,7 +148,17 @@ const callTool = (id, name_, args) => rpc(id, 'tools/call', { name: name_, argum
 
 // ------------------------------------------------------------------------- the Node side
 
-/** Drive `dist/cli.js` with the same bytes, holding stdin open until every id has answered. */
+/**
+ * Drive `dist/cli.js` with the same bytes, holding stdin open until every id has answered.
+ *
+ * platform-checked: the 60-second `child.kill('SIGKILL')` below is portable, and it is the
+ * one shape of signal use that is. Nothing here waits for a HANDLER to run — the kill is a
+ * hard stop on a session that has already been declared stuck, and the `reject()` beside it
+ * is what reports the failure. `TerminateProcess`, which is what Node maps every signal to on
+ * Windows, ends the child just as `SIGKILL` does; a handler would have been the part that did
+ * not survive, and there is none. Contrast the 2026-09-05 CI failure this gate was built from,
+ * where a watcher WROTE ITS VERDICT from a `SIGTERM` handler and produced nothing on Windows.
+ */
 function runNode(spec) {
   return new Promise((resolve, reject) => {
     const env = { ...process.env, BANTAMKIT_ASSETS: ASSETS };
@@ -680,6 +690,23 @@ export async function run(ctx) {
    * reply embeds `archive_dir`, an absolute path, which is why this suite runs both sides
    * over the identical `${scratch}/store`.
    *
+   * AMENDED (job46, J46-6). THE TARGET ARITHMETIC IN THE PARAGRAPH ABOVE IS NO LONGER THE
+   * ARITHMETIC THIS SESSION RUNS, and it stays because it is the measurement the session was
+   * built on. "the default `reserve` is the largest line the store holds (55), so the target
+   * is 265" was true until `87cc1f7` / `55575c3`; since then the default `reserve` is
+   * `(budget - undegraded_index_ceiling(budget)) + largest line`, which at 320 is
+   * (320 - 287) + 55 = 88 and puts the target at 232 rather than 265.
+   *
+   * WHAT DID NOT CHANGE IS THIS SESSION'S ANSWER, and that is worth stating rather than
+   * leaving to be re-derived: 266 is above BOTH targets and one 53-byte archive lands at 213,
+   * which is under both, so exactly one fact still moves and every literal below still reads
+   * the same. This session is therefore NOT the one that measures the change — a session
+   * whose answer is the same on either side of a fix cannot be. `index-band` below is, and it
+   * is built to sit in the band this one is nowhere near: at a 320-byte budget the band
+   * `[0.9 * budget, budget - largest line]` = [288, 265] is EMPTY, because 320 < 10 * 55.
+   * The `reserve: 9999` arm is untouched for a different reason — an explicit `reserve` opts
+   * out of the new floor, so its cap at `budget // 2` = 160 is the same number it always was.
+   *
    * THE EVICTION ORDER MUST NOT DEPEND ON THE WALL-CLOCK DATE OF THE RUN. The staleness key
    * is `(last_recalled or created, name)`, and every date in this session is "today" — so a
    * midnight between the saves and a recall that stamped SOME survivors would make the
@@ -724,6 +751,75 @@ export async function run(ctx) {
     callTool(21, 'memory_compact', { extra: 1 }),
     callTool(22, 'memory_compact', { reserve: [1] }),
   ], { argv: ['--store', store, '--index-budget', '320'], env: { ...baseEnv, [EVENT_LOG_ENV]: '1' } });
+
+  /**
+   * THE BAND: the report warns, the remedy it names runs, and the warning goes away.
+   *
+   * This is `docs/porting.md` register item 7 turned into a comparison. The register's own
+   * words: `index-budget-low` fires at `INDEX_PRESSURE_PERCENT` (90) percent of the budget and
+   * NAMES `compact`, while `compact`'s default target sat at `budget - largest index line` —
+   * so everything between the two was a band in which the command the operator was told to run
+   * exited 0 having archived nothing. `87cc1f7` and `55575c3` closed it on the two sides by
+   * measuring the default `reserve` from the warning line instead of from the budget. Nothing
+   * in this repository compared the two answers until this session, and the unit that changed
+   * the reference verified with `pytest`, which does not run this harness at all.
+   *
+   * THE FIXTURE IS BUILT TO SIT INSIDE THE BAND, AND EVERY EDGE OF IT IS DERIVED. A band
+   * exists at all only when `budget >= 10 * largest line`, because it is `[0.9 * budget,
+   * budget - largest line]` and below that the interval is empty. So:
+   *
+   *   - seven `feedback` facts whose index lines are 105 bytes and five `project` facts whose
+   *     lines are 52, for an index of 7*105 + 5*52 = 995 bytes against a budget of 1101;
+   *   - the LOWER edge: 995 * 100 = 99500 >= 90 * 1101 = 99090, so the store is degraded and
+   *     `bantamkit_status` prints the sentence naming the remedy;
+   *   - the UPPER edge: the OLD default target was `budget - largest line` = 1101 - 105 = 996,
+   *     and 995 < 996, so the old `compact` archived NOTHING here. The fixture is strictly
+   *     inside the band rather than on either edge of it, which is what stops the case being
+   *     the kind whose fixture agrees with the threshold by coincidence.
+   *
+   * 1101 IS NOT A ROUND NUMBER ON PURPOSE: 90 * 1101 = 99090 is not divisible by 100, so the
+   * ceiling is a real floor division (990, not 990.9) rather than an exact one. The `- 1` in
+   * `undegraded_index_ceiling` is invisible at this budget and is swept separately, over the
+   * multiples of ten, by `store.mjs` — see the corpus-membership case there.
+   *
+   * THE ORDER IS THE OTHER HALF, and the names are chosen so a wrong order is visible rather
+   * than merely different. Every fact is saved on the same day, so the staleness key falls
+   * back to the name, and `band-f*` sorts BEFORE `band-p*`: an eviction order that ignored the
+   * class would archive `band-f1, band-f2, band-f3` — the user's standing instructions. What
+   * both runtimes must archive is `band-p1, band-p2, band-p3`, in that order, with all seven
+   * feedback facts left in the index and two project facts still standing, so the loop is seen
+   * to have STOPPED at the target rather than run out of candidates.
+   *
+   * ONE MASK AND ONE SUBSTITUTION, both the same as `status-degraded`'s and for the same
+   * reasons: `build sha256:` fingerprints two different trees, and the remedy sentence names
+   * the command THIS install provides.
+   */
+  const bandDesc = (word, n) => `${word} ${word.repeat(40)}`.slice(0, n);
+  const BAND_FEEDBACK = ['alfa', 'bravo', 'coral', 'delta', 'ember', 'falcon', 'gamma'];
+  const BAND_PROJECT = ['hotel', 'india', 'juliet', 'kilo', 'lima'];
+  add('index-band', [
+    INIT(),
+    INITIALIZED,
+    // A `feedback` line is `- [[<name>]] (feedback) — <description>\n`: 15 fixed bytes (the em
+    // dash is three of them) plus the name, the type word and the description. 7 + 8 + 75 + 15
+    // = 105. A `project` line is 7 + 7 + 23 + 15 = 52. Every description is built from a word
+    // no other fact uses, because `memory_save` DEDUPES on token overlap and twelve facts
+    // padded from one phrase would be eleven refusals and an empty band.
+    ...BAND_FEEDBACK.map((word, i) =>
+      callTool(2 + i, 'memory_save', { type: 'feedback', name: `band-f${i + 1}`, description: bandDesc(word, 75), body: 'b' }),
+    ),
+    ...BAND_PROJECT.map((word, i) =>
+      callTool(9 + i, 'memory_save', { type: 'project', name: `band-p${i + 1}`, description: bandDesc(word, 23), body: 'b' }),
+    ),
+    callTool(14, 'bantamkit_status', {}),
+    callTool(15, 'memory_compact', {}),
+    callTool(16, 'bantamkit_status', {}),
+    callTool(17, 'memory_compact', {}),
+  ], {
+    argv: ['--store', store, '--index-budget', '1101'],
+    mask: maskBuild,
+    refMask: substituteMemoryProg,
+  });
 
   /**
    * `bantamkit_read`, the tenth tool, over the reader's files: every branch the handler has.
@@ -1150,6 +1246,10 @@ export async function run(ctx) {
       .filter((frame) => frame !== null);
   /** The parsed frame for one id, or `null` if the session never answered it. */
   const frameOf = (side, id) => framesOf(side).find((frame) => frame.id === id) ?? null;
+  // The reference embeds the absolute fixture path in its manifest, and the scratch root
+  // changes every run. Taking it out is the whole of the transformation applied before a
+  // `reads` literal is compared — no other byte is touched.
+  const unscratched = (text) => (text ?? '').split(ctx.scratch).join('<SCRATCH>');
   /** The rendered text of a tool result — the half a person actually reads — or `null`. */
   const toolTextOf = (side, id) => frameOf(side, id)?.result?.content?.[0]?.text ?? null;
   const byId = (frames) => {
@@ -1347,14 +1447,59 @@ export async function run(ctx) {
      * `build_identity` answers two different trees' digests by construction. The record
      * carries the COUNT of underivable fields instead, and nothing else, so it is the same
      * bytes on both sides — which is the whole reason no digest was put in it.
+     *
+     * ONE SUBSTITUTION, FOR THE SAME REASON THE `unavailable` CASE IS SPLIT. AS-7 added three
+     * fields whose availability is decided by how the server was INSTALLED, and this harness
+     * does not install its two sides alike — the reference through an editable install of
+     * `runtime-py`, the port out of `runtime-ts/dist`. At `c9372ca` that made this record
+     * `{"unavailable":1}` against `{"unavailable":3}` with no code difference behind it. So
+     * the count compared here is the count NET of the install fields, taken from each side's
+     * own reply in the same session; every other byte of the record still reaches the
+     * comparison as the runtime wrote it, and the raw counts are printed in the note below.
+     *
+     * The substitution deletes nothing, because the case underneath it is stronger than what
+     * it replaces: the record's count must equal the length of the reply's own `unavailable`
+     * list, which is the property that says the record was DERIVED from the answer rather
+     * than computed a second time — and it is pinned per side, so both runtimes miscounting
+     * together still reddens.
      */
     const identityLog = results.get('eventlog-identity');
+    const INSTALL_FIELDS_LOGGED = ['install_shape', 'install_source', 'install_source_exists'];
+    const identityReplyOf = (side) => frameOf(side, 2)?.result?.structuredContent ?? {};
+    const installNamed = (side) =>
+      (identityReplyOf(side).unavailable ?? []).filter((k) => INSTALL_FIELDS_LOGGED.includes(k)).length;
+    const netCount = (text, side) =>
+      maskTs(text ?? '').replace(/"unavailable":(\d+)/g, (_m, n) => `"unavailable":${Number(n) - installNamed(side)}`);
     cases.push({
-      name: 'eventlog: build_identity answers differently and records identically',
+      name: 'eventlog: build_identity answers differently and records identically, net of the install fields',
       kind: 'bytes',
-      expected: maskTs(identityLog.python.eventlog),
-      actual: maskTs(identityLog.node.eventlog),
+      expected: netCount(identityLog.python.eventlog, identityLog.python),
+      actual: netCount(identityLog.node.eventlog, identityLog.node),
     });
+    const recordedCount = (side) => {
+      const line = (side.eventlog ?? '').split('\n').find((l) => l.includes('"build_identity"'));
+      return line === undefined ? null : JSON.parse(line).detail.unavailable;
+    };
+    const countMatchesReply = (side) =>
+      `${recordedCount(side) === (identityReplyOf(side).unavailable ?? []).length}`;
+    cases.push({
+      name: "eventlog: the recorded count is the reply's own unavailable list, counted — the reference",
+      kind: 'string',
+      expected: 'true',
+      actual: countMatchesReply(identityLog.python),
+    });
+    cases.push({
+      name: "eventlog: the recorded count is the reply's own unavailable list, counted — the port",
+      kind: 'string',
+      expected: 'true',
+      actual: countMatchesReply(identityLog.node),
+    });
+    notes.push(
+      `eventlog: build_identity recorded unavailable=${recordedCount(identityLog.python)} (reference) and ` +
+        `unavailable=${recordedCount(identityLog.node)} (port); of those, ${installNamed(identityLog.python)} and ` +
+        `${installNamed(identityLog.node)} are the AS-7 install fields, whose availability is a fact about how ` +
+        'this harness is installed and not about either runtime. The bytes case above compares the counts net of them.',
+    );
 
     const budgetLog = results.get('eventlog-budget');
     cases.push({
@@ -1609,13 +1754,17 @@ export async function run(ctx) {
     });
   }
 
-  // -------------------------------------------------- repo_map: the thirteenth tool, served
+  // ------------------------------------------------ token_ledger: the fourteenth tool, served
 
   /**
    * The advertisement session's `tools/list` is compared canonically above (`advertisement:
    * id 2`) and its raw order is ruled. This pins the three facts the golden entry was added
-   * for: THIRTEEN tools, `skill_audit` still eleventh, and `repo_map` served LAST, on both
+   * for: FOURTEEN tools, `skill_audit` still eleventh, and `token_ledger` served LAST, on both
    * sides.
+   *
+   * It was THIRTEEN with `repo_map` last until job46's J46-18 appended `token_ledger`, and the
+   * paragraph below is why that edit is two numbers and not thirteen: `eleventh` did not move,
+   * so no existing advertisement changed.
    *
    * The MIDDLE index is what makes this more than a count. A tool appended at the end moves
    * the total and nothing else; a tool inserted anywhere earlier moves `eleventh` too, and
@@ -1624,11 +1773,11 @@ export async function run(ctx) {
   {
     const toolNames = (side) => frameOf(side, 2).result.tools.map((t) => t.name);
     const { python, node } = results.get('advertisement');
-    cases.push({ name: 'advertisement: the thirteen tool names, in order', kind: 'json', expected: toolNames(python), actual: toolNames(node) });
+    cases.push({ name: 'advertisement: the fourteen tool names, in order', kind: 'json', expected: toolNames(python), actual: toolNames(node) });
     cases.push({
-      name: 'advertisement: thirteen tools, skill_audit eleventh and repo_map thirteenth',
+      name: 'advertisement: fourteen tools, skill_audit eleventh and token_ledger fourteenth',
       kind: 'json',
-      expected: { count: 13, eleventh: 'skill_audit', last: 'repo_map' },
+      expected: { count: 14, eleventh: 'skill_audit', last: 'token_ledger' },
       actual: { count: toolNames(node).length, eleventh: toolNames(node)[10], last: toolNames(node).at(-1) },
     });
   }
@@ -1644,6 +1793,22 @@ export async function run(ctx) {
    * the bit is ALSO compared side to side, unruled — the case CLAUDE.md requires so that a
    * port that quietly started answering where the reference refuses would go red here and
    * not stay green behind a ruling that only ever asked "do they still differ".
+   *
+   * AND WHERE ONE SIDE READS, WHAT IT READ IS PINNED. Added 2026-09-11 (J46-32, defect 5);
+   * J46-24 measured the hole in `docread.mjs` and named this block as carrying the same one.
+   *
+   * A ruling proves the two sides still DIFFER. A refusal-bit companion proves WHICH side
+   * refuses. Neither of them can see what the READING side read — so the reference can
+   * silently start reading something else and every case here stays green. J46-24's proof, in
+   * `docread.mjs`: truncating every row by one character in `pdfread._rows_from_runs` made
+   * `tiny.pdf` read `Hello conformanc` instead of `Hello conformance`, and that suite still
+   * answered 1169 cases, 0 failures. Only a printed note moved, and a note is not a case.
+   *
+   * `reads` and `sentence` close it with no new machinery: they are the fifth and sixth
+   * columns of the table below, they are emitted only on the rows where the reference does
+   * NOT refuse, and both were generated from a measured run of this very suite rather than
+   * written by hand. `note.rtf`'s pair rides the same branch and so applies on exactly the
+   * hosts where `/usr/bin/textutil` exists — which is the same condition its refusal bit uses.
    */
   {
     const { python, node } = results.get('read-ruled');
@@ -1655,15 +1820,31 @@ export async function run(ctx) {
       expected: [...byId(python.frames).keys()].sort(),
       actual: [...byId(node.frames).keys()].sort(),
     });
+    // MEASURED 2026-09-11 from this suite's own run, not written by hand. The port's sentences
+    // are the `bantamkit_read` refusals the ruling above quotes; the reference's are its
+    // manifest (id 2, id 4) and its paged read (id 7), path-scrubbed.
+    const PDF_REFUSAL =
+      'error: cannot read tiny.pdf: it is a PDF document (PDF-1.4), 585 bytes on disk. pdf is ' +
+      'not readable by the Node server yet (the Python server reads it); see docs/porting.md';
     const table = [
-      [2, 'pdf', 'tiny.pdf, the reference reads it', false],
-      [3, 'pdf', 'header.pdf, both refuse', true],
-      [4, 'rtf', `note.rtf, read where textutil is (${textutil ? 'here' : 'not here'})`, !textutil],
-      [5, 'doc', 'real.doc, both refuse', true],
-      [6, 'rtf', 'bad.rtf, both refuse', true],
-      [7, 'pdf', 'tiny.pdf page 1, the reference pages it', false],
+      [2, 'pdf', 'tiny.pdf, the reference reads it', false,
+        '<SCRATCH>/docs/tiny.pdf (pdf) part 0 "page 1": 1 rows, numbered 0 to 0\n' +
+        '  row 0 is the header: Hello wire',
+        PDF_REFUSAL],
+      [3, 'pdf', 'header.pdf, both refuse', true, null, null],
+      [4, 'rtf', `note.rtf, read where textutil is (${textutil ? 'here' : 'not here'})`, !textutil,
+        '<SCRATCH>/docs/note.rtf (rtf) part 0 "document": 1 rows, numbered 0 to 0\n' +
+        '  row 0 is the header: hello',
+        'error: cannot read note.rtf: it is an RTF document, 18 bytes on disk. rtf is read ' +
+        'through /usr/bin/textutil by the Python server and not by the Node server; see docs/porting.md'],
+      [5, 'doc', 'real.doc, both refuse', true, null, null],
+      [6, 'rtf', 'bad.rtf, both refuse', true, null, null],
+      [7, 'pdf', 'tiny.pdf page 1, the reference pages it', false,
+        '<SCRATCH>/docs/tiny.pdf "page 1" rows 0-0 of 1; each line below begins with its own ' +
+        'row number\n0\tHello wire\nthat was the last row of "page 1"',
+        PDF_REFUSAL],
     ];
-    for (const [id, kind, label, pythonRefuses] of table) {
+    for (const [id, kind, label, pythonRefuses, reads, sentence] of table) {
       cases.push({
         name: `read-ruled: id ${id}: ${label}`,
         kind: 'string',
@@ -1687,6 +1868,22 @@ export async function run(ctx) {
           kind: 'json',
           expected: refusedAt(python, id),
           actual: refusedAt(node, id),
+        });
+      } else {
+        // THE READING SIDE, PINNED. Without these two the reference could start reading
+        // something else entirely and the ruling, the refusal bit and the outcome sequence
+        // would all stay green — the exact hole J46-24 measured one layer down.
+        cases.push({
+          name: `read-ruled: id ${id}: the reference reads what it was measured reading`,
+          kind: 'bytes',
+          expected: reads,
+          actual: unscratched(toolTextOf(python, id)),
+        });
+        cases.push({
+          name: `read-ruled: id ${id}: the port refuses in the sentence the ruling quotes`,
+          kind: 'bytes',
+          expected: sentence,
+          actual: toolTextOf(node, id) ?? '(no reply)',
         });
       }
     }
@@ -1989,6 +2186,19 @@ export async function run(ctx) {
         expected: true,
         actual: /part 0 "document": 1 rows?/.test(toolTextOf(python, id) ?? ''),
       });
+      // AND WHAT IT READ, as a literal. J46-32 (defect 5). The shape assertion above answers
+      // "one part, one row" and would hold just as well if that row said something else
+      // entirely — which is the hole a ruling plus a refusal bit cannot close, measured by
+      // J46-24 one layer down. `hello` is what the reference reads out of both fixtures, from
+      // a run of this suite.
+      cases.push({
+        name: `read-round2: id ${id}: the reference reads what it was measured reading`,
+        kind: 'bytes',
+        expected:
+          `<SCRATCH>/docs/${file} (docx) part 0 "document": 1 rows, numbered 0 to 0\n` +
+          '  row 0 is the header: hello',
+        actual: unscratched(toolTextOf(python, id)),
+      });
     }
     cases.push({
       name: 'read-round2: id 10: rfc2231-charset.eml, both read, one row apart',
@@ -2110,12 +2320,114 @@ export async function run(ctx) {
         'sides report a semver STRING, which is what caught this field silently being `null` ' +
         'on the Node side.',
     });
+    /**
+     * THE UNAVAILABLE LIST, SPLIT BY WHAT DECIDES EACH ENTRY. Read this before changing it.
+     *
+     * This case used to compare the two lists whole, and at `c9372ca` it went red with no
+     * code difference behind it. AS-7 added three fields whose availability is decided by
+     * how the SERVER WAS INSTALLED, and the harness does not install its two sides alike:
+     * the reference is imported from an editable install of `runtime-py` (`linked`, an
+     * origin that exists, nothing added to the list) and the port is run out of the checkout
+     * (`checkout`, no origin path at all, so `install_source` and `install_source_exists`
+     * are both named as unavailable). Same code, two environments — and a colleague whose
+     * laptop carries a `pip install` and an `npm i` would see the two lists agree again.
+     *
+     * A case whose colour is decided by how the developer set their laptop up is not an
+     * instrument, so the list is split rather than narrowed:
+     *
+     *   * everything the CODE decides is still compared whole, below, and still reddens if
+     *     either side starts or stops refusing a field;
+     *   * the three install fields are compared for the RULE they follow, per side against a
+     *     literal, so a symmetric regression cannot hide in a differential;
+     *   * their VALUES are compared across the two runtimes in the `install` suite, over ten
+     *     matched installs both sides are handed, which is strictly more than this case ever
+     *     saw — it only ever compared the one shape this machine happened to be in.
+     *
+     * If you are here because one of these went red: the note at the end of this suite prints
+     * both sides' `install_shape`. Two different shapes is an ENVIRONMENT difference and no
+     * case below should see it. The same shape with different answers is a code difference.
+     */
+    const INSTALL_FIELDS = ['install_shape', 'install_source', 'install_source_exists'];
+    // Written out rather than imported from either runtime, so this file is not testing a
+    // vocabulary against itself. That the two runtimes DECLARE the same five words, in the
+    // same order, is pinned per side in the `install` suite.
+    const INSTALL_SHAPES = ['registry', 'local-file', 'linked', 'checkout', 'ephemeral'];
+    const codeDecided = (identity) => (identity.unavailable ?? []).filter((k) => !INSTALL_FIELDS.includes(k));
     cases.push({
-      name: 'build_identity: the unavailable list agrees',
+      name: 'build_identity: the unavailable list agrees, over every field whose availability the CODE decides',
       kind: 'json',
-      expected: py.unavailable,
-      actual: nd.unavailable,
+      expected: codeDecided(py),
+      actual: codeDecided(nd),
     });
+    // THE CASE THAT COULD NOT FAIL, CLOSED. `codeDecided` reads `identity.unavailable ?? []`,
+    // so two runtimes that both stopped reporting the key at all would compare `[]` against
+    // `[]` and pass — and the case above would have said the lists agree while neither side
+    // had one. That hole is in the case this replaced, too. The literal is what shuts it: a
+    // correctly provisioned harness refuses exactly `git_commit` and derives everything else,
+    // which is a property of the code (both sides refuse a commit by rule) and of the harness
+    // (`BANTAMKIT_ASSETS` is pinned, so the pack is never the missing thing).
+    cases.push({
+      name: 'build_identity: the code-decided refusals against a literal — the reference',
+      kind: 'json',
+      expected: ['git_commit'],
+      actual: codeDecided(py),
+    });
+    cases.push({
+      name: 'build_identity: the code-decided refusals against a literal — the port',
+      kind: 'json',
+      expected: ['git_commit'],
+      actual: codeDecided(nd),
+    });
+    /**
+     * And the install fields, as the rule they are supposed to follow rather than as the
+     * shape this machine is in. Each clause is a property of the code:
+     *
+     *   * the shape is one of the five words, or the whole triple is a named gap;
+     *   * `install_source` is a non-empty path, or a named gap — never dropped, never `""`;
+     *   * `install_source_exists` is a bool EXACTLY when `install_source` is a path;
+     *   * and a named gap in one is a named gap in the other.
+     *
+     * Pinned per side against the same literal, which is the only shape that reddens when
+     * both runtimes break together — the failure mode this job has now measured five times.
+     */
+    const named = (value) =>
+      value !== null && typeof value === 'object' && typeof value.unavailable === 'string' && value.unavailable !== '';
+    const installFieldRule = (identity) => {
+      const shape = identity.install_shape;
+      const source = identity.install_source;
+      const exists = identity.install_source_exists;
+      if (named(shape)) {
+        return `shape undetermined and named; source and exists named too: ${named(source) && named(exists)}`;
+      }
+      return [
+        `shape is one of the five words: ${INSTALL_SHAPES.includes(shape)}`,
+        `source is a non-empty path or a named gap: ${typeof source === 'string' ? source !== '' : named(source)}`,
+        `exists is a bool exactly when source is a path: ${(typeof exists === 'boolean') === (typeof source === 'string')}`,
+        `exists is a named gap exactly when source is: ${named(exists) === named(source)}`,
+      ].join('; ');
+    };
+    const INSTALL_FIELD_RULE =
+      'shape is one of the five words: true; source is a non-empty path or a named gap: true; ' +
+      'exists is a bool exactly when source is a path: true; exists is a named gap exactly when source is: true';
+    cases.push({
+      name: 'build_identity: the three install fields follow their rule — the reference',
+      kind: 'string',
+      expected: INSTALL_FIELD_RULE,
+      actual: installFieldRule(py),
+    });
+    cases.push({
+      name: 'build_identity: the three install fields follow their rule — the port',
+      kind: 'string',
+      expected: INSTALL_FIELD_RULE,
+      actual: installFieldRule(nd),
+    });
+    notes.push(
+      `identity: install_shape — reference ${JSON.stringify(py.install_shape)}, port ${JSON.stringify(nd.install_shape)}. ` +
+        'These are ENVIRONMENT facts about how this harness is installed, not answers being compared: the reference ' +
+        'is imported from whatever install owns `runtime-py` and the port is run from `runtime-ts/dist`. If they ' +
+        'differ, that is the harness and not the code. The `install` suite compares the three fields over matched ' +
+        'installs, where a difference IS the code.',
+    );
     cases.push({
       name: 'build_identity: build_id is domain-separated and MUST differ',
       kind: 'string',
@@ -2299,16 +2611,34 @@ export async function run(ctx) {
           if ((listing ?? []).length > 0) wroteArchive.push(`${spec.name} (${where}): ${listing.join(',')}`);
         }
       }
-      const saidMoved = [...namedBy(9), ...namedBy(13)].map((name) => `${name}.md`).sort();
+      // WIDENED (job46, J46-6) FROM ONE SESSION TO A LIST OF THEM, and it is a widening and
+      // not a loosening: the expectation is still built from what the REPLIES said moved, and
+      // it still forbids every other session and every other store. `index-band` is the second
+      // session in this suite that compacts — it is register item 7's own story, and before it
+      // this case's one-element literal would have failed on its existence rather than on
+      // anything it did. The ids are the archiving calls of each session, named here so a
+      // session that started compacting silently is still a failure.
+      const COMPACTING = [['memory-compact', [9, 13]], ['index-band', [15]]];
+      const expectedArchives = COMPACTING.map(([session, ids]) => {
+        const from = results.get(session)[key];
+        const said = ids
+          .flatMap((id) => [...(toolTextOf(from, id) ?? '').matchAll(/^- (\S+) \(/gm)].map((m) => `${m[1]}.md`))
+          .sort();
+        return `${session} (store): ${said.join(',')}`;
+      });
       cases.push({
-        name: `memory_compact: ${label} wrote \`archive/\` in the session that compacted, in no other store, and only what the replies named`,
+        name: `memory_compact: ${label} wrote \`archive/\` in the sessions that compacted, in no other store, and only what the replies named`,
         kind: 'json',
-        expected: [`memory-compact (store): ${saidMoved.join(',')}`],
+        expected: expectedArchives,
         actual: wroteArchive,
       });
       // The arithmetic the whole session stands on, pinned on disk rather than in prose:
       // five ~53-byte lines make 266 against a 320 budget, one over the 265 default target
       // (the largest line is 55), and the three survivors' lines reach 160 by equality.
+      // AMENDED (job46, J46-6): "the 265 default target" is the PRE-job46 number and stays
+      // as the record of what this case was built against; the default target at a 320-byte
+      // budget is now 232, and 266 is over both. See the session's own comment for why its
+      // answer is unchanged either way, and `index-band` for the case that is not.
       const savedRecords = (side.eventlog ?? '')
         .split('\n')
         .filter((line) => line !== '')
@@ -2327,6 +2657,164 @@ export async function run(ctx) {
       });
     }
     notes.push(`memory_compact (node): ${textOf(results.get('memory-compact').node, 9).split('\n')[0]}`);
+  }
+
+  // -------------------------------------------------- the band, held to register item 7
+
+  /**
+   * PER SIDE AND AS LITERALS, for the reason the block above gives and one more that is
+   * specific to this change: `87cc1f7` and `55575c3` moved the SAME arithmetic on both
+   * runtimes in one job, so a differential comparison of the two cannot see whether either of
+   * them is right. That is this repository's third named vacuity — a symmetric regression —
+   * and the only defence against it is a literal each side has to reach on its own. Both sides
+   * of every case below are therefore fixed numbers and fixed name lists, not one runtime's
+   * answer handed to the other.
+   *
+   * Four things, one case each, in the order the operator meets them:
+   *
+   *   1. IN THE BAND: the report warns, and the command it names is not a no-op there. The
+   *      band is DERIVED from what the session actually left on disk — the index size the
+   *      compaction reply quotes and the largest line `index.md` still carries — and never
+   *      from a percentage. A percentage would rot: the register wrote 99.2% off a store whose
+   *      largest index line was 186 bytes, and the same store measures 98.50% today at 361,
+   *      because the upper edge is a function of store CONTENT.
+   *   2. CLEARED: the condition the report printed before is absent from the report after.
+   *   3. IDEMPOTENT: the second run archives nothing.
+   *   4. ORDER: the same three names, in the same order, on both sides, all of them
+   *      non-feedback — while the three facts a key that ignored the class would have taken
+   *      are all `feedback` and all still in the index.
+   */
+  {
+    const textOf = (side, id) => toolTextOf(side, id) ?? '';
+    /** `- <name> (<type>) — <description>`: the bullets a compaction reply lists, in reply order. */
+    const movedBy = (side, id) =>
+      [...textOf(side, id).matchAll(/^- (\S+) \((\w+)\) — /gm)].map((m) => ({ name: m[1], type: m[2] }));
+    const ALL_BAND_NAMES = [
+      ...BAND_FEEDBACK.map((_, i) => `band-f${i + 1}`),
+      ...BAND_PROJECT.map((_, i) => `band-p${i + 1}`),
+    ];
+    for (const [label, key] of [
+      ['the reference', 'python'],
+      ['the port', 'node'],
+    ]) {
+      const side = results.get('index-band')[key];
+      const before = textOf(side, 14);
+      const compacted = textOf(side, 15);
+      const after = textOf(side, 16);
+      const again = textOf(side, 17);
+      // "the index went from 995 to 839 bytes against a 1101-byte budget" — the two sizes and
+      // the budget read out of the reply the operator is shown, so the arithmetic pinned here
+      // is the arithmetic that was printed and not a second computation of it.
+      const went = /the index went from (\d+) to (\d+) bytes against a (\d+)-byte budget/.exec(compacted);
+      const indexAfter = went ? Number(went[2]) : null;
+      // THE BAND IS MEASURED FROM THE WARNING'S OWN NUMBERS, not from the remedy's. The
+      // degraded sentence is `the memory index is <n> bytes of a <b>-byte budget, …`, and
+      // reading the pair out of THAT is what lets the band case still measure a band when the
+      // remedy has gone back to being a no-op and printed no numbers at all. The remedy's
+      // `from` is compared against it below rather than substituted for it.
+      const warned = /the memory index is (\d+) bytes of a (\d+)-byte budget/.exec(before);
+      const indexBefore = warned ? Number(warned[1]) : null;
+      const budget = warned ? Number(warned[2]) : null;
+      const largestLine = side.index?.largestLine ?? null;
+      cases.push({
+        name: `index-band: ${label} is inside the band — degraded at the warning line, and under the target the OLD default would have aimed at`,
+        kind: 'json',
+        expected: {
+          indexBefore: 995,
+          budget: 1101,
+          largestLine: 105,
+          // 995 * 100 = 99500 >= 90 * 1101 = 99090. Derived from the two numbers above rather
+          // than asserted, so a fixture that drifted out of the band fails here and does not
+          // quietly go on to test nothing.
+          degradedAtTheWarningLine: true,
+          // 995 <= 1101 - 105 = 996: the OLD default target, which is why the remedy used to
+          // exit 0 having archived nothing exactly here.
+          underTheOldDefaultTarget: true,
+          // …and the band is non-empty at all only because 1101 >= 10 * 105.
+          theBandIsNonEmpty: true,
+          reportNamesTheRemedy: true,
+        },
+        actual: {
+          indexBefore,
+          budget,
+          largestLine,
+          degradedAtTheWarningLine: indexBefore !== null && budget !== null && indexBefore * 100 >= 90 * budget,
+          underTheOldDefaultTarget:
+            indexBefore !== null && budget !== null && largestLine !== null && indexBefore <= budget - largestLine,
+          theBandIsNonEmpty: budget !== null && largestLine !== null && budget >= 10 * largestLine,
+          reportNamesTheRemedy: before.includes(REMEDY_HEAD),
+        },
+      });
+      cases.push({
+        name: `index-band: ${label} — the remedy the degraded report names archives something, and the condition has cleared afterwards`,
+        kind: 'json',
+        expected: {
+          archivedCount: 3,
+          indexAfter: 839,
+          remedyAgreesWithTheWarningAboutTheSize: true,
+          stillDegraded: false,
+          reportStillNamesTheRemedy: false,
+        },
+        actual: {
+          archivedCount: movedBy(side, 15).length,
+          indexAfter,
+          // The report and the remedy are two surfaces reading one store; a job that moved
+          // one of them and not the other is the whole defect this session exists for.
+          remedyAgreesWithTheWarningAboutTheSize: went !== null && Number(went[1]) === indexBefore,
+          stillDegraded: indexAfter !== null && budget !== null && indexAfter * 100 >= 90 * budget,
+          // The report AFTER, read for the same sentence the report BEFORE carried. A runtime
+          // that stopped printing the sentence altogether would pass this half and fail the
+          // `reportNamesTheRemedy` half of the case above.
+          reportStillNamesTheRemedy: after.includes(REMEDY_HEAD),
+        },
+      });
+      cases.push({
+        name: `index-band: ${label} — running the remedy a second time archives nothing`,
+        kind: 'json',
+        expected: { archived: [], saysNothingToArchive: true },
+        actual: {
+          archived: movedBy(side, 17).map((m) => m.name),
+          // The reply's own words for the empty outcome. A positive check, so a run that
+          // errored — and archived nothing because it never got that far — fails here rather
+          // than passing as "idempotent".
+          saysNothingToArchive: again.includes('nothing archived: the index is '),
+        },
+      });
+      cases.push({
+        name: `index-band: ${label} — the names and the order, with feedback exhausted last`,
+        kind: 'json',
+        expected: {
+          moved: [
+            { name: 'band-p1', type: 'project' },
+            { name: 'band-p2', type: 'project' },
+            { name: 'band-p3', type: 'project' },
+          ],
+          onDisk: ['band-p1.md', 'band-p2.md', 'band-p3.md'],
+          // What a key that ranked by staleness ALONE would have archived here: every fact was
+          // saved on the same day, so the name breaks the tie, and `band-f*` sorts first. The
+          // three it would have taken are the user's standing instructions.
+          whatATemporalKeyWouldTake: ['band-f1', 'band-f2', 'band-f3'],
+          everyFeedbackFactSurvived: true,
+          // Two project facts are still in the index, so the loop STOPPED at the target
+          // rather than running out of non-feedback candidates — without this the case would
+          // pass under a rule that simply archived every project fact it could find.
+          projectFactsLeftStanding: 2,
+        },
+        actual: {
+          moved: movedBy(side, 15),
+          onDisk: side.archive ?? null,
+          whatATemporalKeyWouldTake: [...ALL_BAND_NAMES].sort().slice(0, 3),
+          everyFeedbackFactSurvived: BAND_FEEDBACK.every((_, i) => !(side.archive ?? []).includes(`band-f${i + 1}.md`)),
+          projectFactsLeftStanding: BAND_PROJECT.filter((_, i) => !(side.archive ?? []).includes(`band-p${i + 1}.md`)).length,
+        },
+      });
+    }
+    notes.push(`index-band (node): ${textOf(results.get('index-band').node, 15).split('\n')[0]}`);
+    notes.push(
+      `index-band: the band on this fixture — degraded from 90% of 1101 = 990.9 up to the old ` +
+        `default target 1101 - 105 = 996, index 995, new target ` +
+        `${Math.floor((90 * 1101 - 1) / 100) - 105}; every edge derived, no percentage pinned`,
+    );
   }
 
   // --------------------------------------------------- the SDK-lineage rulings, in full

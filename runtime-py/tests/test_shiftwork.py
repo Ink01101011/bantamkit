@@ -428,6 +428,291 @@ def test_full_cycle_on_the_v1_example(tmp_path, example):
     assert len(read_log(path)) == 2
 
 
+# --- MCP flavor: clock_out, the AS-2 role/model check ------------------------
+#
+# `job.roles` (J46-7, contract 3fe21ac) maps a role to the model identifiers a
+# session in that role may report. A role the map does not name -- and a
+# checkpoint with no map at all -- is unconstrained, so these tests carry the
+# before-and-after in one place: the refusal, and the four shapes that must
+# still behave exactly as they did before the feature existed.
+#
+# The sentences are pinned as TEXT, not as "an error was raised": the rule
+# lives in one place per runtime and is copied to the other side, so a
+# differential conformance case cannot see a change to it (J46-7 measured
+# that on the schema itself). Per-side literals are the teeth.
+
+ROLES = {"implementer": ["claude-opus-5", "claude-sonnet-5"], "reviewer": ["claude-opus-5"]}
+
+
+def test_clock_out_refuses_a_model_the_role_is_not_allowed(tmp_path, example):
+    """U3 is the implementer cursor unit; haiku is not on the implementer's list."""
+    example["job"]["roles"] = ROLES
+    path = write_checkpoint(tmp_path, example)
+    before = path.read_bytes()
+    r = ops.clock_out(
+        str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, ACCOUNTING
+    )
+    assert r == {
+        "result": "error",
+        "reason": (
+            "unit U3 in role implementer reported model haiku, which "
+            "job.roles.implementer does not allow: claude-opus-5, claude-sonnet-5"
+        ),
+    }
+    # Nothing was written: not the checkpoint, and not the accounting line. The
+    # check is BEFORE the log-then-commit pair, so there is no orphan line
+    # claiming a model that was rejected.
+    assert path.read_bytes() == before
+    assert not Path(str(path) + ".log.jsonl").exists()
+    assert read_log(path) == []
+    assert ops.clock_in(str(path))["unit"]["id"] == "U3"  # the cursor never moved
+
+
+def test_clock_out_accepts_a_model_on_the_roles_list(tmp_path, example):
+    example["job"]["roles"] = ROLES
+    path = write_checkpoint(tmp_path, example)
+    r = ops.clock_out(
+        str(path),
+        "U3",
+        "done",
+        {},
+        {"unit": "U3", "outcome": "done"},
+        dict(ACCOUNTING, model="claude-sonnet-5"),
+    )
+    assert r["result"] == "ok" and r["cursor"] == "U4"
+    assert read_log(path)[-1]["model"] == "claude-sonnet-5"
+
+
+def test_clock_out_compares_the_model_string_exactly(tmp_path, example):
+    """No normalisation, no prefix match, no strip-the-brackets rule (the J46-7 ruling).
+
+    Sibling jobs on this machine log `claude-opus-5[1m]`; the map lists
+    `claude-opus-5`. Those are different strings and the refusal says so.
+    """
+    example["job"]["roles"] = ROLES
+    path = write_checkpoint(tmp_path, example)
+    r = ops.clock_out(
+        str(path),
+        "U3",
+        "done",
+        {},
+        {"unit": "U3", "outcome": "done"},
+        {"model": "claude-opus-5[1m]"},
+    )
+    assert r["result"] == "error"
+    assert "reported model claude-opus-5[1m]" in r["reason"]
+    assert read_log(path) == []
+
+
+def test_clock_out_refuses_a_constrained_role_that_reports_no_model(tmp_path, example):
+    """Case 3, decided: a role the map names must SAY which model it ran.
+
+    Otherwise the rule is enforced only against the honest -- omit the field
+    and the list stops applying.
+    """
+    example["job"]["roles"] = ROLES
+    path = write_checkpoint(tmp_path, example)
+    before = path.read_bytes()
+    r = ops.clock_out(
+        str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, {"tokens": 1234}
+    )
+    assert r == {
+        "result": "error",
+        "reason": (
+            "unit U3 in role implementer reported no model, but "
+            "job.roles.implementer allows only: claude-opus-5, claude-sonnet-5"
+        ),
+    }
+    assert path.read_bytes() == before
+    assert read_log(path) == []
+
+
+def test_clock_out_refuses_a_constrained_role_with_no_accounting_at_all(tmp_path, example):
+    """Same refusal for a missing accounting object as for a missing model key."""
+    example["job"]["roles"] = ROLES
+    path = write_checkpoint(tmp_path, example)
+    r = ops.clock_out(str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"})
+    assert r["result"] == "error"
+    assert "reported no model" in r["reason"]
+    assert read_log(path) == []
+
+
+def test_clock_out_is_unchanged_when_the_checkpoint_declares_no_roles(tmp_path, example):
+    """Property 2: a checkpoint written before this feature clocks out unchanged.
+
+    The shipped example has no `job.roles`, and ACCOUNTING names `haiku` --
+    a model no list anywhere would allow.
+    """
+    assert "roles" not in example["job"]
+    path = write_checkpoint(tmp_path, example)
+    r = ops.clock_out(
+        str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, ACCOUNTING
+    )
+    assert r["result"] == "ok" and r["cursor"] == "U4"
+    assert read_log(path)[-1]["model"] == "haiku"
+
+
+def test_clock_out_is_unchanged_for_a_role_the_map_does_not_name(tmp_path, example):
+    """An absent role is unconstrained (the schema's shape, deliberately preserved).
+
+    U3 is the implementer; this map names only the reviewer, so U3 may report
+    anything -- including nothing at all.
+    """
+    example["job"]["roles"] = {"reviewer": ["claude-opus-5"]}
+    path = write_checkpoint(tmp_path, example)
+    r = ops.clock_out(
+        str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, ACCOUNTING
+    )
+    assert r["result"] == "ok"
+    assert read_log(path)[-1]["model"] == "haiku"
+
+
+def test_clock_out_role_check_runs_after_the_cursor_check(tmp_path, example):
+    """A non-cursor unit is refused for being non-cursor, not for its model.
+
+    Ordering matters for the message a human acts on: the structural refusal
+    that was already there keeps its sentence.
+    """
+    example["job"]["roles"] = ROLES
+    path = write_checkpoint(tmp_path, example)
+    r = ops.clock_out(str(path), "U4", "done", {}, {"unit": "U4", "outcome": "done"}, ACCOUNTING)
+    assert r == {"result": "error", "reason": "unit U4 is not the cursor unit U3"}
+    assert read_log(path) == []
+
+
+def test_roles_refusal_does_not_fire_on_clock_in_or_status(tmp_path, example):
+    """AS-2 constrains what a unit REPORTS, so it can only be checked at clock-out."""
+    example["job"]["roles"] = ROLES
+    path = write_checkpoint(tmp_path, example)
+    assert ops.clock_in(str(path))["result"] == "brief"
+    assert ops.status(str(path))["result"] == "status"
+
+
+# --- AS-2, the two J46-10 rulings -------------------------------------------
+
+
+def test_the_allowed_list_is_rendered_in_checkpoint_order_not_sorted(tmp_path, example):
+    """RULING 2. `ROLES` above lists its models ALPHABETICALLY, so every test that
+    uses it passes whether the renderer joins in checkpoint order or in
+    `sorted()` order -- `tests-that-pick-the-input-that-cannot-fail` by name.
+    runtime-ts already carried a `['zzz-last', 'aaa-first']` case and this side
+    did not, so a `sorted()` introduced HERE passed this suite, and introduced in
+    both passed the differential too. This is the mirror.
+    """
+    example["job"]["roles"] = {"implementer": ["zzz-last", "aaa-first"]}
+    path = write_checkpoint(tmp_path, example)
+    r = ops.clock_out(
+        str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, ACCOUNTING
+    )
+    assert r["reason"] == (
+        "unit U3 in role implementer reported model haiku, "
+        "which job.roles.implementer does not allow: zzz-last, aaa-first"
+    )
+
+
+def _pack_without_min_items(tmp_path, schema):
+    """An asset pack whose checkpoint schema has lost `minItems: 1` on the roles list.
+
+    The ONLY way to reach the empty-list branch of `_model_refusal`: with the
+    shipped schema, `roles: {implementer: []}` is refused during the read and the
+    check is never called. `BANTAMKIT_ASSETS` is the same override both runtimes
+    honour, so the Node half of this ruling is measured the same way.
+    """
+    mutated = copy.deepcopy(schema)
+    del mutated["properties"]["job"]["properties"]["roles"]["additionalProperties"]["minItems"]
+    root = tmp_path / "pack"
+    (root / "schemas").mkdir(parents=True)
+    (root / "schemas" / "shiftwork-checkpoint.json").write_text(
+        json.dumps(mutated), encoding="utf-8"
+    )
+    return root
+
+
+def test_an_empty_allowed_list_still_refuses_when_the_schema_stops_catching_it(
+    tmp_path, monkeypatch, schema, example
+):
+    """RULING 1, decided for J46-9: the check FAILS CLOSED on an empty list.
+
+    `if not allowed` used to read `[]` as unconstrained, so the day `minItems`
+    moves, an empty list becomes a silent opt-out of the rule the checkpoint just
+    declared. The declaration is the KEY: a role the map names is held to its
+    list, and an empty list allows nothing.
+
+    This test is what makes that a measurement rather than a promise -- it drives
+    the real `clock_out` against a pack whose schema no longer refuses `[]`.
+    """
+    monkeypatch.setenv("BANTAMKIT_ASSETS", str(_pack_without_min_items(tmp_path, schema)))
+    example["job"]["roles"] = {"implementer": []}
+    path = write_checkpoint(tmp_path, example)
+    before = path.read_bytes()
+    assert ops.clock_out(
+        str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, ACCOUNTING
+    ) == {
+        "result": "error",
+        "reason": (
+            "unit U3 in role implementer reported model haiku, "
+            "which job.roles.implementer does not allow: "
+        ),
+    }
+    # And no model is not an escape either.
+    assert ops.clock_out(
+        str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, {"tokens": 1}
+    ) == {
+        "result": "error",
+        "reason": (
+            "unit U3 in role implementer reported no model, "
+            "but job.roles.implementer allows only: "
+        ),
+    }
+    assert path.read_bytes() == before
+    assert read_log(path) == []
+
+
+def test_the_mutated_pack_really_is_the_thing_that_lets_the_empty_list_through(
+    tmp_path, monkeypatch, schema, example
+):
+    """The companion that keeps the test above honest: with the SHIPPED schema the
+    same document never reaches the model check at all, and the two refusals are
+    different sentences. A gate has to be confirmed to reach the thing it checks.
+    """
+    example["job"]["roles"] = {"implementer": []}
+    path = write_checkpoint(tmp_path, example)
+    assert ops.clock_out(
+        str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, ACCOUNTING
+    ) == {
+        "result": "error",
+        "reason": (
+            "checkpoint invalid: JSON does not match schema at "
+            "'job/roles/implementer': [] should be non-empty"
+        ),
+    }
+    monkeypatch.setenv("BANTAMKIT_ASSETS", str(_pack_without_min_items(tmp_path, schema)))
+    assert "does not allow" in ops.clock_out(
+        str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, ACCOUNTING
+    )["reason"]
+
+
+def test_an_absent_role_and_an_empty_list_are_different_inputs(
+    tmp_path, monkeypatch, schema, example
+):
+    """They look alike and they are not the same case. Under the SAME pack, where
+    neither is refused by the schema, an absent role clocks out and `[]` refuses.
+    """
+    monkeypatch.setenv("BANTAMKIT_ASSETS", str(_pack_without_min_items(tmp_path, schema)))
+    for name in ("a", "b"):
+        (tmp_path / name).mkdir()
+    def with_roles(name, roles):
+        document = copy.deepcopy(example)
+        document["job"]["roles"] = roles
+        return write_checkpoint(tmp_path / name, document)
+
+    absent = with_roles("a", {"reviewer": ["claude-opus-5"]})
+    empty = with_roles("b", {"implementer": []})
+    args = ("U3", "done", {}, {"unit": "U3", "outcome": "done"}, ACCOUNTING)
+    assert ops.clock_out(str(absent), *args)["result"] == "ok"
+    assert ops.clock_out(str(empty), *args)["result"] == "error"
+
+
 # --- MCP flavor: status -----------------------------------------------------
 
 

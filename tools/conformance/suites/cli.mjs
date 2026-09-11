@@ -39,7 +39,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const name = 'cli';
 export const summary = 'the `bantamkit-mcp` command line as a process: stdout, stderr, exit code';
@@ -47,6 +47,10 @@ export const summary = 'the `bantamkit-mcp` command line as a process: stdout, s
 const here = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = dirname(dirname(here));
 const REF = join(here, 'ref', 'cli_ref.py');
+/** `--update`'s arms, driven offline through the two seams. See `update_ref.py`. */
+const UPDATE_REF = join(here, 'ref', 'update_ref.py');
+/** The terminal. One `pty.openpty()`, allocated for EITHER side — see `cli_tty_ref.py`. */
+const TTY_REF = join(here, 'ref', 'cli_tty_ref.py');
 const CLI = join(repoRoot, 'runtime-ts', 'dist', 'cli.js');
 
 /** Same list `cli_ref.py` scrubs. Kept literal on both sides so the two cannot drift apart. */
@@ -54,6 +58,74 @@ const SCRUBBED = ['COLUMNS', 'LINES', 'BANTAMKIT_ASSETS'];
 
 const unb64 = (s) => Buffer.from(s, 'base64');
 const dec = (buf) => buf.toString('utf8');
+
+/** Two buffers, byte for byte. `run.mjs` has its own; a suite cannot reach it. */
+const bytesDiffer = (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)) !== 0;
+
+/**
+ * Would an MCP host try to PARSE this line?
+ *
+ * Not "does it start with a brace" — that is a grep for a character. A host's stdio reader
+ * splits stdout on newlines and hands each line to a JSON parser, so the question is whether
+ * the parser accepts it and gets a JSON-RPC envelope back. Anything else is text a host
+ * reports as a malformed frame, which is precisely what the person branch must never emit.
+ */
+function looksLikeAFrame(line) {
+  try {
+    const value = JSON.parse(line);
+    return typeof value === 'object' && value !== null && value.jsonrpc === '2.0';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The two streams, diffed PROGRAMMATICALLY, reported as edit opcodes.
+ *
+ * Common prefix and common suffix, then whatever is left in the middle — a real edit script
+ * over the bytes, not a minimal one, and enough to answer the only question anybody asks of
+ * it: how many opcodes are NOT `equal`. J46-27 measured zero through CPython's
+ * `difflib.SequenceMatcher(None, a, b, autojunk=False)`; this says the same thing in the
+ * gate, where it can be rerun.
+ */
+function describeOpcodes(a, b) {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  let head = 0;
+  while (head < x.length && head < y.length && x[head] === y[head]) head += 1;
+  let tail = 0;
+  while (tail < x.length - head && tail < y.length - head && x[x.length - 1 - tail] === y[y.length - 1 - tail]) {
+    tail += 1;
+  }
+  if (head === x.length && x.length === y.length) {
+    return `diffed byte for byte: ONE opcode, equal over all ${x.length} bytes — zero non-equal opcodes, so the two help outputs do not differ at all. there is no prog-name divergence to except: both parsers set prog explicitly and neither reads argv[0].`;
+  }
+  const opcodes = [];
+  if (head > 0) opcodes.push(`equal [0,${head})`);
+  opcodes.push(`replace python[${head},${x.length - tail}) -> node[${head},${y.length - tail})`);
+  if (tail > 0) opcodes.push(`equal (last ${tail} bytes)`);
+  return `diffed byte for byte: ${opcodes.length} opcodes, 1 non-equal — ${opcodes.join(' / ')}`;
+}
+
+/**
+ * A real handshake, as a host sends it: newline-delimited JSON on stdin.
+ *
+ * `initialize` and the notification that completes it, and NOTHING AFTER. A third request
+ * would be a race rather than a case: measured on this checkout, a bare Python server handed
+ * `initialize` + `notifications/initialized` + `ping` and then EOF answers the initialize and
+ * exits before the ping, while Node answers both. That is the harness closing the pipe under a
+ * server, not a difference between the runtimes — `wire` keeps stdin open and waits for ids,
+ * which is why full sessions live there. Two frames, five runs a side, 1456 bytes every time.
+ */
+const HANDSHAKE_FRAMES = [
+  JSON.stringify({
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'initialize',
+    params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'conformance', version: '0' } },
+  }),
+  JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+];
 
 /**
  * The default terminal width argparse falls back to with no tty and no `COLUMNS`.
@@ -75,7 +147,9 @@ function runNode(spec) {
     else env[key] = String(value);
   }
   const r = spawnSync(process.execPath, [CLI, ...(spec.argv ?? [])], {
-    input: '',
+    // `''` — a pipe already at EOF — unless the case feeds it real frames. See the `stdin`
+    // note in `cli_ref.py`: an empty pipe shows that a server STARTED, never that it answered.
+    input: spec.stdin ?? '',
     cwd: spec.cwd ?? repoRoot,
     env,
     timeout: (spec.timeout ?? 60) * 1000,
@@ -99,8 +173,38 @@ function runPy(ctx, spec) {
     env: { ...spec.env, ...(spec.sideEnv?.py ?? {}) },
     cwd: spec.cwd ?? repoRoot,
     timeout: spec.timeout ?? 60,
+    stdin: Buffer.from(spec.stdin ?? '', 'utf8').toString('base64'),
   });
   if (answer.error) throw new Error(`cli_ref.py: ${answer.error}`);
+  return {
+    stdout: unb64(answer.stdout),
+    stderr: unb64(answer.stderr),
+    exit: answer.exit,
+    timedOut: answer.timedOut,
+  };
+}
+
+/**
+ * The same argv line, with a REAL TERMINAL on stdin, on whichever side is named.
+ *
+ * Both children go through `cli_tty_ref.py`, which allocates one `pty.openpty()` and hands
+ * the slave to the process under test. That is deliberate and it is the only way this
+ * comparison means anything: Node has no pty in its standard library, so measuring each side
+ * through its own fake would compare the fakes. `null` comes back where the platform has no
+ * pty at all — Windows — and the caller turns that into a note, not into a pass.
+ */
+function runTty(ctx, side, spec) {
+  const env = { ...spec.env, ...(spec.sideEnv?.[side] ?? {}) };
+  const answer = ctx.runPython(TTY_REF, {
+    side,
+    argv: spec.argv ?? [],
+    env,
+    cwd: spec.cwd ?? repoRoot,
+    timeout: spec.timeout ?? 60,
+    node: { exec: process.execPath, cli: CLI },
+  });
+  if (answer.unsupported) return null;
+  if (answer.error) throw new Error(`cli_tty_ref.py (${side}): ${answer.error}`);
   return {
     stdout: unb64(answer.stdout),
     stderr: unb64(answer.stderr),
@@ -302,6 +406,295 @@ const ASSETS_ROOT_RULING =
   'time. The trees are byte-identical file for file; only the path differs, and it always will. ' +
   'The COUNT on line 2 is compared unruled, right beside this.';
 
+// =============================================================== `--update`, arm by arm ==
+//
+// WHY THESE ARE NOT PROCESS CASES, IN A FILE WHOSE WHOLE POINT IS PROCESSES. Every other
+// argv line here is decided by bytes this harness controls. `--update` is not: its answer
+// comes from a package index, and NEITHER runtime has an environment variable that
+// redirects the lookup. That absence is deliberate — an env var repointing an updater's
+// registry is a real surface with a real hazard — so adding one to make a test reachable
+// would be building product for the gate. The seams the implementers DID build are
+// `fetch` and `installer`, keyword arguments of `update()` with real defaults, and this
+// block drives both sides through them: no network, no installer ever run, the command
+// captured as data.
+//
+// THE PROCESS SURFACE OF THE FLAG IS STILL COMPARED, above and below: `--update` appears
+// in both `-h` outputs (byte-identical at ten widths), `mcp-report-then-update` runs both
+// real CLIs on an argv naming the flag and asserts that the EARLIER flag wins and nothing
+// is written, and `bare-at-a-tty` pins per side that the help a person sees names it.
+//
+// WHAT IS NOT COMPARED, said out loud: the dispatch — which stream each outcome lands on
+// and whether the process exits 0 or 1. `runUpdate` takes its install shape from
+// `currentInstall()` with no seam, and this harness does not install its two sides alike,
+// so that comparison would compare two ENVIRONMENTS (the trap `install_ref.py` names). The
+// dispatch's only INPUT — the refusal bit — is compared for every arm below; the stream and
+// the exit code are held per side by `runtime-py/tests/test_selfupdate.py` and
+// `runtime-ts/test/selfupdate.test.mjs`, and the gap is written down in `docs/porting.md`.
+
+/** The environment `upgradeCommand` reads on the port. The reference has no counterpart. */
+const NPM_PREFIX_TREE = { root: '/opt/x', global: false };
+const NPM_GLOBAL_TREE = { root: '/usr/local/lib', global: true };
+
+/**
+ * Every situation `--update` can be in. One table, driven by both runtimes.
+ *
+ * `latest` makes each side build the index document ITS OWN registry would return — PyPI's
+ * `{"info": {"version": …}}` against npm's top-level `{"version": …}` — which is the
+ * declared JSON-path divergence, exercised rather than papered over. `body` hands the SAME
+ * BYTES to both sides instead, which is what every garbage arm wants: neither side may then
+ * read a shape the other could not see, so the two refusals are comparable.
+ */
+const UPDATE_ARMS = [
+  // --- the two answers that are already true, and exit 0 on both sides.
+  { id: 'up-to-date', installed: '0.30.0', shape: 'registry', source: '/s', latest: '0.30.0' },
+  // `0.30` and `0.30.0` are one release, and both runtimes pad the shorter with zeros.
+  { id: 'up-to-date-padded', installed: '0.30', shape: 'registry', source: '/s', latest: '0.30.0' },
+  { id: 'ahead', installed: '0.31.0', shape: 'registry', source: '/s', latest: '0.30.0' },
+  // THE PRERELEASE, AND IT IS PINNED WRONG ON PURPOSE. `0.31.0 < 0.31.0rc1` by the rule both
+  // runtimes implement and NOT by PEP 440 or semver. A case over `0.30.0` vs `0.31.0` alone
+  // would prove nothing about it, exactly as J46-6's ceiling sweep proved that a
+  // round-budget-only corpus hides a missing `-1`. What matters is that both sides are wrong
+  // in the same direction; a correct comparison on ONE side would be a divergence.
+  { id: 'ahead-prerelease', installed: '0.31.0rc1', shape: 'registry', source: '/s', latest: '0.31.0' },
+  // --- behind, and the shape HAS a route through this flag: the installer runs.
+  {
+    id: 'behind-prefix-tree',
+    installed: '0.30.0', shape: 'registry', source: '/s', latest: '0.31.0',
+    environment: NPM_PREFIX_TREE, installer: { code: 0, output: 'added 1 package\n' },
+  },
+  // The same arm in the GLOBAL tree. `--prefix` there prunes siblings (measured, npm 11.6.2),
+  // so the port must answer `--global`; the reference has no such fork and answers the same
+  // `pip` line in both. That asymmetry is a per-side literal below, not a second ruling.
+  {
+    id: 'behind-global-tree',
+    installed: '0.30.0', shape: 'registry', source: '/s', latest: '0.31.0',
+    environment: NPM_GLOBAL_TREE, installer: { code: 0, output: 'added 1 package\n' },
+  },
+  {
+    id: 'behind-installer-said-nothing',
+    installed: '0.30.0', shape: 'registry', source: '/s', latest: '0.31.0',
+    environment: NPM_PREFIX_TREE, installer: { code: 0, output: '   \n' },
+  },
+  {
+    id: 'behind-installer-failed',
+    installed: '0.30.0', shape: 'registry', source: '/s', latest: '0.31.0',
+    environment: NPM_PREFIX_TREE, installer: { code: 7, output: 'ERR! EACCES\n' },
+  },
+  // The comparison itself, through the product sentence rather than through the function.
+  {
+    id: 'behind-by-a-two-digit-patch',
+    installed: '0.30.0', shape: 'registry', source: '/s', latest: '0.30.10',
+    environment: NPM_PREFIX_TREE, installer: { code: 0, output: 'ok\n' },
+  },
+  {
+    id: 'behind-by-a-two-digit-minor',
+    installed: '0.9.0', shape: 'registry', source: '/s', latest: '0.10.0',
+    environment: NPM_PREFIX_TREE, installer: { code: 0, output: 'ok\n' },
+  },
+  // A version the index padded with spaces is still that version, on both sides.
+  {
+    id: 'behind-whitespace-version',
+    installed: '0.30.0', shape: 'registry', source: '/s', body: null, latest: ' 0.31.0 ',
+    environment: NPM_PREFIX_TREE, installer: { code: 0, output: 'ok\n' },
+  },
+  // --- the shapes with no route through this flag. Each names its shape and its real route.
+  { id: 'route-local-file', installed: '0.30.0', shape: 'local-file', source: '/tmp/bk-0.30.0.tgz', latest: '0.31.0', environment: NPM_PREFIX_TREE },
+  { id: 'route-linked', installed: '0.30.0', shape: 'linked', source: '/home/me/src/bantamkit', latest: '0.31.0', environment: NPM_PREFIX_TREE },
+  { id: 'route-checkout', installed: '0.30.0', shape: 'checkout', source: '/home/me/src/bantamkit', latest: '0.31.0', environment: NPM_PREFIX_TREE },
+  { id: 'route-ephemeral', installed: '0.30.0', shape: 'ephemeral', source: '/home/me/.npm/_npx/abc', latest: '0.31.0', environment: NPM_PREFIX_TREE },
+  // A shape word the table has never heard of: refuse, do not invent a route.
+  { id: 'route-unknown-shape', installed: '0.30.0', shape: 'sideloaded', source: '/x', latest: '0.31.0', environment: NPM_PREFIX_TREE },
+  // --- the network refusals. AS-7(4): opt-in, explicit, named, non-zero.
+  { id: 'offline-unreachable', installed: '0.30.0', shape: 'registry', source: '/s', raise: 'unreachable', reason: 'getaddrinfo ENOTFOUND registry' },
+  { id: 'offline-timed-out', installed: '0.30.0', shape: 'registry', source: '/s', raise: 'timeout', reason: 'the operation timed out' },
+  // The seconds are rendered by a person-facing rule (`10`, not `10.0`), so a non-integer
+  // timeout is the arm that shows the rule is the SAME rule on both sides.
+  { id: 'offline-timed-out-fractional', installed: '0.30.0', shape: 'registry', source: '/s', raise: 'timeout', timeout: 2.5 },
+  // --- the index answered, and it was not the index. The SAME BYTES to both sides.
+  { id: 'garbage-not-json', installed: '0.30.0', shape: 'registry', source: '/s', body: '<html>captive portal</html>' },
+  { id: 'garbage-empty-object', installed: '0.30.0', shape: 'registry', source: '/s', body: '{}' },
+  { id: 'garbage-null', installed: '0.30.0', shape: 'registry', source: '/s', body: 'null' },
+  { id: 'garbage-array', installed: '0.30.0', shape: 'registry', source: '/s', body: '[1, 2, 3]' },
+  { id: 'garbage-version-not-a-string', installed: '0.30.0', shape: 'registry', source: '/s', body: '{"version": 31, "info": {"version": 31}}' },
+  { id: 'garbage-version-blank', installed: '0.30.0', shape: 'registry', source: '/s', body: '{"version": "  ", "info": {"version": "  "}}' },
+];
+
+/** Where the installer command appears, and the arms whose route sentence quotes one. */
+const UPDATE_COMMAND_ARMS = [
+  'behind-prefix-tree',
+  'behind-global-tree',
+  'behind-installer-said-nothing',
+  'behind-installer-failed',
+  'behind-by-a-two-digit-patch',
+  'behind-by-a-two-digit-minor',
+  'behind-whitespace-version',
+];
+
+/** The three route sentences that name a package manager and a tree it updates. */
+const UPDATE_ROUTE_ARMS = ['route-local-file', 'route-linked', 'route-checkout'];
+
+/** The pairs the sentences depend on, compared as integers straight out of the comparator. */
+const UPDATE_COMPARE_PAIRS = [
+  ['0.30.0', '0.30.0'],
+  ['0.30', '0.30.0'],
+  ['0.30.0', '0.30.10'],
+  ['0.30.10', '0.30.0'],
+  ['0.9.0', '0.10.0'],
+  ['0.10.0', '0.9.0'],
+  ['0.30.0', '0.31.0'],
+  ['0.31.0', '0.30.0'],
+  ['0.31.0', '0.31.0rc1'],
+  ['0.31.0rc1', '0.31.0'],
+  ['1.0.0', '1.0'],
+];
+
+const UPDATE_COMMAND_RULING =
+  'RULED DIFFERENT, and carried in `docs/porting.md`. The two runtimes upgrade from two ' +
+  'registries with two package managers, so the one line that NAMES the command cannot be ' +
+  'the same sentence: `pip install --upgrade bantamkit` on the reference against ' +
+  '`npm install --global bantamkit-mcp@latest` (or `--prefix <root>`) on the port. The ' +
+  'template around it — `updating from the package index: {command}` and `the update ' +
+  'command exited {code}: {command}` — is byte-identical and is compared unruled beside ' +
+  'this, arm by arm, as is the refusal bit for every arm in the table.';
+
+const UPDATE_ROUTE_RULING =
+  'RULED DIFFERENT, and carried in `docs/porting.md`. These three sentences answer "then ' +
+  'how DO I update this?" for a shape `--update` will not touch, and the answer names a ' +
+  'package manager and the thing it updates. The reference names pip and a Python tree; the ' +
+  'port names npm and a BUILT one — `linked` and `checkout` both end "and rebuild it — ' +
+  'dist/ is build output, so a pull alone changes nothing", because an editable Python ' +
+  'install serves the .py files a git pull just changed and a Node install serves dist/. ' +
+  'Copying the reference verbatim would hand a Node operator a remedy that exits 0 having ' +
+  'changed nothing. Everything OUTSIDE the route clause is byte-identical and is compared ' +
+  'unruled beside this, and so is the refusal bit — a ruling only proves the two still ' +
+  'differ, never that both still refuse.';
+
+const UPDATE_EPHEMERAL_RULING =
+  'RULED DIFFERENT, and carried in `docs/porting.md` as a CORRECTION rather than a ' +
+  'translation. The reference says an ephemeral environment is discarded and "the next run ' +
+  'fetches {latest} by itself", which is true of `pipx run` / `uvx`. It is FALSE of an npx ' +
+  'cache: `README.md#silent-version-float` measured that `npx -y bantamkit-mcp` resolves ' +
+  '`latest` ONCE and caches it, so two people with byte-identical config can be running ' +
+  'builds resolved weeks apart. The port therefore says the next run serves the same cached ' +
+  'version unless the host command line asks for `@latest`. This is the one row in this ' +
+  'divergence where the REFERENCE IS WRONG AND THE PORT IS RIGHT, and it is registered as ' +
+  'such rather than silently fixed on one side.';
+
+/**
+ * The port's half of the `--update` table: the same arms, through the same two seams.
+ *
+ * `environment` is ALWAYS handed in, even on arms that never reach the installer. Left out,
+ * `update()` calls `installEnvironment()`, which walks the real filesystem for a
+ * `node_modules` ancestor — and the `local-file` route sentence quotes the command that
+ * walk produces. A case whose expected text depends on where the checkout happens to sit is
+ * not a case.
+ */
+async function nodeUpdateAnswers(ctx, arms, pairs) {
+  // A MISSING MODULE IS DATA, NOT A CRASH, and this was measured rather than anticipated:
+  // the first version of this function let the import throw, and reverting `--update` on the
+  // Node side alone took the WHOLE suite down — `✖ cli: the suite could not build its cases`,
+  // 0 cases, one failure, every other case in this file unreported. That is the same hazard
+  // the tolerant frame parser further down exists for. The absence is the defect, so it
+  // travels as one: every field becomes a marked absence and the cases below name it.
+  let su;
+  try {
+    su = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'selfupdate.js')).href);
+  } catch (e) {
+    const gone = { 'THE PORT HAS NO --update': e.message };
+    // The per-arm `text` stays a STRING so every splitter, byte case and literal below keeps
+    // working and reddens with a legible value, instead of throwing a second time on an
+    // object that has no `.split`.
+    const goneText = `THE PORT HAS NO --update: ${e.message}`;
+    return {
+      gone: e.message,
+      arms: Object.fromEntries(arms.map((a) => [a.id, { ok: null, text: goneText, url: null, timeout: null, command: null }])),
+      compare: pairs.map(() => null),
+      constants: gone,
+      index: gone,
+      routes: gone,
+      commands: gone,
+    };
+  }
+  /** What the npm registry answers at `/<pkg>/latest`: the version at the TOP level. */
+  const indexDocument = (version) => JSON.stringify({ version });
+  const answers = {};
+  for (const arm of arms) {
+    const seen = { url: null, timeout: null, command: null };
+    const options = {
+      environment: arm.environment ?? NPM_PREFIX_TREE,
+      fetch: (url, timeout) => {
+        seen.url = url;
+        seen.timeout = timeout;
+        if (arm.raise === 'timeout') throw new su.IndexTimeout(arm.reason ?? 'timed out');
+        if (arm.raise === 'unreachable') throw new Error(arm.reason ?? 'unreachable');
+        if (arm.body !== undefined && arm.body !== null) return String(arm.body);
+        return indexDocument(String(arm.latest));
+      },
+      installer: (command) => {
+        seen.command = su.shlexJoin(command);
+        return [Number(arm.installer?.code ?? 0), String(arm.installer?.output ?? '')];
+      },
+    };
+    if (arm.timeout !== undefined && arm.timeout !== null) options.timeout = arm.timeout;
+    let ok = true;
+    let text;
+    try {
+      text = await su.update(String(arm.installed), { shape: arm.shape, source: arm.source ?? '' }, options);
+    } catch (e) {
+      if (!(e instanceof su.UpdateRefused)) throw e;
+      text = e.message;
+      ok = false;
+    }
+    answers[arm.id] = { ok, text, ...seen };
+  }
+  const names = [
+    'PROGRAM', 'COMPARISON', 'UP_TO_DATE', 'AHEAD', 'UPDATING', 'PRINTED', 'UPDATED',
+    'RESTART', 'NO_ROUTE', 'TIMED_OUT', 'UNREACHABLE', 'NOT_A_VERSION', 'COMMAND_FAILED',
+    'SHAPE_UNKNOWN', 'NOT_JSON', 'NO_VERSION_FIELD', 'NO_OUTPUT',
+  ];
+  return {
+    arms: answers,
+    compare: pairs.map(([a, b]) => su.compareVersions(String(a), String(b))),
+    constants: Object.fromEntries(names.map((n) => [n, su[n]])),
+    index: { url: su.INDEX_URL, document: indexDocument('0.31.0'), timeout: su.DEFAULT_TIMEOUT_SECONDS },
+    routes: Object.keys(su.ROUTES).sort(),
+    commands: {
+      prefix: su.shlexJoin(su.upgradeCommand(NPM_PREFIX_TREE)),
+      global: su.shlexJoin(su.upgradeCommand(NPM_GLOBAL_TREE)),
+    },
+  };
+}
+
+/** The lines of one report that name the installer command, and everything else. */
+function splitOnCommand(text, command) {
+  const lines = text.split('\n');
+  const names = (line) => command !== null && command !== '' && line.includes(command);
+  return { command: lines.filter(names).join('\n'), rest: lines.filter((l) => !names(l)).join('\n') };
+}
+
+/**
+ * The reference's upgrade command with its interpreter masked.
+ *
+ * `sys.executable -m pip` and never a bare `pip` is the reference's own deliberate choice —
+ * the server may run from a venv whose `pip` is not first on `PATH`, and upgrading the wrong
+ * environment is a failure that reports success — so the absolute path is a fact about the
+ * machine running the suite and the rest of the line is the record. Masking the first word
+ * keeps the literal below pinnable without pinning this laptop into it, and the `-m pip`
+ * anchor is what makes the mask fail loudly if the command ever stops going through it.
+ */
+function pipCommandOf(rendered) {
+  const at = (rendered ?? '').indexOf(' -m pip ');
+  return at < 0 ? String(rendered) : `<sys.executable>${rendered.slice(at)}`;
+}
+
+/** A NO_ROUTE refusal, split at the sentence that hands over to the per-shape route. */
+const ROUTE_HANDOVER = 'which --update will not touch. ';
+function splitOnRoute(text) {
+  const at = text.indexOf(ROUTE_HANDOVER);
+  if (at < 0) return { frame: text, route: '' };
+  return { frame: text.slice(0, at + ROUTE_HANDOVER.length), route: text.slice(at + ROUTE_HANDOVER.length) };
+}
+
 // ------------------------------------------------------------------------------ the argv
 
 /**
@@ -389,6 +782,18 @@ function matrix(scratch) {
       ...installSandbox(scratch, 'order-report'),
     },
     { label: 'statusline-then-force', argv: ['--statusline', '--force'], shape: 'wrote-nothing', ...installSandbox(scratch, 'order-status') },
+    // `--update` IS DISPATCHED AFTER `--mcp-report` ON BOTH SIDES, and this is the one argv
+    // line in this matrix that names the flag and can still be run as a PROCESS: the earlier
+    // flag wins, so nothing reaches the network and the case is deterministic offline. It is
+    // also the only thing standing between "the order was reviewed" and "the order is gated"
+    // — dispatch `--update` first on one runtime and this reddens while every arm below
+    // stays green, because those arms call `update()` directly and never see the order.
+    {
+      label: 'mcp-report-then-update',
+      argv: ['--mcp-report', '--update'],
+      shape: 'wrote-nothing',
+      ...installSandbox(scratch, 'order-update'),
+    },
     { label: 'force-without-install', argv: ['--force'] },
     { label: 'double-dash-positional', argv: ['--', 'positional'] },
     { label: 'prefix-abbreviation', argv: ['--inde', '5'], serves: true, ...sandbox },
@@ -420,6 +825,18 @@ function matrix(scratch) {
     // option column lands.
     { label: 'help-columns-135', argv: ['-h'], env: { COLUMNS: '135' } },
     { label: 'help-columns-136', argv: ['-h'], env: { COLUMNS: '136' } },
+    // AMENDED 2026-09-11, J46-31. THE 135/136 PAIR NO LONGER STRADDLES ANYTHING, and neither
+    // does anything above it: `--install {…}` and `--force` moved the boundary long before
+    // this job and `--update` moved it again. MEASURED on this checkout by running the
+    // reference at each width: 207 wraps, 208 does not, and the single-line usage is 206
+    // characters. So this is today's straddle, kept beside the three older pairs for the
+    // reason they were kept — a case is not deleted because the reason it was interesting
+    // has changed. What is NEW is that the pair no longer has to be trusted: the two runs
+    // below it are compared against the boundary this suite MEASURES, so the next flag makes
+    // `help-columns/the pair straddles` say so instead of leaving a comment to go quietly
+    // stale for a third time.
+    { label: 'help-columns-207', argv: ['-h'], env: { COLUMNS: '207' } },
+    { label: 'help-columns-208', argv: ['-h'], env: { COLUMNS: '208' } },
     { label: 'help-columns-200', argv: ['-h'], env: { COLUMNS: '200' } },
   ];
 }
@@ -438,11 +855,45 @@ function matrix(scratch) {
  * A FLAG ADDED TO EITHER RUNTIME MOVES THIS STRING. It is not a second copy of the usage
  * line for its own sake — it is the arithmetic behind the note below, and the pinned first
  * line further down is the thing that actually stops a silent re-baselining.
+ *
+ * AMENDED 2026-09-11, J46-31 — THE PARAGRAPH ABOVE AND THE LITERAL BELOW ARE A RECORD OF
+ * WHAT THIS LINE WAS AT U13, AND THEY WENT STALE WITHOUT GOING RED. They say the single-line
+ * usage is 134 characters and wraps below 136. Measured on this checkout today by running
+ * the reference at each width: it is **206 characters and wraps below 208** — 207 wraps, 208
+ * does not. The literal lost `[--install {claude,claude-desktop,copilot,cursor}]` and
+ * `[--force]`, which landed BEFORE this job, and `[--update]`, which landed in it; 135 and
+ * 136 have both wrapped since `--install` shipped, so the pair the comment above calls a
+ * straddle has straddled nothing for two jobs. Nothing went red, because the literal feeds a
+ * NOTE and a note is not a gate.
+ *
+ * The record is kept, not rewritten — that is `docs/record-vs-pointer.md`, and the sentence
+ * "U13 moved it to 134" was true when it was written. What is ADDED is a measurement:
+ * `measureWrapBoundary` below runs the reference at a width nothing can wrap at, takes the
+ * assembled line, and derives the boundary from it, so the note reports what this tree does
+ * rather than what a previous tree did, and a CASE asserts that the matrix's newest pair
+ * really does straddle it. The next flag moves a case, not a comment.
  */
 const SINGLE_LINE_USAGE =
   'usage: bantamkit-mcp [-h] [--assets-root] [--k K] [--index-budget BYTES] [--mcp-report] ' +
   '[--statusline] [--store STORE | --start START]';
 const wrapBoundary = SINGLE_LINE_USAGE.length + 2;
+
+/** The widths the matrix above uses as today's straddle, asserted rather than trusted. */
+const STRADDLE = { wraps: 207, fits: 208 };
+
+/**
+ * The single-line usage as THIS tree assembles it, and the width below which it wraps.
+ *
+ * Asked at a width nothing can wrap at, so what comes back is the assembled line itself.
+ * argparse formats usage at `width = COLUMNS - 2` and wraps when the line does not fit, so
+ * the first width that fits is `length + 2` — the same arithmetic the record above states
+ * and the reason a measurement can replace a paste without replacing the reasoning.
+ */
+function measureWrapBoundary(ctx) {
+  const wide = runPy(ctx, { argv: ['-h'], env: { COLUMNS: '400' } });
+  const line = dec(wide.stdout).split('\n')[0] ?? '';
+  return { line, length: line.length, boundary: line.length + 2 };
+}
 
 // ------------------------------------------------------------------- the pack precondition
 
@@ -631,20 +1082,564 @@ export async function run(ctx) {
     );
   }
 
+  // ============================== the bare invocation: WHO is on the other end of stdin ==
+  //
+  // J46-26 and J46-27 changed what `bantamkit-mcp` does when it is typed with no arguments:
+  // stdin a terminal -> the help, stdout, exit 0; stdin a pipe -> the server, unchanged. Two
+  // implementations of one property, and until this block nothing compared them.
+  //
+  // THE TRIGGER IS A PAIR — `stdin.isatty()` AND an empty `argv[1:]` — and the argv half is a
+  // SCOPE, not a second signal: an operator who types `bantamkit-mcp --store /tmp/x` at a
+  // terminal is asking for a configured server and still gets one. Both implementers flagged
+  // that a bare-only case cannot see the two runtimes disagreeing about that half, so
+  // `flagged-at-a-tty` is here beside `bare-at-a-tty`.
+  //
+  // AND HALF OF WHAT IS BELOW IS A PER-SIDE LITERAL, ON PURPOSE. Every other case in this file
+  // is a differential, and a differential is satisfied by two runtimes that are wrong in the
+  // same way: J46-6 reverted a shared default on BOTH runtimes earlier in this job and every
+  // differential stayed green. A symmetric revert of THIS change would be invisible the same
+  // way — both sides would print nothing and exit 0 — so what each side printed is also
+  // compared against strings written down here.
+  const ttyRoot = join(ctx.scratch, 'cli-tty');
+  const ttyHome = join(ttyRoot, 'home');
+  const ttyCwd = join(ttyRoot, 'cwd');
+  mkdirSync(ttyHome, { recursive: true });
+  mkdirSync(ttyCwd, { recursive: true });
+  // `USERPROFILE` moves with `HOME` so the same case means the same thing on Windows, and
+  // because `Memory.layered` falls back to a store under the operator's own home when it
+  // cannot find one — the hazard J46-27's first draft hit against the real HOME.
+  const ttyEnv = { HOME: ttyHome, USERPROFILE: ttyHome };
+  const ttySpecs = {
+    bare: { argv: [], cwd: ttyCwd, env: ttyEnv },
+    flagged: { argv: ['--store', join(ttyRoot, 'store')], cwd: ttyCwd, env: ttyEnv },
+  };
+
+  /** What a person must see, written down rather than taken from the other runtime. */
+  const helpShape = (r) => {
+    const text = dec(r.stdout);
+    const lines = text.split('\n');
+    return {
+      firstLine: lines[0] ?? '',
+      namesTheServer: lines.includes('bantamkit MCP server (stdio): per-person memory + JSON validation.'),
+      namesDashH: lines.includes('  -h, --help            show this help message and exit'),
+      // J46-31: the help is the ONLY place the operator learns the flag exists, and the
+      // help cases beside this one are differentials — remove `--update` from BOTH parsers
+      // and they stay green. This line is what a symmetric revert has to get past.
+      namesUpdate: lines.includes(
+        '  --update              check the package index and update this install if it',
+      ),
+      endsWithNewline: text.endsWith('\n'),
+      // The whole hazard of printing on THIS process's stdout is that stdout is the JSON-RPC
+      // channel. Whatever reached the person branch must not be something a host would parse.
+      noLineIsAFrame: lines.filter((l) => l.trim() !== '').every((l) => !looksLikeAFrame(l)),
+    };
+  };
+  const HELP_AS_A_PERSON_SEES_IT = {
+    firstLine: pinned,
+    namesTheServer: true,
+    namesDashH: true,
+    namesUpdate: true,
+    endsWithNewline: true,
+    noLineIsAFrame: true,
+  };
+
+  const bareTtyPy = runTty(ctx, 'py', ttySpecs.bare);
+  const bareTtyNode = bareTtyPy === null ? null : runTty(ctx, 'node', ttySpecs.bare);
+
+  if (bareTtyPy === null || bareTtyNode === null) {
+    // The repository's own shape for an unmeasurable platform (see `store.mjs`'s winerror
+    // table and `docread.mjs`'s `/dev/zero`): no case, and a note that says what is missing
+    // rather than a pass nobody earned.
+    notes.push(
+      'bare-at-a-tty and flagged-at-a-tty: NOT MEASURED HERE — `pty.openpty()` is POSIX-only and ' +
+        `this is ${process.platform}. The tty branch itself IS exercised on every platform by each ` +
+        "runtime's own suite (`runtime-py/tests/test_mcpserver.py`, `runtime-ts/test/cli-surface.test.mjs`), " +
+        'each with its own fake stdin; what a Windows run cannot tell you is whether the two ' +
+        'runtimes still agree about a REAL terminal. The pipe cases below are measured everywhere.',
+    );
+  } else {
+    const flaggedTtyPy = runTty(ctx, 'py', ttySpecs.flagged);
+    const flaggedTtyNode = runTty(ctx, 'node', ttySpecs.flagged);
+
+    // ---- bare at a terminal: the two answers, side to side.
+    cases.push(...streamCases('bare-at-a-tty', bareTtyPy, bareTtyNode));
+
+    // ---- bare at a terminal: what each side printed, against text typed into THIS file.
+    cases.push({
+      name: 'bare-at-a-tty/PINNED PER SIDE: each runtime printed the help a person needs',
+      kind: 'json',
+      expected: { python: HELP_AS_A_PERSON_SEES_IT, node: HELP_AS_A_PERSON_SEES_IT },
+      actual: { python: helpShape(bareTtyPy), node: helpShape(bareTtyNode) },
+    });
+
+    // ---- bare at a terminal: STREAM and EXIT CODE, pinned per side rather than compared.
+    // Two runtimes that both printed nothing agree perfectly; this is the case that does not.
+    const personArm = (r) => ({
+      onStdout: r.stdout.length > 0,
+      onStderr: r.stderr.length > 0,
+      exit: r.exit,
+      timedOut: r.timedOut,
+    });
+    cases.push({
+      name: 'bare-at-a-tty/PINNED PER SIDE: stdout, nothing on stderr, exit 0, no hang',
+      kind: 'json',
+      expected: {
+        python: { onStdout: true, onStderr: false, exit: 0, timedOut: false },
+        node: { onStdout: true, onStderr: false, exit: 0, timedOut: false },
+      },
+      actual: { python: personArm(bareTtyPy), node: personArm(bareTtyNode) },
+    });
+
+    // ---- bare at a terminal: it is THAT SIDE'S OWN `-h`, byte for byte.
+    // The request was "ให้แสดงเหมือน --help", and both runtimes claim to satisfy it by calling
+    // the same renderer over the same parser rather than by holding a second string. This is
+    // the case that notices if one of them grows a second string. It is per-side by
+    // construction — each half compares a runtime only against itself.
+    const sameAsOwnDashH = (bare, dashH) => ({
+      sameBytesAsOwnDashH: !bytesDiffer(bare.stdout, dashH.stdout),
+      empty: bare.stdout.length === 0,
+    });
+    cases.push({
+      name: "bare-at-a-tty/PINNED PER SIDE: the bytes are that runtime's OWN -h output",
+      kind: 'json',
+      expected: {
+        python: { sameBytesAsOwnDashH: true, empty: false },
+        node: { sameBytesAsOwnDashH: true, empty: false },
+      },
+      actual: {
+        python: sameAsOwnDashH(bareTtyPy, helpPy),
+        node: sameAsOwnDashH(bareTtyNode, helpNode),
+      },
+    });
+
+    // ---- FLAGGED at a terminal: the argv half of the trigger, which no bare case can see.
+    cases.push(...streamCases('flagged-at-a-tty', flaggedTtyPy, flaggedTtyNode));
+    const serverArm = (r) => ({
+      printedHelp: dec(r.stdout).startsWith('usage:'),
+      stdoutEmpty: r.stdout.length === 0,
+      stderrEmpty: r.stderr.length === 0,
+      exit: r.exit,
+      timedOut: r.timedOut,
+    });
+    const SERVED = { printedHelp: false, stdoutEmpty: true, stderrEmpty: true, exit: 0, timedOut: false };
+    cases.push({
+      name: 'flagged-at-a-tty/PINNED PER SIDE: --store at a terminal SERVES, and prints no help',
+      kind: 'json',
+      expected: { python: SERVED, node: SERVED },
+      actual: { python: serverArm(flaggedTtyPy), node: serverArm(flaggedTtyNode) },
+    });
+
+    // The brief's last question, answered by diffing the two streams rather than by reading
+    // them. `prog` is set explicitly on both parsers (`prog="bantamkit-mcp"` /
+    // `prog: 'bantamkit-mcp'`), so neither side ever reads `argv[0]` and there is no
+    // prog-name divergence on this surface to except.
+    notes.push(
+      `bare at a REAL terminal (pty.openpty(), one allocator for both sides): python printed ` +
+        `${bareTtyPy.stdout.length} bytes on stdout and ${bareTtyPy.stderr.length} on stderr, exit ` +
+        `${bareTtyPy.exit}; node ${bareTtyNode.stdout.length} / ${bareTtyNode.stderr.length}, exit ` +
+        `${bareTtyNode.exit}. ${describeOpcodes(bareTtyPy.stdout, bareTtyNode.stdout)}`,
+    );
+    notes.push(
+      'flagged at a REAL terminal (`--store <scratch>`): the argv half of the trigger is a SCOPE, ' +
+        `not a second signal — python exited ${flaggedTtyPy.exit} with ${flaggedTtyPy.stdout.length} ` +
+        `bytes on stdout, node ${flaggedTtyNode.exit} with ${flaggedTtyNode.stdout.length}. an ` +
+        'operator who asked for a configured server at a prompt still gets one.',
+    );
+  }
+
+  // ---- BARE OVER A PIPE, with a real handshake. THE PRODUCTION PATH, on both runtimes.
+  //
+  // `bare-closed-stdin` in the matrix above hands the child a pipe that is already at EOF, and
+  // both units measured what that proves and what it does not: a REVERTED branch does not hang
+  // either — the server starts, reads EOF on its first read and exits 0 with an empty stdout in
+  // ~168 ms. So "it did not time out" is worth nothing here and "it answered" is the whole
+  // question. This sends a real `initialize` down the same pipe and compares what comes back.
+  //
+  // Key ORDER inside the `initialize` result is not observable here: `kind: 'json'` sorts keys.
+  // The two SDKs do disagree about that order and it is already a ruling in the `wire` suite
+  // ("initialize: the result key ORDER is the SDK's, and the two disagree"); this case is about
+  // whether a bare launch answers at all, and must not manufacture a second ruling for it.
+  const pipeHome = join(ctx.scratch, 'cli-pipe-home');
+  const pipeCwd = join(ctx.scratch, 'cli-pipe-cwd');
+  mkdirSync(pipeHome, { recursive: true });
+  mkdirSync(pipeCwd, { recursive: true });
+  const handshakeSpec = {
+    argv: [],
+    cwd: pipeCwd,
+    env: { HOME: pipeHome, USERPROFILE: pipeHome },
+    stdin: `${HANDSHAKE_FRAMES.join('\n')}\n`,
+  };
+  const pipePy = runPy(ctx, handshakeSpec);
+  const pipeNode = runNode(handshakeSpec);
+
+  // A TOLERANT PARSE, and the tolerance is load-bearing. Make the person branch unconditional
+  // on both runtimes and this stdout is the help table; a bare `JSON.parse` here throws
+  // `SyntaxError: Unexpected token 'u', "usage: ban"...`, which aborts the whole suite from
+  // inside `run()` — every other case in this file goes unreported and the failure arrives as a
+  // stack trace instead of as a named case. Measured: that is exactly what the both-sides
+  // `if (true)` mutation did to the first draft of this block. An unparsable line is DATA — it
+  // is the defect — so it travels as one and is compared like anything else.
+  const framesOf = (r) =>
+    dec(r.stdout)
+      .split('\n')
+      .filter((l) => l.trim() !== '')
+      .map((l) => {
+        try {
+          return JSON.parse(l);
+        } catch (e) {
+          return { 'NOT A FRAME': l, 'the parser said': e.message };
+        }
+      });
+
+  cases.push({
+    name: 'bare-over-a-pipe/handshake: the frames a bare launch answers with',
+    kind: 'json',
+    expected: framesOf(pipePy),
+    actual: framesOf(pipeNode),
+  });
+  cases.push({ name: 'bare-over-a-pipe/stderr', kind: 'bytes', expected: pipePy.stderr, actual: pipeNode.stderr });
+  cases.push({
+    name: 'bare-over-a-pipe/exit',
+    kind: 'json',
+    expected: { exit: pipePy.exit, timedOut: pipePy.timedOut },
+    actual: { exit: pipeNode.exit, timedOut: pipeNode.timedOut },
+  });
+
+  // The per-side literal for the served arm. A symmetric revert — the help printed on BOTH
+  // runtimes' JSON-RPC channel — leaves the differential above green and fails this.
+  const handshakeShape = (r) => {
+    const lines = dec(r.stdout).split('\n').filter((l) => l.trim() !== '');
+    let result = null;
+    try {
+      result = JSON.parse(lines[0] ?? 'null');
+    } catch {
+      result = null;
+    }
+    return {
+      everyLineIsAFrame: lines.length > 0 && lines.every(looksLikeAFrame),
+      answeredTheInitialize: result?.id === 1 && typeof result?.result === 'object' && result?.result !== null,
+      protocolVersion: result?.result?.protocolVersion ?? null,
+      serverName: result?.result?.serverInfo?.name ?? null,
+      stderrEmpty: r.stderr.length === 0,
+      exit: r.exit,
+      timedOut: r.timedOut,
+    };
+  };
+  const SERVED_A_HANDSHAKE = {
+    everyLineIsAFrame: true,
+    answeredTheInitialize: true,
+    protocolVersion: '2025-06-18',
+    serverName: 'bantamkit',
+    stderrEmpty: true,
+    exit: 0,
+    timedOut: false,
+  };
+  cases.push({
+    name: 'bare-over-a-pipe/PINNED PER SIDE: a bare launch completed a real initialize',
+    kind: 'json',
+    expected: { python: SERVED_A_HANDSHAKE, node: SERVED_A_HANDSHAKE },
+    actual: { python: handshakeShape(pipePy), node: handshakeShape(pipeNode) },
+  });
+
+  // ====================================== `--update`: the arms, the ruling, the companion ==
+  //
+  // THE GAP THIS CLOSES, STATED PRECISELY. Until this block, the ONLY parity gate on
+  // `--update` was the byte-for-byte `-h` comparison at ten widths — which sees that the
+  // flag EXISTS on both sides and NOTHING about what it says. Twenty-five arms, one table,
+  // driven on both runtimes through the seams described where `UPDATE_ARMS` is defined.
+
+  const updatePy = ctx.runPython(UPDATE_REF, { arms: UPDATE_ARMS, compare: UPDATE_COMPARE_PAIRS });
+  const updateNode = await nodeUpdateAnswers(ctx, UPDATE_ARMS, UPDATE_COMPARE_PAIRS);
+
+  // ---- the sentences, side to side. ONE case for all seventeen: any drift on either side
+  // reddens it, and it reddens naming the constant rather than naming an arm.
+  cases.push({
+    name: 'update/the named sentences both runtimes copied, side to side',
+    kind: 'json',
+    expected: updatePy.constants,
+    actual: updateNode.constants,
+  });
+
+  // ---- the same sentences, PER SIDE, against text typed into this file. The case above is
+  // a differential and a differential is satisfied by two runtimes that are wrong in the
+  // same way — measured ten times in this job. These four are the load-bearing ones: the
+  // word the user asked for by name, the line that carries both numbers, the line that makes
+  // a success true rather than plausible, and the refusal that names the seconds.
+  const PINNED_SENTENCES = {
+    UP_TO_DATE: 'up to date.',
+    COMPARISON: '{program} {installed} is installed; the package index has {latest}.',
+    RESTART:
+      'restart the server: a running {program} keeps serving the code it loaded at startup, ' +
+      'so bantamkit_status will report {installed} until the host reconnects.',
+    TIMED_OUT:
+      'the package index did not answer within {timeout} seconds; --update needs the network, ' +
+      'and nothing was changed.',
+  };
+  const pinnedOf = (constants) =>
+    Object.fromEntries(Object.keys(PINNED_SENTENCES).map((k) => [k, constants[k] ?? null]));
+  cases.push({
+    name: 'update/PINNED PER SIDE: the four sentences that carry the product, against this file',
+    kind: 'json',
+    expected: { python: PINNED_SENTENCES, node: PINNED_SENTENCES },
+    actual: { python: pinnedOf(updatePy.constants), node: pinnedOf(updateNode.constants) },
+  });
+
+  // ---- the divergence that produces NO opcode in any report, and therefore cannot be
+  // ruled: a ruling has to be on a case that DIFFERS, and these two never meet in one
+  // output. Pinned per side instead, with the document shape beside the URL, because the
+  // JSON path is half of it and a URL alone would leave the other half unstated.
+  cases.push({
+    name: 'update/PINNED PER SIDE: the index each runtime asks, and the document shape it reads',
+    kind: 'json',
+    expected: {
+      python: {
+        url: 'https://pypi.org/pypi/bantamkit/json',
+        document: '{"info": {"version": "0.31.0"}}',
+        timeout: 10,
+      },
+      node: {
+        url: 'https://registry.npmjs.org/bantamkit-mcp/latest',
+        document: '{"version":"0.31.0"}',
+        timeout: 10,
+      },
+    },
+    actual: { python: updatePy.index, node: updateNode.index },
+  });
+
+  // ---- the shape vocabulary the route table answers for. Not ruled: the WORDS are shared
+  // even where the sentences are not, which is the property `INSTALL_SHAPES` exists to hold.
+  cases.push({
+    name: 'update/the route table answers for the same shape words',
+    kind: 'json',
+    expected: updatePy.routes,
+    actual: updateNode.routes,
+  });
+
+  // ---- THE COMPANION CLAUDE.md REQUIRES BESIDE EVERY RULING, and it is one case covering
+  // every arm: did both sides REFUSE, or did both return a report? A ruling proves the two
+  // sentences differ and says nothing about this. A runtime that quietly started installing
+  // over a `checkout` would leave both rulings below green and fail here.
+  const refusalBits = (answers) =>
+    Object.fromEntries(UPDATE_ARMS.map((a) => [a.id, answers[a.id].ok === false]));
+  cases.push({
+    name: 'update/the refusal bit, every arm, side to side',
+    kind: 'json',
+    expected: refusalBits(updatePy.arms),
+    actual: refusalBits(updateNode.arms),
+  });
+
+  // ---- RULING 1 of 3: the installer command. `docs/porting.md`, row "`--update`'s upgrade
+  // command".
+  const commandOf = (answers) =>
+    Object.fromEntries(UPDATE_COMMAND_ARMS.map((id) => [id, answers[id].command]));
+  cases.push({
+    name: 'update: the upgrade command is pip on the reference and npm on the port',
+    kind: 'json',
+    expected: commandOf(updatePy.arms),
+    actual: commandOf(updateNode.arms),
+    ruling: UPDATE_COMMAND_RULING,
+  });
+
+  // The companion the ruling cannot stand without: everything in each of those reports that
+  // is NOT a line naming the command, byte for byte. A runtime that changed the header, the
+  // restart sentence, the `(nothing)` stand-in or the failure block fails here while the
+  // ruling above still "differs".
+  for (const id of UPDATE_COMMAND_ARMS) {
+    const p = splitOnCommand(updatePy.arms[id].text, updatePy.arms[id].command);
+    const n = splitOnCommand(updateNode.arms[id].text, updateNode.arms[id].command);
+    cases.push({
+      name: `update/${id}: every line that does NOT name the command`,
+      kind: 'bytes',
+      expected: p.rest,
+      actual: n.rest,
+    });
+    // And the SHAPE of the report: a runtime that dropped the command line entirely would
+    // leave the case above green, because the missing line is simply absent from `rest`.
+    cases.push({
+      name: `update/${id}: the report still has exactly one line naming the command`,
+      kind: 'json',
+      expected: { lines: p.command.split('\n').length, named: p.command !== '' },
+      actual: { lines: n.command.split('\n').length, named: n.command !== '' },
+    });
+  }
+
+  // ---- the two commands, PER SIDE. The `--prefix`/`--global` fork exists on one runtime
+  // only and the reference answers one line for both trees, so a differential cannot see it
+  // at all. It is also the one place in this feature where being wrong costs the user
+  // something they cannot get back: `npm install --prefix <dir>` into a directory with no
+  // `package.json` PRUNES every sibling package (measured, npm 11.6.2), and the global tree
+  // is exactly that shape. `--global` there is a RECORD, and this is where it is pinned
+  // across runtimes rather than only in `runtime-ts/test/selfupdate.test.mjs`.
+  cases.push({
+    name: 'update/PINNED PER SIDE: the upgrade command in a prefix tree and in the global tree',
+    kind: 'json',
+    expected: {
+      python: {
+        prefix: '<sys.executable> -m pip install --upgrade bantamkit',
+        global: '<sys.executable> -m pip install --upgrade bantamkit',
+      },
+      node: {
+        prefix: 'npm install --prefix /opt/x bantamkit-mcp@latest',
+        global: 'npm install --global bantamkit-mcp@latest',
+      },
+    },
+    actual: {
+      python: {
+        prefix: pipCommandOf(updatePy.arms['behind-prefix-tree'].command),
+        global: pipCommandOf(updatePy.arms['behind-global-tree'].command),
+      },
+      node: { prefix: updateNode.commands.prefix, global: updateNode.commands.global },
+    },
+  });
+
+  // ---- RULING 2 of 3: the three per-shape route sentences. `docs/porting.md`, row
+  // "`--update`'s per-shape route sentences".
+  const routeOf = (answers, ids) =>
+    Object.fromEntries(ids.map((id) => [id, splitOnRoute(answers[id].text).route]));
+  cases.push({
+    name: 'update: the local-file, linked and checkout routes name pip and a Python tree on the reference, npm and a BUILT one on the port',
+    kind: 'json',
+    expected: routeOf(updatePy.arms, UPDATE_ROUTE_ARMS),
+    actual: routeOf(updateNode.arms, UPDATE_ROUTE_ARMS),
+    ruling: UPDATE_ROUTE_RULING,
+  });
+
+  // ---- RULING 3 of 3: `ephemeral`, which is a CORRECTION and not a translation.
+  cases.push({
+    name: 'update: the ephemeral route is a correction — the reference promises a fresh resolve an npx cache does not do',
+    kind: 'string',
+    expected: splitOnRoute(updatePy.arms['route-ephemeral'].text).route,
+    actual: splitOnRoute(updateNode.arms['route-ephemeral'].text).route,
+    ruling: UPDATE_EPHEMERAL_RULING,
+  });
+
+  // The companion to both route rulings: the NO_ROUTE FRAME — the program, both version
+  // numbers, the shape word and the handover sentence — is byte-identical on all four, and
+  // the fifth arm (a shape word the table has never heard of) is identical end to end.
+  for (const id of [...UPDATE_ROUTE_ARMS, 'route-ephemeral']) {
+    cases.push({
+      name: `update/${id}: the refusal up to the route clause`,
+      kind: 'bytes',
+      expected: splitOnRoute(updatePy.arms[id].text).frame,
+      actual: splitOnRoute(updateNode.arms[id].text).frame,
+    });
+  }
+
+  // ---- every arm whose whole text must be identical, compared as it is.
+  const RULED_ARMS = new Set([...UPDATE_COMMAND_ARMS, ...UPDATE_ROUTE_ARMS, 'route-ephemeral']);
+  for (const arm of UPDATE_ARMS) {
+    if (RULED_ARMS.has(arm.id)) continue;
+    cases.push({
+      name: `update/${arm.id}: the whole answer`,
+      kind: 'bytes',
+      expected: updatePy.arms[arm.id].text,
+      actual: updateNode.arms[arm.id].text,
+    });
+  }
+
+  // ---- the timeout the caller passed reaches the fetch, on both sides, as the same number.
+  // The seconds are printed by `TIMED_OUT`, so a runtime that silently used its own default
+  // would print a number the operator did not choose.
+  const timeoutOf = (answers) =>
+    Object.fromEntries(UPDATE_ARMS.map((a) => [a.id, answers[a.id].timeout]));
+  cases.push({
+    name: 'update/the timeout each arm handed to the fetch',
+    kind: 'json',
+    expected: timeoutOf(updatePy.arms),
+    actual: timeoutOf(updateNode.arms),
+  });
+
+  // ---- the comparison itself, as integers. `0.30.0` against `0.31.0` alone proves nothing:
+  // a plain string compare gets that pair RIGHT and `0.9.0` against `0.10.0` wrong.
+  cases.push({
+    name: 'update/the version comparison over the pairs the sentences depend on',
+    kind: 'json',
+    expected: updatePy.compare,
+    actual: updateNode.compare,
+  });
+
+  // ---- the prerelease, PINNED PER SIDE AND PINNED WRONG. `0.31.0 < 0.31.0rc1` is wrong by
+  // PEP 440 and by semver, and it is kept because bantamkit has never published a prerelease
+  // to either registry and implementing PEP 440 would be a second, larger thing to keep
+  // byte-identical. A CORRECT comparison on one side would be a divergence, not an
+  // improvement — and the differential above cannot say so, because a fix on BOTH sides
+  // moves both answers together. This is the case that notices either way.
+  const PRERELEASE = { 'release vs rc': -1, 'rc vs release': 1 };
+  const prereleaseOf = (compare) => ({ 'release vs rc': compare[8], 'rc vs release': compare[9] });
+  cases.push({
+    name: 'update/PINNED PER SIDE: 0.31.0 sorts BELOW 0.31.0rc1 — wrong by PEP 440, and the same wrong on both',
+    kind: 'json',
+    expected: { python: PRERELEASE, node: PRERELEASE },
+    actual: { python: prereleaseOf(updatePy.compare), node: prereleaseOf(updateNode.compare) },
+  });
+
+  // ---- the up-to-date answer, PER SIDE, byte for byte. The user asked for this word by
+  // name — "ถ้า match ให้แสดงคำ uptodate" — and it is the one arm an operator sees most.
+  const UP_TO_DATE_REPORT =
+    'bantamkit-mcp 0.30.0 is installed; the package index has 0.30.0.\nup to date.';
+  cases.push({
+    name: 'update/PINNED PER SIDE: the up-to-date report, against the text in this file',
+    kind: 'json',
+    expected: { python: UP_TO_DATE_REPORT, node: UP_TO_DATE_REPORT },
+    actual: {
+      python: updatePy.arms['up-to-date'].text,
+      node: updateNode.arms['up-to-date'].text,
+    },
+  });
+
+  notes.push(
+    `--update: ${UPDATE_ARMS.length} arms driven on both runtimes with the network and the ` +
+      `installer stubbed at the two seams the flag was built with; ` +
+      `${Object.values(updatePy.arms).filter((a) => a.ok === false).length} of them refuse on ` +
+      `the reference and ` +
+      `${Object.values(updateNode.arms).filter((a) => a.ok === false).length} on the port. ` +
+      'no request left this machine and no installer ran: the command was captured, and the ' +
+      'two captured commands are the ruled difference.',
+  );
+  notes.push(
+    'the --update DISPATCH is not compared across runtimes and that is written down in ' +
+      "docs/porting.md: `runUpdate` takes its shape from `currentInstall()` with no seam and " +
+      'this harness does not install its two sides alike, so comparing the stream and the ' +
+      'exit code would compare two environments. the refusal BIT is compared for every arm ' +
+      'here; the stream and the exit code are held per side by the two runtimes’ own suites.',
+  );
+
   // ------------------------------------------------------------------------------- notes
+
+  notes.push(
+    `bare over a pipe, driven with a real initialize: python answered ${framesOf(pipePy).length} frame(s) ` +
+      `and exited ${pipePy.exit}; node ${framesOf(pipeNode).length} and ${pipeNode.exit}. this is the ` +
+      'production launch path — `.mcp.json` and the user-scope registration both pass `"args": []` — ' +
+      'and an empty-stdin case cannot tell a server that ANSWERED from one that was reverted: both ' +
+      'exit 0 with an empty stdout.',
+  );
 
   notes.push(
     `python's -h writes ${helpPy.stdout.length} bytes to STDOUT and ${helpPy.stderr.length} to stderr; ` +
       `node writes ${helpNode.stdout.length} to stdout and ${helpNode.stderr.length} to STDERR. ` +
       'the divergence is the stream first, the body second.',
   );
+  // THE WRAP BOUNDARY, MEASURED RATHER THAN PASTED — and the pasted one kept beside it, so
+  // the note reports a number this tree produced and still says what the record claimed.
+  const measured = measureWrapBoundary(ctx);
+  const wrapsAt = (columns) => (dec(runPy(ctx, { argv: ['-h'], env: { COLUMNS: String(columns) } }).stdout).split('\n')[0] ?? '').length !== measured.length;
+  cases.push({
+    name: `help-columns/the matrix's newest pair really does straddle the measured boundary (${STRADDLE.wraps}/${STRADDLE.fits})`,
+    kind: 'json',
+    expected: { boundary: STRADDLE.fits, lowerWraps: true, upperFits: true },
+    actual: { boundary: measured.boundary, lowerWraps: wrapsAt(STRADDLE.wraps), upperFits: !wrapsAt(STRADDLE.fits) },
+  });
   notes.push(
-    `argparse wraps the usage line whenever COLUMNS < ${wrapBoundary} (width = COLUMNS - 2, ` +
-      `single-line usage is ${SINGLE_LINE_USAGE.length} chars after U1 added [--assets-root], ` +
-      'U8 added [--mcp-report] and U13 added [--statusline]); ' +
+    `argparse wraps the usage line whenever COLUMNS < ${measured.boundary} (width = COLUMNS - 2, ` +
+      `single-line usage MEASURED on this tree at ${measured.length} chars); ` +
       `with no COLUMNS and no tty the fallback is ${DEFAULT_COLUMNS}, so the DEFAULT help is wrapped. ` +
-      'the matrix straddles the boundary at 135/136, and keeps the old 105/106 and 120/121 pairs ' +
-      'beside it.',
+      `the matrix straddles the boundary at ${STRADDLE.wraps}/${STRADDLE.fits}, and keeps the old ` +
+      '105/106, 120/121 and 135/136 pairs beside it — all three of which wrap on both halves ' +
+      'today and straddle nothing. AMENDED 2026-09-11: this note used to report ' +
+      `${wrapBoundary} and ${SINGLE_LINE_USAGE.length} chars from a literal pasted at U13; that ` +
+      'literal went stale when [--install {…}] and [--force] landed, before this job, and ' +
+      '[--update] moved it again. nothing went red, because a note is not a gate — which is ' +
+      'why the pair above it is now a case.',
   );
   notes.push(
     'REGISTERED, NOT FIXED: the two --assets-root counts agree at 84 only because the asset tree ' +

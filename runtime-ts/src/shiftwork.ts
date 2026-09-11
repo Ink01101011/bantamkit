@@ -31,6 +31,16 @@
  * `pyjson.ts` already carries. The three entry points therefore return `PyValue`, and the
  * MCP layer converts with `pyjson.toJs` at the last moment.
  *
+ * THE AS-2 REFUSAL IS A SENTENCE, AND THE SENTENCE IS THE PORT. `clockOut` refuses an
+ * accounting entry naming a model the unit's role is not allowed (`job.roles`, J46-7). The
+ * rule is four lines of comparison and none of the risk is in them: it is in the two
+ * refusal strings, which exist once per runtime and are copied, so the differential half of
+ * the harness compares Node to Python and cannot see a change made to both. They are
+ * therefore pinned as per-side literals in each runtime's own tests. The check runs at
+ * validation time — after the cursor check, before the first mutation, and so before the
+ * log-then-commit pair below — because a refusal taken after the append would leave an
+ * orphan accounting line claiming a model that was rejected.
+ *
  * WHAT IS NOT PORTED, DELIBERATELY. The `depends_on` field is ignored on cursor advance
  * (v1-linear, the Python module's own ruling), there is no lock (the MCP topology has one
  * orchestrator by construction), and log-then-commit ordering is preserved exactly: the
@@ -50,7 +60,7 @@ import {
   pyWriteText,
   pyReadText,
 } from './memory/pyfs.js';
-import { dumpJson, fromJs, parseJson, PyJSONDecodeError, type PyValue } from './pyjson.js';
+import { dumpJson, fromJs, parseJson, PyJSONDecodeError, reprValue, type PyValue } from './pyjson.js';
 
 export const SCHEMA_NAME = 'shiftwork-checkpoint';
 /** The driver's SUCCESS test. */
@@ -240,12 +250,78 @@ export function clockIn(checkpoint: string): PyValue {
 // ---------------------------------------------------------------------------- clock_out
 
 /**
+ * `f"{value}"` — `str()`, which is `repr()` for everything except a string itself.
+ *
+ * `accounting` carries no schema, so `model` is whatever the orchestrator sent. Python
+ * interpolates it with `str()` and prints `5`, `5.0`, `True`, `None`; a Node port that
+ * reached for the tagged `.v` would print `5` for both floats and ints and `true` for a
+ * bool. `reprValue` already spells all six the way CPython does.
+ */
+function pyFormat(value: PyValue): string {
+  return value.t === 'str' ? value.v : reprValue(value);
+}
+
+/**
+ * AS-2: a role named in `job.roles` may only report a model on its list.
+ *
+ * Returns the refusal sentence, or `null` when the clock-out may proceed. A role the map
+ * does not name — and a checkpoint carrying no map at all — is unconstrained: that is the
+ * schema's shape (J46-7) and it is what lets a checkpoint written before this feature clock
+ * out unchanged, model and all.
+ *
+ * A role the map DOES name must say which model it ran: a missing `model` is refused with
+ * the same force as a wrong one, because a rule you can escape by omitting a field is
+ * enforced only against the honest. `accounting: null`, `{}` and `{"model": null}` are one
+ * case in Python (`(accounting or {}).get("model") is None`) and three values here.
+ *
+ * Models compare exactly — no normalisation, no prefix match, no strip-the-suffix rule. The
+ * map's whole value is that it is the literal list of the spellings a session logs, so a
+ * spelling this job has never produced is a finding to rule on, not a string to massage.
+ *
+ * The two sentences are BYTE-IDENTICAL to `runtime-py`'s and are copied, never paraphrased.
+ *
+ * THE TEST IS KEY PRESENCE, NOT TRUTHINESS, AND THAT IS A RULING (J46-10). Both runtimes
+ * spelled this `if not allowed`, which reads `roles: {implementer: []}` as unconstrained and
+ * so makes an empty list a silent opt-out of the rule the checkpoint just declared. Today
+ * `minItems: 1` refuses such a document during the read and nothing reaches here — but the
+ * schema is a SHARED asset, the class job46 has measured three times as invisible to the
+ * differential half of the harness, and a check whose safety rests on another layer's
+ * keyword fails open the day that keyword moves. The DECLARATION is the key: a role the map
+ * names is held to its list, and a list of nothing allows nothing. `names` is then the empty
+ * string and the sentence says so. Reachable, and therefore measured: `BANTAMKIT_ASSETS` is
+ * honoured by both runtimes, so the tests and the conformance corpus drive this branch
+ * through a pack whose schema has lost `minItems`.
+ */
+function modelRefusal(document: PyDict, unitId: string, unit: PyDict, accounting: unknown): string | null {
+  const role = text(field(unit, 'role'));
+  const roles = subDict(document, 'job').v.get('roles');
+  const allowed = roles === undefined || roles.t !== 'dict' ? undefined : roles.v.get(role);
+  // `role not in roles`. The `t !== 'list'` arm is a TYPE guard and not a policy: the schema
+  // pins the value to an array, so the only way past it is a document no read would accept.
+  if (allowed === undefined || allowed.t !== 'list') return null;
+  const names = allowed.v.map((model) => pyFormat(model)).join(', ');
+  const offered = asPatch(accounting).get('model');
+  if (offered === undefined || offered.t === 'null') {
+    return `unit ${unitId} in role ${role} reported no model, but job.roles.${role} allows only: ${names}`;
+  }
+  // `offered not in allowed`. The schema pins every entry to a non-empty STRING, so the
+  // only equality Python's `in` can find here is string-to-string: a `{"model": 5}` is
+  // unequal to every entry and is refused, with `5` in the sentence.
+  if (!allowed.v.some((model) => model.t === 'str' && offered.t === 'str' && model.v === offered.v)) {
+    return `unit ${unitId} in role ${role} reported model ${pyFormat(offered)}, which job.roles.${role} does not allow: ${names}`;
+  }
+  return null;
+}
+
+/**
  * Apply the cursor unit's result, validate the WHOLE mutated document, write atomically.
  *
  * `unitId` must name the cursor unit — the contract is execute-the-cursor (driver parity),
- * never pick-a-unit. Mutations: set the unit's status, advance `plan.cursor` to the first
- * non-terminal unit in PLAN order (`depends_on` is ignored), shallow-merge `handoffPatch`
- * into `handoff`, push `historyEntry` onto the 5-entry ring.
+ * never pick-a-unit. When `job.roles` names the unit's role, `accounting.model` must be one
+ * of that role's models, spelled exactly; a wrong or missing model is refused here, before
+ * any mutation and before the accounting line. Mutations: set the unit's status, advance
+ * `plan.cursor` to the first non-terminal unit in PLAN order (`depends_on` is ignored),
+ * shallow-merge `handoffPatch` into `handoff`, push `historyEntry` onto the 5-entry ring.
  *
  * VALIDATE BEFORE WRITING, AND WRITE NOTHING ON REFUSAL. The mutated document goes through
  * the full schema before the first byte leaves; a failure returns `refused to write: …` and
@@ -275,6 +351,8 @@ export function clockOut(
   const plan = subDict(doc, 'plan');
   const cursor = text(field(plan, 'cursor'));
   if (unitId !== cursor) return errorResult(`unit ${unitId} is not the cursor unit ${cursor}`);
+  const wrongModel = modelRefusal(doc, unitId, unit, accounting);
+  if (wrongModel !== null) return errorResult(wrongModel);
 
   unit.v.set('status', str(status));
   const remaining = subList(plan, 'units').v.filter(

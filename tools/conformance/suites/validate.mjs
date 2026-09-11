@@ -234,6 +234,18 @@ const MUTATIONS = {
   'handoff-dropq': (d) => { delete d.handoff.open_questions; },
   'donot-type': (d) => { d.handoff.do_not.push(7); },
   'plan-units-type': (d) => { d.plan.units = {}; },
+  // `job.roles`, the optional v1 addition of job46/AS-2. It is the FIRST use of
+  // `propertyNames` anywhere in this schema, so these are the only cases that carry that
+  // keyword from the reference through the port at all — everything else in the checkpoint
+  // closes an object with `additionalProperties: false`, which `roles` cannot use because it
+  // is a map keyed by role rather than a record read by fixed field name.
+  'job-roles-valid': (d) => { d.job.roles = { implementer: ['claude-opus-5', 'claude-sonnet-5'], reviewer: ['claude-opus-5'] }; },
+  'job-roles-empty-map': (d) => { d.job.roles = {}; },
+  'job-roles-bad-key': (d) => { d.job.roles = { auditor: ['claude-opus-5'] }; },
+  'job-roles-empty-list': (d) => { d.job.roles = { implementer: [] }; },
+  'job-roles-string-value': (d) => { d.job.roles = { implementer: 'claude-opus-5' }; },
+  'job-roles-empty-name': (d) => { d.job.roles = { reviewer: [''] }; },
+  'job-roles-not-object': (d) => { d.job.roles = ['implementer']; },
   'everything': (d) => {
     d.version = 9;
     d.job.id = '';
@@ -406,6 +418,8 @@ export async function run(ctx) {
   }).results;
 
   let raised = 0;
+  /** Both sides' rendered answer, by spec name — so a literal can be pinned without a re-run. */
+  const rendered = new Map();
   for (let i = 0; i < specs.length; i += 1) {
     const spec = specs[i];
     let actual;
@@ -416,14 +430,57 @@ export async function run(ctx) {
     }
     const expected = pySchemaErrors[i];
     if (typeof expected === 'object' && expected !== null) raised += 1;
+    const pyText = answer(expected);
+    const nodeText =
+      typeof actual === 'string' || actual === null ? answer(actual === null ? null : b64(actual)) : answer(actual);
+    rendered.set(spec.name, { python: pyText, node: nodeText });
     cases.push({
       name: `schema_error/${spec.name}`,
       kind: 'string',
-      expected: answer(expected),
-      actual: typeof actual === 'string' || actual === null ? answer(actual === null ? null : b64(actual)) : answer(actual),
+      expected: pyText,
+      actual: nodeText,
     });
   }
   notes.push(`${specs.length} schema_error cases; ${raised} of them are an EXCEPTION on both sides`);
+
+  // ------------------------------------------- `job.roles`, as a literal on each side
+
+  /**
+   * WHY LITERALS AND NOT ONLY THE DIFFERENTIAL ABOVE. `job.roles` is a change to a SHARED
+   * asset — both runtimes read `assets/schemas/shiftwork-checkpoint.json`, the Node package
+   * by vendoring a copy of it — so deleting `propertyNames` from the schema turns
+   * `job-roles-bad-key` from a refusal into `(valid)` on BOTH sides at once, and every
+   * differential case above stays green through it. J46-6 measured that blindness on a
+   * shared default and the answer is the same here: pin the sentence itself, per side. The
+   * two `(valid)` rows are the other half of the property — the field is OPTIONAL and an
+   * empty map constrains nothing, so a schema that started refusing them would be wrong in
+   * the direction that stops a live job.
+   */
+  const ROLES_LITERALS = {
+    'job-roles-valid': '(valid)',
+    'job-roles-empty-map': '(valid)',
+    'job-roles-bad-key':
+      "JSON does not match schema at 'job/roles': 'auditor' is not one of ['planner', 'implementer', 'reviewer']",
+    'job-roles-empty-list': "JSON does not match schema at 'job/roles/implementer': [] should be non-empty",
+    'job-roles-string-value':
+      "JSON does not match schema at 'job/roles/implementer': 'claude-opus-5' is not of type 'array'",
+    'job-roles-empty-name': "JSON does not match schema at 'job/roles/reviewer/0': '' should be non-empty",
+    'job-roles-not-object':
+      "JSON does not match schema at 'job/roles': ['implementer'] is not of type 'object'",
+  };
+  for (const [mname, sentence] of Object.entries(ROLES_LITERALS)) {
+    const got = rendered.get(`real/example/${mname}`) ?? { python: null, node: null };
+    cases.push({
+      name: `schema_error/real/example/${mname}: the sentence, as a literal on each side`,
+      kind: 'json',
+      expected: { python: sentence, node: sentence },
+      actual: { python: got.python, node: got.node },
+    });
+  }
+  notes.push(
+    `job.roles: ${Object.keys(ROLES_LITERALS).length} sentences pinned as a literal on each side — ` +
+      'a shared-asset change is invisible to the differential half of this suite',
+  );
 
   // ------------------------------------------------------- 2. the CPython decoder's text
 

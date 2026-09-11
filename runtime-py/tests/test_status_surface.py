@@ -10,6 +10,10 @@ vacuous":
 * `test_<each>_is_observed_when_it_is_constructed` — four nodes, one per condition, each of
   which builds the broken state on disk and then reads the report. A condition that cannot
   be constructed is not claimed, so a condition with no node here must not be in the list.
+  **AMENDED 2026-09-11 (J46-11, `docs/roadmap-agent-stack.md` AS-7): five, not four.**
+  `install-source-missing` joined the list, last, and
+  `test_an_install_whose_origin_path_is_gone_is_observed_and_named` is its node — built the
+  same way, from a real path that is really deleted.
 * `test_no_argument_value_reaches_the_status_report_or_the_footer` — the absence asserted
   POSITIVELY, against a sentinel that provably went into three different tools.
 * `test_the_server_refuses_to_start_without_the_status_manifest_entry` — the registration
@@ -37,7 +41,7 @@ from bantamkit.mcpserver import (  # noqa: E402
     build_server,
     degraded_conditions,
 )
-from bantamkit.memory import Memory  # noqa: E402
+from bantamkit.memory import Memory, undegraded_index_ceiling  # noqa: E402
 from bantamkit.memory.__main__ import _PROG  # noqa: E402
 
 FOOTER_MARK = "⚠️ bantamkit degraded"
@@ -93,7 +97,7 @@ def test_the_status_tool_is_served_and_answers_active_on_a_healthy_server(tmp_pa
     assert lines[0] == HEALTHY_LINE
     assert len(lines) == 5, report
     assert lines[1].startswith("version ") and ", build sha256:" in lines[1]
-    assert lines[2] == "serving 13 tools, 1 prompt, 2 resource templates"
+    assert lines[2] == "serving 14 tools, 1 prompt, 2 resource templates"
     assert lines[3] == "memory: 0 facts in the project store, index 0 of 24000 bytes"
     assert lines[4] == "event log: off"
 
@@ -353,6 +357,33 @@ def test_the_ninety_percent_line_is_where_the_index_condition_turns_on(tmp_path)
     assert [c.key for c in degraded_conditions(memory, EventLog(None))] == ["index-budget-low"]
 
 
+def test_the_helper_compaction_aims_at_is_the_same_line_the_report_warns_at(tmp_path):
+    """Two spellings of one threshold, swept across the byte where they could disagree.
+
+    `_index_pressure_condition` cross-multiplies (`size * 100 >= PERCENT * budget`);
+    `MemoryStore.compact` needs the same line as a SIZE, and `undegraded_index_ceiling`
+    spells it `(PERCENT * budget - 1) // 100`. The identity is exact over the integers, and
+    nothing in either file makes it stay that way — this does. Sweeping budgets around
+    `(index * 100) // 90` puts the boundary inside the range rather than near it, and both
+    outcomes are asserted to occur, so a helper that answered a constant would redden this.
+    """
+    memory = make_memory(tmp_path)
+    memory.store.save("project", "pressure", "a fact that fills the budget", "body", ())
+    size = (memory.store.root / "index.md").stat().st_size
+
+    seen = set()
+    for budget in range((size * 100) // 90 - 3, (size * 100) // 90 + 4):
+        memory.store.index_budget = budget
+        fires = [c.key for c in degraded_conditions(memory, EventLog(None))] == [
+            "index-budget-low"
+        ]
+        assert fires == (size > undegraded_index_ceiling(budget)), (
+            f"the two spellings disagree at budget {budget} on an index of {size} bytes"
+        )
+        seen.add(fires)
+    assert seen == {True, False}, "the sweep never crossed the line it claims to pin"
+
+
 def test_the_index_remedy_names_the_command_this_install_actually_provides(tmp_path):
     """The remedy is a command the person reading the report can run, spelled THEIR way.
 
@@ -380,6 +411,70 @@ def test_the_index_remedy_names_the_command_this_install_actually_provides(tmp_p
     assert "bantamkit-memory" not in report
 
 
+def _put_the_index_inside_the_old_no_op_band(memory: Memory) -> tuple[int, int, int]:
+    """Fill a store and bind a budget the report warns about and the OLD `compact` ignored.
+
+    The band is `[ceil(90% of budget) .. budget - largest index line]`. The report fires at
+    its bottom edge and `compact`'s pre-fix target — `budget - reserve`, `reserve`
+    defaulting to the largest index line kept — sat at its top edge, so every size in
+    between printed a command that exited 0 having archived nothing (`docs/porting.md`,
+    "Defects registered against `runtime-py`, not fixed here", item 7).
+
+    THE BUDGET IS DERIVED, NOT GUESSED, and the band is asserted non-empty before it is
+    used: an input picked where the two thresholds already agree would prove nothing. The
+    budget chosen is the band's midpoint, so neither edge is what makes this pass.
+    """
+    for n in range(20):
+        # Pairwise below the duplicate threshold the way `_describe` in `test_memory.py`
+        # is: one token unique to the fact, one shared, so jaccard is 1/3 and no save is
+        # swallowed as a near-duplicate of the last one.
+        memory.store.save("project", f"pressure-{n}", f"subject{n} " + "y" * 60, "body", ())
+    size = (memory.store.root / "index.md").stat().st_size
+    largest = max(
+        len(memory.store._index_line(fact).encode()) for fact in memory.store._facts()
+    )
+    lowest_degraded_budget = size + largest  # the largest budget the old target ignored
+    highest_degraded_budget = (size * 100) // 90  # the largest budget that still warns
+    assert lowest_degraded_budget < highest_degraded_budget, (
+        f"fixture is not inside the band: index {size}, largest line {largest}"
+    )
+    budget = (lowest_degraded_budget + highest_degraded_budget) // 2
+    memory.store.index_budget = budget
+    return size, budget, largest
+
+
+def test_the_index_remedy_is_not_a_no_op_at_the_moment_it_is_printed(tmp_path):
+    """`docs/porting.md` item 7, closed: run the command the sentence names and it works.
+
+    MEASURED BEFORE THE FIX, on a read-only copy of this machine's own project store
+    (`.bantamkit/memory`, 101 facts, index.md 21819 bytes of a 24000-byte budget = 90.91%,
+    largest index line 361 bytes so the old target was 23639 = 98.50%): the report printed
+    `index-budget-low` and `MemoryStore.compact()` answered `archived=[]`, leaving the
+    condition firing. That is the whole defect and this is the node that would see it come
+    back.
+
+    The band's TOP edge moves with the store — the register measured 99.2% when the
+    largest index line was 186 bytes, and the same store measured 98.50% at 361 — so the
+    fixture derives both edges instead of quoting either number.
+    """
+    memory = make_memory(tmp_path)
+    size, budget, largest = _put_the_index_inside_the_old_no_op_band(memory)
+
+    # The band, asserted rather than assumed: the report fires, AND the pre-fix target
+    # (`budget - largest index line`) sat at or above the index, so it archived nothing.
+    assert [c.key for c in degraded_conditions(memory, EventLog(None))] == ["index-budget-low"]
+    assert size <= budget - largest, "the old target would have archived something here"
+
+    result = memory.store.compact()
+
+    assert result.archived, "the command the report names must do something"
+    assert result.index_after < budget, "merely-fitting leaves the caller in a retry loop"
+    assert degraded_conditions(memory, EventLog(None)) == [], (
+        "running the remedy the report named must clear the condition it was printed for"
+    )
+    assert memory.store.compact().archived == [], "and a second run must still archive nothing"
+
+
 def test_an_event_log_whose_writes_fail_is_observed_from_the_lost_record_onward(tmp_path):
     """The log is the one channel that cannot report its own silence, so this one does.
 
@@ -403,6 +498,58 @@ def test_an_event_log_whose_writes_fail_is_observed_from_the_lost_record_onward(
     assert first["bantamkit_degraded"].startswith(f"{FOOTER_MARK} (1): the event log")
     assert _keys(memory, log) == ["event-log-unwritable"]
     assert "event log: on" in status_of(server)
+
+
+def test_an_install_whose_origin_path_is_gone_is_observed_and_named(tmp_path, monkeypatch):
+    """The fifth condition, end to end: `degraded_conditions`, the footer, and the report.
+
+    WHAT IS REAL HERE AND WHAT IS SUBSTITUTED. The path is real, it really exists and is
+    really deleted, and everything from `_install_source_condition` outward — the ordering,
+    the footer, the report — is the shipped code. What is substituted is the one step that
+    cannot be built inside this process: `_install_once` walks `sys.path` for the
+    distribution that owns the RUNNING bantamkit, and this interpreter has exactly one
+    answer to that. Discovery itself is tested where it can be honest, against real
+    `.dist-info` directories, in `test_install_shape.py`.
+
+    LAST, NOT FIRST, and that is asserted rather than assumed: the server is serving
+    correctly and what is broken is the next attempt to UPDATE it, so a working event log
+    outranks it. The footer therefore keeps spelling out the event log's sentence while the
+    count moves to 2 — which is the behaviour that would break first if the order were
+    changed by hand.
+    """
+    from bantamkit import mcpserver
+
+    archive = tmp_path / "scratchpad" / "bantamkit-mcp-0.25.0.tgz"
+    archive.parent.mkdir()
+    archive.write_bytes(b"a tarball that will not be here for long")
+    monkeypatch.setattr(
+        mcpserver,
+        "_install_once",
+        lambda: (mcpserver.Install("local-file", str(archive)), None),
+    )
+    memory = make_memory(tmp_path)
+    server = build_server(memory)
+
+    assert _keys(memory, EventLog(None)) == [], "a source that is there is not a problem"
+
+    archive.unlink()
+
+    assert _keys(memory, EventLog(None)) == ["install-source-missing"]
+    notice = validate_reply(server)["bantamkit_degraded"]
+    assert notice.startswith(f"{FOOTER_MARK} (1): this server was installed from ")
+    report = status_of(server)
+    assert report.startswith(DEGRADED_LINE)
+    assert str(archive) in report
+    assert "reinstall bantamkit by name from a package registry" in report
+
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a regular file", encoding="utf-8")
+    log = EventLog(blocker / "events" / "mcp.jsonl")
+    log.record("validate_json", "valid")
+    assert _keys(memory, log) == ["event-log-unwritable", "install-source-missing"]
+
+    archive.write_bytes(b"reinstalled")
+    assert _keys(memory, EventLog(None)) == [], "and it clears when the path comes back"
 
 
 def test_a_disabled_event_log_is_never_a_degraded_condition(tmp_path):

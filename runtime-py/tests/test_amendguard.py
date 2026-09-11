@@ -308,6 +308,40 @@ def test_an_appended_amendment_is_ok(fixture):
     assert row["verdict"] == "OK"
 
 
+def test_a_record_extended_in_place_without_destroying_anything_is_ok(fixture):
+    """The `amendment` class, added 2026-09-11 (J46-32, defect 4).
+
+    A register row is ONE LINE, so this repository's two ordinary ways of closing an item —
+    striking the number (`| 12 |` -> `| ~~12~~ |`) and writing the closure into the row's last
+    cell — both arrive as a line-level `replace`. Before this class they were classified
+    `record` and reported RECORD-EDITED, which is the checker calling an amendment a rewrite.
+
+    MEASURED over `6e506ca..df48b68`, the 40 commits of
+    `feat/job46-register-and-agent-stack`, with `docs/roadmap-toolbox.md`,
+    `docs/roadmap-agent-stack.md` and `docs/porting.md` in `amend_only`: SEVEN hunks came back
+    RECORD-EDITED, FIVE of them destroying not one character. `tools/amendguard/ledger.json`
+    had registered a strict-PREFIX test for exactly this, and the prefix test greens ZERO of
+    the seven — a table row ends in `|`, so no closure on that branch was written at the end
+    of its line. The class is character-level for that measured reason.
+    """
+    row = _row(fixture, "AMEND-IN-PLACE", "doc-e.md")
+    assert row["classify"] == "amendment"
+    assert row["verdict"] == "OK"
+
+
+def test_an_in_place_extension_that_destroys_one_character_is_still_red(fixture):
+    """The teeth, and the reason the predicate is not a length comparison.
+
+    This fixture row is much LONGER than the one it replaces and removes a single character
+    from the middle of a word. A predicate that asked "did the line grow" would call it an
+    amendment; the one that ships asks "was anything destroyed" and calls it a record edit.
+    Without this node the class could be satisfied by the wrong question.
+    """
+    row = _row(fixture, "AMEND-BUT-DELETES", "doc-e.md")
+    assert row["classify"] == "record"
+    assert row["verdict"] == "RECORD-EDITED"
+
+
 # ---------------------------------------------------------------------------------------
 # RB-P47 — the input on which `classify` and the closed list DISAGREE. Without a case that
 # can be made to disagree, their agreement everywhere else is a transcription.

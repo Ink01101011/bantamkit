@@ -112,6 +112,23 @@ function materialise(root, spec) {
   }
 }
 
+/**
+ * Apply one fixture spec's modes to a bed, or put them back.
+ *
+ * platform-checked: BOTH BEDS GET THE SAME CALL FROM THE SAME SPEC — `applyModes` is invoked
+ * once per side (`for (const side of ['py', 'node'])`) with one `spec`, so a platform that
+ * ignores the mode removes the restriction from the reference's tree and the port's tree
+ * identically. That is the property this suite's comparison rests on, and it holds on every
+ * platform because it is a property of the harness rather than of the filesystem.
+ *
+ * WHAT IS NOT CLAIMED, and it is not claimed because it is not measured: whether the
+ * resulting comparison still has teeth on Windows. It does not — an unrestricted bed answers
+ * a question nobody asked — and this repository has no Windows run to show it with, because
+ * Actions is off on this account. `recall-strings.mjs` shows the shape that would measure it:
+ * a probe that tries the denied operation, and a `notes.push('NOT MEASURED: ...')` when the
+ * mode was not honoured. Registered rather than written here, because a sentence asserting
+ * Windows behaviour nobody has run is the thing this gate's own docstring warns about.
+ */
 const applyModes = (root, spec, on) => {
   for (const [path, mode] of Object.entries(spec.modes ?? {})) {
     chmodSync(join(root, path), on ? mode : 0o755);
@@ -402,6 +419,13 @@ const CONFIGS = [
 
 // ------------------------------------------------------------------------------- run
 
+/**
+ * platform-checked: this body chmods `locked` to `0o000` and then PROBES whether the mode was
+ * honoured — `readdirSync` inside a `try`, and a `notes.push('NOT MEASURED: this platform
+ * listed a 0o000 directory anyway (root?)')` when it was not. That probe is the platform
+ * statement; the marker is what makes it visible to the gate, which could not see the
+ * `chmodSync(join(...), 0o000)` spelling until 2026-09-11.
+ */
 export async function run(ctx) {
   const mod = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'component.js')).href);
   const layers = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'layers.js')).href);

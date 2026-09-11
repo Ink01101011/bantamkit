@@ -1,5 +1,5 @@
 /**
- * The MCP surface: the thirteen tools, the two resource templates, and the wire.
+ * The MCP surface: the fourteen tools, the two resource templates, and the wire.
  *
  * WHY MOST OF THIS DRIVES A REAL PROCESS RATHER THAN CALLING A HANDLER. Everything this
  * unit adds lives in the gap between a handler's return value and the bytes on stdout —
@@ -17,7 +17,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -75,13 +75,13 @@ const INITIALIZED = { jsonrpc: '2.0', method: 'notifications/initialized' };
  * Both are now per-session and under the scratch bed. A test that wants the walk to reach
  * something puts it there itself, the way the layered test below does.
  */
-function session(requests, { args = [], env = {}, cwd = null } = {}) {
+function session(requests, { args = [], env = {}, cwd = null, cli = CLI } = {}) {
   const isolated = cwd ?? join(scratch, `cwd${(seq += 1)}`);
   mkdirSync(isolated, { recursive: true });
   const fakeHome = join(scratch, 'fakehome');
   mkdirSync(fakeHome, { recursive: true });
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [CLI, ...args], {
+    const child = spawn(process.execPath, [cli, ...args], {
       cwd: isolated,
       env: { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome, BANTAMKIT_ASSETS: ASSETS, ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -168,6 +168,7 @@ test('the agent-only tools are absent from tools/list and unknown to tools/call'
     'skill_audit',
     'memory_dream',
     'repo_map',
+    'token_ledger',
   ]);
   const refused = byId(lines, 3).result;
   assert.equal(refused.isError, true);
@@ -750,14 +751,19 @@ test('build_identity names its runtime and refuses to be compared across lineage
   const id = byId(lines, 2).result.structuredContent;
   assert.equal(id.runtime, 'node');
   assert.equal(id.server_name, 'bantamkit');
-  assert.equal(id.assets_files, 89);
+  assert.equal(id.assets_files, 91); // +1: assets/tools/token_ledger.json (job46 J46-18, AS-1(c)); +1: assets/pricing/default.json (job46 J46-17, AS-1(b))
   assert.match(id.assets_digest, /^sha256:[0-9a-f]{64}$/);
   assert.match(id.code_digest, /^sha256:[0-9a-f]{64}$/);
   assert.match(id.build_id, /^sha256:[0-9a-f]{64}$/);
   assert.equal(id.assets_root_from_env, true);
   assert.equal(id.node_version, process.versions.node);
   assert.equal(id.interpreter, process.execPath);
-  assert.deepEqual(id.unavailable, ['git_commit']);
+  // `install_source`/`install_source_exists` joined the refusals in job46 (AS-7): this suite
+  // drives the server out of the CHECKOUT, and a checkout has no recorded origin path to
+  // check — the shape itself is still derived, and is asserted here so a build that lost the
+  // field entirely could not pass by refusing all three.
+  assert.equal(id.install_shape, 'checkout');
+  assert.deepEqual(id.unavailable, ['git_commit', 'install_source', 'install_source_exists']);
   // MEASURED DEFECT, FOUND BY DRIVING THE PACKAGED INSTALL. The obvious resolution
   // (`import.meta.resolve('@modelcontextprotocol/sdk/package.json')`) goes through the SDK's
   // `exports` map into `dist/esm/package.json`, a `{"type":"module"}` marker with no version,
@@ -799,7 +805,10 @@ test('build_identity declines a build_id when an input is underivable', async ()
     const id = Object.fromEntries(buildIdentity('0.25.0', '1.30.0'));
     assert.match(id.assets_digest.unavailable, /contains no files|could not resolve a pack/);
     assert.match(id.build_id.unavailable, /could not derive assets_digest/);
-    assert.deepEqual(id.unavailable, ['assets_digest', 'assets_files', 'assets_root', 'build_id', 'git_commit']);
+    assert.deepEqual(id.unavailable, [
+      'assets_digest', 'assets_files', 'assets_root', 'build_id', 'git_commit',
+      'install_source', 'install_source_exists',
+    ]);
     // The refusal is a refusal and not a degraded value: nothing here is a hashable string.
     assert.equal(typeof id.build_id, 'object');
   } finally {
@@ -841,7 +850,7 @@ test('a __pycache__ in the pack is not a different pack — the half a different
     assert.equal(compiled.assets_digest, clean.assets_digest);
     assert.equal(compiled.build_id, clean.build_id);
     // And the count is the pack as shipped, not the pack as the interpreter left it.
-    assert.equal(compiled.assets_files, 89);
+    assert.equal(compiled.assets_files, 91);
   } finally {
     if (previous === undefined) delete process.env.BANTAMKIT_ASSETS;
     else process.env.BANTAMKIT_ASSETS = previous;
@@ -869,6 +878,47 @@ test('production passes no argv at all and still binds a layered memory', async 
   assert.match(text, /nothing is saved in any layer bound here/);
 });
 
+test('a bare launch over a pipe still completes a real handshake — THE production path', async () => {
+  // THE ONE THAT MATTERS for J46-27. `bantamkit-mcp` typed at a TERMINAL now prints the help
+  // instead of blocking as a mute stdio server (`typedBareAtATerminal` in `src/cli.ts`), and
+  // the bare form is ALSO what every host passes: `.mcp.json` and the user-scope registration
+  // both send `"args": []`, and the user-scope one points at `tools/bantamkit-mcp-node`, so
+  // this runtime is the one a broken bare path takes down.
+  //
+  // "The tests pass" is not the assertion. The protocol is spoken over a real pipe to a real
+  // child and the answer is read off the wire, with NO argv at all.
+  //
+  // RED-PROOF, run 2026-09-11 against a COPY of this tree with the discrimination removed —
+  // `if (true)` in place of `if (typedBareAtATerminal(argv))`, i.e. the shape a literal
+  // reading of the request would have shipped:
+  //
+  //   SyntaxError: Unexpected token 'u', "usage: ban"... is not valid JSON
+  //       at JSON.parse (<anonymous>)
+  //       at TestContext.<anonymous> (.../test/server.test.mjs:912:47)
+  //
+  // — this node reading the HELP TABLE off the wire and trying to parse it as a frame, which
+  // is exactly the malformed-frame failure `src/cli.ts`'s header gives as the reason the
+  // original N1 refusal to print on stdout existed. (37 of this file's 61 nodes went red on
+  // that mutation, because `if (true)` prints the help for every argv; this one is the node
+  // that names WHY. It does not time out: the child prints and exits, so a driver watching
+  // only for a hang would have seen nothing.) That is the direction that would break every
+  // MCP host on this machine, so it gets a node of its own rather than riding on the
+  // layered-memory node above.
+  const { lines, stderr, code } = await session(
+    [INIT, INITIALIZED, { jsonrpc: '2.0', id: 2, method: 'tools/list' }],
+    { args: [] },
+  );
+  assert.equal(code, 0);
+  assert.equal(stderr, '');
+  // Every line is a frame, not just the two that were asked for: the help table is 20-odd
+  // lines and `JSON.parse` is what notices any of them.
+  for (const line of lines) assert.equal(JSON.parse(line).jsonrpc, '2.0');
+  assert.equal(byId(lines, 1).result.serverInfo.name, 'bantamkit');
+  // Asking it a question, not counting the answer: the exact tool list is pinned elsewhere in
+  // this file and a second copy here would only mean two nodes to re-baseline.
+  assert.ok(byId(lines, 2).result.tools.some((t) => t.name === 'memory_recall'));
+});
+
 test('every byte on stdout is a JSON-RPC frame', async () => {
   const { lines, trailing, stderr } = await session(
     [INIT, INITIALIZED, { jsonrpc: '2.0', id: 2, method: 'tools/list' }, call(3, 'build_identity', {})],
@@ -893,7 +943,7 @@ test('--assets-root still answers, and it is the only thing that prints outside 
   const { lines, code } = await session([], { args: ['--assets-root'] });
   assert.equal(code, 0);
   assert.equal(lines[0], ASSETS);
-  assert.equal(lines[1], '89 files');
+  assert.equal(lines[1], '91 files');
 });
 
 // ================================================= the pydantic-shaped argument refusals
@@ -1107,7 +1157,7 @@ test('a healthy server reports Active, and the report is the five lines docs/sta
   assert.equal(rows.length, 5, report);
   assert.equal(rows[0], REPORT_LINE_1_ACTIVE);
   assert.match(rows[1], /^version \d+\.\d+\.\d+, build sha256:[0-9a-f]{64}$/);
-  assert.equal(rows[2], 'serving 13 tools, 1 prompt, 2 resource templates');
+  assert.equal(rows[2], 'serving 14 tools, 1 prompt, 2 resource templates');
   assert.equal(rows[3], `memory: 1 fact in the project store, index ${INDEX_BYTES} of ${HEALTHY_BUDGET} bytes`);
   assert.equal(rows[4], 'event log: off');
   // The unstructured half is the RAW string, not the JSON — `bantamkit_status` is a `-> str`
@@ -1346,4 +1396,203 @@ test('the index condition is integer cross-multiplication, on both sides of the 
   assert.equal(at(HEALTHY_BUDGET), null, `${INDEX_BYTES} bytes of ${HEALTHY_BUDGET} is under nine tenths`);
   assert.equal(at(DEGRADED_BUDGET).key, 'index-budget-low');
   assert.equal(at(Math.floor((INDEX_BYTES * 100) / 90)).key, 'index-budget-low');
+});
+
+// ---- the remedy the report names is not a no-op at the moment it is printed -------------
+//
+// `docs/porting.md`'s register item 7, and the Node half of the fix job46/J46-4 landed on the
+// reference. The two runtimes carry the SAME two constants — `INDEX_PRESSURE_PERCENT` and
+// `MemoryStore.compact`'s default `reserve` — which is why the register calls this a defect of
+// the reference and not a divergence, and why the port has to land in the same job or the two
+// sides really would disagree about a user's data.
+
+test('the helper compaction aims at is the same line the report warns at', async () => {
+  // Two spellings of one threshold, swept across the byte where they could disagree.
+  // `indexPressureCondition` cross-multiplies (`size * 100 >= PERCENT * budget`);
+  // `MemoryStore.compact` needs the same line as a SIZE, and `undegradedIndexCeiling` spells
+  // it `floor((PERCENT * budget - 1) / 100)`. The identity is exact over the integers, and
+  // nothing in either file makes it stay that way — this does. Sweeping budgets around
+  // `floor(size * 100 / 90)` puts the boundary INSIDE the range rather than near it, and both
+  // outcomes are asserted to occur, so a helper that answered a constant would redden this.
+  const { degradedConditions } = await import('../dist/mcp/status.js');
+  const { undegradedIndexCeiling } = await import('../dist/memory/store.js');
+  const { Memory } = await import('../dist/memory/component.js');
+  const { EventLog } = await import('../dist/eventlog.js');
+
+  const root = freshStore();
+  new Memory(root).store.save('project', 'pressure', 'a fact that fills the budget', 'body');
+  // The bytes ON DISK, which is what `indexBytes` reads and what CRLF translation moves.
+  const size = statSync(join(root, 'index.md')).size;
+
+  const seen = new Set();
+  const middle = Math.floor((size * 100) / 90);
+  for (let budget = middle - 3; budget <= middle + 3; budget += 1) {
+    const memory = new Memory(root, { indexBudget: budget });
+    const keys = degradedConditions(memory, new EventLog(null)).map((c) => c.key);
+    const fires = keys.length === 1 && keys[0] === 'index-budget-low';
+    assert.equal(
+      fires,
+      size > undegradedIndexCeiling(budget),
+      `the two spellings disagree at budget ${budget} on an index of ${size} bytes`,
+    );
+    seen.add(fires);
+  }
+  assert.deepEqual([...seen].sort(), [false, true], 'the sweep never crossed the line it claims to pin');
+});
+
+/**
+ * Fill a store and bind a budget the report warns about and the OLD `compact` ignored.
+ *
+ * The band is `[ceil(90% of budget) .. budget - largest index line]`. The report fires at its
+ * bottom edge and `compact`'s pre-fix target — `budget - reserve`, `reserve` defaulting to the
+ * largest index line kept — sat at its top edge, so every size in between printed a command
+ * that exited 0 having archived nothing.
+ *
+ * THE BUDGET IS DERIVED, NOT GUESSED, and the band is asserted non-empty before it is used: an
+ * input picked where the two thresholds already agree would prove nothing. The budget chosen
+ * is the band's midpoint, so neither edge is what makes this pass.
+ */
+function putTheIndexInsideTheOldNoOpBand(store) {
+  for (let n = 0; n < 20; n += 1) {
+    // Pairwise below the duplicate threshold: one token unique to the fact, one shared, so
+    // jaccard is 1/3 and no save is swallowed as a near-duplicate of the last one.
+    store.save('project', `pressure-${n}`, `subject${n} ${'y'.repeat(60)}`, 'body');
+  }
+  const size = statSync(join(store.root, 'index.md')).size;
+  const largest = Math.max(
+    ...store.internals().facts().map((f) => Buffer.byteLength(store.internals().indexLine(f), 'utf8')),
+  );
+  const lowestDegradedBudget = size + largest; // the largest budget the old target ignored
+  const highestDegradedBudget = Math.floor((size * 100) / 90); // the largest that still warns
+  assert.ok(
+    lowestDegradedBudget < highestDegradedBudget,
+    `fixture is not inside the band: index ${size}, largest line ${largest}`,
+  );
+  return { size, largest, budget: Math.floor((lowestDegradedBudget + highestDegradedBudget) / 2) };
+}
+
+test('the index remedy is not a no-op at the moment it is printed', async () => {
+  // Run the command the sentence names and it must do something. MEASURED BEFORE THE FIX on
+  // this side, on a read-only copy of this machine's own project store (`.bantamkit/memory`,
+  // 101 facts): index.md 21819 bytes of a 24000-byte budget = 90.91%, largest index line 361
+  // bytes so the old target was 23639 = 98.50%. `degradedConditions` printed
+  // `index-budget-low` and `MemoryStore.compact()` answered `archived: []`, leaving the
+  // condition firing — the same answer the reference gave, to the byte.
+  //
+  // The band's TOP edge moves with the store — the register measured 99.2% when the largest
+  // index line was 186 bytes, and the same store measured 98.50% at 361 — so the fixture
+  // derives both edges instead of quoting either number.
+  const { degradedConditions } = await import('../dist/mcp/status.js');
+  const { Memory } = await import('../dist/memory/component.js');
+  const { EventLog } = await import('../dist/eventlog.js');
+
+  const root = freshStore();
+  const { size, largest, budget } = putTheIndexInsideTheOldNoOpBand(new Memory(root).store);
+  const memory = new Memory(root, { indexBudget: budget });
+
+  // The band, asserted rather than assumed: the report fires, AND the pre-fix target
+  // (`budget - largest index line`) sat at or above the index, so it archived nothing.
+  assert.deepEqual(
+    degradedConditions(memory, new EventLog(null)).map((c) => c.key),
+    ['index-budget-low'],
+  );
+  assert.ok(size <= budget - largest, 'the old target would have archived something here');
+
+  const result = memory.store.compact();
+
+  assert.ok(result.archived.length > 0, 'the command the report names must do something');
+  assert.ok(result.indexAfter < budget, 'merely-fitting leaves the caller in a retry loop');
+  assert.deepEqual(
+    degradedConditions(memory, new EventLog(null)),
+    [],
+    'running the remedy the report named must clear the condition it was printed for',
+  );
+  assert.deepEqual(
+    memory.store.compact().archived,
+    [],
+    'and a second run must still archive nothing',
+  );
+});
+
+/**
+ * AS-7(a) end to end, from a REAL install whose recorded origin is really gone.
+ *
+ * `test/install-shape.test.mjs` covers the derivation over every shape. What only a spawned
+ * process can show is the rest of the chain: that the shape reaches the wire, that the
+ * condition reaches the report and the footer, and that it comes LAST — which is the half a
+ * unit test would have had to assume. So `dist/` is copied into a real
+ * `node_modules/bantamkit-mcp`, npm's hidden lockfile is written beside it naming a tarball
+ * that was never created, and the server is spawned from THERE. Nothing is stubbed and no seam
+ * is opened in the server to let a test say what its own install is.
+ *
+ * TWO CONDITIONS AT ONCE, because a position asserted with one condition in the list is not a
+ * position. The index budget is squeezed under the same 90% line the tests above measure, so
+ * the report has to order them — and the order is the reference's: the index refuses the next
+ * SAVE, while a dangling origin costs nothing until somebody tries to update.
+ */
+test('a real install whose `file:` origin is gone says so — on the wire, in the report, LAST', async () => {
+  const { size: INDEX_BYTES, degraded: DEGRADED_BUDGET } = await indexFacts();
+  const project = join(scratch, 'dangling-install');
+  const pkg = join(project, 'node_modules', 'bantamkit-mcp');
+  mkdirSync(pkg, { recursive: true });
+  cpSync(join(packageRoot, 'dist'), join(pkg, 'dist'), { recursive: true });
+  cpSync(join(packageRoot, 'package.json'), join(pkg, 'package.json'));
+  // The SDK resolves from `<project>/node_modules`, where npm would have put it.
+  symlinkSync(
+    join(packageRoot, 'node_modules', '@modelcontextprotocol'),
+    join(project, 'node_modules', '@modelcontextprotocol'),
+    'dir',
+  );
+  writeFileSync(join(project, 'package.json'), JSON.stringify({ name: 'host', version: '1.0.0' }), 'utf8');
+  writeFileSync(
+    join(project, 'node_modules', '.package-lock.json'),
+    JSON.stringify({
+      name: 'host',
+      lockfileVersion: 3,
+      packages: {
+        'node_modules/bantamkit-mcp': {
+          version: '0.25.0',
+          resolved: 'file:scratchpad/bantamkit-mcp-0.25.0.tgz',
+        },
+      },
+    }),
+    'utf8',
+  );
+  const gone = join(project, 'scratchpad', 'bantamkit-mcp-0.25.0.tgz');
+  assert.ok(!existsSync(gone), 'the fixture is only a fixture if the tarball really is absent');
+
+  const store = freshStore();
+  const { lines, stderr } = await session(
+    [INIT, INITIALIZED, SAVE_PROBE(2), call(3, 'bantamkit_status', {}), call(4, 'build_identity', {})],
+    { args: ['--store', store, '--index-budget', String(DEGRADED_BUDGET)], cli: join(pkg, 'dist', 'cli.js') },
+  );
+
+  const id = byId(lines, 4).result.structuredContent;
+  assert.equal(id.install_shape, 'local-file');
+  assert.equal(id.install_source, gone);
+  assert.equal(id.install_source_exists, false);
+  // A missing origin is a `false`, never a refusal: the check succeeded and the answer is no.
+  assert.deepEqual(id.unavailable, ['git_commit']);
+
+  const rows = byId(lines, 3).result.structuredContent.result.split('\n');
+  assert.equal(rows[0], REPORT_LINE_1_DEGRADED);
+  assert.equal(rows[5], '2 problems:');
+  assert.equal(
+    rows[6],
+    `- the memory index is ${INDEX_BYTES} bytes of a ${DEGRADED_BUDGET}-byte budget, so the next save is close to ` +
+      'being refused — archive or shorten facts with `bantamkit-memory compact`.',
+  );
+  assert.equal(
+    rows[7],
+    `- this server was installed from ${gone}, which no longer exists, so nothing can be ` +
+      'refreshed in place there — reinstall bantamkit by name from a package registry and ' +
+      'restart the server.',
+  );
+  assert.equal(rows.length, 8);
+
+  // The footer shows the FIRST condition, which is still the index one — so the count moved
+  // and the sentence did not. That pair is what would break if the order were changed by hand.
+  const footer = byId(lines, 4).result.structuredContent.bantamkit_degraded;
+  assert.ok(footer.startsWith(`${FOOTER_HEAD}2): the memory index is `), footer);
+  assert.equal(stderr, '');
 });
