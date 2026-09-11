@@ -37,7 +37,7 @@
  * without the scrub a developer's terminal size would be an input to a conformance result.
  */
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -848,6 +848,54 @@ const bedSpec = (sides, extra = {}) => ({
   ...extra,
 });
 
+/**
+ * A directory whose CONTENTS CANNOT BE REACHED, with a real store directory sealed inside it —
+ * and a PROBE, in the shape `hostileBed` above uses, that says whether this platform honours
+ * the seal at all.
+ *
+ * WHY THIS BED IS NOT `hostileBed`. `hostileBed` is `chmod 555`: a directory that can be read
+ * and walked but not written, which is what a GUI host's cwd `/` is. `stat` of a path inside
+ * it SUCCEEDS in saying the path is absent, so `--store <there>/store` reaches
+ * `FileNotFoundError` and is DESIGNATED — J48-3's `store-under-an-uncreatable-parent` measures
+ * exactly that and exits 0. The `unreachable` sentence needs the other wall: a parent whose
+ * children cannot be looked up at all, which is `chmod 000`. Two different modes, two
+ * different refusals; neither bed can carry the other's question.
+ *
+ * THE PROBE READS NO ERRNO, AND THAT IS DELIBERATE. Telling "the lookup was denied" from "the
+ * path is not there" by inspecting `e.code` would be this harness deciding which errno means a
+ * wall — the mistake job48's invariants forbid of the fix, measured there: the same denial is
+ * EROFS(30) on CPython, ENOENT(-2) on Node and EACCES on Linux. So the leaf is CREATED FIRST
+ * and sealed AFTERWARDS. It certainly exists, so a `stat` that fails cannot be failing for
+ * absence, and a `stat` that succeeds says the mode is not a wall for this platform or this
+ * uid — root, and Windows, where a POSIX mode denies nothing. Only whether the call came back
+ * is read. A platform the probe finds unsealed gets a note and no cases.
+ *
+ * platform-checked: the `chmod` here is not an assumption, it is an ATTEMPT. Windows honours
+ * only the read-only bit, so `0o000` may leave the directory wide open there — and that is
+ * precisely what the probe two lines below asks, by trying the lookup the seal is supposed to
+ * deny against a path that certainly exists. `denies` comes back false on any platform or uid
+ * the mode does not bind, and the caller emits a NOT MEASURED HERE note and adds no cases, so
+ * nothing downstream of this helper depends on POSIX semantics holding.
+ */
+function sealedBed(scratch, name) {
+  const parent = join(scratch, name, 'sealed');
+  const leaf = join(parent, 'store');
+  mkdirSync(leaf, { recursive: true });
+  chmodSync(parent, 0o000);
+  let denies = false;
+  let why = '';
+  try {
+    statSync(leaf);
+    why = 'the 0o000 mode was not honoured — this platform or this uid looks inside it anyway';
+  } catch (e) {
+    denies = true;
+    why = `stat of a directory KNOWN to exist inside it was refused with ${e?.code ?? 'an error carrying no code'}`;
+  }
+  // Idempotent, and called twice on the measured path: once before the disk is inspected (the
+  // inspection cannot see through the seal) and once from the caller's `finally`.
+  return { parent, leaf, denies, why, release: () => chmodSync(parent, 0o755) };
+}
+
 function matrix(scratch) {
   const sandbox = { cwd: join(scratch, 'cli-cwd'), env: { HOME: join(scratch, 'cli-home') } };
   return [
@@ -1652,6 +1700,218 @@ export async function run(ctx) {
     actual: {
       python: { served: handshakeShape(writablePy), leftBehind: readdirSync(writable.py.cwd).sort() },
       node: { served: handshakeShape(writableNode), leftBehind: readdirSync(writable.node.cwd).sort() },
+    },
+  });
+
+  // ========== `--store` AT SOMETHING THAT IS NOT A STORE — AND THE BOUNDARY THAT IS NOT ONE ==
+  //
+  // J48-4B, AND IT EXISTS BECAUSE THE BRANCH BROKE THE ONE RULE THIS REPOSITORY WRITES IN
+  // BOLD: the gate is a conformance case, not a promise. J48-1 and J48-2 gave `--store` a
+  // deliberate validation on both runtimes — two new sentences, an exit code, and a refusal
+  // that happens before a transport exists — and shipped it with NO case anywhere. The only
+  // coverage was `runtime-py/tests/test_statusline.py`, asserting `returncode != 0`: the
+  // refusal BIT, on one runtime, as a side effect of a test about a different flag.
+  //
+  // MEASURED, NOT SUPPOSED, and the measurement is stronger than a blind differential.
+  // Removing `_check_store_flag`'s body AND `checkStoreFlag`'s body — both runtimes, so the
+  // two agree about doing nothing — left `node tools/conformance/run.mjs --all` printing
+  //
+  //   PASS: 7691 cases, 2048 byte-identical, 3463 exact-string, 2180 structural,
+  //         156 ruled-different, 0 failures
+  //
+  // character for character the `6f0701b` baseline. And so did removing it from the REFERENCE
+  // ALONE, with the port's check left intact — an asymmetric break, the shape a differential
+  // is supposed to be good at, and it also moved nothing. That is not the "two sides wrong
+  // together" blind spot job47 registered; it is zero coverage. Nothing in 7691 cases handed
+  // either CLI a `--store` that was not a directory.
+  //
+  // WHAT IS BELOW IS THREE SHAPES, and each has a LITERAL PER SIDE beside its differential.
+  // J48-3 proved live in this same job that a symmetric revert can leave `--all` identical, so
+  // a comparison between the two runtimes cannot be the whole gate; the sentences are typed
+  // into this file as constants and asserted against each runtime separately.
+  const NOT_A_DIRECTORY = (p) => `--store is not a directory: ${p}\n`;
+  const UNREACHABLE = (p) => `--store is unreachable: ${p}: Permission denied; nothing was created\n`;
+  const refusedWith = (r) => ({
+    exit: r.exit,
+    stdout: dec(r.stdout),
+    stderr: dec(r.stderr),
+    timedOut: r.timedOut,
+  });
+
+  // ---- 1. `--store` NAMING A REGULAR FILE. Portable everywhere: a file is not a directory on
+  // any platform, and this is the one arm the accidental `mkdir(parents=True)` used to cover
+  // by crashing. `test_statusline.py` arms exactly this argv as a trap and walks past it; that
+  // test says the trap is armed on the reference, and says nothing about the port.
+  const fileBed = writableBed(ctx.scratch, 'cli-store-file');
+  const notAStore = join(ctx.scratch, 'cli-store-file', 'a-regular-file');
+  writeFileSync(notAStore, 'a file, not a store\n');
+  const fileSpec = bedSpec(fileBed, { argv: ['--store', notAStore] });
+  const filePy = runPy(ctx, fileSpec);
+  const fileNode = runNode(fileSpec);
+  cases.push(
+    ...bedStreamCases('store-at-a-regular-file', filePy, fileNode, fileBed, [[notAStore, '<STORE>']]),
+  );
+  cases.push({
+    name: 'store-at-a-regular-file/PINNED PER SIDE: each runtime refused BY NAME, at exit 1, with nothing on stdout',
+    kind: 'json',
+    expected: {
+      python: { exit: 1, stdout: '', stderr: NOT_A_DIRECTORY(notAStore), timedOut: false },
+      node: { exit: 1, stdout: '', stderr: NOT_A_DIRECTORY(notAStore), timedOut: false },
+    },
+    actual: { python: refusedWith(filePy), node: refusedWith(fileNode) },
+  });
+  cases.push({
+    name: 'store-at-a-regular-file/PINNED: the file is still a file, and neither cwd was written to',
+    kind: 'json',
+    expected: { stillARegularFile: true, python: [], node: [] },
+    actual: {
+      stillARegularFile: statSync(notAStore).isFile(),
+      python: readdirSync(fileBed.py.cwd).sort(),
+      node: readdirSync(fileBed.node.cwd).sort(),
+    },
+  });
+
+  // ---- 2. `--store` UNDER A PARENT THAT CANNOT BE REACHED AT ALL. This is the other sentence,
+  // and it is the one that promises something about the disk in its own words — "nothing was
+  // created" — so the disk is checked, not just the text. See `sealedBed` for why the bed is
+  // `chmod 000` rather than J48-3's `chmod 555` (which reaches `FileNotFoundError` and
+  // DESIGNATES) and for the probe, which reads no errno.
+  const sealed = sealedBed(ctx.scratch, 'cli-store-sealed');
+  try {
+    if (!sealed.denies) {
+      notes.push(
+        'store-under-a-sealed-parent: NOT MEASURED HERE — the bed did not deny the lookup: ' +
+          `${sealed.why}. A POSIX mode is not a wall on Windows and is not a wall for root, so ` +
+          'the six cases that need one are not reported rather than reported as passes nobody ' +
+          'earned. The other two `--store` shapes above and below ARE measured on every ' +
+          'platform, and between them they carry the refusal and the boundary.',
+      );
+    } else {
+      // A PRECONDITION AS A CASE. Without it a future run on a platform that quietly stopped
+      // honouring the mode would report six green cases over a bed that denies nothing.
+      cases.push({
+        name: 'store-under-a-sealed-parent/precondition: the bed really does deny a lookup of a path known to exist inside it',
+        kind: 'json',
+        expected: { denies: true },
+        actual: { denies: sealed.denies },
+      });
+      const sealedCwds = writableBed(ctx.scratch, 'cli-store-sealed-cwd');
+      const sealedSpec = bedSpec(sealedCwds, { argv: ['--store', sealed.leaf] });
+      const sealedPy = runPy(ctx, sealedSpec);
+      const sealedNode = runNode(sealedSpec);
+      // Both processes are done; unseal so the disk claim below can actually look. `release`
+      // is idempotent and the `finally` calls it again.
+      sealed.release();
+      cases.push(
+        ...bedStreamCases('store-under-a-sealed-parent', sealedPy, sealedNode, sealedCwds, [
+          [sealed.leaf, '<STORE>'],
+        ]),
+      );
+      cases.push({
+        name: 'store-under-a-sealed-parent/PINNED PER SIDE: each runtime printed the whole unreachable sentence, at exit 1',
+        kind: 'json',
+        expected: {
+          python: { exit: 1, stdout: '', stderr: UNREACHABLE(sealed.leaf), timedOut: false },
+          node: { exit: 1, stdout: '', stderr: UNREACHABLE(sealed.leaf), timedOut: false },
+        },
+        actual: { python: refusedWith(sealedPy), node: refusedWith(sealedNode) },
+      });
+      // THE SAME SENTENCE, MINUS THE ONE WORD NEITHER RUNTIME WROTE. `Permission denied` is
+      // `strerror`, which belongs to the C library and not to this product, so the literal
+      // above is the strict one and this is the one that stays true if a platform spells that
+      // reason differently. It is ADDITIVE — the strict case is not relaxed to make room for
+      // it — and if the two ever disagree the diagnosis is immediate: the product's half of
+      // the sentence is intact and the libc half moved.
+      const unreachableShape = (r) => {
+        const s = dec(r.stderr);
+        return {
+          exit: r.exit,
+          stdoutEmpty: r.stdout.length === 0,
+          namesTheStoreFirst: s.startsWith(`--store is unreachable: ${sealed.leaf}: `),
+          endsSayingNothingWasCreated: s.endsWith('; nothing was created\n'),
+          oneLine: s.split('\n').length === 2,
+        };
+      };
+      const UNREACHABLE_SHAPE = {
+        exit: 1,
+        stdoutEmpty: true,
+        namesTheStoreFirst: true,
+        endsSayingNothingWasCreated: true,
+        oneLine: true,
+      };
+      cases.push({
+        name: 'store-under-a-sealed-parent/PINNED PER SIDE: the product half of that sentence, independent of what libc calls the reason',
+        kind: 'json',
+        expected: { python: UNREACHABLE_SHAPE, node: UNREACHABLE_SHAPE },
+        actual: { python: unreachableShape(sealedPy), node: unreachableShape(sealedNode) },
+      });
+      // AND THE PROMISE THE SENTENCE MAKES, CHECKED. "nothing was created" is a claim about the
+      // disk; the store directory that was sealed inside is still there and still empty, and
+      // neither runtime left anything in the cwd it was launched from.
+      cases.push({
+        name: 'store-under-a-sealed-parent/PINNED: nothing was created — the sealed store is still empty and neither cwd was written to',
+        kind: 'json',
+        expected: { sealedStore: [], parent: ['store'], python: [], node: [] },
+        actual: {
+          sealedStore: readdirSync(sealed.leaf).sort(),
+          parent: readdirSync(sealed.parent).sort(),
+          python: readdirSync(sealedCwds.py.cwd).sort(),
+          node: readdirSync(sealedCwds.node.cwd).sort(),
+        },
+      });
+    }
+  } finally {
+    // Put the mode back whatever happened, so the harness can clean its own scratch tree.
+    sealed.release();
+  }
+
+  // ---- 3. THE BOUNDARY, AND IT IS THE ONE A LATER EDIT WILL CROSS. `--store` at a path that
+  // is simply NOT THERE exits 0. That is not an oversight and it is not the two refusals
+  // leaking: it is DESIGNATION, the same state the project walk reaches by searching, reached
+  // here by being told. It is registered as `(ww)` in `docs/roadmap-toolbox.md` because the
+  // SIBLING program's flag of the same name does the opposite — `bantamkit-memory status
+  // --store {BED}/nowhere` CREATES the two directories, pinned by
+  // `tools/conformance/suites/memorycli.mjs`'s `status-creates-a-missing-store` — and that
+  // asymmetry between the two programs is deliberate. Half of it was pinned and half was not.
+  // This is the other half: `bantamkit-mcp` STARTS here, and a later edit that "fixes" this
+  // into a third refusal would silently contradict a case that is already green on the other
+  // side. NOTHING BELOW ASSERTS IT OUGHT TO REFUSE; it asserts what it does, so that changing
+  // it has to be a decision somebody takes on purpose.
+  //
+  // A REAL `initialize` DOWN THE PIPE, not an empty stdin. `exit 0` on a closed pipe is what a
+  // server that read EOF and did nothing looks like, and it is also what a server that refused
+  // would NOT look like — but only the handshake separates "it started" from "it survived".
+  const missingBed = writableBed(ctx.scratch, 'cli-store-missing');
+  const designated = join(ctx.scratch, 'cli-store-missing', 'a-store-that-is-not-there');
+  const missingSpec = bedSpec(missingBed, {
+    argv: ['--store', designated],
+    stdin: `${HANDSHAKE_FRAMES.join('\n')}\n`,
+  });
+  const missingPy = runPy(ctx, missingSpec);
+  const missingNode = runNode(missingSpec);
+  cases.push({
+    name: 'store-at-a-path-that-is-not-there/handshake: the frames a DESIGNATED store answers with',
+    kind: 'json',
+    expected: framesOf(missingPy),
+    actual: framesOf(missingNode),
+  });
+  cases.push({
+    name: 'store-at-a-path-that-is-not-there/PINNED PER SIDE: DESIGNATED, not refused — each runtime completed a real initialize',
+    kind: 'json',
+    expected: { python: SERVED_A_HANDSHAKE, node: SERVED_A_HANDSHAKE },
+    actual: { python: handshakeShape(missingPy), node: handshakeShape(missingNode) },
+  });
+  // Designated is not created, and that is the whole difference from the sibling CLI. The path
+  // travels in argv and argv cannot be per-side, so this cannot name WHICH runtime would have
+  // created it — it says neither did; the per-side half is the two cwds beside it.
+  cases.push({
+    name: 'store-at-a-path-that-is-not-there/PINNED: designated is not created — the path is still absent and neither cwd was written to',
+    kind: 'json',
+    expected: { storeExists: false, python: [], node: [] },
+    actual: {
+      storeExists: existsSync(designated),
+      python: readdirSync(missingBed.py.cwd).sort(),
+      node: readdirSync(missingBed.node.cwd).sort(),
     },
   });
 
