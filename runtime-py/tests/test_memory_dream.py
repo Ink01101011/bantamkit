@@ -776,6 +776,67 @@ def test_a_memory_with_no_profile_layer_says_so_rather_than_failing(tmp_path: Pa
     assert "no profile layer is bound" in outcome.reply
 
 
+def test_one_directory_is_one_layer_when_the_walk_lands_on_the_profile_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The 2026-09-10 incident, as a node. A cwd with no `.bantamkit` anywhere above it
+    walks up to `~/.bantamkit/memory`, so the PROJECT store resolves to the profile store
+    and `dream` is handed the same directory twice: every fact collides with itself, is
+    merged into itself, and the "profile copy" — the same file — is archived. It archived
+    20 of 20 of the user's real facts. The property is that one directory is one layer, so
+    such a session has a single layer and the existing `no-profile-layer` outcome is the
+    true thing to say about it.
+    """
+    home = tmp_path / "home"
+    (home / "work").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("BANTAMKIT_MEMORY_DIR", raising=False)
+    profile = MemoryStore(home / ".bantamkit" / "memory")
+    profile.save(
+        "project", "alpha-routing-rule", "how the alpha router picks a shard", "hash by tenant"
+    )
+
+    memory = Memory.layered(start=home / "work")
+    outcome = memory.dream_outcome(dry_run=False)
+
+    assert memory.store.root.resolve() == profile.root.resolve()  # the walk landed on it
+    assert outcome.status == "no-profile-layer"
+    assert (outcome.merged, outcome.consumed) == (0, 0)
+    assert [fact.name for fact in profile._facts()] == ["alpha-routing-rule"]
+    assert list((profile.root / "archive").glob("*.md")) == []
+    assert [label for label, _, _ in memory._layers] == ["project"]
+
+
+def test_one_directory_is_one_layer_through_a_symlinked_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two spellings of one directory are still one directory, so the comparison resolves.
+
+    Without this node a string comparison passes the node above: `tmp_path` hands back an
+    already-resolved path and both spellings agree. The case that forced the Stop hook to
+    use `fs.realpathSync` is exactly this one — macOS `/var` vs `/private/var`, where the
+    walk up from the cwd returns the resolved spelling and `Path.home()` returns the link.
+    """
+    real = tmp_path / "real-home"
+    (real / "work").mkdir(parents=True)
+    link = tmp_path / "linked-home"
+    link.symlink_to(real, target_is_directory=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: link))
+    monkeypatch.setenv("HOME", str(link))
+    monkeypatch.delenv("BANTAMKIT_MEMORY_DIR", raising=False)
+    profile = MemoryStore(link / ".bantamkit" / "memory")
+    profile.save("user", "beta-timezone", "which timezone the operator works in", "Asia/Bangkok")
+
+    memory = Memory.layered(start=real / "work")
+    outcome = memory.dream_outcome(dry_run=False)
+
+    assert str(memory.store.root) != str(profile.root)  # the two spellings really differ
+    assert outcome.status == "no-profile-layer"
+    assert [fact.name for fact in profile._facts()] == ["beta-timezone"]
+    assert list((profile.root / "archive").glob("*.md")) == []
+
+
 def test_the_outcome_status_is_read_off_the_decision_not_the_reply(tmp_path: Path) -> None:
     """The same seam `SaveOutcome`, `RecallOutcome` and `CompactOutcome` have: a caller that
     wants to tell the outcomes apart must never have to match prose."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
@@ -153,6 +154,22 @@ def _profile_store() -> Path:
     return Path.home() / ".bantamkit" / "memory"
 
 
+def _same_directory(a: Path, b: Path) -> bool:
+    """Whether two paths name ONE directory, symlinks and `/var` vs `/private/var` included.
+
+    Realpath, not string equality, and that distinction is measured rather than tidy: on
+    macOS the walk up from a cwd under `/var` returns `/private/var/...` while `Path.home()`
+    returns `/var/...`, so two spellings of one directory compare unequal as strings. The
+    Stop hook already compares the same two roots the same way and for the same reason
+    (`tools/hooks/bantamkit-hook.mjs`). When the resolution itself fails, an absolute-path
+    comparison is the honest fallback: it can only under-report a match, never invent one.
+    """
+    try:
+        return os.path.realpath(a) == os.path.realpath(b)
+    except OSError:
+        return a.absolute() == b.absolute()
+
+
 def _layer_label(root: Path) -> str:
     if root.parent.name == ".bantamkit":
         return root.parent.parent.name
@@ -201,7 +218,16 @@ class Memory:
             mem._layers.append(
                 (f"extra:{_layer_label(grant)}", MemoryStore(grant, k=k, create=False), False)
             )
-        mem._layers.append(("profile", MemoryStore(_profile_store(), k=k, create=False), False))
+        # ONE DIRECTORY IS ONE LAYER. The walk above starts at the cwd and climbs, so a
+        # session with no `.bantamkit` anywhere above it resolves `~/.bantamkit/memory` —
+        # the profile store — as its PROJECT store. Binding that directory a second time
+        # gave `dream` the same store twice: every fact collided with itself, was merged
+        # into itself, and the "profile copy" that was archived was the same file. It
+        # archived 20 of 20 of the user's real facts on 2026-09-10. Such a session has one
+        # layer, and `dream_outcome` already has a true thing to say about that.
+        profile_root = _profile_store()
+        if not _same_directory(profile_root, project_root):
+            mem._layers.append(("profile", MemoryStore(profile_root, k=k, create=False), False))
         return mem
 
     def setup(self, agent: Agent) -> None:
