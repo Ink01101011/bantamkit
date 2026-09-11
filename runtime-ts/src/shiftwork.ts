@@ -291,6 +291,25 @@ function pyFormat(value: PyValue): string {
  * string and the sentence says so. Reachable, and therefore measured: `BANTAMKIT_ASSETS` is
  * honoured by both runtimes, so the tests and the conformance corpus drive this branch
  * through a pack whose schema has lost `minItems`.
+ *
+ * AND A DECLARATION THIS CODE CANNOT READ IS NOT A LICENCE (J47-4, ported here as J47-5).
+ * The same ruling, one step further out: a role the map names is constrained by what it
+ * NAMES, and a value that is not a list of model identifiers names nothing, so it allows
+ * nothing. This port failed open five ways and mangled the declaration two more. MEASURED
+ * end to end under a pack whose `job.roles.additionalProperties` is `true`, with
+ * `model: 'haiku'`: a string, a dict, a number, a null and a bool all came back
+ * `{"result":"ok"}` with the status set, the cursor advanced and an accounting line
+ * written — the clock-out COMPLETED — while `[5]` and `['ok', null]` refused with the
+ * unreadable value rendered into the sentence as `5` and `ok, None`. A list holding a
+ * non-string is the shape a bare kind test cannot catch, which is why the property is
+ * LIST OF STRINGS and not merely list; the reference raised `TypeError: sequence item 0`
+ * on exactly that input. Fail CLOSED, through the same structured `_error` return, saying
+ * only what is true — the declaration cannot be read, therefore no model is allowed —
+ * naming no type (a Python type name would not port: `int` against `number`) and
+ * rendering no part of the value. ONE sentence for both accounting shapes: which model
+ * was reported cannot matter when the declaration that would judge it is unreadable.
+ * `[]` is untouched by this — an empty list IS a list of model identifiers and keeps the
+ * sentence J46-10 pinned.
  */
 function modelRefusal(document: PyDict, unitId: string, unit: PyDict, accounting: unknown): string | null {
   const role = text(field(unit, 'role'));
@@ -298,7 +317,15 @@ function modelRefusal(document: PyDict, unitId: string, unit: PyDict, accounting
   const allowed = roles === undefined || roles.t !== 'dict' ? undefined : roles.v.get(role);
   // `role not in roles`. The `t !== 'list'` arm is a TYPE guard and not a policy: the schema
   // pins the value to an array, so the only way past it is a document no read would accept.
-  if (allowed === undefined || allowed.t !== 'list') return null;
+  // AMENDED 2026-09-11 (J47-5): the two lines above stand as written and are now FALSE as a
+  // description of this code. A document no read would accept is exactly what a shared asset
+  // drifting produces, the arm answered `unconstrained` for every such document and the
+  // clock-out completed, and `t === 'list'` was never the property anyway — `['ok', null]`
+  // passed the kind test and mangled `None` into the sentence. The arm below is a POLICY.
+  if (allowed === undefined) return null;
+  if (allowed.t !== 'list' || !allowed.v.every((model) => model.t === 'str')) {
+    return `unit ${unitId} in role ${role} cannot clock out: job.roles.${role} is not a list of model identifiers, so it allows no model`;
+  }
   const names = allowed.v.map((model) => pyFormat(model)).join(', ');
   const offered = asPatch(accounting).get('model');
   if (offered === undefined || offered.t === 'null') {
