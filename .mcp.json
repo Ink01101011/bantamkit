@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "bantamkit": {
-      "command": "tools/bantamkit-mcp",
+      "command": "tools/bantamkit-mcp-node",
       "args": []
     }
   }
