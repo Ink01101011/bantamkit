@@ -409,3 +409,51 @@ Anthropic context management · Tool Search · Claude Code hooks/memory/context-
 SWE-ContextBench (arXiv 2602.08316) · ACE (arXiv 2510.04618) · GEPA (arXiv 2507.19457) ·
 CODESKILL (arXiv 2605.25430) · SWE-MeM (arXiv 2606.28434) · A-MEM (arXiv 2502.12110) ·
 Zep vs Mem0 LoCoMo rebuttal · `read-once` and claude-mem file-read gates · aider repo map.
+
+## Registered 2026-09-11 — five gates widened, and the six holes left open (J46-32), branch `feat/job46-register-and-agent-stack`
+
+Appended, not woven in: this file is now inside `tools/amendguard/ledger.json`'s `amend_only`
+list, so a closure here is an addition or it is a violation.
+
+**(cc) A `ruling:` whose subject is "one side READS, the other REFUSES" still has no literal
+pinning what the reading side read, in six places.** J46-24 measured the shape (truncating
+`pdfread._rows_from_runs` by one character left `docread` at 0 failures) and closed it for
+`tiny.pdf`. J46-32 closed it for `wire.mjs` `read-ruled` ids 2, 4 and 7, `wire.mjs`
+`read-round2` ids 7 and 8, and `docread.mjs` `note.rtf`, each with the same `reads` /
+`sentence` pair and no new machinery. A sweep of all nineteen suites found these still open,
+each with the refusing side pinned and the reading side not:
+
+| where | the ruling | why it is not closed here |
+|---|---|---|
+| `install.mjs` D2 (`an http(s) origin is refused by the reference and is \`registry\` on the port`) | the **port** is the reading side | the answered word `registry` for that scenario appears only in a `notes.push`; closing it needs a per-scenario literal, not a table entry |
+| `install.mjs` D3 (`a running file no package.json owns is \`checkout\` on the reference and refused by the port`) | the reference reads | same shape as D2, same fix, same layer |
+| `recall-strings.mjs` (`RULED: ~someone-else needs a passwd lookup Node does not have`) | the reference resolves `~root` to `/var/root`, the port raises | `/var/root` lives only in the ruling prose, and the differential case's input list does not contain `~root` — closing it means adding an input, which moves the case count of a 96-case matrix |
+| `store.mjs` (`a bare tag indicator, where CPython ANSWERS and this port refuses (!)`) | CPython answers | **deliberately excluded today** — the companion at `store.mjs` explicitly omits `!` and says why. Left as it is; noted so the omission is not mistaken for an oversight |
+| `validate.mjs` (`a Python-only regex in a branch that never fires`) | Python answers `(valid)` | the `(valid)` literals nearby belong to unrelated scenarios; this one needs its own |
+| `validate.mjs` (`$ref is not resolved`) | Python resolves and answers a sentence | neither side's answer is pinned as a literal |
+
+Also open, and smaller: `wire.mjs`'s `read-ruled: the outcome sequence` ruling pins no literal
+for the reference's own `manifest` / `page` list. Ids 2, 4 and 7 now compensate for it
+frame-by-frame, which is why it is registered rather than fixed.
+
+**(dd) The platform-assumption gate's `chmod` pattern was blind to the dominant spelling, and
+what that implies for its other three patterns.** Measured 2026-09-11: the pattern required
+the call's FIRST argument to contain no comma, so `chmodSync(join(root, path), 0o000)` and
+`locked.chmod(stat.S_IRUSR | stat.S_IWUSR)` never matched — **19 real call sites** across
+`runtime-ts/test/` and `tools/conformance/suites/`, one of them in a file the gate had been
+scanning since the day it was written. Widened to match the call itself, which found six
+offence blocks, all now carrying a sentence. **The other three patterns have not been measured
+the same way.** `#!/bin/sh`, `SIGTERM|SIGINT|SIGKILL` and the backslash-filename literal each
+have a `hit`/`miss` sample in the gate's own red-proof node, and a sample a pattern was written
+against is not a census of how people actually write the construct. The `chmod` defect was
+found by a mutation failing to redden, not by reading the regex.
+
+**(ee) Two records on this branch really were edited in place, and cannot be un-edited.**
+Found by putting `docs/roadmap-toolbox.md`, `docs/roadmap-agent-stack.md` and
+`docs/porting.md` into amendguard's ledger and running it over `6e506ca..df48b68`:
+`181744a8` replaced three lines of `docs/roadmap-agent-stack.md` with one (6 characters
+destroyed) while trying to DATE a record, and `a7f90073` removed two backslashes from a
+`docs/porting.md` table cell. The other five in-place hunks destroy nothing and are now
+classified `amendment`. History is not amended, so `check` over any range containing those two
+commits stays red by design; the explanation is in `tools/amendguard/ledger.json`'s
+`closed_2026_09_11` block.

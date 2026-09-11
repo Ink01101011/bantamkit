@@ -148,7 +148,17 @@ const callTool = (id, name_, args) => rpc(id, 'tools/call', { name: name_, argum
 
 // ------------------------------------------------------------------------- the Node side
 
-/** Drive `dist/cli.js` with the same bytes, holding stdin open until every id has answered. */
+/**
+ * Drive `dist/cli.js` with the same bytes, holding stdin open until every id has answered.
+ *
+ * platform-checked: the 60-second `child.kill('SIGKILL')` below is portable, and it is the
+ * one shape of signal use that is. Nothing here waits for a HANDLER to run — the kill is a
+ * hard stop on a session that has already been declared stuck, and the `reject()` beside it
+ * is what reports the failure. `TerminateProcess`, which is what Node maps every signal to on
+ * Windows, ends the child just as `SIGKILL` does; a handler would have been the part that did
+ * not survive, and there is none. Contrast the 2026-09-05 CI failure this gate was built from,
+ * where a watcher WROTE ITS VERDICT from a `SIGTERM` handler and produced nothing on Windows.
+ */
 function runNode(spec) {
   return new Promise((resolve, reject) => {
     const env = { ...process.env, BANTAMKIT_ASSETS: ASSETS };
@@ -1236,6 +1246,10 @@ export async function run(ctx) {
       .filter((frame) => frame !== null);
   /** The parsed frame for one id, or `null` if the session never answered it. */
   const frameOf = (side, id) => framesOf(side).find((frame) => frame.id === id) ?? null;
+  // The reference embeds the absolute fixture path in its manifest, and the scratch root
+  // changes every run. Taking it out is the whole of the transformation applied before a
+  // `reads` literal is compared — no other byte is touched.
+  const unscratched = (text) => (text ?? '').split(ctx.scratch).join('<SCRATCH>');
   /** The rendered text of a tool result — the half a person actually reads — or `null`. */
   const toolTextOf = (side, id) => frameOf(side, id)?.result?.content?.[0]?.text ?? null;
   const byId = (frames) => {
@@ -1779,6 +1793,22 @@ export async function run(ctx) {
    * the bit is ALSO compared side to side, unruled — the case CLAUDE.md requires so that a
    * port that quietly started answering where the reference refuses would go red here and
    * not stay green behind a ruling that only ever asked "do they still differ".
+   *
+   * AND WHERE ONE SIDE READS, WHAT IT READ IS PINNED. Added 2026-09-11 (J46-32, defect 5);
+   * J46-24 measured the hole in `docread.mjs` and named this block as carrying the same one.
+   *
+   * A ruling proves the two sides still DIFFER. A refusal-bit companion proves WHICH side
+   * refuses. Neither of them can see what the READING side read — so the reference can
+   * silently start reading something else and every case here stays green. J46-24's proof, in
+   * `docread.mjs`: truncating every row by one character in `pdfread._rows_from_runs` made
+   * `tiny.pdf` read `Hello conformanc` instead of `Hello conformance`, and that suite still
+   * answered 1169 cases, 0 failures. Only a printed note moved, and a note is not a case.
+   *
+   * `reads` and `sentence` close it with no new machinery: they are the fifth and sixth
+   * columns of the table below, they are emitted only on the rows where the reference does
+   * NOT refuse, and both were generated from a measured run of this very suite rather than
+   * written by hand. `note.rtf`'s pair rides the same branch and so applies on exactly the
+   * hosts where `/usr/bin/textutil` exists — which is the same condition its refusal bit uses.
    */
   {
     const { python, node } = results.get('read-ruled');
@@ -1790,15 +1820,31 @@ export async function run(ctx) {
       expected: [...byId(python.frames).keys()].sort(),
       actual: [...byId(node.frames).keys()].sort(),
     });
+    // MEASURED 2026-09-11 from this suite's own run, not written by hand. The port's sentences
+    // are the `bantamkit_read` refusals the ruling above quotes; the reference's are its
+    // manifest (id 2, id 4) and its paged read (id 7), path-scrubbed.
+    const PDF_REFUSAL =
+      'error: cannot read tiny.pdf: it is a PDF document (PDF-1.4), 585 bytes on disk. pdf is ' +
+      'not readable by the Node server yet (the Python server reads it); see docs/porting.md';
     const table = [
-      [2, 'pdf', 'tiny.pdf, the reference reads it', false],
-      [3, 'pdf', 'header.pdf, both refuse', true],
-      [4, 'rtf', `note.rtf, read where textutil is (${textutil ? 'here' : 'not here'})`, !textutil],
-      [5, 'doc', 'real.doc, both refuse', true],
-      [6, 'rtf', 'bad.rtf, both refuse', true],
-      [7, 'pdf', 'tiny.pdf page 1, the reference pages it', false],
+      [2, 'pdf', 'tiny.pdf, the reference reads it', false,
+        '<SCRATCH>/docs/tiny.pdf (pdf) part 0 "page 1": 1 rows, numbered 0 to 0\n' +
+        '  row 0 is the header: Hello wire',
+        PDF_REFUSAL],
+      [3, 'pdf', 'header.pdf, both refuse', true, null, null],
+      [4, 'rtf', `note.rtf, read where textutil is (${textutil ? 'here' : 'not here'})`, !textutil,
+        '<SCRATCH>/docs/note.rtf (rtf) part 0 "document": 1 rows, numbered 0 to 0\n' +
+        '  row 0 is the header: hello',
+        'error: cannot read note.rtf: it is an RTF document, 18 bytes on disk. rtf is read ' +
+        'through /usr/bin/textutil by the Python server and not by the Node server; see docs/porting.md'],
+      [5, 'doc', 'real.doc, both refuse', true, null, null],
+      [6, 'rtf', 'bad.rtf, both refuse', true, null, null],
+      [7, 'pdf', 'tiny.pdf page 1, the reference pages it', false,
+        '<SCRATCH>/docs/tiny.pdf "page 1" rows 0-0 of 1; each line below begins with its own ' +
+        'row number\n0\tHello wire\nthat was the last row of "page 1"',
+        PDF_REFUSAL],
     ];
-    for (const [id, kind, label, pythonRefuses] of table) {
+    for (const [id, kind, label, pythonRefuses, reads, sentence] of table) {
       cases.push({
         name: `read-ruled: id ${id}: ${label}`,
         kind: 'string',
@@ -1822,6 +1868,22 @@ export async function run(ctx) {
           kind: 'json',
           expected: refusedAt(python, id),
           actual: refusedAt(node, id),
+        });
+      } else {
+        // THE READING SIDE, PINNED. Without these two the reference could start reading
+        // something else entirely and the ruling, the refusal bit and the outcome sequence
+        // would all stay green — the exact hole J46-24 measured one layer down.
+        cases.push({
+          name: `read-ruled: id ${id}: the reference reads what it was measured reading`,
+          kind: 'bytes',
+          expected: reads,
+          actual: unscratched(toolTextOf(python, id)),
+        });
+        cases.push({
+          name: `read-ruled: id ${id}: the port refuses in the sentence the ruling quotes`,
+          kind: 'bytes',
+          expected: sentence,
+          actual: toolTextOf(node, id) ?? '(no reply)',
         });
       }
     }
@@ -2123,6 +2185,19 @@ export async function run(ctx) {
         kind: 'json',
         expected: true,
         actual: /part 0 "document": 1 rows?/.test(toolTextOf(python, id) ?? ''),
+      });
+      // AND WHAT IT READ, as a literal. J46-32 (defect 5). The shape assertion above answers
+      // "one part, one row" and would hold just as well if that row said something else
+      // entirely — which is the hole a ruling plus a refusal bit cannot close, measured by
+      // J46-24 one layer down. `hello` is what the reference reads out of both fixtures, from
+      // a run of this suite.
+      cases.push({
+        name: `read-round2: id ${id}: the reference reads what it was measured reading`,
+        kind: 'bytes',
+        expected:
+          `<SCRATCH>/docs/${file} (docx) part 0 "document": 1 rows, numbered 0 to 0\n` +
+          '  row 0 is the header: hello',
+        actual: unscratched(toolTextOf(python, id)),
       });
     }
     cases.push({

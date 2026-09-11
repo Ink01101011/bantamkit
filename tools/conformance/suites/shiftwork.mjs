@@ -571,7 +571,17 @@ function packSessions() {
 
 // ================================================================================== node
 
-/** The Node side of one session — the same loop the reference script runs. */
+/**
+ * The Node side of one session — the same loop the reference script runs.
+ *
+ * platform-checked: the `chmod` step below is a CALL IN THE SHARED SCRIPT, not a fixture this
+ * side builds. `caseSpec.calls` is one list; `shiftwork_ref.py` walks it and answers
+ * `os.chmod(...)` for the same entry (`ref/shiftwork_ref.py`, `if fn == "chmod"`). So a
+ * platform that ignores the mode makes the write SUCCEED on both sides, both sessions record
+ * the same step, and the comparison stays symmetric. Same caveat as the `applyModes` helpers
+ * in `store.mjs` / `memorycli.mjs` / `recall-strings.mjs`, and same honest limit: that the
+ * case then proves less is asserted, that it still passes is not measured on Windows.
+ */
 async function runNodeSession(shiftwork, pyjson, caseSpec, dir) {
   const { dumpJson, parseJson } = pyjson;
   mkdirSync(dir, { recursive: true });

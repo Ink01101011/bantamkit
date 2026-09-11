@@ -295,10 +295,16 @@ test('an index.md that is a directory reaches the operator as one sentence, not 
 });
 
 /**
- * The other entrance: a directory the OS refuses to write into. `chmod` is a no-op on a
- * directory on Windows and a root uid bypasses the mode bits — same caveat `store.test.mjs`
- * documents at `withUnlistable` — so this diagnoses rather than silently skipping when the
- * platform did not honour the mode.
+ * The other entrance: a directory the OS refuses to write into.
+ *
+ * platform-checked: `chmod` is a no-op on a directory on Windows and a root uid bypasses the
+ * mode bits — same caveat `store.test.mjs` documents at `withUnlistable` — so this DIAGNOSES
+ * rather than silently skipping when the platform did not honour the mode: the probe writes
+ * into the directory and the test reports which entrance it actually exercised.
+ *
+ * The reasoning above is the reasoning this test was written with. What 2026-09-11 added is
+ * the marker word, because the gate's `chmod` pattern could not see `chmodSync(join(a, b), m)`
+ * at all and so never asked. It is the one already-scanned file the widened pattern caught.
  */
 test('an unwritable archive or facts directory reaches the operator as one sentence', (t) => {
   const store = seed();

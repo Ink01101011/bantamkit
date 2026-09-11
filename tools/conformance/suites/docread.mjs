@@ -167,7 +167,23 @@ const RULED = {
   'real.doc': { kind: 'doc', python: () => true },
   'sheet.xls': { kind: 'doc', python: () => true },
   'bad.rtf': { kind: 'rtf', python: () => true },
-  'note.rtf': { kind: 'rtf', python: (textutil) => !textutil },
+  // J46-32 (defect 5). The FOURTH `reads`-shaped entry, and the one J46-24's fix left behind:
+  // where `/usr/bin/textutil` exists the reference READS this file and the port refuses, which
+  // is the same shape as tiny.pdf and had the same hole — a ruling proves the two differ, the
+  // refusal bit proves which side refuses, and neither could see that the reference still
+  // reads `hello`. The emitter's branch is gated on `rule.reads !== undefined`, so before this
+  // pair note.rtf got no read-side companion at all. Both literals measured from a run, never
+  // written by hand; they apply exactly where `python(textutil)` is false, which is the same
+  // condition the refusal bit already uses, so no host-specific branch is added anywhere.
+  'note.rtf': {
+    kind: 'rtf',
+    python: (textutil) => !textutil,
+    reads: ['hello'],
+    sentence:
+      'DocumentReadError: cannot read note.rtf: it is an RTF document, 18 bytes on disk. rtf ' +
+      'is read through /usr/bin/textutil by the Python server and not by the Node server; see ' +
+      'docs/porting.md',
+  },
   // The one ruling where NEITHER side refuses: both read the file to one row, and the row
   // differs by one codepoint. `node: false` is what makes the companion below "both read".
   'utf7.eml': { kind: 'utf7', python: () => false, node: false },

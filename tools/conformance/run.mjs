@@ -215,7 +215,26 @@ function runPython(scriptPath, payload, env = {}) {
 // -------------------------------------------------------------------------- comparison
 
 const enc = new TextEncoder();
-const toBytes = (v) => (typeof v === 'string' ? enc.encode(v) : Uint8Array.from(v));
+/**
+ * A case's side as bytes, and it REFUSES what it cannot read rather than throwing a sentence
+ * about someone else's variable.
+ *
+ * MEASURED, J46-13 mutation M4: a runtime that stopped refusing `git_commit` made
+ * `py.git_commit.unavailable` read `undefined`, `Uint8Array.from(undefined)` raised
+ * `TypeError: undefined is not iterable`, and that exception left the comparison loop, left
+ * the `for` over suites, and ENDED THE PROCESS. 7000-odd cases produced a stack trace rather
+ * than a failure report, and the one thing the operator could not learn from it is which case
+ * was malformed. The message below names the offending value's type so the catch that now
+ * wraps the comparison can print something a reader can act on.
+ */
+const toBytes = (v) => {
+  if (typeof v === 'string') return enc.encode(v);
+  if (v instanceof Uint8Array) return v;
+  if (Array.isArray(v)) return Uint8Array.from(v);
+  throw new TypeError(
+    `cannot compare a value of type ${v === null ? 'null' : typeof v} as bytes: ${clip(JSON.stringify(v) ?? String(v), 120)}`,
+  );
+};
 
 function bytesDiffer(a, b) {
   if (a.length !== b.length) return true;
@@ -280,8 +299,24 @@ try {
     if (mod.name !== suiteName) {
       die(`suite ${suiteName}.mjs exports name ${JSON.stringify(mod.name)}; the two must match`);
     }
-    const { cases, notes: suiteNotes = [] } = await mod.run(ctx);
+    // ONE BROKEN SUITE IS ONE RED SUITE, NOT A DEAD RUN. A suite builds its cases by reaching
+    // into two runtimes' answers, so a regression on either side can make the BUILDING throw
+    // before any case exists — `py.git_commit.unavailable` on a `py.git_commit` that is no
+    // longer an object. Before 2026-09-11 that ended `--all`, and the operator got a stack
+    // trace instead of the other eighteen suites' verdicts. The regression is now one red
+    // suite that names itself and the run reaches its own summary line.
+    let cases = [];
+    let suiteNotes = [];
     let failed = 0;
+    try {
+      ({ cases, notes: suiteNotes = [] } = await mod.run(ctx));
+    } catch (e) {
+      failed += 1;
+      cases = [];
+      suiteNotes = [];
+      console.log(`\n  ✖ ${suiteName}: the suite could not build its cases`);
+      console.log(`      ${e && e.stack ? e.stack.split('\n').slice(0, 4).join('\n      ') : String(e)}`);
+    }
     for (const c of cases) {
       totals.cases += 1;
       if (c.kind === 'bytes') totals.bytes += 1;
@@ -289,8 +324,23 @@ try {
       else if (c.kind === 'json') totals.json += 1;
       else die(`suite ${suiteName} case ${c.name} has unknown kind ${JSON.stringify(c.kind)}`);
 
-      const expected = c.kind === 'json' ? enc.encode(stable(c.expected)) : toBytes(c.expected);
-      const actual = c.kind === 'json' ? enc.encode(stable(c.actual)) : toBytes(c.actual);
+      // A CASE THAT CANNOT READ WHAT IT EXPECTED REPORTS A FAILURE NAMING ITSELF. Encoding is
+      // inside the `try` on purpose: `toBytes` and `stable` are where a malformed side is
+      // first touched, and one malformed answer must cost ONE red case rather than the run.
+      let expected;
+      let actual;
+      try {
+        expected = c.kind === 'json' ? enc.encode(stable(c.expected)) : toBytes(c.expected);
+        actual = c.kind === 'json' ? enc.encode(stable(c.actual)) : toBytes(c.actual);
+      } catch (e) {
+        failed += 1;
+        console.log(`\n  ✖ ${suiteName}/${c.name} — MALFORMED CASE: ${e.message}`);
+        console.log(
+          '      the case reached into a shape one of the runtimes no longer has. That is a ' +
+            'regression in the answer, not in the harness.',
+        );
+        continue;
+      }
       const differs = bytesDiffer(expected, actual);
 
       if (c.ruling) {

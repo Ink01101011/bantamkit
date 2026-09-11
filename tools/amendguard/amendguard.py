@@ -157,7 +157,10 @@ STAMP_MISSING = "STAMP-MISSING"
 BROKEN = "BROKEN"
 
 # Severity order for collapsing a path's hunks into one `classify` field, worst first.
-SEVERITY = ("record", "co-moving-count", "pointer", "insert", "append", "new-file", "deleted")
+# `amendment` sits with `insert`: both add text and destroy none, and neither is a record
+# edit. It is listed BEFORE `insert` only so a mixed commit reports the in-place shape,
+# which is the one a reviewer wants named.
+SEVERITY = ("record", "co-moving-count", "pointer", "amendment", "insert", "append", "new-file", "deleted")
 
 _MASK_RE = re.compile(
     "|".join("(?P<g{}>{})".format(i, pat) for i, (_c, pat, _d) in enumerate(POINTER_CLASSES))
@@ -356,6 +359,55 @@ def pointer_only_change(old: list[str], new: list[str]) -> str | None:
     return "pointer:" + "+".join(sorted({POINTER_CLASSES[i][0] for i in changed}))
 
 
+def destroys_nothing(old: list[str], new: list[str]) -> bool:
+    """True when the new text contains the old text ENTIRELY, with characters only added.
+
+    WHY A CLASS EXISTS FOR THIS. The rule this file enforces is `docs/record-vs-pointer.md`'s,
+    and the rule's own reasoning is that AN ADDITION DESTROYS NO RECORD. `classify_hunks`
+    already honours that for a whole line (`insert`, `append`) and did not honour it for
+    anything smaller — so a register row that gained a closure inside its last table cell, or
+    a heading that gained `~~` around its number, arrived as a line-level `replace` and was
+    called `record`, which is a rewrite. Those are this repository's two most common ways of
+    closing an item.
+
+    WHAT WAS REGISTERED AND WHAT WAS MEASURED — and they are not the same answer, which is why
+    this predicate is character-level rather than the prefix test the ledger proposed.
+    `tools/amendguard/ledger.json` registered candidate (1): "a `replace` hunk whose new line
+    has the old line as a strict PREFIX". MEASURED 2026-09-11 over
+    `6e506ca..df48b68` (40 commits, branch `feat/job46-register-and-agent-stack`) with the
+    register files in `amend_only`: SEVEN hunks come back RECORD-EDITED and the prefix test
+    greens ZERO of them. Not one closure on that branch was written at the end of its line —
+    a table row ends in `|`, and a struck row `| 12 |` becomes `| ~~12~~ |` in the middle. The
+    registered design would have shipped and changed nothing.
+
+    The character-level test greens FIVE of the seven and leaves TWO red, and those two really
+    did destroy text: `181744a86` replaced three lines of `docs/roadmap-agent-stack.md` with
+    one (6 characters destroyed) and `a7f90073d` removed two backslashes from a
+    `docs/porting.md` cell. Both are findings, not false positives.
+
+    THE COMPARISON IS OVER THE WHOLE HUNK, joined by newlines, not line by line. A closure
+    that both extends a row AND adds a line below it is one amendment; testing each line
+    separately would call the pair a rewrite because the line counts differ.
+
+    WHAT THIS IS NOT. It is not "the diff looks additive". `difflib` over CHARACTERS reports
+    `delete` and `replace` opcodes for anything removed, and one such opcode is enough to
+    refuse. Deleting a single character — the `_rows_from_runs`-style off-by-one this
+    repository keeps finding — is a `delete` opcode and stays a record edit.
+    """
+    import difflib
+
+    if not old or not new:
+        return False
+    a = "\n".join(old)
+    b = "\n".join(new)
+    if a == b or len(b) <= len(a):
+        return False
+    for tag, _i1, _i2, _j1, _j2 in difflib.SequenceMatcher(a=a, b=b, autojunk=False).get_opcodes():
+        if tag in ("delete", "replace"):
+            return False
+    return True
+
+
 @dataclass
 class Hunk:
     kind: str
@@ -398,6 +450,9 @@ def classify_hunks(old_text: str, new_text: str) -> list[Hunk]:
         pointer = pointer_only_change(old[i1:i2], new[j1:j2])
         if pointer is not None:
             hunks.append(Hunk(pointer, "corrected in place at line " + str(j1 + 1)))
+            continue
+        if destroys_nothing(old[i1:i2], new[j1:j2]):
+            hunks.append(Hunk("amendment", "extended in place at line " + str(j1 + 1)))
             continue
         # THE CLOSED LIST IS CLOSED HERE. Nothing above matched, so this is a record and a
         # record is amend-only. There is no "unclassified" branch to fall into.
@@ -667,6 +722,25 @@ FIXTURE_COMMITS: tuple[dict, ...] = (
         "\n## How the marker is written\n\n```\n"
         "<!-- co-moving-count: findings = count(^### F-\\d+$) -->\n"
         "**Eleven findings filed.**\n```\n"}]},
+    # THE PAIR THE `amendment` CLASS IS CALIBRATED BY, and they differ by one character.
+    #
+    # A register row here is one LINE — `| 12 | ... |` — so a closure written into its last
+    # cell, or a `~~` struck around its number, is a line-level `replace` even though it
+    # destroys nothing. `AMEND-IN-PLACE` is that shape and must be GREEN. `AMEND-BUT-DELETES`
+    # extends the same line by far more text and removes ONE character while doing it, and
+    # must be RED — because the test is "was anything destroyed", never "did it get longer".
+    # Without the second row the first would be satisfied by a predicate that only compared
+    # lengths.
+    {"label": "AMEND-BASE", "ops": [{"path": "doc-e.md", "write":
+        "# Doc E\n\n| 12 | the row this document is about | open |\n"}]},
+    {"label": "AMEND-IN-PLACE", "ops": [{"path": "doc-e.md", "write":
+        "# Doc E\n\n| ~~12~~ | the row this document is about | open — CLOSED 2026-01-01, "
+        "nothing above was rewritten |\n"}]},
+    {"label": "AMEND-BUT-DELETES", "ops": [{"path": "doc-e.md", "write":
+        "# Doc E\n\n| ~~12~~ | the row this document is abut | open — CLOSED 2026-01-01, "
+        "nothing above was rewritten. And here is a great deal of additional text, so that "
+        "the line is very much longer than it was and a length test would call this an "
+        "amendment. One character of the word `about` is gone. |\n"}]},
 )
 
 FIXTURE_LEDGER = {"amend_only": ["*.md"]}
@@ -820,6 +894,19 @@ MUTATIONS: tuple[dict, ...] = (
      "anchor": "STAMP_WINDOW = 8", "replacement": "STAMP_WINDOW = 100000",
      "pins": "(none — no fixture case places a stamp outside the window)",
      "why": "the distance a stamp may sit from its number stops being bounded"},
+    {"id": "MUT-AMENDMENT", "expect": "pinned", "branch": "amendment",
+     "anchor": 'if destroys_nothing(old[i1:i2], new[j1:j2]):',
+     "replacement": 'if False and destroys_nothing(old[i1:i2], new[j1:j2]):',
+     "pins": "test_a_record_extended_in_place_without_destroying_anything_is_ok",
+     "why": "an in-place extension goes back to reading as a rewrite, which is the state "
+            "this branch was added to end"},
+    {"id": "MUT-AMENDMENT-LENGTH-ONLY", "expect": "pinned", "branch": "amendment",
+     "anchor": 'if tag in ("delete", "replace"):',
+     "replacement": 'if tag in ("delete",) and False:',
+     "pins": "test_an_in_place_extension_that_destroys_one_character_is_still_red",
+     "why": "the predicate stops asking whether anything was destroyed and starts asking "
+            "only whether the line got longer — the false positive the second fixture row "
+            "exists to catch"},
     {"id": "MUT-APPEND", "expect": "pinned", "branch": "append",
      "anchor": 'Hunk("append" if i1 >= len(old) else "insert"',
      "replacement": 'Hunk("record" if i1 >= len(old) else "insert"',

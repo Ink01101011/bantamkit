@@ -19,6 +19,10 @@
   "found_by_running_it": "MARKER-QUOTED — a co-moving-count marker shown inside a fenced example is quoted, not declared. The first field run of this checker, over its own design document, reported COUNT-STALE against a count that document never claimed. The fix is the same rule the fence already carries for pins, and this row is what keeps it fixed.",
   "one_case_per_closed_list_ENTRY": "POINTER-P3-SECTION and POINTER-P3-BACKTICK — the two P3 sub-forms that had no case. `classify` reports the CLASS, so all three P3 sub-forms read `pointer:P3`, and a coverage guard counting class ids was satisfied for all three by the path form alone: six closed-list entries, four ids. Measured both ways before the guard was fixed — deleting the bare-backtick entry, and adding a seventh sub-form with no case, each left the suite at 24 passed and the sweep at flips=0.",
   "the_triple_that_had_no_case": "PARTIAL-STAMP — a provenance stamp carrying value and commit but not command. Invariant 5 makes the (value, commit, command) triple the entire fallback for a cross-artifact co-moving count, and `STAMP_REQUIRED_KEYS = ()` passed with flips=0 before this row existed.",
+  "the_pair_the_amendment_class_demanded": {
+    "must_be_green": "AMEND-IN-PLACE — a register row struck and given a closure INSIDE its own line. Nothing is destroyed, so it is an amendment and not a rewrite.",
+    "must_be_red": "AMEND-BUT-DELETES — the same extension, far longer, with ONE character of the sentence gone. Green here would mean the predicate is a length test. MEASURED 2026-09-11: the ledger had registered a strict-PREFIX test for this class, and over `6e506ca..df48b68` with the register files gated that test greens 0 of the 7 RECORD-EDITED hunks, because a table row ends in `|` and a closure never lands at the end of the line. The character-level test greens 5 and leaves 2, and those 2 destroyed text."
+  },
   "the_rbp47_input": "VERBATIM-PIN — a file:line pin inside a fenced verbatim block. A pointer by syntax, a record by context. classify and the closed list disagree on it, which is why their agreement elsewhere is a cross-check and not a transcription.",
   "expect": [
     {"label": "BASE", "path": "doc-a.md", "classify": "new-file", "isolation": "mixed", "derivation": "absent", "verdict": "OK"},
@@ -42,6 +46,9 @@
     {"label": "BARE-GATE", "path": "doc-a.md", "classify": "append", "isolation": "mixed", "derivation": "absent", "verdict": "STAMP-MISSING"},
     {"label": "STAMPED-GATE", "path": "doc-b.md", "classify": "append", "isolation": "mixed", "derivation": "ok", "verdict": "OK"},
     {"label": "PARTIAL-STAMP", "path": "doc-d.md", "classify": "new-file", "isolation": "mixed", "derivation": "absent", "verdict": "STAMP-MISSING"},
+    {"label": "AMEND-BASE", "path": "doc-e.md", "classify": "new-file", "isolation": "mixed", "derivation": "absent", "verdict": "OK"},
+    {"label": "AMEND-IN-PLACE", "path": "doc-e.md", "classify": "amendment", "isolation": "mixed", "derivation": "absent", "verdict": "OK"},
+    {"label": "AMEND-BUT-DELETES", "path": "doc-e.md", "classify": "record", "isolation": "mixed", "derivation": "absent", "verdict": "RECORD-EDITED"},
     {"label": "MARKER-QUOTED", "path": "doc-c.md", "classify": "append", "isolation": "mixed", "derivation": "absent", "verdict": "OK"}
   ]
 }

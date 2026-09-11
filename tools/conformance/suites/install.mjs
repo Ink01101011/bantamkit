@@ -282,6 +282,13 @@ export async function run(ctx) {
     // The denied directory is closed for exactly as long as both sides are being asked, and
     // reopened in a `finally` so a throw anywhere in here cannot leave harness scratch
     // undeletable. Both runtimes see the SAME mode, which is the whole point of the scenario.
+    //
+    // platform-checked: `0o000` denies nothing on Windows, and this suite already knows it —
+    // the `local-file-denied` comparison further down is SKIPPED with a note whenever either
+    // side's stat got through, naming root and Windows as the two places that happens. So the
+    // scenario loses its teeth there rather than failing there, and it loses them out loud.
+    // What this marker adds is the part the gate could see: the Windows sentence lived 140
+    // lines away from the construct, and nothing joined the two.
     chmodSync(origins.denied, 0o000);
     try {
       for (const scenario of scenarios) {

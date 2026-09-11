@@ -399,68 +399,255 @@ def test_sys_path_is_walked_once_per_process_and_not_once_per_tool_call(monkeypa
     assert second is first
 
 
+# The functions AS-7(a) added, and the module-level names they are allowed to touch. Both
+# lists are data so that `_names_reached_by` — the scanner below — can be run against the real
+# module AND against four hand-written samples in `test_the_network_gate_sees_every_shape_a_
+# person_would_write`. A scanner nobody has shown to be RED on anything is not a gate.
+_AS7_FUNCTIONS = frozenset({
+    "_normalized_project_name",
+    "_file_url_path",
+    "_direct_url_record",
+    "_dist_owns",
+    "_derive_install",
+    "_is_within",
+    "_running_package_file",
+    "_install_once",
+    "current_install",
+    "_install_source_condition",
+    "_current_install_or_none",
+})
+_AS7_ALLOWED = frozenset({
+    "Install",
+    "Iterable",
+    "INSTALL_SHAPES",
+    "Condition",
+    "Path",
+    "_Undetermined",
+    "_derive_install",
+    "_direct_url_record",
+    "_dist_owns",
+    "_file_url_path",
+    "_install_once",
+    "_is_within",
+    "_normalized_project_name",
+    "_running_package_file",
+    "bantamkit",
+    "current_install",
+    "json",
+    "lru_cache",
+    "metadata",
+    "unquote",
+})
+
+
+def _module_level_names(tree) -> set[str]:
+    """The names a module binds at top level, from its AST alone.
+
+    Used only when no live module is available — the real node below passes
+    `vars(mcpserver)`, which is strictly better because it also sees names a star-import or
+    a conditional block brings in. This exists so the four-row proof can feed the scanner a
+    sample that is a string rather than an importable module.
+    """
+    import ast
+
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                names.add(alias.asname or alias.name)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    names.add(target.id)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    return names
+
+
+def _names_reached_by(source: str, functions, module_globals=None) -> set[str]:
+    """Every name the named top-level functions can reach OUT of their own bodies.
+
+    THREE KINDS, and the second and third were added on 2026-09-11 because the first alone
+    was measurably blind (J46-13 measured it; this unit closes it):
+
+      1. A MODULE GLOBAL the body mentions — `urllib.request.urlopen(...)` where the module
+         imported `urllib.request` at the top. Collected by walking to the root of every
+         attribute chain and keeping the `Name` if the module binds it.
+
+      2. A FUNCTION-LOCAL `import` — `def f(): import urllib.request; urllib.request.urlopen()`.
+         This binds NOTHING at module level, so kind 1 sees a local variable it does not
+         recognise and says nothing. **This is the shape a person actually writes when adding
+         one network call to an otherwise offline module**, which is exactly what AS-7(b) is,
+         so a gate blind to it goes green on the very change it exists to notice. The MODULE
+         being imported is recorded (`urllib.request`, not the bound name `urllib`), because
+         the allowlist is a list of things this code may touch and `urllib.request` is what
+         was touched.
+
+      3. A DYNAMIC import — `__import__("urllib.request")` or `importlib.import_module(...)`.
+         Neither binds a module global and neither is an `ast.Import`. The string argument is
+         recorded when it is a literal; when it is not, the unreadable call itself is recorded
+         under a name that can never be allowlisted, because a gate cannot reason about it.
+
+    COMMENTS AND DOCSTRINGS ARE DELIBERATELY INVISIBLE. This node's own docstring names
+    `urllib.request`, and the first version of it failed on itself. An AST carries no
+    comments, and a `Str` is not a `Name` — so the prose stays green and the call goes red,
+    which is the whole reason this is a parse and not a `grep`.
+    """
+    import ast
+
+    tree = ast.parse(source)
+    if module_globals is None:
+        module_globals = _module_level_names(tree)
+    wanted = set(functions)
+    seen: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name not in wanted:
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Import):
+                for alias in inner.names:
+                    seen.add(alias.name)
+                continue
+            if isinstance(inner, ast.ImportFrom):
+                seen.add(inner.module or ".")
+                continue
+            if isinstance(inner, ast.Call):
+                target = inner.func
+                is_dunder = isinstance(target, ast.Name) and target.id == "__import__"
+                is_importlib = (
+                    isinstance(target, ast.Attribute)
+                    and target.attr in {"import_module", "__import__"}
+                )
+                if is_dunder or is_importlib:
+                    first = inner.args[0] if inner.args else None
+                    if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                        seen.add(first.value)
+                    else:
+                        seen.add("a dynamic import whose argument is not a literal")
+                    continue
+            root = inner
+            while isinstance(root, ast.Attribute):
+                root = root.value
+            if isinstance(root, ast.Name) and root.id in module_globals:
+                seen.add(root.id)
+    return seen
+
+
 def test_no_path_this_unit_added_can_reach_the_network(monkeypatch):
     """AS-7(a)'s whole virtue is that it needs no network, so this is structural, not prose.
 
-    Every global name the new functions touch is collected from the module's own AST and
-    checked against a list. A comment mentioning `urllib.request` does not trip it and a
-    real `urlopen(...)` does — which is the wrong way round for a substring scan, and was:
-    the first version of this node failed on its own docstring. AS-7(b), the registry
+    Every name the new functions can reach out of their own bodies is collected from the
+    module's own AST and checked against a list. A comment mentioning the request module does
+    not trip it and a real call does — which is the wrong way round for a substring scan, and
+    was: the first version of this node failed on its own docstring. AS-7(b), the registry
     comparison, is a separate unit for exactly this reason.
+
+    The scanner is `_names_reached_by`, and the four shapes it must and must not see are
+    proved one test down. Read that one before trusting this one.
     """
     import ast
 
     from bantamkit import mcpserver
 
-    added = {
-        "_normalized_project_name",
-        "_file_url_path",
-        "_direct_url_record",
-        "_dist_owns",
-        "_derive_install",
-        "_is_within",
-        "_running_package_file",
-        "_install_once",
-        "current_install",
-        "_install_source_condition",
-        "_current_install_or_none",
-    }
-    allowed = {
-        "Install",
-        "Iterable",
-        "INSTALL_SHAPES",
-        "Condition",
-        "Path",
-        "_Undetermined",
-        "_derive_install",
-        "_direct_url_record",
-        "_dist_owns",
-        "_file_url_path",
-        "_install_once",
-        "_is_within",
-        "_normalized_project_name",
-        "_running_package_file",
-        "bantamkit",
-        "current_install",
-        "json",
-        "lru_cache",
-        "metadata",
-        "unquote",
-    }
-    tree = ast.parse(Path(mcpserver.__file__).read_text(encoding="utf-8"))
-    globals_of_module = set(vars(mcpserver))
-    seen: set[str] = set()
-    for node in tree.body:
-        if not isinstance(node, ast.FunctionDef) or node.name not in added:
-            continue
-        for inner in ast.walk(node):
-            root = inner
-            while isinstance(root, ast.Attribute):
-                root = root.value
-            if isinstance(root, ast.Name) and root.id in globals_of_module:
-                seen.add(root.id)
+    source = Path(mcpserver.__file__).read_text(encoding="utf-8")
+    seen = _names_reached_by(source, _AS7_FUNCTIONS, set(vars(mcpserver)))
+    tree = ast.parse(source)
 
-    assert added <= {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}, (
+    assert _AS7_FUNCTIONS <= {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}, (
         "a function this node claims to cover was renamed or removed"
     )
-    assert seen <= allowed, f"a new global reached the offline diagnosis path: {seen - allowed}"
+    assert seen <= _AS7_ALLOWED, (
+        f"a new name reached the offline diagnosis path: {sorted(seen - _AS7_ALLOWED)}"
+    )
+
+
+def test_the_network_gate_sees_every_shape_a_person_would_write():
+    """The four rows J46-13 measured, run — two that must be RED and two that must be GREEN.
+
+    A gate is only worth its docstring if someone has watched it fail. Before 2026-09-11 rows
+    3 and 4 were GREEN, measured, and rows 3 and 4 are precisely how the next change to this
+    module will be written: J46-29 and J46-30 add a network call to this codebase on purpose,
+    and a gate that goes green on their shape would be cited as evidence that it did not.
+
+    Rows 1 and 2 are here for the opposite failure. A gate that reddens on a COMMENT has been
+    over-tightened, and the next person it annoys will delete it — so the comment row is as
+    load-bearing as the call rows.
+    """
+    guarded = {"_derive_install"}
+
+    module_level = (
+        "import urllib.request\n"
+        "def _derive_install():\n"
+        "    return urllib.request.urlopen('https://pypi.org/simple/bantamkit/').read()\n"
+    )
+    a_comment = (
+        "def _derive_install():\n"
+        "    # urllib.request would reach the network, so nothing here calls it\n"
+        "    return 'offline'\n"
+    )
+    function_local = (
+        "def _derive_install():\n"
+        "    import urllib.request\n"
+        "    return urllib.request.urlopen('https://pypi.org/simple/bantamkit/').read()\n"
+    )
+    dunder = (
+        "def _derive_install():\n"
+        "    fetch = __import__('urllib.request', fromlist=['urlopen'])\n"
+        "    return fetch.urlopen('https://pypi.org/simple/bantamkit/').read()\n"
+    )
+
+    rows = [
+        ("module-level import + urlopen()", module_level, True),
+        ("a comment naming the request module", a_comment, False),
+        ("function-local import + the same urlopen()", function_local, True),
+        ("__import__(...) + the same urlopen()", dunder, True),
+    ]
+    verdicts = {}
+    for label, sample, must_be_red in rows:
+        reached = _names_reached_by(sample, guarded)
+        escaped = reached - _AS7_ALLOWED
+        verdicts[label] = (sorted(escaped), must_be_red)
+        if must_be_red:
+            assert escaped, (
+                f"{label}: the gate saw {sorted(reached)} and let all of it through. This shape "
+                "reaches the network and the gate must go red on it."
+            )
+        else:
+            assert not escaped, (
+                f"{label}: the gate reddened on {sorted(escaped)}. Prose is not a call, and a "
+                "gate that refuses a comment gets deleted by the next person who writes one."
+            )
+
+    # The two red rows must go red for the RIGHT name, not incidentally. Without this a
+    # scanner that reported every identifier would satisfy the assertions above.
+    must_name_the_module = (
+        "function-local import + the same urlopen()",
+        "__import__(...) + the same urlopen()",
+    )
+    for label in must_name_the_module:
+        escaped, _ = verdicts[label]
+        assert "urllib.request" in escaped, (
+            f"{label}: the gate went red but named {escaped}; it must name the module that was "
+            "imported, because that is the string a reader has to judge against the allowlist."
+        )
+
+
+def test_the_network_gate_reads_a_dynamic_import_it_cannot_evaluate_as_a_refusal():
+    """`__import__(name)` where `name` is a variable: unreadable, therefore never allowed.
+
+    The literal form is caught by reading the literal. The computed form has no literal to
+    read, and the only two honest answers are "refuse" and "give up". A gate that gave up here
+    would hand anyone who wanted it a one-line bypass of the previous test.
+    """
+    sample = (
+        "def _derive_install():\n"
+        "    name = 'urllib' + '.request'\n"
+        "    return __import__(name).urlopen('https://pypi.org/').read()\n"
+    )
+    reached = _names_reached_by(sample, {"_derive_install"})
+    assert reached - _AS7_ALLOWED, "a dynamic import the gate cannot read must not pass it"
