@@ -587,9 +587,46 @@ export class MemoryStore {
     if (options.create ?? true) this.ensureDirs();
   }
 
+  /**
+   * Bring the store's directories into existence, or refuse the write that needs them.
+   *
+   * THE PROPERTY: a store that cannot be brought into existence cannot be written to, and the
+   * refusal names which directory and why. It is a refusal and not a crash because the only
+   * callers are the two WRITES (`save`, `compact`); every read is already defined over an
+   * absent directory — `facts()`' own docstring rules it, "AN ABSENT DIRECTORY IS `[]`, NOT AN
+   * ERROR" — which is what makes a lazily-built project layer legal at all.
+   *
+   * THE PREDICATE IS THE OUTCOME AND NEVER AN ERRNO, and that is measured rather than tidy.
+   * One cwd, `/`, gives CPython EROFS(30) at `/.bantamkit` and Node ENOENT(-2) at
+   * `/.bantamkit/memory/facts`, because Node's recursive mkdir does not pass EROFS through and
+   * stats the missing path instead — re-measured here at cwd `/`,
+   * `mkdirSync('/.bantamkit', {recursive: true})` is ENOENT(-2) where `mkdirSync('/.bantamkit')`
+   * is EROFS(-30); a `chmod 555` directory gives EACCES(13) on both; and on Linux `/` is a
+   * writable root owned by root, so the same cwd gives EACCES there. Three platforms, three
+   * numbers, one fact — the directory could not be made — so the `catch` is the whole of
+   * `PyOSError`, which is this runtime's `OSError`, and the sentence carries no errno. A fix
+   * keyed on the number would have been green on Linux CI and wrong on the machine the bug was
+   * reported from, and on THIS side it would additionally have been keyed on a number libuv
+   * invented rather than on the one the filesystem returned.
+   *
+   * THE SENTENCE NAMES `this.root` AND NOTHING DEEPER, for the same reason. The two runtimes
+   * fail at different components of the same path (`/.bantamkit` against
+   * `/.bantamkit/memory/facts`) and report different strerrors for it, so a sentence carrying
+   * the failing leaf, or that strerror, would be a divergence manufactured by mkdir's
+   * internals. `this.root` is the path the caller named and both sides agree on it, which is
+   * what lets one conformance case pin this line byte for byte.
+   */
   private ensureDirs(): void {
-    pyMkdirParents(pyJoin(this.root, 'facts'));
-    pyMkdirParents(pyJoin(this.root, 'archive'));
+    try {
+      pyMkdirParents(pyJoin(this.root, 'facts'));
+      pyMkdirParents(pyJoin(this.root, 'archive'));
+    } catch (e) {
+      if (!(e instanceof PyOSError)) throw e;
+      throw new MemoryValidationError(
+        `memory store could not be created: ${this.root}; the directory is not` +
+          ' there and this filesystem would not make it, so nothing was written',
+      );
+    }
   }
 
   // ---- ops ----
@@ -830,6 +867,14 @@ export class MemoryStore {
    */
   compact(reserve: number | null = null): CompactResult {
     const facts = this.facts();
+    // SECOND, NOT FIRST, and the order is the reference's own ruling kept intact: the listing
+    // still refuses an unreadable store before anything here moves a file. What this line adds
+    // is the other half of the same stance — this method WRITES (every `pyReplace` below lands
+    // in `archive/`, and `rebuildIndex` writes `index.md` into the root whether or not a single
+    // fact was archived), so a root that does not exist and cannot be made is refused here, by
+    // name, instead of surfacing as a `FileNotFoundError` out of the final write. `exist_ok`
+    // semantics make it free for every store that is already there.
+    this.ensureDirs();
     const sizes = new Map<string, number>();
     for (const fact of facts) {
       sizes.set(pyHashKey(fact.name), Buffer.byteLength(this.indexLine(fact), 'utf8'));

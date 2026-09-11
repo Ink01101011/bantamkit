@@ -54,7 +54,20 @@ def run(coro):
 
 
 def make_memory(tmp_path, **kwargs) -> Memory:
-    return Memory(store=tmp_path / "store", **kwargs)
+    """A `Memory` whose store is ON DISK, because every test below breaks one by hand.
+
+    THE `mkdir` IS THE FIXTURE'S OWN AS OF job48, and it is a fixture change and not a
+    weakened assertion. The project layer is built `create=False` -- a cwd that nothing can
+    be created under must be a refused write and not a startup crash -- so constructing a
+    `Memory` no longer brings `facts/` and `archive/` into existence. The tests here all
+    start from a store that is already there (`_break_the_project_layer` rmtree's `facts/`;
+    the budget helper saves into it), so the directories they were relying on the
+    constructor for are made here instead. Not one assertion below moves.
+    """
+    root = tmp_path / "store"
+    (root / "facts").mkdir(parents=True, exist_ok=True)
+    (root / "archive").mkdir(parents=True, exist_ok=True)
+    return Memory(store=root, **kwargs)
 
 
 def status_of(server) -> str:
@@ -311,8 +324,10 @@ def test_an_unreadable_memory_layer_is_observed_and_named_by_kind_not_by_name(tm
 def test_a_granted_layer_is_reported_by_its_kind_and_never_by_its_grant_name(tmp_path):
     """The sharp case for the metadata rule: `extra:<name>` carries the operator's words."""
     grant = tmp_path / "teamdocs" / ".bantamkit" / "memory"
-    Memory(store=grant)
-    (grant / "facts").rmdir()
+    # Built here rather than by `Memory(store=grant)` for the reason `make_memory` gives:
+    # since job48 constructing a store creates nothing. The on-disk state this test
+    # actually needs is unchanged -- `archive/` a directory, `facts/` a regular file.
+    (grant / "archive").mkdir(parents=True)
     (grant / "facts").write_text("not a directory", encoding="utf-8")
     project_root = tmp_path / "proj"
     (project_root / ".bantamkit" / "memory").mkdir(parents=True)

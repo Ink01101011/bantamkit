@@ -91,7 +91,7 @@ import {
   pyIntStrict,
   type ParserSpec,
 } from './pyargparse.js';
-import { pyRepr } from './memory/pyfs.js';
+import { pyJoin, PyOSError, pyRepr, pyStatIsDir } from './memory/pyfs.js';
 import { HOSTS, type Host, install as installHost, InstallError, thisCommand } from './hostinstall.js';
 import { runUpdate } from './selfupdate.js';
 import { statusLine } from './statusline.js';
@@ -365,9 +365,82 @@ function buildMemory(options: Options): Memory {
   const shared = { k: options.k, indexBudget: options.indexBudget };
   if (options.store !== null) {
     if (options.store === '') throw new Refusal('--store requires a non-empty path');
+    checkStoreFlag(options.store);
     return new Memory(options.store, shared);
   }
   return Memory.layered(options.start, shared);
+}
+
+/**
+ * `--store` may name a store that is missing, never one that is not a store.
+ *
+ * THIS CHECK IS RESTORED, NOT INVENTED, and the distinction is the point. Until the project
+ * layer was built lazily there WAS a `--store` validation, and it was entirely accidental: the
+ * constructor ran `pyMkdirParents`, so a `--store` pointing at a regular file or at a path
+ * under a directory that does not exist took the process down with a `PyOSError` stack out of
+ * `pyfs`. The reference's `test_statusline.py::
+ * test_the_flag_returns_before_anything_a_server_would_touch` depends on it — it arms
+ * `--store <a regular file>` as a trap and shows `--statusline` walking past it — and a lazy
+ * layer disarms the trap by making that same argv exit 0. The honest way to keep that test
+ * true is to mean the refusal on purpose.
+ *
+ * IT IS `layers.pinnedStore`'s CHECK MINUS ONE ARM, and the missing arm is deliberate and
+ * measured. The pin refuses a path that is not there ("nothing was created"); this flag does
+ * NOT, and must not, for two reasons that are both already pinned elsewhere in this
+ * repository:
+ *
+ * - The sibling CLI's identical flag is contracted to CREATE one. `tools/conformance/suites/
+ *   memorycli.mjs` carries `status-creates-a-missing-store`, `--store {BED}/nowhere` over an
+ *   empty bed, whose whole job is to say the two runtimes create the same two directories
+ *   there. Refusing a missing `--store` here would put two flags of the same name, in two
+ *   programs of the same product, in direct contradiction.
+ * - "Missing" is no longer a broken state anywhere in this program. The walk designates a
+ *   project store without creating it, and the first save brings it into existence or refuses
+ *   by name (`store.ensureDirs`). A `--store` at a path that is not there is that same
+ *   designated state, reached by being told instead of by searching. MEASURED on the reference
+ *   side: requiring existence reddened 14 tests that have nothing to do with this defect —
+ *   `test_tool_manifest.py` ×7, `test_mcpserver.py` ×6, `test_mcp_endpoint.py` — every one of
+ *   them a fixture naming a store under `tmp_path` it never made, because that is what this
+ *   flag has always meant.
+ *
+ * What is left is the arm the accident actually covered and the only one it covered: a
+ * `--store` that names something which EXISTS and is NOT A DIRECTORY. That is not a store and
+ * never becomes one — `mkdir` under it is ENOTDIR on both runtimes and on every platform, the
+ * one row of the errno table where they already agree — so it is refused here, by name, before
+ * a transport exists.
+ *
+ * `FileNotFoundError` and not an errno comparison: the absent case is selected by the exception
+ * CPython raises for it, and `pyfs`' `PyOSError` carries that class as its `name`. Every other
+ * `stat` failure — a permission wall on the parent, a symlink loop — is a real fault about a
+ * path the operator named, and it keeps the pin's sentence.
+ *
+ * `pyStatIsDir` rather than an `existsSync`/`isDirectory` pair, and that too is `pinnedStore`'s
+ * reasoning: a predicate that swallows `PermissionError` and answers false would report an
+ * operator's real store as a typo. A single named path gets the accurate reason.
+ *
+ * `Refusal` and not `MemoryValidationError`, so that both halves of this flag's refusal family
+ * read the same way on the terminal: `--store requires a non-empty path` is already bare on
+ * stderr at exit 1, and the reference spells both as `SystemExit`.
+ */
+function checkStoreFlag(raw: string): void {
+  // NOT `pyExpanduser`, unlike the pin. `new Memory(store, ...)` builds the root from this
+  // string verbatim, so expanding here would check one path and serve another: `--store ~/x`
+  // left unexpanded by the shell would pass a check against the home directory and then build
+  // a store in a directory literally named `~`. The check must stat the path the store is
+  // going to be. `pyJoin` of the one argument is `Path(raw)`: the same normalisation
+  // `MemoryStore` applies to its root, so the path this stats and the path it names in a
+  // refusal are the path the store would have used.
+  const store = pyJoin(raw);
+  let isDir: boolean;
+  try {
+    isDir = pyStatIsDir(store);
+  } catch (e) {
+    if (!(e instanceof PyOSError)) throw e;
+    // designated, not broken: the first save makes it or refuses by name
+    if (e.name === 'FileNotFoundError') return;
+    throw new Refusal(`--store is unreachable: ${store}: ${e.strerror}; nothing was created`);
+  }
+  if (!isDir) throw new Refusal(`--store is not a directory: ${store}`);
 }
 
 /**

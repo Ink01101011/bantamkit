@@ -23,6 +23,30 @@ print(agent.run("Which team owns the payments API? Check memory first.").output)
 This registers `memory_recall` and `memory_save` as tools. The store directory
 is created if missing.
 
+**AMENDED 2026-09-12 — job48 (`fix/job48-unwritable-cwd`), J48-4.** The second
+sentence is kept as the record of what this constructor did until this job, and it is
+no longer true. `Memory(store=...)` **designates** the directory and creates nothing;
+the first `save` (or `compact`) brings `facts/` and `archive/` into existence, and if
+the filesystem will not have them it refuses by name rather than raising an `OSError`
+at whoever is listening:
+
+```
+memory store could not be created: <root>; the directory is not there and this
+filesystem would not make it, so nothing was written
+```
+
+The change is the fix for a startup crash: every GUI MCP host launches its child with
+cwd `/`, where the eager `mkdir` could not succeed, so the server died before it could
+answer anything. See [MCP](mcp.md#what-happens-if-you-set-nothing).
+
+**The sibling CLI's `--store` is deliberately NOT the same.** `bantamkit-memory
+--store <missing>` still **creates** the store — it is an operator command that was
+asked to act on that path — while `bantamkit-mcp --store <missing>` designates it and
+creates nothing. Measured at this commit on both runtimes: `bantamkit-memory` YES on
+Python and Node, `bantamkit-mcp` NO on Python and Node. It is an asymmetry between two
+programs, not between two runtimes, and it is pinned by the conformance case
+`status-creates-a-missing-store` in `tools/conformance/suites/memorycli.mjs`.
+
 ## Programmatic API
 
 The `save` and `recall` methods are public and can be called directly.
@@ -745,6 +769,22 @@ returns the nearest one — so a sub-package shares its repo's store. If nothing
 up the tree has one, it designates `<start>/.bantamkit/memory` without creating
 anything; `Memory.layered()` then creates that directory, the same way
 `Memory(store=...)` creates the store you name.
+
+**AMENDED 2026-09-12 — job48, J48-4.** Everything after the semicolon is a record of
+what happened until this job and is now false in both of its halves. `Memory.layered()`
+does **not** create the designated directory, and `Memory(store=...)` does **not**
+create the store you name — both build the project layer with `create=False`. The
+designation survives as a designation until a write needs the directory. What did not
+change is the resolution itself: the walk still returns the nearest *existing* store
+and still designates `<start>/.bantamkit/memory` when there is none, and
+`resolve_project_store` still carries the `origin` / `searched_from` / `state` the disk
+never held.
+
+One consequence is worth stating because it is not a tidiness point: the walk keys on
+an *existing* directory, so a bare session that saved nothing used to leave one behind
+and thereby decide where the NEXT session bound. Measured at this commit on the same
+fixture — a bare start in `proj/sub`, then a real store created at `proj/` — the old
+code binds `proj/sub/.bantamkit/memory` and the new code binds `proj/.bantamkit/memory`.
 
 The ancestor chain is resolved, but the returned store path is **not** resolved
 further: a symlinked store keeps its config beside the symlink, not beside the

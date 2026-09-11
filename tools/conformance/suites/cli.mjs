@@ -37,7 +37,7 @@
  * without the scrub a developer's terminal size would be an input to a conformance result.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -55,6 +55,18 @@ const CLI = join(repoRoot, 'runtime-ts', 'dist', 'cli.js');
 
 /** Same list `cli_ref.py` scrubs. Kept literal on both sides so the two cannot drift apart. */
 const SCRUBBED = ['COLUMNS', 'LINES', 'BANTAMKIT_ASSETS'];
+
+/**
+ * WHICH DIRECTORY THE PROCESS IS STARTED IN, and it is per SIDE as well as per case.
+ *
+ * `spec.cwd` already existed and is unchanged: one directory both runtimes are launched in.
+ * `spec.sideCwd` is J48-3's addition and it exists for exactly one question — DID THIS
+ * RUNTIME CREATE ANYTHING IN IT. Sharing one cwd makes that question unanswerable: the
+ * reference runs first, so a directory found afterwards could have come from either side and
+ * a case over it would name the wrong runtime as often as the right one. Two directories,
+ * seeded identically, make "neither side created anything" a claim per runtime.
+ */
+const cwdFor = (spec, side) => spec.sideCwd?.[side] ?? spec.cwd ?? repoRoot;
 
 const unb64 = (s) => Buffer.from(s, 'base64');
 const dec = (buf) => buf.toString('utf8');
@@ -150,7 +162,7 @@ function runNode(spec) {
     // `''` — a pipe already at EOF — unless the case feeds it real frames. See the `stdin`
     // note in `cli_ref.py`: an empty pipe shows that a server STARTED, never that it answered.
     input: spec.stdin ?? '',
-    cwd: spec.cwd ?? repoRoot,
+    cwd: cwdFor(spec, 'node'),
     env,
     timeout: (spec.timeout ?? 60) * 1000,
     maxBuffer: 64 * 1024 * 1024,
@@ -171,7 +183,7 @@ function runPy(ctx, spec) {
     // runtimes cannot share one. Given the same HOME the side that ran second would find the
     // first side's entry and report a conflict — a difference manufactured by the harness.
     env: { ...spec.env, ...(spec.sideEnv?.py ?? {}) },
-    cwd: spec.cwd ?? repoRoot,
+    cwd: cwdFor(spec, 'py'),
     timeout: spec.timeout ?? 60,
     stdin: Buffer.from(spec.stdin ?? '', 'utf8').toString('base64'),
   });
@@ -199,7 +211,7 @@ function runTty(ctx, side, spec) {
     side,
     argv: spec.argv ?? [],
     env,
-    cwd: spec.cwd ?? repoRoot,
+    cwd: cwdFor(spec, side),
     timeout: spec.timeout ?? 60,
     node: { exec: process.execPath, cli: CLI },
   });
@@ -214,6 +226,37 @@ function runTty(ctx, side, spec) {
 }
 
 // -------------------------------------------------------------------------- case shaping
+
+/**
+ * `streamCases` for a spec whose two sides ran in DIFFERENT directories.
+ *
+ * `sideCwd` and `sideEnv` are the harness's doing, so a message that names the directory it
+ * was run in differs between the sides for a reason neither runtime chose — the same trap
+ * `installCases` masks HOME for. Today both streams are empty here and the mask does nothing;
+ * it exists so that a future change which starts naming the cwd in a refusal reddens these
+ * cases for the runtime's reason and not for the harness's. The path is not dropped, it
+ * becomes a marker, so a message naming the WRONG directory still differs.
+ */
+function bedStreamCases(label, py, node, sides, shared = []) {
+  const mask = (buf, side) => {
+    let text = dec(buf);
+    // `shared` is for a path that travels in ARGV, which cannot be per-side: both runtimes are
+    // handed the reference's bed, so that path is the SAME text on both streams and masking it
+    // per side would manufacture a difference out of the harness's own argv.
+    for (const [path, token] of shared) text = text.split(path).join(token);
+    return text.split(sides[side].cwd).join('<CWD>').split(sides[side].home).join('<HOME>');
+  };
+  return [
+    { name: `${label}/stdout`, kind: 'bytes', expected: mask(py.stdout, 'py'), actual: mask(node.stdout, 'node') },
+    { name: `${label}/stderr`, kind: 'bytes', expected: mask(py.stderr, 'py'), actual: mask(node.stderr, 'node') },
+    {
+      name: `${label}/exit`,
+      kind: 'json',
+      expected: { exit: py.exit, timedOut: py.timedOut },
+      actual: { exit: node.exit, timedOut: node.timedOut },
+    },
+  ];
+}
 
 /** stdout, stderr and the exit code, for one argv line. The default shape. */
 function streamCases(label, py, node) {
@@ -728,6 +771,131 @@ function installSandbox(scratch, name, seed = null) {
   };
 }
 
+/**
+ * A cwd NOTHING CAN BE CREATED IN, one per side — and a PROBE that says whether it is one.
+ *
+ * THE BUG THIS SUITE COULD NOT SEE. Every GUI MCP host launches its child with cwd `/`
+ * (measured live: `lsof -p <pid> -a -d cwd` on Claude Desktop and all four of its
+ * `bantamkit-mcp` children), and until job48 the project memory layer was built eagerly, so
+ * that cwd was a startup crash out of `mkdir` and the host saw only CONNECTION_CLOSED. Not
+ * one case of 7668 started either CLI anywhere a directory could not be made — measured by
+ * mutation, not by grep: reverting the whole fix symmetrically on BOTH runtimes leaves
+ * `--all` printing the identical summary, 0 failures and the same 156 ruled.
+ *
+ * WHY NOT cwd `/` ITSELF. `/` is not a bed, it is this machine: it is EROFS on macOS's
+ * sealed volume, EACCES on a Linux root owned by root, and not reachable at all from a
+ * Windows child. A case standing there compares the two runtimes against the filesystem,
+ * which is the trap `store-equals-value` below was written to avoid. A directory the
+ * harness owns and denies itself asks the same question — can a directory be created here —
+ * without asking it of the operator's root.
+ *
+ * WHY NOT A DELETED cwd, which is the portable alternative and was considered first: both
+ * runtimes exit 1 there, in `os.getcwd()` / `uv_cwd`, BEFORE a store object exists. It is a
+ * different defect with a different owner and it is registered as such; it cannot carry
+ * "the server starts", which is the property this block exists to pin.
+ *
+ * PORTABILITY, AND IT IS MEASURED RATHER THAN ASSUMED. `chmod 555` does not deny directory
+ * creation on Windows, and it does not deny it to root anywhere. So the bed PROBES itself —
+ * it tries the denied operation — and a platform (or a uid) that creates the probe anyway
+ * gets a note and no cases, the shape `store.mjs`'s winerror table and `bare-at-a-tty` above
+ * already use. A `process.platform === 'win32'` check would have been a claim about Windows
+ * typed by someone with no Windows run; this is a claim about the directory in front of it.
+ */
+function hostileBed(scratch) {
+  const sides = {};
+  for (const side of ['py', 'node']) {
+    const cwd = join(scratch, 'cli-hostile', side, 'cwd');
+    const home = join(scratch, 'cli-hostile', side, 'home');
+    mkdirSync(cwd, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    chmodSync(cwd, 0o555);
+    sides[side] = { cwd, home };
+  }
+  let denies = false;
+  let why = '';
+  const probe = join(sides.py.cwd, 'probe-can-anything-be-made-here');
+  try {
+    mkdirSync(probe);
+    rmSync(probe, { recursive: true, force: true });
+    why = 'the 0o555 mode was not honoured — this platform or this uid creates directories there anyway';
+  } catch (e) {
+    denies = true;
+    why = `mkdir inside it was refused with ${e?.code ?? 'an error carrying no code'}`;
+  }
+  return { sides, denies, why, release: () => { for (const s of Object.values(sides)) chmodSync(s.cwd, 0o755); } };
+}
+
+/** A writable cwd per side, so "this runtime created nothing" is a claim about ONE runtime. */
+function writableBed(scratch, name) {
+  const sides = {};
+  for (const side of ['py', 'node']) {
+    const cwd = join(scratch, name, side, 'cwd');
+    const home = join(scratch, name, side, 'home');
+    mkdirSync(cwd, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    sides[side] = { cwd, home };
+  }
+  return sides;
+}
+
+/** `sideCwd` + `sideEnv` for a bed shaped by the two helpers above. */
+const bedSpec = (sides, extra = {}) => ({
+  sideCwd: { py: sides.py.cwd, node: sides.node.cwd },
+  sideEnv: {
+    py: { HOME: sides.py.home, USERPROFILE: sides.py.home },
+    node: { HOME: sides.node.home, USERPROFILE: sides.node.home },
+  },
+  ...extra,
+});
+
+/**
+ * A directory whose CONTENTS CANNOT BE REACHED, with a real store directory sealed inside it —
+ * and a PROBE, in the shape `hostileBed` above uses, that says whether this platform honours
+ * the seal at all.
+ *
+ * WHY THIS BED IS NOT `hostileBed`. `hostileBed` is `chmod 555`: a directory that can be read
+ * and walked but not written, which is what a GUI host's cwd `/` is. `stat` of a path inside
+ * it SUCCEEDS in saying the path is absent, so `--store <there>/store` reaches
+ * `FileNotFoundError` and is DESIGNATED — J48-3's `store-under-an-uncreatable-parent` measures
+ * exactly that and exits 0. The `unreachable` sentence needs the other wall: a parent whose
+ * children cannot be looked up at all, which is `chmod 000`. Two different modes, two
+ * different refusals; neither bed can carry the other's question.
+ *
+ * THE PROBE READS NO ERRNO, AND THAT IS DELIBERATE. Telling "the lookup was denied" from "the
+ * path is not there" by inspecting `e.code` would be this harness deciding which errno means a
+ * wall — the mistake job48's invariants forbid of the fix, measured there: the same denial is
+ * EROFS(30) on CPython, ENOENT(-2) on Node and EACCES on Linux. So the leaf is CREATED FIRST
+ * and sealed AFTERWARDS. It certainly exists, so a `stat` that fails cannot be failing for
+ * absence, and a `stat` that succeeds says the mode is not a wall for this platform or this
+ * uid — root, and Windows, where a POSIX mode denies nothing. Only whether the call came back
+ * is read. A platform the probe finds unsealed gets a note and no cases.
+ *
+ * platform-checked: the `chmod` here is not an assumption, it is an ATTEMPT. Windows honours
+ * only the read-only bit, so `0o000` may leave the directory wide open there — and that is
+ * precisely what the probe two lines below asks, by trying the lookup the seal is supposed to
+ * deny against a path that certainly exists. `denies` comes back false on any platform or uid
+ * the mode does not bind, and the caller emits a NOT MEASURED HERE note and adds no cases, so
+ * nothing downstream of this helper depends on POSIX semantics holding.
+ */
+function sealedBed(scratch, name) {
+  const parent = join(scratch, name, 'sealed');
+  const leaf = join(parent, 'store');
+  mkdirSync(leaf, { recursive: true });
+  chmodSync(parent, 0o000);
+  let denies = false;
+  let why = '';
+  try {
+    statSync(leaf);
+    why = 'the 0o000 mode was not honoured — this platform or this uid looks inside it anyway';
+  } catch (e) {
+    denies = true;
+    why = `stat of a directory KNOWN to exist inside it was refused with ${e?.code ?? 'an error carrying no code'}`;
+  }
+  // Idempotent, and called twice on the measured path: once before the disk is inspected (the
+  // inspection cannot see through the seal) and once from the caller's `finally`.
+  return { parent, leaf, denies, why, release: () => chmodSync(parent, 0o755) };
+}
+
 function matrix(scratch) {
   const sandbox = { cwd: join(scratch, 'cli-cwd'), env: { HOME: join(scratch, 'cli-home') } };
   return [
@@ -745,6 +913,22 @@ function matrix(scratch) {
     // interpreter's own absolute paths and line numbers. That is a comparison against the
     // filesystem, not against Node. A scratch path exercises the same `=`-joined parse and
     // leaves both runtimes on their own behaviour.
+    // AMENDED 2026-09-12 (job48, J48-3). THE PARAGRAPH ABOVE IS KEPT AS THE RECORD OF WHY
+    // THIS LINE READS AS IT DOES, AND ITS SECOND SENTENCE IS NO LONGER TRUE. `--store=/a` does
+    // not raise and does not print a traceback any more: J48-1/J48-2 made the project layer
+    // lazy and gave `--store` a deliberate check that refuses a path which exists and is NOT a
+    // directory while allowing one that is merely missing, so `/a` is now DESIGNATED and the
+    // server starts. The reasoning that survives is the part about the filesystem: `/` is
+    // EROFS here, EACCES on Linux and unreachable from a Windows child, so a case standing
+    // there would still be a comparison against this machine. The question it was avoiding is
+    // asked properly in `store-under-an-uncreatable-parent` below, of a directory this harness
+    // owns and denies itself.
+    //
+    // AND WHAT THIS LINE PROVES HAS SHIFTED UNDER IT, which is the reason it is named here at
+    // all: `<scratch>/cli-store` is never created by the harness, so before job48 this argv
+    // took the CREATE route and now it takes the DESIGNATED one. The two sides still agree, so
+    // nothing went red; the differential cannot tell you which route it agreed about. The
+    // literal after the matrix loop pins the route.
     { label: 'store-equals-value', argv: [`--store=${join(scratch, 'cli-store')}`], serves: true, ...sandbox },
     { label: 'k-equals-then-assets-root', argv: ['--k=7', '--assets-root'], shape: 'assets' },
     // `--install`. The three file-writing hosts, each into a home the harness owns, plus the
@@ -983,6 +1167,19 @@ export async function run(ctx) {
     } else cases.push(...streamCases(spec.label, py, node));
   }
 
+  // THE ROUTE `store-equals-value` NOW TAKES, pinned. J48-3 registered it as a vacuity item:
+  // the argv names `<scratch>/cli-store`, which nothing creates, so before job48 the eager
+  // project layer MADE that store during the run and now nothing does. Both runtimes agreed
+  // then and agree now, so the differential above never moved — this says which of the two
+  // agreements it is. The path is in argv and argv cannot be per-side, so this cannot say
+  // WHICH runtime created it; it can say, and does, that neither did.
+  cases.push({
+    name: 'store-equals-value/PINNED: --store at a path that is not there is DESIGNATED, and neither runtime created it',
+    kind: 'json',
+    expected: { storeExists: false },
+    actual: { storeExists: existsSync(join(ctx.scratch, 'cli-store')) },
+  });
+
   // The precondition, as a CASE and not as a note. If the vendoring ever stops working, the
   // two `stdout-line1-path` rulings above go stale for a reason that has nothing to do with
   // either runtime, and "STALE RULING: the case no longer differs" is not a sentence that
@@ -1109,9 +1306,15 @@ export async function run(ctx) {
   // because `Memory.layered` falls back to a store under the operator's own home when it
   // cannot find one — the hazard J46-27's first draft hit against the real HOME.
   const ttyEnv = { HOME: ttyHome, USERPROFILE: ttyHome };
+  // AMENDED 2026-09-12 (job48, J48-3), and it is a vacuity registration rather than a fix.
+  // `flagged`'s `--store <ttyRoot>/store` names a path the harness never creates, so this argv
+  // took the CREATE route before job48 and takes the DESIGNATED one now. The comparison below
+  // is unchanged and still green — both sides moved together, which is exactly what a
+  // differential cannot report — so the literal beside the flagged cases pins the route.
+  const ttyStore = join(ttyRoot, 'store');
   const ttySpecs = {
     bare: { argv: [], cwd: ttyCwd, env: ttyEnv },
-    flagged: { argv: ['--store', join(ttyRoot, 'store')], cwd: ttyCwd, env: ttyEnv },
+    flagged: { argv: ['--store', ttyStore], cwd: ttyCwd, env: ttyEnv },
   };
 
   /** What a person must see, written down rather than taken from the other runtime. */
@@ -1229,6 +1432,17 @@ export async function run(ctx) {
       actual: { python: serverArm(flaggedTtyPy), node: serverArm(flaggedTtyNode) },
     });
 
+    // THE ROUTE, pinned — see the amendment above `ttySpecs`. `--store` at a terminal serves,
+    // and what it serves from is a store that does not exist and was not brought into
+    // existence by either runtime. `SERVED` above says the process behaved; this says the disk
+    // did. A symmetric revert of the lazy layer leaves `SERVED` green and reddens this.
+    cases.push({
+      name: 'flagged-at-a-tty/PINNED: the --store it served from was DESIGNATED, not created',
+      kind: 'json',
+      expected: { storeExists: false },
+      actual: { storeExists: existsSync(ttyStore) },
+    });
+
     // The brief's last question, answered by diffing the two streams rather than by reading
     // them. `prog` is set explicitly on both parsers (`prog="bantamkit-mcp"` /
     // `prog: 'bantamkit-mcp'`), so neither side ever reads `argv[0]` and there is no
@@ -1339,6 +1553,366 @@ export async function run(ctx) {
     kind: 'json',
     expected: { python: SERVED_A_HANDSHAKE, node: SERVED_A_HANDSHAKE },
     actual: { python: handshakeShape(pipePy), node: handshakeShape(pipeNode) },
+  });
+
+  // ============== STARTUP FROM A cwd NOTHING CAN BE CREATED IN, AND THE STORE NOT CREATED ==
+  //
+  // J48-3. THE COVERAGE THIS CLOSES, STATED AS A MEASUREMENT AND NOT AS A CLAIM. Before this
+  // block, reverting the WHOLE of job48 symmetrically — the project layer eager again on both
+  // runtimes, the `designated` sentence back to its old spelling on both — left
+  // `node tools/conformance/run.mjs --all` printing `PASS: 7668 cases, 2043 byte-identical,
+  // 3459 exact-string, 2166 structural, 156 ruled-different, 0 failures`, character for
+  // character the baseline, while both CLIs went back to exiting 1 from cwd `/`. A whole
+  // job's behaviour change was invisible to the gate, because every case that could have seen
+  // it is a DIFFERENTIAL and both sides moved together. That is job47's lesson reproduced, so
+  // half of what is below is a LITERAL PER SIDE, against constants typed into this file.
+  //
+  // See `hostileBed` for why the bed is a directory the harness denies itself rather than `/`,
+  // and for the probe that decides whether this platform can host the question at all.
+  const hostile = hostileBed(ctx.scratch);
+  try {
+    if (!hostile.denies) {
+      notes.push(
+        'unwritable-cwd: NOT MEASURED HERE — the bed did not deny creation: ' +
+          `${hostile.why}. chmod 555 is not a wall on Windows and is not a wall for root, so the ` +
+          'four cases that need one are not reported rather than reported as passes nobody earned. ' +
+          'The writable-cwd case below IS measured on every platform, and it is the one that ' +
+          'carries the lazy project layer.',
+      );
+    } else {
+      // A PRECONDITION AS A CASE, not as a comment — the shape `assets-root/precondition` uses.
+      // Without it, a future run on a platform that quietly stopped honouring the mode would
+      // report four green cases over a bed that denies nothing.
+      cases.push({
+        name: 'unwritable-cwd/precondition: the bed really is a directory nothing can be created in',
+        kind: 'json',
+        expected: { denies: true },
+        actual: { denies: hostile.denies },
+      });
+
+      // ---- the bare launch: what the host that filed this bug actually did.
+      const bare = bedSpec(hostile.sides, { argv: [] });
+      cases.push(...bedStreamCases('unwritable-cwd', runPy(ctx, bare), runNode(bare), hostile.sides));
+
+      // ---- the same cwd, with a REAL handshake down the pipe. "It did not crash" is worth
+      // little on a closed stdin — a server that reads EOF first exits 0 having done nothing.
+      // This one has to answer an `initialize` from a directory it cannot write to.
+      const shook = bedSpec(hostile.sides, { argv: [], stdin: `${HANDSHAKE_FRAMES.join('\n')}\n` });
+      const hostilePy = runPy(ctx, shook);
+      const hostileNode = runNode(shook);
+      cases.push({
+        name: 'unwritable-cwd/handshake: the frames a launch from an uncreatable cwd answers with',
+        kind: 'json',
+        expected: framesOf(hostilePy),
+        actual: framesOf(hostileNode),
+      });
+      cases.push({
+        name: 'unwritable-cwd/PINNED PER SIDE: the server STARTED there and completed a real initialize',
+        kind: 'json',
+        expected: { python: SERVED_A_HANDSHAKE, node: SERVED_A_HANDSHAKE },
+        actual: { python: handshakeShape(hostilePy), node: handshakeShape(hostileNode) },
+      });
+
+      // ---- `--store` at a path under that same cwd: a store that can never be created.
+      // THIS IS THE CASE `store-equals-value` WAS WRITTEN INSTEAD OF (see its comment in the
+      // matrix): the brief's `--store=/a` was dropped because it took Python down with an
+      // `OSError` traceback. The crash is gone, so the question can finally be asked — and it
+      // is asked of a directory this harness owns rather than of the machine's root.
+      const storeUnderIt = bedSpec(hostile.sides, {
+        argv: ['--store', join(hostile.sides.py.cwd, 'store')],
+      });
+      // The path is in argv and argv cannot be per-side, so both runtimes are pointed at the
+      // reference's bed. That is what makes the creation check below mean something: if EITHER
+      // runtime created it, it exists, and the case is red.
+      const storeArg = join(hostile.sides.py.cwd, 'store');
+      const storePy = runPy(ctx, storeUnderIt);
+      const storeNode = runNode(storeUnderIt);
+      cases.push(
+        ...bedStreamCases('store-under-an-uncreatable-parent', storePy, storeNode, hostile.sides, [
+          [storeArg, '<STORE>'],
+        ]),
+      );
+      // A LITERAL BESIDE IT, and the differential is BLIND WITHOUT IT — measured, not argued.
+      // Under a symmetric revert both runtimes refuse this argv, both exit 1, and both print
+      // the same refusal, so every comparison above goes green; and the disk check below stays
+      // green too, because an eager store here fails to create exactly as it fails to start.
+      // The pair could be reverted on both sides and report nothing at all. This is the case
+      // that says what the agreement WAS: they started, and they said nothing while doing it.
+      const startedQuietly = (r) => ({
+        exit: r.exit,
+        stdoutBytes: r.stdout.length,
+        stderrBytes: r.stderr.length,
+        timedOut: r.timedOut,
+      });
+      const STARTED_QUIETLY = { exit: 0, stdoutBytes: 0, stderrBytes: 0, timedOut: false };
+      cases.push({
+        name: 'store-under-an-uncreatable-parent/PINNED PER SIDE: each runtime STARTED on a store that can never be created, and said nothing',
+        kind: 'json',
+        expected: { python: STARTED_QUIETLY, node: STARTED_QUIETLY },
+        actual: { python: startedQuietly(storePy), node: startedQuietly(storeNode) },
+      });
+      cases.push({
+        name: 'store-under-an-uncreatable-parent/PINNED: neither runtime created the store',
+        kind: 'json',
+        expected: { storeExists: false },
+        actual: { storeExists: existsSync(storeArg) },
+      });
+
+      // ---- AND NOTHING WAS LEFT BEHIND. Per side, because each ran in its own directory.
+      const leftBehind = (dir) => readdirSync(dir).sort();
+      cases.push({
+        name: 'unwritable-cwd/PINNED PER SIDE: neither runtime left anything in the cwd it could not write to',
+        kind: 'json',
+        expected: { python: [], node: [] },
+        actual: { python: leftBehind(hostile.sides.py.cwd), node: leftBehind(hostile.sides.node.cwd) },
+      });
+    }
+  } finally {
+    // Put the modes back whatever happened, so the harness can clean its own scratch tree.
+    hostile.release();
+  }
+
+  // ---- THE SAME PROPERTY WHERE EVERY PLATFORM CAN SEE IT: a cwd that WOULD allow creation.
+  //
+  // This is the portable half and it is the load-bearing one. Until job48 a bare
+  // `bantamkit-mcp` scattered `.bantamkit/memory/{facts,archive}` into whatever directory the
+  // operator happened to be standing in, before anything was saved; the lazy project layer is
+  // what stops it, and it is what lets the server start in a cwd where creation is impossible.
+  // A differential cannot see this — revert the laziness on both runtimes and both trees
+  // agree again — so the expectation is written down here.
+  const writable = writableBed(ctx.scratch, 'cli-writable');
+  const writableSpec = bedSpec(writable, { argv: [], stdin: `${HANDSHAKE_FRAMES.join('\n')}\n` });
+  const writablePy = runPy(ctx, writableSpec);
+  const writableNode = runNode(writableSpec);
+  cases.push({
+    name: 'writable-cwd/handshake: a launch in an ordinary directory answers the same frames',
+    kind: 'json',
+    expected: framesOf(writablePy),
+    actual: framesOf(writableNode),
+  });
+  cases.push({
+    name: 'writable-cwd/PINNED PER SIDE: it served, and it created NO store in a cwd that would have allowed one',
+    kind: 'json',
+    expected: {
+      python: { served: SERVED_A_HANDSHAKE, leftBehind: [] },
+      node: { served: SERVED_A_HANDSHAKE, leftBehind: [] },
+    },
+    actual: {
+      python: { served: handshakeShape(writablePy), leftBehind: readdirSync(writable.py.cwd).sort() },
+      node: { served: handshakeShape(writableNode), leftBehind: readdirSync(writable.node.cwd).sort() },
+    },
+  });
+
+  // ========== `--store` AT SOMETHING THAT IS NOT A STORE — AND THE BOUNDARY THAT IS NOT ONE ==
+  //
+  // J48-4B, AND IT EXISTS BECAUSE THE BRANCH BROKE THE ONE RULE THIS REPOSITORY WRITES IN
+  // BOLD: the gate is a conformance case, not a promise. J48-1 and J48-2 gave `--store` a
+  // deliberate validation on both runtimes — two new sentences, an exit code, and a refusal
+  // that happens before a transport exists — and shipped it with NO case anywhere. The only
+  // coverage was `runtime-py/tests/test_statusline.py`, asserting `returncode != 0`: the
+  // refusal BIT, on one runtime, as a side effect of a test about a different flag.
+  //
+  // MEASURED, NOT SUPPOSED, and the measurement is stronger than a blind differential.
+  // Removing `_check_store_flag`'s body AND `checkStoreFlag`'s body — both runtimes, so the
+  // two agree about doing nothing — left `node tools/conformance/run.mjs --all` printing
+  //
+  //   PASS: 7691 cases, 2048 byte-identical, 3463 exact-string, 2180 structural,
+  //         156 ruled-different, 0 failures
+  //
+  // character for character the `6f0701b` baseline. And so did removing it from the REFERENCE
+  // ALONE, with the port's check left intact — an asymmetric break, the shape a differential
+  // is supposed to be good at, and it also moved nothing. That is not the "two sides wrong
+  // together" blind spot job47 registered; it is zero coverage. Nothing in 7691 cases handed
+  // either CLI a `--store` that was not a directory.
+  //
+  // WHAT IS BELOW IS THREE SHAPES, and each has a LITERAL PER SIDE beside its differential.
+  // J48-3 proved live in this same job that a symmetric revert can leave `--all` identical, so
+  // a comparison between the two runtimes cannot be the whole gate; the sentences are typed
+  // into this file as constants and asserted against each runtime separately.
+  const NOT_A_DIRECTORY = (p) => `--store is not a directory: ${p}\n`;
+  const UNREACHABLE = (p) => `--store is unreachable: ${p}: Permission denied; nothing was created\n`;
+  const refusedWith = (r) => ({
+    exit: r.exit,
+    stdout: dec(r.stdout),
+    stderr: dec(r.stderr),
+    timedOut: r.timedOut,
+  });
+
+  // ---- 1. `--store` NAMING A REGULAR FILE. Portable everywhere: a file is not a directory on
+  // any platform, and this is the one arm the accidental `mkdir(parents=True)` used to cover
+  // by crashing. `test_statusline.py` arms exactly this argv as a trap and walks past it; that
+  // test says the trap is armed on the reference, and says nothing about the port.
+  const fileBed = writableBed(ctx.scratch, 'cli-store-file');
+  const notAStore = join(ctx.scratch, 'cli-store-file', 'a-regular-file');
+  writeFileSync(notAStore, 'a file, not a store\n');
+  const fileSpec = bedSpec(fileBed, { argv: ['--store', notAStore] });
+  const filePy = runPy(ctx, fileSpec);
+  const fileNode = runNode(fileSpec);
+  cases.push(
+    ...bedStreamCases('store-at-a-regular-file', filePy, fileNode, fileBed, [[notAStore, '<STORE>']]),
+  );
+  cases.push({
+    name: 'store-at-a-regular-file/PINNED PER SIDE: each runtime refused BY NAME, at exit 1, with nothing on stdout',
+    kind: 'json',
+    expected: {
+      python: { exit: 1, stdout: '', stderr: NOT_A_DIRECTORY(notAStore), timedOut: false },
+      node: { exit: 1, stdout: '', stderr: NOT_A_DIRECTORY(notAStore), timedOut: false },
+    },
+    actual: { python: refusedWith(filePy), node: refusedWith(fileNode) },
+  });
+  cases.push({
+    name: 'store-at-a-regular-file/PINNED: the file is still a file, and neither cwd was written to',
+    kind: 'json',
+    expected: { stillARegularFile: true, python: [], node: [] },
+    actual: {
+      stillARegularFile: statSync(notAStore).isFile(),
+      python: readdirSync(fileBed.py.cwd).sort(),
+      node: readdirSync(fileBed.node.cwd).sort(),
+    },
+  });
+
+  // ---- 2. `--store` UNDER A PARENT THAT CANNOT BE REACHED AT ALL. This is the other sentence,
+  // and it is the one that promises something about the disk in its own words — "nothing was
+  // created" — so the disk is checked, not just the text. See `sealedBed` for why the bed is
+  // `chmod 000` rather than J48-3's `chmod 555` (which reaches `FileNotFoundError` and
+  // DESIGNATES) and for the probe, which reads no errno.
+  const sealed = sealedBed(ctx.scratch, 'cli-store-sealed');
+  try {
+    if (!sealed.denies) {
+      notes.push(
+        'store-under-a-sealed-parent: NOT MEASURED HERE — the bed did not deny the lookup: ' +
+          `${sealed.why}. A POSIX mode is not a wall on Windows and is not a wall for root, so ` +
+          'the six cases that need one are not reported rather than reported as passes nobody ' +
+          'earned. The other two `--store` shapes above and below ARE measured on every ' +
+          'platform, and between them they carry the refusal and the boundary.',
+      );
+    } else {
+      // A PRECONDITION AS A CASE. Without it a future run on a platform that quietly stopped
+      // honouring the mode would report six green cases over a bed that denies nothing.
+      cases.push({
+        name: 'store-under-a-sealed-parent/precondition: the bed really does deny a lookup of a path known to exist inside it',
+        kind: 'json',
+        expected: { denies: true },
+        actual: { denies: sealed.denies },
+      });
+      const sealedCwds = writableBed(ctx.scratch, 'cli-store-sealed-cwd');
+      const sealedSpec = bedSpec(sealedCwds, { argv: ['--store', sealed.leaf] });
+      const sealedPy = runPy(ctx, sealedSpec);
+      const sealedNode = runNode(sealedSpec);
+      // Both processes are done; unseal so the disk claim below can actually look. `release`
+      // is idempotent and the `finally` calls it again.
+      sealed.release();
+      cases.push(
+        ...bedStreamCases('store-under-a-sealed-parent', sealedPy, sealedNode, sealedCwds, [
+          [sealed.leaf, '<STORE>'],
+        ]),
+      );
+      cases.push({
+        name: 'store-under-a-sealed-parent/PINNED PER SIDE: each runtime printed the whole unreachable sentence, at exit 1',
+        kind: 'json',
+        expected: {
+          python: { exit: 1, stdout: '', stderr: UNREACHABLE(sealed.leaf), timedOut: false },
+          node: { exit: 1, stdout: '', stderr: UNREACHABLE(sealed.leaf), timedOut: false },
+        },
+        actual: { python: refusedWith(sealedPy), node: refusedWith(sealedNode) },
+      });
+      // THE SAME SENTENCE, MINUS THE ONE WORD NEITHER RUNTIME WROTE. `Permission denied` is
+      // `strerror`, which belongs to the C library and not to this product, so the literal
+      // above is the strict one and this is the one that stays true if a platform spells that
+      // reason differently. It is ADDITIVE — the strict case is not relaxed to make room for
+      // it — and if the two ever disagree the diagnosis is immediate: the product's half of
+      // the sentence is intact and the libc half moved.
+      const unreachableShape = (r) => {
+        const s = dec(r.stderr);
+        return {
+          exit: r.exit,
+          stdoutEmpty: r.stdout.length === 0,
+          namesTheStoreFirst: s.startsWith(`--store is unreachable: ${sealed.leaf}: `),
+          endsSayingNothingWasCreated: s.endsWith('; nothing was created\n'),
+          oneLine: s.split('\n').length === 2,
+        };
+      };
+      const UNREACHABLE_SHAPE = {
+        exit: 1,
+        stdoutEmpty: true,
+        namesTheStoreFirst: true,
+        endsSayingNothingWasCreated: true,
+        oneLine: true,
+      };
+      cases.push({
+        name: 'store-under-a-sealed-parent/PINNED PER SIDE: the product half of that sentence, independent of what libc calls the reason',
+        kind: 'json',
+        expected: { python: UNREACHABLE_SHAPE, node: UNREACHABLE_SHAPE },
+        actual: { python: unreachableShape(sealedPy), node: unreachableShape(sealedNode) },
+      });
+      // AND THE PROMISE THE SENTENCE MAKES, CHECKED. "nothing was created" is a claim about the
+      // disk; the store directory that was sealed inside is still there and still empty, and
+      // neither runtime left anything in the cwd it was launched from.
+      cases.push({
+        name: 'store-under-a-sealed-parent/PINNED: nothing was created — the sealed store is still empty and neither cwd was written to',
+        kind: 'json',
+        expected: { sealedStore: [], parent: ['store'], python: [], node: [] },
+        actual: {
+          sealedStore: readdirSync(sealed.leaf).sort(),
+          parent: readdirSync(sealed.parent).sort(),
+          python: readdirSync(sealedCwds.py.cwd).sort(),
+          node: readdirSync(sealedCwds.node.cwd).sort(),
+        },
+      });
+    }
+  } finally {
+    // Put the mode back whatever happened, so the harness can clean its own scratch tree.
+    sealed.release();
+  }
+
+  // ---- 3. THE BOUNDARY, AND IT IS THE ONE A LATER EDIT WILL CROSS. `--store` at a path that
+  // is simply NOT THERE exits 0. That is not an oversight and it is not the two refusals
+  // leaking: it is DESIGNATION, the same state the project walk reaches by searching, reached
+  // here by being told. It is registered as `(ww)` in `docs/roadmap-toolbox.md` because the
+  // SIBLING program's flag of the same name does the opposite — `bantamkit-memory status
+  // --store {BED}/nowhere` CREATES the two directories, pinned by
+  // `tools/conformance/suites/memorycli.mjs`'s `status-creates-a-missing-store` — and that
+  // asymmetry between the two programs is deliberate. Half of it was pinned and half was not.
+  // This is the other half: `bantamkit-mcp` STARTS here, and a later edit that "fixes" this
+  // into a third refusal would silently contradict a case that is already green on the other
+  // side. NOTHING BELOW ASSERTS IT OUGHT TO REFUSE; it asserts what it does, so that changing
+  // it has to be a decision somebody takes on purpose.
+  //
+  // A REAL `initialize` DOWN THE PIPE, not an empty stdin. `exit 0` on a closed pipe is what a
+  // server that read EOF and did nothing looks like, and it is also what a server that refused
+  // would NOT look like — but only the handshake separates "it started" from "it survived".
+  const missingBed = writableBed(ctx.scratch, 'cli-store-missing');
+  const designated = join(ctx.scratch, 'cli-store-missing', 'a-store-that-is-not-there');
+  const missingSpec = bedSpec(missingBed, {
+    argv: ['--store', designated],
+    stdin: `${HANDSHAKE_FRAMES.join('\n')}\n`,
+  });
+  const missingPy = runPy(ctx, missingSpec);
+  const missingNode = runNode(missingSpec);
+  cases.push({
+    name: 'store-at-a-path-that-is-not-there/handshake: the frames a DESIGNATED store answers with',
+    kind: 'json',
+    expected: framesOf(missingPy),
+    actual: framesOf(missingNode),
+  });
+  cases.push({
+    name: 'store-at-a-path-that-is-not-there/PINNED PER SIDE: DESIGNATED, not refused — each runtime completed a real initialize',
+    kind: 'json',
+    expected: { python: SERVED_A_HANDSHAKE, node: SERVED_A_HANDSHAKE },
+    actual: { python: handshakeShape(missingPy), node: handshakeShape(missingNode) },
+  });
+  // Designated is not created, and that is the whole difference from the sibling CLI. The path
+  // travels in argv and argv cannot be per-side, so this cannot name WHICH runtime would have
+  // created it — it says neither did; the per-side half is the two cwds beside it.
+  cases.push({
+    name: 'store-at-a-path-that-is-not-there/PINNED: designated is not created — the path is still absent and neither cwd was written to',
+    kind: 'json',
+    expected: { storeExists: false, python: [], node: [] },
+    actual: {
+      storeExists: existsSync(designated),
+      python: readdirSync(missingBed.py.cwd).sort(),
+      node: readdirSync(missingBed.node.cwd).sort(),
+    },
   });
 
   // ====================================== `--update`: the arms, the ruling, the companion ==

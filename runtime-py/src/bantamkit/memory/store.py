@@ -315,8 +315,40 @@ class MemoryStore:
             self._snapshot = previous
 
     def _ensure_dirs(self) -> None:
-        (self.root / "facts").mkdir(parents=True, exist_ok=True)
-        (self.root / "archive").mkdir(parents=True, exist_ok=True)
+        """Bring the store's directories into existence, or refuse the write that needs them.
+
+        THE PROPERTY: a store that cannot be brought into existence cannot be written to,
+        and the refusal names which directory and why. It is a refusal and not a crash
+        because the only callers are the two WRITES (`save`, `compact`); every read is
+        already defined over an absent directory -- `_facts`' own docstring rules it, "AN
+        ABSENT DIRECTORY IS `[]`, NOT AN ERROR" -- which is what makes a lazily-built
+        project layer legal at all.
+
+        THE PREDICATE IS THE OUTCOME AND NEVER AN ERRNO, and that is measured rather than
+        tidy. One cwd, `/`, gives CPython EROFS(30) at `/.bantamkit` and Node ENOENT(-2) at
+        `/.bantamkit/memory/facts`, because Node's recursive mkdir does not pass EROFS
+        through and stats the missing path instead; a `chmod 555` directory gives EACCES(13)
+        on both; and on Linux `/` is a writable root owned by root, so the same cwd gives
+        EACCES there. Three platforms, three numbers, one fact -- the directory could not be
+        made -- so the `except` is the whole of `OSError` and the sentence carries no errno.
+        A fix keyed on the number would have been green on Linux CI and wrong on the machine
+        the bug was reported from.
+
+        THE SENTENCE NAMES `self.root` AND NOTHING DEEPER, for the same reason. The two
+        runtimes fail at different components of the same path (`/.bantamkit` against
+        `/.bantamkit/memory/facts`) and report different strerrors for it, so a sentence
+        carrying the failing leaf, or that strerror, would be a divergence manufactured by
+        mkdir's internals. `self.root` is the path the caller named and both sides agree on
+        it, which is what lets one conformance case pin this line byte for byte.
+        """
+        try:
+            (self.root / "facts").mkdir(parents=True, exist_ok=True)
+            (self.root / "archive").mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            raise MemoryValidationError(
+                f"memory store could not be created: {self.root}; the directory is not"
+                " there and this filesystem would not make it, so nothing was written"
+            ) from e
 
     # ---- ops ----
 
@@ -542,6 +574,15 @@ class MemoryStore:
         archived by staleness and this loop still lands at or below `target`.
         """
         facts = self._facts()
+        # SECOND, NOT FIRST, and the order is the paragraph above kept intact: the listing
+        # still refuses an unreadable store before anything here moves a file. What this
+        # line adds is the other half of the same stance -- this method WRITES (every
+        # `replace` below lands in `archive/`, and `_rebuild_index` writes `index.md` into
+        # the root whether or not a single fact was archived), so a root that does not
+        # exist and cannot be made is refused here, by name, instead of surfacing as a
+        # `FileNotFoundError` out of the final write. `exist_ok=True` makes it free for
+        # every store that is already there.
+        self._ensure_dirs()
         sizes = {fact.name: len(self._index_line(fact).encode()) for fact in facts}
         if reserve is None:
             # The default reserve is measured from the WARNING LINE, not from the budget.

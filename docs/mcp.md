@@ -338,6 +338,30 @@ The server walks up from cwd (or `--start`) and binds the **nearest existing**
 and for a project with no store of its own the nearest existing one is very often
 `~/.bantamkit/memory` — a store you may never have put anything in.
 
+**AMENDED 2026-09-12 — job48 (`fix/job48-unwritable-cwd`), J48-4.** The paragraph
+above is kept as the record of what this server did until this job, and its second
+sentence is no longer true: **it does not create.** The project memory layer is now
+built lazily (`Memory.__init__` / the `Memory` constructor, `create=False`), so when
+nothing up the tree has a store, `<start>/.bantamkit/memory` is **designated** and
+stays absent until the first save brings it into existence — or refuses by name if
+the filesystem will not have it. Starting the server creates nothing anywhere.
+
+The reason is the defect this job closed: every GUI MCP host launches its child with
+cwd `/`, an eager `mkdir` there is a **startup crash**, and the host saw only
+`CONNECTION_CLOSED`. Measured before and after on this machine, from a directory
+nothing can be created in: before, `PermissionError: [Errno 13] Permission denied:
+'<cwd>/.bantamkit'` and exit 1; after, exit 0, one answered `initialize` frame, and
+nothing left in the directory.
+
+**A second consequence, and it is the one to know about.** The walk looks for an
+*existing* `.bantamkit/memory`, so what the old behaviour created, the next session
+found. A bare start in `proj/sub` used to leave a store there, and a later session in
+`proj/sub` bound **that** store even after you created a real one at `proj/`.
+Measured on both paths at this commit: same fixture, the old code binds
+`proj/sub/.bantamkit/memory`, the new code binds `proj/.bantamkit/memory`. The rule in
+the sentence above — nearest *existing* — is unchanged; what changed is that a session
+which saved nothing no longer votes on where the next one binds.
+
 ### The three states, and what `memory_recall` tells the model
 
 A recall that returns nothing used to say the same sentence in all three cases,
@@ -349,6 +373,20 @@ exist. The reply now names the situation:
 | **populated** | the bound store holds facts | `no memories matched. Try different words, or proceed without.` |
 | **empty** | the bound store exists and holds nothing — the walk climbed past your project, the walk stopped in your project's own empty store, or the pin points at a fresh store | `no memories to search: nothing is saved in any layer bound here.` then the store's path, how it was bound (**pinned**, **bound by walking up from** `<start>` — only when the walk really climbed — or `<start>`'s **own** store), and the remedy |
 | **designated** | no `.bantamkit/memory` existed at or above `<start>`, so an empty one was created for this session | `no memories to search: …` then `No memory store existed at or above <start>, so the empty <path> was created for this session.` and the remedy |
+
+**AMENDED 2026-09-12 — job48, J48-4.** The **designated** row above is a record of the
+reply this server gave until this job, quoted verbatim, and both halves of it are now
+false: nothing is created, so nothing is empty-and-created. The row as it reads today:
+
+| State | How it arises | A recall with no hits replies |
+|---|---|---|
+| **designated** | no `.bantamkit/memory` existed at or above `<start>`, so one was **named** for this session and **not created** | `no memories to search: …` then `No memory store existed at or above <start>, so <path> was designated for this session; nothing was created there.` and the remedy |
+
+The remedy after it — *otherwise save a memory to start this one* — is now literally
+true: the save is what brings the directory into existence. The sentence is produced
+byte for byte by both runtimes (verified by running both at this commit, not by
+comparing source), and it is pinned per side, as a literal typed into the suite rather
+than as a differential, by `tools/conformance/suites/recall-strings.mjs`.
 
 The remedy sentence is the same in the last two: *set `BANTAMKIT_MEMORY_DIR` to
 the absolute path of the store your facts are in and restart; otherwise save a

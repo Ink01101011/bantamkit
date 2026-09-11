@@ -589,7 +589,16 @@ test('a walk that climbed says it climbed, and from where', () => {
   });
 });
 
-test('a store nobody had says it was created for this session', () => {
+// RENAMED AND RE-PINNED 2026-09-12 (job48, J48-2), and it is the SAME assertion over an AMENDED
+// sentence — not a weakened one. It was `a store nobody had says it was created for this
+// session`, which pinned "so the empty <root> was created for this session." The project layer
+// is now built `create: false` (`component.ts`), so nothing IS created and the old sentence sent
+// an operator to look for a directory that is not there; `component.py`'s `_binding_diagnosis`
+// amended it in the same job and this is that sentence byte for byte. Nothing is asserted less:
+// the store is still designated, the recall still answers, and the second assertion below is
+// ADDED — the directory really is absent, which is the claim the new clause makes and the old
+// test could not have made.
+test('a store nobody had says it was designated and nothing was created', () => {
   const bed = fresh();
   const home = join(bed, 'home');
   mkdirSync(home);
@@ -599,11 +608,12 @@ test('a store nobody had says it was created for this session', () => {
     assert.equal(
       Memory.layered(project, frozen()).recall('anything'),
       'no memories to search: nothing is saved in any layer bound here. No memory store ' +
-        `existed at or above ${project}, so the empty ${join(project, '.bantamkit', 'memory')} ` +
-        'was created for this session. That is a binding, not a search result — if your ' +
-        'facts are in another store, set BANTAMKIT_MEMORY_DIR to its absolute path and ' +
-        'restart; otherwise save a memory to start this one.',
+        `existed at or above ${project}, so ${join(project, '.bantamkit', 'memory')} ` +
+        'was designated for this session; nothing was created there. That is a binding, not ' +
+        'a search result — if your facts are in another store, set BANTAMKIT_MEMORY_DIR to ' +
+        'its absolute path and restart; otherwise save a memory to start this one.',
     );
+    assert.equal(existsSync(join(project, '.bantamkit')), false);
   });
 });
 
