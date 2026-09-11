@@ -93,10 +93,37 @@ export function profileStore(): string {
  * the same two roots the same way and for the same reason. When the resolution itself
  * fails, an absolute-path comparison is the honest fallback: it can only under-report a
  * match, never invent one.
+ *
+ * AMENDED 2026-09-11 (J47-3B). The paragraph above stands as the reason this function
+ * resolves rather than compares strings, and the fallback's behaviour is unchanged. Two
+ * things it says are now known to be wrong about `fs.realpathSync` in particular, and
+ * measured: (1) it is NOT the twin of `os.path.realpath`. `realpathSync` hands its argument
+ * to `path.resolve` before it resolves anything, and `path.resolve` pops `..` LEXICALLY —
+ * before the symlink in front of it is followed. `os.path.realpath` and the kernel pop it
+ * AFTER. So a `HOME` spelled `<bed>/link/..`, where `link -> <bed>/deep/real`, is
+ * `<bed>/deep` to the reference and `<bed>` to Node: `realpathSync` then threw ENOENT on a
+ * directory that is there, the fallback under-reported, and `layered` bound one directory as
+ * two layers — the 2026-09-10 self-merge, still live on this side until now. (2) "it can
+ * only under-report a match, never invent one" was offered as reassurance, and
+ * under-reporting is the DANGEROUS direction here: a missed match IS the duplicate layer.
+ *
+ * The mechanism is now `realpathSync.native` — libuv's `uv_fs_realpath`, i.e. the platform's
+ * own `realpath(3)` / `GetFinalPathNameByHandle` — chosen because it pops `..` in the
+ * kernel's order and therefore agrees with `os.path.realpath` byte for byte on that bed,
+ * because it keeps the macOS `/var` vs `/private/var` resolution the original was written
+ * for, and because it adds no path arithmetic of this port's own. `statSync` identity
+ * (`dev` + `ino`) was the other candidate and was not taken: `ino` is not dependable on
+ * every Windows filesystem, and this runtime has to answer the same on Windows.
+ *
+ * The fallback stays `resolve(a) === resolve(b)`, and the under-report it can still produce
+ * is provably harmless where `layered` calls this: the native call throws only for a path
+ * that is not on disk, and `binding.path` always is — `layered` constructs that store, which
+ * creates it, before the guard runs — so a throwing side is a directory that does not exist,
+ * and that cannot be the same directory as one that does.
  */
 function sameDirectory(a: string, b: string): boolean {
   try {
-    return realpathSync(a) === realpathSync(b);
+    return realpathSync.native(a) === realpathSync.native(b);
   } catch {
     return resolve(a) === resolve(b);
   }

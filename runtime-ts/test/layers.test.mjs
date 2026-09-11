@@ -504,6 +504,37 @@ test('one directory is one layer through a symlinked home', () => {
   });
 });
 
+test('one directory is one layer when HOME is spelled through a symlink AND a `..`', () => {
+  // J47-3B. The two nodes above pass with `fs.realpathSync`, and this one does not:
+  // `realpathSync` hands its argument to `path.resolve` FIRST, which pops `..` lexically —
+  // before the symlink in front of it has been resolved. `os.path.realpath` and the kernel
+  // pop it AFTER. So `<bed>/link/..` is `<bed>/deep` to the reference and `<bed>` to Node,
+  // and one directory is bound as two layers: the 2026-09-10 self-merge, still live.
+  const bed = fresh();
+  const deep = join(bed, 'deep');
+  mkdirSync(join(deep, 'real'), { recursive: true });
+  mkdirSync(join(deep, 'work'), { recursive: true });
+  symlinkSync(join(deep, 'real'), join(bed, 'link'), 'dir');
+  // Spelled by hand, not with `join`: `join` would normalise the `..` away and the bed
+  // would stop being the bed. `os.path.isdir` on it is True — the kernel reads it as `deep`.
+  const home = `${join(bed, 'link')}/..`;
+  const profile = mkstore(join(deep, '.bantamkit', 'memory'), {
+    'gamma-deploy-rule': 'which branch the deploy watches',
+  });
+
+  sandboxed(home, () => {
+    const memory = Memory.layered(join(deep, 'work'), frozen());
+    const outcome = memory.dreamOutcome(false);
+
+    assert.equal(memory.store.root, profile, 'the walk landed on the profile store itself');
+    assert.deepEqual(memory.layerLabels(), ['project']);
+    assert.equal(outcome.status, 'no-profile-layer');
+    assert.deepEqual([outcome.merged, outcome.consumed], [0, 0]);
+    assert.deepEqual(readdirSync(join(profile, 'facts')), ['gamma-deploy-rule.md']);
+    assert.equal(readdirSync(join(profile, 'archive')).length, 0, 'nothing was consumed');
+  });
+});
+
 // ------------------------------------------------------------- the four nothings, verbatim
 
 test('a populated store that misses says so, and makes no claim about the binding', () => {
