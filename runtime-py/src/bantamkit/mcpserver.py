@@ -232,6 +232,14 @@ def _assets_fingerprint() -> tuple[str, int, Path]:
 # registry is AS-7(b), a separate unit, gated behind this one, and deliberately opt-in
 # because an offline toolbox must not grow a network call in its health check.
 #
+# AMENDED 2026-09-11, J46-31: AS-7(b) HAS SHIPPED, as `--update`, and the first sentence
+# above is still exactly true — that is the point of recording it here. The registry
+# comparison lives in `selfupdate.py`, reached only from the flag, never from any path
+# below and never from `bantamkit_status`. The clause that is now dated is "gated behind
+# this one": the user reversed AS-7 on 2026-09-11 and the gate was overridden rather than
+# met. "Deliberately opt-in" survived the reversal intact and is the reason `--update` is a
+# CLI flag and not an MCP tool — see the ruling appended to AS-7.
+#
 # SHAPE IS LOCATION, NEVER IDENTITY. It is reported for the same reason `package_path` and
 # `interpreter` are — it is what a person acts on — and it is kept OUT of `build_id` for
 # the same reason they are: one build installed two ways is ONE build, and

@@ -2,6 +2,17 @@
 /**
  * The `bantamkit-mcp` entry point: the stdio MCP server, and six flags.
  *
+ * AMENDED 2026-09-11, J46-31 — "six flags" WAS ALREADY WRONG BEFORE THIS JOB AND IS WRONGER
+ * NOW. It was written at `0d067fa`; the parser had nine by the time `--update` was proposed
+ * and has ten today, plus `-h/--help`: `--assets-root`, `--k`, `--index-budget`,
+ * `--mcp-report`, `--statusline`, `--update`, `--install`, `--force`, `--store`, `--start`.
+ * The sentence is kept rather than renumbered because WHAT IT WAS COUNTING AT `0d067fa`
+ * cannot be recovered — six is not the count of anything in `PARSER` at that commit either —
+ * and a number quietly changed to a different wrong number is worse than one a reader can
+ * date. DO NOT RENUMBER IT AGAIN. `PARSER` below is the count; the paragraph after this one
+ * is the reason a second copy of a generated fact does not belong in a comment, and this
+ * amendment is that reason happening to the comment itself.
+ *
  * THE COMMAND LINE IS DATA, NOT PRINTED TEXT. `PARSER` below is the whole description of
  * this CLI, and `pyargparse.ts` renders it — the help table, the usage line at whatever
  * width the terminal is, and every `bantamkit-mcp: error: …` block — with CPython
