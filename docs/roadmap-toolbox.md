@@ -539,3 +539,42 @@ two levels of truth, and the weaker one is the one `build_identity` prints. And
 `bantamkit` by name, which is the PyPI distribution; the npm package is `bantamkit-mcp`. It
 names no command, so nothing exits 0 having changed nothing, but it is the one place the Node
 server hands its operator an identifier that is not this package.
+
+**(hh) Two behaviour asymmetries this branch introduced that are not surface asymmetries, and
+so no gate and no divergence row was ever going to see them.** A sweep of the six surfaces
+job46 added (`--update`, bare-invocation help, `token_ledger`, `job.roles`, install-shape
+diagnosis, pricing) found every one of them present on both runtimes with identical names,
+identical flag lists, identical served-tool order and identical help bytes — the two-runtime
+rule held. What it did not hold for is two error paths that no conformance case reaches:
+
+1. **`token_ledger`'s handler catches a different set on each side, and the port's own comment
+   says otherwise.** `runtime-py/src/bantamkit/mcpserver.py` catches
+   `(tokenledger.TokenLedgerError, PriceTableError, OSError)` and answers the `tool_failed`
+   refusal; `runtime-ts/src/mcp/server.ts` guards on the first two and `throw e`s the rest —
+   under a comment that quotes the reference's three-class tuple, `OSError` included, and calls
+   itself "byte for byte the reference's `token_ledger` handler". So a filesystem fault on
+   `root` (EACCES, say) is a refusal sentence plus a `refused` event record on the reference,
+   and a generic `Error executing tool token_ledger: …` with NO event record on the port. It is
+   hard to reach — both walkers swallow listing errors — which is exactly why it survived: the
+   comment asserts the parity the code does not implement, and nothing compares them.
+2. **`job.roles.<role>` present but not a list fails OPEN on the port and raises on the
+   reference.** `modelRefusal` returns `null` (unconstrained) when `allowed.t !== 'list'`;
+   Python reaches `", ".join(allowed)` and raises. The port's comment calls the arm "a TYPE
+   guard and not a policy", and it is right that the shipped schema pins the value to an array
+   — but this is the same shape as the empty-list question J46-10 ruled on, and it was ruled
+   the other way: **fail CLOSED**. The one path that reaches it is a `BANTAMKIT_ASSETS` pack
+   whose schema drops `minItems`, which is the path the roles tests themselves use.
+
+Neither is fixed here, for the reason (gg) is not: both are product behaviour in a gated
+module, so each lands in both runtimes with a conformance case, and that is an implementer's
+unit. Registered so the next job finds them rather than re-deriving them.
+
+**Pre-existing, extended by this branch and still undeclared: `build_identity`'s Node-only
+fields.** `runtime-ts/src/mcp/identity.ts` sets `runtime` and `cross_runtime`; the reference
+sets neither, and `grep -rn cross_runtime runtime-py/src` returns only a comment telling
+callers to use it. So `build_id` is hashed from FOUR inputs on the reference and FIVE on the
+port, with different "computed from …" sentences, and `docs/porting.md` has a row for
+`build_id` itself and none for `cross_runtime`, `runtime`, `node_version` or `python_version`.
+All of it is present at `6e506ca`, so this branch did not create it — but this branch added
+three fields to `build_identity` and left the older gap open beside them, which is how debt of
+this kind stops being noticed.
