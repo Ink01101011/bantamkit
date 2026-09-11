@@ -51,7 +51,7 @@ function run(argv, columns, assets) {
 /** `parser.print_usage(sys.stderr)` at the no-tty fallback width of 80. Measured. */
 const USAGE_80 =
   "usage: bantamkit-mcp [-h] [--assets-root] [--k K] [--index-budget BYTES]\n" +
-  "                     [--mcp-report] [--statusline]\n" +
+  "                     [--mcp-report] [--statusline] [--update]\n" +
   "                     [--install {claude,claude-desktop,copilot,cursor}]\n" +
   "                     [--force] [--store STORE | --start START]\n";
 
@@ -65,6 +65,7 @@ const HELP = new Map([
     "       [--index-budget BYTES]\n" +
     "       [--mcp-report]\n" +
     "       [--statusline]\n" +
+    "       [--update]\n" +
     "       [--install {claude,claude-desktop,copilot,cursor}]\n" +
     "       [--force]\n" +
     "       [--store STORE | --start START]\n" +
@@ -117,6 +118,14 @@ const HELP = new Map([
     "    for a host\n" +
     "    status bar,\n" +
     "    then exit\n" +
+    "  --update\n" +
+    "    check the\n" +
+    "    package\n" +
+    "    index and\n" +
+    "    update this\n" +
+    "    install if\n" +
+    "    it differs,\n" +
+    "    then exit\n" +
     "  --install {claude,claude-desktop,copilot,cursor}\n" +
     "    wire this\n" +
     "    server into\n" +
@@ -156,6 +165,7 @@ const HELP = new Map([
     "       [--index-budget BYTES]\n" +
     "       [--mcp-report]\n" +
     "       [--statusline]\n" +
+    "       [--update]\n" +
     "       [--install {claude,claude-desktop,copilot,cursor}]\n" +
     "       [--force]\n" +
     "       [--store STORE | --start START]\n" +
@@ -201,6 +211,13 @@ const HELP = new Map([
     "    for a host\n" +
     "    status bar,\n" +
     "    then exit\n" +
+    "  --update\n" +
+    "    check the\n" +
+    "    package index\n" +
+    "    and update\n" +
+    "    this install\n" +
+    "    if it differs,\n" +
+    "    then exit\n" +
     "  --install {claude,claude-desktop,copilot,cursor}\n" +
     "    wire this\n" +
     "    server into a\n" +
@@ -234,6 +251,7 @@ const HELP = new Map([
     "                     [--index-budget BYTES]\n" +
     "                     [--mcp-report]\n" +
     "                     [--statusline]\n" +
+    "                     [--update]\n" +
     "                     [--install {claude,claude-desktop,copilot,cursor}]\n" +
     "                     [--force]\n" +
     "                     [--store STORE | --start START]\n" +
@@ -264,6 +282,10 @@ const HELP = new Map([
     "                line for a host\n" +
     "                status bar, then\n" +
     "                exit\n" +
+    "  --update      check the package\n" +
+    "                index and update\n" +
+    "                this install if it\n" +
+    "                differs, then exit\n" +
     "  --install {claude,claude-desktop,copilot,cursor}\n" +
     "                wire this server\n" +
     "                into a host's MCP\n" +
@@ -287,6 +309,7 @@ const HELP = new Map([
     "usage: bantamkit-mcp [-h] [--assets-root] [--k K]\n" +
     "                     [--index-budget BYTES]\n" +
     "                     [--mcp-report] [--statusline]\n" +
+    "                     [--update]\n" +
     "                     [--install {claude,claude-desktop,copilot,cursor}]\n" +
     "                     [--force]\n" +
     "                     [--store STORE | --start START]\n" +
@@ -310,6 +333,9 @@ const HELP = new Map([
     "                        exit\n" +
     "  --statusline          print one status line for a\n" +
     "                        host status bar, then exit\n" +
+    "  --update              check the package index and\n" +
+    "                        update this install if it\n" +
+    "                        differs, then exit\n" +
     "  --install {claude,claude-desktop,copilot,cursor}\n" +
     "                        wire this server into a\n" +
     "                        host's MCP configuration,\n" +

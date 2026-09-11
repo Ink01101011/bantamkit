@@ -58,6 +58,8 @@
  * and `docs/install.md` carry the same correction in their own words.
  */
 import { readFileSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { assetsRoot } from './assets.js';
 import { BantamError } from './errors.js';
@@ -80,6 +82,7 @@ import {
 } from './pyargparse.js';
 import { pyRepr } from './memory/pyfs.js';
 import { HOSTS, type Host, install as installHost, InstallError, thisCommand } from './hostinstall.js';
+import { runUpdate } from './selfupdate.js';
 import { statusLine } from './statusline.js';
 
 /** `SystemExit("...")`: the message on stderr, exit 1. */
@@ -171,6 +174,25 @@ const PARSER: ParserSpec = {
       help: 'print one status line for a host status bar, then exit',
       defaultValue: false,
     },
+    // THE ONE FLAG ON THIS PARSER THAT TOUCHES THE NETWORK, and the placement is what keeps
+    // that from spreading. `--assets-root` sits first because it needs NOTHING; this one needs
+    // the most of any flag here, so it does NOT go there — and the second reason is the same
+    // measured one the comments above give: the FIRST line of the 80-column usage is pinned by
+    // `test/cli-surface.test.mjs` and by the `cli` conformance suite, and a flag registered
+    // before `--mcp-report` would move it and turn a differential suite into a re-baselining
+    // one. Registered HERE — after `--statusline`, before `--install`, the reference's own
+    // position at `a590df8` — it grows the SECOND usage line only.
+    //
+    // DEFAULTS OFF, like every other flag on this parser, which is the whole of AS-7(3): the
+    // network is reached when a person asks for it by name and on no other path. There is no
+    // startup check, nothing on `bantamkit_status`, and no background poller.
+    {
+      optionStrings: ['--update'],
+      dest: 'update',
+      kind: 'storeTrue',
+      help: 'check the package index and update this install if it differs, then exit',
+      defaultValue: false,
+    },
     // THE SAME PLACE AND THE SAME REASON AS THE TWO ABOVE, and the position is copied from
     // the reference rather than chosen: argparse prints optionals in registration order, so
     // this line decides where `[--install {...}]` sits in the generated usage. After
@@ -223,9 +245,10 @@ const PARSER: ParserSpec = {
     },
   ],
   // `--store`/`--start` moved from 6/7 to 8/9 when `--install` and `--force` were added
-  // ahead of them. These are POSITIONS, not names, so adding an action above the group and
-  // leaving this line alone would silently make two unrelated flags mutually exclusive.
-  groups: [[8, 9]],
+  // ahead of them, and from 8/9 to 9/10 when `--update` was. These are POSITIONS, not names,
+  // so adding an action above the group and leaving this line alone would silently make two
+  // unrelated flags mutually exclusive.
+  groups: [[9, 10]],
 };
 
 /*
@@ -247,6 +270,7 @@ export interface Options {
   assetsRoot: boolean;
   mcpReport: boolean;
   statusline: boolean;
+  update: boolean;
   install: Host | null;
   force: boolean;
 }
@@ -262,6 +286,7 @@ export function parseArgs(argv: readonly string[]): Options {
     assetsRoot: values['assets_root'] as boolean,
     mcpReport: values['mcp_report'] as boolean,
     statusline: values['statusline'] as boolean,
+    update: values['update'] as boolean,
     install: values['install'] as Host | null,
     force: values['force'] as boolean,
   };
@@ -378,8 +403,27 @@ async function main(argv: readonly string[]): Promise<number> {
     process.stdout.write(`${statusLine(process.env, options.store, options.start)}\n`);
     return 0;
   }
+  if (options.update) {
+    // Same discipline and the same place as the three above, and the same place the reference
+    // dispatches it: after `--statusline`, before `--install`. It is the one flag here that
+    // reaches the network, and it still returns before `buildMemory` — somebody who typed
+    // `--update` has not asked for a `.bantamkit/memory` directory in whatever cwd they were
+    // standing in, and has certainly not asked for a stdio server on a process that is about
+    // to be replaced on disk.
+    //
+    // `import.meta.url`'s DIRECTORY is the running package directory — `dist/` in an install,
+    // the built tree in a checkout — which is the counterpart of the reference's
+    // `_running_package_file().resolve().parent`. It stands in for `source` on the two shapes
+    // that record no origin, and it is not a guess: it is where the code being executed lives.
+    return await runUpdate(
+      (text) => process.stdout.write(text),
+      (text) => process.stderr.write(text),
+      version(),
+      dirname(fileURLToPath(import.meta.url)),
+    );
+  }
   // ORDER IS OBSERVABLE, and it is the reference's order. `main` in `mcpserver.py` checks
-  // assets_root, then mcp_report, then statusline, then install, then force — so
+  // assets_root, then mcp_report, then statusline, then update, then install, then force — so
   // `--mcp-report --install cursor` prints a report and writes NOTHING. Dispatching install
   // earlier here made the same argv write a file on one runtime and not the other: one
   // command line, two different states on the user's disk. Reviewed and moved.
