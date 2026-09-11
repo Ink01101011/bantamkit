@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from importlib import metadata
 from pathlib import Path
-from typing import Annotated, Any, TextIO
+from typing import Annotated, Any, NoReturn, TextIO
 from urllib.parse import unquote
 
 import bantamkit
@@ -25,6 +25,7 @@ from bantamkit import (
     docread,
     hostinstall,
     repomap,
+    selfupdate,
     shiftwork,
     skillaudit,
     tokenledger,
@@ -1921,6 +1922,23 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print one status line for a host status bar, then exit",
     )
+    # THE ONE FLAG ON THIS PARSER THAT TOUCHES THE NETWORK, and the placement is what keeps
+    # that from spreading. `--assets-root` sits beside `-h` because it needs nothing; this
+    # one needs the most of any flag here, so it does NOT go there — and the second reason is
+    # the same measured one the comment above gives: the first line of the 80-column usage is
+    # pinned in `test_assets_root_appears_in_the_generated_help_in_the_documented_position`,
+    # in `test_mcpreport.py`, and in the `cli` conformance suite, and a flag added before
+    # `--mcp-report` would move it and turn a differential suite into a re-baselining one.
+    # Registered here it grows the SECOND usage line only.
+    #
+    # DEFAULTS OFF, like every other flag on this parser, which is the whole of AS-7(3): the
+    # network is reached when a person asks for it by name and on no other path. There is no
+    # startup check, nothing on `bantamkit_status`, and no background poller.
+    parser.add_argument(
+        "--update",
+        action="store_true",
+        help="check the package index and update this install if it differs, then exit",
+    )
     # THE SAME PLACE AND THE SAME REASON AS THE TWO ABOVE. It prints and returns before a
     # transport exists, so it belongs with the flags that need no server; and it is placed
     # after `--statusline` rather than beside `-h` so that the FIRST line of the 80-column
@@ -2102,6 +2120,61 @@ def _run_install(args: argparse.Namespace) -> None:
     sys.stdout.buffer.flush()
 
 
+def _run_update() -> None:
+    """`--update`: ask the package index, act on the answer, print what happened, return.
+
+    THE SENTENCES ARE NOT HERE. Every string this can print is a named constant in
+    `selfupdate`, because `runtime-ts` copies them byte for byte and a second spelling in a
+    second module is exactly the drift the two-runtime rule exists to stop. This function
+    owns three things and nothing else: where the shape comes from, which stream each
+    outcome is written to, and the exit code.
+
+    STDOUT + EXIT 0 IS ONLY FOR AN ANSWER THAT IS ALREADY TRUE — up to date, the index
+    behind, or an update that actually ran. Everything else is `error: <sentence>` on
+    stderr and exit 1, including the install shapes this flag will not touch: an operator
+    who typed `--update` asked for an update, and a command that exits 0 having changed
+    nothing is the J46-4 defect by name. Exit 1 rather than 2 because argparse already owns
+    2 for a usage error, and `--update` on a parser that declares it is not one.
+
+    THE SHAPE IS `current_install()`'s ANSWER AND NOT A SECOND DETECTOR. AS-7(a) shipped
+    that at `da97b52` as a module-level function taking no arguments and touching no server
+    state, explicitly so this flag could ask it before a store or a transport exists. A
+    second copy of a derived answer is the defect the `cli` suite exists to catch.
+
+    `_Undetermined` — a `pip install git+https://…` origin, which is neither an index nor a
+    path on this machine — is a refusal and not a fallback. Its own message already names
+    the route ("reinstalling from that same URL"), so it is quoted rather than paraphrased.
+
+    Written through `sys.stdout.buffer`/`sys.stderr.buffer` for the reason
+    `_print_assets_root` gives: on Windows `print` emits CRLF where Node's
+    `process.stdout.write` emits LF, and a byte-comparing conformance runner would read
+    that as a divergence belonging to the writer rather than to the product.
+    """
+    try:
+        install = current_install()
+    except _Undetermined as exc:
+        _refuse_update(selfupdate.SHAPE_UNKNOWN.format(reason=exc))
+    # `source` is `None` for the two shapes that HAVE no recorded origin rather than for one
+    # whose path could not be read — `registry`, where the route is this flag itself, and
+    # `checkout`, whose tree IS the thing to update and which J46-11 deliberately left
+    # without a `source` because finding a repo root without git would be a guess. The
+    # running package directory is not a guess: it is where the code being executed lives.
+    source = install.source or str(_running_package_file().resolve().parent)
+    try:
+        report = selfupdate.update(_version(), selfupdate.Origin(install.shape, source))
+    except selfupdate.UpdateRefused as exc:
+        _refuse_update(str(exc))
+    sys.stdout.buffer.write(f"{report}\n".encode())
+    sys.stdout.buffer.flush()
+
+
+def _refuse_update(sentence: str) -> NoReturn:
+    """One refusal writer, so every `--update` arm exits the same way on the same stream."""
+    sys.stderr.buffer.write(f"error: {sentence}\n".encode())
+    sys.stderr.buffer.flush()
+    raise SystemExit(1)
+
+
 def main() -> None:
     if MCPServer is None:
         raise SystemExit(_INSTALL_HINT)
@@ -2116,6 +2189,9 @@ def main() -> None:
         return
     if args.statusline:
         _print_status_line(args)
+        return
+    if args.update:
+        _run_update()
         return
     if args.install:
         _run_install(args)
