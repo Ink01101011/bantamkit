@@ -184,14 +184,38 @@ class Memory:
         index_budget: int = DEFAULT_INDEX_BUDGET,
         binding: StoreBinding | None = None,
     ):
-        self.store = MemoryStore(store, index_budget=index_budget, k=k)
+        # `create=False`, AND IT IS THE WHOLE OF THE cwd-`/` FIX. This was the last eager
+        # layer -- grants and the profile store have always been lazy -- so a cwd that no
+        # directory can be created under was a STARTUP CRASH: every GUI MCP host launches
+        # its child with cwd `/`, measured live on this machine (`lsof -p <pid> -a -d cwd`
+        # on Claude Desktop and all four of its `bantamkit-mcp` children returns `/`), and
+        # the client saw only CONNECTION_CLOSED. Refusing at startup with a sentence was the
+        # other candidate and it is REFUTED by measurement: it leaves those same four
+        # processes dead, which is strictly worse than today. Built lazily, the server
+        # starts from `/`, binds `['project', 'profile']`, and answers out of the profile
+        # layer. The sentence still exists -- it is what `MemoryStore.save`/`compact` say
+        # when a write actually needs the directory (`store._ensure_dirs`).
+        #
+        # It is legal because every READ is already defined over an absent directory:
+        # `recall() -> []`, `archived() -> []`, `index_text() -> ''`. `_facts`' docstring
+        # says so outright, and `create=False` is one of the three callers it names.
+        #
+        # THE PRICE, stated rather than discovered: a bare server start in a perfectly good
+        # cwd no longer scatters `.bantamkit/memory/{facts,archive}` there before anything
+        # is saved. That moves TOWARD a stance this file already holds -- see the binding
+        # comment below, and `mcpserver.main`'s bare-TTY guard.
+        self.store = MemoryStore(store, index_budget=index_budget, k=k, create=False)
         self.k = k
         self._layers: list[tuple[str, MemoryStore, bool]] = [("project", self.store, True)]
         self._show_layers = False
-        # How this store came to be the store, captured once. It cannot be re-derived
-        # later: `MemoryStore(create=True)` above has already made the directory, so a
-        # store that was only DESIGNATED a moment ago is indistinguishable on disk from
-        # one that was found empty. `None` means the caller named the path outright --
+        # How this store came to be the store, captured once. It is still captured here and
+        # not re-derived later, but the reason has changed with the line above and the old
+        # one is recorded rather than deleted: it WAS that `MemoryStore(create=True)` had
+        # already made the directory, so a store that was only DESIGNATED a moment ago was
+        # indistinguishable on disk from one that was found empty. That complaint is now
+        # discharged -- nothing is created -- and the binding is kept because it also
+        # carries WHY this path (`origin`, `searched_from`), which no amount of looking at
+        # the disk recovers. `None` means the caller named the path outright --
         # `Memory(store=...)` — and no resolution happened to report.
         self._binding = binding
 
@@ -207,8 +231,15 @@ class Memory:
         `resolve_project_store` rather than `discover_project_store`: the path both
         return is the same path (`test_resolve_path_never_disagrees_with_discover`),
         but only the binding carries WHY it is that path and whether it holds
-        anything — and `recall` cannot recover either fact afterwards, because
-        constructing the store creates the directory.
+        anything — and `recall` cannot recover either fact afterwards.
+
+        AMENDMENT 2026-09-12 (job48, J48-1), correcting the reason the clause above used
+        to give and not the clause itself. WAS: "because constructing the store creates
+        the directory." NOW that is false -- the project layer is built `create=False`
+        (see `__init__`) and constructing it creates nothing. The binding is still the
+        only carrier of WHY, because `origin` and `searched_from` were never on the disk
+        to begin with; what the disk has stopped being able to answer is merely "was this
+        empty or brand new", which it now answers correctly for the first time.
         """
         binding = resolve_project_store(start)
         project_root = binding.path
@@ -553,9 +584,20 @@ class Memory:
         if binding is None:
             where = f"The project store {root} is empty."
         elif binding.state == "designated":
+            # AMENDED 2026-09-12 (job48, J48-1) because the sentence became FALSE, not
+            # because it read badly. WAS: "No memory store existed at or above <from>, so
+            # the empty <root> was created for this session." Under a lazily-built project
+            # layer nothing is created -- the path is designated and stays absent until a
+            # save needs it -- so the old sentence told an operator to go look for a
+            # directory that is not there. The new one borrows the pin's own closing
+            # clause, "nothing was created", because it is the same claim about the same
+            # thing, and it reuses the binding's existing `designated` vocabulary rather
+            # than minting a word for it. The remedy that follows -- "otherwise save a
+            # memory to start this one" -- is now literally true: the save is what brings
+            # the directory into existence.
             where = (
-                f"No memory store existed at or above {binding.searched_from}, so the "
-                f"empty {root} was created for this session."
+                f"No memory store existed at or above {binding.searched_from}, so {root} "
+                f"was designated for this session; nothing was created there."
             )
         elif binding.origin == "pin":
             where = f"The project store {root} is empty; {MEMORY_DIR_ENV} pinned it."

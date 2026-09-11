@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import platform
+import stat as stat_module
 import sys
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
@@ -2042,8 +2043,78 @@ def _build_memory(args: argparse.Namespace) -> Memory:
     if args.store is not None:
         if not args.store:
             raise SystemExit("--store requires a non-empty path")
+        _check_store_flag(args.store)
         return Memory(store=args.store, k=args.k, index_budget=args.index_budget)
     return Memory.layered(start=args.start, k=args.k, index_budget=args.index_budget)
+
+
+def _check_store_flag(raw: str) -> None:
+    """`--store` may name a store that is missing, never one that is not a store.
+
+    THIS CHECK IS RESTORED, NOT INVENTED, and the distinction is the point. Until the
+    project layer was built lazily there WAS a `--store` validation, and it was entirely
+    accidental: the constructor ran `mkdir(parents=True)`, so a `--store` pointing at a
+    regular file or at a path under a directory that does not exist took the process down
+    with an `OSError` traceback out of `pathlib`. `test_statusline.py::
+    test_the_flag_returns_before_anything_a_server_would_touch` depends on it -- it arms
+    `--store <a regular file>` as a trap and shows `--statusline` walking past it -- and a
+    lazy layer disarms the trap by making that same argv exit 0. The honest way to keep
+    that test true is to mean the refusal on purpose.
+
+    IT IS `layers._pinned_store`'s CHECK MINUS ONE ARM, and the missing arm is deliberate
+    and measured. The pin refuses a path that is not there ("nothing was created"); this
+    flag does NOT, and must not, for two reasons that are both already pinned elsewhere in
+    this repository:
+
+    - The sibling CLI's identical flag is contracted to CREATE one. `tools/conformance/
+      suites/memorycli.mjs` carries `status-creates-a-missing-store`, `--store {BED}/nowhere`
+      over an empty bed, whose whole job is to say the two runtimes create the same two
+      directories there. Refusing a missing `--store` here would put two flags of the same
+      name, in two programs of the same product, in direct contradiction.
+    - "Missing" is no longer a broken state anywhere in this program. The walk designates a
+      project store without creating it, and the first save brings it into existence or
+      refuses by name (`store._ensure_dirs`). A `--store` at a path that is not there is
+      that same designated state, reached by being told instead of by searching. MEASURED:
+      requiring existence here reddened 14 tests that have nothing to do with this defect
+      -- `test_tool_manifest.py` ×7, `test_mcpserver.py` ×6, `test_mcp_endpoint.py` -- every
+      one of them a fixture naming a store under `tmp_path` it never made, because that is
+      what this flag has always meant.
+
+    What is left is the arm the accident actually covered and the only one it covered: a
+    `--store` that names something which EXISTS and is NOT A DIRECTORY. That is not a store
+    and never becomes one -- `mkdir` under it is ENOTDIR on both runtimes and on every
+    platform, the one row of the errno table where they already agree -- so it is refused
+    here, by name, before a transport exists.
+
+    `FileNotFoundError` and not an errno comparison: the absent case is selected by the
+    exception CPython raises for it, which `runtime-ts`' `pyfs` shim raises under the same
+    name. Every other `stat` failure -- a permission wall on the parent, a symlink loop --
+    is a real fault about a path the operator named, and it keeps the pin's sentence.
+
+    `os.stat` rather than `Path.is_dir()`, and that too is `_pinned_store`'s reasoning:
+    `is_dir()` swallows `PermissionError` and answers False, which would report an
+    operator's real store as a typo. A single named path gets the accurate reason.
+
+    `SystemExit` and not `MemoryValidationError`, so that both halves of this flag's
+    refusal family read the same way on the terminal: `--store requires a non-empty path`
+    is already bare on stderr at exit 1, and the port spells both as `Refusal`.
+    """
+    # NOT `expanduser()`, unlike the pin. `Memory(store=...)` builds `Path(root)` from this
+    # string verbatim, so expanding here would check one path and serve another: `--store
+    # ~/x` left unexpanded by the shell would pass a check against the home directory and
+    # then build a store in a directory literally named `~`. The check must stat the path
+    # the store is going to be.
+    store = Path(raw)
+    try:
+        info = os.stat(store)
+    except FileNotFoundError:
+        return  # designated, not broken: the first save makes it or refuses by name
+    except OSError as e:
+        raise SystemExit(
+            f"--store is unreachable: {store}: {e.strerror}; nothing was created"
+        ) from e
+    if not stat_module.S_ISDIR(info.st_mode):
+        raise SystemExit(f"--store is not a directory: {store}")
 
 
 def _print_mcp_report(args: argparse.Namespace) -> None:
@@ -2184,9 +2255,43 @@ def _refuse_update(sentence: str) -> NoReturn:
 
 
 def main() -> None:
+    """Dispatch one invocation, and hand a refusal to the operator as a SENTENCE.
+
+    THIS ARM IS A PARITY DEFECT BEING CLOSED, not a nicety. `runtime-ts/src/cli.ts` has
+    caught `BantamError` at its top level and written `bantamkit-mcp: <message>` at exit 1
+    since it was written, and `bantamkit/memory/__main__.py` was handed the same defect and
+    fixed the same way for the operator memory CLI. This CLI never got it, so the identical
+    refusal -- `BANTAMKIT_MEMORY_DIR=/nope/pinned`, one sentence that already names the
+    directory and says nothing was created -- was one clean line on Node and a two-stage
+    CPython traceback on Python, carrying this repository's absolute paths and line numbers
+    in place of the store the operator asked about. Nothing covered it, so the suite was
+    green over it.
+
+    `BantamError` AND NOTHING WIDER, in `__main__.py`'s own words: a bug in bantamkit is
+    still a traceback, because that one IS a report for a maintainer. What is caught is the
+    class of failures that are ABOUT the operator's store, and every one of them already
+    carries a sentence that names the directory and says what the consequence would have
+    been -- including `_ensure_dirs`' new one, which is the whole reason a cwd of `/` is now
+    a refused write rather than a dead process.
+
+    `SystemExit` is deliberately not caught: argparse's usage errors are exit 2, and this
+    file's own flag refusals are already their own sentence on stderr.
+
+    Written through `sys.stderr.buffer`, like every other refusal in this file, so the line
+    ends LF on Windows too and cannot drift from the port's `process.stderr.write`.
+    """
     if MCPServer is None:
         raise SystemExit(_INSTALL_HINT)
     args = _parse_args()
+    try:
+        _dispatch(args)
+    except BantamError as e:
+        sys.stderr.buffer.write(f"bantamkit-mcp: {e}\n".encode())
+        sys.stderr.buffer.flush()
+        raise SystemExit(1) from e
+
+
+def _dispatch(args: argparse.Namespace) -> None:
     # Before `_build_memory`, which touches the filesystem, and before the server exists at
     # all -- the Node arm returns from `main` here too, ahead of `new RawStdioTransport()`.
     if args.assets_root:
@@ -2214,6 +2319,14 @@ def main() -> None:
     # store. Somebody who typed a command to see what it does has not asked for a
     # `.bantamkit/memory` directory in whatever cwd they were standing in, and the flags
     # above return before a transport for the same class of reason.
+    #
+    # AMENDMENT 2026-09-12 (job48, J48-1). "which is what creates a store" is no longer
+    # true of the sentence's own words: the project layer is built `create=False`, so
+    # `_build_memory` designates a path and creates nothing until a save. The guard stays
+    # exactly where it is, for what remains of the reason -- a person typing a command to
+    # see what it does has not asked for a walk up their filesystem either -- and it stays
+    # because the ORDER is the contract the port shares, not because it is the last thing
+    # standing between a bare invocation and a mkdir.
     #
     # STDOUT AND EXIT 0, i.e. byte-for-byte what `-h` does on this platform, because the
     # request was "ให้แสดงเหมือน --help" -- show it the way `--help` shows it. `print_help`
