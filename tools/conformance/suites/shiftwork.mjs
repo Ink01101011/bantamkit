@@ -199,7 +199,7 @@ const OUT = (unit, status, over = {}) => ({
   ...over,
 });
 
-function sessions(packDir) {
+function sessions(packDir, anyPackDir) {
   const cases = [];
   const add = (name, checkpoint, calls, extra = {}) => cases.push({ name, file: 'checkpoint.json', checkpoint, calls, ...extra });
 
@@ -466,6 +466,9 @@ function sessions(packDir) {
   for (const [name, doc, calls] of packSessions()) {
     cases.push({ name, file: 'checkpoint.json', checkpoint: doc, calls, assets: packDir });
   }
+  for (const [name, doc, calls] of anyPackSessions()) {
+    cases.push({ name, file: 'checkpoint.json', checkpoint: doc, calls, assets: anyPackDir });
+  }
 
   return cases;
 }
@@ -569,6 +572,63 @@ function packSessions() {
   ];
 }
 
+/**
+ * The eight values a `job.roles.<role>` can hold once the schema stops saying `array`, and
+ * why all eight are here rather than the three the unit brief names as a minimum (J47-6).
+ *
+ * SEVEN ARE UNREADABLE AND ONE IS NOT, and the whole point of the set is the boundary between
+ * them. Measured before the fix, the seven failed in THREE different ways and in ways the two
+ * runtimes did not share: the reference iterated a string's CHARACTERS and a dict's KEYS and
+ * refused while quoting the checkpoint back at its author as `c, l, a, u, d, e, …`, raised an
+ * uncaught `TypeError` on a number, a null, a bool and `[5]`, and the port answered
+ * `unconstrained` for the first five — completing the clock-out, status set, cursor advanced,
+ * accounting line written — while rendering `5` and `ok, None` into the sentence for the last
+ * two. So a set that stops at "an int, a string and a null" omits the two LIST shapes, which
+ * are the ones where a bare kind test passes and the property (a list OF STRINGS) is what
+ * actually decides, and they are the half neither the roadmap register nor the prep probe
+ * predicted.
+ *
+ * THE EIGHTH IS `[]` AND IT MUST NOT MOVE. An empty list IS a list of model identifiers, so
+ * it keeps J46-10's `… does not allow: ` with its trailing empty `names` — not J47-4's
+ * sentence. That line is the one a later edit would slide across (`if (!allowed.v.length)`
+ * folded into the same arm reads as a tidy-up and is a regression of a ruling), and it is
+ * driven here under `additionalProperties: true` as well as under the no-`minItems` pack so
+ * that what separates the two sentences is demonstrably the CODE and not the schema.
+ *
+ * Each shape is clocked out TWICE — once offering `haiku`, once offering no model at all —
+ * because "one sentence for both accounting shapes" is a deliberate choice on both sides:
+ * which model was reported cannot matter when the declaration that would judge it is
+ * unreadable. Then `clock_in`, so the cursor can be shown never to have moved.
+ */
+const UNREADABLE_ROLES = [
+  ['str', 'claude-opus-5'],
+  ['dict', { a: 'claude-opus-5' }],
+  ['int', 5],
+  ['null', null],
+  ['bool', true],
+  ['list-of-int', [5]],
+  ['list-with-a-non-string', ['ok', null]],
+];
+
+function anyPackSessions() {
+  const drive = (accounting) => OUT('N1', 'done', { accounting });
+  const calls = [drive(WRONG), drive(b64('{"tokens": 1}')), IN()];
+  const cases = UNREADABLE_ROLES.map(([label, value]) => [
+    `roles/any/unreadable/${label}`,
+    withRoles({ implementer: value }),
+    calls,
+  ]);
+  // The boundary, on the same instrument as the seven above it.
+  cases.push(['roles/any/empty-list-is-still-a-list', withRoles({ implementer: [] }), calls]);
+  // And the companion that keeps this pack honest, the same way `roles/pack/absent-role-…`
+  // keeps the other one honest: the pack did not simply break every clock-out.
+  cases.push(['roles/any/absent-role-still-unconstrained', withRoles({ reviewer: ['claude-opus-5'] }), [
+    drive(WRONG),
+    IN(),
+  ]]);
+  return cases;
+}
+
 // ================================================================================== node
 
 /**
@@ -646,6 +706,30 @@ function writeSchemaPackWithoutMinItems(scratch) {
   const schema = JSON.parse(readFileSync(join(repoRoot, 'assets', 'schemas', 'shiftwork-checkpoint.json'), 'utf8'));
   delete schema.properties.job.properties.roles.additionalProperties.minItems;
   const pack = join(scratch, 'roles-pack');
+  mkdirSync(join(pack, 'schemas'), { recursive: true });
+  writeFileSync(join(pack, 'schemas', 'shiftwork-checkpoint.json'), JSON.stringify(schema), 'utf8');
+  return pack;
+}
+
+/**
+ * A pack whose roles VALUE has lost its shape entirely — `additionalProperties: true` — and
+ * nothing else. The keys are still the role enum; only what a key may hold is unconstrained.
+ *
+ * J47-4's ruling is J46-10's one step further out: a role the map NAMES is constrained by
+ * what it names, and a value that is not a list of model identifiers names nothing, so it
+ * allows nothing. Reaching that branch needs strictly more than the pack above — `[]` is the
+ * only value `type: "array"` lets through while `minItems` is gone, and the seven shapes this
+ * arm exists for are all refused by `type` before any code sees them. Hence a SECOND pack
+ * rather than a looser first one: the J46-10 cases keep the exact instrument they were ruled
+ * under, and the empty list is driven through BOTH so the boundary between the two sentences
+ * is pinned on a schema that could not be the thing separating them.
+ *
+ * Written outside the session directories, which the harness deletes between the two runs.
+ */
+function writeSchemaPackWithAnyRolesValue(scratch) {
+  const schema = JSON.parse(readFileSync(join(repoRoot, 'assets', 'schemas', 'shiftwork-checkpoint.json'), 'utf8'));
+  schema.properties.job.properties.roles.additionalProperties = true;
+  const pack = join(scratch, 'roles-any-pack');
   mkdirSync(join(pack, 'schemas'), { recursive: true });
   writeFileSync(join(pack, 'schemas', 'shiftwork-checkpoint.json'), JSON.stringify(schema), 'utf8');
   return pack;
@@ -730,7 +814,10 @@ export async function run(ctx) {
   }
 
   // -------------------------------------------------------------------------- sessions
-  const specs = sessions(writeSchemaPackWithoutMinItems(ctx.scratch));
+  const specs = sessions(
+    writeSchemaPackWithoutMinItems(ctx.scratch),
+    writeSchemaPackWithAnyRolesValue(ctx.scratch),
+  );
   const dirs = specs.map((_, i) => join(ctx.scratch, `c${i}`));
   const pythonPayload = {
     op: 'session',
@@ -983,6 +1070,94 @@ export async function run(ctx) {
         `${cases.filter((c) => c.name.startsWith('roles/')).length} per-side cases — ` +
         'the differential alone is blind to a sentence changed on both sides, to a check ' +
         'deleted from both, and to a refusal that started writing on both.',
+    );
+    const ruledCount = cases.filter((c) => c.name.startsWith('roles/')).length;
+
+    // ------------------- J47-4 / J47-5: A DECLARATION THIS CODE CANNOT READ IS NOT A LICENCE
+    //
+    // The count above is taken BEFORE this block on purpose: J46-10's reading is pinned by
+    // exactly the 38 cases it was ruled with, and the block below must be addable without
+    // moving that number. Everything from here down is J47-6.
+    //
+    // MEASURED, NOT ASSUMED, THAT THIS ARM HAD NO COVERAGE: with the reference's guard
+    // deleted outright, `--suite shiftwork` printed the same line it prints with the guard
+    // in place — 806 cases, 0 failures. Neither J47-4 nor J47-5 added a conformance case, so
+    // the parity they claim is, until this block exists, a claim nobody can rerun.
+    //
+    // AND A DIFFERENTIAL ALONE STILL WOULD NOT BE ENOUGH, for the reason J47-3 demonstrated
+    // live one unit earlier in this same job: revert BOTH guards and every `session/*` case
+    // goes green again, because the two sides agree perfectly about being wrong together.
+    // Both guards were written from the same sentence and copied across — precisely the
+    // shape a symmetric regression takes. So each shape below is pinned as a LITERAL against
+    // EACH RUNTIME (`bit`, `says` and `untouched` all compare to a constant, never to the
+    // other side) and the differential session cases sit underneath as a second net.
+    const UNREADABLE =
+      'unit N1 in role implementer cannot clock out: job.roles.implementer ' +
+      'is not a list of model identifiers, so it allows no model';
+
+    // ---- 10. the seven unreadable shapes: one sentence, both accounting shapes, nothing
+    // written. `str` and `dict` are the two that USED to refuse — with the checkpoint's own
+    // value minced into the sentence — so their `says` rows are what stop that regressing;
+    // `int`, `null` and `bool` are the three that used to raise `TypeError` out of the
+    // reference and complete the clock-out on the port; and the two LIST shapes are the ones
+    // a bare kind test lets through, which is why the property is list-OF-STRINGS.
+    for (const [label] of UNREADABLE_ROLES) {
+      const name = `roles/any/unreadable/${label}`;
+      for (const step of [0, 1]) {
+        const offered = step === 0 ? 'model-haiku' : 'no-model';
+        bit(`unreadable/${label}/${offered}`, name, step, 'error');
+        says(`unreadable/${label}/${offered}`, name, step, UNREADABLE);
+        untouched(`unreadable/${label}/${offered}`, name, step);
+      }
+    }
+    // ---- 11. the refusal is total here too: the cursor never moved, so `clock_in` still
+    // offers N1 after two refused clock-outs. Driven on the shape that used to COMPLETE the
+    // clock-out on the port — status set, cursor advanced, accounting line written.
+    cases.push({
+      name: 'roles/any/cursor-never-moved-after-an-unreadable-declaration',
+      kind: 'json',
+      expected: both('N1'),
+      actual: {
+        python: at('roles/any/unreadable/int', 2).python.unit?.id ?? null,
+        node: at('roles/any/unreadable/int', 2).node.unit?.id ?? null,
+      },
+    });
+
+    // ---- 12. THE BOUNDARY, and it is the line this block exists to hold. `[]` is a list of
+    // model identifiers, so it stays on J46-10's sentence — the SAME document, the SAME
+    // relaxed pack as the seven above, and a different answer. Fold the empty case into the
+    // unreadable arm (`if (!allowed.length)` reads like a tidy-up) and these two rows are
+    // what go red; the schema cannot be what tells them apart, because here there is no
+    // schema constraint left on the value at all.
+    bit('any/empty-list-model-haiku', 'roles/any/empty-list-is-still-a-list', 0, 'error');
+    says(
+      'any/empty-list-model-haiku',
+      'roles/any/empty-list-is-still-a-list',
+      0,
+      'unit N1 in role implementer reported model haiku, which job.roles.implementer does not allow: ',
+    );
+    untouched('any/empty-list-model-haiku', 'roles/any/empty-list-is-still-a-list', 0);
+    bit('any/empty-list-no-model', 'roles/any/empty-list-is-still-a-list', 1, 'error');
+    says(
+      'any/empty-list-no-model',
+      'roles/any/empty-list-is-still-a-list',
+      1,
+      'unit N1 in role implementer reported no model, but job.roles.implementer allows only: ',
+    );
+    untouched('any/empty-list-no-model', 'roles/any/empty-list-is-still-a-list', 1);
+
+    // ---- 13. the companion that keeps the instrument honest. A pack that refused every
+    // document, or a `modelRefusal` that refused everything, would satisfy all of §10-§12
+    // and nothing above would notice. An unnamed role still clocks out under this pack.
+    bit('any/absent-role-still-ok', 'roles/any/absent-role-still-unconstrained', 0, 'ok');
+
+    notes.push(
+      'AS-2 / J47-4+J47-5: an unreadable `job.roles.<role>` is pinned by ' +
+        `${cases.filter((c) => c.name.startsWith('roles/')).length - ruledCount} further ` +
+        'per-side cases over 9 sessions on a second pack (`additionalProperties: true`) — ' +
+        'seven unreadable shapes x two accounting shapes x (bit, sentence, disk untouched), ' +
+        'plus `[]` held on J46-10\'s sentence against the same schema, so the line between ' +
+        'the two refusals is the code and not the asset.',
     );
   }
 

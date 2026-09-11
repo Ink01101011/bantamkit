@@ -832,6 +832,24 @@ walk and the profile layer can bind the same directory — is not fixed here, an
 `test_a_save_into_the_bound_store_answers_for_an_unrelated_project` is the
 tripwire that fails on the day it is.
 
+**AMENDED 2026-09-11 (job47).** The paragraph above stands as the record of why this
+remedy is worded as it is. One sentence in it is now answered and one is now measured
+wrong. **Answered:** `Memory.layered` no longer binds one directory as two layers. When
+the walk lands on `~/.bantamkit/memory` the profile layer is not pushed at all, so the
+layer labels there are `['project']` and `dream` reports `no-profile-layer` instead of
+merging the store into itself — `_same_directory` in Python and `sameDirectory` in Node,
+both resolving in the kernel's order, gated by `tools/conformance/suites/dream.mjs`. The
+remedy's own wording does NOT change, and that is not luck: it is keyed on
+`_is_profile_store` / `isProfileStore`, a different predicate, which asks whether this
+store is *also* the machine-wide profile store for every OTHER project — still true, and
+still what the advice is about. **Measured wrong:** the tripwire did not fire.
+`test_a_save_into_the_bound_store_answers_for_an_unrelated_project` PASSED on the day the
+defect was fixed (`2841 passed, 4 skipped, 2 deselected, 3 xfailed`, 0 failures). It
+cannot fail, because what it asserts is the LEAK — project A's save answering for an
+unrelated project B — and the leak is unchanged and correct: both projects walk to the
+one store, which now answers as the `project` layer rather than as a duplicated `profile`
+layer. It never counted layers. Registered as `(oo)` in `docs/roadmap-toolbox.md`.
+
 The diagnosis stops as soon as the project store holds a fact, so a store you
 have started using is never described as empty from a stale binding.
 

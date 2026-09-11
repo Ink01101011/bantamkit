@@ -25,6 +25,9 @@
  * lines carry a `[project] ` tag that the `--store` form never emits. A port validated
  * against only one of them ships a string the deployment never produces.
  */
+import { realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import { BantamError } from '../errors.js';
 import type { Fact } from './factfile.js';
 import { pyStrip } from './factfile.js';
@@ -77,6 +80,55 @@ export function normalizeName<T>(name: T): T {
  */
 export function profileStore(): string {
   return pyJoin(pyHome(), ...PROJECT_STORE);
+}
+
+/**
+ * Whether two paths name ONE directory, symlinks and `/var` vs `/private/var` included.
+ *
+ * Port of `_same_directory` (`runtime-py/src/bantamkit/memory/component.py`, J47-1,
+ * 0844ccb). Realpath, not string equality, and that distinction is measured rather than
+ * tidy: on macOS the walk up from a cwd under `/var` returns `/private/var/...` while
+ * `pyHome()` returns `/var/...`, so two spellings of one directory compare unequal as
+ * strings. The Stop hook's `samePath` (`tools/hooks/bantamkit-hook.mjs`) compares the same
+ * two roots the same way and for the same reason — it carried the identical defect, and
+ * J47-7 (`a109f99`) brought it to the same `realpathSync.native`, following this function
+ * rather than leading it. When the resolution itself
+ * fails, an absolute-path comparison is the honest fallback: it can only under-report a
+ * match, never invent one.
+ *
+ * AMENDED 2026-09-11 (J47-3B). The paragraph above stands as the reason this function
+ * resolves rather than compares strings, and the fallback's behaviour is unchanged. Two
+ * things it says are now known to be wrong about `fs.realpathSync` in particular, and
+ * measured: (1) it is NOT the twin of `os.path.realpath`. `realpathSync` hands its argument
+ * to `path.resolve` before it resolves anything, and `path.resolve` pops `..` LEXICALLY —
+ * before the symlink in front of it is followed. `os.path.realpath` and the kernel pop it
+ * AFTER. So a `HOME` spelled `<bed>/link/..`, where `link -> <bed>/deep/real`, is
+ * `<bed>/deep` to the reference and `<bed>` to Node: `realpathSync` then threw ENOENT on a
+ * directory that is there, the fallback under-reported, and `layered` bound one directory as
+ * two layers — the 2026-09-10 self-merge, still live on this side until now. (2) "it can
+ * only under-report a match, never invent one" was offered as reassurance, and
+ * under-reporting is the DANGEROUS direction here: a missed match IS the duplicate layer.
+ *
+ * The mechanism is now `realpathSync.native` — libuv's `uv_fs_realpath`, i.e. the platform's
+ * own `realpath(3)` / `GetFinalPathNameByHandle` — chosen because it pops `..` in the
+ * kernel's order and therefore agrees with `os.path.realpath` byte for byte on that bed,
+ * because it keeps the macOS `/var` vs `/private/var` resolution the original was written
+ * for, and because it adds no path arithmetic of this port's own. `statSync` identity
+ * (`dev` + `ino`) was the other candidate and was not taken: `ino` is not dependable on
+ * every Windows filesystem, and this runtime has to answer the same on Windows.
+ *
+ * The fallback stays `resolve(a) === resolve(b)`, and the under-report it can still produce
+ * is provably harmless where `layered` calls this: the native call throws only for a path
+ * that is not on disk, and `binding.path` always is — `layered` constructs that store, which
+ * creates it, before the guard runs — so a throwing side is a directory that does not exist,
+ * and that cannot be the same directory as one that does.
+ */
+function sameDirectory(a: string, b: string): boolean {
+  try {
+    return realpathSync.native(a) === realpathSync.native(b);
+  } catch {
+    return resolve(a) === resolve(b);
+  }
 }
 
 /** The name a layer answers under: the PROJECT directory, not the store directory. */
@@ -240,11 +292,21 @@ export class Memory {
         false,
       ]);
     }
-    mem.layers.push([
-      'profile',
-      new MemoryStore(profileStore(), { k, create: false, ...(today ? { today } : {}) }),
-      false,
-    ]);
+    // ONE DIRECTORY IS ONE LAYER. The walk above starts at the cwd and climbs, so a
+    // session with no `.bantamkit` anywhere above it resolves `~/.bantamkit/memory` —
+    // the profile store — as its PROJECT store. Binding that directory a second time
+    // gave `dream` the same store twice: every fact collided with itself, was merged
+    // into itself, and the "profile copy" that was archived was the same file. It
+    // archived 20 of 20 of the user's real facts on 2026-09-10. Such a session has one
+    // layer, and `dreamOutcome` already has a true thing to say about that.
+    const profileRoot = profileStore();
+    if (!sameDirectory(profileRoot, binding.path)) {
+      mem.layers.push([
+        'profile',
+        new MemoryStore(profileRoot, { k, create: false, ...(today ? { today } : {}) }),
+        false,
+      ]);
+    }
     return mem;
   }
 

@@ -23,6 +23,21 @@ survive byte-exactly travels as base64.
 
     {"op": "absolutise", "cases": [[body_b64, basis, name_b64, layer], ...]}
       -> {"out": [{"body": b64, "hits": [...], "unresolved": [...]}, ...]}
+
+    {"op": "outcome", "start": b64, "bed": path, "today": "YYYY-MM-DD", "dry_run": bool}
+      -> {"labels": [b64], "store_root": b64, "outcome": {...}} | {..., "error": {...}}
+
+`outcome` IS A DIFFERENT ENTRY POINT, NOT A SECOND SPELLING OF `run`. `run` above calls
+`dream(project, profile, dry_run)` with both stores handed to it, which is the algorithm and
+nothing else — it can never observe WHICH two stores a session binds, because the harness
+picked them. `outcome` calls `Memory.layered(start).dream_outcome(...)`: the registration
+production actually runs, where the project store is WALKED UP TO from a directory and the
+profile store is `HOME/.bantamkit/memory`. Everything between those two — the walk, the
+grants, whether the profile layer is pushed at all, and the `no-profile-layer` branch — is
+reachable only through this op. `HOME` arrives in the process environment, set by the
+harness, exactly as it does for `layers_ref.py`, and it is ALWAYS a throwaway directory the
+case built: this op consolidates and archives, so a run against the operator's own
+`~/.bantamkit/memory` would destroy their facts (it did, on 2026-09-10).
 """
 
 from __future__ import annotations
@@ -34,6 +49,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "runtime-py" / "src"))
 
+from bantamkit.memory.component import Memory
 from bantamkit.memory.dream import absolutise, dream
 from bantamkit.memory.store import MemoryStore
 
@@ -155,11 +171,68 @@ def run_dream(request: dict) -> dict:
     return {"results": results}
 
 
+def run_outcome(request: dict) -> dict:
+    """`Memory.layered(start).dream_outcome(dry_run)` — the registration, not the algorithm.
+
+    THE CLOCK IS FROZEN THE SAME WAY ON BOTH SIDES, and for the same reason `layers_ref.py`
+    gives: `Memory` takes no `today`, the stores it wraps do, so the freeze is applied to
+    every layer after construction. Without it a pass that stamps races midnight against the
+    other runtime.
+
+    THE BED ROOT IS SUBSTITUTED, NOT DROPPED. `no-profile-layer`'s reply NAMES the project
+    store, and that path differs between the `py/` and `node/` halves of one scenario because
+    the harness created that difference. A message naming the wrong store still differs after
+    the substitution; a message with the path removed would not.
+
+    Construction and the pass are caught SEPARATELY. A `Memory.layered` that raises has no
+    labels to report, and folding the two together would let a port that bound the wrong
+    layers and then failed look like a port that bound the right ones.
+    """
+    bed = request["bed"]
+    today = request["today"]
+
+    def scrub(value: str) -> str:
+        return value.replace(bed, "<BED>")
+
+    def err(e: BaseException) -> dict:
+        return {"error": {"type": type(e).__name__, "message": b64(scrub(str(e)))}}
+
+    try:
+        mem = Memory.layered(unb64(request["start"]))
+    except BaseException as e:  # noqa: BLE001 — a construction failure is a result too
+        return err(e)
+    for _, store, _ in mem._layers:
+        store._today = lambda: today
+    labels = [b64(label) for label, _, _ in mem._layers]
+    try:
+        outcome = mem.dream_outcome(request.get("dry_run", True))
+    except BaseException as e:  # noqa: BLE001 — a raise here is part of the comparison
+        return {"labels": labels, "store_root": b64(scrub(str(mem.store.root))), **err(e)}
+    return {
+        "labels": labels,
+        "store_root": b64(scrub(str(mem.store.root))),
+        "outcome": {
+            "reply": b64(scrub(outcome.reply)),
+            "status": outcome.status,
+            "dry_run": outcome.dry_run,
+            "merged": outcome.merged,
+            "consumed": outcome.consumed,
+            "absolutised": outcome.absolutised,
+            "superseded": outcome.superseded,
+            "index_before": outcome.index_before,
+            "index_after": outcome.index_after,
+            "budget": outcome.budget,
+        },
+    }
+
+
 def main() -> None:
     request = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     op = request["op"]
     if op == "run":
         out = run_dream(request)
+    elif op == "outcome":
+        out = run_outcome(request)
     elif op == "absolutise":
         rows = []
         for body, basis, name, layer in request["cases"]:

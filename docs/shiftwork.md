@@ -122,6 +122,25 @@ Four properties worth knowing before you declare one:
   check itself treats a role it is *given* with an empty list as allowing
   nothing. Keys are the `plan.units[].role` enum, so a key that is not a role is
   refused rather than quietly ignored.
+- **A declaration this code cannot READ is not a licence** — added 2026-09-11 by
+  job47; every bullet above stands as written. A role the map *names* whose value
+  is not a list of model identifiers allows no model, and the refusal is the same
+  structured one taken in the same place: `unit <id> in role <role> cannot clock
+  out: job.roles.<role> is not a list of model identifiers, so it allows no
+  model`. That is the THIRD AS-2 refusal string, not the second. It exists
+  because the value's shape is pinned by a SHARED asset, and a check whose safety
+  rests on another layer's keyword fails open the day that keyword moves:
+  measured under a pack with `additionalProperties: true` and `model: haiku`, a
+  string, a dict, a number, a null and a bool all returned `{"result": "ok"}` on
+  the Node runtime — status set, cursor advanced, accounting line written — while
+  the Python runtime raised an uncaught `TypeError` out of `clock_out` on three of
+  them and minced the checkpoint's own value into the sentence (`… does not
+  allow: c, l, a, u, d, e, -, o, p, u, s, -, 5`) on the other two. The sentence
+  names no type (a Python type name would not port) and renders no part of the
+  unreadable value, and it is ONE sentence for both accounting shapes: which
+  model was reported cannot matter when the declaration that would judge it is
+  unreadable. `[]` is untouched by this — an empty list IS a list of model
+  identifiers and keeps the bullet above.
 
 Note that `job` is a closed object, so an older bantamkit does not skip the key
 — it refuses the whole file. That is deliberate: opening `job` so an old reader
@@ -138,6 +157,7 @@ an older server.
 | `verify` fails on a `done` unit | Distrust the checkpoint from that unit forward; planner re-plans |
 | External `until_cmd` never met | Driver-level timeout, then escalation |
 | Reported model not on `job.roles[role]` (or absent) | Clock-out refuses before writing: no accounting line, no cursor advance, checkpoint byte-unchanged |
+| `job.roles[role]` present but not a list of model identifiers (job47) | Same refusal, same place, same three guarantees — an unreadable declaration allows no model |
 
 ## The driver
 

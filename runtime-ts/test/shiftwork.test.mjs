@@ -726,6 +726,153 @@ test('under one pack, an ABSENT role and an EMPTY list are different inputs', ()
   rmSync(root, { recursive: true, force: true });
 });
 
+// --- J47-5: a roles value this code cannot read is not a licence -------------
+
+/**
+ * An asset pack whose checkpoint schema no longer says what a roles value IS.
+ *
+ * `additionalProperties: true` on `job.roles` is the loosest the shared asset could ever
+ * drift to, so it is the instrument that reaches every non-list shape at once — where
+ * `packWithoutMinItems` above only reaches `[]`. Same `BANTAMKIT_ASSETS` override, and the
+ * same one `runtime-py` uses for the twin of this block (J47-4), so both sides of the
+ * parity are measured by one instrument.
+ */
+function packWithUnconstrainedRolesValues(root) {
+  const shipped = loadSchema('shiftwork-checkpoint');
+  shipped.properties.job.properties.roles.additionalProperties = true;
+  const pack = join(root, 'anyroles');
+  mkdirSync(join(pack, 'schemas'), { recursive: true });
+  writeFileSync(join(pack, 'schemas', 'shiftwork-checkpoint.json'), JSON.stringify(shipped), 'utf8');
+  return pack;
+}
+
+/**
+ * The shapes a `job.roles.<role>` can take that are not a list of model identifiers.
+ *
+ * The last two are the ones the register and the prep probe both missed and that only an
+ * end-to-end probe found: a LIST holding a non-string is a list, so a bare kind test lets
+ * it through. MEASURED on this port before the fix, through `clockOut` under the pack
+ * above with `model: 'haiku'`:
+ *
+ *     str, dict, int, null, bool  -> {"result":"ok", …} — status done, cursor CF2,
+ *                                    history 1, accounting line WRITTEN. Fail-open.
+ *     [5]                         -> refused, but '… does not allow: 5'
+ *     ['ok', null]                -> refused, but '… does not allow: ok, None'
+ *
+ * So the port failed open five ways and mangled the unreadable declaration into the
+ * sentence the other two — two different defects, one cause: the arm at `modelRefusal`
+ * decided nothing about what `allowed` IS before rendering it.
+ */
+const NOT_A_MODEL_LIST = [
+  ['str', 'claude-opus-5'],
+  ['dict', { a: 1 }],
+  ['int', 5],
+  ['null', null],
+  ['bool', true],
+  ['list-of-int', [5]],
+  ['list-with-a-non-string', ['ok', null]],
+];
+
+/** The one sentence, byte-for-byte `runtime-py`'s (shiftwork.py:181-184), for unit N1. */
+const UNREADABLE =
+  'unit N1 in role implementer cannot clock out: job.roles.implementer ' +
+  'is not a list of model identifiers, so it allows no model';
+
+for (const [id, value] of NOT_A_MODEL_LIST) {
+  test(`a roles value that is not a list of model names refuses closed — ${id}`, () => {
+    const root = fresh();
+    // The J46-10 ruling's other half (J47-4). A role the map NAMES is constrained by what
+    // it names, and a value this code cannot read as a list of model identifiers names
+    // nothing — so it allows nothing. Nothing is written, and the proof is the bytes and
+    // the absent log file, not the `result` field.
+    const pack = packWithUnconstrainedRolesValues(root);
+    const path = writeCheckpoint(root, withRoles({ implementer: value }));
+    const before = bytes(path);
+    withAssets(pack, () => {
+      assert.deepEqual(js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, ACCOUNTING, { now: 1 })), {
+        result: 'error',
+        reason: UNREADABLE,
+      });
+      // Offering no model is the SAME refusal, not the no-model twin: which model was
+      // reported cannot matter when the declaration that would judge it is unreadable.
+      assert.deepEqual(js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, { tokens: 1 }, { now: 1 })), {
+        result: 'error',
+        reason: UNREADABLE,
+      });
+      // Inside the pack: under the SHIPPED schema this document cannot be READ at all, so
+      // a `clockIn` out here would report the schema's refusal and prove nothing about the
+      // cursor. The status and the cursor are read back from the same relaxed pack that
+      // reached the branch.
+      const unit = js(clockIn(path)).unit;
+      assert.equal(unit.id, 'N1', 'the cursor never moved');
+      assert.equal(unit.status, 'todo', 'and the status was never set');
+    });
+    assert.deepEqual(bytes(path), before, 'the checkpoint is byte-unchanged');
+    assert.equal(existsSync(`${path}.log.jsonl`), false, 'no accounting line was appended');
+    assert.equal(existsSync(`${path}.tmp`), false, 'no temp file left behind');
+    rmSync(root, { recursive: true, force: true });
+  });
+}
+
+test('an unreadable roles value renders NO part of the declaration and names NO type', () => {
+  const root = fresh();
+  // Two properties of the sentence, both deliberate and both what make it portable.
+  // Rendering the value is what mangled it before — `['ok', null]` came back as
+  // '… does not allow: ok, None' on this port and raised `TypeError: sequence item 0`
+  // on the reference. Naming a type would not port at all: Python would say `int` where
+  // Node says `number`, and the two runtimes' sentences must be one string.
+  const pack = packWithUnconstrainedRolesValues(root);
+  const reason = (value) => {
+    const path = writeCheckpoint(root, withRoles({ implementer: value }), `${JSON.stringify(value)}.json`.replace(/[^\w.]/g, '_'));
+    return withAssets(pack, () => js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, ACCOUNTING, { now: 1 })).reason);
+  };
+  for (const fragment of ['claude-opus-5', 'c, l, a, u']) {
+    assert.equal(reason('claude-opus-5').includes(fragment), false, fragment);
+  }
+  assert.equal(reason(['ok', null]).includes('ok'), false, 'the list entry is not rendered');
+  assert.equal(reason(['ok', null]).includes('None'), false, 'nor is the non-string beside it');
+  assert.equal(reason([5]).includes('5'), false, 'nor a number in the list');
+  for (const named of ['int', 'number', 'str', 'string', 'dict', 'object', 'bool', 'boolean', 'NoneType', 'null']) {
+    assert.equal(reason(5).includes(named), false, `the sentence names no type: ${named}`);
+  }
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('the relaxed pack is what lets a non-list roles value through — the gate reaches it', () => {
+  const root = fresh();
+  // The companion that keeps the block above honest, `packWithoutMinItems`'s own companion
+  // by name: under the SHIPPED schema the same document is refused during the READ and
+  // never reaches the model check, so the two refusals are different sentences.
+  const pack = packWithUnconstrainedRolesValues(root);
+  const path = writeCheckpoint(root, withRoles({ implementer: 5 }));
+  const call = () => js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, ACCOUNTING, { now: 1 })).reason;
+  assert.equal(call(), "checkpoint invalid: JSON does not match schema at 'job/roles/implementer': 5 is not of type 'array'");
+  assert.equal(withAssets(pack, call), UNREADABLE);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('an empty list is still the J46-10 sentence, not the unreadable-declaration one', () => {
+  const root = fresh();
+  // `[]` IS a list of model identifiers — an empty one. It stays on the J46-10 branch with
+  // the sentence that ruling pinned (trailing space, empty `names`) and does NOT fall into
+  // the branch added here. The Node twin of runtime-py's
+  // `test_an_empty_list_is_still_the_j46_10_sentence_not_the_unreadable_one`: the boundary
+  // has to be pinned from both sides or a later edit can slide the ruled case across it.
+  const pack = packWithUnconstrainedRolesValues(root);
+  const path = writeCheckpoint(root, withRoles({ implementer: [] }));
+  withAssets(pack, () => {
+    assert.equal(
+      js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, ACCOUNTING, { now: 1 })).reason,
+      'unit N1 in role implementer reported model haiku, which job.roles.implementer does not allow: ',
+    );
+    assert.equal(
+      js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, { tokens: 1 }, { now: 1 })).reason,
+      'unit N1 in role implementer reported no model, but job.roles.implementer allows only: ',
+    );
+  });
+  rmSync(root, { recursive: true, force: true });
+});
+
 test('the model check runs AFTER the cursor check, so a non-cursor unit keeps its sentence', () => {
   const root = fresh();
   const path = writeCheckpoint(root, withRoles());

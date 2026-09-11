@@ -19,7 +19,10 @@ asset, same discipline:
   allowed, when `job.roles` names that role (AS-2) — a validation-time refusal
   taken BEFORE the log line is appended, so a rejected model never leaves an
   orphan accounting line behind; a role the map omits, or a checkpoint with no
-  map, is unconstrained and behaves exactly as it did before the map existed;
+  map, is unconstrained and behaves exactly as it did before the map existed.
+  J47-4: a role the map DOES name whose value is not a list of model identifiers
+  is refused there too — an unreadable declaration allows no model, and the
+  refusal is the same structured one, taken in the same place;
 * every clock-out appends one line to `<checkpoint>.log.jsonl` beside the
   checkpoint (unit, role, status, ts, plus orchestrator-reported accounting)
   — the driver-log shape, so the history ring's 5-entry cap never loses
@@ -154,12 +157,31 @@ def _model_refusal(document: dict, unit_id: str, unit: dict, accounting: dict | 
     the sentence says so. Measured, not asserted: the conformance corpus and
     both runtimes' tests drive this through a `BANTAMKIT_ASSETS` pack whose
     schema has no `minItems`, which is the only way to reach the branch at all.
+
+    AND A DECLARATION THIS CODE CANNOT READ IS NOT A LICENCE (J47-4). The same
+    ruling, one step further out: a role the map names is constrained by what it
+    NAMES, and a value that is not a list of model identifiers names nothing, so
+    it allows nothing. What made this a second case rather than a corollary is
+    that `", ".join(allowed)` answered for every shape without ever deciding one
+    — over a string it iterated CHARACTERS and refused while misquoting the
+    checkpoint back at its author, and over a number, a null, a bool or a list
+    holding a non-string it raised `TypeError` straight out of `clock_out`, which
+    is the one exit the ruling forbids: not a structured refusal, so not an
+    answer at all. Fail CLOSED and say only what is true — the declaration cannot
+    be read, therefore no model is allowed — without rendering the unreadable
+    value into the sentence. `[]` is untouched by this: an empty list IS a list
+    of model identifiers, and it keeps the sentence J46-10 pinned.
     """
     role = unit["role"]
     roles = document["job"].get("roles", {})
     if role not in roles:
         return None
     allowed = roles[role]
+    if not isinstance(allowed, list) or not all(isinstance(m, str) for m in allowed):
+        return (
+            f"unit {unit_id} in role {role} cannot clock out: job.roles.{role} "
+            f"is not a list of model identifiers, so it allows no model"
+        )
     names = ", ".join(allowed)
     offered = (accounting or {}).get("model")
     if offered is None:
@@ -189,7 +211,10 @@ def clock_out(
     (driver parity); anything else is a structured error. When `job.roles` names
     the unit's role, `accounting["model"]` must be one of that role's models,
     spelled exactly; a wrong or missing model is refused here, before any
-    mutation and before the accounting line. Mutations: set the
+    mutation and before the accounting line. Extended 2026-09-11 (job47): so is a
+    `job.roles` value for that role that is not a list of model identifiers —
+    an unreadable declaration allows no model, and it is refused in the same
+    place, by the same structured return, writing nothing. Mutations: set the
     unit's status, advance `plan.cursor` to the first non-terminal unit
     (v1-linear, `depends_on` is ignored), shallow-merge `handoff_patch` into
     `handoff`, push `history_entry` onto the 5-entry ring. The mutated

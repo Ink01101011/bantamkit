@@ -37,10 +37,12 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
+  realpathSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const name = 'dream';
@@ -50,6 +52,7 @@ const here = dirname(dirname(fileURLToPath(import.meta.url)));
 const REF = join(here, 'ref', 'dream_ref.py');
 
 const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');
+const unb64 = (s) => Buffer.from(s, 'base64').toString('utf8');
 
 // ------------------------------------------------------------------------- fixtures
 
@@ -614,6 +617,259 @@ function scenarios() {
   return list;
 }
 
+// ------------------------------------- the REGISTRATION: Memory.layered -> dreamOutcome
+
+/**
+ * The second entry point, and the only one that can see WHICH two stores a session binds.
+ *
+ * Everything above drives `dream(project, profile, dry_run)` with both stores handed to it
+ * by this harness. That is the algorithm, and it is structurally incapable of catching a
+ * binding defect: the pair is the fixture's choice, so a runtime that resolved the WRONG
+ * pair — or the same store twice — answers exactly what it is asked and the comparison goes
+ * green. `Memory.layered(start).dreamOutcome(...)` is where the pair is CHOSEN: the project
+ * store is walked up to from a directory, the profile store is `HOME/.bantamkit/memory`, and
+ * whether the profile layer is pushed at all is a decision made there. Until this op existed
+ * `dreamOutcome`, `memory_dream` and the `no-profile-layer` branch had no differential
+ * coverage on either side — `grep -rn "dreamOutcome\|no-profile-layer" tools/conformance/`
+ * returned nothing.
+ *
+ * `HOME` IS ALWAYS A DIRECTORY THE CASE BUILT. This op archives out of the profile layer,
+ * which is a write into a home directory; pointed at a real one it destroys real facts, and
+ * on 2026-09-10 it destroyed 20 of 20 of them. Both sides get `HOME`, `USERPROFILE` and an
+ * emptied `BANTAMKIT_MEMORY_DIR`, each under that side's own bed.
+ */
+
+/**
+ * A bed-relative path whose `..` segments are left UNRESOLVED.
+ *
+ * `path.join` normalises `..` away, and one scenario below is nothing but a `..` standing
+ * behind a symlink — where popping it lexically, before the symlink is followed, is the
+ * whole defect. Joining it here would resolve the bed's shape in the HARNESS and hand both
+ * runtimes a path with nothing left to get wrong. So the segments before the first `..` are
+ * joined and the rest are appended with the platform separator, and the runtime is the thing
+ * that resolves them.
+ */
+function underBed(root, rel) {
+  const parts = rel.split('/');
+  const cut = parts.indexOf('..');
+  if (cut === -1) return join(root, ...parts);
+  return [join(root, ...parts.slice(0, cut)), ...parts.slice(cut)].join(sep);
+}
+
+/** One bed: directories, files, symlinks, then pinned mtimes. Paths are bed-relative. */
+function materialiseBed(root, spec) {
+  mkdirSync(root, { recursive: true });
+  for (const dir of spec.dirs ?? []) mkdirSync(join(root, dir), { recursive: true });
+  for (const [path, content] of Object.entries(spec.files ?? {})) {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), Buffer.from(content, 'utf8'));
+  }
+  // Absolute targets, so what the runtime resolves is the bed and never a relative accident.
+  for (const [link, target] of spec.symlinks ?? []) {
+    mkdirSync(dirname(join(root, link)), { recursive: true });
+    symlinkSync(join(root, target), join(root, link));
+  }
+  for (const [path, day] of Object.entries(spec.mtimes ?? {})) {
+    const when = noon(day);
+    utimesSync(join(root, path), when, when);
+  }
+}
+
+/**
+ * Every path under the bed, with the bed's own root substituted out of the bytes.
+ *
+ * Same stance as `manifest` above — entry kinds and symlink targets, not only file bytes —
+ * but the two beds differ by their root, so contents and link targets are scrubbed. An
+ * unguarded run of the duplicate-layer scenario ARCHIVES, and archiving moves a file: this
+ * is where that shows up even if the reply were somehow unchanged.
+ */
+function bedManifest(root) {
+  const real = realpathSync(root);
+  const scrub = (v) => v.split(root).join('<BED>').split(real).join('<BED>');
+  const lines = [];
+  const walk = (dir) => {
+    let entries;
+    try {
+      entries = readdirSync(dir);
+    } catch (e) {
+      lines.push(`${relative(root, dir) || '.'}\tUNREADABLE\t${e.code}`);
+      return;
+    }
+    for (const entry of entries.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {
+      const full = join(dir, entry);
+      const rel = relative(root, full);
+      const st = lstatSync(full);
+      if (st.isSymbolicLink()) lines.push(`${rel}\tlink\t${scrub(readlinkSync(full))}`);
+      else if (st.isDirectory()) {
+        lines.push(`${rel}\tdir`);
+        walk(full);
+      } else lines.push(`${rel}\tfile\t${scrub(readFileSync(full).toString('utf8'))}`);
+    }
+  };
+  walk(root);
+  return `${lines.join('\n')}\n`;
+}
+
+/** The Node side of one `outcome` request, shaped exactly like `dream_ref.py` answers it. */
+function runNodeOutcome(component, request, env) {
+  const before = new Map(Object.keys(env).map((k) => [k, process.env[k]]));
+  for (const [k, v] of Object.entries(env)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  const scrub = (v) => v.split(request.bed).join('<BED>');
+  const err = (e) => ({
+    error: { type: e?.name ?? 'Error', message: b64(scrub(String(e?.message ?? e))) },
+  });
+  try {
+    let mem;
+    try {
+      mem = component.Memory.layered(unb64(request.start), { today: () => request.today });
+    } catch (e) {
+      return err(e);
+    }
+    const labels = mem.layerLabels().map(b64);
+    const store_root = b64(scrub(mem.store.root));
+    let outcome;
+    try {
+      outcome = mem.dreamOutcome(request.dry_run ?? true);
+    } catch (e) {
+      return { labels, store_root, ...err(e) };
+    }
+    return {
+      labels,
+      store_root,
+      outcome: {
+        reply: b64(scrub(outcome.reply)),
+        status: outcome.status,
+        dry_run: outcome.dryRun,
+        merged: outcome.merged,
+        consumed: outcome.consumed,
+        absolutised: outcome.absolutised,
+        superseded: outcome.superseded,
+        index_before: outcome.indexBefore,
+        index_after: outcome.indexAfter,
+        budget: outcome.budget,
+      },
+    };
+  } finally {
+    for (const [k, v] of before) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
+const OUTCOME_TODAY = '2026-09-06';
+
+/**
+ * Four beds: two where the walk lands ON the profile store, two where it does not.
+ *
+ * THE TWO CONTROLS ARE NOT DECORATION. A guard that answered "same directory" for EVERY
+ * pair would pass both duplicate scenarios and cost nothing — the third and fourth beds are
+ * what make that mutation visible, because there the profile layer MUST still be bound and
+ * `dream` must still run across it. And every scenario is `dry_run: false`: an unguarded
+ * duplicate bed does not merely report a merge, it ARCHIVES the fact out of the store it
+ * just merged it into, which the bed manifest sees.
+ */
+function outcomeScenarios() {
+  const store = (prefix, facts) => {
+    const files = {};
+    const mtimes = {};
+    for (const [n, opts] of Object.entries(facts)) {
+      files[`${prefix}/facts/${n}.md`] = factFile(n, opts);
+      mtimes[`${prefix}/facts/${n}.md`] = opts.day ?? '2026-09-01';
+    }
+    return { files, mtimes, dirs: [`${prefix}/facts`, `${prefix}/archive`] };
+  };
+  const merge = (...specs) => ({
+    dirs: specs.flatMap((x) => x.dirs ?? []),
+    files: Object.assign({}, ...specs.map((x) => x.files ?? {})),
+    mtimes: Object.assign({}, ...specs.map((x) => x.mtimes ?? {})),
+    symlinks: specs.flatMap((x) => x.symlinks ?? []),
+  });
+
+  const ownFacts = {
+    'probe-ruling': { description: 'a ruling the walk found in the home directory',
+                      body: 'Deploys: standing, review it and ship it.', day: '2026-09-04' },
+    'probe-second': { description: 'a second fact, so an archive would be visible',
+                      body: 'Merge style: squash and KEEP the branch.', day: '2026-09-02' },
+  };
+
+  return [
+    {
+      // THE GATE. Nothing with a `.bantamkit` above `work` except the home directory itself,
+      // so the walk climbs OUT of it and resolves the profile store as the PROJECT store.
+      label: 'the walk lands on the profile store, so there is one layer and nothing to consolidate',
+      spec: merge(store('home/.bantamkit/memory', ownFacts), { dirs: ['home/work'] }),
+      home: 'home',
+      start: 'home/work',
+    },
+    {
+      // The same bed reached through a symlink. A string comparison of the two roots fails
+      // here — `home` is spelled `link` on the way in and `real` on the way out — so this
+      // gates the realpath choice rather than restating the case above.
+      label: 'the same store under two spellings is still one layer, symlink included',
+      spec: merge(store('real/.bantamkit/memory', ownFacts), {
+        dirs: ['real/work'],
+        symlinks: [['link', 'real']],
+      }),
+      home: 'link',
+      start: 'link/work',
+    },
+    {
+      // CONTROL. Two genuinely different directories holding the same fact name: the profile
+      // layer must be bound and the pass must consolidate across it.
+      label: 'two different directories are two layers, and the colliding fact consolidates',
+      spec: merge(
+        store('home/.bantamkit/memory', {
+          'shared-ruling': { description: 'the rule as the machine holds it',
+                             body: 'Publish channel: npm and PyPI.\n\nProfile-only paragraph.',
+                             created: '2026-08-27', day: '2026-08-27' },
+        }),
+        store('proj/.bantamkit/memory', {
+          'shared-ruling': { description: 'the rule as the repo holds it',
+                             body: 'Publish channel: npm only.\n\nProject-only paragraph.',
+                             created: '2026-08-21', day: '2026-09-06' },
+        }),
+      ),
+      home: 'home',
+      start: 'proj',
+    },
+    {
+      // CONTROL. Two layers with nothing in common: bound, walked, and left alone.
+      label: 'two different directories with nothing in common are two layers and no change',
+      spec: merge(
+        store('home/.bantamkit/memory', {
+          'machine-note': { description: 'the machine side', body: 'b', day: '2026-08-20' },
+        }),
+        store('proj/.bantamkit/memory', {
+          'repo-note': { description: 'the repo side', body: 'a', day: '2026-09-01' },
+        }),
+      ),
+      home: 'home',
+      start: 'proj',
+    },
+    {
+      // J47-3B. The `..` spelling, which the symlink bed above does NOT reach. `fs.realpathSync`
+      // hands its argument to `path.resolve` first, and `path.resolve` pops `..` LEXICALLY —
+      // before the symlink in front of it is followed; `os.path.realpath` and the kernel pop it
+      // AFTER. So `<bed>/link/..` is `<bed>/deep` to the reference and `<bed>` to Node, and on
+      // this bed Node bound two layers and consolidated where Python bound one and did not:
+      //   node    {"labels":["project","profile"],"status":"previewed","merged":1,"consumed":1}
+      //   python  {"labels":["project"],"status":"no-profile-layer","merged":0,"consumed":0}
+      // `home` runs through `underBed` rather than `join` for that reason — see the note there.
+      label: 'one directory is one layer when HOME is spelled through a symlink AND a `..`',
+      spec: merge(store('deep/.bantamkit/memory', ownFacts), {
+        dirs: ['deep/real', 'deep/work'],
+        symlinks: [['link', 'deep/real']],
+      }),
+      home: 'link/..',
+      start: 'deep/work',
+    },
+  ];
+}
+
 // ------------------------------------------------- the pure boundary, and its literals
 
 /**
@@ -840,6 +1096,111 @@ export async function run(ctx) {
         keptOf(rerun(laterIndex, 'node')),
         'a LATER profile mtime keeps the profile claim and retires the project one',
         [{ subject: 'publish channel', kept_layer: 'profile', lost_layer: 'project' }],
+      ),
+    );
+  }
+
+  // ------------------------------------ the registration: Memory.layered -> dreamOutcome
+  const component = await import(
+    pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'component.js')).href
+  );
+  // `realpathSync` for the same reason `recall-strings` does it: the walk resolves the
+  // directory it started from, so an unresolved scratch root (`/var` on macOS) would be
+  // scrubbed out of one side's answer and left in the other's.
+  const outcomeScratch = realpathSync(ctx.scratch);
+  const outcomes = {};
+  let o = 0;
+  for (const { label, spec, home, start } of outcomeScenarios()) {
+    o += 1;
+    const bed = join(outcomeScratch, `o${String(o).padStart(2, '0')}`);
+    const roots = {};
+    const answers = {};
+    for (const side of ['py', 'node']) {
+      roots[side] = join(bed, side);
+      materialiseBed(roots[side], spec);
+    }
+    const request = (side) => ({
+      op: 'outcome',
+      start: b64(underBed(roots[side], start)),
+      bed: roots[side],
+      today: OUTCOME_TODAY,
+      dry_run: false,
+    });
+    const envFor = (side) => ({
+      HOME: underBed(roots[side], home),
+      USERPROFILE: underBed(roots[side], home),
+      BANTAMKIT_MEMORY_DIR: '',
+    });
+    answers.py = ctx.runPython(REF, request('py'), envFor('py'));
+    answers.node = runNodeOutcome(component, request('node'), envFor('node'));
+    outcomes[label] = answers;
+
+    cases.push({ name: `${label} — outcome`, kind: 'json',
+                 expected: answers.py, actual: answers.node });
+    cases.push({ name: `${label} — bed tree`, kind: 'bytes',
+                 expected: bedManifest(roots.py), actual: bedManifest(roots.node) });
+  }
+  notes.push(
+    `${o} Memory.layered scenarios compared through dreamOutcome, each on the outcome and ` +
+      'the whole bed, with HOME inside the harness scratch on both sides',
+  );
+
+  // ----------------------------------------------- literals 3 and 4: the binding decision
+  // The differential above cannot see a SYMMETRIC regression: revert the guard in BOTH
+  // runtimes and the two still agree, exactly the blindness J45-3 measured for the tie-break
+  // and that `differential-is-blind-to-symmetric-regression` names. So the decision itself is
+  // pinned against constants, on each side separately — the duplicate bed's verdict, its
+  // sentence, and the control bed's, which is what a guard that fired unconditionally breaks.
+  {
+    const dup = outcomes[
+      'the walk lands on the profile store, so there is one layer and nothing to consolidate'
+    ];
+    const both = outcomes[
+      'two different directories are two layers, and the colliding fact consolidates'
+    ];
+    // J47-3B: the `..` bed gets a literal of its own for the same reason the dup bed has
+    // one. The differential above reddens for the defect as it actually was — Node lexical,
+    // Python kernel — but a SYMMETRIC regression, both sides popping `..` before the symlink,
+    // leaves it green, and the two literals already here would stay green too: their beds
+    // have no `..` in them, so `path.resolve` answers correctly on both.
+    const dots = outcomes[
+      'one directory is one layer when HOME is spelled through a symlink AND a `..`'
+    ];
+    const decision = (a) => ({
+      labels: (a.labels ?? []).map(unb64),
+      status: a.outcome?.status ?? `RAISED ${a.error?.type}`,
+      merged: a.outcome?.merged ?? null,
+      consumed: a.outcome?.consumed ?? null,
+    });
+    const reply = (a) => (a.outcome ? unb64(a.outcome.reply) : `RAISED ${a.error?.type}`);
+    cases.push(
+      ...literalCases(
+        decision(dup.py),
+        decision(dup.node),
+        'the walk landing on the profile store binds ONE layer and consolidates nothing',
+        { labels: ['project'], status: 'no-profile-layer', merged: 0, consumed: 0 },
+      ),
+      ...literalCases(
+        { reply: reply(dup.py) },
+        { reply: reply(dup.node) },
+        'and says so in the sentence that already existed for one-layer sessions',
+        {
+          reply:
+            'nothing to consolidate: no profile layer is bound, so the project store ' +
+            '<BED>/home/.bantamkit/memory is the only layer there is.',
+        },
+      ),
+      ...literalCases(
+        decision(both.py),
+        decision(both.node),
+        'two distinct directories still bind TWO layers and still consolidate across them',
+        { labels: ['project', 'profile'], status: 'consolidated', merged: 1, consumed: 1 },
+      ),
+      ...literalCases(
+        decision(dots.py),
+        decision(dots.node),
+        'a `..` behind a symlink still names ONE directory, so it is still ONE layer',
+        { labels: ['project'], status: 'no-profile-layer', merged: 0, consumed: 0 },
       ),
     );
   }

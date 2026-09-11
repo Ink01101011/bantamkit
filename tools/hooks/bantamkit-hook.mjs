@@ -28,8 +28,36 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
+/**
+ * The directory `p` names, as the KERNEL names it. `realpathSync.native`, not `realpathSync`.
+ *
+ * Added 2026-09-11 (J47-7); the mechanism is J47-3B's (`6766033`) and the reason is the same.
+ * `fs.realpathSync` hands its argument to `path.resolve` before it resolves anything, and
+ * `path.resolve` pops `..` LEXICALLY — before the symlink in front of it has been followed —
+ * so it throws `ENOENT` on a directory that is there. `realpathSync.native` is libuv's
+ * `uv_fs_realpath`, the platform's own `realpath(3)` / `GetFinalPathNameByHandle`: it pops
+ * `..` in the kernel's order, agrees with `os.path.realpath` byte for byte, and keeps the
+ * macOS `/var` vs `/private/var` resolution every comparison in this file was written for.
+ * `statSync` identity (`dev` + `ino`) was the other candidate and was not taken, for J47-3B's
+ * reason: `ino` is not dependable on every Windows filesystem, and this file runs there too.
+ *
+ * A path that is genuinely not on disk cannot be realpathed at all, and `path.resolve` is the
+ * fallback — it can only under-report a match, never invent one.
+ */
+function realDir(p) {
+  try { return fs.realpathSync.native(p); } catch { return path.resolve(p); }
+}
+
 const T0 = Date.now();
-const HOME = os.homedir();
+// HOME IS RESOLVED, NOT TAKEN AS SPELLED (2026-09-11, J47-7). `os.homedir()` hands back
+// `$HOME` verbatim, and every `path.join` below pops a `..` inside it LEXICALLY. Measured on
+// J47-3B's bed (`link -> <bed>/deep/real`, `HOME=<bed>/link/..`, the real home being
+// `<bed>/deep`): `PROFILE` came out `<bed>/.bantamkit/memory`, a directory nothing had
+// created, so the single-layer guard at the bottom of this file could not answer `true` no
+// matter what predicate it used — and `STATE` put this hook's own log OUTSIDE the home. One
+// kernel-order resolution here fixes both, and for a `HOME` with no symlink and no `..` it
+// is the identity.
+const HOME = realDir(os.homedir());
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..', '..');
 const DIST = path.join(REPO, 'runtime-ts', 'dist', 'memory');
@@ -820,10 +848,34 @@ function postCompact(input) {
  *
  * A path that cannot be realpathed (it does not exist yet) falls back to `resolve`, which is
  * the honest answer for a directory nothing has created.
+ *
+ * AMENDED 2026-09-11 (J47-7). Everything above stands as the reason this compares resolved
+ * directories rather than strings, and the fallback's behaviour is unchanged. Two things it
+ * says are now measured wrong.
+ *
+ * (1) THE MECHANISM. `fs.realpathSync` is not the kernel's realpath. It hands its argument to
+ * `path.resolve` first, and `path.resolve` pops `..` LEXICALLY, before the symlink in front of
+ * it has been followed. The comparison is now `realDir` (`realpathSync.native`) for J47-3B's
+ * reasons (`6766033`), which closed the identical defect in the identical predicate in
+ * `runtime-ts`'s `sameDirectory`.
+ *
+ * (2) "A PATH THAT CANNOT BE REALPATHED (IT DOES NOT EXIST YET)" IS THE WRONG DIAGNOSIS, and
+ * it is wrong in the dangerous direction. Measured on J47-3B's bed (`link -> <bed>/deep/real`,
+ * store at `<bed>/deep/.bantamkit/memory`, `HOME=<bed>/link/..`), the throwing argument was
+ * `PROFILE`, and the directory it names EXISTS: `realpathSync` threw because it had already
+ * looked in the wrong place. `resolve` was not "the honest answer" there, it was the wrong
+ * one, and this function answered `false` for one directory spelled two ways — so the trigger
+ * below launched the dream it exists to skip.
+ *
+ * AND ON THAT BED THE `..` NEVER REACHED THIS FUNCTION, which is why repairing only this
+ * predicate did not flip the decision and is worth writing down: `path.join` at the top of the
+ * file had already popped it, so `PROFILE` arrived here as `<bed>/.bantamkit/memory`, a
+ * directory nothing had created — a real instance of the sentence above, arrived at by the
+ * defect rather than by anyone's intent. The repair is therefore at BOTH ends: `HOME` is
+ * resolved before it is joined, and this predicate no longer lets `path`'s lexical `..` decide.
  */
 function samePath(a, b) {
-  const real = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
-  return real(a) === real(b);
+  return realDir(a) === realDir(b);
 }
 
 function storeFingerprint(roots) {
@@ -890,6 +942,30 @@ async function maybeDream(input) {
   // suite in both runtimes — changing it is a different layer and a different unit, and it is
   // registered as such in `docs/roadmap-toolbox.md`. What this unit owns is WHEN to fire, and
   // "when the two layers are the same directory" is never.
+  //
+  // AMENDED 2026-09-11 (J47-7). "THE GUARD LIVES HERE, IN THE TRIGGER, NOT IN `dream`" IS NO
+  // LONGER TRUE. Everything above it stands as the reason this guard was written, and as the
+  // record of the incident that caused it; it is no longer the reason it is the only guard,
+  // because it is not. `Memory.layered` now refuses to bind one directory as two layers in
+  // BOTH runtimes — `_same_directory` in Python (J47-1, `0844ccb`), `sameDirectory` in Node
+  // (J47-2, `a3afb7c`, corrected by J47-3B, `6766033`) — and the refusal is gated by
+  // conformance cases (J47-3 `ecaf427`, J47-3B `1bd1a43`), which is exactly what row 13 of
+  // `docs/roadmap-toolbox.md` predicted would make this guard "redundant rather than
+  // load-bearing". It is kept anyway, deliberately: it costs one realpath compare, it refuses
+  // BEFORE a child process is spawned rather than inside it, and a working refusal is not
+  // deleted on the strength of a change that shipped the same day.
+  //
+  // AND UNTIL THIS UNIT IT WAS NOT ANSWERING CORRECTLY, which is the other half of J47-7 and
+  // the reason the redundancy was worth having. On J47-3B's bed (`link -> <bed>/deep/real`,
+  // store at `<bed>/deep/.bantamkit/memory`, `HOME=<bed>/link/..`) this trigger fired the
+  // dream it exists to skip — measured, the hook's own log line was
+  //   {"event":"Stop","action":"dream","status":"no-profile-layer","merged":0,"consumed":0}
+  // i.e. the MECHANISM refused and the TRIGGER did not: defence in depth working in the
+  // direction nobody planned for. Two things were wrong and both are repaired above — `HOME`
+  // is resolved in the kernel's order before it is joined (`path.join` was popping the `..`
+  // lexically, so `PROFILE` named a directory that does not exist), and `samePath` no longer
+  // uses `fs.realpathSync`, which pops `..` the same lexical way. Same bed, after:
+  //   {"event":"Stop","action":"dream-skip","reason":"single-layer","root":".../deep/.bantamkit/memory"}
   if (samePath(projectRoot, PROFILE)) {
     log({ event: 'Stop', action: 'dream-skip', reason: 'single-layer', root: projectRoot });
     return;

@@ -713,6 +713,148 @@ def test_an_absent_role_and_an_empty_list_are_different_inputs(
     assert ops.clock_out(str(empty), *args)["result"] == "error"
 
 
+# --- J47-4: a roles value this code cannot read is not a licence -------------
+
+
+def _pack_with_unconstrained_roles_values(tmp_path, schema):
+    """An asset pack whose checkpoint schema no longer says what a roles value IS.
+
+    `additionalProperties: true` on `job.roles` is the loosest the shared asset
+    could ever drift to, so it is the instrument that reaches every non-list
+    shape at once. Same `BANTAMKIT_ASSETS` override the empty-list ruling uses,
+    for the same reason: the check must hold without the schema's help.
+    """
+    mutated = copy.deepcopy(schema)
+    mutated["properties"]["job"]["properties"]["roles"]["additionalProperties"] = True
+    root = tmp_path / "anyroles"
+    (root / "schemas").mkdir(parents=True)
+    (root / "schemas" / "shiftwork-checkpoint.json").write_text(
+        json.dumps(mutated), encoding="utf-8"
+    )
+    return root
+
+
+NOT_A_MODEL_LIST = [
+    pytest.param("claude-opus-5", id="str"),
+    pytest.param({"a": 1}, id="dict"),
+    pytest.param(5, id="int"),
+    pytest.param(None, id="null"),
+    pytest.param(True, id="bool"),
+    pytest.param([5], id="list-of-int"),
+    pytest.param(["ok", None], id="list-with-a-non-string"),
+]
+
+
+@pytest.mark.parametrize("value", NOT_A_MODEL_LIST)
+def test_a_roles_value_that_is_not_a_list_of_model_names_refuses_closed(
+    tmp_path, monkeypatch, schema, example, value
+):
+    """The J46-10 ruling's other half. A role the map NAMES is constrained by what
+    it names, and a value this code cannot read as a list of model identifiers
+    names nothing -- so it allows nothing.
+
+    Measured before the fix, with `accounting['model'] = 'haiku'`: `str` and
+    `dict` refused with the declared value mangled into single characters
+    (`', '.join` over a string iterates CHARACTERS), and `int`, `null`, `bool`
+    and a list holding a non-string all died with an uncaught `TypeError` out of
+    `clock_out` -- no structured answer at all, which is the one exit shape the
+    ruling forbids.
+    """
+    monkeypatch.setenv(
+        "BANTAMKIT_ASSETS", str(_pack_with_unconstrained_roles_values(tmp_path, schema))
+    )
+    example["job"]["roles"] = {"implementer": value}
+    path = write_checkpoint(tmp_path, example)
+    before = path.read_bytes()
+    assert ops.clock_out(
+        str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, ACCOUNTING
+    ) == {
+        "result": "error",
+        "reason": (
+            "unit U3 in role implementer cannot clock out: job.roles.implementer "
+            "is not a list of model identifiers, so it allows no model"
+        ),
+    }
+    # Offering no model is the same refusal: which model was reported cannot
+    # matter when the declaration that would judge it is unreadable.
+    assert ops.clock_out(
+        str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, {"tokens": 1}
+    ) == {
+        "result": "error",
+        "reason": (
+            "unit U3 in role implementer cannot clock out: job.roles.implementer "
+            "is not a list of model identifiers, so it allows no model"
+        ),
+    }
+    assert path.read_bytes() == before
+    assert read_log(path) == []
+
+
+def test_an_unreadable_roles_value_never_mangles_the_declaration_into_characters(
+    tmp_path, monkeypatch, schema, example
+):
+    """The specific pre-fix defect, pinned so it cannot come back: a string value
+    refused, but rendered `claude-opus-5` as `c, l, a, u, d, e, -, o, p, u, s, -, 5`
+    -- a refusal sentence that misdescribes the checkpoint it is refusing.
+    """
+    monkeypatch.setenv(
+        "BANTAMKIT_ASSETS", str(_pack_with_unconstrained_roles_values(tmp_path, schema))
+    )
+    example["job"]["roles"] = {"implementer": "claude-opus-5"}
+    path = write_checkpoint(tmp_path, example)
+    reason = ops.clock_out(
+        str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, ACCOUNTING
+    )["reason"]
+    assert "c, l, a, u" not in reason
+
+
+def test_the_relaxed_pack_is_what_lets_a_non_list_roles_value_through(
+    tmp_path, monkeypatch, schema, example
+):
+    """The companion that keeps the tests above honest, the empty-list ruling's own
+    companion by name: with the SHIPPED schema the same document is refused during
+    the read and never reaches the model check, so the two refusals are different
+    sentences and the gate is confirmed to reach the thing it checks.
+    """
+    example["job"]["roles"] = {"implementer": 5}
+    path = write_checkpoint(tmp_path, example)
+    assert ops.clock_out(
+        str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, ACCOUNTING
+    ) == {
+        "result": "error",
+        "reason": (
+            "checkpoint invalid: JSON does not match schema at "
+            "'job/roles/implementer': 5 is not of type 'array'"
+        ),
+    }
+    monkeypatch.setenv(
+        "BANTAMKIT_ASSETS", str(_pack_with_unconstrained_roles_values(tmp_path, schema))
+    )
+    assert "is not a list of model identifiers" in ops.clock_out(
+        str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, ACCOUNTING
+    )["reason"]
+
+
+def test_an_empty_list_is_still_the_j46_10_sentence_not_the_unreadable_one(
+    tmp_path, monkeypatch, schema, example
+):
+    """`[]` IS a list of model identifiers -- an empty one. It stays on the J46-10
+    branch with the sentence that ruling pinned, and does not fall into the
+    unreadable-declaration branch added here.
+    """
+    monkeypatch.setenv(
+        "BANTAMKIT_ASSETS", str(_pack_with_unconstrained_roles_values(tmp_path, schema))
+    )
+    example["job"]["roles"] = {"implementer": []}
+    path = write_checkpoint(tmp_path, example)
+    assert ops.clock_out(
+        str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"}, ACCOUNTING
+    )["reason"] == (
+        "unit U3 in role implementer reported model haiku, "
+        "which job.roles.implementer does not allow: "
+    )
+
+
 # --- MCP flavor: status -----------------------------------------------------
 
 
