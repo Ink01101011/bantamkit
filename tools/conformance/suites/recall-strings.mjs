@@ -439,13 +439,6 @@ const CONFIGS = [
 // ------------------------------------------------------------------------------- run
 
 /**
- * platform-checked: this body chmods `locked` to `0o000` and then PROBES whether the mode was
- * honoured — `readdirSync` inside a `try`, and a `notes.push('NOT MEASURED: this platform
- * listed a 0o000 directory anyway (root?)')` when it was not. That probe is the platform
- * statement; the marker is what makes it visible to the gate, which could not see the
- * `chmodSync(join(...), 0o000)` spelling until 2026-09-11.
- */
-/**
  * Does a `0o555` directory in THIS scratch tree actually deny creation?
  *
  * `applyModes` above already says, in as many words, that a mode-restricted bed is not a wall
@@ -453,6 +446,16 @@ const CONFIGS = [
  * denied operation, and a `notes.push('NOT MEASURED: ...')` when the mode was not honoured".
  * J48-3 needed one, so this is it. It is a claim about the directory in front of it and never
  * about `process.platform`, because nobody here has a Windows run to type a claim from.
+ *
+ * platform-checked (added 2026-09-12, job48, J48-4): the `chmodSync` below is the SUBJECT of
+ * this function rather than a fixture inside it — the body chmods `0o555` and then tries the
+ * denied `mkdir`, returning `denies: false` with a reason when the mode was not honoured, which
+ * is precisely what Windows and a root uid do. Its caller turns that into a
+ * `notes.push('NOT MEASURED ...')` and skips the scenario. WHY THIS SENTENCE IS NEW AND NOT A
+ * SECOND COPY: this block passed the gate on the day it landed only by standing directly under
+ * `run`'s marker, which J48-3's insertion had detached from `run` — so `run` went red at ~522
+ * and this block went green on a marker that was never about it. The marker is back above
+ * `run`; this is the one this block earns on its own.
  */
 function sealedProbe(scratch) {
   const dir = join(scratch, 'sealed-probe');
@@ -519,6 +522,13 @@ const SEALED_ANSWERS = [
     'is not there and this filesystem would not make it, so nothing was written',
 ];
 
+/**
+ * platform-checked: this body chmods `locked` to `0o000` and then PROBES whether the mode was
+ * honoured — `readdirSync` inside a `try`, and a `notes.push('NOT MEASURED: this platform
+ * listed a 0o000 directory anyway (root?)')` when it was not. That probe is the platform
+ * statement; the marker is what makes it visible to the gate, which could not see the
+ * `chmodSync(join(...), 0o000)` spelling until 2026-09-11.
+ */
 export async function run(ctx) {
   const mod = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'component.js')).href);
   const layers = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'layers.js')).href);

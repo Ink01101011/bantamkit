@@ -716,3 +716,133 @@ tripwire for a property it does not measure. Nothing user-facing moved — the p
 it guards is keyed on `_is_profile_store` / `isProfileStore`, a DIFFERENT predicate from the one
 job47 added, and it is still right. What is registered is the tripwire CLAIM; `docs/memory.md`
 carries the matching amendment, filed in the same commit.
+
+## Registered 2026-09-12 — the closing review of job48 (J48-4), branch `fix/job48-unwritable-cwd`
+
+Everything below was found, or re-measured, by the review of `163fb49..2efbc9d`. Nothing here
+is fixed by this commit except (uu), which had to be fixed because the branch as handed to the
+reviewer did not pass `pytest`. Every number is from a run at this commit, quoted as it printed.
+
+**(pp) The DELETED cwd is a second shape of the same bug and it is NOT fixed.** Re-measured by
+this review on both runtimes, from a directory removed after `chdir` into it: Python exits 1
+with a CPython traceback out of `os.getcwd()`, Node exits 1 with
+
+```
+node:internal/bootstrap/switches/does_own_process_state:142
+    cachedCwd = rawMethods.cwd();
+Error: ENOENT: no such file or directory, uv_cwd
+```
+
+Both fail **before any store object exists**, so neither the lazy project layer nor
+`_ensure_dirs`' new sentence can reach it, and Node's is a plain `Error` rather than a
+`PyOSError`. J48-3 considered this as the portable hostile bed for the new conformance block and
+REJECTED it with a reason worth keeping: it cannot carry the property *the server starts*, which
+is what that block exists to prove. It needs its own unit, in both runtimes, with its own case.
+
+**(qq) `PyOSError`'s docstring is stale, and so is its runtime-py counterpart — ONE record with
+two halves.** `runtime-ts/src/memory/pyfs.ts:188-194` says `_ensure_dirs` "lets a
+`FileExistsError` out of `save` unconverted, and `component.Memory.save` turns whatever comes
+out into the sentence a model reads". After job48 every `PyOSError` out of `ensureDirs` is
+converted to a `MemoryValidationError` first, so the clause describes a path that no longer
+exists. Fixing one side only would be exactly the divergence pattern this job exists to end, so
+it is filed as one item for one later unit that amends both.
+
+**(rr) A CLI-suite process cannot make a `tools/call`, so the recall binding is pinned at the
+COMPONENT level and not at the process level.** Re-measured by this review, once per side, with
+a three-frame stdin (`initialize` + `initialized` + `tools/call memory_recall`) from a cwd
+nothing can be created in: Node answered **2 frames**, Python answered **1** and exited on EOF
+having answered only the `initialize`. J48-3 measured the same thing five runs a side. That is
+why "binds project+profile and answers from the profile layer" lives in `recall-strings` and the
+`cli` suite pins only the process half. The note in `tools/conformance/suites/cli.mjs` about
+this race is correct and was not worked around.
+
+**(ss) `--statusline` from a hostile cwd carries no binding, and that is not a divergence.**
+Measured this review, both runtimes, from a `0o555` cwd: `bantamkit Unknown ⚪ · event log off`,
+exit 0, identical. The flag returns before `_build_memory`, so it never builds a layered
+`Memory` and cannot report which store got bound. Registered so nobody later reads the
+statusline as evidence about a binding; it is simply not that channel.
+
+**(tt) A suite's arm loop can take the WHOLE SUITE down when the two sides return different
+numbers of results, and the same shape may exist in other suites.** Pre-existing in
+`tools/conformance/suites/recall-strings.mjs`; found by J48-3 by MUTATION, not by reading. Before
+its fix, a side that returned fewer results handed `undefined` to `scrub` and the run died with
+`TypeError: Cannot read properties of undefined (reading 'split')` from inside `run()`, with
+every other case in the file unreported — a real one-sided construction failure arriving as a
+stack trace instead of as a named case. J48-3 fixed that one loop (a missing arm is now the
+string `NO ANSWER: this side returned N result(s)…`). **What is registered is the rest of the
+file set:** every other suite that walks `Math.max(py.results.length, nd.results.length)` has
+the same exposure and none of them was audited in this job.
+
+<!-- provenance: value=1 failed, 2840 passed, 4 skipped, 2 deselected, 3 xfailed; commit=2efbc9d, the branch as it was handed to this review, before the repair in 94450b1; command=.venv/bin/python -m pytest runtime-py/tests -q -->
+
+**(uu) A `platform-checked:` marker belongs to whatever declaration it is CONTIGUOUS with, so
+inserting a function between a marker and its function silently transfers the marker — and it
+did, on this branch.** Found by this review by running the gate, and it is the reason
+`.venv/bin/python -m pytest runtime-py/tests -q` on the branch as handed over printed
+`1 failed, 2840 passed, 4 skipped, 2 deselected, 3 xfailed`, not the `2841 passed` the handoff
+claimed. J48-3 inserted `sealedProbe` between `run`'s `platform-checked:` JSDoc and `run`;
+`test_platform_assumption_gate.py`'s `_blocks` walks back over contiguous non-blank lines, so
+`sealedProbe` inherited a marker written about a different function and `run` — which chmods
+`locked` to `0o000` at two call sites — lost its own and went red at `~522`. **Fixed in this
+commit**, because the branch has to pass its own gate: the marker is back above `run` and
+`sealedProbe` carries one it earns on its own. What is registered is the FRAGILITY: the gate
+asks its question of a block boundary that any later insertion can move, and it cannot tell a
+marker that was written about the block from one that merely ended up above it. A gate whose
+subject is silent breakage should not itself break silently.
+
+**(vv) The lazy project layer changes WHICH STORE A LATER SESSION BINDS, not only what is left
+on disk — and nothing pins that.** The walk looks for an *existing* `.bantamkit/memory`, so what
+the old eager layer created, the next session found. Measured this review at this commit, same
+fixture both ways — a bare server start in `proj/sub` that saves nothing, then a real store
+created at `proj/`, then `resolve_project_store('proj/sub')`:
+
+| | binds |
+|---|---|
+| `163fb49` (eager) | `proj/sub/.bantamkit/memory` |
+| `2efbc9d` (lazy) | `proj/.bantamkit/memory` |
+
+The new answer is the better one — a session that saved nothing no longer votes on where the
+next one binds — and `docs/memory.md` and `docs/mcp.md` now carry it. It is registered because
+job48's cases prove only *nothing was left behind*; not one of them asserts the binding that
+follows from it, and that is the half an operator actually experiences.
+
+**(ww) `--store <missing>` now means two different things in the two programs of this product,
+consistently on both runtimes.** Measured this review, four processes: `bantamkit-memory status
+--store <missing>` creates the store (Python YES, Node YES); `bantamkit-mcp --store <missing>`
+designates it and creates nothing (Python NO, Node NO). This is DELIBERATE — J48-1 and J48-2
+both argue it at length, and `memorycli.mjs`'s `status-creates-a-missing-store` pins the
+creating half — and it is an asymmetry between two PROGRAMS, not between two runtimes, so it is
+not a `docs/porting.md` divergence and `ruled-different` correctly stayed at 156. Registered
+because until this commit it existed only inside two source docstrings; `docs/memory.md` now
+states it where an operator reads.
+
+**(xx) The restored `--store` validation shipped with NO conformance case and no test of its
+sentence on either side.** `grep` over `tools/conformance/suites/`, `runtime-py/tests/` and
+`runtime-ts/test/` finds nothing driving `--store` at a regular file or at an unreachable path.
+What exists is `test_statusline.py::test_the_flag_returns_before_anything_a_server_would_touch`,
+which asserts `returncode != 0` — the refusal BIT, on Python only. Verified by hand at this
+commit, four processes, and the two sentences and both exit codes are identical:
+
+```
+--store is not a directory: <path>                                        exit 1, both
+--store is unreachable: <path>: Permission denied; nothing was created    exit 1, both
+```
+
+By this repository's own rule — *the gate is a conformance case, not a promise* — that parity is
+a claim nobody can rerun. The `unreachable` arm additionally depends on `e.strerror` matching
+`os.strerror`, which `pyfs`' table gets right today and which `store.mjs`'s `strerror table`
+case pins in isolation, but nothing joins the two. NOT fixed here: adding a case is
+implementation work and the reviewer does not write the gate he is reviewing. It is the first
+thing a follow-up job should land.
+
+**(yy) A doc that quotes a runtime sentence verbatim has no gate, and one went stale in this
+very job.** `docs/mcp.md`'s **designated** row quoted `No memory store existed at or above
+<start>, so the empty <path> was created for this session.` J48-1 and J48-2 changed that
+sentence in both runtimes and J48-3 pinned the new one per side in `recall-strings.mjs` — and
+the doc still carried the old one when the branch was handed to review. `test_doc_commands_gate.py`
+checks that a documented COMMAND names a program that exists; nothing checks that a documented
+SENTENCE is a sentence either runtime still produces. Amended by this commit in `docs/mcp.md`
+and `docs/memory.md`; the gate is not built, and the quoted strings this repository's docs carry
+were not enumerated.
+
+<!-- provenance: value=2841 passed, 4 skipped, 2 deselected, 3 xfailed, 0 failures; commit=2efbc9d plus this commit's working tree; command=.venv/bin/python -m pytest runtime-py/tests -q -->
