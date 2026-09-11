@@ -42,7 +42,7 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const name = 'dream';
@@ -639,6 +639,23 @@ function scenarios() {
  * emptied `BANTAMKIT_MEMORY_DIR`, each under that side's own bed.
  */
 
+/**
+ * A bed-relative path whose `..` segments are left UNRESOLVED.
+ *
+ * `path.join` normalises `..` away, and one scenario below is nothing but a `..` standing
+ * behind a symlink — where popping it lexically, before the symlink is followed, is the
+ * whole defect. Joining it here would resolve the bed's shape in the HARNESS and hand both
+ * runtimes a path with nothing left to get wrong. So the segments before the first `..` are
+ * joined and the rest are appended with the platform separator, and the runtime is the thing
+ * that resolves them.
+ */
+function underBed(root, rel) {
+  const parts = rel.split('/');
+  const cut = parts.indexOf('..');
+  if (cut === -1) return join(root, ...parts);
+  return [join(root, ...parts.slice(0, cut)), ...parts.slice(cut)].join(sep);
+}
+
 /** One bed: directories, files, symlinks, then pinned mtimes. Paths are bed-relative. */
 function materialiseBed(root, spec) {
   mkdirSync(root, { recursive: true });
@@ -832,6 +849,23 @@ function outcomeScenarios() {
       ),
       home: 'home',
       start: 'proj',
+    },
+    {
+      // J47-3B. The `..` spelling, which the symlink bed above does NOT reach. `fs.realpathSync`
+      // hands its argument to `path.resolve` first, and `path.resolve` pops `..` LEXICALLY —
+      // before the symlink in front of it is followed; `os.path.realpath` and the kernel pop it
+      // AFTER. So `<bed>/link/..` is `<bed>/deep` to the reference and `<bed>` to Node, and on
+      // this bed Node bound two layers and consolidated where Python bound one and did not:
+      //   node    {"labels":["project","profile"],"status":"previewed","merged":1,"consumed":1}
+      //   python  {"labels":["project"],"status":"no-profile-layer","merged":0,"consumed":0}
+      // `home` runs through `underBed` rather than `join` for that reason — see the note there.
+      label: 'one directory is one layer when HOME is spelled through a symlink AND a `..`',
+      spec: merge(store('deep/.bantamkit/memory', ownFacts), {
+        dirs: ['deep/real', 'deep/work'],
+        symlinks: [['link', 'deep/real']],
+      }),
+      home: 'link/..',
+      start: 'deep/work',
     },
   ];
 }
@@ -1087,14 +1121,14 @@ export async function run(ctx) {
     }
     const request = (side) => ({
       op: 'outcome',
-      start: b64(join(roots[side], start)),
+      start: b64(underBed(roots[side], start)),
       bed: roots[side],
       today: OUTCOME_TODAY,
       dry_run: false,
     });
     const envFor = (side) => ({
-      HOME: join(roots[side], home),
-      USERPROFILE: join(roots[side], home),
+      HOME: underBed(roots[side], home),
+      USERPROFILE: underBed(roots[side], home),
       BANTAMKIT_MEMORY_DIR: '',
     });
     answers.py = ctx.runPython(REF, request('py'), envFor('py'));
@@ -1123,6 +1157,14 @@ export async function run(ctx) {
     ];
     const both = outcomes[
       'two different directories are two layers, and the colliding fact consolidates'
+    ];
+    // J47-3B: the `..` bed gets a literal of its own for the same reason the dup bed has
+    // one. The differential above reddens for the defect as it actually was — Node lexical,
+    // Python kernel — but a SYMMETRIC regression, both sides popping `..` before the symlink,
+    // leaves it green, and the two literals already here would stay green too: their beds
+    // have no `..` in them, so `path.resolve` answers correctly on both.
+    const dots = outcomes[
+      'one directory is one layer when HOME is spelled through a symlink AND a `..`'
     ];
     const decision = (a) => ({
       labels: (a.labels ?? []).map(unb64),
@@ -1153,6 +1195,12 @@ export async function run(ctx) {
         decision(both.node),
         'two distinct directories still bind TWO layers and still consolidate across them',
         { labels: ['project', 'profile'], status: 'consolidated', merged: 1, consumed: 1 },
+      ),
+      ...literalCases(
+        decision(dots.py),
+        decision(dots.node),
+        'a `..` behind a symlink still names ONE directory, so it is still ONE layer',
+        { labels: ['project'], status: 'no-profile-layer', merged: 0, consumed: 0 },
       ),
     );
   }
