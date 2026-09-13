@@ -278,6 +278,57 @@ an operator records one with its date and its source. That is the default answer
 not an error path, and it is asserted as a typed literal on both sides — a differential between
 two runtimes reading one file cannot see a rate pasted into it.
 
+## The record rule, the session row, and the refusals
+
+Until 2026-09-12 the served description was 5,985 characters, and Claude Code truncates a
+tool description at 2,048 — mid-sentence, without an error, keeping the input schema. The
+description is now 1,883 characters and says the one thing a caller must know first — narrow
+`root` — while the reference material it carried lives here (job50, J50-3; register rows
+J49-B4 and J49-B8).
+
+**Narrow `root`; there is no summary mode.** A whole-corpus call answers a row per session
+ever recorded — about 83 kB on this machine (J49-B8) — and blows the host's tool-result
+cap. A summary mode (J49-F7) was killed on 2026-09-12: the tool is narrowed by pointing
+`root` at one project's slug directory under `~/.claude/projects`, not by a flag.
+
+**The only reader of the counts.** `docs/eventlog.md`'s four event streams record decisions,
+injections, tool calls and the host's arrival log, and NONE of the four carries a token
+count. Every figure here is the API's own `usage` block; the byte-derived `est` figures in
+`tools/ledger/token-ledger.mjs` are deliberately NOT served.
+
+**A record is counted only when** it carries a non-empty `sessionId`, `type` of `assistant`, a
+`message.usage` object holding ALL FOUR of `input_tokens`, `cache_creation_input_tokens`,
+`cache_read_input_tokens` and `output_tokens` as non-negative integers below 2**53, and a
+non-empty `requestId`. The host's other `usage` keys (`service_tier`, `iterations`,
+`server_tool_use`) are ignored, but a MISSING class is `malformed-usage` and never a zero,
+because a class defaulted to zero is a token invented. A blank line is not a record and is
+counted nowhere.
+
+**The session row** carries `cwd` (the first one seen), `first` and `last` (the minimum and
+maximum timestamp, as strings), `requests`, `sidechain_requests` and the four classes.
+`sidechain_requests` is stated rather than hidden because it is an ASYMMETRY a caller would
+otherwise discover late: a subagent's transcript carries its PARENT's `sessionId` with
+`isSidechain: true`, so its cost lands in the parent session and is not a session of its own.
+
+**Order is a property of the tree.** Sessions are ordered by `first` as a STRING then by
+session id, both in code-point order, never by parsed time — the host writes ISO-8601 with a
+`Z`, for which byte order already is time order. Directory listings are sorted by name in
+code-point order at every level, so the walk order — which decides which copy of a duplicated
+`requestId` counts — is a property of the tree and not of the filesystem.
+
+**What refuses, and what does not.** Four argument failures are refused with their own
+sentences and never as a partial answer: an EMPTY `root` — which passes JSON-schema `string`
+and would otherwise resolve to the server's own working directory — a `root` that is missing,
+a `root` that is a file, and an EMPTY `model`, which would otherwise be reported as "no rate
+recorded for model ''" and read as a missing price rather than a missing argument. Nothing
+about the CONTENT of the tree refuses: a transcript that will not decode, a line that will not
+parse and a record with no usage are omissions and are counted, because a ledger that refused
+over one of eight hundred transcripts would have said nothing about the other seven hundred
+and ninety-nine. The one content failure that DOES refuse is a token total above 2**53-1,
+which is exact in Python and rounded in JavaScript: the place the two runtimes would part
+company is a refusal, not a wrong number. Deterministic: the tool reads `root`, and `prices`
+or `$BANTAMKIT_PRICES` when a `model` is named.
+
 ## First run on the real corpus — 2026-09-10T22:36Z, both runtimes, `~/.claude/projects`
 
 The gate reads a fixture; this is the tool doing the job it was built for. Read-only, nothing

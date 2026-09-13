@@ -10,7 +10,9 @@
  *   * the rewritten checkpoint — `json.dumps(document, indent=2) + "\n"`, `.tmp` then
  *     `replace()`;
  *   * the `.log.jsonl` line — `json.dumps(record, sort_keys=True) + "\n"`, append mode,
- *     **never read back**, so a wrong line is never noticed by the code that wrote it;
+ *     read back by exactly ONE thing since job50/F6 — `briefed()`, which looks at the `unit`
+ *     and `event` keys and nothing else — so a wrong line is still never noticed by the
+ *     code that wrote it;
  *   * the returned dict, which the MCP surface hands straight to the model.
  *
  * THE ensure_ascii RULING. `json.dumps` defaults to `ensure_ascii=True` and
@@ -51,7 +53,7 @@
  * accounting line is appended BEFORE the atomic rename, so a partial failure can lose the
  * commit but never the accounting.
  */
-import { loadSchema } from './assets.js';
+import { AssetNotFound, loadSchema, loadToolAsset } from './assets.js';
 import { schemaError } from './contract.js';
 import {
   pyAppendText,
@@ -63,14 +65,34 @@ import {
   pyWithSuffix,
   pyWriteText,
   pyReadText,
+  PyUnicodeDecodeError,
 } from './memory/pyfs.js';
 import { dumpJson, fromJs, parseJson, PyJSONDecodeError, reprValue, type PyValue } from './pyjson.js';
+import { checkSchema, PyJsonSchemaUnsupported } from './pyjsonschema.js';
 
 export const SCHEMA_NAME = 'shiftwork-checkpoint';
+/** The accounting line's shape lives on the TOOL asset, not in a second copy here (F5). */
+const TOOL_ASSET = 'shiftwork_clock_out';
+/**
+ * J50-9A/9B: the one sentence for a pack that cannot supply the accounting shape. FIXED —
+ * no path, no exception text, no unit — read out of `ACCOUNTING_SHAPE_UNREADABLE` in the
+ * Python module byte for byte, so a differential case can compare the two; which of the
+ * shapes failed is not said, because the property is the same for all of them (see
+ * `accountingSchema`).
+ */
+export const ACCOUNTING_SHAPE_UNREADABLE =
+  "cannot clock out: the shiftwork_clock_out tool asset cannot be read as the " +
+  "accounting line's shape, so it allows no accounting line";
 /** The driver's SUCCESS test. */
 export const TERMINAL_UNIT_STATUS: ReadonlySet<string> = new Set(['done', 'dropped']);
 /** The schema's `maxItems` — older entries fall off the ring. */
 export const HISTORY_RING_SIZE = 5;
+/**
+ * F6: the `event` value of the ledger line `clockIn` appends when it issues a brief. The word
+ * is the register's own — `clock_in` answers `result: "brief"` — so the ledger names the
+ * thing it recorded with the same word the wire used. `BRIEF_EVENT` in `shiftwork.py`.
+ */
+export const BRIEF_EVENT = 'brief';
 
 type PyDict = Extract<PyValue, { t: 'dict' }>;
 type PyList = Extract<PyValue, { t: 'list' }>;
@@ -197,6 +219,97 @@ export interface ClockOptions {
   now?: number;
 }
 
+// ------------------------------------------------------------------------ F6: the ledger
+
+/**
+ * `Path(str(path) + ".log.jsonl")` — string concatenation on the NORMALIZED path, not
+ * `with_suffix`, so `cp.json` gets `cp.json.log.jsonl` and not `cp.log.jsonl`.
+ */
+function logPath(path: string): string {
+  return `${path}.log.jsonl`;
+}
+
+/**
+ * `_record_brief`: append the brief line — best effort, NEVER throws for a store that
+ * refuses writes, never changes the brief.
+ *
+ * One line per call. A unit clocked in twice before it clocks out (a relaunch after a
+ * crashed subagent) leaves two brief lines, and a reader should conclude exactly that. The
+ * ledger records events, not state.
+ *
+ * THE NARROWNESS IS THE PORT OF `except OSError`. `pyAppendText` converts every filesystem
+ * failure into a `PyOSError` — a read-only directory, a directory where the file belongs, a
+ * full disk — and that is the ONLY class swallowed here. Anything else out of this block (a
+ * `TypeError` from a record that could not be dumped, a bug in this function) is not an
+ * OSError in Python and is rethrown here, because hiding it would leave every unit
+ * `briefed: false` forever with no red anywhere. The same `instanceof PyOSError` test the
+ * two write legs of `clockOut` already use, for the same reason.
+ */
+function recordBrief(log: string, unitId: string, role: PyValue, now: number): void {
+  const record = new Map<string, PyValue>([
+    ['event', str(BRIEF_EVENT)],
+    ['ts', str(timestamp(now))],
+    ['unit', str(unitId)],
+    ['role', role],
+  ]);
+  try {
+    pyAppendText(log, `${dumpJson({ t: 'dict', v: record }, { sortKeys: true })}\n`);
+  } catch (e) {
+    if (!(e instanceof PyOSError)) throw e;
+  }
+}
+
+/**
+ * `str.splitlines()` — the boundaries CPython splits on, which are more than `\n`. The
+ * CRLF and bare CR forms are already folded by `pyReadText` (universal newlines, as
+ * `Path.read_text` folds them), so they do not need to be here, but nothing is lost by it.
+ */
+const SPLITLINES = /\r\n|[\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]/;
+
+/**
+ * `_briefed`: was a brief issued for `unitId` since its last clock-out? Read off the ledger.
+ *
+ * Walk the ledger in order, tracking only lines that name this unit: a brief line sets the
+ * flag, an accounting line (any line that is not a brief event) clears it. The answer is the
+ * flag at the end — so a clock-out CONSUMES the brief: brief, blocked, re-run without a
+ * clock_in reads `false`; brief, blocked, clock_in, done reads `true`. Detectable false
+ * negatives (a retried clock-out's duplicate line) beat undetectable false positives (an
+ * inline re-run marked briefed because a brief was issued once, ever).
+ *
+ * Reads the ledger the way a reader must: a missing or unreadable log is `false`, a line
+ * that is not JSON or not an object is skipped, never fatal. `record.get("unit") != unit_id`
+ * is a Python `!=`, so a `unit` that is not a string never equals the id; and the read is
+ * `except OSError` — a ledger that does not DECODE as UTF-8 raises out of Python's
+ * `clock_out` (`UnicodeDecodeError` is a `ValueError`), so `PyUnicodeDecodeError` is
+ * rethrown here for the same reason `recordBrief` rethrows: the port does not swallow what
+ * the reference does not.
+ */
+function briefed(log: string, unitId: string): boolean {
+  let content: string;
+  try {
+    content = pyReadText(log);
+  } catch (e) {
+    if (!(e instanceof PyOSError)) throw e;
+    return false;
+  }
+  let flag = false;
+  for (const line of content.split(SPLITLINES)) {
+    let record: PyValue;
+    try {
+      record = parseJson(line);
+    } catch (e) {
+      if (!(e instanceof PyJSONDecodeError)) throw e;
+      continue;
+    }
+    if (record.t !== 'dict') continue;
+    const unit = record.v.get('unit');
+    if (unit === undefined || unit.t !== 'str' || unit.v !== unitId) continue;
+    const event = record.v.get('event');
+    flag = event !== undefined && event.t === 'str' && event.v === BRIEF_EVENT;
+  }
+  return flag;
+}
+
 // ----------------------------------------------------------------------------- clock_in
 
 /**
@@ -212,7 +325,7 @@ export interface ClockOptions {
  * all-terminal test before the cursor lookup — so an empty plan reports success rather than
  * escalating on its dangling cursor, because `all([])` is true.
  */
-export function clockIn(checkpoint: string): PyValue {
+export function clockIn(checkpoint: string, options: ClockOptions = {}): PyValue {
   const { document, refusal } = readValid(pyJoin(checkpoint));
   if (refusal !== null) return refusal;
   const doc = document!;
@@ -240,6 +353,10 @@ export function clockIn(checkpoint: string): PyValue {
       ['reason', str(`cursor ${cursor} names no unit`)],
     ]);
   }
+  // F6: the brief is issued, so say so in the ledger — best effort, and only on this branch:
+  // a refusal above issued nothing and therefore records nothing. `pyJoin` is the same
+  // normalisation `clockOut` applies before it builds ITS log path, so the two land in one file.
+  recordBrief(logPath(pyJoin(checkpoint)), cursor, field(unit, 'role'), options.now ?? Date.now() / 1000);
   return dict([
     ['result', str('brief')],
     ['unit', unit],
@@ -345,6 +462,132 @@ function modelRefusal(document: PyDict, unitId: string, unit: PyDict, accounting
 }
 
 /**
+ * The accounting line's shape, read off the clock_out TOOL asset — never a second copy.
+ *
+ * J50-7 put the definition on `parameters.properties.accounting` of the tool manifest,
+ * which is what the wire advertises; but the MCP call path enforces only the argument
+ * kind (`dict`), so a host is held to what it was promised only if this function reads
+ * the same file. The declared value is `anyOf: [object, null]`. The null arm is the
+ * caller's (a null line is legal and is not an audit record), so only the object arm is
+ * validated here, wrapped under the key `accounting` so the pointed error names
+ * `accounting` / `accounting/<key>` exactly the way `checkpoint invalid:` names a path —
+ * one renderer for every schema refusal this module makes, not a second one.
+ *
+ * Returns null when the pack CANNOT SUPPLY the shape (J50-9A, ported J50-9B). Reading the
+ * asset gave this module a dependency the roles gate never had, and a `BANTAMKIT_ASSETS`
+ * pack trimmed to `schemas/` — the very pack both runtimes' roles tests build — made
+ * `clockOut` die on `AssetNotFound` where the module promises a structured refusal. The
+ * caller turns null into `ACCOUNTING_SHAPE_UNREADABLE`, fail CLOSED, per J47-4: a
+ * declaration this code cannot read is not a licence. MISSING AND MALFORMED ARE ONE CASE,
+ * not two, because the property is one — the line cannot be checked, so it is not allowed —
+ * and a second sentence would either render an exception message the two runtimes spell
+ * differently, or split one property into per-shape cases that can each be missed. The
+ * shapes folded in, each MEASURED to throw out of `clockOut` before this existed: no
+ * `tools/` dir or no file (`AssetNotFound`); bytes that are not UTF-8
+ * (`PyUnicodeDecodeError`) or not JSON (`SyntaxError`); a manifest without
+ * `parameters.properties.accounting.anyOf` at each step of that path (`TypeError`, five
+ * ways); an `anyOf` with no object arm (a hand-thrown `Error`); and an object arm the
+ * validator refuses as a schema (`PyJsonSchemaUnsupported`, checked here so
+ * `accountingRefusal` only ever validates a schema).
+ */
+function accountingSchema(): Record<string, unknown> | null {
+  let manifest: unknown;
+  try {
+    manifest = loadToolAsset(TOOL_ASSET);
+  } catch (e) {
+    // `except (AssetNotFound, OSError, ValueError)`: no `tools/` dir or no file; a file the
+    // OS will not hand over; bytes that are not UTF-8 (`UnicodeDecodeError`, a `ValueError`
+    // there and `PyUnicodeDecodeError` here); text that is not JSON (`JSONDecodeError` there,
+    // `SyntaxError` out of `JSON.parse` here). Anything else is a defect and still escapes.
+    if (
+      e instanceof AssetNotFound ||
+      e instanceof PyOSError ||
+      e instanceof PyUnicodeDecodeError ||
+      e instanceof SyntaxError
+    ) {
+      return null;
+    }
+    throw e;
+  }
+  // `isinstance(declared, dict) and key in declared`, at each step of the path. A JSON
+  // array is not a dict, and neither is `null` — `typeof null === 'object'` is not a policy.
+  let declared: unknown = manifest;
+  for (const key of ['parameters', 'properties', 'accounting', 'anyOf']) {
+    if (!isDict(declared) || !(key in declared)) return null;
+    declared = declared[key];
+  }
+  if (!Array.isArray(declared)) return null;
+  // `next((a for a in declared if isinstance(a, dict) and a.get("type") == "object"), None)`
+  const arm = declared.find((a) => isDict(a) && a.type === 'object');
+  if (arm === undefined) return null;
+  const schema = { type: 'object', properties: { accounting: arm } };
+  // `check_schema`, taken HERE so `accountingRefusal` only ever validates a schema. The
+  // port's `validate` runs the same check first and would throw the same class out of
+  // `schemaError`; catching it there would make one property two sites.
+  try {
+    checkSchema(fromJs(schema));
+  } catch (e) {
+    if (e instanceof PyJsonSchemaUnsupported) return null;
+    throw e;
+  }
+  return schema;
+}
+
+/** `isinstance(x, dict)` for a value that came out of `JSON.parse`. */
+function isDict(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * F5 (job50): an accounting line that does not fit its declared shape is refused.
+ *
+ * Returns the refusal sentence, or null when the clock-out may proceed. The sentence is
+ * a fixed frame around the SAME `schemaError` rendering the checkpoint refusals use
+ * (`checkpoint invalid: …`, `refused to write: …`), over the same `{"accounting": …}`
+ * wrapper the reference builds, so the differential compares like with like. The frame
+ * is J50-8's, read out of `_accounting_refusal` and reproduced to the character:
+ * `unit {unit_id} in role {role} reported an accounting line the schema refuses: {problem}`.
+ *
+ * Checked BEFORE anything is written: no accounting line, no cursor advance, the
+ * checkpoint byte-unchanged. Same posture as `modelRefusal`, same place in `clockOut`.
+ *
+ * THREE RULINGS, decided in Python and binding here:
+ *
+ *   * ORDER. The roles gate runs first and keeps its sentence; this check runs second. A
+ *     non-string `model` under a role `job.roles` names gets the ROLES sentence (`reported
+ *     model 5, which job.roles.implementer does not allow…`); the schema's `model: string`
+ *     fires only when the roles gate is silent (no map, or a role the map omits).
+ *   * NULL STAYS LEGAL. `accounting: null` is not validated — the container is not
+ *     required. In Node that is three spellings of nothing: the JS `null`, an omitted
+ *     argument (`undefined`), and the tagged `{t: 'null'}` the MCP server hands over.
+ *   * ODD KEYS PASS. `additionalProperties: true` — a key the schema does not name is
+ *     written verbatim. Only the NAMED keys have a type, and only `tokens` and
+ *     `duration_ms` are required.
+ *   * NO SHAPE, NO LINE (J50-9A). When the pack cannot supply the shape the line is
+ *     refused with `ACCOUNTING_SHAPE_UNREADABLE`, in this same place, writing nothing —
+ *     not skipped. Skipping is the fail-open this file has already had once (job47's
+ *     `modelRefusal` returning unconstrained on an unreadable declaration). A null line
+ *     is still not validated, so a pack with no `tools/` can clock out a unit that
+ *     reports no accounting.
+ *
+ * One measured fact reproduced rather than reasoned about: under 2020-12 semantics a float
+ * that is a whole number (`1234.0`) IS an `integer`; `12.5`, `"1234"`, `true` and `-1` are
+ * not. `pyjsonschema` already carries that rule (`instance.t === 'float' &&
+ * Number.isInteger(instance.v)`), and the float only survives to reach it on the
+ * parsed-from-bytes route — a JS-object `1234.0` is `1234` before this code sees it.
+ */
+function accountingRefusal(unitId: string, unit: PyDict, accounting: unknown): string | null {
+  if (accounting === null || accounting === undefined) return null;
+  const line = asPyValue(accounting);
+  if (line.t === 'null') return null;
+  const schema = accountingSchema();
+  if (schema === null) return ACCOUNTING_SHAPE_UNREADABLE;
+  const problem = schemaError(dumpJson(dict([['accounting', line]])), schema);
+  if (problem === null) return null;
+  return `unit ${unitId} in role ${text(field(unit, 'role'))} reported an accounting line the schema refuses: ${problem}`;
+}
+
+/**
  * Apply the cursor unit's result, validate the WHOLE mutated document, write atomically.
  *
  * `unitId` must name the cursor unit — the contract is execute-the-cursor (driver parity),
@@ -353,7 +596,10 @@ function modelRefusal(document: PyDict, unitId: string, unit: PyDict, accounting
  * any mutation and before the accounting line. Extended 2026-09-11 (job47): so is a
  * `job.roles` value for that role that is not a list of model identifiers — an unreadable
  * declaration allows no model, and it is refused in the same place, by the same structured
- * return, writing nothing. Mutations: set the unit's status, advance
+ * return, writing nothing. Extended 2026-09-13 (job50/F5): and so is an accounting line
+ * that does not fit the shape the `shiftwork_clock_out` asset declares — checked after the
+ * roles gate, before any mutation, same structured return, nothing written; a null
+ * accounting is not validated and stays legal. Mutations: set the unit's status, advance
  * `plan.cursor` to the first non-terminal unit in PLAN order (`depends_on` is ignored),
  * shallow-merge `handoffPatch` into `handoff`, push `historyEntry` onto the 5-entry ring.
  *
@@ -387,6 +633,8 @@ export function clockOut(
   if (unitId !== cursor) return errorResult(`unit ${unitId} is not the cursor unit ${cursor}`);
   const wrongModel = modelRefusal(doc, unitId, unit, accounting);
   if (wrongModel !== null) return errorResult(wrongModel);
+  const badLine = accountingRefusal(unitId, unit, accounting);
+  if (badLine !== null) return errorResult(badLine);
 
   unit.v.set('status', str(status));
   const remaining = subList(plan, 'units').v.filter(
@@ -415,11 +663,14 @@ export function clockOut(
   ]);
   for (const [key, value] of asPatch(accounting)) record.set(key, value);
 
-  // `Path(str(path) + ".log.jsonl")` — string concatenation on the NORMALIZED path, not
-  // `with_suffix`, so `cp.json` gets `cp.json.log.jsonl` and not `cp.log.jsonl`.
-  const logPath = `${path}.log.jsonl`;
+  const log = logPath(path);
+  // F6: `briefed` is MEASURED off the ledger, AFTER the orchestrator's keys are merged, so the
+  // runtime's answer wins over a self-reported one — the order is load-bearing. It is written
+  // on every line, `accounting: null` included: the base shape (ts/unit/role/status) is the
+  // runtime's, and so is this field. Never a refusal.
+  record.set('briefed', { t: 'bool', v: briefed(log, unitId) });
   try {
-    pyAppendText(logPath, `${dumpJson({ t: 'dict', v: record }, { sortKeys: true })}\n`);
+    pyAppendText(log, `${dumpJson({ t: 'dict', v: record }, { sortKeys: true })}\n`);
   } catch (e) {
     if (!(e instanceof PyOSError)) throw e;
     return errorResult(`accounting log unwritable, checkpoint untouched: ${e.message}`);
@@ -445,7 +696,7 @@ export function clockOut(
     ['unit', str(unitId)],
     ['status', str(status)],
     ['cursor', field(plan, 'cursor')],
-    ['log', str(logPath)],
+    ['log', str(log)],
   ]);
 }
 

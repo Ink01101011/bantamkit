@@ -50,10 +50,8 @@ const SERVED_ORDER = [
   'build_identity',
   'bantamkit_status',
   'memory_compact',
-  'bantamkit_read',
   'skill_audit',
   'memory_dream',
-  'repo_map',
   'token_ledger',
 ];
 
@@ -474,18 +472,22 @@ test('a price table that will not load stops rather than reporting no rate', () 
 
 // ------------------------------------------------------------------- the MCP surface
 
-test('the tool is served fourteenth and its schema is the asset', async () => {
+test('the tool is served twelfth and its schema is the asset', async () => {
+  // Twelfth, not fourteenth, since `bantamkit_read` and `repo_map` left the roster (job50 I5,
+  // 2026-09-12). The index is pinned rather than `at(-1)` for the reason `skill_audit`'s node
+  // gives: this node is about where `token_ledger` sits, and a later tool moving in behind it
+  // must not be able to satisfy it. Re-derived from `tools/list`, not renumbered by hand.
   const { memory, log } = make(room());
   const client = await connect(memory, log);
   const listed = (await client.listTools()).tools;
   assert.deepEqual(listed.map((t) => t.name), SERVED_ORDER);
-  assert.equal(listed[13].name, 'token_ledger');
+  assert.equal(listed[11].name, 'token_ledger');
   const manifest = JSON.parse(
     readFileSync(join(repoRoot, 'assets', 'tools', 'token_ledger.json'), 'utf8'),
   );
-  assert.equal(listed[13].description, manifest.description);
-  assert.deepEqual(listed[13].inputSchema, manifest.parameters);
-  assert.deepEqual(listed[13].outputSchema, manifest.output_schema);
+  assert.equal(listed[11].description, manifest.description);
+  assert.deepEqual(listed[11].inputSchema, manifest.parameters);
+  assert.deepEqual(listed[11].outputSchema, manifest.output_schema);
 });
 
 test('the reply is the module own document', async () => {

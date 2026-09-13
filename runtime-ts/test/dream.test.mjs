@@ -881,18 +881,19 @@ const callDream = async (client, args) => {
   return [answer.isError === true, answer.content[0].text];
 };
 
-test('memory_dream is served twelfth and its schema is the asset', async () => {
+test('memory_dream is served eleventh and its schema is the asset', async () => {
   const dir = bed();
   const [project, profile] = divergedPair(dir);
   const memory = memoryOver(project.root, profile);
   const client = await connect(memory, new EventLog(join(dir, 'log.jsonl'), CAP_BYTES, () => FIXED_MS));
   const listed = (await client.listTools()).tools;
 
-  // Twelfth of THIRTEEN since J45-11 appended `repo_map`, so the index is pinned rather
-  // than `at(-1)`: this node is about where `memory_dream` sits, and a later tool moving
-  // in behind it must not be able to satisfy it.
-  assert.equal(listed[11].name, 'memory_dream');
-  assert.equal(listed.length, 14);
+  // Eleventh of TWELVE since job50 I5 retired `bantamkit_read` (tenth) and `repo_map`
+  // (thirteenth) — index and length re-derived from a stdio `tools/list` on 2026-09-13
+  // (J50-16). The index is pinned rather than `at(-1)`: this node is about where
+  // `memory_dream` sits, and a later tool moving in behind it must not be able to satisfy it.
+  assert.equal(listed[10].name, 'memory_dream');
+  assert.equal(listed.length, 12);
   const asset = JSON.parse(readFileSync(join(scratchRepoRoot(), 'assets', 'tools', 'memory_dream.json'), 'utf8'));
   const served = listed.find((t) => t.name === 'memory_dream');
   assert.equal(served.description, asset.description);

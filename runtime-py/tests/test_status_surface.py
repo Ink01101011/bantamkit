@@ -110,7 +110,7 @@ def test_the_status_tool_is_served_and_answers_active_on_a_healthy_server(tmp_pa
     assert lines[0] == HEALTHY_LINE
     assert len(lines) == 5, report
     assert lines[1].startswith("version ") and ", build sha256:" in lines[1]
-    assert lines[2] == "serving 14 tools, 1 prompt, 2 resource templates"
+    assert lines[2] == "serving 12 tools, 1 prompt, 2 resource templates"
     assert lines[3] == "memory: 0 facts in the project store, index 0 of 24000 bytes"
     assert lines[4] == "event log: off"
 

@@ -102,6 +102,70 @@ directory here is not resolved at all, and a directory that is not here means ev
 that IS here loses and is named in a `stale-version` record. That is the same discipline
 `enabled` follows — the caller is the authority on its own host.
 
+## The rest of the contract — what the served description no longer carries
+
+Until 2026-09-12 the served description was 8,161 characters, and Claude Code truncates a
+tool description at 2,048 — mid-sentence, without an error, keeping the input schema. What
+was cut was the half that says when to call the tool and how to read its answer, so the
+description is now 1,826 characters and earns the call; the reference material it carried
+lives here (job50, J50-3; the register row is J49-B4).
+
+**Identity comes from the path.** `<marketplace>/<plugin>/<version>/skills/<name>/SKILL.md`
+relative to `root`; any other shape is a skill outside a plugin, identified by its directory
+name alone and never excluded by `enabled`. A skill is reported as `<plugin>:<name>` — the
+spelling the host uses and the key `usage` is looked up by — or as `<name>` when it has no
+plugin.
+
+**The omission record.** Counted skills plus omissions account for every `SKILL.md` found. An
+omission is `{subject, count, size, what}` with subject one of `plugin-not-enabled`,
+`duplicate-skill`, `stale-version`, `unreadable-file`, `unparsed-frontmatter`; `size` is the
+bytes it would have added and `what` names the paths. Inside the resolved version
+`duplicate-skill` still covers two files claiming the same (marketplace, plugin, name), which
+is reachable only for skills outside a plugin; the last in scan order wins.
+
+**`enabled`, measured.** The plugin cache also holds disabled plugins and stale version
+directories; counting those inflated a real audit to 41 skills / 19,065 B against a true
+34 / 14,515. `enabled` takes the plugin ids as `settings.json` spells them,
+`<plugin>@<marketplace>`.
+
+**Folding and unwrapping, exactly.** A `description:` folded over several lines is joined with
+single spaces before it is counted or scanned. A value written as a whole-value quoted YAML
+scalar is unwrapped after that fold and before either — the host's parser strips those quotes
+before a session sees the description, so they are not `catalogue_bytes`, and only quotes
+INSIDE the value delimit a trigger phrase. The unwrap applies to every frontmatter key, not
+just `description:`, so `name: "s"` is the name `s` and `router: "true"` is a router. A value
+is a whole-value scalar only when it begins with `"` or `'` AND that opening quote's own
+closing quote is the value's LAST character, judged by YAML's two escape rules and no others:
+inside a `"` scalar a backslash escapes the character after it, so `\"` does not close it and
+the sequences `\"` and `\\` resolve to `"` and `\` while every other `\x` is left exactly as
+written; inside a `'` scalar a doubled `''` is one literal apostrophe, so it does not close
+it and resolves to `'`. Every other value is left as written and scanned literally: `"a" and
+"b"` begins and ends with `"` and is NOT one scalar, because its opening quote closes at
+index 2, and stripping it would weld the value into one junk phrase and destroy both real
+ones. A value that OPENS with a quote and never closes one — including one whose last quote
+is escaped — is a LITERAL: it is not unwrapped, its quote character is counted, its unpaired
+quote opens no phrase, and it is not a `frontmatter-malformed` finding, which names failures
+of the BLOCK and not of one value.
+
+**Two subjects that look alike.** `frontmatter-malformed` (a finding) is no frontmatter
+block, an unterminated one, or no `description:` key. A block that cannot be parsed at all is
+ALSO omitted as `unparsed-frontmatter` and adds nothing to `skills`; a parsed block with no
+description is a skill costing zero bytes.
+
+**Phrases.** The text of the UNWRAPPED value between `"` pairs, or between `'` pairs where the
+quote is not flanked by letters. A phrase with no letter or digit in it is ignored.
+Collisions are EXACT matches on literal quoted phrases and never a similarity score — see
+"What it will not do" above for the 820-pair measurement that refuted the score.
+
+**What refuses, and what does not.** Four argument failures are refused with their own
+sentences and never as a partial answer: an unknown `check`, a negative `budget`, a `root`
+that is missing or is a file, and an EMPTY `root` — which passes JSON-schema `string` and
+would otherwise resolve to the server's own working directory. Nothing about the CONTENT of
+the tree refuses. Deterministic: the tool reads nothing but `root`; `usage` is the caller's
+own count (`node tools/ledger/tool-usage.mjs --group skill --json`), `enabled` and
+`versions` are host truth the caller supplies, never read from the host's transcripts,
+settings or plugin registry.
+
 ## First run — 2026-09-05, this machine
 
 Root `~/.claude/plugins/cache`, `enabled` from `settings.json`, `usage` from

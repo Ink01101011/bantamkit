@@ -142,8 +142,8 @@ That position only holds if the operator has a lever, and until 2026-08-21 there
 was none: `index_budget` was on no argument parser, and the four ops above were
 reachable only by importing `MemoryStore` from Python. Both halves now exist —
 see [The operator CLI](#the-operator-cli) below and `--index-budget` on
-`bantamkit-mcp`. The MCP surface is now exactly fourteen tools, `memory_compact`
-being the ninth and `memory_dream` the twelfth; the in-process eval agent still
+`bantamkit-mcp`. The MCP surface is now exactly twelve tools, `memory_compact`
+being the ninth and `memory_dream` the eleventh; the in-process eval agent still
 binds only `memory_save` and `memory_recall`.
 
 ```python
@@ -497,6 +497,18 @@ result, and why consumption is the same one-way `facts/` → `archive/` **move**
 `compact()` makes — `MemoryStore.restore(name)` on the profile store brings any of
 it back.
 
+**And it is why the automatic trigger never applies it (J50-2A, 2026-09-12).** The
+`Stop` hook (`docs/hooks.md`) runs this pass once per change to either layer, and it
+runs it **dry** — `dreamOutcome(true)` — logging what it *would* merge as
+`action: "dream-preview"` with `wouldMerge`/`wouldConsume`, never `merged`. From
+J46-14 until that fix the trigger passed `dry_run=false`, and the paragraph above
+was describing a default nothing on the machine was using: every session ending
+inside a project sharing a name with the profile store archived the profile copy
+unasked (14 of 20 profile facts measured in `archive/`). The user ruled that a real
+merge is a deliberate `memory_dream` call and nothing else. The accepted cost is
+stated here rather than hidden: **cross-layer duplicates now accumulate until
+somebody asks**, and the hook log's `wouldMerge` is the count to watch.
+
 Read-only **grants** are never consumed. A grant is another operator's store.
 
 The budget is `compact()`'s budget, reused: the only index this can grow is the
@@ -588,7 +600,9 @@ one runtime and not the other is how the two come to disagree about a user's
 data. It takes one argument, `dry_run`, and it **defaults to true**: the profile
 store is machine-wide, so a fact archived out of it stops answering for every
 other project on this machine that has no store of its own, and the short call is
-therefore the preview. Its reply is the same prose `Memory.dream` returns and its
+therefore the preview. The automatic `Stop` trigger makes only that short call
+(J50-2A): the tool with `dry_run=false` is the one way a cross-layer merge is
+applied, and it is always somebody's decision. Its reply is the same prose `Memory.dream` returns and its
 event-log outcome is one of `consolidated`, `previewed`,
 `nothing-to-consolidate`, `refused-budget`, `no-profile-layer` — read off the
 decision, never off the reply.
@@ -835,6 +849,29 @@ keeps its `config.yaml` beside the symlink.
 
 `resolve_project_store()` reports which route was taken: `origin` is `"pin"` or
 `"walk"`, and `searched_from` is `None` under a pin, because no walk ran.
+
+**The Claude Code hook honours the pin too (J50-1, 2026-09-12).** Everything
+above describes the SERVER, which sees the pin because the host merges the
+registration's `env` into the server's process before spawning it. The hook in
+`tools/hooks/bantamkit-hook.mjs` is spawned by the same host from the host's
+OWN environment, and the registration's `env` never reaches it — so a pinned
+registration used to have the server writing a `memory_save` into the pinned
+store while `SessionStart` and `UserPromptSubmit` injected from whatever the
+walk found from cwd. The hook now reads `env.BANTAMKIT_MEMORY_DIR` off the
+`bantamkit` registration that wins for its cwd — the whole entry, by the host's
+own `local > project > user` precedence, the same walk it already uses for
+`--index-budget` (`docs/hooks.md`) — and applies it to its own environment
+before any arm binds a store, so the one resolution both share (`pinnedStore()`
+in `layers.ts`) sees the same value on both sides. Every row of the table
+above therefore holds for the hook as well, including the refusals: a pin the
+server refuses is refused by the hook in the same sentence, logged as `warn`,
+and never downgraded to the walk. Host merge semantics decide the edges: a key
+present on the winning entry overrides what the hook inherited (blank
+included), a key absent leaves it alone, and a winning entry with no `env`
+means the walk even when a lower scope pins. Not covered: `${VAR}` expansion in
+`.mcp.json` values, which the host performs and the hook does not — such a pin
+is refused as relative, loudly, rather than resolved to the wrong store.
+Node-only by construction: there is no Python hook, so no conformance case.
 
 ### What an empty recall says
 

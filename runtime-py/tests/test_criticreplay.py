@@ -7154,8 +7154,10 @@ _WINDOWS_ONLY_SKIPS = {
     "test_mcp_endpoint::"
     "test_the_endpoint_as_configured_serves_and_names_this_checkout_as_its_source",
     "test_shiftwork::test_clock_out_read_only_dir_is_a_structured_refusal",
+    # job50/F6: clock_in's brief line under a genuinely read-only store (same POSIX rig)
+    "test_shiftwork::test_clock_in_read_only_store_costs_only_the_record",
 }
-"""Every node in the suite that a Windows runner does not execute. FOUR, and priced.
+"""Every node in the suite that a Windows runner does not execute. FIVE, and priced.
 
 Each one is a scenario Windows cannot be put INTO -- the harness raises before the code
 under test is reached -- and each mark names the measurement that established that.
@@ -7212,7 +7214,7 @@ def test_the_windows_only_skips_do_not_fire_on_this_platform():
     """
     conditions = _windows_only_skip_conditions()
     assert set(conditions) == _WINDOWS_ONLY_SKIPS
-    assert len(conditions) == 4
+    assert len(conditions) == 5
     if sys.platform == "win32":
         assert all(conditions.values()), conditions
     else:

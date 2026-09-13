@@ -1358,16 +1358,17 @@ test('a versions value that is not a string is refused the way pydantic refuses 
   await client.close();
 });
 
-test('the tool is served eleventh and its schema is the assets', async () => {
+test('the tool is served tenth and its schema is the assets', async () => {
   // Registration order IS served order, and the schema comes from the manifest.
   const { memory, log } = make(room());
   const client = await connect(memory, log);
   const listed = (await client.listTools()).tools;
-  // Eleventh of THIRTEEN since job45 appended `memory_dream` and then `repo_map`, so the
-  // index is pinned rather than `at(-1)`: this node is about where `skill_audit` sits, and
-  // a later tool moving in behind it must not be able to satisfy it.
-  assert.equal(listed[10].name, 'skill_audit');
-  assert.equal(listed.length, 14);
+  // Tenth of TWELVE since `bantamkit_read` (tenth) and `repo_map` (thirteenth) left the
+  // roster (job50 I5, 2026-09-12) — eleventh of fourteen before that. The index is pinned
+  // rather than `at(-1)`: this node is about where `skill_audit` sits, and a later tool
+  // moving in behind it must not be able to satisfy it.
+  assert.equal(listed[9].name, 'skill_audit');
+  assert.equal(listed.length, 12);
   const asset = JSON.parse(readFileSync(join(repoRoot, 'assets', 'tools', 'skill_audit.json'), 'utf8'));
   const served = listed.find((t) => t.name === 'skill_audit');
   assert.equal(served.description, asset.description);

@@ -37,10 +37,8 @@ SERVED_ORDER = [
     "build_identity",
     "bantamkit_status",
     "memory_compact",
-    "bantamkit_read",
     "skill_audit",
     "memory_dream",
-    "repo_map",
     "token_ledger",
 ]
 

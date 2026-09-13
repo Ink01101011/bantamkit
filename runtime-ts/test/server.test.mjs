@@ -1,5 +1,5 @@
 /**
- * The MCP surface: the fourteen tools, the two resource templates, and the wire.
+ * The MCP surface: the twelve tools, the two resource templates, and the wire.
  *
  * WHY MOST OF THIS DRIVES A REAL PROCESS RATHER THAN CALLING A HANDLER. Everything this
  * unit adds lives in the gap between a handler's return value and the bytes on stdout —
@@ -74,6 +74,14 @@ const INITIALIZED = { jsonrpc: '2.0', method: 'notifications/initialized' };
  *
  * Both are now per-session and under the scratch bed. A test that wants the walk to reach
  * something puts it there itself, the way the layered test below does.
+ *
+ * platform-checked: the 30-second `child.kill('SIGKILL')` below is portable, for the same
+ * reason `tools/conformance/suites/wire.mjs` gives for its own: nothing waits for a HANDLER to
+ * run. The kill is a hard stop on a session already declared stuck and the `reject()` beside
+ * it reports the failure; `TerminateProcess`, which Node maps every signal to on Windows, ends
+ * the child just as `SIGKILL` does. Said here rather than left to the `skip:` string of the
+ * `RETIRED` constant further down, which the platform gate would read as a guard for this
+ * block by coincidence of spelling — a coincidence is not a consideration.
  */
 function session(requests, { args = [], env = {}, cwd = null, cli = CLI } = {}) {
   const isolated = cwd ?? join(scratch, `cwd${(seq += 1)}`);
@@ -128,6 +136,19 @@ const frames = (lines) => lines.map((l) => JSON.parse(l));
 const byId = (lines, id) => frames(lines).find((f) => f.id === id);
 const call = (id, name, args) => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } });
 
+/**
+ * RETIRED FROM THE ROSTER, NOT DELETED. `bantamkit_read` and `repo_map` left `tools/list` on
+ * the user's ruling of 2026-09-12 (job50 I5): measured over the transcript corpus neither was
+ * called, and every request re-sent their descriptions. Their assets stay in the pack with
+ * `"surfaces": []`, their handlers stay in `server.ts` marked DORMANT, and every node below
+ * that drove `bantamkit_read` THROUGH the server skips with this reason rather than being
+ * deleted: the module stays as the record of what the surface promised and what will have to
+ * hold again if the roster line returns. The skip is the honest state, not a silenced pin —
+ * the two-direction node under "the surfaces gate" pins that both are off.
+ */
+const RETIRED_TOOLS = ['bantamkit_read', 'repo_map'];
+const RETIRED = { skip: 'bantamkit_read left the MCP roster by ruling (job50 I5, 2026-09-12); handler DORMANT' };
+
 // ============================================================== the surfaces gate
 
 test('a manifest that does not claim the mcp surface is refused, not filtered', async () => {
@@ -151,9 +172,10 @@ test('the agent-only tools are absent from tools/list and unknown to tools/call'
   );
   const names = byId(lines, 2).result.tools.map((t) => t.name);
   // Registration order IS served order, so `bantamkit_status` was appended, `memory_compact`
-  // after it, `bantamkit_read` after that, `skill_audit` after that and `memory_dream` after
-  // that, and the other eleven stay exactly where they were. A list that reordered would be
-  // a wire change nobody asked for.
+  // after it, `skill_audit` after that and `memory_dream` after that, and the others stay
+  // exactly where they were. A list that reordered would be a wire change nobody asked for.
+  // `bantamkit_read` (tenth) and `repo_map` (thirteenth) left the list on 2026-09-12 (job50
+  // I5); the node below pins that.
   assert.deepEqual(names, [
     'memory_save',
     'memory_recall',
@@ -164,15 +186,67 @@ test('the agent-only tools are absent from tools/list and unknown to tools/call'
     'build_identity',
     'bantamkit_status',
     'memory_compact',
-    'bantamkit_read',
     'skill_audit',
     'memory_dream',
-    'repo_map',
     'token_ledger',
   ]);
   const refused = byId(lines, 3).result;
   assert.equal(refused.isError, true);
   assert.equal(refused.content[0].text, 'Unknown tool: document_read');
+});
+
+test('the retired tools are exactly the ruled ones, none is served, and a call to one is unknown', async () => {
+  // I5 (job50), executable in both directions — the mirror of `test_tool_manifest.py::
+  // test_the_retired_tools_are_exactly_the_ruled_ones_and_none_is_served`. `served ∩ RETIRED
+  // == ∅` alone would pass if a retired asset were deleted or renamed; `assets with [] ==
+  // RETIRED` alone would pass if the server registered a tool the manifest says is on no
+  // surface — which `fromManifest` refuses at startup, so that half is what turns a re-added
+  // roster line into a server that will not start rather than a tool that quietly ships. Put
+  // a name back on `MCP_TOOLS` tomorrow and every session in this file dies at startup; put
+  // `"mcp"` back on its asset too and THIS node and the served-name pin above go red instead.
+  // The third direction is the one the reference gets from its SDK for free and this server
+  // has to hold by hand: `ARG_MODELS` still knows both names, so `tools/call` must answer
+  // `Unknown tool:` for them off the ROSTER, not off the argument table.
+  const manifestDir = join(repoRoot, 'assets', 'tools');
+  const manifest = new Map(
+    readdirSync(manifestDir)
+      .filter((f) => f.endsWith('.json'))
+      .map((f) => JSON.parse(readFileSync(join(manifestDir, f), 'utf8')))
+      .map((a) => [a.name, a]),
+  );
+  const retired = [...manifest.values()].filter((a) => a.surfaces.length === 0).map((a) => a.name).sort();
+  assert.deepEqual(retired, RETIRED_TOOLS);
+  const { MCP_TOOLS } = await import('../dist/mcp/server.js');
+  const claiming = [...manifest.values()].filter((a) => a.surfaces.includes('mcp')).map((a) => a.name).sort();
+  assert.deepEqual(claiming, [...MCP_TOOLS].sort(), 'an asset claims mcp and is not served, or the reverse');
+
+  const { lines } = await session(
+    [
+      INIT,
+      INITIALIZED,
+      { jsonrpc: '2.0', id: 2, method: 'tools/list' },
+      call(3, 'bantamkit_read', { path: 'x.md' }),
+      call(4, 'repo_map', { root: '.' }),
+    ],
+    { args: ['--store', freshStore()] },
+  );
+  const names = byId(lines, 2).result.tools.map((t) => t.name);
+  assert.equal(names.length, 12);
+  for (const name of RETIRED_TOOLS) assert.ok(!names.includes(name), `${name} is still served`);
+  for (const [id, name] of [[3, 'bantamkit_read'], [4, 'repo_map']]) {
+    const refused = byId(lines, id).result;
+    assert.equal(refused.isError, true, name);
+    assert.equal(refused.content[0].text, `Unknown tool: ${name}`);
+    assert.equal(refused.structuredContent, undefined, 'an unknown tool carries no structured half');
+  }
+  for (const name of RETIRED_TOOLS) {
+    // The contract is kept WHOLE, not hollowed: the dormant handler here and the reference's
+    // still have the same description and both schemas to agree on.
+    const asset = manifest.get(name);
+    assert.ok(asset.description, name);
+    assert.equal(asset.parameters.type, 'object', name);
+    assert.ok(asset.output_schema, name);
+  }
 });
 
 // ================================================== memory_compact over the wire
@@ -305,7 +379,7 @@ async function readOne(args, opts = {}) {
   return answer.content[0].text;
 }
 
-test('bantamkit_read: the manifest over a markdown file is the eval pair\'s manifest with the path', async () => {
+test('bantamkit_read: the manifest over a markdown file is the eval pair\'s manifest with the path', RETIRED, async () => {
   const dir = freshStore();
   const path = markdownFixture(dir);
   assert.equal(
@@ -319,7 +393,7 @@ test('bantamkit_read: the manifest over a markdown file is the eval pair\'s mani
   );
 });
 
-test('bantamkit_read: the manifest over a docx names its one part', async () => {
+test('bantamkit_read: the manifest over a docx names its one part', RETIRED, async () => {
   const dir = freshStore();
   const path = join(dir, 'memo.docx');
   writeFileSync(path, docxBytes(para('Hello') + para('World')));
@@ -333,7 +407,7 @@ test('bantamkit_read: the manifest over a docx names its one part', async () => 
   );
 });
 
-test('bantamkit_read: the manifest over an xlsx lists every sheet including an empty one', async () => {
+test('bantamkit_read: the manifest over an xlsx lists every sheet including an empty one', RETIRED, async () => {
   const dir = freshStore();
   const path = workbookFixture(dir);
   assert.equal(
@@ -348,14 +422,14 @@ test('bantamkit_read: the manifest over an xlsx lists every sheet including an e
   );
 });
 
-test('bantamkit_read: a relative path resolves against the server cwd and is echoed as given', async () => {
+test('bantamkit_read: a relative path resolves against the server cwd and is echoed as given', RETIRED, async () => {
   const dir = freshStore();
   markdownFixture(dir);
   const reply = await readOne({ path: 'notes.md' }, { cwd: dir });
   assert.ok(reply.startsWith('notes.md (text) part 0 "document": 84 rows, numbered 0 to 83\n'), reply);
 });
 
-test('bantamkit_read: a page carries its rows numbered and the continuation line names this tool', async () => {
+test('bantamkit_read: a page carries its rows numbered and the continuation line names this tool', RETIRED, async () => {
   const path = markdownFixture(freshStore());
   assert.equal(
     await readOne({ path, part: 'document', limit: 3 }),
@@ -369,7 +443,7 @@ test('bantamkit_read: a page carries its rows numbered and the continuation line
   );
 });
 
-test('bantamkit_read: the last page ends with the last-row sentence', async () => {
+test('bantamkit_read: the last page ends with the last-row sentence', RETIRED, async () => {
   const path = markdownFixture(freshStore());
   assert.equal(
     await readOne({ path, part: 'document', offset: 82 }),
@@ -382,14 +456,14 @@ test('bantamkit_read: the last page ends with the last-row sentence', async () =
   );
 });
 
-test('bantamkit_read: a part may be named by its index and the page reports its name', async () => {
+test('bantamkit_read: a part may be named by its index and the page reports its name', RETIRED, async () => {
   const path = workbookFixture(freshStore());
   const reply = await readOne({ path, part: '0', offset: 2 });
   assert.equal(reply.split('\n')[0], `${path} "Sales" rows 2-2 of 3; each line below begins with its own row number`);
   assert.ok(reply.endsWith('\nthat was the last row of "Sales"'), reply);
 });
 
-test('bantamkit_read: the page ceiling is 3072 bytes and a cut row is reported out of band', async () => {
+test('bantamkit_read: the page ceiling is 3072 bytes and a cut row is reported out of band', RETIRED, async () => {
   const dir = freshStore();
   const path = join(dir, 'wide.txt');
   writeFileSync(path, `h\n${'y'.repeat(5000)}\nz\n`);
@@ -399,7 +473,7 @@ test('bantamkit_read: the page ceiling is 3072 bytes and a cut row is reported o
   assert.equal(lines[3], 'more rows follow: call bantamkit_read again with offset=2');
 });
 
-test('bantamkit_read: limit is clamped to 200 and offset to zero the way memory_recall clamps k', async () => {
+test('bantamkit_read: limit is clamped to 200 and offset to zero the way memory_recall clamps k', RETIRED, async () => {
   const dir = freshStore();
   const path = join(dir, 'short.txt');
   writeFileSync(path, `${Array.from({ length: 400 }, (_, i) => `r${i}`).join('\n')}\n`);
@@ -409,7 +483,7 @@ test('bantamkit_read: limit is clamped to 200 and offset to zero the way memory_
   assert.equal(lines[lines.length - 1], 'more rows follow: call bantamkit_read again with offset=200');
 });
 
-test('bantamkit_read: an offset past the end is refused with the eval pair\'s sentence', async () => {
+test('bantamkit_read: an offset past the end is refused with the eval pair\'s sentence', RETIRED, async () => {
   const path = markdownFixture(freshStore());
   assert.equal(
     await readOne({ path, part: 'document', offset: 84 }),
@@ -417,12 +491,12 @@ test('bantamkit_read: an offset past the end is refused with the eval pair\'s se
   );
 });
 
-test('bantamkit_read: an unknown part is refused by naming the file and what it has', async () => {
+test('bantamkit_read: an unknown part is refused by naming the file and what it has', RETIRED, async () => {
   const path = workbookFixture(freshStore());
   assert.equal(await readOne({ path, part: 'Nope' }), `error: no part named "Nope" in ${path}; it has: Sales, Empty`);
 });
 
-test('bantamkit_read: a NUL byte in the path is `no such file`, as pathlib answers it', async () => {
+test('bantamkit_read: a NUL byte in the path is `no such file`, as pathlib answers it', RETIRED, async () => {
   // `Path('a\x00b').exists()` is False (`os.stat` raises ValueError, pathlib swallows it);
   // Node refuses the string with `ERR_INVALID_ARG_VALUE`, which until job43 G2 was printed as
   // a fabricated `[Errno 0] ERR_INVALID_ARG_VALUE` OSError sentence.
@@ -430,7 +504,7 @@ test('bantamkit_read: a NUL byte in the path is `no such file`, as pathlib answe
   assert.equal(await readOne({ path }), `error: no such file: ${path}`);
 });
 
-test('bantamkit_read: a corrupt deflate stream is the damaged-member sentence, zlib\'s words in parentheses', async () => {
+test('bantamkit_read: a corrupt deflate stream is the damaged-member sentence, zlib\'s words in parentheses', RETIRED, async () => {
   // Until review round 3 this was an `isError` frame, `Error executing tool bantamkit_read:
   // Error -3 while decompressing data: invalid block type`, on both sides; `_read` now words
   // it, and the checked-in `corrupt-deflate.docx` (a hand-written `07 00 00 00 00` stream)
@@ -475,7 +549,7 @@ test('bantamkit_read: a corrupt deflate stream is the damaged-member sentence, z
   );
 });
 
-test('bantamkit_read: a part with no rows is refused as such, not as "numbered 0 to -1", and recorded refused-offset', async () => {
+test('bantamkit_read: a part with no rows is refused as such, not as "numbered 0 to -1", and recorded refused-offset', RETIRED, async () => {
   // MEASURED before the fix (review round 3): `offset 0 is past the end of "Empty", which
   // has 0 rows numbered 0 to -1`, on both runtimes. The Python test is
   // test_a_part_with_no_rows_is_refused_as_such_not_as_numbered_0_to_minus_1.
@@ -490,7 +564,7 @@ test('bantamkit_read: a part with no rows is refused as such, not as "numbered 0
   assert.deepEqual(records.at(-1).detail, { kind: 'xlsx', parts: 2 });
 });
 
-test('bantamkit_read: an encrypted member is refused in the reader\'s words, on the checked-in G1 fixture', async () => {
+test('bantamkit_read: an encrypted member is refused in the reader\'s words, on the checked-in G1 fixture', RETIRED, async () => {
   const path = checkedInFixtures()['encrypted-member.docx'];
   assert.equal(
     await readOne({ path }),
@@ -498,7 +572,7 @@ test('bantamkit_read: an encrypted member is refused in the reader\'s words, on 
   );
 });
 
-test('bantamkit_read: a string argument is never JSON-unwrapped — part "null" is a part name, offset "null" is not an int', async () => {
+test('bantamkit_read: a string argument is never JSON-unwrapped — part "null" is a part name, offset "null" is not an int', RETIRED, async () => {
   const path = join(freshStore(), 'w.docx');
   writeFileSync(path, docxBytes(para('one') + para('two') + para('three')));
   for (const part of ['null', '[1]', '{}']) {
@@ -513,17 +587,17 @@ test('bantamkit_read: a string argument is never JSON-unwrapped — part "null" 
   assert.match(refused.content[0].text, /int_parsing/);
 });
 
-test('bantamkit_read: a missing path is a document_error, not an exception on the wire', async () => {
+test('bantamkit_read: a missing path is a document_error, not an exception on the wire', RETIRED, async () => {
   const path = join(freshStore(), 'missing.txt');
   assert.equal(await readOne({ path }), `error: no such file: ${path}`);
 });
 
-test('bantamkit_read: a directory is refused in the reader\'s words', async () => {
+test('bantamkit_read: a directory is refused in the reader\'s words', RETIRED, async () => {
   const dir = freshStore();
   assert.equal(await readOne({ path: dir }), `error: ${dir} is a directory, not a document`);
 });
 
-test('bantamkit_read: a binary file is refused by naming what the reader saw', async () => {
+test('bantamkit_read: a binary file is refused by naming what the reader saw', RETIRED, async () => {
   const path = join(freshStore(), 'blob.bin');
   writeFileSync(path, Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n', 'latin1'), Buffer.alloc(200)]));
   assert.equal(
@@ -533,7 +607,7 @@ test('bantamkit_read: a binary file is refused by naming what the reader saw', a
   );
 });
 
-test('bantamkit_read: a pdf is refused with the Node server\'s own sentence, which is a ruling', async () => {
+test('bantamkit_read: a pdf is refused with the Node server\'s own sentence, which is a ruling', RETIRED, async () => {
   // `docs/porting.md`: the Python server reads pdf; this one names the port that is missing.
   // The sentence is compared to the reference's by `tools/conformance/suites/wire.mjs` as a
   // `ruling:` case, which is required to keep DIFFERING.
@@ -547,7 +621,15 @@ test('bantamkit_read: a pdf is refused with the Node server\'s own sentence, whi
   );
 });
 
-test('bantamkit_read: a permission error is a document_error carrying the OS text', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async () => {
+test('bantamkit_read: a permission error is a document_error carrying the OS text', {
+  // RETIRED like its siblings, but the platform clause stays LIVE beside the retirement rather
+  // than in prose. `chmodSync(path, 0)` below is honoured only as the read-only bit on win32,
+  // and root reads a 0-mode file anyway, so this must not run there — and the day the roster
+  // line returns and `RETIRED` is deleted, a sentence saying "it never runs" would have become
+  // false at the same moment the guard vanished. The clause is evaluated FIRST so it is never
+  // dead code hiding behind a truthy skip string.
+  skip: process.platform === 'win32' || process.getuid?.() === 0 || RETIRED.skip,
+}, async () => {
   const path = markdownFixture(freshStore());
   chmodSync(path, 0);
   let reply;
@@ -561,7 +643,7 @@ test('bantamkit_read: a permission error is a document_error carrying the OS tex
   assert.equal(reply, `error: [Errno 13] Permission denied: '${path}'`);
 });
 
-test('bantamkit_read refuses a non-string path and a non-integer limit in pydantic\'s words', async () => {
+test('bantamkit_read refuses a non-string path and a non-integer limit in pydantic\'s words', RETIRED, async () => {
   const { lines } = await session([INIT, INITIALIZED, readCall(2, { path: 123, limit: '2.5' })], {
     args: ['--store', freshStore()],
   });
@@ -579,7 +661,7 @@ test('bantamkit_read refuses a non-string path and a non-integer limit in pydant
   );
 });
 
-test('bantamkit_read: a sheet with a bare ampersand is a document_error, not an expat frame', async () => {
+test('bantamkit_read: a sheet with a bare ampersand is a document_error, not an expat frame', RETIRED, async () => {
   // `runtime-py/tests/test_bantamkit_read_tool.py::test_a_sheet_with_a_bare_ampersand_...`
   const dir = freshStore();
   const path = join(dir, 'amp.xlsx');
@@ -590,21 +672,21 @@ test('bantamkit_read: a sheet with a bare ampersand is a document_error, not an 
   );
 });
 
-test('bantamkit_read: a zip whose member offsets are negative is the OSError sentence with no filename', async () => {
+test('bantamkit_read: a zip whose member offsets are negative is the OSError sentence with no filename', RETIRED, async () => {
   const dir = freshStore();
   const path = join(dir, 'badcd.xlsx');
   writeFileSync(path, badCentralDirectoryOffset(xlsxBytes([['Sales', 'worksheets/sheet1.xml', row([inlineCell('A1', 'ok')])]])));
   assert.equal(await readOne({ path }), 'error: [Errno 22] Invalid argument');
 });
 
-test('bantamkit_read: a part key of 4301 digits is the unknown-part sentence, not a ValueError', async () => {
+test('bantamkit_read: a part key of 4301 digits is the unknown-part sentence, not a ValueError', RETIRED, async () => {
   // `test_a_part_key_of_4301_digits_is_the_unknown_part_sentence_not_a_value_error`
   const path = workbookFixture(freshStore());
   const key = '1'.repeat(4301);
   assert.equal(await readOne({ path, part: key }), `error: no part named "${key}" in ${path}; it has: Sales, Empty`);
 });
 
-test('bantamkit_read: an offset past 2^53 is refused by the schema and the boundary is not', async () => {
+test('bantamkit_read: an offset past 2^53 is refused by the schema and the boundary is not', RETIRED, async () => {
   // `test_an_offset_past_2_pow_53_is_refused_by_the_schema_and_the_boundary_is_not`. The
   // request is framed by hand so the integer reaches the wire EXACT — `JSON.stringify` would
   // round 9007199254740993 to ...992 before the server's own decoder ever saw it.
@@ -692,7 +774,10 @@ test('a float argument reaches the accounting log as 5.0, not 5', async () => {
         status: 'done',
         handoff_patch: { next_action: 'x' },
         history_entry: { unit: cursor, outcome: 'done' },
-        accounting: { duration_min: 5.0, tokens: 1000, ratio: 0.5 },
+        // `duration_ms` because the line is a real accounting line since job50/F5; the two
+        // odd keys — `duration_min` with its float, `ratio` — stay because their pass-through
+        // is the point of the test.
+        accounting: { duration_min: 5.0, duration_ms: 1, tokens: 1000, ratio: 0.5 },
       },
     },
   };
@@ -1157,7 +1242,7 @@ test('a healthy server reports Active, and the report is the five lines docs/sta
   assert.equal(rows.length, 5, report);
   assert.equal(rows[0], REPORT_LINE_1_ACTIVE);
   assert.match(rows[1], /^version \d+\.\d+\.\d+, build sha256:[0-9a-f]{64}$/);
-  assert.equal(rows[2], 'serving 14 tools, 1 prompt, 2 resource templates');
+  assert.equal(rows[2], 'serving 12 tools, 1 prompt, 2 resource templates');
   assert.equal(rows[3], `memory: 1 fact in the project store, index ${INDEX_BYTES} of ${HEALTHY_BUDGET} bytes`);
   assert.equal(rows[4], 'event log: off');
   // The unstructured half is the RAW string, not the JSON — `bantamkit_status` is a `-> str`

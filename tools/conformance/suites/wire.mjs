@@ -43,7 +43,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const name = 'wire';
-export const summary = 'the MCP surface: fourteen tools, one prompt, two templates, and the frames themselves';
+export const summary = 'the MCP surface: twelve tools, one prompt, two templates, and the frames themselves';
 
 const here = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = dirname(dirname(here));
@@ -232,7 +232,8 @@ function runNode(spec) {
         try {
           const parsed = JSON.parse(line);
           // A HARNESS DIRECTIVE, not a request: performed here and never written to stdin.
-          // See `directive()` below for why the reader's cache needs one.
+          // A session that must rewrite a file mid-session sends one; `ref/wire_ref.py`'s
+          // `_run_session` performs the same line, so both servers meet the same disk state.
           if (parsed && parsed.conformance === 'write') {
             writeFileSync(parsed.path, Buffer.from(parsed.b64, 'base64'));
             continue;
@@ -278,47 +279,19 @@ export async function run(ctx) {
   const missing = join(scratch, 'nope', 'gone.json');
 
   /**
-   * THE READER'S FILES, written ONCE outside `setup()` because nothing reads them for writing:
-   * both servers are handed the same absolute paths, and the manifest reply embeds the path as
-   * given. R3's fixture builders lay down the docx/xlsx bytes the Python tests build with
-   * `zipfile`; `tinyPdf` is the docread suite's one-page PDF the reference reads and the port
-   * refuses. `relative.md` alone is written inside `setup()`, into the scratch PROJECT that is
-   * each session's `cwd`, so the one relative-path call resolves against the same directory on
-   * both sides and is rebuilt with it.
+   * THE ONE FILE ON DISK A SESSION NAMES, written ONCE outside `setup()` because nothing reads
+   * it for writing: both servers are handed the same absolute path. It exists so that the
+   * `retired` session's `bantamkit_read` call is a call the tool WOULD have answered — a
+   * readable file — and its refusal is therefore the roster's doing and not the reader's.
+   * `docs` is also the parent `skill_audit` is pointed at for its missing-catalogue refusal.
    */
-  const fixtures = await import(pathToFileURL(join(repoRoot, 'runtime-ts', 'test', 'docread-fixtures.mjs')).href);
-  const { tinyPdf } = await import(pathToFileURL(join(here, 'suites', 'docread.mjs')).href);
   const docs = join(scratch, 'docs');
   mkdirSync(docs, { recursive: true });
   const doc = (file, bytes) => {
     writeFileSync(join(docs, file), bytes);
     return join(docs, file);
   };
-  const notesMd = doc('notes.md', `# Title\n\nline one\nline two — ทดสอบ\n${Array.from({ length: 80 }, (_, i) => `row ${i} ${'x'.repeat(60)}`).join('\n')}\n`);
-  const memoDocx = doc('memo.docx', fixtures.docxBytes(fixtures.para('Hello') + fixtures.para('World')));
-  const bookXlsx = doc(
-    'book.xlsx',
-    fixtures.xlsxBytes([
-      ['Sales', 'worksheets/sheet1.xml', fixtures.row([fixtures.inlineCell('A1', 'name'), fixtures.inlineCell('B1', 'qty')]) + fixtures.row([fixtures.inlineCell('A2', 'apple'), fixtures.inlineCell('B2', '3')], 2) + fixtures.row([fixtures.inlineCell('A3', 'pear'), fixtures.inlineCell('B3', '5')], 3)],
-      ['Empty', 'worksheets/sheet2.xml', ''],
-    ]),
-  );
-  const pageHtml = doc('page.html', '<html><body><h1>Hi</h1><p>one</p><table><tr><td>a</td><td>b</td></tr></table></body></html>\n');
-  const apiMht = doc('api.mht', fixtures.MHTML_DOC);
-  const blobPng = doc('blob.png', Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n', 'latin1'), Buffer.alloc(200)]));
-  const wideTxt = doc('wide.txt', `h\n${'y'.repeat(5000)}\nz\n`);
-  const shortTxt = doc('short.txt', `${Array.from({ length: 400 }, (_, i) => `r${i}`).join('\n')}\n`);
-  const emptyTxt = doc('empty.txt', Buffer.alloc(0));
-  const tinyPdfPath = doc('tiny.pdf', tinyPdf('Hello wire'));
-  const headerPdf = doc('header.pdf', Buffer.from('%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<<>>\nendobj\n%%EOF\n', 'latin1'));
-  const noteRtf = doc('note.rtf', Buffer.from('{\\rtf1\\ansi hello}', 'latin1'));
-  const realDoc = doc('real.doc', Buffer.concat([Buffer.from('\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1', 'latin1'), Buffer.alloc(512)]));
-  const badRtf = doc('bad.rtf', Buffer.from('{\\rtf1\x00\x00\xff\xfe garbage', 'latin1'));
-  // F3's two zip-level traps, on the wire: a bare `&` in sheet XML (expat and the port's XML
-  // walk both refuse it) and an EOCD whose central-directory offset (0x7FFFFFF0) points
-  // past the file (`zipfile` seeks there and `read(2)` answers `[Errno 22] Invalid argument`).
-  const ampXlsx = doc('amp.xlsx', fixtures.xlsxBytes([['Sales', 'worksheets/sheet1.xml', fixtures.row([fixtures.inlineCell('A1', 'a & b')])]]));
-  const badcdXlsx = doc('badcd.xlsx', fixtures.badCentralDirectoryOffset(fixtures.xlsxBytes([['Sales', 'worksheets/sheet1.xml', fixtures.row([fixtures.inlineCell('A1', 'x')])]])));
+  const notesMd = doc('notes.md', '# Title\n\nline one\nline two — ทดสอบ\n');
 
   /**
    * `skill_audit`'s corpus is the COMMITTED fixture tree, read where it lives.
@@ -362,7 +335,6 @@ export async function run(ctx) {
     rmSync(checkpoint, { force: true });
     rmSync(`${checkpoint}.log.jsonl`, { force: true });
     cpSync(REAL_CHECKPOINT, checkpoint);
-    writeFileSync(join(project, 'relative.md'), 'relative\nto the project\n');
     rmSync(PYCACHE_ASSETS, { recursive: true, force: true });
     cpSync(ASSETS, PYCACHE_ASSETS, { recursive: true });
     mkdirSync(PYCACHE_DIR, { recursive: true });
@@ -822,61 +794,41 @@ export async function run(ctx) {
   });
 
   /**
-   * `bantamkit_read`, the tenth tool, over the reader's files: every branch the handler has.
+   * THE RETIRED TOOLS, on the wire — job50 I5, the user's ruling of 2026-09-12.
    *
-   *   2-6   manifests: markdown, docx, xlsx (two sheets, one empty), html, mhtml (with a media
-   *         omission) — the rows, the omission lines, the kind and the byte counts;
-   *   7     a RELATIVE path, resolved against the session's `cwd` and echoed as given;
-   *   8-9   a page and its CONTINUATION at the offset the first reply named;
-   *   10-12 a sheet by name, by index string, and the empty sheet (0 rows, so offset 0 is
-   *         already past the end — the offset refusal, not an empty page);
-   *   13    offset past the end of a part that has rows; 14-16 the unknown-part sentence for
-   *         a name, for `--1` (which the reference once answered with `int()`'s ValueError
-   *         as an `isError` frame — the R5 fix, and this case is UNRULED on purpose), and for
-   *         an index past the last part;
-   *   17-20 refused unreadable: a missing file, a directory, a PNG, an empty file;
-   *   21    one row over the 3072-byte ceiling, cut to fit and the shortfall reported;
-   *   22-24 the clamps: limit 0 -> 1, offset -4 -> 0, limit 900 -> 200 (400 short rows, so
-   *         the row ceiling and not the byte ceiling is what stops the page);
-   *   25-31 the argument shapes: five refusals in pydantic's words, and two that are NOT
- *         refused (`limit: '3'` is lax int, an extra key is ignored) — 25 records for 30 calls.
+   * `bantamkit_read` (once tenth) and `repo_map` (once thirteenth) left both rosters. Their
+   * assets stayed and claim no surface, their handlers are DORMANT rather than deleted, and the
+   * reader's parity is still gated at the library layer in `tools/conformance/suites/docread.mjs`.
+   * What this session pins is the half of a retirement that `tools/list` cannot show: that
+   * calling either name is REFUSED, on both sides, with the same words — inspected as literals
+   * in the `retired` block below, and frame for frame by the generic loop.
    *
-   * THE EVENT LOG IS ON so the five outcomes — `manifest`, `page`, `refused-unreadable`,
-   * `refused-unknown-part`, `refused-offset` — are compared as records, `ts` masked, below.
+   *   2  `repo_map` with the argument it used to accept (an existing directory);
+   *   3  `bantamkit_read` with the argument it used to accept (an existing, readable file) — a
+   *      server that still dispatched off its argument model would answer a manifest here;
+   *   4  `bantamkit_read` with NO arguments — the roster check has to come BEFORE validation,
+   *      so this is `Unknown tool:` and not the validator's `path` sentence;
+   *   5  a name that never existed, the control.
+   *
+   * THE EVENT LOG IS ON so that "nothing was recorded" is a measured zero and not an absence.
+   *
+   * This session REPLACES the six `bantamkit_read` sessions that used to sit here (`read`,
+   * `read-ruled`, `read-edges`, `read-round2`, `read-round3`, `read-cache`: 65 calls to the
+   * tool). Measured on 2026-09-13, before this edit: 53 of this suite's 458 cases were red,
+   * every one of them in those six sessions or the fourteen-tool pin — every literal described
+   * a reader that no longer answers, and every `ruling:` had gone STALE because both sides now
+   * say the same four words. They were not gating a retired tool; they were failing, and the
+   * reader they described is gated where it still runs. The harness directive both drivers
+   * perform (`{"conformance":"write",...}`) stays supported for the next session that needs
+   * a file rewritten mid-session; nothing here uses it today.
    */
-  add('read', [
+  add('retired', [
     INIT(),
     INITIALIZED,
-    callTool(2, 'bantamkit_read', { path: notesMd }),
-    callTool(3, 'bantamkit_read', { path: memoDocx }),
-    callTool(4, 'bantamkit_read', { path: bookXlsx }),
-    callTool(5, 'bantamkit_read', { path: pageHtml }),
-    callTool(6, 'bantamkit_read', { path: apiMht }),
-    callTool(7, 'bantamkit_read', { path: 'relative.md' }),
-    callTool(8, 'bantamkit_read', { path: notesMd, part: 'document', limit: 3 }),
-    callTool(9, 'bantamkit_read', { path: notesMd, part: 'document', offset: 3, limit: 3 }),
-    callTool(10, 'bantamkit_read', { path: bookXlsx, part: 'Sales' }),
-    callTool(11, 'bantamkit_read', { path: bookXlsx, part: '0', offset: 2 }),
-    callTool(12, 'bantamkit_read', { path: bookXlsx, part: 'Empty' }),
-    callTool(13, 'bantamkit_read', { path: notesMd, part: 'document', offset: 999 }),
-    callTool(14, 'bantamkit_read', { path: bookXlsx, part: 'Nope' }),
-    callTool(15, 'bantamkit_read', { path: bookXlsx, part: '--1' }),
-    callTool(16, 'bantamkit_read', { path: bookXlsx, part: '5' }),
-    callTool(17, 'bantamkit_read', { path: join(docs, 'missing.txt') }),
-    callTool(18, 'bantamkit_read', { path: docs }),
-    callTool(19, 'bantamkit_read', { path: blobPng }),
-    callTool(20, 'bantamkit_read', { path: emptyTxt }),
-    callTool(21, 'bantamkit_read', { path: wideTxt, part: 'document', offset: 1, limit: 2 }),
-    callTool(22, 'bantamkit_read', { path: notesMd, part: 'document', limit: 0 }),
-    callTool(23, 'bantamkit_read', { path: shortTxt, part: 'document', offset: -4, limit: 900 }),
-    callTool(24, 'bantamkit_read', { path: shortTxt, part: 'document', offset: 200, limit: 900 }),
-    callTool(25, 'bantamkit_read', { path: 123 }),
-    callTool(26, 'bantamkit_read', {}),
-    callTool(27, 'bantamkit_read', { path: notesMd, part: 5 }),
-    callTool(28, 'bantamkit_read', { path: notesMd, part: 'document', limit: '3' }),
-    callTool(29, 'bantamkit_read', { path: notesMd, limit: 2.5 }),
-    callTool(30, 'bantamkit_read', { path: notesMd, offset: 'x' }),
-    callTool(31, 'bantamkit_read', { path: notesMd, extra: 1 }),
+    callTool(2, 'repo_map', { root: project }),
+    callTool(3, 'bantamkit_read', { path: notesMd }),
+    callTool(4, 'bantamkit_read', {}),
+    callTool(5, 'no_such_tool', {}),
   ], { env: { ...baseEnv, [EVENT_LOG_ENV]: '1' } });
 
   /**
@@ -942,190 +894,6 @@ export async function run(ctx) {
   ], { env: { ...baseEnv, [EVENT_LOG_ENV]: '1' } });
 
   /**
-   * The three kinds the port refuses by name — pdf, doc, rtf — in a session of their own, so
-   * that the `read` session above stays a verbatim frame comparison and this one is inspected
-   * case by case: RULED where the sentences must differ, UNRULED where the refusal bit is the
-   * property. `docs/porting.md`, "pdf, doc and rtf on Node"; the library-level twin is
-   * `tools/conformance/suites/docread.mjs`.
-   */
-  add('read-ruled', [
-    INIT(),
-    INITIALIZED,
-    callTool(2, 'bantamkit_read', { path: tinyPdfPath }),
-    callTool(3, 'bantamkit_read', { path: headerPdf }),
-    callTool(4, 'bantamkit_read', { path: noteRtf }),
-    callTool(5, 'bantamkit_read', { path: realDoc }),
-    callTool(6, 'bantamkit_read', { path: badRtf }),
-    callTool(7, 'bantamkit_read', { path: tinyPdfPath, part: 'page 1' }),
-  ], { env: { ...baseEnv, [EVENT_LOG_ENV]: '1' } });
-
-  /**
-   * THE EDGES F2/F3 FIXED, on the wire, UNRULED: every reply here is compared verbatim by the
-   * generic loop (id set, canonical frame, raw bytes) AND its refusal bit is pinned side to
-   * side in the `read-edges` block below, so a port that read where the reference refuses
-   * fails on its own line and not inside a 1 KB frame diff.
-   *
-   *   2  a bare `&` in sheet XML — expat refuses, so the reference refuses, so the port must;
-   *   3  an EOCD whose central-directory offset is 0x7FFFFFF0 — `[Errno 22] Invalid argument`
-   *      from `read(2)` on the reference, reproduced by the port's seek;
-   *   4  a 4301-digit part key — one over CPython's `int()` digit limit, which once escaped
-   *      as a ValueError; now the unknown-part sentence on both;
-   *   5  `path: ""` — `Path('')` is `.`, the session's cwd, a directory;
-   *   6  `path: "a/b/."` — pathlib collapses the `.` before looking, so the sentence names `a/b`;
-   *   7  `offset: 9007199254740993` — 2**53 + 1, past the schema's `maximum`, written RAW so
-   *      the integer reaches the wire exact (`JSON.stringify` would round it to 2**53) and
-   *      refused by both validators in pydantic's words, as an `isError` frame — the one
-   *      reply in this session that is allowed to be one;
-   *   8  `/dev/zero` — a character device, 0 bytes by stat and endless by read; the sniff must
-   *      name twelve NULs and refuse rather than read on. No Windows counterpart: skipped there.
-   */
-  const devZero = process.platform === 'win32' ? null : '/dev/zero';
-  add('read-edges', [
-    INIT(),
-    INITIALIZED,
-    callTool(2, 'bantamkit_read', { path: ampXlsx }),
-    callTool(3, 'bantamkit_read', { path: badcdXlsx }),
-    callTool(4, 'bantamkit_read', { path: bookXlsx, part: '1'.repeat(4301) }),
-    callTool(5, 'bantamkit_read', { path: '' }),
-    callTool(6, 'bantamkit_read', { path: 'a/b/.' }),
-    `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"bantamkit_read","arguments":{"path":${JSON.stringify(bookXlsx)},"part":"Sales","offset":9007199254740993}}}`,
-    ...(devZero === null ? [] : [callTool(8, 'bantamkit_read', { path: devZero })]),
-  ]);
-
-  /**
-   * ROUND 2 (job43 G1/G2), on the wire. Inspected case by case in the `read-round2` block
-   * below, because three of its replies are RULED and one is an `isError` frame:
-   *
-   *   2, 3, 4  `part: "null"`, `"[1]"`, `"{}"` — JSON spellings sent as part NAMES. Neither
-   *            server unwraps them (G1 made `bantamkit_read` take its arguments as sent):
-   *            the unknown-part sentence, unruled, verbatim;
-   *   5        `offset: "null"` — a string where the schema wants an integer: refused by the
-   *            VALIDATOR in pydantic's `int_parsing` words on both, the one `isError` frame;
-   *   6        `path: "a\u0000b"` — a NUL inside the name; `no such file: a\x00b` on both;
-   *   7, 8     bzip2.docx, lzma.docx — RULED: the reference reads `hello`, the port refuses
-   *            by method number and name (docs/porting.md, "bzip2 and lzma zip members on Node");
-   *   9        encrypted-member.docx — both refuse in the same sentence (also method 9), unruled;
-   *   10       rfc2231-charset.eml — RULED, both READ, one row apart (docs/porting.md,
-   *            "RFC 2231 charset continuations on Node").
-   */
-  const built = fixtures.fixtures();
-  const checkedIn = fixtures.checkedInFixtures();
-  const bzip2Docx = doc('bzip2.docx', built['bzip2.docx']);
-  const lzmaDocx = doc('lzma.docx', built['lzma.docx']);
-  add('read-round2', [
-    INIT(),
-    INITIALIZED,
-    callTool(2, 'bantamkit_read', { path: bookXlsx, part: 'null' }),
-    callTool(3, 'bantamkit_read', { path: bookXlsx, part: '[1]' }),
-    callTool(4, 'bantamkit_read', { path: bookXlsx, part: '{}' }),
-    callTool(5, 'bantamkit_read', { path: bookXlsx, part: 'Sales', offset: 'null' }),
-    callTool(6, 'bantamkit_read', { path: 'a\u0000b' }),
-    callTool(7, 'bantamkit_read', { path: bzip2Docx }),
-    callTool(8, 'bantamkit_read', { path: lzmaDocx }),
-    callTool(9, 'bantamkit_read', { path: checkedIn['encrypted-member.docx'] }),
-    callTool(10, 'bantamkit_read', { path: checkedIn['rfc2231-charset.eml'] }),
-  ]);
-
-  /**
-   * ROUND 3 (H1/H2), on the wire, UNRULED — every reply here is byte-identical on both
-   * servers now, and the generic loop compares each frame canonically and raw. The
-   * `read-round3` block below pins the refusal bit of each one and the two literals the
-   * round changed, so the six sentences H1 wrote and H2 mirrored are held as sentences and
-   * not only as a frame diff. The fixtures are the checked-in ones under
-   * `runtime-py/tests/data/docread/`:
-   *
-   *   2   eszett-cell-ref.xlsx — a cell ref `ß1`, which `str.upper()` once turned into `SS1`
-   *       and a TypeError. Round 3 answered `cell reference 'ß1' is not a column-and-row
-   *       reference like B7, so this reader cannot place it` and refused the workbook.
-   *       SUPERSEDED in job43b (M2, `a1acfa7` Python / `4e56836` Node): the refusal is gone
-   *       — the workbook READS, the unplaceable cell keeps its text at its XML position and
-   *       loses only its column, and the loss is disclosed as `1 unplaced-cell`. The old
-   *       sentence is recorded here because it was the round-3 answer, not because it is
-   *       still emitted; the case below pins the manifest that replaced it;
-   *   3   compression-method-9.docx — method 9 (deflate64) has its OWN sentence now, `uses
-   *       compression method 9, which this reader cannot decompress` (it used to print the
-   *       encrypted sentence, docs/porting.md);
-   *   4   encrypted-mimetype.odt — the ODF `mimetype` member with the encrypted flag set;
-   *   5   bad-crc.docx, 6 corrupt-deflate.docx — the damaged-member sentence with the
-   *       parenthesised cause (`Bad CRC-32 for file 'word/document.xml'` / `Error -3 while
-   *       decompressing data: invalid block type`), CPython's words on both sides;
-   *   7   charref-4301-digits.html — a `<p>` holding `&#<4301 digits>;`: read on both, the
-   *       manifest; 8 the page, one row `a \ufffd b` — a 4301-digit number is over CPython's
-   *       `int()` digit limit, which once escaped as a ValueError; now capped to U+FFFD on
-   *       both (the `<xmp>` shape, kept raw, is a built fixture in the `docread` suite);
-   *   9   memory_save with `links` as a STRING of 4303 characters (`[` + 4301 ones + `]`) —
-   *       nine tools take their arguments as sent since G1, so this is refused by the
-   *       validator as `list_type` in pydantic's words on both, the one `isError` frame, and
-   *       never parsed as JSON into a 4301-digit integer;
-   *   10  charset-table.json — the checked-in table itself, read as text on both.
-   */
-  add('read-round3', [
-    INIT(),
-    INITIALIZED,
-    callTool(2, 'bantamkit_read', { path: checkedIn['eszett-cell-ref.xlsx'] }),
-    callTool(3, 'bantamkit_read', { path: checkedIn['compression-method-9.docx'] }),
-    callTool(4, 'bantamkit_read', { path: checkedIn['encrypted-mimetype.odt'] }),
-    callTool(5, 'bantamkit_read', { path: checkedIn['bad-crc.docx'] }),
-    callTool(6, 'bantamkit_read', { path: checkedIn['corrupt-deflate.docx'] }),
-    callTool(7, 'bantamkit_read', { path: checkedIn['charref-4301-digits.html'] }),
-    callTool(8, 'bantamkit_read', { path: checkedIn['charref-4301-digits.html'], part: 'document' }),
-    callTool(9, 'memory_save', { type: 'project', name: 'n', description: 'd', body: 'b', links: `[${'1'.repeat(4301)}]` }),
-    callTool(10, 'bantamkit_read', { path: checkedIn['charset-table.json'] }),
-  ]);
-
-  /**
-   * THE DOCUMENT CACHE, ON THE WIRE: read a file, rewrite it in place, read it again.
-   *
-   * Register entry (i), `docs/roadmap-toolbox.md` row 8, and the case the entry asks for BY
-   * NAME. Both servers now keep the last `docread.extract` result, keyed on
-   * `(realpath, size, mtime_ns)`, so a caller paging one document stops re-parsing it once
-   * per page. A cache is only as good as its invalidation, and nothing else in this suite
-   * could ask about invalidation: every session hands the server a file it never touches.
-   *
-   * THE REWRITE CHANGES THE FILE'S SIZE, DELIBERATELY. `mtime_ns` is nanosecond-SHAPED and
-   * not nanosecond-GRAINED — what it reports is whatever the filesystem stored, one second on
-   * HFS+ — so a case that changed only the CONTENT would be racing the clock and would pass
-   * or fail by how fast the machine is. `v1` is 1,917 bytes and `v2` is 2,033; the sizes are
-   * pinned below, because a fixture edit that accidentally equalised them would leave this
-   * session green while measuring the timestamp instead of the key.
-   *
-   * AND IT REWRITES BACK. Step 8 restores `v1`, so the key is not "the size went up": a cache
-   * that only invalidated on growth would answer `v2` at id 6 and fail there.
-   *
-   * `directive()` is not a request. It is a line both drivers PERFORM and neither forwards —
-   * see `runNode` above and `_run_session` in `ref/wire_ref.py` — so the two servers meet the
-   * same two states in the same order inside one live session.
-   */
-  const cacheXlsx = join(docs, 'cache.xlsx');
-  const cacheSheet = (rows) => [['Sales', 'worksheets/sheet1.xml', rows]];
-  const CACHE_V1 = fixtures.xlsxBytes(
-    cacheSheet(
-      fixtures.row([fixtures.inlineCell('A1', 'fruit'), fixtures.inlineCell('B1', 'qty')]) +
-        fixtures.row([fixtures.inlineCell('A2', 'apple'), fixtures.inlineCell('B2', '3')], 2),
-    ),
-  );
-  const CACHE_V2 = fixtures.xlsxBytes(
-    cacheSheet(
-      fixtures.row([fixtures.inlineCell('A1', 'fruit'), fixtures.inlineCell('B1', 'qty')]) +
-        fixtures.row([fixtures.inlineCell('A2', 'apricot'), fixtures.inlineCell('B2', '17')], 2) +
-        fixtures.row([fixtures.inlineCell('A3', 'quince'), fixtures.inlineCell('B3', '29')], 3),
-    ),
-  );
-  const directive = (path, bytes) => JSON.stringify({ conformance: 'write', path, b64: bytes.toString('base64') });
-  add('read-cache', [
-    INIT(),
-    INITIALIZED,
-    directive(cacheXlsx, CACHE_V1),
-    callTool(2, 'bantamkit_read', { path: cacheXlsx }),
-    callTool(3, 'bantamkit_read', { path: cacheXlsx, part: 'Sales' }),
-    directive(cacheXlsx, CACHE_V2),
-    callTool(4, 'bantamkit_read', { path: cacheXlsx }),
-    callTool(5, 'bantamkit_read', { path: cacheXlsx, part: 'Sales' }),
-    directive(cacheXlsx, CACHE_V1),
-    callTool(6, 'bantamkit_read', { path: cacheXlsx, part: 'Sales' }),
-  ]);
-
-  /**
    * `build_identity` gets a session of its own, and the split is the point being made.
    *
    * Its REPLY is not comparable — `runtime`, `code_digest`, `build_id` and the Python-only
@@ -1167,10 +935,6 @@ export async function run(ctx) {
     'unknown-methods',
     'bad-params',
     'negotiate-2024-10-07',
-    // Inspected in the `read-ruled` block below: two of its six replies are ruled to differ.
-    'read-ruled',
-    // Inspected in the `read-round2` block below: three of its nine replies are ruled to differ.
-    'read-round2',
   ]);
 
   const results = new Map();
@@ -1246,10 +1010,6 @@ export async function run(ctx) {
       .filter((frame) => frame !== null);
   /** The parsed frame for one id, or `null` if the session never answered it. */
   const frameOf = (side, id) => framesOf(side).find((frame) => frame.id === id) ?? null;
-  // The reference embeds the absolute fixture path in its manifest, and the scratch root
-  // changes every run. Taking it out is the whole of the transformation applied before a
-  // `reads` literal is compared — no other byte is touched.
-  const unscratched = (text) => (text ?? '').split(ctx.scratch).join('<SCRATCH>');
   /** The rendered text of a tool result — the half a person actually reads — or `null`. */
   const toolTextOf = (side, id) => frameOf(side, id)?.result?.content?.[0]?.text ?? null;
   const byId = (frames) => {
@@ -1531,33 +1291,23 @@ export async function run(ctx) {
     });
 
     /**
-     * `bantamkit_read`'s records: all five outcomes and the `detail` (kind, parts, rows,
-     * bytes) the reply never carries, compared byte for byte with only `ts` masked. The
-     * argument refusals record nothing — pydantic refuses before the handler runs — so the
-     * record COUNT is part of what is compared: 25 for 30 calls, MEASURED, because two of the
-     * seven argument-shaped calls are not refusals at all: `limit: '3'` is lax `int` and
-     * pages, and an extra key is ignored and the manifest is served.
+     * A name off the roster records NOTHING, on each side — as a literal, not a differential.
+     *
+     * The `retired` session ran four refused calls with the log switched on. An `Unknown tool:`
+     * refusal never enters a handler, and the log records only what handlers decide, so the
+     * measured value on both sides is: no file was created at all (the log opens lazily, on
+     * the first record) and so zero records. Pinned per side because two servers that both
+     * logged a `refused` record for a name they do not serve would agree with each other and
+     * pass the byte comparison — this is the case that says the count is zero.
      */
-    const readLog = results.get('read');
+    const retiredLog = results.get('retired');
     cases.push({
-      name: 'eventlog: bantamkit_read records manifest / page / refused-unreadable / refused-unknown-part / refused-offset, with only `ts` masked',
-      kind: 'bytes',
-      expected: maskTs(readLog.python.eventlog),
-      actual: maskTs(readLog.node.eventlog),
-    });
-    cases.push({
-      name: 'eventlog: the (tool, outcome) sequence of the read session',
+      name: 'eventlog: four calls to names off the roster created no log and recorded nothing, on each side',
       kind: 'json',
-      expected: outcomesOf(readLog.python.eventlog),
-      actual: outcomesOf(readLog.node.eventlog),
-    });
-    cases.push({
-      name: 'eventlog: the read session reached all five bantamkit_read outcomes, 25 records for 30 calls',
-      kind: 'json',
-      expected: { outcomes: ['manifest', 'page', 'refused-offset', 'refused-unknown-part', 'refused-unreadable'], records: 25 },
+      expected: { python: { created: false, records: 0 }, node: { created: false, records: 0 } },
       actual: {
-        outcomes: [...new Set(outcomesOf(readLog.node.eventlog).map(([, outcome]) => outcome))].sort(),
-        records: outcomesOf(readLog.node.eventlog).length,
+        python: { created: retiredLog.python.eventlog !== null, records: outcomesOf(retiredLog.python.eventlog).length },
+        node: { created: retiredLog.node.eventlog !== null, records: outcomesOf(retiredLog.node.eventlog).length },
       },
     });
 
@@ -1643,599 +1393,108 @@ export async function run(ctx) {
     notes.push(`event log: ${outcomesOf(node.eventlog).length} records, identical but for \`ts\``);
   }
 
-  /**
-   * The cache session's three pages, as LITERALS on each side — job44 U3, entry (i).
-   *
-   * The generic per-frame loop above already compares Python's answer to Node's for every id
-   * here, and that is exactly the comparison a cache defect can survive: BOTH servers grew
-   * the cache in the same job, so a key that never invalidated would serve `v1` three times
-   * on both sides and every differential case would agree. The typed literal is what says
-   * which rows each read has to carry.
-   *
-   * The path is not in these strings: only the numbered data lines are compared, because the
-   * reply's first line embeds the scratch path and this case is about the ROWS.
-   */
-  {
-    const { python, node } = results.get('read-cache');
-    const dataRows = (side, id) =>
-      (toolTextOf(side, id) ?? '')
-        .split('\n')
-        .filter((line) => /^\d+\t/.test(line));
-    const V1 = ['0\tfruit\tqty', '1\tapple\t3'];
-    const V2 = ['0\tfruit\tqty', '1\tapricot\t17', '2\tquince\t29'];
-    const wanted = { 3: V1, 5: V2, 6: V1 };
-    for (const [id, rows] of Object.entries(wanted)) {
-      cases.push({
-        name: `read-cache: id ${id}: the rows this read must return, as a literal on each side`,
-        kind: 'json',
-        expected: { python: rows, node: rows },
-        actual: { python: dataRows(python, Number(id)), node: dataRows(node, Number(id)) },
-      });
-    }
-    // The manifest's own row count, which is the number the cache would be stale ABOUT: the
-    // first read sees a 2-row sheet, the second a 3-row one.
-    const rowCount = (side, id) => /part 0 "Sales": (\d+) rows/.exec(toolTextOf(side, id) ?? '')?.[1] ?? null;
-    cases.push({
-      name: 'read-cache: the manifest row count before and after the rewrite, as a literal on each side',
-      kind: 'json',
-      expected: { python: ['2', '3'], node: ['2', '3'] },
-      actual: { python: [rowCount(python, 2), rowCount(python, 4)], node: [rowCount(node, 2), rowCount(node, 4)] },
-    });
-    // THE PRECONDITION, as a case and not a comment. The key is (realpath, size, mtime_ns)
-    // and the size is the half this session controls; if a fixture edit made the two versions
-    // the same length the session would be measuring the filesystem's timestamp granularity
-    // instead, and would pass or fail by how fast the machine is.
-    cases.push({
-      name: 'read-cache: the two versions differ in SIZE, so the case does not race the mtime tick',
-      kind: 'json',
-      expected: { v1: 1917, v2: 2033, differ: true },
-      actual: { v1: CACHE_V1.length, v2: CACHE_V2.length, differ: CACHE_V1.length !== CACHE_V2.length },
-    });
-    notes.push(
-      `read-cache: read, rewrite in place (${CACHE_V1.length} B -> ${CACHE_V2.length} B), read again, rewrite back, read again — ` +
-        'the rows are pinned as a literal on each side because both runtimes grew the cache in one job and a ' +
-        'differential cannot see a stale key that is stale on both',
-    );
-  }
-
-  /**
-   * The numbers `assets/tools/bantamkit_read.json` PUBLISHES, as a literal on each side —
-   * job44 U3, register entries (c) and (l).
-   *
-   * `OFFSET_MAXIMUM` (2**53 - 1) and the `[1, 200]` row clamp are spelled in three places:
-   * the asset, `runtime-py/src/bantamkit/mcpserver.py` and `runtime-ts/src/mcp/pyargs.ts`.
-   * Each runtime now ties its own constant to the asset in its own unit suite. What NEITHER
-   * of those can do is what this case does: both servers SERVE the asset, so a number moved
-   * in the asset moves both served schemas together and `advertisement: id 2` — which
-   * compares Python's `tools/list` to Node's — stays green through it. The expected side here
-   * is typed, so the asset is compared to a number a human wrote down.
-   *
-   * The `limit` description is pinned with them, because it PRINTS two more of the same
-   * constants (`default 50`, `3072-byte page ceiling`) in prose where nothing else can see
-   * them drift.
-   */
-  {
-    const { python, node } = results.get('advertisement');
-    const readSchema = (side) =>
-      frameOf(side, 2)?.result?.tools?.find((t) => t.name === 'bantamkit_read')?.inputSchema?.properties ?? null;
-    const numbersOf = (props) =>
-      props === null
-        ? null
-        : {
-            offsetMinimum: props.offset?.minimum ?? null,
-            offsetMaximum: props.offset?.maximum ?? null,
-            limitMinimum: props.limit?.minimum ?? null,
-            limitMaximum: props.limit?.maximum ?? null,
-            limitDescription: props.limit?.description ?? null,
-          };
-    const published = {
-      offsetMinimum: 0,
-      offsetMaximum: 9007199254740991,
-      limitMinimum: 1,
-      limitMaximum: 200,
-      limitDescription: 'How many rows; default 50, a 3072-byte page ceiling may return fewer',
-    };
-    cases.push({
-      name: 'advertisement: bantamkit_read publishes 0..2**53-1 offsets and a 1..200 row clamp, as a literal on each side',
-      kind: 'json',
-      expected: { python: published, node: published },
-      actual: { python: numbersOf(readSchema(python)), node: numbersOf(readSchema(node)) },
-    });
-    // And the asset ON DISK, compared to the same literal — so the case names WHICH of the
-    // three copies moved. A served schema that disagreed with the file would be a packaging
-    // fault; a file that disagreed with this literal is a deliberate change that has to be
-    // paid for here.
-    const asset = JSON.parse(readFileSync(join(repoRoot, 'assets', 'tools', 'bantamkit_read.json'), 'utf8'));
-    cases.push({
-      name: 'advertisement: the asset on disk carries the same four numbers the two servers publish',
-      kind: 'json',
-      expected: published,
-      actual: numbersOf(asset.parameters.properties),
-    });
-  }
-
-  // ------------------------------------------------ token_ledger: the fourteenth tool, served
+  // ------------------------------------------------ the roster: twelve tools, pinned per side
 
   /**
    * The advertisement session's `tools/list` is compared canonically above (`advertisement:
-   * id 2`) and its raw order is ruled. This pins the three facts the golden entry was added
-   * for: FOURTEEN tools, `skill_audit` still eleventh, and `token_ledger` served LAST, on both
-   * sides.
+   * id 2`) and its raw order is ruled. Both of those are DIFFERENTIAL, and a differential
+   * cannot see a roster that is wrong on both sides: two runtimes that both dropped
+   * `memory_dream`, or both kept `repo_map`, agree with each other and pass. So the roster is
+   * a LITERAL on each side — the exact names, in served order, and the count — written down
+   * from a stdio `tools/list` against each server on 2026-09-13 (job50 J50-16, I5), not
+   * copied from the other side.
    *
-   * It was THIRTEEN with `repo_map` last until job46's J46-18 appended `token_ledger`, and the
-   * paragraph below is why that edit is two numbers and not thirteen: `eleventh` did not move,
-   * so no existing advertisement changed.
-   *
-   * The MIDDLE index is what makes this more than a count. A tool appended at the end moves
-   * the total and nothing else; a tool inserted anywhere earlier moves `eleventh` too, and
-   * that is a wire change to eleven existing advertisements rather than an addition.
+   * It was FOURTEEN with `token_ledger` last until the user's ruling of 2026-09-12 (job50,
+   * I5) took `bantamkit_read` (tenth) and `repo_map` (thirteenth) off both rosters; the
+   * assets stayed, claiming no surface, and the handlers went dormant. `skill_audit` moved
+   * from eleventh to tenth and `memory_dream` from twelfth to eleventh, and the list below is
+   * the whole of what moved. A tool re-added on ONE side fails `advertisement: id 2` and the
+   * literal; a tool re-added on BOTH fails only the literal, which is why it exists.
    */
   {
-    const toolNames = (side) => frameOf(side, 2).result.tools.map((t) => t.name);
-    const { python, node } = results.get('advertisement');
-    cases.push({ name: 'advertisement: the fourteen tool names, in order', kind: 'json', expected: toolNames(python), actual: toolNames(node) });
-    cases.push({
-      name: 'advertisement: fourteen tools, skill_audit eleventh and token_ledger fourteenth',
-      kind: 'json',
-      expected: { count: 14, eleventh: 'skill_audit', last: 'token_ledger' },
-      actual: { count: toolNames(node).length, eleventh: toolNames(node)[10], last: toolNames(node).at(-1) },
-    });
-  }
-
-  /**
-   * The pdf / doc / rtf rulings ON THE WIRE, each with the companion a ruling needs.
-   *
-   * A `ruling:` proves two frames differ and nothing else, so beside each one the refusal
-   * BIT is pinned as a literal — the reference reads `tiny.pdf` (a manifest, `page 1`, one
-   * row) and the port refuses it; both refuse the header-only PDF, the OLE2-over-zeros
-   * `.doc` and the RTF `textutil` cannot convert; `note.rtf` is read by the reference exactly
-   * where `/usr/bin/textutil` exists and refused by the port everywhere. Where both refuse,
-   * the bit is ALSO compared side to side, unruled — the case CLAUDE.md requires so that a
-   * port that quietly started answering where the reference refuses would go red here and
-   * not stay green behind a ruling that only ever asked "do they still differ".
-   *
-   * AND WHERE ONE SIDE READS, WHAT IT READ IS PINNED. Added 2026-09-11 (J46-32, defect 5);
-   * J46-24 measured the hole in `docread.mjs` and named this block as carrying the same one.
-   *
-   * A ruling proves the two sides still DIFFER. A refusal-bit companion proves WHICH side
-   * refuses. Neither of them can see what the READING side read — so the reference can
-   * silently start reading something else and every case here stays green. J46-24's proof, in
-   * `docread.mjs`: truncating every row by one character in `pdfread._rows_from_runs` made
-   * `tiny.pdf` read `Hello conformanc` instead of `Hello conformance`, and that suite still
-   * answered 1169 cases, 0 failures. Only a printed note moved, and a note is not a case.
-   *
-   * `reads` and `sentence` close it with no new machinery: they are the fifth and sixth
-   * columns of the table below, they are emitted only on the rows where the reference does
-   * NOT refuse, and both were generated from a measured run of this very suite rather than
-   * written by hand. `note.rtf`'s pair rides the same branch and so applies on exactly the
-   * hosts where `/usr/bin/textutil` exists — which is the same condition its refusal bit uses.
-   */
-  {
-    const { python, node } = results.get('read-ruled');
-    const textutil = existsSync('/usr/bin/textutil');
-    const refusedAt = (side, id) => (toolTextOf(side, id) ?? '').startsWith('error: ');
-    cases.push({
-      name: 'read-ruled: the answered ids',
-      kind: 'json',
-      expected: [...byId(python.frames).keys()].sort(),
-      actual: [...byId(node.frames).keys()].sort(),
-    });
-    // MEASURED 2026-09-11 from this suite's own run, not written by hand. The port's sentences
-    // are the `bantamkit_read` refusals the ruling above quotes; the reference's are its
-    // manifest (id 2, id 4) and its paged read (id 7), path-scrubbed.
-    const PDF_REFUSAL =
-      'error: cannot read tiny.pdf: it is a PDF document (PDF-1.4), 585 bytes on disk. pdf is ' +
-      'not readable by the Node server yet (the Python server reads it); see docs/porting.md';
-    const table = [
-      [2, 'pdf', 'tiny.pdf, the reference reads it', false,
-        '<SCRATCH>/docs/tiny.pdf (pdf) part 0 "page 1": 1 rows, numbered 0 to 0\n' +
-        '  row 0 is the header: Hello wire',
-        PDF_REFUSAL],
-      [3, 'pdf', 'header.pdf, both refuse', true, null, null],
-      [4, 'rtf', `note.rtf, read where textutil is (${textutil ? 'here' : 'not here'})`, !textutil,
-        '<SCRATCH>/docs/note.rtf (rtf) part 0 "document": 1 rows, numbered 0 to 0\n' +
-        '  row 0 is the header: hello',
-        'error: cannot read note.rtf: it is an RTF document, 18 bytes on disk. rtf is read ' +
-        'through /usr/bin/textutil by the Python server and not by the Node server; see docs/porting.md'],
-      [5, 'doc', 'real.doc, both refuse', true, null, null],
-      [6, 'rtf', 'bad.rtf, both refuse', true, null, null],
-      [7, 'pdf', 'tiny.pdf page 1, the reference pages it', false,
-        '<SCRATCH>/docs/tiny.pdf "page 1" rows 0-0 of 1; each line below begins with its own ' +
-        'row number\n0\tHello wire\nthat was the last row of "page 1"',
-        PDF_REFUSAL],
+    const ROSTER = [
+      'memory_save',
+      'memory_recall',
+      'validate_json',
+      'shiftwork_clock_in',
+      'shiftwork_clock_out',
+      'shiftwork_status',
+      'build_identity',
+      'bantamkit_status',
+      'memory_compact',
+      'skill_audit',
+      'memory_dream',
+      'token_ledger',
     ];
-    for (const [id, kind, label, pythonRefuses, reads, sentence] of table) {
-      cases.push({
-        name: `read-ruled: id ${id}: ${label}`,
-        kind: 'string',
-        expected: canonical(byId(python.frames).get(String(id)) ?? '{"missing":true}'),
-        actual: canonical(byId(node.frames).get(String(id)) ?? '{"missing":true}'),
-        ruling:
-          `${kind} is read by the reference (pdf through \`bantamkit.pdfread\`, doc and rtf through ` +
-          '`/usr/bin/textutil` where the host has it) and refused by name by the port, whose `docread.ts` ' +
-          'has no reader for the kind yet — job44 ports `pdfread`. docs/porting.md, "pdf, doc and rtf on Node"; ' +
-          'the library-level ruling is in tools/conformance/suites/docread.mjs.',
-      });
-      cases.push({
-        name: `read-ruled: id ${id}: the refusal bit each side is required to carry`,
-        kind: 'json',
-        expected: { python: pythonRefuses, node: true },
-        actual: { python: refusedAt(python, id), node: refusedAt(node, id) },
-      });
-      if (pythonRefuses) {
-        cases.push({
-          name: `read-ruled: id ${id}: both refuse (the refusal bit, side to side)`,
-          kind: 'json',
-          expected: refusedAt(python, id),
-          actual: refusedAt(node, id),
-        });
-      } else {
-        // THE READING SIDE, PINNED. Without these two the reference could start reading
-        // something else entirely and the ruling, the refusal bit and the outcome sequence
-        // would all stay green — the exact hole J46-24 measured one layer down.
-        cases.push({
-          name: `read-ruled: id ${id}: the reference reads what it was measured reading`,
-          kind: 'bytes',
-          expected: reads,
-          actual: unscratched(toolTextOf(python, id)),
-        });
-        cases.push({
-          name: `read-ruled: id ${id}: the port refuses in the sentence the ruling quotes`,
-          kind: 'bytes',
-          expected: sentence,
-          actual: toolTextOf(node, id) ?? '(no reply)',
-        });
-      }
-    }
-    // Neither side lets a refusal reach the wire as `isError`: it is a normal reply in the
-    // reader's words on both — the same property the `read` session's `--1` case holds.
+    const RETIRED = ['bantamkit_read', 'repo_map'];
+    const { python, node } = results.get('advertisement');
+    const toolNames = (side) => frameOf(side, 2)?.result?.tools?.map((t) => t.name) ?? null;
+    const rosterOf = (side) => ({
+      count: toolNames(side)?.length ?? null,
+      retired: RETIRED.filter((name_) => (toolNames(side) ?? []).includes(name_)),
+    });
+    cases.push({ name: 'roster: the tool names, in order, side to side', kind: 'json', expected: toolNames(python), actual: toolNames(node) });
     cases.push({
-      name: 'read-ruled: no reply on either side is an isError frame',
+      name: 'roster: the twelve served tool names, in order, as a literal on each side',
       kind: 'json',
-      expected: { python: [], node: [] },
-      actual: {
-        python: table.map(([id]) => id).filter((id) => frameOf(python, id)?.result?.isError === true),
-        node: table.map(([id]) => id).filter((id) => frameOf(node, id)?.result?.isError === true),
-      },
+      expected: { python: ROSTER, node: ROSTER },
+      actual: { python: toolNames(python), node: toolNames(node) },
     });
-    // The records: the reference logs `manifest` where the port logs `refused-unreadable`
-    // for ids 2 and 7, so the sequence is ruled; the three both-refuse records are compared
-    // unruled, `ts` masked, as the bytes the two servers wrote.
-    const maskTs = (text) => (text ?? '').replace(/"ts":"[^"]*"/g, '"ts":"<masked>"');
-    const records = (side) => maskTs(side.eventlog).split('\n').filter((line) => line !== '');
-    const outcomes = (side) => records(side).map((line) => JSON.parse(line).outcome);
     cases.push({
-      name: 'read-ruled: the outcome sequence (manifest on the reference, refused on the port)',
+      name: 'roster: twelve tools, and neither repo_map nor bantamkit_read among them, on each side',
       kind: 'json',
-      expected: outcomes(python),
-      actual: outcomes(node),
-      ruling: 'ids 2 and 7 are `manifest` / `page` on the reference and `refused-unreadable` on the port, for the reason the frame rulings give.',
+      expected: { python: { count: 12, retired: [] }, node: { count: 12, retired: [] } },
+      actual: { python: rosterOf(python), node: rosterOf(node) },
     });
-    const bothRefuse = table.map(([id, , , py], i) => (py ? i : -1)).filter((i) => i !== -1);
-    cases.push({
-      name: 'read-ruled: the three both-refuse records, byte for byte with only `ts` masked',
-      kind: 'bytes',
-      expected: bothRefuse.map((i) => records(python)[i]).join('\n'),
-      actual: bothRefuse.map((i) => records(node)[i]).join('\n'),
-    });
-    notes.push(`read-ruled: /usr/bin/textutil ${textutil ? 'present' : 'absent'}; the port's pdf sentence: ${JSON.stringify((toolTextOf(node, 2) ?? '').split('. ').slice(1).join('. '))}`);
   }
 
-  // ------------------------------------------------------ bantamkit_read: the edges, unruled
+  // ------------------------------------------- the retired tools: refused on tools/call, per side
 
   /**
-   * The refusal BIT of every `read-edges` reply, side to side and against a literal. The
-   * generic loop already compares the frames byte for byte; this is the case that stays
-   * readable when one of them moves — "the port READ amp.xlsx" is one line here and a hex
-   * window there. Ids 2–6 and 8 must refuse in the reader's words (a normal reply starting
-   * `error: `); id 7 must be refused by the VALIDATOR, before the handler runs, which is the
-   * `isError` frame — and it must be the only one.
+   * Absence from `tools/list` and refusal on `tools/call` are two properties, and job50 proved
+   * they come apart: J50-15 found Node's dispatcher selecting the handler off `ARG_MODELS[name]`,
+   * a table that still held both dormant models, so a retired tool was unadvertised AND would
+   * have executed. The roster block above pins the first property; this one pins the second,
+   * as a literal on each side and never only as a differential — both servers refusing the
+   * same wrong way, or both executing, would compare equal.
+   *
+   * Every reply here is required to be the four-word sentence the reference's
+   * `tool_manager.call_tool` raises (`ToolError(f"Unknown tool: {name}")`), delivered as an
+   * `isError` RESULT with one text block and no `structuredContent` — the shape of a call that
+   * never entered a handler. Id 3 is the case that would have caught J50-15's bug: a readable
+   * file, so a server that still dispatched answers a manifest, not a refusal. Id 4 pins the
+   * ORDER of the two checks — no `path` at all, and still `Unknown tool:` rather than the
+   * validator's sentence. Id 5 is the control: a name that never existed gets the same
+   * sentence, so a retired name and an unknown one are indistinguishable to a client.
    */
   {
-    const { python, node } = results.get('read-edges');
-    const refusedAt = (side, id) => (toolTextOf(side, id) ?? '').startsWith('error: ');
-    const ids = [2, 3, 4, 5, 6, 7, ...(devZero === null ? [] : [8])];
-    const reader = ids.filter((id) => id !== 7);
-    for (const id of reader) {
+    const { python, node } = results.get('retired');
+    const table = [
+      [2, 'repo_map over an existing directory', 'Unknown tool: repo_map'],
+      [3, 'bantamkit_read over a readable file — a dispatcher still wired to its model would have answered a manifest', 'Unknown tool: bantamkit_read'],
+      [4, 'bantamkit_read with no arguments — the roster is checked before the validator', 'Unknown tool: bantamkit_read'],
+      [5, 'a name that never existed, the control', 'Unknown tool: no_such_tool'],
+    ];
+    const ids = table.map(([id]) => id);
+    for (const [id, label, sentence] of table) {
       cases.push({
-        name: `read-edges: id ${id}: both refuse in the reader's words (the refusal bit, side to side)`,
-        kind: 'json',
-        expected: refusedAt(python, id),
-        actual: refusedAt(node, id),
-      });
-    }
-    cases.push({
-      name: 'read-edges: the ids the reader refuses, on each side, as a literal',
-      kind: 'json',
-      expected: { python: reader, node: reader },
-      actual: { python: reader.filter((id) => refusedAt(python, id)), node: reader.filter((id) => refusedAt(node, id)) },
-    });
-    cases.push({
-      name: 'read-edges: id 7 (offset 2**53 + 1) is the only isError frame, on both sides',
-      kind: 'json',
-      expected: { python: [7], node: [7] },
-      actual: {
-        python: ids.filter((id) => frameOf(python, id)?.result?.isError === true),
-        node: ids.filter((id) => frameOf(node, id)?.result?.isError === true),
-      },
-    });
-    cases.push({
-      name: 'read-edges: id 7 carries the integer exact — 9007199254740993 in the validator\'s sentence',
-      kind: 'json',
-      expected: true,
-      actual: (toolTextOf(python, 7) ?? '').includes('input_value=9007199254740993') && (toolTextOf(node, 7) ?? '').includes('input_value=9007199254740993'),
-    });
-    notes.push(
-      `read-edges: ${devZero === null ? '/dev/zero has no Windows counterpart and is NOT MEASURED HERE; ' : ''}` +
-        `the sentences: ${reader.map((id) => `id ${id} ${JSON.stringify((toolTextOf(node, id) ?? '').split('\n')[0].slice(0, 96))}`).join('; ')}`,
-    );
-  }
-
-  // ------------------------------------------------ bantamkit_read: round 3, on the wire
-
-  /**
-   * The refusal BIT of every `read-round3` reply, side to side and against a literal, plus
-   * the two sentences the round changed, pinned as literals so a runtime that drifted back
-   * to the old wording fails on a line that names the sentence. The generic loop already
-   * compares every frame; these are the cases that stay readable when one moves.
-   */
-  {
-    const { python, node } = results.get('read-round3');
-    const refusedAt = (side, id) => (toolTextOf(side, id) ?? '').startsWith('error: ');
-    const firstLine = (side, id) => (toolTextOf(side, id) ?? '').split('\n')[0];
-    // A page's rows each begin with their own row number; row 0's text is what follows it.
-    const rowZero = (side, id) => {
-      const line = (toolTextOf(side, id) ?? '').split('\n').find((l) => /^0[\t ]/.test(l));
-      return line === undefined ? null : line.replace(/^0[\t ]/, '');
-    };
-    const ids = [2, 3, 4, 5, 6, 7, 8, 9, 10];
-    // Id 2 (`eszett-cell-ref.xlsx`) MOVED from `reader` to `reads` in job43b/M2: an
-    // unplaceable cell reference now costs that cell its column and is disclosed as an
-    // omission, instead of refusing the whole workbook. Both runtimes moved together
-    // (`a1acfa7` Python, `4e56836` Node); the literals below are what they answer now.
-    const reader = [3, 4, 5, 6];
-    const reads = [2, 7, 8, 10];
-    for (const id of [...reader, ...reads]) {
-      cases.push({
-        name: `read-round3: id ${id}: the refusal bit, side to side`,
-        kind: 'json',
-        expected: refusedAt(python, id),
-        actual: refusedAt(node, id),
-      });
-    }
-    cases.push({
-      name: 'read-round3: the ids the reader refuses (3-6) and reads (2, 7, 8, 10), on each side, as a literal',
-      kind: 'json',
-      expected: { python: reader, node: reader },
-      actual: { python: [...reader, ...reads].filter((id) => refusedAt(python, id)), node: [...reader, ...reads].filter((id) => refusedAt(node, id)) },
-    });
-    cases.push({
-      name: 'read-round3: id 9 (memory_save links as a 4303-character string) is the only isError frame, on both sides',
-      kind: 'json',
-      expected: { python: [9], node: [9] },
-      actual: {
-        python: ids.filter((id) => frameOf(python, id)?.result?.isError === true),
-        node: ids.filter((id) => frameOf(node, id)?.result?.isError === true),
-      },
-    });
-    cases.push({
-      name: 'read-round3: id 9 is refused by the validator as list_type on both sides — the string was never parsed as JSON',
-      kind: 'json',
-      expected: { python: true, node: true },
-      actual: { python: (toolTextOf(python, 9) ?? '').includes('list_type'), node: (toolTextOf(node, 9) ?? '').includes('list_type') },
-    });
-    // THE SENTENCES, as literals on each side — the reference's own first line is what the
-    // literal was generated from (`.venv/bin/python -m bantamkit.mcpserver` over the fixture,
-    // H1), never typed; the case fails if EITHER side drifts, not only if they part.
-    const sentences = {
-      3: 'error: compression-method-9.docx is a zip but its word/document.xml uses compression method 9, which this reader cannot decompress',
-      4: 'error: encrypted-mimetype.odt is a zip but its mimetype is encrypted, so this reader cannot read it without a password',
-      5: `error: bad-crc.docx is a zip but its word/document.xml is damaged (Bad CRC-32 for file 'word/document.xml'), so this reader cannot read it`,
-      6: 'error: corrupt-deflate.docx is a zip but its word/document.xml is damaged (Error -3 while decompressing data: invalid block type), so this reader cannot read it',
-    };
-    for (const [id, sentence] of Object.entries(sentences)) {
-      cases.push({
-        name: `read-round3: id ${id}: the sentence, as a literal on each side`,
+        name: `retired: id ${id}: ${label}: refused as \`${sentence}\`, as a literal on each side`,
         kind: 'json',
         expected: { python: sentence, node: sentence },
-        actual: { python: firstLine(python, Number(id)), node: firstLine(node, Number(id)) },
+        actual: { python: toolTextOf(python, id), node: toolTextOf(node, id) },
       });
     }
-    // Id 2 is no longer a refusal, so it is no longer a first-line case: the WHOLE manifest
-    // is pinned as a literal on each side. The three lines are the datum — the workbook still
-    // reads, the placeable cell still lands, and the cell that could not be placed is
-    // DISCLOSED as an omission rather than dropped in silence. A runtime that went back to
-    // refusing the workbook, or forward to swallowing the unplaceable cell without saying so,
-    // fails here on both sides, not only when the two part.
-    {
-      const eszett = checkedIn['eszett-cell-ref.xlsx'];
-      const manifest =
-        `${eszett} (xlsx) part 0 "Sharp": 1 rows, numbered 0 to 0\n` +
-        '  row 0 is the header: x\n' +
-        '  NOT in those rows: 1 unplaced-cell (the column of a cell whose reference is not letters then digits)';
-      cases.push({
-        name: 'read-round3: id 2: the whole manifest, as a literal on each side — an unplaceable cell costs its column, not the workbook',
-        kind: 'json',
-        expected: { python: manifest, node: manifest },
-        actual: { python: toolTextOf(python, 2) ?? null, node: toolTextOf(node, 2) ?? null },
-      });
-    }
-    // The 4301-digit character reference in a `<p>` is CAPPED to one replacement character on
-    // both sides (the reference's `html.unescape` answers U+FFFD for a number past the
-    // codepoint range, and the port caps the digits before it converts): the page's one row
-    // is `a \ufffd b`, generated from the reference's own `extract` over the fixture. (The
-    // `<xmp>` shape, where the reference keeps the text raw, is the built fixture the
-    // `docread` suite compares.)
+    const refusalShaped = (side, id) => {
+      const result = frameOf(side, id)?.result;
+      return result?.isError === true && Array.isArray(result.content) && result.content.length === 1 && !('structuredContent' in result);
+    };
     cases.push({
-      name: 'read-round3: id 8: the page row is `a \ufffd b` on both sides — the 4301-digit reference capped, not raised',
+      name: 'retired: every reply is an isError frame with one text block and no structuredContent — no handler ran, on either side',
       kind: 'json',
-      expected: { python: 'a \ufffd b', node: 'a \ufffd b' },
-      actual: { python: rowZero(python, 8), node: rowZero(node, 8) },
+      expected: { python: ids, node: ids },
+      actual: { python: ids.filter((id) => refusalShaped(python, id)), node: ids.filter((id) => refusalShaped(node, id)) },
     });
-    // The zero-row part in the `read` session (id 12, `part: 'Empty'`) answers the sentence
-    // H1 introduced — `"Empty" in <path> has no rows`, a `refused-offset` record — and NOT
-    // the `document_offset_past_end` sentence it printed before (`numbered 0 to -1`). Pinned
-    // here as a literal on each side, because the generic loop's byte comparison of that
-    // frame would stay green if both sides went back to the old sentence together.
-    const read = results.get('read');
-    const zeroRow = `error: "Empty" in ${bookXlsx} has no rows`;
-    cases.push({
-      name: 'read: id 12: a part with no rows answers the has-no-rows sentence on both sides, not "numbered 0 to -1"',
-      kind: 'json',
-      expected: { python: zeroRow, node: zeroRow },
-      actual: { python: (toolTextOf(read.python, 12) ?? '').split('\n')[0], node: (toolTextOf(read.node, 12) ?? '').split('\n')[0] },
-    });
-    notes.push(`read-round3: the sentences: ${reader.map((id) => `id ${id} ${JSON.stringify(firstLine(node, id).slice(0, 96))}`).join('; ')}; id 9 ${JSON.stringify((toolTextOf(node, 9) ?? '').split('\n')[0].slice(0, 120))}`);
-  }
-
-  // ------------------------------------------------ bantamkit_read: round 2, on the wire
-
-  /**
-   * The `read-round2` session, frame by frame. Ids 2, 3, 4, 6 and 9 are compared as the
-   * generic loop would (canonical AND raw bytes), unruled; id 5 is the validator's `isError`
-   * frame, pinned as the only one; ids 7, 8 and 10 are RULED, each with the literal that
-   * says which side reads, the unruled companion CLAUDE.md requires, and — for the two zip
-   * methods — the reference's row and the port's sentence pinned as literals, so a port that
-   * lost the method number or a reference that stopped reading `hello` fails on its own line.
-   */
-  {
-    const { python, node } = results.get('read-round2');
-    const left = byId(python.frames);
-    const right = byId(node.frames);
-    const refusedAt = (side, id) => (toolTextOf(side, id) ?? '').startsWith('error: ');
-    const ids = [2, 3, 4, 5, 6, 7, 8, 9, 10];
-    cases.push({
-      name: 'read-round2: the answered ids',
-      kind: 'json',
-      expected: [...left.keys()].sort(),
-      actual: [...right.keys()].sort(),
-    });
-    for (const id of [2, 3, 4, 5, 6, 9]) {
-      cases.push({
-        name: `read-round2: id ${id}`,
-        kind: 'string',
-        expected: canonical(left.get(String(id)) ?? '{"missing":true}'),
-        actual: canonical(right.get(String(id)) ?? '{"missing":true}'),
-      });
-      cases.push({
-        name: `read-round2: id ${id}: raw frame bytes`,
-        kind: 'bytes',
-        expected: left.get(String(id)) ?? '{"missing":true}',
-        actual: right.get(String(id)) ?? '{"missing":true}',
-      });
-    }
-    for (const id of [2, 3, 4, 6, 9]) {
-      cases.push({
-        name: `read-round2: id ${id}: both refuse in the reader's words (the refusal bit, side to side)`,
-        kind: 'json',
-        expected: refusedAt(python, id),
-        actual: refusedAt(node, id),
-      });
-    }
-    cases.push({
-      name: 'read-round2: the ids the reader refuses, on each side, as the literal each side is required to answer',
-      kind: 'json',
-      expected: { python: [2, 3, 4, 6, 9], node: [2, 3, 4, 6, 7, 8, 9] },
-      actual: { python: ids.filter((id) => refusedAt(python, id)), node: ids.filter((id) => refusedAt(node, id)) },
-    });
-    cases.push({
-      name: 'read-round2: id 5 (offset "null") is the only isError frame, on both sides',
-      kind: 'json',
-      expected: { python: [5], node: [5] },
-      actual: {
-        python: ids.filter((id) => frameOf(python, id)?.result?.isError === true),
-        node: ids.filter((id) => frameOf(node, id)?.result?.isError === true),
-      },
-    });
-    cases.push({
-      name: 'read-round2: id 5 is refused by the validator as int_parsing on both sides',
-      kind: 'json',
-      expected: { python: true, node: true },
-      actual: { python: (toolTextOf(python, 5) ?? '').includes('int_parsing'), node: (toolTextOf(node, 5) ?? '').includes('int_parsing') },
-    });
-    const table = [
-      [7, 'bzip2', 12, 'bzip2.docx', 'word/document.xml'],
-      [8, 'lzma', 14, 'lzma.docx', 'word/document.xml'],
-    ];
-    for (const [id, method, number, file, member] of table) {
-      cases.push({
-        name: `read-round2: id ${id}: ${file}, the reference reads it and the port refuses by method`,
-        kind: 'string',
-        expected: canonical(left.get(String(id)) ?? '{"missing":true}'),
-        actual: canonical(right.get(String(id)) ?? '{"missing":true}'),
-        ruling:
-          `compression method ${number} (${method}) is read by the reference (\`zipfile\` through \`${method === 'bzip2' ? 'bz2' : 'lzma'}\`) and refused ` +
-          'by the port, which decompresses through `node:zlib` alone and may add no runtime dependency. ' +
-          'docs/porting.md, "bzip2 and lzma zip members on Node"; the library-level ruling is in tools/conformance/suites/docread.mjs.',
-      });
-      cases.push({
-        name: `read-round2: id ${id}: the refusal bit each side is required to carry`,
-        kind: 'json',
-        expected: { python: false, node: true },
-        actual: { python: refusedAt(python, id), node: refusedAt(node, id) },
-      });
-      cases.push({
-        name: `read-round2: id ${id}: the port's first line is the sentence the ruling quotes`,
-        kind: 'bytes',
-        expected: `error: ${file} is a zip but its ${member} uses compression method ${number} (${method}), which the Node server cannot decompress (the Python server reads it); see docs/porting.md`,
-        actual: (toolTextOf(node, id) ?? '').split('\n')[0],
-      });
-      cases.push({
-        name: `read-round2: id ${id}: the reference's manifest names one part of one row`,
-        kind: 'json',
-        expected: true,
-        actual: /part 0 "document": 1 rows?/.test(toolTextOf(python, id) ?? ''),
-      });
-      // AND WHAT IT READ, as a literal. J46-32 (defect 5). The shape assertion above answers
-      // "one part, one row" and would hold just as well if that row said something else
-      // entirely — which is the hole a ruling plus a refusal bit cannot close, measured by
-      // J46-24 one layer down. `hello` is what the reference reads out of both fixtures, from
-      // a run of this suite.
-      cases.push({
-        name: `read-round2: id ${id}: the reference reads what it was measured reading`,
-        kind: 'bytes',
-        expected:
-          `<SCRATCH>/docs/${file} (docx) part 0 "document": 1 rows, numbered 0 to 0\n` +
-          '  row 0 is the header: hello',
-        actual: unscratched(toolTextOf(python, id)),
-      });
-    }
-    cases.push({
-      name: 'read-round2: id 10: rfc2231-charset.eml, both read, one row apart',
-      kind: 'string',
-      expected: canonical(left.get('10') ?? '{"missing":true}'),
-      actual: canonical(right.get('10') ?? '{"missing":true}'),
-      ruling:
-        'the reference reassembles RFC 2231 charset continuations through `email.policy.default` and ' +
-        'reads `café au lait`; the port reads the plain `charset=` parameter only and decodes the same ' +
-        'bytes as `caf� au lait`. Both read; the row differs. docs/porting.md, "RFC 2231 charset ' +
-        'continuations on Node"; the library-level ruling is in tools/conformance/suites/docread.mjs.',
-    });
-    cases.push({
-      name: 'read-round2: id 10: the refusal bit each side is required to carry',
-      kind: 'json',
-      expected: { python: false, node: false },
-      actual: { python: refusedAt(python, 10), node: refusedAt(node, 10) },
-    });
-    cases.push({
-      name: 'read-round2: id 10: both read (the refusal bit, side to side)',
-      kind: 'json',
-      expected: refusedAt(python, 10),
-      actual: refusedAt(node, 10),
-    });
-    // Everything around the ruled row — the manifest with the row itself blanked — must
-    // match, so the ruling cannot hide a second difference in the part count or the byte count.
-    // The reference's row is 12 UTF-8 bytes and the port's 14 (U+FFFD is three bytes where
-    // `é` is two, and there are two of them); the `text_bytes` figure moves with the row and
-    // is blanked with it.
-    const aroundRow = (text) => (text ?? '').replace(/caf.*? au lait/g, '<row>').replace(/\b1[24] bytes\b/g, '<n> bytes');
-    cases.push({
-      name: 'read-round2: id 10: the same manifest around the ruled row',
-      kind: 'bytes',
-      expected: aroundRow(toolTextOf(python, 10)),
-      actual: aroundRow(toolTextOf(node, 10)),
-    });
-    notes.push(`read-round2: id 6 sentence ${JSON.stringify((toolTextOf(node, 6) ?? '').split('\n')[0])}; id 10 reference ${JSON.stringify((toolTextOf(python, 10) ?? '').split('\n').find((l) => l.includes('au lait')) ?? null)}, port ${JSON.stringify((toolTextOf(node, 10) ?? '').split('\n').find((l) => l.includes('au lait')) ?? null)}`);
+    notes.push(`retired: ${table.length} calls to names off the roster, refused on both sides as ${JSON.stringify(toolTextOf(node, 2))} and its two siblings`);
   }
 
   // ----------------------------------------------------------- build_identity, in parts

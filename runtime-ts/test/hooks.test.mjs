@@ -522,8 +522,17 @@ function postToolUseSave(opts = {}) {
   return runHook({ hook_event_name: 'PostToolUse', tool_name: 'mcp__bantamkit__memory_save' }, opts);
 }
 
-function mcpJsonArgs(cwd, args) {
-  writeFileSync(join(cwd, '.mcp.json'), JSON.stringify({ mcpServers: { bantamkit: { command: 'tools/bantamkit-mcp', args } } }));
+/**
+ * One registration entry as the host would hold it. An ARRAY is `args` alone (the shape every
+ * `--index-budget` case passes); an OBJECT is spread over the entry so a case can name `env`
+ * — the field the store pin lives in — without every older case growing a wrapper.
+ */
+function registrationEntry(command, spec) {
+  return Array.isArray(spec) ? { command, args: spec } : { command, ...spec };
+}
+
+function mcpJsonArgs(cwd, spec) {
+  writeFileSync(join(cwd, '.mcp.json'), JSON.stringify({ mcpServers: { bantamkit: registrationEntry('tools/bantamkit-mcp', spec) } }));
 }
 
 function claudeJsonUserArgs(home, args) {
@@ -538,8 +547,8 @@ function claudeJsonUserArgs(home, args) {
  */
 function claudeJsonScopes(home, { user, local, cwd } = {}) {
   const doc = {};
-  if (user !== undefined) doc.mcpServers = { bantamkit: { command: 'npx', args: user } };
-  if (local !== undefined) doc.projects = { [cwd]: { mcpServers: { bantamkit: { command: 'npx', args: local } } } };
+  if (user !== undefined) doc.mcpServers = { bantamkit: registrationEntry('npx', user) };
+  if (local !== undefined) doc.projects = { [cwd]: { mcpServers: { bantamkit: registrationEntry('npx', local) } } };
   writeFileSync(join(home, '.claude.json'), JSON.stringify(doc));
 }
 
@@ -703,6 +712,250 @@ test('UserPromptSubmit recall is unaffected by a configured --index-budget', asy
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /"hookEventName":"UserPromptSubmit"/);
   assert.match(r.stdout, /deploy-flag/);
+});
+
+// ------------------------------------------- the store the winning registration pins (J50-1)
+//
+// `discoverProjectStore`, `resolveProjectStore` and `Memory.layered` all resolve the project
+// store through `pinnedStore()`, which reads `process.env.BANTAMKIT_MEMORY_DIR`
+// (`runtime-ts/src/memory/layers.ts`). The SERVER sees a registration's `env` because the
+// host merges it into the server's process; the HOOK is launched by the host and never
+// receives it. So a registration that pinned the store had the hook injecting from the store
+// the walk finds while the server saved into the pinned one — a latent split, closed by
+// reading `env.BANTAMKIT_MEMORY_DIR` off the winning entry with the same
+// `local > project > user` walk `--index-budget` already uses, and applying it to the hook's
+// own environment so the ONE shared resolution sees what the server sees.
+//
+// Each case puts a DIFFERENT, populated store in every place the hook could wrongly bind —
+// the walk's own `<cwd>/.bantamkit/memory` and every lower scope's pin — each holding a fact
+// whose NAME is unique to that store and whose description matches the same prompt, so a
+// wrong binding changes WHICH name reaches stdout, never whether one does.
+
+async function storeWithFact(dir, name) {
+  const { Memory } = await import(join(MEMORY_DIST, 'component.js'));
+  const outcome = new Memory(dir).saveOutcome('project', name, `${name} explains the release ladder`, 'body');
+  assert.equal(outcome.status, 'saved', `fixture fact ${name} must save: ${outcome.reply}`);
+  return dir;
+}
+
+/** A registration whose `env` pins the store, and configures nothing else. */
+function pinEntry(dir) {
+  return { args: [], env: { BANTAMKIT_MEMORY_DIR: dir } };
+}
+
+function sessionStart(opts) {
+  return runHook({ hook_event_name: 'SessionStart', source: 'startup' }, opts);
+}
+
+function promptAboutTheLadder(opts) {
+  return runHook({ hook_event_name: 'UserPromptSubmit', prompt: 'walk me through the release ladder' }, opts);
+}
+
+test('SessionStart and UserPromptSubmit inject from the store the winning registration pins, not the one the walk finds', async () => {
+  const cwd = newCwd();
+  const home = newHome();
+  await storeWithFact(join(cwd, '.bantamkit', 'memory'), 'walk-fact');
+  const pinned = await storeWithFact(join(scratch, `pinned-${n++}`), 'pinned-fact');
+  claudeJsonScopes(home, { cwd, local: pinEntry(pinned) });
+
+  const s = sessionStart({ cwd, home });
+  assert.equal(s.status, 0, s.stderr);
+  assert.match(s.stdout, /pinned-fact/, 'SessionStart must inject the index of the store the server would write into');
+  assert.doesNotMatch(s.stdout, /walk-fact/, 'the store the walk finds is not the one the session launched');
+  const rec = hookLog(home, 'SessionStart').find((l) => l.source === 'startup');
+  assert.equal(rec.storeScope, 'local', 'the log names the scope whose entry pinned the store');
+
+  const u = promptAboutTheLadder({ cwd, home });
+  assert.equal(u.status, 0, u.stderr);
+  assert.match(u.stdout, /pinned-fact/, 'recall must read the pinned store too');
+  assert.doesNotMatch(u.stdout, /walk-fact/);
+});
+
+test('the pin follows --index-budget precedence: local beats project beats user', async () => {
+  const cwd = newCwd();
+  const home = newHome();
+  await storeWithFact(join(cwd, '.bantamkit', 'memory'), 'walk-fact');
+  const userStore = await storeWithFact(join(scratch, `pinned-${n++}`), 'user-fact');
+  const projectStore = await storeWithFact(join(scratch, `pinned-${n++}`), 'project-fact');
+  const localStore = await storeWithFact(join(scratch, `pinned-${n++}`), 'local-fact');
+  mcpJsonArgs(cwd, pinEntry(projectStore));
+  claudeJsonScopes(home, { cwd, user: pinEntry(userStore), local: pinEntry(localStore) });
+
+  const s = sessionStart({ cwd, home });
+  assert.equal(s.status, 0, s.stderr);
+  assert.match(s.stdout, /local-fact/);
+  for (const wrong of ['project-fact', 'user-fact', 'walk-fact']) assert.doesNotMatch(s.stdout, new RegExp(wrong));
+  assert.equal(hookLog(home, 'SessionStart')[0].storeScope, 'local');
+});
+
+test('project scope pins over user scope', async () => {
+  const cwd = newCwd();
+  const home = newHome();
+  await storeWithFact(join(cwd, '.bantamkit', 'memory'), 'walk-fact');
+  const userStore = await storeWithFact(join(scratch, `pinned-${n++}`), 'user-fact');
+  const projectStore = await storeWithFact(join(scratch, `pinned-${n++}`), 'project-fact');
+  mcpJsonArgs(cwd, pinEntry(projectStore));
+  claudeJsonScopes(home, { cwd, user: pinEntry(userStore) });
+
+  const s = sessionStart({ cwd, home });
+  assert.equal(s.status, 0, s.stderr);
+  assert.match(s.stdout, /project-fact/);
+  for (const wrong of ['user-fact', 'walk-fact']) assert.doesNotMatch(s.stdout, new RegExp(wrong));
+  assert.equal(hookLog(home, 'SessionStart')[0].storeScope, 'project');
+});
+
+// The whole-entry rule, applied to `env` exactly as it is applied to `args`: the host never
+// merges fields across scopes, so a winning entry that names no pin means the walk, even
+// when a lower scope pins — that lower entry is not what the session launched.
+test('a winning entry with no pin means the walk, even when a lower scope pins', async () => {
+  const cwd = newCwd();
+  const home = newHome();
+  await storeWithFact(join(cwd, '.bantamkit', 'memory'), 'walk-fact');
+  const userStore = await storeWithFact(join(scratch, `pinned-${n++}`), 'user-fact');
+  claudeJsonScopes(home, { cwd, user: pinEntry(userStore), local: [] });
+
+  const s = sessionStart({ cwd, home });
+  assert.equal(s.status, 0, s.stderr);
+  assert.match(s.stdout, /walk-fact/);
+  assert.doesNotMatch(s.stdout, /user-fact/);
+  assert.equal(hookLog(home, 'SessionStart')[0].storeScope, null);
+});
+
+// A pin the server would refuse at construction (`docs/memory.md`, "Pinning the store") is
+// refused by the hook through the same code, in the same sentence — and the hook stays a
+// hook: exit 0, the profile half still injected, and the refusal on the log rather than on
+// the host's screen.
+test('a pin the server would refuse does not crash the hook, and the log carries the server\'s own sentence', async () => {
+  const cwd = newCwd();
+  const home = newHome();
+  await storeWithFact(join(cwd, '.bantamkit', 'memory'), 'walk-fact');
+  claudeJsonScopes(home, { cwd, local: pinEntry(join(scratch, 'no-such-store')) });
+
+  const s = sessionStart({ cwd, home });
+  assert.equal(s.status, 0, s.stderr);
+  assert.doesNotMatch(s.stdout, /walk-fact/, 'a refused pin is not silently downgraded to the walk — the server would not do that either');
+  const rec = hookLog(home, 'SessionStart').find((l) => l.warn);
+  assert.ok(rec, 'the refusal is logged');
+  assert.match(rec.warn, /pinned memory store is unreachable/);
+});
+
+// ------------------------------------ the session header counts what ARRIVED (J50-2E)
+//
+// `SessionStart` wrote its header from the store's fact COUNT and its body from what survived
+// `capLines(…, SESSION_INJECT_MAX)`, which drops whole lines. Reproduced on this machine's
+// 20-fact profile store, 2026-09-12: the header said 20, the body carried 15 (2,943 B; line
+// 16 would have reached 3,155), and the log said `profileFacts: 20` — nothing said five facts
+// never reached the model, and WHICH five was decided by the index's alphabetical order.
+// The cases pin the property the fix holds: the header's number is the number of fact lines
+// in the block; a drop is disclosed in the block and named in the log; no disclosure fires
+// when nothing was dropped; and the drop follows a stated rule, not the alphabet. Every
+// fixture is seeded through the real `Memory.save`, so dates come from the store's own
+// `today` seam and `last_recalled` from a real recall, never from a hand-written file.
+
+const profileDir = (home) => join(home, '.bantamkit', 'memory');
+
+/** One injected index block: header, its fact lines, and the disclosure line if any. */
+function indexBlock(stdout, kind) {
+  const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+  const block = ctx.split('\n\n').find((b) => b.startsWith(`[bantamkit ${kind} memory — `));
+  assert.ok(block, `a ${kind} block was injected`);
+  const lines = block.split('\n');
+  const header = lines[0].match(/^\[bantamkit (?:profile|project) memory — (\d+)(?: of (\d+))? facts/);
+  assert.ok(header, `the header has the announced shape: ${lines[0]}`);
+  const facts = lines.slice(1).filter((l) => l.startsWith('- [['));
+  const disclosure = lines.slice(1).filter((l) => /not shown/.test(l));
+  const names = facts.map((l) => l.match(/^- \[\[([^\]]+)\]\]/)[1]);
+  return { shown: Number(header[1]), total: header[2] === undefined ? null : Number(header[2]), facts, disclosure, names, factBytes: Buffer.byteLength(facts.join('\n')) };
+}
+
+function storedNames(dir) {
+  return readdirSync(join(dir, 'facts')).filter((f) => f.endsWith('.md')).map((f) => f.replace(/\.md$/, '')).sort();
+}
+
+test('the SessionStart header counts the facts in the block, and a drop is disclosed there and named in the log', async () => {
+  const home = newHome();
+  await seedFacts(profileDir(home), 30, 180); // ~6.3 kB of index against a 3,000 B cap
+  const s = sessionStart({ home });
+  assert.equal(s.status, 0, s.stderr);
+  const b = indexBlock(s.stdout, 'profile');
+  assert.ok(b.facts.length > 0 && b.facts.length < 30, `the fixture must actually exceed the cap (got ${b.facts.length} of 30)`);
+  assert.equal(b.shown, b.facts.length, 'the header counts the fact lines that are IN the block');
+  assert.equal(b.total, 30, 'and says how many the store holds');
+  assert.ok(b.factBytes <= 3000, `the fact lines stay inside the cap: ${b.factBytes}`);
+  assert.equal(b.disclosure.length, 1, 'exactly one disclosure line');
+  assert.match(b.disclosure[0], new RegExp(`^\\[${30 - b.facts.length} of 30 not shown`));
+  const rec = hookLog(home, 'SessionStart')[0];
+  assert.equal(rec.profileFacts, 30, 'the store count keeps its old meaning');
+  assert.equal(rec.profileInjected, b.facts.length);
+  assert.deepEqual([...b.names, ...rec.profileDropped].sort(), storedNames(profileDir(home)), 'shown + dropped is exactly the store — nothing counted twice, nothing lost');
+  assert.equal(typeof rec.dropRule, 'string', 'the log names the rule the drop followed');
+});
+
+test('a store under the cap: the header is the store count, and no disclosure fires', async () => {
+  const home = newHome();
+  await seedFacts(profileDir(home), 3, 60);
+  const s = sessionStart({ home });
+  assert.equal(s.status, 0, s.stderr);
+  const b = indexBlock(s.stdout, 'profile');
+  assert.equal(b.facts.length, 3);
+  assert.equal(b.shown, 3);
+  assert.equal(b.total, null, 'no "of N" when nothing was dropped');
+  assert.equal(b.disclosure.length, 0, 'a disclosure that fires when nothing was dropped is its own bug');
+  const rec = hookLog(home, 'SessionStart')[0];
+  assert.equal(rec.profileFacts, 3);
+  assert.equal(rec.profileInjected, 3);
+  assert.deepEqual(rec.profileDropped, []);
+});
+
+// The rule, one half per judged fact. Alphabetical order would keep `aa-…` and `ab-…` and
+// drop `zz-…`; created-only order would drop `ac-…`. Each assertion below is red under one of
+// those and green under the stated rule, so a regression to either shows up by name.
+test('what is dropped follows the stated rule, not the alphabet: durable types first, then the most recently recalled', async () => {
+  const home = newHome();
+  const dir = profileDir(home);
+  const { Memory } = await import(join(MEMORY_DIST, 'component.js'));
+  const save = (today, type, name, stem) => {
+    let description = '';
+    while (Buffer.byteLength(description) < 180) description += `${stem} `;
+    const o = new Memory(dir, { today: () => today }).saveOutcome(type, name, description.trim(), 'body');
+    assert.equal(o.status, 'saved', `fixture fact ${name} must save: ${o.reply}`);
+  };
+  for (let i = 0; i < 14; i += 1) save('2026-05-01', 'feedback', `mm-filler-${i}`, `filler${i}`);
+  save('2026-09-01', 'project', 'aa-project-newest', 'projectnew');          // alphabet-first, newest, DECAYING type
+  save('2026-01-01', 'feedback', 'ab-feedback-oldest', 'feedbackold');       // alphabet-second, oldest evidence
+  save('2026-01-01', 'feedback', 'ac-feedback-old-but-recalled', 'recalledold');
+  save('2026-09-01', 'feedback', 'zz-feedback-newest', 'feedbacknew');       // alphabet-last, newest
+  // A real recall stamps `last_recalled` on the old fact, and that stamp outranks `created`.
+  new Memory(dir, { today: () => '2026-09-12' }).recall('recalledold');
+
+  const s = sessionStart({ home });
+  assert.equal(s.status, 0, s.stderr);
+  const b = indexBlock(s.stdout, 'profile');
+  const rec = hookLog(home, 'SessionStart')[0];
+  assert.ok(rec.profileDropped.length >= 3, `the fixture must drop at least the three judged facts (dropped ${rec.profileDropped.length})`);
+  assert.ok(b.names.includes('zz-feedback-newest'), 'the newest durable fact is kept although the alphabet would drop it');
+  assert.ok(b.names.includes('ac-feedback-old-but-recalled'), 'a recent recall outranks an old created date');
+  assert.ok(rec.profileDropped.includes('ab-feedback-oldest'), 'the stalest durable fact goes before any filler');
+  assert.ok(rec.profileDropped.includes('aa-project-newest'), 'a decaying type goes before every durable one, whatever its date or name');
+  assert.match(rec.dropRule, /recalled/, 'the log names the rule in words');
+  assert.deepEqual([...b.names, ...rec.profileDropped].sort(), storedNames(dir));
+});
+
+test('the project block gets the same header, disclosure and log fields', async () => {
+  const home = newHome();
+  const cwd = newCwd();
+  await seedFacts(join(cwd, '.bantamkit', 'memory'), 30, 180);
+  const s = sessionStart({ home, cwd });
+  assert.equal(s.status, 0, s.stderr);
+  const b = indexBlock(s.stdout, 'project');
+  assert.ok(b.facts.length < 30, 'the fixture must exceed the cap');
+  assert.equal(b.shown, b.facts.length);
+  assert.equal(b.total, 30);
+  assert.equal(b.disclosure.length, 1);
+  const rec = hookLog(home, 'SessionStart')[0];
+  assert.equal(rec.projectFacts, 30);
+  assert.equal(rec.projectInjected, b.facts.length);
+  assert.deepEqual([...b.names, ...rec.projectDropped].sort(), storedNames(join(cwd, '.bantamkit', 'memory')));
 });
 
 // --------------------------------------------- the injection record roadmap #6 measures on
@@ -874,7 +1127,7 @@ function stopPayload() {
   return { hook_event_name: 'Stop', transcript_path: join(scratch, 'transcript.jsonl') };
 }
 
-/** Every record this arm wrote, in order. `action` is one of dream / dream-skip / dream-failed. */
+/** Every record this arm wrote, in order. `action` is one of dream-preview / dream-skip / dream-failed. */
 function dreamRecords(home) {
   return hookLog(home, 'Stop').filter((r) => String(r.action).startsWith('dream'));
 }
@@ -885,7 +1138,64 @@ function factNames(root) {
   } catch { return []; }
 }
 
-test('Stop consolidates the duplicate the two layers share, and reports what it merged', () => {
+/** Every fact in `<root>/facts`, name -> bytes, so "still live" means BYTE-IDENTICAL and not
+ *  merely "a file of that name still exists" (a union rewrite keeps the name and moves the bytes). */
+function factBytes(root) {
+  const out = {};
+  for (const n of factNames(root)) out[n] = readFileSync(join(root, 'facts', n), 'utf8');
+  return out;
+}
+
+// THE RULING OF 2026-09-12 (J50-2A): THE AUTOMATIC TRIGGER NEVER WRITES.
+//
+// J45 bounded the machine-wide cost of the cross-layer merge by defaulting `dry_run` to
+// TRUE — a real merge was something somebody asked for. J46-14 wired the dream to `Stop`
+// with `dry_run=false`, and that mitigation stopped existing: every session ending inside a
+// project whose store shares a name with the profile store silently archived the profile
+// copy. Measured on the user's machine: 14 of 20 profile facts in `archive/`, and a restore
+// of 4 consumed again at the very next Stop.
+//
+// The property, stated as the test asserts it: after any number of Stops the set of live
+// facts in EVERY store is exactly what it was before, byte for byte, and nothing is archived.
+// The Stop dream still RUNS — it previews, and the log says what it WOULD merge — but a real
+// merge is a deliberate `memory_dream` call and nothing else.
+test('Stop never writes: a duplicate the two layers share is still live in BOTH after the dream', () => {
+  const home = newHome(); const cwd = newCwd();
+  const { project, profile } = seedTwoLayers({ home, cwd });
+  writeFileSync(join(scratch, 'transcript.jsonl'), '{"type":"tool_use"}\n');
+  const projectBefore = factBytes(project);
+  const profileBefore = factBytes(profile);
+  assert.ok('shared-ruling.md' in projectBefore && 'shared-ruling.md' in profileBefore, 'the bed shares a name');
+
+  // Three Stops, not one: the first is the pass that used to write, and the two after it are
+  // the gate's own skips — a trigger that re-armed on its own dry run would write on the second.
+  for (let i = 0; i < 3; i++) {
+    const r = runHook(stopPayload(), { home, cwd });
+    assert.equal(r.status, 0, r.stderr);
+  }
+
+  assert.deepEqual(factBytes(project), projectBefore, 'the project layer is byte-identical');
+  assert.deepEqual(factBytes(profile), profileBefore, 'the profile layer is byte-identical: the duplicate is NOT consumed');
+  assert.equal(existsSync(join(profile, 'archive')), false, 'nothing was archived out of the profile store');
+  assert.equal(existsSync(join(project, 'archive')), false, 'nothing was archived out of the project store');
+
+  // …and the early-warning value is kept: the pass ran, and it said what it would do.
+  const [rec] = dreamRecords(home);
+  assert.equal(rec.action, 'dream-preview', 'a dry run is a different action, not a `dream` with a flag');
+  assert.equal(rec.dryRun, true);
+  assert.equal(rec.status, 'previewed');
+  assert.equal(rec.wouldMerge, 1, 'exactly the one name both layers hold');
+  assert.equal(rec.wouldConsume, 1);
+  assert.equal(rec.merged, undefined, 'no field a reader could mistake for a count of merges that happened');
+  assert.equal(rec.consumed, undefined);
+});
+
+// Until J50-2A this test was "Stop consolidates the duplicate the two layers share, and
+// reports what it merged", and it asserted the profile copy GONE from disk. That was the
+// behaviour the user ruled out on 2026-09-12; the test above pins the ruling, and this one
+// keeps what J46-6 wanted from the original — the OUTCOME fields are the pass's real
+// arithmetic, read off the child's stdout, not computed before the spawn.
+test('Stop previews the duplicate the two layers share, and reports what it WOULD merge', () => {
   const home = newHome(); const cwd = newCwd();
   const { project, profile } = seedTwoLayers({ home, cwd });
   writeFileSync(join(scratch, 'transcript.jsonl'), '{"type":"tool_use"}\n');
@@ -898,19 +1208,22 @@ test('Stop consolidates the duplicate the two layers share, and reports what it 
 
   const [rec] = dreamRecords(home);
   // The OUTCOME, not merely that the arm ran.
-  assert.equal(rec.action, 'dream');
-  assert.equal(rec.status, 'consolidated');
-  assert.equal(rec.merged, 1, 'exactly the one name both layers hold');
-  assert.equal(rec.consumed, 1);
-  assert.ok(rec.changes >= 1, `changes should count the merge, got ${rec.changes}`);
+  assert.equal(rec.action, 'dream-preview');
+  assert.equal(rec.dryRun, true);
+  assert.equal(rec.status, 'previewed');
+  assert.equal(rec.wouldMerge, 1, 'exactly the one name both layers hold');
+  assert.equal(rec.wouldConsume, 1);
+  assert.ok(rec.changes >= 1, `changes should count the merge it would make, got ${rec.changes}`);
+  assert.equal(rec.storeMoved, false, 'the fingerprint after the pass is the fingerprint before it');
+  assert.ok(rec.indexProjected >= rec.indexBefore, 'a union only ever grows the project index');
 
-  // …and the store on disk actually moved: the profile copy is gone, the project copy holds
-  // BOTH bodies. A union that dropped a claim would pass an `action`-only assertion.
-  assert.deepEqual(factNames(profile), ['profile-only-fact.md'], 'the profile duplicate is consumed');
+  // …and the store on disk did NOT move: both copies are still where they were, and the
+  // project copy holds ONLY its own claim.
+  assert.deepEqual(factNames(profile), ['profile-only-fact.md', 'shared-ruling.md'], 'the profile duplicate is NOT consumed');
   assert.deepEqual(factNames(project), ['project-only-fact.md', 'shared-ruling.md']);
-  const merged = readFileSync(join(project, 'facts', 'shared-ruling.md'), 'utf8');
-  assert.match(merged, /the gate is a conformance case/, 'the project claim survives');
-  assert.match(merged, /a ruling costs a divergence row/, 'the profile claim survives');
+  const kept = readFileSync(join(project, 'facts', 'shared-ruling.md'), 'utf8');
+  assert.match(kept, /the gate is a conformance case/, 'the project claim is untouched');
+  assert.doesNotMatch(kept, /a ruling costs a divergence row/, 'the profile claim was NOT unioned in');
 });
 
 test('an unchanged store does not dream a second time, and the skip is cheap', () => {
@@ -924,15 +1237,15 @@ test('an unchanged store does not dream a second time, and the skip is cheap', (
 
   const records = dreamRecords(home);
   assert.equal(records.length, 3, 'the arm reports on every Stop');
-  assert.equal(records.filter((r) => r.action === 'dream').length, 1,
-    'the consolidation itself runs exactly once for one change to the store');
+  assert.equal(records.filter((r) => r.action === 'dream-preview').length, 1,
+    'the preview itself runs exactly once for one change to the store — a dry run advances the marker');
   for (const skipped of records.slice(1)) {
     assert.equal(skipped.action, 'dream-skip');
     assert.equal(skipped.reason, 'unchanged');
   }
 });
 
-test('a change to either layer re-arms the gate, and the second pass is a no-op', () => {
+test('a change to either layer re-arms the gate, and the second preview reports the duplicate again', () => {
   const home = newHome(); const cwd = newCwd();
   const { project, profile } = seedTwoLayers({ home, cwd });
   writeFileSync(join(scratch, 'transcript.jsonl'), '{"type":"tool_use"}\n');
@@ -945,14 +1258,51 @@ test('a change to either layer re-arms the gate, and the second pass is a no-op'
   runHook(stopPayload(), { home, cwd });
 
   const records = dreamRecords(home);
-  const ran = records.filter((r) => r.action === 'dream');
+  const ran = records.filter((r) => r.action === 'dream-preview');
   assert.equal(ran.length, 2, 'the change re-armed the gate');
-  assert.equal(ran[1].status, 'nothing-to-consolidate', 'nothing is left to merge');
-  assert.equal(ran[1].changes, 0);
-  assert.equal(ran[1].merged, 0);
-  assert.equal(ran[1].indexBefore, ran[1].indexAfter, 'a no-op pass does not move the index');
+  // THE ACCEPTED COST OF THE RULING, PINNED: nothing consumed the duplicate, so the second
+  // preview finds it again. Before J50-2A this pass reported `nothing-to-consolidate` because
+  // the first one had archived the profile copy.
+  assert.equal(ran[1].status, 'previewed', 'the duplicate accumulates until somebody asks');
+  assert.equal(ran[1].wouldMerge, 1);
+  assert.equal(ran[1].storeMoved, false);
   assert.equal(readFileSync(join(project, 'facts', 'shared-ruling.md'), 'utf8'), after,
-    'the merged fact is byte-identical after a second pass');
+    'the project fact is byte-identical after a second pass');
+  assert.deepEqual(factNames(profile), ['a-new-profile-fact.md', 'profile-only-fact.md', 'shared-ruling.md']);
+});
+
+test('a real merge is a deliberate call, and it re-arms the gate by moving a file', () => {
+  const home = newHome(); const cwd = newCwd();
+  const { project, profile } = seedTwoLayers({ home, cwd });
+  writeFileSync(join(scratch, 'transcript.jsonl'), '{"type":"tool_use"}\n');
+
+  runHook(stopPayload(), { home, cwd });
+  assert.equal(dreamRecords(home)[0].status, 'previewed');
+
+  // What `memory_dream` with `dry_run=false` does — the ONE caller allowed to write — run in
+  // a child from the test's own HOME/cwd, exactly as the hook spawns its preview.
+  const script = `(async () => {
+    const { Memory } = await import(${JSON.stringify(join(packageRoot, 'dist', 'memory', 'component.js'))});
+    const o = Memory.layered(process.argv[1]).dreamOutcome(false);
+    process.stdout.write(JSON.stringify({ status: o.status, consumed: o.consumed }));
+  })().catch((e) => { process.stderr.write(String(e && e.stack || e)); process.exit(1); });`;
+  const merge = spawnSync(process.execPath, ['-e', script, cwd], { encoding: 'utf8', env: { ...process.env, HOME: home, USERPROFILE: home } });
+  assert.equal(merge.status, 0, merge.stderr);
+  assert.deepEqual(JSON.parse(merge.stdout), { status: 'consolidated', consumed: 1 });
+  assert.deepEqual(factNames(profile), ['profile-only-fact.md'], 'the deliberate call consumed the duplicate');
+  const mergedBytes = readFileSync(join(project, 'facts', 'shared-ruling.md'), 'utf8');
+  assert.match(mergedBytes, /a ruling costs a divergence row/, 'the deliberate merge unioned the profile claim in');
+
+  // The move re-armed the gate on its own: the next Stop previews a clean store, and touches
+  // nothing the deliberate call wrote.
+  runHook(stopPayload(), { home, cwd });
+  const ran = dreamRecords(home).filter((r) => r.action === 'dream-preview');
+  assert.equal(ran.length, 2, 'the deliberate merge re-armed the gate');
+  assert.equal(ran[1].status, 'nothing-to-consolidate');
+  assert.equal(ran[1].wouldMerge, 0);
+  assert.equal(ran[1].storeMoved, false);
+  assert.equal(readFileSync(join(project, 'facts', 'shared-ruling.md'), 'utf8'), mergedBytes,
+    'the preview after a deliberate merge leaves its result byte-identical');
 });
 
 // The two ways this arm can fail are DIFFERENT CODE PATHS and both are covered: the project
@@ -1035,8 +1385,8 @@ test('the dream arm never emits, so the Stop nudge stays the only voice on stdou
   assert.doesNotThrow(() => JSON.parse(out), 'stdout must be ONE JSON object, not two concatenated');
   const parsed = JSON.parse(out);
   assert.equal(parsed.decision, 'block', 'the nudge still owns the answer to the host');
-  // …and the dream still happened on that same Stop.
-  assert.equal(dreamRecords(home)[0].status, 'consolidated');
+  // …and the dream preview still happened on that same Stop.
+  assert.equal(dreamRecords(home)[0].status, 'previewed');
 });
 
 // THE REGRESSION THIS ARM CAUSED ONCE, AND MUST NEVER CAUSE AGAIN.

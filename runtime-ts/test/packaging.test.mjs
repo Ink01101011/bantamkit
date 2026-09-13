@@ -31,6 +31,24 @@ const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoPack = join(dirname(packageRoot), 'assets');
 
 /**
+ * AMENDED 2026-09-13 (job50, J50-15, I5): 91 files / 237,831 bytes, measured at that commit by the
+ * walk the byte node below performs over the repository pack, where `assets/tools/bantamkit_read.json`
+ * and `assets/tools/repo_map.json` each lost 13 bytes — `"surfaces": ["mcp"]` became `[]` — because
+ * both tools left the MCP roster on the user's ruling of 2026-09-12. NEITHER FILE LEFT THE PACK: the
+ * contract is kept whole so the dormant handlers on both runtimes have the same schema to return to,
+ * which is why the file count did not move and the second decrease this ledger records is 26 bytes
+ * rather than two manifests. Every earlier line stands as it was written.
+ *
+ * AMENDED 2026-09-12 (job50, J50-3, J49-B4): 91 files / 233,073 bytes, measured at that commit
+ * by `npm pack --dry-run --json` in `runtime-ts/`, where the DESCRIPTIONS of two manifests were
+ * cut: `assets/tools/skill_audit.json` 10,503 -> 4,109 bytes (8,161 -> 1,826 decoded chars) and
+ * `assets/tools/token_ledger.json` 7,459 -> 3,361 bytes (5,985 -> 1,883 chars). Claude Code
+ * truncates a served tool description at 2,048 characters, mid-sentence and without an error,
+ * so the half that said WHEN to call each tool was the half no host ever showed; the cut text
+ * moved to `docs/skill-audit.md` and `docs/ledger.md`. The file count did not move. The first
+ * DECREASE this ledger records, and the reason the node below pins a number rather than a
+ * floor. Every earlier line stands as it was written.
+ *
  * AMENDED 2026-09-11 (job46, J46-18, AS-1(c)): 91 files / 243,565 bytes, measured at that
  * commit, where `assets/tools/token_ledger.json` arrived at 7,459 bytes — the manifest for the
  * fourteenth served tool, the transcript ledger. Every earlier line stands as it was written.
@@ -120,7 +138,34 @@ test('every packed asset is byte-identical to the repository pack', () => {
     assert.equal(sha256(mirror), sha256(abs), `vendored copy of ${rel} differs`);
     bytes += readFileSync(abs).length;
   }
-  assert.equal(bytes, 243565); // +7459: assets/tools/token_ledger.json, the fourteenth served tool's manifest — the transcript ledger promoted off `tools/ledger/token-ledger.mjs` (job46 J46-18, AS-1(c)); +1041: assets/pricing/default.json, the price table, shipped with an empty `rates` map because no rate in it could have been sourced (job46 J46-17, AS-1(b)); +320: assets/tools/shiftwork_clock_out.json says the AS-2 roles check exists, so the surprise reaches the reader of the tool schema (job46 J46-10); +2924: assets/schemas/shiftwork-checkpoint.json gains the optional job.roles map and the $comment amendment that explains it (job46 J46-7, AS-2); +2358: assets/tools/repo_map.json (job45 J45-11, roadmap row 10); +1605: assets/tools/memory_dream.json (job45 J45-3, roadmap row 5); +509: skill_audit.json's empty-root refusal (F5); +1739: skill_audit.json's `versions` argument, host truth over the byte-order guess (F4); +1415: its version-resolution rule (SA6); +1743: its whole-value-quote rule (SA2b); +5097 at 56f8a52: assets/tools/skill_audit.json (SA1); +2341 at 92661f7: bantamkit_read.json and its two contract sentences; +8 when its part example became "document"; +37 when offset gained maximum 2^53-1 (F1)
+  assert.equal(bytes, 238751); // +454: assets/tools/shiftwork_clock_in.json and +466: assets/tools/shiftwork_clock_out.json, the descriptions say what clock_in WRITES (one best-effort brief line per brief) and that `briefed` is runtime-measured, never a gate (job50 J50-16A, F6); -26: assets/tools/bantamkit_read.json and assets/tools/repo_map.json, `"surfaces": ["mcp"]` -> `[]` (13 bytes each) — both tools retired from the MCP roster by the user's ruling of 2026-09-12, assets kept whole, handlers DORMANT (job50 J50-14/J50-15, I5); +3137: assets/tools/shiftwork_clock_out.json, the accounting line's declared shape — `tokens` and `duration_ms` required, five named keys typed, any other key passes (job50 J50-7, F5); +1647: assets/schemas/shiftwork-checkpoint.json gains the optional handoff.notes prose key and the $comment that explains it (job50 J50-5); -6394: assets/tools/skill_audit.json and -4098: assets/tools/token_ledger.json, their descriptions cut to 1,826 and 1,883 decoded chars under the host's 2,048-char truncation, the reference text moved to docs/ (job50 J50-3, J49-B4); +7459: assets/tools/token_ledger.json, the fourteenth served tool's manifest — the transcript ledger promoted off `tools/ledger/token-ledger.mjs` (job46 J46-18, AS-1(c)); +1041: assets/pricing/default.json, the price table, shipped with an empty `rates` map because no rate in it could have been sourced (job46 J46-17, AS-1(b)); +320: assets/tools/shiftwork_clock_out.json says the AS-2 roles check exists, so the surprise reaches the reader of the tool schema (job46 J46-10); +2924: assets/schemas/shiftwork-checkpoint.json gains the optional job.roles map and the $comment amendment that explains it (job46 J46-7, AS-2); +2358: assets/tools/repo_map.json (job45 J45-11, roadmap row 10); +1605: assets/tools/memory_dream.json (job45 J45-3, roadmap row 5); +509: skill_audit.json's empty-root refusal (F5); +1739: skill_audit.json's `versions` argument, host truth over the byte-order guess (F4); +1415: its version-resolution rule (SA6); +1743: its whole-value-quote rule (SA2b); +5097 at 56f8a52: assets/tools/skill_audit.json (SA1); +2341 at 92661f7: bantamkit_read.json and its two contract sentences; +8 when its part example became "document"; +37 when offset gained maximum 2^53-1 (F1)
+});
+
+/**
+ * J49-B4 (job50, J50-3). Claude Code truncates a served MCP tool description at 2,048
+ * characters — mid-sentence, without an error, and keeping the input schema, so the call stays
+ * syntactically possible and semantically unguided. Observed only in the host's own log line,
+ * never documented, hence the margin: 1,900 DECODED characters of the JSON string, not bytes
+ * (`skill_audit`'s old description was 8,161 chars and 8,201 bytes). Both servers serve
+ * `asset["description"]` verbatim from one shared file, so a differential between the two
+ * runtimes can never see this; it is a per-pack literal or it is nothing. Asserted over the
+ * VENDORED copy, the artifact npm publishes, as every other node in this file is.
+ */
+const DESCRIPTION_BUDGET = 1900;
+
+test('no served tool description exceeds the budget the host truncates at', () => {
+  packListing(); // prepack vendors runtime-ts/assets as a side effect
+  const tools = join(packageRoot, 'assets', 'tools');
+  const manifests = readdirSync(tools).filter((f) => f.endsWith('.json')).sort();
+  assert.ok(manifests.length > 0, `no tool manifests under ${tools}`);
+  for (const file of manifests) {
+    const { name, description } = JSON.parse(readFileSync(join(tools, file), 'utf8'));
+    assert.equal(typeof description, 'string', `${file}: description is not a string`);
+    assert.ok(
+      description.length <= DESCRIPTION_BUDGET,
+      `${name} (${file}): description is ${description.length} decoded chars, over the ${DESCRIPTION_BUDGET} budget — the host cuts at 2,048 and shows no error`,
+    );
+  }
 });
 
 test('the tarball carries the executable entry point and its module', () => {

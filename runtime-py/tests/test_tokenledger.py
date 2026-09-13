@@ -483,10 +483,8 @@ SERVED_ORDER = [
     "build_identity",
     "bantamkit_status",
     "memory_compact",
-    "bantamkit_read",
     "skill_audit",
     "memory_dream",
-    "repo_map",
     "token_ledger",
 ]
 
@@ -514,11 +512,14 @@ def call(server, **args):
     return asyncio.run(scenario())
 
 
-def test_the_tool_is_served_fourteenth_and_its_schema_is_the_asset(tmp_path):
+def test_the_tool_is_served_twelfth_and_its_schema_is_the_asset(tmp_path):
     """Registration order IS served order, and the schema comes from the manifest.
 
     The index is pinned rather than `[-1]`: this node is about where `token_ledger` sits, and a
-    later tool moving in behind it must not be able to satisfy it.
+    later tool moving in behind it must not be able to satisfy it. Twelfth of TWELVE since job50
+    I5 retired `bantamkit_read` (tenth) and `repo_map` (thirteenth) — index and length re-derived
+    from a stdio `tools/list` of both launchers on 2026-09-13 (J50-16A), the Python half of the
+    pin J50-16 re-derived in `dream.test.mjs`.
     """
     server, _ = make(tmp_path)
 
@@ -526,8 +527,8 @@ def test_the_tool_is_served_fourteenth_and_its_schema_is_the_asset(tmp_path):
         async with Client(server) as c:
             listed = (await c.list_tools()).tools
             assert [t.name for t in listed] == SERVED_ORDER
-            assert listed[13].name == "token_ledger"
-            return listed[13]
+            assert listed[11].name == "token_ledger"
+            return listed[11]
 
     served = asyncio.run(scenario())
     manifest = load_tool_asset("token_ledger")

@@ -34,6 +34,15 @@ from bantamkit.memory import Memory  # noqa: E402
 
 FIXED_MS = 1756029153412
 
+#: `bantamkit_read` left the MCP roster on the user's ruling of 2026-09-12 (job50 I5); its
+#: handler and document cache are DORMANT in `mcpserver.py`. Every node below that reaches
+#: the reader THROUGH the server carries this mark; the two that read the asset off disk
+#: ((c)/(l)) or scan `docmanifest.py` still run, because the contract and the shared
+#: renderer are kept whole. Not a silenced pin: the premise (the tool is served) is false.
+RETIRED = pytest.mark.skip(
+    reason="bantamkit_read left the MCP roster by ruling (job50 I5, 2026-09-12); handler DORMANT"
+)
+
 
 def make(tmp_path):
     log = tmp_path / "log.jsonl"
@@ -129,6 +138,7 @@ def walk(server, path, part="Sales", limit=200):
 # ------------------------------------------------------- (i) one parse per document
 
 
+@RETIRED
 def test_a_paging_walk_over_one_unchanged_document_parses_it_once(tmp_path, extract_calls):
     """The register's number, measured rather than read.
 
@@ -148,6 +158,7 @@ def test_a_paging_walk_over_one_unchanged_document_parses_it_once(tmp_path, extr
     )
 
 
+@RETIRED
 def test_a_file_rewritten_in_place_is_never_served_from_the_previous_parse(
     tmp_path, extract_calls
 ):
@@ -174,6 +185,7 @@ def test_a_file_rewritten_in_place_is_never_served_from_the_previous_parse(
     assert "9 rows" not in first and "10 rows" in second
 
 
+@RETIRED
 def test_two_documents_alternating_cost_one_parse_each_time_and_never_more(
     tmp_path, extract_calls
 ):
@@ -223,6 +235,7 @@ def eval_handlers(path):
     return {t.tool.name: t.handler for t in _document_tools([fixture_for(path)])}
 
 
+@RETIRED
 def test_the_eval_harness_and_the_mcp_server_render_the_same_manifest_for_the_same_file(
     tmp_path,
 ):
@@ -235,6 +248,7 @@ def test_the_eval_harness_and_the_mcp_server_render_the_same_manifest_for_the_sa
     assert eval_handlers(path)["document_list"]() == rendered
 
 
+@RETIRED
 def test_a_zero_row_part_answers_the_wire_pinned_sentence_from_both_callers(tmp_path):
     """(h). `has no rows` survives; `numbered 0 to -1` does not.
 
@@ -255,6 +269,7 @@ def test_a_zero_row_part_answers_the_wire_pinned_sentence_from_both_callers(tmp_
         assert eval_handlers(path)["document_read"](part="Empty", **args) == expected
 
 
+@RETIRED
 def test_a_real_offset_past_the_end_still_gets_the_past_end_sentence_from_both(tmp_path):
     """The companion the fix must not break: a part WITH rows keeps `document_offset_past_end`."""
     path = sales(tmp_path, 3)
@@ -295,12 +310,14 @@ def test_the_asset_bounds_are_the_constants_each_runtime_enforces(tmp_path):
     )
 
 
+@RETIRED
 def test_the_schema_on_the_wire_is_the_assets_schema_and_not_the_signatures(tmp_path):
     """The advertised half of the same tie: what a client is told, from the same file."""
     server, _ = make(tmp_path)
     assert served_schema(server) == asset()["parameters"]
 
 
+@RETIRED
 def test_the_handler_enforces_the_numbers_the_asset_advertises(tmp_path):
     """The enforced half. A client that ignores the schema meets the same two bounds."""
     path = narrow(tmp_path, docread.PAGE_MAX_ROWS + 5)
@@ -361,6 +378,7 @@ def call_raw(server, **args):
     ["a\x00b", "\x00", "already/gone\x00.xlsx"],
     ids=["embedded", "bare", "suffixed"],
 )
+@RETIRED
 def test_a_path_the_os_refuses_to_stat_still_reads_as_the_readers_own_refusal(path):
     """A parity regression this unit CAUSED, and the class of test that would have caught it.
 
@@ -389,6 +407,7 @@ def test_a_path_the_os_refuses_to_stat_still_reads_as_the_readers_own_refusal(pa
     assert records(log)[-1]["outcome"] == "refused-unreadable"
 
 
+@RETIRED
 def test_an_unkeyable_path_is_simply_not_cached_and_is_re_read_every_time(extract_calls):
     """The other half: not caching is the degradation, and the reader still runs each time."""
     import tempfile

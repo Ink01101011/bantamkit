@@ -60,6 +60,20 @@ const SERVED_ORDER = [
   'token_ledger',
 ];
 
+/**
+ * RETIRED FROM THE ROSTER, NOT DELETED. `repo_map` left `tools/list` on the user's ruling of
+ * 2026-09-12 (job50 I5): measured over the transcript corpus it was never called, and every
+ * request re-sent its description. Every node here drives the tool THROUGH the server by
+ * design (see the module docstring), so none can run while the handler is DORMANT in
+ * `server.ts`. The module stays as the record of what the surface promised and what will have
+ * to hold again if the roster line returns — `SERVED_ORDER` above and the "thirteenth" pin
+ * below are left as they were served, not silently renumbered; the skip is the honest state.
+ * `repomap.test.mjs`, the engine's own suite, is untouched and still runs. `server.test.mjs`'s
+ * retired-tools node pins that `repo_map` is off; this file mirrors the reference's
+ * `test_repo_map_tool.py`, which is skipped the same way.
+ */
+const RETIRED = { skip: 'repo_map left the MCP roster by ruling (job50 I5, 2026-09-12); handler DORMANT' };
+
 const scratch = realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-repomap-tool-')));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
@@ -130,7 +144,7 @@ function tree(dir) {
 
 // ------------------------------------------------------------------ registration
 
-test('repo_map is served thirteenth and its schema is the asset', async () => {
+test('repo_map is served thirteenth and its schema is the asset', RETIRED, async () => {
   // The index is pinned rather than `at(-1)`: this node is about where `repo_map` sits, and
   // a later tool moving in behind it must not be able to satisfy it.
   const { memory, log } = make(room());
@@ -149,7 +163,7 @@ test('repo_map is served thirteenth and its schema is the asset', async () => {
 
 // ---------------------------------------------------------------------- refusals
 
-test('an empty root is refused and never the server\'s own cwd', async () => {
+test('an empty root is refused and never the server\'s own cwd', RETIRED, async () => {
   const dir = room();
   const { memory, path, log } = make(dir);
   const client = await connect(memory, log);
@@ -161,7 +175,7 @@ test('an empty root is refused and never the server\'s own cwd', async () => {
   await client.close();
 });
 
-test('a missing root and a file root refuse differently', async () => {
+test('a missing root and a file root refuse differently', RETIRED, async () => {
   const dir = room();
   const { memory, log } = make(dir);
   const client = await connect(memory, log);
@@ -176,7 +190,7 @@ test('a missing root and a file root refuse differently', async () => {
   await client.close();
 });
 
-test('a negative budget is refused and zero is not', async () => {
+test('a negative budget is refused and zero is not', RETIRED, async () => {
   const dir = room();
   const root = tree(dir);
   const { memory, log } = make(dir);
@@ -191,7 +205,7 @@ test('a negative budget is refused and zero is not', async () => {
 
 test(
   'a dangling symlink root is a missing directory and not a crash',
-  { skip: process.platform === 'win32' ? 'a dangling directory symlink needs a privilege Windows may not grant' : false },
+  RETIRED, // was: skip on win32 — 'a dangling directory symlink needs a privilege Windows may not grant'
   async () => {
     // The reference gets this free from `Path.exists()`, which follows and swallows ENOENT.
     // Here it is `statSync` plus `EXISTS_IGNORED` — real logic, not a translated line, which
@@ -209,7 +223,7 @@ test(
 
 // ------------------------------------------------------------------------ answers
 
-test("the reply is the module's own map plus the header and the tail", async () => {
+test("the reply is the module's own map plus the header and the tail", RETIRED, async () => {
   const dir = room();
   const root = tree(dir);
   const { memory, log } = make(dir);
@@ -232,7 +246,7 @@ test("the reply is the module's own map plus the header and the tail", async () 
   await client.close();
 });
 
-test('no focus is plain centrality and says so', async () => {
+test('no focus is plain centrality and says so', RETIRED, async () => {
   const dir = room();
   const root = tree(dir);
   const { memory, log } = make(dir);
@@ -242,7 +256,7 @@ test('no focus is plain centrality and says so', async () => {
   await client.close();
 });
 
-test('an empty tree names the reason rather than rendering nothing', async () => {
+test('an empty tree names the reason rather than rendering nothing', RETIRED, async () => {
   const dir = room();
   const empty = join(dir, 'empty');
   mkdirSync(empty, { recursive: true });
@@ -254,7 +268,7 @@ test('an empty tree names the reason rather than rendering nothing', async () =>
   await client.close();
 });
 
-test('a focus that is not a scanned source is ignored and never refused', async () => {
+test('a focus that is not a scanned source is ignored and never refused', RETIRED, async () => {
   const dir = room();
   const root = tree(dir);
   const { memory, log } = make(dir);
@@ -265,7 +279,7 @@ test('a focus that is not a scanned source is ignored and never refused', async 
   await client.close();
 });
 
-test('the tail never claims a token saving', async () => {
+test('the tail never claims a token saving', RETIRED, async () => {
   // The one sentence this feature is not allowed to say. Row 10's build gate was REFUTED
   // (`docs/roadmap-toolbox.md`): discovery is 0.114 % of real prompt tokens. A reply that
   // implied otherwise would be the product contradicting the measurement that let it ship.
@@ -289,7 +303,7 @@ test('the tail never claims a token saving', async () => {
 
 // --------------------------------------------------------------------- the record
 
-test('the event log records the decision and no path of it', async () => {
+test('the event log records the decision and no path of it', RETIRED, async () => {
   const dir = room();
   const root = tree(dir);
   const { memory, path, log } = make(dir);

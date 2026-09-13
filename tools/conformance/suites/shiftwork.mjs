@@ -28,7 +28,7 @@
  * scratch and exercised there — see the note on `REAL_CHECKPOINT` below for why it is the
  * tracked template and not the live job file it used to be.
  */
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -187,6 +187,8 @@ const TIMESTAMPS = [
  * runtime's own decoder builds them — which is the route that keeps `5.0` a float.
  */
 const IN = () => ({ fn: 'clock_in' });
+/** The note the F8 sessions write, read back per side below — so it is one literal, not two. */
+const HANDOFF_NOTE = 'gate baseline at plan time — 3989 cases, 0 failures; เป้าหมาย: parity';
 const ST = () => ({ fn: 'status' });
 const OUT = (unit, status, over = {}) => ({
   fn: 'clock_out',
@@ -199,7 +201,7 @@ const OUT = (unit, status, over = {}) => ({
   ...over,
 });
 
-function sessions(packDir, anyPackDir) {
+function sessions(packDir, anyPackDir, brokenPacks) {
   const cases = [];
   const add = (name, checkpoint, calls, extra = {}) => cases.push({ name, file: 'checkpoint.json', checkpoint, calls, ...extra });
 
@@ -236,6 +238,24 @@ function sessions(packDir, anyPackDir) {
   add('handoff-patch-empty-object', b64(raw(baseDocument())), [OUT('N1', 'done', { handoff_patch: b64('{}') })]);
   add('handoff-patch-null', b64(raw(baseDocument())), [OUT('N1', 'done', { handoff_patch: null })]);
 
+  // ---- job50/F8: `handoff.notes` is a declared key. The first session is the accept path
+  // through the runtime's OWN schema loader — which is the route the `validate` suite does
+  // not take (it hands both sides the schema text itself), and the route on which a stale
+  // vendored `runtime-ts/assets/` copy refused `notes` for J50-5 while `assets/` accepted
+  // it. The Thai and the em dash are there so the note's bytes go through `ensure_ascii`
+  // like every other string in the document. The second session is the overwrite the
+  // schema's description promises: the empty string replaces an older note, it does not
+  // leave it standing.
+  add('handoff-notes-accepted', b64(raw(baseDocument())), [
+    OUT('N1', 'done', { handoff_patch: b64(JSON.stringify({ notes: HANDOFF_NOTE })) }),
+    ST(),
+  ]);
+  const olderNote = baseDocument();
+  olderNote.handoff.notes = 'older note — should not survive';
+  add('handoff-notes-empty-string-overwrites', b64(raw(olderNote)), [
+    OUT('N1', 'done', { handoff_patch: b64(JSON.stringify({ notes: '' })) }),
+  ]);
+
   const ring = baseDocument();
   ring.history = [1, 2, 3, 4, 5].map((n) => ({ unit: `old${n}`, outcome: 'done', notes: `note ${n} — kept` }));
   add('history-ring-overflow', b64(raw(ring)), [ST(), OUT('N1', 'done'), ST()]);
@@ -245,18 +265,25 @@ function sessions(packDir, anyPackDir) {
   add('history-ring-exactly-full', b64(raw(four)), [OUT('N1', 'done')]);
 
   // ---- accounting: the four base keys are overridable, and the sort is by codepoint.
+  //
+  // J50-10: every line here carries `tokens` and `duration_ms`. Since job50/F5 `clock_out`
+  // refuses a line without them, and a refused line writes NO log — so these three sessions
+  // had gone on comparing `(absent)` to `(absent)` under names that promise a written line.
+  // The two keys are put where they also do work: `tokens` is the big integer and
+  // `duration_ms` the `5.0` in the second session, so the shape check has to agree that an
+  // unbounded integer and a whole float are both `integer`, before the serializer is reached.
   add('accounting-overrides-and-sorts', b64(raw(baseDocument())), [
     OUT('N1', 'done', {
-      accounting: b64('{"ts": "overridden", "role": "planner", "\\ud83d\\ude00": 1, "\\ue000": 2, "z": 3, "": 4}'),
+      accounting: b64('{"ts": "overridden", "role": "planner", "\\ud83d\\ude00": 1, "\\ue000": 2, "z": 3, "": 4, "tokens": 1, "duration_ms": 2}'),
     }),
   ]);
   add('accounting-float-and-bigint', b64(raw(baseDocument())), [
     OUT('N1', 'done', {
-      accounting: b64('{"n": 5.0, "neg0": -0.0, "big": 12345678901234567890123, "sci": 1e16, "tiny": 1e-5, "s": "\\u0e01 \\u2014"}'),
+      accounting: b64('{"n": 5.0, "neg0": -0.0, "tokens": 12345678901234567890123, "duration_ms": 5.0, "sci": 1e16, "tiny": 1e-5, "s": "\\u0e01 \\u2014"}'),
     }),
   ]);
   add('accounting-nested', b64(raw(baseDocument())), [
-    OUT('N1', 'done', { accounting: b64('{"nested": {"b": [1, 2.0, {"z": null}], "a": true}, "empty": {}}') }),
+    OUT('N1', 'done', { accounting: b64('{"nested": {"b": [1, 2.0, {"z": null}], "a": true}, "empty": {}, "tokens": 1, "duration_ms": 1}') }),
   ]);
 
   // ---- escalate / success arms
@@ -285,8 +312,19 @@ function sessions(packDir, anyPackDir) {
   add('dangling-cursor-escalates', b64(raw(dangling)), [IN(), ST(), OUT('N1', 'done')]);
 
   // ---- refusals. The FILE BYTES after each are the assertion.
+  //
+  // J50-6: the unknown key here USED TO BE `notes`. job50/F8 declared `handoff.notes`, so
+  // from that change on this case clocked out fine on both sides and stayed green under a
+  // name that said "refuse" — a differential cannot see a refusal that stopped happening on
+  // both sides at once. `note` is one letter short of the key that now exists, which is the
+  // typo the F8 amendment promises is still refused, and the per-side `handoff/` block
+  // below pins that refusal as a BIT so a schema that opened `handoff` would go red here.
   add('refuse-handoff-additional-properties', b64(raw(baseDocument())), [
-    OUT('N1', 'done', { handoff_patch: b64(JSON.stringify({ notes: 'nope' })) }),
+    OUT('N1', 'done', { handoff_patch: b64(JSON.stringify({ note: 'nope' })) }),
+    IN(),
+  ]);
+  add('refuse-handoff-notes-not-a-string', b64(raw(baseDocument())), [
+    OUT('N1', 'done', { handoff_patch: b64(JSON.stringify({ notes: 5 })) }),
     IN(),
   ]);
   add('refuse-history-missing-unit', b64(raw(baseDocument())), [
@@ -470,13 +508,175 @@ function sessions(packDir, anyPackDir) {
     cases.push({ name, file: 'checkpoint.json', checkpoint: doc, calls, assets: anyPackDir });
   }
 
+  // ------------------------------------------- job50/F5 (J50-10): the accounting line's shape
+  //
+  // The gate is reached by nothing above on purpose: every session there either offers a
+  // conforming line or is refused by the roles gate first. The sessions here are the ones
+  // that REACH the shape check, on `baseDocument()` — no `job.roles`, so the roles gate is
+  // silent and the sentence can only be this one. `OUT` alone is a null line and is never
+  // validated, so a refusal here writes nothing and the next call sees the same file.
+  for (const [name, doc, calls] of accountingSessions()) cases.push({ name, file: 'checkpoint.json', checkpoint: doc, calls });
+  // And the packs that cannot supply the shape at all (J50-9A/9B), one session per shape.
+  for (const [label, dir] of brokenPacks) {
+    for (const [name, doc, calls] of unreadableShapeSessions(label)) {
+      cases.push({ name, file: 'checkpoint.json', checkpoint: doc, calls, assets: dir });
+    }
+  }
+
+  // ------------------------------------------- job50/F6 (J50-13): `briefed`, measured off the ledger
+  //
+  // Nothing above was written to reach this: `sequence-to-success` happens to clock in and
+  // out, but under a name that promises the cursor's walk, and no session above clocks a
+  // unit out WITHOUT a clock-in on purpose — which is the case F6 exists for. Every session
+  // here is on `baseDocument()` (no `job.roles`), so the roles gate is silent and the only
+  // thing the ledger can differ by is this feature.
+  for (const [name, doc, calls] of briefedSessions()) cases.push({ name, file: 'checkpoint.json', checkpoint: doc, calls });
+
   return cases;
+}
+
+/**
+ * `[name, checkpoint, calls]` triples for job50/F6, one per ruling J50-11 fixed.
+ *
+ * `blocked` is NOT terminal, so a `blocked` clock-out leaves the cursor on N1 and the same
+ * unit can be clocked out again — that is the shape every consume case below needs, and it
+ * is also how the brief line's timestamp is made DETERMINISTIC: the reference stamps a
+ * brief with the harness's process-global clock, which holds whatever the LAST `clock_out`
+ * set, across sessions. A session that clocks out first pins the clock before it clocks
+ * in, so the brief line's exact bytes can be a literal in the per-side block.
+ */
+function briefedSessions() {
+  const LINE = (text) => ({ accounting: b64(text) });
+  const base = () => b64(raw(baseDocument()));
+  const LATER = { now: 1755930061 };
+  const N2 = (over = {}) => OUT('N2', 'done', { ...LATER, history_entry: b64('{"unit": "N2", "outcome": "done"}'), ...over });
+  return [
+    // ---- 1. the plain pair: a brief, then the clock-out that consumes it. `accounting: null`
+    // on purpose — the flag is the runtime's field and lands on a null line too.
+    ['briefed/in-then-out', base(), [IN(), OUT('N1', 'done'), IN()]],
+    // ---- 2. THE CASE: no clock_in at all. The clock-out SUCCEEDS, the line says `false`,
+    // the cursor moves. Once with a conforming line, once with a null one.
+    ['briefed/out-without-in', base(), [OUT('N1', 'done', { accounting: CONFORMING }), IN(), ST()]],
+    ['briefed/out-without-in-null-line', base(), [OUT('N1', 'done'), IN()]],
+    // ---- 3. clocked in twice: TWO brief lines. The ledger records events, not state.
+    ['briefed/clocked-in-twice', base(), [IN(), IN(), OUT('N1', 'done')]],
+    // ---- 4. THE CONSUME RULE. brief -> blocked -> re-run with no clock_in reads `false`.
+    ['briefed/consumed-by-a-clock-out', base(), [IN(), OUT('N1', 'blocked'), OUT('N1', 'done', LATER)]],
+    // ---- 5. and its other half: brief -> blocked -> clock_in -> done reads `true` twice.
+    ['briefed/re-briefed-after-blocked', base(), [IN(), OUT('N1', 'blocked'), IN(), OUT('N1', 'done', LATER)]],
+    // ---- 6. the brief line's exact bytes. The blocked clock-out pins the clock at
+    // 1755930000 first, so the brief that follows carries a stamp both sides must spell.
+    ['briefed/brief-line-shape', base(), [OUT('N1', 'blocked'), IN(), OUT('N1', 'done', LATER)]],
+    // ---- 7. the flag is PER UNIT: N1's brief does not count for N2.
+    ['briefed/brief-is-per-unit', base(), [IN(), OUT('N1', 'done'), N2()]],
+    // ---- 8. a self-reported value is OVERWRITTEN by the measured one, in both directions.
+    ['briefed/self-report-true-overwritten', base(), [OUT('N1', 'done', LINE('{"tokens": 1, "duration_ms": 1, "briefed": true}'))]],
+    ['briefed/self-report-false-overwritten', base(), [IN(), OUT('N1', 'done', LINE('{"tokens": 1, "duration_ms": 1, "briefed": false}'))]],
+    // ---- 9. an unwritable ledger: clock_in still returns the brief, and the record is the
+    // only cost — so the clock-out that follows reads `false`, since nothing was recorded.
+    ['briefed/clock-in-on-an-unwritable-log', base(), [
+      { fn: 'chmod', path: '', mode: 0o555 },
+      IN(),
+      { fn: 'chmod', path: '', mode: 0o755 },
+      OUT('N1', 'done'),
+    ]],
+  ];
+}
+
+/** A line the shipped shape accepts: the two required keys, the model, and the cache figure. */
+const CONFORMING = b64('{"tokens": 110623, "duration_ms": 745045, "model": "claude-sonnet-5", "cache_read_tokens": 9876543}');
+
+/**
+ * `[name, checkpoint, calls]` triples for the shape check, the pack being the SHIPPED one.
+ *
+ * WHERE THE TWO SIDES COULD DISAGREE, which is what each refusal below was picked for. The
+ * sentence's frame is a copied string and a differential cannot see a copy; what the two
+ * runtimes compute SEPARATELY is the `{problem}` inside it — `jsonschema`'s `best_match` on
+ * one side and the port's on the other — so the refusals vary exactly that: which of two
+ * missing keys is named (`{}`), whether a required-key error outranks a `minimum` on another
+ * key, which of two wrongly-typed keys is named first, and the `repr()` of the offending value
+ * (`True`, `None`, `'1234'`, `['x']`, `{'a': None, 'b': 1.5}`, a Thai string) — the spellings a
+ * port reaching for JSON's `true`/`null`/`"1234"` would get wrong. The accept side varies the
+ * two integer readings the port carries as rules: a whole float and an unbounded integer.
+ */
+function accountingSessions() {
+  const LINE = (text) => ({ accounting: b64(text) });
+  const base = () => b64(raw(baseDocument()));
+  return [
+    // ---- the refusal the roles sessions used to hide: a real-looking line short one key
+    ['accounting/refuse-missing-duration-ms', base(), [OUT('N1', 'done', LINE('{"tokens": 7, "model": "claude-sonnet-5"}')), IN(), ST()]],
+    // ---- `best_match`: a missing required key outranks a `minimum` violation elsewhere
+    ['accounting/refuse-missing-tokens-outranks-a-negative-tool-uses', base(), [OUT('N1', 'done', LINE('{"duration_ms": 1, "tool_uses": -3}')), IN()]],
+    // ---- two keys missing: ONE is named, and which one is the `required` list's order
+    ['accounting/refuse-empty-object', base(), [OUT('N1', 'done', LINE('{}')), IN()]],
+    // ---- two keys wrong: ONE is named, and which one is the properties' order
+    ['accounting/refuse-two-wrong-types', base(), [OUT('N1', 'done', LINE('{"tokens": "a", "duration_ms": "b"}')), IN()]],
+    // ---- the `repr()` of the offending value, one refusal per spelling, all on one file
+    ['accounting/refuse-wrong-types', base(), [
+      OUT('N1', 'done', LINE('{"tokens": 12.5, "duration_ms": 1}')),
+      OUT('N1', 'done', LINE('{"tokens": true, "duration_ms": 1}')),
+      OUT('N1', 'done', LINE('{"tokens": "1234", "duration_ms": 1}')),
+      OUT('N1', 'done', LINE('{"tokens": null, "duration_ms": 1}')),
+      OUT('N1', 'done', LINE('{"tokens": [], "duration_ms": 1}')),
+      OUT('N1', 'done', LINE('{"tokens": {"a": null, "b": 1.5}, "duration_ms": 1}')),
+      OUT('N1', 'done', LINE('{"tokens": "\\u0e01\\u2014", "duration_ms": 1}')),
+      OUT('N1', 'done', LINE('{"tokens": -1, "duration_ms": 1}')),
+      OUT('N1', 'done', LINE('{"tokens": 1, "duration_ms": 1, "cache_read_tokens": -5}')),
+      OUT('N1', 'done', LINE('{"tokens": 1, "duration_ms": 1, "note": ["x"]}')),
+      OUT('N1', 'done', LINE('{"tokens": 1, "duration_ms": 1, "model": 5}')),
+      IN(),
+    ]],
+    // ---- ORDER: the roles gate first (a conforming line, wrong model), then the shape
+    // (a model ON the list, `duration_ms` missing) — same document, two sentences.
+    ['accounting/order-roles-gate-then-shape', withRoles(), [
+      OUT('N1', 'done', LINE('{"tokens": 1, "duration_ms": 1, "model": "haiku"}')),
+      OUT('N1', 'done', LINE('{"tokens": 1, "model": "claude-sonnet-5"}')),
+      IN(),
+    ]],
+    // ---- the ACCEPT side: the full line, then the two integer readings, then odd keys
+    ['accounting/accept-full-line', base(), [OUT('N1', 'done', { accounting: CONFORMING }), IN(), ST()]],
+    ['accounting/accept-whole-floats-are-integers', base(), [OUT('N1', 'done', LINE('{"tokens": 1e16, "duration_ms": -0.0}'))]],
+    ['accounting/accept-unbounded-integer', base(), [OUT('N1', 'done', LINE('{"tokens": 12345678901234567890123, "duration_ms": 1234.0}'))]],
+    ['accounting/accept-odd-keys-pass', base(), [OUT('N1', 'done', LINE('{"tokens": 1, "duration_ms": 1, "duration": "88.2s", "\\u0e01": "\\u2014"}'))]],
+    // ---- the boundary: a null line is not an audit record and is never validated
+    ['accounting/null-line-is-not-validated', base(), [OUT('N1', 'done'), IN()]],
+  ];
+}
+
+/**
+ * `[name, checkpoint, calls]` triples for ONE broken pack: a conforming line is refused,
+ * the cursor has not moved, and then a NULL line clocks the same unit out under the same
+ * pack — `accounting: null` never reads the asset, and that boundary is the half a
+ * fail-closed gate can get wrong in the other direction (refusing everything). Plus the
+ * order, driven on the same pack: the roles gate still speaks first.
+ */
+function unreadableShapeSessions(label) {
+  const LINE = (text) => ({ accounting: b64(text) });
+  return [
+    [`shape-unreadable/${label}`, b64(raw(baseDocument())), [
+      OUT('N1', 'done', { accounting: CONFORMING }),
+      IN(),
+      OUT('N1', 'done'),
+      ST(),
+    ]],
+    [`shape-unreadable/${label}/roles-gate-first`, withRoles(), [
+      OUT('N1', 'done', LINE('{"tokens": 1, "duration_ms": 1, "model": "haiku"}')),
+      OUT('N1', 'done', LINE('{"tokens": 1, "duration_ms": 1, "model": "claude-sonnet-5"}')),
+    ]],
+  ];
 }
 
 /** The allowed-model map these sessions declare. Non-alphabetical, and that is the point. */
 const ROLES = { implementer: ['claude-sonnet-5', 'claude-opus-5'], reviewer: ['claude-opus-5'] };
-/** `haiku` is on nobody's list; the other two fields are what a real accounting line carries. */
-const WRONG = b64('{"tokens": 1234, "duration": 88.2, "model": "haiku"}');
+/**
+ * `haiku` is on nobody's list; the other two fields are what a real accounting line carries —
+ * and since job50/F5 they are the two the shape REQUIRES, so a session that expects this line
+ * to clock out (`no-map-at-all`, `absent-role`) cannot carry `duration` where `duration_ms`
+ * is the key. J50-10 renamed it: with `duration: 88.2` every one of those sessions had been
+ * refused for a missing `duration_ms` on both sides, and the `bit(..., 'ok')` rows below
+ * could not be built at all.
+ */
+const WRONG = b64('{"tokens": 1234, "duration_ms": 88200, "model": "haiku"}');
 
 function withRoles(roles = ROLES) {
   const document = baseDocument();
@@ -492,17 +692,17 @@ function rolesSessions() {
   const ACC = (text) => ({ accounting: b64(text) });
   return [
     // ---- the refusal, and the four spellings of "no model at all"
-    ['roles/refuse-wrong-model', withRoles(), [OUT('N1', 'done', ACC('{"tokens": 1234, "duration": 88.2, "model": "haiku"}')), IN(), ST()]],
+    ['roles/refuse-wrong-model', withRoles(), [OUT('N1', 'done', ACC('{"tokens": 1234, "duration_ms": 88200, "model": "haiku"}')), IN(), ST()]],
     ['roles/refuse-no-model-key', withRoles(), [OUT('N1', 'done', ACC('{"tokens": 1234}')), IN()]],
     ['roles/refuse-accounting-null', withRoles(), [OUT('N1', 'done'), IN()]],
     ['roles/refuse-accounting-empty', withRoles(), [OUT('N1', 'done', ACC('{}')), IN()]],
     ['roles/refuse-model-null', withRoles(), [OUT('N1', 'done', ACC('{"model": null}')), IN()]],
     // ---- the allowed path, and that the log line keeps the model
-    ['roles/allowed-model-clocks-out', withRoles(), [OUT('N1', 'done', ACC('{"tokens": 7, "model": "claude-sonnet-5"}')), IN(), ST()]],
+    ['roles/allowed-model-clocks-out', withRoles(), [OUT('N1', 'done', ACC('{"tokens": 7, "duration_ms": 1, "model": "claude-sonnet-5"}')), IN(), ST()]],
     // ---- the list consulted is the UNIT's role. N1 closes on opus (which the reviewer also
     // allows), then N2 offers sonnet, which ONLY the implementer allows.
     ['roles/per-role-not-the-first-entry', withRoles(), [
-      OUT('N1', 'done', ACC('{"model": "claude-opus-5"}')),
+      OUT('N1', 'done', ACC('{"tokens": 1, "duration_ms": 1, "model": "claude-opus-5"}')),
       OUT('N2', 'done', { now: 1755930061, history_entry: b64('{"unit": "N2", "outcome": "done"}'), ...ACC('{"model": "claude-sonnet-5"}') }),
       IN(),
     ]],
@@ -528,8 +728,8 @@ function rolesSessions() {
     // ---- the sentence itself goes through `ensure_ascii` on the way back to the caller, so
     // a non-ASCII model name and a non-ASCII allowed list are a serializer case as well.
     ['roles/non-ascii-model-and-list', withRoles({ implementer: ['รุ่น—ก', 'claude-opus-5'] }), [
-      OUT('N1', 'done', ACC('{"model": "\\u0e23\\u0e38\\u0e48\\u0e19\\u2014\\u0e02"}')),
-      OUT('N1', 'done', ACC('{"model": "\\u0e23\\u0e38\\u0e48\\u0e19\\u2014\\u0e01"}')),
+      OUT('N1', 'done', ACC('{"tokens": 1, "duration_ms": 1, "model": "\\u0e23\\u0e38\\u0e48\\u0e19\\u2014\\u0e02"}')),
+      OUT('N1', 'done', ACC('{"tokens": 1, "duration_ms": 1, "model": "\\u0e23\\u0e38\\u0e48\\u0e19\\u2014\\u0e01"}')),
     ]],
     // ---- BACKWARDS COMPATIBILITY, the case an existing user's checkpoint depends on. The
     // model offered is `haiku`, which no list anywhere would allow.
@@ -642,7 +842,7 @@ function anyPackSessions() {
  * in `store.mjs` / `memorycli.mjs` / `recall-strings.mjs`, and same honest limit: that the
  * case then proves less is asserted, that it still passes is not measured on Windows.
  */
-async function runNodeSession(shiftwork, pyjson, caseSpec, dir) {
+async function runNodeSession(shiftwork, pyjson, caseSpec, dir, clock) {
   const { dumpJson, parseJson } = pyjson;
   mkdirSync(dir, { recursive: true });
   const path = join(dir, caseSpec.file);
@@ -674,9 +874,10 @@ async function runNodeSession(shiftwork, pyjson, caseSpec, dir) {
       continue;
     }
     let answer;
-    if (call.fn === 'clock_in') answer = shiftwork.clockIn(target);
+    if (call.fn === 'clock_in') answer = shiftwork.clockIn(target, { now: clock.now });
     else if (call.fn === 'status') answer = shiftwork.status(target);
     else {
+      clock.now = call.now;
       answer = shiftwork.clockOut(
         target,
         call.unit,
@@ -708,6 +909,19 @@ function writeSchemaPackWithoutMinItems(scratch) {
   const pack = join(scratch, 'roles-pack');
   mkdirSync(join(pack, 'schemas'), { recursive: true });
   writeFileSync(join(pack, 'schemas', 'shiftwork-checkpoint.json'), JSON.stringify(schema), 'utf8');
+  return withShippedTools(pack);
+}
+
+/**
+ * Since job50/F5 `clock_out` reads the `shiftwork_clock_out` TOOL asset for the accounting
+ * line's shape, so a pack that mutates only the checkpoint schema must still carry the
+ * shipped `tools/` — or every clock-out that survives the roles gate is refused with
+ * `ACCOUNTING_SHAPE_UNREADABLE` (J50-9A/9B) instead of reaching the thing the pack exists to
+ * measure. Both runtimes' own test helpers do this (`_with_shipped_tools`, `withShippedTools`);
+ * this is the same copy. The broken packs below are built the other way round on purpose.
+ */
+function withShippedTools(pack) {
+  cpSync(join(repoRoot, 'assets', 'tools'), join(pack, 'tools'), { recursive: true });
   return pack;
 }
 
@@ -732,7 +946,53 @@ function writeSchemaPackWithAnyRolesValue(scratch) {
   const pack = join(scratch, 'roles-any-pack');
   mkdirSync(join(pack, 'schemas'), { recursive: true });
   writeFileSync(join(pack, 'schemas', 'shiftwork-checkpoint.json'), JSON.stringify(schema), 'utf8');
-  return pack;
+  return withShippedTools(pack);
+}
+
+/**
+ * J50-10: the packs that CANNOT supply the accounting shape, `[label, dir]` each.
+ *
+ * Every one carries the shipped `schemas/` — the checkpoint must read, or the refusal under
+ * test is never reached — and breaks the `tools/` side in ONE way. The shapes are chosen
+ * OUTSIDE the validator port's documented gap (J50-9B: Node's `checkSchema` is a shape table,
+ * not the metaschema, so an object arm with a non-compiling `pattern` or duplicate `required`
+ * entries is refused by Python and accepted by Node, and an arm using `$ref` the other way
+ * round). None of these six touches the arm's contents: they remove the file, the directory,
+ * the parse, the path to the arm, or the arm itself — the cases the two sides fold into one
+ * sentence on purpose, so a case here that differed would be this job's, not the port's.
+ */
+function writeBrokenAccountingPacks(scratch) {
+  const shippedSchema = readFileSync(join(repoRoot, 'assets', 'schemas', 'shiftwork-checkpoint.json'));
+  const manifest = () => JSON.parse(readFileSync(join(repoRoot, 'assets', 'tools', 'shiftwork_clock_out.json'), 'utf8'));
+  const shapes = [
+    // the very pack that took the suite down: `schemas/` and nothing else
+    ['no-tools-dir', null],
+    // a `tools/` directory with every OTHER tool in it
+    ['tool-file-missing', (pack) => rmSync(join(pack, 'tools', 'shiftwork_clock_out.json'))],
+    ['not-json', (pack) => writeFileSync(join(pack, 'tools', 'shiftwork_clock_out.json'), '{"name": "shiftwork_clock_out",', 'utf8')],
+    ['not-utf8', (pack) => writeFileSync(join(pack, 'tools', 'shiftwork_clock_out.json'), Buffer.from([0x7b, 0xff, 0xfe, 0x7d]))],
+    ['manifest-is-a-list', (pack) => writeFileSync(join(pack, 'tools', 'shiftwork_clock_out.json'), '[]', 'utf8')],
+    ['accounting-without-anyof', (pack) => {
+      const m = manifest();
+      m.parameters.properties.accounting = { type: 'object', title: 'Accounting' };
+      writeFileSync(join(pack, 'tools', 'shiftwork_clock_out.json'), JSON.stringify(m), 'utf8');
+    }],
+    ['anyof-without-an-object-arm', (pack) => {
+      const m = manifest();
+      m.parameters.properties.accounting.anyOf = [{ type: 'null' }];
+      writeFileSync(join(pack, 'tools', 'shiftwork_clock_out.json'), JSON.stringify(m), 'utf8');
+    }],
+  ];
+  return shapes.map(([label, breakIt]) => {
+    const pack = join(scratch, 'broken-accounting', label);
+    mkdirSync(join(pack, 'schemas'), { recursive: true });
+    writeFileSync(join(pack, 'schemas', 'shiftwork-checkpoint.json'), shippedSchema);
+    if (breakIt !== null) {
+      withShippedTools(pack);
+      breakIt(pack);
+    }
+    return [label, pack];
+  });
 }
 
 // =================================================================================== run
@@ -814,9 +1074,11 @@ export async function run(ctx) {
   }
 
   // -------------------------------------------------------------------------- sessions
+  const brokenPacks = writeBrokenAccountingPacks(ctx.scratch);
   const specs = sessions(
     writeSchemaPackWithoutMinItems(ctx.scratch),
     writeSchemaPackWithAnyRolesValue(ctx.scratch),
+    brokenPacks,
   );
   const dirs = specs.map((_, i) => join(ctx.scratch, `c${i}`));
   const pythonPayload = {
@@ -837,9 +1099,16 @@ export async function run(ctx) {
 
   /** `name -> {spec, python, node}`, so the per-side block below can read either side alone. */
   const ran = new Map();
+  // job50/F6: the reference pins `time.time()` through ONE process-wide `_FrozenTime` — its
+  // `now` starts at 0.0, every `clock_out` call sets it, and `clock_in` stamps its brief line
+  // with whatever it holds at that moment, ACROSS sessions, since all of them run in the one
+  // `runPython` call above. The same seam here, shared across the loop in the same order —
+  // measured: a per-session reset left 15 `session/*/log` cases differing by a `1970-01-01`
+  // stamp that neither runtime chose.
+  const clock = { now: 0 };
   for (let i = 0; i < specs.length; i += 1) {
     const spec = specs[i];
-    const mine = await runNodeSession(shiftwork, pyjson, spec, dirs[i]);
+    const mine = await runNodeSession(shiftwork, pyjson, spec, dirs[i], clock);
     const theirs = pythonSessions[i];
     ran.set(spec.name, { spec, python: theirs, node: mine });
     const steps = Math.max(mine.steps.length, theirs.steps.length);
@@ -1161,6 +1430,451 @@ export async function run(ctx) {
     );
   }
 
+  // --------------------------------- job50/F8: `handoff.notes` — the bit, per side
+  //
+  // F8 LOOSENED a schema: `handoff` gained a key. The sessions above compare the two sides
+  // to each other, and for a loosening that is the wrong instrument twice over. Open
+  // `handoff` entirely (`additionalProperties: true`) and both runtimes accept the typo
+  // together, so `refuse-handoff-additional-properties` stays green under its own name —
+  // which is exactly what happened to that case between J50-5's schema edit and this
+  // block, with `notes` as the "unknown" key. And a ruling-style case would be no help:
+  // a ruling proves the two sides DIFFER, never that both still REFUSE. So the refusal is
+  // pinned here as a BIT against a constant on EACH side, the way the `roles/` block does
+  // it, and the accept path is pinned the same way so the pair cannot both be satisfied
+  // by a schema that refuses everything or one that accepts everything.
+  //
+  // The names start with `handoff/`, not `roles/`: the AS-2 note above counts `roles/`
+  // cases and that number is pinned at what J46-10 ruled with.
+  {
+    const at = (name, step) => {
+      const entry = ran.get(name);
+      const pick = (side) => entry[side].steps[step];
+      return {
+        python: JSON.parse(unb64(pick('python').result)),
+        node: JSON.parse(unb64(pick('node').result)),
+        pythonRaw: pick('python'),
+        nodeRaw: pick('node'),
+        wrote: entry.spec.checkpoint,
+      };
+    };
+    const both = (v) => ({ python: v, node: v });
+    const bit = (label, name, step, expected) => {
+      const got = at(name, step);
+      cases.push({
+        name: `handoff/bit/${label}`,
+        kind: 'json',
+        expected: both(expected),
+        actual: { python: got.python.result, node: got.node.result },
+      });
+    };
+    const says = (label, name, step, sentence) => {
+      const got = at(name, step);
+      cases.push({
+        name: `handoff/sentence/${label}`,
+        kind: 'json',
+        expected: both(sentence),
+        actual: { python: got.python.reason ?? null, node: got.node.reason ?? null },
+      });
+    };
+    const untouched = (label, name, step) => {
+      const got = at(name, step);
+      const state = (raw_) => ({
+        checkpoint: raw_.checkpoint === got.wrote ? 'as written' : 'REWRITTEN',
+        log: raw_.log === null ? 'no log file' : `log exists: ${unb64(raw_.log)}`,
+        tmp: raw_.tmp_left,
+      });
+      cases.push({
+        name: `handoff/untouched/${label}`,
+        kind: 'json',
+        expected: both({ checkpoint: 'as written', log: 'no log file', tmp: false }),
+        actual: { python: state(got.pythonRaw), node: state(got.nodeRaw) },
+      });
+    };
+    /** What each side's REWRITTEN checkpoint carries under `handoff.notes`, read from its bytes. */
+    const notesOnDisk = (label, name, step, expected) => {
+      const got = at(name, step);
+      const read = (raw_) => (raw_.checkpoint === null ? '(absent)' : JSON.parse(unb64bytes(raw_.checkpoint).toString('utf8')).handoff.notes ?? '(no notes key)');
+      cases.push({
+        name: `handoff/on-disk/${label}`,
+        kind: 'json',
+        expected: both(expected),
+        actual: { python: read(got.pythonRaw), node: read(got.nodeRaw) },
+      });
+    };
+
+    // ---- 1. the accept path: the bit, and the note is in the file each side wrote.
+    bit('notes-accepted', 'handoff-notes-accepted', 0, 'ok');
+    notesOnDisk('notes-accepted', 'handoff-notes-accepted', 0, HANDOFF_NOTE);
+    bit('notes-empty-string', 'handoff-notes-empty-string-overwrites', 0, 'ok');
+    notesOnDisk('notes-empty-string-overwrites', 'handoff-notes-empty-string-overwrites', 0, '');
+
+    // ---- 2. THE CASE THIS BLOCK EXISTS FOR: a key that is not `notes` is still refused,
+    // as a bit, on each side — and totally: nothing written, cursor never moved.
+    bit('unknown-key', 'refuse-handoff-additional-properties', 0, 'error');
+    says(
+      'unknown-key',
+      'refuse-handoff-additional-properties',
+      0,
+      "refused to write: JSON does not match schema at 'handoff': Additional properties are not allowed ('note' was unexpected)",
+    );
+    untouched('unknown-key', 'refuse-handoff-additional-properties', 0);
+    cases.push({
+      name: 'handoff/cursor-never-moved-after-an-unknown-key',
+      kind: 'json',
+      expected: both('N1'),
+      actual: {
+        python: at('refuse-handoff-additional-properties', 1).python.unit?.id ?? null,
+        node: at('refuse-handoff-additional-properties', 1).node.unit?.id ?? null,
+      },
+    });
+
+    // ---- 3. the key is a STRING: the right name with the wrong shape is refused too.
+    bit('notes-not-a-string', 'refuse-handoff-notes-not-a-string', 0, 'error');
+    says(
+      'notes-not-a-string',
+      'refuse-handoff-notes-not-a-string',
+      0,
+      "refused to write: JSON does not match schema at 'handoff/notes': 5 is not of type 'string'",
+    );
+    untouched('notes-not-a-string', 'refuse-handoff-notes-not-a-string', 0);
+
+    notes.push(
+      'job50/F8: `handoff.notes` is pinned by ' +
+        `${cases.filter((c) => c.name.startsWith('handoff/')).length} per-side cases over 4 sessions ` +
+        'through each runtime\'s own schema loader — the accept bit and the note on disk, ' +
+        'and the refusal bit for an unknown key, which is the one a loosened schema needs.',
+    );
+  }
+
+  // ------------------------- job50/F5 (J50-10): the accounting line's shape — the bit, per side
+  //
+  // TWO PROPERTIES, both refusals, pinned the way the `roles/` and `handoff/` blocks pin
+  // theirs: the BIT, the SENTENCE and the DISK, each against a constant on EACH side, never
+  // against the other runtime. The sessions above compare the two sides and would stay green
+  // through a check deleted from both, a sentence paraphrased on both, or a refusal that
+  // started writing on both — and one of these two refusals was a crash (`AssetNotFound` out
+  // of `clock_out`) four hours before this block was written, which no differential row saw.
+  //
+  //   1. THE SHAPE REFUSAL. `unit {unit} in role {role} reported an accounting line the schema
+  //      refuses: {problem}` — the frame is a copied string; the `{problem}` is each side's own
+  //      validator, and the literals below are Python's, taken by running it, not by reading it.
+  //   2. THE UNREADABLE-SHAPE REFUSAL. `ACCOUNTING_SHAPE_UNREADABLE`, one sentence with no
+  //      interpolation slot at all, for every way a pack can fail to supply the shape — and
+  //      the boundary that keeps that from being "refuse everything": a null line under the
+  //      same pack still clocks out. Missing and malformed are ONE sentence by ruling (J50-9A).
+  //
+  // The names start with `accounting/` and `shape-unreadable/`, not `roles/`: the AS-2 note
+  // counts `roles/` cases and that number is pinned at what J46-10 ruled with.
+  {
+    const perSide = (prefix) => {
+      const at = (name, step) => {
+        const entry = ran.get(name);
+        const pick = (side) => entry[side].steps[step];
+        return {
+          python: JSON.parse(unb64(pick('python').result)),
+          node: JSON.parse(unb64(pick('node').result)),
+          pythonRaw: pick('python'),
+          nodeRaw: pick('node'),
+          wrote: entry.spec.checkpoint,
+        };
+      };
+      const both = (v) => ({ python: v, node: v });
+      const bit = (label, name, step, expected) => {
+        const got = at(name, step);
+        cases.push({
+          name: `${prefix}/bit/${label}`,
+          kind: 'json',
+          expected: both(expected),
+          actual: { python: got.python.result, node: got.node.result },
+        });
+      };
+      const says = (label, name, step, sentence) => {
+        const got = at(name, step);
+        cases.push({
+          name: `${prefix}/sentence/${label}`,
+          kind: 'json',
+          expected: both(sentence),
+          actual: { python: got.python.reason ?? null, node: got.node.reason ?? null },
+        });
+      };
+      const untouched = (label, name, step) => {
+        const got = at(name, step);
+        const state = (raw_) => ({
+          checkpoint: raw_.checkpoint === got.wrote ? 'as written' : 'REWRITTEN',
+          log: raw_.log === null ? 'no log file' : `log exists: ${unb64(raw_.log)}`,
+          tmp: raw_.tmp_left,
+        });
+        cases.push({
+          name: `${prefix}/untouched/${label}`,
+          kind: 'json',
+          expected: both({ checkpoint: 'as written', log: 'no log file', tmp: false }),
+          actual: { python: state(got.pythonRaw), node: state(got.nodeRaw) },
+        });
+      };
+      /** The cursor after a refusal, read off the NEXT step's `clock_in`. */
+      const cursorStill = (label, name, step, unitId) => {
+        const got = at(name, step);
+        cases.push({
+          name: `${prefix}/cursor-never-moved/${label}`,
+          kind: 'json',
+          expected: both(unitId),
+          actual: { python: got.python.unit?.id ?? null, node: got.node.unit?.id ?? null },
+        });
+      };
+      /** The LAST line of each side's log, parsed, projected onto `keys` — read from its bytes. */
+      const logLine = (label, name, step, keys, expected) => {
+        const got = at(name, step);
+        const read = (raw_) => {
+          if (raw_.log === null) return '(no log file)';
+          const line = JSON.parse(unb64(raw_.log).trim().split('\n').at(-1));
+          return Object.fromEntries(keys.map((k) => [k, k in line ? line[k] : '(absent)']));
+        };
+        cases.push({
+          name: `${prefix}/on-disk/${label}`,
+          kind: 'json',
+          expected: both(expected),
+          actual: { python: read(got.pythonRaw), node: read(got.nodeRaw) },
+        });
+      };
+      return { at, both, bit, says, untouched, cursorStill, logLine };
+    };
+
+    // ======================================================== 1. the shape refusal
+    {
+      const { bit, says, untouched, cursorStill, logLine } = perSide('accounting');
+      const FRAME = 'unit N1 in role implementer reported an accounting line the schema refuses: JSON does not match schema at ';
+      const refused = (label, name, step, problem) => {
+        bit(label, name, step, 'error');
+        says(label, name, step, `${FRAME}${problem}`);
+        untouched(label, name, step);
+      };
+
+      // ---- a. the missing key, and the refusal is total: cursor still N1, no line written
+      refused('missing-duration-ms', 'accounting/refuse-missing-duration-ms', 0, "'accounting': 'duration_ms' is a required property");
+      cursorStill('missing-duration-ms', 'accounting/refuse-missing-duration-ms', 1, 'N1');
+      // ---- b. `best_match`: which error is named when there is more than one
+      refused('missing-tokens-outranks-minimum', 'accounting/refuse-missing-tokens-outranks-a-negative-tool-uses', 0, "'accounting': 'tokens' is a required property");
+      refused('empty-object-names-tokens-first', 'accounting/refuse-empty-object', 0, "'accounting': 'tokens' is a required property");
+      refused('two-wrong-types-names-tokens-first', 'accounting/refuse-two-wrong-types', 0, "'accounting/tokens': 'a' is not of type 'integer'");
+      // ---- c. the repr of the value, one per spelling
+      const REPR = [
+        ['float', "'accounting/tokens': 12.5 is not of type 'integer'"],
+        ['bool', "'accounting/tokens': True is not of type 'integer'"],
+        ['numeric-string', "'accounting/tokens': '1234' is not of type 'integer'"],
+        ['null', "'accounting/tokens': None is not of type 'integer'"],
+        ['empty-list', "'accounting/tokens': [] is not of type 'integer'"],
+        ['dict', "'accounting/tokens': {'a': None, 'b': 1.5} is not of type 'integer'"],
+        ['thai-string', "'accounting/tokens': '\u0e01\u2014' is not of type 'integer'"],
+        ['negative', "'accounting/tokens': -1 is less than the minimum of 0"],
+        ['negative-cache-read', "'accounting/cache_read_tokens': -5 is less than the minimum of 0"],
+        ['note-not-a-string', "'accounting/note': ['x'] is not of type 'string'"],
+        ['model-not-a-string', "'accounting/model': 5 is not of type 'string'"],
+      ];
+      REPR.forEach(([label, problem], step) => refused(`wrong-type/${label}`, 'accounting/refuse-wrong-types', step, problem));
+      cursorStill('after-eleven-refusals', 'accounting/refuse-wrong-types', REPR.length, 'N1');
+      // ---- d. ORDER: the roles gate speaks first, the shape second, on one document
+      bit('order/roles-first', 'accounting/order-roles-gate-then-shape', 0, 'error');
+      says(
+        'order/roles-first',
+        'accounting/order-roles-gate-then-shape',
+        0,
+        'unit N1 in role implementer reported model haiku, which job.roles.implementer does not allow: claude-sonnet-5, claude-opus-5',
+      );
+      refused('order/shape-second', 'accounting/order-roles-gate-then-shape', 1, "'accounting': 'duration_ms' is a required property");
+      cursorStill('order', 'accounting/order-roles-gate-then-shape', 2, 'N1');
+      // ---- e. the ACCEPT side: the bit, the four fields on disk, and the cursor moved
+      bit('accept-full-line', 'accounting/accept-full-line', 0, 'ok');
+      logLine('accept-full-line', 'accounting/accept-full-line', 0, ['tokens', 'duration_ms', 'model', 'cache_read_tokens', 'unit', 'status'], {
+        tokens: 110623,
+        duration_ms: 745045,
+        model: 'claude-sonnet-5',
+        cache_read_tokens: 9876543,
+        unit: 'N1',
+        status: 'done',
+      });
+      cursorStill('accept-full-line-advanced', 'accounting/accept-full-line', 1, 'N2');
+      bit('accept-whole-floats', 'accounting/accept-whole-floats-are-integers', 0, 'ok');
+      bit('accept-unbounded-integer', 'accounting/accept-unbounded-integer', 0, 'ok');
+      bit('accept-odd-keys', 'accounting/accept-odd-keys-pass', 0, 'ok');
+      logLine('accept-odd-keys', 'accounting/accept-odd-keys-pass', 0, ['duration', 'ก'], { duration: '88.2s', 'ก': '—' });
+      // ---- f. the boundary: a null line is not validated, and writes the base shape only
+      bit('null-line', 'accounting/null-line-is-not-validated', 0, 'ok');
+      logLine('null-line-base-shape', 'accounting/null-line-is-not-validated', 0, ['tokens', 'duration_ms', 'unit', 'role', 'status'], {
+        tokens: '(absent)',
+        duration_ms: '(absent)',
+        unit: 'N1',
+        role: 'implementer',
+        status: 'done',
+      });
+
+      notes.push(
+        'job50/F5 (J50-10): the accounting line\'s shape is pinned by ' +
+          `${cases.filter((c) => c.name.startsWith('accounting/')).length} per-side cases over ` +
+          `${specs.filter((s) => s.name.startsWith('accounting/')).length} sessions — the refusal bit, ` +
+          'Python\'s sentence as a literal on each side (best_match choice and repr spelling included), ' +
+          'the disk untouched, and the accept bit with the four fields read back off each side\'s log.',
+      );
+    }
+
+    // ================================================ 2. the unreadable-shape refusal
+    {
+      const { bit, says, untouched, cursorStill, logLine } = perSide('shape-unreadable');
+      // The sentence, 131 bytes, no slot. Measured on both sides before this block existed:
+      // sha256 prefix 3f3cbb02da98552f out of `bantamkit.shiftwork` and out of `dist/shiftwork.js`.
+      const UNREADABLE_SHAPE =
+        "cannot clock out: the shiftwork_clock_out tool asset cannot be read as the accounting line's shape, " +
+        'so it allows no accounting line';
+      for (const [label] of brokenPacks) {
+        const name = `shape-unreadable/${label}`;
+        // ---- a. a CONFORMING line is refused, with the one sentence, and nothing is written
+        bit(label, name, 0, 'error');
+        says(label, name, 0, UNREADABLE_SHAPE);
+        untouched(label, name, 0);
+        // ---- b. the refusal is total: the cursor did not move
+        cursorStill(label, name, 1, 'N1');
+        // ---- c. THE BOUNDARY: a null line never reads the asset, so it clocks out under the
+        // same pack — and the log line it writes is the base shape, nothing more.
+        bit(`${label}/null-line-still-clocks-out`, name, 2, 'ok');
+        logLine(`${label}/null-line-base-shape`, name, 2, ['tokens', 'unit', 'role', 'status'], {
+          tokens: '(absent)',
+          unit: 'N1',
+          role: 'implementer',
+          status: 'done',
+        });
+        // ---- d. ORDER: the roles gate is still first, and only a model ON the list reaches this
+        bit(`${label}/roles-gate-first`, `${name}/roles-gate-first`, 0, 'error');
+        says(
+          `${label}/roles-gate-first`,
+          `${name}/roles-gate-first`,
+          0,
+          'unit N1 in role implementer reported model haiku, which job.roles.implementer does not allow: claude-sonnet-5, claude-opus-5',
+        );
+        says(`${label}/roles-pass-then-unreadable`, `${name}/roles-gate-first`, 1, UNREADABLE_SHAPE);
+      }
+
+      notes.push(
+        'J50-9A/9B (J50-10): the unreadable-shape refusal is pinned by ' +
+          `${cases.filter((c) => c.name.startsWith('shape-unreadable/')).length} per-side cases over ` +
+          `${brokenPacks.length} broken packs x 2 sessions — one sentence for every shape, the bit, ` +
+          'the disk untouched, the cursor still N1, and a null line clocking out under the same pack.',
+      );
+    }
+  }
+
+  // ------------------------- job50/F6 (J50-13): `briefed` — the ledger, read per side
+  //
+  // F6 is a field on a line nobody reads back but `_briefed` itself, so the differential
+  // rows above are the ONLY thing that has ever compared the two ledgers — and they compare
+  // Node's bytes to Python's. Drop the field from both and every `session/*/log` stays
+  // green; make `briefed` mean "ever" on both and they stay green too. So each ruling below
+  // is a constant read off EACH side's ledger, never off the other runtime:
+  //
+  //   1. THE BIT. A clock-out with no clock-in SUCCEEDS. That is the sentence in the job's
+  //      DO-NOT list — "F6 RECORDS, it never refuses" — and it is pinned as `result: ok`
+  //      plus the cursor having moved, separately from the flag. A future "helpful"
+  //      refusal turns exactly these rows red and nothing else in the suite.
+  //   2. THE TRAIL. Every line of the ledger, projected to `brief N1` / `out N1 true`, so a
+  //      brief line that stopped landing, a flag that stopped being consumed, or one that
+  //      stopped being per unit each have a row whose expected value they cannot produce.
+  //   3. THE LINE. The brief line's exact bytes, as a literal — key set, key order, and the
+  //      stamp the harness's clock put there.
+  //
+  // The names start with `briefed/`: the AS-2 note counts `roles/` and that number is pinned.
+  {
+    const at = (name, step) => {
+      const entry = ran.get(name);
+      const pick = (side) => entry[side].steps[step];
+      return {
+        python: JSON.parse(unb64(pick('python').result)),
+        node: JSON.parse(unb64(pick('node').result)),
+        pythonRaw: pick('python'),
+        nodeRaw: pick('node'),
+      };
+    };
+    const both = (v) => ({ python: v, node: v });
+    const row = (label, name, step, expected, read) => {
+      const got = at(name, step);
+      cases.push({
+        name: `briefed/${label}`,
+        kind: 'json',
+        expected: both(expected),
+        actual: { python: read(got.python, got.pythonRaw), node: read(got.node, got.nodeRaw) },
+      });
+    };
+    /** Every ledger line, in order: `brief <unit>` or `out <unit> <briefed>` — `(absent)` if the key is gone. */
+    const ledger = (raw_) => {
+      if (raw_.log === null) return '(no log file)';
+      return unb64(raw_.log)
+        .trim()
+        .split('\n')
+        .map((text) => {
+          const line = JSON.parse(text);
+          if (line.event === 'brief') return `brief ${line.unit}`;
+          return `out ${line.unit} ${'briefed' in line ? String(line.briefed) : '(absent)'}`;
+        });
+    };
+    const bit = (label, name, step, expected) => row(`bit/${label}`, name, step, expected, (r) => r.result);
+    const trail = (label, name, step, expected) => row(`trail/${label}`, name, step, expected, (_, raw_) => ledger(raw_));
+    const cursor = (label, name, step, unitId) => row(`cursor/${label}`, name, step, unitId, (r) => r.unit?.id ?? null);
+    const line = (label, name, step, index, text) =>
+      row(`line/${label}`, name, step, text, (_, raw_) => (raw_.log === null ? '(no log file)' : unb64(raw_.log).split('\n')[index]));
+
+    // ---- 1. the pair: brief, then a clock-out that reads it. `accounting: null` still gets the flag.
+    bit('in-then-out', 'briefed/in-then-out', 1, 'ok');
+    trail('in-then-out', 'briefed/in-then-out', 1, ['brief N1', 'out N1 true']);
+    cursor('in-then-out-advanced', 'briefed/in-then-out', 2, 'N2');
+
+    // ---- 2. THE CASE: never clocked in. It SUCCEEDS, the line says `false`, the cursor moved.
+    bit('out-without-in-succeeds', 'briefed/out-without-in', 0, 'ok');
+    trail('out-without-in', 'briefed/out-without-in', 0, ['out N1 false']);
+    cursor('out-without-in-advanced', 'briefed/out-without-in', 1, 'N2');
+    bit('out-without-in-null-line-succeeds', 'briefed/out-without-in-null-line', 0, 'ok');
+    trail('out-without-in-null-line', 'briefed/out-without-in-null-line', 0, ['out N1 false']);
+
+    // ---- 3. two clock-ins, two brief lines, and the clock-out counts both as one brief.
+    trail('clocked-in-twice', 'briefed/clocked-in-twice', 2, ['brief N1', 'brief N1', 'out N1 true']);
+
+    // ---- 4. THE CONSUME RULE, the subtlest one: the blocked clock-out used the brief up, so
+    // the re-run with no clock_in reads `false` — and it still succeeds.
+    trail('consumed-by-a-clock-out', 'briefed/consumed-by-a-clock-out', 2, ['brief N1', 'out N1 true', 'out N1 false']);
+    bit('consumed-re-run-still-succeeds', 'briefed/consumed-by-a-clock-out', 2, 'ok');
+    // ---- 5. and a fresh clock_in after the block is a fresh brief.
+    trail('re-briefed-after-blocked', 'briefed/re-briefed-after-blocked', 3, ['brief N1', 'out N1 true', 'brief N1', 'out N1 true']);
+
+    // ---- 6. the brief line's exact bytes: four keys, codepoint order, the clock's stamp.
+    line(
+      'brief-line-shape',
+      'briefed/brief-line-shape',
+      1,
+      1,
+      '{"event": "brief", "role": "implementer", "ts": "2025-08-23T06:20:00Z", "unit": "N1"}',
+    );
+    trail('brief-line-shape', 'briefed/brief-line-shape', 2, ['out N1 false', 'brief N1', 'out N1 true']);
+
+    // ---- 7. per unit: N1's brief is not N2's.
+    trail('brief-is-per-unit', 'briefed/brief-is-per-unit', 2, ['brief N1', 'out N1 true', 'out N2 false']);
+
+    // ---- 8. the measured value overwrites a self-reported one, both ways.
+    bit('self-report-true-accepted', 'briefed/self-report-true-overwritten', 0, 'ok');
+    trail('self-report-true-overwritten', 'briefed/self-report-true-overwritten', 0, ['out N1 false']);
+    trail('self-report-false-overwritten', 'briefed/self-report-false-overwritten', 1, ['brief N1', 'out N1 true']);
+
+    // ---- 9. an unwritable ledger: the brief is still returned, no line lands, and the
+    // clock-out that follows reads `false` because the record — not the brief — was the cost.
+    bit('clock-in-on-an-unwritable-log-still-briefs', 'briefed/clock-in-on-an-unwritable-log', 1, 'brief');
+    row('clock-in-on-an-unwritable-log-returns-the-brief', 'briefed/clock-in-on-an-unwritable-log', 1, 'N1', (r) => r.unit?.id ?? null);
+    trail('clock-in-on-an-unwritable-log-writes-nothing', 'briefed/clock-in-on-an-unwritable-log', 1, '(no log file)');
+    trail('clock-in-on-an-unwritable-log-then-out', 'briefed/clock-in-on-an-unwritable-log', 3, ['out N1 false']);
+
+    notes.push(
+      'job50/F6 (J50-13): `briefed` is pinned by ' +
+        `${cases.filter((c) => c.name.startsWith('briefed/')).length} per-side cases over ` +
+        `${specs.filter((s) => s.name.startsWith('briefed/')).length} sessions — the success bit for a clock-out ` +
+        'that was never clocked in, the ledger trail read off each side (two brief lines for two clock-ins, ' +
+        'the brief consumed by a clock-out, per unit, self-report overwritten), and the brief line as a literal.',
+    );
+  }
+
   // ------------------------------------------------------------------- the ruled cases
   //
   // The ONE place this port cannot recover Python's answer, and it is upstream of this
@@ -1180,13 +1894,13 @@ export async function run(ctx) {
         file: 'checkpoint.json',
         checkpoint: bytes,
         target: path,
-        calls: [OUT('N1', 'done', { accounting: b64('{"tokens": 5.0, "ratio": 2.0}') })],
+        calls: [OUT('N1', 'done', { accounting: b64('{"tokens": 5.0, "duration_ms": 1, "ratio": 2.0}') })],
       }],
     }).results[0];
     rmSync(dir, { recursive: true, force: true });
     mkdirSync(dir, { recursive: true });
     writeFileSync(path, unb64bytes(bytes));
-    shiftwork.clockOut(path, 'N1', 'done', null, { unit: 'N1', outcome: 'done' }, fromJs({ tokens: 5.0, ratio: 2.0 }), {
+    shiftwork.clockOut(path, 'N1', 'done', null, { unit: 'N1', outcome: 'done' }, fromJs({ tokens: 5.0, duration_ms: 1, ratio: 2.0 }), {
       now: 1755930000,
     });
     cases.push({

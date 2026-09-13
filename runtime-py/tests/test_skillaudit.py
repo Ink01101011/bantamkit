@@ -1470,8 +1470,11 @@ def test_the_tool_is_served_eleventh_and_its_schema_is_the_assets(tmp_path):
     # INDEX is pinned rather than `order[-1]`: this node is about where `skill_audit` sits,
     # and a later tool moving in behind it must not be able to satisfy it. The TOTAL moves
     # with the surface and the index does not — that is the whole design of this node.
-    assert order[10] == "skill_audit"
-    assert len(order) == 14
+    # (served-tools: dated — the counts above are job45's.) The index DID move once, and
+    # for the one reason it can: a tool AHEAD of it left. `bantamkit_read` (tenth) was
+    # retired by ruling (job50 I5, 2026-09-12), so `skill_audit` is tenth of twelve now.
+    assert order[9] == "skill_audit"
+    assert len(order) == 12
     asset = json.loads(
         (REPO / "assets" / "tools" / "skill_audit.json").read_text(encoding="utf-8")
     )

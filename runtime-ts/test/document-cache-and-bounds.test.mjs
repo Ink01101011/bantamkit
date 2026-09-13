@@ -28,6 +28,15 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { after, test } from 'node:test';
 
+/**
+ * RETIRED FROM THE ROSTER, NOT DELETED. `bantamkit_read` left `tools/list` on the user's ruling
+ * of 2026-09-12 (job50 I5). Every node below that pages a document THROUGH the server skips
+ * with this reason while the handler and its `DocumentCache` are DORMANT in `server.ts`; the
+ * one node that compares the asset's numbers with the constants in the code still runs,
+ * because the contract and the constants are both still here to compare.
+ */
+const RETIRED = { skip: 'bantamkit_read left the MCP roster by ruling (job50 I5, 2026-09-12); handler DORMANT' };
+
 import { inlineCell, row, xlsxBytes } from './docread-fixtures.mjs';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
@@ -191,7 +200,7 @@ async function walk(session, path, { part = 'Sales', limit = 200 } = {}) {
 
 // ======================================================= (i) one parse per document
 
-test('bantamkit_read: a paging walk over one unchanged document parses it once', async () => {
+test('bantamkit_read: a paging walk over one unchanged document parses it once', RETIRED, async () => {
   // The register's number, measured rather than read. 1001 rows at the advertised 200-row
   // ceiling is a manifest and six pages — seven calls into the tool. Before the cache each of
   // the seven re-parsed the whole workbook, which is what makes paging O(N^2) in the row
@@ -210,7 +219,7 @@ test('bantamkit_read: a paging walk over one unchanged document parses it once',
   }
 });
 
-test('bantamkit_read: a file rewritten in place is never served from the previous parse', async () => {
+test('bantamkit_read: a file rewritten in place is never served from the previous parse', RETIRED, async () => {
   // The cache key's whole job. THE REWRITE CHANGES THE SIZE, DELIBERATELY. `mtimeNs` alone
   // would be racing the filesystem's timestamp granularity and this test would then be
   // measuring the clock rather than the key. The hole that leaves is real and is stated where
@@ -236,7 +245,7 @@ test('bantamkit_read: a file rewritten in place is never served from the previou
   }
 });
 
-test('bantamkit_read: two documents alternating cost one parse each time and never more', async () => {
+test('bantamkit_read: two documents alternating cost one parse each time and never more', RETIRED, async () => {
   // The single entry's price, measured instead of assumed. A single entry evicts on every
   // alternation, so two callers walking two documents in lockstep get zero hits. What this
   // pins is that zero hits is exactly TODAY's cost — one parse per call and not one more — so
@@ -258,7 +267,7 @@ test('bantamkit_read: two documents alternating cost one parse each time and nev
   }
 });
 
-test('bantamkit_read: a path the reader refuses is re-read every call, never cached as a refusal', async () => {
+test('bantamkit_read: a path the reader refuses is re-read every call, never cached as a refusal', RETIRED, async () => {
   // The entry holds a PARSE. A path with no parse has to reach the reader again next call, so
   // that the sentence a caller gets is the reader's own view of the file as it is NOW — the
   // case that matters is a file being written while a client polls it.
@@ -309,7 +318,7 @@ test('bantamkit_read: the asset bounds are the constants this runtime enforces',
   );
 });
 
-test('bantamkit_read: the schema on the wire is the asset\'s schema and not the signature\'s', async () => {
+test('bantamkit_read: the schema on the wire is the asset\'s schema and not the signature\'s', RETIRED, async () => {
   // The advertised half of the same tie: what a client is TOLD, taken off the wire and
   // compared with the same file. `fromManifest` serves `parameters` verbatim; a server that
   // derived its schema from `ARG_MODELS` instead would pass every other test in this
@@ -324,7 +333,7 @@ test('bantamkit_read: the schema on the wire is the asset\'s schema and not the 
   }
 });
 
-test('bantamkit_read: the handler enforces the numbers the asset advertises', async () => {
+test('bantamkit_read: the handler enforces the numbers the asset advertises', RETIRED, async () => {
   // The ENFORCED half. A client that ignores the schema meets the same two bounds: the row
   // limit is clamped rather than refused, and the offset maximum is refused by the signature
   // before the handler runs.

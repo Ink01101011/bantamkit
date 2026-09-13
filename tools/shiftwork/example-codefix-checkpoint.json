@@ -66,6 +66,7 @@
     "open_questions": [],
     "do_not": [
       "Do not fix anything while reproducing — CF1 ends with a failing test, nothing else"
-    ]
+    ],
+    "notes": "Gate baseline at plan time: <N> passed, <M> skipped. A different count at clock-in is a stale checkpoint, not a regression. Anything the next session needs that is not an action, a question, or a prohibition goes here — one string, overwritten by whoever has something newer to say."
   }
 }

@@ -44,6 +44,14 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 #: lives in the manifest, and a test that also stated it would let the two disagree.
 SURFACES = {"agent", "mcp"}
 
+#: Tools RETIRED from every surface — `"surfaces": []` in the manifest. These ARE named
+#: here, unlike the agent-only set, because retirement is a ruling (user, 2026-09-12,
+#: job50 I5) and not a fact the manifest derives: an asset that quietly lost its `mcp`
+#: claim must be a red diff, not a silently shorter roster. The asset stays in the pack
+#: — the contract as it was last served, whole — and the handlers stay in `mcpserver.py`
+#: as DORMANT code, so restoring either tool is the roster line plus the `"mcp"` claim.
+RETIRED = {"bantamkit_read", "repo_map"}
+
 
 def _served_listing(tmp_path, pack: Path | None = None) -> tuple[list[str], dict[str, dict]]:
     """The whole `tools/list` answer: the ORDER it arrived in, and the tools keyed by name.
@@ -109,14 +117,12 @@ def test_every_served_tool_has_an_asset(tmp_path):
     served = _served_tools(tmp_path)
     have = {f.stem for f in (assets_root() / "tools").glob("*.json")}
     assert sorted(served) == [
-        "bantamkit_read",
         "bantamkit_status",
         "build_identity",
         "memory_compact",
         "memory_dream",
         "memory_recall",
         "memory_save",
-        "repo_map",
         "shiftwork_clock_in",
         "shiftwork_clock_out",
         "shiftwork_status",
@@ -155,6 +161,41 @@ def test_each_asset_advertises_what_the_server_actually_advertises(tmp_path):
         assert asset["output_schema"] == wire["outputSchema"], name
 
 
+#: The largest description a host will show whole. Claude Code truncates a tool
+#: description at 2,048 characters and reports nothing when it does; the cut is undocumented,
+#: hence the margin. The SAME number as `DESCRIPTION_BUDGET` in
+#: `runtime-ts/test/packaging.test.mjs`, deliberately: a budget that differed per runtime
+#: would be a divergence, and this is not one.
+DESCRIPTION_BUDGET = 1900
+
+
+def test_no_served_tool_description_exceeds_the_budget_the_host_truncates_at(tmp_path):
+    """Every description, AS IT ARRIVES ON THE WIRE, fits under the host's silent cut.
+
+    Why this is a second literal and not a conformance case: both runtimes serve
+    `asset["description"]` verbatim from one shared file, so a differential between them
+    agrees while both are over budget — it was 8,161 chars on both sides and green. The
+    Node case measures the vendored asset; this one measures what the Python serving path
+    actually hands a host, so it is an independent witness that nothing between the asset
+    and `tools/list` re-expands what the asset trimmed. Reading the asset here would make
+    it a copy of the Node case, not a second witness.
+
+    Counted in DECODED characters — what the host sees after JSON decoding — not bytes.
+    """
+    served = _served_tools(tmp_path)
+    assert served, "tools/list served nothing; a bound over an empty set holds vacuously"
+    over = {
+        name: len(wire["description"])
+        for name, wire in sorted(served.items())
+        if len(wire["description"]) > DESCRIPTION_BUDGET
+    }
+    assert not over, (
+        f"served descriptions over the {DESCRIPTION_BUDGET}-character budget: {over}. "
+        "The host cuts at 2,048 and shows no error; move the excess into docs/, do not "
+        "raise the budget."
+    )
+
+
 def test_the_manifest_names_the_surface_each_tool_serves(tmp_path):
     """Gap 1, executable: `tools/list` is reproducible from the JSON alone.
 
@@ -175,7 +216,7 @@ def test_the_manifest_names_the_surface_each_tool_serves(tmp_path):
 
     for name, asset in manifest.items():
         surfaces = asset["surfaces"]
-        assert surfaces, name
+        assert surfaces or name in RETIRED, name
         assert set(surfaces) <= SURFACES, (name, surfaces)
         assert surfaces == sorted(set(surfaces)), (name, surfaces)
 
@@ -205,6 +246,35 @@ def test_the_eval_agent_assets_are_not_judged_against_the_mcp_surface(tmp_path):
 
     assert agent_only == {"document_list", "document_read", "file_graph"}
     assert agent_only & set(served) == set()
+
+
+def test_the_retired_tools_are_exactly_the_ruled_ones_and_none_is_served(tmp_path):
+    """I5 (job50), executable in both directions: `repo_map` and `bantamkit_read` are off.
+
+    The ruling retired two names and kept a third (`escalate` — never an MCP tool here, so
+    there is nothing for it to keep). Two directions, for the reason the manifest test
+    gives: `served ∩ RETIRED == ∅` alone would pass if a retired asset were deleted or
+    renamed, and `assets with [] == RETIRED` alone would pass if the server registered a
+    tool the manifest says is on no surface — which `_from_manifest` refuses at startup,
+    so that half is what turns a re-added roster line into a server that will not start
+    rather than a tool that quietly ships. Put a name back on the roster tomorrow and the
+    startup refusal takes every node in this file with it; put `"mcp"` back on its asset
+    too and this node and the served-name pin above go red instead. The cross-runtime
+    half — that Node's `tools/list` dropped the same two — is `tools/conformance`, not
+    this file.
+    """
+    served = _served_tools(tmp_path)
+    manifest = _manifest()
+    retired = {n for n, a in manifest.items() if a["surfaces"] == []}
+
+    assert retired == RETIRED
+    assert retired & set(served) == set()
+    for name in RETIRED:
+        # The contract is kept WHOLE, not hollowed: a port's dormant handler and this
+        # one still have the same description and both schemas to agree on.
+        assert manifest[name]["description"]
+        assert manifest[name]["parameters"]["type"] == "object"
+        assert manifest[name]["output_schema"] is not None
 
 
 def test_the_new_manifest_fields_do_not_reach_the_eval_agents_tool_objects():

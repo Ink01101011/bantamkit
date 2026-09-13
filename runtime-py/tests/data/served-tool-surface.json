@@ -9,10 +9,8 @@
     "build_identity",
     "bantamkit_status",
     "memory_compact",
-    "bantamkit_read",
     "skill_audit",
     "memory_dream",
-    "repo_map",
     "token_ledger"
   ],
   "tools": {
@@ -166,7 +164,7 @@
       }
     },
     "shiftwork_clock_in": {
-      "description": "Shift-work clock-in: schema-validate the checkpoint file and return the brief for the unit at plan.cursor — {unit, role, invariants, handoff, do_not, files} — to hand to the spawned agent verbatim. Structured refusals, never exceptions: result=escalate when handoff.open_questions is non-empty, result=success when every unit is done or dropped, result=error when the checkpoint fails validation.",
+      "description": "Shift-work clock-in: schema-validate the checkpoint file and return the brief for the unit at plan.cursor — {unit, role, invariants, handoff, do_not, files} — to hand to the spawned agent verbatim. Structured refusals, never exceptions: result=escalate when handoff.open_questions is non-empty, result=success when every unit is done or dropped, result=error when the checkpoint fails validation. Clock-in also WRITES: on result=brief, and only then, it appends one line {event: brief, ts, unit, role} to <checkpoint>.log.jsonl — best-effort: a log it cannot write costs the brief nothing (the brief still returns, no error, only the record is lost). clock_out reads those lines back to write `briefed` on every accounting line, so the ledger is no longer one line per clock-out; a brief line carries `event` and no `status`. See docs/shiftwork.md.",
       "inputSchema": {
         "properties": {
           "checkpoint": {
@@ -187,7 +185,7 @@
       }
     },
     "shiftwork_clock_out": {
-      "description": "Shift-work clock-out: record a finished unit — set its status, advance plan.cursor, merge handoff_patch, push history_entry onto the 5-entry ring — validating the whole mutated document against the checkpoint schema BEFORE an atomic write (a failure writes nothing and returns result=error). Every success appends one accounting line (unit, role, status, ts, plus your accounting fields, e.g. tokens/duration/model) to <checkpoint>.log.jsonl. If the checkpoint's job.roles names this unit's role, accounting.model must be one of that role's model identifiers, spelled exactly — a model that is not on the list, or none reported at all, is refused before anything is written; a role job.roles omits, and a checkpoint carrying no job.roles, are unconstrained.",
+      "description": "Shift-work clock-out: record a finished unit — set its status, advance plan.cursor, merge handoff_patch, push history_entry onto the 5-entry ring — validating the whole mutated document against the checkpoint schema BEFORE an atomic write (a failure writes nothing and returns result=error). Every success appends one accounting line (unit, role, status, ts, briefed, plus your accounting fields, e.g. tokens/duration_ms/model) to <checkpoint>.log.jsonl, beside the brief lines clock_in writes (a brief line carries `event` and no `status`). `briefed` is written by the runtime, never taken from you — a self-reported value is overwritten by the measured one: true when a brief was issued for this unit since its LAST clock-out (not ever), so a unit re-run inline after a blocked clock-out reads false. It records; it never refuses — a unit that was never clocked in still clocks out, with briefed=false. If the checkpoint's job.roles names this unit's role, accounting.model must be one of that role's model identifiers, spelled exactly — a model that is not on the list, or none reported at all, is refused before anything is written; a role job.roles omits, and a checkpoint carrying no job.roles, are unconstrained.",
       "inputSchema": {
         "properties": {
           "checkpoint": {
@@ -215,8 +213,43 @@
           "accounting": {
             "anyOf": [
               {
-                "additionalProperties": true,
-                "type": "object"
+                "type": "object",
+                "description": "Per-unit cost. Written verbatim, beside ts/unit/role/status, as one line of <checkpoint>.log.jsonl - the ledger the N-sessions experiment reads. The keys named here have fixed meanings so a reader holding only the ledger knows what each number counts, in which unit, and which model produced it; any other key passes through unchanged (a refused key is friction, not safety). Lines written before this schema existed may spell these differently; the schema governs new writes only.",
+                "properties": {
+                  "tokens": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Tokens the unit consumed as the harness's subagent counter reports them: every class it reports (input, output, cache creation) summed, EXCLUDING cache reads. Required, because a unit whose cost is unknown cannot be compared with any other; a rounded self-estimate is allowed only if `note` says it is one."
+                  },
+                  "cache_read_tokens": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Tokens the unit's requests served from prompt cache, kept OUT of `tokens` because they dominate a real session's traffic and would swamp the work signal. Optional: omit it when the harness reports no such figure - a written 0 means the unit read nothing from cache."
+                  },
+                  "duration_ms": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Wall-clock from spawning the subagent to its final message, in whole milliseconds. Required, and the only duration key with a defined meaning: older lines carry `duration`, `duration_min` or `duration_s`, which this schema neither reads nor renames."
+                  },
+                  "model": {
+                    "type": "string",
+                    "description": "The exact identifier of the model the subagent actually ran on (e.g. `claude-sonnet-5`) and nothing else - a caveat about how it was chosen belongs in `note`. Not required here: when the checkpoint's job.roles names this unit's role, clock_out already requires it and refuses a value off that role's list, spelled exactly; a checkpoint with no job.roles leaves it optional. This schema does not change that gate."
+                  },
+                  "tool_uses": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Tool calls the subagent made, as the harness counts them. Optional; it is the denominator that makes `tokens` comparable across units of different size (per-unit cost is linear in tool calls, not in unit length)."
+                  },
+                  "note": {
+                    "type": "string",
+                    "description": "Free text for what the fields above cannot say: that `tokens` is an estimate, that this is a retry or a second scope under the same unit id, what a harness counter excludes. Anything that is not a model identifier goes here, not in `model`."
+                  }
+                },
+                "required": [
+                  "tokens",
+                  "duration_ms"
+                ],
+                "additionalProperties": true
               },
               {
                 "type": "null"
@@ -290,52 +323,8 @@
         "title": "validate_jsonDictOutput"
       }
     },
-    "bantamkit_read": {
-      "description": "Read a document through a program, never its raw bytes. Call with `path` alone for the manifest: the file's kind, every part (sheet, document, page) with its row count and byte size, and every omission the reader had to make (embedded images, blank rows, unmapped glyphs, unread pages). Then call with `part` (and `offset`) to page rows; row 0 is the header and each page ends with a continuation line naming the next offset or the end of the part. Do not page through a part to find a row: estimate its offset from the row count and jump. Supported kinds: text/markdown/code, docx, xlsx, html, mhtml; pdf on the Python server only. The Node server refuses pdf, doc and rtf until its reader is ported. A refusal names what the reader actually saw in the file rather than the format's error.",
-      "inputSchema": {
-        "type": "object",
-        "required": [
-          "path"
-        ],
-        "properties": {
-          "path": {
-            "type": "string",
-            "description": "Path to the document, absolute or relative to the server's working directory"
-          },
-          "part": {
-            "type": "string",
-            "description": "Part name as the manifest reports it (a sheet name, \"document\", a page); omit to get the manifest"
-          },
-          "offset": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Row number of the first row to return; default 0"
-          },
-          "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 200,
-            "description": "How many rows; default 50, a 3072-byte page ceiling may return fewer"
-          }
-        }
-      },
-      "outputSchema": {
-        "properties": {
-          "result": {
-            "title": "Result",
-            "type": "string"
-          }
-        },
-        "required": [
-          "result"
-        ],
-        "type": "object",
-        "title": "bantamkit_readOutput"
-      }
-    },
     "skill_audit": {
-      "description": "Price the skill catalogue every session pays for, and name the collisions in it. A skill's `description:` frontmatter is loaded into the agent's context in EVERY session; its body is read only when the skill is invoked, so the descriptions are the standing bill. Walks `root` for `<marketplace>/<plugin>/<version>/skills/<name>/SKILL.md` and answers one JSON document: `roots` (what was scanned), `skills` (how many were counted), `catalogue_bytes` (UTF-8 bytes of their `description:` values), `findings` and `omissions`. Counted skills plus omissions account for every SKILL.md found — an omission is `{subject, count, size, what}` with subject one of `plugin-not-enabled`, `duplicate-skill`, `stale-version`, `unreadable-file`, `unparsed-frontmatter`, and `what` naming the paths. Pass `enabled` with the plugin ids the host has switched on (`<plugin>@<marketplace>`, as settings.json spells them): the plugin cache also holds disabled plugins and stale version directories, and counting those inflated a real audit to 41 skills / 19,065 B against a true 34 / 14,515. Identity comes from the path: `<marketplace>/<plugin>/<version>/skills/<name>/SKILL.md` relative to `root`; any other shape is a skill outside a plugin, identified by its directory name alone and never excluded by `enabled`. Exactly ONE version directory is resolved per (marketplace, plugin) BEFORE anything is counted, and its skills are that plugin's skills: a name absent from the resolved version is absent, never merged in from another version directory. The winner is the version directory name that sorts LAST in byte order — a byte order and deliberately not a semver comparison, so two runtimes cannot disagree about which directory was read, and so that names which are not versions at all still have a total order (a real cache spells nine of one plugin's directories as content hashes plus the literal `unknown`). What byte order gets wrong is stated rather than hidden: `10.0.0` loses to `9.0.0`, and among non-version names the winner is deterministic but arbitrary; both losers are named in an omission record. Pass `versions` with the version directory the host actually serves, per `<plugin>@<marketplace>` — the `installPath` recorded in the same `installed_plugins.json` the caller reads `enabled` out of — and that plugin is resolved to the named directory whatever byte order would have said; a plugin absent from `versions` falls back to byte order. It is host truth the caller supplies, exactly as `enabled` is, and it is not refused when it names a plugin or a directory this `root` does not hold: a plugin with no version directory here is not resolved at all, and a directory that is not here means every directory that IS here loses and is named in a `stale-version` record. Measured 2026-09-05 on a real cache, byte order picks `unknown` for a plugin whose host serves `1dd995193ba2`, so the installed copy is discarded as a duplicate. The candidates are the version DIRECTORIES on disk — every path spelled `<marketplace>/<plugin>/<version>/skills` — and not the skills that survived reading: a version directory holding no `SKILL.md`, or only files that will not decode or will not parse, still exists and the host still serves it, so an older directory must not win by default. Every SKILL.md under a version directory that did not win is omitted, under one of two subjects: `duplicate-skill` when the resolved version has a skill of the same name standing in for it, `stale-version` when it does not — a skill the resolved version DROPPED, which is on disk, in nobody's bill, and would otherwise be resurrected by the audit. Deduping by the (marketplace, plugin, name) triple instead merges versions rather than choosing between them, and measured 2026-09-05 over a real cache holding a plugin's `0.4.0` (14 skills) and `0.5.0` (5, nine having moved to another plugin) it answered 31 skills / 9,280 bytes where the host serves 22 / 3,396. Inside the resolved version `duplicate-skill` still covers two files claiming the same (marketplace, plugin, name), which is reachable only for skills outside a plugin; the last in scan order wins. Every omission carries the bytes it would have added. A skill is identified as `<plugin>:<name>`, the spelling the host uses and the key `usage` is looked up by, or as `<name>` when it has no plugin. A `description:` folded over several lines is joined with single spaces before it is counted or scanned, and a value written as a whole-value quoted YAML scalar is UNWRAPPED after that fold and before either — the host's parser strips those quotes before a session sees the description, so they are not `catalogue_bytes`, and only quotes INSIDE the value delimit a trigger phrase. The unwrap applies to every frontmatter key, not just `description:`, so `name: \"s\"` is the name `s` and `router: \"true\"` is a router. A value is a whole-value scalar only when it begins with `\"` or `'` AND that opening quote's own closing quote is the value's LAST character, judged by YAML's two escape rules and no others: inside a `\"` scalar a backslash escapes the character after it, so `\\\"` does not close it and the sequences `\\\"` and `\\\\` resolve to `\"` and `\\` while every other `\\x` is left exactly as written; inside a `'` scalar a doubled `''` is one literal apostrophe, so it does not close it and resolves to `'`. Every other value is left as written and scanned literally: `\"a\" and \"b\"` begins and ends with `\"` and is NOT one scalar, because its opening quote closes at index 2, and stripping it would weld the value into one junk phrase and destroy both real ones. A value that OPENS with a quote and never closes one — including one whose last quote is escaped — is a LITERAL: it is not unwrapped, its quote character is counted, its unpaired quote opens no phrase, and it is not a `frontmatter-malformed` finding, which names failures of the BLOCK and not of one value. Measured 2026-09-05 over a real plugin cache: 17 of 31 enabled skills write `description: \"...\"`, so a reader that takes those quotes literally over-prices the majority of a catalogue and buries any phrase quoted inside them. Five findings, each `{kind, severity, skills, detail}`, severity fixed per kind: `shared-trigger-phrase` (high) — two or more skills quote the same literal phrase, so which one fires is a coin flip; `catalogue-over-budget` (high) — `catalogue_bytes` exceeds `budget`; `never-invoked` (low) — a counted skill has zero calls in `usage`; `frontmatter-malformed` (medium) — no frontmatter block, an unterminated one, or no `description:` key, where a block that cannot be parsed at all is also omitted as `unparsed-frontmatter` and adds nothing to `skills` while a parsed block with no description is a skill costing zero bytes; `name-mismatch` (medium) — the frontmatter `name:` is not the skill's directory name. Collisions are EXACT matches on literal quoted phrases and never a similarity score: Jaccard over description tokens was measured across 820 real pairs and refuted, topping out at 0.239 and ranking the two real collisions 118th and 791st of 820. Phrases are the text of the UNWRAPPED value between `\"` pairs, or between `'` pairs where the quote is not flanked by letters — `'don't'` is a contraction, not a phrase — and a phrase with no letter or digit in it is ignored. A router, a skill whose frontmatter carries `router: true`, quotes its siblings' phrases by design and is left out of the phrase index entirely. Four argument failures are refused with their own sentences and never as a partial answer: an unknown `check`, a negative `budget`, a `root` that is missing or is a file, and an EMPTY `root` — which passes JSON-schema `string` and would otherwise resolve to the server's own working directory. Nothing about the CONTENT of the tree refuses. Deterministic: the tool reads nothing but `root`. The three facts a directory of files cannot answer arrive from the caller — call counts in `usage` (`node tools/ledger/tool-usage.mjs --group skill --json`), switched-on plugins in `enabled`, served version directories in `versions` — never by reading the host's transcripts, settings or plugin registry.",
+      "description": "Price the skill catalogue every session pays for, and name the collisions in it. A skill's `description:` frontmatter is loaded into the agent's context in EVERY session; its body is read only when the skill is invoked, so the descriptions are the standing bill. Call it before adding or retiring a skill, or when two skills keep firing on the same phrase. Walks `root` for `<marketplace>/<plugin>/<version>/skills/<name>/SKILL.md` and answers one JSON document: `roots`, `skills` (counted), `catalogue_bytes` (UTF-8 bytes of their `description:` values), `findings` and `omissions`. Read `findings` first — each is `{kind, severity, skills, detail}`: `shared-trigger-phrase` (high; two skills quote the same literal phrase, so which fires is a coin flip), `catalogue-over-budget` (high; only when `budget` is given), `never-invoked` (low; only when `usage` is given), `frontmatter-malformed` and `name-mismatch` (medium). Then `omissions`: counted skills plus omissions account for every SKILL.md found, each `{subject, count, size, what}` with subject one of `plugin-not-enabled`, `duplicate-skill`, `stale-version`, `unreadable-file`, `unparsed-frontmatter`. The tool reads nothing but `root`; the three facts a directory cannot answer come from the caller — `enabled` (plugin ids the host has switched on, `<plugin>@<marketplace>`; the cache also holds disabled plugins, so without it the bill is inflated), `usage` (call counts per skill) and `versions` (the version directory the host serves per plugin; a plugin absent from it gets the directory name that sorts LAST in byte order, which is wrong for `10.0.0` against `9.0.0`). Refused with their own sentence, never as a partial answer: an unknown `check`, a negative `budget`, an EMPTY `root`, a `root` that is missing or is a file. Full rules in docs/skill-audit.md.",
       "inputSchema": {
         "type": "object",
         "required": [
@@ -425,48 +414,8 @@
         "title": "memory_dreamOutput"
       }
     },
-    "repo_map": {
-      "description": "A ranked map of a source tree: every file's definitions, ordered by how central that file is to the files you name in `focus`, truncated to a byte budget. Call it when you are about to work on a file and want to know which OTHER files matter to it — the ports, the callers, the module it reaches through a private helper — rather than reading a directory listing and guessing. `focus` is the file or files you are editing, relative to `root` and POSIX-separated; they are excluded from the listing because you already have them open, and an empty focus gives plain centrality over the whole tree. This is a PRECISION pass and it is not a token saving: the gate this feature was supposed to clear was refuted by measurement — discovery is 0.114% of real prompt tokens, because 97.8% of the bill is cache_read — so a map does not make a session cheaper. What it buys is the right file found sooner. Nothing the scanner cannot read is dropped silently: every unread file resolves into a named omission (unknown-language, unreadable-bytes, size-cap, no-definitions, unreachable, per-file-cap, budget) counted in a footer that is NOT charged to the budget. The budget is UTF-8 BYTES of the listing, not tokens; there is no model tokenizer in either runtime and this tool will not pretend to one.",
-      "inputSchema": {
-        "type": "object",
-        "required": [
-          "root"
-        ],
-        "properties": {
-          "root": {
-            "type": "string",
-            "description": "Directory to map, absolute or relative to the server's working directory"
-          },
-          "focus": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "The files you are working on, relative to `root` and POSIX-separated. They are excluded from the listing. A name that is not a scanned source is ignored rather than refused."
-          },
-          "budget": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "UTF-8 bytes of listing to render; default 4000. The omission footer is not charged against it."
-          }
-        }
-      },
-      "outputSchema": {
-        "properties": {
-          "result": {
-            "title": "Result",
-            "type": "string"
-          }
-        },
-        "required": [
-          "result"
-        ],
-        "type": "object",
-        "title": "repo_mapOutput"
-      }
-    },
     "token_ledger": {
-      "description": "What a session actually cost, read off the host's own transcripts. Walks `root` for `*.jsonl` transcripts -- the host writes `<cwd-slug>/<session>.jsonl` and `<cwd-slug>/<session>/subagents/*.jsonl` beneath a projects directory, which on this machine is `~/.claude/projects` -- and answers ONE JSON document: `root` (echoed as given), `transcripts` (files read), `lines` (records seen), `requests` (distinct API requests counted), `totals` (the four token classes), `sessions` (one row each), `omissions` (every line that was read and not counted), and `cost` only when `model` is given. This is the ONLY reader of the token counts: `docs/eventlog.md`'s four event streams record decisions, injections, tool calls and the host's arrival log, and NONE of the four carries a token count. Every figure here is the API's own `usage` block and nothing is estimated -- the byte-derived `est` figures in `tools/ledger/token-ledger.mjs` (tool_result bytes, repeated Reads) are deliberately NOT served, because an estimate handed to a model through a tool is an estimate that will be quoted back as a fact. COUNTING IS PER `requestId`, NEVER PER LINE: the host writes one API response as several assistant records -- a text block, a tool_use block -- which all carry the SAME `usage`, so summing records overcounts by the number of content blocks. The dedupe spans the WHOLE walk and not one file, because a resumed session rewrites earlier records verbatim into a new file and a per-file rule counts that request twice; the first occurrence in walk order wins and every later copy is reported as a `duplicate-request` omission rather than dropped in silence. EVERY LINE IS COUNTED OR OMITTED AND THE TWO ADD UP: `lines` equals `requests` plus the sum of every omission's `count`, always, so 'your transcripts hold no usage' is distinguishable from 'I skipped most of your transcripts'. An omission is `{subject, count, what}` with subject one of `undecodable-file`, `unparsed-line`, `not-an-object`, `no-session-id`, `not-an-assistant-record`, `no-usage`, `malformed-usage`, `no-request-id`, `duplicate-request`, and `what` naming the FIRST site as `<relpath>:<line>` plus `and N more` -- bounded on purpose, because a real corpus omits tens of thousands of lines as `not-an-assistant-record` (the host writes attachments, mode changes and titles into the same file) and listing them all would hand back a megabyte of paths in place of an answer. A blank line is not a record and is counted nowhere. A record is counted only when it carries a non-empty `sessionId`, `type` of `assistant`, a `message.usage` object holding ALL FOUR of `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens` and `output_tokens` as non-negative integers below 2**53, and a non-empty `requestId`; the host's other `usage` keys (`service_tier`, `iterations`, `server_tool_use`) are ignored, but a MISSING class is `malformed-usage` and never a zero, because a class defaulted to zero is a token invented. A session row carries `cwd` (the first one seen), `first` and `last` (the minimum and maximum timestamp, as strings), `requests`, `sidechain_requests` and the four classes. `sidechain_requests` is stated rather than hidden because it is an ASYMMETRY a caller would otherwise discover late: a subagent's transcript carries its PARENT's `sessionId` with `isSidechain: true`, so its cost lands in the parent session and is not a session of its own. Sessions are ordered by `first` as a STRING then by session id, both in code-point order, never by parsed time -- the host writes ISO-8601 with a `Z`, for which byte order already is time order. Directory listings are sorted by name in code-point order at every level, so the walk order -- which decides which copy of a duplicated `requestId` counts -- is a property of the tree and not of the filesystem. THERE IS NO TIME WINDOW, deliberately: the operator script has `--days N` and this has nothing, because a tool whose answer depends on the wall clock cannot be pinned by a gate that runs twice, and 'the last 7 days' is a question about a live machine rather than a fact about a corpus. `root` is the CALLER's, exactly as `skill_audit`'s is: this tool reads nothing but `root`, so it can be pointed at a frozen corpus and asked the same question twice. Pass `model` to convert the totals into money through the price table; `assets/pricing/default.json` ships with NO rates on purpose, so `{\"unavailable\": \"no rate recorded for model ...\"}` is the NORMAL answer and not an error path -- a rate enters only as an operator's own fact with its date and its source, through `$BANTAMKIT_PRICES` or through `prices`. `cost` carries `micros` (integer micro-USD), `amount` (a fixed-6-decimal string), a per-class `breakdown` and the `rate` that produced it; the four classes are priced separately because 98.1 % of a real prompt measured here was `cache_read`, and one averaged rate would be wrong in exactly that direction. Four argument failures are refused with their own sentences and never as a partial answer: an EMPTY `root` -- which passes JSON-schema `string` and would otherwise resolve to the server's own working directory -- a `root` that is missing, a `root` that is a file, and an EMPTY `model`, which would otherwise be reported as \"no rate recorded for model ''\" and read as a missing price rather than a missing argument. Nothing about the CONTENT of the tree refuses: a transcript that will not decode, a line that will not parse and a record with no usage are omissions and are counted, because a ledger that refused over one of eight hundred transcripts would have said nothing about the other seven hundred and ninety-nine. The one content failure that DOES refuse is a token total above 2**53-1, which is exact in Python and rounded in JavaScript: the place the two runtimes would part company is a refusal, not a wrong number. Deterministic: the tool reads `root`, and `prices` or `$BANTAMKIT_PRICES` when a `model` is named.",
+      "description": "What a session actually cost, read off the host's own transcripts. Walks `root` for `*.jsonl` transcripts — the host writes `<cwd-slug>/<session>.jsonl` and `<cwd-slug>/<session>/subagents/*.jsonl` beneath `~/.claude/projects` — and answers ONE JSON document: `root`, `transcripts`, `lines`, `requests` (distinct API requests), `totals` (the four classes: `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `output_tokens`), `sessions` (one row each), `omissions`, and `cost` only when `model` is given. Call it to answer 'what did this work cost' from the API's own `usage` blocks — nothing here is estimated. Point `root` at ONE project's slug directory, not the whole projects tree: there is no time window and no summary mode, so a whole-corpus call answers a row per session ever recorded and blows the host's tool-result cap. The four classes are reported and priced separately because on a real prompt 98.1 % of the tokens were `cache_read`. Counting is per `requestId`, never per line: one response is written as several records with the same `usage`, so the dedupe spans the whole walk and every later copy is a `duplicate-request` omission. A subagent's transcript carries its PARENT's `sessionId`, so its cost lands in the parent row as `sidechain_requests`. `lines` equals `requests` plus the sum of every omission's `count`, always. An omission is `{subject, count, what}`; `what` names the first site as `<relpath>:<line>` plus `and N more`. `cost` needs a rate: the shipped price table has none, so `{\"unavailable\": \"no rate recorded for model ...\"}` is the NORMAL answer, not an error; a rate enters through `$BANTAMKIT_PRICES` or `prices`. Refused with their own sentence: an EMPTY `root`, a `root` that is missing or is a file, an EMPTY `model`, and a token total above 2**53-1. The record rule and the nine omission subjects: docs/ledger.md.",
       "inputSchema": {
         "type": "object",
         "required": [

@@ -42,9 +42,9 @@ Exactly five lines when healthy, `\n`-joined, no trailing newline:
 
 ```
 bantamkit Active 🟢
-version 0.25.0, build sha256:942922d7997c5a31387d38d4369d1d94108d034765bf692c9c23479e05af0a2c
-serving 14 tools, 1 prompt, 2 resource templates
-memory: 12 facts in the project store, index 431 of 24000 bytes
+version 0.32.1, build sha256:bcf716f32e0b461383a30ed1539843f309b1eb00621f1d4d663440c605d3d685
+serving 12 tools, 1 prompt, 2 resource templates
+memory: 57 facts in the project store, index 12258 of 24000 bytes
 event log: off
 ```
 
@@ -52,8 +52,8 @@ When something is wrong, line 1 changes and a block is appended:
 
 ```
 bantamkit Degraded 🟠
-version 0.25.0, build sha256:9429…
-serving 14 tools, 1 prompt, 2 resource templates
+version 0.32.1, build sha256:bcf7…
+serving 12 tools, 1 prompt, 2 resource templates
 memory: 12 facts in the project store, index 23900 of 24000 bytes
 event log: on
 2 problems:

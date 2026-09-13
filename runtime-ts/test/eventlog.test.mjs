@@ -493,7 +493,12 @@ test('no free-text argument reaches the file', async () => {
   );
 });
 
-test('bantamkit_read records the branch taken, with kind and counts, and never the path', async () => {
+// RETIRED FROM THE ROSTER, NOT DELETED: `bantamkit_read` left `tools/list` on the user's ruling
+// of 2026-09-12 (job50 I5). The two nodes below drive it THROUGH the server and skip while the
+// handler is DORMANT in `server.ts`; the module they record for (`eventlog.ts`) is untouched.
+const RETIRED = { skip: 'bantamkit_read left the MCP roster by ruling (job50 I5, 2026-09-12); handler DORMANT' };
+
+test('bantamkit_read records the branch taken, with kind and counts, and never the path', RETIRED, async () => {
   /**
    * Five decisions, five outcomes — the mirror of `test_bantamkit_read_tool.py::test_the_
    * record_is_the_branch_taken_with_kind_and_counts_and_never_the_path`, over a sentinel-
@@ -528,7 +533,7 @@ test('bantamkit_read records the branch taken, with kind and counts, and never t
   ]);
 });
 
-test('bantamkit_read records its decision and the reply wording says more', async () => {
+test('bantamkit_read records its decision and the reply wording says more', RETIRED, async () => {
   /**
    * The second source for the tool's two own sentences: a page's continuation line names
    * THIS tool, and a missing part is stated as a fact about the file. The record beside each
@@ -567,10 +572,11 @@ test('the only values written are from a closed set', async () => {
   await client.callTool({ name: 'memory_recall', arguments: { query: 'widget cache' } });
   await client.callTool({ name: 'validate_json', arguments: { output: '{}', schema: { type: 'object' } } });
   await client.callTool({ name: 'build_identity', arguments: {} });
-  const doc = join(room(), 'SECRET-DOC-31be.txt');
-  writeFileSync(doc, 'a\nb\nc\n');
-  await client.callTool({ name: 'bantamkit_read', arguments: { path: doc } });
-  await client.callTool({ name: 'bantamkit_read', arguments: { path: doc, part: 'document', limit: 2 } });
+  // `bantamkit_read`'s `manifest` and `page` records were driven here too until the tool left
+  // the roster (job50 I5, 2026-09-12); a call to it is now `Unknown tool:` and writes nothing,
+  // so the two calls are gone rather than left as a silent no-op. Its outcome words stay in
+  // the vocabulary below: the DORMANT handler still writes them, and a vocabulary that forgot
+  // them would refuse the records the day the roster line returns.
   await client.close();
   const vocabulary = new Set([
     'memory_save', 'memory_recall', 'memory_compact', 'validate_json', 'build_identity',
