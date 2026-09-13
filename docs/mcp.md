@@ -76,8 +76,9 @@ writes nothing — the prior bytes survive.
 
 Every successful clock-out appends one line to `<checkpoint>.log.jsonl`
 beside the checkpoint: `{ts, unit, role, status}` plus whatever you pass
-in `accounting` (report `tokens`, `duration`, and `model` — the model
-actually used). Same shape as the driver's per-session log, so
+in `accounting` (`tokens` and `duration_ms` are required, `model` is the
+model actually used; what each key means is defined in
+[shiftwork.md](shiftwork.md#orchestrator-flavor)). Same shape as the driver's per-session log, so
 driver-flavor and MCP-flavor runs compare on one format and the history
 ring's 5-entry cap never loses measurement data. The log is append-only
 and never read by the tools.

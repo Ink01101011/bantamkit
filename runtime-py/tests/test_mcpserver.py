@@ -58,14 +58,12 @@ def test_lists_exactly_the_twelve_tools(tmp_path):
         async with Client(make_server(tmp_path)) as c:
             names = sorted(t.name for t in (await c.list_tools()).tools)
             assert names == [
-                "bantamkit_read",
                 "bantamkit_status",
                 "build_identity",
                 "memory_compact",
                 "memory_dream",
                 "memory_recall",
                 "memory_save",
-                "repo_map",
                 "shiftwork_clock_in",
                 "shiftwork_clock_out",
                 "shiftwork_status",
@@ -273,7 +271,7 @@ def test_shiftwork_round_trip_beside_memory_on_one_server(tmp_path):
                     "status": "done",
                     "handoff_patch": {"next_action": "Review the diff per briefs/U4.md."},
                     "history_entry": {"unit": "U3", "outcome": "done"},
-                    "accounting": {"tokens": 99, "duration": 1.5, "model": "haiku"},
+                    "accounting": {"tokens": 99, "duration_ms": 1500, "model": "haiku"},
                 },
             )
             assert out.structured_content["result"] == "ok"
@@ -282,10 +280,57 @@ def test_shiftwork_round_trip_beside_memory_on_one_server(tmp_path):
             assert again.structured_content["unit"]["id"] == "U4"
             status = await c.call_tool("shiftwork_status", {"checkpoint": str(path)})
             assert status.structured_content["units"] == {"done": 2, "todo": 1}
-        log = json.loads(
-            (tmp_path / "checkpoint.json.log.jsonl").read_text(encoding="utf-8").splitlines()[0]
-        )
-        assert log["model"] == "haiku" and log["unit"] == "U3"
+        # F6: the ledger is brief / accounting / brief (the second clock_in issued U4's brief
+        # and nothing has clocked it out), so the accounting line is the one with `status`.
+        lines = [
+            json.loads(line)
+            for line in (tmp_path / "checkpoint.json.log.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        assert [line.get("event") for line in lines] == ["brief", None, "brief"]
+        log = lines[1]
+        assert log["model"] == "haiku" and log["unit"] == "U3" and log["briefed"] is True
+
+    run(scenario())
+
+
+def test_shiftwork_clock_out_refuses_a_malformed_accounting_line_on_the_wire(tmp_path):
+    """job50/F5 over MCP: the served schema advertises the accounting shape, the call
+    path validates only the Python signature (`dict | None`), so the refusal has to come
+    from `clock_out` itself — structured, and leaving nothing behind on disk."""
+
+    async def scenario():
+        path = checkpoint_copy(tmp_path)
+        before = path.read_bytes()
+        async with Client(make_server(tmp_path)) as c:
+            out = await c.call_tool(
+                "shiftwork_clock_out",
+                {
+                    "checkpoint": str(path),
+                    "unit_id": "U3",
+                    "status": "done",
+                    "handoff_patch": {},
+                    "history_entry": {"unit": "U3", "outcome": "done"},
+                    "accounting": {"tokens": 99, "duration": 1.5, "model": "haiku"},
+                },
+            )
+            assert out.structured_content == {
+                "result": "error",
+                "reason": (
+                    "unit U3 in role implementer reported an accounting line the schema "
+                    "refuses: JSON does not match schema at 'accounting': "
+                    "'duration_ms' is a required property"
+                ),
+            }
+            again = await c.call_tool("shiftwork_clock_in", {"checkpoint": str(path)})
+            assert again.structured_content["unit"]["id"] == "U3"  # the cursor never moved
+        assert path.read_bytes() == before
+        # F6: that clock_in issued a brief, so the ledger now holds exactly its brief line —
+        # and still NO accounting line: the refused clock-out wrote nothing.
+        lines = (tmp_path / "checkpoint.json.log.jsonl").read_text(encoding="utf-8").splitlines()
+        assert [json.loads(line).get("event") for line in lines] == ["brief"]
+        assert "status" not in json.loads(lines[0])
 
     run(scenario())
 
@@ -454,14 +499,12 @@ def test_stdio_subprocess_initializes(tmp_path):
                 # An EXACT list, not a count, for the reason the sibling node states: a
                 # count says "not six" and an exact list says WHICH tool arrived.
                 assert sorted(t.name for t in tools.tools) == [
-                    "bantamkit_read",
                     "bantamkit_status",
                     "build_identity",
                     "memory_compact",
                     "memory_dream",
                     "memory_recall",
                     "memory_save",
-                    "repo_map",
                     "shiftwork_clock_in",
                     "shiftwork_clock_out",
                     "shiftwork_status",
@@ -514,14 +557,12 @@ def test_module_entrypoint_serves_over_stdio(tmp_path):
                 # An EXACT list, matching both siblings: a count says "not seven" and a
                 # list names WHICH tool the module entry point is or is not serving.
                 assert sorted(t.name for t in tools.tools) == [
-                    "bantamkit_read",
                     "bantamkit_status",
                     "build_identity",
                     "memory_compact",
                     "memory_dream",
                     "memory_recall",
                     "memory_save",
-                    "repo_map",
                     "shiftwork_clock_in",
                     "shiftwork_clock_out",
                     "shiftwork_status",
@@ -1045,3 +1086,31 @@ def test_no_stdin_at_all_is_not_a_person_and_cannot_take_the_serving_path_down()
     with pytest.raises(ValueError):
         closed.isatty()
     assert _typed_bare_at_a_terminal([], closed) is False
+
+
+def test_the_served_tools_still_unwrap_a_json_encoded_list(tmp_path):
+    """`memory_save.links` sent as the STRING `'["a-b"]'` is unwrapped to a list.
+
+    Moved here from `test_bantamkit_read_tool.py` when `bantamkit_read` left the roster
+    (job50 I5, 2026-09-12): that module is skipped as a whole, but this node was never
+    about the reader — it pins that `_ArgMetadata`'s per-key pre-parse still runs for the
+    tools that ARE served, and it would have gone quietly with the skip. `_NO_JSON_UNWRAP`
+    still names the retired tool and nothing served, so `unwrap_json` is `True` for all
+    twelve; a change that switched the pre-parse off for the surface reddens here.
+    """
+
+    async def scenario():
+        async with Client(make_server(tmp_path)) as c:
+            r = await c.call_tool(
+                "memory_save",
+                {
+                    "type": "project",
+                    "name": "links-unwrap",
+                    "description": "a probe of the links unwrap",
+                    "body": "body text here",
+                    "links": '["a-b"]',
+                },
+            )
+            return r.is_error, r.content[0].text
+
+    assert run(scenario()) == (False, "saved 'links-unwrap'")

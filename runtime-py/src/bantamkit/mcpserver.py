@@ -1015,6 +1015,9 @@ class _ArgMetadata(FuncMetadata):  # type: ignore[misc,valid-type]
 
 
 # Tools whose arguments reach the handler exactly as sent — see `_ArgMetadata`.
+# DORMANT — `bantamkit_read` left the roster (job50 I5, 2026-09-12), so no served tool is
+# in this set today and `unwrap_json` is `True` for all twelve. The entry stays so that
+# restoring the roster line restores the property with it.
 _NO_JSON_UNWRAP = frozenset({"bantamkit_read"})
 
 
@@ -1038,6 +1041,9 @@ OFFSET_MAXIMUM = 9007199254740991
 @dataclass
 class _DocumentCache:
     """The last `docread.extract` result this server produced, and what it was OF.
+
+    DORMANT — its one user, `bantamkit_read`, left the roster (job50 I5, 2026-09-12); kept
+    with the handler so the roster line can come back without re-deriving the cache.
 
     Register entry (i): `bantamkit_read` re-parsed the whole document on EVERY call, so a
     caller paging a 12,001-row sheet in 200-row pages parsed the workbook once per page —
@@ -1219,6 +1225,10 @@ def _record_result(log: EventLog, tool: str, call: Callable[[], dict[str, Any]])
 
 
 #: The last paragraph of every `repo_map` reply, refusal excepted. FIXED AND MANDATORY.
+#:
+#: DORMANT — `repo_map` left the roster (job50 I5, 2026-09-12). The tail, the empty-listing
+#: sentence and `repo_map_reply` below stay with the handler: a roster decision, not a
+#: deletion of working code.
 #:
 #: Roadmap row 10's build gate was "build only after #4 shows discovery tokens dominate",
 #: and #4 REFUTED it: discovery is 0.114 % of real prompt tokens because 97.8 % of the
@@ -1516,6 +1526,12 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
     ) -> str:
         """The reader on the MCP surface (job43): `docread` digests, `contract` words it.
 
+        DORMANT — NOT REGISTERED since job50 I5 (user ruling, 2026-09-12): `bantamkit_read`
+        left the roster because the transcript corpus showed it was never called. The
+        reader (`docread`, `docmanifest`, `contract`) and its tests are untouched; this
+        handler, its document cache and `OFFSET_MAXIMUM` are kept, unregistered, so the
+        roster line can return without a rewrite.
+
         The eval pair (`evalrun._document_tools`) already renders a manifest, a page and
         every refusal from these two modules, and this handler makes the SAME calls with
         the path standing in for the document name, so the two surfaces print the same
@@ -1660,6 +1676,11 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
     ) -> str:
         """The ranked definition map on the MCP surface: `repomap` measures, this serves it.
 
+        DORMANT — NOT REGISTERED since job50 I5 (user ruling, 2026-09-12): `repo_map` left
+        the roster because the transcript corpus showed it was never called. The engine
+        (`repomap.py`) and its tests are untouched; this handler is kept, unregistered, so
+        the roster line can return without a rewrite.
+
         THE THREE REFUSALS LIVE HERE AND NOT IN `repomap.py`, and that is deliberate.
         `repo_map()` over a root that does not exist answers an EMPTY map on both runtimes
         — `os.walk` yields nothing for a missing directory and `walkSources`' `readdirSync`
@@ -1784,12 +1805,20 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
     # the server, because the server cannot start without it.
     #
     # `bantamkit_status` went LAST rather than first, `memory_compact` after it rather
-    # than beside `memory_save` where a reader would look for it, `bantamkit_read`
-    # after that, `skill_audit` after that, `memory_dream` after that, `repo_map`
-    # after that and `token_ledger` after that. Registration order IS the served order
+    # than beside `memory_save` where a reader would look for it, `skill_audit` after
+    # that, `memory_dream` after that and `token_ledger` after that. Registration order
+    # IS the served order
     # (`test_tool_manifest.py::test_the_golden_records_the_order_the_wire_actually_
     # serves`), and appending is the only edit that leaves the others where every
     # existing declaration says they are.
+    #
+    # `bantamkit_read` (tenth) and `repo_map` (thirteenth) LEFT this list on the user's
+    # ruling of 2026-09-12 (job50, I5): measured over the transcript corpus, neither was
+    # called — auto-mode routes discovery and reading through Bash — and every request
+    # re-sent their descriptions. Their assets claim NO surface now (`"surfaces": []`),
+    # so putting either name back here without also restoring `"mcp"` to its asset is
+    # refused by `_from_manifest` at startup. The handlers below are DORMANT, not gone:
+    # a roster decision, not a deletion of working code.
     tools = [
         _from_manifest(memory_save, "memory_save"),
         _from_manifest(memory_recall, "memory_recall"),
@@ -1800,10 +1829,8 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         _from_manifest(build_identity_tool, "build_identity"),
         _from_manifest(bantamkit_status, "bantamkit_status"),
         _from_manifest(memory_compact, "memory_compact"),
-        _from_manifest(bantamkit_read, "bantamkit_read"),
         _from_manifest(skill_audit, "skill_audit"),
         _from_manifest(memory_dream, "memory_dream"),
-        _from_manifest(repo_map, "repo_map"),
         _from_manifest(token_ledger, "token_ledger"),
     ]
 

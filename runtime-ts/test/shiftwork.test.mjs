@@ -3,8 +3,9 @@
  *
  * THE PROPERTY: given the same checkpoint and the same call, Node writes byte-identical
  * files and returns the identical result object. Three artefacts are at stake — the
- * rewritten checkpoint, the `.log.jsonl` line, and the returned dict — and only the first
- * is ever read back, so a wrong log line is invisible to the code that wrote it.
+ * rewritten checkpoint, the `.log.jsonl` line, and the returned dict — and the log is read
+ * back only by `briefed` (job50/F6), which looks at two keys, so a wrong log line is
+ * otherwise invisible to the code that wrote it.
  *
  * The Python differential lives in `tools/conformance/suites/shiftwork.mjs`. This file is
  * the fast loop: it pins the four serializer rules, the refusal sentences, and the
@@ -15,7 +16,7 @@
  * a careless port would rewrite un-escaped on its first successful clock-out.
  */
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -23,9 +24,9 @@ import { test } from 'node:test';
 const dist = new URL('../dist/', import.meta.url);
 const { clockIn, clockOut, status, HISTORY_RING_SIZE } = await import(new URL('shiftwork.js', dist));
 const { dumpJson, fromJs, parseJson, toJs } = await import(new URL('pyjson.js', dist));
-const { pyNewlineOut, pyReadText, pyReplace, pyRepr, pySuffix } =
+const { pyNewlineOut, pyReadText, pyReplace, pyRepr, pySuffix, PyUnicodeDecodeError } =
   await import(new URL('memory/pyfs.js', dist));
-const { loadSchema } = await import(new URL('assets.js', dist));
+const { assetsRoot, loadSchema } = await import(new URL('assets.js', dist));
 
 /**
  * A path as `str(OSError)` prints it: `%r`, which ESCAPES A BACKSLASH.
@@ -273,14 +274,14 @@ test('clock_out writes the checkpoint ASCII-ONLY, and that is the whole ensure_a
   rmSync(root, { recursive: true, force: true });
 });
 
-test('the log line is sort_keys=True, one line, appended, and never read back', () => {
+test('the log line is sort_keys=True, one line, appended, and read back only by `briefed`', () => {
   const root = fresh();
   const path = writeCheckpoint(root);
   clockOut(path, 'N1', 'done', {}, OK_ENTRY, { tokens: 1, model: 'claude-opus-5[1m]', duration_ms: 2 }, { now: 1755930000.9 });
   const log = text(`${path}.log.jsonl`);
   assert.equal(
     log,
-    disk('{"duration_ms": 2, "model": "claude-opus-5[1m]", "role": "implementer", "status": "done", ' +
+    disk('{"briefed": false, "duration_ms": 2, "model": "claude-opus-5[1m]", "role": "implementer", "status": "done", ' +
       '"tokens": 1, "ts": "2025-08-23T06:20:00Z", "unit": "N1"}\n'),
   );
   clockOut(path, 'N2', 'done', {}, { unit: 'N2', outcome: 'done' }, null, { now: 1755930001 });
@@ -290,8 +291,13 @@ test('the log line is sort_keys=True, one line, appended, and never read back', 
 test('accounting can OVERRIDE the four keys the record starts with', () => {
   const root = fresh();
   const path = writeCheckpoint(root);
-  clockOut(path, 'N1', 'done', {}, OK_ENTRY, { ts: 'whenever', role: 'planner' }, { now: 1755930000 });
-  assert.equal(text(`${path}.log.jsonl`), disk('{"role": "planner", "status": "done", "ts": "whenever", "unit": "N1"}\n'));
+  // `tokens` + `duration_ms` because the line is a real accounting line since job50/F5; the
+  // two OVERRIDING keys are still the point of the test.
+  clockOut(path, 'N1', 'done', {}, OK_ENTRY, { ts: 'whenever', role: 'planner', tokens: 1, duration_ms: 2 }, { now: 1755930000 });
+  assert.equal(
+    text(`${path}.log.jsonl`),
+    disk('{"briefed": false, "duration_ms": 2, "role": "planner", "status": "done", "tokens": 1, "ts": "whenever", "unit": "N1"}\n'),
+  );
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -359,11 +365,14 @@ test('a schema refusal writes NOTHING — not a partial checkpoint, not a log li
   const root = fresh();
   const path = writeCheckpoint(root);
   const before = bytes(path);
-  // `handoff` is additionalProperties:false and allows only next_action/open_questions/do_not.
-  const answer = js(clockOut(path, 'N1', 'done', { notes: 'nope' }, OK_ENTRY, null, { now: 1 }));
+  // `handoff` is additionalProperties:false and allows only next_action/open_questions/do_not
+  // and, since job50 J50-5, `notes`. The unknown key here was `notes` until J50-5 legalised
+  // it and this test started clocking out for real — the same vacuous-gate defect J50-6
+  // found in the conformance suite, in a second home. `note`, one letter off, is unknown.
+  const answer = js(clockOut(path, 'N1', 'done', { note: 'nope' }, OK_ENTRY, null, { now: 1 }));
   assert.deepEqual(answer, {
     result: 'error',
-    reason: "refused to write: JSON does not match schema at 'handoff': Additional properties are not allowed ('notes' was unexpected)",
+    reason: "refused to write: JSON does not match schema at 'handoff': Additional properties are not allowed ('note' was unexpected)",
   });
   assert.deepEqual(bytes(path), before, 'the checkpoint is byte-unchanged');
   // The log append WOULD have succeeded — the directory is writable and the very same call
@@ -408,7 +417,13 @@ test('a status outside the unit enum is refused, and the unit status is not left
  * A bare `skipif` would have hidden that; saying it out loud prices what stops being
  * measured, per RB-P51.
  */
-function withUnwritable(dir, t) {
+function withUnwritable(
+  dir,
+  t,
+  unmeasured = 'the ORDER of the two writes — that the accounting log line is ' +
+    'committed before the checkpoint is attempted, and that the refusal names which of ' +
+    'the two got out. Nothing else in this file reaches that ordering.',
+) {
   chmodSync(dir, 0o555);
   const probe = join(dir, '.probe');
   try {
@@ -421,9 +436,7 @@ function withUnwritable(dir, t) {
   t.diagnostic(
     `NOT MEASURED: this platform wrote into ${dir} at mode 0o555 anyway (Windows, where ` +
       'chmod is inert on a directory, or a uid that bypasses the mode bits). What goes ' +
-      'unchecked here is the ORDER of the two writes — that the accounting log line is ' +
-      'committed before the checkpoint is attempted, and that the refusal names which of ' +
-      'the two got out. Nothing else in this file reaches that ordering.',
+      `unchecked here is ${unmeasured}`,
   );
   return false;
 }
@@ -466,8 +479,13 @@ test('an unwritable checkpoint directory refuses AFTER the log line, and says so
 // a per-role lookup from a lookup that reads whichever entry it finds first.
 
 const ROLES = { implementer: ['claude-sonnet-5', 'claude-opus-5'], reviewer: ['claude-opus-5'] };
-/** The orchestrator's accounting as the tool receives it — `haiku` is on nobody's list. */
-const ACCOUNTING = { tokens: 1234, duration: 88.2, model: 'haiku' };
+/**
+ * The orchestrator's accounting as the tool receives it — `haiku` is on nobody's list.
+ * `duration` beside `duration_ms` ON PURPOSE (job50/F5): the schema requires the pair
+ * `tokens` + `duration_ms` and lets any other key through, and the fixture carries an odd
+ * key so a pass-through that stopped passing would show here.
+ */
+const ACCOUNTING = { tokens: 1234, duration_ms: 88200, duration: 88.2, model: 'haiku' };
 const withRoles = (roles = ROLES) => {
   const doc = checkpointDocument();
   doc.job.roles = roles;
@@ -494,7 +512,7 @@ test('clock_out refuses a model the role is not allowed, and the refused path wr
   assert.equal(existsSync(`${path}.tmp`), false, 'no temp file left behind');
   assert.equal(js(clockIn(path)).unit.id, 'N1', 'the cursor never moved');
   // And the append WOULD have worked — the same call with an allowed model writes one.
-  assert.equal(js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, { model: 'claude-opus-5' }, { now: 1 })).result, 'ok');
+  assert.equal(js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, { ...ACCOUNTING, model: 'claude-opus-5' }, { now: 1 })).result, 'ok');
   assert.equal(existsSync(`${path}.log.jsonl`), true, 'which proves the log append was available');
   rmSync(root, { recursive: true, force: true });
 });
@@ -594,7 +612,7 @@ test('the list consulted is the UNIT’s role, not the first entry in the map', 
   // N2 is the reviewer, whose list does NOT carry `claude-sonnet-5` even though the
   // implementer's does. Close N1 first so the reviewer is the cursor.
   const path = writeCheckpoint(root, withRoles());
-  assert.equal(js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, { model: 'claude-opus-5' }, { now: 1 })).result, 'ok');
+  assert.equal(js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, { ...ACCOUNTING, model: 'claude-opus-5' }, { now: 1 })).result, 'ok');
   const answer = js(clockOut(path, 'N2', 'done', {}, { unit: 'N2', outcome: 'done' }, { model: 'claude-sonnet-5' }, { now: 2 }));
   assert.deepEqual(answer, {
     result: 'error',
@@ -655,7 +673,19 @@ function packWithoutMinItems(root) {
   delete shipped.properties.job.properties.roles.additionalProperties.minItems;
   const pack = join(root, 'pack');
   mkdirSync(join(pack, 'schemas'), { recursive: true });
+  withShippedTools(pack);
   writeFileSync(join(pack, 'schemas', 'shiftwork-checkpoint.json'), JSON.stringify(shipped), 'utf8');
+  return pack;
+}
+
+/**
+ * Since job50/F5 `clockOut` reads the `shiftwork_clock_out` TOOL asset for the accounting
+ * line's shape, so a pack that mutates only the checkpoint schema must still carry the
+ * shipped tools/ — or a clock-out that survives the roles gate dies on AssetNotFound
+ * instead of reaching the thing these packs exist to measure.
+ */
+function withShippedTools(pack) {
+  cpSync(join(assetsRoot(), 'tools'), join(pack, 'tools'), { recursive: true });
   return pack;
 }
 
@@ -742,6 +772,7 @@ function packWithUnconstrainedRolesValues(root) {
   shipped.properties.job.properties.roles.additionalProperties = true;
   const pack = join(root, 'anyroles');
   mkdirSync(join(pack, 'schemas'), { recursive: true });
+  withShippedTools(pack);
   writeFileSync(join(pack, 'schemas', 'shiftwork-checkpoint.json'), JSON.stringify(shipped), 'utf8');
   return pack;
 }
@@ -784,7 +815,8 @@ for (const [id, value] of NOT_A_MODEL_LIST) {
     // The J46-10 ruling's other half (J47-4). A role the map NAMES is constrained by what
     // it names, and a value this code cannot read as a list of model identifiers names
     // nothing — so it allows nothing. Nothing is written, and the proof is the bytes and
-    // the absent log file, not the `result` field.
+    // the log holding no accounting line, not the `result` field. (Since job50/F6 the
+    // `clockIn` below writes its OWN brief line, so "absent file" is no longer the test.)
     const pack = packWithUnconstrainedRolesValues(root);
     const path = writeCheckpoint(root, withRoles({ implementer: value }));
     const before = bytes(path);
@@ -808,7 +840,8 @@ for (const [id, value] of NOT_A_MODEL_LIST) {
       assert.equal(unit.status, 'todo', 'and the status was never set');
     });
     assert.deepEqual(bytes(path), before, 'the checkpoint is byte-unchanged');
-    assert.equal(existsSync(`${path}.log.jsonl`), false, 'no accounting line was appended');
+    assert.deepEqual(logLines(path).filter((l) => 'status' in l), [], 'no accounting line was appended');
+    assert.deepEqual(logLines(path).map((l) => l.event), ['brief'], 'only clockIn’s own brief line');
     assert.equal(existsSync(`${path}.tmp`), false, 'no temp file left behind');
     rmSync(root, { recursive: true, force: true });
   });
@@ -998,10 +1031,575 @@ test('os.replace prints BOTH names: OSError.filename2 is not decoration', () => 
 test('RULING: a patch that arrived as a JS object cannot say 5.0; one parsed from bytes can', () => {
   const root = fresh();
   const path = writeCheckpoint(root);
-  clockOut(path, 'N1', 'done', {}, OK_ENTRY, { n: 5.0 }, { now: 1 });
+  // `n` is the odd key whose float is the property; the required pair rides beside it.
+  clockOut(path, 'N1', 'done', {}, OK_ENTRY, { tokens: 1, duration_ms: 1, n: 5.0 }, { now: 1 });
   assert.match(text(`${path}.log.jsonl`), /"n": 5,/, 'the JS-object route loses the decimal point');
   const path2 = writeCheckpoint(root, checkpointDocument(), 'two.json');
-  clockOut(path2, 'N1', 'done', {}, OK_ENTRY, parseJson('{"n": 5.0}'), { now: 1 });
+  clockOut(path2, 'N1', 'done', {}, OK_ENTRY, parseJson('{"tokens": 1, "duration_ms": 1, "n": 5.0}'), { now: 1 });
   assert.match(text(`${path2}.log.jsonl`), /"n": 5\.0,/, 'the parsed-from-bytes route keeps it');
+  rmSync(root, { recursive: true, force: true });
+});
+
+// ================================ F5 (job50): the accounting line's shape is a gate
+
+// The refusal's fixed frame, J50-8's, read out of `_accounting_refusal`; what follows it
+// is the same `schemaError` rendering the checkpoint refusals use, so the whole sentence
+// is one renderer, not a second one.
+const REFUSED = 'unit N1 in role implementer reported an accounting line the schema refuses: ';
+// The fixture this file used until job50 — the exact shape the ledger census measured 43
+// times in this repo: a `duration` spelled its own way and no `duration_ms`.
+const OLD_SHAPE = { tokens: 1234, duration: 88.2, model: 'haiku' };
+const attempt = (path, accounting, unit = 'N1') =>
+  js(clockOut(path, unit, 'done', {}, { unit, outcome: 'done' }, accounting, { now: 1 }));
+const logLines = (path) =>
+  existsSync(`${path}.log.jsonl`) ? read(`${path}.log.jsonl`).split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
+
+test('an accounting line without duration_ms is refused and nothing is written', () => {
+  const root = fresh();
+  const path = writeCheckpoint(root);
+  const before = bytes(path);
+  assert.deepEqual(attempt(path, OLD_SHAPE), {
+    result: 'error',
+    reason: `${REFUSED}JSON does not match schema at 'accounting': 'duration_ms' is a required property`,
+  });
+  assert.deepEqual(bytes(path), before, 'the checkpoint is byte-unchanged');
+  assert.equal(existsSync(`${path}.log.jsonl`), false, 'no line was ever appended');
+  assert.equal(existsSync(`${path}.tmp`), false, 'no temp file left behind');
+  assert.equal(js(clockIn(path)).unit.id, 'N1', 'the cursor never moved');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('an accounting line without tokens is refused', () => {
+  const root = fresh();
+  const path = writeCheckpoint(root);
+  const before = bytes(path);
+  assert.deepEqual(attempt(path, { duration_ms: 88200, model: 'haiku' }), {
+    result: 'error',
+    reason: `${REFUSED}JSON does not match schema at 'accounting': 'tokens' is a required property`,
+  });
+  assert.deepEqual(bytes(path), before);
+  assert.deepEqual(logLines(path), []);
+  rmSync(root, { recursive: true, force: true });
+});
+
+// [id, the line AS JSON TEXT, the pointed detail the sentence ends with]. JSON text and
+// `parseJson`, not object literals, so `5.0` reaches the validator as the float it is in
+// Python (the JS-object route would hand over `5`). Every detail here is the one the
+// Python suite MEASURED against jsonschema 4.26.0; the port reproduces the rendering
+// (`True`, `['a', 'b']`, `{'name': 'x'}`, `None`), it does not reason about it.
+const WRONG_TYPES = [
+  ['tokens-negative', '{"tokens": -1, "duration_ms": 1}', "'accounting/tokens': -1 is less than the minimum of 0"],
+  ['tokens-string', '{"tokens": "1234", "duration_ms": 1}', "'accounting/tokens': '1234' is not of type 'integer'"],
+  ['tokens-fraction', '{"tokens": 12.5, "duration_ms": 1}', "'accounting/tokens': 12.5 is not of type 'integer'"],
+  ['tokens-bool', '{"tokens": true, "duration_ms": 1}', "'accounting/tokens': True is not of type 'integer'"],
+  ['duration-negative', '{"tokens": 1, "duration_ms": -5}', "'accounting/duration_ms': -5 is less than the minimum of 0"],
+  ['cache-read-negative', '{"tokens": 1, "duration_ms": 1, "cache_read_tokens": -1}', "'accounting/cache_read_tokens': -1 is less than the minimum of 0"],
+  ['tool-uses-string', '{"tokens": 1, "duration_ms": 1, "tool_uses": "3"}', "'accounting/tool_uses': '3' is not of type 'integer'"],
+  ['note-number', '{"tokens": 1, "duration_ms": 1, "note": 5}', "'accounting/note': 5 is not of type 'string'"],
+  ['model-int', '{"tokens": 1, "duration_ms": 1, "model": 5}', "'accounting/model': 5 is not of type 'string'"],
+  ['model-float', '{"tokens": 1, "duration_ms": 1, "model": 5.0}', "'accounting/model': 5.0 is not of type 'string'"],
+  ['model-bool', '{"tokens": 1, "duration_ms": 1, "model": true}', "'accounting/model': True is not of type 'string'"],
+  ['model-list', '{"tokens": 1, "duration_ms": 1, "model": ["a", "b"]}', "'accounting/model': ['a', 'b'] is not of type 'string'"],
+  ['model-dict', '{"tokens": 1, "duration_ms": 1, "model": {"name": "x"}}', "'accounting/model': {'name': 'x'} is not of type 'string'"],
+  ['model-null', '{"tokens": 1, "duration_ms": 1, "model": null}', "'accounting/model': None is not of type 'string'"],
+];
+
+for (const [id, line, detail] of WRONG_TYPES) {
+  test(`a named key of the wrong type is refused and nothing is written: ${id}`, () => {
+    const root = fresh();
+    // No `job.roles` here, so the schema is the only gate a wrong `model` can meet.
+    const path = writeCheckpoint(root);
+    const before = bytes(path);
+    assert.deepEqual(attempt(path, parseJson(line)), {
+      result: 'error',
+      reason: `${REFUSED}JSON does not match schema at ${detail}`,
+    });
+    assert.deepEqual(bytes(path), before);
+    assert.equal(existsSync(`${path}.log.jsonl`), false);
+    rmSync(root, { recursive: true, force: true });
+  });
+}
+
+test('a whole-number float is an integer to the schema', () => {
+  const root = fresh();
+  // A MEASURED fact, pinned so the port reproduces it instead of reasoning about it: under
+  // the 2020-12 semantics `1234.0` satisfies `integer`, and it is written back as it
+  // arrived. Only the parsed-from-bytes route can carry the float this far (see the RULING
+  // test above); the JS-object route hands over `1234` and is the trivial half.
+  const path = writeCheckpoint(root);
+  assert.equal(attempt(path, parseJson('{"tokens": 1234.0, "duration_ms": 88200.0}')).result, 'ok');
+  assert.match(text(`${path}.log.jsonl`), /"tokens": 1234\.0\b/, 'written back as it arrived');
+  const path2 = writeCheckpoint(root, checkpointDocument(), 'two.json');
+  assert.equal(attempt(path2, { tokens: 1234.0, duration_ms: 88200.0 }).result, 'ok');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('when two keys are wrong the required one is the sentence', () => {
+  const root = fresh();
+  // `best_match` prefers the SHALLOWER error: a missing required key (at `accounting`) over
+  // a wrong type one level down. A port that reported the first error in document order
+  // would say `model` here.
+  const path = writeCheckpoint(root);
+  assert.equal(
+    attempt(path, { tokens: -1, model: 5 }).reason,
+    `${REFUSED}JSON does not match schema at 'accounting': 'duration_ms' is a required property`,
+  );
+  assert.deepEqual(logLines(path), []);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('an odd key still passes through beside the required pair', () => {
+  const root = fresh();
+  // `additionalProperties: true` is J50-7's deliberate choice — a refused key is friction,
+  // not safety. Two odd keys, one of them the OLD duration spelling, one a shape the schema
+  // never names.
+  const path = writeCheckpoint(root);
+  assert.equal(attempt(path, { tokens: 1, duration_ms: 2, duration: 88.2, wall: ['x', { y: 1 }] }).result, 'ok');
+  const written = logLines(path).pop();
+  assert.equal(written.duration, 88.2);
+  assert.deepEqual(written.wall, ['x', { y: 1 }]);
+  assert.equal(written.tokens, 1);
+  assert.equal(written.duration_ms, 2);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('accounting null stays legal and writes the base shape — all three spellings of nothing', () => {
+  const root = fresh();
+  // The container is NOT required (J50-7 kept it optional on purpose). Python has one
+  // spelling, `None`; this side has the JS `null`, the omitted argument, and the tagged
+  // `{t: 'null'}` the MCP server hands over — every one must skip the shape check.
+  const path = writeCheckpoint(root);
+  assert.equal(js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, undefined, { now: 1 })).result, 'ok');
+  assert.equal(js(clockOut(path, 'N2', 'done', {}, { unit: 'N2', outcome: 'done' }, null, { now: 1 })).result, 'ok');
+  const path2 = writeCheckpoint(root, checkpointDocument(), 'two.json');
+  assert.equal(js(clockOut(path2, 'N1', 'done', {}, OK_ENTRY, { t: 'null' }, { now: 1 })).result, 'ok');
+  for (const written of [...logLines(path), ...logLines(path2)]) {
+    // `briefed` is the runtime's field (F6), on every line — a null line included.
+    assert.deepEqual(Object.keys(written).sort(), ['briefed', 'role', 'status', 'ts', 'unit']);
+  }
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('a non-string model gets the ROLES sentence when the role is named — the order, decided', () => {
+  const root = fresh();
+  // J50-8's ruling: the roles gate runs first and keeps its sentence, whether or not the
+  // rest of the line is well-formed. The schema's `model: string` fires only when the roles
+  // gate is silent (the WRONG_TYPES rows above have no `job.roles`).
+  const path = writeCheckpoint(root, withRoles());
+  const before = bytes(path);
+  const rolesSentence =
+    'unit N1 in role implementer reported model 5, which job.roles.implementer does not allow: claude-sonnet-5, claude-opus-5';
+  // the line is ALSO missing the required pair — the roles gate still speaks first
+  assert.equal(attempt(path, { model: 5 }).reason, rolesSentence);
+  // and a line that is otherwise well-formed gets the same sentence
+  assert.equal(attempt(path, { tokens: 1, duration_ms: 1, model: 5 }).reason, rolesSentence);
+  assert.deepEqual(bytes(path), before);
+  assert.deepEqual(logLines(path), []);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('a well-formed model on the list then meets the shape check', () => {
+  const root = fresh();
+  // After a roles PASS the shape check still runs: a listed model on a line with no
+  // `duration_ms` is refused by the schema, not waved through by the roles gate.
+  const path = writeCheckpoint(root, withRoles());
+  const before = bytes(path);
+  assert.equal(
+    attempt(path, { tokens: 1, model: 'claude-sonnet-5' }).reason,
+    `${REFUSED}JSON does not match schema at 'accounting': 'duration_ms' is a required property`,
+  );
+  assert.deepEqual(bytes(path), before);
+  assert.deepEqual(logLines(path), []);
+  assert.equal(attempt(path, { tokens: 1, duration_ms: 1, model: 'claude-sonnet-5' }).result, 'ok');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('the shape check runs after the cursor check', () => {
+  const root = fresh();
+  // Same ordering ruling as the roles gate: a non-cursor unit is refused for being
+  // non-cursor, whatever its accounting looks like.
+  const path = writeCheckpoint(root);
+  assert.deepEqual(attempt(path, OLD_SHAPE, 'N2'), { result: 'error', reason: 'unit N2 is not the cursor unit N1' });
+  assert.deepEqual(logLines(path), []);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('the shape check runs before any mutation is validated', () => {
+  const root = fresh();
+  // A history entry the checkpoint schema would refuse (`refused to write: …`) AND a bad
+  // accounting line: the accounting sentence wins, because it is taken before the document
+  // is mutated at all — not discovered after, over the mutated copy.
+  const path = writeCheckpoint(root);
+  const before = bytes(path);
+  const r = js(clockOut(path, 'N1', 'done', {}, { outcome: 'no unit key' }, OLD_SHAPE, { now: 1 }));
+  assert.ok(r.reason.startsWith(REFUSED), r.reason);
+  assert.deepEqual(bytes(path), before);
+  assert.deepEqual(logLines(path), []);
+  // and with a GOOD line the same history entry is what gets refused — the gate above was
+  // confirmed to be the accounting check and not this one
+  const r2 = js(clockOut(path, 'N1', 'done', {}, { outcome: 'no unit key' }, ACCOUNTING, { now: 1 }));
+  assert.ok(r2.reason.startsWith('refused to write: '), r2.reason);
+  assert.deepEqual(bytes(path), before);
+  rmSync(root, { recursive: true, force: true });
+});
+
+/**
+ * A full copy of the shipped pack whose `shiftwork_clock_out` asset has lost its `required`
+ * list on the accounting object — the instrument that shows the check READS THE ASSET
+ * rather than carrying a second copy of the shape.
+ */
+function packWhoseClockOutAssetRequiresNothing(root) {
+  const pack = join(root, 'loose');
+  cpSync(assetsRoot(), pack, { recursive: true });
+  const assetPath = join(pack, 'tools', 'shiftwork_clock_out.json');
+  const asset = JSON.parse(readFileSync(assetPath, 'utf8'));
+  const arm = asset.parameters.properties.accounting.anyOf.find((a) => a.type === 'object');
+  delete arm.required;
+  writeFileSync(assetPath, JSON.stringify(asset), 'utf8');
+  return pack;
+}
+
+test('the shape is read off the tool asset, not a second copy', () => {
+  const root = fresh();
+  // The gate is confirmed to reach the thing it checks: with the SHIPPED asset the old
+  // shape is refused; under a pack whose asset requires nothing, the same line clocks out.
+  // A check that carried its own `required` list would refuse both.
+  const path = writeCheckpoint(root);
+  assert.equal(attempt(path, OLD_SHAPE).result, 'error');
+  const pack = packWhoseClockOutAssetRequiresNothing(root);
+  assert.equal(withAssets(pack, () => attempt(path, OLD_SHAPE)).result, 'ok');
+  rmSync(root, { recursive: true, force: true });
+});
+
+// ============================ J50-9B: a pack that cannot supply the shape allows no line
+
+// The one sentence, read out of `ACCOUNTING_SHAPE_UNREADABLE` in the Python module and
+// pinned here as a per-side LITERAL, for the same reason every roles refusal is: the
+// differential compares Node to Python and cannot see a change made to both. No path, no
+// exception text, no unit id — nothing to interpolate, so nothing to drift per input.
+const SHAPE_UNREADABLE =
+  "cannot clock out: the shiftwork_clock_out tool asset cannot be read as the " +
+  "accounting line's shape, so it allows no accounting line";
+/** A well-formed line — the control: under the SHIPPED pack this clocks out. */
+const GOOD_LINE = { tokens: 1234, duration_ms: 88200, model: 'claude-opus-5' };
+
+/** The orchestrator's repro: the shipped checkpoint schema and NOTHING else. */
+function packWithSchemasOnly(root) {
+  const pack = join(root, 'schemas-only');
+  mkdirSync(join(pack, 'schemas'), { recursive: true });
+  cpSync(join(assetsRoot(), 'schemas', 'shiftwork-checkpoint.json'), join(pack, 'schemas', 'shiftwork-checkpoint.json'));
+  return pack;
+}
+
+/**
+ * The shipped schema plus ONE tool asset holding `content` (raw bytes when given as a
+ * Buffer, else JSON) — the present-but-malformed family.
+ */
+function packWhoseClockOutAssetIs(root, content) {
+  const pack = packWithSchemasOnly(root);
+  mkdirSync(join(pack, 'tools'));
+  const target = join(pack, 'tools', 'shiftwork_clock_out.json');
+  if (Buffer.isBuffer(content)) writeFileSync(target, content);
+  else writeFileSync(target, JSON.stringify(content), 'utf8');
+  return pack;
+}
+
+function assertRefusedAndUntouched(path, before, r) {
+  assert.deepEqual(r, { result: 'error', reason: SHAPE_UNREADABLE });
+  assert.deepEqual(bytes(path), before, 'the checkpoint is byte-unchanged');
+  assert.equal(existsSync(`${path}.log.jsonl`), false, 'the log gained no line');
+  assert.equal(existsSync(`${path}.tmp`), false, 'no temp file was left');
+  assert.equal(js(clockIn(path)).unit.id, 'N1', 'the cursor never moved');
+}
+
+test('a pack with no tools dir refuses the line and writes nothing — and the answer is a dict, not a throw', () => {
+  const root = fresh();
+  const path = writeCheckpoint(root);
+  const pack = packWithSchemasOnly(root);
+  const before = bytes(path);
+  // The override is what makes this the BROKEN pack and not the vendored one: `assetsRoot`
+  // returns `$BANTAMKIT_ASSETS` verbatim, and the pack has no `tools/` at all.
+  withAssets(pack, () => {
+    assert.equal(assetsRoot(), pack, 'the run reads the trimmed pack, not runtime-ts/assets');
+    assert.equal(existsSync(join(assetsRoot(), 'tools')), false, 'and that pack has no tools/');
+    assertRefusedAndUntouched(path, before, attempt(path, GOOD_LINE));
+  });
+  assert.equal(attempt(path, GOOD_LINE).result, 'ok', 'the line was never the problem');
+  rmSync(root, { recursive: true, force: true });
+});
+
+// MISSING AND MALFORMED ARE ONE CASE. Each row is a different failure of the loader —
+// the decoder, the parser, a missing key at each step of the path, a wrong kind at each
+// step, no object arm, an arm the validator refuses as a schema — and every one gets the
+// one sentence, because the property is one: the shape cannot be read, so the line cannot
+// be checked, so it is not allowed.
+for (const [id, content] of [
+  ['not-json', Buffer.from('{not json')],
+  ['not-utf8', Buffer.from([0xff, 0xfe, 0x00])],
+  ['no-parameters', { name: 'shiftwork_clock_out' }],
+  ['no-accounting', { parameters: { properties: {} } }],
+  ['no-anyOf', { parameters: { properties: { accounting: { type: 'object' } } } }],
+  ['anyOf-not-a-list', { parameters: { properties: { accounting: { anyOf: 'object' } } } }],
+  ['no-object-arm', { parameters: { properties: { accounting: { anyOf: [{ type: 'null' }] } } } }],
+  ['arm-is-not-a-schema', { parameters: { properties: { accounting: { anyOf: [{ type: 'object', required: 5 }] } } } }],
+  ['parameters-not-a-dict', { parameters: 'yes' }],
+]) {
+  test(`a present but malformed asset is the same refusal, not a second one — ${id}`, () => {
+    const root = fresh();
+    const path = writeCheckpoint(root);
+    const pack = packWhoseClockOutAssetIs(root, content);
+    const before = bytes(path);
+    withAssets(pack, () => assertRefusedAndUntouched(path, before, attempt(path, GOOD_LINE)));
+    rmSync(root, { recursive: true, force: true });
+  });
+}
+
+test('a null line never needs the shape, so a trimmed pack can still clock it out', () => {
+  const root = fresh();
+  const path = writeCheckpoint(root);
+  const pack = packWithSchemasOnly(root);
+  const r = withAssets(pack, () => attempt(path, null));
+  assert.equal(r.result, 'ok', JSON.stringify(r));
+  assert.equal(logLines(path).at(-1).unit, 'N1');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('the unreadable shape refusal runs after the roles gate', () => {
+  const root = fresh();
+  const path = writeCheckpoint(root, checkpointDocument({ job: { ...checkpointDocument().job, roles: { implementer: ['claude-opus-5'] } } }));
+  const pack = packWithSchemasOnly(root);
+  const r = withAssets(pack, () => attempt(path, { ...GOOD_LINE, model: 'haiku' }));
+  assert.ok(r.reason.startsWith('unit N1 in role implementer reported model haiku, which'), r.reason);
+  assert.deepEqual(logLines(path), []);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('the unreadable shape refusal runs after the cursor check', () => {
+  const root = fresh();
+  const path = writeCheckpoint(root);
+  const pack = packWithSchemasOnly(root);
+  const r = withAssets(pack, () => attempt(path, GOOD_LINE, 'N2'));
+  assert.deepEqual(r, { result: 'error', reason: 'unit N2 is not the cursor unit N1' });
+  assert.deepEqual(logLines(path), []);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('the sentence is the module’s constant and interpolates nothing', async () => {
+  const { ACCOUNTING_SHAPE_UNREADABLE } = await import(new URL('shiftwork.js', dist));
+  assert.equal(ACCOUNTING_SHAPE_UNREADABLE, SHAPE_UNREADABLE);
+  assert.ok(!SHAPE_UNREADABLE.includes('{') && !SHAPE_UNREADABLE.includes('/'), 'no format slot, no path');
+});
+
+// ------------------------------------------ job50/F6: the ledger records that a brief was issued
+//
+// Before this, nothing linked clock_in to clock_out: the only trace of a unit run without a
+// brief was a self-reported `"executed_by": "orchestrator-inline"`. Now `clockIn` appends a
+// `{"event": "brief", ...}` line and `clockOut` reads it back into `briefed` — and NEVER
+// refuses on it. The line shape is read out of `runtime-py/src/bantamkit/shiftwork.py`
+// (`_record_brief`) and pinned here as bytes; the differential half is every
+// `session/*/log` case in `tools/conformance/suites/shiftwork.mjs`.
+
+const { BRIEF_EVENT } = await import(new URL('shiftwork.js', dist));
+const briefLine = (role, ts, unit) => `{"event": "brief", "role": "${role}", "ts": "${ts}", "unit": "${unit}"}\n`;
+
+test('clock_in appends ONE brief line — `{"event", "role", "ts", "unit"}`, sorted, no `status`', () => {
+  const root = fresh();
+  const path = writeCheckpoint(root);
+  const answer = js(clockIn(path, { now: 1755930000.9 }));
+  assert.equal(answer.result, 'brief');
+  assert.equal(BRIEF_EVENT, 'brief');
+  // The verbatim shape: keys sorted the way every ledger line is written, the clock floored.
+  assert.equal(text(`${path}.log.jsonl`), disk(briefLine('implementer', '2025-08-23T06:20:00Z', 'N1')));
+  const line = logLines(path)[0];
+  assert.deepEqual(Object.keys(line).sort(), ['event', 'role', 'ts', 'unit']);
+  // Without a clock the line is stamped from `Date.now()` in the same UTC second format.
+  clockIn(path);
+  const lines = logLines(path);
+  assert.equal(lines.length, 2, 'one line per call, appended');
+  assert.match(lines[1].ts, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('clock_in refusals — escalate, success, error — record no brief line', () => {
+  const root = fresh();
+  const questions = checkpointDocument();
+  questions.handoff.open_questions = ['who owns the deploy key?'];
+  const done = checkpointDocument();
+  for (const unit of done.plan.units) unit.status = 'done';
+  const dangling = checkpointDocument();
+  dangling.plan.cursor = 'N99';
+  for (const [name, doc, expected] of [
+    ['q.json', questions, 'escalate'],
+    ['d.json', done, 'success'],
+    ['c.json', dangling, 'escalate'],
+  ]) {
+    const path = writeCheckpoint(root, doc, name);
+    assert.equal(js(clockIn(path, { now: 1 })).result, expected);
+    assert.equal(existsSync(`${path}.log.jsonl`), false, `${name}: a refusal issued nothing`);
+  }
+  const broken = join(root, 'e.json');
+  writeFileSync(broken, '{not json', 'utf8');
+  assert.equal(js(clockIn(broken, { now: 1 })).result, 'error');
+  assert.equal(existsSync(`${broken}.log.jsonl`), false);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('a clock-out after a brief writes `briefed: true`, and the accounting still passes beside it', () => {
+  const root = fresh();
+  const path = writeCheckpoint(root);
+  clockIn(path, { now: 1755930000 });
+  const answer = js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, { tokens: 1234, duration_ms: 88200 }, { now: 1755930001 }));
+  assert.equal(answer.result, 'ok');
+  const lines = logLines(path);
+  assert.equal(lines.length, 2);
+  assert.equal(lines[0].event, 'brief');
+  assert.equal(lines[1].briefed, true);
+  assert.equal(lines[1].status, 'done');
+  assert.equal(lines[1].tokens, 1234);
+  // the bytes of the accounting line, `briefed` sorting first as `b` < `d`
+  assert.equal(
+    text(`${path}.log.jsonl`),
+    disk(briefLine('implementer', '2025-08-23T06:20:00Z', 'N1') +
+      '{"briefed": true, "duration_ms": 88200, "role": "implementer", "status": "done", "tokens": 1234, ' +
+      '"ts": "2025-08-23T06:20:01Z", "unit": "N1"}\n'),
+  );
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('a clock-out WITHOUT a brief records `briefed: false` and never refuses — F6 records', () => {
+  const root = fresh();
+  const path = writeCheckpoint(root);
+  const answer = js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, { tokens: 1234, duration_ms: 88200 }, { now: 1 }));
+  assert.equal(answer.result, 'ok');
+  assert.equal(answer.cursor, 'N2');
+  const lines = logLines(path);
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].briefed, false);
+  assert.equal(JSON.parse(read(path)).plan.cursor, 'N2', 'the checkpoint committed');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('`briefed` is written on a null accounting line too — it is the runtime’s field', () => {
+  const root = fresh();
+  const path = writeCheckpoint(root);
+  clockIn(path, { now: 1 });
+  clockOut(path, 'N1', 'done', {}, OK_ENTRY, null, { now: 2 });
+  const line = logLines(path).at(-1);
+  assert.deepEqual(Object.keys(line).sort(), ['briefed', 'role', 'status', 'ts', 'unit']);
+  assert.equal(line.briefed, true);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('two briefs before one clock-out is a relaunch: TWO lines, and the clock-out is briefed', () => {
+  const root = fresh();
+  const path = writeCheckpoint(root);
+  assert.equal(js(clockIn(path, { now: 1 })).unit.id, 'N1');
+  assert.equal(js(clockIn(path, { now: 2 })).unit.id, 'N1');
+  clockOut(path, 'N1', 'done', {}, OK_ENTRY, { tokens: 1, duration_ms: 1 }, { now: 3 });
+  const lines = logLines(path);
+  assert.deepEqual(lines.map((l) => l.event ?? null), ['brief', 'brief', null]);
+  assert.equal(lines[2].briefed, true);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('a clock-out CONSUMES the brief: brief→blocked→re-run reads false, then brief→done reads true', () => {
+  const root = fresh();
+  const path = writeCheckpoint(root);
+  const BLOCKED = { unit: 'N1', outcome: 'blocked' };
+  clockIn(path, { now: 1 });
+  clockOut(path, 'N1', 'blocked', {}, BLOCKED, null, { now: 2 });
+  clockOut(path, 'N1', 'blocked', {}, BLOCKED, null, { now: 3 }); // the inline re-run, no clock_in
+  clockIn(path, { now: 4 });
+  clockOut(path, 'N1', 'done', {}, OK_ENTRY, { tokens: 1, duration_ms: 1 }, { now: 5 });
+  const lines = logLines(path);
+  assert.deepEqual(lines.map((l) => l.event ?? null), ['brief', null, null, 'brief', null]);
+  assert.deepEqual(lines.filter((l) => 'status' in l).map((l) => l.briefed), [true, false, true]);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('`briefed` is MEASURED off the ledger — a self-reported `briefed: true` is overwritten, not refused', () => {
+  const root = fresh();
+  const path = writeCheckpoint(root);
+  const answer = js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, { tokens: 1, duration_ms: 1, briefed: true }, { now: 1 }));
+  assert.equal(answer.result, 'ok', 'an odd key passes the F5 shape');
+  assert.equal(logLines(path).at(-1).briefed, false, 'and the measured value wins');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('the briefed reader skips lines it cannot parse or that do not name the unit as a string', () => {
+  const root = fresh();
+  const path = writeCheckpoint(root);
+  clockIn(path, { now: 1 });
+  // A ledger people edit by hand during recovery: junk, a list, a blank, a unit that is not a
+  // string (`5 != "N1"` in Python, so it is skipped rather than compared), an accounting line
+  // for the OTHER unit — none of them clears N1's brief.
+  appendFileSync(`${path}.log.jsonl`, 'not json\n[1, 2]\n\n{"unit": 5, "status": "done"}\n{"unit": "N2", "status": "done"}\n', 'utf8');
+  const answer = js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, { tokens: 1, duration_ms: 1 }, { now: 2 }));
+  assert.equal(answer.result, 'ok');
+  assert.equal(logLine(path).briefed, true); // `logLine`, not `logLines`: the junk does not parse
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('a ledger that does not DECODE is not swallowed — `except OSError` is narrow on both sides', () => {
+  const root = fresh();
+  const path = writeCheckpoint(root);
+  writeFileSync(`${path}.log.jsonl`, Buffer.from([0x7b, 0xff, 0x7d, 0x0a]));
+  // Python: `read_text` raises `UnicodeDecodeError` (a ValueError, not an OSError) out of
+  // `clock_out`. The port rethrows the same class for the same reason: what the reference
+  // does not swallow, the port does not either.
+  assert.throws(
+    () => clockOut(path, 'N1', 'done', {}, OK_ENTRY, null, { now: 1 }),
+    (e) => e instanceof PyUnicodeDecodeError,
+  );
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('clock_in with a DIRECTORY where the log belongs still returns the brief (portable arm)', () => {
+  const root = fresh();
+  const path = writeCheckpoint(root);
+  mkdirSync(`${path}.log.jsonl`);
+  const brief = js(clockIn(path, { now: 1 }));
+  assert.equal(brief.result, 'brief');
+  assert.equal(brief.unit.id, 'N1');
+  assert.ok(statSync(`${path}.log.jsonl`).isDirectory(), 'nothing was written anywhere');
+  // and the later clock-out's OWN log refusal is unchanged by it
+  const answer = js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, null, { now: 2 }));
+  assert.equal(answer.result, 'error');
+  assert.ok(answer.reason.startsWith('accounting log unwritable, checkpoint untouched: '), answer.reason);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('clock_in in a READ-ONLY store costs only the record: the brief returns whole, nothing is written', (t) => {
+  const root = fresh();
+  const inner = join(root, 'ro');
+  mkdirSync(inner);
+  const doc = checkpointDocument();
+  const path = writeCheckpoint(inner, doc);
+  const before = bytes(path);
+  // The stronger arm — a genuine permission failure (job48's shape), not a patched function.
+  if (!withUnwritable(
+    inner,
+    t,
+    'that a genuinely read-only store costs clock_in nothing but the record: the brief still ' +
+      'returns, no exception escapes, no log file appears, and the checkpoint is byte-unchanged. ' +
+      'The sibling test with a DIRECTORY where the log belongs still covers the property here.',
+  )) {
+    rmSync(root, { recursive: true, force: true });
+    return;
+  }
+  let brief;
+  try {
+    brief = js(clockIn(path, { now: 1 }));
+  } finally {
+    chmodSync(inner, 0o755);
+  }
+  assert.equal(brief.result, 'brief');
+  assert.equal(brief.unit.id, 'N1');
+  assert.deepEqual(brief.invariants, doc.job.constraints, 'the brief is whole');
+  assert.equal(existsSync(`${path}.log.jsonl`), false, 'the record is what it cost');
+  assert.deepEqual(bytes(path), before);
+  // and a clock-out after the store is writable again reads the truth: no brief landed
+  clockOut(path, 'N1', 'done', {}, OK_ENTRY, { tokens: 1, duration_ms: 1 }, { now: 2 });
+  assert.equal(logLines(path).at(-1).briefed, false);
   rmSync(root, { recursive: true, force: true });
 });

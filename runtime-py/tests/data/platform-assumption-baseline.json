@@ -26,9 +26,6 @@
   "runtime-ts/test/packaging.test.mjs": [
     "a child is controlled with a signal"
   ],
-  "runtime-ts/test/server.test.mjs": [
-    "a child is controlled with a signal"
-  ],
   "runtime-ts/test/shiftwork.test.mjs": [
     "chmod removes a permission"
   ],

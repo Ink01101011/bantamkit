@@ -246,6 +246,13 @@ const MUTATIONS = {
   'job-roles-string-value': (d) => { d.job.roles = { implementer: 'claude-opus-5' }; },
   'job-roles-empty-name': (d) => { d.job.roles = { reviewer: [''] }; },
   'job-roles-not-object': (d) => { d.job.roles = ['implementer']; },
+  // `handoff.notes`, the optional v1 addition of job50/F8. The example checkpoint already
+  // carries one, so `real/example/valid` exercises the accept path; these four overwrite
+  // it, empty it, mis-type it, and stand a one-letter typo beside it.
+  'handoff-notes-valid': (d) => { d.handoff.notes = 'gate baseline — 3989 cases, 0 failures'; },
+  'handoff-notes-empty': (d) => { d.handoff.notes = ''; },
+  'handoff-notes-type': (d) => { d.handoff.notes = 5; },
+  'handoff-extra-key': (d) => { d.handoff.note = 'typo'; },
   'everything': (d) => {
     d.version = 9;
     d.job.id = '';
@@ -480,6 +487,37 @@ export async function run(ctx) {
   notes.push(
     `job.roles: ${Object.keys(ROLES_LITERALS).length} sentences pinned as a literal on each side — ` +
       'a shared-asset change is invisible to the differential half of this suite',
+  );
+
+  /**
+   * job50/F8, the same instrument for a LOOSENING. `handoff.notes` was added to the shared
+   * schema; the differential above is green whether `handoff` is closed or wide open,
+   * because both sides read the same text. What must not drift: the two `(valid)` rows say
+   * the key exists and may be empty, and the two refusals say the object is STILL closed —
+   * a typo one letter off the new key is refused, and so is the right key with the wrong
+   * shape. Note this suite hands the schema text to both sides itself, so it cannot see a
+   * stale vendored copy under `runtime-ts/assets/`; the `shiftwork` suite's `handoff/`
+   * block, which goes through `clockOut` and each runtime's own loader, is what can.
+   */
+  const HANDOFF_LITERALS = {
+    'handoff-notes-valid': '(valid)',
+    'handoff-notes-empty': '(valid)',
+    'handoff-notes-type': "JSON does not match schema at 'handoff/notes': 5 is not of type 'string'",
+    'handoff-extra-key':
+      "JSON does not match schema at 'handoff': Additional properties are not allowed ('note' was unexpected)",
+  };
+  for (const [mname, sentence] of Object.entries(HANDOFF_LITERALS)) {
+    const got = rendered.get(`real/example/${mname}`) ?? { python: null, node: null };
+    cases.push({
+      name: `schema_error/real/example/${mname}: the sentence, as a literal on each side`,
+      kind: 'json',
+      expected: { python: sentence, node: sentence },
+      actual: { python: got.python, node: got.node },
+    });
+  }
+  notes.push(
+    `handoff.notes: ${Object.keys(HANDOFF_LITERALS).length} sentences pinned as a literal on each side — ` +
+      'two accept, two refuse, so neither a closed nor an open `handoff` can satisfy all four',
   );
 
   // ------------------------------------------------------- 2. the CPython decoder's text

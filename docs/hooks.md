@@ -23,8 +23,8 @@ when it wants more.
 
 | Event | Matcher | Action | Cost (measured) |
 |---|---|---|---|
-| `SessionStart` | `startup\|resume\|clear\|compact` | Injects the **profile** index (cross-project lessons) and, when the cwd has no native `MEMORY.md`, the project index. On `compact` it resets the read ledger. | 3353 B once per session, 8 ms |
-| `UserPromptSubmit` | — | Layered `recall(prompt, 3)`; injects only the **header line** of each hit (`[layer] [name] (type) description`) and tells the model the name to pass to `memory_recall` for the body. Skips prompts < 12 chars and `/commands`. | ≤700 B per prompt, 10–16 ms |
+| `SessionStart` | `startup\|resume\|clear\|compact` | Injects the **profile** index (cross-project lessons) and, when the cwd has no native `MEMORY.md`, the project index. On `compact` it resets the read ledger. **Which project store (J50-1, 2026-09-12):** the one the `bantamkit` registration that wins for this cwd pins with `env.BANTAMKIT_MEMORY_DIR`, read off the whole winning entry by the same `local > project > user` walk the `PostToolUse` row describes for `--index-budget`; with no pin on that entry, the walk from cwd. Until this the hook never saw a registration's `env` — the host hands it to the server's process only — so a pinned registration had the server saving into one store and this row injecting from another. The log line carries `storeScope` (`local`/`project`/`user`, or `null` for the walk). A pin the server would refuse (`docs/memory.md`, "Pinning the store") is refused here through the same code and logged as `warn`, never downgraded to the walk. **The header counts what ARRIVED (J50-2E, 2026-09-12):** each block's header number is the number of fact lines in that block — `15 of 20 facts` when the 3,000-byte cap dropped some, a bare `20 facts` when it dropped none — a drop adds one disclosure line to the block, the log names the dropped facts and the rule, and the rule is no longer the alphabet. See "The session header counts what arrived" below. | 3658 B once per session on this machine's 20-fact profile store (was 3353 B before the disclosure line: 2981 B of fact lines under the 3000 B cap, plus header and the one 298 B disclosure line), 12 ms |
+| `UserPromptSubmit` | — | Layered `recall(prompt, 3)`; injects only the **header line** of each hit (`[layer] [name] (type) description`) and tells the model the name to pass to `memory_recall` for the body. Skips prompts < 12 chars and `/commands`. The project layer is bound the way the `SessionStart` row says: the winning registration's `env.BANTAMKIT_MEMORY_DIR` when it names one, else the walk (J50-1). | ≤700 B per prompt, 10–16 ms |
 | `PreToolUse` | `Read` | The filegraph over the operator's own reads. Key = transcript + path + offset + limit; signature = mtime + size. A repeat of an unchanged read is **refused once** with a reason; the next identical call goes through, so nothing can be hard-blocked. A subagent has its own transcript and is never refused for the parent's read. Registered follow-up 2026-08-28, not fixed: the matcher is `Read`, so a document read through `mcp__bantamkit__bantamkit_read` is neither ledgered nor refused on repeat, and `PreCompact` steering (below) cannot name the files it read. **WIDENED 2026-09-06 (job44, unit U11), and it is worse than the follow-up says.** The matcher is `Read` and AUTO MODE READS THROUGH `Bash`, so what this ledger misses is not just `bantamkit_read` but the ordinary reading an agent does — and the `PreCompact` steering built on it names files the compacted context never read through this path. Measured over 45 compaction boundaries: 41.2 % of the 5,212 post-boundary reads are re-reads; rejected-steering 42.1 % against no-hook 41.7 %, which is indistinguishable; and at the 3 boundaries where steering was actually delivered, 0 of 22 re-reads were of a file it named. Post-2026-08-27 there are ZERO post-boundary `Read` calls at all, which is why a `Read`-only counter would have reported a fall to 0 % rather than the defect. Registered in `docs/roadmap-toolbox.md` row 9 and NOT fixed there: widening the matcher changes what this hook ledgers on every tool call, which is its own budget question. `docs/eval-data/2026-09-06-job44-measurements.md`. | 1–2 ms per Read |
 | `PostToolUse` | `mcp__bantamkit__memory_save` | Marks the session as "saved"; if the index is ≥ 90 % of budget, runs `bantamkit-memory compact --budget <budget> --reserve <20 % of budget>`, which aims at 80 % (**AMENDED 2026-09-10, job46:** this cell used to read `--budget 80 %`, past the 90–99.2 % no-op band job40/C6 measured. That band is closed — `docs/porting.md` item 7 — and naming a fake budget began compounding with the new floor: 15 facts archived per fire became 23 on this machine's own store. The 80 % aim stays as hysteresis; it is now asked for as a reserve, so `compact`'s target is `budget - reserve` exactly) and reports what was archived. This is the automatic half; when a save is actually **refused** for budget, the reply names the `memory_compact` MCP tool and the model compacts on its own (`docs/memory.md`). **Fixed 2026-09-06 (job44):** this arm used to always measure the 90 % band against the DEFAULT budget, so a real `--index-budget N` was measured against the wrong denominator and only the tool's half applied. A running server never writes its budget to disk (`MemoryStore.indexBudget` is process-memory-only), so the hook now reads `--index-budget` from the same three scopes `tools/mcpdrift/mcpdrift.py`'s `discover()` reads for the `bantamkit` registration — user (`~/.claude.json` `.mcpServers`), local (that file's `.projects[<cwd>].mcpServers`), project (`<cwd>/.mcp.json`). None configuring it is the honest default; more than one configuring a *different* value is a real drift this process cannot resolve, so it logs `skip-ambiguous-budget` and refuses to compact that cycle rather than guess against a denominator it knows may be wrong. Not covered: other MCP hosts (this hook only runs under Claude Code), enterprise-managed settings, and a server launched by hand outside all three files. **AMENDED the same day (job44, unit F4): the sentence above about `skip-ambiguous-budget` describes behaviour that has been REMOVED, and it was wrong when written.** Claude Code does not treat two scopes naming different values as a drift — it resolves them by PRECEDENCE, `local > project > user`, connecting once to the highest-precedence definition and never merging fields across scopes (https://code.claude.com/docs/en/mcp, "MCP installation scopes", read 2026-09-06). So the refusal fired on the ordinary case of a project override beside a user default, and auto-compaction silently stopped for that project. The hook now follows that precedence over the WHOLE ENTRY — the highest scope that registers `bantamkit` at all supplies the args, so a winning entry with no `--index-budget` means the default even when a lower scope names a number — and the ambiguity branch is gone rather than narrowed, because precedence leaves no ambiguous case for it to catch. The log line now carries `budgetScope`. `docs/roadmap-toolbox.md` (bb) and the `(aa)` residual there carry the rest. | 12 ms |
 | `PostToolUse` | *(every tool)* | Appends one line — ts, session, project, tool, server, detail — to `$TOOL_METRICS_DIR/events.jsonl` (default `~/.claude/tool-metrics/`), the durable copy behind the transcript that `tools/ledger/tool-usage.mjs` reads for sessions whose transcript the host has deleted (4 of 110 logged sessions, 2026-09-04). Folded in from the `tool-metrics` plugin's `log_event.py`, field names kept so either program can read either's log. Uses `appendFileSync`, NOT the read-modify-write the read ledger uses: one hook process fires per tool call and a parallel block fires them at once, which loses 40–50 % of a read-modify-write's records (roadmap row 8, follow-up (q)); an append of one short line is atomic on both platforms. Never throws — a failed write is swallowed rather than failing the tool call. **This arm is the reason the
@@ -35,7 +35,81 @@ once per session:** measured end to end on this machine, `node bantamkit-hook.mj
 matcher-less and paid the same tax. **Bounded since 2026-09-05:** above 4 MB the arm drops every line whose session still has a transcript — redundant by construction, since the reader consults this log ONLY for sessions whose transcript is gone. Measured on a synthetic 4,760,378 B / 40,003-line log: 505 B / 4 lines afterwards, the 3 recoverable rows kept. `statSync` is paid per call; the walk and rewrite only above the cap, and a walk that finds NO transcripts refuses to prune rather than emptying the log. | 30–40 ms **per tool call** |
 | `PreCompact` | — | Hands the summariser the list of files **this transcript** already read (from the ledger, ≤40 paths, and the whole block bounded at `PRECOMPACT_STDOUT_MAX` = 4000 B) and the open shiftwork cursor, plus "preserve numbers, decisions, pending operator steps". Roadmap #9. **Emits PLAIN TEXT on stdout, not a `hookSpecificOutput` envelope — see "PreCompact steers through stdout" below.** | **bounded ≤4000 B**; median **26.6 ms** end to end (n=10, 23-file ledger, 6 checkpoints on disk), of which the arm itself is 3 ms. **AMENDED 2026-09-04 (review round 4, M9/M11).** The old cell read *"median 2 ms, 3006 B (n=10, ledger of 40 files, 5 checkpoints on disk)"*. Both halves were wrong in the same way — they were SAMPLES presented in the column that holds the other arms' real caps. There was no byte budget at all: measured worst cases were 12,305 B from 40 real absolute paths and **35,315 B from one malformed unit title**, all of it echoed back to the user on every compaction. And the 2 ms was measured on a small `.shiftwork`: on this repository's real one the whole arm took 29 ms. `0951974` added the budget; the timing is re-measured here as end-to-end process cost rather than arm cost, and both figures are given so the two are not confused again |
 | `PostCompact` | — | Resets the read ledger: the context was rebuilt, earlier reads are gone. | 1 ms |
-| `Stop` | — | Once per session, when the transcript holds ≥ 20 tool calls and no `memory_save` (and no native memory write) happened: returns `decision: block` with one instruction — save at most 3 durable, non-derivable lessons, or say in one line that nothing qualifies. | 2 ms + one model turn per qualifying session |
+| `Stop` | — | Once per session, when the transcript holds ≥ 20 tool calls and no `memory_save` (and no native memory write) happened: returns `decision: block` with one instruction — save at most 3 durable, non-derivable lessons, or say in one line that nothing qualifies. **And, on every Stop, the cross-layer dream PREVIEW** (J46-14, roadmap row 5): when a `facts/*.md` in either the project or the profile layer has appeared, vanished or changed since the last look (a sha256 over name, size and mtime against `~/.bantamkit/hooks/dream-state.json`), a bounded child runs `Memory.layered(cwd).dreamOutcome(true)` — a **dry run** — and the hook log gets one `action: "dream-preview"` line carrying `dryRun: true`, `status`, `wouldMerge`, `wouldConsume` and `storeMoved`. Nothing is emitted to the host and **nothing is written to any store.** **AMENDED 2026-09-12 (J50-2A, user ruling):** from J46-14 until this fix the child ran with `dry_run=false`, so a session ending inside a project whose store shared a name with the machine-wide profile store silently archived the profile copy — measured 14 of 20 profile facts in `~/.bantamkit/memory/archive/`, and a restore of 4 consumed at the next Stop. The automatic trigger now never writes; a real merge is the `memory_dream` MCP tool called with `dry_run=false`, and nothing else. The accepted cost: duplicates across the two layers accumulate until somebody asks, and the log's `wouldMerge` count is how they are seen. The marker advances after a dry run too — it answers "has the store changed since the last look", not "is the store consolidated" — so a quiet turn stays a 6 ms skip, and the deliberate merge re-arms it by moving a file. | nudge: 2 ms + one model turn per qualifying session; preview: ~6 ms on a quiet turn, one child process (≤ 8000 ms, `BANTAMKIT_DREAM_TIMEOUT_MS`) when a layer changed |
+
+## The session header counts what arrived — and did not, until J50-2E
+
+`SessionStart` wrote its header from the store's fact COUNT and its body from
+`capLines(indexText, 3000)`, which drops whole lines from the END of the index. The two
+numbers were never compared. Reproduced 2026-09-12 against this machine's restored 20-fact
+profile store, before the fix:
+
+    printf '%s' '{"hook_event_name":"SessionStart","source":"startup","session_id":"p","cwd":"/tmp/empty"}' \
+      | node tools/hooks/bantamkit-hook.mjs
+    # header: [bantamkit profile memory — 20 facts learned across projects]
+    # body:   15 fact lines, 2943 B — line 16 would have reached 3155
+    # log:    "profileFacts":20
+
+Two defects, and the second is worse. **The header lied** to every session since the store
+grew past roughly 15 facts. **And which five were dropped was decided by the alphabet**, because
+the index lists by name: on this machine the casualties included
+`feedback-ship-it-working-and-measured` and `feedback-verify-against-the-run-not-the-source`
+— the user's rules that every job ends measured and that verification is a run, not a read —
+and nothing in any log said so.
+
+**What holds now.** A block's header number is the number of fact lines in that block:
+`[bantamkit profile memory — 15 of 20 facts learned across projects]` when something was
+dropped, a bare `20 facts` when nothing was. A drop adds ONE line at the end of the block:
+
+    [5 of 20 not shown — the block is capped at 3000 bytes; kept by rule: durable types first,
+    then most recently recalled (else created) first, then name; ~/.bantamkit/hooks/hook-log.jsonl
+    names the dropped; mcp__bantamkit__memory_recall reads any fact by name]
+
+and the `SessionStart` log record grows four fields (the project trio only when a project
+block was injected at all):
+
+| field | meaning |
+|---|---|
+| `profileFacts` | files in the profile store — UNCHANGED meaning, so older records stay comparable |
+| `profileInjected` | fact lines that reached the block |
+| `profileDropped[]` | the names that did not, in the order the rule dropped them |
+| `projectFacts` / `projectInjected` / `projectDropped[]` | the same three for the project block |
+| `dropRule` | the rule in words, so a record is readable without this file |
+
+**The rule, and where it comes from.** The hook does not invent a notion of worth. It reads
+the store's own eviction order backwards: `MemoryStore.byEviction` is what `compact` archives
+by — decaying types first, then the stalest `last_recalled` (falling back to `created`), then
+name — so the facts `compact` would archive LAST are the ones a session sees FIRST. Selection
+walks the facts in that order and keeps each one whose whole index line still fits under the
+cap; a line that does not fit is skipped, never split, and never a barrier for a shorter one
+after it. The kept lines are shown in the index's own order, so a block that lost nothing is
+byte-for-byte what it was. Everything used is already exported from `runtime-ts/dist/memory/store.js`
+— `MemoryStore.internals()` hands out `facts()` and `indexLine()`, and `DURABLE_TYPES`,
+`pyEqualValue`, `pyText` are public — so the runtime's index is untouched and this stays in
+the hook's own layer, the same way the `score` in the `UserPromptSubmit` record is re-derived
+from the exported tokenizer.
+
+Its limit, stated: inside one class the date is the ONLY signal a fact carries on disk, and
+`last_recalled` is stamped by the recall path before that path's own byte cap (J49-B3), so
+"most recently recalled" is a stated rule, not a measured claim of importance. On this
+machine's store all 20 facts are `feedback`, so the class half does not separate them and
+the dates alone choose: after the fix the block holds the six recalled on 2026-09-12 and nine
+of the eleven recalled on 2026-09-11, and drops
+`feedback-worktree-pytest-tests-mains-source`, `merge-authorized-standing-tag-withheld`
+(2026-09-11, last by name), `feedback-clock-in-before-spawning-not-after` (09-10),
+`feedback-prescribe-the-property-not-the-mechanism` (09-08) and
+`recall-before-declaring-a-target-refuted` (09-03).
+
+What did NOT change: the 3,000-byte cap, `capLines` dropping whole lines, and the store on
+disk. The cost of the disclosure is the one line itself — 3353 B became 3658 B on the
+20-fact store, once per session.
+
+Pinned in `runtime-ts/test/hooks.test.mjs` by four cases (header = lines in the block and the
+drop is disclosed and logged; a store under the cap gets a bare count and NO disclosure; the
+drop follows the stated rule, one assertion per half, each red under the alphabet or under a
+created-only order; the project block gets the same treatment). All four are red against the
+pre-fix adapter: `BANTAMKIT_HOOK_PATH=<pre-J50-2E copy> node --test runtime-ts/test/hooks.test.mjs`
+→ `tests 48, pass 44, fail 4`.
 
 ## PreCompact steers through stdout — and did not, from b3625d9 until this fix
 

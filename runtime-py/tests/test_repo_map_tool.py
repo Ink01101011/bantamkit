@@ -24,6 +24,17 @@ import pytest
 
 pytest.importorskip("mcp")
 
+#: RETIRED FROM THE ROSTER, NOT DELETED. `repo_map` left `tools/list` on the user's ruling
+#: of 2026-09-12 (job50 I5): measured over the transcript corpus it was never called, and
+#: every request re-sent its description. Every node here drives the tool THROUGH the
+#: server by design (see the module docstring), so none can run while the handler is
+#: DORMANT in `mcpserver.py`. The module stays as the record of what the surface promised
+#: and what will have to hold again if the roster line returns; the skip is the honest
+#: state, not a silenced pin. `test_tool_manifest.py::RETIRED` pins that it is off.
+pytestmark = pytest.mark.skip(
+    reason="repo_map left the MCP roster by ruling (job50 I5, 2026-09-12); handler DORMANT"
+)
+
 from mcp import Client  # noqa: E402
 
 from bantamkit import repomap  # noqa: E402

@@ -43,7 +43,6 @@ def test_tool_assets_are_valid():
         jsonschema.Draft202012Validator.check_schema(data["parameters"])
 
         surfaces = data["surfaces"]
-        assert surfaces, f.stem
         assert set(surfaces) <= TOOL_SURFACES, (f.stem, surfaces)
         assert surfaces == sorted(set(surfaces)), (f.stem, surfaces)
 
@@ -51,7 +50,13 @@ def test_tool_assets_are_valid():
         # handed to a model as name/description/parameters and advertises no return
         # shape, so `null` is the honest entry — and a REQUIRED one, because an absent
         # key and a deliberate "there is none" must not read the same to a port.
-        if "mcp" in surfaces:
+        #
+        # An EMPTY `surfaces` is a tool RETIRED from every surface (job50 I5: `repo_map`
+        # and `bantamkit_read`, user ruling 2026-09-12). Its entry is the contract as it
+        # was last served, kept whole so both runtimes' dormant handlers still have one
+        # shape to agree on — so it keeps its output schema. `test_tool_manifest.py`
+        # pins WHICH names may be empty; this only says what an empty one must carry.
+        if "mcp" in surfaces or not surfaces:
             assert data["output_schema"] is not None, f.stem
             jsonschema.Draft202012Validator.check_schema(data["output_schema"])
         else:

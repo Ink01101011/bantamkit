@@ -17,10 +17,14 @@
  * framing, request routing, the initialize handshake, cancellation, error codes.
  *
  * THE `surfaces` GATE IS LOAD-BEARING. `assets/tools/` serves the eval agent too, and three
- * of the thirteen manifests (`document_list`, `document_read`, `file_graph`) claim only `agent`.
- * `fromManifest` REFUSES those by name rather than filtering them out, because a filter is
- * indistinguishable from a typo: a manifest renamed or a surface dropped would silently
- * shrink the served set, and the field would be a comment.
+ * of the seventeen manifests (`document_list`, `document_read`, `file_graph`) claim only
+ * `agent`, while two (`bantamkit_read`, `repo_map`) claim NO surface at all since job50 I5
+ * (2026-09-12). `fromManifest` REFUSES those by name rather than filtering them out, because
+ * a filter is indistinguishable from a typo: a manifest renamed or a surface dropped would
+ * silently shrink the served set, and the field would be a comment. `MCP_TOOLS` below is the
+ * SAME literal list the reference's `build_server` holds, in the same order, and the asset is
+ * the gate on every name in it — not the source of the names, because the served ORDER is
+ * part of the wire and no asset carries it.
  */
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -76,15 +80,23 @@ import {
 import type { RawStdioTransport } from './transport.js';
 
 /**
- * The thirteen, in the order `build_server` lists them — which is the order `tools/list` emits.
+ * The twelve, in the order `build_server` lists them — which is the order `tools/list` emits.
  *
  * `bantamkit_status` went LAST rather than first, `memory_compact` after it rather than
- * beside `memory_save` where a reader would look for it, `bantamkit_read` after that,
- * `skill_audit` after that, `memory_dream` after that, `repo_map` after that and
- * `token_ledger` after that, for the
- * same reason the reference appends all six: registration order IS the served order, and
- * appending is the only edit that leaves the other twelve where every existing declaration
- * says they are.
+ * beside `memory_save` where a reader would look for it, `skill_audit` after that,
+ * `memory_dream` after that and `token_ledger` after that, for the same reason the reference
+ * appends: registration order IS the served order, and appending is the only edit that
+ * leaves the others where every existing declaration says they are.
+ *
+ * `bantamkit_read` (tenth) and `repo_map` (thirteenth) LEFT this list on the user's ruling
+ * of 2026-09-12 (job50, I5), the same ruling that took them out of the reference's
+ * `tools = [...]`: measured over the transcript corpus, neither was called — auto-mode routes
+ * discovery and reading through Bash — and every request re-sent their descriptions. Their
+ * assets claim NO surface now (`"surfaces": []`), so putting either name back here without
+ * also restoring `"mcp"` to its asset is refused by `fromManifest` at startup; and a name
+ * that is not here is `Unknown tool:` on `tools/call` even though `ARG_MODELS` still holds
+ * its argument model. The handlers below are DORMANT, not gone: a roster decision, not a
+ * deletion of working code.
  */
 export const MCP_TOOLS = [
   'memory_save',
@@ -96,12 +108,13 @@ export const MCP_TOOLS = [
   'build_identity',
   'bantamkit_status',
   'memory_compact',
-  'bantamkit_read',
   'skill_audit',
   'memory_dream',
-  'repo_map',
   'token_ledger',
 ] as const;
+
+/** The served set, for the call path: a name outside it is unknown, whatever `ARG_MODELS` says. */
+const SERVED: ReadonlySet<string> = new Set<string>(MCP_TOOLS);
 
 
 /**
@@ -209,6 +222,10 @@ const EXISTS_IGNORED = new Set(['ENOENT', 'ENOTDIR', 'EBADF', 'ELOOP']);
  * The last paragraph of every `repo_map` reply, refusal excepted. FIXED AND MANDATORY, and
  * byte-identical to the reference's `REPO_MAP_TAIL`.
  *
+ * DORMANT — `repo_map` left the roster (job50 I5, 2026-09-12). The tail, `REPO_MAP_EMPTY`
+ * and `repoMapReply` below stay with the handler: a roster decision, not a deletion of
+ * working code.
+ *
  * Roadmap row 10's build gate was "build only after #4 shows discovery tokens dominate",
  * and #4 REFUTED it: discovery is 0.114 % of real prompt tokens because 97.8 % of the bill
  * is `cache_read`. The feature ships on an explicit ruling to build it anyway, as a
@@ -290,6 +307,9 @@ function recordRaise<T>(log: EventLog, tool: string, body: () => T): T {
 
 /**
  * The last `docread.extract` result this server produced, and what it was OF.
+ *
+ * DORMANT — its one user, `bantamkit_read`, left the roster (job50 I5, 2026-09-12); kept
+ * with the handler so the roster line can come back without re-deriving the cache.
  *
  * The port of `mcpserver._DocumentCache` (register entry (i), `docs/roadmap-toolbox.md` row
  * 8). `bantamkit_read` re-parsed the whole document on EVERY call, so a caller paging a
@@ -622,6 +642,12 @@ function runTool(
       return { value: { t: 'str', v: noted(outcome.reply) }, wrapped: true };
     }
     case 'bantamkit_read': {
+      // DORMANT — NOT ON THE ROSTER since job50 I5 (user ruling, 2026-09-12): `bantamkit_read`
+      // left `MCP_TOOLS` because the transcript corpus showed it was never called. The reader
+      // (`docread`, `contract`) and its tests are untouched; this arm, `DocumentCache` and
+      // `OFFSET_MAXIMUM` are kept, unreachable from the wire (`SERVED` gates the call path),
+      // so the roster line can return without a rewrite.
+      //
       // The reader on the MCP surface (job43): `docread` digests, `contract` words it. The
       // handler makes the SAME `contract` calls the reference's `bantamkit_read` makes,
       // with the path standing in for the document name, so the two servers print the
@@ -825,6 +851,11 @@ function runTool(
       });
     }
     case 'repo_map': {
+      // DORMANT — NOT ON THE ROSTER since job50 I5 (user ruling, 2026-09-12): `repo_map` left
+      // `MCP_TOOLS` because the transcript corpus showed it was never called. The engine
+      // (`repomap.ts`) and its tests are untouched; this arm is kept, unreachable from the
+      // wire (`SERVED` gates the call path), so the roster line can return without a rewrite.
+      //
       // The ranked definition map on the MCP surface (job45 row 10): `repomap` measures,
       // this serves it. Byte for byte the reference's `repo_map` handler.
       //
@@ -1097,7 +1128,10 @@ export function buildServer(
     let structuredValue: PyValue | null = null;
     let isError: boolean;
     try {
-      const model = ARG_MODELS[name];
+      // The roster decides what exists, not the argument table: `ARG_MODELS` still carries
+      // the DORMANT `bantamkit_read` and `repo_map` models (job50 I5), and the reference
+      // answers `Unknown tool:` for a handler it never registered.
+      const model = SERVED.has(name) ? ARG_MODELS[name] : undefined;
       if (model === undefined) throw new BantamError(`Unknown tool: ${name}`);
       const bound = validateArguments(model, args);
       const { value, wrapped } = runTool(name, memory, bound, version, log, documents);

@@ -332,16 +332,17 @@ async def test_a_raising_handler_names_the_type_and_leaks_no_argument_value(tmp_
 
 @synchronous
 async def test_no_free_text_argument_reaches_the_file(tmp_path):
-    """Eight of the fourteen tools take unbounded free text. None of it is on disk.
+    """Eight of the twelve tools take an unbounded string. None of it is on disk.
 
-    `bantamkit_read`'s `path` and `part` are covered by `test_bantamkit_read_tool.py`,
-    which asserts the same property over a file whose path, part name and rows are all
-    sentinels. `skill_audit`'s `root` is covered by `test_skillaudit.py`, which asserts it
-    over a root whose every path segment is a sentinel. `repo_map`'s `root` and `focus`
-    are covered by `test_repo_map_tool.py`, which asserts it over a tree whose directory
-    name, file names and definition names are all sentinels. `token_ledger`'s `root` and
-    `model` are covered by `test_tokenledger.py`, which asserts it over a corpus whose
-    directory name, session ids and cwd are all sentinels.
+    (The count is `eventlog.py`'s rule over `assets/tools/`: a `string` parameter with no
+    `enum` or `maxLength`, or an array of such.) `skill_audit`'s `root` is covered by
+    `test_skillaudit.py`, which asserts it over a root whose every path segment is a
+    sentinel. `token_ledger`'s `root` and `model` are covered by `test_tokenledger.py`,
+    which asserts it over a corpus whose directory name, session ids and cwd are all
+    sentinels. `bantamkit_read`'s `path` and `part` and `repo_map`'s `root` and `focus`
+    WERE covered by `test_bantamkit_read_tool.py` and `test_repo_map_tool.py` over
+    sentinel fixtures; both tools left the roster (job50 I5, 2026-09-12) and those modules
+    are skipped with the handlers dormant, not deleted.
     """
     _, path, server = make(tmp_path)
     secrets = {
@@ -735,6 +736,10 @@ def test_the_module_never_names_a_standard_stream():
         assert forbidden not in body, forbidden
 
 
+@pytest.mark.skip(
+    reason="bantamkit_read left the MCP roster by ruling (job50 I5, 2026-09-12); the handler "
+    "is DORMANT in mcpserver.py and this node needs it served to run"
+)
 @synchronous
 async def test_bantamkit_read_records_its_decision_and_the_reply_wording_says_more(tmp_path):
     """The reader's record is the branch it took; the words it hands back are the file's.

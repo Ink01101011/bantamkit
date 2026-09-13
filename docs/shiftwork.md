@@ -41,7 +41,11 @@ problem = schema_error(open(".shiftwork/checkpoint.json").read(),
 Shape, top level: `version` (const `1`), `job`, `plan`, `state`, `history`,
 `retro`, `handoff`. The schema is strict — unknown keys are rejected
 everywhere except inside `history[]`/`retro[]` entries, which are the
-free-text annotation space.
+free-text annotation space. A fact the *next* session needs that is not an
+imperative, a question, or a prohibition goes in `handoff.notes` — one
+optional free-form string (job50). It is declared precisely so the strictness
+survives it: `handoff` itself stays closed, and a misspelled `next_action` is
+refused exactly as before.
 
 ### The eight load-bearing decisions
 
@@ -64,7 +68,13 @@ free-text annotation space.
    `running` (or drop it) once it stops gating work — a finished process left
    marked `running` stalls the loop until the wait times out and escalates.
 6. **`handoff.do_not`.** Negative space transfers worst across sessions, so it
-   is a first-class field, not prose buried in notes.
+   is a first-class field, not prose buried in notes. The prose has its own
+   field since job50: `handoff.notes`, a string, for the gate baseline or last
+   commit or technique that is none of an action, a question, or a
+   prohibition. It is a string and not a map because a map keyed by fact grows
+   a key per session — the journal decision 1 bans, one level down. It is
+   shallow-merged like the rest of `handoff`, so a note persists until a later
+   session overwrites it (the empty string is a legal overwrite).
 7. **`handoff.open_questions` is the autonomy switch.** Empty = the driver
    keeps cycling. Non-empty = the driver stops and surfaces to the user. One
    field decides clock-out vs escalate.
@@ -247,7 +257,9 @@ The workflow, per unit:
    orchestrating session itself.
 2. `shiftwork_clock_in(checkpoint)` → get `{unit, role, invariants,
    handoff, do_not, files}`. On `escalate`, stop and surface to the user;
-   on `success`, the job is done.
+   on `success`, the job is done. A `brief` answer also appends one
+   `{"event": "brief", ts, unit, role}` line to `<checkpoint>.log.jsonl` —
+   best-effort, and only on that branch; see *Clock-in writes too* below.
 3. Spawn the subagent with the returned brief verbatim, picking the model
    from the unit's `role`.
 4. `shiftwork_clock_out(checkpoint, unit_id, status, handoff_patch,
@@ -263,9 +275,12 @@ Cursor advance is v1-linear: clock-out moves the cursor to the first
 non-terminal unit in plan order and ignores `depends_on` — a non-linear
 plan needs a planner unit to reorder `plan.units` first.
 
-**Log-line comparability with the driver.** Both flavors log one JSONL
-line per session, in deliberately different shapes; the N-sessions
-experiment reads both logs through this mapping:
+**Log-line comparability with the driver.** The driver logs one JSONL
+line per session; the MCP flavor logs one accounting line per clock-out
+*and*, since job50, one brief line per clock-in (next section) — in
+deliberately different shapes. The N-sessions experiment reads both logs
+through this mapping, skipping the brief lines (`event` present, `status`
+absent):
 
 | driver `driver-log.jsonl` | MCP `<checkpoint>.log.jsonl` | note |
 |---|---|---|
@@ -273,9 +288,84 @@ experiment reads both logs through this mapping:
 | `cursor` | `unit` | the unit the session executed |
 | `role` | `role` | identical |
 | `exit` + `progressed` | `status` | the driver observes exit + hash delta; the MCP flavor records the reported unit status |
-| `duration` | `accounting.duration` | driver-measured vs orchestrator-reported |
+| `duration` | `duration_ms` | driver-measured vs orchestrator-reported; the MCP side is whole milliseconds, defined below |
 | `seq` | — | driver-only session counter |
-| — | `tokens`, `model` | MCP-only orchestrator accounting |
+| — | `tokens`, `model`, `cache_read_tokens`, `tool_uses`, `note` | MCP-only orchestrator accounting — each defined below |
+| — | `briefed` | MCP-only, written by the **runtime** off the ledger, never by the orchestrator — defined in the next section |
+
+**Clock-in writes too (job50, F6).** `shiftwork_clock_in` is a writer:
+when it answers `brief` — and only then; an `escalate`, `success` or
+`error` issued no brief and records nothing — it appends one line
+`{"event": "brief", "ts": …, "unit": …, "role": …}` to
+`<checkpoint>.log.jsonl`. The ledger is therefore **no longer one line per
+clock-out**. A reader tells the two shapes apart by `event`: a brief line
+carries `event` and no `status`; an accounting line always carries
+`status`. The write is **best-effort**: a ledger that cannot be written (a
+read-only directory, a missing parent, a full disk) costs the orchestrator
+the record and nothing else — the brief still returns, no error is raised,
+no result changes. That is the eventlog's rule ("failing to log never fails
+the tool") and job48's lesson, and it is the one place the record can go
+missing silently: the accounting line of a unit whose brief line was lost
+reads `briefed: false`, with no red anywhere.
+
+Every accounting line carries `briefed`, a boolean the **runtime** writes
+by reading the ledger back — after the orchestrator's keys are merged, so
+a self-reported `briefed` is overwritten by the measured one, and on
+`accounting: null` lines too. It means "a brief was issued for this unit
+since its **last** clock-out", not "ever": brief → clock-out is `true`;
+brief → clock-out(blocked) → clock-out is `true` then **`false`**, because
+nobody was handed a brief for the second run — that inline re-run is
+exactly the shape F6 exists to make visible, where the older ledgers could
+only carry a self-report (`executed_by: orchestrator-inline`). Two briefs
+before one clock-out (a relaunch after a crashed subagent) both count as
+`true`. `clock_out` **never refuses** on it: a unit that was never clocked
+in clocks out normally, with `briefed: false` — the field records, it does
+not gate, because the recovery practice is to recover the accounting,
+never to drop it.
+
+**What an accounting line means (job50, F5).** Until this change
+`accounting` had no properties at all — `additionalProperties: true` and
+nothing else — and `clock_out` wrote whatever arrived. Measured on
+2026-09-13 across every `.shiftwork/*.log.jsonl` on the machine that wrote
+them (28 ledgers, 352 lines): 63 distinct key-sets, eight spellings of
+duration (`duration_ms` 271, `duration_min` 49, `duration_s` 17, five
+one-off suffixed variants), 24 lines whose `model` carries a parenthetical
+note instead of an identifier, and 14 round-thousand `tokens` values with
+no note saying they are estimates. The tool asset
+(`assets/tools/shiftwork_clock_out.json`) now defines the keys, so that a
+reader holding only the ledger can tell what a number counts, in which
+unit, and which model produced it — without asking the session that wrote
+it:
+
+| key | type | meaning |
+|---|---|---|
+| `tokens` | integer ≥ 0, **required** | what the harness's subagent counter reports for the unit: every class it reports (input, output, cache creation) summed, **excluding cache reads**. Required because a unit whose cost is unknown cannot be compared with any other. A rounded self-estimate is allowed only if `note` says it is one |
+| `cache_read_tokens` | integer ≥ 0, optional | tokens served from prompt cache, kept out of `tokens` because they dominate a real session's traffic and would swamp the work signal. Omit it when the harness reports no such figure; a written `0` means the unit read nothing from cache |
+| `duration_ms` | integer ≥ 0, **required** | wall-clock from spawning the subagent to its final message, in whole milliseconds. The only duration key with a defined meaning |
+| `model` | string | the exact identifier of the model the subagent actually ran on, and nothing else. Not required by the schema: where `job.roles` names the unit's role, `clock_out` already requires it and refuses a value off the list (the gate above, unchanged); where it does not, it stays optional |
+| `tool_uses` | integer ≥ 0, optional | tool calls the subagent made, as the harness counts them — the denominator that makes `tokens` comparable across units of different size |
+| `note` | string, optional | free text for what the fields cannot say: an estimate, a retry, a second scope under the same unit id. Anything that is not a model identifier goes here, not in `model` |
+
+Any other key still passes through unchanged. Refusing unknown keys is
+exactly the friction the `handoff.notes` change removed (F8), and the two
+rules must not pull against each other. `accounting: null` stays legal on
+the wire, as it always was, but a line with no numbers is not an audit
+record — and where `job.roles` names the role, the missing `model` already
+refuses it. What refuses an *object* that violates this definition is the
+runtimes' change, landing with its own conformance gate; this section is
+the definition that check enforces, not the check.
+
+**Pre-schema lines.** The schema governs new writes only; nothing rewrites
+the ledger. Validated against the definition above, 43 of the 211 lines in
+this repository's own `.shiftwork/` ledgers do not conform (40 have no
+`duration_ms`, 22 no `tokens`; some both), and 88 of the 352 machine-wide
+(7 of those carry `tokens` as a string or null). Read a `duration_min` as
+minutes and a `duration_s` as seconds, because that is what the session
+that wrote them meant; the definition does not reach back to say
+otherwise. A reader comparing across jobs should filter on the presence
+of `duration_ms` rather than assume the history is clean. This job's own
+ledger (`checkpoint-job50.json.log.jsonl`) conforms on every line, which
+is the shape the definition was taken from, not a shape it imposed.
 
 **Role → model mapping — never random, never silently inherited.** The
 orchestrator maps role to model when spawning. Recommendation: planner =
@@ -323,6 +413,21 @@ post-merge live smoke — copy it into any other machine or project):
 > entry, and accounting (tokens, duration, and the model actually used).
 > Exempt: one-off ad-hoc spawns (a single search or review with no plan
 > behind it) — no unit to clock.
+
+**`escalate` stays (user ruling 2026-09-12, J49-I6).** Measured over the
+month before job49 (`.shiftwork/notes-job49/A3.md`): `shiftwork_clock_in`
+answered `escalate` once in 459 calls, 52 s after the user had already
+answered the question in chat, and that resolution is recorded nowhere in
+the ledger. The user ruled the branch keeps its place; it is not retired
+and neither runtime changes. Why it looks dead and is not: since
+2026-08-18 the user's standing instruction overrides the "stop and
+surface" in step 2 above — on `escalate` the orchestrator spawns an agent
+to work the question, resolves it, and keeps cycling, so the resolution
+lands in that agent's transcript rather than as a clock-out line (and the
+brief ledger records nothing on that branch, see *Clock-in writes too*).
+The one boundary that does not move: a question that is genuinely the
+user's — scope, what ships, what is authorized — is still surfaced to them
+at the next pause, never answered by a subagent.
 
 No lock, deliberately: this topology has one orchestrator by
 construction; `driver.lock` guards cross-process races the single-session

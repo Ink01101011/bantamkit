@@ -130,6 +130,9 @@ export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
   // `maximum` are advisory to the client for `limit` and for `offset`'s floor; the handler
   // clamps `limit` to `[1, 200]` and `offset` to `>= 0` itself, the way `memory_recall`
   // clamps `k`. `offset`'s CEILING is bound in the model, as it is on the reference (F2).
+  // DORMANT — `bantamkit_read` left the roster (job50 I5, 2026-09-12). The model stays so the
+  // roster line can return with its validation intact; `tools/call` consults `MCP_TOOLS`
+  // before this table, so the entry serves nothing today.
   bantamkit_read: {
     model: 'bantamkit_readArguments',
     fields: [req('path', 'str'), opt('part', 'str'), opt('offset', 'int', { le: OFFSET_MAXIMUM }), opt('limit', 'int')],
@@ -162,6 +165,8 @@ export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
   // explicit `null` is the default. No `le`, because the reference binds none — the
   // manifest's `minimum: 0` is advisory to the client and the handler's own refusal is the
   // negative one, exactly as `skill_audit`'s `budget` works.
+  // DORMANT — `repo_map` left the roster (job50 I5, 2026-09-12); kept for the same reason as
+  // `bantamkit_read` above, and equally unreachable from the wire.
   repo_map: {
     model: 'repo_mapArguments',
     fields: [req('root', 'str'), opt('focus', 'listStr'), opt('budget', 'int')],

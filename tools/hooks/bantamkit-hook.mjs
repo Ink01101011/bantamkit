@@ -207,10 +207,63 @@ function nativeMemoryExists(cwd) {
   return fs.existsSync(path.join(HOME, '.claude', 'projects', slug, 'memory', 'MEMORY.md'));
 }
 
-/** The index as the store computes it — `index.md` on disk is only rewritten by a save. */
-async function indexText(root) {
-  const { MemoryStore } = await import(path.join(DIST, 'store.js'));
-  return new MemoryStore(root).indexText();
+// The rule a capped session block keeps facts by, in the words the block, the log and
+// `docs/hooks.md` all quote. Until J50-2E (2026-09-12) the block was `capLines` over the
+// store's index text, so what was dropped was whatever sorted LAST in the index — the
+// alphabet, not any property of the fact. Reproduced on this machine's 20-fact profile
+// store: the header said 20, the body carried 15, and the two facts the user had written
+// to say that every job ends measured and that verification comes from a run were among
+// the five nobody was told about. The rule below is the store's own eviction order
+// (`MemoryStore.byEviction`) read backwards — the facts `compact` would archive LAST are the
+// ones a session should see FIRST — so the hook invents no new notion of worth: durable
+// types (`DURABLE_TYPES`) before decaying ones, then the most recent evidence of use
+// (`last_recalled`, falling back to `created`), then name. Inside one class the date is
+// the ONLY signal a fact carries on disk, and `last_recalled` is stamped by the recall path
+// before its own byte cap (J49-B3), so this is a stated rule, not a claim of importance.
+const SESSION_DROP_RULE = 'durable types first, then most recently recalled (else created) first, then name';
+
+/**
+ * The index of `root` as ONE capped block: a header whose number is the number of fact
+ * lines IN the block, the fact lines that fit under `max` bytes, and — only when something
+ * did not fit — one disclosure line saying how many are missing and where they are named.
+ *
+ * Selection walks the facts in `SESSION_DROP_RULE` order and keeps each one whose whole
+ * index line still fits; a line that does not fit is skipped, never split, and never a
+ * barrier for a shorter one after it. The kept lines are then shown in the index's own
+ * order, so a block that lost nothing is byte-for-byte the index text, as before. The lines
+ * come from `MemoryStore.internals().indexLine`, the same function `indexText` joins, so
+ * the block never says a fact differently from the index the runtime would write.
+ *
+ * `header(count)` is handed `"15 of 20"` when something was dropped and `"20"` when not, so
+ * a reader who sees a bare number knows the block is whole.
+ */
+async function cappedIndex(root, header, max) {
+  const { MemoryStore, DURABLE_TYPES, pyEqualValue, pyText } = await import(path.join(DIST, 'store.js'));
+  const { facts, indexLine } = new MemoryStore(root).internals();
+  const all = facts().map((fact, position) => ({ fact, position, line: indexLine(fact), name: pyText(fact.name) }));
+  const text = (value) => (value == null ? '' : pyText(value));
+  const decays = (f) => (DURABLE_TYPES.some((durable) => pyEqualValue(f.fact.type, durable)) ? 0 : 1);
+  const evidence = (f) => text(f.fact.last_recalled) || text(f.fact.created);
+  const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  const ranked = [...all].sort((a, b) =>
+    decays(a) - decays(b) || cmp(evidence(b), evidence(a)) || cmp(a.name, b.name) || a.position - b.position);
+  const kept = new Set();
+  let size = 0;
+  for (const f of ranked) {
+    const n = Buffer.byteLength(f.line);
+    if (size + n > max) continue;
+    kept.add(f);
+    size += n;
+  }
+  const shown = all.filter((f) => kept.has(f));
+  const dropped = ranked.filter((f) => !kept.has(f)).map((f) => f.name);
+  const body = capLines(shown.map((f) => f.line).join('').replace(/\n$/, ''), max);
+  const lines = [header(dropped.length ? `${shown.length} of ${all.length}` : String(all.length))];
+  if (body) lines.push(body);
+  if (dropped.length) {
+    lines.push(`[${dropped.length} of ${all.length} not shown — the block is capped at ${max} bytes; kept by rule: ${SESSION_DROP_RULE}; ~/.bantamkit/hooks/hook-log.jsonl names the dropped; mcp__bantamkit__memory_recall reads any fact by name]`);
+  }
+  return { block: lines.join('\n'), total: all.length, injected: shown.length, dropped };
 }
 
 function countFacts(store) {
@@ -222,18 +275,21 @@ async function sessionStart(input) {
   const cwd = input.cwd || process.cwd();
   const parts = [];
   const profileFacts = countFacts(PROFILE);
+  let profile = { injected: 0, dropped: [] };
   if (profileFacts > 0) {
-    const idx = await indexText(PROFILE);
-    parts.push(`[bantamkit profile memory — ${profileFacts} facts learned across projects]\n${capLines(idx, SESSION_INJECT_MAX)}`);
+    profile = await cappedIndex(PROFILE, (count) => `[bantamkit profile memory — ${count} facts learned across projects]`, SESSION_INJECT_MAX);
+    parts.push(profile.block);
   }
   // A project store that is NOT the profile dir and has no native MEMORY.md beside it:
   // inject its index too, otherwise the host already carries an index for this cwd.
+  let project = null;
   try {
     const { discoverProjectStore } = await import(path.join(DIST, 'layers.js'));
     const store = discoverProjectStore(cwd);
     if (path.resolve(store) !== path.resolve(PROFILE) && countFacts(store) > 0 && !nativeMemoryExists(cwd)) {
-      const idx = await indexText(store);
-      parts.push(`[bantamkit project memory — ${countFacts(store)} facts]\n${capLines(idx, SESSION_INJECT_MAX)}`);
+      project = await cappedIndex(store, (count) => `[bantamkit project memory — ${count} facts]`, SESSION_INJECT_MAX);
+      project.facts = countFacts(store);
+      parts.push(project.block);
     }
   } catch (e) { log({ event: 'SessionStart', warn: String(e.message || e) }); }
   parts.push('[bantamkit] Toolbox is live: mcp__bantamkit__memory_recall reads the body of any fact above; memory_save stores a durable lesson (feedback|user|project|reference — never something derivable from the repo). Repeat reads of an unchanged file are refused once by the filegraph hook; a save nudge fires once at session end when nothing was saved.');
@@ -242,7 +298,16 @@ async function sessionStart(input) {
     // context was just rebuilt: earlier reads are gone, so the read ledger must not refuse them
     try { fs.unlinkSync(ledgerPath(input.session_id)); } catch { /* none */ }
   }
-  log({ event: 'SessionStart', source: input.source, cwd, bytes: Buffer.byteLength(ctx), profileFacts });
+  // `profileFacts` keeps its old meaning — files in the store — so older records stay
+  // comparable; `profileInjected` / `profileDropped` are what the block carried and did
+  // not, and `dropRule` is the order the drop followed. The project trio appears only when
+  // a project block was injected at all.
+  log({
+    event: 'SessionStart', source: input.source, cwd, bytes: Buffer.byteLength(ctx),
+    profileFacts, profileInjected: profile.injected, profileDropped: profile.dropped,
+    ...(project ? { projectFacts: project.facts, projectInjected: project.injected, projectDropped: project.dropped } : {}),
+    dropRule: SESSION_DROP_RULE, storeScope: STORE_SCOPE,
+  });
   emit({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: ctx } });
 }
 
@@ -473,6 +538,7 @@ function pruneUsageEvents(file) {
 }
 
 // ---------------------------------------------- the server's actual --index-budget
+// (and, since J50-1, the server's actual store pin — the walk below is shared by both)
 // `Memory.layered(cwd)` opens the project store at DEFAULT_INDEX_BUDGET unless told
 // otherwise, and the MCP server honours `--index-budget N` (`runtime-ts/src/cli.ts:123-130`).
 // A RUNNING server never writes that number down anywhere: `MemoryStore` keeps `indexBudget`
@@ -567,6 +633,19 @@ function indexBudgetFromArgs(args) {
  * that won, or is `null` when none did, so the log says WHICH file the number came from.
  */
 function configuredIndexBudget(cwd) {
+  const { entry, scope } = winningRegistration(cwd);
+  return entry ? { budget: indexBudgetFromArgs(entry.args), scope } : { budget: undefined, scope: null };
+}
+
+/**
+ * The `bantamkit` registration entry a session in `cwd` actually launched, and the scope it
+ * came from — the walk `configuredIndexBudget` has always done, lifted out (J50-1) so that
+ * `env` is read off the SAME entry as `args`. One walk, two fields; a second walk would be
+ * the second place the precedence rule could be got wrong.
+ *
+ * Returns `{ entry, scope }`, both `null` when no scope registers `bantamkit` at all.
+ */
+function winningRegistration(cwd) {
   const repo = path.resolve(cwd);
   const claudeJson = readJsonSafe(path.join(HOME, '.claude.json'));
   const mcpJson = readJsonSafe(path.join(repo, '.mcp.json'));
@@ -578,9 +657,52 @@ function configuredIndexBudget(cwd) {
   ];
   for (const [scope, entry] of scopes) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
-    return { budget: indexBudgetFromArgs(entry.args), scope };
+    return { entry, scope };
   }
-  return { budget: undefined, scope: null };
+  return { entry: null, scope: null };
+}
+
+// ------------------------------------------------ the server's actual store pin (J50-1)
+//
+// `discoverProjectStore`, `resolveProjectStore` and `Memory.layered` — every store the hook
+// binds, in every arm — resolve through `pinnedStore()` in `dist/memory/layers.js`, which
+// reads `process.env.BANTAMKIT_MEMORY_DIR` and outranks the walk. The SERVER sees a
+// registration's `env` because the host merges it into the server's process before spawning
+// it; this hook is spawned by the host too, but from the host's OWN environment, and the
+// registration's `env` never reaches it. So a registration that pins the store had the
+// server saving into the pinned directory while this hook injected from whatever the walk
+// found — from any cwd the walk would not have led to the pin, two different stores.
+//
+// MEASURED LATENT, NOT LIVE, on 2026-09-12: the only pin on this machine is the bantamkit
+// repo's LOCAL-scope entry, and it names the directory the walk finds from that cwd anyway
+// (`.shiftwork/notes-job50/PROBE.md`, B2). The user-scope pin that DID split the two was
+// removed on 2026-09-11. This closes the shape, not one instance of it.
+//
+// THE FIX FEEDS THE ONE RESOLUTION RATHER THAN ADDING A SECOND: the winning entry's value is
+// applied to this process's environment before any arm runs, and the same `pinnedStore()`
+// the server runs then sees the same value. Host merge semantics are what decide the edge
+// cases, and they are `{ ...inherited, ...entry.env }`: a key PRESENT in the winning entry
+// overrides whatever this process inherited (a blank one included — `pinnedStore` already
+// reads blank as "no pin", so the server and the hook then both walk), and a key ABSENT from
+// it leaves the inherited value alone, because that is what the server inherits too. The
+// whole-entry rule applies exactly as it does to `--index-budget`: a winning entry with no
+// `env` means the walk, even when a lower scope pins.
+//
+// NOT DONE HERE, NAMED RATHER THAN HALF-BUILT: the host expands `${VAR}` and `${VAR:-default}`
+// in `.mcp.json` `env` values before spawning the server. A pin written that way reaches
+// `pinnedStore` unexpanded here, and is refused by it as a relative path — loudly, on the
+// log, never silently as the wrong store. No registration on this machine uses the syntax.
+let STORE_SCOPE = null;   // the scope whose entry pinned the store this process binds, for the log
+
+function applyRegistrationStorePin(cwd) {
+  const { entry, scope } = winningRegistration(cwd);
+  const env = entry && entry.env;
+  if (!env || typeof env !== 'object' || Array.isArray(env)) return;
+  if (!Object.prototype.hasOwnProperty.call(env, 'BANTAMKIT_MEMORY_DIR')) return;
+  const value = env.BANTAMKIT_MEMORY_DIR;
+  if (typeof value !== 'string') return;
+  process.env.BANTAMKIT_MEMORY_DIR = value;
+  STORE_SCOPE = value.trim() === '' ? null : scope;
 }
 
 // ---------------------------------------------- PostToolUse memory_save → compact
@@ -810,6 +932,25 @@ function postCompact(input) {
 // user ruled compaction AUTOMATIC (2026-08-24). `postSave` is what that ruling produced, and
 // this arm is the same move for consolidation.
 //
+// AMENDED 2026-09-12 (J50-2A). "THE SAME MOVE" WAS ONE STEP TOO FAR, AND THE USER RULED IT
+// BACK. `postSave` moves facts inside ONE store. This arm moves facts OUT OF THE PROFILE
+// STORE, which is machine-wide, and J45 had bounded exactly that cost by making `dry_run`
+// default to TRUE — a real cross-layer merge was something somebody asked for. Firing the
+// dream from `Stop` with `dry_run=false` made the mitigation stop existing: every session
+// that ends inside a project whose store shares a name with the profile store archived the
+// profile copy, silently, at the end of a turn nobody was watching. Measured on the user's
+// own machine before this amendment: 14 of 20 profile facts in `~/.bantamkit/memory/archive/`,
+// and a restore of 4 consumed again at the very next Stop (`.shiftwork/backlog.md` J49-B1).
+//
+// THE RULING: THE AUTOMATIC TRIGGER RUNS THE DREAM IN DRY-RUN ONLY. It never writes to any
+// store. A real merge stays a deliberate call — the `memory_dream` MCP tool with
+// `dry_run=false`. What the arm keeps is its early-warning value: the log says what a merge
+// WOULD do, once per change to either layer, and a human decides. The accepted cost is
+// stated rather than hidden: duplicates across the two layers now ACCUMULATE until somebody
+// asks. This is not the self-merge of 2026-09-10 (row 13, closed by job47) — that was one
+// directory bound as two layers; this is the designed cross-layer merge (row 5) firing
+// without anyone asking for it. The tool is untouched; the TRIGGER is what changed.
+//
 // THE EVENT IS `Stop`, AND IT IS NOT THE ONE THE ROW NAMED. The row's spec said "run from a
 // `SessionEnd`/cron". Re-derived from the user's own `~/.claude/settings.json` on
 // 2026-09-10, the events that actually reach this hook are
@@ -896,7 +1037,9 @@ function storeFingerprint(roots) {
 }
 
 /**
- * Consolidate, at most once per change to either layer, in a bounded child process.
+ * PREVIEW the consolidation, at most once per change to either layer, in a bounded child
+ * process. Since J50-2A the child runs `dreamOutcome(true)` — a dry run — so nothing this
+ * arm does moves a file; see the amendment in the header above for the ruling and the cost.
  *
  * NOTHING IS EMITTED. `stop` may answer the host with `decision: 'block'`, and two JSON
  * objects on one stdout is not a protocol — so this arm reports only into the hook log.
@@ -908,10 +1051,18 @@ function storeFingerprint(roots) {
  * The child gets `postSave`'s discipline: a `spawnSync` with a timeout, everything logged,
  * and any failure degrading to a log line rather than an exception.
  *
- * WHAT IS LOGGED IS WHAT THE PASS ACTUALLY DID, parsed out of the child's stdout — `status`,
- * `merged`, `consumed`, `changes`, and the index either side. J46-6 measured the cost of the
- * other habit: a log record whose fields are computed BEFORE the spawn is vacuous, and its
- * own first repair of that was itself vacuous for exactly that reason.
+ * WHAT IS LOGGED IS WHAT THE PASS ACTUALLY FOUND, parsed out of the child's stdout — `status`,
+ * `changes`, the index before and projected, and the counts it WOULD merge and consume. J46-6
+ * measured the cost of the other habit: a log record whose fields are computed BEFORE the
+ * spawn is vacuous, and its own first repair of that was itself vacuous for exactly that
+ * reason.
+ *
+ * THE LOG LINE IS A DIFFERENT ACTION WITH DIFFERENT FIELD NAMES, ON PURPOSE. A dry run's line
+ * is `action: 'dream-preview'` carrying `dryRun: true`, `wouldMerge` and `wouldConsume`; the
+ * line a real merge wrote was `action: 'dream'` with `merged` and `consumed`. The log is the
+ * only place a human sees this arm, and "would have merged 14" must never read as "merged 14"
+ * — so the preview carries NO field named `merged` at all, rather than the same field under a
+ * flag a reader could miss.
  */
 async function maybeDream(input) {
   const cwd = input.cwd || process.cwd();
@@ -979,8 +1130,10 @@ async function maybeDream(input) {
   }
   const script = `(async () => {
     const { Memory } = await import(${JSON.stringify(path.join(DIST, 'component.js'))});
-    const o = Memory.layered(process.argv[1]).dreamOutcome(false);
-    process.stdout.write(JSON.stringify({ status: o.status, merged: o.merged, consumed: o.consumed,
+    // DRY RUN, by the ruling of 2026-09-12 (J50-2A). Passing \`false\` here is what archived
+    // the user's profile facts; \`true\` is the J45 default and the only value this arm may pass.
+    const o = Memory.layered(process.argv[1]).dreamOutcome(true);
+    process.stdout.write(JSON.stringify({ status: o.status, dryRun: o.dryRun, merged: o.merged, consumed: o.consumed,
       absolutised: o.absolutised, superseded: o.superseded, changes: o.result ? o.result.changes : 0,
       indexBefore: o.indexBefore, indexAfter: o.indexAfter, budget: o.budget }));
   })().catch((e) => { process.stderr.write(String(e && e.stack || e)); process.exit(1); });`;
@@ -1002,10 +1155,27 @@ async function maybeDream(input) {
       error: `${r.stderr || ''}`.trim().slice(0, 400) || String(r.error && r.error.message || '') });
     return;
   }
-  // The pass may itself have moved files, so the fingerprint recorded is the one AFTER it —
-  // otherwise a merge that changed the store would re-arm the gate and dream again forever.
-  writeJsonSafe(DREAM_STATE, { fingerprint: storeFingerprint(roots), at: new Date().toISOString(), status: outcome.status });
-  log({ event: 'Stop', action: 'dream', ms, ...outcome });
+  // THE MARKER ADVANCES AFTER A DRY RUN, DELIBERATELY. It answers "has either layer changed
+  // since the last look", never "is the store consolidated" — the status it records is the
+  // pass's own (`previewed`, `nothing-to-consolidate`, ...), so a preview cannot mark anything
+  // as merged. NOT advancing it would spawn a child on every Stop for as long as one duplicate
+  // exists, which is the every-turn cost the header rules out; advancing it keeps the cadence
+  // the arm always had — one report per change to either layer — and the deliberate
+  // `memory_dream` merge that finally consumes the duplicate moves a file, so it re-arms the
+  // gate by itself and the next Stop reports the store clean.
+  //
+  // The fingerprint is still recomputed AFTER the pass, as it was when the pass could move
+  // files. For a dry run the two numbers must be equal, and `storeMoved` on the log line says
+  // whether they were: a preview that moved anything is the bug this unit closed, come back.
+  const after = storeFingerprint(roots);
+  writeJsonSafe(DREAM_STATE, { fingerprint: after, at: new Date().toISOString(), status: outcome.status, dryRun: true });
+  log({
+    event: 'Stop', action: 'dream-preview', ms, dryRun: true, status: outcome.status,
+    wouldMerge: outcome.merged, wouldConsume: outcome.consumed,
+    wouldAbsolutise: outcome.absolutised, wouldSupersede: outcome.superseded,
+    changes: outcome.changes, indexBefore: outcome.indexBefore, indexProjected: outcome.indexAfter,
+    budget: outcome.budget, storeMoved: after !== fingerprint,
+  });
 }
 
 // -------------------------------------------------------------------------- Stop
@@ -1040,6 +1210,10 @@ async function main() {
   let input = {};
   try { input = JSON.parse(raw || '{}'); } catch { log({ event: 'parse-error', raw: raw.slice(0, 200) }); return; }
   const ev = input.hook_event_name;
+  // Before ANY arm binds a store: the winning registration's `BANTAMKIT_MEMORY_DIR`, applied
+  // to this process so `pinnedStore()` sees what the server sees (J50-1). Two small file
+  // reads, measured at 0.6 ms on this machine's 164 kB `~/.claude.json`.
+  applyRegistrationStorePin(input.cwd || process.cwd());
   switch (ev) {
     case 'SessionStart': return sessionStart(input);
     case 'UserPromptSubmit': return userPromptSubmit(input);
