@@ -11,7 +11,7 @@
 // injection to the host's own transcript for the SAME session and asks whether any injected
 // name was afterwards passed to `memory_recall` or written back by the assistant.
 //
-// HISTORY STARTS THE DAY THE NEW HOOK RECORD SHIPS. The 487 injection records written before
+// HISTORY STARTS THE DAY THE NEW HOOK RECORD SHIPS. The 488 injection records written before
 // it carry `hits` and `bytes` only: no names, no scores, and no `session`, so they cannot even
 // be matched to a transcript. There is no retroactive baseline and no honest way to build one,
 // so this tool counts only records carrying `injected[]` and says so on every run.

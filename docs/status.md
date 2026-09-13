@@ -40,6 +40,11 @@ surface rather than an addition to an existing list.
 
 Exactly five lines when healthy, `\n`-joined, no trailing newline:
 
+*(Captured from a live run at `0.32.1`, the version current when J50-16A regenerated this
+sample. The schema below is unchanged by the 0.33.0 release that follows it — only the
+version and build-digest bytes on line 2 would differ in a fresh capture — so the sample is
+left as a dated transcript rather than hand-edited to a number nobody ran.)*
+
 ```
 bantamkit Active 🟢
 version 0.32.1, build sha256:bcf716f32e0b461383a30ed1539843f309b1eb00621f1d4d663440c605d3d685
