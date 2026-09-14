@@ -30,6 +30,7 @@ from bantamkit.memory.layers import (
     resolve_project_store,
 )
 from bantamkit.memory.store import (
+    BANTAMKIT_GITIGNORE_TEXT,
     DEFAULT_INDEX_BUDGET,
     INDEX_PRESSURE_PERCENT,
     RECALL_MIN_SCORE_RATIO,
@@ -40,5 +41,6 @@ from bantamkit.memory.store import (
     MemoryStore,
     MemoryValidationError,
     SaveResult,
+    ensure_bantamkit_gitignore,
     undegraded_index_ceiling,
 )

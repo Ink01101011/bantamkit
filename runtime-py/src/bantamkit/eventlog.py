@@ -69,6 +69,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from bantamkit.memory.store import ensure_bantamkit_gitignore
+
 #: Environment switch. Unset or `off`/`0`/`false`/`no`/empty -> disabled. `on`/`1`/
 #: `true`/`yes` -> the default file inside the memory store. Anything else is taken as
 #: the literal path of the log file.
@@ -277,6 +279,17 @@ class EventLog:
         """
         assert self.path is not None
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # AUDIT FINDING (J51-1): this `mkdir(parents=True)` can bring a whole `.bantamkit`
+        # directory into existence on its own -- `BANTAMKIT_EVENT_LOG=on` with a project
+        # store that was never saved to reaches here first -- entirely bypassing
+        # `MemoryStore._ensure_dirs`, which is the only other place a `.bantamkit`
+        # directory gets created. Without this call a store built that way would never get
+        # its self-ignoring `.gitignore`. Cheap and idempotent: a no-op unless one of
+        # `self.path`'s ancestors is literally named `.bantamkit`.
+        for parent in self.path.parents:
+            if parent.name == ".bantamkit":
+                ensure_bantamkit_gitignore(parent)
+                break
         try:
             size = self.path.stat().st_size
         except FileNotFoundError:

@@ -252,6 +252,54 @@ def _mtime_date(path: Path) -> str:
     return date.fromtimestamp(path.stat().st_mtime).isoformat()
 
 
+# The exact bytes written into a `.bantamkit/.gitignore` the first time such a directory
+# is brought into existence (user ruling 2026-09-15, `.shiftwork/notes-job51/P0-probes.md`).
+# Both runtimes hold this text byte-for-byte -- a conformance case pins it against this
+# literal -- so it is spelled once, here, rather than re-typed at each call site.
+BANTAMKIT_GITIGNORE_TEXT = (
+    "# Created by bantamkit: this directory is local state. Delete this file to commit it.\n"
+    "*\n"
+)
+
+
+def ensure_bantamkit_gitignore(directory: Path) -> None:
+    """Best-effort, idempotent: give `directory` a self-ignoring `.gitignore` if it is
+    literally named `.bantamkit` and does not already have one.
+
+    THE PROPERTY, not the mechanism: whenever a `.bantamkit` directory is brought into
+    existence -- by `MemoryStore._ensure_dirs`, or by anything else in this runtime that
+    creates one, such as `EventLog._append`'s own `mkdir` when the event log is on and
+    the project store was never saved to -- this is the one place that decides whether it
+    gets ignored. A second creator that skipped this call would leave a `.bantamkit` that
+    git can see, which is the whole bug this closes (`P0-probes.md`, user ruling 3).
+
+    NEVER REWRITES. A `.gitignore` that already exists -- whatever its bytes -- is left
+    exactly as it is: an operator who deleted it to commit the directory on purpose, or
+    edited it, keeps that decision on every later call. Checked by existence, not content,
+    so this never diffs its own output against what is on disk.
+
+    NEVER RAISES. Failing to write the ignore file must never be why a fact does not get
+    saved -- the parent write (`save`, `compact`, an event record) still has to succeed
+    exactly as it does today. A missing ignore file is not worth a lost fact, so an
+    unwritable filesystem, a permissions error, or the directory disappearing under this
+    call are all swallowed the same way `EventLog.record` already swallows its own
+    `OSError`.
+
+    NEVER CREATES `directory` ITSELF. `write_text` fails into a missing parent exactly
+    like any other `OSError` here, so calling this before `directory` exists is a no-op,
+    not a way to bring `.bantamkit` into existence early.
+    """
+    if directory.name != ".bantamkit":
+        return
+    gitignore = directory / ".gitignore"
+    if gitignore.exists():
+        return
+    try:
+        gitignore.write_text(BANTAMKIT_GITIGNORE_TEXT, encoding="utf-8")
+    except OSError:
+        pass
+
+
 class MemoryStore:
     def __init__(
         self,
@@ -349,6 +397,7 @@ class MemoryStore:
                 f"memory store could not be created: {self.root}; the directory is not"
                 " there and this filesystem would not make it, so nothing was written"
             ) from e
+        ensure_bantamkit_gitignore(self.root.parent)
 
     # ---- ops ----
 
