@@ -4,8 +4,35 @@
  * cache that has never seen it, to a client that speaks real MCP?
  *
  *   node tools/conformance/npx-cold-start.mjs            # the gate: pack, cold, warm, PATH
- *   node tools/conformance/npx-cold-start.mjs --offline  # + the no-registry probe (~150 s)
+ *   node tools/conformance/npx-cold-start.mjs --offline  # + 6 no-network arms below (~4-5 min)
  *   node tools/conformance/npx-cold-start.mjs --keep     # leave the scratch tree behind
+ *
+ * `--offline` REPORTS six arms, all cut from the same packed tarball (never a registry
+ * download), all REPORTED and never asserted -- they are properties of the machine and the
+ * network, not of this package:
+ *   0. no-registry probe (pre-existing): a fresh cache pointed at a dead registry URL.
+ *   1. warm cache, network cut, `npx -y <spec>`            -- the job51 prep probe measured a
+ *      SILENT HANG here for a bare registry spec (`bantamkit-mcp@0.33.0`); this harness always
+ *      resolves `--package=<the packed tarball's absolute path>` (see the WHY section above),
+ *      which is a local-file spec npx can serve from cache without any registry check at all --
+ *      so this arm may legitimately come back OK instead of hanging, and reports whichever it
+ *      measures rather than assuming the probe's registry-spec finding transfers.
+ *   2. warm cache, network cut, `npx --offline -y <spec>`  -- expect OK, served from cache.
+ *   3. cold cache, `npx --offline -y <spec>`                -- expect npm's own cache-miss error.
+ *   4. a kept install (`npm install --prefix <dir> <tarball>`, one-time, online) launched as
+ *      `<abs node> <dir>/node_modules/bantamkit-mcp/dist/cli.js` under a login-less PATH, with
+ *      the network cut.
+ *   5. the same kept install launched through `node_modules/.bin/bantamkit-mcp` under that PATH
+ *      -- expect EXITED(127) on macOS/Linux (the shebang's `env node` cannot find `node`).
+ *
+ * THE CACHE-KEY TRAP: pointing `npm_config_registry` at a dead port (arm 0's method, and the
+ * job51 prep probe's first attempt) makes npm key its cache lookup against that URL, so a WARM
+ * cache silently measures as a COLD one -- a warm-cache arm built that way is invalid. Arms 1
+ * and 2 cut the network instead with `npm_config_proxy` / `npm_config_https_proxy` at a closed
+ * port: npm still resolves the real registry URL for its cache key, the TCP connect to the
+ * proxy fails immediately, and the warm cache stays warm. See
+ * `.shiftwork/notes-job51/P0-probes.md` for the discarded method and the numbers this file's
+ * arms were designed to reproduce.
  *
  * WHY THIS IS NOT `npm install`, AND WHY IT IS NOT THE CONFORMANCE SUITE EITHER
  * -----------------------------------------------------------------------------
@@ -172,7 +199,17 @@ const callTool = (id, name, args) => rpc(id, 'tools/call', { name, arguments: ar
  * well as to the last, because those are different numbers on a cold cache and only the
  * first one is the user-visible startup.
  */
-function npxSession({ lines, cache, home, cwd, registry = null, extraEnv = {}, timeoutMs = 180_000, cliArgs = [] }) {
+function npxSession({
+  lines,
+  cache,
+  home,
+  cwd,
+  registry = null,
+  extraEnv = {},
+  timeoutMs = 180_000,
+  cliArgs = [],
+  npxFlags = [],
+}) {
   return new Promise((resolve) => {
     const env = { ...process.env, HOME: home, USERPROFILE: home, npm_config_cache: cache, ...extraEnv };
     if (registry !== null) env.npm_config_registry = registry;
@@ -182,7 +219,7 @@ function npxSession({ lines, cache, home, cwd, registry = null, extraEnv = {}, t
 
     const started = process.hrtime.bigint();
     let firstFrameAt = null;
-    const child = spawn('npx', ['-y', `--package=${tarball}`, 'bantamkit-mcp', ...cliArgs], {
+    const child = spawn('npx', [...npxFlags, '-y', `--package=${tarball}`, 'bantamkit-mcp', ...cliArgs], {
       cwd,
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -273,6 +310,80 @@ function npxSession({ lines, cache, home, cwd, registry = null, extraEnv = {}, t
         }
       }
     })();
+  });
+}
+
+/**
+ * A session against a direct command (no `npx` in the middle) — the kept-install arms launch
+ * `node cli.js` or the `.bin` shim straight. There is no install prompt to dodge here, so unlike
+ * `npxSession` this writes the whole script and closes stdin immediately: the server (per
+ * `runtime-ts/src/cli.ts`) treats stdin EOF as "the host has gone" and shuts down once it has
+ * answered, which is exactly the signal that lets this resolve without a fixed sleep.
+ */
+function directSession({ cmd, args, env, cwd, timeoutMs = 20_000 }) {
+  return new Promise((resolve) => {
+    const started = process.hrtime.bigint();
+    let firstFrameAt = null;
+    let child;
+    try {
+      child = spawn(cmd, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    } catch (e) {
+      resolve({
+        frames: [],
+        trailing: '',
+        stderr: '',
+        exit: null,
+        spawnError: e.message,
+        timedOut: false,
+        msToFirstFrame: null,
+        msTotal: 0,
+      });
+      return;
+    }
+    let out = '';
+    let err = '';
+    const frames = [];
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
+    }, timeoutMs);
+    child.stdout.on('data', (chunk) => {
+      if (firstFrameAt === null) firstFrameAt = process.hrtime.bigint();
+      out += chunk.toString('utf8');
+      let at;
+      while ((at = out.indexOf('\n')) !== -1) {
+        frames.push(out.slice(0, at));
+        out = out.slice(at + 1);
+      }
+    });
+    child.stderr.on('data', (c) => {
+      err += c.toString('utf8');
+    });
+    const finish = (exit, spawnError) => {
+      clearTimeout(timer);
+      const ended = process.hrtime.bigint();
+      resolve({
+        frames,
+        trailing: out,
+        stderr: err,
+        exit,
+        spawnError,
+        timedOut,
+        msToFirstFrame: firstFrameAt === null ? null : Number(firstFrameAt - started) / 1e6,
+        msTotal: Number(ended - started) / 1e6,
+      });
+    };
+    child.on('close', (code) => finish(code, null));
+    child.on('error', (e) => finish(null, e.message));
+    try {
+      child.stdin.write(`${INIT}\n`);
+      child.stdin.write(`${INITIALIZED}\n`);
+      child.stdin.write(`${rpc(2, 'tools/list')}\n`);
+      child.stdin.end();
+    } catch {
+      /* the child died before or during the write; `close`/`error` resolves with what came back */
+    }
   });
 }
 
@@ -506,8 +617,115 @@ if (wantOffline) {
       '  An MCP host sees a server that accepted the launch and never answered `initialize` —\n' +
       '  a handshake timeout, whose message names the host\'s timeout and not the network.',
   );
+
+  // Cuts the network without touching npm's cache key — see the header comment and
+  // `.shiftwork/notes-job51/P0-probes.md` for why `npm_config_registry` cannot be used here.
+  const NETWORK_CUT = { npm_config_proxy: 'http://127.0.0.1:1', npm_config_https_proxy: 'http://127.0.0.1:1' };
+  const GUI_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+
+  // --- arm 1: warm cache, network cut, `npx -y` --------------------------------------------
+  // `cold.cache` is already warm from THIS tarball: sections 1 and 6 above populated it via
+  // the same `--package=<tarball>` spec, never the registry.
+  console.log('\n[offline] warm cache, network cut: does `npx -y` actually hang? (bounded to 45 s)');
+  const warmCut1 = world('offline-warm-cut-1');
+  const r1 = await npxSession({
+    lines: SESSION_LINES,
+    home: warmCut1.home,
+    cwd: warmCut1.cwd,
+    cache: cold.cache,
+    extraEnv: NETWORK_CUT,
+    timeoutMs: 45_000,
+  });
+  const r1Bytes = r1.frames.join('\n').length + r1.trailing.length;
+  console.log(
+    `  outcome : ${
+      r1.timedOut
+        ? `timed out after ${(r1.msTotal / 1000).toFixed(2)} s — SILENT HANG (the README's warm-cache claim is false on this npm)`
+        : `${r1.exit === 0 ? 'OK' : `EXITED(${r1.exit})`} in ${(r1.msTotal / 1000).toFixed(2)} s`
+    }`,
+  );
+  console.log(`  stdout bytes : ${r1Bytes}`);
+  if (!r1.timedOut) {
+    console.log(
+      '  NOTE: this did NOT hang. The prep probe\'s hang was for a bare registry spec\n' +
+        "      (`bantamkit-mcp@0.33.0`); this harness's `--package=<tarball>` is a local-file\n" +
+        '      spec, which npx can apparently serve from cache without a registry round trip.\n' +
+        '      That is a real difference in what this arm can show, not a fix.',
+    );
+  }
+
+  // --- arm 2: warm cache, network cut, `npx --offline -y` (the fix) ------------------------
+  console.log('\n[offline] warm cache, network cut: `npx --offline -y` (the fix)');
+  const warmCut2 = world('offline-warm-cut-2');
+  const r2 = await npxSession({
+    lines: SESSION_LINES,
+    home: warmCut2.home,
+    cwd: warmCut2.cwd,
+    cache: cold.cache,
+    extraEnv: NETWORK_CUT,
+    timeoutMs: 30_000,
+    npxFlags: ['--offline'],
+  });
+  console.log(
+    `  outcome : ${r2.timedOut ? `TIMEOUT after ${(r2.msTotal / 1000).toFixed(2)} s` : `${r2.exit === 0 ? 'OK' : `EXITED(${r2.exit})`} in ${(r2.msTotal / 1000).toFixed(2)} s`}`,
+  );
+  const r2Tools = (parsedById(r2).get(2)?.result?.tools ?? []).map((t) => t.name);
+  console.log(`  tools served : ${r2Tools.length}`);
+
+  // --- arm 3: cold cache, `npx --offline -y` ------------------------------------------------
+  console.log('\n[offline] cold cache: `npx --offline -y` (never warmed, and told not to try the network)');
+  const cold3 = world('offline-cold-offline');
+  const r3 = await npxSession({
+    lines: SESSION_LINES,
+    home: cold3.home,
+    cwd: cold3.cwd,
+    cache: cold3.cache,
+    timeoutMs: 30_000,
+    npxFlags: ['--offline'],
+  });
+  console.log(`  outcome : ${r3.exit === 0 ? 'OK' : `EXITED(${r3.exit})`} in ${(r3.msTotal / 1000).toFixed(2)} s`);
+  console.log(`  npm's error line : ${(r3.stderr ?? '').trim().split('\n').slice(0, 2).join(' | ') || '(none)'}`);
+
+  // --- arm 4 & 5: a kept install, launched two ways -----------------------------------------
+  console.log('\n[offline] a kept install: `npm install --prefix <scratch>/kept <tarball>` (one-time, online)');
+  const keptDir = join(bed, 'kept', 'install');
+  const keptHome = join(bed, 'kept', 'home');
+  const keptCwd = join(bed, 'kept', 'project');
+  for (const d of [keptDir, keptHome, keptCwd]) mkdirSync(d, { recursive: true });
+  const installStarted = process.hrtime.bigint();
+  const keptInstall = spawnSync('npm', ['install', '--prefix', keptDir, tarball], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    env: process.env,
+  });
+  const installWall = Number(process.hrtime.bigint() - installStarted) / 1e9;
+  console.log(`  npm install result : ${keptInstall.status === 0 ? 'OK' : `FAILED(${keptInstall.status})`} in ${installWall.toFixed(2)} s`);
+  if (keptInstall.status !== 0) {
+    console.log(`      ${(keptInstall.stderr ?? '').trim().split('\n').slice(0, 4).join('\n      ')}`);
+  }
+
+  const launchEnv = { ...process.env, HOME: keptHome, USERPROFILE: keptHome, PATH: GUI_PATH, ...NETWORK_CUT };
+  delete launchEnv.BANTAMKIT_MEMORY_DIR;
+  delete launchEnv.BANTAMKIT_ASSETS;
+  const keptCliJs = join(keptDir, 'node_modules', pkg.name, 'dist', 'cli.js');
+
+  console.log('\n[offline] that kept install launched as `<abs node> cli.js`, network cut, login-less PATH');
+  const keptDirect = await directSession({ cmd: process.execPath, args: [keptCliJs], env: launchEnv, cwd: keptCwd, timeoutMs: 20_000 });
+  const keptTools = (parsedById(keptDirect).get(2)?.result?.tools ?? []).map((t) => t.name);
+  console.log(
+    `  outcome : ${keptDirect.timedOut ? `TIMEOUT after ${(keptDirect.msTotal / 1000).toFixed(2)} s` : `${keptTools.length > 0 ? 'OK' : `EXITED(${keptDirect.exit})`} in ${(keptDirect.msTotal / 1000).toFixed(2)} s`}`,
+  );
+  console.log(`  tools served : ${keptTools.length}`);
+
+  console.log('\n[offline] the same kept install through `node_modules/.bin/bantamkit-mcp`, same PATH');
+  const keptBin = join(keptDir, 'node_modules', '.bin', 'bantamkit-mcp');
+  const keptBinRun = await directSession({ cmd: keptBin, args: [], env: launchEnv, cwd: keptCwd, timeoutMs: 10_000 });
+  console.log(
+    `  outcome : ${keptBinRun.timedOut ? `TIMEOUT after ${(keptBinRun.msTotal / 1000).toFixed(2)} s` : keptBinRun.spawnError ? `SPAWN_ERROR ${keptBinRun.spawnError}` : `EXITED(${keptBinRun.exit})`} in ${(keptBinRun.msTotal / 1000).toFixed(2)} s`,
+  );
+  console.log(`  stderr : ${(keptBinRun.stderr ?? '').trim().split('\n')[0] || '(none)'}`);
 } else {
-  console.log('\n[offline] skipped — pass --offline to measure it (takes ~2.5 minutes)');
+  console.log('\n[offline] skipped — pass --offline to measure it (takes ~4-5 minutes)');
 }
 
 // -------------------------------------------------------------------------- the verdict
