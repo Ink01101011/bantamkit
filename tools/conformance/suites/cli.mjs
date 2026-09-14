@@ -37,7 +37,20 @@
  * without the scrub a developer's terminal size would be an input to a conformance result.
  */
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -158,7 +171,9 @@ function runNode(spec) {
     if (value === null) delete env[key];
     else env[key] = String(value);
   }
-  const r = spawnSync(process.execPath, [CLI, ...(spec.argv ?? [])], {
+  // `spec.cli` is J51-6's: a copy of this build laid out as an `npx` cache, so the port's
+  // `currentInstall()` derives a shape a checkout never can. Every other spec runs `CLI`.
+  const r = spawnSync(process.execPath, [spec.cli ?? CLI, ...(spec.argv ?? [])], {
     // `''` — a pipe already at EOF — unless the case feeds it real frames. See the `stdin`
     // note in `cli_ref.py`: an empty pipe shows that a server STARTED, never that it answered.
     input: spec.stdin ?? '',
@@ -323,8 +338,10 @@ function assetsRootCases(label, py, node, ruling) {
 /**
  * `--install <host>`, decomposed, because exactly one LINE of its stdout is not comparable.
  *
- * The two runtimes register DIFFERENT commands on purpose — this side records
- * `npx -y bantamkit-mcp`, the reference its own console script — so the `  command: ` line
+ * The two runtimes register DIFFERENT commands on purpose — each records ITSELF by absolute
+ * path: this side `<absolute node> <absolute dist/cli.js>` (since J51-4; it was
+ * `npx -y bantamkit-mcp` before, which hangs silently offline), the reference its own console
+ * script or `<python> -m bantamkit.mcpserver` — so the `  command: ` line
  * is ruled and every other line is compared like anything else. That split is the same one
  * `assetsRootCases` makes and for the same reason: a whole-stdout ruling would swallow the
  * file, the key, the backup line and the exit code along with the command.
@@ -428,11 +445,31 @@ function installCases(label, py, node, home, ruling, stderrRuling = null) {
 }
 
 const INSTALL_RULING =
-  'the two runtimes register DIFFERENT commands, by construction: this side writes ' +
-  '`npx -y bantamkit-mcp` and the reference writes its own console script, because the thing ' +
-  'installed must be the thing that answers and neither side may send a host looking for the ' +
-  "other's runtime. Only the `  command: ` line differs; the companion case beside this one " +
-  'compares every other byte of the report.';
+  'the two runtimes register DIFFERENT commands, by construction: each records ITSELF by ' +
+  'absolute path — this side `<absolute node> <absolute dist/cli.js>` and the reference its ' +
+  'own console script (or `<python> -m bantamkit.mcpserver`) — because the thing installed ' +
+  "must be the thing that answers and neither side may send a host looking for the other's " +
+  'runtime. Only the `  command: ` line differs; the companion case beside this one compares ' +
+  'every other byte of the report.';
+
+const KEPT_INSTALL_RULING =
+  'RULED DIFFERENT, and carried in `docs/porting.md` (J51-4). From an `npx` cache the port ' +
+  'does not record the cache it is running in — npm may discard it, and `npx -y bantamkit-mcp` ' +
+  'hangs silently with the network cut — it records the KEPT install at ' +
+  '`<homedir>/.bantamkit/mcp`, launched as `<absolute node> <kept dist/cli.js>`, and here that ' +
+  'install already reports this version so npm is never run. The reference never derives ' +
+  '`ephemeral` (AS-7a), so it records its own console script exactly as it does anywhere. ' +
+  'Only the `  command: ` line differs: every other byte, stderr and the exit code are ' +
+  'compared unruled beside this, and the port line is pinned against a literal.';
+
+const UNDETERMINED_INSTALL_RULING =
+  'RULED DIFFERENT, and carried in `docs/porting.md` (J51-4). A port whose install shape cannot ' +
+  'be derived — here a `git+https` origin in the lockfile — REFUSES `--install`: which copy a ' +
+  'host should launch depends on the shape (an `npx` cache means the kept install), and ' +
+  'recording one anyway would be a guess. The reference does not consult the shape to register ' +
+  'itself — it records the console script it is running as — so it writes the entry. This is a ' +
+  'refusal on ONE side, so the refusal bit and the written file are pinned PER SIDE, unruled, ' +
+  'beside this: a ruling only proves the two still differ, never that the port still refuses.';
 
 const PARSE_ERROR_RULING =
   'a config that does not parse is refused by BOTH runtimes, naming the file, and the reason ' +
@@ -466,13 +503,15 @@ const ASSETS_ROOT_RULING =
 // real CLIs on an argv naming the flag and asserts that the EARLIER flag wins and nothing
 // is written, and `bare-at-a-tty` pins per side that the help a person sees names it.
 //
-// WHAT IS NOT COMPARED, said out loud: the dispatch — which stream each outcome lands on
-// and whether the process exits 0 or 1. `runUpdate` takes its install shape from
-// `currentInstall()` with no seam, and this harness does not install its two sides alike,
-// so that comparison would compare two ENVIRONMENTS (the trap `install_ref.py` names). The
-// dispatch's only INPUT — the refusal bit — is compared for every arm below; the stream and
-// the exit code are held per side by `runtime-py/tests/test_selfupdate.py` and
-// `runtime-ts/test/selfupdate.test.mjs`, and the gap is written down in `docs/porting.md`.
+// WHAT WAS NOT COMPARED UNTIL J51-6, kept as the record: the dispatch — which stream each
+// outcome lands on and whether the process exits 0 or 1. `runUpdate` took its install shape
+// from `currentInstall()` with no seam, and this harness does not install its two sides
+// alike, so that comparison would have compared two ENVIRONMENTS (the trap `install_ref.py`
+// names). J51-5 (`01cee52`) gave `runUpdate` an `install` option, so that is no longer true
+// of the port; the reference's `_run_update` is reached by replacing `current_install` for
+// one call, the idiom its own `test_selfupdate.py` uses. The `update-dispatch/…` block in
+// `run` below drives BOTH dispatchers with the shape handed in, and compares the stream and
+// the exit code across runtimes — including J51-5's kept-install arm, which is ruled.
 
 /** The environment `upgradeCommand` reads on the port. The reference has no counterpart. */
 const NPM_PREFIX_TREE = { root: '/opt/x', global: false };
@@ -708,6 +747,115 @@ async function nodeUpdateAnswers(ctx, arms, pairs) {
   };
 }
 
+/**
+ * `--update`'s DISPATCH arms: `runUpdate` against `_run_update`, the shape handed in on both.
+ *
+ * `full` marks an arm with no ruled sentence in it, compared byte for byte. The rest carry a
+ * ruled command or route and are compared on the stream and the exit code only — their words
+ * are already compared, ruled and unruled, in the `update/…` block. `keptVersion` seeds a kept
+ * install under BOTH sides' HOME; the running version (`installed`) is deliberately different
+ * from it so a report naming the wrong one is visible.
+ */
+const DISPATCH_ARMS = [
+  { id: 'up-to-date', installed: '0.30.0', shape: 'registry', latest: '0.30.0', full: true },
+  { id: 'behind', installed: '0.30.0', shape: 'registry', latest: '0.31.0', installer: { code: 0, output: 'added 1 package\n' } },
+  { id: 'behind-installer-failed', installed: '0.30.0', shape: 'registry', latest: '0.31.0', installer: { code: 7, output: 'ERR! EACCES\n' } },
+  { id: 'offline-unreachable', installed: '0.30.0', shape: 'registry', raise: 'unreachable', reason: 'getaddrinfo ENOTFOUND registry', full: true },
+  { id: 'route-checkout', installed: '0.30.0', shape: 'checkout', source: '/home/me/src/bantamkit', latest: '0.31.0' },
+  { id: 'undetermined', installed: '0.30.0', undetermined: 'its origin is a git URL', full: true },
+  { id: 'ephemeral-no-kept-install', installed: '0.29.0', shape: 'ephemeral', source: '/home/me/.npm/_npx/abc', latest: '0.31.0' },
+  {
+    id: 'ephemeral-with-a-kept-install',
+    installed: '0.29.0', shape: 'ephemeral', source: '/home/me/.npm/_npx/abc', latest: '0.31.0',
+    keptVersion: '0.30.0', installer: { code: 0, output: 'added 1 package\n' },
+  },
+];
+const KEPT_DISPATCH_ARM = 'ephemeral-with-a-kept-install';
+
+const UPDATE_KEPT_RULING =
+  'RULED DIFFERENT, and carried in `docs/porting.md` (J51-5, extending the AS-7b `ephemeral` ' +
+  'row). From an `npx` cache there is nothing to update in place, but since J51-4 a host does ' +
+  'not launch the cache: `--install` recorded the kept install at `<homedir>/.bantamkit/mcp`. ' +
+  'So when that install exists — a manifest with a version, and npm’s `package.json` at the ' +
+  'prefix — the port’s `--update` updates IT through the registry route: its version is the ' +
+  'one compared, `npm install --prefix <kept> bantamkit-mcp@latest` is the command, exit 0. ' +
+  'The reference never derives `ephemeral` and has no kept install, so handed that shape it ' +
+  'refuses exactly as it does without one. Unruled beside this: the report is the registry ' +
+  'route’s line for line against the reference, the reference’s answer does not move with ' +
+  'the kept install in HOME, and the exit codes are pinned per side.';
+
+/** The port's whole stdout on the kept-install arm, HOME masked. Typed, not captured. */
+const KEPT_UPDATE_REPORT = [
+  'bantamkit-mcp 0.30.0 is installed; the package index has 0.31.0.',
+  `updating from the package index: npm install --prefix ${join('<HOME>', '.bantamkit', 'mcp')} bantamkit-mcp@latest`,
+  'the command printed:',
+  'added 1 package',
+  'updated bantamkit-mcp from 0.30.0 to 0.31.0.',
+  'restart the server: a running bantamkit-mcp keeps serving the code it loaded at startup, ' +
+    'so bantamkit_status will report 0.30.0 until the host reconnects.',
+  '',
+].join('\n');
+
+/**
+ * The port's half of the dispatch arms: `runUpdate` with its writers, `install`, `fetch`,
+ * `installer` and `environment` handed in, and HOME/USERPROFILE at the arm's home for the call.
+ *
+ * HOME IS PUT BACK IN A `finally`: `keptInstall()` reads `homedir()` at call time, so an arm
+ * that leaked its HOME would have every later `homedir()` in this process — and the next arm —
+ * reading a scratch directory. A missing module is data, as in `nodeUpdateAnswers`.
+ */
+async function nodeDispatchAnswers(ctx, arms, homes) {
+  let su;
+  let identity;
+  try {
+    su = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'selfupdate.js')).href);
+    identity = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'mcp', 'identity.js')).href);
+  } catch (e) {
+    const gone = `THE PORT HAS NO --update DISPATCH: ${e.message}`;
+    return Object.fromEntries(arms.map((a) => [a.id, { exit: null, stdout: '', stderr: gone, command: null, homeFollowed: null }]));
+  }
+  const previous = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  const answers = {};
+  try {
+    for (const arm of arms) {
+      const home = homes[arm.id].node;
+      process.env.HOME = home;
+      process.env.USERPROFILE = home;
+      const seen = { command: null };
+      let stdout = '';
+      let stderr = '';
+      const exit = await su.runUpdate(
+        (t) => { stdout += t; },
+        (t) => { stderr += t; },
+        String(arm.installed),
+        '/pkg',
+        {
+          environment: NPM_PREFIX_TREE,
+          install: () => {
+            if (arm.undetermined !== undefined) throw new identity.Undetermined(arm.undetermined);
+            return { shape: arm.shape, source: arm.source ?? null };
+          },
+          fetch: (_url, _timeout) => {
+            if (arm.raise === 'unreachable') throw new Error(arm.reason ?? 'unreachable');
+            return JSON.stringify({ version: String(arm.latest) });
+          },
+          installer: (command) => {
+            seen.command = su.shlexJoin(command);
+            return [Number(arm.installer?.code ?? 0), String(arm.installer?.output ?? '')];
+          },
+        },
+      );
+      answers[arm.id] = { exit, stdout, stderr, command: seen.command, homeFollowed: homedir() === home };
+    }
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+  return answers;
+}
+
 /** The lines of one report that name the installer command, and everything else. */
 function splitOnCommand(text, command) {
   const lines = text.split('\n');
@@ -769,6 +917,150 @@ function installSandbox(scratch, name, seed = null) {
     sideEnv: { py: { HOME: py, USERPROFILE: py }, node: { HOME: node, USERPROFILE: node } },
     homes: { py, node },
   };
+}
+
+/** The version this build of the port reports, read the way `cli.ts`'s `version()` reads it. */
+const PORT_VERSION = JSON.parse(readFileSync(join(repoRoot, 'runtime-ts', 'package.json'), 'utf8')).version;
+
+/** What the harness writes into a seeded kept `cli.js`, so a reinstall over it is visible. */
+const SEEDED_KEPT_CLI = '// seeded by the conformance harness; npm never wrote this\n';
+
+/** `<home>/.bantamkit/mcp`, spelled as `npminstall.keptPrefix` spells it. */
+const keptPrefixUnder = (home) => join(home, '.bantamkit', 'mcp');
+const keptCliUnder = (home) => join(keptPrefixUnder(home), 'node_modules', 'bantamkit-mcp', 'dist', 'cli.js');
+
+/**
+ * A kept install as `npm install --prefix` leaves one: npm's own `package.json` at the prefix
+ * (without it `installEnvironment` reads the global tree and J51-5 ignores the install), the
+ * package manifest reporting `version`, and a `dist/cli.js`. Nothing here is runnable and
+ * nothing needs to be: both flags only READ it.
+ */
+function seedKeptInstall(home, version) {
+  const prefix = keptPrefixUnder(home);
+  const cli = keptCliUnder(home);
+  mkdirSync(dirname(cli), { recursive: true });
+  writeFileSync(join(prefix, 'package.json'), `${JSON.stringify({ dependencies: { 'bantamkit-mcp': `^${version}` } })}\n`);
+  writeFileSync(join(dirname(dirname(cli)), 'package.json'), `${JSON.stringify({ name: 'bantamkit-mcp', version })}\n`);
+  writeFileSync(cli, SEEDED_KEPT_CLI);
+}
+
+/**
+ * THIS BUILD, LAID OUT AS AN `npx` CACHE — so the port's `currentInstall()` derives what a
+ * checkout never can — plus a home per side with a kept install already at this version.
+ *
+ * WHY A COPY AND NOT A SEAM. `--install` is a process surface and the shape it acts on is read
+ * off the running file's own location (`deriveInstall(import.meta.url)`), with deliberately no
+ * environment variable to override it. So the port is RUN from where an npx cache would put
+ * it: `<project>/node_modules/bantamkit-mcp/{package.json,dist}` with the `_npx` marker in the
+ * project's `package.json` and npm's hidden lockfile recording `resolved`. `dist/` is copied,
+ * not linked, because Node realpaths the main module and a link would report the checkout.
+ * Its runtime dependencies are reached through ONE directory link to `runtime-ts/node_modules`
+ * (`'junction'` so the same call works on Windows without the symlink privilege).
+ *
+ * `resolved` picks the arm: an https tarball URL is `registry` origin inside an npx project, so
+ * `ephemeral`; a `git+https` URL is neither, so the shape is undeterminable.
+ *
+ * NO NETWORK ON EITHER ARM, and the port is kept from reaching it even if this seed stopped
+ * matching: its side runs with `npm_config_offline=true`, and the seeded `cli.js` carries a
+ * marker a reinstall would overwrite, which a literal case reads back.
+ */
+function npxCacheSandbox(scratch, name, resolved) {
+  const root = join(scratch, `install-${name}`);
+  rmSync(root, { recursive: true, force: true });
+  const project = join(root, 'npx-project');
+  const pkg = join(project, 'node_modules', 'bantamkit-mcp');
+  mkdirSync(pkg, { recursive: true });
+  cpSync(join(repoRoot, 'runtime-ts', 'dist'), join(pkg, 'dist'), { recursive: true });
+  cpSync(join(repoRoot, 'runtime-ts', 'package.json'), join(pkg, 'package.json'));
+  symlinkSync(join(repoRoot, 'runtime-ts', 'node_modules'), join(pkg, 'node_modules'), 'junction');
+  writeFileSync(
+    join(project, 'package.json'),
+    `${JSON.stringify({ dependencies: { 'bantamkit-mcp': PORT_VERSION }, _npx: { packages: [`bantamkit-mcp@${PORT_VERSION}`] } })}\n`,
+  );
+  writeFileSync(
+    join(project, 'node_modules', '.package-lock.json'),
+    `${JSON.stringify({
+      name: 'npx-project',
+      lockfileVersion: 3,
+      requires: true,
+      packages: { 'node_modules/bantamkit-mcp': { version: PORT_VERSION, resolved } },
+    })}\n`,
+  );
+  const homes = { py: join(root, 'home-py'), node: join(root, 'home-node') };
+  // Seeded IDENTICALLY on both sides: the reference never looks, and that is a measurement
+  // only if it had the same kept install in front of it.
+  for (const home of Object.values(homes)) seedKeptInstall(home, PORT_VERSION);
+  return {
+    cli: join(pkg, 'dist', 'cli.js'),
+    sideEnv: {
+      py: { HOME: homes.py, USERPROFILE: homes.py },
+      node: { HOME: homes.node, USERPROFILE: homes.node, npm_config_offline: 'true' },
+    },
+    homes,
+  };
+}
+
+/**
+ * The `  command: ` line with the three machine facts in it named: this node, this python as
+ * `Path(sys.executable).resolve()` spells it, and the side's HOME. Everything else is the record.
+ */
+function maskedCommandLine(buf, home, python) {
+  const line = dec(buf).split('\n').find((l) => l.startsWith('  command: ')) ?? '';
+  return line.split(process.execPath).join('<NODE>').split(python).join('<PYTHON>').split(home).join('<HOME>');
+}
+
+/** The port's refusal when it cannot derive its own install shape (J51-4, `hostinstall.thisCommand`). */
+const UNDETERMINED_INSTALL_PREFIX =
+  'error: --install could not tell how this install was made, so it will not guess which copy a host should launch: ';
+
+/**
+ * `--install` where the port refuses and the reference writes. `installCases` cannot carry it:
+ * its companion compares the report around the command line, and on this arm one side has a
+ * report and the other has none, so that companion would be red for the ruled reason.
+ */
+function undeterminedInstallCases(spec, py, node, python, origin) {
+  const mask = (buf) => dec(buf).split(spec.homes.py).join('<HOME>').split(spec.homes.node).join('<HOME>');
+  const wrote = (home) => existsSync(join(home, '.cursor', 'mcp.json'));
+  const nodeStderr = dec(node.stderr);
+  return [
+    {
+      name: `${spec.label}/stderr`,
+      kind: 'string',
+      expected: mask(py.stderr),
+      actual: mask(node.stderr),
+      ruling: UNDETERMINED_INSTALL_RULING,
+    },
+    // THE REFUSAL BIT, PER SIDE, against this file. Side to side it differs by the ruling, so
+    // an unruled differential would be red forever; a literal is what goes red if the port
+    // starts writing a guessed entry, or the reference starts refusing.
+    {
+      name: `${spec.label}/PINNED PER SIDE: the refusal bit, and whether the host file was written`,
+      kind: 'json',
+      expected: { python: { refused: false, wroteConfig: true }, node: { refused: true, wroteConfig: false } },
+      actual: {
+        python: { refused: py.exit !== 0, wroteConfig: wrote(spec.homes.py) },
+        node: { refused: node.exit !== 0, wroteConfig: wrote(spec.homes.node) },
+      },
+    },
+    {
+      name: `${spec.label}/PINNED PER SIDE: what each process printed, against this file`,
+      kind: 'json',
+      expected: {
+        python: { exit: 0, stderr: '', command: '  command: <PYTHON> -m bantamkit.mcpserver' },
+        node: { exit: 1, stdout: '', sentence: true, namesTheOrigin: true, oneLine: true },
+      },
+      actual: {
+        python: { exit: py.exit, stderr: dec(py.stderr), command: maskedCommandLine(py.stdout, spec.homes.py, python) },
+        node: {
+          exit: node.exit,
+          stdout: dec(node.stdout),
+          sentence: nodeStderr.startsWith(UNDETERMINED_INSTALL_PREFIX),
+          namesTheOrigin: nodeStderr.includes(origin),
+          oneLine: nodeStderr.endsWith('\n') && nodeStderr.indexOf('\n') === nodeStderr.length - 1,
+        },
+      },
+    },
+  ];
 }
 
 /**
@@ -896,6 +1188,9 @@ function sealedBed(scratch, name) {
   return { parent, leaf, denies, why, release: () => chmodSync(parent, 0o755) };
 }
 
+/** A lockfile origin that is neither a package index nor a path — the `git-origin` of `install.mjs`. */
+const UNDETERMINED_ORIGIN = 'git+https://github.com/example/bantamkit.git#abc123def456';
+
 function matrix(scratch) {
   const sandbox = { cwd: join(scratch, 'cli-cwd'), env: { HOME: join(scratch, 'cli-home') } };
   return [
@@ -945,6 +1240,22 @@ function matrix(scratch) {
     // command at all, so the ruling above must not be the thing that makes it pass.
     { label: 'install-cursor-again', argv: ['--install', 'cursor'], shape: 'install', ...installSandbox(scratch, 'cursor') },
     { label: 'install-bad-host', argv: ['--install', 'nope'] },
+    // J51-4's two port-only branches, reached as PROCESSES from a copy of this build laid out
+    // as an npx cache (see `npxCacheSandbox`). The first takes the kept install already at
+    // this version, so npm never runs; the second has an origin no shape can be derived from.
+    {
+      label: 'install-cursor-from-an-npx-cache-with-a-kept-install',
+      argv: ['--install', 'cursor'],
+      shape: 'install-kept',
+      ...npxCacheSandbox(scratch, 'npx-kept', `https://registry.npmjs.org/bantamkit-mcp/-/bantamkit-mcp-${PORT_VERSION}.tgz`),
+    },
+    {
+      label: 'install-cursor-from-an-install-of-undeterminable-shape',
+      argv: ['--install', 'cursor'],
+      shape: 'install-undetermined',
+      origin: UNDETERMINED_ORIGIN,
+      ...npxCacheSandbox(scratch, 'npx-git', UNDETERMINED_ORIGIN),
+    },
     // A config that does not parse. Both runtimes refuse and neither writes; the REASON after
     // the colon is CPython's `Expecting value (line 1, column 1)` on one side and V8's
     // `Unexpected token …` on the other, which is ruled — see `docs/porting.md`.
@@ -1129,6 +1440,11 @@ export async function run(ctx) {
 
   const vendoring = vendorThePack();
 
+  // How the reference spells its own interpreter in `  command: `: `Path(sys.executable).resolve()`,
+  // and `cli_ref.py` launches the child with the harness's python. Resolved here so a literal
+  // can name `<PYTHON>` without pinning this laptop's interpreter path into the file.
+  const pythonResolved = realpathSync(ctx.python);
+
   const specs = matrix(ctx.scratch);
 
   /** The reference's own answer for the argv line whose ambiguity is asserted below. */
@@ -1164,6 +1480,55 @@ export async function run(ctx) {
     } else if (spec.shape === 'assets') cases.push(...assetsRootCases(spec.label, py, node, ASSETS_ROOT_RULING));
     else if (spec.shape === 'install') {
       cases.push(...installCases(spec.label, py, node, spec.homes, INSTALL_RULING, spec.stderrRuling ?? null));
+      if (spec.label === 'install-cursor') {
+        // THE RULING ABOVE ONLY PROVES THE TWO LINES DIFFER. This is what each line IS, against
+        // text in this file: a port that went back to `npx -y bantamkit-mcp` would still differ
+        // from the reference and leave the ruling green.
+        cases.push({
+          name: 'install-cursor/PINNED PER SIDE: each runtime records itself by absolute path, against this file',
+          kind: 'json',
+          expected: {
+            python: '  command: <PYTHON> -m bantamkit.mcpserver',
+            node: `  command: <NODE> ${CLI}`,
+          },
+          actual: {
+            python: maskedCommandLine(py.stdout, spec.homes.py, pythonResolved),
+            node: maskedCommandLine(node.stdout, spec.homes.node, pythonResolved),
+          },
+        });
+      }
+    } else if (spec.shape === 'install-kept') {
+      cases.push(...installCases(spec.label, py, node, spec.homes, KEPT_INSTALL_RULING));
+      cases.push({
+        name: `${spec.label}/PINNED PER SIDE: the port records the KEPT install, the reference itself, against this file`,
+        kind: 'json',
+        expected: {
+          python: '  command: <PYTHON> -m bantamkit.mcpserver',
+          node: `  command: <NODE> ${join('<HOME>', '.bantamkit', 'mcp', 'node_modules', 'bantamkit-mcp', 'dist', 'cli.js')}`,
+        },
+        actual: {
+          python: maskedCommandLine(py.stdout, spec.homes.py, pythonResolved),
+          node: maskedCommandLine(node.stdout, spec.homes.node, pythonResolved),
+        },
+      });
+      // npm did not run: the kept `cli.js` still carries the harness's marker on both sides, and
+      // both sides wrote the host file. A reinstall over the seed would overwrite the marker.
+      cases.push({
+        name: `${spec.label}/PINNED PER SIDE: the kept install was used as it was — npm never ran — and the host file was written`,
+        kind: 'json',
+        expected: { python: { keptUntouched: true, wroteConfig: true }, node: { keptUntouched: true, wroteConfig: true } },
+        actual: Object.fromEntries(
+          [['python', spec.homes.py], ['node', spec.homes.node]].map(([side, home]) => [
+            side,
+            {
+              keptUntouched: existsSync(keptCliUnder(home)) && readFileSync(keptCliUnder(home), 'utf8') === SEEDED_KEPT_CLI,
+              wroteConfig: existsSync(join(home, '.cursor', 'mcp.json')),
+            },
+          ]),
+        ),
+      });
+    } else if (spec.shape === 'install-undetermined') {
+      cases.push(...undeterminedInstallCases(spec, py, node, pythonResolved, spec.origin));
     } else cases.push(...streamCases(spec.label, py, node));
   }
 
@@ -2170,12 +2535,125 @@ export async function run(ctx) {
       'no request left this machine and no installer ran: the command was captured, and the ' +
       'two captured commands are the ruled difference.',
   );
+  // ================================ `--update`'s DISPATCH, across runtimes, since J51-6 ==
+  //
+  // Which stream each outcome lands on and the exit code, compared side to side for the first
+  // time. Until J51-5 the port's `runUpdate` read its shape from `currentInstall()` with no
+  // seam; it now takes `install` as an option, and the reference's `_run_update` is reached by
+  // replacing `current_install` for one call (see `update_ref.py`). The shape is HANDED IN on
+  // both sides, so this compares two dispatchers and never two environments.
+  const dispatchHomes = Object.fromEntries(
+    DISPATCH_ARMS.map((arm) => {
+      const sides = { py: join(ctx.scratch, 'update-dispatch', arm.id, 'py'), node: join(ctx.scratch, 'update-dispatch', arm.id, 'node') };
+      for (const home of Object.values(sides)) {
+        mkdirSync(home, { recursive: true });
+        if (arm.keptVersion) seedKeptInstall(home, arm.keptVersion);
+      }
+      return [arm.id, sides];
+    }),
+  );
+  const dispatchPy = Object.fromEntries(
+    Object.entries(
+      ctx.runPython(UPDATE_REF, { dispatch: DISPATCH_ARMS.map((arm) => ({ ...arm, home: dispatchHomes[arm.id].py })) }).dispatch,
+    ).map(([id, a]) => [id, { ...a, stdout: dec(unb64(a.stdout)), stderr: dec(unb64(a.stderr)) }]),
+  );
+  const dispatchNode = await nodeDispatchAnswers(ctx, DISPATCH_ARMS, dispatchHomes);
+
+  // The precondition every port arm stands on: `homedir()` followed HOME, so the port read the
+  // harness's kept install and never the machine's own `~/.bantamkit/mcp`.
+  cases.push({
+    name: 'update-dispatch/precondition: the port’s homedir() followed the HOME each arm was given',
+    kind: 'json',
+    expected: Object.fromEntries(DISPATCH_ARMS.map((arm) => [arm.id, true])),
+    actual: Object.fromEntries(DISPATCH_ARMS.map((arm) => [arm.id, dispatchNode[arm.id].homeFollowed])),
+  });
+
+  const outcomeOf = (a) => ({ exit: a.exit, stdout: a.stdout !== '', stderrIsAnError: a.stderr.startsWith('error: ') });
+  for (const arm of DISPATCH_ARMS) {
+    if (arm.id === KEPT_DISPATCH_ARM) continue;
+    cases.push({
+      name: `update-dispatch/${arm.id}: the stream and the exit code, side to side`,
+      kind: 'json',
+      expected: outcomeOf(dispatchPy[arm.id]),
+      actual: outcomeOf(dispatchNode[arm.id]),
+    });
+    // Where no ruled sentence is in the answer, the whole thing — both streams, byte for byte.
+    if (arm.full) {
+      cases.push({
+        name: `update-dispatch/${arm.id}: stdout, stderr and the exit code, byte for byte`,
+        kind: 'json',
+        expected: { exit: dispatchPy[arm.id].exit, stdout: dispatchPy[arm.id].stdout, stderr: dispatchPy[arm.id].stderr },
+        actual: { exit: dispatchNode[arm.id].exit, stdout: dispatchNode[arm.id].stdout, stderr: dispatchNode[arm.id].stderr },
+      });
+    }
+  }
+
+  // THE EXIT CODES, PER SIDE, against this file. The differential above is blind to both
+  // dispatchers moving together (a `route-checkout` that started exiting 0 on both), and it
+  // cannot see the kept-install arm at all because that arm is ruled. This sees both.
+  const DISPATCH_EXITS = {
+    'up-to-date': 0,
+    behind: 0,
+    'behind-installer-failed': 1,
+    'offline-unreachable': 1,
+    'route-checkout': 1,
+    undetermined: 1,
+    'ephemeral-no-kept-install': 1,
+  };
+  cases.push({
+    name: 'update-dispatch/PINNED PER SIDE: the exit code of every arm, and the kept-install arm is the one that differs',
+    kind: 'json',
+    expected: {
+      python: { ...DISPATCH_EXITS, [KEPT_DISPATCH_ARM]: 1 },
+      node: { ...DISPATCH_EXITS, [KEPT_DISPATCH_ARM]: 0 },
+    },
+    actual: {
+      python: Object.fromEntries(DISPATCH_ARMS.map((arm) => [arm.id, dispatchPy[arm.id].exit])),
+      node: Object.fromEntries(DISPATCH_ARMS.map((arm) => [arm.id, dispatchNode[arm.id].exit])),
+    },
+  });
+
+  // ---- RULED: J51-5's kept-install arm. The reference refuses the npx shape; the port updates
+  // the install `--install` kept. Over the exit code and stdout, so the port behaving like the
+  // reference (refusing) makes this STALE — stderr is left out because the two refusal
+  // sentences differ by `UPDATE_EPHEMERAL_RULING` already.
+  const keptPy = dispatchPy[KEPT_DISPATCH_ARM];
+  const keptNode = dispatchNode[KEPT_DISPATCH_ARM];
+  const maskHome = (text, home) => text.split(home).join('<HOME>');
+  cases.push({
+    name: `update-dispatch/${KEPT_DISPATCH_ARM}: the reference refuses an npx shape, the port updates the install --install kept`,
+    kind: 'json',
+    expected: { exit: keptPy.exit, stdout: maskHome(keptPy.stdout, dispatchHomes[KEPT_DISPATCH_ARM].py) },
+    actual: { exit: keptNode.exit, stdout: maskHome(keptNode.stdout, dispatchHomes[KEPT_DISPATCH_ARM].node) },
+    ruling: UPDATE_KEPT_RULING,
+  });
+  // The companion that is NOT a literal: the port's kept-install report is the registry route's
+  // report, line for line, and the reference's registry route is the text to hold it to. Every
+  // line but the one naming the command (ruled by `UPDATE_COMMAND_RULING`), byte for byte.
+  cases.push({
+    name: `update-dispatch/${KEPT_DISPATCH_ARM}: the port's report is the registry route's report — every line not naming the command, against the reference's \`behind\``,
+    kind: 'bytes',
+    expected: splitOnCommand(dispatchPy.behind.stdout, dispatchPy.behind.command).rest,
+    actual: splitOnCommand(keptNode.stdout, keptNode.command).rest,
+  });
+  // The refusal on the reference side does not move with a kept install in HOME: its answer is
+  // the no-kept-install answer, byte for byte. That is what "the reference never looks" means.
+  cases.push({
+    name: `update-dispatch/${KEPT_DISPATCH_ARM}: the reference's answer is its no-kept-install answer, byte for byte`,
+    kind: 'json',
+    expected: { exit: dispatchPy['ephemeral-no-kept-install'].exit, stderr: dispatchPy['ephemeral-no-kept-install'].stderr, stdout: '' },
+    actual: { exit: keptPy.exit, stderr: keptPy.stderr, stdout: keptPy.stdout },
+  });
+  cases.push({
+    name: `update-dispatch/${KEPT_DISPATCH_ARM}: PINNED — the port's report names the kept version and prefix, never the running one, against this file`,
+    kind: 'string',
+    expected: KEPT_UPDATE_REPORT,
+    actual: maskHome(keptNode.stdout, dispatchHomes[KEPT_DISPATCH_ARM].node),
+  });
   notes.push(
-    'the --update DISPATCH is not compared across runtimes and that is written down in ' +
-      "docs/porting.md: `runUpdate` takes its shape from `currentInstall()` with no seam and " +
-      'this harness does not install its two sides alike, so comparing the stream and the ' +
-      'exit code would compare two environments. the refusal BIT is compared for every arm ' +
-      'here; the stream and the exit code are held per side by the two runtimes’ own suites.',
+    `--update dispatch: ${DISPATCH_ARMS.length} arms through \`_run_update\` and \`runUpdate\` with the shape, the index and the ` +
+      'installer handed in on both sides and HOME at harness scratch; no request left this machine and no installer ran. ' +
+      `the kept-install arm: reference exit ${keptPy.exit}, port exit ${keptNode.exit} naming ${JSON.stringify(keptNode.command)}.`,
   );
 
   // ------------------------------------------------------------------------------- notes
