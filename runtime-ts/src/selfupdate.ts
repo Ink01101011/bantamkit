@@ -40,12 +40,17 @@
  * `test/selfupdate.test.mjs` — and it calls `runUpdate` from the flag and returns before a
  * memory store or a transport exists, the same shape `--assets-root` and `--install` use.
  */
-import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { currentInstall, Undetermined } from './mcp/identity.js';
+import { PACKAGE, runInstaller, shlexJoin } from './npminstall.js';
+
+// `PACKAGE`, `shlexJoin` and `runInstaller` moved to `npminstall.ts` in job51 so `--install` can
+// share the npm spawner without importing this module (see that file's header). Re-exported so
+// this module's surface — and every test importing these from `dist/selfupdate.js` — is unchanged.
+export { PACKAGE, runInstaller, shlexJoin };
 
 /**
  * The command the operator typed, on BOTH runtimes. Not the package name — see the module
@@ -53,9 +58,6 @@ import { currentInstall, Undetermined } from './mcp/identity.js';
  * both, so only this word can appear in a sentence the reference and this file share verbatim.
  */
 export const PROGRAM = 'bantamkit-mcp';
-
-/** The npm package this install would upgrade. Divergent by construction (`DISTRIBUTION`). */
-export const PACKAGE = 'bantamkit-mcp';
 
 /**
  * The one URL this toolbox ever fetches. Divergent by construction (`INDEX_URL`).
@@ -319,25 +321,6 @@ export function fill(template: string, values: Readonly<Record<string, string | 
 }
 
 /**
- * `shlex.join`: `shlex.quote` each word and space them.
- *
- * Hand-rolled from CPython's own rule — `_find_unsafe = re.compile(r'[^\w@%+=:,./-]', re.ASCII)`
- * — because the rendered command is printed to the operator by `UPDATING`, by `COMMAND_FAILED`
- * and by the `local-file` route, and a prefix path with a space in it is the normal case on
- * macOS and on Windows. Single quotes, with an embedded `'` closed and reopened the way
- * `shlex.quote` does it, so the line can be pasted back into a shell unchanged.
- */
-export function shlexJoin(command: readonly string[]): string {
-  return command
-    .map((word) => {
-      if (word === '') return "''";
-      if (/^[\w@%+=:,./-]+$/.test(word)) return word;
-      return `'${word.replace(/'/g, `'"'"'`)}'`;
-    })
-    .join(' ');
-}
-
-/**
  * The version string out of the registry's JSON, or a named refusal. Pure — no network here.
  *
  * SPLIT FROM THE FETCH SO THE GARBAGE CASE IS TESTED THROUGH THE REAL PARSER, exactly as the
@@ -441,38 +424,6 @@ export async function fetchIndex(
 export function upgradeCommand(environment: Environment): string[] {
   if (environment.global) return ['npm', 'install', '--global', `${PACKAGE}@latest`];
   return ['npm', 'install', '--prefix', environment.root, `${PACKAGE}@latest`];
-}
-
-/**
- * Run the installer, capture what it said, return both. The only side effect in this module.
- *
- * CAPTURED RATHER THAN INHERITED so the report has one shape whether or not anybody is
- * watching, and so a test can inject a substitute and assert on the command WITHOUT a real
- * install ever running.
- *
- * THE ONE PLACE THIS IS NOT THE REFERENCE'S BEHAVIOUR: `stderr=STDOUT` genuinely interleaves
- * the two streams in the order they happened, and `spawnSync` has no fd-dup, so the two pipes
- * are concatenated instead — stdout, then stderr. npm writes its progress to stderr and its
- * result to stdout, so an operator reading a failure still gets both, in two blocks rather than
- * one. The installer's own words are never compared across runtimes; the sentences around them
- * are.
- *
- * `shell: true` ON WINDOWS ONLY, the idiom `hostinstall.installViaClaudeCli` established for
- * the same reason: npm is a `npm.cmd` batch shim there and `spawnSync` returns ENOENT for a
- * batch file without a shell. Arguments are quoted because `cmd.exe` gets a string.
- */
-export function runInstaller(command: readonly string[]): [number, string] {
-  const [program, ...args] = command;
-  const win = process.platform === 'win32';
-  const quoted = win ? args.map((a) => (/[\s"^&|<>]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a)) : args;
-  const done = spawnSync(program ?? '', quoted, { encoding: 'utf8', shell: win });
-  if (done.error) {
-    // A missing `npm` is not a stack trace: it is a command that failed, and `COMMAND_FAILED`
-    // is the sentence that says so and hands back what went wrong. 127 is the shell's own
-    // code for "command not found", so the number means something to the person reading it.
-    return [127, done.error.message];
-  }
-  return [done.status ?? 1, `${done.stdout ?? ''}${done.stderr ?? ''}`];
 }
 
 type Part = readonly [number, number, string];
