@@ -4,33 +4,43 @@
  * cache that has never seen it, to a client that speaks real MCP?
  *
  *   node tools/conformance/npx-cold-start.mjs            # the gate: pack, cold, warm, PATH
- *   node tools/conformance/npx-cold-start.mjs --offline  # + 6 no-network arms below (~4-5 min)
+ *   node tools/conformance/npx-cold-start.mjs --offline  # + 10 no-network arms below (~6-7 min)
  *   node tools/conformance/npx-cold-start.mjs --keep     # leave the scratch tree behind
  *
- * `--offline` REPORTS six arms, all cut from the same packed tarball (never a registry
- * download), all REPORTED and never asserted -- they are properties of the machine and the
- * network, not of this package:
+ * `--offline` REPORTS the following arms, all REPORTED and never asserted -- they are
+ * properties of the machine and the network, not of this package:
  *   0. no-registry probe (pre-existing): a fresh cache pointed at a dead registry URL.
- *   1. warm cache, network cut, `npx -y <spec>`            -- the job51 prep probe measured a
- *      SILENT HANG here for a bare registry spec (`bantamkit-mcp@0.33.0`); this harness always
- *      resolves `--package=<the packed tarball's absolute path>` (see the WHY section above),
- *      which is a local-file spec npx can serve from cache without any registry check at all --
- *      so this arm may legitimately come back OK instead of hanging, and reports whichever it
- *      measures rather than assuming the probe's registry-spec finding transfers.
- *   2. warm cache, network cut, `npx --offline -y <spec>`  -- expect OK, served from cache.
- *   3. cold cache, `npx --offline -y <spec>`                -- expect npm's own cache-miss error.
+ *   1. warm cache, network cut, `npx -y <spec>`, TARBALL SPEC -- this harness always resolves
+ *      `--package=<the packed tarball's absolute path>` for arms 1-5 (see the WHY section
+ *      above), which is a local-file spec npx can serve from cache without any registry check
+ *      at all -- so this arm comes back OK, not hung, and that is real: see arm group 6 below
+ *      for the REGISTRY-spec arm that actually reproduces the hang.
+ *   2. warm cache, network cut, `npx --offline -y <spec>`, TARBALL SPEC -- expect OK, from cache.
+ *   3. cold cache, `npx --offline -y <spec>`, TARBALL SPEC -- expect npm's own cache-miss error.
  *   4. a kept install (`npm install --prefix <dir> <tarball>`, one-time, online) launched as
  *      `<abs node> <dir>/node_modules/bantamkit-mcp/dist/cli.js` under a login-less PATH, with
  *      the network cut.
  *   5. the same kept install launched through `node_modules/.bin/bantamkit-mcp` under that PATH
  *      -- expect EXITED(127) on macOS/Linux (the shebang's `env node` cannot find `node`).
+ *   6. THE REGISTRY-SPEC GROUP, in a cache of its own, warmed ONLINE from the real registry
+ *      (the one genuine network use in this whole file) against `bantamkit-mcp@<version>`,
+ *      `<version>` read at run time via `npm view bantamkit-mcp version` -- this is the form a
+ *      host's `.mcp.json` actually types (`npx -y bantamkit-mcp`, `@latest`, `@<version>`), and
+ *      unlike arms 1-5 it DOES need the registry to resolve the top-level package on every
+ *      launch, warm cache or not. Then, network cut, three specs bounded to ~45 s each:
+ *      `bantamkit-mcp@<version>`, `bantamkit-mcp`, `bantamkit-mcp@latest` -- expect the SILENT
+ *      HANG the job51 prep probe measured. Then network cut + `--offline` against the same
+ *      spec -- expect OK, served from cache. If the registry cannot be reached to read the
+ *      version or to warm the cache, the whole group is SKIPPED and says why; it never fails
+ *      the gate, because reachability is exactly the kind of machine/network fact this section
+ *      reports rather than asserts.
  *
  * THE CACHE-KEY TRAP: pointing `npm_config_registry` at a dead port (arm 0's method, and the
  * job51 prep probe's first attempt) makes npm key its cache lookup against that URL, so a WARM
- * cache silently measures as a COLD one -- a warm-cache arm built that way is invalid. Arms 1
- * and 2 cut the network instead with `npm_config_proxy` / `npm_config_https_proxy` at a closed
- * port: npm still resolves the real registry URL for its cache key, the TCP connect to the
- * proxy fails immediately, and the warm cache stays warm. See
+ * cache silently measures as a COLD one -- a warm-cache arm built that way is invalid. Every
+ * other network-cut arm here (1, 2, 6) cuts the network instead with `npm_config_proxy` /
+ * `npm_config_https_proxy` at a closed port: npm still resolves the real registry URL for its
+ * cache key, the TCP connect to the proxy fails immediately, and the warm cache stays warm. See
  * `.shiftwork/notes-job51/P0-probes.md` for the discarded method and the numbers this file's
  * arms were designed to reproduce.
  *
@@ -209,6 +219,7 @@ function npxSession({
   timeoutMs = 180_000,
   cliArgs = [],
   npxFlags = [],
+  pkgArgs = [`--package=${tarball}`, 'bantamkit-mcp'],
 }) {
   return new Promise((resolve) => {
     const env = { ...process.env, HOME: home, USERPROFILE: home, npm_config_cache: cache, ...extraEnv };
@@ -219,7 +230,7 @@ function npxSession({
 
     const started = process.hrtime.bigint();
     let firstFrameAt = null;
-    const child = spawn('npx', [...npxFlags, '-y', `--package=${tarball}`, 'bantamkit-mcp', ...cliArgs], {
+    const child = spawn('npx', [...npxFlags, '-y', ...pkgArgs, ...cliArgs], {
       cwd,
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -724,8 +735,102 @@ if (wantOffline) {
     `  outcome : ${keptBinRun.timedOut ? `TIMEOUT after ${(keptBinRun.msTotal / 1000).toFixed(2)} s` : keptBinRun.spawnError ? `SPAWN_ERROR ${keptBinRun.spawnError}` : `EXITED(${keptBinRun.exit})`} in ${(keptBinRun.msTotal / 1000).toFixed(2)} s`,
   );
   console.log(`  stderr : ${(keptBinRun.stderr ?? '').trim().split('\n')[0] || '(none)'}`);
+
+  // --- arm group 6: THE REGISTRY SPEC -------------------------------------------------------
+  // Everything above resolves `--package=<local tarball path>`, which arm 1 showed does not
+  // need the registry to serve warm even with the network cut. A host's `.mcp.json` never
+  // types a tarball path -- it types `npx -y bantamkit-mcp`, `@latest`, or `@<version>` -- and
+  // that IS a registry spec, resolved fresh on every launch. This group reproduces the job51
+  // prep probe's hang against that real spec, in a cache of its own, warmed the only way a
+  // registry spec CAN be warmed: from the real registry, once, online.
+  console.log('\n[offline] registry-spec group: what a host config actually types (`npx -y bantamkit-mcp[@version]`)');
+  let registryVersion = null;
+  try {
+    const view = spawnSync('npm', ['view', 'bantamkit-mcp', 'version'], { encoding: 'utf8', timeout: 20_000 });
+    if (view.status === 0 && view.stdout.trim()) registryVersion = view.stdout.trim();
+    else console.log(`  SKIPPED: \`npm view bantamkit-mcp version\` did not return a version (status ${view.status}); ${(view.stderr ?? '').trim().split('\n')[0] || '(no stderr)'}`);
+  } catch (e) {
+    console.log(`  SKIPPED: \`npm view bantamkit-mcp version\` failed to run: ${e.message}`);
+  }
+
+  if (registryVersion === null) {
+    console.log('  SKIPPED: the registry is not reachable from here, so this group cannot warm a real registry-spec cache. Not a gate failure -- reachability is a machine/network fact, reported not asserted.');
+  } else {
+    console.log(`  latest published version read from the registry: ${registryVersion} (NOT the working tree's ${pkg.version})`);
+    const regWorld = world('offline-registry-spec');
+
+    console.log(`\n[offline] warming a FRESH cache ONLINE: \`npx -y bantamkit-mcp@${registryVersion}\``);
+    const warmOnline = await npxSession({
+      lines: SESSION_LINES,
+      home: regWorld.home,
+      cwd: regWorld.cwd,
+      cache: regWorld.cache,
+      pkgArgs: [`bantamkit-mcp@${registryVersion}`],
+      timeoutMs: 120_000,
+    });
+    const warmOnlineTools = (parsedById(warmOnline).get(2)?.result?.tools ?? []).length;
+    console.log(
+      `  outcome : ${warmOnline.timedOut ? `TIMEOUT after ${(warmOnline.msTotal / 1000).toFixed(2)} s` : `${warmOnlineTools > 0 ? 'OK' : `EXITED(${warmOnline.exit})`} in ${(warmOnline.msTotal / 1000).toFixed(2)} s`}`,
+    );
+    console.log(`  tools served : ${warmOnlineTools}`);
+
+    if (warmOnlineTools === 0) {
+      console.log('  SKIPPED the network-cut sub-arms: the online warm-up did not succeed, so a network-cut arm against this cache would show nothing about the hang -- it would just be cold.');
+    } else {
+      const hangResults = [];
+      for (const spec of [`bantamkit-mcp@${registryVersion}`, 'bantamkit-mcp', 'bantamkit-mcp@latest']) {
+        console.log(`\n[offline] registry spec, warm cache, network cut: \`npx -y ${spec}\` (bounded to 45 s)`);
+        const w = world(`offline-registry-cut-${spec.replace(/[^a-z0-9]/gi, '_')}`);
+        const r = await npxSession({
+          lines: SESSION_LINES,
+          home: w.home,
+          cwd: w.cwd,
+          cache: regWorld.cache,
+          extraEnv: NETWORK_CUT,
+          pkgArgs: [spec],
+          timeoutMs: 45_000,
+        });
+        const bytes = r.frames.join('\n').length + r.trailing.length;
+        hangResults.push({ spec, timedOut: r.timedOut, msTotal: r.msTotal });
+        console.log(
+          `  outcome : ${r.timedOut ? `timed out after ${(r.msTotal / 1000).toFixed(2)} s — SILENT HANG` : `${r.exit === 0 ? 'OK' : `EXITED(${r.exit})`} in ${(r.msTotal / 1000).toFixed(2)} s`}`,
+        );
+        console.log(`  stdout bytes : ${bytes}`);
+      }
+
+      console.log(`\n[offline] registry spec, warm cache, network cut: \`npx --offline -y bantamkit-mcp@${registryVersion}\` (the fix)`);
+      const wOff = world('offline-registry-cut-offline-flag');
+      const rOff = await npxSession({
+        lines: SESSION_LINES,
+        home: wOff.home,
+        cwd: wOff.cwd,
+        cache: regWorld.cache,
+        extraEnv: NETWORK_CUT,
+        pkgArgs: [`bantamkit-mcp@${registryVersion}`],
+        timeoutMs: 30_000,
+        npxFlags: ['--offline'],
+      });
+      const rOffTools = (parsedById(rOff).get(2)?.result?.tools ?? []).length;
+      console.log(
+        `  outcome : ${rOff.timedOut ? `TIMEOUT after ${(rOff.msTotal / 1000).toFixed(2)} s` : `${rOffTools > 0 ? 'OK' : `EXITED(${rOff.exit})`} in ${(rOff.msTotal / 1000).toFixed(2)} s`}`,
+      );
+      console.log(`  tools served : ${rOffTools}`);
+
+      console.log(
+        '\n  SIDE BY SIDE, same warm-cache + network-cut method:\n' +
+          `      TARBALL spec (\`--package=<local file>\`, arm 1)  : ${r1.timedOut ? `TIMEOUT after ${(r1.msTotal / 1000).toFixed(2)} s` : `OK in ${(r1.msTotal / 1000).toFixed(2)} s`}\n` +
+          hangResults
+            .map((h) => `      REGISTRY spec \`npx -y ${h.spec}\`${' '.repeat(Math.max(0, 24 - h.spec.length))}: ${h.timedOut ? `TIMEOUT after ${(h.msTotal / 1000).toFixed(2)} s — SILENT HANG` : `OK in ${(h.msTotal / 1000).toFixed(2)} s`}`)
+            .join('\n') +
+          '\n  A local-file spec never needs the registry to resolve the top-level package; a\n' +
+          '  registry spec does, on every launch, warm cache or not. That difference -- not a\n' +
+          "  bug in either arm -- is why the README's warm-cache claim fails for the way a\n" +
+          '  host actually configures this package.',
+      );
+    }
+  }
 } else {
-  console.log('\n[offline] skipped — pass --offline to measure it (takes ~4-5 minutes)');
+  console.log('\n[offline] skipped — pass --offline to measure it (takes ~6-7 minutes)');
 }
 
 // -------------------------------------------------------------------------- the verdict
