@@ -29,6 +29,13 @@ That is the whole install. No `pip`, no venv, no `PYTHONPATH`. `runtime-ts/mcp.j
 in the repository is the annotated version, with the four forms and the two measured
 questions that decide between them.
 
+> **AMENDED 2026-09-15 (job51) — this is no longer the recommended form.** The block above
+> resolves the package against the registry at every launch. When the registry cannot be
+> reached, it hangs silently, even with a warm cache (measured below). From 0.34.0,
+> `npx -y bantamkit-mcp@latest --install <host>` writes an entry that starts with no network.
+> See *Install once, run offline*. `mcp.json.example` now has five forms, and the kept install
+> is the first.
+
 **Pass `-y`.** `npx` historically prompted before installing a package it had not seen,
 and stdin here is the JSON-RPC channel: a prompt that consumed one frame looks like a
 server that lost a request. npm 11.6.2 was measured sending that prompt to stderr rather
@@ -49,6 +56,23 @@ npx -y bantamkit-mcp --install copilot         # GitHub Copilot in VS Code
 npx -y bantamkit-mcp --install cursor          # Cursor
 ```
 
+> **ADDED 2026-09-15 (job51) — what these commands record changes in 0.34.0.** 0.33.0 and
+> earlier record `npx -y bantamkit-mcp`. From 0.34.0 they record
+> `<absolute node> <absolute dist/cli.js>`:
+>
+> - **Run from an npx cache**, as the lines above are, the `cli.js` belongs to a *kept
+>   install* at `~/.bantamkit/mcp`. On Windows that is `%USERPROFILE%\.bantamkit\mcp`, which was
+>   not measured. The kept install is made once with `npm install --prefix`, and only when it
+>   does not already report this version.
+> - **Run from any other install** (`npm i -g`, `npm i --prefix`, a checkout), it is that
+>   install's own `dist/cli.js`.
+>
+> If npm fails, no host file is read or written and no backup is taken. Add `@latest`
+> (`npx -y bantamkit-mcp@latest --install <host>`) so npx does not reuse an older cached
+> resolve. Two further points are explained in *Install once, run offline*. Moving from an
+> existing `npx` entry needs `--force`, and on Claude Code it needs `claude mcp remove`
+> first. The recorded node path names one node version.
+
 `--install claude` runs `claude mcp add` rather than editing `~/.claude.json` directly:
 that file is the host's, and it carries state that is not MCP configuration. What happens on
 a second run there is Claude Code's decision, not this command's, and `--force` does not
@@ -62,6 +86,26 @@ not parse is refused rather than replaced.
 
 The rest of this section is what those commands write, for anyone who would rather do it by
 hand. Every host runs the same command; only the file and the key around it change.
+
+**AMENDED 2026-09-15 (job51) — the forms below are the online ones.** They are what 0.33.0
+and earlier write. From 0.34.0, `--install` writes the kept install instead, and that is also
+the recommended form to write by hand. Make the install once, then register node and its
+`cli.js`, both by absolute path:
+
+```bash
+npm install --prefix ~/.bantamkit/mcp bantamkit-mcp@0.33.0
+claude mcp add bantamkit -s user -- "$(node -p process.execPath)" ~/.bantamkit/mcp/node_modules/bantamkit-mcp/dist/cli.js
+```
+
+Both lines were run against a scratch `HOME`. npm exited 0, and Claude Code recorded
+`"command": "<…>/mise/installs/node/25.2.1/bin/node"` with the absolute `cli.js` as the one
+argument. For the three JSON hosts below, keep the file and the key, keep Copilot's
+`"type": "stdio"`, and use this `command`/`args` pair (`node -p process.execPath` prints the
+first path):
+
+```json
+{"command": "/absolute/path/to/node", "args": ["/Users/you/.bantamkit/mcp/node_modules/bantamkit-mcp/dist/cli.js"]}
+```
 
 **Claude Code** — one command, no file to edit. `-s user` makes it available in every
 project; drop it for this project only.
@@ -174,6 +218,104 @@ exactly when nobody is watching.
 If offline operation matters, do not use `npx`. Run `npm i -g bantamkit-mcp` once and
 point the config at the installed binary, or keep using `tools/bantamkit-mcp`.
 
+> **AMENDED 2026-09-15 (job51) — "A warm cache does not have this problem" is false on npm
+> 11.6.2 for every spec a host config actually types.** Both paragraphs are kept rather than
+> rewritten, because the table above still holds. With a warm cache and the network cut,
+> `npx -y bantamkit-mcp@0.33.0`, `npx -y bantamkit-mcp` and `npx -y bantamkit-mcp@latest` all
+> hung silently, as the next section measures. "Point the config at the installed binary"
+> has a trap of its own under a GUI host: see the `.bin` row in that table. The next section
+> replaces both paragraphs.
+
+### Install once, run offline
+
+`node tools/conformance/npx-cold-start.mjs --offline` printed every row below in a single run.
+It ran on 2026-09-15 at commit `2f58af4`, with node v25.2.1 and npm 11.6.2, on macOS 26.6.2 on
+Apple silicon, and took 299.94 s wall. It cuts the network by pointing `npm_config_proxy`
+and `npm_config_https_proxy` at `http://127.0.0.1:1`. It does not use `npm_config_registry`,
+which changes npm's cache key and would make a warm cache measure as cold. "GUI PATH" means
+`/usr/bin:/bin:/usr/sbin:/sbin`, the PATH a GUI-launched host inherits on this machine.
+
+| arm | outcome | wall | stdout |
+|---|---|---|---|
+| cold cache, registry refusing connections, `npx -y` | exit 1, 0 frames | 140.29 s | 0 bytes |
+| registry spec, warm cache, network cut: `npx -y bantamkit-mcp@0.33.0` | **silent hang**, killed at the 45 s bound | 45.01 s | 0 bytes |
+| the same, `npx -y bantamkit-mcp` | **silent hang** | 45.01 s | 0 bytes |
+| the same, `npx -y bantamkit-mcp@latest` | **silent hang** | 45.02 s | 0 bytes |
+| the same warm cache, network cut: `npx --offline -y bantamkit-mcp@0.33.0` | OK, 12 tools | 0.40 s | — |
+| local tarball spec (`--package=<file>.tgz`), warm cache, network cut: `npx -y` | OK | 1.35 s | 27987 bytes |
+| cold cache, `npx --offline -y` (tarball spec) | exit 1, `npm error code ENOTCACHED` | 2.69 s | — |
+| kept install: `npm install --prefix <dir> <tarball>`, once, online | OK | 4.82 s | — |
+| that install as `<abs node> <dir>/node_modules/bantamkit-mcp/dist/cli.js`, GUI PATH, network cut | OK, 12 tools | 0.09 s | — |
+| that install's `node_modules/.bin/bantamkit-mcp`, same PATH | exit 127, `env: node: No such file or directory` | 0.16 s | — |
+
+What the table says:
+
+- **The hang comes from a registry spec, not from npx in general.** npx resolves a registry
+  spec against the registry at every start, so a warm cache does not save it. A local tarball
+  on its own warm cache answered in 1.35 s with the same cut. Do not read the three hung rows
+  as "every npx launch hangs offline".
+- **`npx --offline` is the middle option.** It serves a warm cache without the registry, in
+  0.40 s here. On a cache that has never seen the package it fails at once with
+  `ENOTCACHED`. It suits a machine that has already run that exact spec online once, and it
+  cannot start a new one.
+- **Only a kept install launched as node plus `cli.js` needs nothing.** No package is
+  resolved and no PATH lookup happens. The `.bin` shim fails because its first line is
+  `#!/usr/bin/env node`, and a GUI host's PATH has no `node`. An `npm i -g` bin runs the
+  same file, so the global advice above hits the same trap unless `node` is on the host's
+  PATH.
+
+**From 0.34.0, `--install` builds the kept install for you.** Run as
+`npx -y bantamkit-mcp@latest --install <host>`, it finds that it is running from an npx cache.
+It then installs `bantamkit-mcp@<its own version>` into `~/.bantamkit/mcp` with
+`npm install --prefix`, and records `<process.execPath> ~/.bantamkit/mcp/node_modules/bantamkit-mcp/dist/cli.js`
+with both paths absolute. It skips npm when the kept install already reports that version.
+Measured end to end from `npm pack` of this tree (version string still 0.33.0), in a scratch
+`HOME` with an empty npm cache:
+
+| command | result |
+|---|---|
+| `npx -y -p <tgz> bantamkit-mcp --install cursor` | exit 0 in 11.60 s; wrote `"command": "/Users/…/mise/installs/node/25.2.1/bin/node"` and `"args": ["<HOME>/.bantamkit/mcp/node_modules/bantamkit-mcp/dist/cli.js"]` |
+| the same with `--install copilot`, network cut | exit 0 in 0.35 s; npm did not run |
+| `--install cursor` over an existing `npx -y bantamkit-mcp` entry | exit 1: `cursor already has a bantamkit entry with different settings` … `re-run with --force to replace it` |
+| the same with `--force` | exit 0, `backup : …/mcp.json.backup-2026-09-15` |
+
+0.34.0 was not yet on npm when this was written. Measured the same day,
+`npx -y bantamkit-mcp@0.33.0 --install cursor` still writes
+`"command": "npx", "args": ["-y", "bantamkit-mcp"]`. Until 0.34.0 is out, make the kept install
+by hand, as shown in *Connect it to a host*.
+
+**Two consequences to know.**
+
+1. **The recorded node is one version of node.** Under mise, `process.execPath` is
+   `~/.local/share/mise/installs/node/25.2.1/bin/node`. Uninstall or switch away from that
+   version and the host can no longer spawn the server. Re-run
+   `npx -y bantamkit-mcp@latest --install <host> --force` with the node you have now. nvm
+   also keeps one directory per version; that was not measured here.
+2. **Moving from an `npx` entry needs `--force`**, as the table shows. On Claude Code
+   `--force` does not help: `claude mcp add` refuses a name it already has
+   (`MCP server bantamkit already exists in user config`, exit 1, measured with Claude Code
+   2.1.270 against a scratch `HOME`). Run `claude mcp remove bantamkit -s user` first.
+
+**Updating the kept install.** From 0.34.0, `npx -y bantamkit-mcp@latest --update` run from
+an npx cache finds `~/.bantamkit/mcp`. It compares that install's version with the registry,
+and when they differ it runs `npm install --prefix ~/.bantamkit/mcp bantamkit-mcp@latest`.
+With no kept install, it refuses exactly as it did before. Measured with a kept 0.32.1 in a
+scratch `HOME`:
+
+```console
+$ npx -y -p <tgz> bantamkit-mcp --update
+bantamkit-mcp 0.32.1 is installed; the package index has 0.33.0.
+updating from the package index: npm install --prefix <HOME>/.bantamkit/mcp bantamkit-mcp@latest
+the command printed:
+<npm's own output>
+updated bantamkit-mcp from 0.32.1 to 0.33.0.
+restart the server: a running bantamkit-mcp keeps serving the code it loaded at startup, so bantamkit_status will report 0.32.1 until the host reconnects.
+```
+
+That run exited 0 in 1.58 s. A second run printed `up to date.` and exited 0. Then reconnect
+the server in the host. Nothing checks for updates at server startup, and startup never
+touches the network.
+
 ### Measured: `npx` is not on a login-less PATH
 
 ```sh
@@ -206,6 +348,12 @@ Two ways out, both in `runtime-ts/mcp.json.example`:
 { "command": "/usr/local/bin/bantamkit-mcp", "args": [] }
 ```
 
+> **AMENDED 2026-09-15 (job51) — the second form has the same problem one level down.**
+> `bantamkit-mcp` runs `dist/cli.js`, whose first line is `#!/usr/bin/env node`. Under this
+> PATH the kept install's `.bin` shim exited 127 (`env: node: No such file or directory`). A
+> global link runs the same file, though it was not launched separately here. Name node by
+> absolute path instead, as *Install once, run offline* shows.
+
 ## What `npx` gives up versus `tools/bantamkit-mcp`
 
 The sh launcher is not obsolete. It guarantees things `npx` cannot, and this table is the
@@ -218,7 +366,7 @@ prep probe's, unsoftened.
 | code from the worktree, deps from the main checkout | yes (`PYTHONPATH` + `PYTHONSAFEPATH`) | **no Node analogue.** `NODE_PATH` is ignored by ESM and there is no `-P`. `npm link` and workspaces are a different failure surface, not the same one solved |
 | stdin is the JSON-RPC channel | yes | yes, with `-y` |
 | names the cause when dependencies are missing | yes | the analogous failure is *no network*, and it has no message at all — see the table above |
-| starts without a network | yes | **no**, on a cold cache |
+| starts without a network | yes | **no**, on a cold cache. *Amended 2026-09-15:* nor on a warm one, for a registry spec (silent hang at a 45 s bound; *Install once, run offline*). From 0.34.0 `--install` records a kept install that does start offline |
 | `--which`, for diagnosing which endpoint answered | the flag exists | **not in the npx CLI** — but `tools/bantamkit-mcp-node --which` has it, see below |
 | one config line, no clone, no venv | no | **yes.** This is the whole reason the package exists |
 
@@ -280,6 +428,9 @@ that were imported (RB-P84).
 **Pin the version in the config** if you want this to be a non-issue:
 `"args": ["-y", "bantamkit-mcp@0.30.0"]`.
 
+A kept install (what `--install` records from 0.34.0) does not float either. It serves the
+version in `~/.bantamkit/mcp` until someone runs `--update`.
+
 ## Updating
 
 **There is no `bantamkit-mcp --update`, deliberately.** The package manager that installed
@@ -305,6 +456,7 @@ serving the code it loaded at startup**, so every row ends with restarting it in
 | how it was installed | how to update |
 |---|---|
 | `npx -y bantamkit-mcp` in the host config | nothing to update — but npx **caches the resolved version**, so add `@latest` (or a pinned `@0.30.0`) or it will keep serving what it resolved weeks ago. `rm -rf ~/.npm/_npx` forces a clean resolve. |
+| `npx -y bantamkit-mcp --install <host>` from 0.34.0: a kept install at `~/.bantamkit/mcp` (added 2026-09-15) | `npx -y bantamkit-mcp@latest --update` patches it in place, or `npm i --prefix ~/.bantamkit/mcp bantamkit-mcp@latest`. The recorded paths do not change. Before 0.34.0, `--update` from an npx cache refuses instead |
 | `npm i -g bantamkit-mcp` | `npm i -g bantamkit-mcp@latest` |
 | `npm i --prefix <dir> bantamkit-mcp` | `npm i --prefix <dir> bantamkit-mcp@latest` |
 | PyPI (`pip install "bantamkit[mcp]"`) | `pip install -U "bantamkit[mcp]"` · pipx: `pipx upgrade bantamkit` · uv: `uv tool upgrade bantamkit` |
@@ -533,7 +685,7 @@ From the repository root:
 ```sh
 node tools/conformance/run.mjs --all                   # Node vs Python, 4300+ cases
 node tools/conformance/npx-cold-start.mjs              # pack, cold npx, warm npx, PATH
-node tools/conformance/npx-cold-start.mjs --offline    # + the no-registry probe (~2.5 min)
+node tools/conformance/npx-cold-start.mjs --offline    # + the no-network arms (299.94 s on 2026-09-15)
 ```
 
 The conformance harness shells out to a CPython to produce the reference side. That is a

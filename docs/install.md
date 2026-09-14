@@ -83,6 +83,19 @@ Full install documentation, with every number measured rather than estimated, is
 [`runtime-ts/README.md`](../runtime-ts/README.md); the annotated config with all four
 forms is `runtime-ts/mcp.json.example`.
 
+> **AMENDED 2026-09-15 (job51) — that one line needs the registry on every launch, not only
+> on the first one, and it is no longer the recommended form.** A registry spec
+> (`bantamkit-mcp`, `@latest`, `@<version>`) asks npm to resolve the package at each start.
+> With the network cut, a warm cache does not avoid that: each of the three hung silently for
+> the whole 45 s bound with 0 bytes on stdout (`node tools/conformance/npx-cold-start.mjs
+> --offline`, 2026-09-15, node v25.2.1, npm 11.6.2, macOS). From **bantamkit-mcp 0.34.0**,
+> `npx -y bantamkit-mcp@latest --install <host>` makes a kept install under
+> `~/.bantamkit/mcp` and records an absolute command that starts with no network. 0.34.0 was
+> not yet on npm when this was written. Until it is, that command installs 0.33.0, which still
+> records `npx -y bantamkit-mcp`. See
+> [`runtime-ts/README.md` → Install once, run offline](../runtime-ts/README.md#install-once-run-offline).
+> `runtime-ts/mcp.json.example` now carries five forms, and the kept install is the first.
+
 **The package declares two bins.** `bantamkit-mcp` is the server the config line above
 launches. `bantamkit-memory` is the operator CLI for memory lifecycle — `status`,
 `lint`, `compact`, `archived`, `restore` — and it is this install's spelling of the
@@ -132,6 +145,27 @@ Three things change, and all three are measured, not predicted:
    `build_identity` to settle it when in doubt: `runtime` says which lineage answered,
    `assets_digest` is computed identically in both and must match across machines,
    `build_id` differing on the same version string *is* the float.
+
+> **AMENDED 2026-09-15 (job51) — "A warm cache is unaffected", the last sentence of item 2,
+> is false for the config line this page gives.** It holds only for a spec npx can resolve
+> without the registry. `node tools/conformance/npx-cold-start.mjs --offline` warms a cache
+> online and then cuts the network by pointing `npm_config_proxy` and
+> `npm_config_https_proxy` at a closed port. It does not repoint `npm_config_registry`,
+> because that changes npm's cache key and makes a warm cache look cold. With node v25.2.1
+> and npm 11.6.2 on macOS, it printed:
+>
+> - `npx -y bantamkit-mcp@0.33.0`, `npx -y bantamkit-mcp` and `npx -y bantamkit-mcp@latest`
+>   each timed out at the 45 s bound (45.01 s, 45.01 s, 45.02 s) with 0 stdout bytes. The
+>   warm cache did not help.
+> - A local tarball (`--package=<file>.tgz`) on its own warm cache started in 1.35 s. A
+>   local file needs no registry round trip. Do not read this as "every npx launch hangs".
+> - `npx --offline -y bantamkit-mcp@0.33.0` on the warm cache served 12 tools in 0.40 s.
+>   On a cache that had never seen the package, `npx --offline -y` exited 1 in 2.69 s with
+>   `npm error code ENOTCACHED`.
+>
+> The fix is not to launch through npx at all: see
+> [`runtime-ts/README.md` → Install once, run offline](../runtime-ts/README.md#install-once-run-offline).
+> Staying on `tools/bantamkit-mcp` remains the other answer, as the paragraph above says.
 
 Not carried over: **`--which`**. Not because the flag is bad — `tools/bantamkit-mcp` and
 `tools/bantamkit-mcp-node` both have it, and both are tested — but because it reports
