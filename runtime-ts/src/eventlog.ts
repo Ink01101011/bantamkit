@@ -56,7 +56,8 @@
  */
 import { appendFileSync, mkdirSync, renameSync, statSync } from 'node:fs';
 
-import { cmpCodepoint, osErrorClassName, PyOSError, pyJoin, pyParent } from './memory/pyfs.js';
+import { cmpCodepoint, osErrorClassName, PyOSError, pyJoin, pyName, pyParent, pyParents } from './memory/pyfs.js';
+import { ensureBantamkitGitignore } from './memory/store.js';
 
 /**
  * Environment switch. Unset or `off`/`0`/`false`/`no`/empty -> disabled. `on`/`1`/`true`/
@@ -270,6 +271,19 @@ export class EventLog {
     // that understands a drive letter. `.`'s parent is `.` in both, so a bare filename
     // makes the directory that already exists rather than reaching for the root.
     mkdirSync(pyParent(path), { recursive: true });
+    // AUDIT FINDING (J51-1, mirrored from `runtime-py/src/bantamkit/eventlog.py`): this
+    // `mkdirSync` can bring a whole `.bantamkit` directory into existence on its own --
+    // `BANTAMKIT_EVENT_LOG=on` with a project store that was never saved to reaches here
+    // first -- entirely bypassing `MemoryStore.ensureDirs`, which is the only other place a
+    // `.bantamkit` directory gets created. Without this call a store built that way would
+    // never get its self-ignoring `.gitignore`. Cheap and idempotent: a no-op unless one of
+    // `path`'s ancestors is literally named `.bantamkit`.
+    for (const parent of pyParents(path)) {
+      if (pyName(parent) === '.bantamkit') {
+        ensureBantamkitGitignore(parent);
+        break;
+      }
+    }
     let size = 0;
     try {
       size = statSync(path).size;

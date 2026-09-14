@@ -102,8 +102,10 @@ export {
 } from './eventlog.js';
 export type { DetailValue } from './eventlog.js';
 export {
+  BANTAMKIT_GITIGNORE_TEXT,
   DEFAULT_INDEX_BUDGET,
   DUPLICATE_JACCARD,
+  ensureBantamkitGitignore,
   jaccard,
   MemoryBudgetExceeded,
   MemoryStore,
