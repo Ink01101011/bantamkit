@@ -782,6 +782,136 @@ export async function run(ctx) {
     notes.push(`constructor-less tags: python refuses ${py.filter(Boolean).length}/4, node ${nd.filter(Boolean).length}/4 (the fifth, \`!\`, is the ruled one where python answers)`);
   }
 
+  // ------------------------------------------------ the self-ignoring .bantamkit/.gitignore
+  //
+  // THE PROPERTY (user ruling 2026-09-15, J51-1/J51-2): the first save that brings a
+  // `.bantamkit` directory into existence leaves `.bantamkit/.gitignore` holding exactly
+  // GITIGNORE_LITERAL; a `.gitignore` already there is never rewritten; a store whose parent
+  // is not named `.bantamkit` gets none.
+  //
+  // WHY EVERY SIDE IS ALSO COMPARED TO A LITERAL. A Python-vs-Node comparison alone stays
+  // green when both runtimes regress the same way — both stop writing the file and they
+  // "agree" on its absence (see `differential-is-blind-to-symmetric-regression`). So each
+  // scenario yields eight cases: per side, the save succeeded, the file's bytes against the
+  // literal, and the `.gitignore` files under the bed against the expected list; then python
+  // against node, for the file's bytes and for the whole tree. The literal is typed HERE, not
+  // imported from either runtime, so a change to both runtimes' constant turns this red
+  // instead of moving the goalposts. Proven non-vacuous in J51-3: removing the write, the
+  // exists-guard, or the name-guard — in Python only, Node only, or both — turns it red.
+  //
+  // A missing file reads as the sentinel `<ABSENT>` rather than throwing, so a runtime that
+  // stopped writing is one red case naming itself, not a suite that could not build.
+  {
+    const GITIGNORE_LITERAL =
+      '# Created by bantamkit: this directory is local state. Delete this file to commit it.\n' +
+      '*\n';
+    const OPERATOR_GITIGNORE = '# mine: an operator edited this one\n!memory/\n';
+    const ABSENT = '<ABSENT>';
+    const readOr = (path) => {
+      try {
+        return readFileSync(path);
+      } catch (e) {
+        if (e.code === 'ENOENT') return ABSENT;
+        throw e;
+      }
+    };
+    /** Every `.gitignore` under `root`, as `/`-joined relative paths, sorted. */
+    const gitignoresUnder = (root) => {
+      const found = [];
+      const walk = (dir) => {
+        for (const entry of readdirSync(dir).sort()) {
+          const full = join(dir, entry);
+          if (lstatSync(full).isDirectory()) walk(full);
+          else if (entry === '.gitignore') found.push(relative(root, full).split('\\').join('/'));
+        }
+      };
+      walk(root);
+      return found;
+    };
+    const gitignoreScenarios = [
+      {
+        label: 'a fresh .bantamkit store',
+        store: ['proj', '.bantamkit', 'memory'],
+        files: {},
+        file: ['proj', '.bantamkit', '.gitignore'],
+        literal: GITIGNORE_LITERAL,
+      },
+      {
+        label: 'a pre-existing .bantamkit/.gitignore',
+        store: ['proj', '.bantamkit', 'memory'],
+        files: { 'proj/.bantamkit/.gitignore': OPERATOR_GITIGNORE },
+        file: ['proj', '.bantamkit', '.gitignore'],
+        literal: OPERATOR_GITIGNORE,
+      },
+      {
+        label: 'a store whose parent is not .bantamkit',
+        store: ['proj', 'state', 'memory'],
+        files: {},
+        file: ['proj', 'state', '.gitignore'],
+        literal: ABSENT,
+      },
+    ];
+    gitignoreScenarios.forEach((sc, i) => {
+      const bed = join(ctx.scratch, 'gitignore', `g${i}`);
+      const got = {};
+      const answers = {};
+      const beds = {};
+      for (const side of ['py', 'node']) {
+        beds[side] = join(bed, side);
+        materialise(beds[side], { dirs: ['proj'], files: sc.files });
+        const request = {
+          op: 'run',
+          root: join(beds[side], ...sc.store),
+          today: TODAY,
+          index_budget: null,
+          k: null,
+          create: true,
+          calls: [save('project', 'gitignore-probe', 'the first save into this store', 'b')],
+        };
+        const r = side === 'py' ? ctx.runPython(REF, request) : runNode(store, request);
+        answers[side] = scrub(r.results, beds[side]);
+        got[side] = { file: readOr(join(beds[side], ...sc.file)), all: gitignoresUnder(beds[side]) };
+      }
+      const name = (what) => `.bantamkit/.gitignore: ${sc.label} — ${what}`;
+      const expectedAll = sc.literal === ABSENT ? [] : [sc.file.join('/')];
+      // The save itself must have SUCCEEDED on both sides; a refused save writes no ignore
+      // file and would make the absence scenario pass for the wrong reason.
+      for (const side of ['py', 'node']) {
+        cases.push({
+          name: name(`${side === 'py' ? 'python' : 'node'} saved`),
+          kind: 'json',
+          expected: [{ status: 'saved', name: b64('gitignore-probe'), similar: null }],
+          actual: answers[side],
+        });
+        cases.push({
+          name: name(`${side === 'py' ? 'python' : 'node'} bytes against the literal`),
+          kind: 'bytes',
+          expected: sc.literal,
+          actual: got[side].file,
+        });
+        cases.push({
+          name: name(`${side === 'py' ? 'python' : 'node'} .gitignore files under the bed`),
+          kind: 'json',
+          expected: expectedAll,
+          actual: got[side].all,
+        });
+      }
+      cases.push({
+        name: name('python against node, bytes'),
+        kind: 'bytes',
+        expected: got.py.file,
+        actual: got.node.file,
+      });
+      cases.push({
+        name: name('python against node, whole tree'),
+        kind: 'bytes',
+        expected: manifest(beds.py),
+        actual: manifest(beds.node),
+      });
+    });
+    notes.push(`.bantamkit/.gitignore: ${gitignoreScenarios.length} scenarios, each side against a literal and against the other`);
+  }
+
   // ---------------------------------------------------- the recall tie-break, 50 000 times
   //
   // `recall` sorts on `(-score, fact.name)`, and once a name can be something other than a
