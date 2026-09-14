@@ -45,7 +45,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { currentInstall, Undetermined } from './mcp/identity.js';
-import { PACKAGE, runInstaller, shlexJoin } from './npminstall.js';
+import { keptCli, keptManifest, keptPrefix, PACKAGE, runInstaller, shlexJoin } from './npminstall.js';
 
 // `PACKAGE`, `shlexJoin` and `runInstaller` moved to `npminstall.ts` in job51 so `--install` can
 // share the npm spawner without importing this module (see that file's header). Re-exported so
@@ -199,6 +199,9 @@ export const NO_RECORDED_ROUTE =
  * byte-identical config can be running builds resolved weeks apart. So this row is true of the
  * cache that actually exists rather than of a fresh resolve that does not happen, and it names
  * the only thing that changes it: the spec on the host's command line.
+ *
+ * Since J51-5 this row is reached only when there is NO kept install (`keptInstall`): with one,
+ * `runUpdate` updates that install instead, so the sentence stays true of what it describes.
  */
 export const ROUTES: Record<string, string> = {
   'local-file':
@@ -497,6 +500,50 @@ export interface UpdateOptions {
   readonly url?: string;
   readonly timeout?: number;
   readonly environment?: Environment;
+  /**
+   * Which install is running, as `runUpdate` asks it. Default: `currentInstall()`, and nothing
+   * else in `src/` passes one. A seam so the `ephemeral` arms are reachable from a test running
+   * in a checkout; `update()` itself never reads it.
+   */
+  readonly install?: () => { readonly shape: string; readonly source: string | null };
+}
+
+/** The kept install `--update` targets from an `npx` cache: its version and its `--prefix` tree. */
+export interface KeptInstall {
+  readonly version: string;
+  readonly environment: Environment;
+}
+
+/**
+ * The kept install `--install` left at `keptPrefix()` (J51-4), or `null` when there is none to
+ * patch. A local read and nothing more — no network, no spawn.
+ *
+ * WHY `--update` LOOKS FOR IT. From an `npx` cache there is nothing to update in place, but the
+ * hosts do not launch the cache: `--install` recorded the kept install's `cli.js`. So an operator
+ * who types `npx -y bantamkit-mcp@latest --update` is asking about THAT install, and it is a
+ * `--prefix` tree `npm install --prefix` updates in place (measured: 0.32.1 to 0.33.0, exit 0).
+ *
+ * THERE IS ONE ONLY WHEN ALL OF THIS HOLDS, and anything short of it is `null` — which leaves
+ * today's `ephemeral` refusal exactly as it was:
+ *
+ *   - the kept manifest (`keptManifest`, never respelled) is readable JSON with a non-blank
+ *     string `version`;
+ *   - `installEnvironment` on the kept `cli.js` says it is NOT the global tree. npm writes a
+ *     `package.json` at a `--prefix` it installed into, so a real kept install always passes.
+ *     One without it would render `npm install --global`, which updates some other install and
+ *     reports success about this one — worse than refusing.
+ */
+export function keptInstall(prefix: string = keptPrefix()): KeptInstall | null {
+  let version: unknown;
+  try {
+    version = (JSON.parse(readFileSync(keptManifest(prefix), 'utf8')) as { version?: unknown }).version;
+  } catch {
+    return null;
+  }
+  if (typeof version !== 'string' || version.trim() === '') return null;
+  const environment = installEnvironment(keptCli(prefix));
+  if (environment.global) return null;
+  return { version, environment };
 }
 
 /**
@@ -630,7 +677,7 @@ export async function runUpdate(
   let shape: string;
   let recorded: string | null;
   try {
-    const install = currentInstall();
+    const install = (options.install ?? currentInstall)();
     shape = install.shape;
     recorded = install.source;
   } catch (e) {
@@ -642,9 +689,24 @@ export async function runUpdate(
   // path could not be read — `registry`, where the route is this flag itself, and `checkout`,
   // whose tree IS the thing to update. The running package directory is not a guess: it is
   // where the code being executed lives, and it is the tree the route says to `git pull`.
-  const origin: Origin = { shape, source: recorded ?? packageDirectory };
+  let origin: Origin = { shape, source: recorded ?? packageDirectory };
+  let current = installed;
+  let chosen = options;
+  // J51-5: an `npx` cache WITH a kept install updates the kept install — its version is the one
+  // compared and printed, and its prefix is where npm points — through exactly the registry
+  // route's lines. Decided HERE and not in `update()`, so `update()` stays a function of its
+  // arguments and never of whatever `~/.bantamkit/mcp` the machine running it happens to hold.
+  // No kept install: nothing below changes and the `ephemeral` refusal is today's.
+  if (shape === 'ephemeral') {
+    const kept = keptInstall();
+    if (kept !== null) {
+      origin = { shape: 'registry', source: kept.environment.root };
+      current = kept.version;
+      chosen = { ...options, environment: kept.environment };
+    }
+  }
   try {
-    out(`${await update(installed, origin, options)}\n`);
+    out(`${await update(current, origin, chosen)}\n`);
   } catch (e) {
     if (!(e instanceof UpdateRefused)) throw e;
     err(`error: ${e.message}\n`);
