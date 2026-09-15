@@ -56,7 +56,8 @@
  */
 import { appendFileSync, mkdirSync, renameSync, statSync } from 'node:fs';
 
-import { cmpCodepoint, osErrorClassName, PyOSError, pyJoin, pyParent } from './memory/pyfs.js';
+import { cmpCodepoint, osErrorClassName, pyExists, PyOSError, pyJoin, pyName, pyParent, pyParents } from './memory/pyfs.js';
+import { ensureBantamkitGitignore } from './memory/store.js';
 
 /**
  * Environment switch. Unset or `off`/`0`/`false`/`no`/empty -> disabled. `on`/`1`/`true`/
@@ -265,11 +266,33 @@ export class EventLog {
    * by construction, so that branch is a statement of intent, not a live path.
    */
   private append(path: string, payload: Buffer): void {
+    // AUDIT FINDING (J51-1, mirrored from `runtime-py/src/bantamkit/eventlog.py`): the
+    // `mkdirSync` below can bring a whole `.bantamkit` directory into existence on its own
+    // -- `BANTAMKIT_EVENT_LOG=on` with a project store that was never saved to reaches here
+    // first -- entirely bypassing `MemoryStore.ensureDirs`, which is the only other place a
+    // `.bantamkit` directory gets created. Without this call a store built that way would
+    // never get its self-ignoring `.gitignore`. Cheap and idempotent: a no-op unless one of
+    // `path`'s ancestors is literally named `.bantamkit`.
+    //
+    // USER RULING #2 (J51-8b): the ignore file is written only when THIS call is what
+    // creates `.bantamkit`, so existence has to be checked BEFORE the mkdir below -- after
+    // it, the directory unconditionally exists and the question is unanswerable.
+    let bantamkitDir: string | null = null;
+    for (const parent of pyParents(path)) {
+      if (pyName(parent) === '.bantamkit') {
+        bantamkitDir = parent;
+        break;
+      }
+    }
+    const bantamkitDirExistedBefore = bantamkitDir !== null && pyExists(bantamkitDir);
     // `pyParent` and not `node:path`'s `dirname`: this module is reached from a Windows
     // host through the same code, and the reference's `Path(...).parent` is the spelling
     // that understands a drive letter. `.`'s parent is `.` in both, so a bare filename
     // makes the directory that already exists rather than reaching for the root.
     mkdirSync(pyParent(path), { recursive: true });
+    if (bantamkitDir !== null) {
+      ensureBantamkitGitignore(bantamkitDir, !bantamkitDirExistedBefore);
+    }
     let size = 0;
     try {
       size = statSync(path).size;

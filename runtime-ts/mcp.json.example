@@ -1,7 +1,7 @@
-// bantamkit-mcp — MCP host configuration, three forms.
+// bantamkit-mcp — MCP host configuration, five forms.
 //
 // This file is JSONC for the comments. A real `.mcp.json` (project scope) or the
-// `mcpServers` block of a host's user-scope config is plain JSON: copy ONE of the three
+// `mcpServers` block of a host's user-scope config is plain JSON: copy ONE of the five
 // server entries below, drop the comments, and drop the surrounding `_variants` wrapper.
 //
 // Which one to use is decided by two questions, and both were measured — see
@@ -19,8 +19,53 @@
 //      JSON-RPC channel for 140 s (connection refused) or 590 s (packets dropped) and
 //      then the process exits. The host reports a handshake timeout, not a network
 //      error. If cold-and-offline is real for you, use form C.
+//
+// AMENDED 2026-09-15 (job51). Both answers above are now wrong, and form K below is the
+// recommended form.
+//
+//   - Question 2 is not only about a COLD start. A registry spec (`bantamkit-mcp`,
+//     `@latest`, `@<version>`) is resolved against the registry on every launch. With a
+//     warm cache and the network cut, all three hung silently at the 45 s bound with
+//     0 stdout bytes (45.01 s, 45.01 s, 45.02 s). The cold-cache arm, with the registry
+//     refusing connections, gave up after 140.29 s with 0 frames. Both are from
+//     `node tools/conformance/npx-cold-start.mjs --offline`, 2026-09-15, node v25.2.1,
+//     npm 11.6.2, macOS.
+//   - Form C does not fix question 1 by itself. See its own amendment.
+//
+// The answer to both questions is form K: node by absolute path, and a kept install's
+// `cli.js` by absolute path.
 {
   "_variants": {
+
+    // ------------------------------------------ K. a kept install, no npx (RECOMMENDED)
+    // What `npx -y bantamkit-mcp@latest --install <host>` writes from bantamkit-mcp 0.34.0.
+    // 0.34.0 was not yet on npm on 2026-09-15; until it is, that command installs 0.33.0,
+    // which still writes form A. To make this form by hand today:
+    //
+    //     npm install --prefix ~/.bantamkit/mcp bantamkit-mcp@0.33.0
+    //     node -p process.execPath          # paste the result as "command"
+    //
+    // A JSON file cannot expand `~`, so both paths are spelled out in full.
+    //
+    // Measured (npx-cold-start.mjs --offline, kept-install arms): launched this way with
+    // PATH=/usr/bin:/bin:/usr/sbin:/sbin and the network cut, it served 12 tools in 0.09 s.
+    // The same install's `node_modules/.bin/bantamkit-mcp` exited 127 in 0.16 s with
+    // `env: node: No such file or directory`, because its first line is
+    // `#!/usr/bin/env node`. That is why "command" is node itself and not the shim.
+    //
+    // "command" names ONE node version. Under mise it was
+    // `~/.local/share/mise/installs/node/25.2.1/bin/node`. Remove or switch away from that
+    // version and this entry stops launching. Re-run
+    // `npx -y bantamkit-mcp@latest --install <host> --force` to record the node you have
+    // now. nvm also keeps each version in its own directory; that was not measured here.
+    //
+    // Update in place with `npx -y bantamkit-mcp@latest --update` (0.34.0 and later), or
+    // `npm install --prefix ~/.bantamkit/mcp bantamkit-mcp@latest`, then reconnect the
+    // server in the host. The paths above do not change.
+    "K-kept-install": {
+      "command": "/Users/you/.local/share/mise/installs/node/25.2.1/bin/node",
+      "args": ["/Users/you/.bantamkit/mcp/node_modules/bantamkit-mcp/dist/cli.js"]
+    },
 
     // ---------------------------------------------------------------- A. the short form
     // What the package exists for: one line, no clone, no venv, no Python.
@@ -28,6 +73,9 @@
     // Requires `npx` on the host's PATH and a network on first run. `-y` is not optional:
     // stdin is the JSON-RPC channel, and an install prompt that read one frame would look
     // like a server that lost a request.
+    //
+    // AMENDED 2026-09-15: "a network on first run" is false for this spec. It needs the
+    // registry on EVERY launch; see the header amendment.
     //
     // `@0.25.0` is a deliberate pin. Without it npx resolves the `latest` dist-tag and
     // caches it, so two machines can run different builds from this identical config and
@@ -42,6 +90,12 @@
     // `command -v npx` in your terminal and paste it here verbatim.
     //
     // This still needs the network on a cold cache. It only fixes question 1.
+    //
+    // AMENDED 2026-09-15: on every launch, not only a cold one (header amendment). Adding
+    // `--offline` before `-y` makes npx serve a warm cache without the registry. Measured:
+    // 12 tools in 0.40 s. On a cache that has never seen the package it exits 1 in 2.69 s
+    // with `ENOTCACHED`. That makes it a middle option for a machine that has already run
+    // this spec once, not a way to start on a new one.
     "B-npx-absolute": {
       "command": "/Users/you/.local/share/mise/installs/node/latest/bin/npx",
       "args": ["-y", "bantamkit-mcp@0.25.0"]
@@ -54,6 +108,13 @@
     // Fixes both questions: no PATH lookup of `npx`, no registry on start, and the
     // version is whatever you installed rather than whatever `latest` resolved to today.
     // The cost is that upgrading is now a thing you do on purpose.
+    //
+    // AMENDED 2026-09-15: "fixes both questions" holds only when `node` itself is on the
+    // host's PATH. The command installed here runs `dist/cli.js`, whose first line is
+    // `#!/usr/bin/env node`. The kept install's `.bin` shim is that same file, and under
+    // PATH=/usr/bin:/bin:/usr/sbin:/sbin it exited 127 (form K's note). A global bin was
+    // not launched separately here. Where node is not on the host's PATH, use form K's
+    // shape instead: node by absolute path, then the global install's `dist/cli.js`.
     "C-global-install": {
       "command": "/usr/local/bin/bantamkit-mcp",
       "args": []
@@ -80,7 +141,8 @@
 
   // ------------------------------------------------------------------------- arguments
   //
-  // PASS NO ARGUMENTS unless you know why. With an empty `args` (beyond the npx spec) the
+  // PASS NO ARGUMENTS unless you know why. With an empty `args` (beyond the npx spec, or
+  // the `cli.js` path in forms K and D) the
   // server binds `Memory.layered` — the project store found from the working directory,
   // the profile layer, and any `extra_stores` from `.bantamkit/config.yaml` — and every
   // recall line carries its layer tag, `[project] ` / `[extra:<name>] ` / `[profile] `.

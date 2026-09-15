@@ -11,10 +11,12 @@
  * isolation is a belief is a test that eventually writes to somebody's Cursor config.
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 const CMD = '/opt/bantamkit/bin/bantamkit-mcp';
 
@@ -197,10 +199,267 @@ test('the written JSON escapes non-ASCII so both runtimes write the same bytes',
   });
 });
 
-test('this side registers npx and never a path from this machine', async () => {
-  // The ruled divergence, pinned from this side so it cannot drift into "whatever ran".
-  const { thisCommand } = await import('../dist/hostinstall.js');
-  assert.deepEqual(thisCommand(), { command: 'npx', args: ['-y', 'bantamkit-mcp'] });
+// --- J51-4: the recorded command is an absolute node and an absolute cli.js --------------------
+//
+// CHANGED EXPECTATION. Until job51 this block pinned `thisCommand()` to `npx -y bantamkit-mcp`.
+// Measured on npm 11.6.2 with a WARM cache and the network cut, that command hangs silently past
+// 45 s with zero bytes on stdout, pinned or not; a kept install launched as
+// `<abs node> <abs dist/cli.js>` answered in 0.11 s under a GUI-shaped PATH. The user ruled for
+// the kept install, so the pin moved with the ruling rather than being deleted.
+
+const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+const OWN_CLI = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
+
+/** The kept prefix, spelled as a LITERAL here so the exported one is checked against something. */
+const keptPrefixIn = (home) => join(home, '.bantamkit', 'mcp');
+const keptCliIn = (home) => join(keptPrefixIn(home), 'node_modules', 'bantamkit-mcp', 'dist', 'cli.js');
+
+/** What `npm install --prefix` leaves behind, as far as this module reads it. */
+function seedKept(home, version) {
+  const cli = keptCliIn(home);
+  mkdirSync(dirname(cli), { recursive: true });
+  writeFileSync(join(dirname(dirname(cli)), 'package.json'), JSON.stringify({ name: 'bantamkit-mcp', version }));
+  writeFileSync(cli, '');
+  return cli;
+}
+
+/** An installer double: records every argv it is handed and answers with `effect(argv)`. */
+function recorder(effect) {
+  const calls = [];
+  const fn = (argv) => {
+    calls.push([...argv]);
+    return effect(argv);
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+const mustNotInstall = recorder(() => {
+  throw new Error('the installer ran on a branch that must stay offline');
+});
+
+test('the kept prefix is exported once and lives at <home>/.bantamkit/mcp', async () => {
+  await withHome(async (h, root) => {
+    assert.equal(h.keptPrefix(), keptPrefixIn(root));
+    assert.equal(h.keptCli(), keptCliIn(root));
+  });
+});
+
+test('ephemeral with no kept install: npm runs once into the kept prefix, then the entry names it', async () => {
+  await withHome(async (h, root) => {
+    const path = h.hostConfigPath('cursor');
+    const installer = recorder(() => {
+      // The config is not touched before the kept install exists.
+      assert.ok(!existsSync(path), 'a host config was written before the kept install was made');
+      seedKept(root, VERSION);
+      return [0, 'added 95 packages'];
+    });
+    h.installSelf('cursor', false, { shape: () => 'ephemeral', installer });
+    assert.deepEqual(installer.calls, [
+      ['npm', 'install', '--prefix', keptPrefixIn(root), `bantamkit-mcp@${VERSION}`],
+    ]);
+    assert.deepEqual(readJson(path).mcpServers.bantamkit, { command: process.execPath, args: [keptCliIn(root)] });
+  });
+});
+
+test('ephemeral with a kept install at this version: npm never runs, same entry', async () => {
+  // A second `--install` for another host must work with no network at all.
+  await withHome(async (h, root) => {
+    seedKept(root, VERSION);
+    h.installSelf('copilot', false, { shape: () => 'ephemeral', installer: mustNotInstall });
+    assert.deepEqual(readJson(h.hostConfigPath('copilot')).servers.bantamkit, {
+      type: 'stdio',
+      command: process.execPath,
+      args: [keptCliIn(root)],
+    });
+    assert.deepEqual(mustNotInstall.calls, []);
+  });
+});
+
+test('ephemeral with a kept install at an OLDER version: npm runs', async () => {
+  await withHome(async (h, root) => {
+    seedKept(root, '0.0.1');
+    const installer = recorder(() => {
+      seedKept(root, VERSION);
+      return [0, ''];
+    });
+    h.installSelf('cursor', false, { shape: () => 'ephemeral', installer });
+    assert.equal(installer.calls.length, 1);
+    assert.equal(installer.calls[0].at(-1), `bantamkit-mcp@${VERSION}`);
+    assert.deepEqual(readJson(h.hostConfigPath('cursor')).mcpServers.bantamkit.args, [keptCliIn(root)]);
+  });
+});
+
+// J51-9a (review F1). `--install` from a stale npx cache must never move a NEWER kept install
+// back: the operator ran `--update` to a later release, and every host already launches that
+// kept install. The pair is mixed-digit on purpose — as strings `'0.10.0' < '0.9.0'`, so an
+// equality check and a string comparison both run npm here, and only a numeric order passes.
+test('ephemeral with a kept install at a NEWER version: npm never runs, the kept install is recorded', async () => {
+  await withHome(async (h, root) => {
+    seedKept(root, '0.10.0');
+    const installer = recorder(() => {
+      seedKept(root, '0.9.0');
+      return [0, ''];
+    });
+    h.installSelf('cursor', false, { shape: () => 'ephemeral', installer, version: '0.9.0' });
+    assert.deepEqual(installer.calls, [], 'npm ran and would have downgraded the kept install');
+    assert.deepEqual(readJson(h.hostConfigPath('cursor')).mcpServers.bantamkit, {
+      command: process.execPath,
+      args: [keptCliIn(root)],
+    });
+    assert.equal(readJson(join(dirname(dirname(keptCliIn(root))), 'package.json')).version, '0.10.0');
+  });
+});
+
+test('ephemeral with a kept install whose version is not dotted numbers: kept, never replaced, no stack trace', async () => {
+  // `compareVersions` is total: a non-numeric component sorts after every number in its
+  // position, so a version this module cannot read as numbers ranks ABOVE the running one.
+  // The kept install is left alone rather than overwritten with something that may be older.
+  await withHome(async (h, root) => {
+    seedKept(root, 'not-a-version');
+    const installer = recorder(() => [0, '']);
+    const { command, args } = h.thisCommand({ shape: () => 'ephemeral', installer, version: '0.9.0' });
+    assert.deepEqual(installer.calls, []);
+    assert.deepEqual({ command, args }, { command: process.execPath, args: [keptCliIn(root)] });
+  });
+});
+
+test('ephemeral with a kept install at a NEWER version but no cli.js: npm runs, as with no kept install', async () => {
+  await withHome(async (h, root) => {
+    rmSync(seedKept(root, '0.10.0'));
+    const installer = recorder(() => {
+      seedKept(root, '0.9.0');
+      return [0, ''];
+    });
+    h.installSelf('cursor', false, { shape: () => 'ephemeral', installer, version: '0.9.0' });
+    assert.deepEqual(installer.calls, [['npm', 'install', '--prefix', keptPrefixIn(root), 'bantamkit-mcp@0.9.0']]);
+  });
+});
+
+test('ephemeral with a kept install reporting a BLANK version: npm runs, as with no readable version', async () => {
+  await withHome(async (h, root) => {
+    seedKept(root, '   ');
+    const installer = recorder(() => {
+      seedKept(root, '0.9.0');
+      return [0, ''];
+    });
+    h.installSelf('cursor', false, { shape: () => 'ephemeral', installer, version: '0.9.0' });
+    assert.equal(installer.calls.length, 1);
+  });
+});
+
+test('npm failing is a refusal naming prefix, command and exit; the config is byte-unchanged', async () => {
+  await withHome(async (h, root) => {
+    const path = h.hostConfigPath('cursor');
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({ mcpServers: { 'someone-else': { command: 'keep-me', args: [] } } }));
+    const before = readFileSync(path);
+    const installer = recorder(() => [1, 'npm http fetch GET\nnpm error code ETIMEDOUT\n']);
+    assert.throws(
+      () => h.installSelf('cursor', false, { shape: () => 'ephemeral', installer }),
+      (e) =>
+        e instanceof h.InstallError &&
+        e.message.includes(keptPrefixIn(root)) &&
+        e.message.includes(`npm install --prefix ${keptPrefixIn(root)} bantamkit-mcp@${VERSION}`) &&
+        e.message.includes('exited 1') &&
+        e.message.includes('npm error code ETIMEDOUT') &&
+        !e.message.includes('npm http fetch GET'),
+    );
+    assert.deepEqual(readFileSync(path), before);
+    assert.deepEqual(backupsIn(path), []);
+  });
+});
+
+test('npm exiting 0 without leaving the cli.js is the same refusal, not a half-install', async () => {
+  await withHome(async (h, root) => {
+    const installer = recorder(() => [0, 'up to date']);
+    assert.throws(
+      () => h.installSelf('cursor', false, { shape: () => 'ephemeral', installer }),
+      (e) => e instanceof h.InstallError && e.message.includes(keptCliIn(root)) && e.message.includes('exited 0'),
+    );
+    assert.ok(!existsSync(h.hostConfigPath('cursor')));
+  });
+});
+
+for (const shape of ['registry', 'local-file', 'linked', 'checkout']) {
+  test(`a ${shape} install is already kept: npm never runs, the entry is this process's own cli.js`, async () => {
+    await withHome(async (h) => {
+      h.installSelf('cursor', false, { shape: () => shape, installer: mustNotInstall });
+      assert.deepEqual(readJson(h.hostConfigPath('cursor')).mcpServers.bantamkit, {
+        command: process.execPath,
+        args: [OWN_CLI],
+      });
+      assert.deepEqual(mustNotInstall.calls, []);
+    });
+  });
+}
+
+test('the default shape is currentInstall()’s, and this tree is a checkout', async () => {
+  await withHome(async (h) => {
+    h.installSelf('cursor', false, { installer: mustNotInstall });
+    assert.deepEqual(readJson(h.hostConfigPath('cursor')).mcpServers.bantamkit, {
+      command: process.execPath,
+      args: [OWN_CLI],
+    });
+    assert.ok(existsSync(OWN_CLI));
+  });
+});
+
+test('an install shape that cannot be derived is a refusal, not a guessed command', async () => {
+  const { Undetermined } = await import('../dist/mcp/identity.js');
+  await withHome(async (h) => {
+    const shape = () => {
+      throw new Undetermined('this install records its origin as git+https://example/x');
+    };
+    assert.throws(
+      () => h.installSelf('cursor', false, { shape, installer: mustNotInstall }),
+      (e) => e instanceof h.InstallError && e.message.includes('git+https://example/x'),
+    );
+    assert.ok(!existsSync(h.hostConfigPath('cursor')));
+  });
+});
+
+test('the claude arm hands `claude mcp add` the same absolute pair', { skip: process.platform === 'win32' }, async () => {
+  const { chmodSync } = await import('node:fs');
+  await withHome(async (h, root) => {
+    const bin = join(root, 'bin');
+    mkdirSync(bin, { recursive: true });
+    const seen = join(root, 'argv.txt');
+    writeFileSync(join(bin, 'claude'), `#!/bin/sh\nfor a in "$@"; do printf '%s\\n' "$a"; done > '${seen}'\nexit 0\n`);
+    chmodSync(join(bin, 'claude'), 0o755);
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${bin}:${previousPath}`;
+    try {
+      const installer = recorder(() => {
+        seedKept(root, VERSION);
+        return [0, ''];
+      });
+      h.installSelf('claude', false, { shape: () => 'ephemeral', installer });
+      assert.deepEqual(readFileSync(seen, 'utf8').split('\n').slice(0, -1), [
+        'mcp', 'add', 'bantamkit', '-s', 'user', '--', process.execPath, keptCliIn(root),
+      ]);
+    } finally {
+      process.env.PATH = previousPath;
+    }
+  });
+});
+
+test('--install on the real CLI records the absolute node and this tree’s cli.js, never npx', () => {
+  const root = mkdtempSync(join(tmpdir(), 'bk-hostinstall-cli-'));
+  try {
+    const r = spawnSync(process.execPath, [OWN_CLI, '--install', 'cursor'], {
+      input: '',
+      encoding: 'utf8',
+      env: { ...process.env, HOME: root, USERPROFILE: root },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const entry = readJson(join(root, '.cursor', 'mcp.json')).mcpServers.bantamkit;
+    assert.deepEqual(entry, { command: process.execPath, args: [OWN_CLI] });
+    assert.ok(isAbsolute(entry.command) && isAbsolute(entry.args[0]));
+    assert.ok(r.stdout.includes(`  command: ${process.execPath} ${OWN_CLI}`), r.stdout);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 // --- the five things review found that no test could see ------------------------------------

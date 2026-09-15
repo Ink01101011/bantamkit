@@ -15,10 +15,12 @@ convenience — a file the host owns and rewrites is a file we should not be mer
 hand.
 
 WHAT THIS WRITES IS WHAT IS RUNNING. The command recorded is this interpreter's own
-`bantamkit-mcp` console script, by absolute path. The Node distribution records
-`npx -y bantamkit-mcp` for the same reason: the thing installed should be the thing that
-answers, and neither side should send a host looking for the other's runtime. The two
-outputs therefore DIFFER by construction and that difference is ruled in `docs/porting.md`.
+`bantamkit-mcp` console script, by absolute path. Since J51-4, the Node side records its
+own absolute command the same way -- `<absolute node> <absolute dist/cli.js>` of the kept
+install under `~/.bantamkit/mcp` -- for the same reason: the thing installed should be the
+thing that answers, and neither side should send a host looking for the other's runtime.
+The two outputs therefore DIFFER by construction (different interpreter, different path)
+and that difference is ruled in `docs/porting.md`.
 
 WHY IT NEVER PROMPTS. An overwrite is exactly the moment a program wants to ask, and asking
 requires a terminal. Measured repeatedly on this machine: Claude Code's `!` channel has no

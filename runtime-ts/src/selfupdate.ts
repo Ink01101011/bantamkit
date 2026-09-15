@@ -40,12 +40,19 @@
  * `test/selfupdate.test.mjs` — and it calls `runUpdate` from the flag and returns before a
  * memory store or a transport exists, the same shape `--assets-root` and `--install` use.
  */
-import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { currentInstall, Undetermined } from './mcp/identity.js';
+import { compareVersions, keptCli, keptManifest, keptPrefix, PACKAGE, runInstaller, shlexJoin } from './npminstall.js';
+
+// `PACKAGE`, `shlexJoin` and `runInstaller` moved to `npminstall.ts` in job51 so `--install` can
+// share the npm spawner without importing this module (see that file's header). Re-exported so
+// this module's surface — and every test importing these from `dist/selfupdate.js` — is unchanged.
+// `compareVersions` followed in J51-9a, for the same reason: `--install` from an `npx` cache orders
+// the kept install's version against its own, and must not import this module to do it.
+export { compareVersions, PACKAGE, runInstaller, shlexJoin };
 
 /**
  * The command the operator typed, on BOTH runtimes. Not the package name — see the module
@@ -53,9 +60,6 @@ import { currentInstall, Undetermined } from './mcp/identity.js';
  * both, so only this word can appear in a sentence the reference and this file share verbatim.
  */
 export const PROGRAM = 'bantamkit-mcp';
-
-/** The npm package this install would upgrade. Divergent by construction (`DISTRIBUTION`). */
-export const PACKAGE = 'bantamkit-mcp';
 
 /**
  * The one URL this toolbox ever fetches. Divergent by construction (`INDEX_URL`).
@@ -197,6 +201,9 @@ export const NO_RECORDED_ROUTE =
  * byte-identical config can be running builds resolved weeks apart. So this row is true of the
  * cache that actually exists rather than of a fresh resolve that does not happen, and it names
  * the only thing that changes it: the spec on the host's command line.
+ *
+ * Since J51-5 this row is reached only when there is NO kept install (`keptInstall`): with one,
+ * `runUpdate` updates that install instead, so the sentence stays true of what it describes.
  */
 export const ROUTES: Record<string, string> = {
   'local-file':
@@ -319,25 +326,6 @@ export function fill(template: string, values: Readonly<Record<string, string | 
 }
 
 /**
- * `shlex.join`: `shlex.quote` each word and space them.
- *
- * Hand-rolled from CPython's own rule — `_find_unsafe = re.compile(r'[^\w@%+=:,./-]', re.ASCII)`
- * — because the rendered command is printed to the operator by `UPDATING`, by `COMMAND_FAILED`
- * and by the `local-file` route, and a prefix path with a space in it is the normal case on
- * macOS and on Windows. Single quotes, with an embedded `'` closed and reopened the way
- * `shlex.quote` does it, so the line can be pasted back into a shell unchanged.
- */
-export function shlexJoin(command: readonly string[]): string {
-  return command
-    .map((word) => {
-      if (word === '') return "''";
-      if (/^[\w@%+=:,./-]+$/.test(word)) return word;
-      return `'${word.replace(/'/g, `'"'"'`)}'`;
-    })
-    .join(' ');
-}
-
-/**
  * The version string out of the registry's JSON, or a named refusal. Pure — no network here.
  *
  * SPLIT FROM THE FETCH SO THE GARBAGE CASE IS TESTED THROUGH THE REAL PARSER, exactly as the
@@ -443,90 +431,6 @@ export function upgradeCommand(environment: Environment): string[] {
   return ['npm', 'install', '--prefix', environment.root, `${PACKAGE}@latest`];
 }
 
-/**
- * Run the installer, capture what it said, return both. The only side effect in this module.
- *
- * CAPTURED RATHER THAN INHERITED so the report has one shape whether or not anybody is
- * watching, and so a test can inject a substitute and assert on the command WITHOUT a real
- * install ever running.
- *
- * THE ONE PLACE THIS IS NOT THE REFERENCE'S BEHAVIOUR: `stderr=STDOUT` genuinely interleaves
- * the two streams in the order they happened, and `spawnSync` has no fd-dup, so the two pipes
- * are concatenated instead — stdout, then stderr. npm writes its progress to stderr and its
- * result to stdout, so an operator reading a failure still gets both, in two blocks rather than
- * one. The installer's own words are never compared across runtimes; the sentences around them
- * are.
- *
- * `shell: true` ON WINDOWS ONLY, the idiom `hostinstall.installViaClaudeCli` established for
- * the same reason: npm is a `npm.cmd` batch shim there and `spawnSync` returns ENOENT for a
- * batch file without a shell. Arguments are quoted because `cmd.exe` gets a string.
- */
-export function runInstaller(command: readonly string[]): [number, string] {
-  const [program, ...args] = command;
-  const win = process.platform === 'win32';
-  const quoted = win ? args.map((a) => (/[\s"^&|<>]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a)) : args;
-  const done = spawnSync(program ?? '', quoted, { encoding: 'utf8', shell: win });
-  if (done.error) {
-    // A missing `npm` is not a stack trace: it is a command that failed, and `COMMAND_FAILED`
-    // is the sentence that says so and hands back what went wrong. 127 is the shell's own
-    // code for "command not found", so the number means something to the person reading it.
-    return [127, done.error.message];
-  }
-  return [done.status ?? 1, `${done.stdout ?? ''}${done.stderr ?? ''}`];
-}
-
-type Part = readonly [number, number, string];
-
-/**
- * A dotted version as something orderable, deterministically, without claiming PEP 440.
- *
- * THE REFERENCE'S RULE, REPRODUCED EXACTLY, INCLUDING THE PART THAT IS WRONG. Split on `.`; a
- * component that is all digits sorts as a NUMBER, anything else sorts as a STRING after every
- * number in that position. So `0.9.0 < 0.10.0` — the thing a plain string compare gets wrong,
- * and the reason this exists — and `0.31.0 < 0.31.0rc1`, which is WRONG BY SEMVER AND BY PEP
- * 440 and is kept anyway.
- *
- * A CORRECT COMPARISON HERE WOULD BE A DIVERGENCE, NOT AN IMPROVEMENT. `_version_key`'s
- * docstring in the reference gives the reason: bantamkit has never published a prerelease to
- * either registry, and implementing PEP 440 there in order to reproduce it here would be a
- * second, larger thing to keep byte-identical in service of a case neither index can currently
- * return. What matters is that both runtimes are wrong in the SAME direction, which a
- * conformance case can pin and a reader can check. If a prerelease is ever published, this is
- * the function to fix — in both runtimes, in one job.
- *
- * `/^\d+$/` is ASCII-only, where CPython's `str.isdigit()` is not. That narrowing is the safe
- * direction: the strings `str.isdigit()` accepts and `int()` then REFUSES (superscripts, for
- * one) raise in the reference and sort as strings here, and no registry can answer with one.
- */
-function versionKey(version: string): Part[] {
-  return version.split('.').map((part): Part => (/^\d+$/.test(part) ? [0, Number(part), ''] : [1, 0, part]));
-}
-
-const PAD: Part = [0, 0, ''];
-
-function comparePart(left: Part, right: Part): number {
-  if (left[0] !== right[0]) return left[0] < right[0] ? -1 : 1;
-  if (left[1] !== right[1]) return left[1] < right[1] ? -1 : 1;
-  if (left[2] === right[2]) return 0;
-  return left[2] < right[2] ? -1 : 1;
-}
-
-/**
- * -1 when the index is ahead, 0 when they agree, 1 when the installed version is ahead.
- *
- * The shorter of the two is padded with numeric zeros, so `0.30` and `0.30.0` agree — which is
- * what a person means by them and what both registries would print for one release.
- */
-export function compareVersions(installed: string, latest: string): number {
-  const left = versionKey(installed);
-  const right = versionKey(latest);
-  const width = Math.max(left.length, right.length);
-  for (let i = 0; i < width; i += 1) {
-    const order = comparePart(left[i] ?? PAD, right[i] ?? PAD);
-    if (order !== 0) return order;
-  }
-  return 0;
-}
 
 /**
  * `10` rather than `10.0`, because the sentence is read by a person, not parsed.
@@ -546,6 +450,50 @@ export interface UpdateOptions {
   readonly url?: string;
   readonly timeout?: number;
   readonly environment?: Environment;
+  /**
+   * Which install is running, as `runUpdate` asks it. Default: `currentInstall()`, and nothing
+   * else in `src/` passes one. A seam so the `ephemeral` arms are reachable from a test running
+   * in a checkout; `update()` itself never reads it.
+   */
+  readonly install?: () => { readonly shape: string; readonly source: string | null };
+}
+
+/** The kept install `--update` targets from an `npx` cache: its version and its `--prefix` tree. */
+export interface KeptInstall {
+  readonly version: string;
+  readonly environment: Environment;
+}
+
+/**
+ * The kept install `--install` left at `keptPrefix()` (J51-4), or `null` when there is none to
+ * patch. A local read and nothing more — no network, no spawn.
+ *
+ * WHY `--update` LOOKS FOR IT. From an `npx` cache there is nothing to update in place, but the
+ * hosts do not launch the cache: `--install` recorded the kept install's `cli.js`. So an operator
+ * who types `npx -y bantamkit-mcp@latest --update` is asking about THAT install, and it is a
+ * `--prefix` tree `npm install --prefix` updates in place (measured: 0.32.1 to 0.33.0, exit 0).
+ *
+ * THERE IS ONE ONLY WHEN ALL OF THIS HOLDS, and anything short of it is `null` — which leaves
+ * today's `ephemeral` refusal exactly as it was:
+ *
+ *   - the kept manifest (`keptManifest`, never respelled) is readable JSON with a non-blank
+ *     string `version`;
+ *   - `installEnvironment` on the kept `cli.js` says it is NOT the global tree. npm writes a
+ *     `package.json` at a `--prefix` it installed into, so a real kept install always passes.
+ *     One without it would render `npm install --global`, which updates some other install and
+ *     reports success about this one — worse than refusing.
+ */
+export function keptInstall(prefix: string = keptPrefix()): KeptInstall | null {
+  let version: unknown;
+  try {
+    version = (JSON.parse(readFileSync(keptManifest(prefix), 'utf8')) as { version?: unknown }).version;
+  } catch {
+    return null;
+  }
+  if (typeof version !== 'string' || version.trim() === '') return null;
+  const environment = installEnvironment(keptCli(prefix));
+  if (environment.global) return null;
+  return { version, environment };
 }
 
 /**
@@ -679,7 +627,7 @@ export async function runUpdate(
   let shape: string;
   let recorded: string | null;
   try {
-    const install = currentInstall();
+    const install = (options.install ?? currentInstall)();
     shape = install.shape;
     recorded = install.source;
   } catch (e) {
@@ -691,9 +639,24 @@ export async function runUpdate(
   // path could not be read — `registry`, where the route is this flag itself, and `checkout`,
   // whose tree IS the thing to update. The running package directory is not a guess: it is
   // where the code being executed lives, and it is the tree the route says to `git pull`.
-  const origin: Origin = { shape, source: recorded ?? packageDirectory };
+  let origin: Origin = { shape, source: recorded ?? packageDirectory };
+  let current = installed;
+  let chosen = options;
+  // J51-5: an `npx` cache WITH a kept install updates the kept install — its version is the one
+  // compared and printed, and its prefix is where npm points — through exactly the registry
+  // route's lines. Decided HERE and not in `update()`, so `update()` stays a function of its
+  // arguments and never of whatever `~/.bantamkit/mcp` the machine running it happens to hold.
+  // No kept install: nothing below changes and the `ephemeral` refusal is today's.
+  if (shape === 'ephemeral') {
+    const kept = keptInstall();
+    if (kept !== null) {
+      origin = { shape: 'registry', source: kept.environment.root };
+      current = kept.version;
+      chosen = { ...options, environment: kept.environment };
+    }
+  }
   try {
-    out(`${await update(installed, origin, options)}\n`);
+    out(`${await update(current, origin, chosen)}\n`);
   } catch (e) {
     if (!(e instanceof UpdateRefused)) throw e;
     err(`error: ${e.message}\n`);

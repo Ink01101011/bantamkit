@@ -33,6 +33,63 @@ The uv equivalent is `uvx --from "bantamkit[mcp]" bantamkit-mcp`. uv is not
 installed on the machine this README was measured on, so unlike every other
 command here that one is the documented form rather than a measured one.
 
+> **AMENDED 2026-09-15 (job51) — `pipx run` launches online, and it is offline only while
+> pipx's own cache lasts.** The first form above is fine to try the server. As the command a
+> host runs on every launch, it has a cost. Measured with pipx 1.11.1 and `bantamkit 0.33.0`,
+> with the network cut by pointing the proxy variables at a closed port:
+>
+> ```bash
+> PIPX_HOME=<scratch> https_proxy=http://127.0.0.1:1 HTTPS_PROXY=http://127.0.0.1:1 \
+>   http_proxy=http://127.0.0.1:1 HTTP_PROXY=http://127.0.0.1:1 PIP_PROXY=http://127.0.0.1:1 \
+>   PIP_RETRIES=0 PIP_TIMEOUT=5 pipx run --spec "bantamkit[mcp]==0.33.0" bantamkit-mcp --assets-root
+> ```
+>
+> On a `PIPX_HOME` that had never run it, this exited 1 in 1.33 s. After one run online into
+> the same `PIPX_HOME`, the same command exited 0 in 0.47 s. So a `pipx run` host entry needs
+> the package index on a new machine, after the cache is cleared, and whenever pipx decides
+> its cached environment is stale. That last one is pipx's policy and was not measured here.
+> For a host, install into an environment you keep, as in the next section.
+
+### Install once, run offline
+
+Install into an environment you keep, then let `--install` record that environment's console
+script:
+
+```bash
+python -m venv <env>
+<env>/bin/pip install "bantamkit[mcp]"
+<env>/bin/bantamkit-mcp --install cursor     # or claude, claude-desktop, copilot
+```
+
+After that, no launch needs the network. `--install` writes the absolute path of the console
+script you ran. Measured 2026-09-15 on macOS arm64 against `bantamkit 0.33.0`,
+`<env>/bin/bantamkit-mcp --install cursor` wrote `"command": "<env>/bin/bantamkit-mcp", "args": []`.
+That command answered `initialize` and `tools/list` with 12 tools under the PATH a GUI app
+inherits on macOS, `/usr/bin:/bin:/usr/sbin:/sbin`. The Windows layout (`<env>\Scripts\`) was
+not measured.
+
+**For a machine with no network at all, carry a wheelhouse.** On a connected machine with the
+**same operating system, CPU architecture and Python minor version** as the target:
+
+```bash
+python -m pip download "bantamkit[mcp]==0.33.0" -d wheels
+```
+
+With Python 3.12.13 on macOS arm64 that wrote 33 files. One of them is
+`pydantic_core-2.46.5-cp312-cp312-macosx_11_0_arm64.whl`, which is built for CPython 3.12 on
+arm64 macOS and nothing else. That is why the two machines must match. Copy `wheels/` across,
+then on the target:
+
+```bash
+python -m venv <env>
+<env>/bin/pip install --no-index --find-links wheels "bantamkit[mcp]==0.33.0"
+<env>/bin/bantamkit-mcp --install cursor
+```
+
+Measured in a fresh venv with `PIP_INDEX_URL=http://127.0.0.1:1/` (a closed port): the install
+finished in 1.69 s, and the installed console script served the 12 tools as above. To move to
+a newer version, repeat the download and the install with the new version number.
+
 ### Connect it to a host
 
 **One command, and it writes the entry for you:**
@@ -62,6 +119,14 @@ The rest of this section is what those commands write, for anyone who would rath
 hand. Every host runs the same command; only the file and the key around it change. If
 you installed with `pip` into an environment you keep, replace the `command`/`args` pair
 with the absolute path to the `bantamkit-mcp` console script in that environment.
+
+**Prefer that absolute form over the `pipx run` lines below.** A `pipx run` entry needs the
+package index whenever pipx's cache is cold (measured in the amendment under *Install and
+run*). An entry that names a kept console script needs nothing at launch:
+
+```json
+{"mcpServers": {"bantamkit": {"command": "/absolute/path/to/env/bin/bantamkit-mcp", "args": []}}}
+```
 
 **Claude Code** — one command, no file to edit. `-s user` makes it available in every
 project; drop it for this project only.

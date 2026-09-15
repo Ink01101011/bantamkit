@@ -27,11 +27,12 @@ import { createHook } from 'node:async_hooks';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { keptCli, keptManifest, keptPrefix } from '../dist/npminstall.js';
 import {
   AHEAD,
   COMPARISON,
@@ -39,6 +40,7 @@ import {
   INDEX_URL,
   IndexTimeout,
   NO_OUTPUT,
+  NO_ROUTE,
   NOT_JSON,
   NO_VERSION_FIELD,
   PACKAGE,
@@ -554,6 +556,15 @@ test('every offline arm of --update opens no network handle, and the census can 
       ...SHAPELESS.map((shape) => () =>
         update('0.29.0', { shape, source: '/tmp/x' }, { fetch: stubFetch('0.30.0'), installer: installerMustNotRun })),
       () => runUpdate(() => {}, () => {}, '0.30.0', '/tmp/pkg', { fetch: stubFetch('0.30.0'), installer: installerMustNotRun }),
+      // J51-5: the kept-install arm reads a manifest off disk and still opens nothing.
+      () => withHome(async () => {
+        seedKept('0.29.0');
+        await runUpdate(() => {}, () => {}, '0.20.0', '/tmp/pkg', {
+          install: () => ({ shape: 'ephemeral', source: null }),
+          fetch: stubFetch('0.30.0'),
+          installer: recordingInstaller(),
+        });
+      }),
     ];
     for (const arm of arms) {
       try {
@@ -746,6 +757,184 @@ test('AHEAD and UP_TO_DATE are the constants the reference defines, byte for byt
   assert.equal(AHEAD, 'the installed version is ahead of the package index; there is nothing to update to.');
   assert.equal(COMPARISON, '{program} {installed} is installed; the package index has {latest}.');
   assert.equal(PROGRAM, 'bantamkit-mcp', 'the COMMAND is the same word on both sides; the package name is not');
+});
+
+// ============================================================ an npx cache, and the install it kept
+//
+// J51-5. `--install` on an `npx` cache leaves a kept install at `keptPrefix()` (J51-4), and that
+// is what every host launches. So an operator who types `npx -y bantamkit-mcp@latest --update`
+// is asking about THAT install, not about the cache they happen to be running from. These arms
+// drive `runUpdate` through its `install` seam with HOME at a scratch directory, so the kept
+// install found is the fixture's and never the developer's own.
+
+/** HOME and USERPROFILE at a fresh scratch directory for `body`, then the world put back. */
+async function withHome(body) {
+  const home = room();
+  const previous = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  try {
+    assert.equal(homedir(), home, 'homedir() did not follow HOME; this test would read a real kept install');
+    await body(home);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+/**
+ * A kept install as `npm install --prefix` leaves one: the package's own manifest, its `cli.js`,
+ * and — unless told otherwise — the `package.json` npm writes at the prefix. Every path comes from
+ * `npminstall.ts`, never respelled here.
+ */
+function seedKept(version, { prefixManifest = true } = {}) {
+  const prefix = keptPrefix();
+  mkdirSync(dirname(keptCli(prefix)), { recursive: true });
+  writeFileSync(keptManifest(prefix), JSON.stringify({ name: PACKAGE, version }), 'utf8');
+  writeFileSync(keptCli(prefix), '', 'utf8');
+  if (prefixManifest) {
+    writeFileSync(join(prefix, 'package.json'), JSON.stringify({ dependencies: { [PACKAGE]: `^${version}` } }), 'utf8');
+  }
+  return prefix;
+}
+
+const EPHEMERAL = () => ({ shape: 'ephemeral', source: null });
+
+/** `runUpdate` as the CLI calls it, from an `npx` cache, with both streams and the exit code. */
+async function runFrom(install, running, options) {
+  const out = [];
+  const err = [];
+  const code = await runUpdate((t) => out.push(t), (t) => err.push(t), running, '/tmp/the-npx-cache/dist', {
+    install,
+    environment: ENV,
+    ...options,
+  });
+  return { code, out: out.join(''), err: err.join('') };
+}
+
+test('an npx cache with an OLDER kept install updates the kept install, by its version and its prefix', async () => {
+  await withHome(async (home) => {
+    const prefix = seedKept('0.32.1');
+    assert.ok(prefix.startsWith(home), prefix);
+    const fetch = stubFetch('0.33.0');
+    const installer = recordingInstaller();
+
+    const r = await runFrom(EPHEMERAL, '0.29.0', { fetch, installer });
+
+    assert.deepEqual(installer.commands, [['npm', 'install', '--prefix', prefix, 'bantamkit-mcp@latest']]);
+    assert.deepEqual(fetch.calls, [[INDEX_URL, DEFAULT_TIMEOUT_SECONDS]], 'still exactly one index request');
+    assert.equal(r.code, 0);
+    assert.equal(r.err, '');
+    assert.equal(
+      r.out,
+      'bantamkit-mcp 0.32.1 is installed; the package index has 0.33.0.\n' +
+        `updating from the package index: npm install --prefix ${shlexJoin([prefix])} bantamkit-mcp@latest\n` +
+        'the command printed:\n' +
+        'added 1 package in 902ms\n' +
+        'updated bantamkit-mcp from 0.32.1 to 0.33.0.\n' +
+        'restart the server: a running bantamkit-mcp keeps serving the code it loaded at startup, ' +
+        'so bantamkit_status will report 0.32.1 until the host reconnects.\n',
+    );
+    assert.ok(!r.out.includes('0.29.0'), 'the running cache version leaked into a report about the kept install');
+  });
+});
+
+test('an npx cache with an EQUAL kept install says up to date and runs nothing', async () => {
+  await withHome(async () => {
+    seedKept('0.33.0');
+    // The running cache is 0.29.0, so an answer about the cache would be a refusal, not this.
+    const r = await runFrom(EPHEMERAL, '0.29.0', { fetch: stubFetch('0.33.0'), installer: installerMustNotRun });
+    assert.equal(r.code, 0);
+    assert.equal(r.err, '');
+    assert.equal(r.out, 'bantamkit-mcp 0.33.0 is installed; the package index has 0.33.0.\nup to date.\n');
+  });
+});
+
+test('an npx cache with NO kept install refuses exactly as before, by the ROUTES.ephemeral sentence', async () => {
+  await withHome(async (home) => {
+    // A `.bantamkit` that holds a memory store and no `mcp` is not a kept install.
+    mkdirSync(join(home, '.bantamkit', 'memory'), { recursive: true });
+    const r = await runFrom(EPHEMERAL, '0.29.0', { fetch: stubFetch('0.30.0'), installer: installerMustNotRun });
+    const route = fill(ROUTES['ephemeral'], { installed: '0.29.0', package: PACKAGE });
+    assert.equal(r.code, 1);
+    assert.equal(r.out, '');
+    assert.equal(
+      r.err,
+      `error: ${fill(NO_ROUTE, { program: PROGRAM, installed: '0.29.0', latest: '0.30.0', shape: 'ephemeral', route })}\n`,
+    );
+    assert.ok(
+      r.err.includes('the next run serves the same cached 0.29.0 unless the host command line asks for bantamkit-mcp@latest.'),
+      r.err,
+    );
+  });
+});
+
+test('a kept install whose npm run fails is the command-failed refusal, naming the kept prefix and version', async () => {
+  await withHome(async () => {
+    const prefix = seedKept('0.32.1');
+    const r = await runFrom(EPHEMERAL, '0.29.0', {
+      fetch: stubFetch('0.33.0'),
+      installer: recordingInstaller(1, 'npm ERR! code ENOTFOUND'),
+    });
+    assert.equal(r.code, 1);
+    assert.equal(r.out, '');
+    assert.equal(
+      r.err,
+      `error: the update command exited 1: npm install --prefix ${shlexJoin([prefix])} bantamkit-mcp@latest\n` +
+        'bantamkit-mcp 0.32.1 is still installed; nothing was changed.\n' +
+        'the command printed:\n' +
+        'npm ERR! code ENOTFOUND\n',
+    );
+  });
+});
+
+test('the kept prefix is a --prefix tree by installEnvironment, and one without npm\'s package.json is never --global', async () => {
+  await withHome(async () => {
+    // THE SAFETY `installEnvironment` EXISTS FOR, asserted on the kept prefix rather than assumed:
+    // npm writes a package.json there, so it is a prefix install and its siblings are not pruned.
+    const prefix = seedKept('0.32.1');
+    const env = installEnvironment(keptCli(prefix));
+    assert.deepEqual(env, { root: prefix, global: false });
+    assert.deepEqual(upgradeCommand(env), ['npm', 'install', '--prefix', prefix, 'bantamkit-mcp@latest']);
+  });
+  await withHome(async () => {
+    // A kept manifest with NO package.json beside node_modules reads as the global tree, and
+    // `npm install --global` would update something other than the kept install. So it is not
+    // treated as one: the refusal is today's, about the running cache, and nothing runs.
+    const prefix = seedKept('0.32.1', { prefixManifest: false });
+    assert.equal(installEnvironment(keptCli(prefix)).global, true);
+    const r = await runFrom(EPHEMERAL, '0.29.0', { fetch: stubFetch('0.33.0'), installer: installerMustNotRun });
+    assert.equal(r.code, 1);
+    assert.ok(r.err.startsWith('error: bantamkit-mcp 0.29.0 is installed and the package index has 0.33.0, but this is a ephemeral install'), r.err);
+  });
+});
+
+test('a kept install changes nothing for any shape that is not an npx cache', async () => {
+  await withHome(async () => {
+    seedKept('0.32.1');
+    const installer = recordingInstaller();
+    const registry = await runFrom(() => ({ shape: 'registry', source: null }), '0.29.0', {
+      fetch: stubFetch('0.33.0'),
+      installer,
+    });
+    assert.equal(registry.code, 0);
+    assert.deepEqual(installer.commands, [['npm', 'install', '--prefix', '/opt/x', 'bantamkit-mcp@latest']]);
+    assert.ok(registry.out.startsWith('bantamkit-mcp 0.29.0 is installed; the package index has 0.33.0.\n'), registry.out);
+
+    for (const shape of ['local-file', 'linked', 'checkout']) {
+      const r = await runFrom(() => ({ shape, source: '/tmp/an-origin' }), '0.29.0', {
+        fetch: stubFetch('0.33.0'),
+        installer: installerMustNotRun,
+      });
+      assert.equal(r.code, 1, shape);
+      assert.ok(
+        r.err.startsWith(`error: bantamkit-mcp 0.29.0 is installed and the package index has 0.33.0, but this is a ${shape} install`),
+        r.err,
+      );
+    }
+  });
 });
 
 // ============================================================ the platform's own failures

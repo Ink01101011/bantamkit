@@ -54,6 +54,7 @@ import {
   pyMkdirParents,
   pyMtimeDate,
   pyName,
+  pyParent,
   pyReadText,
   pyReplace,
   pyScandirNames,
@@ -66,6 +67,66 @@ import {
 } from './pyfs.js';
 
 export type { Fact } from './factfile.js';
+
+/**
+ * The exact bytes written into a `.bantamkit/.gitignore` the first time such a directory is
+ * brought into existence (user ruling 2026-09-15, `.shiftwork/notes-job51/P0-probes.md`).
+ * Both runtimes hold this text byte-for-byte -- a conformance case pins it against the
+ * Python literal -- so it is spelled once, here, rather than re-typed at each call site.
+ * `runtime-py/src/bantamkit/memory/store.py`'s `BANTAMKIT_GITIGNORE_TEXT` is the reference.
+ */
+export const BANTAMKIT_GITIGNORE_TEXT =
+  '# Created by bantamkit: this directory is local state. Delete this file to commit it.\n' +
+  '*\n';
+
+/**
+ * Best-effort, idempotent: give `directory` a self-ignoring `.gitignore` if it is literally
+ * named `.bantamkit` AND `created` says THIS CALLER'S OWN mkdir is what just brought it into
+ * existence.
+ *
+ * USER RULING #2 (2026-09-15, after J51-8 measured the fallout of the first rule): the
+ * ignore file is written only when bantamkit itself creates the `.bantamkit` directory. An
+ * existing `.bantamkit` -- made by an earlier bantamkit, by hand, or checked out from git;
+ * with or without a `.gitignore` already in it -- is never given one. That is why `created`
+ * is the caller's job, not this function's: only the caller knows whether `.bantamkit`
+ * existed immediately before ITS mkdir, because by the time this function runs the directory
+ * unconditionally exists either way. (Was: written whenever the ignore file itself was
+ * absent, regardless of whether `.bantamkit` predated the call -- which meant deleting the
+ * file never stuck, and a store a team already commits would silently start ignoring new
+ * fact files after an upgrade. `P0-probes.md` ruling 4.)
+ *
+ * THE PROPERTY, not the mechanism: whenever a `.bantamkit` directory is brought into
+ * existence -- by `MemoryStore.ensureDirs`, or by anything else in this runtime that creates
+ * one, such as `EventLog`'s own append-time `mkdirSync` when the event log is on and the
+ * project store was never saved to -- this is the one place that decides whether it gets
+ * ignored. A second creator that skipped this call, or that got `created` wrong, would leave
+ * a `.bantamkit` that git can see (or ignore one it should not), which is the whole bug this
+ * closes.
+ *
+ * NEVER REWRITES. A `.gitignore` that already exists -- whatever its bytes -- is left
+ * exactly as it is, kept as a second guard even when `created` is `true`: an operator who
+ * deleted it to commit the directory keeps that decision, and this never diffs its own
+ * output against what is on disk.
+ *
+ * NEVER RAISES. Failing to write the ignore file must never be why a fact does not get
+ * saved -- the parent write still has to succeed exactly as it does today. An unwritable
+ * filesystem, a permissions error, or the directory disappearing under this call are all
+ * swallowed, mirroring the reference's `except OSError: pass`.
+ *
+ * NEVER CREATES `directory` ITSELF. A write into a missing parent fails like any other
+ * filesystem error here, so calling this before `directory` exists is a no-op, not a way to
+ * bring `.bantamkit` into existence early.
+ */
+export function ensureBantamkitGitignore(directory: string, created: boolean): void {
+  if (pyName(directory) !== '.bantamkit' || !created) return;
+  const gitignore = pyJoin(directory, '.gitignore');
+  if (pyExists(gitignore)) return;
+  try {
+    pyWriteText(gitignore, BANTAMKIT_GITIGNORE_TEXT);
+  } catch {
+    /* best-effort: a missing ignore file is not worth a lost fact */
+  }
+}
 
 /** `sorted(VALID_TYPES)` is what the error message interpolates, so the order is load-bearing. */
 export const VALID_TYPES = ['feedback', 'project', 'reference', 'user'] as const;
@@ -617,6 +678,11 @@ export class MemoryStore {
    * what lets one conformance case pin this line byte for byte.
    */
   private ensureDirs(): void {
+    // Checked BEFORE the mkdir below, per user ruling #2: this is the one moment that can
+    // tell whether `.bantamkit` already existed. After the mkdir it unconditionally exists
+    // either way, so the answer has to be captured now or not at all.
+    const bantamkitDir = pyParent(this.root);
+    const bantamkitDirExistedBefore = pyExists(bantamkitDir);
     try {
       pyMkdirParents(pyJoin(this.root, 'facts'));
       pyMkdirParents(pyJoin(this.root, 'archive'));
@@ -627,6 +693,7 @@ export class MemoryStore {
           ' there and this filesystem would not make it, so nothing was written',
       );
     }
+    ensureBantamkitGitignore(bantamkitDir, !bantamkitDirExistedBefore);
   }
 
   // ---- ops ----

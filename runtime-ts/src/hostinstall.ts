@@ -17,9 +17,19 @@
  *      runtimes write different bytes for the same install.
  *
  * WHAT IS RULED DIFFERENT, and it is one field: the COMMAND. This side records
- * `npx -y bantamkit-mcp`; the reference records its own console script. The thing installed
- * should be the thing that answers, and neither side should send a host looking for the
- * other's runtime. `docs/porting.md` carries the row.
+ * `<absolute node> <absolute .../dist/cli.js>`; the reference records its own console script.
+ * The thing installed should be the thing that answers, and neither side should send a host
+ * looking for the other's runtime. `docs/porting.md` carries the row.
+ *
+ * JOB51 CHANGED THIS SIDE'S COMMAND, AND THE REASON IS A MEASUREMENT. It used to be
+ * `npx -y bantamkit-mcp`. On npm 11.6.2, with a WARM cache and the network cut (proxies pointed
+ * at a closed port, which leaves the cache key alone), that command — pinned, unpinned or
+ * `@latest` — hung silently past 45 s with zero bytes on stdout, so a host reports a handshake
+ * timeout. A kept `npm install --prefix` launched as `<abs node> <abs dist/cli.js>` answered in
+ * 0.11 s under a GUI-shaped PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), where that install's own
+ * `.bin/bantamkit-mcp` shim exits 127 (`env: node: No such file or directory`). The user ruled
+ * (2026-09-15): `--install` makes a one-time kept install under `~/.bantamkit`, and the host
+ * launches it without the network. See `thisCommand`.
  */
 import { spawnSync } from 'node:child_process';
 import {
@@ -35,8 +45,13 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
+import { currentInstall, Undetermined } from './mcp/identity.js';
+import { compareVersions, keptCli, keptManifest, keptPrefix, PACKAGE, runInstaller, shlexJoin } from './npminstall.js';
 import { dumpJson, fromJs } from './pyjson.js';
+
+export { keptCli, keptPrefix };
 
 /** The four hosts, in the order they print in `--help`. */
 export const HOSTS = ['claude', 'claude-desktop', 'copilot', 'cursor'] as const;
@@ -257,15 +272,108 @@ export function install(host: Host, command: string, args: string[], force = fal
   return lines.join('\n');
 }
 
+/** The seams `thisCommand` takes, so no test ever reaches npm or the network. */
+export interface CommandOptions {
+  /** The install shape. Default: `currentInstall().shape` — never a second detector. */
+  readonly shape?: () => string;
+  /** Runs an argv and returns `[exit code, output]`. Default: `npminstall.runInstaller`. */
+  readonly installer?: (command: string[]) => [number, string];
+  /** This process's version. Default: the `package.json` this build ships with. */
+  readonly version?: string;
+}
+
+function ownVersion(): string {
+  return (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string })
+    .version;
+}
+
+/** The kept install's version, or `null` when there is no readable manifest with one. */
+function keptVersion(prefix: string): string | null {
+  try {
+    const manifest = JSON.parse(readFileSync(keptManifest(prefix), 'utf8')) as { version?: unknown };
+    return typeof manifest.version === 'string' ? manifest.version : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The installer's last non-blank line — stderr's, when npm wrote any, since it is appended last. */
+function lastLine(output: string): string {
+  const lines = output.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== '');
+  return lines.length === 0 ? 'it printed nothing' : (lines[lines.length - 1] ?? '');
+}
+
 /**
- * What a host should run to get THIS server.
+ * What a host should run to get THIS server: `<absolute node> <absolute dist/cli.js>`.
  *
- * `npx -y bantamkit-mcp` and not this process's own path, and the two are not the same
- * thing: a global install, an `npx` cache entry and a checkout all have different paths,
- * while the published name resolves the same everywhere. `-y` because `npx` historically
- * prompts before installing a package it has not seen, and stdin here is the JSON-RPC
- * channel — a prompt that ate one frame would look like a server that lost a request.
+ * NOT `npx -y bantamkit-mcp` ANY MORE — see the module header for the measurement: with a warm
+ * cache and no network that command hangs silently, so a host that launches it offline sees a
+ * handshake timeout. Not a bare `node` either, because a GUI host's PATH need not have one, and
+ * not a `.bin` shim, whose `#!/usr/bin/env node` fails the same way (measured: exit 127).
+ * `process.execPath` is the node binary running THIS process, which is known to work.
+ *
+ * WHICH `cli.js` DEPENDS ON THE INSTALL SHAPE, and the shape is `currentInstall()`'s answer:
+ *
+ *   - `ephemeral` (an `npx` cache): this process's own `cli.js` lives in a cache npm may discard,
+ *     so the recorded one is the KEPT install at `keptPrefix()`. If its manifest already reports
+ *     this version OR A NEWER ONE and its `cli.js` is there, nothing runs — a second `--install`
+ *     for another host works offline, and a stale `npx` cache never moves a kept install that
+ *     `--update` took further back to its own version (J51-9a). Otherwise `npm install --prefix <kept> bantamkit-mcp@<this version>`
+ *     runs once, through the same spawner `--update` uses, and the `cli.js` is confirmed after.
+ *     npm creates a missing prefix directory itself (measured, npm 11.6.2), so nothing is made
+ *     here first and a failed install leaves no empty directory of this module's making.
+ *   - every other shape (`registry`, `local-file`, `linked`, `checkout`) is already kept, so it
+ *     is this process's own `dist/cli.js`.
+ *
+ * Every failure is an `InstallError` thrown BEFORE any host configuration is read or written.
  */
-export function thisCommand(): { command: string; args: string[] } {
-  return { command: 'npx', args: ['-y', 'bantamkit-mcp'] };
+export function thisCommand(options: CommandOptions = {}): { command: string; args: string[] } {
+  let shape: string;
+  try {
+    shape = (options.shape ?? ((): string => currentInstall().shape))();
+  } catch (e) {
+    if (!(e instanceof Undetermined)) throw e;
+    throw new InstallError(
+      `--install could not tell how this install was made, so it will not guess which copy a host should launch: ${e.message}`,
+    );
+  }
+  const node = process.execPath;
+  if (shape !== 'ephemeral') {
+    return { command: node, args: [fileURLToPath(new URL('./cli.js', import.meta.url))] };
+  }
+
+  const version = options.version ?? ownVersion();
+  const prefix = keptPrefix();
+  const cli = keptCli(prefix);
+  const kept = keptVersion(prefix);
+  // NEVER LOWER THE KEPT INSTALL (J51-9a). An `npx` cache can be older than the kept install —
+  // `--update` moved the kept install on, and this cache was filled weeks ago — and every host
+  // already launches the kept one, so installing THIS version over it would move them all back.
+  // A kept version at or above this one is recorded as it is. `compareVersions` is total: a
+  // component that is not all digits sorts after every number, so a version it cannot read as
+  // numbers counts as newer and is left alone rather than overwritten. A blank one is no version.
+  if (kept !== null && kept.trim() !== '' && compareVersions(kept, version) >= 0 && existsSync(cli)) {
+    return { command: node, args: [cli] };
+  }
+
+  const command = ['npm', 'install', '--prefix', prefix, `${PACKAGE}@${version}`];
+  const rendered = shlexJoin(command);
+  const [code, output] = (options.installer ?? runInstaller)(command);
+  const refused = `could not make the kept install at ${prefix}, so no host configuration was changed: ${rendered} exited ${code}`;
+  if (code !== 0) throw new InstallError(`${refused}: ${lastLine(output)}`);
+  if (!existsSync(cli)) throw new InstallError(`${refused} but left no ${cli}`);
+  return { command: node, args: [cli] };
+}
+
+/**
+ * `--install <host>` whole: resolve the command (making the kept install if this is an `npx`
+ * cache), THEN touch the host. The order is the property: a refusal from npm leaves the host's
+ * file byte-unchanged with no backup, because `install` has not been reached.
+ */
+export function installSelf(host: Host, force = false, options: CommandOptions = {}): string {
+  if (!(HOSTS as readonly string[]).includes(host)) {
+    throw new InstallError(`unknown host '${host}'; choose one of: ${HOSTS.join(', ')}`);
+  }
+  const { command, args } = thisCommand(options);
+  return install(host, command, args, force);
 }

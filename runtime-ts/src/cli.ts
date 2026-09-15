@@ -92,7 +92,7 @@ import {
   type ParserSpec,
 } from './pyargparse.js';
 import { pyJoin, PyOSError, pyRepr, pyStatIsDir } from './memory/pyfs.js';
-import { HOSTS, type Host, install as installHost, InstallError, thisCommand } from './hostinstall.js';
+import { HOSTS, type Host, InstallError, installSelf } from './hostinstall.js';
 import { runUpdate } from './selfupdate.js';
 import { statusLine } from './statusline.js';
 
@@ -512,10 +512,11 @@ async function main(argv: readonly string[]): Promise<number> {
   // earlier here made the same argv write a file on one runtime and not the other: one
   // command line, two different states on the user's disk. Reviewed and moved.
   if (options.install !== null && options.install !== undefined) {
-    // Before any store or transport exists, the shape `--assets-root` established.
-    const { command, args } = thisCommand();
+    // Before any store or transport exists, the shape `--assets-root` established. The command
+    // is resolved INSIDE the try: on an `npx` cache it makes the kept install first, and npm
+    // failing there is an `InstallError` like any other refusal — `error:` and exit 1.
     try {
-      process.stdout.write(`${installHost(options.install, command, args, options.force)}\n`);
+      process.stdout.write(`${installSelf(options.install, options.force, { version: version() })}\n`);
     } catch (e) {
       if (!(e instanceof InstallError)) throw e;
       process.stderr.write(`error: ${e.message}\n`);
