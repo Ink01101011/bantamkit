@@ -52,6 +52,15 @@ from pathlib import Path
 RED, GREEN, BROKEN = "RED", "GREEN", "BROKEN"
 FAILED_LINE = re.compile(r"^FAILED (\S+)", re.M)
 ERROR_LINE = re.compile(r"^ERROR (\S+)", re.M)
+# An ANSI CSI sequence (`ESC[31m`, `ESC[0m`, ...). Stripped from the child's stdout BEFORE
+# anything is parsed: with `FORCE_COLOR` / `PY_COLORS` in the environment, or `--color=yes`
+# in a spec's pytest_args, pytest writes `ESC[31mFAILED ESC[0m node`, `^FAILED ` matches
+# nothing, and a caught mutation is reported BROKEN. Stripping on the READ side rather than
+# asking the child for `--color=no` or scrubbing its env is deliberate: the child's args are
+# the spec author's and its env is the one the suite under mutation runs in, so neither is
+# this tool's to change. Uncoloured output contains no ESC byte, so it parses exactly as it
+# did before.
+ANSI_CSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 @dataclass(frozen=True)
@@ -125,10 +134,11 @@ def _pytest(repo: Path, args: list[str], env_python: str) -> tuple[str, list[str
         )
     finally:
         shutil.rmtree(cache, ignore_errors=True)
-    lines = [row for row in done.stdout.strip().splitlines() if row.strip()]
+    stdout = ANSI_CSI.sub("", done.stdout)
+    lines = [row for row in stdout.strip().splitlines() if row.strip()]
     tail = lines[-1] if lines else "(pytest produced no output)"
-    failed = FAILED_LINE.findall(done.stdout)
-    errored = ERROR_LINE.findall(done.stdout)
+    failed = FAILED_LINE.findall(stdout)
+    errored = ERROR_LINE.findall(stdout)
     if done.returncode == 0:
         return GREEN, [], tail
     if failed:

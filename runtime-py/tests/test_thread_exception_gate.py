@@ -112,7 +112,9 @@ def _child_env() -> dict[str, str]:
     return env
 
 
-def _run_child(tmp_path: Path, *extra: str) -> subprocess.CompletedProcess[str]:
+def _run_child(
+    tmp_path: Path, *extra: str, colour_env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     """Collect the rig under the REPOSITORY'S OWN pytest config and report what happened.
 
     `-c PYPROJECT` is the load-bearing argument. The rig lives in `tmp_path`, which has no
@@ -120,18 +122,35 @@ def _run_child(tmp_path: Path, *extra: str) -> subprocess.CompletedProcess[str]:
     these nodes would pass no matter what runtime-py/pyproject.toml says -- they would be
     asserting a fact about pytest, not about this repository. With it, deleting or
     weakening the `filterwarnings` entry is red HERE.
+
+    `--color=no` is load-bearing too. The nodes below read the child's short test summary
+    line by line, and pytest honours `FORCE_COLOR` / `PY_COLORS` from the environment: with
+    either exported the line arrives as `ESC[31mFAILED ESC[0m ...` and `startswith("FAILED ")`
+    matches nothing. An explicit `--color` beats every colour variable, so the report is
+    plain whatever session this runs in. The rig is fixed and owned here, which is why
+    asking the child is the right side to fix it on; the colour of the report is not
+    something these nodes measure.
+
+    `colour_env`, when given, REPLACES whatever colour variables this process inherited, so
+    a node can pin the colour environment the child starts in instead of taking the
+    session's.
     """
     rig = tmp_path / f"test_{tmp_path.name[:8]}_rig.py"
     rig.write_text(_CHILD_SOURCE, encoding="utf-8")
+    env = _child_env()
+    if colour_env is not None:
+        for name in ("FORCE_COLOR", "PY_COLORS", "NO_COLOR"):
+            env.pop(name, None)
+        env.update(colour_env)
     return subprocess.run(
         [
             sys.executable, "-m", "pytest", "-c", str(PYPROJECT),
-            str(rig), "-q", "-p", "no:cacheprovider", *extra,
+            str(rig), "-q", "-p", "no:cacheprovider", "--color=no", *extra,
         ],
         capture_output=True,
         text=True,
         encoding="utf-8",
-        env=_child_env(),
+        env=env,
         cwd=str(tmp_path),
         timeout=300,
         check=False,
@@ -161,7 +180,28 @@ def test_a_dead_thread_fails_the_node_that_caused_it(tmp_path):
     `FAILED` line names the node whose thread died, so the next occurrence is read off the
     short test summary like any other red.
     """
-    result = _run_child(tmp_path)
+    _assert_the_dead_thread_is_a_named_failure(_run_child(tmp_path))
+
+
+@pytest.mark.parametrize(
+    "colour_env",
+    [{"FORCE_COLOR": "3"}, {"PY_COLORS": "1"}, {"NO_COLOR": "1"}, {}],
+    ids=["FORCE_COLOR=3", "PY_COLORS=1", "NO_COLOR=1", "no colour vars"],
+)
+def test_the_named_failure_is_read_whatever_colour_the_child_inherits(tmp_path, colour_env):
+    """The FAILED line is found whatever colour environment the parent was started in.
+
+    With `FORCE_COLOR=3` exported (some sessions do) the child printed
+    `ESC[31mFAILED ESC[0m ...`, the `startswith("FAILED ")` filter matched nothing, and the
+    node above went red for a reason that has nothing to do with the gate. This node pins
+    the colour variables itself, so it reddens the unfixed rig in any session.
+    """
+    _assert_the_dead_thread_is_a_named_failure(_run_child(tmp_path, colour_env=colour_env))
+
+
+def _assert_the_dead_thread_is_a_named_failure(
+    result: subprocess.CompletedProcess[str],
+) -> None:
     assert result.returncode != 0, f"the child passed:\n{result.stdout}\n{result.stderr}"
     assert "1 failed" in result.stdout, result.stdout
     failed = [line for line in result.stdout.splitlines() if line.startswith("FAILED ")]

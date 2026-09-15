@@ -20,6 +20,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUNNER = REPO_ROOT / "tools" / "mutmatrix" / "mutmatrix.py"
 
@@ -203,6 +205,51 @@ def test_check_validates_anchors_without_running_pytest(tmp_path):
     assert done.returncode == 0
     assert "each match exactly once" in done.stdout
     assert "baseline" not in done.stdout
+
+
+@pytest.mark.parametrize(
+    ("colour_env", "colour_args"),
+    [
+        ({"FORCE_COLOR": "3"}, []),
+        ({"PY_COLORS": "1"}, []),
+        ({"NO_COLOR": "1"}, ["--color=yes"]),
+    ],
+    ids=["FORCE_COLOR=3", "PY_COLORS=1", "pytest_args --color=yes"],
+)
+def test_a_coloured_child_run_is_still_read_as_RED(tmp_path, colour_env, colour_args):
+    """The child's FAILED lines are read whatever colour it was asked to print in.
+
+    Some sessions export `FORCE_COLOR=3`. pytest honours it and writes `ESC[31mFAILED ESC[0m`,
+    which a `^FAILED ` pattern never matches, so a caught mutation came back BROKEN and the
+    baseline tail carried raw escape codes. This node sets the colour itself rather than
+    inheriting the caller's, so it is red on the unfixed tool in ANY session: two ways the
+    environment forces colour, and one where the spec's own pytest_args do.
+    """
+    repo = _rig(tmp_path, SUBJECT, TEST)
+    spec = repo / "spec.json"
+    spec.write_text(
+        json.dumps({"pytest_args": ["t", "-q", "--no-header", "-p", "no:cacheprovider",
+                                    *colour_args],
+                    "mutations": [{"label": "M1", "path": "subject.py", "anchor": "n * 2",
+                                   "replacement": "n * 3", "why": "stops doubling"}]}),
+        encoding="utf-8",
+    )
+    _git(repo, "add", "spec.json")
+    _git(repo, "commit", "-qm", "spec")
+    env = _utf8_env()
+    for name in ("FORCE_COLOR", "PY_COLORS", "NO_COLOR"):
+        env.pop(name, None)
+    env.update(colour_env)
+    done = subprocess.run(
+        [sys.executable, str(RUNNER), "run", str(spec), "--repo", str(repo),
+         "--python", sys.executable],
+        capture_output=True, text=True, encoding="utf-8", check=False, env=env,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "RED    M1" in done.stdout, done.stdout
+    assert "1 of 1 must-be-red mutations were caught" in done.stdout, done.stdout
+    assert "BROKEN" not in done.stdout, done.stdout
+    assert "\x1b[" not in done.stdout, "an escape code reached the report:\n" + done.stdout
 
 
 def test_a_same_length_replacement_still_takes_effect(tmp_path):
