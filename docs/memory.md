@@ -110,14 +110,19 @@ is the thing the budget is measured against, and is rebuilt after every save and
 compact. Fact files are written through a temp file and an atomic rename; the
 index is rewritten in place, and is always derivable from the fact files.
 
-### `.bantamkit/.gitignore`: the store keeps itself out of git
+### `.bantamkit/.gitignore`: written only when bantamkit itself creates `.bantamkit`
 
 > **ADDED 2026-09-15 (job51), both runtimes, from bantamkit 0.34.0 and bantamkit-mcp 0.34.0.**
-> Neither was published when this was written.
+> Neither is published yet. Superseded within the same unreleased change by **USER RULING
+> #2 (2026-09-15)**: the first version of this section (job51, same day) said the ignore
+> file was written whenever it was missing, however `.bantamkit` came to exist, and advised
+> emptying it rather than deleting it. Nothing carrying that behaviour ever shipped, so this
+> section is rewritten rather than amended.
 
 A write (`save`, `compact`, or an event-log record) first makes sure the store's directories
-exist. If the store's parent directory is named exactly `.bantamkit`, the write also creates
-`.bantamkit/.gitignore` when it is missing. That covers the project store
+exist. Exactly one moment decides whether the store gets a `.gitignore`: if the write is what
+just created the store's parent directory, and that directory is named exactly `.bantamkit`,
+the write also creates `.bantamkit/.gitignore`. That covers the project store
 (`.bantamkit/memory`) and the profile store (`~/.bantamkit/memory`). The file holds exactly:
 
 ```
@@ -125,47 +130,86 @@ exist. If the store's parent directory is named exactly `.bantamkit`, the write 
 *
 ```
 
-So a project store stays out of `git status`, and the repository's own `.gitignore` is never
-touched. Measured in a scratch git repository: after one `save` into `.bantamkit/memory`,
-`git status --porcelain --untracked-files=all` printed nothing. The rules:
+So a project store bantamkit creates from nothing stays out of `git status`, and the
+repository's own `.gitignore` is never touched. The rules:
 
 - **Only a parent named `.bantamkit`.** `Memory(store="./.bantam-memory")` gets no
-  `.gitignore` anywhere. Measured: its fact and index files showed as untracked.
-- **An existing file is never rewritten.** The check is whether the file exists, not what it
-  says. A pre-existing `.bantamkit/.gitignore` holding `memory/archive/` still held exactly
-  that after a save.
+  `.gitignore` anywhere, however it came to exist.
+- **Only when THIS write creates `.bantamkit`.** An existing `.bantamkit` — made by an
+  earlier bantamkit, created by hand, or checked out from git — is never given one, whether
+  or not it already holds a `.gitignore`. Only the very first write against a `.bantamkit`
+  that did not exist a moment before writes the file.
+- **An existing file is never rewritten.** If `.bantamkit/.gitignore` is already there at
+  creation time — a strange but possible race — its bytes are left exactly as they are.
 - **It never fails a write.** If the file cannot be written, the save still succeeds, and the
   store simply has no `.gitignore`.
-- **A store that already exists gets it on its next write.** Files git already tracks stay
-  tracked. Every file added after that is ignored. Measured: in a repository with a committed
-  `.bantamkit/memory`, one save added `.bantamkit/.gitignore`, and `git status` reported
-  `index.md` as modified but did not list the new fact file at all.
+- **Deleting it sticks.** Nothing re-checks or re-creates the file after `.bantamkit` exists,
+  so `rm .bantamkit/.gitignore` is the whole opt-in: the next save leaves it deleted.
 
-**To commit project memory on purpose, empty the file. Do not delete it.** The file's first
-line says "Delete this file to commit it", and in both runtimes that does not stick: the check
-runs on every write, so the next save writes the file again. Measured in a scratch repository
-with each runtime: after `rm .bantamkit/.gitignore`, one more save put it back, and `git status`
-was empty again. The existence rule above is what does work, because a file that exists is
-left alone whatever it holds. With a Python that has this build installed:
+Measured, in a scratch git repository, with a Python that has this build installed:
 
 ```console
-$ : > .bantamkit/.gitignore
+$ git init -q
 $ python -c "from bantamkit.memory.store import MemoryStore; MemoryStore('.bantamkit/memory').save('project', 'owner', 'who owns this repo', 'team atlas')"
-$ wc -c .bantamkit/.gitignore
-       0 .bantamkit/.gitignore
 $ git status --porcelain --untracked-files=all
-?? .bantamkit/.gitignore
-?? .bantamkit/memory/facts/deploy-command.md
+
+$ rm .bantamkit/.gitignore
+$ python -c "from bantamkit.memory.store import MemoryStore; MemoryStore('.bantamkit/memory').save('project', 'second', 'a second fact', 'body')"
+$ git status --porcelain --untracked-files=all
+?? .bantamkit/memory/facts/owner.md
+?? .bantamkit/memory/facts/second.md
+?? .bantamkit/memory/index.md
+```
+
+The first `git status` is silent: the save created `.bantamkit`, so it got the ignore file.
+The second save writes into the same, now-existing `.bantamkit` — the directory this write
+found was not freshly created — so the deleted file is not put back, and every file the store
+holds shows as untracked. And a `.bantamkit` that already existed before bantamkit ever wrote
+to it never gets one in the first place:
+
+```console
+$ git init -q
+$ mkdir .bantamkit
+$ python -c "from bantamkit.memory.store import MemoryStore; MemoryStore('.bantamkit/memory').save('project', 'owner', 'who owns this repo', 'team atlas')"
+$ git status --porcelain --untracked-files=all
 ?? .bantamkit/memory/facts/owner.md
 ?? .bantamkit/memory/index.md
 ```
 
-Commit the empty `.gitignore` along with the store, so a teammate's first save does not
-recreate the ignore-everything version.
+No `.gitignore` appears here at all — including for a store a team already commits, which is
+the case this rule protects: an upgrade never starts hiding a teammate's new fact files from
+each other.
 
-The exact bytes, the never-rewrite rule, and "no file unless the parent is `.bantamkit`" are
-compared across the two runtimes, and each side against the literal above, by the store
-suite in `node tools/conformance/run.mjs --all`.
+**To ignore the store of an existing project, opt in with one command — bantamkit will not do
+it for you, and will not undo it once it's there.** POSIX shell:
+
+```bash
+printf '*\n' > .bantamkit/.gitignore
+```
+
+PowerShell:
+
+```powershell
+Set-Content -Path .bantamkit\.gitignore -Value '*'
+```
+
+Both were checked against the property that matters, not just typed: `git status --porcelain
+--untracked-files=all` shows nothing under `.bantamkit` afterwards. Measured on this machine
+(macOS, no PowerShell installed here — the PowerShell form was written to the same contract
+and reviewed, but was not run) for the POSIX form:
+
+```console
+$ printf '*\n' > .bantamkit/.gitignore
+$ git status --porcelain --untracked-files=all
+
+```
+
+Nothing printed. To commit the ignored files instead, `rm .bantamkit/.gitignore` and they are
+untracked again, as shown above — no emptying step, and no second write puts the file back.
+
+The exact bytes, "only on the write that creates `.bantamkit`", "never rewritten", and
+"deleting it stays deleted" are compared across the two runtimes, and each side against the
+literal above, by the store suite in `node tools/conformance/run.mjs --all`.
 
 ## The ops
 
