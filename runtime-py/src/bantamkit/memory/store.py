@@ -262,21 +262,34 @@ BANTAMKIT_GITIGNORE_TEXT = (
 )
 
 
-def ensure_bantamkit_gitignore(directory: Path) -> None:
+def ensure_bantamkit_gitignore(directory: Path, *, created: bool) -> None:
     """Best-effort, idempotent: give `directory` a self-ignoring `.gitignore` if it is
-    literally named `.bantamkit` and does not already have one.
+    literally named `.bantamkit` AND `created` says THIS CALLER'S OWN mkdir is what just
+    brought it into existence.
+
+    USER RULING #2 (2026-09-15, after J51-8 measured the fallout of the first rule): the
+    ignore file is written only when bantamkit itself creates the `.bantamkit` directory.
+    An existing `.bantamkit` -- made by an earlier bantamkit, by hand, or checked out from
+    git; with or without a `.gitignore` already in it -- is never given one. That is why
+    `created` is the caller's job, not this function's: only the caller knows whether
+    `.bantamkit` existed immediately before ITS mkdir, because by the time this function
+    runs the directory unconditionally exists either way. (Was: written whenever the
+    ignore file itself was absent, regardless of whether `.bantamkit` predated the call --
+    which meant deleting the file never stuck, and a store a team already commits would
+    silently start ignoring new fact files after an upgrade. `P0-probes.md` ruling 4.)
 
     THE PROPERTY, not the mechanism: whenever a `.bantamkit` directory is brought into
     existence -- by `MemoryStore._ensure_dirs`, or by anything else in this runtime that
     creates one, such as `EventLog._append`'s own `mkdir` when the event log is on and
     the project store was never saved to -- this is the one place that decides whether it
-    gets ignored. A second creator that skipped this call would leave a `.bantamkit` that
-    git can see, which is the whole bug this closes (`P0-probes.md`, user ruling 3).
+    gets ignored. A second creator that skipped this call, or that got `created` wrong,
+    would leave a `.bantamkit` that git can see (or ignore one it should not), which is
+    the whole bug this closes.
 
     NEVER REWRITES. A `.gitignore` that already exists -- whatever its bytes -- is left
-    exactly as it is: an operator who deleted it to commit the directory on purpose, or
-    edited it, keeps that decision on every later call. Checked by existence, not content,
-    so this never diffs its own output against what is on disk.
+    exactly as it is, kept as a second guard even when `created` is `True`: an operator
+    who deleted it to commit the directory keeps that decision, and this never diffs its
+    own output against what is on disk.
 
     NEVER RAISES. Failing to write the ignore file must never be why a fact does not get
     saved -- the parent write (`save`, `compact`, an event record) still has to succeed
@@ -289,7 +302,7 @@ def ensure_bantamkit_gitignore(directory: Path) -> None:
     like any other `OSError` here, so calling this before `directory` exists is a no-op,
     not a way to bring `.bantamkit` into existence early.
     """
-    if directory.name != ".bantamkit":
+    if directory.name != ".bantamkit" or not created:
         return
     gitignore = directory / ".gitignore"
     if gitignore.exists():
@@ -389,6 +402,11 @@ class MemoryStore:
         mkdir's internals. `self.root` is the path the caller named and both sides agree on
         it, which is what lets one conformance case pin this line byte for byte.
         """
+        # Checked BEFORE the mkdir, per user ruling #2: this is the one moment that can
+        # tell whether `.bantamkit` already existed. After the mkdir it unconditionally
+        # exists either way, so the answer has to be captured now or not at all.
+        bantamkit_dir = self.root.parent
+        bantamkit_dir_existed_before = bantamkit_dir.exists()
         try:
             (self.root / "facts").mkdir(parents=True, exist_ok=True)
             (self.root / "archive").mkdir(parents=True, exist_ok=True)
@@ -397,7 +415,7 @@ class MemoryStore:
                 f"memory store could not be created: {self.root}; the directory is not"
                 " there and this filesystem would not make it, so nothing was written"
             ) from e
-        ensure_bantamkit_gitignore(self.root.parent)
+        ensure_bantamkit_gitignore(bantamkit_dir, created=not bantamkit_dir_existed_before)
 
     # ---- ops ----
 

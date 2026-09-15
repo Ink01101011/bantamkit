@@ -1,24 +1,39 @@
-"""J51-1: a `.bantamkit` directory ignores itself in git.
+"""J51-1 / J51-8a: a `.bantamkit` directory ignores itself in git — but ONLY the one
+bantamkit itself brings into existence.
 
 User ruling 2026-09-15 (`.shiftwork/notes-job51/P0-probes.md`): `.bantamkit` stays out of
 git by default via a self-ignoring `.bantamkit/.gitignore` (`*`), never by editing the
-repository's own `.gitignore`. The property, from `.shiftwork/briefs-job51/J51-1.md`:
+repository's own `.gitignore`. The property, from `.shiftwork/briefs-job51/J51-1.md`,
+AS AMENDED by user ruling #2 (2026-09-15, `.shiftwork/briefs-job51/J51-8a.md`) after J51-8
+measured that a deleted ignore file came back on the next save and that a store a team
+already commits would silently start ignoring new fact files after an upgrade:
 
-1. Whenever a memory store's directories are brought into existence and the store root's
-   parent directory is named `.bantamkit`, afterwards `<that .bantamkit>/.gitignore`
-   exists holding exactly `BANTAMKIT_GITIGNORE_TEXT`.
-2. An existing `.bantamkit/.gitignore` is never rewritten.
+1. The ignore file is written IF AND ONLY IF, in this call, the `.bantamkit` directory
+   did not exist immediately before the directories were made and exists afterwards.
+   "Did not exist" is decided by checking the `.bantamkit` directory itself BEFORE the
+   mkdir — never the `.gitignore` file, never `memory/`. (Was: written whenever the
+   store's directories are brought into existence and the ignore file itself is absent,
+   regardless of whether `.bantamkit` already existed — J51-8 measured this makes
+   deletion not stick.)
+2. A `.bantamkit` directory that already existed — made by an earlier bantamkit, by hand,
+   or checked out from git; with or without a `.gitignore` — is never given one. In
+   particular, an existing `.gitignore` is never rewritten (unchanged from J51-1).
 3. Writing it is best-effort: an unwritable `.gitignore` never fails the write that
    triggered it.
 4. A store whose parent is not named `.bantamkit` gets no `.gitignore` anywhere.
 5. End-to-end: a fresh `git init` directory shows nothing under `.bantamkit` in
    `git status --porcelain --untracked-files=all` after a `memory_save`.
+6. Consequence of 1: deleting the file after bantamkit created it, then saving again,
+   leaves it deleted — the file's own first line ("Delete this file to commit it") is
+   now true.
 
 Also covers the bypass this audit found: `EventLog._append`'s own
 `self.path.parent.mkdir(parents=True, exist_ok=True)` can bring a `.bantamkit` directory
 into existence WITHOUT ever calling `MemoryStore._ensure_dirs` — e.g. when
 `BANTAMKIT_EVENT_LOG=on` and the project store has never been saved to. That path must
-carry the same gitignore-write, or a `.bantamkit` created that way is never ignored.
+carry the same gitignore-write (and the same "only if `.bantamkit` did not already
+exist" gate), or a `.bantamkit` created that way is never ignored, or is ignored when it
+should not be.
 """
 
 import shutil
@@ -96,10 +111,82 @@ def test_property_4_store_not_under_dot_bantamkit_gets_no_gitignore(tmp_path):
 
 
 def test_ensure_bantamkit_gitignore_is_a_noop_off_a_non_bantamkit_directory(tmp_path):
+    """API change for J51-8a: `created` is now a required keyword — the caller must say
+    whether ITS OWN mkdir is what brought `directory` into existence. Passed `True` here
+    on purpose: the name check must refuse even when the caller claims a fresh creation.
+    """
     directory = tmp_path / "not-bantamkit"
     directory.mkdir()
-    ensure_bantamkit_gitignore(directory)
+    ensure_bantamkit_gitignore(directory, created=True)
     assert list(directory.iterdir()) == []
+
+
+def test_property_1_amended_existing_bantamkit_without_gitignore_gets_none_on_save(tmp_path):
+    """J51-8a (a): a `.bantamkit` that already existed — with no `.gitignore` in it —
+    never gets one, even though the ignore file itself is absent. FAILS on the
+    pre-J51-8a source, which writes whenever the file is absent.
+    """
+    bantamkit_dir = tmp_path / ".bantamkit"
+    bantamkit_dir.mkdir()
+    gitignore = bantamkit_dir / ".gitignore"
+    assert not gitignore.exists()
+
+    root = bantamkit_dir / "memory"
+    store = MemoryStore(root)
+    store.save("project", "widget-cache", "one line", "body", ())
+
+    assert not gitignore.exists()
+
+
+def test_property_1_amended_deleting_the_gitignore_after_creation_stays_deleted(tmp_path):
+    """J51-8a (b): bantamkit creates `.bantamkit` itself, so the ignore file is written —
+    delete it, save again, and it must stay deleted. FAILS on the pre-J51-8a source,
+    which rewrites it on the next save because the file is absent.
+    """
+    root = tmp_path / ".bantamkit" / "memory"
+    gitignore = tmp_path / ".bantamkit" / ".gitignore"
+
+    store = MemoryStore(root)
+    assert gitignore.exists()
+
+    gitignore.unlink()
+    store.save("project", "widget-cache", "one line", "body", ())
+
+    assert not gitignore.exists()
+
+
+def test_eventlog_amended_existing_bantamkit_without_gitignore_gets_none(tmp_path):
+    """J51-8a (c), condition (a): the event-log creator follows the same rule — a
+    `.bantamkit` that already existed, with no `.gitignore`, is left alone.
+    """
+    bantamkit_dir = tmp_path / ".bantamkit"
+    bantamkit_dir.mkdir()
+    gitignore = bantamkit_dir / ".gitignore"
+    assert not gitignore.exists()
+
+    store_root = bantamkit_dir / "memory"
+    log = EventLog(default_path(store_root))
+    log.record("memory_save", "saved", {"budget": 1, "index_bytes": 1})
+
+    assert log.write_failed is False
+    assert not gitignore.exists()
+
+
+def test_eventlog_amended_deleting_the_gitignore_after_creation_stays_deleted(tmp_path):
+    """J51-8a (c), condition (b): the event-log creator brought `.bantamkit` into
+    existence itself, so deleting the ignore file it wrote must stick on the next append.
+    """
+    store_root = tmp_path / ".bantamkit" / "memory"
+    gitignore = tmp_path / ".bantamkit" / ".gitignore"
+
+    log = EventLog(default_path(store_root))
+    log.record("memory_save", "saved", {"budget": 1, "index_bytes": 1})
+    assert gitignore.exists()
+
+    gitignore.unlink()
+    log.record("memory_save", "saved", {"budget": 1, "index_bytes": 1})
+
+    assert not gitignore.exists()
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")

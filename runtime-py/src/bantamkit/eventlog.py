@@ -278,7 +278,6 @@ class EventLog:
         intent, not a live path.
         """
         assert self.path is not None
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         # AUDIT FINDING (J51-1): this `mkdir(parents=True)` can bring a whole `.bantamkit`
         # directory into existence on its own -- `BANTAMKIT_EVENT_LOG=on` with a project
         # store that was never saved to reaches here first -- entirely bypassing
@@ -286,10 +285,21 @@ class EventLog:
         # directory gets created. Without this call a store built that way would never get
         # its self-ignoring `.gitignore`. Cheap and idempotent: a no-op unless one of
         # `self.path`'s ancestors is literally named `.bantamkit`.
+        #
+        # USER RULING #2 (J51-8a): the ignore file is written only when THIS call is what
+        # creates `.bantamkit`, so existence has to be checked BEFORE the mkdir below --
+        # after it, the directory unconditionally exists and the question is unanswerable.
+        bantamkit_dir = None
         for parent in self.path.parents:
             if parent.name == ".bantamkit":
-                ensure_bantamkit_gitignore(parent)
+                bantamkit_dir = parent
                 break
+        bantamkit_dir_existed_before = bantamkit_dir is not None and bantamkit_dir.exists()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if bantamkit_dir is not None:
+            ensure_bantamkit_gitignore(
+                bantamkit_dir, created=not bantamkit_dir_existed_before
+            )
         try:
             size = self.path.stat().st_size
         except FileNotFoundError:
