@@ -659,6 +659,130 @@ there is no third spelling lives in the `prog` row of
 [porting.md's divergence table](porting.md#where-the-two-runtimes-deliberately-differ);
 `tools/conformance/suites/memorycli.mjs` is the gate that compares the two.
 
+### Python package: measured detail
+
+The [Python package's README](../runtime-py/README.md) (the PyPI page) gives the short form. This
+section keeps the measurements behind it, moved here from that README in job52 (J52-3) so the
+PyPI page could stay short. Nothing moved here was re-measured by that move; dates and versions
+are those of the original measurement. The `--install` transcript at the end is new, measured by
+J52-3.
+
+#### `pipx run` launches online, and is offline only while pipx's cache lasts
+
+Amended 2026-09-15 (job51). `pipx run --spec "bantamkit[mcp]" bantamkit-mcp` is fine for trying
+the server. As the command a host runs on every launch, it has a cost. Measured with pipx 1.11.1
+and `bantamkit 0.33.0`, with the network cut by pointing the proxy variables at a closed port:
+
+```bash
+PIPX_HOME=<scratch> https_proxy=http://127.0.0.1:1 HTTPS_PROXY=http://127.0.0.1:1 \
+  http_proxy=http://127.0.0.1:1 HTTP_PROXY=http://127.0.0.1:1 PIP_PROXY=http://127.0.0.1:1 \
+  PIP_RETRIES=0 PIP_TIMEOUT=5 pipx run --spec "bantamkit[mcp]==0.33.0" bantamkit-mcp --assets-root
+```
+
+On a `PIPX_HOME` that had never run it, this exited 1 in 1.33 s. After one run online into the
+same `PIPX_HOME`, the same command exited 0 in 0.47 s. So a `pipx run` host entry needs the
+package index on a new machine, after the cache is cleared, and whenever pipx decides its cached
+environment is stale. That last one is pipx's policy and was not measured here.
+
+The uv equivalent is `uvx --from "bantamkit[mcp]" bantamkit-mcp`. uv is not installed on the
+machine the README was measured on, so that one is the documented form rather than a measured one.
+
+#### What `--install` records from a venv
+
+Measured 2026-09-15 on macOS arm64 against `bantamkit 0.33.0`:
+`<env>/bin/bantamkit-mcp --install cursor` wrote `"command": "<env>/bin/bantamkit-mcp", "args": []`.
+That command answered `initialize` and `tools/list` with 12 tools under the PATH a GUI app
+inherits on macOS, `/usr/bin:/bin:/usr/sbin:/sbin`. The Windows layout (`<env>\Scripts\`) was not
+measured.
+
+#### A wheelhouse for a machine with no network
+
+On a connected machine with the **same operating system, CPU architecture and Python minor
+version** as the target:
+
+```bash
+python -m pip download "bantamkit[mcp]==0.33.0" -d wheels
+```
+
+With Python 3.12.13 on macOS arm64 that wrote 33 files. One of them is
+`pydantic_core-2.46.5-cp312-cp312-macosx_11_0_arm64.whl`, which is built for CPython 3.12 on
+arm64 macOS and nothing else. That is why the two machines must match. Copy `wheels/` across,
+then on the target:
+
+```bash
+python -m venv <env>
+<env>/bin/pip install --no-index --find-links wheels "bantamkit[mcp]==0.33.0"
+<env>/bin/bantamkit-mcp --install cursor
+```
+
+Measured in a fresh venv with `PIP_INDEX_URL=http://127.0.0.1:1/` (a closed port): the install
+finished in 1.69 s, and the installed console script served the 12 tools as above.
+
+#### Hand-written `pipx run` entries, per host
+
+What the README used to show for each host, for anyone who would rather write the entry by hand
+than name a kept console script. Prefer the absolute console-script form: a `pipx run` entry needs
+the package index whenever pipx's cache is cold.
+
+```bash
+claude mcp add bantamkit -s user -- pipx run --spec "bantamkit[mcp]" bantamkit-mcp
+```
+
+```json
+{"mcpServers": {"bantamkit": {"command": "pipx", "args": ["run", "--spec", "bantamkit[mcp]", "bantamkit-mcp"]}}}
+```
+
+That `mcpServers` form is the entry for Claude Desktop and for Cursor. GitHub Copilot in VS Code
+uses the `servers` key:
+
+```json
+{"servers": {"bantamkit": {"type": "stdio", "command": "pipx", "args": ["run", "--spec", "bantamkit[mcp]", "bantamkit-mcp"]}}}
+```
+
+The Claude Code and Claude Desktop forms were taken from the machine the README was measured on
+— `claude mcp add --help` and an existing config file. The VS Code and Cursor forms are from those
+projects' own documentation, not from a host installed there.
+
+#### `--install` into a scratch `HOME`, transcript
+
+Measured 2026-09-15 by J52-3 from this repository's venv (`bantamkit 0.34.0`), with
+`HOME=<scratch>` so no real host file was touched. `--install claude` was not run, because it
+shells out to the real `claude` binary.
+
+```console
+$ HOME=<scratch> .venv/bin/bantamkit-mcp --install cursor
+installed bantamkit into cursor
+  file   : <scratch>/.cursor/mcp.json
+  key    : mcpServers
+  command: <repo>/.venv/bin/bantamkit-mcp
+$ HOME=<scratch> .venv/bin/bantamkit-mcp --install copilot
+installed bantamkit into copilot
+  file   : <scratch>/Library/Application Support/Code/User/mcp.json
+  key    : servers
+  command: <repo>/.venv/bin/bantamkit-mcp
+$ HOME=<scratch> .venv/bin/bantamkit-mcp --install cursor
+bantamkit is already installed in cursor and matches
+  file   : <scratch>/.cursor/mcp.json
+```
+
+With the Cursor entry hand-edited to the `npx -y bantamkit-mcp` form, a re-run exited 1:
+
+```console
+$ HOME=<scratch> .venv/bin/bantamkit-mcp --install cursor
+error: cursor already has a bantamkit entry with different settings
+  file    : <scratch>/.cursor/mcp.json
+  current : {"args": ["-y", "bantamkit-mcp"], "command": "npx"}
+  proposed: {"args": [], "command": "<repo>/.venv/bin/bantamkit-mcp"}
+  re-run with --force to replace it
+```
+
+`--force` then exited 0, adding `backup : <scratch>/.cursor/mcp.json.backup-2026-09-15`. With the
+file replaced by `{bad`, `--install cursor --force` exited 1 with
+`error: <scratch>/.cursor/mcp.json is not valid JSON, so this refuses to touch it: Expecting property name enclosed in double quotes (line 1, column 2)`.
+`--install claude-desktop` wrote
+`<scratch>/Library/Application Support/Claude/claude_desktop_config.json` with key `mcpServers`.
+The Copilot file carried `"type": "stdio"` and `"args": []`.
+
 ## Point at an endpoint
 
 Every backend is reached through the one adapter, `OpenAICompatible`. Only
