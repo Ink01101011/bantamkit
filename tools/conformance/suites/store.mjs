@@ -25,6 +25,7 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
+  rmSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
@@ -784,10 +785,22 @@ export async function run(ctx) {
 
   // ------------------------------------------------ the self-ignoring .bantamkit/.gitignore
   //
-  // THE PROPERTY (user ruling 2026-09-15, J51-1/J51-2): the first save that brings a
-  // `.bantamkit` directory into existence leaves `.bantamkit/.gitignore` holding exactly
-  // GITIGNORE_LITERAL; a `.gitignore` already there is never rewritten; a store whose parent
-  // is not named `.bantamkit` gets none.
+  // THE PROPERTY (user ruling 2026-09-15, J51-1/J51-2, narrowed by user ruling #2 the same
+  // day, J51-8a/J51-8b): the first save that brings a `.bantamkit` directory into existence
+  // leaves `.bantamkit/.gitignore` holding exactly GITIGNORE_LITERAL; a `.gitignore` already
+  // there is never rewritten; a store whose parent is not named `.bantamkit` gets none. And
+  // the ignore file is written ONLY when bantamkit itself creates `.bantamkit`: a `.bantamkit`
+  // that already exists without one never gets one (scenario 4), and deleting the file sticks
+  // across a later save (scenario 5). Those two are the ruling; J51-3's first three are
+  // unchanged by it.
+  //
+  // SCENARIO 5 READS THE FILE BEFORE IT DELETES IT. Absence after the second save proves
+  // nothing if the first save never wrote the file, so each side also gets a case pinning
+  // the first save's bytes to the literal — the delete is a real delete, not a no-op.
+  //
+  // PROVEN NON-VACUOUS IN J51-8c: reverting the rule to J51-1/J51-2's "write whenever the
+  // file is absent" — Python only, Node only, and both — turns scenarios 4 and 5 red; in the
+  // both-sides run only the against-the-literal arms can see it, which is why they exist.
   //
   // WHY EVERY SIDE IS ALSO COMPARED TO A LITERAL. A Python-vs-Node comparison alone stays
   // green when both runtimes regress the same way — both stop writing the file and they
@@ -850,39 +863,84 @@ export async function run(ctx) {
         file: ['proj', 'state', '.gitignore'],
         literal: ABSENT,
       },
+      {
+        // Ruling #2: `.bantamkit` predates bantamkit's first save — made by hand, by an
+        // earlier bantamkit, or checked out from git — so bantamkit did not create it.
+        label: 'an existing .bantamkit with no ignore file',
+        store: ['proj', '.bantamkit', 'memory'],
+        dirs: ['proj/.bantamkit/memory'],
+        files: {},
+        file: ['proj', '.bantamkit', '.gitignore'],
+        literal: ABSENT,
+      },
+      {
+        // Ruling #2: the operator deleted the file bantamkit wrote; the next save leaves it gone.
+        label: 'an ignore file deleted after creation',
+        store: ['proj', '.bantamkit', 'memory'],
+        files: {},
+        file: ['proj', '.bantamkit', '.gitignore'],
+        literal: ABSENT,
+        deleteThenSaveAgain: true,
+      },
     ];
     gitignoreScenarios.forEach((sc, i) => {
       const bed = join(ctx.scratch, 'gitignore', `g${i}`);
       const got = {};
       const answers = {};
       const beds = {};
+      const beforeDelete = {};
+      const probes = [save('project', 'gitignore-probe', 'the first save into this store', 'b')];
+      if (sc.deleteThenSaveAgain) {
+        probes.push(save('project', 'after-the-delete', 'a later process writes again once the operator removed it', 'c'));
+      }
       for (const side of ['py', 'node']) {
         beds[side] = join(bed, side);
-        materialise(beds[side], { dirs: ['proj'], files: sc.files });
-        const request = {
-          op: 'run',
-          root: join(beds[side], ...sc.store),
-          today: TODAY,
-          index_budget: null,
-          k: null,
-          create: true,
-          calls: [save('project', 'gitignore-probe', 'the first save into this store', 'b')],
-        };
-        const r = side === 'py' ? ctx.runPython(REF, request) : runNode(store, request);
-        answers[side] = scrub(r.results, beds[side]);
+        materialise(beds[side], { dirs: ['proj', ...(sc.dirs ?? [])], files: sc.files });
+        answers[side] = [];
+        probes.forEach((call, n) => {
+          if (n > 0) {
+            // Each save is its own request — a separate MemoryStore, as a later process would
+            // be — and the file is deleted between them, after its bytes are recorded.
+            beforeDelete[side] = readOr(join(beds[side], ...sc.file));
+            rmSync(join(beds[side], ...sc.file), { force: true });
+          }
+          const request = {
+            op: 'run',
+            root: join(beds[side], ...sc.store),
+            today: TODAY,
+            index_budget: null,
+            k: null,
+            create: true,
+            calls: [call],
+          };
+          const r = side === 'py' ? ctx.runPython(REF, request) : runNode(store, request);
+          answers[side].push(...scrub(r.results, beds[side]));
+        });
         got[side] = { file: readOr(join(beds[side], ...sc.file)), all: gitignoresUnder(beds[side]) };
       }
       const name = (what) => `.bantamkit/.gitignore: ${sc.label} — ${what}`;
       const expectedAll = sc.literal === ABSENT ? [] : [sc.file.join('/')];
+      const expectedSaves = [{ status: 'saved', name: b64('gitignore-probe'), similar: null }];
+      if (sc.deleteThenSaveAgain) {
+        expectedSaves.push({ status: 'saved', name: b64('after-the-delete'), similar: null });
+      }
       // The save itself must have SUCCEEDED on both sides; a refused save writes no ignore
       // file and would make the absence scenario pass for the wrong reason.
       for (const side of ['py', 'node']) {
         cases.push({
           name: name(`${side === 'py' ? 'python' : 'node'} saved`),
           kind: 'json',
-          expected: [{ status: 'saved', name: b64('gitignore-probe'), similar: null }],
+          expected: expectedSaves,
           actual: answers[side],
         });
+        if (sc.deleteThenSaveAgain) {
+          cases.push({
+            name: name(`${side === 'py' ? 'python' : 'node'} first save wrote the literal before the delete`),
+            kind: 'bytes',
+            expected: GITIGNORE_LITERAL,
+            actual: beforeDelete[side],
+          });
+        }
         cases.push({
           name: name(`${side === 'py' ? 'python' : 'node'} bytes against the literal`),
           kind: 'bytes',
