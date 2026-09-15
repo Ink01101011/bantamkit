@@ -75,7 +75,7 @@ This asks the registry on **every** launch. Offline it fails silently: with a wa
 `npx -y bantamkit-mcp`, `npx -y bantamkit-mcp@latest` and `npx -y bantamkit-mcp@0.33.0` each hung
 to the 45 s bound with 0 bytes on stdout, and the host reports only its own handshake timeout.
 `npx` also caches what `latest` resolved to, so add `@latest` or pin a version
-([why](runtime-ts/README.md#silent-version-float-and-the-instrument-for-it)).
+([why](runtime-ts/README.md#silent-version-float)).
 
 ### Install with Python (PyPI)
 
@@ -185,7 +185,7 @@ stdin it prints `usage: bantamkit-mcp …` and exits 0.
 
 Any stdio MCP client runs the same `command`/`args`; nothing is host-specific. Codex and a
 generic JSON config: [docs/mcp.md → Client setup](docs/mcp.md#client-setup). Hand-written forms
-for every host: [npm README](runtime-ts/README.md#connect-it-to-a-host) ·
+for every host: [npm README](runtime-ts/README.md#connect-to-a-host) ·
 [Python README](runtime-py/README.md#connect-it-to-a-host).
 
 ## Configuration
