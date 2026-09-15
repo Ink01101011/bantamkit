@@ -112,7 +112,7 @@ stdin it prints `usage: bantamkit-mcp …` and exits 0.
 
 1. **Command:** `npx -y bantamkit-mcp@latest --install claude`
 2. **File:** none edited directly — it runs `claude mcp add bantamkit -s user -- <command> <args>`
-   (user scope, every project).
+   (user scope, every project), because `~/.claude.json` also holds host state that is not MCP config.
 3. **Entry:** printed as `ran    : claude mcp add bantamkit -s user -- <node> <cli.js>`.
 4. **Confirm:** `claude mcp list` prints `bantamkit: <node> <cli.js> - ✔ Connected` (Claude Code
    2.1.272; run it outside a project whose `.mcp.json` also names bantamkit, or it prints
@@ -168,7 +168,7 @@ stdin it prints `usage: bantamkit-mcp …` and exits 0.
 1. **Command:** `npx -y bantamkit-mcp@latest --install copilot`
 2. **File:** macOS `~/Library/Application Support/Code/User/mcp.json` ·
    Windows `%APPDATA%\Code\User\mcp.json` · Linux `~/.config/Code/User/mcp.json`;
-   `.vscode/mcp.json` for one workspace, by hand.
+   `.vscode/mcp.json` for one workspace, or **MCP: Open User Configuration**, by hand.
 3. **Entry** — the key is **`servers`**, not `mcpServers`, plus `"type": "stdio"`. This is the
    detail that catches people out:
 
@@ -196,8 +196,8 @@ Flags go in the entry's `args`; environment variables in its `env` block (or
 | Setting | What it does | Default | Example |
 |---|---|---|---|
 | `BANTAMKIT_MEMORY_DIR` | Pins the store to one absolute path; a missing or relative path refuses at startup | unset: nearest existing `.bantamkit/memory` at or above the start directory | `"env": {"BANTAMKIT_MEMORY_DIR": "/abs/project/.bantamkit/memory"}` |
-| `--store PATH` | One store, layering off; outranks `BANTAMKIT_MEMORY_DIR` | off (layered) | `"--store", "/abs/store"` |
-| `--start DIR` | Where store discovery starts; not with `--store` | cwd | `"--start", "/abs/project"` |
+| `--store STORE` | One store, layering off; outranks `BANTAMKIT_MEMORY_DIR` | off (layered) | `"--store", "/abs/store"` |
+| `--start START` | Where store discovery starts; not with `--store` | cwd | `"--start", "/abs/project"` |
 | Layered memory | Recall reads the project store, stores granted in `.bantamkit/config.yaml`, and `~/.bantamkit/memory`; saves go to the project store | on | [docs/memory.md → Layers](docs/memory.md#layers) |
 | `--k K` | Default recall budget | `3` | `"--k", "5"` |
 | `--index-budget BYTES` | Memory index byte budget | `24000` | `"--index-budget", "32000"` |
@@ -221,7 +221,7 @@ npx -y bantamkit-mcp@latest --update        # 0.34.0+: patches the kept install 
 npx -y bantamkit-mcp@latest --assets-root   # npx CACHES; without @latest you get an old resolve
 npm i -g bantamkit-mcp@latest               # global npm install
 pip install -U "bantamkit[mcp]"             # PyPI (pipx upgrade bantamkit · uv tool upgrade bantamkit)
-git pull && npm run build --prefix runtime-ts   # a checkout: dist/ is build output, a pull alone does nothing
+git pull && npm ci --prefix runtime-ts && npm run build --prefix runtime-ts   # a checkout: dist/ is build output
 ```
 
 `--update` (`check the package index and update this install if it differs, then exit`) patches a

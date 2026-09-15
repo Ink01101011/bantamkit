@@ -7,8 +7,8 @@ Code**, and every later launch starts **offline**. No Python, `pip`, `uv`, `pipx
 
 It serves the same twelve tools, `bantamkit_status` prompt and two resource templates as the
 Python server on **PyPI** (`pip install "bantamkit[mcp]"`), and reads and writes the same memory
-store. The two are compared frame by frame: 4500+ conformance cases, with every intentional
-difference written down as a ruling.
+store. The two are compared frame by frame: 8,130 conformance cases on 2026-09-15, with every
+intentional difference written down as a ruling.
 
 ## Contents
 
@@ -272,8 +272,8 @@ Flags go in the entry's `args`; environment variables in its `env` block (or
 | Setting | What it does | Default | Example |
 |---|---|---|---|
 | `BANTAMKIT_MEMORY_DIR` | Pins the store to one absolute path; a missing or relative path refuses at startup | unset: nearest existing `.bantamkit/memory` at or above the start directory | `"env": {"BANTAMKIT_MEMORY_DIR": "/abs/project/.bantamkit/memory"}` |
-| `--store PATH` | One store, layering off; outranks `BANTAMKIT_MEMORY_DIR` | off (layered) | `"--store", "/abs/store"` |
-| `--start DIR` | Where store discovery starts; not with `--store` | cwd | `"--start", "/abs/project"` |
+| `--store STORE` | One store, layering off; outranks `BANTAMKIT_MEMORY_DIR` | off (layered) | `"--store", "/abs/store"` |
+| `--start START` | Where store discovery starts; not with `--store` | cwd | `"--start", "/abs/project"` |
 | Layered memory | Recall reads the project store, stores granted in `.bantamkit/config.yaml`, and `~/.bantamkit/memory`; saves go to the project store | on | [Memory stores are layered by default](#memory-stores-are-layered-by-default) |
 | `--k K` | Default recall budget | `3` | `"--k", "5"` |
 | `--index-budget BYTES` | Memory index byte budget | `24000` | `"--index-budget", "32000"` |
@@ -306,7 +306,8 @@ kept install from `--install`, which serves the version in `~/.bantamkit/mcp` un
 - **`runtime`** — `"node"` here, absent on the Python server. Its *presence* is the
   discriminator, and it is folded into `build_id` so the two lineages cannot collide.
 - **`assets_digest`** — sha256 over every byte of the asset pack, computed identically in both
-  runtimes and verified equal (`sha256:b03141bf…` over 83 files from Python and from Node). Two
+  runtimes and verified equal (`sha256:eb79f9e3…` over 91 files from Python and from Node,
+  `node tools/conformance/run.mjs --all`, 2026-09-15). Two
   machines disagreeing here are serving different data.
 - **`code_digest`** / **`build_id`** — over `dist/**/*.js` here and `*.py` on the Python side, so
   they must differ across runtimes and must match across two installs of one version. `build_id`
@@ -340,7 +341,7 @@ package called `bantamkit-memory`.
 | `archive NAME` | move one named fact out |
 | `restore NAME` | move an archived fact back |
 
-Each takes `--store PATH` or `--start DIR`; with neither, it resolves the project store the way
+Each takes `--store STORE` or `--start START`; with neither, it resolves the project store the way
 `Memory.layered()` does. It reaches the writable **project** layer only — read-only grants and the
 profile store are out of reach by the code path, not by convention. Exit codes: `0` success, `1`
 a failure to act on (over budget, a malformed fact, a refused restore), `2` a usage error, so
@@ -370,7 +371,7 @@ npm cannot reach outside a package directory, so `scripts/sync-assets.mjs` vendo
 `runtime-ts/assets/` on `prepack`; that directory is generated and git-ignored.
 
 `build_identity` hashes **every byte of the whole tree**, not just the 20 files the tools read, so
-the pack ships whole — 83 files / 212,480 bytes — or `assets_digest` and `build_id` change.
+the pack ships whole — 91 files / 238,751 bytes on 2026-09-15 — or `assets_digest` and `build_id` change.
 `test/packaging.test.mjs` asserts that against what `npm pack` would put in the tarball.
 
 `assetsRoot()` mirrors `runtime-py/src/bantamkit/assets.py` arm for arm:
@@ -408,7 +409,7 @@ npm pack --dry-run # vendors the pack via prepack, lists the tarball
 From the repository root:
 
 ```sh
-node tools/conformance/run.mjs --all                   # Node vs Python, 4300+ cases
+node tools/conformance/run.mjs --all                   # Node vs Python, 8,130 cases on 2026-09-15
 node tools/conformance/npx-cold-start.mjs              # pack, cold npx, warm npx, PATH
 node tools/conformance/npx-cold-start.mjs --offline    # + the no-network arms (299.94 s on 2026-09-15)
 ```

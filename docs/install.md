@@ -59,14 +59,26 @@ Optional extras: add `[mcp]` (e.g. `bantamkit[mcp] @ git+https...`) for the
 
 ### Releasing (maintainers)
 
-After merging to `main`: bump `__version__` in
-`runtime-py/src/bantamkit/__init__.py` in the release PR if it was not already
-bumped, then
+One version, both runtimes, one release commit:
 
-```bash
-git tag -a v0.34.0 -m "bantamkit 0.34.0"
-git push origin v0.34.0
-```
+1. Bump `runtime-ts/package.json` `version` (and the root `version` fields of
+   `runtime-ts/package-lock.json`) and `__version__` in `runtime-py/src/bantamkit/__init__.py`
+   to the same number.
+2. Run the four gates: `.venv/bin/python -m pytest runtime-py/tests -q`,
+   `.venv/bin/ruff check runtime-py`, `(cd runtime-ts && npm test)`,
+   `node tools/conformance/run.mjs --all`.
+3. Build: `(cd runtime-ts && npm pack)`; `python -m build runtime-py`; `twine check` on both files.
+   The npm checklist is [Releasing to npm](release-npm.md#before-you-publish).
+4. Merge to `main`, then publish:
+   `(cd runtime-ts && npm publish bantamkit-mcp-<version>.tgz --access public)` and
+   `twine upload` the wheel and sdist.
+5. Tag and release:
+
+   ```bash
+   git tag -a v<version> -m "bantamkit <version>"
+   git push origin v<version>
+   gh release create v<version> --notes-file <notes.md>
+   ```
 
 ## The MCP server without Python: `npx bantamkit-mcp`
 
@@ -76,7 +88,7 @@ prompt, the same two resource templates, the same memory store on disk — packa
 teammate can add one line to `.mcp.json` and be done:
 
 ```json
-{"mcpServers": {"bantamkit": {"command": "npx", "args": ["-y", "bantamkit-mcp@0.25.0"]}}}
+{"mcpServers": {"bantamkit": {"command": "npx", "args": ["-y", "bantamkit-mcp@latest"]}}}
 ```
 
 Full install documentation, with every number measured rather than estimated, is
@@ -120,7 +132,8 @@ hand serves. The two runtimes' answers are compared, help bytes and handshake bo
 
 The sh launcher is **not** deprecated and nothing is being removed. Both endpoints read
 and write the same store, and the Node port is checked against the Python server frame by
-frame — 4300+ conformance cases, every deliberate difference recorded as a ruling. Run
+frame — 8,130 conformance cases on 2026-09-15, every deliberate difference recorded as a
+ruling. Run
 whichever suits the machine; a team can mix them.
 
 Move to `npx` when the pain is *installation*: a teammate with no clone, no venv and no
@@ -141,7 +154,7 @@ Three things change, and all three are measured, not predicted:
    140 s (connection refused) or 590 s (packets dropped), then the process exits. The host
    reports its own handshake timeout. A warm cache is unaffected.
 3. **`npx` floats the version.** `latest` is resolved once and cached, so two people with
-   the identical config line can run different builds. Pin `@0.25.0`, and use
+   the identical config line can run different builds. Pin a version (`bantamkit-mcp@<version>`), and use
    `build_identity` to settle it when in doubt: `runtime` says which lineage answered,
    `assets_digest` is computed identically in both and must match across machines,
    `build_id` differing on the same version string *is* the float.
@@ -176,8 +189,8 @@ never been added on any ref of this repository — `git log --all --diff-filter=
 '*mcpreach*'` is empty, and it stays rerunnable in a way a ref count would not. See the
 `--which` section of `runtime-ts/README.md`.)
 
-Version numbers are currently pinned together: the npm package is `0.25.0` to match
-`runtime-py.__version__`, because `build_identity` reports the version and a reader
+Version numbers are pinned together: the npm package version always equals
+`runtime-py.__version__`, both bumped in the same release commit, because `build_identity` reports the version and a reader
 comparing two servers should not have to hold two numbering schemes in their head.
 Whether npm and PyPI should float independently is an open decision, not a settled one.
 
