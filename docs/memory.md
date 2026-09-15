@@ -113,11 +113,7 @@ index is rewritten in place, and is always derivable from the fact files.
 ### `.bantamkit/.gitignore`: written only when bantamkit itself creates `.bantamkit`
 
 > **ADDED 2026-09-15 (job51), both runtimes, from bantamkit 0.34.0 and bantamkit-mcp 0.34.0.**
-> Neither is published yet. Superseded within the same unreleased change by **USER RULING
-> #2 (2026-09-15)**: the first version of this section (job51, same day) said the ignore
-> file was written whenever it was missing, however `.bantamkit` came to exist, and advised
-> emptying it rather than deleting it. Nothing carrying that behaviour ever shipped, so this
-> section is rewritten rather than amended.
+> Neither is published yet.
 
 A write (`save`, `compact`, or an event-log record) first makes sure the store's directories
 exist. Exactly one moment decides whether the store gets a `.gitignore`: if the write is what
@@ -193,10 +189,11 @@ PowerShell:
 Set-Content -Path .bantamkit\.gitignore -Value '*'
 ```
 
-Both were checked against the property that matters, not just typed: `git status --porcelain
---untracked-files=all` shows nothing under `.bantamkit` afterwards. Measured on this machine
-(macOS, no PowerShell installed here — the PowerShell form was written to the same contract
-and reviewed, but was not run) for the POSIX form:
+The POSIX form was checked against the property that matters, not just typed: `git status
+--porcelain --untracked-files=all` shows nothing under `.bantamkit` afterwards. Measured on
+this machine (macOS, no PowerShell installed here). The PowerShell form was written to the
+same contract and reviewed, but was not run on this machine — the checked measurement below is
+for the POSIX form only:
 
 ```console
 $ printf '*\n' > .bantamkit/.gitignore

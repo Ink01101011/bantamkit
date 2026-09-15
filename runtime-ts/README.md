@@ -268,9 +268,26 @@ What the table says:
 `npx -y bantamkit-mcp@latest --install <host>`, it finds that it is running from an npx cache.
 It then installs `bantamkit-mcp@<its own version>` into `~/.bantamkit/mcp` with
 `npm install --prefix`, and records `<process.execPath> ~/.bantamkit/mcp/node_modules/bantamkit-mcp/dist/cli.js`
-with both paths absolute. It skips npm when the kept install already reports that version.
+with both paths absolute. It skips npm — and never downgrades — when the kept install already
+reports this version or a newer one; an unparseable kept version sorts as newer and is left
+alone too (J51-9a). Only an older, missing or blank kept version, or one whose `cli.js` is
+gone, runs npm. Measured in this unit: a kept install's manifest was hand-edited to
+`0.100.0` (newer than the `0.33.0` tarball below), then `--install`ed again with the network
+cut (`npm_config_proxy`/`npm_config_https_proxy` pointed at a closed port) — exit 0 in 0.355 s,
+npm never ran, and the kept manifest still read `0.100.0` afterward.
+
+**This installs the registry's package for that version, not this tree's code.** The `npm
+install --prefix` above asks the registry for `bantamkit-mcp@<version>`, so a checkout or an
+`npm pack` tarball only supplies the version *number*; the bytes that end up in
+`~/.bantamkit/mcp` are whatever the registry published under that number. Measured in this
+unit: a `0.33.0` tarball packed from this tree carries the string `J51-9a` twice in
+`dist/hostinstall.js` (`tar -xOzf bantamkit-mcp-0.33.0.tgz package/dist/hostinstall.js | grep
+-c J51-9a` → `2`), but after `--install cursor` ran from that same tarball, the kept
+`~/.bantamkit/mcp/node_modules/bantamkit-mcp/dist/hostinstall.js` carries it zero times — the
+kept install is the published `0.33.0`, which predates J51-9a, not the tree that was packed.
 Measured end to end from `npm pack` of this tree (version string still 0.33.0), in a scratch
-`HOME` with an empty npm cache:
+`HOME` with an empty npm cache — read the table below as *when* the install happens, not
+*whose code* it installs:
 
 | command | result |
 |---|---|
@@ -433,25 +450,29 @@ version in `~/.bantamkit/mcp` until someone runs `--update`.
 
 ## Updating
 
-**There is no `bantamkit-mcp --update`, deliberately.** The package manager that installed
-this is the thing that updates it, and there are five install shapes with five different
-answers. Pick the row you are actually on — and note that **the running server keeps
-serving the code it loaded at startup**, so every row ends with restarting it in the host.
+**Updating.** `bantamkit-mcp --update` — quoted verbatim from `--help`, run in this job
+(`node runtime-ts/dist/cli.js --help`, the same line as `.venv/bin/bantamkit-mcp --help`):
+`--update  check the package index and update this install if it differs, then exit`. It asks
+the npm registry for `latest` and compares it to the version installed. If they match, it
+prints both numbers and `up to date.` and stops. If the index is ahead **and this is a
+registry install, or, from 0.34.0, a kept install made by `--install`**, it runs the row below
+that applies to you and prints what npm said. If the index is ahead and this is any OTHER
+shape — a checkout, a linked tree, a local file, or an npx cache with no kept install — **it
+refuses, exits 1, and names the row you are on**: it will not write a registry install into a
+tree you manage with `git`, and a command that exits 0 having changed nothing is worse than
+one that says no. Either way it ends by telling you to restart the server — **the running
+server keeps serving the code it loaded at startup**, so every row ends with restarting it in
+the host. The flag reaches the network and nothing else here does — not at startup, not on
+`bantamkit_status`, not on any tool — with a 10-second timeout, and being offline is a named
+refusal on stderr, never a traceback. The table below is the reference for what to do by hand,
+and it is what `--update` prints back at you when it will not act.
 
-> **AMENDED 2026-09-11 — there IS a `bantamkit-mcp --update` now, and the paragraph above is
-> kept rather than rewritten because everything in it is still true of what the flag does.**
-> `bantamkit-mcp --update` asks the npm registry for `latest` and compares it to the version
-> that is installed. If they match it prints both numbers and `up to date.` and stops. If the
-> index is ahead **and this is a registry install**, it runs the row below that applies to you
-> and prints what npm said. If the index is ahead and this is any OTHER shape, **it refuses,
-> exits 1, and names the row you are on** — it will not write a registry install into a tree
-> you manage with `git`, and a command that exits 0 having changed nothing is worse than one
-> that says no. Either way it ends by telling you to restart the server, for the reason the
-> paragraph above gives: a successful update does not change the process that is answering
-> you. The flag reaches the network and nothing else here does — not at startup, not on
-> `bantamkit_status`, not on any tool — with a 10-second timeout, and being offline is a named
-> refusal on stderr, never a traceback. The table below is still the reference for what to do
-> by hand, and it is what `--update` prints back at you when it will not act.
+> **J51-9b (2026-09-15).** This section used to open "There is no `bantamkit-mcp --update`,
+> deliberately," amended below rather than rewritten (2026-09-11, when the flag first
+> shipped). A review (F4) found that opening sentence sitting directly above this job's own
+> `--update` table row and flagged it as actively wrong, not merely stale, so this time the
+> paragraph is rewritten rather than amended again; it says nothing the 2026-09-11 amendment
+> did not already say, plus the 0.34.0 kept-install route this job added to the table below.
 
 | how it was installed | how to update |
 |---|---|

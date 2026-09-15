@@ -40,9 +40,20 @@ npx -y bantamkit-mcp@latest --install claude   # or claude-desktop, copilot, cur
 >
 > From 0.34.0, `--install` runs `npm install --prefix ~/.bantamkit/mcp` once. It then records
 > `<the node that ran it> ~/.bantamkit/mcp/node_modules/bantamkit-mcp/dist/cli.js`, both as
-> absolute paths. No later launch needs npx, the registry, or your shell's PATH. It was
-> measured from `npm pack` of `runtime-ts/` at this job's tree, in a scratch `HOME` with an
-> empty npm cache:
+> absolute paths. No later launch needs npx, the registry, or your shell's PATH. **That `npm
+> install` asks the registry for `bantamkit-mcp@<version>` — a checkout or an `npm pack`
+> tarball only supplies the version number, so the kept install is whatever the registry
+> published under it, not the packed tree's own code.** Measured in this unit: a `0.33.0`
+> tarball packed from this tree carries `J51-9a` twice in `dist/hostinstall.js`
+> (`tar -xOzf bantamkit-mcp-0.33.0.tgz package/dist/hostinstall.js | grep -c J51-9a` → `2`),
+> but the kept install that `--install` built from that same tarball carries it zero times —
+> it is the published `0.33.0`, which predates J51-9a. **It also never downgrades an existing
+> kept install:** it skips `npm install` when the kept install already reports this version or
+> a newer one (an unparseable kept version sorts as newer and is left alone too, J51-9a).
+> Measured in this unit: a kept install's manifest hand-edited to `0.100.0` was `--install`ed
+> again from the `0.33.0` tarball with the network cut — exit 0 in 0.355 s, npm never ran, and
+> the kept manifest still read `0.100.0` afterward. The rest was measured end to end from
+> `npm pack` of `runtime-ts/` at this job's tree, in a scratch `HOME` with an empty npm cache:
 >
 > - `npx -y -p <that .tgz> bantamkit-mcp --install cursor` exited 0 in 11.60 s. That time
 >   includes filling the npx cache and the one `npm install --prefix`.
@@ -125,26 +136,25 @@ which is the one detail that catches people out.
 
 ### Updating
 
-**Updating.** There is no `--update` flag: whatever installed it updates it, and the
-running server keeps serving the code it loaded at startup, so every route ends with
-restarting the server in your host (`/mcp` → reconnect in Claude Code; a full app restart
-in Claude Desktop). The short version —
+**Updating.** `--update` exists on both CLIs — quoted verbatim from `--help`, run in this job
+on both (`node runtime-ts/dist/cli.js --help` and `.venv/bin/bantamkit-mcp --help` print the
+same line): `--update  check the package index and update this install if it differs, then
+exit`. It patches a registry install and, from 0.34.0, a kept install made by `--install`;
+every other shape — a checkout, a linked tree, a local file, or an npx cache with no kept
+install — it refuses, exit 1, naming the shape and the manual route instead of guessing one.
+Either way, the running server keeps serving the code it loaded at startup, so every route
+ends with restarting the server in your host (`/mcp` → reconnect in Claude Code; a full app
+restart in Claude Desktop). It is the only thing in this toolbox that touches the network, and
+only when you type it — nothing checks for updates at server startup.
 
-> **AMENDED 2026-09-11 — there is a `--update` flag now.** The sentence above is kept rather
-> than rewritten because the rest of it still holds: `bantamkit-mcp --update` asks the package
-> index for `latest`, prints both numbers, says `up to date.` when they match, updates when
-> they differ **and the install came from the index**, and otherwise refuses with exit 1 and
-> names the route below that applies to you. It always ends by telling you to restart the
-> server, because an update does not change the process already answering you. It is the only
-> thing in this toolbox that touches the network, and only when you type it.
-
-> **AMENDED 2026-09-15 (job51) — `--update` now also patches the kept install.** From
-> bantamkit-mcp 0.34.0, not yet on npm when this was written, `npx -y bantamkit-mcp@latest
-> --update` run from an npx cache no longer refuses when `~/.bantamkit/mcp` holds a kept install
-> made by `--install`. It compares that install's version with the index and updates it with
-> `npm install --prefix ~/.bantamkit/mcp bantamkit-mcp@latest`. With no kept install, the
-> refusal is unchanged. Nothing checks for updates at server startup: the flag stays the only
-> thing that reaches the network, and only when you type it.
+> **J51-9b (2026-09-15).** This paragraph used to open "There is no `--update` flag," amended
+> twice below rather than rewritten (2026-09-11, when the flag first shipped; 2026-09-15, for
+> job51's kept-install route). A review (F4) found that opening sentence sitting directly
+> above this job's own `--update` line and flagged it as actively wrong, not merely stale, so
+> this time the paragraph is rewritten instead of amended again; it says nothing the two
+> retired amendments did not already say — asking the index for `latest`, refusing a non-index
+> install by name, and (from 0.34.0) patching a kept install with
+> `npm install --prefix ~/.bantamkit/mcp bantamkit-mcp@latest` instead of refusing it.
 
 ```bash
 npx -y bantamkit-mcp@latest --update        # 0.34.0+: patches the kept install at ~/.bantamkit/mcp
