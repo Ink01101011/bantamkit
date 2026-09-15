@@ -290,6 +290,64 @@ test('ephemeral with a kept install at an OLDER version: npm runs', async () => 
   });
 });
 
+// J51-9a (review F1). `--install` from a stale npx cache must never move a NEWER kept install
+// back: the operator ran `--update` to a later release, and every host already launches that
+// kept install. The pair is mixed-digit on purpose — as strings `'0.10.0' < '0.9.0'`, so an
+// equality check and a string comparison both run npm here, and only a numeric order passes.
+test('ephemeral with a kept install at a NEWER version: npm never runs, the kept install is recorded', async () => {
+  await withHome(async (h, root) => {
+    seedKept(root, '0.10.0');
+    const installer = recorder(() => {
+      seedKept(root, '0.9.0');
+      return [0, ''];
+    });
+    h.installSelf('cursor', false, { shape: () => 'ephemeral', installer, version: '0.9.0' });
+    assert.deepEqual(installer.calls, [], 'npm ran and would have downgraded the kept install');
+    assert.deepEqual(readJson(h.hostConfigPath('cursor')).mcpServers.bantamkit, {
+      command: process.execPath,
+      args: [keptCliIn(root)],
+    });
+    assert.equal(readJson(join(dirname(dirname(keptCliIn(root))), 'package.json')).version, '0.10.0');
+  });
+});
+
+test('ephemeral with a kept install whose version is not dotted numbers: kept, never replaced, no stack trace', async () => {
+  // `compareVersions` is total: a non-numeric component sorts after every number in its
+  // position, so a version this module cannot read as numbers ranks ABOVE the running one.
+  // The kept install is left alone rather than overwritten with something that may be older.
+  await withHome(async (h, root) => {
+    seedKept(root, 'not-a-version');
+    const installer = recorder(() => [0, '']);
+    const { command, args } = h.thisCommand({ shape: () => 'ephemeral', installer, version: '0.9.0' });
+    assert.deepEqual(installer.calls, []);
+    assert.deepEqual({ command, args }, { command: process.execPath, args: [keptCliIn(root)] });
+  });
+});
+
+test('ephemeral with a kept install at a NEWER version but no cli.js: npm runs, as with no kept install', async () => {
+  await withHome(async (h, root) => {
+    rmSync(seedKept(root, '0.10.0'));
+    const installer = recorder(() => {
+      seedKept(root, '0.9.0');
+      return [0, ''];
+    });
+    h.installSelf('cursor', false, { shape: () => 'ephemeral', installer, version: '0.9.0' });
+    assert.deepEqual(installer.calls, [['npm', 'install', '--prefix', keptPrefixIn(root), 'bantamkit-mcp@0.9.0']]);
+  });
+});
+
+test('ephemeral with a kept install reporting a BLANK version: npm runs, as with no readable version', async () => {
+  await withHome(async (h, root) => {
+    seedKept(root, '   ');
+    const installer = recorder(() => {
+      seedKept(root, '0.9.0');
+      return [0, ''];
+    });
+    h.installSelf('cursor', false, { shape: () => 'ephemeral', installer, version: '0.9.0' });
+    assert.equal(installer.calls.length, 1);
+  });
+});
+
 test('npm failing is a refusal naming prefix, command and exit; the config is byte-unchanged', async () => {
   await withHome(async (h, root) => {
     const path = h.hostConfigPath('cursor');

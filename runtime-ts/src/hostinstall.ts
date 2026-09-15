@@ -48,7 +48,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { currentInstall, Undetermined } from './mcp/identity.js';
-import { keptCli, keptManifest, keptPrefix, PACKAGE, runInstaller, shlexJoin } from './npminstall.js';
+import { compareVersions, keptCli, keptManifest, keptPrefix, PACKAGE, runInstaller, shlexJoin } from './npminstall.js';
 import { dumpJson, fromJs } from './pyjson.js';
 
 export { keptCli, keptPrefix };
@@ -316,8 +316,9 @@ function lastLine(output: string): string {
  *
  *   - `ephemeral` (an `npx` cache): this process's own `cli.js` lives in a cache npm may discard,
  *     so the recorded one is the KEPT install at `keptPrefix()`. If its manifest already reports
- *     this version and its `cli.js` is there, nothing runs — a second `--install` for another
- *     host works offline. Otherwise `npm install --prefix <kept> bantamkit-mcp@<this version>`
+ *     this version OR A NEWER ONE and its `cli.js` is there, nothing runs — a second `--install`
+ *     for another host works offline, and a stale `npx` cache never moves a kept install that
+ *     `--update` took further back to its own version (J51-9a). Otherwise `npm install --prefix <kept> bantamkit-mcp@<this version>`
  *     runs once, through the same spawner `--update` uses, and the `cli.js` is confirmed after.
  *     npm creates a missing prefix directory itself (measured, npm 11.6.2), so nothing is made
  *     here first and a failed install leaves no empty directory of this module's making.
@@ -344,7 +345,16 @@ export function thisCommand(options: CommandOptions = {}): { command: string; ar
   const version = options.version ?? ownVersion();
   const prefix = keptPrefix();
   const cli = keptCli(prefix);
-  if (keptVersion(prefix) === version && existsSync(cli)) return { command: node, args: [cli] };
+  const kept = keptVersion(prefix);
+  // NEVER LOWER THE KEPT INSTALL (J51-9a). An `npx` cache can be older than the kept install —
+  // `--update` moved the kept install on, and this cache was filled weeks ago — and every host
+  // already launches the kept one, so installing THIS version over it would move them all back.
+  // A kept version at or above this one is recorded as it is. `compareVersions` is total: a
+  // component that is not all digits sorts after every number, so a version it cannot read as
+  // numbers counts as newer and is left alone rather than overwritten. A blank one is no version.
+  if (kept !== null && kept.trim() !== '' && compareVersions(kept, version) >= 0 && existsSync(cli)) {
+    return { command: node, args: [cli] };
+  }
 
   const command = ['npm', 'install', '--prefix', prefix, `${PACKAGE}@${version}`];
   const rendered = shlexJoin(command);

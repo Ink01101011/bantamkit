@@ -462,6 +462,15 @@ const KEPT_INSTALL_RULING =
   'Only the `  command: ` line differs: every other byte, stderr and the exit code are ' +
   'compared unruled beside this, and the port line is pinned against a literal.';
 
+const NEWER_KEPT_INSTALL_RULING =
+  'RULED DIFFERENT, and carried in `docs/porting.md` (J51-4, J51-9a). The same port-only branch ' +
+  'as `install-cursor-from-an-npx-cache-with-a-kept-install`, with the kept install NEWER than ' +
+  'the running `npx` cache — the operator ran `--update`, then `--install` from a stale cache. ' +
+  'The port records the kept install as it is and never runs npm, because installing its own ' +
+  'older version there would move every host that launches it backwards. The reference never ' +
+  'derives `ephemeral` (AS-7a), so it records its own console script. Only the `  command: ` ' +
+  'line differs: every other byte, stderr and the exit code are compared unruled beside this.';
+
 const UNDETERMINED_INSTALL_RULING =
   'RULED DIFFERENT, and carried in `docs/porting.md` (J51-4). A port whose install shape cannot ' +
   'be derived — here a `git+https` origin in the lockfile — REFUSES `--install`: which copy a ' +
@@ -922,6 +931,23 @@ function installSandbox(scratch, name, seed = null) {
 /** The version this build of the port reports, read the way `cli.ts`'s `version()` reads it. */
 const PORT_VERSION = JSON.parse(readFileSync(join(repoRoot, 'runtime-ts', 'package.json'), 'utf8')).version;
 
+/**
+ * A version NEWER than this build that a STRING comparison ranks OLDER — `0.100.0` against
+ * `0.33.0` — so an equality check and a string order both run npm over it, and only a numeric
+ * order leaves it alone (J51-9a). Searched, not pasted, so the next release keeps the property;
+ * a version for which no such minor exists fails loudly here rather than seeding one that
+ * cannot tell the three rules apart.
+ */
+function newerKeptVersionThatSortsOlderAsAString(version) {
+  const [major, minor] = version.split('.').map(Number);
+  for (let n = minor + 1; n <= minor * 10 + 1000; n += 1) {
+    const candidate = `${major}.${n}.0`;
+    if (candidate < version) return candidate;
+  }
+  throw new Error(`no minor above ${version} sorts below it as a string; choose another seed`);
+}
+const NEWER_KEPT_VERSION = newerKeptVersionThatSortsOlderAsAString(PORT_VERSION);
+
 /** What the harness writes into a seeded kept `cli.js`, so a reinstall over it is visible. */
 const SEEDED_KEPT_CLI = '// seeded by the conformance harness; npm never wrote this\n';
 
@@ -964,7 +990,7 @@ function seedKeptInstall(home, version) {
  * matching: its side runs with `npm_config_offline=true`, and the seeded `cli.js` carries a
  * marker a reinstall would overwrite, which a literal case reads back.
  */
-function npxCacheSandbox(scratch, name, resolved) {
+function npxCacheSandbox(scratch, name, resolved, keptVersion = PORT_VERSION) {
   const root = join(scratch, `install-${name}`);
   rmSync(root, { recursive: true, force: true });
   const project = join(root, 'npx-project');
@@ -989,7 +1015,7 @@ function npxCacheSandbox(scratch, name, resolved) {
   const homes = { py: join(root, 'home-py'), node: join(root, 'home-node') };
   // Seeded IDENTICALLY on both sides: the reference never looks, and that is a measurement
   // only if it had the same kept install in front of it.
-  for (const home of Object.values(homes)) seedKeptInstall(home, PORT_VERSION);
+  for (const home of Object.values(homes)) seedKeptInstall(home, keptVersion);
   return {
     cli: join(pkg, 'dist', 'cli.js'),
     sideEnv: {
@@ -1249,6 +1275,21 @@ function matrix(scratch) {
       shape: 'install-kept',
       ...npxCacheSandbox(scratch, 'npx-kept', `https://registry.npmjs.org/bantamkit-mcp/-/bantamkit-mcp-${PORT_VERSION}.tgz`),
     },
+    // J51-9a: the same cache with a kept install NEWER than it. The port must record the kept
+    // install and leave it — npm installing this build's older version there is the downgrade.
+    {
+      label: 'install-cursor-from-an-npx-cache-with-a-newer-kept-install',
+      argv: ['--install', 'cursor'],
+      shape: 'install-kept',
+      ruling: NEWER_KEPT_INSTALL_RULING,
+      keptVersion: NEWER_KEPT_VERSION,
+      ...npxCacheSandbox(
+        scratch,
+        'npx-kept-newer',
+        `https://registry.npmjs.org/bantamkit-mcp/-/bantamkit-mcp-${PORT_VERSION}.tgz`,
+        NEWER_KEPT_VERSION,
+      ),
+    },
     {
       label: 'install-cursor-from-an-install-of-undeterminable-shape',
       argv: ['--install', 'cursor'],
@@ -1498,7 +1539,31 @@ export async function run(ctx) {
         });
       }
     } else if (spec.shape === 'install-kept') {
-      cases.push(...installCases(spec.label, py, node, spec.homes, KEPT_INSTALL_RULING));
+      cases.push(...installCases(spec.label, py, node, spec.homes, spec.ruling ?? KEPT_INSTALL_RULING));
+      if (spec.keptVersion !== undefined) {
+        // THE SEED IS WHAT MAKES THIS A DOWNGRADE QUESTION, so it is asserted rather than trusted:
+        // newer than this build by number, older as a string, and still what the kept manifest
+        // says after both runs — a reinstall of this build would have rewritten it.
+        const manifestVersion = (home) =>
+          JSON.parse(readFileSync(join(dirname(dirname(keptCliUnder(home))), 'package.json'), 'utf8')).version;
+        cases.push({
+          name: `${spec.label}/PINNED PER SIDE: the kept install is newer by number, older as a string, and still at that version`,
+          kind: 'json',
+          expected: {
+            seed: { newerByNumber: true, olderAsAString: true },
+            python: spec.keptVersion,
+            node: spec.keptVersion,
+          },
+          actual: {
+            seed: {
+              newerByNumber: spec.keptVersion.split('.').map(Number)[1] > PORT_VERSION.split('.').map(Number)[1],
+              olderAsAString: spec.keptVersion < PORT_VERSION,
+            },
+            python: manifestVersion(spec.homes.py),
+            node: manifestVersion(spec.homes.node),
+          },
+        });
+      }
       cases.push({
         name: `${spec.label}/PINNED PER SIDE: the port records the KEPT install, the reference itself, against this file`,
         kind: 'json',

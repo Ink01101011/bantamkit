@@ -45,12 +45,14 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { currentInstall, Undetermined } from './mcp/identity.js';
-import { keptCli, keptManifest, keptPrefix, PACKAGE, runInstaller, shlexJoin } from './npminstall.js';
+import { compareVersions, keptCli, keptManifest, keptPrefix, PACKAGE, runInstaller, shlexJoin } from './npminstall.js';
 
 // `PACKAGE`, `shlexJoin` and `runInstaller` moved to `npminstall.ts` in job51 so `--install` can
 // share the npm spawner without importing this module (see that file's header). Re-exported so
 // this module's surface — and every test importing these from `dist/selfupdate.js` — is unchanged.
-export { PACKAGE, runInstaller, shlexJoin };
+// `compareVersions` followed in J51-9a, for the same reason: `--install` from an `npx` cache orders
+// the kept install's version against its own, and must not import this module to do it.
+export { compareVersions, PACKAGE, runInstaller, shlexJoin };
 
 /**
  * The command the operator typed, on BOTH runtimes. Not the package name — see the module
@@ -429,58 +431,6 @@ export function upgradeCommand(environment: Environment): string[] {
   return ['npm', 'install', '--prefix', environment.root, `${PACKAGE}@latest`];
 }
 
-type Part = readonly [number, number, string];
-
-/**
- * A dotted version as something orderable, deterministically, without claiming PEP 440.
- *
- * THE REFERENCE'S RULE, REPRODUCED EXACTLY, INCLUDING THE PART THAT IS WRONG. Split on `.`; a
- * component that is all digits sorts as a NUMBER, anything else sorts as a STRING after every
- * number in that position. So `0.9.0 < 0.10.0` — the thing a plain string compare gets wrong,
- * and the reason this exists — and `0.31.0 < 0.31.0rc1`, which is WRONG BY SEMVER AND BY PEP
- * 440 and is kept anyway.
- *
- * A CORRECT COMPARISON HERE WOULD BE A DIVERGENCE, NOT AN IMPROVEMENT. `_version_key`'s
- * docstring in the reference gives the reason: bantamkit has never published a prerelease to
- * either registry, and implementing PEP 440 there in order to reproduce it here would be a
- * second, larger thing to keep byte-identical in service of a case neither index can currently
- * return. What matters is that both runtimes are wrong in the SAME direction, which a
- * conformance case can pin and a reader can check. If a prerelease is ever published, this is
- * the function to fix — in both runtimes, in one job.
- *
- * `/^\d+$/` is ASCII-only, where CPython's `str.isdigit()` is not. That narrowing is the safe
- * direction: the strings `str.isdigit()` accepts and `int()` then REFUSES (superscripts, for
- * one) raise in the reference and sort as strings here, and no registry can answer with one.
- */
-function versionKey(version: string): Part[] {
-  return version.split('.').map((part): Part => (/^\d+$/.test(part) ? [0, Number(part), ''] : [1, 0, part]));
-}
-
-const PAD: Part = [0, 0, ''];
-
-function comparePart(left: Part, right: Part): number {
-  if (left[0] !== right[0]) return left[0] < right[0] ? -1 : 1;
-  if (left[1] !== right[1]) return left[1] < right[1] ? -1 : 1;
-  if (left[2] === right[2]) return 0;
-  return left[2] < right[2] ? -1 : 1;
-}
-
-/**
- * -1 when the index is ahead, 0 when they agree, 1 when the installed version is ahead.
- *
- * The shorter of the two is padded with numeric zeros, so `0.30` and `0.30.0` agree — which is
- * what a person means by them and what both registries would print for one release.
- */
-export function compareVersions(installed: string, latest: string): number {
-  const left = versionKey(installed);
-  const right = versionKey(latest);
-  const width = Math.max(left.length, right.length);
-  for (let i = 0; i < width; i += 1) {
-    const order = comparePart(left[i] ?? PAD, right[i] ?? PAD);
-    if (order !== 0) return order;
-  }
-  return 0;
-}
 
 /**
  * `10` rather than `10.0`, because the sentence is read by a person, not parsed.
