@@ -5,9 +5,36 @@ build-backend = "hatchling.build"
 [project]
 name = "bantamkit"
 dynamic = ["version"]
-description = "bantamweight tooling — harness primitives that lift small-model agents"
+description = "Memory MCP server for Claude Code, Cursor, VS Code Copilot and Claude Desktop, plus a Python library that lifts small-model agents. Install once, run offline."
 readme = "README.md"
 requires-python = ">=3.11"
+# J52-4, 2026-09-15. The same keyword set as `runtime-ts/package.json`, so both registries
+# are searched by the same words. Every one names something the package does.
+keywords = [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "claude",
+    "claude-code",
+    "claude-desktop",
+    "cursor",
+    "copilot",
+    "vscode",
+    "agent",
+    "memory",
+    "json-schema",
+    "llm",
+]
+# Python versions are the CI matrix in .github/workflows/ci.yml. No License classifier:
+# PEP 639 forbids one beside the `license` expression below.
+classifiers = [
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 # U9, 2026-08-24. THE SPELLING IS MEASURED, not copied from a changelog. `runtime-ts/
 # package.json` has declared `"license": "MIT"` since it existed, against a `LICENSE`
 # file that did not exist and a Python half that declared nothing at all. This line is
@@ -46,6 +73,12 @@ mcp = ["mcp>=2.0,<3"]
 
 [project.scripts]
 bantamkit-mcp = "bantamkit.mcpserver:main"
+
+[project.urls]
+Homepage = "https://github.com/Ink01101011/bantamkit"
+Repository = "https://github.com/Ink01101011/bantamkit"
+Issues = "https://github.com/Ink01101011/bantamkit/issues"
+Documentation = "https://github.com/Ink01101011/bantamkit/tree/main/docs"
 
 # RB-P45. Read the version out of the package instead of restating it here, so the
 # version a running server reports is a property of the checkout and not of the last

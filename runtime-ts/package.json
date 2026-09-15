@@ -1,7 +1,26 @@
 {
   "name": "bantamkit-mcp",
-  "version": "0.34.0",
-  "description": "bantamkit MCP server — pure Node, runnable with npx",
+  "version": "0.34.1",
+  "description": "Memory MCP server for Claude Code, Cursor, VS Code Copilot and Claude Desktop: per-person memory, JSON Schema validation, shift-work tools. Pure Node; install once with npx, run offline.",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "claude",
+    "claude-code",
+    "claude-desktop",
+    "cursor",
+    "copilot",
+    "vscode",
+    "agent",
+    "memory",
+    "json-schema",
+    "llm"
+  ],
+  "homepage": "https://github.com/Ink01101011/bantamkit#readme",
+  "bugs": {
+    "url": "https://github.com/Ink01101011/bantamkit/issues"
+  },
   "type": "module",
   "bin": {
     "bantamkit-mcp": "dist/cli.js",
