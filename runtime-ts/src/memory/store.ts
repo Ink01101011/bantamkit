@@ -55,6 +55,7 @@ import {
   pyMtimeDate,
   pyName,
   pyParent,
+  pyParents,
   pyReadText,
   pyReplace,
   pyScandirNames,
@@ -103,6 +104,14 @@ export const BANTAMKIT_GITIGNORE_TEXT =
  * a `.bantamkit` that git can see (or ignore one it should not), which is the whole bug this
  * closes.
  *
+ * THE CREATORS, ENUMERATED (J54-3), because "anything else" is how one got missed: in THIS
+ * runtime there are exactly three — `MemoryStore.ensureDirs`, `EventLog`'s append-time
+ * `mkdirSync`, and `hostinstall.thisCommand`, where `--install` from an `npx` cache has npm
+ * create `<homedir>/.bantamkit/mcp` (npm makes a missing `--prefix` itself). The first two ask
+ * `bantamkitDirFor` which directory the decision is about rather than assuming the root's
+ * parent is it; the third is the one the reference does not have at all, because the offline
+ * install is Node-only by user ruling. `docs/porting.md` carries the row.
+ *
  * NEVER REWRITES. A `.gitignore` that already exists -- whatever its bytes -- is left
  * exactly as it is, kept as a second guard even when `created` is `true`: an operator who
  * deleted it to commit the directory keeps that decision, and this never diffs its own
@@ -126,6 +135,33 @@ export function ensureBantamkitGitignore(directory: string, created: boolean): v
   } catch {
     /* best-effort: a missing ignore file is not worth a lost fact */
   }
+}
+
+/**
+ * The `.bantamkit` directory a recursive mkdir of `path` would create or fill, or `null` when
+ * there is none: `path` itself if it is named `.bantamkit`, otherwise its nearest ancestor
+ * that is. `runtime-py/src/bantamkit/memory/store.py`'s `bantamkit_dir_for` is the reference.
+ *
+ * WHY A WALK AND NOT `pyParent(path)` (J54-3). Every creator has to hand
+ * `ensureBantamkitGitignore` the directory the decision is ABOUT, and the parent is the right
+ * answer for exactly one shape of path, `<x>/.bantamkit/memory`. A store rooted AT the
+ * `.bantamkit` directory (`--store ~/.bantamkit`) or nested deeper under it creates a
+ * `.bantamkit` whose gitignore decision was taken about the wrong directory — so no decision
+ * was taken at all, and git could see the whole tree. MEASURED, not hypothetical: `~/.bantamkit`
+ * on the machine this was found on holds an empty `facts/` and `archive/` beside `memory/`,
+ * left by a store once rooted at it, and no `.gitignore`.
+ *
+ * NEAREST AND NOT OUTERMOST, which is the choice `EventLog`'s append already made and this
+ * function now carries for both creators.
+ *
+ * READ-ONLY. It looks at names, never at the filesystem, so it is equally valid before or after
+ * the mkdir — but `created` is answered by checking THIS path's existence BEFORE.
+ */
+export function bantamkitDirFor(path: string): string | null {
+  for (const candidate of [path, ...pyParents(path)]) {
+    if (pyName(candidate) === '.bantamkit') return candidate;
+  }
+  return null;
 }
 
 /** `sorted(VALID_TYPES)` is what the error message interpolates, so the order is load-bearing. */
@@ -681,8 +717,13 @@ export class MemoryStore {
     // Checked BEFORE the mkdir below, per user ruling #2: this is the one moment that can
     // tell whether `.bantamkit` already existed. After the mkdir it unconditionally exists
     // either way, so the answer has to be captured now or not at all.
-    const bantamkitDir = pyParent(this.root);
-    const bantamkitDirExistedBefore = pyExists(bantamkitDir);
+    //
+    // J54-3: `bantamkitDirFor`, not `pyParent`. The mkdirs below create every missing
+    // component of `this.root` — a root that IS the `.bantamkit` directory, or one nested
+    // deeper under it, brought a `.bantamkit` into existence while the decision was being
+    // taken about some other directory, which meant no decision at all.
+    const bantamkitDir = bantamkitDirFor(this.root);
+    const bantamkitDirExistedBefore = bantamkitDir !== null && pyExists(bantamkitDir);
     try {
       pyMkdirParents(pyJoin(this.root, 'facts'));
       pyMkdirParents(pyJoin(this.root, 'archive'));
@@ -693,7 +734,7 @@ export class MemoryStore {
           ' there and this filesystem would not make it, so nothing was written',
       );
     }
-    ensureBantamkitGitignore(bantamkitDir, !bantamkitDirExistedBefore);
+    if (bantamkitDir !== null) ensureBantamkitGitignore(bantamkitDir, !bantamkitDirExistedBefore);
   }
 
   // ---- ops ----
