@@ -30,7 +30,7 @@ intentional difference written down as a ruling.
 | [The operator CLI: `bantamkit-memory`](#the-operator-cli-bantamkit-memory) | The second bin: status, lint, compact, archive, restore |
 | [Memory stores are layered by default](#memory-stores-are-layered-by-default) | Why not to add `--store` by reflex |
 | [The asset pack](#the-asset-pack) | What ships in `assets/` and how it is found |
-| [Sharing a store with the Python server](#sharing-a-store-with-the-python-server) | Concurrent writes, and one hand-edit to avoid |
+| [Where the Python and Node servers differ](#where-the-python-and-node-servers-differ) | One store; concurrent writes, one hand-edit to avoid |
 | [Development](#development) | Build, test, conformance |
 | [Measurements and history](#measurements-and-history) | Where the measured numbers behind this page live |
 
@@ -261,7 +261,7 @@ dependency in a temp directory that will be deleted, and `npm update` cannot hel
 | Two machines with one config run different builds | [Silent version float](#silent-version-float): compare `build_id` |
 | `bantamkit_status` still shows the old version after an update | The host has not reconnected; restart the server |
 | Recall finds nothing, or the wrong store | Set `BANTAMKIT_MEMORY_DIR`; the reply names the store it searched |
-| `malformed fact file …` | A hand-edited fact has a bare non-string field; see [Sharing a store](#sharing-a-store-with-the-python-server) |
+| `malformed fact file …` | A hand-edited fact has a bare non-string field; see [Where the Python and Node servers differ](#where-the-python-and-node-servers-differ) |
 | `AssetNotFound: no assets directory found; set BANTAMKIT_ASSETS` | See [The asset pack](#the-asset-pack) |
 
 ## Configuration
@@ -381,9 +381,12 @@ the pack ships whole — 91 files / 238,751 bytes on 2026-09-15 — or `assets_d
 3. `<repo>/assets/` — two levels above `dist/`, for a dev checkout with nothing vendored.
 4. Otherwise `AssetNotFound: no assets directory found; set BANTAMKIT_ASSETS`.
 
-## Sharing a store with the Python server
+## Where the Python and Node servers differ
 
-Both servers read and write the same memory store; byte-compatibility is the product.
+Both servers read and write the same on-disk store; byte-compatibility is the product. Every
+feature lands in both in one change, and a conformance case compares their answers. Differences
+are deliberate and each is ruled in the
+[divergence table](https://github.com/Ink01101011/bantamkit/blob/main/docs/porting.md#where-the-two-runtimes-deliberately-differ):
 
 - **Concurrent writes are safe for the memory store and lossy for the checkpoint, in both
   runtimes.** `index.md` is derived from `facts/`, so the last writer re-enumerates everything
