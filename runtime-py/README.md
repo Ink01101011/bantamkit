@@ -68,9 +68,9 @@ CPU architecture and Python minor version** (some wheels, such as `pydantic_core
 one platform only), copy `wheels/` across, and install from it:
 
 ```bash
-python -m pip download "bantamkit[mcp]==0.34.2" -d wheels
+python -m pip download "bantamkit[mcp]==0.34.3" -d wheels
 python -m venv <env>
-<env>/bin/pip install --no-index --find-links wheels "bantamkit[mcp]==0.34.2"
+<env>/bin/pip install --no-index --find-links wheels "bantamkit[mcp]==0.34.3"
 <env>/bin/bantamkit-mcp --install cursor
 ```
 
@@ -219,10 +219,10 @@ pipx upgrade bantamkit                 # pipx
 uv tool upgrade bantamkit              # uv
 ```
 
-`--update` (`check the package index and update this install if it differs, then exit`) is the
-only network access here. An editable install, a local file or a source tree is refused with
-exit 1 and a sentence naming the manual route (for a clone, `git pull`). For a wheelhouse, repeat
-the download and install.
+`--update` (`check the package index and update this install if it differs, then exit`) upgrades
+an install from PyPI with this interpreter's pip; it is the only network access here. An editable
+install, a local file or a source tree is refused with exit 1 and a sentence naming the manual
+route (for a clone, `git pull`). For a wheelhouse, repeat the download and install.
 
 **Then restart the server in the host** (`/mcp` → reconnect in Claude Code; fully restart Claude
 Desktop). `bantamkit_status` prints the version **and the `build_id` of the code answering
@@ -260,7 +260,7 @@ you**; a new version with an old `build_id` means an old process.
 | `shiftwork_status` | report the open cursor |
 | `token_ledger` | what a session cost, read off the host's transcripts |
 | `bantamkit_status` | report store health against its budget |
-| `build_identity` | report the fingerprint of the source on disk, not the executing code |
+| `build_identity` | report the fingerprint of the source on disk, not the executing code — useful when a machine carries two installs under one name |
 
 The document reader `bantamkit_read` left the served tools in job50 (2026-09-12) and stays in the
 library as `bantamkit.docread`.
@@ -275,7 +275,7 @@ under the `[mcp]` extra.
 Contracts, schemas, eval tasks, rubrics and tool manifests ship inside the package.
 `bantamkit-mcp --assets-root` prints the resolved directory and its file count, and
 `BANTAMKIT_ASSETS` overrides it. A build that cannot find the pack fails instead of shipping
-without it.
+without it — deliberately, because the silent version shipped once.
 
 ## The operator CLI: `python -m bantamkit.memory`
 
@@ -314,7 +314,7 @@ git clone https://github.com/Ink01101011/bantamkit
 cd bantamkit
 python -m venv .venv && .venv/bin/pip install -e "runtime-py[dev,mcp]"
 .venv/bin/python -m pytest runtime-py/tests -q
-.venv/bin/ruff check runtime-py
+.venv/bin/ruff check runtime-py tools
 ```
 
 The cross-runtime gate needs Node:

@@ -46,7 +46,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "runtime-py" / "src"))
 
-from bantamkit import pricing  # noqa: E402
+from bantamkit import pricing
 
 
 def b64(text: str) -> str:

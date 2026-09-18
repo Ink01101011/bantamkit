@@ -234,3 +234,67 @@ def test_eventlog_path_unrelated_to_dot_bantamkit_writes_no_gitignore(tmp_path):
 
     assert log.write_failed is False
     assert not list(tmp_path.glob("**/.gitignore"))
+
+
+# ---------------------------------------------------------------------- J54-3 (2026-09-18)
+#
+# THE SECOND CREATOR THE PROPERTY MISSED, and it is not hypothetical: on the machine this
+# was found on, `~/.bantamkit` holds an empty `facts/` and `archive/` beside `memory/` --
+# a `MemoryStore` was once rooted AT the `.bantamkit` directory itself (`--store
+# ~/.bantamkit`), its `mkdir(parents=True)` brought `~/.bantamkit` into existence, and the
+# gitignore decision was taken about `~` instead, because `_ensure_dirs` looked at
+# `self.root.parent` and nothing else.
+#
+# `self.root.parent` is the right directory for exactly one shape of root,
+# `<x>/.bantamkit/memory`. A root that IS the `.bantamkit` directory, or one nested deeper
+# under it, creates a `.bantamkit` that no call ever decides about -- the hole the
+# docstring names as "a second creator that skipped this call, or that got `created`
+# wrong". `EventLog._append` already walks the ancestors to find the `.bantamkit` among
+# them; this is that same walk, in the other creator.
+
+
+def test_j54_3_a_store_rooted_at_the_bantamkit_directory_itself_gets_the_gitignore(tmp_path):
+    root = tmp_path / ".bantamkit"
+    assert not root.exists()
+
+    MemoryStore(root)
+
+    gitignore = root / ".gitignore"
+    assert gitignore.exists()
+    assert gitignore.read_bytes() == BANTAMKIT_GITIGNORE_TEXT.encode("utf-8")
+
+
+def test_j54_3_a_store_nested_deeper_under_bantamkit_gets_the_gitignore(tmp_path):
+    root = tmp_path / ".bantamkit" / "memory" / "extra"
+    assert not (tmp_path / ".bantamkit").exists()
+
+    MemoryStore(root)
+
+    gitignore = tmp_path / ".bantamkit" / ".gitignore"
+    assert gitignore.exists()
+    assert gitignore.read_text(encoding="utf-8") == BANTAMKIT_GITIGNORE_TEXT
+
+
+def test_j54_3_ruling_2_holds_for_a_store_rooted_at_an_existing_bantamkit(tmp_path):
+    """The fix must not over-fire: a `.bantamkit` that predates this call never gets one,
+    whichever creator is looking at it."""
+    root = tmp_path / ".bantamkit"
+    root.mkdir()
+
+    store = MemoryStore(root)
+    store.save("project", "widget-cache", "one line", "body", ())
+
+    assert not (root / ".gitignore").exists()
+
+
+def test_j54_3_deleting_the_gitignore_under_a_nested_root_stays_deleted(tmp_path):
+    root = tmp_path / ".bantamkit" / "memory" / "extra"
+    gitignore = tmp_path / ".bantamkit" / ".gitignore"
+
+    store = MemoryStore(root)
+    assert gitignore.exists()
+
+    gitignore.unlink()
+    store.save("project", "widget-cache", "one line", "body", ())
+
+    assert not gitignore.exists()

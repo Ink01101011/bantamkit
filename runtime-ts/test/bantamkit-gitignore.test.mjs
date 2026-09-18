@@ -299,3 +299,62 @@ test('an eventlog path unrelated to .bantamkit writes no gitignore', () => {
   assert.equal(log.writeFailed, false);
   assert.deepEqual(walkFilenames(dir, '.gitignore'), []);
 });
+
+// ------------------------------------------------------------------- J54-3 (2026-09-18)
+//
+// THE SECOND CREATOR THE PROPERTY MISSED, mirrored from
+// `runtime-py/tests/test_bantamkit_gitignore.py`. `ensureDirs` decided about
+// `pyParent(this.root)` and nothing else, which is the right directory for exactly one
+// shape of root — `<x>/.bantamkit/memory`. A root that IS the `.bantamkit` directory
+// (`--store ~/.bantamkit`, which is what left an empty `facts/` and `archive/` beside
+// `memory/` in the operator's own home), or one nested deeper under it, brings a
+// `.bantamkit` into existence that no call ever decides about. `EventLog` already walks
+// the ancestors to find the `.bantamkit` among them; this is that same walk, in the other
+// creator.
+
+test('J54-3: a store rooted at the .bantamkit directory itself gets the gitignore', () => {
+  const dir = room();
+  const root = join(dir, '.bantamkit');
+  assert.equal(existsSync(root), false);
+
+  new MemoryStore(root);
+
+  const gitignore = join(root, '.gitignore');
+  assert.equal(existsSync(gitignore), true);
+  assert.equal(readFileSync(gitignore, 'utf8'), BANTAMKIT_GITIGNORE_TEXT);
+});
+
+test('J54-3: a store nested deeper under .bantamkit gets the gitignore', () => {
+  const dir = room();
+  assert.equal(existsSync(join(dir, '.bantamkit')), false);
+
+  new MemoryStore(join(dir, '.bantamkit', 'memory', 'extra'));
+
+  const gitignore = join(dir, '.bantamkit', '.gitignore');
+  assert.equal(existsSync(gitignore), true);
+  assert.equal(readFileSync(gitignore, 'utf8'), BANTAMKIT_GITIGNORE_TEXT);
+});
+
+test('J54-3: ruling #2 holds for a store rooted at an EXISTING .bantamkit', () => {
+  const dir = room();
+  const root = join(dir, '.bantamkit');
+  mkdirSync(root, { recursive: true });
+
+  const store = new MemoryStore(root);
+  store.save('project', 'widget-cache', 'one line', 'body', []);
+
+  assert.equal(existsSync(join(root, '.gitignore')), false);
+});
+
+test('J54-3: deleting the gitignore under a nested root stays deleted', () => {
+  const dir = room();
+  const gitignore = join(dir, '.bantamkit', '.gitignore');
+
+  const store = new MemoryStore(join(dir, '.bantamkit', 'memory', 'extra'));
+  assert.equal(existsSync(gitignore), true);
+
+  unlinkSync(gitignore);
+  store.save('project', 'widget-cache', 'one line', 'body', []);
+
+  assert.equal(existsSync(gitignore), false);
+});

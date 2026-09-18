@@ -48,6 +48,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { currentInstall, Undetermined } from './mcp/identity.js';
+import { bantamkitDirFor, ensureBantamkitGitignore } from './memory/store.js';
 import { compareVersions, keptCli, keptManifest, keptPrefix, PACKAGE, runInstaller, shlexJoin } from './npminstall.js';
 import { dumpJson, fromJs } from './pyjson.js';
 
@@ -358,7 +359,27 @@ export function thisCommand(options: CommandOptions = {}): { command: string; ar
 
   const command = ['npm', 'install', '--prefix', prefix, `${PACKAGE}@${version}`];
   const rendered = shlexJoin(command);
+  // THE THIRD `.bantamkit` CREATOR (J54-3), and the one that creates the most of it: npm makes
+  // a missing `--prefix` itself, so this line — not `MemoryStore`, not `EventLog` — is what
+  // brings `<homedir>/.bantamkit` into existence on a machine that has never saved a memory.
+  // Measured on the machine this was found on: 28 MB of install tree under a `~/.bantamkit`
+  // with no `.gitignore`, every byte of it untracked in a `$HOME` that is a git repository.
+  //
+  // Checked BEFORE npm runs, per user ruling #2, for the reason both other creators check it
+  // before their own mkdir: afterwards the directory exists either way and the question
+  // "did THIS call create it" is unanswerable. A `~/.bantamkit` that was already there —
+  // holding an older kept install, a memory store, or an ignore file the operator deleted on
+  // purpose — is left exactly as it is.
+  const bantamkitDir = bantamkitDirFor(prefix);
+  const bantamkitDirExistedBefore = bantamkitDir !== null && existsSync(bantamkitDir);
   const [code, output] = (options.installer ?? runInstaller)(command);
+  // BEFORE THE REFUSALS, AND THAT ORDER IS MEASURED, not tidy. A `npm install --prefix` that
+  // FAILS still leaves the prefix behind: measured 2026-09-18 with `npm_config_offline=true`
+  // against an empty cache — exit 1, and `<home>/.bantamkit/mcp` there afterwards. A refusal
+  // that returned first would leave exactly the directory this closes over: made by bantamkit's
+  // own command, holding nothing anybody asked for, and visible to git. The helper never
+  // creates `bantamkitDir` itself, so an installer that made nothing writes nothing here.
+  if (bantamkitDir !== null) ensureBantamkitGitignore(bantamkitDir, !bantamkitDirExistedBefore);
   const refused = `could not make the kept install at ${prefix}, so no host configuration was changed: ${rendered} exited ${code}`;
   if (code !== 0) throw new InstallError(`${refused}: ${lastLine(output)}`);
   if (!existsSync(cli)) throw new InstallError(`${refused} but left no ${cli}`);

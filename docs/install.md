@@ -65,7 +65,7 @@ One version, both runtimes, one release commit:
    `runtime-ts/package-lock.json`) and `__version__` in `runtime-py/src/bantamkit/__init__.py`
    to the same number.
 2. Run the four gates: `.venv/bin/python -m pytest runtime-py/tests -q`,
-   `.venv/bin/ruff check runtime-py`, `(cd runtime-ts && npm test)`,
+   `.venv/bin/ruff check runtime-py tools`, `(cd runtime-ts && npm test)`,
    `node tools/conformance/run.mjs --all`.
 3. Build: `(cd runtime-ts && npm pack)`; `python -m build runtime-py`; `twine check` on both files.
    The npm checklist is [Releasing to npm](release-npm.md#before-you-publish).
@@ -228,6 +228,13 @@ absolute paths. No later launch needs npx, the registry, or your shell's PATH.
   newer and is left alone too, J51-9a). Measured: a kept install's manifest hand-edited to
   `0.100.0` was `--install`ed again from the `0.33.0` tarball with the network cut — exit 0 in
   0.355 s, npm never ran, and the kept manifest still read `0.100.0` afterward.
+- **A `~/.bantamkit` this brings into existence gets bantamkit's own self-ignoring
+  `.gitignore`.** `npm install --prefix` makes a missing `--prefix` directory itself, so this
+  is one of the moments that decides whether a `.bantamkit` is ignored, under the same rule
+  every other `.bantamkit` bantamkit creates gets — see
+  [Memory → `.bantamkit/.gitignore`](memory.md#bantamkitgitignore-written-only-when-bantamkit-itself-creates-bantamkit).
+  A `~/.bantamkit` that already existed — an older kept install, a memory store, an ignore
+  file you deleted on purpose — is left exactly as it is.
 
 Measured end to end from `npm pack` of `runtime-ts/` at job51's tree, in a scratch `HOME` with
 an empty npm cache:

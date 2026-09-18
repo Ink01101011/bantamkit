@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Run a whole mutation matrix in ONE invocation, and report it as N of M.
 
 WHY THIS EXISTS. Red-demonstration discipline says a node that cannot be reddened is
@@ -50,8 +49,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 RED, GREEN, BROKEN = "RED", "GREEN", "BROKEN"
-FAILED_LINE = re.compile(r"^FAILED (\S+)", re.M)
-ERROR_LINE = re.compile(r"^ERROR (\S+)", re.M)
+FAILED_LINE = re.compile(r"^FAILED (\S+)", re.MULTILINE)
+ERROR_LINE = re.compile(r"^ERROR (\S+)", re.MULTILINE)
 # An ANSI CSI sequence (`ESC[31m`, `ESC[0m`, ...). Stripped from the child's stdout BEFORE
 # anything is parsed: with `FORCE_COLOR` / `PY_COLORS` in the environment, or `--color=yes`
 # in a spec's pytest_args, pytest writes `ESC[31mFAILED ESC[0m node`, `^FAILED ` matches
