@@ -1,8 +1,12 @@
 # Work-plan DAG: turning `depends_on` into batches
 
 **Date:** 2026-09-18
-**Status:** design approved, not implemented
-**Branch:** `worktree-exflow-agent-tools` (cut from `main` at `6666d8b`)
+**Status:** design approved; implemented on the branch below (W1–W6), documented by W7
+**Branch:** `docs/workplan-dag-spec` (cut from `main` at `6666d8b`). *Corrected by W7,
+2026-09-19: this line and the job checkpoint's constraint both named
+`worktree-exflow-agent-tools`, a branch that was never created — `git branch --list
+'*exflow*'` is empty. The worktree directory is named `exflow-agent-tools`; the branch
+checked out in it is not.*
 
 ## The problem, measured
 

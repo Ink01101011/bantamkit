@@ -47,11 +47,17 @@
  * same place. That makes three refusal strings, not two, and the third is likewise a
  * per-side literal.
  *
- * WHAT IS NOT PORTED, DELIBERATELY. The `depends_on` field is ignored on cursor advance
- * (v1-linear, the Python module's own ruling), there is no lock (the MCP topology has one
- * orchestrator by construction), and log-then-commit ordering is preserved exactly: the
- * accounting line is appended BEFORE the atomic rename, so a partial failure can lose the
- * commit but never the accounting.
+ * WHAT IS NOT PORTED, DELIBERATELY. There is no lock (the MCP topology has one orchestrator
+ * by construction), and log-then-commit ordering is preserved exactly: the accounting line is
+ * appended BEFORE the atomic rename, so a partial failure can lose the commit but never the
+ * accounting.
+ *
+ * `depends_on` USED TO BE LISTED ABOVE, AND NO LONGER BELONGS THERE. `planBatches` below
+ * READS `depends_on` and answers the batch view, so the module no longer ignores the field;
+ * what still ignores it is CURSOR ADVANCE, which stays v1-linear (the Python module's own
+ * ruling) — it moves to the first non-terminal unit in `plan.units` order, and a non-linear
+ * plan still needs a planner unit to reorder `plan.units` first. The batch view is read-only
+ * and moves nothing.
  */
 import { AssetNotFound, loadSchema, loadToolAsset } from './assets.js';
 import { schemaError } from './contract.js';

@@ -18,7 +18,7 @@ transferred fine. The layer split makes that seam physical
 
 | layer | owns | lives in |
 |---|---|---|
-| **1 — Core** | deterministic mechanics, proven cross-model: agent loop, gate control flow, memory store, filegraph ledger/cache, token accounting | `agent.py`, `memory/`, `filegraph.py`, gate mechanics in `critique.py` / `structured.py`, `textutil.py` |
+| **1 — Core** | deterministic mechanics, proven cross-model: agent loop, gate control flow, memory store, filegraph ledger/cache, token accounting, dependency-graph batching | `agent.py`, `memory/`, `filegraph.py`, gate mechanics in `critique.py` / `structured.py`, `textutil.py`, `workplan.py` / `workplan.ts` (the Kahn batcher: pure computation over the nodes it is handed — `workplan.py`'s only import is `typing.Any` and `workplan.ts` imports nothing, read off the two files rather than asserted by a gate; see the note below) |
 | **2 — Contract** | everything the model reads or writes: instruction/feedback/evidence wording (data) + outbound parsing (code) | `contract.py` + `assets/contracts/`; rubrics, skills, tool schemas in `assets/` |
 | **3 — Transport** | wire protocol, retries, timeouts, (future) server capability detection | `client.py` |
 | **4 — Policy/Profile** | tunables as named data: turn budgets, retry caps, evidence budgets | `profile.py` + `assets/profiles/` |
@@ -79,6 +79,15 @@ moving:
 
 ## Known debt
 
+- **"Layer 1 imports no `mcp` and touches no filesystem" is a sentence, not an
+  assertion.** `test_layers.py::test_core_purity` scans a core module for leaked
+  *contract literals*; `test_import_direction` runs over `contract.py` and
+  `profile.py` only. Neither one reads a core module's import list, and there is
+  no Node counterpart to either — `runtime-ts` has no layer test at all. So the
+  purity of `workplan.py` / `workplan.ts` is true today by inspection (their
+  imports are `typing.Any` and nothing, respectively) and would stay green if
+  someone added `import json, pathlib` tomorrow. Repo-wide and pre-existing: it
+  is the property every Layer 1 row here claims.
 - Tool-observation wording is still inline in `filegraph.py` (repeat
   annotations) and `memory/component.py` (save feedback). It is
   model-facing, but it measured fine cross-model, so it moves in a later

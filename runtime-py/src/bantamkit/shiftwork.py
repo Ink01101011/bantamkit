@@ -67,7 +67,9 @@ a missing one.
 
 Cursor advance is v1-linear: it moves to the first non-terminal unit in plan
 order and ignores `depends_on` — non-linear plans need a planner unit to
-reorder `plan.units` first.
+reorder `plan.units` first. `plan_batches` below READS `depends_on` and answers
+the batch view, so the module no longer ignores the field; what still ignores it
+is CURSOR ADVANCE, and the batch view is read-only and moves nothing.
 
 No lock: the MCP topology has one orchestrator by construction. The driver's
 O_EXCL lock guards cross-process races this shape does not have, and clock-out

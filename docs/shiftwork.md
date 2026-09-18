@@ -247,7 +247,10 @@ it exists only behind the explicit config opt-in, for sandboxed environments.
 The driver spawns sessions from outside; the MCP flavor serves the inverse
 topology: an already-running Claude session orchestrates subagents and
 keeps clock-in/clock-out discipline through three tools on
-[`bantamkit-mcp`](mcp.md#shift-work-tools) — same checkpoint contract,
+[`bantamkit-mcp`](mcp.md#shift-work-tools) — `shiftwork_clock_in`,
+`shiftwork_clock_out`, `shiftwork_status`; two more, `shiftwork_plan` and
+`work_plan`, only report and are covered in
+[The batch view](#the-batch-view-shiftwork_plan-and-work_plan) below — same checkpoint contract,
 same schema validation, mirrored refusal semantics (structured
 `escalate`/`success` results instead of exit codes 10/0).
 
@@ -273,7 +276,10 @@ The workflow, per unit:
 
 Cursor advance is v1-linear: clock-out moves the cursor to the first
 non-terminal unit in plan order and ignores `depends_on` — a non-linear
-plan needs a planner unit to reorder `plan.units` first.
+plan needs a planner unit to reorder `plan.units` first. That is still
+true. `shiftwork_plan` (below) now READS `depends_on` and says what the
+graph would permit, but it is read-only and moves nothing: the executor
+is one cursor, exactly as it was.
 
 **Log-line comparability with the driver.** The driver logs one JSONL
 line per session; the MCP flavor logs one accounting line per clock-out
@@ -433,6 +439,110 @@ No lock, deliberately: this topology has one orchestrator by
 construction; `driver.lock` guards cross-process races the single-session
 shape does not have, and clock-out re-validates before writing so a
 concurrent driver run fails validation-visibly rather than corrupting.
+
+### The batch view: `shiftwork_plan` and `work_plan`
+
+**Both are READ-ONLY, and neither changes how work is executed.** They answer
+one question — *which of these units does the dependency graph permit to run at
+the same time?* — and then stop. Nothing about clock-in, clock-out or cursor
+advance moved: the cursor is still a single pointer, it still advances to the
+first non-terminal unit in `plan.units` order, and it still ignores
+`depends_on`. Reading this page and coming away thinking the executor became
+dependency-aware would be the one wrong conclusion. It did not. What exists now
+is an *instrument*: an orchestrator can see the false serialization it is
+paying for, and a plan can be re-ordered by hand in response.
+
+**`work_plan(nodes)` — any graph, no file.** `nodes` is a list of
+`{id, depends_on, priority}`; `priority` defaults to `0`. The answer is
+
+```json
+{"result": "plan", "batches": [...], "sequence": [...], "width": N}
+```
+
+- **`batches`** — batch *k* holds every node whose dependencies all appear in
+  batches below *k*.
+- **`sequence`** — those batches flattened, in order.
+- **`width`** — the largest batch length: the widest fan-out, which is the
+  number an orchestrator needs in order to decide whether it can afford the
+  batch.
+
+Order **inside** a batch is contract, not an accident: priority descending,
+then the order the nodes were given. Determinism inside a batch is what the two
+implementations are held to, so both halves of that rule are gated.
+
+It opens no file and takes no path — pure computation over the nodes it was
+handed (Layer 1; see [architecture.md](architecture.md)).
+
+**`shiftwork_plan(checkpoint)` — the same planner over a checkpoint.** It adds
+`ready` and `cursor`:
+
+```json
+{"result": "plan", "batches": [...], "ready": [...], "sequence": [...], "width": N, "cursor": "<unit id>"}
+```
+
+- **`ready`** is `batches[0]`: the units dispatchable right now.
+- **`cursor`** is echoed **unchanged** — deliberately, so the single-pointer
+  contract and the batch view can be read side by side and the difference
+  between them is visible rather than implied.
+
+**The satisfied rule.** A unit whose status is `done` or `dropped` is
+*satisfied*: it is removed from the graph, and every edge pointing at it is
+treated as already resolved. `todo`, `in_progress` and `blocked` stay in the
+graph. So the batch view narrows as a job progresses, which is what makes
+`ready` mean "now" rather than "at the start".
+
+Every unit has priority `0`, because the checkpoint schema has no priority
+field — so order inside a batch is `plan.units` order.
+
+**Three refusals, one sentence each, checked in this order.** They are the same
+sentences on both tools and in both runtimes:
+
+1. `duplicate node id <id>`
+2. `node <id> depends on <dep>, which no node declares`
+3. `the graph has a cycle: <a> -> <b> -> <a>`
+
+`shiftwork_plan` additionally gives the same refusals `shiftwork_status` gives
+for a checkpoint it cannot read.
+
+**Empty input is an ANSWER, not a refusal**: no batches, no sequence, width 0.
+
+**Worked example, measured 2026-09-19** by calling both tools over stdio against
+both servers (`runtime-py` via `python -m bantamkit.mcpserver`, `runtime-ts` via
+`dist/cli.js`) — the two answered byte-identical JSON on every line below:
+
+```
+work_plan, the 8 units of this page's own job:
+  {"result":"plan","batches":[["W1","W2","W3"],["W4","W5"],["W6"],["W7"],["W8"]],
+   "sequence":["W1",...,"W8"],"width":3}
+
+work_plan, nodes []:              {"result":"plan","batches":[],"sequence":[],"width":0}
+work_plan, a -> b -> a:           {"result":"error","reason":"the graph has a cycle: a -> b -> a"}
+work_plan, a depends on ghost:    {"result":"error","reason":"node a depends on ghost, which no node declares"}
+work_plan, two nodes called a:    {"result":"error","reason":"duplicate node id a"}
+
+shiftwork_plan, .shiftwork/checkpoint-workplan.json with W1..W6 done:
+  {"result":"plan","batches":[["W7"],["W8"]],"ready":["W7"],"sequence":["W7","W8"],
+   "width":1,"cursor":"W7"}
+```
+
+That first line is also the honest self-assessment of this feature: the job that
+built the planner was itself dispatched as eight serial units, because
+`shiftwork_clock_in` only ever hands back the cursor unit. Its own planner says
+three of those eight could have gone at once.
+
+**What the tools do NOT decide.** `depends_on` encodes *logical* order, not file
+contention. A batch these tools call parallel may still hold two units that
+write the same file. They report what the graph permits; an orchestrator stays
+responsible for what it actually dispatches.
+
+**Where the code lives.** The batcher itself is
+`runtime-py/src/bantamkit/workplan.py` and `runtime-ts/src/workplan.ts` — Layer
+1, hand-written on both sides against `ex-flow`'s semantics rather than taking
+`ex-flow` as a dependency, for the reason in
+[porting.md](porting.md#ex-flow-a-fifth-library-evaluated-and-rejected).
+The checkpoint reader is `shiftwork.plan_batches` / `planBatches`, and the two
+are compared by the `workplan` suite (`node tools/conformance/run.mjs --suite
+workplan`).
 
 ## Conventions and future work
 

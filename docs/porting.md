@@ -167,6 +167,56 @@ Two shortcuts were tried and refuted. "Raise if any equal-score pair is incompar
 the right *decision* 20,000/20,000 but the wrong *sentence* 1,087/30,000. "Just call `<` where
 the scores tie" raises `'NoneType' and 'NoneType'` where CPython answers an order.
 
+## `ex-flow`: a fifth library, evaluated and rejected
+
+The four above are CPython facilities with no usable JS equivalent. `ex-flow` (with
+`exsorted`, its topological sort) is the opposite case and belongs here for the opposite
+reason: it is a Node library that would have worked, and was rejected anyway.
+
+**What it would have bought.** `workplan.ts` is a Kahn batcher — group the nodes with no
+unsatisfied dependency, emit them, repeat. `ex-flow`/`exsorted` do that, and taking them
+would have removed on the order of a hundred hand-written lines from `runtime-ts`.
+
+**Why it was rejected.** `runtime-ts` carries **exactly one runtime dependency**,
+`@modelcontextprotocol/sdk`. That is not a style preference; it is load-bearing, and three
+rows of [Where the two runtimes deliberately differ](#where-the-two-runtimes-deliberately-differ)
+cite it *by name* as the reason the port refuses a format the reference reads:
+
+- **pdf, doc and rtf on Node** — "No runtime dependency is allowed into `runtime-ts` (one
+  runtime dep, `package.json`), so the pdf side is a PORT and not an install".
+- **bzip2 and lzma zip members on Node** — "`runtime-ts` may carry no runtime dependency
+  beyond the one in `package.json`", which is why method 12 and method 14 are refused by
+  member, method number and name rather than decompressed.
+- **a bzip2 `xl/styles.xml` that carries date formats** — the same sentence again, which is
+  why the port hands back a workbook whose `46235` it cannot explain.
+
+Those three rows tell a user their document is refused *on principle*. Adding a graph
+library to save a hundred lines of arithmetic would have spent that principle on the
+cheapest thing in the repo to write by hand, and every one of those three refusals would
+have become an excuse. The dependency count is the argument; the argument is worth more
+than the lines.
+
+**So `ex-flow` is the SPECIFICATION, not the dependency.** Both `workplan.py` and
+`workplan.ts` were written by hand against its semantics — batch k holds every node whose
+dependencies all appear in batches below k; order inside a batch is priority descending,
+then declaration order; empty input is an answer, not a refusal — and the two are held to
+each other by the `workplan` conformance suite rather than to a package on npm.
+
+**And this is deliberately NOT a row in the divergence table.** Nothing here differs.
+`workplan.py` and `workplan.ts` were compared over the whole `.shiftwork/` corpus and every
+differential case passed on the suite's first run; a `ruling:` case would assert a
+difference that does not exist, which is the one thing a ruling must never do. Route B — two
+independent hand-written implementations — is the argument, and since the `workplan` suite
+landed it is an argument with a gate behind it instead of a claim.
+
+**One honestly unmeasured edge, named rather than hidden.** `planNodes` in
+`runtime-ts/src/mcp/server.ts` documents two places where JS's dynamic typing and CPython's
+part company on input the tool's schema does not admit: a `nodes` array mixing `5` and
+`"5"`, and a non-numeric `priority`. They are **not** ruled and **not** gated — pinning them
+would need a refusal corpus and a decision about whether the two runtimes are even required
+to agree there. Until someone takes that decision they are a gap named in a comment, not a
+divergence, and they are not a row here.
+
 ## `PyScalar`: what a `Fact` field holds
 
 YAML frontmatter is not typed by the schema, so `description: 2026` gives Python an `int`.
