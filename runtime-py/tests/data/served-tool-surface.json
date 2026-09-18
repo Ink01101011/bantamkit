@@ -11,7 +11,9 @@
     "memory_compact",
     "skill_audit",
     "memory_dream",
-    "token_ledger"
+    "token_ledger",
+    "work_plan",
+    "shiftwork_plan"
   ],
   "tools": {
     "bantamkit_status": {
@@ -448,6 +450,72 @@
         ],
         "type": "object",
         "title": "token_ledgerOutput"
+      }
+    },
+    "work_plan": {
+      "description": "Work plan: turn a dependency graph into the batches that may run in parallel. Takes `nodes`, each `{id, depends_on, priority}` — `priority` defaults to 0 — and answers `{\"result\": \"plan\", \"batches\", \"sequence\", \"width\"}`: batch k holds every node whose dependencies all appear in batches below k, `sequence` is those batches flattened in order, and `width` is the largest batch length — the widest fan-out, which is the number an orchestrator needs to decide whether it can afford the batch. Order inside a batch is priority descending, then the order the nodes were given; both halves are contract, because determinism inside a batch is what two implementations are held to. Empty `nodes` is an ANSWER, not a refusal: no batches, no sequence, width 0. Three refusals, checked in this order and one sentence each: `duplicate node id <id>`, `node <id> depends on <dep>, which no node declares`, and `the graph has a cycle: <a> -> <b> -> <a>`. It reports what the graph permits and decides nothing about what may actually be dispatched together — `depends_on` encodes logical order, not file contention, so a batch this tool calls parallel may still hold work that writes one file. Pure computation over the nodes it was handed: it opens no file and takes no path. Never mutates.",
+      "inputSchema": {
+        "properties": {
+          "nodes": {
+            "title": "Nodes",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "The node's identifier, unique across `nodes`"
+                },
+                "depends_on": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Ids this node waits for; every one of them must be declared by some node"
+                },
+                "priority": {
+                  "type": "integer",
+                  "description": "Tie-break inside a batch, descending. Optional; 0 when absent"
+                }
+              },
+              "required": [
+                "id",
+                "depends_on"
+              ]
+            }
+          }
+        },
+        "required": [
+          "nodes"
+        ],
+        "type": "object",
+        "title": "work_planArguments"
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true,
+        "title": "work_planDictOutput"
+      }
+    },
+    "shiftwork_plan": {
+      "description": "Shift-work plan: read-only batch view of a checkpoint — which units its `depends_on` graph permits to run in parallel. Answers `{\"result\": \"plan\", \"batches\", \"ready\", \"sequence\", \"width\", \"cursor\"}`: `ready` is `batches[0]`, the units dispatchable right now, and `width` is the largest batch length, the widest fan-out. Units with status `done` or `dropped` are satisfied — dropped from the graph, and edges pointing at them treated as already resolved; `todo`, `in_progress` and `blocked` stay in it. Every unit has priority 0, because the checkpoint schema has no priority field, so order inside a batch is `plan.units` order. Same refusal sentences as `work_plan` for a duplicate id, an unknown dependency or a cycle, and the same refusals `shiftwork_status` gives for a checkpoint it cannot read. It reports what the dependency graph permits; it does not move the cursor, which is echoed unchanged so the single-pointer contract and the batch view can be read side by side. An orchestrator stays responsible for what it actually dispatches: `depends_on` encodes logical order, not file contention. Never mutates.",
+      "inputSchema": {
+        "properties": {
+          "checkpoint": {
+            "title": "Checkpoint",
+            "type": "string"
+          }
+        },
+        "required": [
+          "checkpoint"
+        ],
+        "type": "object",
+        "title": "shiftwork_planArguments"
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true,
+        "title": "shiftwork_planDictOutput"
       }
     }
   }

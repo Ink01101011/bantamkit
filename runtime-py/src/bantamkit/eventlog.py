@@ -30,11 +30,13 @@ THREE HARD RULES, each with the failure it prevents:
   byte-compares both runtimes' streams; one stray write breaks the wire suite. Nothing
   in this module touches `sys.stderr` or `sys.stdout`.
 * **Metadata only.** Never a tool argument's value, never a memory body, never a
-  validated output, never a query, never a document row. Eight of the twelve tools take
+  validated output, never a query, never a document row. Nine of the fourteen tools take
   an unbounded string (counted over `assets/tools/`: a `string` parameter with no `enum`
   or `maxLength`, or an array of such; `bantamkit_read` and `repo_map` were two more until
-  job50 I5 retired them from the roster) and among those `skill_audit`'s `root`,
-  `token_ledger`'s `root` and `prices` and the three shift-work tools' `checkpoint` are
+  job50 I5 retired them from the roster — and `work_plan` is NOT one of them: its `nodes`
+  is an array of objects, not an array of strings, so the rule does not reach the ids
+  inside it) and among those `skill_audit`'s `root`,
+  `token_ledger`'s `root` and `prices` and the four shift-work tools' `checkpoint` are
   absolute paths; each record carries counts and tokens from a closed set, never the
   path, never a part name, never a skill id, never a mapped file, never a session id,
   never a model name. The dormant `bantamkit_read` and `repo_map` handlers keep the same

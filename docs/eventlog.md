@@ -358,7 +358,7 @@ One JSON object per line, UTF-8, terminated by a single `\n`.
 |---|---|---|
 | `v` | int | record schema version, currently `1`. Bump only when a key is added, removed or renamed; both runtimes move together. |
 | `ts` | string | UTC, `YYYY-MM-DDTHH:MM:SS.mmmZ`. Byte-identical to JavaScript's `new Date(ms).toISOString()`. |
-| `tool` | string | one of the twelve served tools (a log written before job50 I5 retired them may also carry `bantamkit_read` or `repo_map`). The **join key** to the host's log, not the payload. |
+| `tool` | string | one of the fourteen served tools (a log written before job50 I5 retired them may also carry `bantamkit_read` or `repo_map`). The **join key** to the host's log, not the payload. |
 | `outcome` | string | the decision. Closed vocabulary, below. |
 | `detail` | object | metadata: counts, and one string — `bantamkit_read`'s `kind`, a container name from `docread`'s closed set. Always present; `{}` when empty. |
 
@@ -437,8 +437,8 @@ derived field is a second thing to keep true.
 ## Metadata only
 
 Never a tool argument's value, never a memory body, never a validated output, never a
-query string, never a document row. Six of the twelve tools take unbounded free text
-and five take absolute paths (the three shift-work tools' `checkpoint`, `skill_audit`'s
+query string, never a document row. Six of the fourteen tools take unbounded free text
+and six take absolute paths (the four shift-work tools' `checkpoint`, `skill_audit`'s
 `root`, and `token_ledger`'s `root` and `prices`; until job50 I5 retired them,
 `bantamkit_read`'s `path` and `repo_map`'s `root` and `focus` made it seven of fourteen —
 served-tools: dated); each record carries counts and tokens from a closed set, never the

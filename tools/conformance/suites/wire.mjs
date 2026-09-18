@@ -43,7 +43,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const name = 'wire';
-export const summary = 'the MCP surface: twelve tools, one prompt, two templates, and the frames themselves';
+export const summary = 'the MCP surface: fourteen tools, one prompt, two templates, and the frames themselves';
 
 const here = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = dirname(dirname(here));

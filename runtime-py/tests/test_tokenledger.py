@@ -486,6 +486,8 @@ SERVED_ORDER = [
     "skill_audit",
     "memory_dream",
     "token_ledger",
+    "work_plan",
+    "shiftwork_plan",
 ]
 
 

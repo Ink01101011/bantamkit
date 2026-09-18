@@ -60,7 +60,8 @@ python -m venv <env>
 ```
 
 `--install` records the venv's console script by absolute path with `"args": []`, so no launch
-needs the network or your shell's PATH. Measured on macOS arm64, it served 12 tools under a GUI
+needs the network or your shell's PATH. Measured on macOS arm64 (served-tools: dated — the
+surface was twelve then), it served 12 tools under a GUI
 app's PATH, `/usr/bin:/bin:/usr/sbin:/sbin`; the Windows layout (`<env>\Scripts\`) was not.
 
 **No network on the target? Carry a wheelhouse.** Download it on a machine with the **same OS,

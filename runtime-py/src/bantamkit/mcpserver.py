@@ -30,6 +30,7 @@ from bantamkit import (
     shiftwork,
     skillaudit,
     tokenledger,
+    workplan,
 )
 from bantamkit.assets import AssetNotFound, assets_root, load_skill, load_tool_asset
 from bantamkit.client import BantamError
@@ -1474,6 +1475,24 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
             _record_result(log, "shiftwork_status", lambda: shiftwork.status(checkpoint))
         )
 
+    def work_plan(nodes: list[dict[str, Any]]) -> dict[str, Any]:
+        # `result` is added HERE and not in `workplan.plan`, which is Layer 1 and answers
+        # the computation (`batches`, `sequence`, `width`) rather than a wire shape. The
+        # wire shape is the tool asset's, so the verdict key is put on at the seam that
+        # serves it — the same division `plan_batches` uses one layer down. A refusal
+        # already carries its own `result` and passes through untouched, because
+        # `_record_result` reads that key to write the register's verdict to the log.
+        def answered() -> dict[str, Any]:
+            plan = workplan.plan(nodes)
+            return plan if plan.get("result") == "error" else {"result": "plan", **plan}
+
+        return _noted_dict(_record_result(log, "work_plan", answered))
+
+    def shiftwork_plan(checkpoint: str) -> dict[str, Any]:
+        return _noted_dict(
+            _record_result(log, "shiftwork_plan", lambda: shiftwork.plan_batches(checkpoint))
+        )
+
     # A TOOL and not a resource or an `initialize` field, because the gap RB-P84 names is
     # an AGENT MID-CALL: the host reads `serverInfo` once at handshake and the
     # tool-calling model never sees it, and `resources/read` is a host-facing surface
@@ -1832,6 +1851,8 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         _from_manifest(skill_audit, "skill_audit"),
         _from_manifest(memory_dream, "memory_dream"),
         _from_manifest(token_ledger, "token_ledger"),
+        _from_manifest(work_plan, "work_plan"),
+        _from_manifest(shiftwork_plan, "shiftwork_plan"),
     ]
 
     server = MCPServer(

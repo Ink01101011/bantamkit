@@ -1472,9 +1472,11 @@ def test_the_tool_is_served_eleventh_and_its_schema_is_the_assets(tmp_path):
     # with the surface and the index does not — that is the whole design of this node.
     # (served-tools: dated — the counts above are job45's.) The index DID move once, and
     # for the one reason it can: a tool AHEAD of it left. `bantamkit_read` (tenth) was
-    # retired by ruling (job50 I5, 2026-09-12), so `skill_audit` is tenth of twelve now.
+    # retired by ruling (job50 I5, 2026-09-12), so `skill_audit` is tenth of fourteen now:
+    # `work_plan` and `shiftwork_plan` were APPENDED (job `workplan-dag`, W4), which moves
+    # the total and leaves the index where it was — the case this node was built for.
     assert order[9] == "skill_audit"
-    assert len(order) == 12
+    assert len(order) == 14
     asset = json.loads(
         (REPO / "assets" / "tools" / "skill_audit.json").read_text(encoding="utf-8")
     )
