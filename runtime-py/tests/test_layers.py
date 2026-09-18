@@ -216,6 +216,10 @@ CORE_MODULES = (
     "critique.py",
     "evalrun.py",
     "mcpserver.py",
+    # 2026-09-18, W3. `workplan.py` landed as a Layer 1 core module in W1 and its purity
+    # was asserted by its own docstring and nothing mechanical. MEASURED before adding it:
+    # a contract literal pasted into it left this file at `44 passed`.
+    "workplan.py",
 )
 LAYER_MODULES = ("contract.py", "profile.py")
 FORBIDDEN_IMPORTS = (
