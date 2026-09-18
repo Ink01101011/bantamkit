@@ -331,8 +331,8 @@
     {
       "label": "M47-the-reply-is-not-the-json-document",
       "path": "runtime-py/src/bantamkit/mcpserver.py",
-      "anchor": "            return _noted(result.as_json())",
-      "replacement": "            return _noted(str(result.as_dict()))",
+      "anchor": "                    \"omissions\": len(result.omissions),\n                },\n            )\n            return _noted(result.as_json())",
+      "replacement": "                    \"omissions\": len(result.omissions),\n                },\n            )\n            return _noted(str(result.as_dict()))",
       "why": "the tool serves a repr a caller cannot parse back"
     },
     {
@@ -359,9 +359,9 @@
     {
       "label": "M51-registration-order",
       "path": "runtime-py/src/bantamkit/mcpserver.py",
-      "anchor": "        _from_manifest(bantamkit_read, \"bantamkit_read\"),\n        _from_manifest(skill_audit, \"skill_audit\"),",
-      "replacement": "        _from_manifest(skill_audit, \"skill_audit\"),\n        _from_manifest(bantamkit_read, \"bantamkit_read\"),",
-      "why": "the eleventh tool stops being served eleventh"
+      "anchor": "        _from_manifest(memory_compact, \"memory_compact\"),\n        _from_manifest(skill_audit, \"skill_audit\"),",
+      "replacement": "        _from_manifest(skill_audit, \"skill_audit\"),\n        _from_manifest(memory_compact, \"memory_compact\"),",
+      "why": "skill_audit stops being served tenth (order[9] no longer holds it) since bantamkit_read's retirement (job50 I5) shifted the pinned ordinal"
     },
     {
       "label": "M52-a-refusal-escapes-as-an-error-frame",

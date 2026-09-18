@@ -163,7 +163,7 @@ BROKEN = "BROKEN"
 SEVERITY = ("record", "co-moving-count", "pointer", "amendment", "insert", "append", "new-file", "deleted")
 
 _MASK_RE = re.compile(
-    "|".join("(?P<g{}>{})".format(i, pat) for i, (_c, pat, _d) in enumerate(POINTER_CLASSES))
+    "|".join(f"(?P<g{i}>{pat})" for i, (_c, pat, _d) in enumerate(POINTER_CLASSES))
 )
 _GATE_RE = re.compile("|".join(GATE_EXPECTATION_PATTERNS))
 
@@ -924,7 +924,7 @@ MUTATIONS: tuple[dict, ...] = (
 
 def _fields(text: str) -> list[str]:
     """Exactly the machine-readable lines. Prose is invisible to the sweep, by design."""
-    return [ln for ln in text.splitlines() if ln.startswith("VERDICT ") or ln.startswith("SUMMARY ")]
+    return [ln for ln in text.splitlines() if ln.startswith(("VERDICT ", "SUMMARY "))]
 
 
 def calibrate(keep: Path | None = None) -> int:

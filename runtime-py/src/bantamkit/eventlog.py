@@ -71,7 +71,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from bantamkit.memory.store import ensure_bantamkit_gitignore
+from bantamkit.memory.store import bantamkit_dir_for, ensure_bantamkit_gitignore
 
 #: Environment switch. Unset or `off`/`0`/`false`/`no`/empty -> disabled. `on`/`1`/
 #: `true`/`yes` -> the default file inside the memory store. Anything else is taken as
@@ -291,11 +291,12 @@ class EventLog:
         # USER RULING #2 (J51-8a): the ignore file is written only when THIS call is what
         # creates `.bantamkit`, so existence has to be checked BEFORE the mkdir below --
         # after it, the directory unconditionally exists and the question is unanswerable.
-        bantamkit_dir = None
-        for parent in self.path.parents:
-            if parent.name == ".bantamkit":
-                bantamkit_dir = parent
-                break
+        #
+        # J54-3: the walk moved into `bantamkit_dir_for` beside the writer it feeds, so the
+        # two creators in this runtime ask the same question in the same words rather than
+        # keeping a copy each. The answer here is unchanged -- a log file is never itself
+        # named `.bantamkit`, so self-or-ancestors and ancestors give the same directory.
+        bantamkit_dir = bantamkit_dir_for(self.path)
         bantamkit_dir_existed_before = bantamkit_dir is not None and bantamkit_dir.exists()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if bantamkit_dir is not None:

@@ -990,6 +990,95 @@ function seedKeptInstall(home, version) {
  * matching: its side runs with `npm_config_offline=true`, and the seeded `cli.js` carries a
  * marker a reinstall would overwrite, which a literal case reads back.
  */
+/**
+ * THE `.gitignore` A `~/.bantamkit` THE INSTALLER ITSELF MADE GETS (J54-3), and the one bytes
+ * literal it is held to. Typed HERE rather than imported from either runtime, for the reason
+ * `store.mjs` types it too: a change to both runtimes' constant must turn this red instead of
+ * moving the goalposts.
+ */
+const GITIGNORE_LITERAL =
+  '# Created by bantamkit: this directory is local state. Delete this file to commit it.\n' +
+  '*\n';
+
+/** A missing file, as a value a case can carry. */
+const ABSENT = '<ABSENT>';
+const readOrAbsent = (path) => {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch (e) {
+    if (e.code === 'ENOENT') return ABSENT;
+    throw e;
+  }
+};
+
+/**
+ * `npm`, STUBBED — the one arm of `--install` that has to watch npm create `~/.bantamkit`.
+ *
+ * WHY A STUB AND NOT npm. The branch under test is the one that RUNS the installer, which is
+ * `--install`'s single network call; a case that reached the registry would fail on a plane
+ * and pass for the wrong reason off a cache. The thing that matters here is not npm: it is
+ * that npm MAKES A MISSING `--prefix` ITSELF (measured, npm 11.6.2 — `thisCommand`'s
+ * docstring), so `<home>/.bantamkit` comes into existence without either runtime calling
+ * mkdir. This script does exactly that and nothing else, so the case measures what the port
+ * does AROUND the installer.
+ *
+ * NOT A SEAM, because `--install` is a process surface here: the port is spawned as a real
+ * process and takes its installer from `runInstaller`, which resolves a bare `npm` on PATH.
+ * So the stub goes on PATH, and `runtime-ts/test/hostinstall.test.mjs` keeps the in-process
+ * seam version of the same question.
+ *
+ * PLATFORM-CHECKED, in the shape `sealedBed` and `hostileBed` use: a POSIX shell script named
+ * `npm` is not what `cmd.exe` resolves for a bare `npm` (it looks for `npm.cmd`), so this
+ * PROBES ITSELF by running the stub the way `runInstaller` would and asking whether the tree
+ * appeared. A platform where it did not gets a note and no cases — never a real npm install.
+ */
+function npmStub(scratch, version) {
+  const dir = join(scratch, 'npm-stub', 'bin');
+  rmSync(dirname(dir), { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  const marker = '// written by the conformance npm stub; the registry was never asked\n';
+  const script = [
+    '#!/bin/sh',
+    '# A stand-in for `npm install --prefix <dir> <pkg>`: it makes the tree npm would make,',
+    '# including the --prefix directory itself, and asks nothing of any network.',
+    'prefix=""',
+    'while [ $# -gt 0 ]; do',
+    '  if [ "$1" = "--prefix" ]; then prefix="$2"; fi',
+    '  shift',
+    'done',
+    '[ -n "$prefix" ] || exit 2',
+    'mkdir -p "$prefix/node_modules/bantamkit-mcp/dist"',
+    `printf '{"dependencies":{"bantamkit-mcp":"^${version}"}}\\n' > "$prefix/package.json"`,
+    `printf '{"name":"bantamkit-mcp","version":"${version}"}\\n' > "$prefix/node_modules/bantamkit-mcp/package.json"`,
+    `printf '%s' '${marker}' > "$prefix/node_modules/bantamkit-mcp/dist/cli.js"`,
+    'echo "added 95 packages in 1s"',
+    '',
+  ].join('\n');
+  const path = join(dir, 'npm');
+  writeFileSync(path, script);
+  chmodSync(path, 0o755);
+  // The probe: run it the way `runInstaller` runs it — a bare `npm` resolved off PATH — and
+  // ask the disk whether the prefix appeared. Nothing here reads `process.platform`.
+  const probePrefix = join(dirname(dir), 'probe-prefix');
+  const env = { ...process.env, PATH: `${dir}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH ?? ''}` };
+  const r = spawnSync('npm', ['install', '--prefix', probePrefix, `bantamkit-mcp@${version}`], {
+    encoding: 'utf8',
+    env,
+    shell: process.platform === 'win32',
+  });
+  const madeIt = existsSync(join(probePrefix, 'node_modules', 'bantamkit-mcp', 'dist', 'cli.js'));
+  return {
+    dir,
+    marker,
+    pathEntry: env.PATH,
+    works: r.status === 0 && madeIt,
+    why:
+      r.status === 0 && madeIt
+        ? 'a bare `npm` on PATH resolved to the stub and it made the --prefix tree'
+        : `a bare \`npm\` on PATH did not make the --prefix tree (exit ${r.status}, error ${r.error?.code ?? 'none'})`,
+  };
+}
+
 function npxCacheSandbox(scratch, name, resolved, keptVersion = PORT_VERSION) {
   const root = join(scratch, `install-${name}`);
   rmSync(root, { recursive: true, force: true });
@@ -1014,8 +1103,13 @@ function npxCacheSandbox(scratch, name, resolved, keptVersion = PORT_VERSION) {
   );
   const homes = { py: join(root, 'home-py'), node: join(root, 'home-node') };
   // Seeded IDENTICALLY on both sides: the reference never looks, and that is a measurement
-  // only if it had the same kept install in front of it.
-  for (const home of Object.values(homes)) seedKeptInstall(home, keptVersion);
+  // only if it had the same kept install in front of it. `keptVersion: null` seeds NEITHER —
+  // the J54-3 arm, where npm is what brings `<home>/.bantamkit` into existence, so the home
+  // must be a home with nothing of bantamkit's in it.
+  for (const home of Object.values(homes)) {
+    if (keptVersion === null) mkdirSync(home, { recursive: true });
+    else seedKeptInstall(home, keptVersion);
+  }
   return {
     cli: join(pkg, 'dist', 'cli.js'),
     sideEnv: {
@@ -1217,8 +1311,21 @@ function sealedBed(scratch, name) {
 /** A lockfile origin that is neither a package index nor a path — the `git-origin` of `install.mjs`. */
 const UNDETERMINED_ORIGIN = 'git+https://github.com/example/bantamkit.git#abc123def456';
 
+/**
+ * The stub's self-probe, recorded by `matrix` and turned into a note by `run` — so a platform
+ * where a bare `npm` cannot resolve to a shell script says so in the report instead of
+ * silently measuring nothing (or, far worse, reaching the real registry).
+ */
+let NPM_STUB = null;
+
+/** `sideEnv.node` with the stub's PATH in front, leaving the reference's environment alone. */
+function withStubOnNodePath(spec, stub) {
+  return { ...spec, sideEnv: { ...spec.sideEnv, node: { ...spec.sideEnv.node, PATH: stub.pathEntry } } };
+}
+
 function matrix(scratch) {
   const sandbox = { cwd: join(scratch, 'cli-cwd'), env: { HOME: join(scratch, 'cli-home') } };
+  NPM_STUB = npmStub(scratch, PORT_VERSION);
   return [
     { label: 'help-short', argv: ['-h'] },
     { label: 'help-long', argv: ['--help'] },
@@ -1290,6 +1397,31 @@ function matrix(scratch) {
         NEWER_KEPT_VERSION,
       ),
     },
+    // J54-3: the same cache with NO kept install, so the branch that RUNS npm is reached —
+    // the one branch of `--install` this suite never drove, because it is the flag's single
+    // network call. npm is stubbed on the port's PATH (`npmStub`), and what is measured is
+    // not npm: it is that npm creates `<home>/.bantamkit` on its own and, until this job,
+    // nothing gave that directory the self-ignoring `.gitignore` every other creator's
+    // directory gets. The reference has no such branch at all (`docs/porting.md`), which is
+    // why the state of HOME is pinned PER SIDE below rather than compared side to side.
+    ...(NPM_STUB.works
+      ? [
+          withStubOnNodePath(
+            {
+              label: 'install-cursor-from-an-npx-cache-with-no-kept-install',
+              argv: ['--install', 'cursor'],
+              shape: 'install-npm-runs',
+              ...npxCacheSandbox(
+                scratch,
+                'npx-nokept',
+                `https://registry.npmjs.org/bantamkit-mcp/-/bantamkit-mcp-${PORT_VERSION}.tgz`,
+                null,
+              ),
+            },
+            NPM_STUB,
+          ),
+        ]
+      : []),
     {
       label: 'install-cursor-from-an-install-of-undeterminable-shape',
       argv: ['--install', 'cursor'],
@@ -1588,6 +1720,45 @@ export async function run(ctx) {
             {
               keptUntouched: existsSync(keptCliUnder(home)) && readFileSync(keptCliUnder(home), 'utf8') === SEEDED_KEPT_CLI,
               wroteConfig: existsSync(join(home, '.cursor', 'mcp.json')),
+            },
+          ]),
+        ),
+      });
+    } else if (spec.shape === 'install-npm-runs') {
+      // The ruled command line and its unruled companions, exactly as every other `--install`
+      // arm gets them: the two runtimes record different commands on purpose, and everything
+      // the ruling does not cover is compared as bytes.
+      cases.push(...installCases(spec.label, py, node, spec.homes, KEPT_INSTALL_RULING));
+      // THE PRECONDITION, ASSERTED: npm ran on the port side and the tree it left is the
+      // STUB's. Without this the two cases below could pass because nothing happened at all.
+      cases.push({
+        name: `${spec.label}/precondition: the stubbed npm ran and left the kept install it makes`,
+        kind: 'json',
+        expected: { keptCli: NPM_STUB.marker, madeTheTree: true },
+        actual: {
+          keptCli: readOrAbsent(keptCliUnder(spec.homes.node)),
+          madeTheTree: existsSync(keptPrefixUnder(spec.homes.node)),
+        },
+      });
+      // THE BEHAVIOUR BIT, PER SIDE, against this file — the companion `CLAUDE.md` requires
+      // beside a ruling, because a ruling only ever proves the two sides still DIFFER. The
+      // port creates `<home>/.bantamkit` (npm does, under it) and ignores it; the reference
+      // has no kept install and creates no such directory, so there is nothing to ignore. A
+      // port that stopped writing the file, or a reference that started scattering a
+      // `.bantamkit` into HOME, reddens here while the ruling above stays green.
+      cases.push({
+        name: `${spec.label}/PINNED PER SIDE: a ~/.bantamkit the installer made is ignored, and the reference makes none`,
+        kind: 'json',
+        expected: {
+          python: { bantamkitDir: false, gitignore: ABSENT },
+          node: { bantamkitDir: true, gitignore: GITIGNORE_LITERAL },
+        },
+        actual: Object.fromEntries(
+          [['python', spec.homes.py], ['node', spec.homes.node]].map(([side, home]) => [
+            side,
+            {
+              bantamkitDir: existsSync(join(home, '.bantamkit')),
+              gitignore: readOrAbsent(join(home, '.bantamkit', '.gitignore')),
             },
           ]),
         ),
@@ -2779,6 +2950,15 @@ export async function run(ctx) {
       `scripts/sync-assets.mjs before the matrix. this run: pack was ` +
       `${vendoring.already ? 'already present' : 'ABSENT and has been vendored'}, sync exited ` +
       `${vendoring.exit}${vendoring.stderr ? ` — ${vendoring.stderr.split('\n').join(' / ')}` : ''}.`,
+  );
+  notes.push(
+    NPM_STUB.works
+      ? `--install's npm branch (J54-3): DRIVEN, with npm stubbed on the port's PATH — ${NPM_STUB.why}. ` +
+          'the registry was never asked and the real ~/.bantamkit was never touched: every home here is ' +
+          'harness scratch.'
+      : `--install's npm branch (J54-3): NOT MEASURED HERE — ${NPM_STUB.why}. the arm is omitted rather ` +
+          'than run, because running it would reach the real registry. the same question is held ' +
+          "in-process by runtime-ts/test/hostinstall.test.mjs through the flag's injectable installer.",
   );
   notes.push(
     'every process here runs with COLUMNS, LINES and BANTAMKIT_ASSETS deleted, and every argv line ' +

@@ -113,13 +113,17 @@ index is rewritten in place, and is always derivable from the fact files.
 ### `.bantamkit/.gitignore`: written only when bantamkit itself creates `.bantamkit`
 
 > **ADDED 2026-09-15 (job51), both runtimes, from bantamkit 0.34.0 and bantamkit-mcp 0.34.0.**
-> Neither is published yet.
 
-A write (`save`, `compact`, or an event-log record) first makes sure the store's directories
-exist. Exactly one moment decides whether the store gets a `.gitignore`: if the write is what
-just created the store's parent directory, and that directory is named exactly `.bantamkit`,
-the write also creates `.bantamkit/.gitignore`. That covers the project store
-(`.bantamkit/memory`) and the profile store (`~/.bantamkit/memory`). The file holds exactly:
+A write (`save`, `compact`, or an event-log record) — or, in `runtime-ts` only, the
+`--install` step that lays down an offline copy under `~/.bantamkit/mcp` — first makes sure
+the directory it needs exists. Exactly one moment decides whether a `.bantamkit` gets a
+`.gitignore`: take the nearest `.bantamkit` in the path of the directory that write needed —
+that directory itself if it is *named* `.bantamkit`, otherwise the closest ancestor that is —
+and if THIS call is what just brought that `.bantamkit` into existence, it also creates
+`.bantamkit/.gitignore` inside it. That covers the project store (`.bantamkit/memory`), the
+profile store (`~/.bantamkit/memory`), a store rooted at a `.bantamkit` directly
+(`--store ~/.bantamkit`) or nested deeper under one (`.bantamkit/memory/extra`), and — node
+only — the kept install tree `~/.bantamkit/mcp`. The file holds exactly:
 
 ```
 # Created by bantamkit: this directory is local state. Delete this file to commit it.
@@ -129,16 +133,17 @@ the write also creates `.bantamkit/.gitignore`. That covers the project store
 So a project store bantamkit creates from nothing stays out of `git status`, and the
 repository's own `.gitignore` is never touched. The rules:
 
-- **Only a parent named `.bantamkit`.** `Memory(store="./.bantam-memory")` gets no
-  `.gitignore` anywhere, however it came to exist.
-- **Only when THIS write creates `.bantamkit`.** An existing `.bantamkit` — made by an
-  earlier bantamkit, created by hand, or checked out from git — is never given one, whether
-  or not it already holds a `.gitignore`. Only the very first write against a `.bantamkit`
-  that did not exist a moment before writes the file.
+- **Only a directory named `.bantamkit`.** `Memory(store="./.bantam-memory")` gets no
+  `.gitignore` anywhere, however it came to exist — there is no `.bantamkit` in its path at
+  all, so the walk finds nothing to decide about.
+- **Only when THIS call creates that `.bantamkit`.** An existing `.bantamkit` — made by an
+  earlier bantamkit, created by hand, checked out from git, or left by an earlier install — is
+  never given one, whether or not it already holds a `.gitignore`. Only the very first call
+  against a `.bantamkit` that did not exist a moment before writes the file.
 - **An existing file is never rewritten.** If `.bantamkit/.gitignore` is already there at
   creation time — a strange but possible race — its bytes are left exactly as they are.
-- **It never fails a write.** If the file cannot be written, the save still succeeds, and the
-  store simply has no `.gitignore`.
+- **It never fails the call it rides on.** If the file cannot be written, the save (or
+  install) still succeeds, and the directory simply has no `.gitignore`.
 - **Deleting it sticks.** Nothing re-checks or re-creates the file after `.bantamkit` exists,
   so `rm .bantamkit/.gitignore` is the whole opt-in: the next save leaves it deleted.
 

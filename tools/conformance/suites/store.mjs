@@ -882,6 +882,39 @@ export async function run(ctx) {
         literal: ABSENT,
         deleteThenSaveAgain: true,
       },
+      // ---- J54-3: THE SHAPES OF ROOT THE FIRST FIVE NEVER ASKED ABOUT. Every scenario above
+      // roots the store at `<x>/.bantamkit/memory`, where the `.bantamkit` directory happens
+      // to be the root's PARENT — and both runtimes decided about the parent and nothing else.
+      // A root that IS the `.bantamkit` directory, or one nested deeper under it, is created
+      // by the same `mkdir(parents=True)` and had its decision taken about the wrong
+      // directory, which is no decision at all. MEASURED, not hypothetical: `~/.bantamkit` on
+      // the machine this was found on holds an empty `facts/` and `archive/` beside `memory/`
+      // — left by a store once rooted at it — and no `.gitignore`. Both of the first two were
+      // RED on both sides before the fix; the third is the guard that it does not over-fire.
+      {
+        label: 'a store rooted AT the .bantamkit directory itself',
+        store: ['proj', '.bantamkit'],
+        files: {},
+        file: ['proj', '.bantamkit', '.gitignore'],
+        literal: GITIGNORE_LITERAL,
+      },
+      {
+        label: 'a store nested deeper under .bantamkit',
+        store: ['proj', '.bantamkit', 'memory', 'extra'],
+        files: {},
+        file: ['proj', '.bantamkit', '.gitignore'],
+        literal: GITIGNORE_LITERAL,
+      },
+      {
+        // Ruling #2 again, at the new shape: the directory predates the call, so it stays
+        // visible to git whichever component of the root happens to be named `.bantamkit`.
+        label: 'an existing .bantamkit the store is rooted AT',
+        store: ['proj', '.bantamkit'],
+        dirs: ['proj/.bantamkit'],
+        files: {},
+        file: ['proj', '.bantamkit', '.gitignore'],
+        literal: ABSENT,
+      },
     ];
     gitignoreScenarios.forEach((sc, i) => {
       const bed = join(ctx.scratch, 'gitignore', `g${i}`);

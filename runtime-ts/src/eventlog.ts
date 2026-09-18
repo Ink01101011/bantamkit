@@ -59,8 +59,8 @@
  */
 import { appendFileSync, mkdirSync, renameSync, statSync } from 'node:fs';
 
-import { cmpCodepoint, osErrorClassName, pyExists, PyOSError, pyJoin, pyName, pyParent, pyParents } from './memory/pyfs.js';
-import { ensureBantamkitGitignore } from './memory/store.js';
+import { cmpCodepoint, osErrorClassName, pyExists, PyOSError, pyJoin, pyName, pyParent } from './memory/pyfs.js';
+import { bantamkitDirFor, ensureBantamkitGitignore } from './memory/store.js';
 
 /**
  * Environment switch. Unset or `off`/`0`/`false`/`no`/empty -> disabled. `on`/`1`/`true`/
@@ -280,13 +280,12 @@ export class EventLog {
     // USER RULING #2 (J51-8b): the ignore file is written only when THIS call is what
     // creates `.bantamkit`, so existence has to be checked BEFORE the mkdir below -- after
     // it, the directory unconditionally exists and the question is unanswerable.
-    let bantamkitDir: string | null = null;
-    for (const parent of pyParents(path)) {
-      if (pyName(parent) === '.bantamkit') {
-        bantamkitDir = parent;
-        break;
-      }
-    }
+    //
+    // J54-3: the walk moved into `bantamkitDirFor` beside the writer it feeds, so the two
+    // creators in this runtime ask the same question in the same words rather than keeping a
+    // copy each. The answer here is unchanged -- a log file is never itself named
+    // `.bantamkit`, so self-or-ancestors and ancestors give the same directory.
+    const bantamkitDir = bantamkitDirFor(path);
     const bantamkitDirExistedBefore = bantamkitDir !== null && pyExists(bantamkitDir);
     // `pyParent` and not `node:path`'s `dirname`: this module is reached from a Windows
     // host through the same code, and the reference's `Path(...).parent` is the spelling

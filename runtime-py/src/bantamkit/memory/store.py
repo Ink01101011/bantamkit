@@ -286,6 +286,14 @@ def ensure_bantamkit_gitignore(directory: Path, *, created: bool) -> None:
     would leave a `.bantamkit` that git can see (or ignore one it should not), which is
     the whole bug this closes.
 
+    THE CREATORS, ENUMERATED (J54-3), because "anything else" is how one got missed: in
+    THIS runtime there are exactly two -- `MemoryStore._ensure_dirs` and `EventLog._append`
+    -- and both now ask `bantamkit_dir_for` which directory the decision is about, rather
+    than assuming the root's parent is it. `runtime-ts` has a THIRD, `hostinstall`'s
+    `thisCommand`, where npm creates `~/.bantamkit/mcp` for `--install`; there is no npm
+    install path in this runtime (the offline install is Node-only by user ruling), which
+    is why that creator has no counterpart here. `docs/porting.md` carries the row.
+
     NEVER REWRITES. A `.gitignore` that already exists -- whatever its bytes -- is left
     exactly as it is, kept as a second guard even when `created` is `True`: an operator
     who deleted it to commit the directory keeps that decision, and this never diffs its
@@ -311,6 +319,34 @@ def ensure_bantamkit_gitignore(directory: Path, *, created: bool) -> None:
         gitignore.write_text(BANTAMKIT_GITIGNORE_TEXT, encoding="utf-8")
     except OSError:
         pass
+
+
+def bantamkit_dir_for(path: Path) -> Path | None:
+    """The `.bantamkit` directory a `mkdir(parents=True)` of `path` would create or fill,
+    or `None` when there is none: `path` itself if it is named `.bantamkit`, otherwise its
+    nearest ancestor that is.
+
+    WHY A WALK AND NOT `path.parent` (J54-3). Every creator has to hand
+    `ensure_bantamkit_gitignore` the directory the decision is ABOUT, and `parent` is the
+    right answer for exactly one shape of path, `<x>/.bantamkit/memory`. A store rooted AT
+    the `.bantamkit` directory (`--store ~/.bantamkit`) or nested deeper under it
+    (`<x>/.bantamkit/memory/extra`) creates a `.bantamkit` whose gitignore decision was
+    taken about the wrong directory -- so no decision was taken at all, and git could see
+    the whole tree. MEASURED, not hypothetical: `~/.bantamkit` on the machine this was
+    found on holds an empty `facts/` and `archive/` beside `memory/`, left by a store once
+    rooted at it, and no `.gitignore`.
+
+    NEAREST AND NOT OUTERMOST, which is the choice `EventLog._append` already made and this
+    function now carries for both creators: under a `<x>/.bantamkit/y/.bantamkit/z` the
+    directory a reader would expect to be ignored is the one the store is actually in.
+
+    READ-ONLY. It looks at names, never at the filesystem, so it is equally valid before or
+    after the mkdir -- but `created` is answered by checking THIS path's existence BEFORE.
+    """
+    for candidate in (path, *path.parents):
+        if candidate.name == ".bantamkit":
+            return candidate
+    return None
 
 
 class MemoryStore:
@@ -405,8 +441,16 @@ class MemoryStore:
         # Checked BEFORE the mkdir, per user ruling #2: this is the one moment that can
         # tell whether `.bantamkit` already existed. After the mkdir it unconditionally
         # exists either way, so the answer has to be captured now or not at all.
-        bantamkit_dir = self.root.parent
-        bantamkit_dir_existed_before = bantamkit_dir.exists()
+        #
+        # J54-3: `bantamkit_dir_for`, not `self.root.parent`. The mkdir below is
+        # `parents=True`, so it creates every missing component of `self.root` -- a root
+        # that IS the `.bantamkit` directory, or one nested deeper under it, brought a
+        # `.bantamkit` into existence while the decision was being taken about some other
+        # directory, which meant no decision at all.
+        bantamkit_dir = bantamkit_dir_for(self.root)
+        bantamkit_dir_existed_before = (
+            bantamkit_dir is not None and bantamkit_dir.exists()
+        )
         try:
             (self.root / "facts").mkdir(parents=True, exist_ok=True)
             (self.root / "archive").mkdir(parents=True, exist_ok=True)
@@ -415,7 +459,10 @@ class MemoryStore:
                 f"memory store could not be created: {self.root}; the directory is not"
                 " there and this filesystem would not make it, so nothing was written"
             ) from e
-        ensure_bantamkit_gitignore(bantamkit_dir, created=not bantamkit_dir_existed_before)
+        if bantamkit_dir is not None:
+            ensure_bantamkit_gitignore(
+                bantamkit_dir, created=not bantamkit_dir_existed_before
+            )
 
     # ---- ops ----
 

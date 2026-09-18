@@ -64,7 +64,11 @@ def main() -> None:
     #
     # Whatever went wrong now arrives as data the suite can turn into a failing CASE.
     done = subprocess.run(
-        [sys.executable, str(GENERATOR)], capture_output=True, text=True, encoding="utf-8"
+        [sys.executable, str(GENERATOR)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
     )
     generated = done.stdout if done.returncode == 0 else None
     out = {

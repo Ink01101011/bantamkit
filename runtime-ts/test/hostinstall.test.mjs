@@ -622,3 +622,97 @@ test('a path with a space survives the shell on Windows', winOnly, async () => {
     }
   });
 });
+
+// ------------------------------------------------------------------- J54-3 (2026-09-18)
+//
+// THE INSTALL PATH IS A `.bantamkit` CREATOR TOO, and it skipped the one call that decides
+// whether such a directory gets its self-ignoring `.gitignore`. `--install` from an `npx`
+// cache runs `npm install --prefix <home>/.bantamkit/mcp`, and npm creates that whole path
+// itself (measured, npm 11.6.2 — see `thisCommand`'s docstring). Measured on the machine
+// this was found on: `~/.bantamkit` held 28 MB of install tree and the whole memory store,
+// with no `.gitignore` — every byte of it untracked in a `$HOME` that is a git repository.
+//
+// The rule is unchanged (user ruling #2): only the `.bantamkit` THIS call brings into
+// existence is ignored. A kept install that is already there, or a `~/.bantamkit` that
+// predates this run, is left exactly as it is.
+
+const GITIGNORE_TEXT =
+  '# Created by bantamkit: this directory is local state. Delete this file to commit it.\n*\n';
+
+test('J54-3: a kept install npm creates gets ~/.bantamkit/.gitignore', async () => {
+  await withHome(async (h, root) => {
+    assert.equal(existsSync(join(root, '.bantamkit')), false, 'the fake HOME already had one');
+    // The installer double stands in for npm exactly where npm stands: it is what brings
+    // `<home>/.bantamkit/mcp/...` — and therefore `<home>/.bantamkit` — into existence.
+    const installer = recorder(() => {
+      seedKept(root, VERSION);
+      return [0, 'added 95 packages'];
+    });
+    h.installSelf('cursor', false, { shape: () => 'ephemeral', installer });
+
+    const gitignore = join(root, '.bantamkit', '.gitignore');
+    assert.equal(existsSync(gitignore), true, 'the installer created ~/.bantamkit and nothing ignored it');
+    assert.equal(readFileSync(gitignore, 'utf8'), GITIGNORE_TEXT);
+  });
+});
+
+test('J54-3: a ~/.bantamkit that predates the install never gets one (ruling #2)', async () => {
+  await withHome(async (h, root) => {
+    mkdirSync(join(root, '.bantamkit'), { recursive: true });
+    const installer = recorder(() => {
+      seedKept(root, VERSION);
+      return [0, ''];
+    });
+    h.installSelf('cursor', false, { shape: () => 'ephemeral', installer });
+
+    assert.equal(installer.calls.length, 1, 'npm did not run, so this proves nothing');
+    assert.equal(existsSync(join(root, '.bantamkit', '.gitignore')), false);
+  });
+});
+
+test('J54-3: a second --install writes no ignore file, and a deleted one stays deleted', async () => {
+  await withHome(async (h, root) => {
+    const installer = recorder(() => {
+      seedKept(root, VERSION);
+      return [0, ''];
+    });
+    h.installSelf('cursor', false, { shape: () => 'ephemeral', installer });
+    const gitignore = join(root, '.bantamkit', '.gitignore');
+    assert.equal(existsSync(gitignore), true);
+
+    // Second run: the kept install is current, so npm never runs and nothing is created.
+    rmSync(gitignore);
+    h.installSelf('copilot', false, { shape: () => 'ephemeral', installer: mustNotInstall });
+    assert.deepEqual(mustNotInstall.calls, []);
+    assert.equal(existsSync(gitignore), false, 'the ignore file came back after the operator deleted it');
+  });
+});
+
+test('J54-3: a failed install that made no directory writes no ignore file', async () => {
+  await withHome(async (h, root) => {
+    const installer = recorder(() => [1, 'npm ERR! code E404']);
+    assert.throws(() => h.installSelf('cursor', false, { shape: () => 'ephemeral', installer }));
+    // The helper never creates the directory itself, so there is nothing to ignore and
+    // nothing is written -- not even an orphan `.gitignore` in a `.bantamkit` nobody made.
+    assert.equal(existsSync(join(root, '.bantamkit')), false);
+    assert.equal(existsSync(join(root, '.bantamkit', '.gitignore')), false);
+  });
+});
+
+test('J54-3: a FAILED install that npm left a ~/.bantamkit behind still ignores it', () => {
+  // MEASURED, not assumed (2026-09-18, npm 11.6.2, `npm_config_offline=true` against an empty
+  // cache): `npm install --prefix <home>/.bantamkit/mcp bantamkit-mcp@0.34.2` exits 1 AND
+  // leaves `<home>/.bantamkit/mcp` on disk. So the ignore decision is taken on what npm did,
+  // not on whether it succeeded -- otherwise the one case that leaves junk behind is the one
+  // case that leaves it visible to git.
+  return withHome(async (h, root) => {
+    const installer = recorder(() => {
+      mkdirSync(join(root, '.bantamkit', 'mcp'), { recursive: true });
+      return [1, 'npm ERR! code ENOTCACHED'];
+    });
+    assert.throws(() => h.installSelf('cursor', false, { shape: () => 'ephemeral', installer }));
+    const gitignore = join(root, '.bantamkit', '.gitignore');
+    assert.equal(existsSync(gitignore), true, 'npm left a ~/.bantamkit and nothing ignored it');
+    assert.equal(readFileSync(gitignore, 'utf8'), GITIGNORE_TEXT);
+  });
+});
