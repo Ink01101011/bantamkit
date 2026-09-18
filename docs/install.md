@@ -65,7 +65,7 @@ One version, both runtimes, one release commit:
    `runtime-ts/package-lock.json`) and `__version__` in `runtime-py/src/bantamkit/__init__.py`
    to the same number.
 2. Run the four gates: `.venv/bin/python -m pytest runtime-py/tests -q`,
-   `.venv/bin/ruff check runtime-py`, `(cd runtime-ts && npm test)`,
+   `.venv/bin/ruff check runtime-py tools`, `(cd runtime-ts && npm test)`,
    `node tools/conformance/run.mjs --all`.
 3. Build: `(cd runtime-ts && npm pack)`; `python -m build runtime-py`; `twine check` on both files.
    The npm checklist is [Releasing to npm](release-npm.md#before-you-publish).

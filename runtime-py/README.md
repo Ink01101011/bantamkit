@@ -314,7 +314,7 @@ git clone https://github.com/Ink01101011/bantamkit
 cd bantamkit
 python -m venv .venv && .venv/bin/pip install -e "runtime-py[dev,mcp]"
 .venv/bin/python -m pytest runtime-py/tests -q
-.venv/bin/ruff check runtime-py
+.venv/bin/ruff check runtime-py tools
 ```
 
 The cross-runtime gate needs Node:

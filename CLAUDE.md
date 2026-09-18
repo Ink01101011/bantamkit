@@ -3,7 +3,7 @@
 Layer discipline is strict: a change lives in exactly one layer
 (docs/architecture.md). Run the suite from the repo venv:
 `.venv/bin/python -m pytest runtime-py/tests -q` and keep
-`.venv/bin/ruff check runtime-py` clean.
+`.venv/bin/ruff check runtime-py tools` clean.
 
 ## Two runtimes, one surface — a feature lands in BOTH or it does not land
 
